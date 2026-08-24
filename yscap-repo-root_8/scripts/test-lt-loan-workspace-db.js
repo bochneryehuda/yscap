@@ -158,6 +158,69 @@ async function main() {
     const asNamed = await call('GET', `/api/lt/pipeline/${loanId}`, named);
     eq(asNamed.status, 200, 'and for the scoped officer Encompass named on the file');
 
+    // ── A2. THE MILESTONE CLOCK IS MEASURED AGAINST THIS LOAN'S OWN LADDER
+    //        (audit round 4, C1) ────────────────────────────────────────────
+    //
+    // `milestone_since` now means "when the last step COMPLETED" = when the wait
+    // on the NEXT step began, so the bar is the AWAITED step's expected_days.
+    // Deriving "the next step" from the COMPANY CATALOG is wrong: a real funded
+    // loan's ladder runs "Docs Out → Funding" with WIRE ORDER ABSENT while the
+    // catalog runs "Docs Out → Wire Order → Funding" — and Wire Order's
+    // expected_days is 0, which describeClock reads as "no expectation set",
+    // silently switching the stall alarm OFF on a genuinely stalled file.
+    await db.query(
+      `UPDATE lt_loans SET milestone_name = 'Docs Out', stage_key = 'closing',
+              milestone_since = now() - interval '9 days', milestone_since_is_baseline = false
+        WHERE id = $1::uuid`, [loanId]);
+    // This loan's ladder SKIPS Wire Order, exactly as the live trace records —
+    // AND carries a not-done step BEHIND the standing one (round 5, obs 1).
+    // That second property is what makes this test able to fail: on a
+    // CONTIGUOUS ladder "the first not-done row anywhere" and "the first
+    // not-done row after the standing one" give the same answer, so the earlier
+    // fixture passed green against the naive reading that was actually live in
+    // this very route. Loan Setup is left unticked on purpose — its
+    // expected_days is 0, so the naive reading claims NO bar and the stall
+    // alarm goes silent, which is the exact defect being pinned.
+    for (const [nm, pos, done] of [['Loan Setup', 2, false], ['Docs Out', 12, true], ['Funding', 13, false]]) {
+      await db.query(
+        `INSERT INTO lt_loan_milestones (loan_id, milestone_name, position, done)
+         VALUES ($1::uuid, $2, $3, $4)
+         ON CONFLICT (loan_id, milestone_name) DO UPDATE SET position = EXCLUDED.position, done = EXCLUDED.done`,
+        [loanId, nm, pos, done]);
+    }
+    const clocked = await call('GET', `/api/lt/pipeline/${loanId}`, admin);
+    const mc = clocked.body && clocked.body.milestoneClock;
+    ok(mc, 'the clock rides on the payload');
+    eq(mc.expectedDays, 1,
+      "the bar is FUNDING's expectation (1) — the step this loan actually awaits, not the catalog's Wire Order (C1)");
+    eq(mc.stalled, true,
+      '…so a 9-day wait against a 1-day bar still reports STALLED — the alarm is not silently switched off');
+    // The sentence must NAME the step the bar came from (round 5, defect 5).
+    // Saying "at this milestone … longer than the 1 expected" would put
+    // Funding's number under Docs Out's name, and the Milestones board on the
+    // same screen shows Docs Out's own (different) expectation.
+    ok(/Waiting on Funding/.test(String(mc.note || '')),
+      '…and the sentence names FUNDING — the step the bar belongs to — not the step the loan stands at');
+
+    // Every step done → nothing is awaited, so there is NO bar. Measuring
+    // against the FINISHED step would restart the alarm on a completed file.
+    await db.query(
+      `UPDATE lt_loan_milestones SET done = true WHERE loan_id = $1::uuid`, [loanId]);
+    await db.query(
+      `UPDATE lt_loans SET milestone_name = 'Funding' WHERE id = $1::uuid`, [loanId]);
+    const doneClock = await call('GET', `/api/lt/pipeline/${loanId}`, admin);
+    eq(doneClock.body.milestoneClock.expectedDays, null,
+      'with every step done nothing is awaited, so no bar is claimed');
+    eq(doneClock.body.milestoneClock.stalled, null,
+      '…and a finished file is never reported stalled');
+    ok(/nothing is being waited on/i.test(String(doneClock.body.milestoneClock.note || ''))
+      && !/catalog/.test(String(doneClock.body.milestoneClock.note || '')),
+    '…and it SAYS nothing is being waited on, rather than blaming the catalog for a bar that is absent because the ladder is finished');
+    await db.query('DELETE FROM lt_loan_milestones WHERE loan_id = $1::uuid', [loanId]);
+    await db.query(
+      `UPDATE lt_loans SET milestone_name = 'Submittal', stage_key = 'submitted',
+              milestone_since = NULL WHERE id = $1::uuid`, [loanId]);
+
     // ── B. THE ONE THAT MATTERS: A FILE THAT IS NOT YOURS IS INDISTINGUISHABLE
     //       FROM ONE THAT DOES NOT EXIST ────────────────────────────────────
     //

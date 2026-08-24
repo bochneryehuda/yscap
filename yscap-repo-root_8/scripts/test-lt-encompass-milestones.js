@@ -103,6 +103,41 @@ async function applyMigration() {
   const countAgain = await catalog.countMilestones();
   check('still 19 after re-applying the migration a third time', countAgain === 19, `got ${countAgain}`);
 
+  // ---- the completed-wording table is DERIVED, never a hand-kept count -----
+  //
+  // Audit round 5, defect 7: `stages.COMPLETED_FORM` covers some of db/547's
+  // milestones and the rest keep their own name, and BOTH the module comment
+  // and docs/longterm/MILESTONE-COMPLETED-WORDING.md state the split (19 / 9 /
+  // ten open) in prose. That count went stale once already — round 3 removed a
+  // wording and the "ten are open" list kept saying nine — precisely because a
+  // number nobody derives is a number nobody updates. So it is derived here
+  // from the two real sources and the doc is held to the answer.
+  const stagesMod = require('../src/longterm/stages');
+  const { rows: seeded } = await db.query('SELECT milestone_name FROM lt_encompass_milestones');
+  const seededNames = seeded.map((r) => r.milestone_name);
+  const covered = seededNames.filter((n) => stagesMod.completedFormLabel(n) !== n);
+  const open = seededNames.filter((n) => stagesMod.completedFormLabel(n) === n);
+  check('every wording in COMPLETED_FORM belongs to a milestone db/547 actually seeds',
+    Object.keys(stagesMod.COMPLETED_FORM).every(
+      (k) => seededNames.some((n) => stagesMod.milestoneKey(n) === k)),
+    `unmatched: ${Object.keys(stagesMod.COMPLETED_FORM)
+      .filter((k) => !seededNames.some((n) => stagesMod.milestoneKey(n) === k)).join(', ')}`);
+  check('covered + open accounts for every seeded milestone, with nothing counted twice',
+    covered.length + open.length === seededNames.length && seededNames.length === 19,
+    `${covered.length} + ${open.length} vs ${seededNames.length}`);
+
+  // The doc must state the SAME numbers and name the SAME open milestones.
+  // Reading it here is what stops the prose drifting from the table again.
+  const doc = fs.readFileSync(
+    path.join(__dirname, '..', 'docs', 'longterm', 'MILESTONE-COMPLETED-WORDING.md'), 'utf8');
+  check(`the doc states db/547 seeds ${seededNames.length}`,
+    new RegExp(`db/547 seeds \\*\\*${seededNames.length}\\*\\*`).test(doc));
+  check(`the doc states the table covers ${covered.length}`,
+    new RegExp(`the table covers \\*\\*${covered.length}\\*\\*`).test(doc));
+  const missingFromDoc = open.filter((n) => !doc.includes(n));
+  check('the doc names EVERY milestone that is still open, by name',
+    missingFromDoc.length === 0, `missing from the doc: ${missingFromDoc.join(', ')}`);
+
   // ---- the HTTP surface (mounted WITHOUT auth here; auth is at the server seam)
   const app = express();
   app.use('/api/lt', lt.router);

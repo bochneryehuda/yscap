@@ -187,6 +187,11 @@ async function main() {
     'routes/borrowers.js': 'GET /api/lt/borrowers, in the route smoke test',
     'routes/my-loans.js': 'test-lt-borrower-switch-db.js drives the handler directly against the real schema',
     'routes/sync.js': 'GET /api/lt/sync, in the route smoke test',
+    // The ClickUp writer composes the SAME trash guard into its loan loads. Each
+    // assembled form runs against a real Postgres in this job:
+    'sync/milestone-ladder.js': 'test-lt-milestone-ladder.js section H drives ladderDue live (the assembled not-trash WHERE), and sections E–I drive every other statement in the file',
+    'clickup/push.js': 'test-lt-clickup-writer.js DB half drives pushLoan, createForLoan, pushPass and createPass live — every loan load assembles the trash guard',
+    'routes/clickup.js': 'GET /api/lt/clickup/loans/:loanId in the route smoke test (loadScopedLoan assembles the trash guard), plus test-lt-clickup-section-db.js over the whole section',
   };
   const byFile = new Map();
   for (const b of built) byFile.set(b.rel, (byFile.get(b.rel) || 0) + 1);

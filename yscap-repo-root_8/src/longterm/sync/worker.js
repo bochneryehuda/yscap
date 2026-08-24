@@ -31,8 +31,10 @@
 const loans = require('./loans');
 const conditions = require('../conditions/sync');
 const milestoneCatalog = require('./milestone-catalog');
+const milestoneLadder = require('./milestone-ladder');
 const contacts = require('../people/contacts');
 const clickupLink = require('../clickup/link');
+const clickupPush = require('../clickup/push');
 const borrowerAutolink = require('../borrower-autolink');
 const runLog = require('./run-log');
 
@@ -170,7 +172,7 @@ async function tickOnce({ trigger = 'worker' } = {}) {
   if (running) return { ok: false, reason: 'a pass is already running' };
   running = true;
   const started_at = Date.now();
-  const out = { loans: null, conditions: null, milestoneCatalog: null, pilotRoles: null, clickupLink: null, borrowerLinks: null };
+  const out = { loans: null, conditions: null, milestoneCatalog: null, milestoneLadders: null, pilotRoles: null, clickupLink: null, borrowerLinks: null };
   try {
     // EVERY PASS RECORDS WHAT IT DID (db/616). The log line below says the same
     // thing, and a log line is not an answer: the owner asked twice why nothing was
@@ -197,6 +199,27 @@ async function tickOnce({ trigger = 'worker' } = {}) {
       out.milestoneCatalog = await runLog.record('milestone_catalog', trigger, () => milestoneCatalog.refreshOnce({}));
     } catch (e) {
       out.milestoneCatalog = { ok: false, reason: (e && e.message) || String(e) };
+    }
+    // THE MILESTONE LADDERS for the already-mirrored book (db/623). The ordinary
+    // loan read ladders every loan it touches, but it only touches a loan whose
+    // Encompass stamp moved — so a finished file (precisely the ones whose
+    // milestone read wrong, like Birch) would keep the lagging reading forever.
+    // Drains on `ladder_synced_at IS NULL`, a bounded batch per tick, and
+    // self-terminates: a laddered book costs one SELECT that finds nothing.
+    try {
+      out.milestoneLadders = await runLog.record('milestone_ladder', trigger, () => milestoneLadder.backfillLadders({}));
+    } catch (e) {
+      out.milestoneLadders = { ok: false, reason: (e && e.message) || String(e) };
+    }
+    // THE STANDING REALIGN (owner-directed 2026-08-24): move every laddered
+    // loan onto its LAST-COMPLETED milestone, from the mirror alone — no
+    // Encompass call, no history event (a re-definition is not a move). One
+    // cheap SELECT once aligned; also self-heals any future mirror/loan drift.
+    // LOCAL work, so it runs whether or not Encompass is reachable.
+    try {
+      out.milestoneRealign = await runLog.record('milestone_realign', trigger, () => milestoneLadder.realignStanding({}));
+    } catch (e) {
+      out.milestoneRealign = { ok: false, reason: (e && e.message) || String(e) };
     }
     // THE ROLES ENCOMPASS HAS NOBODY FOR — today, who sets a file up. It cannot ride
     // the loan read, because a loan is only re-read when Encompass's own stamp moves
@@ -231,6 +254,22 @@ async function tickOnce({ trigger = 'worker' } = {}) {
       out.borrowerLinks = await runLog.record('borrower_links', trigger, () => borrowerAutolink.autoLinkPass({}));
     } catch (e) {
       out.borrowerLinks = { ok: false, reason: (e && e.message) || String(e) };
+    }
+    // THE FIELD WRITER (db/625, owner-directed 2026-08-23): a brand-new
+    // Encompass file gets its card in the officer's folder, and a linked card
+    // gets its fields refreshed whenever the mirror moved. Runs AFTER the link
+    // pass so a card linked this tick pushes this tick, and a file the link
+    // pass could not match is the one the create pass may card. OFF until the
+    // owner flips LT_CLICKUP_WRITE_ENABLED (blank = off; DRYRUN logs the plan).
+    try {
+      out.clickupCreate = await runLog.record('clickup_create', trigger, () => clickupPush.createPass({}));
+    } catch (e) {
+      out.clickupCreate = { ok: false, reason: (e && e.message) || String(e) };
+    }
+    try {
+      out.clickupPush = await runLog.record('clickup_push', trigger, () => clickupPush.pushPass({}));
+    } catch (e) {
+      out.clickupPush = { ok: false, reason: (e && e.message) || String(e) };
     }
   } finally {
     running = false;

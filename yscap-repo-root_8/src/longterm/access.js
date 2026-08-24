@@ -202,6 +202,63 @@ function onFileSql(ph) {
     )`;
 }
 
+/**
+ * WHY somebody is on a file decides whether it is THEIRS (owner-directed
+ * 2026-08-23: *"your system needs to understand, for each and every person, why
+ * they are looped into the file"* — a file where the owner was assigned "only to
+ * the Closer and Funder milestone" turned up in their LOAN-OFFICER pipeline).
+ *
+ * `onFileSql` answers a different question — MAY they open it — and deliberately
+ * matches every role: being the closer on a file is real access (the 2026-08-14
+ * ruling stands untouched). This map answers "which files are MINE": the contact
+ * roles that match the person's own FUNCTION. An admin's book is the files they
+ * ORIGINATE (they wear the loan-officer hat when they carry files — the owner's
+ * own search was "files that I was the Loan Officer on"); a processor's is the
+ * files they process or set up; a closer's "mine" is their closing queue.
+ *
+ * SELLABLE-LOS RULE: a buyer's org chart is not ours, so the map is a SETTING
+ * (`access.mineRoles`) pre-filled with this default. A role with NO entry
+ * anywhere answers null — which callers read as "any role", the pre-2026-08-24
+ * behaviour, because an unmapped role silently shown an EMPTY book is a support
+ * ticket while a broad book is merely unfiltered.
+ */
+const DEFAULT_MINE_ROLES = {
+  loan_officer: ['loan_officer'],
+  loan_coordinator: ['loan_officer'],   // this tenant's own name for the LO slot
+  processor: ['processor', 'file_setup'],
+  underwriter: ['underwriter'],
+  closer: ['closer'],
+  funder: ['funder'],
+  post_closer: ['post_closer'],
+  admin: ['loan_officer'],
+  super_admin: ['loan_officer'],
+};
+
+function rolesForMine(ltRole, settings = {}) {
+  const configured = settings['access.mineRoles'];
+  const map = (configured && typeof configured === 'object') ? configured : DEFAULT_MINE_ROLES;
+  const v = map[String(ltRole || '')];
+  if (Array.isArray(v) && v.length) return v.map(String);
+  // A configured map that omits the role still falls back to OUR default for it —
+  // a buyer narrowing one role must not silently widen every other.
+  const d = DEFAULT_MINE_ROLES[String(ltRole || '')];
+  return Array.isArray(d) && d.length ? d.slice() : null;
+}
+
+/**
+ * "Is this file MINE, in one of THESE roles?" — the persona-matched twin of
+ * `onFileSql`, taking a second placeholder for the role list. Same effective-person
+ * expression, so an override moves a file between people identically in both.
+ */
+function mineRolesSql(mePh, rolesPh) {
+  return `EXISTS (
+      SELECT 1 FROM lt_loan_contacts c
+       WHERE c.loan_id = l.id
+         AND c.role = ANY(${rolesPh}::text[])
+         AND ${effectiveStaffSql('c')} = ${mePh}::uuid
+    )`;
+}
+
 /** The JS twin of `onFileSql`, for a caller holding rows rather than a query. It
  *  MUST read the same way — a single file that opens for somebody the list would
  *  never show them is the whole class this pair exists to prevent. */
@@ -312,6 +369,7 @@ module.exports = {
   LT_ROLES,
   DEFAULT_ROLE_SCOPES,
   DEFAULT_ADMIN_ROLES,
+  DEFAULT_MINE_ROLES,
   ADMIN_FLOOR_ROLE,
   adminRoles,
   mayManagePeople,
@@ -321,6 +379,8 @@ module.exports = {
   accessFor,
   pipelineScopeSql,
   onFileSql,
+  rolesForMine,
+  mineRolesSql,
   effectiveStaffSql,
   effectiveStaffIdOf,
   mayOpenLoan,

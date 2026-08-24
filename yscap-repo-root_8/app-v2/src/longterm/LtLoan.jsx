@@ -4,6 +4,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import LtLayout from './LtLayout.jsx';
 import LtFileSection, { hasFileSection } from './LtFileSections.jsx';
 import LtConditionCenter from './LtConditionCenter.jsx';
+import LtClickupSection from './LtClickupSection.jsx';
 import ProductStamp from './ProductStamp.jsx';
 import { ltApi } from './api.js';
 
@@ -55,7 +56,9 @@ function Rail({ rail }) {
     ['Interest only', rail.interestOnlyMonths == null ? '—' : `${rail.interestOnlyMonths} months`],
     ['Prepayment penalty', rail.prepaymentPenaltyMonths == null ? '—' : `${rail.prepaymentPenaltyMonths} months`],
     ['Program', plain(rail.program)],
-    ['Milestone', plain(rail.milestone)],
+    // The COMPLETED wording (owner-directed 2026-08-24): "Funded", never
+    // "Funding". The raw Encompass name still lives in the Milestones section.
+    ['Milestone', plain(rail.milestoneLabel || rail.milestone)],
   ];
 
   return (
@@ -88,43 +91,127 @@ function Rail({ rail }) {
   );
 }
 
-function Stepper({ stepper, clock }) {
-  if (!stepper || !stepper.steps || !stepper.steps.length) return null;
+/**
+ * THE FILE HEADER (owner-directed 2026-08-23, the approved meridian design):
+ * the loan number as ONE BOX, beside the property address and the deal's
+ * headline chips — purpose, program, DSCR, loan amount, LTV, and whether the
+ * loan vests in an entity or an individual. PILOT style, dark on paper.
+ */
+function FileHeader({ rail, loan, file }) {
+  const address = (file && file.property && file.property.address) || null;
+  const vesting = !loan || !loan.vesting_type ? null
+    : String(loan.vesting_type).trim().toLowerCase() === 'individual' ? 'Individual'
+      : (loan.vesting_entity_name || 'Entity');
+  const chips = [
+    ['Purpose', plain(rail && rail.purpose)],
+    ['Program', plain(rail && rail.program)],
+    ['DSCR', ratio(rail && rail.dscr)],
+    ['Loan amount', money(rail && rail.loanAmount)],
+    ['LTV', pct(rail && rail.ltv)],
+    ['Vesting', vesting || '—'],
+  ];
   return (
     <div className="card" style={{ color: INK, marginBottom: 12 }}>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-        {stepper.steps.map((s) => (
-          <span key={s.name} style={{
-            display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 1,
-            fontSize: 12, padding: '3px 9px', borderRadius: 999, whiteSpace: 'nowrap',
-            // A PILOT step is drawn as OURS: teal when it is reached, and DASHED while
-            // Encompass has not said either way, so "we have not been told" never looks
-            // like a plain "not yet" — they are different answers and the second one is
-            // the one somebody would act on.
-            border: s.pilot
-              ? `1px ${s.unknown ? 'dashed' : 'solid'} ${s.reached ? TEAL : 'rgba(20,27,34,.18)'}`
-              : `1px solid ${s.current ? GOLD : 'rgba(20,27,34,.14)'}`,
-            background: s.pilot
-              ? (s.reached ? 'rgba(47,127,134,.12)' : 'transparent')
-              : (s.current ? 'rgba(174,135,70,.14)' : s.reached ? '#F4F1EA' : 'transparent'),
-            color: s.reached || s.current ? INK : MUTED,
-            fontWeight: s.current ? 700 : 500,
-          }}>
-            <span>{s.name}</span>
-            {/* A date ONLY where PILOT actually watched the loan arrive. Encompass's own
-                milestone log is unreadable on this tenant, so a step we did not witness
-                shows nothing — never the day we first noticed the loan sitting there. */}
-            {s.reachedAt ? (
-              <span style={{ fontSize: 10, fontWeight: 500, color: MUTED }}>{day(s.reachedAt)}</span>
-            ) : null}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'stretch' }}>
+        {/* The loan number, as ONE box — the identity somebody quotes on the phone. */}
+        <div style={{
+          border: `1.5px solid ${GOLD}`, borderRadius: 10, padding: '10px 16px',
+          display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 170,
+          background: 'rgba(174,135,70,.06)',
+        }}>
+          <span style={{ fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
+            Loan number
           </span>
-        ))}
+          <span style={{ fontSize: 20, fontWeight: 800, color: INK, letterSpacing: '.02em', whiteSpace: 'nowrap' }}>
+            {plain(rail && rail.loanNumber)}
+          </span>
+        </div>
+        <div style={{ flex: '1 1 320px', minWidth: 0 }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: INK, lineHeight: 1.3 }}>
+            {address || 'No property address read from Encompass yet'}
+          </div>
+          <div style={{ fontSize: 13, color: MUTED, marginTop: 2 }}>{plain(rail && rail.borrower)}</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+            {chips.map(([k, v]) => (
+              <span key={k} style={{
+                display: 'inline-flex', gap: 5, alignItems: 'baseline', fontSize: 12,
+                padding: '3px 9px', borderRadius: 999, border: '1px solid rgba(20,27,34,.14)', background: '#FFFFFF',
+              }}>
+                <span style={{ color: MUTED, fontSize: 10, textTransform: 'uppercase', letterSpacing: '.06em', fontWeight: 700 }}>{k}</span>
+                <span style={{ color: INK, fontWeight: 650 }}>{v}</span>
+              </span>
+            ))}
+          </div>
+        </div>
       </div>
+    </div>
+  );
+}
 
-      {/* How long it has been here. The server sends the sentence, because the whole
-          point is the difference between "6 days, longer than expected" and "we do not
-          know, we only started watching" — and that distinction must not be re-derived
-          on a screen where it could be got wrong. */}
+/**
+ * THE SEVEN STOPS — the header progress bar. Only the owner's seven, decided on
+ * the server (`workspace.sevenStops`) off the ladder's own done flags, each
+ * carrying Encompass's own date. The PURCHASED stop is OURS (teal), with its
+ * three honest states: bought, not bought, and "Encompass has not said"
+ * (dashed). The full ladder lives in the Milestones section.
+ */
+function SevenStops({ stops, clock, sale, statusLabel }) {
+  if (!stops || !stops.stops || !stops.stops.length) return null;
+  // WHERE THE FILE IS vs WHAT IS UP NEXT (owner-directed 2026-08-24): the file
+  // WEARS the last COMPLETED stop — its label is the status — and the first
+  // unreached stop is merely what is being waited on. The old rendering wrote
+  // "now" under the UNREACHED stop, which read as the file being somewhere it
+  // has not got to yet.
+  const nextStop = stops.currentIndex >= 0 ? stops.stops[stops.currentIndex] : null;
+  return (
+    <div className="card" style={{ color: INK, marginBottom: 12 }}>
+      {statusLabel ? (
+        <div style={{ marginBottom: 10, fontSize: 13, color: INK }}>
+          Status: <strong style={{ fontWeight: 750 }}>{statusLabel}</strong>
+          {nextStop ? <span style={{ color: MUTED }}> &middot; up next: {nextStop.label}</span> : null}
+        </div>
+      ) : null}
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', rowGap: 10 }}>
+        {stops.stops.map((s, i) => {
+          const at = i === stops.atIndex;          // the stop the file WEARS
+          const next = i === stops.currentIndex;   // the stop being waited on
+          const dotColor = s.pilot
+            ? (s.reached ? TEAL : 'rgba(20,27,34,.25)')
+            : (s.reached ? GOLD : next ? GOLD : 'rgba(20,27,34,.22)');
+          return (
+            <div key={s.key} style={{ display: 'flex', alignItems: 'flex-start', flex: '1 1 auto', minWidth: 96 }}>
+              {i > 0 && (
+                <div aria-hidden style={{
+                  height: 2, flex: '1 1 12px', margin: '9px 4px 0',
+                  background: s.reached ? (s.pilot ? TEAL : GOLD) : 'rgba(20,27,34,.14)',
+                }} />
+              )}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, minWidth: 84 }}
+                title={s.pilot && s.note ? s.note : undefined}>
+                <span aria-hidden style={{
+                  width: 18, height: 18, borderRadius: 999, boxSizing: 'border-box',
+                  border: s.pilot && s.unknown ? `2px dashed ${dotColor}` : `2px solid ${dotColor}`,
+                  background: s.reached ? dotColor : next ? 'rgba(174,135,70,.15)' : 'transparent',
+                  boxShadow: at ? '0 0 0 3px rgba(174,135,70,.25)' : 'none',
+                }} />
+                <span style={{
+                  fontSize: 12, textAlign: 'center', lineHeight: 1.25, maxWidth: 110,
+                  color: s.reached ? INK : MUTED,
+                  fontWeight: at ? 750 : s.reached ? 650 : 500,
+                }}>{s.label}</span>
+                <span style={{ fontSize: 10, color: MUTED, minHeight: 12 }}>
+                  {s.reached && s.at ? day(s.at) : s.reached && at ? 'here now' : next ? 'up next' : s.pilot && s.unknown ? 'not said' : ''}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {!stops.ladderRead && (
+        <div style={{ marginTop: 8, fontSize: 12, color: MUTED }}>
+          Encompass&rsquo;s milestone ladder has not been read for this loan yet, so no progress is claimed.
+        </div>
+      )}
       {clock && clock.note ? (
         <div style={{
           marginTop: 8, fontSize: 12,
@@ -132,24 +219,108 @@ function Stepper({ stepper, clock }) {
           fontWeight: clock.stalled ? 600 : 400,
         }}>{clock.note}</div>
       ) : null}
-      {/* Nothing is marked reached from a milestone the catalog does not carry, so the
-          screen has to SAY that rather than draw an empty ladder. */}
-      {stepper.unrecognised && (
-        <div style={{ marginTop: 8, fontSize: 12, color: '#8A6A22' }}>
-          Encompass has this loan at “{stepper.currentName}”, which is not in the milestone list we
-          hold — so no step is marked as reached. Nothing is wrong with the loan; our list needs it added.
+      {/* The purchase's own sentence — "bought on the 31st" / "not bought — Encompass
+          has it as Shipped" / "Encompass has not said" are three different pieces of
+          news, decided on the server. Shown when the loan is far enough along that
+          the answer is the question somebody opened the file with. */}
+      {sale && sale.note && (stops.currentIndex === -1 || stops.currentIndex >= 5) ? (
+        <div style={{ marginTop: 6, fontSize: 12, color: sale.purchased ? TEAL : MUTED }}>{sale.note}</div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * THE MILESTONES SECTION — every step of the ladder, each with Encompass's own
+ * date (worked vs planned — the ladder's `done` says which), the day PILOT
+ * watched it flip, and the ASSOCIATE Encompass assigns to the step.
+ */
+function MilestoneBoard({ board, history }) {
+  if (!board || !board.rows || !board.rows.length) {
+    return <p style={{ margin: 0, color: MUTED }}>The milestone list has not been read for this loan yet.</p>;
+  }
+  return (
+    <div>
+      {!board.ladderRead && (
+        <p style={{ margin: '0 0 10px', color: MUTED, fontSize: 13 }}>
+          This loan&rsquo;s own ladder has not been read from Encompass yet — the steps below are the
+          company&rsquo;s milestone list with nothing claimed.
+        </p>
+      )}
+      <div style={{ display: 'grid' }}>
+        {board.rows.map((m) => (
+          <div key={m.name} style={{
+            display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 0',
+            borderTop: '1px solid rgba(20,27,34,.07)',
+          }}>
+            <span aria-hidden style={{
+              width: 16, height: 16, borderRadius: 999, marginTop: 2, boxSizing: 'border-box', flex: 'none',
+              border: m.pilot
+                ? `2px ${m.unknown ? 'dashed' : 'solid'} ${m.done ? TEAL : 'rgba(20,27,34,.25)'}`
+                : `2px solid ${m.done ? GOLD : 'rgba(20,27,34,.2)'}`,
+              background: m.done ? (m.pilot ? TEAL : GOLD) : 'transparent',
+            }} />
+            <div style={{ flex: '1 1 auto', minWidth: 0 }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'baseline' }}>
+                {/* A DONE step is named in its COMPLETED wording (#44) — the
+                    server already resolved it onto `label` (workspace.milestoneBoard
+                    -> stages.completedFormLabel), and this line drew the raw
+                    `name` instead, so a finished Funding step read "Funding ·
+                    done": the active form the owner said must never label a
+                    completed milestone. Falls back to the raw name, which is
+                    what `label` already carries for an open step and for any
+                    milestone with no proven completed wording. */}
+                <span style={{ color: INK, fontWeight: m.done ? 700 : 550, fontSize: 14 }}>{m.label || m.name}</span>
+                <span style={{ fontSize: 12, color: m.done ? '#1F5F3F' : MUTED }}>
+                  {m.pilot
+                    ? (m.unknown ? 'Encompass has not said' : m.done ? 'done' : 'not yet')
+                    : m.done === true ? 'done' : m.done === false ? 'not yet' : 'not in this loan’s ladder'}
+                </span>
+              </div>
+              {m.pilot && m.note ? (
+                <div style={{ fontSize: 12, color: m.done ? TEAL : MUTED, marginTop: 2 }}>{m.note}</div>
+              ) : null}
+              {m.associate ? (
+                <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>
+                  {m.associate.name || '—'}
+                  {m.associate.role ? ` · ${m.associate.role}` : ''}
+                  {m.associate.email ? ` · ${m.associate.email}` : ''}
+                </div>
+              ) : m.roleRequired ? (
+                <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>Needs a {m.roleRequired} — nobody assigned yet</div>
+              ) : null}
+            </div>
+            <div style={{ textAlign: 'right', fontSize: 12, color: MUTED, flex: 'none' }}>
+              {m.date ? (
+                <div style={{ color: INK, fontWeight: 600 }}>
+                  {day(m.date)}
+                  <span style={{ color: MUTED, fontWeight: 400 }}>
+                    {m.dateKind === 'planned' ? ' (planned)' : ''}
+                  </span>
+                </div>
+              ) : null}
+              {m.witnessedAt && (!m.date || day(m.witnessedAt) !== day(m.date)) ? (
+                <div>seen here {day(m.witnessedAt)}</div>
+              ) : null}
+              {m.expectedDays != null ? <div>{m.expectedDays} day{m.expectedDays === 1 ? '' : 's'} expected</div> : null}
+            </div>
+          </div>
+        ))}
+      </div>
+      {Array.isArray(history) && history.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ fontSize: 11, letterSpacing: '.09em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
+            What PILOT has watched move
+          </div>
+          {history.map((h, i) => (
+            <div key={`${h.observedAt}-${i}`} style={{ fontSize: 13, color: INK, padding: '4px 0', borderTop: '1px solid rgba(20,27,34,.07)' }}>
+              {day(h.observedAt)} — {h.isBaseline
+                ? <span style={{ color: MUTED }}>first seen at <strong style={{ color: INK }}>{plain(h.toMilestone)}</strong> (a baseline, not an arrival)</span>
+                : <>{plain(h.fromMilestone)} → <strong>{plain(h.toMilestone)}</strong></>}
+            </div>
+          ))}
         </div>
       )}
-      {/* OUR OWN steps say, in words, where their answer came from. The sentence is
-          written on the server for the same reason the clock's is: "bought on the 31st",
-          "not bought — Encompass has it as Shipped" and "Encompass has not said" are three
-          different pieces of news, and deciding which one to show is not a thing a screen
-          should be doing twice. */}
-      {stepper.steps.filter((s) => s.pilot && s.note).map((s) => (
-        <div key={`note-${s.name}`} style={{ marginTop: 8, fontSize: 12, color: s.reached ? TEAL : MUTED }}>
-          {s.note}
-        </div>
-      ))}
     </div>
   );
 }
@@ -371,6 +542,10 @@ function Contacts({ contacts, canReassign = false, staff = [], onReassign }) {
   );
 }
 
+// Exported for the render smoke (scripts/test-lt-loan-render-pure.mjs), which
+// proves the LOADED states render — a green build alone cannot.
+export { FileHeader, SevenStops, MilestoneBoard, Rail };
+
 export default function LtLoan() {
   const { loanId } = useParams();
   const nav = useNavigate();
@@ -407,7 +582,8 @@ export default function LtLoan() {
   }
   if (!data) return <LtLayout title="Long-term file"><div className="card" style={{ color: INK }}>Loading…</div></LtLayout>;
 
-  const { rail, stepper, sections = [], contacts = [], lock, file, milestoneClock } = data;
+  const { rail, sections = [], contacts = [], lock, file, milestoneClock } = data;
+  const { stops, milestoneBoard, sale, loan } = data;
   const { canReassign = false, assignableStaff = [] } = data;
   const { product: productKey, productLabel, milestoneHistory } = data;
   const current = sections.find((s) => s.key === active) || sections[0];
@@ -454,7 +630,9 @@ export default function LtLoan() {
         </div>
       )}
 
-      <Stepper stepper={stepper} clock={milestoneClock} />
+      <FileHeader rail={rail} loan={loan} file={file} />
+      <SevenStops stops={stops} clock={milestoneClock} sale={sale}
+        statusLabel={rail && rail.milestoneLabel} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 300px', gap: 14, alignItems: 'start' }}
         className="lt-workspace">
@@ -493,7 +671,25 @@ export default function LtLoan() {
             )}
           </div>
 
-          {active === 'contacts' ? (
+          {active === 'milestones' ? (
+            <div className="card" style={{ color: INK }}>
+              <h2 style={{ margin: '0 0 4px', fontSize: 16 }}>Milestones</h2>
+              <p style={{ margin: '0 0 10px', color: MUTED, fontSize: 13 }}>
+                Every step of this loan&rsquo;s ladder, with Encompass&rsquo;s own date and the
+                associate on each step. The bar above shows only the seven big stops.
+              </p>
+              <MilestoneBoard board={milestoneBoard} history={milestoneHistory} />
+            </div>
+          ) : active === 'clickup' ? (
+            <div className="card" style={{ color: INK }}>
+              <h2 style={{ margin: '0 0 4px', fontSize: 16 }}>ClickUp syncing</h2>
+              <p style={{ margin: '0 0 10px', color: MUTED, fontSize: 13 }}>
+                What the sync does for this file automatically &mdash; and the buttons to do any
+                of it by hand.
+              </p>
+              <LtClickupSection loanId={loanId} />
+            </div>
+          ) : active === 'contacts' ? (
             <div className="card" style={{ color: INK }}>
               <h2 style={{ margin: '0 0 4px', fontSize: 16 }}>Who is on this file</h2>
               <p style={{ margin: '0 0 6px', color: MUTED, fontSize: 13 }}>

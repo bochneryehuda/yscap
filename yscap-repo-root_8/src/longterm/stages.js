@@ -89,6 +89,94 @@ function normalizeMilestone(name) {
   return String(name == null ? '' : name).trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+/**
+ * The PUNCTUATION-BLIND join key for milestone names (pre-merge audit round 2,
+ * obs 4). `normalizeMilestone` keeps punctuation, so a ladder spelled
+ * "Cond Approval" against a catalog "Cond. Approval" missed every join — the
+ * board read `inLadder:false` and dropped the witnessed date. All three sources
+ * (ladder, catalog, event log) are one tenant vocabulary that differs only in
+ * dots and spacing, so joins key on letters and digits alone.
+ */
+function milestoneKey(name) {
+  return String(name == null ? '' : name).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE TWO WORDINGS OF A MILESTONE (owner-directed 2026-08-24).
+ *
+ * "Every milestone has two different kinds of wording: before it's completed
+ *  and after it's completed. The name of the status in our system should
+ *  ALWAYS be the last milestone that is completed [in its completed wording].
+ *  When funding is completed, the name of the milestone in our system is
+ *  FUNDED. When LO Prep is completed, it's ASSIGNED TO PROCESSOR."
+ *
+ * So a loan whose ladder shows Funding done and Investor Delivery not yet done
+ * is displayed as "Funded" — never "Funding" (the active form, which reads as
+ * not-yet-funded) and never "Investor Delivery" (a step that has not happened).
+ *
+ * WHERE EACH WORDING COMES FROM. Only three kinds of evidence count here, and
+ * the weakest of them was REMOVED in audit round 3 (D6) — see the warning below:
+ *   · OWNER — stated in the owner's own words (LO Prep, Submittal, Funding,
+ *     and the Cond. Approval / Clear to Close stop vocabulary). The strongest.
+ *   · CENSUS — a value this tenant's MS.STATUS was actually OBSERVED returning
+ *     across the 490-loan live sweep recorded in `encompass/dropdowns.js`
+ *     ("File started", "Completed").
+ *   · SETTINGS — the tenant's own milestone settings (db/547): Schedule
+ *     Closing's external wording is "Closing Scheduled", Resubmittal's is
+ *     "In Underwriting". Both re-verified against the seeded catalog.
+ *
+ * ⚠ DO NOT ADD A WORDING FROM A PER-MILESTONE `MS.STATUS` SAMPLE. That is how
+ * "Loan Setup → Sent to Processing" got in, and it was wrong twice over:
+ * (1) "Sent to processing" appears ONLY in Encompass's STOCK declared list and
+ * was never once observed on this tenant, whose MS.STATUS returns its own
+ * milestone names; and (2) MS.STATUS LAGS on older loans, so a per-milestone
+ * sample attributes each wording to the milestone one step off wherever the lag
+ * is present. A sample of a lagging field against a contradicted vocabulary is
+ * not evidence. Use the owner's words, the observed census, or db/547.
+ *
+ * A milestone with no proven completed wording falls back to ITS OWN NAME —
+ * honest, and listed as an open wording question for the owner rather than
+ * invented. db/547 seeds NINETEEN milestones and this table covers nine, so ten
+ * are open: Loan Setup, Processing, Waiting for Docs, Ready for Docs, Docs Out,
+ * Wire Order, Investor Delivery, Purchasing Conditions, Final Docs, Closed.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+const COMPLETED_FORM = {
+  // CENSUS-PAIRED. The 490-loan sweep's own note pairs these two names in
+  // words — "the field says 'File started' where the milestone settings say
+  // 'Started'" (encompass/dropdowns.js) — so this is a recorded statement
+  // about THIS milestone, not merely a string seen somewhere in the book.
+  'started': 'File started',
+  'lo prep': 'Assigned to Processor',        // OWNER
+  'submittal': 'Submitted',                  // OWNER
+  'cond approval': 'Conditionally Approved', // OWNER (stop vocabulary)
+  'resubmittal': 'In Underwriting',          // SETTINGS (db/547, re-verified)
+  'clear to close': 'Clear to Close',        // OWNER (stop vocabulary)
+  'schedule closing': 'Closing Scheduled',   // SETTINGS (db/547, re-verified)
+  'funding': 'Funded',                       // OWNER
+  // CENSUS-OBSERVED, ATTRIBUTION INFERRED — the weakest row in this table, and
+  // labelled so deliberately (audit round 5, defect 5). "Completed" IS a value
+  // this tenant's MS.STATUS was observed returning, so unlike the wording D6
+  // removed it is not invented. But the sweep records a flat list of DISTINCT
+  // values with no per-milestone breakdown, so nothing establishes that it is
+  // COMPLETION's wording rather than another step's — that pairing rests on the
+  // two names resembling each other. It is kept because the fallback (the raw
+  // "Completion") is no better evidenced, and it is on the owner's question
+  // list rather than presented as proven.
+  'completion': 'Completed',
+};
+
+/**
+ * The label a loan wears once a milestone is its LAST COMPLETED one. Falls
+ * back to the milestone's own name — never blank, never invented.
+ */
+function completedFormLabel(milestoneName) {
+  const raw = String(milestoneName == null ? '' : milestoneName).trim();
+  if (!raw) return null;
+  return COMPLETED_FORM[milestoneKey(raw)] || raw;
+}
+
 function buildIndex(map) {
   const idx = new Map();
   for (const [milestone, stageKey] of Object.entries(map || {})) {
@@ -177,7 +265,10 @@ module.exports = {
   DEFAULT_STAGES,
   DEFAULT_MAP,
   UNMAPPED_STAGE,
+  COMPLETED_FORM,
   normalizeMilestone,
+  milestoneKey,
+  completedFormLabel,
   stageForMilestone,
   consumerStatusOf,
   tpoStatusOf,

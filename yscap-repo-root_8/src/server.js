@@ -495,6 +495,13 @@ app.use('/api/tpo', require('./routes/tpo'));
   // LT_BOOK_DIAG_TOKEN is set, and removing that variable turns it off again with no
   // deploy. Read-only: there is no write path inside it.
   app.use('/api/lt/_diag/book', require('./longterm/routes/book-diag'));
+  // The Encompass WEBHOOK receiver (#42) — Encompass's advanced-code rule posts
+  // "this loan changed" here. PUBLIC of necessity (Encompass holds no PILOT
+  // session) and authenticated by the X-Encompass-Secret shared-secret header
+  // (LT_ENCOMPASS_WEBHOOK_SECRET; unset = the endpoint refuses everything).
+  // NUDGE-ONLY: nothing in the body is ever applied — it only marks the loan
+  // for re-read over the authenticated read-only connection. Same seam.
+  app.use('/api/lt/encompass-hook', require('./longterm/routes/encompass-hook'));
   const { requireAuth, requireStaff, requireBorrower } = require('./auth');
   // THE BORROWER'S OWN long-term files — the client-facing half of the owner's
   // switch (2026-08-16). Mounted BEFORE the staff-gated /api/lt because that one

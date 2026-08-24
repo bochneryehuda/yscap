@@ -119,6 +119,62 @@ check(ms.describeClock({ milestone_since: 'not-a-date', milestone_since_is_basel
 check(ms.describeClock({ milestone_since: null, milestone_since_is_baseline: false }, { now: NOW }).days === null,
   'a loan with no recorded sighting has no age even when the baseline flag says otherwise');
 
+// ── The sentence names the step the BAR came from (round 5, defect 5) ───────
+//
+// Under the last-completed rule the clock measures the wait on the NEXT step
+// and the expectation is that step's. Saying "at THIS milestone … longer than
+// the 3 expected" put the awaited step's number under the standing step's name,
+// so the header and the Milestones board on the same screen quoted two
+// different expectations for what read as one step, with nothing to reconcile
+// them.
+console.log('\nthe clock names the step it is measuring against');
+
+const named = ms.describeClock(
+  { milestone_since: daysAgo(9), milestone_since_is_baseline: false },
+  { expectedDays: 3, awaiting: 'Cond. Approval', now: NOW },
+);
+check(/Waiting on Cond\. Approval/.test(named.note) && !/At this milestone/.test(named.note),
+  'the sentence names the AWAITED step rather than saying "this milestone"');
+check(/9 days/.test(named.note) && /3 expected for it/.test(named.note) && named.stalled === true,
+  '…and still quotes both numbers, tied to that step');
+
+const namedOk = ms.describeClock(
+  { milestone_since: daysAgo(1), milestone_since_is_baseline: false },
+  { expectedDays: 3, awaiting: 'Funding', now: NOW },
+);
+check(/Waiting on Funding for 1 day,/.test(namedOk.note) && namedOk.stalled === false,
+  'a single day reads "1 day", not "1 days" — and within the bar it is not stalled');
+
+const namedNoBar = ms.describeClock(
+  { milestone_since: daysAgo(12), milestone_since_is_baseline: false },
+  { expectedDays: null, awaiting: 'Wire Order', now: NOW },
+);
+check(/Waiting on Wire Order/.test(namedNoBar.note) && /no expected duration for Wire Order/.test(namedNoBar.note),
+  'with no bar it still names the step, and blames the catalog for THAT step');
+
+// "Nothing is awaited" and "the catalog set no duration" are different facts.
+// The old wording blamed the catalog on a finished ladder, which is simply false.
+const done = ms.describeClock(
+  { milestone_since: daysAgo(4), milestone_since_is_baseline: false },
+  { expectedDays: null, nothingAwaited: true, now: NOW },
+);
+check(/nothing is being waited on/i.test(done.note) && !/catalog/.test(done.note),
+  'a finished ladder says nothing is being waited on — never that the catalog set no duration');
+check(done.days === 4 && done.stalled === null,
+  '…and claims no bar, so a completed file can never read as stalled');
+
+// A caller that does not name a step keeps the older wording rather than
+// inventing one, so nothing that has not been moved over changes meaning.
+const unnamed = ms.describeClock(
+  { milestone_since: daysAgo(9), milestone_since_is_baseline: false }, { expectedDays: 3, now: NOW },
+);
+check(/At this milestone/.test(unnamed.note) && !/Waiting on/.test(unnamed.note),
+  'a caller that names no step gets the previous wording — never a fabricated step name');
+check(!/Waiting on\s*\./.test(ms.describeClock(
+  { milestone_since: daysAgo(9), milestone_since_is_baseline: false },
+  { expectedDays: 3, awaiting: '   ', now: NOW }).note),
+'a blank step name is treated as none, never rendered as an empty gap in the sentence');
+
 // ── It never pretends to be Encompass ───────────────────────────────────────
 console.log('\nit can never pretend to be Encompass’s own record');
 

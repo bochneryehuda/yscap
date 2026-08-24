@@ -46,12 +46,46 @@ const lazy = {
  * interpolated into SQL — there is no placeholder for an identifier, so the only
  * safe sort is one we named ourselves.
  */
+/**
+ * The Milestone column's sort expression, GENERATED from `stages.COMPLETED_FORM`
+ * rather than written out (audit round 5, observation 1).
+ *
+ * The column DISPLAYS the completed wording (`milestone_label`), so sorting on
+ * the raw `l.milestone_name` made the list disagree with itself: four of the
+ * nine covered wordings change initial letter (Started → **F**ile started,
+ * LO Prep → **A**ssigned to Processor, Resubmittal → **I**n Underwriting,
+ * Schedule Closing → **C**losing Scheduled), so an alphabetical sort looked
+ * random on screen. That is the same defect the `borrower` entry below already
+ * records having fixed, and the same remedy: sort on the expression the row
+ * actually shows.
+ *
+ * GENERATED, NEVER HAND-WRITTEN. A second copy of the wording table in SQL is
+ * exactly the drift trap this codebase keeps being bitten by, so the CASE is
+ * built from the one JS table every time the query is built — it cannot fall
+ * behind it, and adding a wording needs no SQL change at all. The keys are
+ * matched through the SAME punctuation-blind normalisation `stages.milestoneKey`
+ * applies, so a ladder spelled "Cond Approval" sorts with the catalog's
+ * "Cond. Approval". Values are our own source literals, not user input; they are
+ * escaped anyway because a quote in a wording would otherwise end the string.
+ */
+function completedFormOrderSql(col) {
+  const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
+  const key = `lower(regexp_replace(${col}, '[^a-zA-Z0-9]+', ' ', 'g'))`;
+  const whens = Object.entries(stages.COMPLETED_FORM)
+    .map(([k, v]) => `WHEN btrim(${key}) = ${q(k)} THEN ${q(v)}`)
+    .join(' ');
+  // No wording for this milestone → it is displayed under its own name, so it
+  // sorts under its own name too.
+  return `CASE ${whens} ELSE ${col} END`;
+}
+
 const SORTABLE = {
   last_modified: 'l.encompass_last_modified',
   loan_number: 'l.loan_number',
   loan_amount: 'l.loan_amount',
   stage: 'l.stage_key',
-  milestone: 'l.milestone_name',
+  // Sorted on the SAME wording the row displays — see completedFormOrderSql.
+  milestone: completedFormOrderSql('l.milestone_name'),
   // Sorted on the SAME expression the row displays. Sorting on b.full_name alone put
   // every unlinked loan in one undifferentiated block at the end while the page
   // showed real names -- a list that disagrees with its own ordering.
@@ -145,6 +179,21 @@ const UNASSIGNED_SQL = `NOT EXISTS (
        WHERE c3.loan_id = l.id
          AND ${access.effectiveStaffSql('c3')} IS NOT NULL
     )`;
+
+/**
+ * Which contact roles "Mine" means for THIS viewer — one function, used by the
+ * filter AND its chip count, so the number on the chip can never describe a
+ * different set of rows than clicking it shows. `filters.mineRole` (one role,
+ * picked deliberately — "files where I am the closer") overrides the viewer's
+ * default set; 'any' is the deliberate wide reading; null means any role (the
+ * unmapped-role fallback).
+ */
+function mineRolesOf(viewerAccess, filters = {}, opts = {}) {
+  const one = String(filters.mineRole || '').trim();
+  if (one === 'any') return null;
+  if (one) return [one];
+  return access.rolesForMine(viewerAccess && viewerAccess.ltRole, (opts && opts.settings) || {});
+}
 
 /**
  * Compose the WHERE every pipeline read shares.
@@ -250,12 +299,20 @@ function buildWhere(viewerAccess, staffId, filters = {}, omit = new Set(), opts 
   const scopeFilterMoot = !viewerAccess || !viewerAccess.seesAll;
   if (!skip('whose') && filters.unassigned && !scopeFilterMoot) where.push(UNASSIGNED_SQL);
 
-  // "Mine" for somebody who sees the whole book. It is `access.onFileSql`, the SAME
-  // predicate that decides what a SCOPED viewer may see at all — so "my files" means
-  // one thing on this side, whichever chair you are sitting in. Defining it as "the
-  // loan officer is me" would hand every processor an empty book of their own.
+  // "Mine" for somebody who sees the whole book is PERSONA-MATCHED (owner-directed
+  // 2026-08-23: a file where they were "assigned only to the Closer and Funder
+  // milestone" turned up under "files that I was the Loan Officer on"). The roles
+  // that make a file YOURS are your own function's (`access.rolesForMine`) — an
+  // admin's book is the files they originate, a processor's the files they process
+  // or set up — and `mineRole` narrows to ONE role deliberately ("files where I am
+  // the closer"). A role nobody has mapped falls back to any-role, the old reading,
+  // because an unmapped role shown an empty book is a support ticket. ACCESS is a
+  // different question and is untouched: `onFileSql` still decides what a scoped
+  // viewer may see at all, every role counted.
   if (!skip('whose') && filters.mine && staffId && !scopeFilterMoot) {
-    where.push(access.onFileSql(p(String(staffId))));
+    const mineRoles = mineRolesOf(viewerAccess, filters, opts);
+    if (mineRoles) where.push(access.mineRolesSql(p(String(staffId)), p(mineRoles)));
+    else where.push(access.onFileSql(p(String(staffId))));
   }
 
   if (!skip('search') && filters.search) {
@@ -398,9 +455,22 @@ function buildFacetQueries(viewerAccess, staffId, filters = {}, opts = {}) {
   const me = staffId ? String(staffId) : null;
   const minePh = me ? `$${forScope.params.length + 1}` : null;
   if (me) forScope.params.push(me);
+  // The chip counts what CLICKING IT SHOWS — the persona-matched set, through the
+  // SAME role resolution the filter uses. Any-role only for a role nobody mapped.
+  const mineChipRoles = me ? mineRolesOf(viewerAccess, filters, opts) : null;
+  let mineCountSql = null;
+  if (me) {
+    if (mineChipRoles) {
+      const rolesPh = `$${forScope.params.length + 1}`;
+      forScope.params.push(mineChipRoles);
+      mineCountSql = access.mineRolesSql(minePh, rolesPh);
+    } else {
+      mineCountSql = access.onFileSql(minePh);
+    }
+  }
   const scopeSql = `
     SELECT count(*)::int AS all_n,
-           ${me ? `count(*) FILTER (WHERE ${access.onFileSql(minePh)})::int` : 'NULL::int'} AS mine_n,
+           ${me ? `count(*) FILTER (WHERE ${mineCountSql})::int` : 'NULL::int'} AS mine_n,
            count(*) FILTER (WHERE ${UNASSIGNED_SQL})::int AS unassigned_n
       ${FROM} ${forScope.whereSql}`;
 
@@ -521,7 +591,9 @@ async function loadPipeline(staff, filters = {}) {
   // Read here, with the books, and threaded into BOTH builders for the same reason:
   // the list and every chip count have to be describing one book. A tenant that turns
   // it off gets exactly the query this screen ran before the rule existed.
-  const opts = { books, hideShortTerm: settings['pipeline.hideShortTerm'] !== false };
+  // `settings` rides in whole so the persona map (`access.mineRoles`) resolves the
+  // same way in the filter and in its chip count.
+  const opts = { books, hideShortTerm: settings['pipeline.hideShortTerm'] !== false, settings };
 
   const q = buildPipelineQuery(viewerAccess, staffId, filters, opts);
   const f = buildFacetQueries(viewerAccess, staffId, filters, opts);
@@ -603,6 +675,35 @@ async function loadPipeline(staff, filters = {}) {
     emptyReason = access.emptyPipelineReason(viewerAccess, { hasConfirmedLink });
   }
 
+  // WHY the viewer is on each file (owner-directed 2026-08-23: "for each and every
+  // person, why they are looped into the file"). One follow-up read over the page's
+  // ids, so the row can say "you are the closer here" instead of leaving a file's
+  // presence in a book unexplained. Best-effort: an unreadable answer costs the
+  // badges, never the page.
+  let myRolesByLoan = null;
+  if (staffId && rows.length) {
+    try {
+      const { rows: mr } = await lazy.db.query(
+        `SELECT c.loan_id, array_agg(DISTINCT c.role ORDER BY c.role) AS roles
+           FROM lt_loan_contacts c
+          WHERE c.loan_id = ANY($1::uuid[])
+            AND ${access.effectiveStaffSql('c')} = $2::uuid
+          GROUP BY c.loan_id`,
+        [rows.map((r) => r.id), staffId],
+      );
+      myRolesByLoan = new Map(mr.map((r) => [String(r.loan_id), r.roles]));
+    } catch (_) { /* the badge is a convenience */ }
+  }
+  if (myRolesByLoan) {
+    for (const r of rows) r.my_roles = myRolesByLoan.get(String(r.id)) || null;
+  }
+
+  // THE STATUS EACH ROW WEARS (owner-directed 2026-08-24): the last COMPLETED
+  // milestone in its completed wording — "Funded" on a funding-done file, never
+  // "Funding". The raw Encompass name stays on `milestone_name`; the screen's
+  // Milestone column draws this label.
+  for (const r of rows) r.milestone_label = stages.completedFormLabel(r.milestone_name);
+
   return {
     // EVERY ROW CARRIES ITS OWN PRODUCT STAMP (CLAUDE.md §7). Tagged here, at the
     // edge, because a combined pipeline tags and concatenates what each product
@@ -616,6 +717,10 @@ async function loadPipeline(staff, filters = {}) {
     dir: q.dir,
     scope: viewerAccess.scope,
     ltRole: viewerAccess.ltRole,
+    // What "Mine" MEANS for this viewer — the persona-matched roles the filter and
+    // its chip both use — so the screen can label the chip ("Mine — as loan
+    // officer") instead of leaving the narrowing silent. Null = any role.
+    mineRoles: staffId ? mineRolesOf(viewerAccess, filters, opts) : null,
     emptyReason,
     stages: stageChips(stages.stageList(stages.configFrom(settings)), facets),
     facets: facets ? { ...facets.scope, allStages: facets.allStages } : null,
@@ -724,5 +829,5 @@ module.exports = {
   // fragment that actually runs — which matters here because it and the ACCESS scope
   // (access.onFileSql) deliberately disagree about a reassigned file, and that
   // disagreement is asserted rather than assumed.
-  _internals: { officerIsSql, UNASSIGNED_SQL },
+  _internals: { officerIsSql, UNASSIGNED_SQL, completedFormOrderSql, SORTABLE },
 };

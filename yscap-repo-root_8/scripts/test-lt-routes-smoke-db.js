@@ -185,6 +185,10 @@ async function main() {
       // exactly the kind of door this smoke test exists to open. On a fresh
       // database it answers the DECLARED defaults (source 'standard' throughout).
       '/api/lt/dscr/comp-plan',
+      // The ClickUp syncing section (#36). On the no-such-loan id the scoped
+      // loader answers its own 404 — the route's uuid check + SELECT both run,
+      // so a phantom column in either would surface here as a 500.
+      `/api/lt/clickup/loans/${NO_LOAN}`,
     ];
 
     // ── WHAT THE LIST OMITS, SAID OUT LOUD ──────────────────────────────────

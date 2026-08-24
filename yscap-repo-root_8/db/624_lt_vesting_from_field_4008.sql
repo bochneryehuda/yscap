@@ -1,0 +1,36 @@
+-- ============================================================================
+-- db/624 — lt: HOW TITLE VESTS, from field 4008 — "Individual" means individual
+--
+-- Owner-directed 2026-08-23: *"If field 4008 is showing 'individual' … vesting
+-- is individual. The only time you need to look for the entity name is if that
+-- field 4008 shows 'officer'."* Verified live both ways on 2026-08-24:
+--
+--   · an Officer-vested loan answers  {"4008":"Officer","1859":"400 Birchwood LLC"}
+--   · an Individual-vested loan answers {"4008":"Individual","1859":""}
+--
+-- and across the whole book (486 loans, the field sweep): Officer 445 ·
+-- Individual 22 · blank 19 — no other value occurs.
+--
+-- Two columns on the loan, because vesting is a fact about the LOAN (who takes
+-- title), not about the person record:
+--
+--   vesting_type        — field 4008, VERBATIM ("Officer" / "Individual").
+--                         Whether that means an entity is decided by ONE rule in
+--                         src/longterm/vesting.js, never re-read off this text.
+--   vesting_entity_name — field 1859, stored ONLY when 4008 says the loan vests
+--                         in an entity. On an Individual vesting it is left NULL
+--                         even if 1859 happens to carry text — the owner's rule
+--                         is that an individual vesting never hunts a company
+--                         name, and a stale 1859 on a re-vested loan is exactly
+--                         the trap that rule closes.
+--
+-- BACKFILL: none in SQL — the sync writes both on each loan's next full read,
+-- and the milestone-ladder backfill era means the book is being walked anyway.
+-- Until a loan is re-read its columns are NULL, which every reader treats as
+-- "not read yet", never as "vests individually".
+--
+-- PRODUCT SEPARATION: `lt_*` only.
+-- ============================================================================
+
+ALTER TABLE lt_loans ADD COLUMN IF NOT EXISTS vesting_type text;
+ALTER TABLE lt_loans ADD COLUMN IF NOT EXISTS vesting_entity_name text;
