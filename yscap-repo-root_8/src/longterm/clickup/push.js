@@ -46,6 +46,7 @@ const T = require('./transforms');
 const ltRouting = require('./routing');
 const program = require('./program');
 const trash = require('../trash');
+const statusEngine = require('./status-engine');
 const rtlStaff = require('../../clickup/routing');   // DATA import — authorized in the ledger
 const addressCanon = require('../../lib/address-canon'); // authorized import (read-only lookup)
 
@@ -284,20 +285,33 @@ async function loadBag(loanId, { ex = null, forCreate = false } = {}) {
     processor = await resolvePerson(contacts.find((c) => c.role === 'processor'));
   } catch (_) { /* omitted, never guessed */ }
 
-  let investorLoanNumber = null; let investorName = null;
+  let investorLoanNumber = null; let investorName = null; let investorChannel = null;
   try {
     const { rows: inv } = await db.query(
-      `SELECT investor_loan_number, COALESCE(accurate_name, shorthand_name) AS investor_name
+      `SELECT investor_loan_number, COALESCE(accurate_name, shorthand_name) AS investor_name, funding_channel
          FROM lt_loan_investors WHERE loan_id = $1::uuid`, [loanId]);
-    if (inv[0]) { investorLoanNumber = inv[0].investor_loan_number; investorName = inv[0].investor_name; }
+    if (inv[0]) {
+      investorLoanNumber = inv[0].investor_loan_number;
+      investorName = inv[0].investor_name;
+      investorChannel = inv[0].funding_channel;
+    }
   } catch (_) { /* optional table */ }
+
+  // The milestone ladder (db/623) — what the status engine keys on.
+  let ladder = [];
+  try {
+    const { rows } = await db.query(
+      `SELECT milestone_name, position, done FROM lt_loan_milestones
+        WHERE loan_id = $1::uuid ORDER BY position`, [loanId]);
+    ladder = rows;
+  } catch (_) { /* no ladder read yet — the engine claims nothing */ }
 
   const appUrl = String(process.env.APP_URL || 'https://yscap.onrender.com').replace(/\/$/, '');
   const bag = {
     loan, prop, borrower, coborrower, residence, priorResidence,
     ex: ex || {},
     officer, processor,
-    investorLoanNumber, investorName,
+    investorLoanNumber, investorName, investorChannel, ladder,
     portalFileId: loan.id,
     portalFileLink: `${appUrl}/portal/#/long-term/file/${loan.id}`,
     subjectGeo: null, borrowerGeo: null, priorGeo: null,
@@ -457,6 +471,60 @@ async function pushLoan(loanId, opts = {}) {
       // G23 — a lossy push is never marked done. PII-free accounting.
       out.failed.push({ fieldId: f.id, key: f.key, status: e && e.status, code: e && e.code, retryable: !!(e && e.retryable), message: String((e && e.message) || e).slice(0, 160) });
       await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldId: f.id, fieldKey: f.key, oldValue: oldVal, newValue: f.value, changed: false, blocked: true, source: opts.source || 'scoped_push' });
+    }
+  }
+
+  // THE STATUS ENGINE (#39, owner-directed): the card's status follows the
+  // Encompass milestone ladder — and is RE-ASSERTED on every full push, so a
+  // manual change in ClickUp is corrected on the next mirror movement
+  // ("Encompass always wins, even after manual changes"). A SCOPED push (a
+  // review approval re-pushing one field) deliberately does not touch status.
+  if (!onlyIds) {
+    try {
+      const channelRaw = (bag.ex && bag.ex['CX.TABLEFUNDER']) || bag.investorChannel;
+      const desired = statusEngine.desiredStatus({
+        ladder: bag.ladder,
+        folder: loan.loan_folder,
+        f1393: bag.ex && bag.ex['1393'],
+        channelLabel: mapper._internals.channelLabel(channelRaw),
+      });
+      const current = String((before.status && before.status.status) || '').trim();
+      const want = desired.status ? String(desired.status).trim() : null;
+      if (want && current.toLowerCase() !== want.toLowerCase()) {
+        if (dryRun()) {
+          out.plan.push({ field: '__status', wouldWrite: want, reason: desired.reason });
+        } else {
+          // Statuses are LIST-level: resolve the destination list's own exact
+          // spelling; a status the list does not carry is SKIPPED and journaled,
+          // never invented (the §4.3 discipline, applied to statuses).
+          const listId = before.list && before.list.id;
+          let exact = null;
+          try {
+            const listInfo = listId ? await writer.getList(listId) : null;
+            const names = ((listInfo && listInfo.statuses) || []).map((st) => String(st.status || ''));
+            exact = names.find((n) => n.trim().toLowerCase() === want.toLowerCase()) || null;
+          } catch (_) { exact = null; }
+          if (!exact) {
+            out.statusSkipped = { wanted: want, reason: 'status_not_on_list' };
+            await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: want, changed: false, blocked: true, source: opts.source || 'full_repush' });
+          } else {
+            circuitCheck();
+            try {
+              await writer.updateTask(loan.clickup_task_id, { status: exact });
+              countWrite();
+              out.statusWrote = { from: current, to: exact, reason: desired.reason };
+              await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: exact, changed: true, blocked: false, source: opts.source || 'full_repush' });
+            } catch (e) {
+              out.failed.push({ key: '__status', status: e && e.status, code: e && e.code, retryable: !!(e && e.retryable), message: String((e && e.message) || e).slice(0, 160) });
+              await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: exact, changed: false, blocked: true, source: opts.source || 'full_repush' });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      // The engine claiming nothing (or a broken read) must never fail the
+      // field push that already landed.
+      console.warn('[lt-clickup-push] status assert skipped:', (e && e.message) || e);
     }
   }
 

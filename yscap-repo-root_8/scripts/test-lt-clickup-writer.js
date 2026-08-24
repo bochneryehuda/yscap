@@ -343,6 +343,54 @@ async function pureHalf() {
     'the Piscataway corruption (house number dropped) is refused');
   eq(PI.providerTextSafe('1727 S 2nd St, Piscataway, NJ 08854', '1727 S 2nd St, Plainfield, NJ 07063'), false,
     'a contradicted ZIP is refused (the Plainfield case)');
+
+  console.log('G2. the status engine (pure)');
+  const SE = require('../src/longterm/clickup/status-engine');
+  // The REAL tenant ladder (live read, 2026-08-24) as a fixture.
+  const LADDER_NAMES = ['Started', 'LO Prep', 'Loan Setup', 'Submittal', 'Cond. Approval', 'Waiting for Docs',
+    'Processing', 'Resubmittal', 'Clear To Close', 'Schedule Closing', 'Ready for Docs', 'Docs Out',
+    'Wire Order', 'Funding', 'Investor Delivery', 'Purchasing Conditions', 'Final Docs', 'Completion'];
+  const ladderDoneThrough = (name) => {
+    const at = LADDER_NAMES.indexOf(name);
+    return LADDER_NAMES.map((n, i) => ({ milestone_name: n, position: i + 1, done: i <= at }));
+  };
+  const st = (args) => SE.desiredStatus(args).status;
+  eq(st({ ladder: ladderDoneThrough('Started') }), 'starting', 'Started done → starting');
+  eq(st({ ladder: ladderDoneThrough('LO Prep') }), 'assigned to processor', 'LO Prep done → assigned to processor');
+  eq(st({ ladder: ladderDoneThrough('Loan Setup') }), 'assigned to processor',
+    'Loan Setup (unmapped) inherits the last mapped milestone');
+  eq(st({ ladder: ladderDoneThrough('Submittal'), channelLabel: 'Non Del Correspondent' }), 'non del imported ba(2-em)',
+    'Submittal done on a NON-DEL file → non del imported ba');
+  eq(st({ ladder: ladderDoneThrough('Submittal'), channelLabel: 'Table funding' }), 'non del imported ba(2-em)',
+    'Submittal done on a TABLE-FUNDED file → non del imported ba (owner rule)');
+  eq(st({ ladder: ladderDoneThrough('Submittal'), channelLabel: 'Wholesale' }), 'non del imported ba(2-em)',
+    'Submittal done on a BROKERED file → non del imported ba');
+  eq(st({ ladder: ladderDoneThrough('Submittal'), channelLabel: 'Delegate Correspondent' }), 'delegated initial',
+    'Submittal done on a DELEGATE file → delegated initial');
+  eq(st({ ladder: ladderDoneThrough('Submittal'), channelLabel: 'Evolve Underwriting' }), 'delegated initial',
+    'Submittal done on an EVOLVE file → delegated initial');
+  eq(st({ ladder: ladderDoneThrough('Cond. Approval') }), 'workflow', 'Cond. Approval done → workflow');
+  eq(st({ ladder: ladderDoneThrough('Clear To Close') }), 'ctc (4-email)', 'Clear To Close done → ctc');
+  eq(st({ ladder: ladderDoneThrough('Schedule Closing') }), 'scheduling closing', 'Schedule Closing done → scheduling closing');
+  eq(st({ ladder: ladderDoneThrough('Ready for Docs') }), 'active closing', 'Ready for Docs done → active closing');
+  eq(st({ ladder: ladderDoneThrough('Funding') }), 'closed (6-email funded)', 'Funding done → closed');
+  eq(st({ ladder: ladderDoneThrough('Investor Delivery') }), 'in purchase review', 'Investor Delivery done → in purchase review');
+  eq(st({ ladder: ladderDoneThrough('Purchasing Conditions') }), 'pa issued-post closing.',
+    'Purchased done → PA issued post closing (the trailing period is real)');
+  eq(st({ ladder: ladderDoneThrough('Final Docs') }), 'closed reconciled', 'Final Docs done → closed reconciled');
+  eq(st({ ladder: ladderDoneThrough('Completion') }), 'closed reconciled', 'Completion adds nothing past Final Docs');
+  eq(st({ ladder: ladderDoneThrough('Funding'), f1393: 'Application withdrawn' }), 'cancelled',
+    '1393 withdrawn outranks the ladder → cancelled');
+  eq(st({ ladder: ladderDoneThrough('Funding'), f1393: 'Application denied' }), 'cancelled', '1393 denied → cancelled');
+  eq(st({ ladder: ladderDoneThrough('Cond. Approval'), folder: 'Withdrawn files' }), 'cancelled',
+    'the Withdrawn files folder → cancelled');
+  eq(st({ ladder: ladderDoneThrough('Cond. Approval'), folder: 'On Hold' }), 'inactive / on hold',
+    'the On Hold folder → inactive / on hold');
+  eq(st({ ladder: ladderDoneThrough('Cond. Approval'), folder: 'Pipeline' }), 'workflow',
+    'back OUT of the hold folder → the ladder answer again (workflow — Encompass wins)');
+  eq(st({ ladder: [] }), null, 'no ladder read yet → the engine claims NOTHING');
+  eq(st({ ladder: ladderDoneThrough('Funding'), f1393: 'Loan Originated' }), 'closed (6-email funded)',
+    "1393 'Loan Originated' is not a cancellation");
 }
 
 // ── the DB half ──────────────────────────────────────────────────────────────
@@ -357,7 +405,11 @@ async function dbHalf() {
   const encPath = path.resolve(__dirname, '../src/longterm/encompass/client.js');
 
   const realWriter = require(writerPath);   // keep the REAL guards on the stub's writes
-  const wire = { setField: [], createTask: [], getTask: 0 };
+  const wire = { setField: [], createTask: [], getTask: 0, updateTask: [] };
+  let LIST_STATUSES = ['starting', 'assigned to processor', 'workflow', 'delegated initial',
+    'non del imported ba(2-em)', 'ctc (4-email)', 'scheduling closing', 'active closing',
+    'closed (6-email funded)', 'in purchase review', 'pa issued-post closing.', 'closed reconciled',
+    'cancelled', 'inactive / on hold'];
   let fakeTask;
   let taskFailNext = false;
   let failFieldIds = new Set();
@@ -380,7 +432,12 @@ async function dbHalf() {
       return { id: 'newtask9', url: 'https://app.clickup.com/t/newtask9', custom_id: 'FILLE-9999' };
     },
     getFolderLists: async () => ({ lists: [{ id: 'list-77', name: 'Loan Pipeline' }] }),
-    getList: async () => ({}),
+    getList: async () => ({ statuses: LIST_STATUSES.map((s) => ({ status: s })) }),
+    updateTask: async (taskId, payload) => {
+      realWriter.guardTaskUpdatePayload(payload);              // the real status-only allowlist still bites
+      wire.updateTask.push({ taskId, payload });
+      return {};
+    },
     getTeams: async () => ({ teams: [] }),
     getListFields: async () => ({ fields: [] }),
     guardNoFieldClearing: realWriter.guardNoFieldClearing,
@@ -630,6 +687,87 @@ async function dbHalf() {
     ok(dry.plan.length > 0, '…but reports the exact plan');
     const { rows: dryStamp } = await db.query('SELECT clickup_pushed_at FROM lt_loans WHERE id = $1::uuid', [loanId]);
     eq(dryStamp[0].clickup_pushed_at, null, 'a dry run never stamps — the drain keeps offering the loan');
+    delete process.env.LT_CLICKUP_WRITE_DRYRUN;
+
+    push._internals._resetBreaker();
+    console.log('O. the status engine ENFORCES — Encompass always wins');
+    // Give the loan a ladder: everything done through Cond. Approval.
+    const L18 = ['Started', 'LO Prep', 'Loan Setup', 'Submittal', 'Cond. Approval', 'Waiting for Docs',
+      'Processing', 'Resubmittal', 'Clear To Close', 'Schedule Closing', 'Ready for Docs', 'Docs Out',
+      'Wire Order', 'Funding', 'Investor Delivery', 'Purchasing Conditions', 'Final Docs', 'Completion'];
+    for (let i = 0; i < L18.length; i++) {
+      await db.query(
+        `INSERT INTO lt_loan_milestones (loan_id, milestone_name, position, done)
+         VALUES ($1::uuid, $2, $3, $4)
+         ON CONFLICT (loan_id, milestone_name) DO UPDATE SET position = EXCLUDED.position, done = EXCLUDED.done`,
+        [loanId, L18[i], i + 1, i <= 4]);
+    }
+    // The card was MANUALLY dragged to 'active closing' in ClickUp; the ladder
+    // says Cond. Approval → workflow. Encompass wins.
+    fakeTask = { id: 'task1', status: { status: 'active closing' }, list: { id: 'list-77' },
+      custom_fields: mkCustomFields({ program: 2 }) };
+    wire.updateTask.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    let so = await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(wire.updateTask.length, 1, 'the manual status change is corrected on the next push');
+    eq(wire.updateTask[0].payload.status, 'workflow', "…to the ladder's answer: workflow (Encompass always wins)");
+    const { rows: stJ } = await db.query(
+      `SELECT * FROM lt_clickup_write_log WHERE lt_loan_id = $1::uuid AND field_key = '__status' AND changed = true ORDER BY id DESC LIMIT 1`, [loanId]);
+    eq(JSON.parse(JSON.stringify(stJ[0].old_value)), 'active closing', 'the status change is journaled with the before value');
+
+    // Already right → no write at all.
+    fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
+      custom_fields: mkCustomFields({ program: 2 }) };
+    wire.updateTask.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(wire.updateTask.length, 0, 'a card already at the right status is not touched');
+
+    // A scoped push never moves status.
+    fakeTask = { id: 'task1', status: { status: 'active closing' }, list: { id: 'list-77' },
+      custom_fields: mkCustomFields({ program: 2 }) };
+    wire.updateTask.length = 0;
+    await push.pushLoan(loanId, { source: 'scoped_push', only: ['loan_amount'] });
+    eq(wire.updateTask.length, 0, 'a SCOPED push (one field) never touches the status');
+
+    // The Submittal fork follows the funding channel.
+    for (let i = 0; i < L18.length; i++) {
+      await db.query(`UPDATE lt_loan_milestones SET done = $3 WHERE loan_id = $1::uuid AND milestone_name = $2`,
+        [loanId, L18[i], i <= 3]);   // done through Submittal
+    }
+    exLive = { ...EX_BIRCH, 'CX.TABLEFUNDER': 'Delegate correspondent / Evolve' };
+    fakeTask = { id: 'task1', status: { status: 'assigned to processor' }, list: { id: 'list-77' },
+      custom_fields: mkCustomFields({ program: 2 }) };
+    wire.updateTask.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(wire.updateTask[0] && wire.updateTask[0].payload.status, 'delegated initial',
+      'Submittal on an EVOLVE file lands delegated initial');
+    exLive = { ...EX_BIRCH };
+
+    // A status the destination list does not carry is SKIPPED, never invented.
+    LIST_STATUSES = ['starting', 'workflow'];
+    fakeTask = { id: 'task1', status: { status: 'starting' }, list: { id: 'list-77' },
+      custom_fields: mkCustomFields({ program: 2 }) };
+    wire.updateTask.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    so = await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(wire.updateTask.length, 0, 'a status the list does not carry writes NOTHING…');
+    eq(so.statusSkipped && so.statusSkipped.reason, 'status_not_on_list', '…and reports status_not_on_list');
+    LIST_STATUSES = ['starting', 'assigned to processor', 'workflow', 'delegated initial',
+      'non del imported ba(2-em)', 'ctc (4-email)', 'scheduling closing', 'active closing',
+      'closed (6-email funded)', 'in purchase review', 'pa issued-post closing.', 'closed reconciled',
+      'cancelled', 'inactive / on hold'];
+
+    // The terminal rules reach the card: a withdrawn 1393 cancels it.
+    exLive = { ...EX_BIRCH, 1393: 'Application withdrawn' };
+    fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
+      custom_fields: mkCustomFields({ program: 2 }) };
+    wire.updateTask.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(wire.updateTask[0] && wire.updateTask[0].payload.status, 'cancelled', 'a withdrawn 1393 cancels the card');
+    exLive = { ...EX_BIRCH };
     delete process.env.LT_CLICKUP_WRITE_DRYRUN;
   } finally {
     await db.query(`DELETE FROM lt_loans WHERE loan_number LIKE 'TESTWR%'`).catch(() => {});

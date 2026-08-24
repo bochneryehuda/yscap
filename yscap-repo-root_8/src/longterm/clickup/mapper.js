@@ -559,6 +559,9 @@ const EX_FIELD_IDS = Object.freeze([
   'CX.SUBMITEDTOINVESTOR', 'VEND.X276', 'VEND.X263',
   'FR0115', 'FR0116', 'FR0112', 'FR0124', 'FR0326', 'FR0306', 'FR0315',
   'VASUMM.X23',
+  // The status engine's terminal signal (live vocabulary: 'Loan Originated' /
+  // 'Active Loan' / 'Application withdrawn' / 'Application denied').
+  '1393',
 ]);
 
 // ---- write helpers (COPY of the RTL machinery) -----------------------------
