@@ -47,6 +47,7 @@ const ltRouting = require('./routing');
 const program = require('./program');
 const trash = require('../trash');
 const statusEngine = require('./status-engine');
+const statusPush = require('./status-push');
 const rtlStaff = require('../../clickup/routing');   // DATA import — authorized in the ledger
 const addressCanon = require('../../lib/address-canon'); // authorized import (read-only lookup)
 
@@ -378,6 +379,53 @@ const LOCATION_FIELD_IDS = new Set([mapper.CU.subjectAddress, mapper.CU.borrower
  * mirror holds a channel; otherwise null, and the engine claims nothing
  * rather than asserting the non-del default during an outage.
  */
+/* ── The status watermark (db/626) ──────────────────────────────────────────
+ * A status write needs a milestone that FIRED since the last one answered.
+ * 'observed_baseline' is excluded in SQL, not in JS: a first sighting is where
+ * the loan already WAS, and treating it as a move is how every newly mirrored
+ * loan would write a status nobody asked for. */
+async function readStatusWatermark(loanId) {
+  const { rows } = await db.query(
+    `SELECT l.clickup_status_event_at AS watermark,
+            (SELECT max(e.observed_at) FROM lt_milestone_events e
+              WHERE e.loan_id = l.id AND e.event_type = 'observed_entered') AS latest_entered
+       FROM lt_loans l WHERE l.id = $1::uuid`, [String(loanId)]);
+  const r = rows[0] || {};
+  return { watermark: r.watermark || null, latestEntered: r.latest_entered || null };
+}
+
+/** Answer the event. `stampTo` is the event's own observed_at (never now()), so
+ *  an event that lands mid-pass is not silently swallowed by a later stamp. */
+async function stampStatusWatermark(loanId, stampTo) {
+  if (!stampTo) return;
+  try {
+    await db.query(
+      `UPDATE lt_loans SET clickup_status_event_at = GREATEST($2::timestamptz, COALESCE(clickup_status_event_at, $2::timestamptz)),
+              updated_at = now()
+        WHERE id = $1::uuid`, [String(loanId), stampTo instanceof Date ? stampTo.toISOString() : String(stampTo)]);
+  } catch (e) {
+    // A watermark that fails to advance costs a repeated question next pass,
+    // never a wrong write — so it may not fail the push that already landed.
+    console.warn('[lt-clickup-push] status watermark not stamped:', (e && e.message) || e);
+  }
+}
+
+/** Put a status disagreement in front of a person. The db/625 partial unique
+ *  index dedupes one OPEN row per (task, field, proposal), so a pass that keeps
+ *  finding the same disagreement refreshes rather than stacking questions. */
+async function raiseStatusReview({ loanId, taskId, current, proposed, reason }) {
+  try {
+    await db.query(
+      `INSERT INTO lt_clickup_review_queue (lt_loan_id, task_id, direction, field_key, current_value, proposed_value, reason)
+       VALUES ($1::uuid, $2, 'outbound', '__status', $3, $4, $5)
+       ON CONFLICT (task_id, field_key, direction, (COALESCE(proposed_value, ''))) WHERE status = 'open'
+       DO UPDATE SET current_value = EXCLUDED.current_value, reason = EXCLUDED.reason`,
+      [String(loanId), String(taskId), current || null, proposed || null, String(reason || '').slice(0, 500)]);
+  } catch (e) {
+    console.warn('[lt-clickup-push] status review not raised:', (e && e.message) || e);
+  }
+}
+
 function desiredStatusFor(bag, loan) {
   const liveAnswered = !!(bag.ex && ('CX.TABLEFUNDER' in bag.ex));
   const mirrorChannel = bag.investorChannel != null && String(bag.investorChannel).trim() !== '';
@@ -531,51 +579,73 @@ async function pushLoan(loanId, opts = {}) {
     }
   }
 
-  // THE STATUS ENGINE (#39, owner-directed): the card's status follows the
-  // Encompass milestone ladder — and is RE-ASSERTED on every full push, so a
-  // manual change in ClickUp is corrected on the next mirror movement
-  // ("Encompass always wins, even after manual changes"). A SCOPED push (a
-  // review approval re-pushing one field) deliberately does not touch status.
+  // THE STATUS (#39 as CORRECTED by the owner on 2026-08-24). The card's status
+  // follows a milestone FIRING — it is never re-asserted to reconcile a card.
+  // The rule, and the reason the old one was wrong, live in status-push.js;
+  // everything here is the IO half. A SCOPED push (a review approval re-pushing
+  // one field) deliberately does not touch status.
   if (!onlyIds && !subtaskKeys) {
     try {
       const desired = desiredStatusFor(bag, loan);
       const current = String((before.status && before.status.status) || '').trim();
-      const want = desired.status ? String(desired.status).trim() : null;
-      if (want && current.toLowerCase() !== want.toLowerCase()) {
+
+      // The destination list's own statuses, IN ORDER — both the exact spelling
+      // and the direction test come from this one read.
+      const listId = before.list && before.list.id;
+      let names = null;
+      try {
+        const listInfo = listId ? await writer.getList(listId) : null;
+        const sts = (listInfo && listInfo.statuses) || null;
+        if (Array.isArray(sts)) {
+          names = sts.slice()
+            .sort((a, b) => (Number(a.orderindex) || 0) - (Number(b.orderindex) || 0))
+            .map((st) => String(st.status || ''));
+        }
+      } catch (_) { names = null; }
+
+      const { watermark, latestEntered } = await readStatusWatermark(loanId);
+      const d = statusPush.decideStatusPush({
+        desired, current, watermark, latestEntered, statusOrder: names, now: new Date(),
+      });
+      out.statusDecision = { act: d.act, reason: d.reason };
+
+      if (d.act === 'push') {
+        // Statuses are LIST-level: a status the list does not carry is SKIPPED
+        // and journaled, never invented (the §4.3 discipline).
+        const exact = (names || []).find((n) => n.trim().toLowerCase() === String(d.to).toLowerCase()) || null;
         if (dryRun()) {
-          out.plan.push({ field: '__status', wouldWrite: want, reason: desired.reason });
+          out.plan.push({ field: '__status', wouldWrite: d.to, reason: d.reason });
+        } else if (!exact) {
+          out.statusSkipped = { wanted: d.to, reason: 'status_not_on_list' };
+          await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: d.to, changed: false, blocked: true, source: opts.source || 'full_repush' });
         } else {
-          // Statuses are LIST-level: resolve the destination list's own exact
-          // spelling; a status the list does not carry is SKIPPED and journaled,
-          // never invented (the §4.3 discipline, applied to statuses).
-          const listId = before.list && before.list.id;
-          let exact = null;
+          circuitCheck();
           try {
-            const listInfo = listId ? await writer.getList(listId) : null;
-            const names = ((listInfo && listInfo.statuses) || []).map((st) => String(st.status || ''));
-            exact = names.find((n) => n.trim().toLowerCase() === want.toLowerCase()) || null;
-          } catch (_) { exact = null; }
-          if (!exact) {
-            out.statusSkipped = { wanted: want, reason: 'status_not_on_list' };
-            await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: want, changed: false, blocked: true, source: opts.source || 'full_repush' });
-          } else {
-            circuitCheck();
-            try {
-              await writer.updateTask(loan.clickup_task_id, { status: exact });
-              countWrite();
-              out.statusWrote = { from: current, to: exact, reason: desired.reason };
-              await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: exact, changed: true, blocked: false, source: opts.source || 'full_repush' });
-            } catch (e) {
-              out.failed.push({ key: '__status', status: e && e.status, code: e && e.code, retryable: !!(e && e.retryable), message: String((e && e.message) || e).slice(0, 160) });
-              await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: exact, changed: false, blocked: true, source: opts.source || 'full_repush' });
-            }
+            await writer.updateTask(loan.clickup_task_id, { status: exact });
+            countWrite();
+            out.statusWrote = { from: current, to: exact, reason: d.reason };
+            await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: exact, changed: true, blocked: false, source: opts.source || 'full_repush' });
+          } catch (e) {
+            out.failed.push({ key: '__status', status: e && e.status, code: e && e.code, retryable: !!(e && e.retryable), message: String((e && e.message) || e).slice(0, 160) });
+            await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: exact, changed: false, blocked: true, source: opts.source || 'full_repush' });
+            // The event is NOT consumed when the write failed — the next pass
+            // must be free to try again, or one ClickUp blip would swallow a
+            // real milestone permanently.
+            d.stamp = false;
           }
         }
+      } else if (d.act === 'review') {
+        out.statusReview = { current: d.current, proposed: d.proposed, reason: d.reason };
+        if (!dryRun()) await raiseStatusReview({ loanId, taskId: loan.clickup_task_id, current: d.current, proposed: d.proposed, reason: d.reason });
       }
+
+      // A DRY RUN never moves the watermark — a rehearsal that consumed the
+      // event would make the real pass skip the very milestone it was proving.
+      if (d.stamp && !dryRun()) await stampStatusWatermark(loanId, d.stampTo);
     } catch (e) {
       // The engine claiming nothing (or a broken read) must never fail the
       // field push that already landed.
-      console.warn('[lt-clickup-push] status assert skipped:', (e && e.message) || e);
+      console.warn('[lt-clickup-push] status step skipped:', (e && e.message) || e);
     }
   }
 
@@ -928,6 +998,7 @@ module.exports = {
   pushLoan, createForLoan, pushPass, createPass, desiredStatusFor,
   writeEnabled, dryRun, createSince,
   _internals: {
+    readStatusWatermark, stampStatusWatermark, raiseStatusReview,
     circuitCheck, countWrite, seedBreakerFromDb, breakerLimit,
     journalFieldWrite, queueReview, resolvePerson, providerTextSafe, geoFor,
     loadBag, readExtras, cardProgramLabel, taskFieldValue, taskOptionsMap,
