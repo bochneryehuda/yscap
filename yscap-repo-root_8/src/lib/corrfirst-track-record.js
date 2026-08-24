@@ -456,10 +456,18 @@ async function loadCorrfirstTrackRecords(appId, db) {
   return { app, records };
 }
 
-/** `Track Record_<loan number>.csv` — CorrFirst's own file naming ("Track
- *  Record_ 32856.csv"), falling back to the borrower's last name. */
+/** `Track Record_<loan number>.csv` — CorrFirst's own file-naming shape ("Track
+ *  Record_ 32856.csv"), named by OUR loan number, falling back to the investor's
+ *  and then to the borrower's last name.
+ *
+ *  IT LED WITH THE INVESTOR'S NUMBER and was changed on owner direction
+ *  (2026-08-24): "we always prefer our loan number, not the investor's loan
+ *  number — across the board for all the tape exports, for all the term sheets,
+ *  for all the emails." The SHAPE of the name still matches what CorrFirst sent
+ *  us; only which number fills it moved, so their filing convention is intact
+ *  while the file is identified by the number every PILOT surface uses. */
 function corrfirstFilename(app) {
-  const ln = String((app && (app.investor_loan_number || app.ys_loan_number)) || '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-|-$/g, '');
+  const ln = String((app && (app.ys_loan_number || app.investor_loan_number)) || '').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-|-$/g, '');
   const last = String((app && app.last_name) || '').replace(/[^A-Za-z0-9]+/g, '');
   const tag = ln || last || 'Export';
   return `Track Record_${tag}.csv`;

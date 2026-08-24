@@ -115,7 +115,11 @@ for (const op of oParts) {
 }
 ok(changed.includes(SHEET), 'the data sheet changed');
 ok(changed.includes('xl/workbook.xml'), 'workbook.xml changed (calc flag)');
-ok(changed.length === 2, `ONLY the data sheet + workbook changed (got: ${changed.join(', ')})`);
+// styles.xml joins the changed set since the display-precision fix (2026-08-24):
+// the note-rate cell declares FMT.RATE, which APPENDS a cloned style — every
+// pre-existing style survives byte-identical (pinned by test-tape-rate-precision).
+ok(changed.includes('xl/styles.xml'), 'styles.xml changed (appended display format)');
+ok(changed.length === 3, `ONLY the data sheet + workbook + appended styles changed (got: ${changed.join(', ')})`);
 const wb = nParts.find((p) => p.name === 'xl/workbook.xml').data.toString('utf8');
 ok(wb.indexOf('fullCalcOnLoad="1"') > -1, 'workbook recalculates on open');
 const sheet = nParts.find((p) => p.name === SHEET).data.toString('utf8');
