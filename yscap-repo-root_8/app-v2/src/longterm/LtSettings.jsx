@@ -63,6 +63,40 @@ const plainList = (v) => Array.isArray(v) && v.every((x) => x === null || typeof
  */
 const optionLabel = (decl, o) => (decl.optionLabels && decl.optionLabels[o]) || String(o);
 
+/**
+ * The "Yours" editor for a TYPED value — a number (the three compensation figures) or a
+ * string. Enum and boolean save on the click itself; a typed figure must NOT save per
+ * keystroke — a person typing "2.25" passes through "2", and on a comp key every
+ * below-floor intermediate would be refused mid-typing — so the draft sits locally and
+ * Save sends it once, whole. A refusal (the compensation floor, the bounds) lands in the
+ * screen's note in the server's own words. An EMPTY box saves nothing: `Number('')` is 0,
+ * and a blank accidentally saved as a zero comp is the silent-zero trap the whole
+ * comp-plan chain exists to refuse.
+ */
+function MineValueEditor({ s, busy, onSave }) {
+  const isNumber = editorFor(s) === 'number';
+  const shown = (v) => (v === null || v === undefined ? '' : String(v));
+  const [draft, setDraft] = useState(shown(s.value));
+  useEffect(() => { setDraft(shown(s.value)); }, [s.value]); // a fresh server read wins
+  const dirty = draft !== shown(s.value);
+  const submit = () => {
+    if (busy || !dirty || draft.trim() === '') return;
+    onSave(s.key, isNumber ? Number(draft) : draft);
+  };
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <input
+        className="input" style={{ maxWidth: 130 }} disabled={busy}
+        type={isNumber ? 'number' : 'text'} step="any" value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }}
+      />
+      <button type="button" className="btn primary" disabled={busy || !dirty || draft.trim() === ''}
+        onClick={submit}>Save</button>
+    </div>
+  );
+}
+
 function SettingRow({ setting, canManage, pending, onChange, onReset }) {
   const kind = editorFor(setting);
   const value = pending !== undefined ? pending : setting.value;
@@ -330,6 +364,14 @@ export default function LtSettings() {
                       onChange={(e) => saveMine(s.key, e.target.checked)} />
                     {s.value === true ? 'On' : 'Off'}
                   </label>
+                ) : editorFor(s) === 'number' || editorFor(s) === 'string' ? (
+                  /* The three compensation figures are NUMBERS, and this branch is why an
+                     officer can actually set their own (owner-reported 2026-08-23: "the one
+                     where I can set my own is all preset. I can't fix anything over there" —
+                     the fallback below rendered every non-enum, non-boolean value read-only,
+                     and the only personal setting before the comp keys was an enum, so the
+                     gap had never been visible). */
+                  <MineValueEditor s={s} busy={busy} onSave={saveMine} />
                 ) : (
                   <code style={{ color: INK, fontSize: 12 }}>{JSON.stringify(s.value)}</code>
                 )}

@@ -240,3 +240,64 @@ export function quoteCharges(mode, plan, rawPrice, loanAmount, waiveLenderFees =
     netDollars: r2(borrowerPaysDollars - borrowerCreditDollars),
   };
 }
+
+/**
+ * THE CLOSING SHEET (owner-directed 2026-08-23) — the TOTALS under the fee list, ending in the
+ * one number a person prices a deal for: what the borrower brings to the table.
+ *
+ * The owner's words, which are the spec: *"Total origination fee is zero. Total lender fee is
+ * zero. Final closing cost has the total number, but it's wrong. Cash to close needs to include
+ * the down payment percentage down plus all the closing cost fees, origination fees, and lender
+ * fees."* The zeros were Lender Price's own comp-plan fee fields — figures about a plan we do
+ * not keep at the vendor — so the sheet is OURS, summed from the SAME charge list the screen
+ * already itemizes. One source: a total here can never disagree with the lines above it.
+ *
+ *   originationDollars   the origination line (0 when there is none — lender-paid, or a
+ *                        zero-comp plan)
+ *   lenderFeesDollars    application + commitment as charged (0 when waived)
+ *   buydownDollars       the discount points paid to be under par (0 at or above)
+ *   closingCostDollars   every charge, net of any credit — charges.netDollars, restated
+ *   downPaymentDollars   value − loan, ON A PURCHASE ONLY. A refinance has no down payment,
+ *                        so the row is null there rather than a fabricated 0 — and null is
+ *                        also the answer when the value or the loan cannot be read, or the
+ *                        loan exceeds the value (a data problem is never rendered as a
+ *                        negative down payment).
+ *   downPaymentPct       the "percentage down" the owner asked to see beside it (0–100).
+ *   cashToCloseDollars   downPayment (when there is one) + the net closing cost. A credit
+ *                        REDUCES it — that is what a credit is on every closing statement —
+ *                        and on a refinance it is simply the net closing cost.
+ *
+ * ⛔ DISPLAY MATH ONLY, like everything in this module: nothing here reaches the wire, prices
+ * a loan, or is a consumer disclosure. Null in, null out — a sheet that cannot be summed is
+ * not summed. Pure; never throws.
+ */
+export function closingSheet(charges, deal) {
+  if (!charges || typeof charges !== 'object' || !Array.isArray(charges.lines)) return null;
+  const d = deal && typeof deal === 'object' ? deal : {};
+  const lineDollars = (key) => {
+    const l = charges.lines.find((x) => x && x.key === key);
+    return l && nn(l.dollars) ? l.dollars : 0;
+  };
+  const originationDollars = r2(lineDollars('origination'));
+  const lenderFeesDollars = r2(lineDollars('applicationFee') + lineDollars('commitmentFee'));
+  const buydownDollars = r2(lineDollars('buydown'));
+  const closingCostDollars = nn(charges.netDollars) ? r2(charges.netDollars) : null;
+
+  const value = nn(d.propertyValue) && d.propertyValue > 0 ? d.propertyValue : null;
+  const loan = nn(d.loanAmount) && d.loanAmount > 0 ? d.loanAmount : null;
+  const purchase = d.purpose === 'Purchase';
+  const downPaymentDollars = purchase && value != null && loan != null && value >= loan
+    ? r2(value - loan) : null;
+  const downPaymentPct = downPaymentDollars != null && value
+    ? Math.round((downPaymentDollars / value) * 10000) / 100 : null;
+
+  const cashToCloseDollars = closingCostDollars == null
+    ? null
+    : r2((downPaymentDollars != null ? downPaymentDollars : 0) + closingCostDollars);
+
+  return {
+    originationDollars, lenderFeesDollars, buydownDollars, closingCostDollars,
+    downPaymentDollars, downPaymentPct, cashToCloseDollars,
+    purchase,
+  };
+}

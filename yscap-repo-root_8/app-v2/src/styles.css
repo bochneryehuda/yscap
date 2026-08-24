@@ -6415,3 +6415,21 @@ tr.tape-row-on{background:rgba(47,127,134,.07)}
   line-height:1.45;border-left:3px solid var(--gold,#AE8746);
   background:rgba(174,135,70,.09);color:var(--ivory,#141B22)}
 .gc-warn > div + div{margin-top:4px}
+
+/* LONG-TERM PRICING ENGINE — the sticky search strip (owner-directed 2026-08-23).
+   The "Pricing shown as" switch and the search overview stay pinned while the rate board
+   scrolls, exactly as a flight search keeps its summary bar. `top` clears the sticky
+   `.header` (72px, the same offset .file-top has proven); under 900px the strip goes
+   static, mirroring .file-top's own fallback — a phone gives the pin no room to earn.
+   Explicit white background: a sticky surface must never be transparent, or the rows it
+   pins over read straight through it. */
+.lt-strip{position:sticky;top:72px;z-index:29;background:#fff;
+  border:1px solid rgba(20,27,34,.14);border-radius:12px;
+  box-shadow:0 8px 18px -14px rgba(20,27,34,.45)}
+@media(max-width:900px){.lt-strip{position:static;box-shadow:none}}
+/* One search fact on the strip: a small label and its value, reading as one unit. */
+.lt-chip{display:inline-flex;gap:5px;align-items:baseline;white-space:nowrap;
+  font-size:12px;color:#3A4550;font-variant-numeric:tabular-nums}
+.lt-chip b{font-weight:650;color:#141B22}
+.lt-chip .k{font-size:10px;letter-spacing:.07em;text-transform:uppercase;
+  color:#4B585C;font-weight:700}

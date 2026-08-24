@@ -180,12 +180,15 @@ const attempt = (fn) => { try { return { html: fn(), err: null }; } catch (e) { 
     'R4a …already filled in, so a staffer can price on arrival without typing plumbing');
   ok(/\$<\/span>/.test(html || '') || />\$</.test(html || ''),
     'R4a2 …with the dollar sign DRAWN beside the figure, not typed into it');
-  // ⛔ AND THE ZIP IS NOT ONE OF THE PREFILLS (owner-directed 2026-08-23: "Zip code should not
-  // default to anything. Right now, it's defaulting to Miami"). The ZIP decides the state and the
-  // county a loan is priced in, so a pre-filled one is a silent answer, not a starting point.
-  ok(!/33101/.test(html || ''), 'R4c the ZIP does not default to Miami — or to anything');
-  ok(/id="pe-zip"[^>]*value=""/.test(html || '') || !/id="pe-zip"[^>]*value="[^"]/.test(html || ''),
-    'R4d …the ZIP box starts empty');
+  // ⛔ THE ZIP STARTS ON THE OWNER'S CONNECTICUT DEFAULT (owner-directed 2026-08-24: "we should
+  // pre-fill the zip code to any Connecticut zip code" — SUPERSEDING 2026-08-23's "should not
+  // default to anything", which was aimed at the old Miami 33101). Both halves are pinned: the
+  // Miami default may never come back, and the box arrives on 06001 (Avon, Hartford County, CT —
+  // a ZIP our own county table resolves, so the hint names the county and the default is VISIBLY
+  // a default). The empty-ZIP pre-flight refusal is untouched and pinned in the fields suite.
+  ok(!/33101/.test(html || ''), 'R4c the ZIP does not default to Miami');
+  ok(/id="pe-zip"[^>]*value="06001"/.test(html || ''),
+    'R4d …the ZIP box starts on the owner’s Connecticut default (06001)');
   ok(/First-time homebuyer/.test(html || ''),
     'R4e the first-time-homebuyer flag is on the screen — the same fact Lender Price carries');
   ok(/starting point you can change/.test(html || ''),

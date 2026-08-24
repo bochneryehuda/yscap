@@ -518,10 +518,13 @@ export default function StaffLayout({ children }) {
             <NavLink className="sb-link" to="/internal/lt/statuses" title="Encompass's milestones, our own stage names, and what the borrower is told — side by side."><NavIcon name="conditions" />Statuses</NavLink>
             <NavLink className="sb-link" to="/internal/lt/conditions"><NavIcon name="conditions" />Condition Center</NavLink>
             <NavLink className="sb-link" to="/internal/lt/pricer" title="Price a scenario through Lender Price and see every rate, every investor at each rate, and the whole build behind each price."><NavIcon name="pricing" />Pricing Engine</NavLink>
-            {/* The rules/parity console is PARKED (owner-directed 2026-08-23) and renamed so
-                nobody mistakes it for the Pricing Engine above. Kept, reached by nothing the
-                engine touches, still guarded in CI. */}
-            <NavLink className="sb-link" to="/internal/lt/ppe" title="Parked: our own rate sheets, eligibility rules and the Lender Price parity work. Not the pricing engine."><NavIcon name="pricing" />Parity &amp; rules (parked)</NavLink>
+            {/* The rules/parity console is PARKED FOR REAL now (owner-directed 2026-08-23,
+                second pass: "It's just written that it's parked, but it's not really parked.
+                Just get that removed from that screen and park it."). Its nav entry is GONE —
+                parked means not on anybody's screen, not a link wearing a "(parked)" label.
+                The route itself stays behind StaffPrivate, so a deliberate URL still opens the
+                console when the parity work resumes; nothing was deleted. Do not re-add a nav
+                link here without the owner asking for the console back. */}
             <NavLink className="sb-link" to="/internal/lt/sync"><NavIcon name="health" />Sync</NavLink>
             <NavLink className="sb-link" to="/internal/lt/settings"><NavIcon name="settings" />Settings</NavLink>
           </>
