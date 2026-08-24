@@ -373,15 +373,24 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
       // For a draw with a RECORDED release, the stored net wins — it already carries the
       // out-of-pocket floor and the retainage. Until then the net is a PROJECTION (approved − fee).
       //
-      // ONLY A RELEASED ROW MAY SPEAK FOR THE MONEY (owner-reported 2026-08-24, YSCAP258134629).
-      // `drawMoney` treats a stored net as FINAL, so handing it a row that is not released
-      // states a settled figure for money nobody released — and it silently outranks the
-      // projection, which is the honest answer at that point. `auto-release` writes exactly
-      // such a row on purpose when the lien-waiver gate fails, and its own header says a
-      // `held` row must "never [be] silently reported as released"; this call site was the
-      // one place making it so. The FEE still comes from the row either way — it is earned
-      // when the draw is approved, not when the wire clears.
-      netReleaseCents: (l && l.released) ? l.net_release_cents : null,
+      // DO NOT GATE THIS ON `released` — it was tried on 2026-08-24 and REVERTED the same day, by
+      // the adversarial audit of that very commit. Two independent reasons, both verified:
+      //
+      //  (1) It does NOTHING for the phantom-release incident it was written for. db/302 stamps its
+      //      fabricated row `funded_status='released'`, so `l.released` is TRUE for exactly the row
+      //      the guard was meant to disarm, and the net stayed $6,200. The phantom is killed by
+      //      db/626 deleting the row — that is the whole fix — not by anything here.
+      //  (2) It is a MONEY REGRESSION on every row that is legitimately not yet released. A
+      //      `pending` row (the default at routes/sitewire.js) and a `held` row (auto-release, when
+      //      the lien-waiver gate fails) both carry a net computed by `money.computeRelease`, which
+      //      subtracts the borrower's OUT-OF-POCKET FLOOR — a figure `drawMoney` knows nothing
+      //      about. Discarding the stored net makes it recompute `approved − fee − retainage` and
+      //      OVERSTATE the wire by the whole floor: on a $50,000 floor, $19,950 becomes $69,950 on
+      //      a borrower-facing email. Overstating a wire is the expensive direction.
+      //
+      // The `released:` flag below is the right place to express "this is not a wire yet", and it
+      // already did. The STAGE was the thing that was wrong, never the amount.
+      netReleaseCents: l ? l.net_release_cents : null,
       released: !!(l && l.released),
       finding: findingByDraw.get(d.sitewire_draw_id) || null,
     });
@@ -519,7 +528,16 @@ async function projectedFee(db, appId) {
          LEFT JOIN product_registrations pr ON pr.application_id=a.id AND pr.is_current
         WHERE a.id=$1`, [appId])).rows[0] || {};
     const program = /gold/i.test(String(a.program || '')) ? 'gold' : 'standard';
-    const rule = await orch.resolveRule(a.lender, null, program);
+    // THE CAPITAL-PARTNER ID IS THE SECOND WAY A RULE IS FOUND, AND PASSING null DISABLED IT.
+    // `resolveRule` matches partner LABEL first, then capital_partner_id, then the global default —
+    // so with null here a file whose note-buyer label is spelled even slightly differently from the
+    // rule row ("Blue Lake Capital LLC" vs "Blue Lake") fell straight through to the GLOBAL rule and
+    // this projection quoted $499 where the Start-draw screen, the push and `verifyPartnerFee` all
+    // quote $250 off the partner rule. Two surfaces stating two fees for one draw is the exact drift
+    // the one-money-definition rule exists to stop. Every other caller already passes the id
+    // (orchestrator.js pushFile, routing.js); this was the odd one out. DB-only, no network.
+    const cp = await orch.resolveCapitalPartnerId(a.lender);
+    const rule = await orch.resolveRule(a.lender, cp && cp.id != null ? cp.id : null, program);
     const insp = orch.resolveInspection(link, rule);
     return { fee_cents: Number(insp.feeCents) || 0, fee_kind: insp.feeKind, method: insp.method, overridden: !!insp.overridden };
   } catch (_) { return null; }

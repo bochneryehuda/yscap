@@ -29,10 +29,16 @@
  *      typed, both survive — that is the whole risk of a migration that DELETES money rows.
  *   E. Idempotent across boots, and AUDITED: the row is gone afterwards, so the audit line
  *      is the only record it was ever there.
- *   F. THE SAME CLASS ONE LAYER UP: `drawMoney` treats a stored net as final, so a ledger
- *      row that is NOT released must not become the draw's net. `auto-release` writes such
- *      a row deliberately (lien-waiver gate) and says in its own header that it must
- *      "never [be] silently reported as released" — the rollup was doing exactly that.
+ *   F. THE FIX THAT WAS *NOT* THE FIX, pinned so it is not re-attempted. It looks obvious that
+ *      a ledger row which is not `released` should not speak for the net — and gating on that
+ *      was written, tested, and reverted the same day. It is INERT against this incident
+ *      (db/302 stamps its fabricated row `released`, so the gate never sees it) and it is a
+ *      MONEY REGRESSION everywhere else: a `pending`/`held` row's net comes from
+ *      `money.computeRelease` and already carries the borrower's out-of-pocket FLOOR, which
+ *      `drawMoney` cannot re-derive — discarding it overstates the wire by the whole floor
+ *      ($19,950 became $69,950 on a $50,000 floor). What was wrong was the STAGE, never the
+ *      amount, and the `released:` flag already carried it. This section asserts the stored
+ *      net survives, on the desk AND in the Excel packet.
  *   G. SOURCE GUARDS, because a back end is not a feature: the desk must read the server's
  *      answer rather than re-deriving the rule from the raw field.
  *
@@ -69,8 +75,21 @@ const eq = (name, got, exp) => {
     /release_confirmed:\s*tpMirror\.releaseConfirmed\(/.test(route));
 
   const roll = fs.readFileSync(R + '/src/sitewire/rollup.js', 'utf8');
-  ok('the rollup only lets a RELEASED row speak for the net',
-    /netReleaseCents:\s*\(l\s*&&\s*l\.released\)\s*\?/.test(roll));
+  // THE ROLLUP MUST KEEP THE STORED NET. Gating this on `released` was tried and reverted the
+  // same day: it is inert against the phantom (db/302 stamps its row `released`) and it throws
+  // away `money.computeRelease`'s out-of-pocket-floor arithmetic on every pending/held row,
+  // overstating the wire by the whole floor. The `released:` FLAG is where "not a wire yet"
+  // belongs. This guard exists so the gate is not re-added by someone reading only the incident.
+  ok('the rollup keeps a recorded row’s stored net — the floor-aware figure is never recomputed',
+    /netReleaseCents:\s*l\s*\?\s*l\.net_release_cents\s*:\s*null/.test(roll));
+
+  // THE PACKET READS THE SAME FIGURE, and it has to. The Excel packet and the draw desk both
+  // print a net for one draw off `drawMoney`; gating one on `released` and not the other states
+  // two different nets for the same draw, which is the exact drift the one-money-definition rule
+  // exists to stop. (Both were gated in the first cut of this work; both were reverted.)
+  const packet = fs.readFileSync(R + '/src/sitewire/draw-packet.js', 'utf8');
+  ok('the draw packet keeps the stored net too \u2014 the packet and the desk never state two nets',
+    /netReleaseCents:\s*ledgerRow\s*\?\s*Number\(ledgerRow\.net_release_cents\)\s*:\s*null/.test(packet));
 
   const mirror = fs.readFileSync(R + '/src/trustpoint/mirror.js', 'utf8');
   ok('the money mirror gates on the shared predicate rather than its own copy',
@@ -316,23 +335,27 @@ const money = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { mini
             job_item_name, requested_cents, approved_cents)
          VALUES ($1,$2,1,'Roof',7020000,7020000)`,
         [f.swId, Number((await db.query(`SELECT (floor(random()*8e8)+1e8)::bigint AS n`)).rows[0].n)]);
-      // What `auto-release` writes when the lien-waiver gate does not pass: recorded, so the
-      // money is never lost, but HELD with NOTHING wired — and its own header says such a row
-      // must never read as released. A stored net of 0 is what makes this assertion bite:
-      // without the guard the desk prints "$0.00" as the net of a $70,200 approved draw, which
-      // is the very "APPROVED FOR RELEASE $0" the whole approval ladder was built to end.
+      // WHAT `auto-release` ACTUALLY WRITES when the lien-waiver gate does not pass: recorded so
+      // the money is never lost, HELD so nothing reads as wired — and its net comes from
+      // `money.computeRelease`, which subtracts the borrower's OUT-OF-POCKET FLOOR. That is the
+      // whole point of this fixture: on a $50,000 floor only $70,200 − $50,000 = $20,200 of this
+      // draw is reimbursable, so the recorded net is $20,200 − $250 = $19,950, NOT $69,950.
+      // `drawMoney` has no concept of the floor and cannot re-derive that figure — so a caller
+      // that discards the stored net overstates the wire by the entire floor. This assertion is
+      // the one that catches it; the first version of this suite asserted the opposite and shipped
+      // a $50,000 overstatement past its own author.
       await db.query(
         `INSERT INTO draw_disbursements (application_id, sitewire_draw_id, approved_cents, fee_cents,
             retainage_held_cents, net_release_cents, funded_status, kind, source, note)
-         VALUES ($1,$2,7020000,25000,0,0,'held','draw','pilot','held pending lien waivers')`,
+         VALUES ($1,$2,7020000,25000,0,1995000,'held','draw','pilot','held pending lien waivers')`,
         [f.appId, f.swId]);
       await boot();
       const m = await deskMoney(f.appId, f.swId);
       ok('a HELD row does not make the draw read as released', m && m.approval_stage !== 'released' && m.released === false);
-      ok('and its stored net does not silently become the draw’s net',
-        m && Number(m.net_release_cents) !== 0);
-      eq('the honest projection is shown instead — approved less the fee',
-        m && money(m.net_release_cents), money(7020000 - Number(m.fee_cents)));
+      eq('and its RECORDED floor-aware net is what the desk states — never a recomputed projection',
+        m && money(m.net_release_cents), money(1995000));
+      ok('so the wire is not overstated by the out-of-pocket floor',
+        m && Number(m.net_release_cents) !== 7020000 - Number(m.fee_cents));
       ok('while the fee it recorded is still ours to count', m && Number(m.fee_cents) === 25000);
     }
   } finally {
