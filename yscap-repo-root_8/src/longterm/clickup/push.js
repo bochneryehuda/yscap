@@ -206,10 +206,48 @@ async function resolvePerson(contact) {
  * provider's coordinates.
  */
 function providerTextSafe(ours, provider) {
-  const houseOf = (t) => { const m = String(t || '').trim().match(/^(\d+[A-Za-z]?)\b/); return m ? m[1].toLowerCase() : null; };
+  // THE HOUSE TOKEN IS EVERYTHING UP TO THE FIRST SPACE — not merely the leading
+  // digits (owner-reported 2026-08-24: "963 Sherman Ave" was written to ClickUp
+  // as "963;965 Sherman Ave", and the same on 967 and 971).
+  //
+  // ROOT CAUSE this replaces: the old test was /^(\d+[A-Za-z]?)\b/, and in
+  // "963;965" the semicolon SATISFIES \b — so it extracted "963", matched ours
+  // exactly, and the guard reported the house number as preserved. It asked
+  // whether our number SURVIVED and never whether anything had been APPENDED, so
+  // a second address (the neighbouring unit of a two-family, which the geocoder
+  // returns as a range) was adopted onto the card as though it were ours.
+  //
+  // Comparing the whole token makes an added ";965" a DIFFERENCE, and a
+  // difference keeps OUR text with the provider's coordinates — the safe
+  // direction, since refusing only ever means we write the address we already
+  // hold. "963-965" and "963 1/2" are refused for the same reason.
+  const houseTok = (t) => {
+    const m = String(t || '').trim().match(/^(\S+)/);
+    if (!m) return null;
+    const tok = m[1].toLowerCase().replace(/[.,]+$/, '');
+    return /^\d/.test(tok) ? tok : null;      // must still START with a digit
+  };
   const zipOf = (t) => { const m = String(t || '').match(/\b(\d{5})(?:-\d{4})?\b(?!.*\d{5})/); return m ? m[1] : null; };
-  const oh = houseOf(ours); const ph = houseOf(provider);
+  // The token AFTER the house number is the start of the STREET NAME, and it
+  // must survive too. That is what catches an addition the house token cannot
+  // see because a SPACE separates it: "963 1/2 Sherman Ave" is a genuinely
+  // different address from "963 Sherman Ave". A restyle never touches this
+  // token ("Ave" -> "Avenue" changes the SUFFIX, not the name), so the
+  // legitimate case still passes.
+  //
+  // ACCEPTED, STATED COST: a directional spelled out ("S" -> "South") is also
+  // refused, so we keep our own text there. That is the deliberate direction --
+  // the established rule is that a leading directional may never be dropped or
+  // rewritten, and refusing costs only the provider's tidier spelling while the
+  // address itself still reaches the card intact.
+  const streetTok = (t) => {
+    const m = String(t || '').trim().match(/^\S+\s+(\S+)/);
+    return m ? m[1].toLowerCase().replace(/[.,]+$/, '') : null;
+  };
+  const oh = houseTok(ours); const ph = houseTok(provider);
   if (!oh || !ph || oh !== ph) return false;
+  const os = streetTok(ours); const ps = streetTok(provider);
+  if (!os || !ps || os !== ps) return false;
   const oz = zipOf(ours); const pz = zipOf(provider);
   if (oz && pz && oz !== pz) return false;
   return true;
