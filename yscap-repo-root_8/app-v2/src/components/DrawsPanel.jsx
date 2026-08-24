@@ -102,7 +102,7 @@ function setupBlurb(s) {
   return (m ? m[1] : (s.reason || 'Setup needs a quick check.')).trim();
 }
 
-export default /* THE PAYOFF DEMAND, SAID BIG (owner-directed 2026-08-21: *"it should come out big that there
+/* THE PAYOFF DEMAND, SAID BIG (owner-directed 2026-08-21: *"it should come out big that there
    was a Pay Off Demand on this one, so you can't request the set of draws on this file
    anymore"*).
 
@@ -146,7 +146,7 @@ function PayoffDemandBanner({ payoff, started }) {
   );
 }
 
-function DrawsPanel({ appId }) {
+export default function DrawsPanel({ appId }) {
   const openReport = useReportOpener();   // the in-app report panel (see ReportOpener.jsx)
   const { can } = useAuth();
   const [data, setData] = useState(null);
