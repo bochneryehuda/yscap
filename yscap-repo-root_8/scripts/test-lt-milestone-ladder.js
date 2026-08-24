@@ -107,7 +107,14 @@ async function main() {
     'Loan Setup keeps its OWN name — its only evidence was a lagging, stock-contradicted sample (D6)');
   eq(stages.completedFormLabel('Started'), 'File started',
     'Started reads File started — one of the two wordings the live census actually OBSERVED');
-  eq(stages.completedFormLabel('Completion'), 'Completed', 'Completion reads Completed');
+  // OWNER-DIRECTED 2026-08-24, answering the question round 5 raised about this
+  // exact row: *"Keep the milestones the same way it is in Encompass if a
+  // certain milestone doesn't have different language … It should be exactly as
+  // it is in Encompass."* "Completed" was the one wording here attributed by
+  // name similarity rather than by anything stated, so under that rule it is not
+  // a wording at all and the milestone keeps its Encompass name.
+  eq(stages.completedFormLabel('Completion'), 'Completion',
+    'Completion keeps its ENCOMPASS name — an unproven wording is not a wording (owner-directed)');
   eq(stages.completedFormLabel('Investor Delivery'), 'Investor Delivery',
     'a milestone with NO proven completed wording keeps its own name — honest, never invented');
   eq(stages.completedFormLabel('  '), null, 'a blank name answers null, never an empty label');

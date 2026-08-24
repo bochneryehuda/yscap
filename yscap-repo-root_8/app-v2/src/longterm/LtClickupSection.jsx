@@ -233,7 +233,18 @@ function PlanTable({ data, loanId, act, compare, onCompare }) {
           <span style={{ color: MUTED }}>Card status </span>
           <strong>{data.compare.status.current || '—'}</strong>
           {data.compare.status.desired && String(data.compare.status.desired).toLowerCase() !== String(data.compare.status.current || '').toLowerCase() ? (
-            <span style={{ color: '#8A6A22' }}> · Encompass says it should be <strong>{data.compare.status.desired}</strong> — the next full push moves it ({data.compare.status.reason})</span>
+            <span style={{ color: '#8A6A22' }}> · Encompass says it should be <strong>{data.compare.status.desired}</strong>
+              {' — '}
+              {/* WHAT THE NEXT PUSH WILL ACTUALLY DO, from the server's own run of
+                  the push decision. This used to promise "the next full push moves
+                  it", which stopped being true when a status became something that
+                  follows a milestone FIRING rather than a reconcile (2026-08-24). */}
+              {data.compare.status.decision
+                ? (data.compare.status.decision.act === 'push'
+                  ? <>the next push moves it</>
+                  : <>PILOT will NOT move it — {data.compare.status.decision.reason}</>)
+                : <>{data.compare.status.reason}</>}
+            </span>
           ) : data.compare.status.desired ? (
             <span style={{ color: '#1F5F3F' }}> · matches what Encompass says</span>
           ) : null}
@@ -270,12 +281,25 @@ function Reviews({ data, loanId, act, reload }) {
             {REASON_WORDS[r.reason] || r.reason} · raised {day(r.created_at)}
           </div>
           <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-            <ArmedButton label="Approve — write PILOT’s value" confirmLabel="Yes — overwrite the card"
-              onFire={() => act(async () => {
-                const out = await ltApi.clickupReview(loanId, r.id, 'approve');
-                await reload();
-                return out && out.dryRun ? 'Rehearsed — dry run is on; the review stays open.' : 'Approved and written to the card.';
-              })} />
+            {/* A STATUS disagreement has no Approve. The writer re-pushes ONE
+                MAPPED FIELD on approval, and '__status' is not a mapped field —
+                the button existed and 409'd every single time. A status is
+                deliberately not something PILOT writes on request either: it
+                follows a milestone firing (2026-08-24). So the reader is told
+                where the two real answers live instead of given a dead button. */}
+            {String(r.field_key) === '__status' ? (
+              <div style={{ fontSize: 12, color: MUTED }}>
+                PILOT will not change this by itself. Either move the milestone in Encompass,
+                or set the status on the card by hand — whichever is actually right.
+              </div>
+            ) : (
+              <ArmedButton label="Approve — write PILOT’s value" confirmLabel="Yes — overwrite the card"
+                onFire={() => act(async () => {
+                  const out = await ltApi.clickupReview(loanId, r.id, 'approve');
+                  await reload();
+                  return out && out.dryRun ? 'Rehearsed — dry run is on; the review stays open.' : 'Approved and written to the card.';
+                })} />
+            )}
             <ArmedButton label="Keep the card as it is" confirmLabel="Yes — keep the card’s value"
               className="btn ghost"
               onFire={() => act(async () => {

@@ -372,7 +372,7 @@ async function mirrorDisbursement(appId, row, { baseline = false, addr = 'the pr
     // been decided. Never infer a release from an amount alone.
     // Under-announcing is safe — `drawReleaseOverdueOnce` already alerts the team when an
     // accepted draw's wire has not been recorded in time.
-    // ONE definition, shared with the desk and with db/626 (restated there in SQL,
+    // ONE definition, shared with the desk and with db/627 (restated there in SQL,
     // because a migration cannot require this module) — see `releaseConfirmed`.
     if (!releaseConfirmed(row)) return { skipped: 'not_disbursed' };
     // the Sitewire draw this money belongs to: the live intake tie, or the portal close-out

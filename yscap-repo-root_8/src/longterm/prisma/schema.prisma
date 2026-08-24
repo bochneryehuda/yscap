@@ -440,6 +440,16 @@ model LtLoan {
   /// The last push failure, plain text; cleared on the next clean push.
   clickupPushError String? @map("clickup_push_error")
 
+  /// db/626 — the STATUS watermark. A ClickUp status is written only for an
+  /// `lt_milestone_events` row of type 'observed_entered' NEWER than this, so a
+  /// status follows a milestone FIRING and is never written to reconcile a card
+  /// that merely disagrees (owner-directed 2026-08-24, correcting #39's
+  /// "Encompass always wins"). Both a push and a raised review row answer the
+  /// event and advance this. NULL = never baselined; the writer takes the
+  /// watermark and writes nothing, so a newly linked loan's back history can
+  /// never fire a status nobody asked for.
+  clickupStatusEventAt DateTime? @map("clickup_status_event_at") @db.Timestamptz(6)
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 

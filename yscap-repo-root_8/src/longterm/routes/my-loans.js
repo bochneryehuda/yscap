@@ -193,10 +193,12 @@ router.get('/loans', async (req, res) => {
            SELECT m.milestone_name
              FROM lt_loan_milestones m
             WHERE m.loan_id = l.id AND m.done = false
+              AND btrim(m.milestone_name) <> ''
               AND m.position > COALESCE(
                     (SELECT max(d.position) FROM lt_loan_milestones d
-                      WHERE d.loan_id = l.id AND d.done), -1)
-            ORDER BY m.position ASC
+                      WHERE d.loan_id = l.id AND d.done
+                        AND btrim(d.milestone_name) <> ''), -1)
+            ORDER BY m.position ASC, m.milestone_name ASC
             LIMIT 1
          ) w ON true
         WHERE l.borrower_id = $1::uuid

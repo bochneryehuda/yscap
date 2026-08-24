@@ -379,7 +379,7 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
       //  (1) It does NOTHING for the phantom-release incident it was written for. db/302 stamps its
       //      fabricated row `funded_status='released'`, so `l.released` is TRUE for exactly the row
       //      the guard was meant to disarm, and the net stayed $6,200. The phantom is killed by
-      //      db/626 deleting the row — that is the whole fix — not by anything here.
+      //      db/627 deleting the row — that is the whole fix — not by anything here.
       //  (2) It is a MONEY REGRESSION on every row that is legitimately not yet released. A
       //      `pending` row (the default at routes/sitewire.js) and a `held` row (auto-release, when
       //      the lien-waiver gate fails) both carry a net computed by `money.computeRelease`, which

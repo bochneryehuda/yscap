@@ -72,10 +72,25 @@ function stageFor(milestoneName, settings) {
 /**
  * Mirror what DISCOVERY knows. Identity and freshness only.
  *
- * `loan_number` and `loan_amount` use COALESCE on the EXISTING value so a pipeline
- * row that is momentarily missing a field cannot blank one we already hold — the
- * Reporting Database omits an unpopulated field entirely, and reading that omission
- * as "cleared" would empty the pipeline a column at a time.
+ * NOTHING HERE CAN BLANK A COLUMN. The Reporting Database omits an unpopulated
+ * field entirely, and reading that omission as "cleared" would empty the pipeline
+ * a column at a time — so every column below is COALESCEd. Which side comes FIRST
+ * is the real decision, and the two shapes mean different things:
+ *
+ *   COALESCE(EXCLUDED.x, lt_loans.x)  — the pipeline's value WINS when it has one
+ *                                       (loan_number, borrower_name, loan_folder).
+ *   COALESCE(lt_loans.x, EXCLUDED.x)  — FILL-ONLY: the pipeline may fill a blank
+ *                                       and may never correct what is already
+ *                                       there (loan_amount, milestone_name,
+ *                                       stage_key), because the per-loan read is
+ *                                       the authority on those and the pipeline's
+ *                                       copy of them LAGS.
+ *
+ * `loan_amount` is fill-only for that reason, which is only safe because the full
+ * read now writes it from field 1109 (owner-reported 2026-08-24). Before that it
+ * was fill-only here and written NOWHERE else, so the figure was taken once at
+ * discovery and never corrected — the bug this comment used to describe as though
+ * it were the design.
  */
 async function upsertDiscovered(dbc, loan, settings) {
   const { milestoneName, stageKey } = stageFor(loan.milestoneName, settings);
@@ -186,11 +201,20 @@ async function readLoan(loanId, guid, settings) {
   // we hold, and `writeMilestone` sees no change). Only a loan with no ladder
   // at all still takes the lagging reading, which is better than nothing.
   let laddered = false;
+  // Whether the probe ANSWERED at all. Two different rules read this one fact
+  // and they need it to fail in OPPOSITE directions, so a single boolean cannot
+  // carry both (see `redefinition` below): the D3 fallback is safe when an
+  // unreadable probe reads as ALREADY laddered, and the phantom-event guard is
+  // safe when it reads as a FIRST read. Both conservative answers hold at once
+  // — claim no milestone, and record no movement — but only if the failure
+  // itself is remembered rather than collapsed into `laddered`.
+  let probeAnswered = true;
   try {
     const { rows: lr } = await lazy.db.query(
       'SELECT ladder_synced_at FROM lt_loans WHERE id = $1::uuid', [String(loanId)]);
     laddered = !!(lr.length && lr[0].ladder_synced_at);
   } catch (e) {
+    probeAnswered = false;
     // FAIL TOWARD THE SAFE READING (audit round 4). Defaulting to `false`
     // here means an unreadable probe reinstates the very fallback D3
     // removed — so on the one path that reaches this line (the ladder read
@@ -237,6 +261,30 @@ async function readLoan(loanId, guid, settings) {
   const programName = String(
     (fv && (fv['1401'] != null ? fv['1401'] : fv[1401])) ?? (loan && loan.loanProgramName) ?? '',
   ).trim() || null;
+
+  // THE LOAN AMOUNT, CORRECTED BY THE REAL READ (owner-reported 2026-08-24:
+  // *"The loan amounts always need to update"*). It was written ONLY by
+  // `upsertDiscovered`, and fill-only there — so the figure was taken once when
+  // the loan was first discovered and never corrected again, on the pipeline's
+  // own lagging copy. Every other decision-bearing figure on this loan (rate,
+  // DSCR, the ARM terms, the expenses) is refreshed by the application sync
+  // below; this one column was simply missed, and the module header has claimed
+  // since it shipped that discovery fills a blank "never to correct a value a
+  // real read established" — this is the real read that was supposed to.
+  //
+  // Field 1109, read BY NUMBER and falling back to the path, exactly as term (4)
+  // and program (1401) above: the same field number sits at a different JSON path
+  // from loan to loan, so a value read by number wins. Written through the same
+  // COALESCE(new, old) never-blank rule — a read that could not see the amount
+  // must never blank one we hold, while a real change lands.
+  const loanAmount = (() => {
+    const raw = (fv && (fv['1109'] != null ? fv['1109'] : fv[1109])) ?? (loan && loan.baseLoanAmount);
+    if (raw == null || String(raw).trim() === '') return null;
+    const n = Number(String(raw).replace(/[$,\s]/g, ''));
+    // A figure we cannot read cleanly states NOTHING rather than writing a 0 or a
+    // NaN over a real amount — this column is money on a mortgage.
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  })();
 
   // WHO IS THE BORROWER? `lt_loans.borrower_id` has existed since db/549 and
   // nothing has ever written it, so a borrower signing in sees none of their
@@ -325,6 +373,7 @@ async function readLoan(loanId, guid, settings) {
             ms_status_date = COALESCE($13, ms_status_date),
             vesting_type = CASE WHEN $14::boolean THEN $15 ELSE vesting_type END,
             vesting_entity_name = CASE WHEN $14::boolean THEN $16 ELSE vesting_entity_name END,
+            loan_amount = COALESCE($17::numeric, loan_amount),
             encompass_synced_at = now(),
             encompass_sync_error = NULL,
             updated_at = now()
@@ -348,16 +397,54 @@ async function readLoan(loanId, guid, settings) {
       borrowerFirst, borrowerLast, borrowerEmail,
       sale.purchased !== null, sale.status, sale.at,
       ms.status, ms.date,
-      vest.answered, vest.vestingType, vest.entityName],
+      vest.answered, vest.vestingType, vest.entityName,
+      loanAmount],
   );
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // THE FIRST LADDER READ IS A RE-DEFINITION, NOT A MOVE — THE SECOND CALL
+  // SITE (post-merge audit, defect 1).
+  //
+  // `ladderOne` got this guard in round 5; THIS function performs the IDENTICAL
+  // conversion and did not, which made the fix worth nothing in practice: the
+  // worker drains loans through here BEFORE it runs the ladder backfill, so on
+  // the ordinary sync path every already-synced loan still gained a BACKWARD
+  // "Investor Delivery -> Funding" event that never happened, had
+  // `milestone_since` reset to now, and had `milestone_since_is_baseline`
+  // cleared — the exact outcome round 5 believed it had closed. The
+  // Encompass webhook nudges a loan straight down this path, so it is also the
+  // path that runs on a real milestone change.
+  //
+  // THE LESSON, which is the standing rule in CLAUDE.md and was broken anyway:
+  // a rule pinned at one of its two call sites is not fixed, it is half-fixed,
+  // and the half that is left is the one that runs first.
+  //
+  // Same reading as the ladder twin: before db/623 the mirror stored the
+  // LAGGING active milestone and stamped `milestone_since`, so on the FIRST
+  // ladder read the last-done standing legitimately differs from what is
+  // stored. That is a re-definition of the position we were already looking at,
+  // not a movement — so the standing is written (the UPDATE above already did
+  // it) and NO event is recorded, leaving the clock and its honest baseline
+  // flag exactly as they were.
+  //
+  // Gated on `ladder.ok` because the conversion only happens when a ladder was
+  // actually read; with no ladder in hand the ordinary rules still apply. A
+  // genuinely new loan has no `milestone_since`, so `hasRecord` is false and it
+  // still gets its baseline. An unanswered probe counts as a first read, so it
+  // fails toward recording nothing.
+  // ═══════════════════════════════════════════════════════════════════════
+  const firstLadderRead = !probeAnswered || !laddered;
+  const redefinition = ladder.ok && firstLadderRead && priorMilestone.hasRecord;
 
   // A first sighting is recorded as a BASELINE, never as an arrival — we cannot know
   // how long the loan had already been sitting there, and dating it from today would
   // make the whole back book look freshly moved. Best-effort: never undoes the
   // mirror above.
-  const milestoneWrite = await milestones.writeMilestone(
-    loanId, priorMilestone, { milestoneName, stageKey },
-  );
+  const milestoneWrite = redefinition
+    ? { ok: true, action: 'none', reason: 'redefinition' }
+    : await milestones.writeMilestone(
+      loanId, priorMilestone, { milestoneName, stageKey },
+    );
 
   // The ladder itself — every step with done/date/associate — mirrored beside the
   // loan and stamping `ladder_synced_at` (which is what drains this loan out of

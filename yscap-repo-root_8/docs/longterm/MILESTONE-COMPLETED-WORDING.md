@@ -51,53 +51,63 @@ below the table.
 | Clear To Close | Clear to Close | the owner's seven-stop vocabulary |
 | Schedule Closing | Closing Scheduled | db/547 — the tenant's own `tpo_status` for that step |
 | Funding | **Funded** | **the owner's own words** |
-| Completion | Completed | CENSUS — observed, but **attributed by name**: see below |
 
 > ⚠ **A PER-MILESTONE `MS.STATUS` SAMPLE IS NOT EVIDENCE, and this table used to contain one.**
 > Audit round 3 removed `Loan Setup → "Sent to Processing"`: that string appears only in Encompass's
 > **stock declared list** and was never once OBSERVED in this tenant's 490-loan MS.STATUS census
 > (`src/longterm/encompass/dropdowns.js`), whose loans return their own milestone names. And
 > MS.STATUS **lags**, so a per-milestone sample of it attributes each wording to the milestone one
-> step off wherever the lag is present. `Started → "File started"` and `Completion → "Completed"`
-> survive because the census actually observed them; every other row above rests on the owner's own
-> words or on db/547.
+> step off wherever the lag is present. `Started → "File started"` survives because the sweep's own
+> note pairs the two names in words; every other row above rests on the owner's own words or on
+> db/547. `Completion → "Completed"` did NOT survive — see the owner's rule below.
 
-> **HOW STRONG THE TWO CENSUS ROWS ACTUALLY ARE — corrected in audit round 5, because the first
-> wording of this legend claimed more than was measured.** The sweep records a flat list of
-> **distinct values** with no per-milestone breakdown, so on its own it proves a string EXISTS on
-> this tenant and nothing about which milestone produces it.
-> · `Started → "File started"` is the stronger of the two: the sweep's own note pairs the names in
->   words — *"the field says 'File started' where the milestone settings say 'Started'"* — which is
->   a recorded statement about this milestone, not an inference.
-> · `Completion → "Completed"` is the **weakest row in the table**. The string is genuinely observed
->   (so it is not invented, unlike the row round 3 removed), but nothing ties it to COMPLETION
->   rather than to some other step — that pairing is the two names resembling each other. It is kept
->   because the fallback, the raw "Completion", is no better evidenced, and it is **added to the
->   owner's question list below** rather than presented as settled.
+> **THE OWNER SETTLED THIS ON 2026-08-24, and it removed a row rather than adding one.** Asked what
+> the ten uncovered milestones should read, the answer was a rule rather than ten words:
 >
-> Worth stating plainly because it cuts the other way: the only per-milestone sample anywhere in this
-> repo is the one this very warning rules inadmissible, and it points elsewhere — Loan Setup files
-> answering "File started". That is a reason to keep per-milestone samples out of the table, not a
-> reason to doubt the pairing above; but it is why "Completed" is now flagged rather than asserted.
+> *"Keep the milestones the same way it is in Encompass if a certain milestone doesn't have different
+> language, and keep it in the language it is in Encompass. Potentially, if we switch the language in
+> Encompass and we rename something, then you should rename your system as well. It should be exactly
+> as it is in Encompass."*
+>
+> So the table is ONLY for a milestone Encompass itself words differently once it completes — which is
+> what the owner's own examples always were (*"when LO Prep is completed, it's Assigned to Processor
+> because that's the name of the milestone when it's completed"*). Everything else reads as Encompass
+> names it, and that is now a settled answer rather than an open question.
+>
+> **`Completion → "Completed"` was therefore REMOVED.** It was the one row attributed by name
+> similarity rather than by anything stated: the string is genuinely observed in the 490-loan sweep,
+> so it was never invented, but the sweep records a flat list of DISTINCT values with no
+> per-milestone breakdown, so nothing tied it to COMPLETION rather than to another step. Under the
+> owner's rule an unproven wording is not a wording. Re-adding it is one line, and the bar is the one
+> the owner set — Encompass showing a different word when that milestone completes, not a value seen
+> somewhere in the book.
+>
+> **The rename half needs no code.** Nothing here stores a copy of an Encompass name: the label falls
+> back to the name on the loan's own ladder row, re-read from Encompass every sync, and the lookup is
+> keyed punctuation-blind on that name — so a rename in Encompass reaches every screen on the next
+> pass, and a renamed milestone correctly stops matching a wording chosen for its old name.
 
 **Anything not in that table keeps its own name.** That is honest rather than lazy: inventing a
 past-tense wording for a step nobody has stated one for would put a word on a loan file that no
-person chose. db/547 seeds **19** milestones and the table covers **9**, so **ten** are open:
+person chose. db/547 seeds **19** milestones and the table covers **8**, so **eleven** read as
+Encompass names them:
 
 > **Loan Setup** · Processing · Waiting for Docs · Ready for Docs · Docs Out · Wire Order ·
-> Investor Delivery · Purchasing Conditions · Final Docs · **Closed**
+> Investor Delivery · Purchasing Conditions · Final Docs · **Closed** · **Completion**
 
-**These are the open questions for the owner.** Adding a wording is one line in `COMPLETED_FORM`.
+**These are ANSWERED, not open** (owner-directed 2026-08-24, above): each reads as Encompass names
+it, and follows a rename in Encompass automatically. Adding a wording is still one line in
+`COMPLETED_FORM` if Encompass turns out to word one of them differently on completion.
 
-**One more to confirm rather than add:** `Completion → "Completed"` is already in the table but is
-attributed by name similarity alone (see the note above), so it belongs on the same list — the
-question there is *"is this right?"* rather than *"what should it be?"*.
-
-**And a caution to raise with them about three of the ten.** For an uncovered milestone the file
-keeps the step's own name, which is honest but reads as the ACTIVE form on the seven-stop bar's
-`Status:` line — so a file that has FINISHED waiting for documents reads "Waiting for Docs", one
-whose documents are back reads "Docs Out", and one whose wire is ordered reads "Wire Order". The
-wording is not wrong so much as inverted, which is worth a sentence when the ten go to the owner.
+**THE ONE CONSEQUENCE STILL WORTH RAISING, about three of the eleven.** Keeping the Encompass name is
+exactly what the owner asked for, and on three steps it reads as the ACTIVE form on the seven-stop
+bar's `Status:` line — a file that has FINISHED waiting for documents reads "Waiting for Docs", one
+whose documents are back reads "Docs Out", and one whose wire is ordered reads "Wire Order". That is
+not a defect under the rule; it is what the rule produces when Encompass has only one word for the
+step. The question to put to the owner is narrow: does Encompass ITSELF show a different word once
+those three complete? If it does, this table gains three lines. If it does not, the wording stays
+inverted by their own instruction — which is a choice they are entitled to make, not a bug to fix
+behind their back.
 
 **A note that matters for the post-closing ones:** the tenant's own db/547 catalog collapses *every*
 post-Funding step (Investor Delivery, Purchasing Conditions, Final Docs, Closed, Completion) to the

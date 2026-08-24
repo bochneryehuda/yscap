@@ -466,7 +466,13 @@ async function dbHalf() {
       return { id, url: `https://app.clickup.com/t/${id}`, custom_id: 'FILLE-9999' };
     },
     getFolderLists: async () => ({ lists: [{ id: 'list-77', name: 'Loan Pipeline' }] }),
-    getList: async () => ({ statuses: LIST_STATUSES.map((s) => ({ status: s })) }),
+    // REAL ClickUp lists carry an `orderindex` on every status, and the writer
+    // now REQUIRES one: a status whose orderindex is not a finite number makes
+    // the whole order UNKNOWN rather than silently ranking 0 and jumping to the
+    // front of the ladder (pre-merge audit 2026-08-24 — with one missing index a
+    // move the true order calls BACKWARDS was written). A stub without them
+    // exercised only the array-order path and could not have seen that.
+    getList: async () => ({ statuses: LIST_STATUSES.map((s, i) => ({ status: s, orderindex: i })) }),
     updateTask: async (taskId, payload) => {
       realWriter.guardTaskUpdatePayload(payload);              // the real status-only allowlist still bites
       wire.updateTask.push({ taskId, payload });
@@ -725,7 +731,32 @@ async function dbHalf() {
     delete process.env.LT_CLICKUP_WRITE_DRYRUN;
 
     push._internals._resetBreaker();
-    console.log('O. the status engine ENFORCES — Encompass always wins');
+    // ── SECTION O WAS RE-POINTED, NOT LOOSENED (owner-directed 2026-08-24) ──
+    // It used to assert "the manual status change is corrected on the next
+    // push" — the #39 rule, which the owner has now overturned: *"Only when
+    // Encompass is changing a milestone should ClickUp be changing milestones,
+    // not go back to all the ClickUp tasks and update everything according to
+    // how Encompass is."* So the assertions below are INVERTED where they
+    // encoded the old rule, and a fired milestone is now staged explicitly
+    // wherever a push is expected. The old expectations are kept in words so
+    // nobody restores them by accident.
+    console.log('O. a status follows a milestone FIRING — it is never reconciled');
+
+    // Fire a milestone by hand: an 'observed_entered' event NEWER than the
+    // loan's watermark is the only thing that entitles a status write.
+    const fireMilestone = async (at) => {
+      await db.query(
+        `INSERT INTO lt_milestone_events (id, loan_id, event_type, to_milestone, observed_at, created_at)
+         VALUES (gen_random_uuid(), $1::uuid, 'observed_entered', 'Cond. Approval', $2::timestamptz, now())`,
+        [loanId, at]);
+    };
+    const setWatermark = async (at) => {
+      await db.query('UPDATE lt_loans SET clickup_status_event_at = $2::timestamptz WHERE id = $1::uuid', [loanId, at]);
+    };
+    const clearEvents = async () => {
+      await db.query('DELETE FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId]);
+      await db.query(`DELETE FROM lt_clickup_review_queue WHERE lt_loan_id = $1::uuid AND field_key = '__status'`, [loanId]);
+    };
     // Give the loan a ladder: everything done through Cond. Approval.
     const L18 = ['Started', 'LO Prep', 'Loan Setup', 'Submittal', 'Cond. Approval', 'Waiting for Docs',
       'Processing', 'Resubmittal', 'Clear To Close', 'Schedule Closing', 'Ready for Docs', 'Docs Out',
@@ -737,20 +768,86 @@ async function dbHalf() {
          ON CONFLICT (loan_id, milestone_name) DO UPDATE SET position = EXCLUDED.position, done = EXCLUDED.done`,
         [loanId, L18[i], i + 1, i <= 4]);
     }
-    // The card was MANUALLY dragged to 'active closing' in ClickUp; the ladder
-    // says Cond. Approval → workflow. Encompass wins.
+    // THE OWNER'S SCENARIO. The card was MANUALLY dragged to 'active closing';
+    // the ladder says Cond. Approval → workflow. No milestone has fired, so
+    // PILOT leaves it alone and puts the disagreement in front of a person.
+    // (Under #39 this asserted a write to 'workflow'. That was the bug.)
+    await clearEvents();
+    await setWatermark('2026-08-20T00:00:00Z');
     fakeTask = { id: 'task1', status: { status: 'active closing' }, list: { id: 'list-77' },
       custom_fields: mkCustomFields({ program: 2 }) };
     wire.updateTask.length = 0;
     await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
     let so = await push.pushLoan(loanId, { source: 'full_repush' });
-    eq(wire.updateTask.length, 1, 'the manual status change is corrected on the next push');
-    eq(wire.updateTask[0].payload.status, 'workflow', "…to the ladder's answer: workflow (Encompass always wins)");
+    eq(wire.updateTask.length, 0, "a manual status change is LEFT ALONE — PILOT does not reconcile");
+    eq(so.statusDecision && so.statusDecision.act, 'review', '…and the disagreement is raised for a person');
+    const { rows: revRows } = await db.query(
+      `SELECT * FROM lt_clickup_review_queue WHERE lt_loan_id = $1::uuid AND field_key = '__status' AND status = 'open'`, [loanId]);
+    eq(revRows.length, 1, 'exactly one open status review row');
+    eq(revRows[0].current_value, 'active closing', 'showing what ClickUp holds');
+    eq(revRows[0].proposed_value, 'workflow', "and what Encompass's milestones imply");
+
+    // A MILESTONE FIRES and the move is forwards → it is pushed, and journaled.
+    await clearEvents();
+    await setWatermark('2026-08-20T00:00:00Z');
+    await fireMilestone('2026-08-24T00:00:00Z');
+    fakeTask = { id: 'task1', status: { status: 'starting' }, list: { id: 'list-77' },
+      custom_fields: mkCustomFields({ program: 2 }) };
+    wire.updateTask.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    so = await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(wire.updateTask.length, 1, 'a FIRED milestone does push the status');
+    eq(wire.updateTask[0].payload.status, 'workflow', "…to the ladder's answer");
     const { rows: stJ } = await db.query(
       `SELECT * FROM lt_clickup_write_log WHERE lt_loan_id = $1::uuid AND field_key = '__status' AND changed = true ORDER BY id DESC LIMIT 1`, [loanId]);
-    eq(JSON.parse(JSON.stringify(stJ[0].old_value)), 'active closing', 'the status change is journaled with the before value');
+    eq(JSON.parse(JSON.stringify(stJ[0].old_value)), 'starting', 'the status change is journaled with the before value');
+    const { rows: wmRows } = await db.query('SELECT clickup_status_event_at w FROM lt_loans WHERE id = $1::uuid', [loanId]);
+    eq(wmRows[0].w.toISOString(), new Date('2026-08-24T00:00:00Z').toISOString(), 'and the event is answered exactly once');
+
+    // The SAME pass again: the event is spent, so nothing is written a second
+    // time — this is what stops one milestone re-asserting forever.
+    wire.updateTask.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(wire.updateTask.length, 0, 'an already-answered milestone does not push again');
+
+    // A fired milestone whose status sits BEHIND the card is refused and raised.
+    await clearEvents();
+    await setWatermark('2026-08-20T00:00:00Z');
+    await fireMilestone('2026-08-24T00:00:00Z');
+    fakeTask = { id: 'task1', status: { status: 'active closing' }, list: { id: 'list-77' },
+      custom_fields: mkCustomFields({ program: 2 }) };
+    wire.updateTask.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    so = await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(wire.updateTask.length, 0, 'a fired milestone that would move the card BACKWARDS writes nothing');
+    eq(so.statusDecision && so.statusDecision.act, 'review', '…it is raised for a person instead');
+
+    // THE OWNER'S ONE EXCLUSION: assigned to processor may move a card back,
+    // because that is how a file is handed to a different processor.
+    await clearEvents();
+    await setWatermark('2026-08-20T00:00:00Z');
+    await fireMilestone('2026-08-24T00:00:00Z');
+    for (let i = 0; i < L18.length; i++) {
+      await db.query(`UPDATE lt_loan_milestones SET done = $3 WHERE loan_id = $1::uuid AND milestone_name = $2`,
+        [loanId, L18[i], i <= 1]);          // done through LO Prep -> assigned to processor
+    }
+    fakeTask = { id: 'task1', status: { status: 'active closing' }, list: { id: 'list-77' },
+      custom_fields: mkCustomFields({ program: 2 }) };
+    wire.updateTask.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(wire.updateTask[0] && wire.updateTask[0].payload.status, 'assigned to processor',
+      'assigned to processor IS written backwards — the reassignment exclusion');
+    for (let i = 0; i < L18.length; i++) {
+      await db.query(`UPDATE lt_loan_milestones SET done = $3 WHERE loan_id = $1::uuid AND milestone_name = $2`,
+        [loanId, L18[i], i <= 4]);          // back to done-through-Cond. Approval
+    }
 
     // Already right → no write at all.
+    await clearEvents();
+    await setWatermark('2026-08-20T00:00:00Z');
+    await fireMilestone('2026-08-24T00:00:00Z');
     fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
       custom_fields: mkCustomFields({ program: 2 }) };
     wire.updateTask.length = 0;
@@ -765,7 +862,126 @@ async function dbHalf() {
     await push.pushLoan(loanId, { source: 'scoped_push', only: ['loan_amount'] });
     eq(wire.updateTask.length, 0, 'a SCOPED push (one field) never touches the status');
 
-    // The Submittal fork follows the funding channel.
+    // ── O2. AN UNUSABLE `orderindex` MAKES THE ORDER UNKNOWN ───────────────
+    // A missing/non-numeric index used to collapse to rank 0, pulling that
+    // status to the FRONT of the ladder; sort is stable so nothing else moved
+    // and nothing signalled a thing, and a move the true order calls BACKWARDS
+    // was written. The whole suite was blind to it because the stub carried no
+    // indexes at all, so this case supplies a REALISTIC list with one gap.
+    push._internals._resetBreaker();
+    console.log('O2. a status order we cannot trust is no order');
+    {
+      await clearEvents();
+      await setWatermark('2026-08-20T00:00:00Z');
+      await fireMilestone('2026-08-24T00:00:00Z');
+      const good = writerStub.getList;
+      // 'active closing' loses its index. Under the old rule it ranked 0, which
+      // put it FIRST — making the ladder's 'workflow' look like a forward move
+      // off it. It is not: 'workflow' sits well behind 'active closing'.
+      writerStub.getList = async () => ({
+        statuses: LIST_STATUSES.map((s, i) => (s === 'active closing'
+          ? { status: s }
+          : { status: s, orderindex: i })),
+      });
+      fakeTask = { id: 'task1', status: { status: 'active closing' }, list: { id: 'list-77' },
+        custom_fields: mkCustomFields({ program: 2 }) };
+      wire.updateTask.length = 0;
+      await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+      const o2 = await push.pushLoan(loanId, { source: 'full_repush' });
+      eq(wire.updateTask.length, 0,
+        'THE ONE THAT MATTERS: one status missing its orderindex makes the order untrustworthy, so nothing is written');
+      eq(o2.statusDecision && o2.statusDecision.act, 'review', '…it is raised for a person instead');
+      writerStub.getList = good;
+    }
+
+    // ── O3. A MILESTONE THAT LANDS MID-PUSH IS NOT SWALLOWED ───────────────
+    // The watermark used to be read AFTER the bag — separated by every field
+    // write, the subtask sync and a getList — so a milestone arriving DURING a
+    // push was consumed by the stamp while the PREVIOUS milestone's status was
+    // the one written. The newer move then read as "already answered" and was
+    // never pushed at all. The event is inserted from inside the getList stub,
+    // which is exactly the window that was open.
+    push._internals._resetBreaker();
+    console.log('O3. a milestone that arrives mid-push survives it');
+    {
+      await clearEvents();
+      await setWatermark('2026-08-20T00:00:00Z');
+      await fireMilestone('2026-08-21T00:00:00Z');          // E1 — the one this push answers
+      const good = writerStub.getList;
+      let fired = false;
+      writerStub.getList = async (id) => {
+        if (!fired) {
+          fired = true;
+          await fireMilestone('2026-08-23T00:00:00Z');      // E2 — lands mid-push
+        }
+        return good(id);
+      };
+      fakeTask = { id: 'task1', status: { status: 'starting' }, list: { id: 'list-77' },
+        custom_fields: mkCustomFields({ program: 2 }) };
+      wire.updateTask.length = 0;
+      await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+      await push.pushLoan(loanId, { source: 'full_repush' });
+      writerStub.getList = good;
+
+      const { rows: wm } = await db.query('SELECT clickup_status_event_at w FROM lt_loans WHERE id = $1::uuid', [loanId]);
+      eq(wm[0].w.toISOString(), new Date('2026-08-21T00:00:00Z').toISOString(),
+        'THE ONE THAT MATTERS: the watermark advances to the event this push ANSWERED, not to one that arrived while it ran');
+      ok(wm[0].w.getTime() < new Date('2026-08-23T00:00:00Z').getTime(),
+        '…so the mid-push milestone is still waiting, not silently spent');
+    }
+
+    // ── O4. A LIST WE COULD NOT READ DOES NOT SPEND THE MILESTONE ──────────
+    // The owner's one carve-out — 'assigned to processor', so a file can be
+    // handed to a different processor — skips the direction test, so a getList
+    // that throws lands it straight in the not-on-list branch. That branch
+    // ANSWERS the event, which for a transient 502 turns the carve-out into a
+    // permanent no-op. A list we could not READ must leave the event for the
+    // next pass; a status genuinely NOT ON the list is a configuration problem a
+    // retry cannot fix, and that one is answered.
+    push._internals._resetBreaker();
+    console.log('O4. a list PILOT could not read leaves the milestone for the next pass');
+    {
+      await clearEvents();
+      await setWatermark('2026-08-20T00:00:00Z');
+      await fireMilestone('2026-08-24T00:00:00Z');
+      for (let i = 0; i < L18.length; i++) {
+        await db.query(`UPDATE lt_loan_milestones SET done = $3 WHERE loan_id = $1::uuid AND milestone_name = $2`,
+          [loanId, L18[i], i <= 1]);          // -> assigned to processor, the exempt status
+      }
+      const good = writerStub.getList;
+      writerStub.getList = async () => { const e = new Error('ClickUp 502'); e.retryable = true; throw e; };
+      fakeTask = { id: 'task1', status: { status: 'active closing' }, list: { id: 'list-77' },
+        custom_fields: mkCustomFields({ program: 2 }) };
+      wire.updateTask.length = 0;
+      await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+      const o4 = await push.pushLoan(loanId, { source: 'full_repush' });
+      writerStub.getList = good;
+
+      eq(wire.updateTask.length, 0, 'an unreadable list writes no status');
+      eq(o4.statusSkipped && o4.statusSkipped.reason, 'status_list_unreadable',
+        '…and says the list could not be READ, not that the status is missing from it');
+      const { rows: wm } = await db.query('SELECT clickup_status_event_at w FROM lt_loans WHERE id = $1::uuid', [loanId]);
+      eq(wm[0].w.toISOString(), new Date('2026-08-20T00:00:00Z').toISOString(),
+        'THE ONE THAT MATTERS: the milestone is NOT spent — a transient blip must not swallow a reassignment for good');
+      const { rows: rev } = await db.query(
+        `SELECT count(*)::int n FROM lt_clickup_review_queue WHERE lt_loan_id = $1::uuid AND field_key = '__status' AND status = 'open'`, [loanId]);
+      ok(rev[0].n >= 1, '…and a person is told, rather than it failing in silence');
+      for (let i = 0; i < L18.length; i++) {
+        await db.query(`UPDATE lt_loan_milestones SET done = $3 WHERE loan_id = $1::uuid AND milestone_name = $2`,
+          [loanId, L18[i], i <= 4]);
+      }
+    }
+
+    // Section O now drives several more full pushes than it used to (every
+    // status case needs its own fired milestone), so the write budget is reset
+    // here — the breaker's own behaviour is proven in section N, not here.
+    push._internals._resetBreaker();
+
+    // The Submittal fork follows the funding channel. (A milestone must fire
+    // for any of these to be written at all, now that nothing is reconciled.)
+    await clearEvents();
+    await setWatermark('2026-08-20T00:00:00Z');
+    await fireMilestone('2026-08-24T00:00:00Z');
     for (let i = 0; i < L18.length; i++) {
       await db.query(`UPDATE lt_loan_milestones SET done = $3 WHERE loan_id = $1::uuid AND milestone_name = $2`,
         [loanId, L18[i], i <= 3]);   // done through Submittal
@@ -781,6 +997,11 @@ async function dbHalf() {
     exLive = { ...EX_BIRCH };
 
     // A status the destination list does not carry is SKIPPED, never invented.
+    // 'delegated initial' is absent below, and 'starting' IS on the list, so the
+    // direction is provable and the refusal is about the LIST, not the direction.
+    await clearEvents();
+    await setWatermark('2026-08-20T00:00:00Z');
+    await fireMilestone('2026-08-24T00:00:00Z');
     LIST_STATUSES = ['starting', 'workflow'];
     fakeTask = { id: 'task1', status: { status: 'starting' }, list: { id: 'list-77' },
       custom_fields: mkCustomFields({ program: 2 }) };
@@ -794,7 +1015,11 @@ async function dbHalf() {
       'closed (6-email funded)', 'in purchase review', 'pa issued-post closing.', 'closed reconciled',
       'cancelled', 'inactive / on hold'];
 
-    // The terminal rules reach the card: a withdrawn 1393 cancels it.
+    // The terminal rules reach the card: a withdrawn 1393 cancels it. Still
+    // event-driven — a terminal signal is not a licence to reconcile either.
+    await clearEvents();
+    await setWatermark('2026-08-20T00:00:00Z');
+    await fireMilestone('2026-08-24T00:00:00Z');
     exLive = { ...EX_BIRCH, 1393: 'Application withdrawn' };
     fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
       custom_fields: mkCustomFields({ program: 2 }) };
