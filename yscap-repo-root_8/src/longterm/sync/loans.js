@@ -72,10 +72,25 @@ function stageFor(milestoneName, settings) {
 /**
  * Mirror what DISCOVERY knows. Identity and freshness only.
  *
- * `loan_number` and `loan_amount` use COALESCE on the EXISTING value so a pipeline
- * row that is momentarily missing a field cannot blank one we already hold — the
- * Reporting Database omits an unpopulated field entirely, and reading that omission
- * as "cleared" would empty the pipeline a column at a time.
+ * NOTHING HERE CAN BLANK A COLUMN. The Reporting Database omits an unpopulated
+ * field entirely, and reading that omission as "cleared" would empty the pipeline
+ * a column at a time — so every column below is COALESCEd. Which side comes FIRST
+ * is the real decision, and the two shapes mean different things:
+ *
+ *   COALESCE(EXCLUDED.x, lt_loans.x)  — the pipeline's value WINS when it has one
+ *                                       (loan_number, borrower_name, loan_folder).
+ *   COALESCE(lt_loans.x, EXCLUDED.x)  — FILL-ONLY: the pipeline may fill a blank
+ *                                       and may never correct what is already
+ *                                       there (loan_amount, milestone_name,
+ *                                       stage_key), because the per-loan read is
+ *                                       the authority on those and the pipeline's
+ *                                       copy of them LAGS.
+ *
+ * `loan_amount` is fill-only for that reason, which is only safe because the full
+ * read now writes it from field 1109 (owner-reported 2026-08-24). Before that it
+ * was fill-only here and written NOWHERE else, so the figure was taken once at
+ * discovery and never corrected — the bug this comment used to describe as though
+ * it were the design.
  */
 async function upsertDiscovered(dbc, loan, settings) {
   const { milestoneName, stageKey } = stageFor(loan.milestoneName, settings);
@@ -247,6 +262,30 @@ async function readLoan(loanId, guid, settings) {
     (fv && (fv['1401'] != null ? fv['1401'] : fv[1401])) ?? (loan && loan.loanProgramName) ?? '',
   ).trim() || null;
 
+  // THE LOAN AMOUNT, CORRECTED BY THE REAL READ (owner-reported 2026-08-24:
+  // *"The loan amounts always need to update"*). It was written ONLY by
+  // `upsertDiscovered`, and fill-only there — so the figure was taken once when
+  // the loan was first discovered and never corrected again, on the pipeline's
+  // own lagging copy. Every other decision-bearing figure on this loan (rate,
+  // DSCR, the ARM terms, the expenses) is refreshed by the application sync
+  // below; this one column was simply missed, and the module header has claimed
+  // since it shipped that discovery fills a blank "never to correct a value a
+  // real read established" — this is the real read that was supposed to.
+  //
+  // Field 1109, read BY NUMBER and falling back to the path, exactly as term (4)
+  // and program (1401) above: the same field number sits at a different JSON path
+  // from loan to loan, so a value read by number wins. Written through the same
+  // COALESCE(new, old) never-blank rule — a read that could not see the amount
+  // must never blank one we hold, while a real change lands.
+  const loanAmount = (() => {
+    const raw = (fv && (fv['1109'] != null ? fv['1109'] : fv[1109])) ?? (loan && loan.baseLoanAmount);
+    if (raw == null || String(raw).trim() === '') return null;
+    const n = Number(String(raw).replace(/[$,\s]/g, ''));
+    // A figure we cannot read cleanly states NOTHING rather than writing a 0 or a
+    // NaN over a real amount — this column is money on a mortgage.
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  })();
+
   // WHO IS THE BORROWER? `lt_loans.borrower_id` has existed since db/549 and
   // nothing has ever written it, so a borrower signing in sees none of their
   // long-term files (owner-directed 2026-08-16). The link is proposed by matching
@@ -334,6 +373,7 @@ async function readLoan(loanId, guid, settings) {
             ms_status_date = COALESCE($13, ms_status_date),
             vesting_type = CASE WHEN $14::boolean THEN $15 ELSE vesting_type END,
             vesting_entity_name = CASE WHEN $14::boolean THEN $16 ELSE vesting_entity_name END,
+            loan_amount = COALESCE($17::numeric, loan_amount),
             encompass_synced_at = now(),
             encompass_sync_error = NULL,
             updated_at = now()
@@ -357,7 +397,8 @@ async function readLoan(loanId, guid, settings) {
       borrowerFirst, borrowerLast, borrowerEmail,
       sale.purchased !== null, sale.status, sale.at,
       ms.status, ms.date,
-      vest.answered, vest.vestingType, vest.entityName],
+      vest.answered, vest.vestingType, vest.entityName,
+      loanAmount],
   );
 
   // ═══════════════════════════════════════════════════════════════════════

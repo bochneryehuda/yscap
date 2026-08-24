@@ -47,6 +47,7 @@ const ltRouting = require('./routing');
 const program = require('./program');
 const trash = require('../trash');
 const statusEngine = require('./status-engine');
+const statusPush = require('./status-push');
 const rtlStaff = require('../../clickup/routing');   // DATA import — authorized in the ledger
 const addressCanon = require('../../lib/address-canon'); // authorized import (read-only lookup)
 
@@ -378,6 +379,77 @@ const LOCATION_FIELD_IDS = new Set([mapper.CU.subjectAddress, mapper.CU.borrower
  * mirror holds a channel; otherwise null, and the engine claims nothing
  * rather than asserting the non-del default during an outage.
  */
+/* ── The status watermark (db/626) ──────────────────────────────────────────
+ * A status write needs a milestone that FIRED since the last one answered.
+ * 'observed_baseline' is excluded in SQL, not in JS: a first sighting is where
+ * the loan already WAS, and treating it as a move is how every newly mirrored
+ * loan would write a status nobody asked for. */
+async function readStatusWatermark(loanId) {
+  const { rows } = await db.query(
+    `SELECT l.clickup_status_event_at AS watermark,
+            (SELECT max(e.observed_at) FROM lt_milestone_events e
+              WHERE e.loan_id = l.id AND e.event_type = 'observed_entered') AS latest_entered
+       FROM lt_loans l WHERE l.id = $1::uuid`, [String(loanId)]);
+  const r = rows[0] || {};
+  return { watermark: r.watermark || null, latestEntered: r.latest_entered || null };
+}
+
+/** Answer the event. `stampTo` is the event's own observed_at (never now()), so
+ *  an event that lands mid-pass is not silently swallowed by a later stamp. */
+async function stampStatusWatermark(loanId, stampTo) {
+  if (!stampTo) return;
+  try {
+    await db.query(
+      `UPDATE lt_loans SET clickup_status_event_at = GREATEST($2::timestamptz, COALESCE(clickup_status_event_at, $2::timestamptz)),
+              updated_at = now()
+        WHERE id = $1::uuid`, [String(loanId), stampTo instanceof Date ? stampTo.toISOString() : String(stampTo)]);
+  } catch (e) {
+    // A watermark that fails to advance costs a repeated question next pass,
+    // never a wrong write — so it may not fail the push that already landed.
+    console.warn('[lt-clickup-push] status watermark not stamped:', (e && e.message) || e);
+  }
+}
+
+/** Put a status disagreement in front of a person. The db/625 partial unique
+ *  index dedupes one OPEN row per (task, field, proposal), so a pass that keeps
+ *  finding the same disagreement refreshes rather than stacking questions. */
+/** @returns {Promise<boolean>} whether the row actually landed — the caller
+ *  consumes the milestone only if it did, or a failed INSERT would leave the
+ *  event spent with nothing anywhere recording it. */
+async function raiseStatusReview({ loanId, taskId, current, proposed, reason }) {
+  try {
+    await db.query(
+      `INSERT INTO lt_clickup_review_queue (lt_loan_id, task_id, direction, field_key, current_value, proposed_value, reason)
+       VALUES ($1::uuid, $2, 'outbound', '__status', $3, $4, $5)
+       ON CONFLICT (task_id, field_key, direction, (COALESCE(proposed_value, ''))) WHERE status = 'open'
+       DO UPDATE SET current_value = EXCLUDED.current_value, reason = EXCLUDED.reason`,
+      [String(loanId), String(taskId), current || null, proposed || null, String(reason || '').slice(0, 500)]);
+    return true;
+  } catch (e) {
+    console.warn('[lt-clickup-push] status review not raised:', (e && e.message) || e);
+    return false;
+  }
+}
+
+/** A disagreement that has RESOLVED closes its own rows. Without this the
+ *  standing list grows one row per proposal the engine ever wanted and never
+ *  shrinks — a screen showing the same file several times over, with proposals
+ *  that stopped being true weeks ago. Resolved, never deleted: the row is the
+ *  record that PILOT once disagreed, and somebody may want to see it. */
+async function closeStatusReviews(taskId) {
+  try {
+    const { rowCount } = await db.query(
+      `UPDATE lt_clickup_review_queue
+          SET status = 'resolved', resolved_at = now()
+        WHERE task_id = $1 AND field_key = '__status' AND direction = 'outbound' AND status = 'open'`,
+      [String(taskId)]);
+    return rowCount || 0;
+  } catch (e) {
+    console.warn('[lt-clickup-push] status reviews not closed:', (e && e.message) || e);
+    return 0;
+  }
+}
+
 function desiredStatusFor(bag, loan) {
   const liveAnswered = !!(bag.ex && ('CX.TABLEFUNDER' in bag.ex));
   const mirrorChannel = bag.investorChannel != null && String(bag.investorChannel).trim() !== '';
@@ -441,6 +513,18 @@ async function pushLoan(loanId, opts = {}) {
   const ex = await readExtras(loan.encompass_loan_guid);
   const bag = await loadBag(loanId, { ex });
   if (!bag) return { ok: false, skipped: 'no_such_loan' };
+
+  // THE WATERMARK IS READ WITH THE BAG, NOT WITH THE DECISION (pre-merge audit
+  // 2026-08-24). The bag is what `desiredStatus` answers from, and the event that
+  // justifies that answer must be one the bag can already see. Reading
+  // `latestEntered` later — after every field write, the subtask sync and a
+  // getList — meant a milestone that landed DURING the push was consumed by the
+  // stamp while the PREVIOUS milestone's status was the one written: the newer
+  // move was then "already answered" and never pushed at all. Demonstrated, not
+  // theorised. Binding both reads to this instant closes it: an event arriving
+  // after this line is simply not seen, so it is still waiting on the next pass.
+  let statusMark = null;
+  try { statusMark = await readStatusWatermark(loanId); } catch (_) { statusMark = null; }
 
   const options = taskOptionsMap(before);
   let fields = mapper.buildTaskFields(bag, options);
@@ -531,51 +615,150 @@ async function pushLoan(loanId, opts = {}) {
     }
   }
 
-  // THE STATUS ENGINE (#39, owner-directed): the card's status follows the
-  // Encompass milestone ladder — and is RE-ASSERTED on every full push, so a
-  // manual change in ClickUp is corrected on the next mirror movement
-  // ("Encompass always wins, even after manual changes"). A SCOPED push (a
-  // review approval re-pushing one field) deliberately does not touch status.
+  // THE STATUS (#39 as CORRECTED by the owner on 2026-08-24). The card's status
+  // follows a milestone FIRING — it is never re-asserted to reconcile a card.
+  // The rule, and the reason the old one was wrong, live in status-push.js;
+  // everything here is the IO half. A SCOPED push (a review approval re-pushing
+  // one field) deliberately does not touch status.
   if (!onlyIds && !subtaskKeys) {
     try {
       const desired = desiredStatusFor(bag, loan);
       const current = String((before.status && before.status.status) || '').trim();
-      const want = desired.status ? String(desired.status).trim() : null;
-      if (want && current.toLowerCase() !== want.toLowerCase()) {
-        if (dryRun()) {
-          out.plan.push({ field: '__status', wouldWrite: want, reason: desired.reason });
-        } else {
-          // Statuses are LIST-level: resolve the destination list's own exact
-          // spelling; a status the list does not carry is SKIPPED and journaled,
-          // never invented (the §4.3 discipline, applied to statuses).
+
+      const watermark = statusMark && statusMark.watermark;
+      const latestEntered = statusMark && statusMark.latestEntered;
+
+      // THE LIST IS READ ONLY WHEN THE DECISION CAN ACTUALLY NEED IT. Reading it
+      // up front cost a ClickUp GET on EVERY full push — including dry runs and
+      // the agree/baseline/none cases, which return before touching the order —
+      // five wasted reads a pass against a shared budget, forever.
+      let listRead = false;
+      let names = null;
+      const readList = async () => {
+        if (listRead) return names;
+        listRead = true;
+        try {
           const listId = before.list && before.list.id;
-          let exact = null;
+          const listInfo = listId ? await writer.getList(listId) : null;
+          const sts = (listInfo && listInfo.statuses) || null;
+          if (!Array.isArray(sts) || !sts.length) return (names = null);
+          // AN UNUSABLE `orderindex` MAKES THE ORDER UNKNOWN, NEVER RANK 0
+          // (pre-merge audit 2026-08-24). `Number(undefined) || 0` and
+          // `Number('abc') || 0` both collapse to 0, which pulls that status to
+          // the FRONT of the ladder; sort is stable, so everything else keeps its
+          // place and nothing signals a thing. Demonstrated: with one status
+          // missing its orderindex, a move the true order calls BACKWARDS was
+          // written. This module's own posture is that an unprovable direction is
+          // treated as backwards, so an order we cannot trust must be no order.
+          const usable = sts.every((st) => Number.isFinite(Number(st && st.orderindex)));
+          if (!usable) return (names = null);
+          names = sts.slice()
+            .sort((a, b) => Number(a.orderindex) - Number(b.orderindex))
+            .map((st) => String(st.status || ''));
+        } catch (_) { names = null; }
+        return names;
+      };
+
+      // Peek with no order first; only a decision that turns on DIRECTION pays
+      // for the read, and it is then re-decided with the real order.
+      let d = statusPush.decideStatusPush({
+        desired, current, watermark, latestEntered, statusOrder: null, now: new Date(),
+      });
+      if (d.act === 'review' || d.act === 'push') {
+        await readList();
+        d = statusPush.decideStatusPush({
+          desired, current, watermark, latestEntered, statusOrder: names, now: new Date(),
+        });
+      }
+      out.statusDecision = { act: d.act, reason: d.reason };
+
+      if (d.act === 'push') {
+        // Statuses are LIST-level: a status the list does not carry is SKIPPED
+        // and journaled, never invented (the §4.3 discipline).
+        const exact = (names || []).find((n) => n.trim().toLowerCase() === String(d.to).toLowerCase()) || null;
+        if (dryRun()) {
+          out.plan.push({ field: '__status', wouldWrite: d.to, reason: d.reason });
+        } else if (!exact) {
+          // A PUSH THAT COULD NOT LAND STILL GETS A PERSON (pre-merge audit
+          // 2026-08-24). This branch consumes the event, so without a review row
+          // the milestone would vanish with nothing in front of anybody — every
+          // OTHER refusal raises one. It is reachable in two ways that read very
+          // differently, so the reason must not claim more than we know: the list
+          // genuinely lacks the status, or the list could not be read at all
+          // (`names` null — a transient getList failure), which for a BACKWARD_OK
+          // status skips the direction test and arrives straight here.
+          const couldNotRead = !Array.isArray(names) || !names.length;
+          out.statusSkipped = { wanted: d.to, reason: couldNotRead ? 'status_list_unreadable' : 'status_not_on_list' };
+          await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: d.to, changed: false, blocked: true, source: opts.source || 'full_repush' });
+          const raised = await raiseStatusReview({
+            loanId,
+            taskId: loan.clickup_task_id,
+            current,
+            proposed: d.to,
+            reason: couldNotRead
+              ? `a milestone fired wanting "${d.to}", but PILOT could not read the card's ClickUp list to write it`
+              : `a milestone fired wanting "${d.to}", but that status is not on the card's ClickUp list — PILOT never invents one`,
+          });
+          // WHICH OF THE TWO DECIDES WHETHER THE EVENT IS SPENT. A list we could
+          // not READ is transient — a 502 on GET /list turns the owner's one
+          // carve-out (reassigning a processor) into a permanent no-op if we
+          // consume the milestone for it — so the event survives for the next
+          // pass, exactly as a failed write does. A status genuinely NOT ON the
+          // list is a configuration problem that will not fix itself on a retry,
+          // so that one is answered by raising it and consumed. And if the review
+          // row itself failed to land, nothing anywhere records the milestone, so
+          // it is never consumed.
+          if (couldNotRead || !raised) d.stamp = false;
+        } else {
+          circuitCheck();
           try {
-            const listInfo = listId ? await writer.getList(listId) : null;
-            const names = ((listInfo && listInfo.statuses) || []).map((st) => String(st.status || ''));
-            exact = names.find((n) => n.trim().toLowerCase() === want.toLowerCase()) || null;
-          } catch (_) { exact = null; }
-          if (!exact) {
-            out.statusSkipped = { wanted: want, reason: 'status_not_on_list' };
-            await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: want, changed: false, blocked: true, source: opts.source || 'full_repush' });
-          } else {
-            circuitCheck();
-            try {
-              await writer.updateTask(loan.clickup_task_id, { status: exact });
-              countWrite();
-              out.statusWrote = { from: current, to: exact, reason: desired.reason };
-              await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: exact, changed: true, blocked: false, source: opts.source || 'full_repush' });
-            } catch (e) {
-              out.failed.push({ key: '__status', status: e && e.status, code: e && e.code, retryable: !!(e && e.retryable), message: String((e && e.message) || e).slice(0, 160) });
-              await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: exact, changed: false, blocked: true, source: opts.source || 'full_repush' });
-            }
+            await writer.updateTask(loan.clickup_task_id, { status: exact });
+            countWrite();
+            out.statusWrote = { from: current, to: exact, reason: d.reason };
+            await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: exact, changed: true, blocked: false, source: opts.source || 'full_repush' });
+            // The card now holds what the ladder implies, so any question this
+            // loan was asking is answered and leaves the list.
+            const closed = await closeStatusReviews(loan.clickup_task_id);
+            if (closed) out.statusReviewsClosed = closed;
+          } catch (e) {
+            out.failed.push({ key: '__status', status: e && e.status, code: e && e.code, retryable: !!(e && e.retryable), message: String((e && e.message) || e).slice(0, 160) });
+            await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: current, newValue: exact, changed: false, blocked: true, source: opts.source || 'full_repush' });
+            // The event is NOT consumed when the write failed — the next pass
+            // must be free to try again, or one ClickUp blip would swallow a
+            // real milestone permanently.
+            d.stamp = false;
           }
         }
+      } else if (d.act === 'review') {
+        out.statusReview = { current: d.current, proposed: d.proposed, reason: d.reason };
+        // A status the LIST does not carry keeps its own distinct report — it is
+        // somebody adding a status in ClickUp, not a workflow judgement — and it
+        // is journaled as a blocked write exactly as it always was.
+        if (d.notOnList) {
+          out.statusSkipped = { wanted: d.proposed, reason: 'status_not_on_list' };
+          if (!dryRun()) await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: d.current, newValue: d.proposed, changed: false, blocked: true, source: opts.source || 'full_repush' });
+        }
+        if (!dryRun()) {
+          const raised = await raiseStatusReview({ loanId, taskId: loan.clickup_task_id, current: d.current, proposed: d.proposed, reason: d.reason });
+          // Same rule as the push branch: a milestone is only ever answered by a
+          // row that actually landed.
+          if (!raised) d.stamp = false;
+        }
+      } else if (d.act === 'agree' && !dryRun()) {
+        // THE DISAGREEMENT IS OVER — close its rows. Whether the card caught up
+        // by itself, somebody set it by hand, or Encompass moved to meet it, the
+        // question this loan was raising is answered and must leave the list.
+        const closed = await closeStatusReviews(loan.clickup_task_id);
+        if (closed) out.statusReviewsClosed = closed;
       }
+
+      // A DRY RUN never moves the watermark — a rehearsal that consumed the
+      // event would make the real pass skip the very milestone it was proving.
+      if (d.stamp && !dryRun()) await stampStatusWatermark(loanId, d.stampTo);
     } catch (e) {
       // The engine claiming nothing (or a broken read) must never fail the
       // field push that already landed.
-      console.warn('[lt-clickup-push] status assert skipped:', (e && e.message) || e);
+      console.warn('[lt-clickup-push] status step skipped:', (e && e.message) || e);
     }
   }
 
@@ -781,6 +964,60 @@ async function createForLoan(loanId) {
       [loanId, taskId, `card created in folder ${folder.pipeline} for ${officerName || 'unknown officer'}`]);
   } catch (_) { /* trail is best-effort */ }
 
+  // A CARD PILOT JUST MINTED STARTS WHERE THE LOAN IS (pre-merge audit
+  // 2026-08-24). The card opens at the list's FIRST status, and the event-driven
+  // rule would then leave it there: the first push finds a NULL watermark and
+  // baselines, and every push after that finds no NEWER milestone event, because
+  // the loan's own history predates the card. A late-stage loan given a card by
+  // the admin "Create New Task" button would sit at "starting" until its next
+  // milestone fired — which may be never.
+  //
+  // The owner's rule protects a team's own work on a card ("a team that had moved
+  // a card forward watched PILOT move it back"). There is no such work on a card
+  // that did not exist a second ago, so this ONE write is not a reconcile — it is
+  // the card's opening position. The watermark is taken in the same breath, so
+  // nothing further is written until a real milestone fires.
+  try {
+    // The bag this create was built from — re-loading it would be a second read
+    // of the same loan and could answer differently mid-create.
+    const want = bag ? desiredStatusFor(bag, { ...loan, clickup_task_id: taskId }) : null;
+    if (want && want.status && !dryRun()) {
+      const listInfo = await writer.getList(listId);
+      const names = ((listInfo && listInfo.statuses) || []).map((st) => String(st.status || ''));
+      const exact = names.find((n) => n.trim().toLowerCase() === String(want.status).toLowerCase()) || null;
+      const opened = String((listInfo && listInfo.statuses && listInfo.statuses[0] && listInfo.statuses[0].status) || '').trim();
+      if (exact && exact.toLowerCase() !== opened.toLowerCase()) {
+        circuitCheck();
+        await writer.updateTask(taskId, { status: exact });
+        countWrite();
+        await journalFieldWrite({ ltLoanId: loanId, taskId, fieldKey: '__status', oldValue: opened || null, newValue: exact, changed: true, blocked: false, source: 'create' });
+      }
+    }
+  } catch (e) {
+    // The card exists and its fields landed; an opening status that could not be
+    // set must never turn a successful create into a failure — but it must not
+    // vanish either, so it is raised for a person (pre-merge audit 2026-08-24:
+    // the first cut let the throw skip past the stamp, which left the watermark
+    // NULL, sent the next push through the baseline branch, and lost the opening
+    // status permanently — the exact failure this block was written to prevent).
+    console.warn('[lt-clickup-push] opening status not set on the new card:', (e && e.message) || e);
+    if (!dryRun()) {
+      await raiseStatusReview({
+        loanId,
+        taskId,
+        current: null,
+        proposed: null,
+        reason: `the card was created, but PILOT could not set its opening status: ${String((e && e.message) || e).slice(0, 200)}`,
+      });
+    }
+  }
+
+  // TAKEN ON EVERY PATH, INCLUDING THE FAILED ONE, AND DELIBERATELY OUTSIDE THE
+  // TRY. A NULL watermark sends the next push through the baseline branch, which
+  // writes nothing and takes the watermark anyway — so leaving it NULL here does
+  // not buy a retry, it just loses the opening status quietly one pass later.
+  try { if (!dryRun()) await stampStatusWatermark(loanId, new Date()); } catch (_) { /* best-effort */ }
+
   return { ok: true, created: true, taskId, listId, linked, fields: fields.length };
 }
 
@@ -928,6 +1165,7 @@ module.exports = {
   pushLoan, createForLoan, pushPass, createPass, desiredStatusFor,
   writeEnabled, dryRun, createSince,
   _internals: {
+    readStatusWatermark, stampStatusWatermark, raiseStatusReview, closeStatusReviews,
     circuitCheck, countWrite, seedBreakerFromDb, breakerLimit,
     journalFieldWrite, queueReview, resolvePerson, providerTextSafe, geoFor,
     loadBag, readExtras, cardProgramLabel, taskFieldValue, taskOptionsMap,
