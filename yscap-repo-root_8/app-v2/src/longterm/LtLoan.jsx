@@ -31,6 +31,10 @@ import { ltApi } from './api.js';
 const INK = '#141B22';
 const MUTED = '#4B585C';
 const GOLD = '#AE8746';
+// The brand gold measures 2.98:1 on this paper — under AA for body text and under
+// even the large-text bar. Use GOLD for a rule, a dot or a mark; use GOLD_TEXT
+// (4.55:1) the moment it has to carry a WORD.
+const GOLD_TEXT = '#8A6A22';
 // PILOT's own teal, for the one step in the ladder that is OURS rather than
 // Encompass's. A different colour, not just a different word: the purchase is a
 // different KIND of fact from a workflow step and should not look like one.
@@ -600,7 +604,7 @@ function Contacts({ contacts, canReassign = false, staff = [], onReassign }) {
             {c.overridden ? (
               <>
                 <div style={{ color: INK }}>{plain(c.overrideName)}</div>
-                <div style={{ color: GOLD }}>reassigned here</div>
+                <div style={{ color: GOLD_TEXT }}>reassigned here</div>
               </>
             ) : c.staffName ? (
               <div style={{ color: INK }}>{c.staffName}</div>
@@ -926,7 +930,7 @@ export default function LtLoan() {
             themselves now open in place, this is a JUMP list — it opens the section
             and scrolls to it, and never closes one. */}
         <nav className="card lt-rooms" style={{ color: INK, alignSelf: 'start', position: 'sticky', top: 12, padding: '12px 12px 10px' }}>
-          <div style={{ fontSize: 10, letterSpacing: '.14em', textTransform: 'uppercase', color: GOLD, fontWeight: 700 }}>
+          <div style={{ fontSize: 10, letterSpacing: '.14em', textTransform: 'uppercase', color: GOLD_TEXT, fontWeight: 700 }}>
             The file
           </div>
           <div style={{ display: 'grid', gap: 1, marginTop: 8 }}>

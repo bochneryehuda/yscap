@@ -320,7 +320,7 @@ function Cell({ col, row, stageLabel, mineRoles }) {
       return (
         <span>
           {c.name}
-          {c.overridden && <span style={{ marginLeft: 6, fontSize: 11, color: '#AE8746' }}>reassigned</span>}
+          {c.overridden && <span style={{ marginLeft: 6, fontSize: 11, color: '#8A6A22' }}>reassigned</span>}
         </span>
       );
     }

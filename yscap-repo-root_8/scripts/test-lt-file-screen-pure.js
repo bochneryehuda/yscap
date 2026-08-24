@@ -114,8 +114,8 @@ check(/<h1 className="lt-utter">/.test(ui),
   'the milestone name IS the page heading — not a line inside a card under a second heading');
 check(/<LtLayout>/.test(ui),
   'and the layout renders no <h1> of its own on this screen, so the milestone is never said twice');
-check(/\.lt-utter \.lt-now\{[^}]*color:#AE8746/.test(css),
-  'the attained name is the brand GOLD (owner: "the whole big gold name of the Milestone")');
+check(/\.lt-utter \.lt-now\{[^}]*color:#8A6A22/.test(css),
+  'the attained name is GOLD (owner: "the whole big gold name of the Milestone") — the READABLE gold #8A6A22 rather than the brand #AE8746, which measures 2.98:1 on this paper and fails even the large-text contrast bar. The owner asked for gold, not for a hex');
 check(/\.lt-utter \.lt-now\{[^}]*font-size:clamp\(/.test(css),
   'and it is sized to the viewport, so it is big on a desk and still fits a phone');
 check(/wasDifferent \? <span className="lt-was">not \{raw\}/.test(ui),
