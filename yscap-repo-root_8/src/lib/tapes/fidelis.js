@@ -32,6 +32,9 @@ const path = require('path');
 const reg = require('../conditions/field-registry');
 // One wording for "what does this file vest in" across every tape + screen.
 const { vestingCell } = require('../vesting-label');
+// The shared display formats — a rate cell must never DISPLAY rounded (the
+// lib/rate-format rule, owner-directed 2026-08-04, reaching the tapes 2026-08-24).
+const { FMT } = require('./xlsx-template');
 
 // Template cell-style indices (from the workbook's styles.xml cellXfs) — reused
 // so injected cells carry the template's own formatting:
@@ -244,7 +247,12 @@ function economics(loan) {
 }
 
 // ---- the 48-column map (A..AV) --------------------------------------------
-// Each entry: [column, type, styleIndex|null, getter(loan, econ)]
+// Each entry: [column, type, styleIndex|null, getter(loan, econ), displayFmt?]
+// The optional 5th element is an Excel number-format code the written cell must
+// DISPLAY with (resolved at fill time against the template's own styles — see
+// xlsx-template.makeFormatResolver). The template's W style is 0.000%, which
+// never rounds a real rate; FMT.RATE additionally makes the tape read exactly
+// like every PILOT screen (10.25 → "10.25%", 10.625 → "10.625%").
 const COLUMNS = [
   ['A', 's', null, (l) => l.app.investor_loan_number || l.app.ys_loan_number || ''],
   ['B', 's', null, (l) => vestingCell(l.vesting)],   // Borrowing Entity ("Individual" when there is no entity)
@@ -272,7 +280,7 @@ const COLUMNS = [
   ['T', 'n', S.THOUSANDS, (l, e) => e.asIs],
   ['U', 'n', S.THOUSANDS, (l, e) => e.arv],
   ['V', 's', null, (l) => appraisalTypeV(l)],
-  ['W', 'n', S.PERCENT, (l, e) => e.noteRate],
+  ['W', 'n', S.PERCENT, (l, e) => e.noteRate, FMT.RATE],
   ['X', 'd', S.DATE, (l) => l.app.actual_closing || l.app.est_closing_date || l.app.expected_closing],
   // Next payment due — the next scheduled payment for a SEASONED loan; equals the
   // first payment date at origination. Z is the (unchanging) first payment date.
@@ -306,7 +314,7 @@ const COLUMNS = [
 
 function buildRow(loan) {
   const econ = economics(loan);
-  return COLUMNS.map(([col, type, style, get]) => ({ col, type, style, value: get(loan, econ) }));
+  return COLUMNS.map(([col, type, style, get, fmt]) => ({ col, type, style, value: get(loan, econ), fmt }));
 }
 
 function filename(loan) {

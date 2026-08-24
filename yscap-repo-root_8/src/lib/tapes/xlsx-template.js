@@ -47,6 +47,13 @@ function xmlEsc(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
+// The reverse, for reading a numFmt formatCode attribute back out of styles.xml
+// (a format like `0.000%;[Red]\(0.000%\)` round-trips through entity escaping).
+function xmlUnesc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+}
 // Neutralize a spreadsheet formula-injection payload (leading = + - @) in a text
 // cell, exactly like src/lib/xlsx.js safeCell — an address/name that starts with
 // one of those must never be evaluated as a formula in the investor's file.
@@ -172,6 +179,149 @@ function rowXml(rowNum, cells, templateRowAttrs, spans, styleMap) {
   return `<row r="${rowNum}"${spansAttr}${attrs ? ' ' + attrs : ''}>${parts}</row>`;
 }
 
+// ---- per-cell DISPLAY FORMAT override (spec.fmt) ---------------------------
+/*
+ * A tape column may declare the NUMBER FORMAT its cells must display with
+ * (`fmt` on the cell spec — an Excel format code like '0.00#%'), on top of the
+ * template style it would otherwise carry. Why this exists (owner-reported
+ * 2026-08-24): the stored VALUE was always full-precision, but the template
+ * cell's own format could carry too few decimals, so a 10.625% note rate
+ * DISPLAYED as "10.63%" and an 84.375% LTC as "84.4%" — the exact truncation
+ * class the owner banned on every PILOT screen in 2026-08-04 (lib/rate-format),
+ * still reaching the investor tapes. The format, not the value, was the bug.
+ *
+ * Resolution rules, in order — all chosen so a workbook can never be corrupted
+ * and an untouched cell can never change:
+ *   1. No styles.xml / unparseable → the fmt is IGNORED and the cell keeps its
+ *      base style: degrade to the old display, never break the file.
+ *   2. The base style (explicit spec.style, else the inherited column style)
+ *      ALREADY shows exactly this format → the base index is returned
+ *      unchanged, so a template whose format is already right round-trips
+ *      byte-identical.
+ *   3. Otherwise a NEW cellXfs entry is APPENDED — a clone of the base xf, so
+ *      font / fill / border / alignment survive and only numFmtId moves (with
+ *      applyNumberFormat="1") — pointing at: an existing custom numFmt with
+ *      that exact code, else the BUILTIN id when the template has not
+ *      redefined it, else a freshly allocated custom id above every id in use.
+ *      Appending never renumbers an existing style.
+ * One appended xf per (base, code) pair per fill (cached), so a 500-loan bulk
+ * tape adds the same handful of styles a single-loan export does.
+ */
+const BUILTIN_NUMFMTS = {
+  General: 0, '0': 1, '0.00': 2, '#,##0': 3, '#,##0.00': 4,
+  '0%': 9, '0.00%': 10, 'm/d/yyyy': 14, '@': 49,
+};
+
+// The display formats the tapes share. RATE mirrors lib/rate-format's trim3
+// exactly — two decimals always, a third only when the value carries one
+// (10.25 → "10.25%", 10.625 → "10.625%") — so a note rate reads on the tape
+// exactly as it reads on the term sheet and the studio. RATIO is the house
+// leverage convention (the term sheet's "up to 2 decimals" for LTV/LTC/ARV).
+const FMT = { RATE: '0.00#%', RATIO: '0.00%' };
+
+function makeFormatResolver(parts) {
+  const stylesPart = parts.find((p) => p.name === 'xl/styles.xml');
+  let p = null; // lazily parsed state
+
+  function parse() {
+    if (p) return p;
+    if (!stylesPart) { p = { broken: true }; return p; }
+    const xml = stylesPart.data.toString('utf8');
+    const cellXfsM = /<cellXfs count="(\d+)"[^>]*>([\s\S]*?)<\/cellXfs>/.exec(xml);
+    if (!cellXfsM) { p = { broken: true }; return p; }
+    const xfEls = cellXfsM[2].match(/<xf\b[^>]*\/>|<xf\b[^>]*>[\s\S]*?<\/xf>/g) || [];
+    const codeById = {};   // custom numFmtId -> formatCode
+    const idByCode = {};   // formatCode -> custom numFmtId
+    let maxId = 163;       // custom ids start at 164
+    const nfRe = /<numFmt numFmtId="(\d+)" formatCode="([^"]*)"\s*\/?>/g;
+    let m;
+    while ((m = nfRe.exec(xml))) {
+      const id = Number(m[1]);
+      const code = xmlUnesc(m[2]);
+      codeById[id] = code;
+      if (idByCode[code] == null) idByCode[code] = id;
+      if (id > maxId) maxId = id;
+    }
+    p = { xml, xfEls, codeById, idByCode, maxId, addedXfs: [], addedFmts: [], cache: new Map() };
+    return p;
+  }
+
+  // The format code a style index currently displays with (custom beats builtin
+  // — a template MAY redefine a builtin-range id, and the redefinition wins).
+  function codeOfStyle(s, idx) {
+    const el = s.xfEls[idx];
+    if (!el) return null;
+    const idM = /numFmtId="(\d+)"/.exec(el);
+    const id = idM ? Number(idM[1]) : 0;
+    if (s.codeById[id] != null) return s.codeById[id];
+    for (const code of Object.keys(BUILTIN_NUMFMTS)) if (BUILTIN_NUMFMTS[code] === id) return code;
+    return `#builtin:${id}`; // unmapped builtin — never equal to a wanted code
+  }
+
+  function idForCode(s, code) {
+    if (s.idByCode[code] != null) return s.idByCode[code];
+    const builtin = BUILTIN_NUMFMTS[code];
+    // A builtin id the template REDEFINED no longer shows the builtin format —
+    // only reuse the builtin id when it is untouched.
+    if (builtin != null && s.codeById[builtin] == null) return builtin;
+    const id = Math.max(163, s.maxId) + 1;
+    s.maxId = id;
+    s.addedFmts.push({ id, code });
+    s.idByCode[code] = id;
+    s.codeById[id] = code;
+    return id;
+  }
+
+  function resolve(baseIdx, code) {
+    const s = parse();
+    if (s.broken || !code) return null;
+    const baseN = Number(baseIdx);
+    const base = (Number.isFinite(baseN) && s.xfEls[baseN]) ? baseN : 0;
+    if (codeOfStyle(s, base) === code) return base; // already right — byte-identical
+    const key = `${base}|${code}`;
+    if (s.cache.has(key)) return s.cache.get(key);
+    const id = idForCode(s, code);
+    let el = s.xfEls[base];
+    if (/numFmtId="\d+"/.test(el)) el = el.replace(/numFmtId="\d+"/, `numFmtId="${id}"`);
+    else el = el.replace(/<xf\b/, `<xf numFmtId="${id}"`);
+    if (/applyNumberFormat="\d+"/.test(el)) el = el.replace(/applyNumberFormat="\d+"/, 'applyNumberFormat="1"');
+    else el = el.replace(/<xf\b/, '<xf applyNumberFormat="1"');
+    const idx = s.xfEls.length + s.addedXfs.length;
+    s.addedXfs.push(el);
+    s.cache.set(key, idx);
+    return idx;
+  }
+
+  // Write the appended numFmts + xfs back onto styles.xml. A fill that resolved
+  // nothing leaves styles.xml byte-identical (this is a no-op).
+  function flush() {
+    if (!p || p.broken || (!p.addedXfs.length && !p.addedFmts.length)) return;
+    let xml = p.xml;
+    if (p.addedFmts.length) {
+      const fmtsXml = p.addedFmts.map((f) => `<numFmt numFmtId="${f.id}" formatCode="${xmlEsc(f.code)}"/>`).join('');
+      if (/<numFmts\b[^>]*\/>/.test(xml)) {
+        // a degenerate self-closing <numFmts/> — replace it with a real block
+        xml = xml.replace(/<numFmts\b[^>]*\/>/, `<numFmts count="${p.addedFmts.length}">${fmtsXml}</numFmts>`);
+      } else if (/<numFmts count="\d+"[^>]*>/.test(xml)) {
+        xml = xml.replace(/<numFmts count="(\d+)"([^>]*)>/, (mm, c, rest) => `<numFmts count="${Number(c) + p.addedFmts.length}"${rest}>`);
+        xml = xml.replace('</numFmts>', `${fmtsXml}</numFmts>`);
+      } else {
+        // no numFmts block at all — it must be the FIRST child of styleSheet
+        const block = `<numFmts count="${p.addedFmts.length}">${fmtsXml}</numFmts>`;
+        if (/<fonts\b/.test(xml)) xml = xml.replace(/<fonts\b/, `${block}<fonts`);
+        else xml = xml.replace(/(<styleSheet[^>]*>)/, `$1${block}`);
+      }
+    }
+    if (p.addedXfs.length) {
+      xml = xml.replace(/<cellXfs count="(\d+)"([^>]*)>/, (mm, c, rest) => `<cellXfs count="${Number(c) + p.addedXfs.length}"${rest}>`);
+      xml = xml.replace('</cellXfs>', `${p.addedXfs.join('')}</cellXfs>`);
+    }
+    stylesPart.data = Buffer.from(xml, 'utf8');
+  }
+
+  return { resolve, flush };
+}
+
 /**
  * fillXlsxTemplate(templateBuf, opts) -> Buffer
  *
@@ -179,6 +329,7 @@ function rowXml(rowNum, cells, templateRowAttrs, spans, styleMap) {
  *   sheetPart   {string}  zip part of the target sheet, e.g. 'xl/worksheets/sheet5.xml'
  *   firstRow    {number}  first data row (e.g. 2 — row 1 is the header)
  *   rows        {Array<Array<cellSpec>>}  one inner array per loan/data row
+ *                 (a cell spec may carry `fmt` — see makeFormatResolver above)
  *   lastCol     {string}  last column letter (e.g. 'AV') — used for dimension/spans
  *   extendValidations {boolean} widen each dataValidation sqref to cover all rows
  *   forceFullCalc {boolean} set fullCalcOnLoad on workbook.xml (default true)
@@ -223,6 +374,23 @@ function fillXlsxTemplate(templateBuf, opts) {
       while ((m = re.exec(rowM[0]))) styleMap[m[1]] = Number(m[2]);
     }
   }
+
+  // Resolve per-cell display formats (spec.fmt) into real style indexes BEFORE
+  // any row is built — one resolver per fill, so the SINGLE export and the BULK
+  // export resolve identically and bulk rows share the appended styles. A fmt
+  // that cannot be resolved leaves the cell on its base style (old display).
+  const resolver = makeFormatResolver(parts);
+  let anyFmt = false;
+  for (const cells of rows) {
+    for (const spec of cells) {
+      if (!spec || !spec.fmt) continue;
+      const base = (spec.style != null && spec.style !== '') ? spec.style
+        : (styleMap && styleMap[spec.col] != null ? styleMap[spec.col] : null);
+      const resolved = resolver.resolve(base, spec.fmt);
+      if (resolved != null) { spec.style = resolved; anyFmt = true; }
+    }
+  }
+  if (anyFmt) resolver.flush();
 
   // Build and splice each data row.
   rows.forEach((cells, i) => {
@@ -491,6 +659,8 @@ function setFullCalcOnLoad(parts) {
 module.exports = {
   fillXlsxTemplate, fillXlsxCells,
   toExcelSerial, colToIndex, indexToCol, xmlEsc, safeStr,
+  // the shared display formats + the resolver (exposed for the precision tests)
+  FMT, makeFormatResolver,
   // exposed for the unit tests that pin the cell-level writer's edge cases
   _cells: { parseRef, cellElement, putCellInRow, clearCachedFormulaValues },
 };

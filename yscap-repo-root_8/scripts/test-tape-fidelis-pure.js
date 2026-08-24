@@ -157,13 +157,20 @@ for (const op of origParts) {
   if (!np.data.equals(op.data)) changed.push(op.name);
 }
 changed.sort();
-assert.deepStrictEqual(changed, ['xl/workbook.xml', SHEET], `ONLY Data Tape + workbook changed, got: ${changed.join(', ')}`);
+// styles.xml joins the changed set since the display-precision fix (2026-08-24):
+// the note-rate cell declares FMT.RATE, which APPENDS a cloned style — every
+// pre-existing style survives byte-identical (pinned by test-tape-rate-precision).
+assert.deepStrictEqual(changed, ['xl/styles.xml', 'xl/workbook.xml', SHEET], `ONLY Data Tape + workbook + appended styles changed, got: ${changed.join(', ')}`);
 passed++;
 
 const sheetXml = outParts.find((p) => p.name === SHEET).data.toString('utf8');
 ok(/<c r="H2" s="57"><v>480000<\/v><\/c>/.test(sheetXml), 'H2 currency number injected');
 ok(/<c r="F2"[^>]*t="inlineStr"><is><t[^>]*>IL<\/t>/.test(sheetXml), 'F2 state string injected');
-ok(/<c r="W2" s="20"><v>0.1075<\/v><\/c>/.test(sheetXml), 'W2 note-rate fraction injected');
+// W2 carries a RESOLVED style since the display-precision fix — a clone of the
+// template's s=20 (0.000%) with FMT.RATE ('0.00#%'), appended past the
+// template's own 92 styles so nothing pre-existing moves.
+const w2 = /<c r="W2" s="(\d+)"><v>0.1075<\/v><\/c>/.exec(sheetXml);
+ok(w2 && Number(w2[1]) >= 92, 'W2 note-rate fraction injected with the resolved display style');
 ok(new RegExp(`<c r="X2" s="78"><v>${toExcelSerial('2026-08-15')}</v></c>`).test(sheetXml), 'X2 funding date serial injected');
 ok(/dropdown|sqref="AC2"/.test(sheetXml) || sheetXml.indexOf('sqref="AC2"') > -1, 'AC2 dropdown preserved');
 const wbXml = outParts.find((p) => p.name === 'xl/workbook.xml').data.toString('utf8');
