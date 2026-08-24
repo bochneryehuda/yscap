@@ -12,6 +12,12 @@ export const INK = '#141B22';     // primary text
 export const MUTED = '#4B585C';   // secondary text
 export const SLATE = '#3A4550';   // body text inside lists
 export const GOLD = '#AE8746';
+/* THE BRAND GOLD IS A MARK COLOUR, NOT A TEXT COLOUR — and that is measured, not a
+   preference: on this paper #AE8746 is 2.98:1, which fails AA for body text (4.5:1)
+   and fails even the large-text bar (3:1). Use GOLD for a rule, a dot, a border or
+   a fill; use GOLD_TEXT (4.55:1) the moment it has to carry a WORD. It still reads
+   unmistakably as gold. */
+export const GOLD_TEXT = '#8A6A22';
 export const PAPER = '#F4F1EA';
 export const DANGER = '#8A2F2F';  // a refusal
 export const CAUTION = '#7A5C25'; // a "you should know" note that is not an error
