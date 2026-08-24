@@ -163,7 +163,62 @@ async function main() {
     const evAfter = (await db.query(
       'SELECT count(*)::int AS n FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId])).rows[0].n;
     eq(evAfter, evBefore, '…and no phantom "entered" event was written');
+
+    // ── E. THE FIRST LADDER READ THROUGH **readLoan** IS A RE-DEFINITION ─────
+    //
+    // POST-MERGE AUDIT, defect 1. Round 5 put this rule in `ladderOne` and
+    // NOT here — and the worker drains loans through `readLoan` BEFORE it runs
+    // the ladder backfill, so the ordinary sync path reached every loan first
+    // and still wrote the backward event, reset `milestone_since`, and cleared
+    // the honest baseline flag. The fix was pinned at one of its two call
+    // sites, which is not a fix. This section is the missing half of the pin:
+    // it drives the SAME conversion through THIS function.
+    console.log('E. readLoan: the first ladder read re-defines, it does not move');
+    // Section D left the stub THROWING on purpose; restore a real ladder whose
+    // last DONE step is Funding — the conversion this rule is about.
+    stub.getLoanMilestones = async () => ([
+      { name: 'Funding', doneIndicator: true, startDate: '2026-08-01T00:00:00Z' },
+      { name: 'Investor Delivery', doneIndicator: false, startDate: '2026-08-25T00:00:00Z' },
+    ]);
+    const since = '2026-07-10T00:00:00.000Z';
+    await db.query(
+      `UPDATE lt_loans
+          SET milestone_name = 'Investor Delivery', stage_key = 'post_closing',
+              milestone_since = $2, milestone_since_is_baseline = true,
+              ladder_synced_at = NULL, encompass_synced_at = NULL
+        WHERE id = $1::uuid`, [loanId, since]);
+    await db.query('DELETE FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId]);
+
+    const conv = await loans.readLoan(loanId, made[0].guid, {});
+    eq(conv.ok, true, 'the converting read runs');
+    const cl = (await db.query(
+      `SELECT milestone_name, milestone_since, milestone_since_is_baseline
+         FROM lt_loans WHERE id = $1::uuid`, [loanId])).rows[0];
+    eq(cl.milestone_name, 'Funding',
+      'the standing IS updated to the last-completed reading');
+    eq(new Date(cl.milestone_since).toISOString(), since,
+      '…while `milestone_since` is left EXACTLY as it was — the clock is not restarted');
+    eq(cl.milestone_since_is_baseline, true,
+      '…and the honest "we never watched it arrive" flag survives');
+    const convEv = (await db.query(
+      'SELECT count(*)::int AS n FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId])).rows[0].n;
+    eq(convEv, 0,
+      'NO backward event is written on the ORDINARY SYNC PATH — the half the round-5 fix missed');
+
+    // A REAL later move still records: the rule silences the conversion only.
+    await db.query('UPDATE lt_loans SET encompass_synced_at = NULL WHERE id = $1::uuid', [loanId]);
+    stub.getLoanMilestones = async () => ([
+      { name: 'Funding', doneIndicator: true, startDate: '2026-08-01T00:00:00Z' },
+      { name: 'Investor Delivery', doneIndicator: true, startDate: '2026-08-25T00:00:00Z' },
+    ]);
+    const moved = await loans.readLoan(loanId, made[0].guid, {});
+    eq(moved.ok, true, 'a later read runs');
+    const movedEv = (await db.query(
+      'SELECT count(*)::int AS n FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId])).rows[0].n;
+    ok(movedEv >= 1,
+      '…and a genuine later move IS recorded — the rule only silences the one-time conversion');
   } finally {
+    await db.query('DELETE FROM lt_milestone_events WHERE loan_id = $1::uuid', [loanId]).catch(() => {});
     await db.query('DELETE FROM lt_loans WHERE id = $1::uuid', [loanId]).catch(() => {});
   }
 
