@@ -681,6 +681,16 @@ function buildTaskFields(bag, options = {}) {
  * The CO-BORROWER SUBTASK's field set (owner-directed 2026-08-23: a
  * co-borrower gets their own SUBTASK under the loan card, carrying their
  * personal + contact fields; the parent keeps the yes/no flag + the name).
+ *
+ * LIVE-VERIFIED on a POPULATED sample 2026-08-24 (YSCAP258134711, Pipeline,
+ * Investor DSCR — the two original probe loans had no co-borrower): 4004/4005/
+ * 4006 carry the co first/middle/last name, 97 the co SSN — NINE DIGITS AND
+ * ALREADY DASHED in the live value, which is why the digits are extracted
+ * before re-dashing below — 1403 the co DOB in the US 'MM/DD/YYYY' form the
+ * date transform handles, and 1268 a real co email. Corpus-wide (the 772-loan
+ * field dictionary): 23 DSCR + 37 fix&flip files carry the family, at
+ * identical fill counts across 97/1403/4004/4006 — one consistent family, not
+ * scattered leftovers.
  * The subtask reuses the PRIMARY borrower field ids — custom fields are
  * space-level, so on the subtask "Borrower SSN" simply holds the co-borrower's
  * Social. Same guards apply on the way out (the shield keys on these ids).
