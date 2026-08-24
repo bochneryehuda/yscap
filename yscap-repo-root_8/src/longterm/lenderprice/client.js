@@ -1272,15 +1272,29 @@ function rateSheetSummary(raw, options) {
   };
 }
 
+// §38 — A PROGRAM IS IDENTIFIED BY ITS RATE SHEET, NOT ONLY ITS NAME (owner-reported 2026-08-24:
+// "on high rates you price on 109, and then on the next rate one higher, you price the same lender
+// as 106"). MEASURED live on the default CT search: Lender Price returns ResiCentral's
+// "DSCR Select 30 Year Fixed" TWICE — once from the "ResiCentral Non-Del Parent - NEW" rate period
+// and once from "Resicentral Wholesale Parent" — two DIFFERENT ladders (104.275 vs 101.2 at the
+// same coupon) under ONE program name. Keying on lender+program alone merged the two channels'
+// rungs into one ladder, so after the rate sort the board read "same lender, 104.3 then 98.5 at
+// the next rate" — a price jumping DOWN as the rate went up, which no real ladder does. The key
+// therefore includes the vendor's own grid + rate-period identity, which is exactly how Lender
+// Price itself keeps them apart; the two channels become two programs, each ladder monotone,
+// each stamped with the sheet it priced from (`rateSheetName`) so a reader can tell them apart.
+function programKeyOf(o) {
+  return o.lender + '||' + o.program + '||' + (o.rateGridId || '') + '||' + ((o.rateSheet && o.rateSheet.id) || '');
+}
 function parse(raw) {
   const { options } = collectOptions(raw);
   if (!options.length) return parseFallback(raw); // synthetic / non-grouped shapes
   const seen = new Map();
   const programs = [];
   for (const o of options) {
-    const key = o.lender + '||' + o.program;
+    const key = programKeyOf(o);
     let p = seen.get(key);
-    if (!p) { p = { lender: o.lender, investor: o.investor, lenderId: o.lenderId, program: o.program, product: o.product, rungs: [] }; seen.set(key, p); programs.push(p); }
+    if (!p) { p = { lender: o.lender, investor: o.investor, lenderId: o.lenderId, program: o.program, product: o.product, rateGridId: o.rateGridId || null, rateSheetName: (o.rateSheet && o.rateSheet.name) || null, rungs: [] }; seen.set(key, p); programs.push(p); }
     const pb = o.priceBuild;
     p.rungs.push({
       rate: pb.noteRate, price: pb.price, points: pb.adjustedPoints, priceDerivedFromPoints: pb.priceDerivedFromPoints,
@@ -1325,9 +1339,9 @@ function parseFull(raw, opts = {}) {
   const seen = new Map();
   const programs = [];
   for (const o of options) {
-    const key = o.lender + '||' + o.program;
+    const key = programKeyOf(o); // §38 — same rule as parse(): one program per rate sheet, never a merged ladder
     let p = seen.get(key);
-    if (!p) { p = { lender: o.lender, investor: o.investor, lenderId: o.lenderId, lenderShort: o.lenderShort, program: o.program, product: o.product, rateGridId: o.rateGridId, options: [] }; seen.set(key, p); programs.push(p); }
+    if (!p) { p = { lender: o.lender, investor: o.investor, lenderId: o.lenderId, lenderShort: o.lenderShort, program: o.program, product: o.product, rateGridId: o.rateGridId, rateSheetName: (o.rateSheet && o.rateSheet.name) || null, options: [] }; seen.set(key, p); programs.push(p); }
     p.options.push(o);
   }
   for (const p of programs) {
