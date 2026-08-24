@@ -282,6 +282,49 @@ async function offline() {
   const rfRaw = lp.parseFull(richRaw, { raw: true });
   ok(Object.keys(rfRaw.programs[0].options[0].raw).length > 20, 'parseFull raw:true attaches the untouched leaf');
 
+  // 13c) §38 — ONE PROGRAM NAME, TWO RATE SHEETS, TWO PROGRAMS (owner-reported 2026-08-24:
+  // "you price on 109, and then on the next rate one higher, you price the same lender as 106").
+  // MEASURED live: Lender Price returns ResiCentral "DSCR Select 30 Year Fixed" from BOTH its
+  // non-delegated and its wholesale rate periods — two different ladders under one program name.
+  // Keying on lender+program alone merged them into one ladder that read non-monotonic after the
+  // rate sort. The key now includes the vendor's own grid + rate-period identity, so each channel
+  // is its own program with its own monotone ladder, stamped with the sheet it priced from.
+  const chanLeaf = (gridId, rpId, rpName, rate, adjPts) => ({
+    companyName: 'ResiCentral Mortgage', companyId: 'RC1', programName: 'DSCR Select 30 Year Fixed',
+    productName: '30 Year Fixed', rateGridId: gridId, rate, adjustedRates: rate,
+    basePoints: adjPts + 0.25, adjustmentPoints: -0.25, adjustedPoints: adjPts, dayLock: 30,
+    ratePeriod: { id: rpId, name: rpName, validAsOf: '2026-08-24' },
+    groupAdjustmentProperties: [], monthlyPayment: { monthlyPI: 2000, total: 2000 },
+  });
+  const twoChannels = { results: { lenderDtos: { lenderDtoNonQm: [{ id: 'RC1', name: 'ResiCentral Mortgage' }] },
+    qualifiedNonQMData: { keyLabel: 'ROOT', childs: [{ type: 'CriteriaFromLineResultKey', keyLabel: 'DSCR Select 30 Year Fixed', childs: [
+      { type: 'RateKey', keyLabel: '7.125', childs: [{ type: 'LenderKey', keyLabel: 'ResiCentral Mortgage', plenderId: '"RC1"', leafs: [
+        chanLeaf('G-NONDEL', 'RP-NONDEL', 'ResiCentral Non-Del Parent - NEW', 7.125, -4.275),
+        chanLeaf('G-WHOLESALE', 'RP-WHOLESALE', 'Resicentral Wholesale Parent', 7.125, -2.451),
+      ] }] },
+      { type: 'RateKey', keyLabel: '7.25', childs: [{ type: 'LenderKey', keyLabel: 'ResiCentral Mortgage', plenderId: '"RC1"', leafs: [
+        chanLeaf('G-NONDEL', 'RP-NONDEL', 'ResiCentral Non-Del Parent - NEW', 7.25, -4.275),
+        chanLeaf('G-WHOLESALE', 'RP-WHOLESALE', 'Resicentral Wholesale Parent', 7.25, -2.014),
+      ] }] },
+    ] }] } } };
+  const twoP = lp.parse(twoChannels);
+  ok(twoP.programCount === 2, '§38 two rate sheets sharing a program name parse as TWO programs, never one merged ladder');
+  for (const p of twoP.programs) {
+    ok(p.rungCount === 2, `§38 each channel keeps its own two rungs (${p.rateSheetName})`);
+    ok(typeof p.rateSheetName === 'string' && p.rateSheetName.length > 0, '§38 each program is stamped with the sheet it priced from');
+    // THE INVARIANT IS NO MERGING, NOT MONOTONICITY: a sheet's own ladder is the vendor's to shape
+    // (the real wholesale ladder genuinely falls as the rate rises — mirrored, never "corrected").
+    // What a merged ladder produced, and what may never come back, is TWO prices at ONE rate.
+    ok(new Set(p.rungs.map((r) => r.rate)).size === p.rungs.length,
+      `§38 one price per rate inside a program — no other sheet's rung interleaved (${p.rateSheetName})`);
+  }
+  const twoF = lp.parseFull(twoChannels);
+  ok(twoF.programCount === 2, '§38 parseFull applies the same rate-sheet key as parse');
+  ok(new Set(twoF.programs.map((p) => p.rateSheetName)).size === 2, '§38 parseFull programs carry both sheet names');
+  // The single-sheet board is UNCHANGED: the rich capture above still parses as exactly one program.
+  ok(lp.parse(richRaw).programCount === 1 && lp.parseFull(richRaw).programCount === 1,
+    '§38 an ordinary one-sheet lender still parses as one program — the key change is inert there');
+
   // 14) No-prepay (months=0) must send "No PPP" / PrepayTerm "None" — never "0 Yr PPP" (live HTTP 400).
   const noPpp = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 0 });
   ok(noPpp.criteria.specialMortgageOptions.some((o) => o.name === 'No PPP'), 'no-prepay → No PPP special option');

@@ -312,6 +312,29 @@ console.log('LT Pricing Engine — structural guards\n');
   }
   ok(/groupByLender\(/.test(code),
     'PE-64 the board actually groups by lender — a rule the screen does not call is a rule nobody is following');
+  {
+    /* §38 — ONE PROGRAMME NAME, TWO RATE SHEETS (measured live 2026-08-24: ResiCentral quotes
+       "DSCR Select 30 Year Fixed" from its non-delegated AND its wholesale sheet, two different
+       prices at one coupon). Only the ambiguous labels get their sheet said; the ordinary
+       single-sheet board is untouched. */
+    const S = (lender, key, price, program, sheet) => ({ lender, key, price, program, product: '30 Year Fixed', sheet });
+    const twoSheets = [
+      S('ResiCentral', 'a', 104.275, 'DSCR Select 30 Year Fixed', 'ResiCentral Non-Del Parent - NEW'),
+      S('ResiCentral', 'b', 101.201, 'DSCR Select 30 Year Fixed', 'Resicentral Wholesale Parent'),
+      S('ResiCentral', 'c', 100.1, 'DSCR Elite 30 Year Fixed', 'ResiCentral Non-Del Parent - NEW'),
+    ];
+    const dup = PB.ambiguousProgramLabels(twoSheets);
+    ok(dup.has(PB.programLabelKey(twoSheets[0])) && dup.has(PB.programLabelKey(twoSheets[1])),
+      'PE-64a a label carried by two different sheets is flagged ambiguous — both rows will say their sheet');
+    ok(!dup.has(PB.programLabelKey(twoSheets[2])),
+      'PE-64b a label from ONE sheet is not flagged — the ordinary board stays unchanged');
+    ok(PB.ambiguousProgramLabels([twoSheets[0]]).size === 0 && PB.ambiguousProgramLabels(null).size === 0,
+      'PE-64c a single quote and a non-list both yield an empty set rather than throwing');
+    ok(/ambiguousProgramLabels\(g\.quotes\)/.test(code) && /sheetNote\(g\.best\)/.test(code) && /\{sheetNote\(q\)\}/.test(code),
+      'PE-64d the screen actually renders the sheet on ambiguous rows — the collapsed best line AND the expanded list');
+    ok(/sheet: \(o && o\.rateSheet && o\.rateSheet\.name\) \|\| null/.test(code),
+      'PE-64e the stack entry carries the sheet the vendor named — never a value invented here');
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════

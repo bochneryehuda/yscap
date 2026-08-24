@@ -147,6 +147,29 @@ export function groupByLender(quotes) {
   return out;
 }
 
+/* §38 — WHICH PROGRAMME LABELS NEED THEIR RATE SHEET SAID OUT LOUD. Lender Price can return the
+   SAME lender + programme name from TWO different rate sheets (measured live 2026-08-24:
+   ResiCentral "DSCR Select 30 Year Fixed" priced once from its non-delegated sheet and once from
+   its wholesale sheet — 104.275 vs 101.2 at the same coupon). Two rows wearing one identical label
+   with different prices read as a glitch; the sheet name is the fact that tells them apart. This
+   answers, for ONE lender group's quotes, which labels are carried by MORE THAN ONE distinct
+   sheet — only those rows get the sheet appended, so the ordinary single-sheet board is unchanged.
+   Pure; never throws; a non-array yields an empty Set. */
+export function ambiguousProgramLabels(quotes) {
+  const sheetsByLabel = new Map();
+  if (!Array.isArray(quotes)) return new Set();
+  for (const q of quotes) {
+    if (!q) continue;
+    const label = `${q.program || ''} ${q.product || ''}`;
+    if (!sheetsByLabel.has(label)) sheetsByLabel.set(label, new Set());
+    sheetsByLabel.get(label).add(typeof q.sheet === 'string' ? q.sheet : '');
+  }
+  const out = new Set();
+  for (const [label, sheets] of sheetsByLabel) if (sheets.size > 1) out.add(label);
+  return out;
+}
+export function programLabelKey(q) { return `${(q && q.program) || ''} ${(q && q.product) || ''}`; }
+
 /* ═══════════════════════════════════════════════════════════════════════════════
    WHAT A PRICE COSTS, IN DOLLARS — the owner's three columns (2026-08-23).
 

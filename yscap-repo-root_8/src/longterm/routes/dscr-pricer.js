@@ -34,6 +34,10 @@ function trimPrograms(parsed, limit = 60) {
     programs: parsed.programs.slice(0, limit).map((p) => ({
       lender: p.lender, investor: p.investor || null, lenderId: p.lenderId || null,
       program: p.program, product: p.product || null,
+      // §38 — the sheet this program priced from. Two channels of one lender can share a program
+      // NAME with different ladders (measured: ResiCentral non-del vs wholesale), so a summary
+      // that names the program without its sheet is ambiguous about which ladder it describes.
+      rateSheetName: p.rateSheetName || null,
       minRate: p.minRate, minPoints: p.minPoints, maxPrice: p.maxPrice, rungCount: p.rungCount,
     })),
   };
