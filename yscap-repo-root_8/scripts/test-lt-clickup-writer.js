@@ -769,6 +769,64 @@ async function dbHalf() {
     eq(wire.updateTask[0] && wire.updateTask[0].payload.status, 'cancelled', 'a withdrawn 1393 cancels the card');
     exLive = { ...EX_BIRCH };
     delete process.env.LT_CLICKUP_WRITE_DRYRUN;
+
+    push._internals._resetBreaker();
+    console.log('P. the co-borrower SUBTASK');
+    const { rows: pairMade } = await db.query(
+      `INSERT INTO lt_borrower_pairs (id, loan_id, pair_number) VALUES (gen_random_uuid(), $1::uuid, 1) RETURNING id`, [loanId]);
+    await db.query(
+      `INSERT INTO lt_parties (id, pair_id, role, first_name, last_name)
+       VALUES (gen_random_uuid(), $1::uuid, 'borrower', 'Joseph', 'Parnes')`, [pairMade[0].id]);
+    await db.query(
+      `INSERT INTO lt_parties (id, pair_id, role, first_name, last_name, email, mobile_phone, date_of_birth)
+       VALUES (gen_random_uuid(), $1::uuid, 'coborrower', 'Rivka', 'Parnes', 'rivka@example.com', '9175551234', '1987-03-02')`,
+      [pairMade[0].id]);
+    exLive = { ...EX_BIRCH, 97: '456789123', 1268: '' };
+    fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
+      subtasks: [], custom_fields: mkCustomFields({ program: 2 }) };
+    wire.createTask.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    let co = await push.pushLoan(loanId, { source: 'full_repush' });
+    const sub = wire.createTask.find((c) => c.payload && c.payload.parent === 'task1');
+    ok(sub, 'a co-borrower with no subtask gets one CREATED under the loan card');
+    eq(sub.payload.name, 'Rivka Parnes', '…named for the co-borrower');
+    const subSsn = sub.payload.custom_fields.find((f) => f.id === CU.borrowerSSN);
+    eq(subSsn && subSsn.value, '456-78-9123', "…carrying the CO-borrower's Social (live field 97), dashed");
+    const subEmail = sub.payload.custom_fields.find((f) => f.id === CU.borrowerEmail);
+    eq(subEmail && subEmail.value, 'rivka@example.com', '…and her own email from the mirror');
+    const parentFlag = wire.setField.find((w) => w.taskId === 'task1' && w.fieldId === CU.coBorrowerFlag);
+    ok(parentFlag, 'the PARENT card writes the co-borrower flag…');
+    const parentName = wire.setField.find((w) => w.taskId === 'task1' && w.fieldId === CU.coBorrowerName);
+    eq(parentName && parentName.value, 'Rivka Parnes', '…and the co-borrower name in the parent (owner rule)');
+
+    // Second push: the subtask exists by name — no duplicate, fields update it.
+    fakeTask = { id: 'task1', status: { status: 'workflow' }, list: { id: 'list-77' },
+      subtasks: [{ id: 'subtask1', name: 'Rivka Parnes' }], custom_fields: mkCustomFields({ program: 2 }) };
+    const realGetTask = writerStub.getTask;
+    writerStub.getTask = async (id) => {
+      wire.getTask++;
+      if (String(id) === 'subtask1') return { id: 'subtask1', custom_fields: mkCustomFields({}) };
+      return fakeTask;
+    };
+    wire.createTask.length = 0; wire.setField.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    co = await push.pushLoan(loanId, { source: 'full_repush' });
+    eq(wire.createTask.length, 0, 'a second push never duplicates the subtask (found by name)');
+    ok(wire.setField.some((w) => w.taskId === 'subtask1' && w.fieldId === CU.borrowerSSN),
+      "…and pushes the co fields onto the EXISTING subtask");
+    // The shield holds on the subtask too: a differing co name is never rewritten.
+    writerStub.getTask = async (id) => {
+      wire.getTask++;
+      if (String(id) === 'subtask1') return { id: 'subtask1', custom_fields: mkCustomFields({ borrowerName: 'Somebody Else' }) };
+      return fakeTask;
+    };
+    wire.setField.length = 0;
+    await db.query('UPDATE lt_loans SET clickup_pushed_at = NULL WHERE id = $1::uuid', [loanId]);
+    await push.pushLoan(loanId, { source: 'full_repush' });
+    ok(!wire.setField.some((w) => w.taskId === 'subtask1' && w.fieldId === CU.borrowerName),
+      'the PII shield holds on the subtask — a differing co name is not rewritten');
+    writerStub.getTask = realGetTask;
+    exLive = { ...EX_BIRCH };
   } finally {
     await db.query(`DELETE FROM lt_loans WHERE loan_number LIKE 'TESTWR%'`).catch(() => {});
     await db.query(`DELETE FROM lt_clickup_write_log WHERE task_id IN ('task1','newtask9')`).catch(() => {});

@@ -284,9 +284,12 @@ const setField = (taskId, fieldId, value) => {
 };
 
 // GET a single task (custom_fields are included by default on v2) — the
-// pre-write read every push starts from.
-function getTask(taskId) {
-  return call(`/task/${encodeURIComponent(String(taskId))}`);
+// pre-write read every push starts from. includeSubtasks asks ClickUp to
+// attach the shallow subtasks[] array ({id, name, …}) — how the co-borrower
+// profile subtask is found.
+function getTask(taskId, { includeSubtasks = false } = {}) {
+  const qs = includeSubtasks ? '?include_subtasks=true' : '';
+  return call(`/task/${encodeURIComponent(String(taskId))}${qs}`);
 }
 
 // Accessible custom fields for a list — field ids, types, dropdown options.

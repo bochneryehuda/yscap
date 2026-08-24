@@ -562,6 +562,11 @@ const EX_FIELD_IDS = Object.freeze([
   // The status engine's terminal signal (live vocabulary: 'Loan Originated' /
   // 'Active Loan' / 'Application withdrawn' / 'Application denied').
   '1393',
+  // The CO-borrower's own Social + DOB (standard URLA ids; unverified on the
+  // two-loan probe — both loans had no co-borrower — and safe to carry BECAUSE
+  // the reader is split-tolerant: an invalid id is omitted, never a blanked
+  // batch).
+  '97', '1403',
 ]);
 
 // ---- write helpers (COPY of the RTL machinery) -----------------------------
@@ -657,6 +662,41 @@ function buildTaskFields(bag, options = {}) {
     if (idx >= 0) out.splice(idx, 1);
   }
   return out;
+}
+
+/**
+ * The CO-BORROWER SUBTASK's field set (owner-directed 2026-08-23: a
+ * co-borrower gets their own SUBTASK under the loan card, carrying their
+ * personal + contact fields; the parent keeps the yes/no flag + the name).
+ * The subtask reuses the PRIMARY borrower field ids — custom fields are
+ * space-level, so on the subtask "Borrower SSN" simply holds the co-borrower's
+ * Social. Same guards apply on the way out (the shield keys on these ids).
+ */
+function buildCoBorrowerFields(bag, options = {}) {
+  const co = bag && bag.coborrower;
+  if (!co) return [];
+  const rows = [];
+  const putRaw = (cu, key, name, type, raw) => {
+    const f = { cu, key, name, type };
+    const value = writeValue(f, raw, options);
+    if (value !== undefined && value !== null && value !== '') rows.push({ id: cu, key, name, value });
+  };
+  const coSsn = (() => {
+    const digits = String(exv(bag, '97') || '').replace(/\D/g, '');
+    return digits.length === 9 ? `${digits.slice(0, 3)}-${digits.slice(3, 5)}-${digits.slice(5)}` : null;
+  })();
+  const name = fullNameOf(co);
+  if (!T.isPlaceholderName(name)) putRaw(CU.borrowerName, 'co_name', 'Borrower Name (co)', 'text', name);
+  putRaw(CU.borrowerDOB, 'co_dob', 'Borrower DOB (co)', 'date', exv(bag, '1403') || s(co.date_of_birth));
+  if (coSsn) putRaw(CU.borrowerSSN, 'co_ssn', 'Borrower SSN (co)', 'text', coSsn);
+  const email = exv(bag, '1268') || s(co.email);
+  if (email && !T.isShadowEmail(email)) putRaw(CU.borrowerEmail, 'co_email', 'Borrower Email (co)', 'email', email);
+  putRaw(CU.borrowerCell, 'co_cell', 'Borrower Cell (co)', 'phone_text', phoneOf(co));
+  const fico = num(co.fico_representative);
+  if (fico != null && fico >= 300 && fico <= 850) putRaw(CU.borrowerFico, 'co_fico', 'Borrower FICO (co)', 'number', fico);
+  const married = T.normalizeMarried(s(co.marital_status));
+  if (married != null) putRaw(CU.maritalStatus, 'co_marital', 'Marital Status (co)', 'dropdown', married ? 'YES' : 'NO');
+  return rows;
 }
 
 // ---- PII overwrite shield + scoped-push keys (COPY of the RTL shape) -------
@@ -802,7 +842,7 @@ function isDobChange(fieldId, oldVal, newVal) {
 
 module.exports = {
   CU, FIELD_MAP, FIELD_TYPE, FIELD_BY_KEY, EX_FIELD_IDS,
-  buildTaskFields, writeValue, addressField, isBlankClickupValue,
+  buildTaskFields, buildCoBorrowerFields, writeValue, addressField, isBlankClickupValue,
   fieldValueEquivalent, isDobChange, resolveOnly,
   PII_OVERWRITE_SHIELD, PII_REVIEW_KEY, reviewPreview,
   _internals: {

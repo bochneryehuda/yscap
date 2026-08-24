@@ -391,7 +391,7 @@ async function pushLoan(loanId, opts = {}) {
   // G17 — pre-read, fail CLOSED. The suppression + shields cannot evaluate blind.
   let before;
   try {
-    before = await writer.getTask(loan.clickup_task_id);
+    before = await writer.getTask(loan.clickup_task_id, { includeSubtasks: true });
   } catch (e) {
     const err = new Error(`ClickUp pre-read failed for task ${loan.clickup_task_id}: ${(e && e.message) || e}`);
     err.code = 'CLICKUP_PREREAD_FAILED';
@@ -474,6 +474,20 @@ async function pushLoan(loanId, opts = {}) {
     }
   }
 
+  // THE CO-BORROWER SUBTASK (#40, owner-directed): a file with a co-borrower
+  // carries their own SUBTASK under the loan card — the second borrower's
+  // personal + contact fields, on the same field ids the primary uses (the
+  // shield + DOB gate key on those ids, so the co-borrower's identity gets the
+  // same protection). Found by NAME on every push (stateless + idempotent) and
+  // created once when missing. Full pushes only.
+  if (!onlyIds && bag.coborrower) {
+    try {
+      await syncCoBorrowerSubtask({ loanId, loan, bag, before, options, out, opts });
+    } catch (e) {
+      console.warn('[lt-clickup-push] co-borrower subtask sync skipped:', (e && e.message) || e);
+    }
+  }
+
   // THE STATUS ENGINE (#39, owner-directed): the card's status follows the
   // Encompass milestone ladder — and is RE-ASSERTED on every full push, so a
   // manual change in ClickUp is corrected on the next mirror movement
@@ -550,6 +564,75 @@ async function pushLoan(loanId, opts = {}) {
         WHERE id = $1::uuid`, [loanId]);
   }
   return out;
+}
+
+/** The co-borrower's profile subtask: find by name, create once, then push
+ *  the co fields with the SAME per-field guards a primary field gets. */
+async function syncCoBorrowerSubtask({ loanId, loan, bag, before, options, out, opts }) {
+  const coName = [bag.coborrower.first_name, bag.coborrower.middle_name, bag.coborrower.last_name, bag.coborrower.name_suffix]
+    .filter(Boolean).join(' ').trim();
+  if (!coName || T.isPlaceholderName(coName)) return;
+  const coFields = mapper.buildCoBorrowerFields(bag, options);
+  if (!coFields.length) return;
+
+  const subtasks = Array.isArray(before.subtasks) ? before.subtasks : [];
+  const existing = subtasks.find((st) => {
+    try { return mapper._internals.sameNameLoose(String(st.name || ''), coName); } catch (_) { return false; }
+  });
+
+  if (!existing) {
+    if (dryRun()) { out.plan.push({ field: '__co_subtask', wouldWrite: `create subtask "${coName}" with ${coFields.length} fields` }); return; }
+    circuitCheck();
+    const listId = before.list && before.list.id;
+    if (!listId) return;
+    const made = await writer.createTask(listId, {
+      name: coName,
+      parent: String(loan.clickup_task_id),
+      custom_fields: coFields.map((f) => ({ id: f.id, value: f.value })),
+    });
+    countWrite();
+    const subId = made && made.id ? String(made.id) : null;
+    out.coSubtaskCreated = subId;
+    for (const f of coFields) {
+      await journalFieldWrite({ ltLoanId: loanId, taskId: subId || 'co-subtask', fieldId: f.id, fieldKey: f.key, oldValue: undefined, newValue: f.value, changed: true, blocked: false, source: 'create' });
+    }
+    return;
+  }
+
+  // The subtask exists — pre-read it and push the co fields under the SAME
+  // guards (equivalence, the PII fill-only shield, the DOB gate).
+  let subBefore;
+  try {
+    subBefore = await writer.getTask(existing.id);
+  } catch (_) { return; }   // an unreadable subtask waits for the next pass — never written blind
+  for (const f of coFields) {
+    const oldVal = taskFieldValue(subBefore, f.id);
+    if (mapper.fieldValueEquivalent(f.id, oldVal, f.value, options, opts)) { out.suppressed++; continue; }
+    const oldBlank = mapper.isBlankClickupValue(oldVal);
+    if (mapper.isDobChange(f.id, oldVal, f.value) && !opts.approvedReview) {
+      out.blocked++;
+      await journalFieldWrite({ ltLoanId: loanId, taskId: existing.id, fieldId: f.id, fieldKey: f.key, oldValue: oldVal, newValue: f.value, changed: false, blocked: true, source: opts.source || 'full_repush' });
+      await queueReview({ ltLoanId: loanId, taskId: existing.id, fieldKey: f.key, currentValue: mapper.reviewPreview(f.id, oldVal), proposedValue: mapper.reviewPreview(f.id, f.value), reason: 'dob_change_blocked_pending_review' });
+      continue;
+    }
+    if (mapper.PII_OVERWRITE_SHIELD[f.id] && !oldBlank && !opts.approvedReview) {
+      out.blocked++;
+      await journalFieldWrite({ ltLoanId: loanId, taskId: existing.id, fieldId: f.id, fieldKey: f.key, oldValue: oldVal, newValue: f.value, changed: false, blocked: true, source: opts.source || 'full_repush' });
+      await queueReview({ ltLoanId: loanId, taskId: existing.id, fieldKey: f.key, currentValue: mapper.reviewPreview(f.id, oldVal), proposedValue: mapper.reviewPreview(f.id, f.value), reason: 'pii_overwrite_blocked' });
+      continue;
+    }
+    if (dryRun()) { out.plan.push({ field: `${f.name} [subtask]`, key: f.key, wouldWrite: mapper.reviewPreview(f.id, f.value) }); continue; }
+    circuitCheck();
+    try {
+      await writer.setField(existing.id, f.id, f.value);
+      countWrite();
+      out.wrote++;
+      await journalFieldWrite({ ltLoanId: loanId, taskId: existing.id, fieldId: f.id, fieldKey: f.key, oldValue: oldVal, newValue: f.value, changed: true, blocked: false, source: opts.source || 'full_repush' });
+    } catch (e) {
+      out.failed.push({ fieldId: f.id, key: f.key, status: e && e.status, code: e && e.code, retryable: !!(e && e.retryable), message: String((e && e.message) || e).slice(0, 160) });
+      await journalFieldWrite({ ltLoanId: loanId, taskId: existing.id, fieldId: f.id, fieldKey: f.key, oldValue: oldVal, newValue: f.value, changed: false, blocked: true, source: opts.source || 'full_repush' });
+    }
+  }
 }
 
 // ── THE CREATE: a brand-new Encompass file gets its card (§7) ────────────────
