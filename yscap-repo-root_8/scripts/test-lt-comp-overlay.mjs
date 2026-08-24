@@ -18,7 +18,7 @@
 
 import {
   COMP_MODES, DEFAULT_COMP_MODE, DEFAULT_COMP_PLAN,
-  normalizePlan, compShiftPoints, shiftedPrice, shiftBuild, quoteCharges,
+  normalizePlan, compShiftPoints, shiftedPrice, shiftBuild, quoteCharges, closingSheet,
 } from '../app-v2/src/longterm/compOverlay.js';
 
 let bad = 0;
@@ -164,6 +164,61 @@ console.log('\nJ. the fallback plan constant mirrors the declared settings');
 ok(normalizePlan(DEFAULT_COMP_PLAN) !== null, 'J1 the documented default plan is itself valid');
 eq(DEFAULT_COMP_PLAN.applicationFee, 1595, 'J2 $1,595 application fee');
 eq(DEFAULT_COMP_PLAN.commitmentFee, 500, 'J3 $500 commitment fee');
+
+console.log('\nK. the closing sheet — totals summed FROM the charge list (owner-directed 2026-08-23)');
+// The spec is the owner's sentence: "Cash to close needs to include the down payment percentage
+// down plus all the closing cost fees, origination fees, and lender fees." Every figure below is
+// derived from that sentence and the charge rows already proven above — never from a failing run.
+{
+  // Borrower-paid at raw 99 on a $500k purchase with a $350k loan: origination $7,000 +
+  // buydown $3,500 + fees $2,095 = $12,595 closing cost; down payment $150,000 (30% down);
+  // cash to close $162,595.
+  const c = quoteCharges('borrowerPaid', PLAN, 99, LOAN, false);
+  const s = closingSheet(c, { purpose: 'Purchase', propertyValue: 500000, loanAmount: LOAN });
+  eq(s.originationDollars, 7000, 'K1 total origination = the origination line');
+  eq(s.lenderFeesDollars, 2095, 'K2 total lender fees = application + commitment');
+  eq(s.buydownDollars, 3500, 'K3 the buydown is carried');
+  eq(s.closingCostDollars, 12595, 'K4 final closing cost = every charge, totalled');
+  eq(s.downPaymentDollars, 150000, 'K5 down payment = value − loan on a purchase');
+  eq(s.downPaymentPct, 30, 'K6 …with the percentage-down the owner asked to see');
+  eq(s.cashToCloseDollars, 162595, 'K7 cash to close = down payment + closing cost + origination + lender fees');
+}
+{
+  // Lender-paid above par: the CREDIT reduces cash to close — that is what a credit is on
+  // every closing statement. Raw 103 → credit $3,500, fees $2,095 → net −$1,405.
+  const c = quoteCharges('lenderPaid', PLAN, 103, LOAN, false);
+  const s = closingSheet(c, { purpose: 'Purchase', propertyValue: 500000, loanAmount: LOAN });
+  eq(s.originationDollars, 0, 'K8 no origination in lender-paid — 0, not a phantom line');
+  eq(s.closingCostDollars, -1405, 'K9 the credit nets the closing cost negative');
+  eq(s.cashToCloseDollars, 148595, 'K10 …and reduces cash to close below the bare down payment');
+}
+{
+  // A REFINANCE has no down payment — the row is null, never a fabricated $0, and cash to
+  // close is simply the net closing cost.
+  const c = quoteCharges('lenderPaid', PLAN, 102, LOAN, false);
+  const s = closingSheet(c, { purpose: 'Refinance', propertyValue: 500000, loanAmount: LOAN });
+  ok(s.downPaymentDollars === null, 'K11 no down payment on a refinance');
+  eq(s.cashToCloseDollars, 2095, 'K12 cash to close = the closing cost alone');
+}
+{
+  // The waive flows through: fees 0, and the sheet still reconciles with the charge list.
+  const c = quoteCharges('lenderPaid', PLAN, 102, LOAN, true);
+  const s = closingSheet(c, { purpose: 'Purchase', propertyValue: 500000, loanAmount: LOAN });
+  eq(s.lenderFeesDollars, 0, 'K13 waived lender fees total 0');
+  eq(s.closingCostDollars, c.netDollars, 'K14 the sheet total IS the charge list net — one source');
+}
+{
+  // Unreadable inputs refuse rather than guess: no charges → no sheet; a loan bigger than the
+  // value is a data problem, never a negative down payment.
+  ok(closingSheet(null, { purpose: 'Purchase', propertyValue: 500000, loanAmount: LOAN }) === null,
+    'K15 no charge list → no sheet');
+  const c = quoteCharges('lenderPaid', PLAN, 102, LOAN, false);
+  const s = closingSheet(c, { purpose: 'Purchase', propertyValue: 300000, loanAmount: LOAN });
+  ok(s.downPaymentDollars === null, 'K16 loan over value → no down-payment row, never a negative');
+  const s2 = closingSheet(c, { purpose: 'Purchase', propertyValue: null, loanAmount: LOAN });
+  ok(s2.downPaymentDollars === null && s2.cashToCloseDollars === s2.closingCostDollars,
+    'K17 no value → no down payment; cash to close falls back to the closing cost');
+}
 
 if (bad) { console.error(`\n${bad} FAILED`); process.exit(1); }
 console.log('\nall passed');

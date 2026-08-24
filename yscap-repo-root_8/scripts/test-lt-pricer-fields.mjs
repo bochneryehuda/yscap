@@ -246,6 +246,55 @@ for (const t of F.LOAN_TERMS) {
     `T5.${t.value} the server accepts the ${t.label} the box offers`);
 }
 
+/* ── H. the pre-flight gate — a doomed search never reaches the wire ─────────
+   Owner-directed 2026-08-23: "If the zip code is empty on somebody's price … your system is
+   trying to price it and is getting back with an error. You need to know by yourself." */
+{
+  const GOOD = {
+    purpose: 'Purchase', value: '500,000', amountMode: 'loan', loan: '375,000', ltv: '',
+    fico: '760', dscr: '1.25', zip: '07001', state: '', county: '',
+    propertyType: 'SingleFamily', units: '1', termYears: '30', lockDays: '30',
+    prepayMonths: '60', prepayStructure: 'Standard',
+  };
+  ok(F.searchProblem(GOOD, 'ok') === null, 'H1 a complete scenario passes the gate');
+  ok(/ZIP/.test(F.searchProblem({ ...GOOD, zip: '' }, 'idle') || ''),
+    'H2 an EMPTY ZIP is refused in words, before any vendor call — the owner’s report');
+  ok(/ZIP/.test(F.searchProblem({ ...GOOD, zip: '070' }, 'idle') || ''),
+    'H3 a short ZIP is refused too — five digits or nothing');
+  ok(F.searchProblem({ ...GOOD, zip: '00000' }, 'error') !== null,
+    'H4 a ZIP the lookup PROVED unresolvable blocks…');
+  ok(F.searchProblem({ ...GOOD, zip: '00000', state: 'NJ', county: 'Union' }, 'error') === null,
+    'H5 …unless the state and county are typed — the escape hatch the screen already offers');
+  ok(F.searchProblem(GOOD, 'loading') === null,
+    'H6 a lookup still IN FLIGHT does not block — the server resolves the ZIP itself');
+  ok(/value/.test(F.searchProblem({ ...GOOD, value: '' }, 'ok') || ''), 'H7 no property value → refused');
+  ok(/loan amount/.test(F.searchProblem({ ...GOOD, loan: '' }, 'ok') || ''), 'H8 no loan in loan mode → refused');
+  ok(/LTV/.test(F.searchProblem({ ...GOOD, amountMode: 'ltv', ltv: '' }, 'ok') || ''), 'H9 no LTV in LTV mode → refused');
+  ok(F.searchProblem({ ...GOOD, amountMode: 'ltv', ltv: '75', loan: '' }, 'ok') === null,
+    'H10 …and in LTV mode the loan box is not demanded — it is the derived one');
+  ok(/FICO/.test(F.searchProblem({ ...GOOD, fico: '' }, 'ok') || ''), 'H11 no FICO → refused');
+  ok(/DSCR/.test(F.searchProblem({ ...GOOD, dscr: '' }, 'ok') || ''), 'H12 no DSCR → refused, pointing at Calculate');
+
+  /* the chips — the sticky strip's summary of the search */
+  const chips = F.searchChips(GOOD, { state: 'NJ', county: 'Union' });
+  const chip = (k) => (chips.find((c) => c.k === k) || {}).v;
+  ok(chip('Purpose') === 'Purchase', 'H13 the purpose chip carries the option LABEL');
+  ok(chip('Value') === '$500,000', 'H14 money chips are grouped dollars');
+  ok(chip('Loan') === '$375,000', 'H15 loan mode shows the loan');
+  ok(chip('ZIP') === '07001 · NJ, Union', 'H16 the ZIP chip carries the resolved place');
+  ok(chip('Lock') === '30 d' && chip('Term') === '30 yr', 'H17 term and lock, short');
+  ok(chip('Prepay') === '5 yr Standard', 'H18 the prepay chip states years and structure');
+  const ltvChips = F.searchChips({ ...GOOD, amountMode: 'ltv', ltv: '75' }, null);
+  ok((ltvChips.find((c) => c.k === 'LTV') || {}).v === '75%'
+    && !ltvChips.find((c) => c.k === 'Loan'),
+    'H19 LTV mode shows the LTV and NOT the derived loan — the strip states what was typed');
+  const flagChips = F.searchChips({ ...GOOD, io: true, fthb: true }, null);
+  ok(/Interest-only/.test((flagChips.find((c) => c.k === 'Options') || {}).v || ''),
+    'H20 a ticked option earns a chip; unticked ones say nothing');
+  ok(!JSON.stringify(F.searchChips({ ...GOOD, fico: '' }, null)).includes('FICO'),
+    'H21 a blank fact is ABSENT — never a chip reading an em dash');
+}
+
 /* ── report ───────────────────────────────────────────────────────────────── */
 if (fails.length) {
   console.error(`\nFAILED ${fails.length} of ${pass + fails.length}:`);
