@@ -636,6 +636,13 @@ async function pushLoan(loanId, opts = {}) {
         }
       } else if (d.act === 'review') {
         out.statusReview = { current: d.current, proposed: d.proposed, reason: d.reason };
+        // A status the LIST does not carry keeps its own distinct report — it is
+        // somebody adding a status in ClickUp, not a workflow judgement — and it
+        // is journaled as a blocked write exactly as it always was.
+        if (d.notOnList) {
+          out.statusSkipped = { wanted: d.proposed, reason: 'status_not_on_list' };
+          if (!dryRun()) await journalFieldWrite({ ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: '__status', oldValue: d.current, newValue: d.proposed, changed: false, blocked: true, source: opts.source || 'full_repush' });
+        }
         if (!dryRun()) await raiseStatusReview({ loanId, taskId: loan.clickup_task_id, current: d.current, proposed: d.proposed, reason: d.reason });
       }
 

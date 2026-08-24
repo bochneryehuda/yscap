@@ -170,11 +170,20 @@ function decideStatusPush({
   const wantRank = rankOf(statusOrder, want);
   const forward = (haveRank != null && wantRank != null) ? wantRank > haveRank : null;
 
+  // "The list does not carry this status" is a CONFIGURATION problem — somebody
+  // adds it to the ClickUp list — and it is reported separately from a
+  // direction refusal, which is a workflow situation. Collapsing the two sends
+  // the reader hunting the wrong thing.
+  const knownOrder = Array.isArray(statusOrder) && statusOrder.length > 0;
+  const notOnList = knownOrder && wantRank == null;
+
   if (!exempt && forward !== true) {
-    const why = forward === false
-      ? `a milestone fired, but "${want}" sits BEHIND the card's "${have}" — PILOT does not move a card backwards`
-      : `a milestone fired wanting "${want}", but PILOT could not read where that sits against the card's "${have || '(none)'}" — it will not write a status it cannot prove moves forward`;
-    return { act: 'review', stamp: true, stampTo: latestEntered, current: have, proposed: want, reason: why };
+    const why = notOnList
+      ? `a milestone fired wanting "${want}", but that status is not on the card's ClickUp list — PILOT never invents one`
+      : forward === false
+        ? `a milestone fired, but "${want}" sits BEHIND the card's "${have}" — PILOT does not move a card backwards`
+        : `a milestone fired wanting "${want}", but PILOT could not read where that sits against the card's "${have || '(none)'}" — it will not write a status it cannot prove moves forward`;
+    return { act: 'review', stamp: true, stampTo: latestEntered, current: have, proposed: want, notOnList, reason: why };
   }
 
   const why = exempt && forward === false

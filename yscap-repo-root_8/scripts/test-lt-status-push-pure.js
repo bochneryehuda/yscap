@@ -185,8 +185,19 @@ console.log('F. an unprovable direction fails safe');
     eq(r.act, 'review', `an unusable status order (${JSON.stringify(order)}) refuses the write`);
     eq(r.stamp, true, 'and still answers the event');
   }
+  // "Not on the list" is a CONFIGURATION problem and is reported as its own
+  // thing — a reviewer told "PILOT could not read the direction" would go
+  // hunting the wrong fault.
   const unknownWanted = decideStatusPush({ desired: D('some new status'), current: 'workflow', watermark: T0, latestEntered: T1, statusOrder: ORDER, now: NOW });
   eq(unknownWanted.act, 'review', 'a wanted status the list does not carry is never written blind');
+  eq(unknownWanted.notOnList, true, '…and it is flagged as a list problem, not a direction one');
+  ok(/not on the card's ClickUp list/.test(unknownWanted.reason), '…in those words');
+
+  // With NO readable order at all we cannot claim the list lacks it — we simply
+  // could not look. Saying "not on the list" there would be a confident guess.
+  const noOrder = decideStatusPush({ desired: D('some new status'), current: 'workflow', watermark: T0, latestEntered: T1, statusOrder: null, now: NOW });
+  eq(noOrder.act, 'review', 'an unreadable order still refuses');
+  eq(noOrder.notOnList, false, '…but never claims the status is missing from a list it could not read');
 
   // A blank card status with a known target is still unprovable, so it is
   // surfaced rather than written.

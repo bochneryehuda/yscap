@@ -162,6 +162,58 @@ const switchesOf = () => ({
   createSince: clickupPush.createSince(),
 });
 
+// ── GET /api/lt/clickup/status-reviews — the disagreement list ───────────────
+// Owner-directed 2026-08-24: *"You can open up a general sync review … That
+// should have every Encompass status that does not match with ClickUp status,
+// which means that we need to go and maybe update Encompass, or we need to go
+// manually and update ClickUp."*
+//
+// READS OUR OWN ROWS ONLY — never ClickUp. The rows are recorded by the push
+// pass, which already reads each card before writing, so this list costs no API
+// calls and cannot be rate-limited into being wrong. A file PILOT has not pushed
+// since the disagreement began is therefore absent rather than guessed at, which
+// is the honest failure: the list says what we have SEEN, not what we suppose.
+router.get('/status-reviews', async (req, res) => {
+  try {
+    const { settings } = await settingsStore.load();
+    const viewer = access.accessFor(req.actor, settings);
+
+    // Scoped exactly like the pipeline: an officer sees the disagreements on
+    // their own files and nobody else's. Never a wider list than the screen the
+    // reader already has.
+    const params = [];
+    const scope = access.pipelineScopeSql(viewer && viewer.access, viewer && viewer.staffId, params.length + 1);
+    params.push(...scope.params);
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
+    params.push(limit);
+
+    const { rows } = await db.query(
+      `SELECT q.id, q.task_id, q.current_value AS clickup_status, q.proposed_value AS encompass_status,
+              q.reason, q.created_at,
+              l.id AS loan_id, l.loan_number, l.borrower_name, l.milestone_name
+         FROM lt_clickup_review_queue q
+         JOIN lt_loans l ON l.id = q.lt_loan_id
+        WHERE q.status = 'open' AND q.field_key = '__status' AND q.direction = 'outbound'
+          AND ${trash.notTrashSql('l')}
+          ${scope.where ? `AND ${scope.where}` : ''}
+        ORDER BY q.created_at DESC
+        LIMIT $${params.length}`, params);
+
+    res.json({
+      ok: true,
+      count: rows.length,
+      truncated: rows.length >= limit,
+      rows,
+      // Said on the screen rather than assumed by the reader: this list is what
+      // PILOT has observed, and it is not a live comparison of the whole book.
+      note: 'Every file where the ClickUp status and the Encompass milestones disagree, as of the last time PILOT looked at that card. PILOT does not change these — update Encompass, or set the ClickUp status by hand.',
+    });
+  } catch (e) {
+    console.warn('[lt-clickup] status-reviews failed:', (e && e.message) || e);
+    res.status(500).json({ ok: false, error: 'could not read the status disagreements' });
+  }
+});
+
 // ── GET /api/lt/clickup/loans/:loanId — the whole section ────────────────────
 // ?compare=1 additionally reads the live card (ONE ClickUp read) and puts the
 // card's current value beside each of ours, plus the status the engine would
