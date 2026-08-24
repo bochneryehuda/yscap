@@ -74,11 +74,15 @@ async function main() {
        VALUES ($1::uuid, 'YSCAP626A', $3, now(), now()), ($2::uuid, 'YSCAP626B', NULL, now(), now())`,
       [linkedId, loanId, taskId]);
 
-    // Re-run ONLY the backfill statement the migration carries, exactly as it
-    // is written there — the rows above were inserted after the real run.
-    await db.query(
-      `UPDATE lt_loans SET clickup_status_event_at = now()
-        WHERE clickup_status_event_at IS NULL AND clickup_task_id IS NOT NULL`);
+    // Run the migration's OWN backfill statement, READ OUT OF db/626 rather
+    // than retyped here — a hand-copied duplicate is free to drift from the
+    // migration, and then this section would prove a statement that no longer
+    // ships. The rows above were inserted after the real run, so it has real
+    // work to do.
+    const backfill = backfillStatementFromMigration();
+    ok(/clickup_status_event_at\s*=\s*now\(\)/.test(backfill), 'the backfill was found in db/626');
+    ok(/clickup_task_id IS NOT NULL/.test(backfill), 'and it is scoped to LINKED loans');
+    await db.query(backfill);
 
     const { rows } = await db.query(
       `SELECT id, clickup_status_event_at FROM lt_loans WHERE id = ANY($1::uuid[]) ORDER BY loan_number`,
@@ -191,6 +195,18 @@ async function main() {
   await cleanup([loanId, linkedId], [taskId]);
   console.log(`\ntest-lt-status-push-db: ${pass} passed, ${fails.length} failed`);
   if (fails.length) process.exitCode = 1;
+}
+
+/** The one UPDATE in db/626, lifted from the file itself so this suite can
+ *  never prove a backfill that has since been edited. */
+function backfillStatementFromMigration() {
+  const fs = require('fs');
+  const path = require('path');
+  const file = path.join(__dirname, '..', 'db', '626_lt_status_push_is_event_driven_not_reconciled.sql');
+  const sql = fs.readFileSync(file, 'utf8');
+  const m = sql.match(/^\s*UPDATE\s+lt_loans[\s\S]*?;/m);
+  if (!m) throw new Error('db/626 no longer carries an UPDATE lt_loans backfill — this suite is out of date');
+  return m[0];
 }
 
 async function addEvent(loanId, type, at) {
