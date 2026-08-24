@@ -1347,6 +1347,8 @@ function TrinityInspectionCard({ appId }) {
   const usd = (c) => (c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 }));
   const [why, setWhy] = useState('');             // the typed reason for an order against the setup
   const [products, setProducts] = useState(null); // Trinity's own live catalogue
+  const [formPick, setFormPick] = useState('');   // a deliberately different Trinity form
+  const [formOpen, setFormOpen] = useState(false);// the change-the-form control, closed by default
   const load = useCallback(() => {
     api.get(`/api/trinity/files/${appId}`).then(setData).catch(() => setData(null));
   }, [appId]);
@@ -1458,6 +1460,62 @@ function TrinityInspectionCard({ appId }) {
                 placeholder="Why is this being ordered? (recorded on the file — e.g. the virtual inspector can’t get access)" />
             </div>
           )}
+          {/* WHICH FORM — the PRODUCT Trinity builds (owner-directed 2026-08-24). Closed by
+              default and never in the way of an ordinary click: the default is the production
+              line-item draw and that is what a plain press orders. Opened, it offers the account's
+              OWN catalogue rather than anything written down here, because the production account
+              carries different forms from the sandbox. Changing it is confirmed before it is sent —
+              a different form is a different report, billed differently. */}
+          {orderable.form && (
+            <div className="small" style={{ marginTop: 8, color: '#4B585C' }}>
+              {!formOpen ? (
+                <>
+                  Ordering on form {orderable.form.default}
+                  {orderable.form.defaultName ? ` — ${orderable.form.defaultName}` : ''}.
+                  {orderable.form.read && !orderable.form.onAccount && (
+                    <span style={{ color: '#8A2B2B', fontWeight: 600 }}>
+                      {' '}⚠ That form is not on this Trinity account, so the order would be refused.
+                    </span>
+                  )}
+                  {' '}
+                  <button type="button" className="btn ghost" style={{ padding: '2px 8px' }}
+                    onClick={() => setFormOpen(true)}>Change the form</button>
+                </>
+              ) : (
+                <div className="tr-order-warn">
+                  <div className="small" style={{ fontWeight: 700, color: '#141B22' }}>
+                    Changing the form changes the product
+                  </div>
+                  <div className="small" style={{ color: '#4B585C', marginTop: 2 }}>
+                    {orderable.form.note || 'A different form is a different report, billed differently.'}
+                    {' '}Only change it if Trinity has told you to.
+                  </div>
+                  <select className="input" style={{ marginTop: 6 }} value={formPick}
+                    onChange={(e) => setFormPick(e.target.value)}>
+                    <option value="">
+                      Form {orderable.form.default}
+                      {orderable.form.defaultName ? ` — ${orderable.form.defaultName}` : ''} (the usual one)
+                    </option>
+                    {(orderable.form.products || [])
+                      .filter((pr) => Number(pr.id) !== Number(orderable.form.default))
+                      .map((pr) => (
+                        <option key={pr.id} value={String(pr.id)}>{pr.id} — {pr.name}</option>
+                      ))}
+                  </select>
+                  {!orderable.form.read && (
+                    <div className="small" style={{ marginTop: 4, color: '#8A2B2B' }}>
+                      Trinity’s product list could not be read just now, so there is nothing to pick
+                      from and we cannot check a form against the account.
+                    </div>
+                  )}
+                  <button type="button" className="btn ghost" style={{ padding: '2px 8px', marginTop: 6 }}
+                    onClick={() => { setFormOpen(false); setFormPick(''); }}>
+                    Use the usual form
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
             <select className="input" style={{ flex: 1, minWidth: 220 }} value={pick}
               onChange={(e) => setPick(e.target.value)}>
@@ -1475,8 +1533,24 @@ function TrinityInspectionCard({ appId }) {
                 const [kind, id] = pick.split(':');
                 const body = kind === 'd' ? { sitewireDrawId: Number(id) } : { portalRequestId: Number(id) };
                 if (!orderable.eligible) { body.override = true; body.overrideReason = why.trim(); }
+                /* A DELIBERATELY DIFFERENT FORM IS CONFIRMED ON ITS OWN, after the order
+                   confirmation, because it is a second decision: not "order an inspection" but
+                   "order a different product". The server refuses without `confirmForm`, so this
+                   is the prompt for that gate rather than a substitute for it. */
+                if (formPick) {
+                  const chosen = (orderable.form.products || []).find((pr) => String(pr.id) === String(formPick));
+                  if (!(await askConfirm(
+                    `This would be ordered on form ${formPick}${chosen ? ` (${chosen.name})` : ''} instead of the `
+                    + `usual form ${orderable.form.default}`
+                    + `${orderable.form.defaultName ? ` (${orderable.form.defaultName})` : ''}.\n\n`
+                    + 'A form is a product — a different one is a different report, billed differently, and '
+                    + 'its results read back differently. Are you sure Trinity told you to use this one?',
+                    { confirmLabel: 'Yes, use that form' }))) return null;
+                  body.formId = Number(formPick);
+                  body.confirmForm = true;
+                }
                 const r = await api.post(`/api/trinity/files/${appId}/orders`, body);
-                setPick(''); setWhy('');
+                setPick(''); setWhy(''); setFormPick(''); setFormOpen(false);
                 return r;
               }, (r) => (r == null ? '' : r.already ? 'That inspection was already ordered.'
                 : r.dryrun ? 'Test mode — the order was built but nothing was sent to Trinity.'
