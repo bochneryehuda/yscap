@@ -92,6 +92,15 @@ const SECTIONS = [
     applies: (l) => !!l.lock_status,
     why: 'This loan has no lock recorded in Encompass yet.',
   },
+  {
+    // ALWAYS available, even unlinked — an unlinked file is exactly where the
+    // section's Create / Link controls live (owner-directed 2026-08-23: every
+    // automatic sync feature gets its manual option on the file). The section's
+    // data comes from /api/lt/clickup/loans/:id; this row only puts it on the
+    // menu. Staff-only by construction — the workspace IS the staff screen.
+    key: 'clickup',
+    label: 'ClickUp syncing',
+  },
 ];
 
 /**
