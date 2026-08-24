@@ -164,19 +164,6 @@ model LtLoan {
   /// to the system of record. Nullable: a file can be started here first.
   encompassLoanGuid String? @unique @map("encompass_loan_guid")
 
-  /// This record is ARCHIVED inside Encompass — it appears in a pipeline search
-  /// only with `includeArchivedLoans` and is invisible in the tenant's normal
-  /// view. A fact about the source system, not a judgement; maintained by the
-  /// sync's diff of a with-the-flag discovery against a flag-less one (db/621,
-  /// src/longterm/sync/loans.js).
-  encompassArchived Boolean @default(false) @map("encompass_archived")
-
-  /// Archived AND a live record carries the same loan number, so this copy is
-  /// superseded — retired into the archive (trash.js widens trashSql over this
-  /// column) and out of every pipeline read, exactly like Encompass's own trash.
-  /// An archived-only file with no live twin (a withdrawn loan) stays false.
-  archivedDuplicate Boolean @default(false) @map("archived_duplicate")
-
   /// The person this file belongs to — the SHARED identity record (`borrowers`).
   /// Authorized crossing `sql-ref borrowers` (ledger, 2026-08-03). Long-Term READS
   /// this record and never writes it.
