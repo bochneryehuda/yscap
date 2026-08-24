@@ -174,7 +174,12 @@ function SevenStops({ stops, clock, sale, statusLabel }) {
   // How far the gold runs: to the stop the file WEARS. Measured in column
   // centres so the line ends ON a node rather than between two.
   const doneIdx = stops.atIndex >= 0 ? stops.atIndex : -1;
-  const pct = (i) => ((i + 0.5) / n) * 100;
+  // NOT a formatter — this is a position ALONG THE SPINE, in per cent of its
+  // width. It must not be called `pct`: `pct` is the shared FIGURE formatter
+  // imported at the top of this file, and a local of that name is invisible
+  // shadowing — the next person who adds an LTV row inside this component
+  // would silently get a spine coordinate instead of "80.0%".
+  const atPct = (i) => ((i + 0.5) / n) * 100;
 
   return (
     <div className="card" style={{ color: INK, marginBottom: 12, position: 'relative', overflow: 'hidden' }}>
@@ -212,12 +217,12 @@ function SevenStops({ stops, clock, sale, statusLabel }) {
         }}>
           {/* the quiet rail, then the gold the file has actually earned */}
           <div aria-hidden style={{
-            position: 'absolute', left: `${pct(0)}%`, right: `${100 - pct(n - 1)}%`,
+            position: 'absolute', left: `${atPct(0)}%`, right: `${100 - atPct(n - 1)}%`,
             top: '50%', height: 1, marginTop: -0.5, background: 'rgba(20,27,34,.16)',
           }} />
           {doneIdx > 0 && (
             <div aria-hidden style={{
-              position: 'absolute', left: `${pct(0)}%`, width: `${pct(doneIdx) - pct(0)}%`,
+              position: 'absolute', left: `${atPct(0)}%`, width: `${atPct(doneIdx) - atPct(0)}%`,
               top: '50%', height: 2, marginTop: -1, background: GOLD,
             }} />
           )}
