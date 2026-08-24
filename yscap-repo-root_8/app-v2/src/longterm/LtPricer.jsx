@@ -93,14 +93,15 @@ const START = {
   // Lender Price as a fact, and their answer is what the board shows. Nothing here decides
   // eligibility — the DSCR band a programme requires is the vendor's own, not ours.
   dscr: '1.25',
-  // ⛔ THE ZIP STARTS EMPTY, BY OWNER DIRECTION (2026-08-23): *"Zip code should not default to
-  // anything. Right now, it's defaulting to Miami."* And they are right about more than tidiness —
-  // the ZIP decides the STATE and the COUNTY a loan is priced in, and those move the answer. A
-  // pre-filled 33101 makes Miami-Dade the silent default on every scenario nobody edited, which is
-  // exactly the class this screen's own note warns about: a default that is not visibly a default
-  // is how somebody quotes a borrower off a number nobody chose. Every other box here is a starting
-  // point a person can sanity-check at a glance; a ZIP is not — 33101 looks like an answer.
-  zip: '',
+  // THE ZIP STARTS ON CONNECTICUT, BY OWNER DIRECTION (2026-08-24): *"we should pre-fill the zip
+  // code to any Connecticut zip code."* This SUPERSEDES the 2026-08-23 "should not default to
+  // anything" (which was really about the old Miami 33101 default — a state nobody here lends
+  // from). 06001 is Avon, Hartford County, CT, chosen because our own ZIP → county table resolves
+  // it cleanly (state CT, county Hartford, not a split ZIP), so the field's own hint shows the
+  // resolved county at a glance and the default is VISIBLY a default — the guard the empty-ZIP
+  // rule existed for. The pre-flight gate (searchProblem) still stands word for word: clear the
+  // box and Price it refuses before any vendor call, exactly as before.
+  zip: '06001',
   // A STATE AND COUNTY TYPED BY HAND, used only when the ZIP cannot be resolved. Blank normally,
   // and blanks are omitted from the scenario entirely, so on the ordinary path the server's own
   // ZIP → county table is still the single authority. See the ZIP field below.
