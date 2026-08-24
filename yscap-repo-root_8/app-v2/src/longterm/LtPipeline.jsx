@@ -198,7 +198,24 @@ function cellSearchText(col, row, stageLabel) {
  * read this yet" and "it is nothing" are different answers, and on money, a rate or a
  * ratio the second one is a lie a desk would act on.
  */
-function Cell({ col, row, stageLabel }) {
+/** Plain words for a contact role — the persona chip and the "Mine" label share
+ *  them so the two can never call one role two things. */
+const ROLE_WORDS = {
+  loan_officer: 'loan officer',
+  processor: 'processor',
+  file_setup: 'file setup',
+  underwriter: 'underwriter',
+  closer: 'closer',
+  funder: 'funder',
+  post_closer: 'post-closer',
+};
+const roleWord = (r) => ROLE_WORDS[r] || String(r || '').replace(/_/g, ' ');
+function mineRoleWords(roles) {
+  if (!Array.isArray(roles) || !roles.length) return '';
+  return roles.map(roleWord).join(' / ');
+}
+
+function Cell({ col, row, stageLabel, mineRoles }) {
   const muted = { color: '#4B585C' };
 
   // WHICH FIELD A COLUMN READS IS THE COLUMN'S OWN BUSINESS (`field`, from the
@@ -224,6 +241,24 @@ function Cell({ col, row, stageLabel }) {
             {dups + 1} RECORDS
           </span>
         )}
+        {/* WHY this file is in front of you, when the reason is a hat OTHER than
+            your own function (owner-directed 2026-08-23: "for each and every
+            person, why they are looped into the file" — a closer-only file must
+            never read as an officer's own). Quiet on the ordinary case: a file
+            you hold in your own role carries no chip, or every row would. */}
+        {(() => {
+          const mineList = Array.isArray(mineRoles) ? mineRoles : null;
+          const others = (row.my_roles || []).filter((r) => !mineList || !mineList.includes(r));
+          if (!others.length) return null;
+          return (
+            <span title={'You are on this file as: ' + others.map(roleWord).join(', ') + '. It is not one of your own-function files \u2014 that is why it does not sit under \u201CMy files\u201D.'}
+              style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em',
+                color: '#2F7F86', border: '1px solid #BFD9DC', background: '#F0F7F8',
+                borderRadius: 999, padding: '1px 7px', verticalAlign: 'middle', whiteSpace: 'nowrap' }}>
+              YOU: {others.map(roleWord).join(' + ').toUpperCase()}
+            </span>
+          );
+        })()}
       </span>
     );
   }
@@ -341,7 +376,12 @@ export default function LtPipeline() {
       // "Mine" is asked for as a FLAG. The server resolves whose from the session,
       // so a viewer who sees the whole book cannot ask for somebody else's personal
       // queue by editing a URL.
-      mine: !officerId && !officerLogin && whose === 'mine' ? 'true' : '',
+      mine: !officerId && !officerLogin && (whose === 'mine' || whose === 'mine-any') ? 'true' : '',
+      // 'mine' is persona-matched on the server (an admin's book is the files they
+      // ORIGINATE — the owner: a file where they were only the closer must not turn
+      // up under "files I'm the loan officer on"); 'mine-any' is the deliberate
+      // wide reading, every file they hold ANY role on.
+      mineRole: !officerId && !officerLogin && whose === 'mine-any' ? 'any' : '',
       unassigned: !officerId && !officerLogin && whose === 'unassigned' ? 'true' : '',
       officer: officerId,
       officerLogin,
@@ -564,7 +604,16 @@ export default function LtPipeline() {
               else if (v.startsWith('e:')) { setOfficerLogin(v.slice(2)); setOfficerId(''); setWhose(''); }
               else { setOfficerId(''); setOfficerLogin(''); setWhose(v); }
             }}>
-            <option value="mine">{`My files${data.facets && data.facets.mine != null ? ` (${data.facets.mine})` : ''}`}</option>
+            {/* "My files" says WHAT IT MEANS \u2014 the persona the server matched
+                ("as loan officer"), so the narrowing is never silent; the any-role
+                reading is its own choice one line below, so a file held in another
+                hat is always one click away, with the row badge saying which hat. */}
+            <option value="mine">
+              {`My files${mineRoleWords(data.mineRoles) ? ` \u2014 as ${mineRoleWords(data.mineRoles)}` : ''}${whose === 'mine' && data.facets && data.facets.mine != null ? ` (${data.facets.mine})` : ''}`}
+            </option>
+            <option value="mine-any">
+              {`Everything I\u2019m on \u2014 any role${whose === 'mine-any' && data.facets && data.facets.mine != null ? ` (${data.facets.mine})` : ''}`}
+            </option>
             <option value="">{`Everyone\u2019s${data.facets ? ` (${data.facets.all})` : ''}`}</option>
             <option value="unassigned">{`Nobody\u2019s yet${data.facets ? ` (${data.facets.unassigned})` : ''}`}</option>
             {(data.officers || []).length > 0 && (
@@ -750,7 +799,7 @@ export default function LtPipeline() {
                           separately"*). The FILE header keeps its stamp — §7 asks for
                           that one by name, and LtLoan.jsx renders it. A future combined
                           pipeline brings the per-row stamp back with the merge. */}
-                      <Cell col={c} row={l} stageLabel={stageLabel} />
+                      <Cell col={c} row={l} stageLabel={stageLabel} mineRoles={data.mineRoles} />
                     </td>
                   ))}
                 </tr>

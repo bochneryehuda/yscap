@@ -148,12 +148,40 @@ async function facets(access, staffId, filters) {
     const unassignedRows = await listIds(ALL, ME, { unassigned: true });
     check(mineRows.length === 3 && mineRows.includes(mineSetup) && mineRows.includes(mineSetup2)
       && mineRows.includes(mineFunded),
-    'THE ONE THAT MATTERS: "mine" is every file I am ON, in ANY role — a processor’s own book would be empty if it meant "the loan officer is me"');
+    'a viewer whose role nobody has mapped falls back to the wide reading — every file they are ON, any role (an unmapped role shown an empty book would be a support ticket)');
     check(!mineRows.includes(theirsSetup), '…and never somebody else’s');
     check(unassignedRows.length === 1 && unassignedRows[0] === nobodys,
       '"nobody yet" is the file with no contact on it at all — the closer’s and funder’s reason for seeing the whole book');
     check(Number(f0.scope.mine_n) >= 3 && Number(f0.scope.unassigned_n) >= 1,
       'the counts see them too');
+
+    // ── B2. "Mine" is PERSONA-MATCHED (db/623 era, owner-directed 2026-08-23) ──
+    // The owner's own case: a file where they were assigned ONLY as the closer
+    // turned up under "files that I was the Loan Officer on". An admin's book is
+    // the files they ORIGINATE; the wide reading is its own deliberate choice.
+    console.log('\n"mine" is persona-matched — WHY you are on a file decides whether it is yours');
+
+    const ADMIN = { seesAll: true, ltRole: 'admin' };
+    const adminMine = await listIds(ADMIN, ME, { mine: true });
+    check(adminMine.length === 2 && adminMine.includes(mineSetup) && adminMine.includes(mineFunded),
+      'THE ONE THAT MATTERS: an admin’s "Mine" is the files they are the LOAN OFFICER on');
+    check(!adminMine.includes(mineSetup2),
+      '…and the file they hold only ANOTHER hat on is NOT in it — the owner’s closer-only complaint');
+    const adminAny = await listIds(ADMIN, ME, { mine: true, mineRole: 'any' });
+    check(adminAny.length === 3 && adminAny.includes(mineSetup2),
+      'the wide reading is one deliberate click away (mineRole=any), so nothing is unreachable');
+    const adminOne = await listIds(ADMIN, ME, { mine: true, mineRole: 'processor' });
+    check(adminOne.length === 1 && adminOne[0] === mineSetup2,
+      'and one specific hat can be asked for by name ("files where I am the processor")');
+    // The stage key is unique to this run, so a stage-narrowed facet counts ONLY
+    // this test's rows — which is what lets the agreement be asserted EXACTLY.
+    const fAdminSetup = await facets(ADMIN, ME, { stage: SETUP });
+    check(Number(fAdminSetup.scope.mine_n) === 1,
+      'the chip count is built from the SAME persona-matched predicate as the filter — the processor-held file is not in the admin’s number');
+    const PROC = { seesAll: true, ltRole: 'processor' };
+    const procMine = await listIds(PROC, ME, { mine: true });
+    check(procMine.length === 1 && procMine[0] === mineSetup2,
+      'a processor’s "Mine" is the files they PROCESS — their own book, never empty and never the officer’s');
 
     const fSetup = await facets(ALL, ME, { stage: SETUP });
     const mineInSetup = await listIds(ALL, ME, { stage: SETUP, mine: true });

@@ -56,6 +56,10 @@ router.get('/', async (req, res) => {
       // `officer` filter is the deliberate, named way to look at another officer's
       // files, and it exists for exactly that.
       mine: String(req.query.mine || '') === 'true',
+      // Narrows "Mine" to ONE of the viewer's hats, deliberately — "files where I
+      // am the closer". Still resolved against the SESSION's identity; it names a
+      // ROLE, never a person, so it can widen nothing.
+      mineRole: req.query.mineRole,
       // The screen asks for the whole (filtered) book in one answer so its
       // per-column search can be honest; the cap in pipeline.js still bounds it.
       limit: req.query.limit,
