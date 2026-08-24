@@ -160,7 +160,7 @@ export function ambiguousProgramLabels(quotes) {
   if (!Array.isArray(quotes)) return new Set();
   for (const q of quotes) {
     if (!q) continue;
-    const label = `${q.program || ''} ${q.product || ''}`;
+    const label = `${q.program || ''}\u0000${q.product || ''}`;
     if (!sheetsByLabel.has(label)) sheetsByLabel.set(label, new Set());
     sheetsByLabel.get(label).add(typeof q.sheet === 'string' ? q.sheet : '');
   }
@@ -168,7 +168,7 @@ export function ambiguousProgramLabels(quotes) {
   for (const [label, sheets] of sheetsByLabel) if (sheets.size > 1) out.add(label);
   return out;
 }
-export function programLabelKey(q) { return `${(q && q.program) || ''} ${(q && q.product) || ''}`; }
+export function programLabelKey(q) { return `${(q && q.program) || ''}\u0000${(q && q.product) || ''}`; }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
    WHAT A PRICE COSTS, IN DOLLARS — the owner's three columns (2026-08-23).
