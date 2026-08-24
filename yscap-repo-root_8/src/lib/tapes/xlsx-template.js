@@ -233,11 +233,22 @@ function makeFormatResolver(parts) {
     const codeById = {};   // custom numFmtId -> formatCode
     const idByCode = {};   // formatCode -> custom numFmtId
     let maxId = 163;       // custom ids start at 164
-    const nfRe = /<numFmt numFmtId="(\d+)" formatCode="([^"]*)"\s*\/?>/g;
+    /* Read the numFmt ELEMENTS first, then their attributes IN ANY ORDER.
+       Matching `numFmtId="…" formatCode="…"` as one fixed sequence looked
+       tidier and carried a corruption risk: a writer that emits the two
+       attributes the other way round (Excel always writes id-first, other
+       producers need not) would parse as "this workbook has no custom
+       formats" — leaving maxId at 163, so idForCode would allocate 164 and
+       collide with the real, unparsed numFmt 164. Two elements sharing an id
+       is a broken workbook, and it would happen silently. */
+    const nfEl = /<numFmt\b[^>]*\/?>/g;
     let m;
-    while ((m = nfRe.exec(xml))) {
-      const id = Number(m[1]);
-      const code = xmlUnesc(m[2]);
+    while ((m = nfEl.exec(xml))) {
+      const idM = /\bnumFmtId="(\d+)"/.exec(m[0]);
+      const codeM = /\bformatCode="([^"]*)"/.exec(m[0]);
+      if (!idM || !codeM) continue;
+      const id = Number(idM[1]);
+      const code = xmlUnesc(codeM[1]);
       codeById[id] = code;
       if (idByCode[code] == null) idByCode[code] = id;
       if (id > maxId) maxId = id;
@@ -297,24 +308,30 @@ function makeFormatResolver(parts) {
   function flush() {
     if (!p || p.broken || (!p.addedXfs.length && !p.addedFmts.length)) return;
     let xml = p.xml;
+    /* EVERY replacement below is FUNCTION-FORM on purpose. A format code is
+       arbitrary text that lands in the replacement string, and String.replace
+       reads `$&`, `$1`, "$'" and "$`" as special there — so a currency code
+       (`\$#,##0.00`) added to FMT later would silently splice the wrong text
+       into styles.xml. A function replacement is taken literally, always. */
+    const lit = (s) => () => s;
     if (p.addedFmts.length) {
       const fmtsXml = p.addedFmts.map((f) => `<numFmt numFmtId="${f.id}" formatCode="${xmlEsc(f.code)}"/>`).join('');
       if (/<numFmts\b[^>]*\/>/.test(xml)) {
         // a degenerate self-closing <numFmts/> — replace it with a real block
-        xml = xml.replace(/<numFmts\b[^>]*\/>/, `<numFmts count="${p.addedFmts.length}">${fmtsXml}</numFmts>`);
+        xml = xml.replace(/<numFmts\b[^>]*\/>/, lit(`<numFmts count="${p.addedFmts.length}">${fmtsXml}</numFmts>`));
       } else if (/<numFmts count="\d+"[^>]*>/.test(xml)) {
         xml = xml.replace(/<numFmts count="(\d+)"([^>]*)>/, (mm, c, rest) => `<numFmts count="${Number(c) + p.addedFmts.length}"${rest}>`);
-        xml = xml.replace('</numFmts>', `${fmtsXml}</numFmts>`);
+        xml = xml.replace('</numFmts>', lit(`${fmtsXml}</numFmts>`));
       } else {
         // no numFmts block at all — it must be the FIRST child of styleSheet
         const block = `<numFmts count="${p.addedFmts.length}">${fmtsXml}</numFmts>`;
-        if (/<fonts\b/.test(xml)) xml = xml.replace(/<fonts\b/, `${block}<fonts`);
-        else xml = xml.replace(/(<styleSheet[^>]*>)/, `$1${block}`);
+        if (/<fonts\b/.test(xml)) xml = xml.replace(/<fonts\b/, lit(`${block}<fonts`));
+        else xml = xml.replace(/(<styleSheet[^>]*>)/, (mm) => `${mm}${block}`);
       }
     }
     if (p.addedXfs.length) {
       xml = xml.replace(/<cellXfs count="(\d+)"([^>]*)>/, (mm, c, rest) => `<cellXfs count="${Number(c) + p.addedXfs.length}"${rest}>`);
-      xml = xml.replace('</cellXfs>', `${p.addedXfs.join('')}</cellXfs>`);
+      xml = xml.replace('</cellXfs>', lit(`${p.addedXfs.join('')}</cellXfs>`));
     }
     stylesPart.data = Buffer.from(xml, 'utf8');
   }

@@ -241,4 +241,45 @@ for (const tape of [fidelis, emcap, bluelake]) {
   ok(/formatCode="0\.00%"/.test(outXml), 'resolver: the wanted code was written as a fresh custom numFmt');
 }
 
+// ---- G. two corruption traps the audit closed ------------------------------
+{
+  /* G1. numFmt ATTRIBUTES IN THE OTHER ORDER must still be read. Excel always
+     writes numFmtId first; another producer need not. Reading them as one
+     fixed sequence made such a workbook parse as "no custom formats", which
+     left the next free id at 164 — colliding with the real numFmt 164 that
+     was never parsed. Two elements sharing one id is a broken workbook. */
+  const reversed = [{
+    name: 'xl/styles.xml',
+    data: Buffer.from('<styleSheet><numFmts count="1"><numFmt formatCode="0.000%" numFmtId="164"/></numFmts><fonts count="1"><font/></fonts><cellXfs count="1"><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>', 'utf8'),
+  }];
+  const r = makeFormatResolver(reversed);
+  // The base already displays 0.000% — read correctly, this is idempotent…
+  ok(r.resolve(0, '0.000%') === 0, 'G1: reversed numFmt attributes are still read (idempotent base)');
+  // …and a NEW code must never be handed the id 164 that is already taken.
+  const idx = r.resolve(0, '0.00#%');
+  r.flush();
+  const x = reversed[0].data.toString('utf8');
+  const ids = (x.match(/numFmtId="(\d+)"/g) || []).map((s) => /(\d+)/.exec(s)[1]);
+  const declared = (x.match(/<numFmt\b[^>]*>/g) || []).map((s) => /numFmtId="(\d+)"/.exec(s)[1]);
+  ok(new Set(declared).size === declared.length, `G1: no duplicate numFmtId declared (${declared.join(',')})`);
+  ok(!declared.includes('164') || declared.filter((i) => i === '164').length === 1, 'G1: the pre-existing id 164 is not re-declared');
+  ok(idx === 1 && ids.length >= 3, 'G1: the new format landed on an appended xf');
+
+  /* G2. A FORMAT CODE IS ARBITRARY TEXT in a String.replace replacement, where
+     `$&` / `$1` are special. Today's codes carry no `$`; a currency code would.
+     Resolve one and confirm it is written VERBATIM, not $-expanded. */
+  const cur = [{
+    name: 'xl/styles.xml',
+    data: Buffer.from('<styleSheet><fonts count="1"><font/></fonts><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>', 'utf8'),
+  }];
+  const rc = makeFormatResolver(cur);
+  rc.resolve(0, '$#,##0.00;[Red]($&)');   // a code carrying the $& replacement pattern
+  rc.flush();
+  const cx = cur[0].data.toString('utf8');
+  ok(cx.indexOf('formatCode="$#,##0.00;[Red]($&amp;)"') > -1,
+    `G2: a $-bearing format code is written verbatim, never $-expanded — got ${/formatCode="([^"]*)"/.exec(cx)[1]}`);
+  ok(/<numFmts count="1">/.test(cx) && cx.indexOf('<numFmts') < cx.indexOf('<fonts'),
+    'G2: a template with no numFmts block gains one as the FIRST child of styleSheet');
+}
+
 console.log(`test-tape-rate-precision-pure: OK (${passed} assertions)`);
