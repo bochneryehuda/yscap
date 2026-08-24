@@ -89,6 +89,72 @@ function normalizeMilestone(name) {
   return String(name == null ? '' : name).trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+/**
+ * The PUNCTUATION-BLIND join key for milestone names (pre-merge audit round 2,
+ * obs 4). `normalizeMilestone` keeps punctuation, so a ladder spelled
+ * "Cond Approval" against a catalog "Cond. Approval" missed every join — the
+ * board read `inLadder:false` and dropped the witnessed date. All three sources
+ * (ladder, catalog, event log) are one tenant vocabulary that differs only in
+ * dots and spacing, so joins key on letters and digits alone.
+ */
+function milestoneKey(name) {
+  return String(name == null ? '' : name).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE TWO WORDINGS OF A MILESTONE (owner-directed 2026-08-24).
+ *
+ * "Every milestone has two different kinds of wording: before it's completed
+ *  and after it's completed. The name of the status in our system should
+ *  ALWAYS be the last milestone that is completed [in its completed wording].
+ *  When funding is completed, the name of the milestone in our system is
+ *  FUNDED. When LO Prep is completed, it's ASSIGNED TO PROCESSOR."
+ *
+ * So a loan whose ladder shows Funding done and Investor Delivery not yet done
+ * is displayed as "Funded" — never "Funding" (the active form, which reads as
+ * not-yet-funded) and never "Investor Delivery" (a step that has not happened).
+ *
+ * WHERE EACH WORDING COMES FROM — verified live 2026-08-24, never guessed:
+ *   · OWNER — stated in the owner's own words (LO Prep, Submittal, Funding,
+ *     and the Cond. Approval / Clear to Close stop vocabulary).
+ *   · MS.STATUS — the tenant's own status field, stamped by their Encompass
+ *     rules at milestone completion; sampled per-milestone across the book
+ *     (Funding→"Funded" 5/5, Submittal→"Submitted" 6/8, Loan Setup→"Sent to
+ *     processing" 6/8, Started→"File started" 6/8, Completion→"Completed" 8/8).
+ *   · SETTINGS — the tenant's milestone settings (db/547): Schedule Closing's
+ *     own external wording is "Closing Scheduled", Resubmittal's is
+ *     "In Underwriting" — their words for a loan PAST that step.
+ *
+ * A milestone with no proven completed wording falls back to ITS OWN NAME —
+ * honest, and listed as an open wording question for the owner rather than
+ * invented (Processing, Waiting for Docs, Ready for Docs, Docs Out, Wire
+ * Order, Investor Delivery, Purchasing Conditions, Final Docs).
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+const COMPLETED_FORM = {
+  'started': 'File started',                 // MS.STATUS
+  'lo prep': 'Assigned to Processor',        // OWNER
+  'loan setup': 'Sent to Processing',        // MS.STATUS ("Sent to processing")
+  'submittal': 'Submitted',                  // OWNER + MS.STATUS
+  'cond approval': 'Conditionally Approved', // OWNER (stop vocabulary)
+  'resubmittal': 'In Underwriting',          // SETTINGS (tenant's own wording)
+  'clear to close': 'Clear to Close',        // OWNER (stop vocabulary)
+  'schedule closing': 'Closing Scheduled',   // SETTINGS (tenant's own wording)
+  'funding': 'Funded',                       // OWNER + MS.STATUS
+  'completion': 'Completed',                 // MS.STATUS
+};
+
+/**
+ * The label a loan wears once a milestone is its LAST COMPLETED one. Falls
+ * back to the milestone's own name — never blank, never invented.
+ */
+function completedFormLabel(milestoneName) {
+  const raw = String(milestoneName == null ? '' : milestoneName).trim();
+  if (!raw) return null;
+  return COMPLETED_FORM[milestoneKey(raw)] || raw;
+}
+
 function buildIndex(map) {
   const idx = new Map();
   for (const [milestone, stageKey] of Object.entries(map || {})) {
@@ -177,7 +243,10 @@ module.exports = {
   DEFAULT_STAGES,
   DEFAULT_MAP,
   UNMAPPED_STAGE,
+  COMPLETED_FORM,
   normalizeMilestone,
+  milestoneKey,
+  completedFormLabel,
   stageForMilestone,
   consumerStatusOf,
   tpoStatusOf,

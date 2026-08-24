@@ -151,10 +151,12 @@ for (const [key, def] of Object.entries(cols.COLUMNS)) {
   const c = r.columns[0];
   if (c.key !== key) { check(false, `${key}: could not be resolved on its own — the loop would have tested a different column under this name`); continue; }
   if (def.source === 'route') {
-    // Its field is attached to the rows by the ROUTE rather than selected by the
-    // query, so the phantom-field question is asked of the route instead.
-    check(new RegExp(`row\\.${c.field}\\s*=`).test(strip(read('src/longterm/routes/pipeline.js'))),
-      `${key}: the route really attaches \`${c.field}\` to each row — the query does not select it, so nothing else could`);
+    // Its field is attached to the rows AFTER the query — by the route, or by
+    // `loadPipeline` itself (the milestone_label decoration) — so the
+    // phantom-field question is asked of those two sources instead.
+    const attachedIn = strip(read('src/longterm/routes/pipeline.js')) + strip(read('src/longterm/pipeline.js'));
+    check(new RegExp(`\\b(?:row|r)\\.${c.field}\\s*=`).test(attachedIn),
+      `${key}: the route/loader really attaches \`${c.field}\` to each row — the query does not select it, so nothing else could`);
   } else if (c.kind === 'contact') {
     check(contacts.DEFAULT_ROLES.includes(c.field),
       `${key}: its field names a real loan-team ROLE (${c.field}) — a role nobody mirrors would read empty on every loan`);

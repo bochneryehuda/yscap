@@ -244,8 +244,10 @@ console.log('\nthe seven stops — the owner\'s exact list, keyed on done flags'
     'Started done → the stop is reached with Encompass\'s OWN date');
   check(out.stops[1].reached && out.stops[1].at === '2026-06-03',
     'LO Prep done → Assigned to processor reached (completion semantics, #33)');
+  check(out.atIndex === 1,
+    'the file WEARS the last reached stop — Assigned to processor (owner-directed 2026-08-24)');
   check(!out.stops[2].reached && out.currentIndex === 2,
-    'Submittal not done → Submitted to underwriting is the CURRENT stop — its planned date is never shown as reached');
+    'Submittal not done → Submitted to underwriting is what is UP NEXT — its planned date is never shown as reached');
   check(out.stops[6].pilot && out.stops[6].unknown && !out.stops[6].reached,
     'Purchased with no answer stays UNKNOWN — never a no, never a yes');
 
@@ -254,13 +256,15 @@ console.log('\nthe seven stops — the owner\'s exact list, keyed on done flags'
     { sale: { purchased: true, at: '2026-08-20', note: 'The investor bought this loan on 2026-08-20.' } });
   check(funded.stops[5].reached && funded.stops[5].label === 'Closed' && funded.stops[5].at === '2026-08-01',
     'Funding done → the CLOSED stop (the owner\'s word — never "funded/not funding")');
+  check(funded.atIndex === 5 && funded.currentIndex === -1,
+    'a funded file wears Closed; nothing non-pilot is up next');
   check(funded.stops[6].reached && funded.stops[6].at === '2026-08-20',
     'a bought loan reaches Purchased with the purchase date');
 
   const empty = ws.sevenStops([], { sale: null });
-  check(empty.ladderRead === false && empty.currentIndex === -1
+  check(empty.ladderRead === false && empty.currentIndex === -1 && empty.atIndex === -1
     && empty.stops.every((s) => !s.reached),
-    'an UNREAD ladder claims nothing — no stop reached, none current');
+    'an UNREAD ladder claims nothing — no stop reached, none worn, none up next');
 
   // The witnessed-day fallback: a done step with no Encompass date still shows
   // the day PILOT watched it flip.
@@ -269,6 +273,14 @@ console.log('\nthe seven stops — the owner\'s exact list, keyed on done flags'
     { reachedAt: { started: '2026-06-09' } });
   check(witnessed.stops[0].reached && witnessed.stops[0].at === '2026-06-09',
     'a done step with no Encompass date falls back to the day PILOT watched it');
+
+  // PUNCTUATION-BLIND joins (audit round 2, obs 4): a ladder spelled without
+  // the dot, and a witnessed day keyed WITH it, must still land on the stop.
+  const dotless = ws.sevenStops(
+    [{ milestone_name: 'Cond Approval', position: 5, done: true }],
+    { reachedAt: { 'cond. approval': '2026-07-20' } });
+  check(dotless.stops[3].reached && dotless.stops[3].at === '2026-07-20',
+    '"Cond Approval" (no dot) reaches the Conditionally-approved stop and keeps the dotted witnessed day (obs 4)');
 }
 
 console.log('the milestone board — every step, date kind, associate');
@@ -291,6 +303,10 @@ console.log('the milestone board — every step, date kind, associate');
   const started = board.rows[0];
   check(started.done === true && started.date === '2026-06-01' && started.dateKind === 'worked',
     'a DONE step carries Encompass\'s date as the WORKED date');
+  check(started.label === 'File started' && started.name === 'Started',
+    'a DONE step wears its COMPLETED wording; the raw name stays for joins (owner-directed 2026-08-24)');
+  check(board.rows[1].label === 'LO Prep',
+    'an OPEN step keeps its active name — "Assigned to Processor" only once it is done');
   check(started.associate && started.associate.name === 'Rivka Processor'
     && started.associate.role === 'Loan Processor',
     'the associate on the step rides straight off the ladder row (#34\'s ground truth)');
@@ -306,6 +322,27 @@ console.log('the milestone board — every step, date kind, associate');
   const noLadder = ws.milestoneBoard(catalog, [], {});
   check(noLadder.ladderRead === false && noLadder.rows[0].done === null && noLadder.rows[0].inLadder === false,
     'an unread ladder answers done NULL ("the ladder has not said"), never false');
+
+  // The obs-4 join: catalog "Cond. Approval" (db/547's spelling) against a
+  // ladder "Cond Approval" (no dot) must still land on ONE row.
+  const dotBoard = ws.milestoneBoard(
+    [{ name: 'Cond. Approval', sort_order: 5 }],
+    [{ milestone_name: 'Cond Approval', position: 5, done: true, start_date: '2026-07-20' }],
+    { reachedAt: { 'cond approval': '2026-07-21' } });
+  check(dotBoard.rows[0].inLadder === true && dotBoard.rows[0].done === true
+    && dotBoard.rows[0].witnessedAt === '2026-07-21'
+    && dotBoard.rows[0].label === 'Conditionally Approved',
+    'the dotted catalog row joins the dotless ladder row AND the witnessed day — and wears the completed wording (obs 4)');
+}
+
+console.log('the rail wears the completed wording');
+{
+  const r = ws.summaryRail({ milestone_name: 'Funding' });
+  check(r.milestoneLabel === 'Funded' && r.milestone === 'Funding',
+    'the rail\'s status label is the COMPLETED form ("Funded"); the raw name stays beside it');
+  check(ws.summaryRail({ milestone_name: 'Investor Delivery' }).milestoneLabel === 'Investor Delivery',
+    'a milestone with no proven completed wording keeps its own name — never invented');
+  check(ws.summaryRail({}).milestoneLabel === null, 'no milestone, no label');
 }
 
 // The menu carries the two new sections, always available.

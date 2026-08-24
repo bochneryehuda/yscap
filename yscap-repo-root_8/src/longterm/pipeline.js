@@ -664,6 +664,12 @@ async function loadPipeline(staff, filters = {}) {
     for (const r of rows) r.my_roles = myRolesByLoan.get(String(r.id)) || null;
   }
 
+  // THE STATUS EACH ROW WEARS (owner-directed 2026-08-24): the last COMPLETED
+  // milestone in its completed wording — "Funded" on a funding-done file, never
+  // "Funding". The raw Encompass name stays on `milestone_name`; the screen's
+  // Milestone column draws this label.
+  for (const r of rows) r.milestone_label = stages.completedFormLabel(r.milestone_name);
+
   return {
     // EVERY ROW CARRIES ITS OWN PRODUCT STAMP (CLAUDE.md §7). Tagged here, at the
     // edge, because a combined pipeline tags and concatenates what each product

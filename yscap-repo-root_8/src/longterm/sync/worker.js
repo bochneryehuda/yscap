@@ -211,6 +211,16 @@ async function tickOnce({ trigger = 'worker' } = {}) {
     } catch (e) {
       out.milestoneLadders = { ok: false, reason: (e && e.message) || String(e) };
     }
+    // THE STANDING REALIGN (owner-directed 2026-08-24): move every laddered
+    // loan onto its LAST-COMPLETED milestone, from the mirror alone — no
+    // Encompass call, no history event (a re-definition is not a move). One
+    // cheap SELECT once aligned; also self-heals any future mirror/loan drift.
+    // LOCAL work, so it runs whether or not Encompass is reachable.
+    try {
+      out.milestoneRealign = await runLog.record('milestone_realign', trigger, () => milestoneLadder.realignStanding({}));
+    } catch (e) {
+      out.milestoneRealign = { ok: false, reason: (e && e.message) || String(e) };
+    }
     // THE ROLES ENCOMPASS HAS NOBODY FOR — today, who sets a file up. It cannot ride
     // the loan read, because a loan is only re-read when Encompass's own stamp moves
     // (`loans.needsRead`), so a caught-up book would never gain the assignment. It

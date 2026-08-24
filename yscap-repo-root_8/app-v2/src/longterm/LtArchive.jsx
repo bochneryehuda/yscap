@@ -119,7 +119,7 @@ export default function LtArchive() {
                   <td style={td}>{l.borrower_name || '—'}</td>
                   <td style={td}>{l.program_name || '—'}</td>
                   <td style={{ ...td, textAlign: 'right' }}>{money(l.loan_amount)}</td>
-                  <td style={td}>{l.milestone_name || '—'}</td>
+                  <td style={td}>{l.milestone_label || l.milestone_name || '—'}</td>
                   <td style={td}>{day(l.encompass_last_modified)}</td>
                   <td style={td}>{l.clickup_custom_id || (l.clickup_task_id ? 'linked' : '—')}</td>
                   <td style={{ ...td, whiteSpace: 'nowrap' }}>

@@ -9,12 +9,16 @@
  *
  *   · `GET /loans/{id}/milestones` returns the loan's OWN ladder — every step
  *     with `doneIndicator`, its date, and the associate assigned to that step.
- *     The file SITS in the FIRST step whose doneIndicator is false. On Birch:
- *     Funding done=true → sitting = "Investor Delivery".
- *   · `Log.MS.CurrentMilestone` — what the mirror displayed until db/623 — LAGS:
- *     it stays on the last WORKED milestone until somebody starts the next one.
- *     On Birch it still read "Funding". That is the wrong answer this module
- *     replaces.
+ *     The file STANDS at the LAST COMPLETED step (owner-directed 2026-08-24,
+ *     revising the first cut, which answered the first NOT-done step): on
+ *     Birch, Funding done=true → standing = "Funding", DISPLAYED in its
+ *     completed wording "Funded" (`stages.completedFormLabel`). The first cut's
+ *     "Investor Delivery" named a step that had not happened.
+ *   · `Log.MS.CurrentMilestone` — what the mirror displayed until db/623 —
+ *     carries the last WORKED milestone until somebody starts the next one
+ *     ("Funding" on Birch), which AGREES with the last-completed standing on
+ *     any loan whose next step has not started; the ladder stays authoritative
+ *     because it also answers mid-step and carries the dates.
  *   · Virtual field `MS.STATUS` is the tenant's own status WORDING, stamped at
  *     each milestone transition ("Funded" on Birch — the field their existing
  *     Encompass automation fires webhooks on), and `MS.STATUSDATE` is its stamp.
@@ -100,9 +104,21 @@ function rowFrom(item, index) {
 }
 
 /**
- * WHERE THE FILE SITS. The first not-done step; a loan whose every step is done
- * sits at its LAST step (the file is finished — "Completion" on this tenant);
- * an empty ladder answers null and the caller keeps whatever it had.
+ * WHERE THE FILE STANDS: the LAST COMPLETED step (owner-directed 2026-08-24,
+ * revising the first cut of #33 — which answered the first NOT-done step).
+ *
+ * "The name of the status in our system should always be the last milestone
+ *  that is completed" — a loan whose Funding is done and whose Investor
+ *  Delivery has not happened STANDS at Funding, displayed in its completed
+ *  wording ("Funded", `stages.completedFormLabel`). The first-not-done answer
+ *  ("Investor Delivery") named a step that has not happened. Verified against
+ *  Encompass's own vocabulary: on Birch, `MS.STATUS` reads "Funded" and
+ *  `Log.MS.CurrentMilestone` reads "Funding" — Encompass itself carries the
+ *  last COMPLETED milestone as the loan's current one.
+ *
+ * A loan with NOTHING done yet stands at its FIRST step (a file just born,
+ * before Started completes — vanishingly brief in practice); an empty ladder
+ * answers null and the caller keeps whatever it had.
  *
  * PURE — this is the one sentence the whole rebuild exists for, so it is a
  * function a test can hold still.
@@ -110,8 +126,12 @@ function rowFrom(item, index) {
 function sittingOf(rows) {
   const list = (rows || []).filter((r) => r && r.milestoneName);
   if (!list.length) return null;
-  const open = list.find((r) => !r.done);
-  return (open || list[list.length - 1]).milestoneName;
+  // Ladder order is positional; sort defensively so a caller handing rows read
+  // back out of SQL (any order) gets the same answer as the live read.
+  list.sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0));
+  let lastDone = null;
+  for (const r of list) { if (r.done) lastDone = r; }
+  return (lastDone || list[0]).milestoneName;
 }
 
 /**
@@ -342,6 +362,69 @@ async function backfillLadders(opts = {}) {
   return { ok: true, laddered, failed, reason, more: due.length >= limit };
 }
 
+/**
+ * REALIGN THE BOOK to the last-completed standing (owner-directed 2026-08-24)
+ * — from the ladder mirror alone, NO Encompass call and NO history event.
+ *
+ * WHY NOT LET THE ORDINARY SYNC DO IT: every already-laddered loan holds the
+ * old first-not-done milestone, and the next `ladderOne` would record the
+ * change through `writeMilestone` — one spurious BACKWARD "moved Investor
+ * Delivery → Funding" event on every loan in the book, polluting every file's
+ * history with a move that never happened. This is a re-DEFINITION of the same
+ * position, not a move, so it rewrites `milestone_name`/`stage_key` directly
+ * and leaves `milestone_since` alone — the moment the loan "entered Investor
+ * Delivery" under the old reading IS the moment it "became Funded" under the
+ * new one, so the clock stays truthful. After this, `ladderOne` finds
+ * prior == next and writes nothing.
+ *
+ * Idempotent and self-draining (the WHERE finds nothing once aligned); cheap
+ * enough to run every worker pass, which also self-heals any future drift
+ * between the mirror and the loan row. Never throws.
+ */
+async function realignStanding(opts = {}) {
+  const db = opts.db || lazy.db;
+  let settings = opts.settings;
+  if (!settings) {
+    try { ({ settings } = await lazy.settings.load()); } catch (_) { settings = {}; }
+  }
+  const cfg = stagesMod.configFrom(settings || {});
+  try {
+    const { rows } = await db.query(
+      `SELECT l.id, d.name
+         FROM lt_loans l
+         JOIN LATERAL (
+           SELECT COALESCE(
+             (SELECT m.milestone_name FROM lt_loan_milestones m
+               WHERE m.loan_id = l.id AND m.done = true
+               ORDER BY m.position DESC LIMIT 1),
+             (SELECT m.milestone_name FROM lt_loan_milestones m
+               WHERE m.loan_id = l.id
+               ORDER BY m.position ASC LIMIT 1)
+           ) AS name
+         ) d ON true
+        WHERE l.ladder_synced_at IS NOT NULL
+          AND d.name IS NOT NULL
+          AND d.name IS DISTINCT FROM l.milestone_name`,
+    );
+    let realigned = 0;
+    for (const r of rows) {
+      /* eslint-disable no-await-in-loop */
+      const stage = stagesMod.stageForMilestone(r.name, cfg);
+      try {
+        await db.query(
+          `UPDATE lt_loans SET milestone_name = $2, stage_key = $3, updated_at = now()
+            WHERE id = $1::uuid`,
+          [String(r.id), r.name, stage.key],
+        );
+        realigned += 1;
+      } catch (_) { /* best-effort per loan */ }
+    }
+    return { ok: true, realigned };
+  } catch (e) {
+    return { ok: false, reason: String((e && e.message) || e).slice(0, 300) };
+  }
+}
+
 module.exports = {
   MS_FIELD_IDS,
   DEFAULT_BACKFILL_BUDGET,
@@ -354,5 +437,6 @@ module.exports = {
   writeMsStatus,
   ladderOne,
   backfillLadders,
+  realignStanding,
   _internals: { text, ladderDue },
 };

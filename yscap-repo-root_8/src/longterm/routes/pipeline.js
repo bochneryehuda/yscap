@@ -249,7 +249,9 @@ router.get('/:loanId', async (req, res) => {
     // The movement history itself — what PILOT watched, in order. Best-effort.
     const milestoneHistory = await milestones.loadHistory(rows[0].id, 25).catch(() => []);
     const currentMs = catalog.find(
-      (m) => String(m.name || '').trim().toLowerCase() === String(rows[0].milestone_name || '').trim().toLowerCase(),
+      // Punctuation-blind (audit round 2, obs 4): "Cond Approval" must land on
+      // the catalog's "Cond. Approval" row.
+      (m) => stages.milestoneKey(m.name) === stages.milestoneKey(rows[0].milestone_name),
     );
 
     // The lock's own detail — the posture, the countdown, and what PILOT watched

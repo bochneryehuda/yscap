@@ -254,6 +254,10 @@ function summaryRail(loan, opts = {}) {
     prepaymentPenaltyMonths: l.prepayment_penalty_months == null ? null : Number(l.prepayment_penalty_months),
     program: l.program_name || null,
     milestone: l.milestone_name || null,
+    // THE STATUS THE FILE WEARS (owner-directed 2026-08-24): the last COMPLETED
+    // milestone in its completed wording — "Funded", never "Funding". The raw
+    // Encompass name stays in `milestone` for anything that joins on it.
+    milestoneLabel: stages.completedFormLabel(l.milestone_name),
     stage: { key: stage.key, label: stage.label, mapped: stage.mapped },
     lockStatus: l.lock_status || null,
     lockExpiration: l.lock_expiration_date || null,
@@ -285,20 +289,24 @@ const SEVEN_STOPS = [
   { key: 'started', label: 'Started', milestones: ['started'] },
   { key: 'processor', label: 'Assigned to processor', milestones: ['lo prep'] },
   { key: 'underwriting', label: 'Submitted to underwriting', milestones: ['submittal', 'submitted'] },
-  { key: 'cond_approved', label: 'Conditionally approved', milestones: ['cond. approval', 'cond approval', 'conditional approval'] },
+  { key: 'cond_approved', label: 'Conditionally approved', milestones: ['cond approval', 'conditional approval'] },
   { key: 'ctc', label: 'Clear to close', milestones: ['clear to close', 'ctc'] },
   { key: 'closed', label: 'Closed', milestones: ['funding', 'funded', 'closed'] },
   { key: 'purchased', label: 'Purchased', pilot: true },
 ];
 
 function sevenStops(ladder, { reachedAt = {}, sale = null } = {}) {
-  // done: normalized milestone name -> the best date we hold for it.
+  // done: punctuation-blind milestone key -> the best date we hold for it.
+  // `milestoneKey` (not normalizeMilestone) on BOTH sides of every join here:
+  // a ladder spelled "Cond Approval" against a stop/catalog "Cond. Approval"
+  // used to miss (audit round 2, obs 4) and silently drop the date.
+  const witnessedByKey = {};
+  for (const [k, v] of Object.entries(reachedAt || {})) witnessedByKey[stages.milestoneKey(k)] = v;
   const done = new Map();
   for (const r of (Array.isArray(ladder) ? ladder : [])) {
     if (!r || !r.done || !r.milestone_name) continue;
-    const k = stages.normalizeMilestone(r.milestone_name);
-    // reachedAt is keyed the stepper's way — trim().toLowerCase() of the name.
-    const witnessed = reachedAt[String(r.milestone_name).trim().toLowerCase()] || null;
+    const k = stages.milestoneKey(r.milestone_name);
+    const witnessed = witnessedByKey[k] || null;
     const at = r.start_date || witnessed || null;
     if (!done.has(k) || (at && !done.get(k).at)) done.set(k, { at });
   }
@@ -317,20 +325,24 @@ function sevenStops(ladder, { reachedAt = {}, sale = null } = {}) {
       };
     }
     let hit = null;
-    for (const name of s.milestones) { if (done.has(name)) { hit = done.get(name); break; } }
+    for (const name of s.milestones) { const k = stages.milestoneKey(name); if (done.has(k)) { hit = done.get(k); break; } }
     return { key: s.key, label: s.label, pilot: false, reached: !!hit, at: hit ? hit.at : null };
   });
 
-  // The stop being WORKED: the first unreached Encompass stop past the last
-  // reached one. With no ladder read, nothing is current — inventing progress
-  // from an unread ladder is the stepper's own rule, kept here.
+  // WHERE THE FILE IS vs WHAT IS UP NEXT (owner-directed 2026-08-24: the file's
+  // status is the last COMPLETED stop, worn in its attained wording — the stop
+  // labels are already the attained forms). `atIndex` is the stop the file
+  // STANDS at (the last reached non-pilot stop); `currentIndex` keeps its
+  // meaning as the first unreached stop past it — the one being WAITED ON.
+  // With no ladder read, neither is claimed — inventing progress from an
+  // unread ladder is the stepper's own rule, kept here.
   let currentIndex = -1;
+  let atIndex = -1;
   if (ladderRead) {
-    let lastReached = -1;
-    stops.forEach((s, i) => { if (!s.pilot && s.reached) lastReached = i; });
-    currentIndex = stops.findIndex((s, i) => i > lastReached && !s.pilot && !s.reached);
+    stops.forEach((s, i) => { if (!s.pilot && s.reached) atIndex = i; });
+    currentIndex = stops.findIndex((s, i) => i > atIndex && !s.pilot && !s.reached);
   }
-  return { ladderRead, currentIndex, stops };
+  return { ladderRead, currentIndex, atIndex, stops };
 }
 
 /**
@@ -345,17 +357,21 @@ function sevenStops(ladder, { reachedAt = {}, sale = null } = {}) {
  * NULL — "the ladder has not said", which is a different fact from "not done".
  */
 function milestoneBoard(catalog = [], ladder = [], { reachedAt = {}, sale = null } = {}) {
+  // Punctuation-blind joins on BOTH sides (audit round 2, obs 4) — a ladder
+  // "Cond Approval" must land on the catalog's "Cond. Approval" row.
   const byName = new Map();
   for (const r of (Array.isArray(ladder) ? ladder : [])) {
-    if (r && r.milestone_name) byName.set(stages.normalizeMilestone(r.milestone_name), r);
+    if (r && r.milestone_name) byName.set(stages.milestoneKey(r.milestone_name), r);
   }
+  const witnessedByKey = {};
+  for (const [k, v] of Object.entries(reachedAt || {})) witnessedByKey[stages.milestoneKey(k)] = v;
   const rows = (catalog || [])
     .slice()
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
     .map((m) => {
       if (m.pilot) {
         return {
-          name: m.name, pilot: true,
+          name: m.name, label: m.name, pilot: true,
           done: sale ? sale.purchased === true : null,
           unknown: !sale || sale.purchased == null,
           date: sale && sale.purchased === true ? (sale.at || null) : null,
@@ -367,14 +383,20 @@ function milestoneBoard(catalog = [], ladder = [], { reachedAt = {}, sale = null
           note: sale ? sale.note : null,
         };
       }
-      const r = byName.get(stages.normalizeMilestone(m.name)) || null;
+      const r = byName.get(stages.milestoneKey(m.name)) || null;
+      const isDone = r ? !!r.done : null;
       return {
         name: m.name, pilot: false,
+        // A DONE step wears its COMPLETED wording (owner-directed 2026-08-24:
+        // "every milestone has two wordings" — LO Prep done reads "Assigned to
+        // Processor"); an open step keeps its active name. `name` stays the
+        // raw Encompass spelling for anything that joins on it.
+        label: isDone === true ? stages.completedFormLabel(m.name) : m.name,
         inLadder: !!r,
-        done: r ? !!r.done : null,
+        done: isDone,
         date: r ? (r.start_date || null) : null,
         dateKind: r ? (r.done ? 'worked' : 'planned') : null,
-        witnessedAt: reachedAt[String(m.name || '').trim().toLowerCase()] || null,
+        witnessedAt: witnessedByKey[stages.milestoneKey(m.name)] || null,
         associate: r && (r.associate_name || r.associate_role || r.associate_email) ? {
           name: r.associate_name || null,
           role: r.associate_role || null,

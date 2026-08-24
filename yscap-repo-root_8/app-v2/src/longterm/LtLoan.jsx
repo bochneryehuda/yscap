@@ -56,7 +56,9 @@ function Rail({ rail }) {
     ['Interest only', rail.interestOnlyMonths == null ? '—' : `${rail.interestOnlyMonths} months`],
     ['Prepayment penalty', rail.prepaymentPenaltyMonths == null ? '—' : `${rail.prepaymentPenaltyMonths} months`],
     ['Program', plain(rail.program)],
-    ['Milestone', plain(rail.milestone)],
+    // The COMPLETED wording (owner-directed 2026-08-24): "Funded", never
+    // "Funding". The raw Encompass name still lives in the Milestones section.
+    ['Milestone', plain(rail.milestoneLabel || rail.milestone)],
   ];
 
   return (
@@ -153,16 +155,29 @@ function FileHeader({ rail, loan, file }) {
  * three honest states: bought, not bought, and "Encompass has not said"
  * (dashed). The full ladder lives in the Milestones section.
  */
-function SevenStops({ stops, clock, sale }) {
+function SevenStops({ stops, clock, sale, statusLabel }) {
   if (!stops || !stops.stops || !stops.stops.length) return null;
+  // WHERE THE FILE IS vs WHAT IS UP NEXT (owner-directed 2026-08-24): the file
+  // WEARS the last COMPLETED stop — its label is the status — and the first
+  // unreached stop is merely what is being waited on. The old rendering wrote
+  // "now" under the UNREACHED stop, which read as the file being somewhere it
+  // has not got to yet.
+  const nextStop = stops.currentIndex >= 0 ? stops.stops[stops.currentIndex] : null;
   return (
     <div className="card" style={{ color: INK, marginBottom: 12 }}>
+      {statusLabel ? (
+        <div style={{ marginBottom: 10, fontSize: 13, color: INK }}>
+          Status: <strong style={{ fontWeight: 750 }}>{statusLabel}</strong>
+          {nextStop ? <span style={{ color: MUTED }}> &middot; up next: {nextStop.label}</span> : null}
+        </div>
+      ) : null}
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', rowGap: 10 }}>
         {stops.stops.map((s, i) => {
-          const current = i === stops.currentIndex;
+          const at = i === stops.atIndex;          // the stop the file WEARS
+          const next = i === stops.currentIndex;   // the stop being waited on
           const dotColor = s.pilot
             ? (s.reached ? TEAL : 'rgba(20,27,34,.25)')
-            : (s.reached ? GOLD : current ? GOLD : 'rgba(20,27,34,.22)');
+            : (s.reached ? GOLD : next ? GOLD : 'rgba(20,27,34,.22)');
           return (
             <div key={s.key} style={{ display: 'flex', alignItems: 'flex-start', flex: '1 1 auto', minWidth: 96 }}>
               {i > 0 && (
@@ -176,15 +191,16 @@ function SevenStops({ stops, clock, sale }) {
                 <span aria-hidden style={{
                   width: 18, height: 18, borderRadius: 999, boxSizing: 'border-box',
                   border: s.pilot && s.unknown ? `2px dashed ${dotColor}` : `2px solid ${dotColor}`,
-                  background: s.reached ? dotColor : current ? 'rgba(174,135,70,.15)' : 'transparent',
+                  background: s.reached ? dotColor : next ? 'rgba(174,135,70,.15)' : 'transparent',
+                  boxShadow: at ? '0 0 0 3px rgba(174,135,70,.25)' : 'none',
                 }} />
                 <span style={{
                   fontSize: 12, textAlign: 'center', lineHeight: 1.25, maxWidth: 110,
-                  color: s.reached || current ? INK : MUTED,
-                  fontWeight: current ? 750 : s.reached ? 650 : 500,
+                  color: s.reached ? INK : MUTED,
+                  fontWeight: at ? 750 : s.reached ? 650 : 500,
                 }}>{s.label}</span>
                 <span style={{ fontSize: 10, color: MUTED, minHeight: 12 }}>
-                  {s.reached && s.at ? day(s.at) : current ? 'now' : s.pilot && s.unknown ? 'not said' : ''}
+                  {s.reached && s.at ? day(s.at) : s.reached && at ? 'here now' : next ? 'up next' : s.pilot && s.unknown ? 'not said' : ''}
                 </span>
               </div>
             </div>
@@ -607,7 +623,8 @@ export default function LtLoan() {
       )}
 
       <FileHeader rail={rail} loan={loan} file={file} />
-      <SevenStops stops={stops} clock={milestoneClock} sale={sale} />
+      <SevenStops stops={stops} clock={milestoneClock} sale={sale}
+        statusLabel={rail && rail.milestoneLabel} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 300px', gap: 14, alignItems: 'start' }}
         className="lt-workspace">

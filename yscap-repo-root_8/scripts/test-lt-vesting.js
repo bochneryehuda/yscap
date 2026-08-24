@@ -103,7 +103,8 @@ async function main() {
     let l = (await db.query('SELECT vesting_type, vesting_entity_name, milestone_name, ms_status FROM lt_loans WHERE id = $1::uuid', [loanId])).rows[0];
     eq(l.vesting_type, 'Officer', 'the vesting word landed');
     eq(l.vesting_entity_name, '400 Birchwood LLC', 'the entity name landed on an Officer vesting');
-    eq(l.milestone_name, 'Investor Delivery', 'and the SITTING milestone rode the same read (db/623)');
+    eq(l.milestone_name, 'Funding',
+      'and the STANDING milestone rode the same read — the LAST COMPLETED step (db/623 + owner-directed 2026-08-24)');
     eq(l.ms_status, 'Funded', 'with the tenant’s own wording');
 
     // The loan is RE-VESTED to an individual in Encompass. 1859 often keeps its

@@ -157,12 +157,15 @@ async function readLoan(loanId, guid, settings) {
     return { ok: false, reason };
   }
 
-  // WHERE THE FILE SITS (db/623, owner-reported on 363 Birch Dr). The loan's own
-  // milestone LADDER decides: the file sits in the first step whose doneIndicator
-  // is false. The loan JSON's `currentMilestone` LAGS — it stays on the last
-  // WORKED step until somebody starts the next, which is how a file whose
-  // Funding step had COMPLETED still read "Funding". The lagging form is kept
-  // only as the fallback for a ladder that could not be read.
+  // WHERE THE FILE STANDS (db/623 + owner-directed 2026-08-24, Birch Dr). The
+  // loan's own milestone LADDER decides: the file stands at its LAST COMPLETED
+  // step, and every screen displays that step's COMPLETED wording
+  // (`stages.completedFormLabel` — Funding done reads "Funded", never
+  // "Funding" and never the not-yet-happened "Investor Delivery"). The loan
+  // JSON's `currentMilestone` is the fallback for a ladder that could not be
+  // read — it carries the last WORKED step until somebody starts the next,
+  // which AGREES with the last-completed standing on any loan whose next step
+  // has not started.
   const ladderMod = require('./milestone-ladder');
   const ladder = await ladderMod.readLadder(guid, { client: lazy.client });
   const laggingMilestone = loan && (loan.currentMilestone || loan.currentMilestoneName

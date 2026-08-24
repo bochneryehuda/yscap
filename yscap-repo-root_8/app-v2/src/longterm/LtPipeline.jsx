@@ -68,7 +68,9 @@ const FALLBACK_COLUMNS = [
   { key: 'borrower', label: 'Borrower', field: 'borrower_name', kind: 'borrower', sort: 'borrower', align: 'left' },
   { key: 'loan_amount', label: 'Amount', field: 'loan_amount', kind: 'money', sort: 'loan_amount', align: 'right' },
   { key: 'stage', label: 'Stage', field: 'stage_key', kind: 'text', sort: 'stage', align: 'left' },
-  { key: 'milestone', label: 'Milestone', field: 'milestone_name', kind: 'text', sort: 'milestone', align: 'left' },
+  // `milestone_label` is the server's completed-form wording (owner-directed
+  // 2026-08-24: "Funded", never "Funding") — pipeline.js decorates every row.
+  { key: 'milestone', label: 'Milestone', field: 'milestone_label', kind: 'text', sort: 'milestone', align: 'left' },
   { key: 'days_in_stage', label: 'At milestone', field: 'milestone_days', kind: 'milestone_days', sort: 'milestone_since', align: 'right' },
   { key: 'loan_officer', label: 'Loan officer', field: 'loan_officer', kind: 'contact', sort: null, align: 'left' },
   { key: 'lock_status', label: 'Lock', field: 'lock_status', kind: 'lock', sort: 'lock_expiration', align: 'left' },
