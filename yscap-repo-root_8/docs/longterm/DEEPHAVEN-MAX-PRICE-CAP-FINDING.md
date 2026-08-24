@@ -76,14 +76,16 @@ lender+program only, so the two channels' rungs merged into one ladder that read
 Fixed: the program key now includes the vendor's own `rateGridId` + rate-period id, each
 program is stamped with `rateSheetName`, and the board says which sheet a quote came from
 whenever one lender quotes the same programme name from two sheets. Measured on the live
-capture: 0 merged ladders after the fix (was 32 non-monotonic steps).
+capture: **4 programmes quoted two prices at one rate before the fix, 0 after** — see the
+correction below for the full table, and for why "non-monotonic steps" is the wrong metric.
 
 Guards: §13c in `scripts/test-lt-lenderprice.js` (mutation-proven — reverting the key fails
 6 assertions) and PE-64a…e in `scripts/test-lt-pricer-screen.mjs`.
 
-**CORRECTION (post-merge, 2026-08-24).** The PR body and the merge commit for #1329 state
-"32 non-monotonic ladder steps before, 0 after." **That was inferred, not measured, and it is
-wrong.** The measured figures on the same live capture are:
+**CORRECTION (post-merge, 2026-08-24).** The PR body and the merge commit for #1329 — and the
+first version of the paragraph above — state "32 non-monotonic ladder steps before, 0 after."
+**That was inferred, not measured, and it is wrong.** The measured figures on the same live
+capture are:
 
 | grouping key | programs | programs quoting TWO prices at one rate | falling steps |
 |---|---:|---:|---:|
