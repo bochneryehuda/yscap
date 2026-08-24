@@ -177,6 +177,19 @@ check(shuffled.steps.map((s) => s.name).join(',') === 'Started,Loan Setup,Proces
   'the stepper sorts by the tenant\'s own order, whatever order the rows arrive in');
 check(shuffled.currentIndex === 2, '…so the current position is right regardless');
 
+// PUNCTUATION-BLIND on BOTH sides (audit round 2, obs 4): a loan standing at
+// "Cond Approval" must land on the catalog's "Cond. Approval" row, and a
+// witnessed day keyed either way must still reach the step. Keying these on
+// `normalizeMilestone` (which keeps the dot) silently missed the join, so the
+// step read unreached and its witnessed date was dropped.
+const dotCatalog = [{ name: 'Submittal', sort_order: 1 }, { name: 'Cond. Approval', sort_order: 2 }];
+const dotStep = ws.milestoneStepper({ milestone_name: 'Cond Approval' }, dotCatalog,
+  { reachedAt: { 'cond. approval': '2026-07-20' } });
+check(dotStep.currentIndex === 1 && dotStep.unrecognised === false,
+  'a dotless standing milestone lands on the dotted catalog row — never "unrecognised" over one full stop');
+check(dotStep.steps[1].reachedAt === '2026-07-20',
+  '…and the witnessed day keyed the other way still reaches it');
+
 // ── The rail ────────────────────────────────────────────────────────────────
 console.log('\nthe summary rail');
 

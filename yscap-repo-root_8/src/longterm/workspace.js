@@ -159,12 +159,16 @@ function sectionMenu(loan, opts = {}) {
  * on exactly the files that matter. See `milestone-purchased.js`.
  */
 function milestoneStepper(loan, catalog = [], opts = {}) {
-  const current = stages.normalizeMilestone((loan || {}).milestone_name);
+  // Punctuation-blind (audit round 2, obs 4): a loan standing at "Cond Approval"
+  // must land on the catalog's "Cond. Approval" row.
+  const current = stages.milestoneKey((loan || {}).milestone_name);
   const ordered = (catalog || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   // A PILOT step is never the loan's CURRENT milestone — Encompass names that, and
   // Encompass has never heard of our step. Excluding it from the match also stops a
   // tenant that happens to name a milestone "Purchased" from resolving to ours.
-  const currentIndex = ordered.findIndex((m) => !m.pilot && stages.normalizeMilestone(m.name) === current);
+  const currentIndex = ordered.findIndex((m) => !m.pilot && stages.milestoneKey(m.name) === current);
+  const witnessedByKey = {};
+  for (const [k, v] of Object.entries(opts.reachedAt || {})) witnessedByKey[stages.milestoneKey(k)] = v;
 
   return {
     currentIndex,
@@ -205,7 +209,7 @@ function milestoneStepper(loan, catalog = [], opts = {}) {
         note: pilot ? ((opts.pilotNotes || {})[m.milestoneId] || null) : null,
         reachedAt: pilot
           ? ((opts.pilotReachedAt || {})[m.milestoneId] || null)
-          : ((opts.reachedAt || {})[String(m.name || '').trim().toLowerCase()] || null),
+          : (witnessedByKey[stages.milestoneKey(m.name)] || null),
       };
     }),
   };
