@@ -98,13 +98,19 @@ async function main() {
   eq(stages.completedFormLabel('Submittal'), 'Submitted', 'Submittal completed reads Submitted');
   eq(stages.completedFormLabel('Cond. Approval'), 'Conditionally Approved', 'Cond. Approval — punctuation-blind — reads Conditionally Approved');
   eq(stages.completedFormLabel('Clear To Close'), 'Clear to Close', "Clear To Close keeps the owner's stop wording");
-  // AUDIT ROUND 3, D6: 'Sent to processing' is in Encompass's STOCK declared
-  // list and was never once OBSERVED on this tenant (the 490-loan MS.STATUS
-  // census in encompass/dropdowns.js), and MS.STATUS lags — so a per-milestone
-  // sample of it is not evidence. Loan Setup keeps its own name and joins the
-  // open owner questions.
+  // AUDIT ROUND 3, D6 — CORRECTED 2026-08-24 (owner-reported). D6 gave two
+  // reasons for removing 'Loan Setup -> Sent to Processing' and one of them was
+  // FALSE: it said the string had never once been OBSERVED on this tenant, when
+  // the 490-loan MS.STATUS census recorded it on 27 loans. THE REMOVAL STANDS on
+  // the reason that never depended on that: MS.STATUS LAGS, so a per-milestone
+  // sample of it attributes a wording to the milestone one step off wherever the
+  // lag is present — which is precisely the question this table answers. The
+  // owner's 2026-08-24 rule seals it from the other side: 'Sent to processing' is
+  // one of Encompass's seven STOCK bucket words, not this tenant's own name for
+  // Loan Setup, and a milestone with no different Encompass wording keeps its
+  // Encompass name.
   eq(stages.completedFormLabel('Loan Setup'), 'Loan Setup',
-    'Loan Setup keeps its OWN name — its only evidence was a lagging, stock-contradicted sample (D6)');
+    'Loan Setup keeps its OWN name — its only evidence was a sample of a LAGGING field, and the word itself is a stock bucket name rather than this tenant\'s (D6, corrected)');
   eq(stages.completedFormLabel('Started'), 'File started',
     'Started reads File started — one of the two wordings the live census actually OBSERVED');
   // OWNER-DIRECTED 2026-08-24, answering the question round 5 raised about this

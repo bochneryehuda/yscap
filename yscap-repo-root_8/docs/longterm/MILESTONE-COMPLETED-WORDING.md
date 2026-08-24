@@ -53,13 +53,31 @@ below the table.
 | Funding | **Funded** | **the owner's own words** |
 
 > ⚠ **A PER-MILESTONE `MS.STATUS` SAMPLE IS NOT EVIDENCE, and this table used to contain one.**
-> Audit round 3 removed `Loan Setup → "Sent to Processing"`: that string appears only in Encompass's
-> **stock declared list** and was never once OBSERVED in this tenant's 490-loan MS.STATUS census
-> (`src/longterm/encompass/dropdowns.js`), whose loans return their own milestone names. And
-> MS.STATUS **lags**, so a per-milestone sample of it attributes each wording to the milestone one
-> step off wherever the lag is present. `Started → "File started"` survives because the sweep's own
-> note pairs the two names in words; every other row above rests on the owner's own words or on
-> db/547. `Completion → "Completed"` did NOT survive — see the owner's rule below.
+> Audit round 3 removed `Loan Setup → "Sent to Processing"`. It gave two reasons, and **one of them
+> was false** — corrected 2026-08-24 after the owner said so.
+>
+> **The false half.** The note claimed that string "was never once OBSERVED" on this tenant. Our own
+> 490-loan MS.STATUS census recorded it on **27 loans**. The error came from reading a hand-typed
+> summary list in `src/longterm/encompass/dropdowns.js` rather than the machine-recorded census
+> beside it; that list omitted eleven values the sweep saw and invented two it never did. It is now
+> **derived** from the census, so the same mistake cannot be made from it again.
+>
+> **What the census really says**, which matters more than the wrong claim: MS.STATUS **returns a
+> mix of both vocabularies**. On 342 of 490 loans it gives a tenant milestone name; on the other 148
+> it gives one of Encompass's seven stock bucket names — Completed 79, Submitted 32,
+> "Sent to processing" 27, Started 6, Funded 4. Nothing about a value says which vocabulary it is
+> from.
+>
+> **The removal stands, on the reason that never depended on the false half.** MS.STATUS **lags**,
+> so a per-milestone sample of it attributes each wording to the milestone one step off wherever the
+> lag is present — which is exactly the question this table answers. And the owner's rule below
+> seals it from the other side: "Sent to processing" is a **stock bucket** word, not this tenant's
+> own name for Loan Setup.
+>
+> `Started → "File started"` survives because the sweep's own note pairs the two names in words;
+> every other row above rests on the owner's own words or on db/547. `Completion → "Completed"` did
+> NOT survive — the word is on 79 loans, but the census counts values without breaking them down by
+> milestone, so nothing ties those 79 to Completion. See the owner's rule below.
 
 > **THE OWNER SETTLED THIS ON 2026-08-24, and it removed a row rather than adding one.** Asked what
 > the ten uncovered milestones should read, the answer was a rule rather than ten words:
