@@ -2058,9 +2058,19 @@ function TrustpointPanel({ appId }) {
             <b>Draw #{d.number == null ? '—' : d.number}</b>
             <StatusChip info={d.status_info} />
             <span className="small muted">Requested {usd(d.requested_cents)} · Approved {usd(d.approved_cents)}{d.to_disburse_cents != null ? ` · Net ${usd(d.to_disburse_cents)}` : ''}</span>
-            {(d.disbursed_at || Number(d.disbursed_cents) > 0) && (
+            {/* `release_confirmed` is the SERVER's answer (mirror.releaseConfirmed) — a wire
+                DATE plus a decided draw. This used to test `disbursed_cents > 0` here, which
+                is TrustPoint's PROJECTED net pre-populated at submission, so a $6,450 DRAFT
+                with nothing approved printed "✓ Released $6,200.00" (owner-reported
+                2026-08-24, YSCAP258134629). A figure with no wire behind it is now stated as
+                what it is, and never in the success colour. */}
+            {d.release_confirmed ? (
               <span className="small" style={{ color: 'var(--success)' }}>✓ Released{Number(d.disbursed_cents) > 0 ? ` ${usd(d.disbursed_cents)}` : ''}</span>
-            )}
+            ) : Number(d.disbursed_cents) > 0 ? (
+              <span className="small muted" title="TrustPoint fills this in when the draw is keyed in — it is their projected net, not a wire.">
+                Projected net {usd(d.disbursed_cents)} · not wired
+              </span>
+            ) : null}
             {d.writeback_at ? <span className="small" style={{ color: 'var(--success)' }}>✓ In Sitewire</span>
               : d.writeback_note ? <span className="small muted">{d.writeback_note}</span> : null}
           </div>

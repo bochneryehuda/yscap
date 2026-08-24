@@ -116,8 +116,16 @@ router.get('/files/:id/overview', requirePermission('manage_draws'), async (req,
         for (const d of draws) threads.set(d.tp_draw_id, await comments.threadFor(appId, d.tp_draw_id));
       } catch (e) { console.warn('[trustpoint] thread read failed:', e && e.message); threads = new Map(); }
     }
+    // WAS THIS DRAW ACTUALLY WIRED? Answered on the SERVER, by the same predicate the
+    // money mirror gates its ledger row on (`mirror.releaseConfirmed`), so the desk can
+    // never call a draw released on evidence the ledger refuses. The screen used to test
+    // `disbursed_cents > 0` itself — TrustPoint's projected net, pre-populated at
+    // submission — and printed "✓ Released $6,200.00" against a $6,450 DRAFT on
+    // YSCAP258134629 (owner-reported 2026-08-24). Never re-derive this in a component.
+    const tpMirror = require('../trustpoint/mirror');
     const draws2 = draws.map((d) => ({
       ...d, status_info: ds.drawStatus(d), messages: threads.get(d.tp_draw_id) || [],
+      release_confirmed: tpMirror.releaseConfirmed(d),
     }));
     const sos2 = serviceOrders.map((s) => ({ ...s, status_info: ds.serviceStatus(s) }));
     // The newest draw is the one the file is "on" — its headline answers "what's happening now?"

@@ -372,7 +372,16 @@ async function loadRollup(db, appId, { sowState = null } = {}) {
       retainageHeldCents: l ? l.retainage_held_cents : 0,
       // For a draw with a RECORDED release, the stored net wins — it already carries the
       // out-of-pocket floor and the retainage. Until then the net is a PROJECTION (approved − fee).
-      netReleaseCents: l ? l.net_release_cents : null,
+      //
+      // ONLY A RELEASED ROW MAY SPEAK FOR THE MONEY (owner-reported 2026-08-24, YSCAP258134629).
+      // `drawMoney` treats a stored net as FINAL, so handing it a row that is not released
+      // states a settled figure for money nobody released — and it silently outranks the
+      // projection, which is the honest answer at that point. `auto-release` writes exactly
+      // such a row on purpose when the lien-waiver gate fails, and its own header says a
+      // `held` row must "never [be] silently reported as released"; this call site was the
+      // one place making it so. The FEE still comes from the row either way — it is earned
+      // when the draw is approved, not when the wire clears.
+      netReleaseCents: (l && l.released) ? l.net_release_cents : null,
       released: !!(l && l.released),
       finding: findingByDraw.get(d.sitewire_draw_id) || null,
     });
