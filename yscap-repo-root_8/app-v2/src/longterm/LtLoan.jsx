@@ -398,12 +398,15 @@ function MilestoneBoard({ board, history }) {
   );
 }
 
-function LockCard({ lock }) {
+function LockCard({ lock, bare = false }) {
   if (!lock) return null;
+  // `bare` drops the card chrome and the heading so the lock can be the BODY of a
+  // section that already carries both. Nothing else about it changes.
+  const wrap = bare ? undefined : 'card';
   if (!lock.recorded) {
     return (
-      <div className="card" style={{ color: INK }}>
-        <h2 style={{ margin: '0 0 6px', fontSize: 16 }}>Rate lock</h2>
+      <div className={wrap} style={{ color: INK }}>
+        {!bare && <h2 style={{ margin: '0 0 6px', fontSize: 16 }}>Rate lock</h2>}
         <p style={{ margin: 0, color: MUTED }}>{lock.why}</p>
       </div>
     );
@@ -411,8 +414,8 @@ function LockCard({ lock }) {
   const left = lock.daysRemaining;
   const tone = left == null ? MUTED : left < 0 ? '#8A2D2D' : left <= 7 ? '#8A6A22' : '#1F5F3F';
   return (
-    <div className="card" style={{ color: INK }}>
-      <h2 style={{ margin: '0 0 8px', fontSize: 16 }}>Rate lock</h2>
+    <div className={wrap} style={{ color: INK }}>
+      {!bare && <h2 style={{ margin: '0 0 8px', fontSize: 16 }}>Rate lock</h2>}
       <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'baseline' }}>
         <span style={{ fontSize: 20, fontWeight: 700 }}>{plain(lock.status)}</span>
         <span style={{ color: tone, fontWeight: 600 }}>
@@ -617,6 +620,92 @@ function Contacts({ contacts, canReassign = false, staff = [], onReassign }) {
 
 // Exported for the render smoke (scripts/test-lt-loan-render-pure.mjs), which
 // proves the LOADED states render — a green build alone cannot.
+/* One line under each section name saying what is inside it, so the shut file
+   still reads as a list of what this loan HAS rather than fifteen bare words.
+   A key with no line here simply shows none — never a placeholder sentence. */
+const SECTION_BLURB = {
+  summary: 'The loan\u2019s headline figures, exactly as Encompass has them.',
+  milestones: 'Every step of the ladder, with Encompass\u2019s own date and the associate on each step.',
+  borrowers: 'The people on the loan \u2014 names, contact details and how they take title.',
+  property: 'The subject property \u2014 address, type, units and value.',
+  terms: 'Rate, term, interest-only and the prepayment penalty.',
+  income: 'The rent, the housing expense and the DSCR this loan qualifies on.',
+  employment: 'Jobs and income, as Encompass has them.',
+  assets: 'What the borrower owns, and what they owe.',
+  reo: 'Every other property on the borrower\u2019s schedule.',
+  declarations: 'The borrower\u2019s own answers on the application.',
+  contacts: 'Who is on this file, and whose pipeline it sits in.',
+  conditions: 'What is still outstanding on this loan, and the documents against it.',
+  investor: 'Who bought this loan, and when.',
+  lock: 'The rate lock, and everything we have watched change on it.',
+  clickup: 'What the sync does for this file on its own \u2014 and the buttons to do any of it by hand.',
+};
+
+/**
+ * ONE SECTION OF THE FILE, opening in place (owner-directed 2026-08-24: "this
+ * should be like you click on it, and next it comes up with the details, like an
+ * LOS works").
+ *
+ * THE HEADER IS THE WHOLE CONTROL — the name, one line saying what is inside, and
+ * the plate's own chevron, which turns down when the section is open. The file
+ * opens with everything shut but the summary, so the first thing anybody reads is
+ * a short list of what this loan HAS.
+ *
+ * A SECTION THE SERVER SAID DOES NOT APPLY IS STILL OPENABLE, and answers with its
+ * reason. A control that does nothing when pressed teaches people the screen is
+ * broken; one that answers the question is honest — the same rule the old room
+ * buttons carried, kept.
+ *
+ * THE BODY IS RENDERED ONLY WHILE IT IS OPEN, and that is not a nicety: the
+ * ClickUp panel and the Condition Center each load themselves on mount, so a
+ * screen that mounted all fifteen would fire a burst of requests for panels
+ * nobody asked to see.
+ */
+function LtSection({ id, label, blurb, available, open, onToggle, children }) {
+  return (
+    <section id={id} className="card" style={{ color: INK, padding: 0, scrollMarginTop: 14 }}>
+      <button type="button" onClick={onToggle} aria-expanded={open}
+        aria-controls={open ? `${id}-body` : undefined}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 12, width: '100%',
+          background: open ? 'rgba(174,135,70,.05)' : 'transparent',
+          border: 0, cursor: 'pointer', font: 'inherit', textAlign: 'left',
+          padding: '12px 14px',
+          borderRadius: open ? 'var(--radius) var(--radius) 0 0' : 'var(--radius)',
+        }}>
+        {/* The plate's chevron, at reading size. Decoration + state, never the
+            only carrier of state: the label's weight and the body itself say it too. */}
+        <svg aria-hidden="true" viewBox="0 0 100 100" width="11" height="13"
+          style={{ flex: '0 0 11px', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .16s ease' }}>
+          <path d="M20 8 L78 50 L20 92 L36 50 Z" fill={open ? GOLD : 'rgba(20,27,34,.42)'} />
+        </svg>
+        <span style={{ minWidth: 0, flex: '1 1 auto' }}>
+          <span style={{
+            display: 'block', fontSize: 14.5, letterSpacing: '.01em',
+            fontWeight: open ? 750 : 650, color: available ? INK : MUTED,
+          }}>{label}</span>
+          {blurb ? (
+            <span style={{ display: 'block', fontSize: 12, color: MUTED, marginTop: 2, lineHeight: 1.4 }}>{blurb}</span>
+          ) : null}
+        </span>
+        {!available ? (
+          <span style={{
+            flex: '0 0 auto', fontSize: 10, letterSpacing: '.1em', textTransform: 'uppercase',
+            fontWeight: 700, color: MUTED, whiteSpace: 'nowrap',
+            border: '1px solid rgba(20,27,34,.16)', borderRadius: 999, padding: '2px 8px',
+          }}>Not on this file</span>
+        ) : null}
+      </button>
+      {open ? (
+        <div id={`${id}-body`} className="lt-sec-body"
+          style={{ borderTop: '1px solid rgba(20,27,34,.08)', minWidth: 0 }}>
+          {children}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export { FileHeader, SevenStops, MilestoneBoard, Rail };
 
 export default function LtLoan() {
@@ -624,7 +713,12 @@ export default function LtLoan() {
   const nav = useNavigate();
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
-  const [active, setActive] = useState('summary');
+  // WHICH SECTIONS ARE OPEN. The file opens on its summary and everything else is
+  // shut, so the first read is a short list of what this loan HAS — then you open
+  // the one you came for. A Set, not a single key: an LOS lets you hold two open
+  // side by side (the terms beside the income) and reading one should never close
+  // the other.
+  const [openSecs, setOpenSecs] = useState(() => new Set(['summary']));
 
   const load = useCallback(() => {
     setErr(null);
@@ -644,6 +738,27 @@ export default function LtLoan() {
     ltApi.reassign(loanId, role, payload).then(() => { load(); })
   ), [loanId, load]);
 
+  const toggleSection = useCallback((key) => {
+    setOpenSecs((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+
+  // The index on the left OPENS a section and brings it into view — it never
+  // closes one. Somebody reaching for a section wants to read it, and a click
+  // that shut the thing you just asked for would be the opposite of the answer.
+  // The scroll waits a frame because the section may be opening in the same tick.
+  const jumpToSection = useCallback((key) => {
+    setOpenSecs((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+    if (typeof window === 'undefined') return;
+    window.requestAnimationFrame(() => {
+      const el = document.getElementById(`lt-sec-${key}`);
+      if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, []);
+
   if (err) {
     return (
       <LtLayout title="Long-term file">
@@ -659,11 +774,55 @@ export default function LtLoan() {
   const { stops, milestoneBoard, sale, loan } = data;
   const { canReassign = false, assignableStaff = [] } = data;
   const { product: productKey, productLabel, milestoneHistory } = data;
-  const current = sections.find((s) => s.key === active) || sections[0];
+
   // A section is drawn from the file ONLY when the server said it applies. A section
   // the workspace greyed out has a reason attached, and that reason is the answer —
   // drawing it anyway would contradict the sentence right above it.
-  const showFile = !!(current && current.available && hasFileSection(current.key));
+  const bodyFor = (s) => {
+    if (!s.available) {
+      return <p style={{ margin: 0, color: MUTED, fontSize: 13, lineHeight: 1.55 }}>{s.why}</p>;
+    }
+    if (s.key === 'milestones') return <MilestoneBoard board={milestoneBoard} history={milestoneHistory} />;
+    if (s.key === 'clickup') return <LtClickupSection loanId={loanId} />;
+    if (s.key === 'lock') return <LockCard lock={lock} bare />;
+    // The Condition Center loads ITSELF. It is two Encompass feeds rather than a
+    // slice of the 1003, so it is not in `file` and does not go through
+    // LtFileSection — which stays about the URLA sections it documents. While the
+    // switch is off the server greys this section and the branch above shows its
+    // reason, so the screen never renders a centre the API would refuse.
+    if (s.key === 'conditions') return <LtConditionCenter loanId={loanId} />;
+    if (s.key === 'contacts') {
+      return (
+        <>
+          <p style={{ margin: '0 0 8px', color: MUTED, fontSize: 13 }}>
+            Read from Encompass. A person shown as not linked simply has no confirmed
+            match on the People screen yet.
+          </p>
+          <Contacts contacts={contacts} canReassign={canReassign} staff={assignableStaff}
+            onReassign={reassign} />
+        </>
+      );
+    }
+    if (hasFileSection(s.key)) {
+      return (
+        <>
+          <p style={{ margin: '0 0 10px', color: MUTED, fontSize: 13 }}>
+            Read from Encompass. Nothing here is editable — the long-term side reads
+            Encompass and never writes to it.
+          </p>
+          <LtFileSection sectionKey={s.key} file={file}
+            sections={sections} lock={lock} contacts={contacts}
+            history={milestoneHistory} />
+        </>
+      );
+    }
+    return (
+      <p style={{ margin: 0, color: MUTED, fontSize: 13, lineHeight: 1.55 }}>
+        This loan’s headline figures are in File Details, on the right. Nothing here is
+        editable: the long-term side reads Encompass and never writes to it.
+      </p>
+    );
+  };
 
   return (
     <LtLayout title={(rail && (rail.milestoneLabel || rail.milestone)) || 'Long-term file'}>
@@ -718,20 +877,19 @@ export default function LtLoan() {
             lets each table scroll inside its OWN box the way it was meant to. */}
         {/* THE ROOMS (the plate's section index). A VERTICAL list, not a row of
             buttons: the plate reads top-to-bottom and so does a loan file, and a
-            wrapping button row gave the eye no order to follow. A section that does
-            not apply is greyed WITH ITS REASON and stays CLICKABLE — a disabled
-            control that does nothing when pressed teaches people the screen is
-            broken; one that answers the question is honest. */}
+            wrapping button row gave the eye no order to follow. Since the sections
+            themselves now open in place, this is a JUMP list — it opens the section
+            and scrolls to it, and never closes one. */}
         <nav className="card lt-rooms" style={{ color: INK, alignSelf: 'start', position: 'sticky', top: 12, padding: '12px 12px 10px' }}>
           <div style={{ fontSize: 10, letterSpacing: '.14em', textTransform: 'uppercase', color: GOLD, fontWeight: 700 }}>
             The file
           </div>
           <div style={{ display: 'grid', gap: 1, marginTop: 8 }}>
             {sections.map((s2) => {
-              const on = s2.key === active && s2.available;
+              const on = openSecs.has(s2.key);
               return (
                 <button key={s2.key} type="button" title={s2.why || ''}
-                  onClick={() => setActive(s2.key)}
+                  onClick={() => jumpToSection(s2.key)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8, width: '100%',
                     background: on ? 'rgba(174,135,70,.08)' : 'transparent',
@@ -752,77 +910,20 @@ export default function LtLoan() {
               );
             })}
           </div>
-          {current && !current.available && (
-            <div style={{ marginTop: 8, fontSize: 12, color: MUTED, lineHeight: 1.45 }}>{current.why}</div>
-          )}
         </nav>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: 12, minWidth: 0 }}>
-
-          {active === 'milestones' ? (
-            <div className="card" style={{ color: INK }}>
-              <h2 style={{ margin: '0 0 4px', fontSize: 16 }}>Milestones</h2>
-              <p style={{ margin: '0 0 10px', color: MUTED, fontSize: 13 }}>
-                Every step of this loan&rsquo;s ladder, with Encompass&rsquo;s own date and the
-                associate on each step. The bar above shows only the seven big stops.
-              </p>
-              <MilestoneBoard board={milestoneBoard} history={milestoneHistory} />
-            </div>
-          ) : active === 'clickup' ? (
-            <div className="card" style={{ color: INK }}>
-              <h2 style={{ margin: '0 0 4px', fontSize: 16 }}>ClickUp syncing</h2>
-              <p style={{ margin: '0 0 10px', color: MUTED, fontSize: 13 }}>
-                What the sync does for this file automatically &mdash; and the buttons to do any
-                of it by hand.
-              </p>
-              <LtClickupSection loanId={loanId} />
-            </div>
-          ) : active === 'contacts' ? (
-            <div className="card" style={{ color: INK }}>
-              <h2 style={{ margin: '0 0 4px', fontSize: 16 }}>Who is on this file</h2>
-              <p style={{ margin: '0 0 6px', color: MUTED, fontSize: 13 }}>
-                Read from Encompass. A person shown as not linked simply has no confirmed
-                match on the People screen yet.
-              </p>
-              <Contacts contacts={contacts} canReassign={canReassign} staff={assignableStaff}
-                onReassign={reassign} />
-            </div>
-          ) : active === 'lock' ? (
-            <LockCard lock={lock} />
-          ) : active === 'conditions' && current && current.available ? (
-            // The Condition Center loads ITSELF. It is two Encompass feeds rather
-            // than a slice of the 1003, so it is not in `file` and does not go
-            // through LtFileSection — which stays about the URLA sections it
-            // documents. While the switch is off the server greys this section and
-            // the branch below shows its reason, so the screen never renders a
-            // centre the API would refuse.
-            <div className="card" style={{ color: INK }}>
-              <h2 style={{ margin: '0 0 6px', fontSize: 16 }}>Conditions</h2>
-              <LtConditionCenter loanId={loanId} />
-            </div>
-          ) : (
-            <div className="card" style={{ color: INK }}>
-              <h2 style={{ margin: '0 0 6px', fontSize: 16 }}>{current ? current.label : 'Loan summary'}</h2>
-              {showFile ? (
-                <>
-                  <p style={{ margin: '0 0 10px', color: MUTED, fontSize: 13 }}>
-                    Read from Encompass. Nothing on this screen is editable — the
-                    long-term side reads Encompass and never writes to it.
-                  </p>
-                  <LtFileSection sectionKey={current.key} file={file}
-                    sections={sections} lock={lock} contacts={contacts}
-                    history={milestoneHistory} />
-                </>
-              ) : (
-                <p style={{ margin: 0, color: MUTED, lineHeight: 1.55 }}>
-                  {current && !current.available
-                    ? current.why
-                    : 'This loan’s headline figures are on the Summary panel. Nothing here is '
-                      + 'editable: the long-term side reads Encompass and never writes to it.'}
-                </p>
-              )}
-            </div>
-          )}
+        {/* THE FILE ITSELF, top to bottom, each section opening in place. The order
+            is the SERVER'S (`workspace.js`), which is why ClickUp syncing — the
+            plumbing rather than the loan — sits at the bottom of the stack. */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: 10, minWidth: 0 }}>
+          {sections.map((s2) => (
+            <LtSection key={s2.key} id={`lt-sec-${s2.key}`} label={s2.label}
+              blurb={s2.available ? (SECTION_BLURB[s2.key] || null) : null}
+              available={s2.available} open={openSecs.has(s2.key)}
+              onToggle={() => toggleSection(s2.key)}>
+              {bodyFor(s2)}
+            </LtSection>
+          ))}
         </div>
 
         <Rail rail={rail} />

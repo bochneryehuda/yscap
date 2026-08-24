@@ -5041,6 +5041,13 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    that costs a third of the screen for navigation nobody is using yet. */
 @media(max-width:900px){ .lt-rooms{position:static !important} }
 
+/* A section's details line up UNDER its name, not under its chevron: the chevron is
+   a control, and body copy hanging to the left of the heading it belongs to reads as
+   though it belongs to the card rather than to the section. On a phone that indent
+   is a tenth of the screen for nothing, so it goes back to the card's own edge. */
+.lt-sec-body{padding:12px 14px 14px 37px}
+@media(max-width:720px){ .lt-sec-body{padding-left:14px} }
+
 /* The 1003 sections' label/value lists. Two columns is right on a desktop and is a
    guaranteed one-word-per-line on a phone, so they stack — the table rows inside a
    section scroll in their own box instead (the page body must never scroll sideways). */
