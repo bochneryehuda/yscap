@@ -519,6 +519,169 @@ router.get('/catalog-probe', async (_req, res) => {
   res.json({ ok: true, probed: results.length, results });
 });
 
+/**
+ * REQUEST AUDIT — every request PILOT makes to Encompass, fired at the live tenant,
+ * with the status it answered written down. READ ONLY.
+ *
+ * WHY (owner-directed, 2026-08-25, asked three times): *"I want you to double-check
+ * and triple-check every single request that you're going to encompass to make sure
+ * every request works... make sure all the tests and all the requests are correct,
+ * everything works, and nothing returns an error."*
+ *
+ * `/catalog-probe` above answers that for the CATALOG. This answers it for the whole
+ * surface: the token, the pipeline search, the loan, the milestone ladder, the
+ * milestone logs, the field reader, the company users, and every settings address —
+ * eighteen distinct requests, which is all of them. The list was taken by grepping
+ * every `apiGet(`, `_fetchGuarded(` and path constant in all THREE Encompass clients,
+ * so a request that exists in code and not here is a gap this file is wrong about,
+ * not a request that went unaudited.
+ *
+ * IT IS NOT AN OPEN PROXY, for the same reason `/catalog-probe` is not: the list is
+ * FIXED in code and nothing is taken from the query string except which loan to use
+ * as the subject — and that is looked up in our OWN book, never passed through to
+ * Encompass as a path. Every entry is a GET through the read-only client, or one of
+ * the two read-shaped POSTs (`loanPipeline`, `fieldReader`) that the client's own
+ * allowlist already permits and that mutate nothing.
+ *
+ * WHERE THE TWO PRODUCTS DISAGREE, BOTH ARE ASKED. RTL reads the milestone log at
+ * `/logs/milestoneLogs` and Long-Term reads it at `/milestoneLogs`. Both cannot be
+ * right, and neither has ever been measured — so both are in the list, side by side,
+ * and the answer decides it rather than whichever file somebody opens first.
+ */
+router.get('/request-audit', async (req, res) => {
+  if (!encompass.configured()) {
+    return res.status(503).json({ ok: false, error: 'Encompass is not connected on this deployment.' });
+  }
+
+  // THE SUBJECT LOAN comes from our own book, not from the caller. A caller may name
+  // a loan NUMBER to audit a specific file; the GUID is looked up here, so nothing a
+  // caller types ever reaches Encompass as a path.
+  const wanted = String(req.query.loan || '').trim();
+  let subject = null;
+  try {
+    const { rows } = await db.query(
+      wanted
+        ? `SELECT loan_number, encompass_loan_guid FROM lt_loans
+            WHERE loan_number = $1 AND encompass_loan_guid IS NOT NULL LIMIT 1`
+        : `SELECT loan_number, encompass_loan_guid FROM lt_loans
+            WHERE encompass_loan_guid IS NOT NULL
+            ORDER BY encompass_synced_at DESC NULLS LAST LIMIT 1`,
+      wanted ? [wanted] : [],
+    );
+    subject = rows[0] || null;
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: `could not choose a subject loan: ${(e && e.message) || e}` });
+  }
+  if (!subject) {
+    return res.status(404).json({ ok: false, error: 'no loan in the book carries an Encompass id, so the per-loan requests cannot be audited' });
+  }
+  const guid = subject.encompass_loan_guid;
+
+  const results = [];
+  const record = async (group, what, how, run) => {
+    const t0 = Date.now();
+    try {
+      const body = await run();
+      const rows = Array.isArray(body) ? body : (body && Array.isArray(body.items) ? body.items : null);
+      const keys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body) : null;
+      results.push({
+        group, what, how, ok: true, status: 200, ms: Date.now() - t0,
+        count: rows ? rows.length : (keys ? keys.length : null),
+        shape: rows ? 'list' : (body === null || body === undefined ? 'empty' : typeof body),
+        sampleKeys: rows && rows[0] && typeof rows[0] === 'object' ? Object.keys(rows[0]).slice(0, 8)
+          : (keys ? keys.slice(0, 10) : null),
+      });
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      const m = msg.match(/(?:Encompass|fieldReader)\s+(\d{3})/);
+      results.push({ group, what, how, ok: false, status: m ? Number(m[1]) : null,
+        ms: Date.now() - t0, error: msg.slice(0, 240) });
+    }
+  };
+
+  // ── 1. THE TOKEN. Nothing else can pass if this does not. ──────────────────
+  await record('auth', 'mint an access token', 'POST /oauth2/v1/token', async () => {
+    const p = await encompass.ping();
+    if (!p.ok) throw new Error(`LT Encompass 000: ${p.reason}`);
+    return { ok: true };
+  });
+
+  // ── 2. THE SEARCH. How every loan is discovered in the first place. ────────
+  await record('search', 'find loans by field', 'POST /encompass/v3/loanPipeline', () =>
+    encompass.pipelineSearch({
+      fields: ['Loan.LoanNumber', 'Loan.LastModified'],
+      filter: { operator: 'and', terms: [{ canonicalName: 'Loan.LastModified', matchType: 'greaterThanOrEquals', value: '2000-01-01' }] },
+    }, { limit: 5, start: 0 }));
+
+  // ── 3. THE PER-LOAN READS. The four calls a full read makes. ──────────────
+  await record('loan', 'the loan itself', 'GET /encompass/v3/loans/{guid}', () => encompass.getLoan(guid));
+  await record('loan', 'the milestone ladder', 'GET /encompass/v3/loans/{guid}/milestones', () => encompass.getLoanMilestones(guid));
+
+  // BOTH spellings of the milestone log, because the two products disagree.
+  await record('loan', 'milestone log — the Long-Term spelling', 'GET /encompass/v3/loans/{guid}/milestoneLogs',
+    () => encompass.apiGet(`/encompass/v3/loans/${encodeURIComponent(guid)}/milestoneLogs`));
+  await record('loan', 'milestone log — the RTL spelling', 'GET /encompass/v3/loans/{guid}/logs/milestoneLogs',
+    () => encompass.apiGet(`/encompass/v3/loans/${encodeURIComponent(guid)}/logs/milestoneLogs`));
+
+  // THE FIELD READER — the call that fills the rate, the DSCR and the address.
+  await record('loan', 'fields by number', 'POST /encompass/v3/loans/{guid}/fieldReader',
+    () => encompass.fieldReader(guid, ['4002', '3', '1109', '4008', 'MS.STATUS']));
+
+  // ── 4. THE CATALOG. Both the address in use and the measured candidate. ────
+  const cat = (what, path) => record('catalog', what, `GET ${path}`, () => encompass.apiGet(path));
+  await cat('custom fields', '/encompass/v3/settings/loan/customFields');
+  await cat('standard fields — in use', '/encompass/v3/settings/loan/standardFields');
+  await cat('standard fields — candidate', '/encompass/v3/schemas/loan/standardFields?start=0&limit=5');
+  await cat('standard fields by id', '/encompass/v3/schemas/loan/standardFields?ids=4002&start=0&limit=5');
+  await cat('milestones — in use', '/encompass/v3/settings/loan/milestones');
+  await cat('milestones — candidate', '/encompass/v3/settings/milestones?start=0&limit=5');
+  await cat('dropdown options — in use', '/encompass/v3/settings/loan/enums');
+  await cat('dropdown options — candidate', '/encompass/v1/loanPipeline/fieldDefinitions');
+  await cat('folders — in use', '/encompass/v3/settings/loan/folders');
+  await cat('folders — candidate', '/encompass/v1/loanFolders');
+  await cat('loan templates — in use', '/encompass/v3/settings/loan/loanTemplates');
+  await cat('loan templates — per the 400', '/encompass/v3/settings/templates/loanTemplateSet/folders?path=public');
+  await cat('loan templates — per the 400', '/encompass/v3/settings/templates/loanTemplateSet/folders?path=personal');
+  await cat('the people in the company', '/encompass/v1/company/users?limit=5&start=0');
+
+  // ── 5. THE TWO THE COVERAGE CHECK CAUGHT. Neither has ever been measured. ──
+  // `getMilestoneSetting(id)` — one milestone by id. The id comes from the catalog
+  // call above, so this is only asked when that answered; asking it with a made-up
+  // id would audit our guess rather than the endpoint.
+  let msId = null;
+  try {
+    const list = await encompass.apiGet('/encompass/v3/settings/milestones?start=0&limit=1');
+    const rows = Array.isArray(list) ? list : (list && list.items) || [];
+    msId = rows[0] && (rows[0].id || rows[0].milestoneId);
+  } catch (_) { /* the catalog entry above already recorded why */ }
+  if (msId) {
+    await cat('one milestone by id', `/encompass/v3/settings/milestones/${encodeURIComponent(String(msId))}`);
+  } else {
+    results.push({ group: 'catalog', what: 'one milestone by id', how: 'GET /encompass/v3/settings/milestones/{id}',
+      ok: false, status: null, error: 'not asked: the milestone list did not answer, so there was no real id to ask with' });
+  }
+
+  // RTL's `getLoan` takes an `entities=` filter that Long-Term's never uses. Same
+  // endpoint, different question, and only one of the two has ever been exercised.
+  await record('loan', 'the loan, asking for named entities only',
+    'GET /encompass/v3/loans/{guid}?entities=…', () =>
+    encompass.apiGet(`/encompass/v3/loans/${encodeURIComponent(guid)}?entities=${encodeURIComponent('LoanProductData,Property')}`));
+
+  const failed = results.filter((r) => !r.ok);
+  res.json({
+    ok: failed.length === 0,
+    subject: { loanNumber: subject.loan_number },
+    audited: results.length,
+    passed: results.length - failed.length,
+    failed: failed.length,
+    // The headline, so a human does not have to read the table to get the answer.
+    summary: failed.length
+      ? `${failed.length} of ${results.length} requests did NOT work: ${failed.map((f) => `${f.what} (${f.status || 'no status'})`).join(', ')}`
+      : `all ${results.length} requests answered`,
+    results,
+  });
+});
+
 router.get('/people', async (_req, res) => {
   try {
     const { rows } = await db.query(
