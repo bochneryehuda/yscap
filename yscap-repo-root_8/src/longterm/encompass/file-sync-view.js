@@ -79,6 +79,17 @@ const FULL_READ_FIELDS = [
   { column: 'ms_status_date', label: 'Status date from Encompass' },
   { column: 'purchased_status', label: 'Investor purchase status' },
   { column: 'purchased_at', label: 'Purchase advice date' },
+
+  // THE FIGURES SOMEBODY ACTUALLY NOTICES ARE MISSING (owner-reported 2026-08-25).
+  // The report was a file that sat empty for twenty hours — and what the owner meant
+  // by empty was the rate and the DSCR, which this list did not mention. So the one
+  // panel whose entire job is "what it read and what it didn't" could not answer the
+  // only question anybody was asking it. `syncLoanTerms` writes all four onto
+  // `lt_loans`, so they are on the row this view already has.
+  { column: 'note_rate_pct', label: 'Note rate' },
+  { column: 'dscr_ratio', label: 'DSCR' },
+  { column: 'housing_expense_total', label: 'Monthly housing expense' },
+  { column: 'loan_purpose', label: 'Purpose' },
 ];
 
 /** Plain words for the shape of a webhook ping. Never a code on a screen. */
@@ -91,10 +102,19 @@ const NUDGE_WORDS = {
 
 /** How long a loan may go unread before the rota re-reads it whatever the stamps
  *  say. Read from the same environment variable `sync/loans.js` reads, so the
- *  screen can never promise a different rota from the one that runs. */
-function rotaHours() {
+ *  screen can never promise a different rota from the one that runs.
+ *
+ *  A LOAN WHOSE LAST READ CAME BACK EMPTY IS ON THE SHORT ROTA, and this has to say
+ *  so. `needsRead` brings such a loan back in an hour rather than twelve; a screen
+ *  still counting down from twelve would be telling somebody to wait most of a day
+ *  for something already scheduled for the next hour — which is the same class of
+ *  wrong this whole change is about, just pointed at the reader instead of the row. */
+function rotaHours(row = null) {
   const n = parseInt(process.env.LT_ENCOMPASS_REREAD_HOURS || '12', 10);
-  return Number.isFinite(n) && n >= 0 ? n : 12;
+  const full = Number.isFinite(n) && n >= 0 ? n : 12;
+  if (!row || !row.encompass_sync_error || full === 0) return full;
+  const p = parseInt(process.env.LT_ENCOMPASS_PARTIAL_REREAD_HOURS || '1', 10);
+  return Math.min(Number.isFinite(p) && p >= 0 ? p : 1, full);
 }
 
 const isFilled = (v) => !(v === null || v === undefined || v === '');
@@ -113,7 +133,9 @@ function pick(row, list) {
  * never been read (there is no clock to count from) or the rota is switched off.
  */
 function nextRotaDue(row, now) {
-  const hours = rotaHours();
+  // The ROW's rota, not the deployment's — a loan whose last read came back empty
+  // is due in an hour, and this is the number the screen counts down from.
+  const hours = rotaHours(row);
   if (!hours) return null;
   const synced = row && row.encompass_synced_at ? Date.parse(row.encompass_synced_at) : NaN;
   if (!Number.isFinite(synced)) return null;
@@ -158,7 +180,7 @@ function fileSyncView(row, { readState, switches, now = Date.now() } = {}) {
       // which.
       conditionsRead: r.conditions_synced_at || null,
       nextRotaDue: nextRotaDue(r, now),
-      rotaHours: rotaHours(),
+      rotaHours: rotaHours(r),
     },
 
     // "last webhooks" (db/629). Before those columns this was recorded nowhere, so a

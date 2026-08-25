@@ -454,10 +454,16 @@ const CATALOG_PROBES = [
   { kind: 'folder', role: 'in use', path: '/encompass/v3/settings/loan/folders' },
   { kind: 'folder', role: 'probed 2026-08-14', path: '/encompass/v1/loanFolders' },
 
-  // TEMPLATES. The one genuinely open question: its sibling template endpoints were
-  // all live-probed 403, so this may really be permission-gated rather than moved.
+  // TEMPLATES. Measured 2026-08-25: the address in use is 403, and the candidate
+  // answers 400 with an instruction rather than a refusal —
+  //   "Folder path is empty. Default parent directory should start with public or
+  //    personal."
+  // That is the vendor telling us the shape of the question, so both shapes are
+  // asked. A 400 that explains itself is a better lead than a 403 that does not.
   { kind: 'loanTemplate', role: 'in use', path: '/encompass/v3/settings/loan/loanTemplates' },
   { kind: 'loanTemplate', role: 'candidate', path: '/encompass/v3/settings/templates/loanTemplateSet/folders' },
+  { kind: 'loanTemplate', role: 'per the 400', path: '/encompass/v3/settings/templates/loanTemplateSet/folders?path=public' },
+  { kind: 'loanTemplate', role: 'per the 400', path: '/encompass/v3/settings/templates/loanTemplateSet/folders?path=personal' },
 
   // THE PAGING QUESTION, asked rather than assumed. ICE's own reference says there is
   // no fixed upper limit, only a max payload size — if a single call answers with
@@ -480,6 +486,13 @@ router.get('/catalog-probe', async (_req, res) => {
     try {
       const body = await encompass.apiGet(probe.path);
       const rows = Array.isArray(body) ? body : (body && Array.isArray(body.items) ? body.items : null);
+      // AN OBJECT IS AN ANSWER TOO. The first run reported the enum candidate as
+      // `shape: object, sampleKeys: null` — a probe that saw a 200 and then threw
+      // away the one thing that would have told us how to read it. `refreshFieldCatalog`
+      // only understands an array or `{items:[…]}`, so an object under any OTHER key
+      // is silently zero rows, and that is exactly what has to be visible here.
+      const objKeys = (!rows && body && typeof body === 'object') ? Object.keys(body) : null;
+      const listUnder = objKeys ? objKeys.filter((k) => Array.isArray(body[k])) : null;
       results.push({
         ...probe,
         ok: true,
@@ -489,6 +502,13 @@ router.get('/catalog-probe', async (_req, res) => {
         count: rows ? rows.length : null,
         sampleKeys: rows && rows[0] ? Object.keys(rows[0]).slice(0, 8) : null,
         shape: rows ? 'list' : typeof body,
+        objectKeys: objKeys ? objKeys.slice(0, 20) : null,
+        // Which of those keys actually holds a list, and how long — this is the one
+        // fact that turns "200 but we read nothing" into a one-line reader change.
+        listsUnder: listUnder && listUnder.length
+          ? listUnder.slice(0, 8).map((k) => ({ key: k, len: body[k].length,
+              firstKeys: body[k][0] && typeof body[k][0] === 'object' ? Object.keys(body[k][0]).slice(0, 8) : null }))
+          : null,
       });
     } catch (e) {
       // The client's own error text is `Encompass <status>: <body>` — the status is

@@ -43,6 +43,32 @@ function fnBody(src, startMarker, endMarker) {
 const DISCOVERY_SRC = fnBody(LOANS_SRC, 'async function upsertDiscovered', 'const REREAD_HOURS');
 const READ_SRC = fnBody(LOANS_SRC, 'async function readLoan', 'async function syncOnce');
 
+/**
+ * THE FULL READ IS NOT ONE FUNCTION ANY MORE, SO THE GUARD FOLLOWS THE DELEGATION.
+ *
+ * `readLoan` writes the loan's own row itself, and hands the property, the terms,
+ * the borrowers and the investor to `application/sync.js`. A column filled by one of
+ * those four is still filled BY OPENING THE LOAN — it is the same Encompass payload,
+ * the same pass and no extra call — so the section is right to list it, and a guard
+ * that only looked inside `readLoan` would call that a lie.
+ *
+ * Only the four functions `readLoan` actually calls are trusted, and only when
+ * `readLoan` is seen calling them: this widens the guard by exactly one hop and no
+ * further. A column named nowhere in either file still fails, which is the whole
+ * point — it went on failing when this was checked with a made-up column.
+ */
+const APPLICATION_SRC = fs.readFileSync(path.join(__dirname, '..', 'src/longterm/application/sync.js'), 'utf8');
+const DELEGATED = ['syncSubjectProperty', 'syncLoanTerms', 'syncBorrowerPairs', 'syncLoanInvestor'];
+const DELEGATED_SRC = DELEGATED
+  .filter((fn) => READ_SRC && READ_SRC.includes(`application.${fn}(`))
+  .map((fn) => fnBody(APPLICATION_SRC, `async function ${fn}(`, '\n}\n') || '')
+  .join('\n');
+
+/** Written by opening the loan — by `readLoan` itself, or by one of the four
+ *  application syncs it hands the same payload to. */
+const writtenByTheFullRead = (col) =>
+  (!!READ_SRC && READ_SRC.includes(col)) || DELEGATED_SRC.includes(col);
+
 // ── 1. Every "from the pipeline search" column is written by discovery ────────
 console.log('the pipeline-search list matches what discovery writes');
 
@@ -57,8 +83,11 @@ console.log('');
 console.log('the full-read list matches what readLoan writes');
 
 check(!!READ_SRC, 'readLoan was located in loans.js');
+check(DELEGATED.every((fn) => READ_SRC && READ_SRC.includes(`application.${fn}(`)),
+  'readLoan still hands the property, terms, borrowers and investor to application/sync.js — a rename must fail here loudly, not quietly widen this guard to nothing');
+check(DELEGATED_SRC.length > 1000, 'the four delegated writers were located and read');
 for (const f of view.FULL_READ_FIELDS) {
-  check(!!READ_SRC && READ_SRC.includes(f.column),
+  check(writtenByTheFullRead(f.column),
     `the full read writes ${f.column} — the section says opening the loan brings it back`);
 }
 

@@ -143,8 +143,18 @@ ok(neverHtml.includes('Read this file from Encompass now'),
   'the read button is offered');
 // The two lists: discovery filled, the full read empty. That contrast IS the
 // explanation for a half-empty file.
-ok(neverHtml.includes('9 of 9 filled in'), 'the pipeline search shows everything it brings back is there');
-ok(neverHtml.includes('0 of 9 filled in'), '…and the full read shows nothing has arrived yet');
+// THE TOTALS COME FROM THE MODULE, NOT FROM A NUMBER TYPED HERE. Both lists are
+// hand-kept and both are meant to grow — the full-read list gained the note rate,
+// the DSCR, the housing expense and the purpose the day the owner reported a file
+// showing none of them. A literal "9" turns every such addition into a failing test
+// that says nothing about what broke, and the temptation is then to bump the number
+// rather than read it. What this line actually means is "all of the first list, none
+// of the second", so that is what it now says.
+const DISC_N = view.DISCOVERY_FIELDS.length;
+const FULL_N = view.FULL_READ_FIELDS.length;
+ok(DISC_N > 0 && FULL_N > 0, `both lists are non-empty (${DISC_N} from the search, ${FULL_N} from opening the loan)`);
+ok(neverHtml.includes(`${DISC_N} of ${DISC_N} filled in`), 'the pipeline search shows everything it brings back is there');
+ok(neverHtml.includes(`0 of ${FULL_N} filled in`), '…and the full read shows nothing has arrived yet');
 
 // 3) A FILE READ IN FULL.
 console.log('');

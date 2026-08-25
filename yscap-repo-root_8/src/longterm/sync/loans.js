@@ -146,6 +146,16 @@ const REREAD_HOURS = (() => {
   return Number.isFinite(n) && n >= 0 ? n : 12;
 })();
 
+/** The same rota, for a loan whose last read left a recorded miss. Bounded by
+ *  REREAD_HOURS, because a "sooner" that is later than the ordinary rota is not
+ *  sooner — and setting REREAD_HOURS to 0 switches the whole rota off, which this
+ *  must not quietly override. */
+const PARTIAL_REREAD_HOURS = (() => {
+  const n = parseInt(process.env.LT_ENCOMPASS_PARTIAL_REREAD_HOURS || '1', 10);
+  const v = Number.isFinite(n) && n >= 0 ? n : 1;
+  return REREAD_HOURS > 0 ? Math.min(v, REREAD_HOURS) : v;
+})();
+
 /**
  * Does this loan need a full read?
  *
@@ -179,6 +189,17 @@ function needsRead(row, now = Date.now()) {
   const synced = new Date(row.encompass_synced_at).getTime();
   // A stamp we cannot read is not evidence that the loan is up to date.
   if (!Number.isFinite(synced)) return true;
+  // A READ THAT CAME BACK EMPTY COMES ROUND AGAIN SOONER. `readLoan` now records
+  // what a read failed to fill, and a loan carrying one of those notes is a loan
+  // somebody is looking at a blank screen for. Twelve hours is the right patience
+  // for a file that is merely OLD; it is far too much for one that is EMPTY.
+  //
+  // It is an hour rather than "immediately" on purpose: not stamping at all, or
+  // re-reading every tick, would put a permanently unfillable loan in a hot loop
+  // against a call budget shared with every other integration on this tenant. An
+  // hour is twelve chances a day where there was one, and still bounded.
+  if (row.encompass_sync_error && REREAD_HOURS > 0
+      && now - synced >= PARTIAL_REREAD_HOURS * 3600 * 1000) return true;
   if (REREAD_HOURS > 0 && now - synced >= REREAD_HOURS * 3600 * 1000) return true;
   if (!row.encompass_last_modified) return false;
   const modified = new Date(row.encompass_last_modified).getTime();
@@ -216,7 +237,36 @@ async function readLoan(loanId, guid, settings) {
   // has not started.
   const ladderMod = require('./milestone-ladder');
   const ladder = await ladderMod.readLadder(guid, { client: lazy.client });
-  const laggingMilestone = loan && (loan.currentMilestone || loan.currentMilestoneName
+  //
+  // THE KEY IS `milestoneCurrentName`, AND THE THREE THAT WERE HERE DO NOT EXIST.
+  // Measured against this repo's own 772-loan field dictionary, which was built from
+  // live Encompass answers:
+  //
+  //     currentMilestone                    0 occurrences
+  //     currentMilestoneName                0 occurrences
+  //     loanProductData.currentMilestone    0 occurrences
+  //     milestoneCurrentName                MS.STATUS, "Tracking - Current Milestone
+  //                                         Name", 100% filled at EVERY stage
+  //                                         including "Started", across 490 DSCR loans
+  //
+  // So this whole fallback has always evaluated to `undefined`, and a loan whose
+  // ladder read failed before it was ever laddered kept discovery's "Started" for
+  // ever — which is the "stuck on File started" report, precisely. RTL has read the
+  // right key all along (`src/encompass/enrich.js`), which is why only Long-Term
+  // showed the symptom.
+  //
+  // The three dead keys are KEPT behind the live one rather than deleted: they cost
+  // nothing, and if this tenant is ever configured to send one of them, the fallback
+  // still works. What matters is that the key which is actually filled is asked FIRST.
+  //
+  // Read off `loan` and nothing else. MS.STATUS reaches this function a second way —
+  // `ms.status`, read by number through the field batch — but that batch is issued a
+  // hundred and fifty lines BELOW this point, so naming it here would be a reference
+  // to a `const` in its temporal dead zone: a ReferenceError on every single read,
+  // thrown from inside the drain loop. `loan` is already in hand and already proven
+  // (we are past `getLoan`'s catch), so it is the only honest source at this line.
+  const laggingMilestone = loan && (loan.milestoneCurrentName || loan.currentMilestone
+    || loan.currentMilestoneName
     || (loan.loanProductData && loan.loanProductData.currentMilestone));
 
   // …BUT THE FALLBACK IS ONLY FOR A LOAN THAT HAS NO LADDER YET (audit round 3,
@@ -418,8 +468,6 @@ async function readLoan(loanId, guid, settings) {
             vesting_type = CASE WHEN $14::boolean THEN $15 ELSE vesting_type END,
             vesting_entity_name = CASE WHEN $14::boolean THEN $16 ELSE vesting_entity_name END,
             loan_amount = COALESCE($17::numeric, loan_amount),
-            encompass_synced_at = now(),
-            encompass_sync_error = NULL,
             updated_at = now()
       WHERE id = $1::uuid`,
     // COALESCE(new, old) — the milestone's own rule. A read that could not see the
@@ -554,7 +602,71 @@ async function readLoan(loanId, guid, settings) {
   const lock = locks.lockFromLoan(loan, values, settings);
   const lockWrite = await locks.writeLock(loanId, lock);
 
-  return { ok: true, milestoneName, stageKey, team, milestone: milestoneWrite, sale,
+  // ═══════════════════════════════════════════════════════════════════════
+  // ONLY NOW IS THE READ STAMPED, AND ONLY NOW MAY THE ERROR BE CLEARED.
+  //
+  // It used to be stamped in the UPDATE above — a hundred lines and five writes
+  // BEFORE the property, the terms, the borrowers and the investor were even
+  // attempted. Each of those four is wrapped in its own try/catch and each hands
+  // back `{ok:false, reason}` on a miss, and every one of those reasons went into
+  // this function's return value, which `syncOnce` throws away. So the row said
+  // "read just now, no error" while the address, the rate and the DSCR stayed
+  // blank, the twelve-hour rota came back, failed identically, and re-stamped it.
+  //
+  // That is the owner's report of 2026-08-25, exactly: *"This is how this file was:
+  // it was empty for 20 hours. Only when I went into the section of Encompass
+  // syncing and I clicked sync to the file for that particular file did it pull
+  // information... Why didn't it go by itself?"* It DID go by itself. It went by
+  // itself twice, said it had succeeded both times, and wrote nothing.
+  //
+  // A stamp that is written before the work is a stamp that cannot report the
+  // work. The module header has claimed since it was written that "a failure is
+  // recorded on the loan, not swallowed" — that was true of the one `getLoan`
+  // throw at the top and false of everything below it. This makes the header true.
+  //
+  // WHY IT STILL STAMPS ON A PARTIAL READ. Not stamping would make `needsRead`
+  // answer yes on every tick for ever, and a loan that cannot be filled would then
+  // be re-read every pass — a hot loop against a call budget shared with every
+  // other integration on this tenant. So the stamp is written either way and the
+  // MISS is recorded beside it, which is what `needsRead` reads to bring a partly
+  // read loan back in an hour instead of twelve.
+  const misses = [];
+  const miss = (what, r) => {
+    if (!r) { misses.push(`${what}: nothing came back`); return; }
+    if (r.ok === false) misses.push(`${what}: ${r.reason || 'failed'}`);
+    else if (r.written === false) misses.push(`${what}: ${r.reason || 'the payload carried nothing'}`);
+  };
+  miss('subject property', property);
+  miss('loan terms', terms);
+  miss('borrowers', pairs);
+  miss('investor', investor);
+  // AN EMPTY ANSWER IS NOT AN ANSWER. `fieldReader` can hand back `{}` — truthy,
+  // so a `values === null` test alone sails straight past the case where the batch
+  // connected and returned nothing, which is the shape a single unreadable field id
+  // produces for the whole batch.
+  const gotValues = values !== null && typeof values === 'object' && Object.keys(values).length > 0;
+  if (!gotValues && ids.length) {
+    misses.push(`${ids.length} field(s) asked for by number: the batch read ${values === null ? 'did not answer' : 'came back empty'}`);
+  }
+  if (!ladder.ok) misses.push(`milestone ladder: ${ladder.reason || 'could not be read'}`);
+
+  // The reason column is 500 characters (see the `getLoan` catch above), so the
+  // sentence is built to fit rather than trusted to.
+  const readError = misses.length
+    ? `Read from Encompass, but ${misses.length} part(s) came back empty — ${misses.join('; ')}`.slice(0, 500)
+    : null;
+
+  await lazy.db.query(
+    `UPDATE lt_loans
+        SET encompass_synced_at = now(),
+            encompass_sync_error = $2,
+            updated_at = now()
+      WHERE id = $1::uuid`,
+    [loanId, readError],
+  );
+
+  return { ok: true, partial: misses.length > 0, misses,
+    milestoneName, stageKey, team, milestone: milestoneWrite, sale,
     ladder: ladder.ok ? { steps: ladder.rows.length, sitting: ladder.sitting, ...(ladderWrite || {}) } : { ok: false, reason: ladder.reason },
     msStatus: ms.status,
     lock: { ...lockWrite, posture: lock.posture }, property, terms, pairs, investor };
@@ -784,6 +896,9 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
   // connection for minutes and roll back every loan because one failed.
   let read = 0;
   let failed = 0;
+  // A read that finished but filled nothing. Counted apart from `read` and `failed`
+  // because it is neither: the loan WAS read, and the file is still empty.
+  let partial = 0;
   // DRAIN THE LONGEST-UNREAD FIRST. Discovery hands these over sorted by Encompass's
   // own LastModified DESCENDING, so without this the same busy handful of loans would
   // take all 25 slots on every pass and a quiet loan on the re-read rota would never
@@ -796,9 +911,46 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
     const nb = Number.isFinite(tb) ? tb : -Infinity;
     return na - nb;
   });
+  // ONE LOAN THAT THROWS MUST NOT STARVE THE ONES BEHIND IT (2026-08-25).
+  //
+  // `readLoan` guards its own `getLoan`, but everything after that — the main
+  // UPDATE, the field batch, the contacts sync, the lock write — can throw, and
+  // this loop had no catch. A throw walked out through `drainLoans` and ended the
+  // whole pass. Combined with the sort directly above, which puts NEVER-READ loans
+  // first so the emptiest files are served soonest, that turned one bad loan into a
+  // total outage: it was read first on every pass, threw, and every loan behind it
+  // was never reached. Nobody would see why, because the throw was the pass ending
+  // rather than anything recorded against a loan.
+  //
+  // That is not hypothetical. It is exactly what the vesting-module collision did
+  // last week — `vesting.FIELD_IDS` came back undefined, the spread threw, and the
+  // Long-Term book stopped filling in silently. That particular throw is fixed; this
+  // is the shape of it, closed, so the next one costs one loan instead of the book.
+  let starved = 0;
+  const starvedLoans = [];
   for (const item of drain.slice(0, readBudget)) {
-    const out = await readLoan(item.id, item.guid, settings);
+    let out;
+    try {
+      out = await readLoan(item.id, item.guid, settings);
+    } catch (e) {
+      const reason = String((e && e.message) || e).slice(0, 500);
+      starved += 1;
+      if (starvedLoans.length < 10) starvedLoans.push({ id: item.id, reason });
+      // Record it ON THE LOAN, which is the module's own stated contract, and stamp
+      // it so the rota does not pin this loan to the front of the queue for ever.
+      try {
+        await lazy.db.query(
+          `UPDATE lt_loans
+              SET encompass_sync_error = $2, encompass_synced_at = now(), updated_at = now()
+            WHERE id = $1::uuid`,
+          [item.id, `The read threw before it finished: ${reason}`],
+        );
+      } catch (_) { /* the row is unreachable; the count below still reports it */ }
+      failed += 1;
+      continue;
+    }
     if (out.ok) read += 1; else failed += 1;
+    if (out.partial) partial += 1;
   }
 
   // A borrower link a human confirmed YESTERDAY has to reach a loan that arrived
@@ -845,6 +997,17 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
     due: due.length,
     read,
     failed,
+    // A READ THAT FILLED NOTHING IS NOT A SUCCESSFUL READ. These two are the whole
+    // point of the change: `partial` counts loans Encompass answered for but whose
+    // property, terms, borrowers or investor came back empty, and `starved` counts
+    // loans whose read threw outright. Both used to be invisible — the first was
+    // counted as a success, the second ended the pass — and between them they are
+    // why a file could sit empty for twenty hours with every screen insisting it had
+    // just been read. They ride the run log, so "why is this file blank?" has an
+    // answer without anyone reading a server log.
+    partial,
+    starved,
+    starvedLoans,
     borrowersLinked: links.linked || 0,
     // What a human still has to do: `officersProposed` are new matches waiting for a
     // confirm, `officersUnmatched` are logins the machine could not match at all.
