@@ -810,6 +810,90 @@ router.get('/template-walk', async (_req, res) => {
   });
 });
 
+/**
+ * WEBHOOK CHECK — does this tenant actually have webhooks, and has Encompass ever
+ * tried to deliver one? READ ONLY.
+ *
+ * WHY (owner, 2026-08-25, on a status changed half an hour earlier and still not
+ * showing): *"We need to make this shit happen immediately because we have the
+ * webhooks. Maybe your system is not reading webhooks correctly."*
+ *
+ * OUR SIDE IS ALREADY ANSWERED, from this deployment's own logs: seven days contain
+ * exactly two `[lt-encompass-hook]` lines and both are test pings sent by hand from
+ * a session. The endpoint is alive and correctly refuses an unauthenticated POST
+ * with 403. Nothing arrives to be read wrongly.
+ *
+ * SO THE QUESTION IS ENCOMPASS'S SIDE, and Encompass keeps its own record of it.
+ * `/webhook/v1/subscriptions` says whether any subscription exists at all;
+ * `/webhook/v1/events` is Event History — every delivery ATTEMPT, with statuses up
+ * to `DeliveryFailedExhaustedRetries`. Between them, "nobody ever subscribed" and
+ * "we subscribed and every delivery failed" stop looking identical, which from the
+ * outside they do.
+ *
+ * AND THERE IS A THIRD ANSWER THE VENDOR HAS ALREADY WRITTEN DOWN, recorded in
+ * `docs/ENCOMPASS-API-ATLAS.md` §6.3: the Loan `milestone` event — along with
+ * `create`, `condition` and `fieldchange` — fires for **API-originated actions
+ * ONLY**. Staff working in the Encompass desktop emit none of them. A milestone
+ * completed by a human at a desk therefore CANNOT produce a milestone webhook,
+ * however perfectly the subscription is configured. `change` (with filters),
+ * `update`, `move` and `delete` are the events a desktop action does emit, and this
+ * route reports which of those the tenant actually offers so the question can be
+ * settled with the vendor's own list rather than an assumption.
+ *
+ * READ ONLY, and pointedly so: creating or repairing a subscription is a WRITE
+ * against the tenant's configuration and is not this route's business.
+ */
+router.get('/webhook-check', async (_req, res) => {
+  if (!encompass.configured()) {
+    return res.status(503).json({ ok: false, error: 'Encompass is not connected on this deployment.' });
+  }
+  const out = {};
+  const ask = async (key, path) => {
+    try {
+      const body = await encompass.apiGet(path);
+      const rows = Array.isArray(body) ? body : (body && (body.items || body.events || body.subscriptions)) || null;
+      out[key] = { ok: true, path, count: Array.isArray(rows) ? rows.length : null, body: rows || body };
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      const m = msg.match(/Encompass\s+(\d{3})/);
+      out[key] = { ok: false, path, status: m ? Number(m[1]) : null, error: msg.slice(0, 220) };
+    }
+  };
+
+  await ask('subscriptions', '/webhook/v1/subscriptions');
+  await ask('resources', '/webhook/v1/resources');
+  await ask('loanEvents', '/webhook/v1/resources/loan/events');
+  // Event History — Encompass's OWN record of every delivery attempt. This is the
+  // one that tells "never subscribed" apart from "subscribed and every send failed".
+  await ask('deliveryHistory', '/webhook/v1/events?limit=25');
+
+  const subs = out.subscriptions;
+  const subCount = subs && subs.ok ? (subs.count == null ? null : subs.count) : null;
+  const hist = out.deliveryHistory;
+  const histCount = hist && hist.ok ? (hist.count == null ? null : hist.count) : null;
+
+  // The answer in words, so nobody has to read the JSON to get it.
+  let verdict;
+  if (subs && !subs.ok) {
+    verdict = `Could not read this tenant's webhook subscriptions (${subs.status || 'no status'}). That is a question for ICE — PILOT cannot see them.`;
+  } else if (subCount === 0) {
+    verdict = 'Encompass has NO webhook subscriptions at all. Nothing was ever going to arrive, and no change on PILOT\'s side could have made it. The five-minute sweep is doing the whole job.';
+  } else if (histCount === 0) {
+    verdict = `Encompass has ${subCount} subscription(s) but its own delivery history is EMPTY — it has never attempted a send. Note that a milestone completed in the Encompass desktop emits no milestone event at all (atlas §6.3), so this is expected if the subscription is for 'milestone'.`;
+  } else {
+    verdict = `Encompass has ${subCount} subscription(s) and ${histCount} delivery record(s) — read deliveryHistory.body for the statuses; DeliveryFailedExhaustedRetries means it tried and gave up.`;
+  }
+
+  res.json({
+    ok: true,
+    verdict,
+    // Stated every time, because it is the fact that most often explains the report
+    // and it is nobody's fault on either side of the integration.
+    desktopCaveat: 'Encompass Loan events create/milestone/condition/fieldchange fire for API-originated actions ONLY. A milestone completed by a person in the Encompass desktop emits none of them. change (with filters), update, move and delete are the desktop-visible events.',
+    ...out,
+  });
+});
+
 router.get('/people', async (_req, res) => {
   try {
     const { rows } = await db.query(
