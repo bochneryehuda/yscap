@@ -174,13 +174,33 @@ Custom fields ride in the top-level `customFields[]` array as
 ## Field catalog endpoints (all GET; PILOT pulls nightly into
 `encompass_field_catalog`)
 
-- `GET /encompass/v3/settings/loan/customFields` — tenant's custom fields
-  (e.g. `CUST01FV` = "DSCR" on BE11397907; ~855 slots total, most unused).
-- `GET /encompass/v3/settings/loan/standardFields` — the canonical fields.
-- `GET /encompass/v3/settings/loan/enums` — picklist values for enum fields.
-- `GET /encompass/v3/settings/loan/milestones` — the tenant's milestone list.
-- `GET /encompass/v3/settings/loan/folders` — loan folder names.
-- `GET /encompass/v3/settings/loan/loanTemplates` — loan template paths.
+> **MEASURED AGAINST THE LIVE TENANT, 2026-08-25.** Five of the six addresses this
+> section used to list DO NOT EXIST. They were written here by analogy with the one
+> that does — `settings/loan/customFields` — and the analogy was wrong. Encompass
+> answers **403** for a path that is not there, so for months this read as "the API
+> user is not allowed to see the catalog" when the truth was "we are knocking on the
+> wrong door." Every row below now carries the status the tenant actually returned to
+> `GET /api/lt/_diag/book/catalog-probe`. **Do not change one of these back on the
+> strength of a doc, an SDK sample, or an analogy — probe it.**
+
+| what | address | measured |
+| --- | --- | --- |
+| custom fields | `GET /encompass/v3/settings/loan/customFields` | **200** — 857 rows. Unchanged; this is the one that was always right (e.g. `CUST01FV` = "DSCR"; ~855 slots, most unused). |
+| standard fields | `GET /encompass/v3/schemas/loan/standardFields?start=&limit=` | **200** — `limit=10000` returns 10,000 rows in ONE call, so the ~23,700-field catalog is three requests. Keyed by `id`. |
+| ~~standard fields~~ | ~~`/encompass/v3/settings/loan/standardFields`~~ | **403** — does not exist. |
+| milestones | `GET /encompass/v3/settings/milestones` | **200**. Keyed by `name`. Note it drops `/loan`. |
+| ~~milestones~~ | ~~`/encompass/v3/settings/loan/milestones`~~ | **403** — does not exist. |
+| picklist values | `GET /encompass/v1/loanPipeline/fieldDefinitions` | **200**, but answers an OBJECT rather than a list. There is no enum endpoint anywhere in ICE's own 800-request Developer Connect collection; this is where this tenant publishes option lists. |
+| ~~enums~~ | ~~`/encompass/v3/settings/loan/enums`~~ | **403** — does not exist. |
+| loan folders | `GET /encompass/v1/loanFolders` | **200** — all 22 folders. Keyed by `name`. Note it is **v1**, and drops `/settings/loan`. |
+| ~~folders~~ | ~~`/encompass/v3/settings/loan/folders`~~ | **403** — does not exist. |
+| loan templates | — still unresolved — | `/v3/settings/loan/loanTemplates` is **403**. `/v3/settings/templates/loanTemplateSet/folders` answers **400** with an instruction rather than a refusal: *"Folder path is empty. Default parent directory should start with public or personal."* ICE's own collection ships four shapes for this; all four are in the audit. |
+
+Every one of these — plus the token, the pipeline search, the loan, the milestone
+ladder, both spellings of the milestone log, the field reader and the company roster —
+is re-asked on demand by `GET /api/lt/_diag/book/request-audit`, and
+`scripts/test-encompass-request-coverage-pure.js` fails the build if a request exists
+in a client and the audit does not ask about it.
 
 Also `GET /encompass/v1/schema/loan` (whole loan schema) if we ever need the
 JSON schema itself instead of the catalog. PILOT doesn't need this today.

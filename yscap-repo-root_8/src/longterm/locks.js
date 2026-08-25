@@ -252,6 +252,23 @@ function lockFromLoan(loan, fieldValues, settings = {}, today = null) {
     ),
     fieldOrderAssumed: !entityExp && fromFields.fieldOrderAssumed,
     raw: Object.keys(root).length ? root : null,
+
+    // DID WE LEARN ANYTHING AT ALL? "This loan has no lock" and "we could not read
+    // this loan's lock" are different sentences, and until now this function
+    // returned the same all-null posture for both. `writeLock` then wrote that
+    // posture with `EXCLUDED.*` and no COALESCE, so a read that learned nothing
+    // ERASED a lock we were already holding — the one destructive path in an
+    // otherwise never-blank mirror.
+    //
+    // A rate lock leaves evidence in two independent places: a named entity on the
+    // loan JSON (`root`, hence `raw`) and the numbered date fields (`fromFields`).
+    // With neither of them carrying anything, there is nothing to write down, and
+    // the honest thing is to leave what we already know alone. Note this is
+    // deliberately NOT the same as "the posture is empty": a loan Encompass
+    // genuinely reports as unlocked still arrives with a `root`, so a real release
+    // is still recorded.
+    sawEvidence: Object.keys(root).length > 0
+      || fromFields.lockDate != null || fromFields.expiration != null,
   };
 }
 
@@ -296,6 +313,23 @@ async function writeLock(loanId, posture, dbc = null) {
       'SELECT lock_status, expiration_date, note_rate_pct FROM lt_locks WHERE loan_id = $1::uuid', [loanId],
     );
     const prev = before[0] || null;
+
+    // A READ THAT LEARNED NOTHING MAY NOT ERASE WHAT WE ALREADY HOLD. The upsert
+    // below is the only write in the Long-Term mirror that is not COALESCEd — every
+    // column is `EXCLUDED.*`, on purpose, because a lock genuinely being released
+    // has to be able to clear the columns that described it. That is right when the
+    // payload actually said something about the lock, and destructive when it did
+    // not: a failed field batch or a thin loan JSON produced an all-null posture
+    // that overwrote a live lock with nulls, silently.
+    //
+    // So the one case that is refused is the one that carries no information:
+    // nothing on the loan's rate-lock entity AND nothing in the numbered date
+    // fields, with a row already on file. Nothing is written and the caller is told
+    // why, rather than being handed a success that quietly destroyed a record.
+    if (prev && !posture.sawEvidence) {
+      return { ok: true, written: false,
+        reason: 'the payload said nothing about this loan\'s rate lock, so the lock already on file was left alone' };
+    }
 
     await q.query(
       `INSERT INTO lt_locks (loan_id, lock_status, note_rate_pct, price, lock_date, expiration_date,
