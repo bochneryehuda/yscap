@@ -5032,9 +5032,20 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .ltset-row.ltset-mid{align-items:center;padding:10px 0}
 @media(max-width:720px){ .ltset-row{grid-template-columns:1fr;gap:8px} }
 
-/* The long-term loan workspace: content and its summary rail. Under 900px the rail
-   drops below the content rather than squeezing both — a 300px rail beside a
-   narrowing column is how a table of figures ends up one word per line. */
+/* The long-term loan workspace: the jump menu, the file, and its details rail.
+   Under 900px the rail drops below the content rather than squeezing both — a 300px
+   rail beside a narrowing column is how a table of figures ends up one word per line.
+
+   THE ORDER IS SET HERE, AT EVERY WIDTH (owner-directed 2026-08-25: the file details
+   move to the RIGHT and the file's own sections to the LEFT, matching the RTL file
+   screen, which is a menu on the left with the sections beside it). These three
+   values already existed in the phone block below, where the stack has always read
+   menu → file → details; lifting them to the base rule is what makes the desktop
+   agree with it, and it leaves the DOM alone — which keeps the reading order right
+   for a keyboard and a screen reader as well. */
+.lt-workspace > .lt-rooms{order:1}
+.lt-workspace > .lt-sections{order:2}
+.lt-workspace > .lt-ledger{order:3}
 @media(max-width:900px){ .lt-workspace{grid-template-columns:1fr !important} }
 /* Stacked, the room index is just the first block on the page — sticking it to the
    top would pin a list above the content it is meant to introduce, and on a phone
@@ -5060,10 +5071,12 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    top of everything else. Every colour is an explicit dark or the brand gold: in
    this palette every --ink* token is a LIGHT paper colour, so one used as a text
    colour renders white on white. */
-.lt-utter{margin:2px 0 8px;line-height:1.05;display:flex;flex-wrap:wrap;align-items:baseline;gap:10px}
-.lt-utter .lt-was{font-size:clamp(15px,2.2vw,24px);font-style:italic;color:#4B585C;font-weight:400}
+.lt-utter{margin:2px 0 12px;line-height:1.05;display:flex;flex-wrap:wrap;align-items:baseline;gap:10px}
 .lt-utter .lt-now{font-size:clamp(27px,4.4vw,44px);font-weight:800;letter-spacing:.005em;color:#8A6A22}
-.lt-law{font-size:10.5px;letter-spacing:.22em;text-transform:uppercase;color:#4B585C;margin:0 0 12px}
+/* `.lt-was` and `.lt-law` are RETIRED (owner-directed 2026-08-25). They drew the raw
+   Encompass milestone beside the finished wording — "not Submittal — Submitted" — so
+   the first word at the top of nearly every file was NOT. The status is said once, in
+   its finished form; the raw names live in the Milestones section. */
 .lt-facts{display:flex;flex-wrap:wrap;
   border-top:1px solid rgba(20,27,34,.16);border-bottom:1px solid rgba(20,27,34,.16)}
 /* The cells DO NOT STRETCH. Eight facts do not divide evenly into one row, and a
@@ -5071,7 +5084,15 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    wide boxes. Sized to their own content, they pack left and the unused tail of
    the last row reads like a ledger rather than a mistake. */
 .lt-fact{flex:0 1 auto;min-width:104px;padding:11px 14px;border-left:1px solid rgba(20,27,34,.08)}
-.lt-fact.wide{min-width:200px;max-width:320px}
+/* THE SUBJECT ADDRESS ON ONE LINE (owner-directed 2026-08-25). It used to be capped
+   at 320px with `overflow-wrap:anywhere` on the value, so an ordinary address broke
+   across two or three lines and could split mid-word. It now takes whatever room the
+   row has left and is trimmed with an ellipsis rather than wrapped; the cell carries
+   the full text as a `title`, so nothing is unreachable. `min-width:0` is what allows
+   a flex item to shrink below its content at all — without it `text-overflow` never
+   fires and the cell simply pushes the row wider. */
+.lt-fact.wide{flex:1 1 260px;min-width:0;max-width:none}
+.lt-fact.wide .v{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;overflow-wrap:normal}
 /* The loan number is the one value that must never break across two lines —
    it is what somebody reads down a telephone — so its cell neither stretches
    nor wraps. */
@@ -5089,13 +5110,16 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
   .lt-fact.wide{flex:1 1 100%}
 }
 
-/* Stacked on a phone the three columns keep the order that is useful there: the
-   jump menu, then the file, then its details — a sixteen-row table of figures
-   between the menu and the content would be a long scroll to reach the work. */
+/* Stacked on a phone the three columns keep the SAME order they have side by side:
+   the jump menu, then the file, then its details — a sixteen-row table of figures
+   between the menu and the content would be a long scroll to reach the work. It is
+   restated here rather than left to the base rule so that a future change to the
+   desktop arrangement cannot silently re-stack a phone; the values agree today and
+   are meant to. */
 @media(max-width:900px){
-  .lt-rooms{order:-1}
-  .lt-sections{order:0}
-  .lt-ledger{order:1}
+  .lt-rooms{order:1}
+  .lt-sections{order:2}
+  .lt-ledger{order:3}
 }
 
 /* The 1003 sections' label/value lists. Two columns is right on a desktop and is a

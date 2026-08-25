@@ -146,6 +146,55 @@ export const yesNo = (v) => (v === true ? 'Yes' : v === false ? 'No' : '—');
  * different value in it, so the CALLER words the absence. A sync stamp is an
  * INSTANT (unlike `day`, which reads a calendar column), so it is read as one.
  */
+/**
+ * A CODE FROM ENCOMPASS, WRITTEN THE WAY A PERSON WRITES IT — `rate_term_refinance`
+ * becomes "Rate & term refinance" (owner-reported 2026-08-25: the purpose "should be
+ * nicely displayed, not with these lines").
+ *
+ * TWO LAYERS, and the order matters. A small table gives the RIGHT English for the
+ * handful of values where simply removing the underscores would not — "Cash-out
+ * refinance" carries a hyphen a de-underscoring cannot invent, and "Rate & term"
+ * reads as a pair rather than three words. EVERYTHING ELSE falls through to a
+ * de-underscored, sentence-cased reading, which can never change what a value MEANS:
+ * it only stops a screen printing a database code at somebody.
+ *
+ * A VALUE NOBODY HAS WORDS FOR IS STILL SHOWN. Dropping it would hide a real purpose
+ * because we had not met that spelling yet, which is worse than an unpolished one.
+ */
+const PURPOSE_WORDS = {
+  purchase: 'Purchase',
+  refinance: 'Refinance',
+  rate_term_refinance: 'Rate & term refinance',
+  ratetermrefinance: 'Rate & term refinance',
+  rate_and_term_refinance: 'Rate & term refinance',
+  no_cash_out_refinance: 'Rate & term refinance',
+  cash_out_refinance: 'Cash-out refinance',
+  cashoutrefinance: 'Cash-out refinance',
+  limited_cash_out_refinance: 'Limited cash-out refinance',
+  construction: 'Construction',
+  construction_to_permanent: 'Construction to permanent',
+  delayed_purchase: 'Delayed purchase',
+  delayed_financing: 'Delayed financing',
+};
+
+export const humanCode = (v) => {
+  if (v == null || v === '') return '—';
+  const raw = String(v).trim();
+  if (!raw) return '—';
+  const key = raw.toLowerCase().replace(/[\s-]+/g, '_');
+  if (PURPOSE_WORDS[key]) return PURPOSE_WORDS[key];
+  // The generic reading. Underscores become spaces, the first letter is raised, and
+  // NOTHING else is touched — a word already capitalised keeps its capital, because
+  // lower-casing "DSCR" or "LLC" to look tidy would be a change to the value.
+  const words = raw.replace(/_+/g, ' ').replace(/\s+/g, ' ').trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : '—';
+};
+
+/** The loan purpose, in words. A thin name over `humanCode` so the four screens
+ *  that show a purpose read as though they mean it, and so the table above has an
+ *  obvious home if a purpose ever needs wording nothing else does. */
+export const purpose = (v) => humanCode(v);
+
 export const stamp = (v) => {
   if (!v) return null;
   const d = new Date(v);
