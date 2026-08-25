@@ -795,8 +795,16 @@ async function pushLoan(loanId, opts = {}) {
       if (d.stamp && !dryRun()) await stampStatusWatermark(loanId, d.stampTo);
     } catch (e) {
       // The engine claiming nothing (or a broken read) must never fail the
-      // field push that already landed.
-      console.warn('[lt-clickup-push] status step skipped:', (e && e.message) || e);
+      // field push that already landed. But it must not vanish either: a
+      // console line is not a record anybody can read, and this whole week has
+      // been silent-failure defects (the read that stamped itself green before
+      // it filled the file, this route blaming a guard that never ran). The
+      // field push still counts as done — the loan is NOT demoted for it,
+      // because its fields really did land — and the status trouble now rides
+      // the pass result to the run log where a person can see it.
+      const msg = String((e && e.message) || e).slice(0, 200);
+      out.statusError = msg;
+      console.warn('[lt-clickup-push] status step skipped:', msg);
     }
   }
 
@@ -1060,6 +1068,86 @@ async function createForLoan(loanId) {
 }
 
 // ── The worker passes ────────────────────────────────────────────────────────
+
+/**
+ * A WITNESSED MILESTONE MOVE DOES NOT QUEUE BEHIND COSMETICS (owner-reported
+ * 2026-08-25, YSCAP258134720 — "why can't the system just work?").
+ *
+ * WHAT WENT WRONG, and it is worth reading before touching the ORDER BY. This one
+ * queue carries two completely different kinds of work. A routine FIELD REFRESH —
+ * any of a few hundred linked loans whose mirror moved a borrower's phone number —
+ * has no deadline and nobody watching. A STATUS MOVE is the thing people actually
+ * watch, and the only thing the owner's rule lets PILOT write on a card at all.
+ * They shared one cap (5 a tick) and one order that knew nothing about statuses:
+ * longest-since-pushed first. So the card's status was scheduled by an ordering
+ * with no opinion about statuses, and on a book this size a real move sat HOURS
+ * behind refreshes — measured on the reported loan: witnessed at 16:19, decided
+ * "push", forward on the list, still untouched at 18:40. Nothing read as broken
+ * anywhere, because nothing WAS broken. It was just last in line, every time.
+ *
+ * THIS IS A SCHEDULING CHANGE AND NOTHING ELSE, which matters because of what the
+ * owner reported in August: PILOT must NEVER go back over cards and reconcile them
+ * to Encompass. So read what this does NOT do — it adds no loan to the queue, it
+ * writes no status, it re-asserts nothing, and it does not touch `decideStatusPush`.
+ * The set of writes PILOT makes is byte-for-byte what it was; only the ORDER the
+ * queue is visited in changes. A loan is "waiting on a move" precisely when an
+ * `observed_entered` sits newer than its own watermark — the same test the rule
+ * itself calls `isNewEvent` — so this promotes exactly the loans the rule was
+ * already going to act on, and not one more.
+ *
+ * URGENCY SITS BELOW THE PROBLEM FLAG ON PURPOSE. Above it, one permanently
+ * failing loan carrying an unconsumed event would re-take the head of the queue
+ * every pass, forever, and starve the whole book — which is the defect the
+ * problem flag was added to fix (pre-merge audit 2026-08-24, defect 3). A loan
+ * whose status write keeps failing keeps its event (the write path clears
+ * `stamp` on a failure), so it stays urgent WITHIN the demoted cohort and comes
+ * round there, without ever costing a healthy loan its turn.
+ *
+ * The partial index `lt_milestone_events_loan_entered_idx` — (loan_id,
+ * observed_at DESC) WHERE event_type = 'observed_entered' — is what makes the
+ * EXISTS cost nothing.
+ */
+/**
+ * THE QUEUE, DEFINED ONCE. The book diagnostic reports where a loan sits in this
+ * queue, and the first version of that report carried its own retyped copy of the
+ * ORDER BY — which silently ranked by the OLD rule and told the reader the opposite
+ * of what the pass would do. A second copy of an ordering IS a second ordering. So
+ * the three fragments live here, the pass and the diagnostic both build from them,
+ * and drift between what runs and what is reported is not expressible.
+ */
+const queueSql = {
+  /** Linked, confirmed, not trashed, and read since it was last pushed. */
+  where: (a) => `${a}.clickup_task_id IS NOT NULL
+        AND COALESCE(${a}.clickup_link_confidence, 'confirmed') = 'confirmed'
+        AND ${trash.notTrashSql(a)}
+        AND (${a}.clickup_pushed_at IS NULL OR ${a}.encompass_synced_at > ${a}.clickup_pushed_at)`,
+
+  /** An `observed_entered` newer than this loan's OWN watermark — the rule's own
+   *  `isNewEvent` test, so this promotes exactly the loans the rule was already
+   *  going to act on, and not one loan more. */
+  waitingOnAMove: (a) => `EXISTS (SELECT 1 FROM lt_milestone_events e
+                     WHERE e.loan_id = ${a}.id
+                       AND e.event_type = 'observed_entered'
+                       AND e.observed_at > COALESCE(${a}.clickup_status_event_at, '-infinity'::timestamptz))`,
+
+  /** The recorded-problem flag first (anti-starvation), THEN whether a move is
+   *  waiting, then the order this queue always had. */
+  order: (a) => `(${a}.clickup_push_error IS NOT NULL) ASC,
+               (NOT ${queueSql.waitingOnAMove(a)}) ASC,
+               ${a}.clickup_pushed_at ASC NULLS FIRST,
+               ${a}.encompass_last_modified DESC`,
+};
+
+async function pushQueue({ limit } = {}) {
+  const cap = Math.max(1, parseInt(String(limit || 5), 10) || 5);
+  return db.query(
+    `SELECT l.id, ${queueSql.waitingOnAMove('l')} AS waiting_on_a_move
+       FROM lt_loans l
+      WHERE ${queueSql.where('l')}
+      ORDER BY ${queueSql.order('l')}
+      LIMIT $1`, [cap]);
+}
+
 /** Linked, confirmed loans whose mirror moved since the last push. */
 async function pushPass({ limit } = {}) {
   if (!writer.configured()) return { ok: true, skipped: 'not_configured' };
@@ -1072,18 +1160,12 @@ async function pushPass({ limit } = {}) {
   // them. clickup_push_error is the durable "this one has a problem" stamp:
   // healthy loans always outrank stamped ones, stamped ones still retry when
   // no healthy work remains, and a clean full push clears the stamp.
-  const { rows } = await db.query(
-    `SELECT l.id FROM lt_loans l
-      WHERE l.clickup_task_id IS NOT NULL
-        AND COALESCE(l.clickup_link_confidence, 'confirmed') = 'confirmed'
-        AND ${trash.notTrashSql('l')}
-        AND (l.clickup_pushed_at IS NULL OR l.encompass_synced_at > l.clickup_pushed_at)
-      ORDER BY (l.clickup_push_error IS NOT NULL) ASC, l.clickup_pushed_at ASC NULLS FIRST, l.encompass_last_modified DESC
-      LIMIT $1`, [cap]);
+  const { rows } = await pushQueue({ limit: cap });
   const out = { ok: true, considered: rows.length, pushed: 0, problems: [] };
   for (const r of rows) {
     try {
       const res = await pushLoan(r.id, { source: 'full_repush' });
+      if (res && res.statusError) out.problems.push({ loanId: r.id, statusError: res.statusError });
       if (res && res.ok) out.pushed++;
       else if (res && res.skipped) {
         out.problems.push({ loanId: r.id, skipped: res.skipped });
@@ -1200,7 +1282,7 @@ async function createPass({ limit } = {}) {
 }
 
 module.exports = {
-  pushLoan, createForLoan, pushPass, createPass, desiredStatusFor,
+  pushLoan, createForLoan, pushPass, pushQueue, queueSql, createPass, desiredStatusFor,
   writeEnabled, dryRun, createSince,
   _internals: {
     readStatusWatermark, stampStatusWatermark, raiseStatusReview, closeStatusReviews,
