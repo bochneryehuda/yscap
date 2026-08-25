@@ -16,6 +16,7 @@ import { BorrowerContacts } from '../components/FileContacts.jsx';
 import ExperienceHeader from '../components/track-record/ExperienceHeader.jsx';
 import RecordLedger from '../components/track-record/RecordLedger.jsx';
 import ExportRecord from '../components/track-record/ExportRecord.jsx';
+import SpreadsheetEditor from '../components/track-record/SpreadsheetEditor.jsx';
 import { EntityRecordsStamp } from '../components/track-record/RecordsStamp.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -638,8 +639,14 @@ function TrackRecord({ id, onOpenEntities }) {
         </div>
       )}
       <ExperienceHeader lens="borrower" experience={view ? { verified: view.verified } : null} findingsOpen={0} />
-      {/* The same export control the loan file and the workspace mount (item 7). */}
-      <ExportRecord borrowerId={id} className="tr-export-profile" />
+      {/* The same export control the loan file and the workspace mount (item 7), and beside it the
+          same legacy spreadsheet tool with its Excel IMPORT (owner-directed 2026-08-24). This is
+          the person's own record — the natural place to hand over a borrower's exported .xlsx —
+          and it was the one surface with no way to import one. */}
+      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <ExportRecord borrowerId={id} className="tr-export-profile" />
+        <SpreadsheetEditor borrowerId={id} onClosed={reloadAll} />
+      </div>
       {rows.length === 0
         ? <div className="panel"><Empty t="No track-record entries." /></div>
         : (

@@ -22,6 +22,7 @@ import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import ExperienceHeader from '../components/track-record/ExperienceHeader.jsx';
 import RecordLedger from '../components/track-record/RecordLedger.jsx';
 import ExportRecord from '../components/track-record/ExportRecord.jsx';
+import SpreadsheetEditor from '../components/track-record/SpreadsheetEditor.jsx';
 import DropZone from '../components/DropZone.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import DocumentsPanel from '../components/DocumentsPanel.jsx';
@@ -2881,7 +2882,6 @@ function StaffTrackRecordPanel({ app, role }) {
   const borrowerId = people.some(p => p.id === selected) ? selected : app.borrower_id;
   const [snap, setSnap] = useState(null);
   const [dl, setDl] = useState(false);
-  const [full, setFull] = useState(false);   // the legacy spreadsheet-editor tool sheet (bulk grid + xlsx import/export)
   // Per-line-item list so staff can raise an issue/request against a SPECIFIC
   // past project — it becomes a named condition on this file the borrower answers.
   const [trs, setTrs] = useState([]);
@@ -3010,10 +3010,14 @@ function StaffTrackRecordPanel({ app, role }) {
           title="This borrower's projects in the full-screen track-record workspace — every check, the documents, the actions, and the public-records search.">
           Open full screen
         </Link>
-        <button className="btn ghost small" onClick={() => setFull(true)}
-          title="The spreadsheet-style editor (the legacy tool sheet) — bulk-edit the grid, import or export Excel.">
-          Spreadsheet editor
-        </button>
+        {/* THE SAME control the profile and the workspace mount (owner-directed 2026-08-24) — the
+            legacy tool with its Excel import, and the ONE place its URL is built. */}
+        {/* KEYED ON THE BORROWER, and that is not decoration: the sheet used to be closed by hand
+            when somebody switched between the borrower and the co-borrower below, so it could not
+            be left open on one person's record while the page had moved to the other's. The key
+            remounts it closed instead, which does the same job without a second piece of state
+            for the component to disagree with. */}
+        <SpreadsheetEditor key={borrowerId} borrowerId={borrowerId} onClosed={refreshSnap} />
         {/* #82: the "Preview" of a saved static copy was removed — it opened a
             stale snapshot. The workspace link is the live record; the HTML
             export below stays for a static copy on hand. */}
@@ -3031,7 +3035,7 @@ function StaffTrackRecordPanel({ app, role }) {
           {people.map(p => (
             <button key={p.id} type="button"
               className={`btn small ${p.id === borrowerId ? 'primary' : 'ghost'}`}
-              onClick={() => { setFull(false); setSelected(p.id); }}
+              onClick={() => setSelected(p.id)}
               title={`${p.role} — deals you add here save to ${p.label}'s profile`}>
               {p.label} <span className="muted" style={{ fontWeight: 400 }}>· {p.role}</span>
             </button>
@@ -3099,8 +3103,9 @@ function StaffTrackRecordPanel({ app, role }) {
           now navigates to the REAL workspace (/internal/track-record?borrower=,
           owner-directed 2026-08-19: the full screen must be the live center,
           never the static-copy tool), and the legacy grid survives behind the
-          "Spreadsheet editor" button (the ToolModal below — still the only
-          bulk-edit grid / xlsx import). The borrower's saved copy is rebuilt
+          "Spreadsheet editor" button — the shared `SpreadsheetEditor` control, still
+          the only bulk-edit grid / xlsx import, now mounted on the profile and the
+          workspace too (owner-directed 2026-08-24). The borrower's saved copy is rebuilt
           SERVER-SIDE on every write (src/lib/track-record/html-copy.js), so
           nothing depends on this page hosting the tool any more. The borrower's
           own tool sheet and the ?internal=1 bridge are untouched (A13). */}
@@ -3110,12 +3115,7 @@ function StaffTrackRecordPanel({ app, role }) {
           one fetch, not two. */}
       <TrackRecordTodo appId={app.id} borrowerId={borrowerId} reloadKey={todoKey}
         preloaded={todoFailed ? undefined : todo} />
-      {full && (
-        <ToolModal
-          title="Borrower track record"
-          url={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
-          onClose={() => { setFull(false); refreshSnap(); }} />
-      )}
+
     </div>
   );
 }
