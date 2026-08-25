@@ -234,19 +234,85 @@ async function listMilestoneCatalog() { return encompass.apiGet('/encompass/v3/s
 async function listLoanFolders() { return encompass.apiGet('/encompass/v1/loanFolders'); }
 
 /**
- * STILL UNRESOLVED, AND LEFT POINTING AT THE ADDRESS WE KNOW RATHER THAN A GUESS.
+ * THE LOAN TEMPLATES, WALKED — MEASURED 2026-08-25, THE LAST OF THE SIX.
  *
- * `/v3/settings/loan/loanTemplates` is 403. The one candidate the research turned up,
- * `/v3/settings/templates/loanTemplateSet/folders`, answers 400 — but with an
- * instruction rather than a refusal: *"Folder path is empty. Default parent directory
- * should start with public or personal."* That is a lead, not an answer, and it is
- * being followed by probe rather than by guess. Until one of those probes returns
- * 200, this stays where it is: `refreshFieldCatalog` records the per-kind failure and
- * carries on to the next kind, which is the correct behaviour for a catalog we cannot
- * read, and far better than pointing it somewhere that might answer with the wrong
- * thing.
+ * `/v3/settings/loan/loanTemplates` is 403: it does not exist. The address that
+ * answers is `/v3/settings/templates/loanTemplateSet/folders?path=…`, and the
+ * tenant's own 400 named the parameter before the probe confirmed the value —
+ * *"Folder path is empty. Default parent directory should start with public or
+ * personal."*
+ *
+ * IT IS A TREE, NOT A LIST, so one call cannot answer it. Walked live: two roots,
+ * three calls, 13 rows — 2 folders and **11 loan template sets**, which are this
+ * tenant's real programs (DSCR 30 YEAR FRM, DSCR 40 YEAR FRM, DSCR I/O, Fix & Flip,
+ * Conventional, Closed End Second, Investor Alt Doc, and the rest).
+ *
+ * AND ITS ROWS WOULD HAVE KEYED TO NOTHING. Each is
+ * `{entityType, entityName, entityPath, hasSubFolders}`, while `refreshFieldCatalog`
+ * keys this kind with `r.path || r.name || r.id` — not one of those three names is
+ * in the payload. Handed straight through, every row keys to `undefined`, hits the
+ * reader's `if (!key) continue`, and the catalog reports a clean refresh holding
+ * zero templates. That is the THIRD endpoint this week with that exact shape, after
+ * the picklists and the standard fields, so it is normalised here like the others:
+ * the reader stores rows, and one vendor's spelling is this client's problem.
+ *
+ * ONLY THE LEAVES ARE RETURNED. `TemplateFolder` rows are navigation — they are
+ * followed, not stored, because a folder is not a template and a catalog listing
+ * both would answer "which templates exist?" with a mixture of two kinds of thing.
+ *
+ * EVERY FOLDER IS OPENED, including one whose `hasSubFolders` is false: that flag
+ * means "no child FOLDERS", and a folder with none can still hold templates. The
+ * walk's first run gated on it and duly missed a branch while reporting a complete
+ * tree.
+ *
+ * BOUNDED, and the bound is reported rather than silent. At most 40 calls and 4
+ * levels — comfortably above the 3 calls and 2 levels this tenant actually needs —
+ * and only `entityPath` values Encompass itself returned are ever followed, never a
+ * path this code assembles.
  */
-async function listLoanTemplates() { return encompass.apiGet('/encompass/v3/settings/loan/loanTemplates'); }
+const TEMPLATE_ROOTS = ['public', 'personal'];
+const TEMPLATE_MAX_CALLS = 40;
+const TEMPLATE_MAX_DEPTH = 4;
+
+async function listLoanTemplates() {
+  const out = [];
+  const seen = new Set();
+  const queue = TEMPLATE_ROOTS.map((path) => ({ path, depth: 0 }));
+  let calls = 0;
+
+  while (queue.length && calls < TEMPLATE_MAX_CALLS) {
+    const { path, depth } = queue.shift();
+    if (seen.has(path)) continue;
+    seen.add(path);
+    calls += 1;
+
+    let body;
+    try {
+      body = await encompass.apiGet(`/encompass/v3/settings/templates/loanTemplateSet/folders?path=${encodeURIComponent(path)}`);
+    } catch (e) {
+      // A branch that will not open must not cost the branches that will. The root
+      // failing is a real failure and is thrown; a sub-folder failing is recorded by
+      // its absence, and `refreshFieldCatalog` reports the kind's count either way.
+      if (depth === 0) throw e;
+      continue;
+    }
+
+    const contents = body && Array.isArray(body.contents) ? body.contents : [];
+    for (const c of contents) {
+      if (!c || typeof c !== 'object') continue;
+      const type = String(c.entityType || '');
+      if (type.toLowerCase().includes('folder')) {
+        if (c.entityPath && depth + 1 <= TEMPLATE_MAX_DEPTH) queue.push({ path: c.entityPath, depth: depth + 1 });
+        continue;
+      }
+      const templatePath = String(c.entityPath || '').trim();
+      if (!templatePath) continue;
+      // Normalised to what `reader.js` already reads — `path` first in its chain.
+      out.push({ path: templatePath, name: c.entityName || null, description: c.entityName || null, entityType: type });
+    }
+  }
+  return out;
+}
 
 // Ping + config passthroughs so consumers don't need two imports.
 const configured = encompass.configured;

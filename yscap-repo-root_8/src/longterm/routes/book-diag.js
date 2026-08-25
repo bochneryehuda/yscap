@@ -772,7 +772,19 @@ router.get('/template-walk', async (_req, res) => {
         hasSubFolders: c.hasSubFolders === true,
       });
       // Follow only what the VENDOR handed back, and only while inside the bound.
-      if (c.entityPath && depth + 1 <= MAX_DEPTH && c.hasSubFolders === true) {
+      // EVERY FOLDER IS OPENED, NOT ONLY THE ONES WITH SUB-FOLDERS.
+      //
+      // The first run gated this on `hasSubFolders === true` and reported
+      // `complete: true` — while never looking inside "DO NOT USE", whose
+      // `hasSubFolders` is false. That flag says the folder has no child FOLDERS.
+      // It says nothing about whether it holds TEMPLATES, which is the thing being
+      // counted. So the walk announced a complete tree having skipped a branch that
+      // could contain rows: a report that measured less than it claimed, which is
+      // the exact defect being hunted everywhere else this week.
+      //
+      // The bound that keeps this safe is the call cap and the depth cap, both of
+      // which are reported. A folder is opened because it is a folder.
+      if (c.entityPath && depth + 1 <= MAX_DEPTH && String(c.entityType || '').toLowerCase().includes('folder')) {
         queue.push({ path: c.entityPath, depth: depth + 1 });
       }
     }
