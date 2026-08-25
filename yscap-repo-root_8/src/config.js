@@ -549,11 +549,20 @@ module.exports = {
     // Our company on Trinity's side (GET /companies/default). Left null = resolve once
     // and cache, so a fresh tenant needs no env change.
     companyId:      process.env.TRINITY_COMPANY_ID ? parseInt(process.env.TRINITY_COMPANY_ID, 10) : null,
-    // Form 19 — "Blank General Purpose Line Item Draw", the DOLLAR-based draw. The only
-    // shape whose line items carry itemCost + previousPercentCompleted, which is what
-    // lets the construction budget AND the historical draws travel. Configurable so a
-    // production company enabled on a different draw form needs no deploy.
-    formId:         parseInt(process.env.TRINITY_FORM_ID || '19', 10),
+    // The DOLLAR-based line-item draw — the only shape whose line items carry itemCost +
+    // previousPercentCompleted, which is what lets the construction budget AND the
+    // historical draws travel.
+    //
+    // 1079 ("General Purpose Line Item Draw PCR") is the PRODUCTION form; 19 ("Blank
+    // General Purpose Line Item Draw") is the SANDBOX one and is not on the production
+    // account at all (owner-directed 2026-08-24 — "Form 19 is only for the test
+    // environment"). Same product, same request schema to the field, different id. Set
+    // TRINITY_FORM_ID=19 to point a sandbox deployment back at the test form.
+    //
+    // This is the DEFAULT a new order goes out on. It is NEVER what a placed order is read
+    // back at — that is `trinity_inspection_orders.trinity_form_id`, recorded per order
+    // (db/628), because an order placed on 19 is only readable at /forms/19/.
+    formId:         parseInt(process.env.TRINITY_FORM_ID || String(require('./trinity/form').PRODUCTION_DRAW_FORM_ID), 10),
     pollSec:        parseInt(process.env.TRINITY_POLL_SEC || '600', 10),   // open-order status sweep
     // Trinity webhooks carry NO signature, so the receiver authenticates on a secret
     // path token we choose and then hydrates every fact with an authenticated GET.

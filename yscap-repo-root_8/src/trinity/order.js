@@ -30,6 +30,7 @@ const db = require('../db');
 const cfg = require('../config');
 const client = require('./client');
 const mapper = require('./mapper');
+const FORM = require('./form');
 const drawCommitted = require('../lib/draw-committed');   // "how much of this line is already spoken for"
 
 const usd = (c) => '$' + (Number(c || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -276,10 +277,20 @@ async function placeOrder(appId, orderRowId, { staffId = null } = {}) {
       return { blocked: true, message: reason, problems };
     }
 
+    /* ---- WHICH FORM THIS ORDER GOES OUT ON ----
+       The record's own choice wins over the configured default, for two reasons that pull the
+       same way. A coordinator who deliberately picked a form (`intake.orderManually`) must get the
+       one they picked, and a retry of a record that has ALREADY been placed must go out on the
+       form the record claims — a resume that switched forms would place a second, different
+       product and leave the read-back pointing at neither. `formForRow` is that one rule; the
+       form actually used is recorded in the same statement that records the order id below, so
+       the record and the read-back can never disagree about it (db/628). */
+    const formUsed = FORM.formForRow(o, client.formId());
+
     // ---- the call ----
     let created = null, trinityOrderId = null, trinityProjectId = null;
     try {
-      created = await client.createOrder(payload);
+      created = await client.createOrder(payload, { form: formUsed });
       if (created && created.__dryrun) {
         await release();
         return { ok: true, dryrun: true, wouldSend: { lines: payload.order.lineItems.length, requestedTotal } };
@@ -314,11 +325,12 @@ async function placeOrder(appId, orderRowId, { staffId = null } = {}) {
       await db.query(
         `UPDATE trinity_inspection_orders
             SET trinity_order_id=$2, trinity_project_id=$3, customer_key=$4,
+                trinity_form_id=$6,
                 status = CASE WHEN status='requested' THEN 'ordered' ELSE status END,
                 ordered_at = COALESCE(ordered_at, now()), ordered_by = COALESCE(ordered_by, $5::uuid),
                 blocked_reason = NULL, order_claimed_at = NULL, updated_at = now()
           WHERE id=$1`,
-        [orderRowId, trinityOrderId, trinityProjectId, customerKey, staffId]);
+        [orderRowId, trinityOrderId, trinityProjectId, customerKey, staffId, formUsed]);
     } catch (e) {
       // `uq_tio_trinity_order` refusing means ANOTHER of our records already holds this
       // Trinity order — the 409-recovery path resolved to an order a different draw is
@@ -373,7 +385,7 @@ async function placeOrder(appId, orderRowId, { staffId = null } = {}) {
     // ---- everything below is BEST-EFFORT: the order exists and must never be undone ----
     // PROVE the budget landed before anything else — a broken crosswalk is worth
     // knowing about now, not when the report comes back and nothing can be matched.
-    const proof = await verifyBudget(appId, orderRowId, trinityOrderId, sentItems).catch(
+    const proof = await verifyBudget(appId, orderRowId, trinityOrderId, sentItems, formUsed).catch(
       (e) => ({ error: String(e && e.message).slice(0, 200) }));
 
     const docs = await sendDocuments(appId, orderRowId, trinityOrderId, { lines, requestedTotal }).catch(
@@ -446,10 +458,11 @@ async function recordEvent(appId, orderRowId, {
  * the inspection is real and cancelling it over a reconciliation is worse than showing
  * a human what differs. Best-effort throughout: it can never fail a placement.
  */
-async function verifyBudget(appId, orderRowId, trinityOrderId, sentItems) {
+async function verifyBudget(appId, orderRowId, trinityOrderId, sentItems, form = null) {
   if (!client.available() || !client.enabled()) return { skipped: 'off' };
   let remote;
-  try { remote = await client.getBudget(trinityOrderId); }
+  // The form THIS order went out on — a budget is only readable at the form it was placed on.
+  try { remote = await client.getBudget(trinityOrderId, form); }
   catch (e) { return { skipped: 'unreadable', message: String(e && e.message).slice(0, 200) }; }
   if (remote && remote.__dryrun) return { skipped: 'dryrun' };
 

@@ -232,6 +232,11 @@ router.post('/files/:appId/orders', fileScope, async (req, res, next) => {
       staffId: req.actor.id,
       override: b.override === true || b.override === 'true',
       overrideReason: b.overrideReason != null ? String(b.overrideReason) : null,
+      /* ORDERING A DIFFERENT FORM (owner-directed 2026-08-24). The default is what a plain click
+         sends; a coordinator changing it must confirm the warning `intake.orderManually` answers
+         with. The rule lives there and in `trinity/form.js`, so this door cannot widen it. */
+      formId: b.formId != null ? b.formId : (b.form_id != null ? b.form_id : null),
+      confirmForm: b.confirmForm === true || b.confirmForm === 'true',
     });
     if (r.blocked) return res.status(422).json(r);
     if (r.error) return res.status(502).json(r);
@@ -722,11 +727,11 @@ router.get('/status', async (req, res, next) => {
    from Trinity — the production account's catalogue differs from the sandbox's, so anything we kept
    ourselves would be right in testing and wrong on the first real order.
 
-   Cached briefly: a catalogue changes when Trinity changes our account, and the client shares one
-   rate bucket with every order and poll. Never throws — an unreadable catalogue answers `read:false`,
-   which is a different statement from "they sell nothing" and is shown as such. */
-let _catalogCache = { at: 0, value: null };
-const CATALOG_TTL_MS = 10 * 60 * 1000;
+   Cached briefly IN THE CLIENT — ONE cache shared with the admin health page and the form picker on
+   the order door, because a catalogue changes only when Trinity changes our account and all three
+   surfaces share one rate bucket with the orders and the pollers. Never throws — an unreadable
+   catalogue answers `read:false`, which is a different statement from "they sell nothing" and is
+   shown as such. */
 router.get('/products', async (req, res, next) => {
   try {
     if (!can(req, 'manage_draws')) return bad(res, 403, 'You do not have permission to manage draws.');
@@ -735,13 +740,8 @@ router.get('/products', async (req, res, next) => {
       return res.json({ configured: false, formId: want, read: false, products: [],
         message: 'The Trinity connection is not set up yet, so their product list cannot be read.' });
     }
-    const fresh = Date.now() - _catalogCache.at < CATALOG_TTL_MS;
-    if (!fresh || !_catalogCache.value) {
-      let forms = null;
-      try { forms = await client.forms(); } catch (_) { forms = null; }
-      _catalogCache = { at: Date.now(), value: catalog.productCheck(forms, want) };
-    }
-    res.json({ configured: true, cachedAt: new Date(_catalogCache.at).toISOString(), ..._catalogCache.value });
+    const forms = await client.formsCached();
+    res.json({ configured: true, ...catalog.productCheck(forms, want) });
   } catch (e) { next(e); }
 });
 
