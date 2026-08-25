@@ -53,6 +53,9 @@
 /** The most-recently-modified loans, newest first — the same canonical field and
  *  sort the discovery pass already uses, so the two cannot disagree about what
  *  "recently changed" means. */
+// ONE definition of "which loans are ours" — discovery's. See the filter note below.
+const discover = require('./discover');
+
 const SORT_FIELD = 'Loan.LastModified';
 
 /** One call's worth. Deliberately modest: this runs on a doorbell that can ring
@@ -85,11 +88,31 @@ async function sweepRecentlyChanged({ client, db, limit } = {}) {
 
   // ASK ENCOMPASS WHAT MOVED. A read, over the read-only connection, with the
   // same shape the discovery pass has used since it shipped.
+  //
+  // THE FILTER IS NOT OPTIONAL, AND LEAVING IT OUT IS WHY THIS PATH NEVER ONCE
+  // WORKED (measured live 2026-08-25 against the production endpoint). Encompass
+  // refuses a pipeline search that names neither loans nor a filter — HTTP 400,
+  // "Either 'LoanIds' or filter properties like 'Loa[nFolder]'..." — so every
+  // unnamed ping got as far as this call and no further. The comment above was
+  // already true about intent and false about the code: discovery has always sent
+  // `filter` and `includeArchivedLoans`, and this sent neither.
+  //
+  // IT REUSES `discover.buildFilter` RATHER THAN RESTATING IT. Two copies of the
+  // one question "which loans are ours?" would drift, and the copy that drifted
+  // would be this one — the path nobody watches, because a doorbell that answers
+  // nothing looks exactly like a doorbell nobody rang.
+  //
+  // ARCHIVED LOANS ARE STILL OUR LOANS, for the reason discovery states at length:
+  // a loan that drops out of the result set is not marked withdrawn and is not
+  // deleted, it FREEZES at whatever it was last seen in. A ping about a loan that
+  // has just been archived is exactly the ping worth answering.
   let rows;
   try {
     const body = await client.pipelineSearch({
       fields: ['Loan.LoanNumber', 'Loan.GUID', SORT_FIELD],
+      filter: discover.buildFilter({ loanFolder: null }),
       sortOrder: [{ canonicalName: SORT_FIELD, order: 'Descending' }],
+      includeArchivedLoans: true,
     }, { limit: cap, start: 0 });
     rows = Array.isArray(body) ? body : (body && Array.isArray(body.loans) ? body.loans : []);
   } catch (e) {
