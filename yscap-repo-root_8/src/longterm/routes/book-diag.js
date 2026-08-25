@@ -1130,20 +1130,33 @@ router.get('/why-no-status', async (req, res) => {
         + ' A status is only ever written for a witnessed move (the owner\'s rule, 2026-08-24), so the card was never going to be told.';
     } else if (loan.clickup_status_event_at
         && new Date(lastEntered.observed_at).getTime() <= new Date(loan.clickup_status_event_at).getTime()) {
-      // AN ANSWERED MOVE HAS TWO COMPLETELY DIFFERENT ENDINGS, and calling both
-      // of them a disagreement is a lie the reader will act on. Measured on the
-      // reported loan minutes after it came good: the card had caught up to
-      // "ctc (4-email)" and this sentence still called it a disagreement bound
-      // for the status-review list. When the card HOLDS what the ladder implies,
-      // the honest answer is that it worked — late, and the timing is the story.
+      // WHO ACTUALLY WROTE IT — the automatic pass, or a person. The first version
+      // of this branch said "the push queue reached it at ...", and on the very loan
+      // this route was built for that was FALSE: the queue never arrived, and the
+      // owner wrote the status himself with the Push Updates button. `clickup_pushed_at`
+      // alone cannot tell the two apart — both stamp it — and guessing turned a
+      // two-and-a-half-hour outage into a story about it working late. The write log
+      // knows: `source` is 'manual' for the button and 'full_repush' for the pass.
+      let wroteBy = null;
+      try {
+        const { rows: w } = await db.query(
+          `SELECT source, created_at FROM lt_clickup_write_log
+            WHERE task_id = $1 AND field_key = '__status' AND changed = true
+            ORDER BY created_at DESC LIMIT 1`, [String(loan.clickup_task_id)]);
+        if (w[0]) wroteBy = { source: w[0].source || null, at: w[0].created_at };
+      } catch (e) { wroteBy = { error: String((e && e.message) || e).slice(0, 120) }; }
+      const byHand = !!(wroteBy && wroteBy.source === 'manual');
       const agrees = decision && decision.desired && cardStatus
         && String(cardStatus).trim().toLowerCase() === String(decision.desired).trim().toLowerCase();
       const waited = loan.clickup_pushed_at
         ? Math.round((new Date(loan.clickup_pushed_at).getTime()
                       - new Date(lastEntered.observed_at).getTime()) / 60000)
         : null;
+      const howLong = waited != null && waited > 0 ? `${waited} minutes after the milestone` : 'immediately';
       verdict = agrees
-        ? `ANSWERED — the move was witnessed at ${lastEntered.observed_at} and the card now holds "${cardStatus}", which is what the ladder implies. Nothing is wrong with this loan${waited != null && waited > 0 ? `, but it took ${waited} minutes to get there: the push queue reached it at ${loan.clickup_pushed_at}` : ''}.`
+        ? (byHand
+          ? `A PERSON DID THIS, NOT THE SYNC — the card holds "${cardStatus}", but the write log says it was written by hand (Push Updates), ${howLong}. The automatic pass never reached this loan. Do not read the card being right as the sync working.`
+          : `ANSWERED — the move was witnessed at ${lastEntered.observed_at} and the automatic pass wrote "${cardStatus}" ${howLong}. Nothing is wrong with this loan; the only question is whether that wait is acceptable.`)
         : `LINK 3 — the move was witnessed at ${lastEntered.observed_at}, but the loan's status watermark is already at ${loan.clickup_status_event_at}, so that move has been answered. The card holding "${cardStatus}" is a disagreement PILOT will not overwrite; it belongs in the status-review list.`;
     } else if (!dueForPush) {
       verdict = `LINK 2 — the move was witnessed, but the push pass will not pick this loan up: it was last pushed at ${loan.clickup_pushed_at} which is not older than the last read at ${loan.encompass_synced_at}.`;

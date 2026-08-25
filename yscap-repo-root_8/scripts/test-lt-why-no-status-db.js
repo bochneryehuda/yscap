@@ -137,23 +137,45 @@ async function main() {
   eq(b.body.queue && b.body.queue.position, 1,
     'and the loan waiting on a witnessed move still comes first, though the other was pushed far longer ago');
 
-  // ── D2. AN ANSWERED MOVE: the card caught up, versus a real disagreement ──
-  // Measured on the reported loan minutes after the queue reached it: the card
-  // held "ctc (4-email)" — exactly what the ladder implies — and the verdict
-  // still called it "a disagreement PILOT will not overwrite" bound for the
-  // review list. A diagnostic that reports a healthy loan as a problem sends the
-  // reader to fix nothing, which is the cost this whole route exists to remove.
-  console.log('\nD2. an answered move reads as answered when the card agrees');
+  // ── D2. WHO WROTE IT: the sync, or a person with the button ──────────────
+  // The owner's correction, and it is the whole lesson of this report. The card
+  // on YSCAP258134720 did end up holding "ctc (4-email)" — but not because the
+  // queue arrived. The owner opened ClickUp syncing and clicked Push Updates.
+  // `clickup_pushed_at` is stamped by BOTH, so a verdict that reads only that
+  // column cannot tell a working sync from a person quietly covering for one —
+  // and the first version of this branch confidently reported the wrong one.
+  // The write log knows: source 'manual' is the button, 'full_repush' the pass.
+  console.log('\nD2. the verdict says WHO wrote the status, never guesses');
   await db.query(
     `UPDATE lt_loans SET clickup_status_event_at = '2026-08-25T16:19:00Z'::timestamptz,
                          clickup_pushed_at = '2026-08-25T18:44:59Z'::timestamptz
       WHERE loan_number = $1`, [LOAN]);
-  const agreed = await askWithCard('ctc (4-email)');
-  ok(/^ANSWERED/.test(String(agreed.verdict || '')), 'the card holding what the ladder implies reads as ANSWERED, not as a disagreement');
-  ok(!/disagreement/i.test(String(agreed.verdict || '')), 'and the word "disagreement" does not appear at all');
-  ok(/146 minutes/.test(String(agreed.verdict || '')),
-    'and it says how long the card waited — 16:19 to 18:44 is 146 minutes, which IS the story of this report');
 
+  const logStatus = async (source) => {
+    await db.query(`DELETE FROM lt_clickup_write_log WHERE task_id = 'task_why_1888'`);
+    await db.query(
+      `INSERT INTO lt_clickup_write_log (lt_loan_id, task_id, field_key, changed, blocked, source)
+            VALUES ((SELECT id FROM lt_loans WHERE loan_number = $1), 'task_why_1888', '__status', true, false, $2)`,
+      [LOAN, source]);
+  };
+
+  await logStatus('manual');
+  const byHand = await askWithCard('ctc (4-email)');
+  ok(/A PERSON DID THIS/.test(String(byHand.verdict || '')),
+    'a status written by the Push Updates button is reported as a PERSON doing it');
+  ok(/never reached/.test(String(byHand.verdict || '')),
+    'and it says plainly that the automatic pass never got there');
+  ok(!/^ANSWERED/.test(String(byHand.verdict || '')),
+    'it is NOT reported as the sync working — a right card is not a working sync');
+
+  await logStatus('full_repush');
+  const byPass = await askWithCard('ctc (4-email)');
+  ok(/^ANSWERED/.test(String(byPass.verdict || '')), 'the same card written by the PASS reads as answered');
+  ok(/146 minutes after the milestone/.test(String(byPass.verdict || '')),
+    'and carries how long it took — 16:19 to 18:44 is 146 minutes');
+  ok(!/A PERSON/.test(String(byPass.verdict || '')), 'and does not blame a person who did nothing');
+
+  await db.query(`DELETE FROM lt_clickup_write_log WHERE task_id = 'task_why_1888'`);
   const disagreed = await askWithCard('waiting for docs');
   ok(/LINK 3/.test(String(disagreed.verdict || '')), 'a card that genuinely disagrees still reads as link 3');
   ok(/disagreement/i.test(String(disagreed.verdict || '')), 'and is still named a disagreement PILOT will not overwrite');
