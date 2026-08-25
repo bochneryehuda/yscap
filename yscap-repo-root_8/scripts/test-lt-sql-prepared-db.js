@@ -191,6 +191,12 @@ async function main() {
     // assembled form runs against a real Postgres in this job:
     'sync/milestone-ladder.js': 'test-lt-milestone-ladder.js section H drives ladderDue live (the assembled not-trash WHERE), and sections E–I drive every other statement in the file',
     'clickup/push.js': 'test-lt-clickup-writer.js DB half drives pushLoan, createForLoan, pushPass and createPass live — every loan load assembles the trash guard',
+    // The SHARED scoped loader every per-loan section goes through. It composes the
+    // trash guard into its `SELECT ... FROM lt_loans`, so the statement only exists
+    // once a door assembles it. The smoke test's all-zeros loan id is a VALID uuid,
+    // so it passes the loader's own uuid guard and the SELECT genuinely runs before
+    // the no-rows 404 — which is what makes this entry true rather than hopeful.
+    'routes/scoped-loan.js': 'GET /api/lt/encompass-file/loans/:loanId and GET /api/lt/clickup/loans/:loanId in the route smoke test both assemble and execute it',
     'routes/clickup.js': 'GET /api/lt/clickup/loans/:loanId in the route smoke test (loadScopedLoan assembles the trash guard), plus test-lt-clickup-section-db.js over the whole section',
   };
   const byFile = new Map();
