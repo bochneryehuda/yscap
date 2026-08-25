@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**888 objects**, and a database rebuilt from the Prisma
+**892 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 626 numbered migrations in `db/` (highest `db/629`) remain the only thing that builds this database.
+rebuild a database from them.** The 627 numbered migrations in `db/` (highest `db/630`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -21,8 +21,8 @@ the live database.
 |---|---|
 | Tables | 385 |
 | Columns | 6206 |
-| Triggers | 35 |
-| Functions | 138 |
+| Triggers | 37 |
+| Functions | 140 |
 | CHECK constraints | 318 |
 | Generated columns | 12 |
 | Partial indexes | 385 |
@@ -33,9 +33,11 @@ the live database.
 | Enum types | 12 |
 | Views | 0 |
 
-## Triggers (35)
+## Triggers (37)
 
 - **trg_ai_suggestions_updated** on `ai_suggestions`
+- **trg_assignment_condition_is_purchase_only** on `checklist_items`
+- **trg_assignment_is_a_purchase_concept** on `applications`
 - **trg_borrower_auth_one_login_per_email** on `borrower_auth`
 - **trg_class_orders_touch** on `class_orders`
 - **trg_default_deal_program** on `applications`
@@ -86,11 +88,13 @@ the live database.
 - **track_records.counts_from** — `COALESCE( CASE WHEN (lower(COALESCE(deal_type, ''::text)) ~~ '%flip%'::text) THEN sale_date ELSE COALESCE(rent_date, refi_date) END, CASE WHEN ((lower(COALESCE(deal_type, ''::text)) ~~ '%ground%'::text) OR (lower(COALESCE(deal_type, ''::text)) ~~ '%construction%'::text)) THEN COALESCE(sale_date, rent_date, refi_date) ELSE NULL::date END)`
 - **track_records.hold_days** — `(COALESCE( CASE WHEN (lower(COALESCE(deal_type, ''::text)) ~~ '%flip%'::text) THEN sale_date ELSE COALESCE(rent_date, refi_date) END, CASE WHEN ((lower(COALESCE(deal_type, ''::text)) ~~ '%ground%'::text) OR (lower(COALESCE(deal_type, ''::text)) ~~ '%construction%'::text)) THEN COALESCE(sale_date, rent_date, refi_date) ELSE NULL::date END) - purchase_date)`
 
-## Functions (138)
+## Functions (140)
 
 - **appraisal_review_guard()** → trigger
 - **armor(bytea)** → text
 - **armor(bytea, text[], text[])** → text
+- **assignment_condition_is_purchase_only()** → trigger
+- **assignment_is_a_purchase_concept()** → trigger
 - **borrower_auth_one_login_per_email()** → trigger
 - **citext(boolean)** → citext
 - **citext(character)** → citext
