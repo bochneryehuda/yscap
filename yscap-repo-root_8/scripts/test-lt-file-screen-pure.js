@@ -57,8 +57,18 @@ check(!/sections\s*\.\s*(sort|reverse|filter)\(/.test(ui) && !/\[\.\.\.sections\
 const sectionsBlock = (server.match(/const SECTIONS = \[([\s\S]*?)\n\];/) || [])[1] || '';
 const serverKeys = [...sectionsBlock.matchAll(/key: '([a-z_]+)'/g)].map((m) => m[1]);
 check(serverKeys.length >= 12, `the server's section list is readable (${serverKeys.length} sections)`);
-check(serverKeys[serverKeys.length - 1] === 'clickup',
-  `ClickUp syncing is the LAST section the server names (${serverKeys[serverKeys.length - 1]}) — the owner asked for it brought DOWN`);
+// THE SYNCING SECTIONS SIT AT THE BOTTOM, below everything about the loan itself
+// — the owner asked for ClickUp syncing brought DOWN, and the rule was never about
+// that one section: it is that plumbing goes under content. So this pins the
+// PROPERTY rather than one section's index, which is what let the Encompass
+// syncing section (#52) land beside it without either loosening the guard or
+// having to be squeezed in above the plumbing it belongs with.
+const SYNCING = ['clickup', 'encompass'];
+const tail = serverKeys.slice(-SYNCING.length);
+check(SYNCING.every((k) => tail.includes(k)),
+  `the syncing sections are the LAST ones the server names (${tail.join(', ')}) — the owner asked for them brought DOWN`);
+check(!serverKeys.slice(0, serverKeys.length - SYNCING.length).some((k) => SYNCING.includes(k)),
+  '…and none of them appears anywhere above the loan’s own sections');
 check(serverKeys[0] === 'summary', `the loan summary leads (${serverKeys[0]})`);
 
 // ── 2. A shut section costs nothing ──────────────────────────────────────────

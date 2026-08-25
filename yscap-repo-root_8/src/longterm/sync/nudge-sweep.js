@@ -165,10 +165,19 @@ async function sweepRecentlyChanged({ client, db, limit } = {}) {
 
   if (!toNudge.length) return out;
 
-  // THE NUDGE. The ONLY write this module makes, and it clears one column.
+  // THE NUDGE. Clearing `encompass_synced_at` is the whole nudge — the sync's own
+  // drain re-reads the loan on its next pass. The three `encompass_nudge*` columns
+  // beside it (db/629) RECORD that Encompass asked, which is a different fact and
+  // the one the owner cannot otherwise see: before them, a webhook that had
+  // silently stopped looked exactly like one that never fired.
   try {
     await db.query(
-      `UPDATE lt_loans SET encompass_synced_at = NULL, updated_at = now()
+      `UPDATE lt_loans
+          SET encompass_synced_at   = NULL,
+              encompass_nudged_at   = now(),
+              encompass_nudged_via  = 'sweep',
+              encompass_nudge_count = COALESCE(encompass_nudge_count, 0) + 1,
+              updated_at            = now()
         WHERE id = ANY($1::uuid[])`, [toNudge.map((t) => String(t.id))]);
     out.nudged = toNudge.map((t) => ({ loanNumber: t.loanNumber, was: t.was, now: t.now }));
   } catch (e) {

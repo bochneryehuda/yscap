@@ -112,6 +112,16 @@ const SECTIONS = [
     key: 'clickup',
     label: 'ClickUp syncing',
   },
+  {
+    // ALWAYS available, for the same reason its ClickUp twin is — and more so.
+    // This section exists to explain why a file looks empty (owner-directed
+    // 2026-08-25: "see what it read and what it didn't read"), so greying it out
+    // on a file that has not been read is exactly backwards: that file is the one
+    // somebody most needs it for. Its data comes from
+    // /api/lt/encompass-file/loans/:id; this row only puts it on the menu.
+    key: 'encompass',
+    label: 'Encompass syncing',
+  },
 ];
 
 /**

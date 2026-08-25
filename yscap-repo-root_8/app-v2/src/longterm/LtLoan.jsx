@@ -5,6 +5,7 @@ import LtLayout from './LtLayout.jsx';
 import LtFileSection, { hasFileSection } from './LtFileSections.jsx';
 import LtConditionCenter from './LtConditionCenter.jsx';
 import LtClickupSection from './LtClickupSection.jsx';
+import LtEncompassSection from './LtEncompassSection.jsx';
 import ProductStamp from './ProductStamp.jsx';
 import { ltApi } from './api.js';
 
@@ -667,6 +668,7 @@ const SECTION_BLURB = {
   investor: 'Who bought this loan, and when.',
   lock: 'The rate lock, and everything we have watched change on it.',
   clickup: 'What the sync does for this file on its own \u2014 and the buttons to do any of it by hand.',
+  encompass: 'What PILOT has read from Encompass and what it has not \u2014 the last pull, the last webhook, and a button to read it again now.',
 };
 
 /**
@@ -812,6 +814,7 @@ export default function LtLoan() {
     }
     if (s.key === 'milestones') return <MilestoneBoard board={milestoneBoard} history={milestoneHistory} />;
     if (s.key === 'clickup') return <LtClickupSection loanId={loanId} />;
+    if (s.key === 'encompass') return <LtEncompassSection loanId={loanId} />;
     if (s.key === 'lock') return <LockCard lock={lock} bare />;
     // The Condition Center loads ITSELF. It is two Encompass feeds rather than a
     // slice of the 1003, so it is not in `file` and does not go through

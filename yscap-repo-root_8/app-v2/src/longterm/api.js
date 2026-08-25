@@ -178,6 +178,14 @@ export const ltApi = {
   clickupReview: (loanId, reviewId, decision) => ltPost(
     lt(`/clickup/loans/${encodeURIComponent(loanId)}/reviews/${encodeURIComponent(reviewId)}/${decision === 'approve' ? 'approve' : 'reject'}`), {}),
 
+  // THE ENCOMPASS SYNCING SECTION (#52, owner-directed 2026-08-25): what has been
+  // read for this loan and what has not, when Encompass last changed it, when a
+  // webhook last asked us to look, and a button that reads it again on the spot.
+  // READ-ONLY towards Encompass — `encompassFileRead` opens the loan and reads it;
+  // nothing here can write to Encompass.
+  encompassFileSection: (loanId) => ltGet(lt(`/encompass-file/loans/${encodeURIComponent(loanId)}`)),
+  encompassFileRead: (loanId) => ltPost(lt(`/encompass-file/loans/${encodeURIComponent(loanId)}/read`), {}),
+
   // Every file where the ClickUp status and the Encompass milestones disagree, as
   // of the last time PILOT looked at that card. Scoped by the server exactly like
   // the pipeline, and it reads OUR OWN rows — no ClickUp call, so it can never be

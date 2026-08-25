@@ -390,6 +390,24 @@ model LtLoan {
   /// visible rather than silently stale.
   encompassSyncError String? @map("encompass_sync_error")
 
+  // ── Did the webhook actually fire for this loan (db/629) ──────────────────
+  // The owner asked to see "last webhooks" on every file, and the nudge was
+  // recorded NOWHERE: the hook cleared `encompass_synced_at` and logged a line.
+  // So "is the webhook firing?" had no answer on any screen, and a webhook that
+  // silently stopped looked exactly like one that never fired.
+
+  /// When Encompass last asked PILOT to re-read this loan. NULL means never —
+  /// which is a real answer ABOUT the webhook, never missing data.
+  encompassNudgedAt DateTime? @map("encompass_nudged_at") @db.Timestamptz(6)
+
+  /// How that nudge identified the loan: guid | loan_number | sweep | manual.
+  /// The SHAPE of the ping, never a status.
+  encompassNudgedVia String? @map("encompass_nudged_via")
+
+  /// How many nudges in total. A recent stamp with a count of 1 and an old stamp
+  /// with a count of 41 are different stories about the same webhook.
+  encompassNudgeCount Int @default(0) @map("encompass_nudge_count")
+
   /// The Condition Center's own freshness, kept apart from the loan's because the
   /// two are separate reads on separate cadences: a loan can be perfectly current
   /// while its conditions have not been asked for since yesterday, and a screen

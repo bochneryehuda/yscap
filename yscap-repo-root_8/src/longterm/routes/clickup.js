@@ -38,6 +38,7 @@ const db = require('../db');
 const access = require('../access');
 const settingsStore = require('../settings/store');
 const trash = require('../trash');
+const scopedLoan = require('./scoped-loan');
 const clickupPush = require('../clickup/push');
 const statusPush = require('../clickup/status-push');
 const mapper = require('../clickup/mapper');
@@ -48,39 +49,10 @@ const program = require('../clickup/program');
 const P = clickupPush._internals;
 
 // ── access: the pipeline's one per-loan rule, verbatim ───────────────────────
-async function loadScopedLoan(req, res) {
-  // A DATABASE failure is a 503, never the 404 disguise (audit round 2, obs 8):
-  // "no such loan" is an ANSWER about the loan, and an outage is not one. A
-  // malformed id, though, IS "no such loan" — refuse it before the query so a
-  // garbage URL cannot masquerade as an outage.
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(req.params.loanId || ''))) {
-    res.status(404).json({ error: 'No such long-term loan.' });
-    return null;
-  }
-  let rows;
-  try {
-    ({ rows } = await db.query(
-      `SELECT l.*, ${trash.notTrashSql('l')} AS not_trash FROM lt_loans l WHERE l.id = $1::uuid`,
-      [String(req.params.loanId)],
-    ));
-  } catch (e) {
-    console.error('[lt-clickup] loan read failed:', (e && e.message) || e);
-    res.status(503).json({ error: 'Could not read this loan just now. Try again in a moment.' });
-    return null;
-  }
-  if (!rows.length) { res.status(404).json({ error: 'No such long-term loan.' }); return null; }
-  const loan = rows[0];
-  const { settings } = await settingsStore.load();
-  const viewer = access.accessFor(req.actor, settings);
-  const { rows: team } = await db.query(
-    'SELECT * FROM lt_loan_contacts WHERE loan_id = $1::uuid', [loan.id],
-  );
-  if (!access.mayOpenLoan(viewer, req.actor && req.actor.id, team)) {
-    res.status(404).json({ error: 'No such long-term loan.' });
-    return null;
-  }
-  return { loan, settings, viewer };
-}
+// THE PER-FILE SCOPE lives in ONE place (routes/scoped-loan.js) so a second
+// per-file screen cannot answer differently about the same loan. The RULE itself
+// (`access.mayOpenLoan`) was always shared; the plumbing around it was not.
+const loadScopedLoan = (req, res) => scopedLoan.loadScopedLoan(req, res, 'lt-clickup');
 
 async function requireLtAdmin(req, res, next) {
   try {

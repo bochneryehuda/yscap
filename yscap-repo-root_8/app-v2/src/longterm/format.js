@@ -137,3 +137,40 @@ export const fileSize = (v) => {
  * do not understand, and reading it as "No" would state a determination nobody made.
  */
 export const yesNo = (v) => (v === true ? 'Yes' : v === false ? 'No' : '—');
+
+/**
+ * A TIMESTAMP, day AND time, or null when there isn't one.
+ *
+ * Deliberately returns NULL rather than a dash: on a sync screen "never read" and
+ * "read, and here is when" are different sentences, not the same sentence with a
+ * different value in it, so the CALLER words the absence. A sync stamp is an
+ * INSTANT (unlike `day`, which reads a calendar column), so it is read as one.
+ */
+export const stamp = (v) => {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isFinite(d.getTime()) ? d.toLocaleString('en-US') : null;
+};
+
+/**
+ * How long ago, in words — "12 minutes ago", "3 days ago".
+ *
+ * Null when there is nothing to measure, and null for a FUTURE stamp too: the only
+ * way that happens is a clock disagreement, and "in -4 hours ago" on a screen about
+ * timing would undermine the one thing it is there to explain. `stamp` still prints
+ * the real value beside it either way.
+ */
+export const ago = (v, now = Date.now()) => {
+  if (!v) return null;
+  const t = new Date(v).getTime();
+  if (!Number.isFinite(t)) return null;
+  const secs = Math.floor((now - t) / 1000);
+  if (secs < 0) return null;
+  if (secs < 60) return 'just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+};
