@@ -112,6 +112,17 @@ const spring = parse('3/8/2026 2:30:00 AM');
 check(typeof spring === 'string' && Number.isFinite(Date.parse(spring)),
   `a wall-clock time inside the spring-forward gap still answers a real instant (${spring})`);
 
+// AND THE CASE THAT PROVES THE SECOND CORRECTION PASS EARNS ITS KEEP. 3:30 AM on
+// the spring-forward morning is the first hour of EDT (-4). The first pass reads the
+// zone's offset at the WRONG instant — still inside EST (-5) — and lands an hour
+// late at 08:30Z; only a second pass, using the offset where the answer actually
+// falls, gives 07:30Z. Every ordinary date converges on the first pass, so this is
+// the one shape that can tell a one-pass implementation from a correct one.
+check(parse('3/8/2026 3:30:00 AM') === '2026-03-08T07:30:00.000Z',
+  'the hour after the clocks go forward converts to 07:30Z — one correction pass alone lands an hour out');
+check(parse('11/1/2026 3:30:00 AM') === '2026-11-01T08:30:00.000Z',
+  'and the morning the clocks go back converts to 08:30Z, read at the instant the answer falls on');
+
 // ── 3. The rota — the half that outlives this particular stamp bug ───────────
 console.log('');
 console.log('a mirror fails toward looking again');
@@ -158,9 +169,22 @@ console.log('the timezone is configurable and fails soft');
 check(tenantTime.DEFAULT_TZ === 'America/New_York',
   'the default is the tenant`s own zone — the same default the ClickUp side has read dates correctly with since it shipped');
 check(tenantTime.zoneUsable('America/New_York') === true, 'a real zone is usable');
-check(tenantTime.zoneUsable('Not/AZone') === false, 'and a nonsense one is reported as unusable rather than trusted');
-check(tenantTime.wallClockToUtcMs(2026, 8, 14, 10, 48, 18, 'Not/AZone') === Date.UTC(2026, 7, 14, 10, 48, 18),
-  'a nonsense zone degrades to the historic UTC reading — a mis-typed setting may not stop every read');
+
+// A NONSENSE ZONE MUST BE ANSWERED, NEVER THROWN. Asserting the answer alone is not
+// enough: an implementation that throws takes the whole suite down mid-run, which
+// reports as a crash rather than as a failure and reads to a harness counting FAIL
+// lines like a PASS. So the throw is caught here and turned into a clean failure —
+// the same discipline the repo's own frozen-engine suites document.
+const soft = (what, fn, want) => {
+  let got, threw = null;
+  try { got = fn(); } catch (e) { threw = String((e && e.message) || e); }
+  check(threw === null, `${what} answers instead of throwing${threw ? ` (threw: ${threw})` : ''}`);
+  if (threw === null) check(got === want, `${what} → ${JSON.stringify(got)}`);
+};
+soft('a nonsense zone reported as unusable', () => tenantTime.zoneUsable('Not/AZone'), false);
+soft('a nonsense zone degrading to the historic UTC reading',
+  () => tenantTime.wallClockToUtcMs(2026, 8, 14, 10, 48, 18, 'Not/AZone'),
+  Date.UTC(2026, 7, 14, 10, 48, 18));
 check(tenantTime.wallClockToUtcMs(2026, 8, 14, 10, 48, 18, 'Europe/London') === Date.UTC(2026, 7, 14, 9, 48, 18),
   'and a different real zone is honoured, so this is a setting rather than a hard-coded offset');
 
