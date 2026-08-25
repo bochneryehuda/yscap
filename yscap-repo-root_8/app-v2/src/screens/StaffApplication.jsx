@@ -33,6 +33,7 @@ import DealSnapshot from '../components/DealSnapshot.jsx';
 import NoteBuyerCard from '../components/NoteBuyerCard.jsx';
 import AbPieceCard from '../components/AbPieceCard.jsx';
 import PayoffCard from '../components/PayoffCard.jsx';
+import FreeAndClearControl from '../components/FreeAndClearControl.jsx';
 import { payoffApplies, payoffMissingKeys } from '../lib/payoff.js';
 import { sizesOnAsIsValue } from '../lib/dealBasis.js';
 import WhatsLeftPanel from '../components/WhatsLeftPanel.jsx';
@@ -381,6 +382,16 @@ function CondInlineEntry({ it, appId, onChanged, indent }) {
        sec-payoff section mounts, so the two can never disagree. The condition's
        own wording is untouched; this renders UNDER it. */
     case 'cond_payoff_internal':     box = <PayoffCard appId={appId} app={{}} onSaved={onChanged} />; break;
+    /* THE PAYOFF CONDITION ITSELF OFFERS FREE AND CLEAR (owner-directed 2026-08-24: "if you mark
+       over there in that condition … you should be able to attach that logic and mark over there
+       that the property is free and clear"). The logic has existed since db/575; the place had
+       not. This is the BORROWER-facing "Current mortgage / payoff statement" row — the condition
+       a processor is looking at when they find out there is no mortgage — and it offered nothing,
+       so the only way through was the Payoff section or the separate STAFF condition above.
+       COMPACT on purpose: this condition is about the borrower sending a statement, so it gets the
+       one action that answers it, not the whole payoff section. Same component, same confirmation,
+       same server rule as the section — a second surface here is a mount, never a copy. */
+    case 'cond_payoff_external':     box = <FreeAndClearControl appId={appId} compact onChanged={onChanged} />; break;
     default: return null;   // never an empty wrapper — Item is a gapped flex column
   }
   return indent ? <div style={{ width: '100%', paddingLeft: 20 }}>{box}</div> : box;

@@ -27,6 +27,8 @@
 const db = require('../db');
 const client = require('./client');
 const eligibility = require('./eligibility');
+const FORM = require('./form');
+const catalog = require('./catalog');
 
 // The same reading of "the borrower actually submitted this" the physical program
 // already uses — a drafting/pending-borrower draw is not ready to inspect. It was
@@ -143,7 +145,7 @@ async function maybeOrderFromSitewire(appId, { drawId, status, platform, method,
  * put two inspectors on one draw.
  */
 async function orderManually(appId, { sitewireDrawId = null, portalRequestId = null, staffId = null,
-  override = false, overrideReason = null } = {}) {
+  override = false, overrideReason = null, formId = null, confirmForm = false } = {}) {
   const ctx = await fileRouting(appId);
   /* ONE rule, in `eligibility.planManualOrder` — the route and this door read the same answer, so
      what the screen says a coordinator may do and what actually happens can never disagree. */
@@ -155,6 +157,44 @@ async function orderManually(appId, { sitewireDrawId = null, portalRequestId = n
     }
     return { blocked: true, mayOverride: plan.mayOverride, warning: plan.warning,
       message: `This file's inspections are not Trinity's — ${plan.blockedReason}.` };
+  }
+
+  /* ---- WHICH FORM (owner-directed 2026-08-24: *"we should also have the option to change forms
+     and order different forms, but this should be the default and should give you a warning if you
+     are trying to change"*) ----
+
+     Decided BEFORE any record is minted, because a form that is going to be refused must refuse
+     here rather than after a row exists claiming an order nobody can place. Nothing picked, or the
+     default picked back, is the ordinary path and behaves exactly as it always did — no catalogue
+     read, no confirmation, no warning.
+
+     A DIFFERENT form is checked against TRINITY'S OWN LIST rather than any list we keep: the
+     production account's catalogue differs from the sandbox's, so anything we held ourselves would
+     be right in testing and wrong on the first real order. An unreadable catalogue does NOT refuse
+     — "we could not check" is not "they do not sell it" — it just says so in the warning the
+     coordinator has to confirm. */
+  let chosenForm = null;
+  let formWarning = null;
+  const wantForm = FORM.normalizeFormId(formId);
+  if (wantForm != null && wantForm !== client.formId()) {
+    const raw = client.available() ? await client.formsCached() : null;
+    const products = raw ? catalog.flattenForms(raw) : [];
+    const decided = FORM.chooseForm(wantForm, client.formId(), { products, catalogRead: !!raw && products.length > 0 });
+    if (!decided.ok) {
+      return { blocked: true, formProblem: decided.problem.code, message: decided.problem.message };
+    }
+    formWarning = decided.warning
+      + (raw ? '' : ' Trinity’s product list could not be read just now, so we could not check that '
+        + 'this form is on the account — the order may be refused.');
+    /* THE WARNING IS A GATE, NOT A LABEL. A form is a PRODUCT: the wrong one buys the wrong report
+       and dispatches a person to do the wrong thing, so a mistyped number must never reach Trinity
+       because somebody did not read a line of small print. Same shape as the override reason above
+       — the door answers with what needs confirming and places nothing until it is confirmed. */
+    if (!(confirmForm === true || confirmForm === 'true')) {
+      return { blocked: true, needsFormConfirm: true, formId: decided.formId, warning: formWarning,
+        message: formWarning };
+    }
+    chosenForm = decided.formId;
   }
 
   let orderRowId = null;
@@ -240,8 +280,26 @@ async function orderManually(appId, { sitewireDrawId = null, portalRequestId = n
     });
   }
 
+  /* THE CHOSEN FORM IS STAMPED ON THE RECORD BEFORE THE ORDER GOES OUT, and `placeOrder` reads it
+     back off the row — so the form that was confirmed is the form that is placed, and a retry
+     resumes on the same one rather than quietly reverting to the default.
+
+     `trinity_order_id IS NULL` is the guard that matters: once an order exists its form is a FACT
+     about what Trinity built, and rewriting it would point every later read-back at a form the
+     order was never placed on. Best-effort like the override stamp — a stamp that cannot be
+     written falls back to the default rather than stopping an order a coordinator confirmed. */
+  if (chosenForm != null) {
+    await db.query(
+      `UPDATE trinity_inspection_orders SET trinity_form_id = $2, updated_at = now()
+        WHERE id = $1 AND trinity_order_id IS NULL`,
+      [orderRowId, chosenForm]).catch((e) => {
+      console.warn('[trinity] could not stamp the chosen form:', e && e.message);
+    });
+  }
+
   const placed = await require('./order').placeOrder(appId, orderRowId, { staffId });
-  return { orderRowId, override: plan.override, warning: plan.warning, ...placed };
+  return { orderRowId, override: plan.override, warning: plan.warning || formWarning,
+    formId: chosenForm, formWarning, ...placed };
 }
 
 /** The file's routing, in the shape `eligibility` reads, failing CLOSED if we cannot look. */
@@ -281,6 +339,32 @@ async function orderOptions(appId) {
     draws: [],
     requests: [],
   };
+
+  /* WHAT FORM THIS WOULD BE ORDERED ON, and what else the account carries (owner-directed
+     2026-08-24). The picker is fed from TRINITY'S OWN catalogue — the production account's list
+     differs from the sandbox's, so a list we kept ourselves would be right in testing and wrong on
+     the first real order. Cached in the client, so the three surfaces that show this share one
+     read. `read:false` means we could not ask, which is NOT the same as an empty account and is
+     rendered as such. Never throws — a form picker is a convenience and must not blank the screen
+     the Order button lives on. */
+  try {
+    const deflt = client.formId();
+    const raw = client.available() ? await client.formsCached() : null;
+    const products = raw ? catalog.flattenForms(raw) : [];
+    out.form = {
+      default: deflt,
+      defaultName: FORM.nameOf(products, deflt),
+      onAccount: products.some((p) => Number(p.id) === Number(deflt)),
+      read: !!raw,
+      products,
+      budgetReviewFormId: FORM.BUDGET_REVIEW_FORM_ID,
+      note: 'Form 1079 is the production line-item draw; 19 is the sandbox one. Changing the form '
+        + 'changes the PRODUCT Trinity builds — only do it if Trinity has told you to.',
+    };
+  } catch (_) {
+    out.form = { default: client.formId(), defaultName: null, onAccount: false, read: false,
+      products: [], budgetReviewFormId: FORM.BUDGET_REVIEW_FORM_ID, note: null };
+  }
 
   const statuses = Array.from(SUBMITTED_STATUSES);
   // THE AMOUNT SHOWN IS THE ONE THE INSPECTOR WILL SEE. `sitewire_draws.total_requested_cents`

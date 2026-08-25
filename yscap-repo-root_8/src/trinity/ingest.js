@@ -22,6 +22,7 @@ const db = require('../db');
 const storage = require('../lib/storage');
 const client = require('./client');
 const mapper = require('./mapper');
+const FORM = require('./form');
 // Read-only reuse of the draw stack's hardened downloader: https-only, re-validated on
 // every redirect hop, private-IP refused, size-capped, streamed. Duplicating that would
 // mean a second SSRF surface to keep correct.
@@ -124,7 +125,12 @@ async function syncStatus(orderRow) {
  * number that would change what a borrower is paid.
  */
 async function readResults(orderRow) {
-  const budget = await client.getBudget(orderRow.trinity_order_id);
+  /* THE ORDER'S OWN FORM, NEVER THE CONFIGURED DEFAULT (db/628). A budget is readable only at the
+     form the order was placed on, so asking at today's default returns nothing for every order
+     placed before the default moved — the inspector's approved figures would simply stop arriving,
+     silently, on exactly the orders already in flight. `formForRow` falls back to the default for
+     a record that carries no form, so a caller holding a pre-db/628 row behaves as it always did. */
+  const budget = await client.getBudget(orderRow.trinity_order_id, FORM.formForRow(orderRow, client.formId()));
   const sent = (await db.query(
     `SELECT customer_key, sitewire_job_item_id, sow_line_key FROM trinity_order_lines
       WHERE trinity_inspection_order_id = $1`, [orderRow.id])).rows;
