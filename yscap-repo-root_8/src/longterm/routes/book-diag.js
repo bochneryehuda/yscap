@@ -328,6 +328,177 @@ router.get('/cards', async (req, res) => {
  * (computed here — the addresses themselves are not handed out). No token, no
  * phone, no write path.
  */
+/**
+ * FIELD PROBE — what does Encompass actually hold for ONE loan, beside what PILOT
+ * stored for it. READ ONLY.
+ *
+ * WHY (owner-reported 2026-08-25): *"Everything was already filled in Encompass.
+ * Just didn't read. The ratios and everything was already filled."* A file screen
+ * showing a dash cannot tell you whether the far system is empty or whether OUR read
+ * dropped it — and those are opposite problems with opposite fixes. Reasoning about
+ * it from the milestone (as I did, wrongly) is exactly the guess this endpoint
+ * exists to replace.
+ *
+ * It reads the SAME field numbers the loan sync reads, by number, through the same
+ * read-only `fieldReader` the sync uses — so what comes back here is what the sync
+ * would have seen. Beside each one it prints what PILOT has stored, so a field that
+ * Encompass fills and PILOT left blank is visible at a glance.
+ *
+ * The ids are the ones the 490-loan census recorded (src/longterm/encompass/
+ * loan-anatomy.js), with the census's own fill rate quoted, so "Encompass usually
+ * fills this" is a measurement rather than an impression.
+ */
+const FIELD_PROBE = [
+  // The COLUMN names are the real ones, taken from the schema rather than from the
+  // screen's labels — the file screen says "LTV" and "Note rate" while the columns
+  // are `lt_properties.ltv_pct` and `lt_loans.note_rate_pct`, and several of these
+  // live on the PROPERTY row rather than the loan. A probe that reported "(no such
+  // column)" for half of them would be a broken instrument telling a confident story.
+  { id: '353',  what: 'LTV',                census: 'filled on 90.2% of DSCR files', on: 'property', column: 'ltv_pct' },
+  { id: '3',    what: 'Note rate',          census: 'filled on 86.9%',               on: 'loan',     column: 'note_rate_pct' },
+  { id: '1005', what: 'Gross monthly rent', census: 'filled on 65.9%',               on: 'property', column: 'gross_monthly_rent' },
+  { id: '912',  what: 'Housing expense',    census: 'filled on 92.2%',               on: 'loan',     column: 'housing_expense_total' },
+  { id: '4',    what: 'Term (months)',      census: 'filled on 100%',                on: 'loan',     column: 'term_months' },
+  { id: '2',    what: 'Loan amount',        census: 'filled ~92%',                   on: 'loan',     column: 'loan_amount' },
+  { id: '356',  what: 'Appraised value',    census: 'filled on 74.5%',               on: 'property', column: 'appraised_value' },
+  { id: '1821', what: 'Estimated value',    census: 'filled on 69.6%',               on: 'property', column: 'estimated_value' },
+  { id: '4008', what: 'Vesting type',       census: 'the vesting line',              on: 'loan',     column: 'vesting_type' },
+  { id: '1859', what: 'Vesting entity',     census: 'the entity name',               on: 'loan',     column: 'vesting_entity_name' },
+];
+
+router.get('/fields', async (req, res) => {
+  const loanNumber = String(req.query.loan || '').trim();
+  if (!loanNumber) return res.status(400).json({ ok: false, error: 'pass ?loan=<loan number>' });
+  if (!encompass.configured()) {
+    return res.status(503).json({ ok: false, error: 'Encompass is not connected on this deployment.' });
+  }
+  try {
+    const { rows } = await db.query(
+      `SELECT id, loan_number, encompass_loan_guid, encompass_synced_at, milestone_name
+         FROM lt_loans WHERE loan_number = $1`, [loanNumber]);
+    const loan = rows[0];
+    if (!loan) return res.status(404).json({ ok: false, error: 'PILOT does not hold that loan number.' });
+    if (!loan.encompass_loan_guid) {
+      return res.json({ ok: true, loanNumber, note: 'PILOT holds no Encompass id for this loan, so it can only be found by a pipeline search — nothing can be read by field number.' });
+    }
+
+    // ONE fieldReader call, exactly as the sync makes it.
+    let values = null; let readError = null;
+    try {
+      values = await encompass.fieldReader(loan.encompass_loan_guid, FIELD_PROBE.map((f) => f.id));
+    } catch (e) { readError = String((e && e.message) || e).slice(0, 300); }
+
+    const storedLoan = (await db.query('SELECT * FROM lt_loans WHERE id = $1', [loan.id])).rows[0] || {};
+    const storedProp = (await db.query('SELECT * FROM lt_properties WHERE loan_id = $1 LIMIT 1', [loan.id])).rows[0] || {};
+    const compare = FIELD_PROBE.map((f) => {
+      const row = f.on === 'property' ? storedProp : storedLoan;
+      return {
+        field: f.id,
+        what: f.what,
+        census: f.census,
+        encompass: values ? (values[f.id] === undefined ? '(not returned)' : values[f.id]) : null,
+        pilot: f.column in row ? row[f.column] : '(no such column)',
+        storedOn: f.on,
+      };
+    });
+    res.json({ ok: true, loanNumber, milestone: loan.milestone_name,
+      lastRead: loan.encompass_synced_at, readError, fields: compare });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: (e && e.message) || String(e) });
+  }
+});
+
+/**
+ * CATALOG PROBE — ask Encompass, from the server that holds the credentials, which
+ * catalog addresses actually answer. READ ONLY.
+ *
+ * WHY THIS EXISTS (owner-directed 2026-08-25, after the nightly refresh reported
+ * five of six catalog reads refused with 403). "Which address works?" is a question
+ * about the VENDOR, and the only honest way to answer it is to ask the vendor — from
+ * the machine whose environment already holds the login, so nobody has to move a
+ * credential anywhere to find out. A path that is guessed and happens to answer is
+ * far worse than a 403 that says so, and this is what makes guessing unnecessary.
+ *
+ * IT IS NOT AN OPEN PROXY. The list below is FIXED in code; nothing is taken from the
+ * query string. So this can ask Encompass exactly these questions and no others, and
+ * every one of them is a GET through the read-only client, which refuses any method
+ * but GET and refuses the OAuth namespace outright.
+ *
+ * Each entry pairs a `kind` with the address the code uses today and any CANDIDATE
+ * worth asking about. Reporting a candidate's status is research; ADOPTING one is a
+ * separate, deliberate code change that only ever follows a 200 seen here.
+ */
+const CATALOG_PROBES = [
+  // The control. This one is known to work (857 fields in production), so a run
+  // where even this fails is telling us about the connection, not about the paths.
+  { kind: 'customField', role: 'in use', path: '/encompass/v3/settings/loan/customFields' },
+
+  { kind: 'standardField', role: 'was in use', path: '/encompass/v3/settings/loan/standardFields' },
+  { kind: 'standardField', role: 'probed 2026-08-14', path: '/encompass/v3/schemas/loan/standardFields?start=0&limit=5' },
+
+  { kind: 'milestone', role: 'was in use', path: '/encompass/v3/settings/loan/milestones' },
+  { kind: 'milestone', role: 'probed 2026-08-14', path: '/encompass/v3/settings/milestones?start=0&limit=5' },
+
+  // The three nobody has ever probed. Their current addresses are asked FIRST so the
+  // answer is recorded either way, then the shapes the two corrections above turned
+  // out to take — a settings path that dropped `/loan`, and a schemas path.
+  // ENUMS. The research pass found NO enum endpoint anywhere in ICE's own 800-request
+  // Developer Connect collection, and `encompass/dropdowns.js` explains why: a custom
+  // dropdown does not publish its options at all. The candidate below is the one place
+  // the tenant was measured to carry option lists (790 of 3,159 definitions).
+  { kind: 'enum', role: 'in use', path: '/encompass/v3/settings/loan/enums' },
+  { kind: 'enum', role: 'candidate', path: '/encompass/v1/loanPipeline/fieldDefinitions' },
+
+  // FOLDERS. Live-probed 2026-08-14 and transcribed with all 22 folder names, so this
+  // candidate is expected to answer; asking anyway is the point of the exercise.
+  { kind: 'folder', role: 'in use', path: '/encompass/v3/settings/loan/folders' },
+  { kind: 'folder', role: 'probed 2026-08-14', path: '/encompass/v1/loanFolders' },
+
+  // TEMPLATES. The one genuinely open question: its sibling template endpoints were
+  // all live-probed 403, so this may really be permission-gated rather than moved.
+  { kind: 'loanTemplate', role: 'in use', path: '/encompass/v3/settings/loan/loanTemplates' },
+  { kind: 'loanTemplate', role: 'candidate', path: '/encompass/v3/settings/templates/loanTemplateSet/folders' },
+
+  // THE PAGING QUESTION, asked rather than assumed. ICE's own reference says there is
+  // no fixed upper limit, only a max payload size — if a single call answers with
+  // 10,000, the catalog is one request rather than fifty.
+  //
+  // TWO sizes, on purpose. `apiGet` gives up after 15 seconds, so a big page that
+  // comes back empty-handed is ambiguous: it could be the vendor refusing the size
+  // or it could be OUR clock. The 1,000 asked first settles that — if 1,000 answers
+  // and 10,000 aborts, the limit is the timeout and the fix is paging, not the path.
+  { kind: 'standardField', role: 'paging check', path: '/encompass/v3/schemas/loan/standardFields?start=0&limit=1000' },
+  { kind: 'standardField', role: 'paging check', path: '/encompass/v3/schemas/loan/standardFields?start=0&limit=10000' },
+];
+
+router.get('/catalog-probe', async (_req, res) => {
+  if (!encompass.configured()) {
+    return res.status(503).json({ ok: false, error: 'Encompass is not connected on this deployment.' });
+  }
+  const results = [];
+  for (const probe of CATALOG_PROBES) {
+    try {
+      const body = await encompass.apiGet(probe.path);
+      const rows = Array.isArray(body) ? body : (body && Array.isArray(body.items) ? body.items : null);
+      results.push({
+        ...probe,
+        ok: true,
+        // The COUNT is what tells a working address from one that answers politely
+        // with nothing, and the first row's keys are what tells us the shape our
+        // reader would have to read.
+        count: rows ? rows.length : null,
+        sampleKeys: rows && rows[0] ? Object.keys(rows[0]).slice(0, 8) : null,
+        shape: rows ? 'list' : typeof body,
+      });
+    } catch (e) {
+      // The client's own error text is `Encompass <status>: <body>` — the status is
+      // the whole answer here, so it is kept rather than flattened to "failed".
+      results.push({ ...probe, ok: false, error: String((e && e.message) || e).slice(0, 200) });
+    }
+  }
+  res.json({ ok: true, probed: results.length, results });
+});
+
 router.get('/people', async (_req, res) => {
   try {
     const { rows } = await db.query(
