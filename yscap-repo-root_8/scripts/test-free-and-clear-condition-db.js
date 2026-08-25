@@ -22,6 +22,15 @@
  * file agrees with itself. That is what makes a VOM condition added later safe: give it the
  * ordinary free-and-clear exclusion and this suite fails until it is in the list.
  *
+ * THE VOM IS SETTLED, AND THE ANSWER IS "THERE ISN'T ONE" (owner-directed 2026-08-25). The owner
+ * hedged on the third condition when they asked for this ("asking MAYBE for a VOM"), and short-term
+ * has never carried a verification-of-mortgage condition in any form. Asked directly, the owner
+ * chose to leave it that way: RTL asks for no VOM. So section D no longer records an OPEN question
+ * — it records a DECISION, and it is written as the owner's rule rather than as a snapshot of the
+ * table: IF a VOM condition ever exists here, free and clear must waive it. Do NOT re-open this by
+ * copying the Long-Term Encompass library's VOM across; that is a different product and would need
+ * fresh written authorisation recorded in docs/LONG-TERM-AUTHORIZED-COPIES.md.
+ *
  * Skips cleanly when DATABASE_URL is unset.
  */
 
@@ -118,18 +127,42 @@ const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:]
     ok(!/color:\s*['"`]?var\(--ink/.test(control), 'C7 no --ink* token is used as a text colour');
   }
 
-  // ── D. the VOM, stated honestly ───────────────────────────────────────────────────────────
+  // ── D. the VOM ── a DECISION, not an open question ───────────────────────────────────
   {
-    /* The owner named three conditions and hedged on the third ("asking MAYBE for a VOM"). There
-       is no verification-of-mortgage condition on the short-term side — not in the template
-       library, not among the rule-driven refinance set, and not hand-typed on any file. It exists
-       only in the LONG-TERM Encompass condition library, a different product that may not be
-       copied here without written authorisation. This records the fact rather than inventing one;
-       section A is what makes adding one later safe. */
-    const tmpl = (await db.query(
-      `SELECT count(*)::int AS c FROM checklist_templates
-        WHERE is_active AND (code ~* 'vom' OR label ~* '(verification of mortgage|\\mVOM\\M)')`)).rows[0].c;
-    eq(tmpl, 0, 'D1 there is no VOM condition template on the short-term side (a fact, recorded)');
+    /* The owner hedged when they asked ("asking MAYBE for a VOM"); asked directly on 2026-08-25
+       they chose to leave short-term with none. So this is not "we have not checked" — it is the
+       recorded answer.
+
+       IT IS WRITTEN AS THE RULE, NOT AS A SNAPSHOT. An `expect zero` assertion would record
+       today's table and then FAIL, confusingly, on the day somebody adds a VOM with fresh owner
+       sign-off — reading as "you broke something" when the truth is "you added one, now register
+       it". What the owner actually asked for is that free and clear WAIVES the VOM, so that is
+       what is asserted: if a VOM condition exists here at all, it must carry the ordinary
+       free-and-clear exclusion, which is what puts it in the waive list via section A. With none
+       present the fact is recorded and the guard is dormant. Either way nothing is invented. */
+    const vom = (await db.query(
+      `SELECT code, (rule_logic::text LIKE '%property_free_and_clear%'
+                 AND rule_logic::text LIKE '%is_false%') AS fc_gated
+         FROM checklist_templates
+        WHERE is_active AND (code ~* 'vom' OR label ~* '(verification of mortgage|\\mVOM\\M)')
+        ORDER BY code`)).rows;
+
+    if (!vom.length) {
+      ok(true, 'D1 short-term carries no VOM condition — the owner\u2019s decision, recorded (2026-08-25)');
+    } else {
+      /* Somebody added one. The owner's instruction was that free and clear waives it, so the
+         only acceptable shape is the free-and-clear exclusion on its own rule. */
+      for (const v of vom) {
+        ok(v.fc_gated,
+          `D1 the VOM condition ${v.code} carries the free-and-clear exclusion, so the flip waives `
+          + 'it (add `property_free_and_clear is_false` to its rule_logic — section A then requires '
+          + 'it in payoff.FREE_AND_CLEAR_WAIVES)');
+      }
+    }
+
+    /* Hand-typed conditions carry no rule, so nothing can waive one automatically — a VOM typed
+       onto a file by hand would sit open on a property with no mortgage. Recorded as a fact; if
+       this ever stops being zero it is a prompt to make it a real template, not to widen the list. */
     const typed = (await db.query(
       `SELECT count(*)::int AS c FROM conditions
         WHERE (COALESCE(title,'') || ' ' || COALESCE(detail,'')) ~* '(verification of mortgage|\\mVOM\\M)'`)).rows[0].c;
