@@ -124,6 +124,45 @@ async function main() {
       '...and it names no loan-value table at all');
   }
 
+  // ── THE REQUEST ENCOMPASS IS ACTUALLY SENT ────────────────────────────────
+  //
+  // MEASURED LIVE 2026-08-25 against the production endpoint: the tenant's own
+  // ping answered 200 and reported "Encompass could not be asked what changed:
+  // LT Encompass pipeline 400 — Either 'LoanIds' or filter properties like
+  // 'Loa[nFolder]'". Encompass refuses a pipeline search that names neither loans
+  // nor a filter, and this call sent fields + sortOrder and nothing else. So the
+  // whole unnamed-ping path had never once worked, and it failed the way that is
+  // hardest to notice: a doorbell that answers nothing looks exactly like a
+  // doorbell nobody rang.
+  //
+  // The request is captured from a stub rather than read out of the source,
+  // because what matters is the object Encompass RECEIVES.
+  {
+    let sent = null;
+    const client = { pipelineSearch: async (req) => { sent = req; return []; } };
+    await sweep.sweepRecentlyChanged({ client, db: mkDb([], []) });
+
+    ok(sent && typeof sent === 'object', 'the sweep really called Encompass — a stub that was never called would make every check below pass by finding nothing');
+    ok(!!sent.filter, 'THE ONE THAT MATTERS: the pipeline search carries a FILTER — Encompass 400s a search that names neither loans nor a filter, and a 400 here nudges nothing at all');
+    ok(Array.isArray(sent.filter.terms) && sent.filter.terms.length > 0,
+      '...and the filter has real terms, so it can never be an empty object that satisfies the check above while Encompass still refuses it');
+
+    // ONE definition of "which loans are ours". Two copies drift, and the copy that
+    // drifts is this one — the path nobody watches.
+    const discover = require('../src/longterm/sync/discover');
+    assert.deepStrictEqual(sent.filter, discover.buildFilter({ loanFolder: null }),
+      'the filter IS discovery\'s own, not a second copy of it'); n++;
+    const sweepSrc = fs.readFileSync(require.resolve('../src/longterm/sync/nudge-sweep'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    ok(/discover\.buildFilter\(/.test(sweepSrc),
+      '...taken from that module BY NAME, so restating the terms here would fail this check');
+
+    eq(sent.includeArchivedLoans, true,
+      'archived loans are still our loans — a ping about a loan that was just archived is exactly the ping worth answering');
+    ok(Array.isArray(sent.fields) && sent.fields.includes('Loan.GUID'),
+      '...and it still asks for the guid it nudges by');
+  }
+
   console.log(`✓ lt nudge sweep (pure): ${n} assertions passed`);
 }
 
