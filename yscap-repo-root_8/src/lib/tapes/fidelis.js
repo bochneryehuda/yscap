@@ -39,6 +39,13 @@ const { FMT } = require('./xlsx-template');
 // Template cell-style indices (from the workbook's styles.xml cellXfs) — reused
 // so injected cells carry the template's own formatting:
 const S = {
+  /* WHOLE DOLLARS ON PURPOSE (owner-directed 2026-08-25). $#,##0 is FIDELIS'S OWN
+     template style, not ours, so a $285,250.55 price prints "$285,251" — the same
+     shape as the 10.25→10.3 rate bug that WAS fixed, and deliberately NOT fixed the
+     same way: the rate style was ours to choose and this one is the investor's, whose
+     intake reads this workbook. The cell VALUE keeps its cents. Reopening changes what
+     Fidelis receives and needs the owner's own words. See
+     scripts/test-tape-money-format-pure.js. */
   CURRENCY: 57, // $#,##0        (H..O, R, S money columns)
   THOUSANDS: 77, // #,##0        (T As-Is, U ARV)
   DATE: 78, //     m/d/yyyy      (X/Y/Z/AA/AV)
