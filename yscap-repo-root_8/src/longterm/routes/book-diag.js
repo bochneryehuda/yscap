@@ -442,14 +442,33 @@ const CATALOG_PROBES = [
   // The three nobody has ever probed. Their current addresses are asked FIRST so the
   // answer is recorded either way, then the shapes the two corrections above turned
   // out to take — a settings path that dropped `/loan`, and a schemas path.
+  // ENUMS. The research pass found NO enum endpoint anywhere in ICE's own 800-request
+  // Developer Connect collection, and `encompass/dropdowns.js` explains why: a custom
+  // dropdown does not publish its options at all. The candidate below is the one place
+  // the tenant was measured to carry option lists (790 of 3,159 definitions).
   { kind: 'enum', role: 'in use', path: '/encompass/v3/settings/loan/enums' },
-  { kind: 'enum', role: 'candidate', path: '/encompass/v3/schemas/loan/enums?start=0&limit=5' },
+  { kind: 'enum', role: 'candidate', path: '/encompass/v1/loanPipeline/fieldDefinitions' },
 
+  // FOLDERS. Live-probed 2026-08-14 and transcribed with all 22 folder names, so this
+  // candidate is expected to answer; asking anyway is the point of the exercise.
   { kind: 'folder', role: 'in use', path: '/encompass/v3/settings/loan/folders' },
-  { kind: 'folder', role: 'candidate', path: '/encompass/v3/settings/loanFolders' },
+  { kind: 'folder', role: 'probed 2026-08-14', path: '/encompass/v1/loanFolders' },
 
+  // TEMPLATES. The one genuinely open question: its sibling template endpoints were
+  // all live-probed 403, so this may really be permission-gated rather than moved.
   { kind: 'loanTemplate', role: 'in use', path: '/encompass/v3/settings/loan/loanTemplates' },
-  { kind: 'loanTemplate', role: 'candidate', path: '/encompass/v3/settings/templates/loanTemplates' },
+  { kind: 'loanTemplate', role: 'candidate', path: '/encompass/v3/settings/templates/loanTemplateSet/folders' },
+
+  // THE PAGING QUESTION, asked rather than assumed. ICE's own reference says there is
+  // no fixed upper limit, only a max payload size — if a single call answers with
+  // 10,000, the catalog is one request rather than fifty.
+  //
+  // TWO sizes, on purpose. `apiGet` gives up after 15 seconds, so a big page that
+  // comes back empty-handed is ambiguous: it could be the vendor refusing the size
+  // or it could be OUR clock. The 1,000 asked first settles that — if 1,000 answers
+  // and 10,000 aborts, the limit is the timeout and the fix is paging, not the path.
+  { kind: 'standardField', role: 'paging check', path: '/encompass/v3/schemas/loan/standardFields?start=0&limit=1000' },
+  { kind: 'standardField', role: 'paging check', path: '/encompass/v3/schemas/loan/standardFields?start=0&limit=10000' },
 ];
 
 router.get('/catalog-probe', async (_req, res) => {
