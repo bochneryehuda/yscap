@@ -194,13 +194,33 @@ Custom fields ride in the top-level `customFields[]` array as
 | ~~enums~~ | ~~`/encompass/v3/settings/loan/enums`~~ | **403** — does not exist. |
 | loan folders | `GET /encompass/v1/loanFolders` | **200** — all 22 folders. Keyed by `name`. Note it is **v1**, and drops `/settings/loan`. |
 | ~~folders~~ | ~~`/encompass/v3/settings/loan/folders`~~ | **403** — does not exist. |
-| loan templates | — still unresolved — | `/v3/settings/loan/loanTemplates` is **403**. `/v3/settings/templates/loanTemplateSet/folders` answers **400** with an instruction rather than a refusal: *"Folder path is empty. Default parent directory should start with public or personal."* ICE's own collection ships four shapes for this; all four are in the audit. |
+| loan templates | `GET /encompass/v3/settings/templates/loanTemplateSet/folders?path=public` | **200** — and so do `?path=personal`, `?path=public\Companywide`, and the v1 spelling `/encompass/v1/settings/templates/loanTemplateSet/folders/public`. All four shapes ICE ships answer. The v3 form returns an OBJECT `{name, path, contents}`; the rows are under `contents`. **The v1 form's rows are `{entityId, entityType, entityName, entityUri}` — none of which the catalog's key chain asks for, so adopting v1 would store nothing.** |
+| ~~loan templates~~ | ~~`/encompass/v3/settings/loan/loanTemplates`~~ | **403** — does not exist. |
+| milestone LOG | — genuinely unavailable — | **403 on BOTH spellings**: `/v3/loans/{id}/milestoneLogs` (what Long-Term asked) and `/v3/loans/{id}/logs/milestoneLogs` (what RTL asked). The two products had each guessed a different address and neither is the problem — this API user cannot read the "who moved this file and when" history at all. That is a PERMISSIONS question for ICE, not a path to keep hunting for. The milestone LADDER (`/v3/loans/{id}/milestones`, **200**, 18 steps) is unaffected and is where the file's standing comes from. |
 
 Every one of these — plus the token, the pipeline search, the loan, the milestone
 ladder, both spellings of the milestone log, the field reader and the company roster —
 is re-asked on demand by `GET /api/lt/_diag/book/request-audit`, and
 `scripts/test-encompass-request-coverage-pure.js` fails the build if a request exists
 in a client and the audit does not ask about it.
+
+**First full run, 2026-08-25: 25 requests, 18 answered, 7 refused — and all seven of
+the refusals were the old addresses above.** Everything else PILOT does is healthy:
+the token, the pipeline search, the loan itself (184 fields), the milestone ladder
+(18 steps), the field reader, the company roster, one milestone by id, and RTL's
+`entities=`-filtered loan read. The last two of those had never been exercised even
+once before the coverage gate found them.
+
+**A 200 IS NOT THE SAME AS A ROW STORED, and two of these prove it.** The picklists
+answer with their rows under `pipelineLoanReportFieldDefs`, and the templates under
+`contents`. `refreshFieldCatalog` understands an array or `{items:[…]}` and nothing
+else, so pointing a reader at either address without lifting the nested list is a
+perfect 200 that stores zero rows and reports success. The picklist payload also keys
+its rows `fieldID` with a capital D, where the catalog's key chain asks for `fieldId`
+— a different string, so every row would key to `undefined` and be skipped silently.
+Both are handled in `src/encompass/client.js`, and
+`scripts/test-encompass-catalog-keys-pure.js` runs the real key functions against
+these real payloads so neither can regress.
 
 Also `GET /encompass/v1/schema/loan` (whole loan schema) if we ever need the
 JSON schema itself instead of the catalog. PILOT doesn't need this today.
