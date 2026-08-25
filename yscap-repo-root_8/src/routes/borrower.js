@@ -41,6 +41,7 @@ const apprCard = require('../lib/appraisal-card');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRegistry = require('../lib/conditions/field-registry');
 const externalNote = require('../lib/conditions/external-note');   // db/604 — the note staff wrote FOR the borrower
+const { carriesAssignmentCondition } = require('../lib/conditions/assignment-purchase'); // the ONE rule for the assignment condition
 /* The details door speaks camelCase and the field registry speaks snake_case,
    and `file-lock.payoffContactLockReason` is keyed on the DETAILS door's names —
    that is where its carve-out is defined. Only the payoff contact pair needs
@@ -4571,15 +4572,29 @@ async function insertFromTemplate(tpl, owner, client = db) {
 
 async function generateChecklist(appId, borrowerId, program, loanType, opts = {}) {
   const track = normLoanType([program, loanType].join(' '));
+  /* THE FILE'S OWN ROW, READ ONCE. Both gates below — ground-up and assignment —
+     are decided by what the file IS, not by what a caller happened to pass. That
+     is the same doctrine `conditions/ensure.js` was written on ("derives EVERY
+     input from the DB row — the opts drift was the class"), and the assignment
+     gate is here because it drifted exactly that way: the caller's
+     `opts.isAssignment` said "the box is ticked" while db/179's trigger asks the
+     real question, "ticked AND a purchase" (owner-reported 2026-08-25,
+     YSCAP258134828 — a cash-out refinance asking its borrower for an assignment
+     letter). Caller args stay as the fallback for the row that cannot be read. */
+  let row = null;
+  try {
+    row = (await db.query(
+      `SELECT rehab_type, loan_type, program, is_assignment FROM applications WHERE id=$1`, [appId])).rows[0] || null;
+  } catch (_) { /* best-effort */ }
   // Ground-up build? Drives the "Plans & permits (if applicable)" placeholder
   // condition. Read the file itself so every caller gets the same answer.
   let groundUp = /ground/i.test([program, loanType].join(' '));
-  if (!groundUp) {
-    try {
-      const a = await db.query(`SELECT rehab_type, loan_type, program FROM applications WHERE id=$1`, [appId]);
-      if (a.rows[0]) groundUp = /ground/i.test([a.rows[0].rehab_type, a.rows[0].loan_type, a.rows[0].program].join(' '));
-    } catch (_) { /* best-effort */ }
-  }
+  if (!groundUp && row) groundUp = /ground/i.test([row.rehab_type, row.loan_type, row.program].join(' '));
+  // Assignment paperwork: the ONE shared rule (assignment-purchase.js), read off
+  // the file when the file can answer.
+  const assignmentApplies = carriesAssignmentCondition(row
+    ? { is_assignment: row.is_assignment, loan_type: row.loan_type != null ? row.loan_type : loanType }
+    : { is_assignment: opts.isAssignment === true, loan_type: loanType });
   // auto_apply IS NULL = legacy templates instantiated here at creation.
   // Templates managed by the Condition Center engine (auto_apply set) are
   // attached/retracted by evaluateApplication() below instead.
@@ -4590,8 +4605,10 @@ async function generateChecklist(appId, borrowerId, program, loanType, opts = {}
        AND (applies_loan_type IS NULL OR applies_loan_type=$2)
      ORDER BY sort_order`, [program || null, track]);
   for (const tpl of t.rows) {
-    // Assignment paperwork is only required when the purchase is an assignment.
-    if (tpl.code === 'rtl_p5_assign' && !opts.isAssignment) continue;
+    // Assignment paperwork is only required when the purchase is an assignment —
+    // and an assignment of contract is a PURCHASE concept, so a refinance never
+    // carries it however the file's assignment box got ticked.
+    if (tpl.code === 'rtl_p5_assign' && !assignmentApplies) continue;
     // Plans & permits placeholder only exists on ground-up construction files.
     if (tpl.code === 'rtl_p1_plans' && !groundUp) continue;
     const owner = tpl.scope === 'application' ? { application_id: appId }

@@ -23,6 +23,7 @@
  * boot for previous AND future files.
  */
 const db = require('../../db');
+const { carriesAssignmentCondition } = require('./assignment-purchase');
 
 async function ensureFileConditions(appId, { reason = 'ensure' } = {}) {
   const a = (await db.query(
@@ -34,8 +35,16 @@ async function ensureFileConditions(appId, { reason = 'ensure' } = {}) {
   }
   // Lazy require avoids a module cycle (routes/borrower requires condition libs).
   const { generateChecklist } = require('../../routes/borrower');
+  /* THE ASSIGNMENT GATE IS THE SHARED RULE, NOT A SECOND OPINION (owner-reported
+     2026-08-25, YSCAP258134828). This line used to read `a.is_assignment ===
+     true` on its own — one question where db/179's trigger asks two (flagged AND
+     a purchase). On a refinance whose assignment box was ticked the trigger
+     deleted the borrower-facing "Assignment letter" condition and THIS call put
+     it straight back on the next ensure — which is every create path, every
+     re-sync and every key-field change. `carriesAssignmentCondition` is now the
+     one definition; see src/lib/conditions/assignment-purchase.js. */
   await generateChecklist(a.id, a.borrower_id, a.program, a.loan_type, {
-    isAssignment: a.is_assignment === true,
+    isAssignment: carriesAssignmentCondition(a),
   });
   // Invariant: a live file must never sit at ZERO checklist items. This is the
   // loud tripwire the old silent try/catch swallowing never had.
