@@ -584,12 +584,26 @@ router.get('/request-audit', async (req, res) => {
       const body = await run();
       const rows = Array.isArray(body) ? body : (body && Array.isArray(body.items) ? body.items : null);
       const keys = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body) : null;
+      // WHERE THE LIST IS, WHEN THE ANSWER IS AN OBJECT. `refreshFieldCatalog`
+      // understands an array or `{items:[…]}` and nothing else, so a list under any
+      // other key is silently zero rows — the enum endpoint hides its rows under
+      // `pipelineLoanReportFieldDefs`, and the template endpoint under `contents`.
+      // Reporting the nested key AND the shape of its first row is what turns
+      // "200 but we stored nothing" into a one-line reader change.
+      const listsUnder = keys
+        ? keys.filter((k) => Array.isArray(body[k])).slice(0, 6).map((k) => ({
+          key: k,
+          len: body[k].length,
+          firstKeys: body[k][0] && typeof body[k][0] === 'object' ? Object.keys(body[k][0]).slice(0, 10) : null,
+        }))
+        : null;
       results.push({
         group, what, how, ok: true, status: 200, ms: Date.now() - t0,
         count: rows ? rows.length : (keys ? keys.length : null),
         shape: rows ? 'list' : (body === null || body === undefined ? 'empty' : typeof body),
         sampleKeys: rows && rows[0] && typeof rows[0] === 'object' ? Object.keys(rows[0]).slice(0, 8)
           : (keys ? keys.slice(0, 10) : null),
+        listsUnder: listsUnder && listsUnder.length ? listsUnder : null,
       });
     } catch (e) {
       const msg = String((e && e.message) || e);
