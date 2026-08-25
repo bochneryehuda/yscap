@@ -908,8 +908,16 @@ router.get('/webhook-check', async (_req, res) => {
 
   // The answer in words, so nobody has to read the JSON to get it.
   let verdict;
-  if (subs && !subs.ok) {
-    verdict = `Could not read this tenant's webhook subscriptions (${subs.status || 'no status'}). That is a question for ICE — PILOT cannot see them.`;
+  if (subs && !subs.ok && !subs.status) {
+    // NO HTTP STATUS MEANS THE CALL NEVER LANDED — a connection that dropped, a
+    // timeout, a DNS blip. Observed on the very first live run of this route, so it
+    // is not rare. The earlier wording sent that case to ICE ("PILOT cannot see
+    // them"), which is a confident wrong answer about somebody else's system and
+    // would have somebody chasing a vendor over a network hiccup. Say what actually
+    // happened and say to ask again.
+    verdict = `The request for this tenant's webhook subscriptions did not complete — ${subs.error || 'the connection failed'}. That is a network failure on the way out, not an answer from Encompass. Run this again.`;
+  } else if (subs && !subs.ok) {
+    verdict = `Encompass refused to say what this tenant's webhook subscriptions are (HTTP ${subs.status}). That is a permissions question for ICE — PILOT is asking correctly and being turned down.`;
   } else if (subCount === 0) {
     verdict = 'Encompass has NO webhook subscriptions at all. Nothing was ever going to arrive, and no change on PILOT\'s side could have made it. The five-minute sweep is doing the whole job.';
   } else if (histCount === 0) {
