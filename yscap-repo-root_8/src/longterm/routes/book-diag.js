@@ -848,11 +848,45 @@ router.get('/webhook-check', async (_req, res) => {
     return res.status(503).json({ ok: false, error: 'Encompass is not connected on this deployment.' });
   }
   const out = {};
+  /**
+   * NOTHING SECRET LEAVES THIS ROUTE.
+   *
+   * A subscription carries its `signingkey` — the HMAC secret Encompass signs every
+   * delivery with — and its `endpoint` carries a per-integration token in the path.
+   * The first run of this route handed both back in clear text. It is token-gated,
+   * so the exposure was narrow, but this file's own header says it out loud: *"a
+   * diagnostic that hands out more than its job needs is a diagnostic somebody will
+   * regret."* Reading a secret is not this route's job.
+   *
+   * What the job DOES need is the endpoint's HOST — "these deliveries go somewhere
+   * that is not PILOT" is the entire finding — so the host is kept and the path is
+   * replaced by its length. The key is replaced by whether one is set at all, which
+   * is the only fact about it anybody here needs.
+   */
+  const REDACT = /^(signingkey|signingKey|secret|token|password|clientSecret)$/i;
+  const scrub = (v) => {
+    if (Array.isArray(v)) return v.map(scrub);
+    if (!v || typeof v !== 'object') return v;
+    const o = {};
+    for (const [k, val] of Object.entries(v)) {
+      if (REDACT.test(k)) { o[k] = val ? `(set — ${String(val).length} chars, not shown)` : null; continue; }
+      if (k === 'endpoint' && typeof val === 'string') {
+        try {
+          const u = new URL(val);
+          o[k] = `${u.protocol}//${u.host}${u.pathname === '/' ? '' : `/…(${u.pathname.length} chars)`}`;
+        } catch (_) { o[k] = '(unreadable endpoint)'; }
+        continue;
+      }
+      o[k] = scrub(val);
+    }
+    return o;
+  };
+
   const ask = async (key, path) => {
     try {
       const body = await encompass.apiGet(path);
       const rows = Array.isArray(body) ? body : (body && (body.items || body.events || body.subscriptions)) || null;
-      out[key] = { ok: true, path, count: Array.isArray(rows) ? rows.length : null, body: rows || body };
+      out[key] = { ok: true, path, count: Array.isArray(rows) ? rows.length : null, body: scrub(rows || body) };
     } catch (e) {
       const msg = String((e && e.message) || e);
       const m = msg.match(/Encompass\s+(\d{3})/);
