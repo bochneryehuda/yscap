@@ -1,107 +1,95 @@
 'use strict';
 /**
- * HOW A LONG-TERM LOAN VESTS — the one answer, so two screens cannot give two.
+ * LONG-TERM — how title vests, decided by field 4008 and nothing else.
  *
- * WHY THIS EXISTS (owner-reported 2026-08-25): *"on the long summary screen, in the
- * middle of the page, 'Vesting entity' is empty, but on top we do have a vesting
- * entity. Something over there is messed up."*
+ * Owner-directed 2026-08-23: *"If field 4008 is showing 'individual' … vesting
+ * is individual. The only time you need to look for the entity name is if that
+ * field 4008 shows 'officer'."*
  *
- * BOTH SCREENS WERE RIGHT ABOUT THEIR OWN SOURCE, AND THAT WAS THE BUG. The plate at
- * the top reads Encompass **field 4008** — the vesting description, mirrored onto
- * `lt_loans.vesting_type` / `vesting_entity_name`. The Loan summary read the 1003's
- * **PARTY rows** (`lt_parties` where `party_type = 'entity'`). They are two different
- * records of one fact, and on this tenant the entity is routinely stated in 4008 while
- * no entity party row exists — so the top of the file named the company and the middle
- * of the same page said there wasn't one.
+ * Verified live both ways (2026-08-24): an Officer-vested loan answers
+ * `{"4008":"Officer","1859":"Sample Holdings LLC"}`; an Individual-vested loan
+ * answers `{"4008":"Individual","1859":""}`. Across the whole book (486 loans)
+ * field 4008 holds exactly Officer (445) / Individual (22) / blank (19).
  *
- * The rail's own header already records this exact class, about a different fact:
- * *"Two answers to one question on two screens is worse than one answer we did not
- * derive."* This is that lesson applied to the vesting.
+ * THE RULE, PRECISELY:
+ *   · "Individual" → the person takes title. The entity name is NEVER read,
+ *     never stored — even if 1859 happens to carry text, which on a re-vested
+ *     loan is exactly the stale value the rule exists to ignore.
+ *   · "Officer" → the loan vests in an entity, and 1859 is its legal name. An
+ *     Officer vesting whose 1859 is blank is a real state ("entity name still
+ *     to be entered") and is reported as such, never guessed.
+ *   · "Trustee" → an entity vesting too. The tenant's own completion rule
+ *     (encompass/completion-rules.js: `[4008] = "Trustee" OR [4008] = "Officer"`)
+ *     defines entity vesting as either word; Trustee has not occurred in the
+ *     measured book, so this is readiness, not behaviour anyone sees today.
+ *   · blank / anything else → NOTHING is claimed. Both columns stay as they
+ *     are; an absent reading is not evidence.
  *
- * THE RULE IS THE OWNER'S (2026-08-24, field 4008): **"individual" means individual.**
- * Only look for an entity name when 4008 says it vests in one. That is why an entity
- * PARTY row is deliberately NOT allowed to overrule a 4008 that says individual — a
- * loan can carry a party row for a company that guarantees it while the title itself
- * vests in a person, and reading that as the vesting would put a company's name on
- * the wrong loan.
- *
- * WHERE THE NAME COMES FROM, in order, and it always SAYS which:
- *   1. field 4008's own name          — Encompass's answer to the question asked
- *   2. an entity party's legal name   — the 1003's answer, when 4008 named none
- *   3. nothing                        — it vests in an entity nobody has named yet,
- *                                       which is reported as exactly that
- *
- * PURE. No database, no network, no requires — so the file payload, the rail, and
- * every test ask the same thing, and none of them can grow a second opinion.
+ * PURE — no database, no client. The sync hands it the fieldReader values.
  */
 
-const txt = (v) => {
-  const s = v === null || v === undefined ? '' : String(v).trim();
-  return s || null;
+/** The two ids, both VERIFIED LIVE before joining any shared batch (the FR0117
+ *  lesson: the LT client does not split a failed batch). */
+const FIELD_IDS = ['4008', '1859'];
+
+const text = (v) => {
+  const s = String(v == null ? '' : v).trim();
+  return s === '' ? null : s;
 };
 
-/** Does field 4008 say this loan vests in a person? */
-const saysIndividual = (vestingType) => String(vestingType || '').trim().toLowerCase() === 'individual';
+/** 4008 wordings that mean "an entity takes title" — the tenant's own pair. */
+const ENTITY_WORDS = new Set(['officer', 'trustee']);
+const INDIVIDUAL_WORD = 'individual';
 
 /**
- * @param {object} loan     an `lt_loans` row (vesting_type, vesting_entity_name)
- * @param {Array}  parties  the file's parties, as `file.borrowers.parties` shapes them
- *                          ({ partyType, name }) — an empty list is fine and common.
+ * The decision. Returns:
+ *   { answered, vestingType, vestsInEntity, entityName, entityNameMissing }
+ *
+ * `answered` false = 4008 was blank or unreadable → claim nothing (the writer
+ * leaves both columns alone). `vestsInEntity` null on an unrecognised word —
+ * a value we have never seen is reported verbatim, never mapped by guess.
  */
-function vestingOf(loan, parties) {
-  const l = loan || {};
-  const stated = txt(l.vesting_type);
-  const entityParties = (Array.isArray(parties) ? parties : [])
-    .filter((p) => p && p.partyType === 'entity')
-    .map((p) => txt(p.name))
-    .filter(Boolean);
+function vestingOf(values) {
+  const raw = text(values && values['4008']);
+  if (!raw) return { answered: false, vestingType: null, vestsInEntity: null, entityName: null, entityNameMissing: false };
 
-  // NOTHING STATED IS NOT "INDIVIDUAL". A loan PILOT has not read in full has no
-  // vesting_type at all, and answering "Individual" there would state a fact about
-  // the title that nobody has told us — the same class as reading a blank as a zero.
-  if (!stated) {
+  const word = raw.toLowerCase();
+  if (word === INDIVIDUAL_WORD) {
+    // The owner's rule, verbatim: individual means individual. The entity name
+    // is not consulted at all.
+    return { answered: true, vestingType: raw, vestsInEntity: false, entityName: null, entityNameMissing: false };
+  }
+  if (ENTITY_WORDS.has(word)) {
+    const entityName = text(values && values['1859']);
     return {
-      type: null,
-      entityName: null,
-      entityNames: entityParties,
-      source: null,
-      label: null,
-      why: 'Encompass has not said how this loan vests yet.',
+      answered: true,
+      vestingType: raw,
+      vestsInEntity: true,
+      entityName,
+      // A real state on a young file: vested in an entity whose name nobody has
+      // typed yet. Said, never guessed.
+      entityNameMissing: !entityName,
     };
   }
-
-  if (saysIndividual(stated)) {
-    return {
-      type: 'individual',
-      entityName: null,
-      // The party rows are carried through even here, because a company on the file
-      // is worth SEEING — it is simply not the vesting. The screen words that.
-      entityNames: entityParties,
-      source: 'field_4008',
-      label: 'Individual',
-      why: null,
-    };
-  }
-
-  const fromField = txt(l.vesting_entity_name);
-  const fromParty = entityParties.length ? entityParties.join(' · ') : null;
-  const name = fromField || fromParty;
-  return {
-    type: 'entity',
-    entityName: name,
-    entityNames: entityParties,
-    source: name ? (fromField ? 'field_4008' : 'party') : null,
-    // "Entity" is the honest label when we know it vests in a company and nobody has
-    // named it — better than a dash, which reads as "there isn't one".
-    label: name || 'Entity',
-    why: name ? null : 'Encompass says this loan vests in an entity but has not named it yet.',
-  };
+  // A word the measured book has never shown. Recorded verbatim so a screen can
+  // show it; no entity conclusion is drawn from it.
+  return { answered: true, vestingType: raw, vestsInEntity: null, entityName: null, entityNameMissing: false };
 }
 
-/** Where a name came from, in words. Never a code on a screen. */
-const SOURCE_WORDS = {
-  field_4008: 'from the vesting line on the loan',
-  party: 'from the borrowing party on the application',
-};
+/**
+ * Plain words for a screen. Kept here so the file header, the pipeline and the
+ * ClickUp mapping can never describe one loan's vesting two ways.
+ */
+function describeVesting(row) {
+  const t = text(row && (row.vesting_type != null ? row.vesting_type : row.vestingType));
+  const name = text(row && (row.vesting_entity_name != null ? row.vesting_entity_name : row.vestingEntityName));
+  if (!t) return { known: false, label: null, entityName: null };
+  const word = t.toLowerCase();
+  if (word === INDIVIDUAL_WORD) return { known: true, label: 'Individual', entityName: null };
+  if (ENTITY_WORDS.has(word)) {
+    return { known: true, label: name || 'Entity — name not entered yet', entityName: name };
+  }
+  return { known: true, label: t, entityName: name };
+}
 
-module.exports = { vestingOf, saysIndividual, SOURCE_WORDS, _internals: { txt } };
+module.exports = { FIELD_IDS, vestingOf, describeVesting, _internals: { ENTITY_WORDS, INDIVIDUAL_WORD, text } };

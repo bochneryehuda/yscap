@@ -39,7 +39,7 @@
 
 const unsourced = require('./application/unsourced');
 const dscrVerdict = require('./dscr-verdict');
-const vesting = require('./vesting');
+const vesting = require('./vesting-view');
 const { num, text } = require('./num');
 
 const lazy = {

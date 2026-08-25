@@ -372,12 +372,23 @@ async function readLoan(loanId, guid, settings) {
   // client does NOT split a failed batch, so one bad id blanks every read).
   // A failure here is its own: a loan whose team or lock could not be read is
   // still a loan we successfully mirrored, and the failure must not undo that.
+  //
+  // THE ID LIST IS BUILT OUTSIDE THE try, AND THAT PLACEMENT IS THE LESSON OF A REAL
+  // OUTAGE (2026-08-25). `vesting.js` was replaced by a module of the same name whose
+  // job was the OPPOSITE end of this pipe — the display rule — so `vesting.FIELD_IDS`
+  // became `undefined`, spreading it threw a TypeError, and the catch below swallowed
+  // it into `values = null`. That reads to every consumer as "Encompass returned
+  // nothing", so the team, the rate lock, the milestone ladder AND the vesting were
+  // silently blank on EVERY loan, on every read, with no error anywhere. The catch is
+  // for a VENDOR miss — a timeout, a 400, an unpermitted id — which is genuinely not
+  // this loan's fault and must not undo a mirror that otherwise succeeded. A mistake
+  // in OUR OWN code is not that, and must fail loudly the first time it runs.
+  const ids = [...new Set([
+    ...contacts.fieldIdsFor(settings), ...locks.fieldIdsFor(settings),
+    ...ladderMod.MS_FIELD_IDS, ...vesting.FIELD_IDS,
+  ])];
   let values = null;
   try {
-    const ids = [...new Set([
-      ...contacts.fieldIdsFor(settings), ...locks.fieldIdsFor(settings),
-      ...ladderMod.MS_FIELD_IDS, ...vesting.FIELD_IDS,
-    ])];
     if (ids.length) values = await lazy.client.fieldReader(guid, ids);
   } catch (_) { /* each consumer below reports its own miss */ }
   const ms = ladderMod.msStatusOf(values);

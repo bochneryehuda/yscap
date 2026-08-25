@@ -30,7 +30,7 @@ const check = (cond, msg) => {
   else { failures += 1; console.error(`  FAIL ${msg}`); }
 };
 
-const vesting = require('../src/longterm/vesting');
+const vesting = require('../src/longterm/vesting-view');
 const V = vesting.vestingOf;
 
 // ── 1. The bug, reproduced ───────────────────────────────────────────────────
@@ -134,6 +134,50 @@ check(/from the pipeline; the application has not been read yet/.test(summary),
 // the summary said `rate_term_refinance`.
 check(!/plain\(data\.purpose\)/.test(summary) && !/plain\(rail\.purpose\)/.test(plate),
   'no screen draws a purpose with the raw-value formatter');
+
+// ── 5. TWO VESTING MODULES, TWO JOBS — the guard that would have caught an outage ──
+//
+// These two files were ONE file for about eight minutes on 2026-08-25, and the cost
+// was not a wrong answer on a screen. `src/longterm/vesting.js` is the READ-TIME rule
+// that `sync/loans.js` spreads `FIELD_IDS` from; replacing it with this display rule
+// left `vesting.FIELD_IDS` undefined, spreading it threw, and the sync's catch-all
+// turned that into `values = null` — which every consumer reads as "Encompass said
+// nothing". The team, the rate lock, the milestone ladder and the vesting went blank
+// on EVERY loan on EVERY read, silently. So the separation is pinned here, both ways.
+console.log('\nthe read-time rule and the display rule stay two modules');
+
+const writer = require('../src/longterm/vesting');
+check(writer !== vesting, 'the sync writer and the screen rule are two different modules');
+check(Array.isArray(writer.FIELD_IDS) && writer.FIELD_IDS.length > 0
+  && writer.FIELD_IDS.every((x) => typeof x === 'string'),
+  'THE ONE THAT MATTERS: the read-time rule still exports FIELD_IDS as a real list of field numbers — the sync spreads it, and an undefined here is a silent total read failure');
+
+// They are NOT interchangeable, and the proof is that they answer the same input
+// differently: the writer is handed Encompass's raw field map, this one a stored row.
+const fromFields = writer.vestingOf({ 4008: 'Officer', 1859: 'Sample Holdings LLC' });
+check(fromFields.answered === true && fromFields.entityName === 'Sample Holdings LLC',
+  'the read-time rule reads the raw Encompass field map (4008 / 1859)');
+check(V({ 4008: 'Officer', 1859: 'Sample Holdings LLC' }, []).type === null,
+  '…and the display rule reads a stored loan row, so the two can never be swapped by accident');
+
+const loansSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'sync', 'loans.js'), 'utf8');
+check(/require\('\.\.\/vesting'\)/.test(loansSrc) && !/vesting-view/.test(loansSrc),
+  'the sync reads the READ-TIME rule, never the screen one');
+check(/require\('\.\/vesting-view'\)/.test(fs.readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'file.js'), 'utf8')),
+  '…and the file payload reads the screen one, never the sync rule');
+
+// A MISTAKE IN OUR OWN CODE MUST NOT LOOK LIKE A VENDOR MISS. The id list is built
+// BEFORE the try, so a bad module or a renamed export throws on the first read
+// instead of degrading into a loan that reads perfectly and returns nothing.
+const idsAt = loansSrc.indexOf('...ladderMod.MS_FIELD_IDS, ...vesting.FIELD_IDS');
+const readerAt = loansSrc.indexOf('values = await lazy.client.fieldReader');
+// The `try {` that WRAPS the reader — not the first one in the file, and not the
+// reader line itself: asking whether the ids come before the READER is no test at
+// all, since they do either way. What must be true is that they come before the try.
+const tryAt = loansSrc.lastIndexOf('try {', readerAt);
+check(idsAt > 0 && readerAt > 0 && tryAt > idsAt,
+  'the field-id list is built OUTSIDE the try that swallows a vendor failure, so a code mistake cannot be read as "Encompass returned nothing"');
+
 
 console.log('');
 if (failures) {

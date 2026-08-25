@@ -232,6 +232,106 @@ for (const step of pkgChain) {
 for (const [f, count] of seen) if (count > 1) dupes.push(`${f} x${count}`);
 ok(dupes.length === 0, `npm test runs the same suite more than once: ${dupes.join(', ')}`);
 
+// -----------------------------------------------------------------------------
+// 6. No step in the chain hard-codes an ABSOLUTE filesystem root.
+//
+//    A step that requires `/home/<somebody>/…/src/db` resolves on the ONE machine
+//    it was typed on and nowhere else: CI checks out to /home/runner/work/…, so
+//    the very first require is a MODULE_NOT_FOUND, the process dies before its
+//    first assertion, and the whole `&&` chain stops there. It is the same class
+//    section 4 guards — a step that cannot run — and it is worse in one way: it
+//    passes perfectly on the machine where it was written, so nothing says so
+//    until CI. (Found 2026-08-24 in `test-esign-sign-link-db.js`, which needed a
+//    resolved path to stub a module through `require.cache` and used an absolute
+//    one to get it. `path.join(__dirname, '..')` is the same value, anywhere.)
+//
+//    Scoped to the CHAIN rather than to all of `scripts/`, deliberately: the
+//    one-off local rendering helpers are not run by anything and are not the
+//    hazard this describes.
+// -----------------------------------------------------------------------------
+const ABSOLUTE_ROOT = /(?:require\(|require\.resolve\(|from\s+)['"`]\/(?:home|Users|root|mnt|var)\//;
+const rooted = [];
+for (const f of inChainNow) {
+  const full = path.join(ROOT, f);
+  if (!fs.existsSync(full)) continue;               // section 4 already reports those
+  const body = fs.readFileSync(full, 'utf8');
+  // Also catch the two-step form: a root in a variable, then required off it.
+  const viaVar = /=\s*['"`]\/(?:home|Users|root|mnt|var)\/[^'"`]*['"`]\s*;/.test(body)
+    && /require\([A-Za-z_$][\w$]*\s*\+/.test(body);
+  if (ABSOLUTE_ROOT.test(body) || viaVar) rooted.push(f);
+}
+ok(
+  rooted.length === 0,
+  'a suite in npm test hard-codes an absolute filesystem root, so it can only run on one machine '
+  + `(use path.join(__dirname, '..')): ${rooted.join(', ')}`,
+);
+
+// -----------------------------------------------------------------------------
+// 7. Every *-db step SURVIVES having no database.
+//
+//    `npm test` is ONE chain and BOTH CI jobs run it: `test-db` with a Postgres
+//    service, and `test` with no database at all. A suite that dials one and
+//    does not catch takes the whole build down — and the DEPLOY with it, because
+//    `deploy` is `needs: test`. `scripts/lib/db-gate.js` exists for exactly this
+//    and its header records the first time it happened (#1224); it happened
+//    again on 2026-08-24 in `test-esign-sign-link-db.js`, which went straight
+//    into its first INSERT and died with ECONNREFUSED, stopping every step
+//    behind it. Both times it passed perfectly on the machine it was written on.
+//
+//    TWO STAGES, because the cheap one alone cannot answer it. The source screen
+//    below recognises the three house shapes (a DATABASE_URL check, an emitted
+//    SKIPPED, or the shared `skipUnlessDb`) — but a suite that is simply built to
+//    run OFFLINE uses none of them and is perfectly fine, so a source-only guard
+//    would fail working code and grow an exception list. So anything the screen
+//    cannot vouch for is RUN, with no database, and has to exit 0. That is the
+//    real invariant, it needs no list, and it self-maintains: a genuinely
+//    offline-capable suite passes because it genuinely passes.
+// -----------------------------------------------------------------------------
+{
+  const { execFileSync } = require('child_process');
+  const HOUSE_SHAPES = /DATABASE_URL|SKIPPED|skipUnlessDb|db-gate/;
+  const stripComments = (t) => t
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+
+  const candidates = [...inChainNow]
+    .filter((f) => /-db\.js$/.test(f))
+    .filter((f) => fs.existsSync(path.join(ROOT, f)))
+    .filter((f) => !HOUSE_SHAPES.test(stripComments(fs.readFileSync(path.join(ROOT, f), 'utf8'))))
+    .sort();
+
+  /* A CAP, and it is REPORTED rather than silent. The screen normally leaves a
+     handful; if a change ever leaves dozens, spawning them all would turn an
+     instant gate into a slow one, so it says so and stops instead. */
+  const SPAWN_CAP = 12;
+  ok(
+    candidates.length <= SPAWN_CAP,
+    `${candidates.length} *-db suites in the chain declare no missing-database handling — too many `
+    + `to verify here. Give them scripts/lib/db-gate.js: ${candidates.slice(0, 15).join(', ')}`,
+  );
+
+  const crashed = [];
+  for (const f of candidates.slice(0, SPAWN_CAP)) {
+    // A clean environment: dropping DATABASE_URL is not enough on its own, since
+    // libpq also reads PGHOST/PGPORT/PGUSER and a developer with those exported
+    // would get a pass this check has not earned.
+    const env = { ...process.env };
+    for (const k of Object.keys(env)) if (k === 'DATABASE_URL' || /^PG[A-Z]/.test(k)) delete env[k];
+    try {
+      execFileSync(process.execPath, [path.join(ROOT, f)], {
+        cwd: ROOT, env, timeout: 60000, stdio: 'ignore',
+      });
+    } catch (e) {
+      crashed.push(`${f} (${e && e.signal === 'SIGTERM' ? 'timed out' : `exit ${e && e.status}`})`);
+    }
+  }
+  ok(
+    crashed.length === 0,
+    'a *-db suite in npm test does not survive having no database, so the no-database CI job — and '
+    + `the deploy behind it — dies there. Use scripts/lib/db-gate.js: ${crashed.join(', ')}`,
+  );
+}
+
 console.log(`\n✓ test-chain coverage: ${n} assertions passed`);
 console.log(`  ${suiteFiles().length} suites on disk, ${inChainNow.size} steps in the chain, `
   + `${Object.keys(QUARANTINE).length} quarantined with a written reason`);

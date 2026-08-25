@@ -38,9 +38,14 @@ let n = 0, failed = 0;
 const ok = (cond, label) => { n++; if (cond) return; failed++; console.error('  ✘ ' + label); };
 const eq = (a, b, label) => ok(a === b, `${label} (got ${JSON.stringify(a)}, expected ${JSON.stringify(b)})`);
 
-// The forms we may legitimately order a line-item draw on: 19 is the sandbox's, 1079 is
-// production's. Adding one here is a deliberate act — it must be a dollar line-item form.
-const OUR_FORMS = ['19', '1079'];
+/* The forms we may legitimately order a line-item draw on: 19 is the sandbox's, 1079 is
+   production's — READ OFF THE PRODUCTION CONSTANTS rather than retyped here. A hand-kept copy
+   would have passed happily on ['19','1079'] the day somebody pointed
+   `PRODUCTION_DRAW_FORM_ID` at form 26 (a PERCENT-based budget on a different model), which is
+   precisely the hazard this file exists to catch. Adding a form is a deliberate act in
+   `src/trinity/form.js` — and it must be a dollar line-item form, which section A then proves. */
+const TRINITY_FORM = require('../src/trinity/form');
+const OUR_FORMS = [TRINITY_FORM.SANDBOX_DRAW_FORM_ID, TRINITY_FORM.PRODUCTION_DRAW_FORM_ID].map(String);
 
 // What a budget line MUST carry for this integration to work at all, and why each one.
 const REQUIRED_LINE_FIELDS = {

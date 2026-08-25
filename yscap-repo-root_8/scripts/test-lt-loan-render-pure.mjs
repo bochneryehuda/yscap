@@ -119,7 +119,7 @@ const LOAN = {
   file: {
     property: { address: '1 Test Ln, Sampletown, PA, 18326' },
     income: {},
-    vesting: requireSrv(path.join(here, '..', 'src', 'longterm', 'vesting.js'))
+    vesting: requireSrv(path.join(here, '..', 'src', 'longterm', 'vesting-view.js'))
       .vestingOf({ vesting_type: 'Individual', vesting_entity_name: null }, []),
   },
   canReassign: false, assignableStaff: [],
@@ -191,7 +191,7 @@ async function renderEntry(entry, propsJs = '{}') {
   // rows instead, said there was none. Both read `file.vesting` now, so this asserts
   // the plate draws the name that the SERVER decided rather than one it worked out
   // for itself.
-  const vestMod = requireSrv(path.join(here, '..', 'src', 'longterm', 'vesting.js'));
+  const vestMod = requireSrv(path.join(here, '..', 'src', 'longterm', 'vesting-view.js'));
   const entityOnly = await esbuild.build({
     stdin: {
       contents: `import React from 'react'; import { renderToString } from 'react-dom/server';
