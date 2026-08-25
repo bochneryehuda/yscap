@@ -5032,9 +5032,20 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .ltset-row.ltset-mid{align-items:center;padding:10px 0}
 @media(max-width:720px){ .ltset-row{grid-template-columns:1fr;gap:8px} }
 
-/* The long-term loan workspace: content and its summary rail. Under 900px the rail
-   drops below the content rather than squeezing both — a 300px rail beside a
-   narrowing column is how a table of figures ends up one word per line. */
+/* The long-term loan workspace: the jump menu, the file, and its details rail.
+   Under 900px the rail drops below the content rather than squeezing both — a 300px
+   rail beside a narrowing column is how a table of figures ends up one word per line.
+
+   THE ORDER IS SET HERE, AT EVERY WIDTH (owner-directed 2026-08-25: the file details
+   move to the RIGHT and the file's own sections to the LEFT, matching the RTL file
+   screen, which is a menu on the left with the sections beside it). These three
+   values already existed in the phone block below, where the stack has always read
+   menu → file → details; lifting them to the base rule is what makes the desktop
+   agree with it, and it leaves the DOM alone — which keeps the reading order right
+   for a keyboard and a screen reader as well. */
+.lt-workspace > .lt-rooms{order:1}
+.lt-workspace > .lt-sections{order:2}
+.lt-workspace > .lt-ledger{order:3}
 @media(max-width:900px){ .lt-workspace{grid-template-columns:1fr !important} }
 /* Stacked, the room index is just the first block on the page — sticking it to the
    top would pin a list above the content it is meant to introduce, and on a phone
@@ -5060,10 +5071,12 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    top of everything else. Every colour is an explicit dark or the brand gold: in
    this palette every --ink* token is a LIGHT paper colour, so one used as a text
    colour renders white on white. */
-.lt-utter{margin:2px 0 8px;line-height:1.05;display:flex;flex-wrap:wrap;align-items:baseline;gap:10px}
-.lt-utter .lt-was{font-size:clamp(15px,2.2vw,24px);font-style:italic;color:#4B585C;font-weight:400}
+.lt-utter{margin:2px 0 12px;line-height:1.05;display:flex;flex-wrap:wrap;align-items:baseline;gap:10px}
 .lt-utter .lt-now{font-size:clamp(27px,4.4vw,44px);font-weight:800;letter-spacing:.005em;color:#8A6A22}
-.lt-law{font-size:10.5px;letter-spacing:.22em;text-transform:uppercase;color:#4B585C;margin:0 0 12px}
+/* `.lt-was` and `.lt-law` are RETIRED (owner-directed 2026-08-25). They drew the raw
+   Encompass milestone beside the finished wording — "not Submittal — Submitted" — so
+   the first word at the top of nearly every file was NOT. The status is said once, in
+   its finished form; the raw names live in the Milestones section. */
 .lt-facts{display:flex;flex-wrap:wrap;
   border-top:1px solid rgba(20,27,34,.16);border-bottom:1px solid rgba(20,27,34,.16)}
 /* The cells DO NOT STRETCH. Eight facts do not divide evenly into one row, and a
@@ -5071,7 +5084,15 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    wide boxes. Sized to their own content, they pack left and the unused tail of
    the last row reads like a ledger rather than a mistake. */
 .lt-fact{flex:0 1 auto;min-width:104px;padding:11px 14px;border-left:1px solid rgba(20,27,34,.08)}
-.lt-fact.wide{min-width:200px;max-width:320px}
+/* THE SUBJECT ADDRESS ON ONE LINE (owner-directed 2026-08-25). It used to be capped
+   at 320px with `overflow-wrap:anywhere` on the value, so an ordinary address broke
+   across two or three lines and could split mid-word. It now takes whatever room the
+   row has left and is trimmed with an ellipsis rather than wrapped; the cell carries
+   the full text as a `title`, so nothing is unreachable. `min-width:0` is what allows
+   a flex item to shrink below its content at all — without it `text-overflow` never
+   fires and the cell simply pushes the row wider. */
+.lt-fact.wide{flex:1 1 260px;min-width:0;max-width:none}
+.lt-fact.wide .v{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;overflow-wrap:normal}
 /* The loan number is the one value that must never break across two lines —
    it is what somebody reads down a telephone — so its cell neither stretches
    nor wraps. */
@@ -5089,19 +5110,77 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
   .lt-fact.wide{flex:1 1 100%}
 }
 
-/* Stacked on a phone the three columns keep the order that is useful there: the
-   jump menu, then the file, then its details — a sixteen-row table of figures
-   between the menu and the content would be a long scroll to reach the work. */
+/* Stacked on a phone the three columns keep the SAME order they have side by side:
+   the jump menu, then the file, then its details — a sixteen-row table of figures
+   between the menu and the content would be a long scroll to reach the work. It is
+   restated here rather than left to the base rule so that a future change to the
+   desktop arrangement cannot silently re-stack a phone; the values agree today and
+   are meant to. */
 @media(max-width:900px){
-  .lt-rooms{order:-1}
-  .lt-sections{order:0}
-  .lt-ledger{order:1}
+  .lt-rooms{order:1}
+  .lt-sections{order:2}
+  .lt-ledger{order:3}
 }
 
 /* The 1003 sections' label/value lists. Two columns is right on a desktop and is a
    guaranteed one-word-per-line on a phone, so they stack — the table rows inside a
    section scroll in their own box instead (the page body must never scroll sideways). */
-@media(max-width:640px){ .ltf-facts{grid-template-columns:1fr !important} }
+/* ── THE LONG-TERM SECTION LEDGER ───────────────────────────────────────────
+   Owner-directed 2026-08-25: the sections under the summary should be "more like a
+   structure, more like an order, like a rich LOS, not just flowing away everything",
+   and should "copy the same idea" as the RTL file screen "so it should look familiar".
+
+   THE IDEA COPIED IS THE LEDGER: the label on the left, the value on the RIGHT, a
+   hairline between rows so the eye runs down a column of figures, and tabular
+   numerals so the digits line up. What was there before stacked the label on top of
+   the value in a plain grid, which on a sixteen-fact section is thirty-two lines of
+   alternating small and large text with no shape at all.
+
+   THESE ARE LONG-TERM'S OWN CLASSES. RTL's `.snap-*` components are RTL's; the two
+   products do not share code, and what the owner asked for is the same IDEA so a
+   person moving between the screens recognises the shape.
+
+   EVERY COLOUR IS AN EXPLICIT DARK. In this palette every `--ink*` token is a LIGHT
+   paper colour, so one used as a text colour renders white on white. */
+
+/* A flat run of facts, in however many columns the caller asked for. `--ltf-cols` is
+   set inline by the component; the phone rule below overrides it to one. */
+.ltf-facts{display:grid;grid-template-columns:repeat(var(--ltf-cols,2),minmax(0,1fr));
+  gap:0 34px;margin:0}
+
+/* Named clusters. They AUTO-FIT rather than take a fixed count: a section with three
+   short groups should use the width it has, and one with two long ones should not be
+   forced into three thin columns. */
+.ltf-clusters{display:grid;grid-template-columns:repeat(auto-fit,minmax(var(--ltf-min,260px),1fr));
+  gap:18px 34px;margin:0}
+.ltf-cluster{min-width:0}
+.ltf-cluster-h{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;
+  color:#8A6A22;padding-bottom:7px;margin-bottom:2px;border-bottom:2px solid rgba(174,135,70,.35)}
+
+/* One fact. THE LABEL NEVER SHRINKS AND THE VALUE ABSORBS THE SQUEEZE — with
+   `min-width:0` on both sides flexbox shrinks them proportionally, and a label reading
+   "Prepayment penalty" wraps to three words per line beside a value with room to
+   spare. `min-width:0` on the value alone is what lets a long one wrap instead of
+   pushing the row wider than its column. */
+.ltf-row{display:flex;justify-content:space-between;gap:16px;padding:8px 0;
+  border-top:1px solid #E6E1D6;min-width:0}
+.ltf-row:first-of-type{border-top:none}
+.ltf-rk{color:#4B585C;font-size:13px;flex:none}
+.ltf-rv{color:#141B22;font-weight:600;font-size:14px;text-align:right;
+  min-width:0;flex:1 1 auto;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+/* The third answer — "Encompass does not record this" — is a SENTENCE, not a value:
+   it is quieter, it is not bold, and it reads left-aligned like prose. */
+.ltf-rv-note{color:#4B585C;font-weight:400;font-size:12.5px;font-style:italic;
+  text-align:left;font-variant-numeric:normal}
+
+@media(max-width:640px){
+  .ltf-facts{grid-template-columns:1fr !important}
+  .ltf-clusters{grid-template-columns:1fr !important;gap:14px}
+  /* A label and its value stay on ONE line on a phone too — that is the whole point
+     of the ledger — but the gap closes so a long label has room. */
+  .ltf-row{gap:10px}
+  .ltf-rk{font-size:12.5px}
+}
 
 /* ---- File-overview slide-over (owner-directed 2026-08-18) — .fov-* namespace.
    One component on all three file screens (staff / borrower / broker): a

@@ -14,6 +14,9 @@
  *     wrong one silently skips loans, which looks exactly like a quiet pipeline.
  *     So it is taken apart explicitly, and the boundaries that trip every hand-
  *     written 12-hour parser (12 AM is midnight, 12 PM is noon) are asked here.
+ *     It also carries NO OFFSET: it is a wall clock in the tenant's own timezone,
+ *     so the instant is four hours later than the digits in summer, five in winter.
+ *     Reading it as UTC is the defect `test-lt-tenant-time-pure.js` reproduces.
  *   · THE AMOUNT. Absent, empty and unreadable all answer null and never 0,
  *     because a zero loan amount is a FACT and "we could not read it" is not.
  *     `Number('')` is 0, which is how the two get confused.
@@ -51,14 +54,25 @@ const check = (cond, msg) => {
 console.log('the pipeline date is taken apart rather than handed to new Date()');
 
 const d = discover.parsePipelineDate;
-check(d('8/14/2026 10:48:18 AM') === '2026-08-14T10:48:18.000Z',
-  'THE ONE THAT MATTERS: the tenant\'s own format reads exactly — this is the stamp the sync pages on, and a wrong one silently skips loans');
-check(d('8/14/2026 12:00:00 AM') === '2026-08-14T00:00:00.000Z',
+
+// THE DIGITS ARE FOUR HOURS APART FROM THE READING, ON PURPOSE. Encompass states
+// this stamp as a bare WALL CLOCK in the tenant's own timezone with no offset on it,
+// so 10:48 AM in New York is 14:48Z in August (15:48Z in winter). These assertions
+// USED to expect the digits back verbatim, which is exactly the defect
+// `scripts/test-lt-tenant-time-pure.js` reproduces: every stamp landed four hours
+// early, so a loan edited shortly after PILOT read it compared as edited BEFORE and
+// was never read again. They still ask what they always asked — the 12-hour
+// boundaries every hand-written parser trips over — only now against the instant the
+// tenant actually meant.
+check(d('8/14/2026 10:48:18 AM') === '2026-08-14T14:48:18.000Z',
+  'THE ONE THAT MATTERS: the tenant\'s own format reads exactly — 10:48 in New York, which is 14:48Z; this is the stamp the sync pages on, and a wrong one silently skips loans');
+check(d('8/14/2026 12:00:00 AM') === '2026-08-14T04:00:00.000Z',
   '12 AM is MIDNIGHT — the boundary every hand-written 12-hour parser gets wrong in one direction');
-check(d('8/14/2026 12:00:00 PM') === '2026-08-14T12:00:00.000Z',
+check(d('8/14/2026 12:00:00 PM') === '2026-08-14T16:00:00.000Z',
   '…and 12 PM is NOON, which is the other direction');
-check(d('8/14/2026 1:05 PM') === '2026-08-14T13:05:00.000Z', 'an afternoon time with no seconds');
-check(d('8/14/2026') === '2026-08-14T00:00:00.000Z', 'a date with no time at all is midnight, not today');
+check(d('8/14/2026 1:05 PM') === '2026-08-14T17:05:00.000Z', 'an afternoon time with no seconds');
+check(d('8/14/2026') === '2026-08-14T04:00:00.000Z',
+  'a date with no time at all is midnight IN THE TENANT`S ZONE, not midnight UTC and not today');
 check(d('2026-08-14T10:48:18.000Z') === '2026-08-14T10:48:18.000Z',
   'and an ISO stamp from a differently-configured tenant is read too, rather than refused');
 
@@ -103,7 +117,8 @@ check(one.loanNumber === '12345', '…its number is trimmed');
 check(one.borrowerName === 'Ada Lovelace',
   '…the borrower name has its runs of spaces collapsed, because it is drawn on a screen beside other names');
 check(one.loanAmount === 310000, '…the amount is a number');
-check(one.lastModified === '2026-08-14T10:48:18.000Z', '…and the stamp is an instant');
+check(one.lastModified === '2026-08-14T14:48:18.000Z',
+  '…and the stamp is an instant, read in the tenant`s own zone');
 check(one.loanOfficerLoginId === 'alovelace', '…and it carries the login the file is attributed through');
 
 check(discover.rowToLoan({ loanGuid: 'older-shape', fields: {} }).encompassLoanGuid === 'older-shape',

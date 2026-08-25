@@ -84,6 +84,14 @@ router.use('/archive', require('./routes/archive'));
 // queue. Every write still goes through the guarded writer. /api/lt/clickup
 router.use('/clickup', require('./routes/clickup'));
 
+// The ENCOMPASS SYNCING section of every file (owner-directed 2026-08-25: "the
+// pull, the refresh, the last pull, last refresh, last webhooks, and stuff like
+// that") — what has been read for this loan and what has not, when Encompass last
+// changed it, when a webhook last asked us to look, and a button that reads the
+// loan again on the spot. READ-ONLY towards Encompass; the read-only gate covers
+// it like every other module. /api/lt/encompass-file
+router.use('/encompass-file', require('./routes/encompass-file'));
+
 // The Condition Center, READ side: this loan's conditions with the documents that
 // answer each one, plus the eFolder needs list — which is where the work actually
 // is on a live file, since every condition in this tenant sits on a loan that is

@@ -114,13 +114,25 @@ router.post('/', async (req, res) => {
     // Clearing encompass_synced_at is the whole nudge: the sync's own drain
     // (`needsRead`) re-reads the loan on its next pass — ladder, fields,
     // contacts and all — and the ClickUp push drain follows the fresh read.
+    // The three `encompass_nudge*` columns (db/629) are a SECOND fact, not part of
+    // the nudge: clearing the read stamp is what makes the loan re-read, and these
+    // record that Encompass asked at all. Without them the only trace of a webhook
+    // was a console line, so "is the webhook firing?" had no answer on any screen —
+    // and a webhook that had silently stopped looked exactly like one that never
+    // fired. `via` is the SHAPE of the ping, so it is decided by which half of the
+    // WHERE could have matched rather than by which we sent.
+    const via = id.guid ? 'guid' : 'loan_number';
     const { rows } = await db.query(
       `UPDATE lt_loans
-          SET encompass_synced_at = NULL, updated_at = now()
+          SET encompass_synced_at   = NULL,
+              encompass_nudged_at   = now(),
+              encompass_nudged_via  = $3,
+              encompass_nudge_count = COALESCE(encompass_nudge_count, 0) + 1,
+              updated_at            = now()
         WHERE (LOWER(encompass_loan_guid) = LOWER($1) AND $1 IS NOT NULL)
            OR (UPPER(loan_number) = UPPER($2) AND $2 IS NOT NULL)
         RETURNING id, loan_number`,
-      [id.guid, id.loanNumber]);
+      [id.guid, id.loanNumber, via]);
     if (rows.length) {
       console.log(`[lt-encompass-hook] nudged ${rows.length} loan(s) (${rows.map((r) => r.loan_number).join(', ')}) — re-read on the next sync pass`);
       return res.json({ ok: true, nudged: true, loans: rows.length });

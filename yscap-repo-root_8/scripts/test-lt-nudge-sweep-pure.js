@@ -100,8 +100,26 @@ async function main() {
     const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
     const writes = code.match(/\b(UPDATE|INSERT INTO|DELETE FROM)\b/gi) || [];
     eq(writes.length, 1, 'THE ONE THAT MATTERS: exactly one write statement exists in the module');
-    ok(/UPDATE lt_loans SET encompass_synced_at = NULL/.test(code),
-      '...and it clears the sync stamp — it can never write a loan value');
+    ok(/UPDATE lt_loans\s+SET encompass_synced_at\s*=\s*NULL/.test(code),
+      '...and it clears the sync stamp — which IS the nudge: the sync drain re-reads the loan on its next pass');
+
+    // WHAT THAT ONE STATEMENT MAY TOUCH, enumerated. This used to pin the exact
+    // text of the statement, which broke the moment db/629 added the three
+    // `encompass_nudge*` columns beside it — bookkeeping about the SYNC, not a
+    // value of the LOAN, so the safety property never moved. Pinning the text
+    // could only ever answer "did anybody edit this line"; pinning the COLUMN SET
+    // answers the question the section is actually about, and it is strictly
+    // stricter: a loan value added here fails whether or not the old line survives.
+    const setBlock = (code.match(/UPDATE lt_loans[\s\S]*?WHERE/i) || [''])[0];
+    const targets = (setBlock.match(/^\s*([a-z_]+)\s*=/gim) || [])
+      .map((m) => m.trim().replace(/\s*=$/, ''));
+    const ALLOWED = new Set(['SET encompass_synced_at', 'encompass_synced_at',
+      'encompass_nudged_at', 'encompass_nudged_via', 'encompass_nudge_count', 'updated_at']);
+    const stray = targets.filter((t) => !ALLOWED.has(t) && !ALLOWED.has(t.replace(/^SET\s+/, '')));
+    eq(stray.join(',') , '',
+      '...and it writes ONLY the sync stamp and the nudge bookkeeping — never a value of the loan itself');
+    ok(targets.length >= 2, '...(and the column set was actually parsed, so an empty match cannot pass this)');
+
     ok(!/lt_loan_milestones|lt_parties|lt_properties|lt_loan_investors/.test(code),
       '...and it names no loan-value table at all');
   }

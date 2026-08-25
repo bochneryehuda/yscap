@@ -139,18 +139,51 @@ async function upsertDiscovered(dbc, loan, settings) {
   return rows[0];
 }
 
+/** How long a loan may go unread before it is re-read on the ROTA alone, whatever
+ *  the stamps say. `0` switches the rota off and restores stamp-only freshness. */
+const REREAD_HOURS = (() => {
+  const n = parseInt(process.env.LT_ENCOMPASS_REREAD_HOURS || '12', 10);
+  return Number.isFinite(n) && n >= 0 ? n : 12;
+})();
+
 /**
  * Does this loan need a full read?
  *
- * Never read → yes. Encompass's stamp newer than our sync → yes. Otherwise no. A
- * loan with NO Encompass stamp is read once and then left alone, rather than re-read
- * on every tick forever, because an absent stamp tells us nothing about change.
+ * Never read → yes. Encompass's stamp newer than our sync → yes. Not read for
+ * `REREAD_HOURS` → yes, on the rota. Otherwise no.
+ *
+ * THE ROTA IS THE POINT OF THIS FUNCTION NOW (owner-reported 2026-08-25: three
+ * Sherman Ave files that never filled in, a loan stuck on "File started" after LO
+ * Prep completed, and the full-pull button appearing to do nothing — all three were
+ * this test answering NOT DUE). The stamp comparison had TWO ways to freeze a loan
+ * for ever, and both had actually happened:
+ *
+ *   · A WRONG STAMP. `encompass_last_modified` was being stored four hours early
+ *     (`tenant-time`'s header has the measurement), so it could never overtake an
+ *     `encompass_synced_at` set after the edit. Fixed at the parser — and fixing the
+ *     parser alone would have left the same trap armed for the next stamp problem.
+ *   · NO STAMP AT ALL. `if (!encompass_last_modified) return false` read "we cannot
+ *     prove it changed" as "never look again", so one loan the pipeline search
+ *     returned no date for was mirrored once and abandoned.
+ *
+ * A MIRROR MUST FAIL TOWARD LOOKING AGAIN. The cost of the rota is one read per loan
+ * per twelve hours — on a ~770-loan book, comfortably inside one pass's budget over
+ * a day, and nothing at all on a book that is being read for other reasons anyway.
+ * The cost of the old reading was a file frozen in the state it was discovered in,
+ * silently, with every screen insisting it had been read. An unreadable stamp is
+ * treated the same way: look again.
  */
-function needsRead(row) {
+function needsRead(row, now = Date.now()) {
   if (!row) return false;
   if (!row.encompass_synced_at) return true;
+  const synced = new Date(row.encompass_synced_at).getTime();
+  // A stamp we cannot read is not evidence that the loan is up to date.
+  if (!Number.isFinite(synced)) return true;
+  if (REREAD_HOURS > 0 && now - synced >= REREAD_HOURS * 3600 * 1000) return true;
   if (!row.encompass_last_modified) return false;
-  return new Date(row.encompass_last_modified).getTime() > new Date(row.encompass_synced_at).getTime();
+  const modified = new Date(row.encompass_last_modified).getTime();
+  if (!Number.isFinite(modified)) return false;
+  return modified > synced;
 }
 
 /**
@@ -339,12 +372,23 @@ async function readLoan(loanId, guid, settings) {
   // client does NOT split a failed batch, so one bad id blanks every read).
   // A failure here is its own: a loan whose team or lock could not be read is
   // still a loan we successfully mirrored, and the failure must not undo that.
+  //
+  // THE ID LIST IS BUILT OUTSIDE THE try, AND THAT PLACEMENT IS THE LESSON OF A REAL
+  // OUTAGE (2026-08-25). `vesting.js` was replaced by a module of the same name whose
+  // job was the OPPOSITE end of this pipe — the display rule — so `vesting.FIELD_IDS`
+  // became `undefined`, spreading it threw a TypeError, and the catch below swallowed
+  // it into `values = null`. That reads to every consumer as "Encompass returned
+  // nothing", so the team, the rate lock, the milestone ladder AND the vesting were
+  // silently blank on EVERY loan, on every read, with no error anywhere. The catch is
+  // for a VENDOR miss — a timeout, a 400, an unpermitted id — which is genuinely not
+  // this loan's fault and must not undo a mirror that otherwise succeeded. A mistake
+  // in OUR OWN code is not that, and must fail loudly the first time it runs.
+  const ids = [...new Set([
+    ...contacts.fieldIdsFor(settings), ...locks.fieldIdsFor(settings),
+    ...ladderMod.MS_FIELD_IDS, ...vesting.FIELD_IDS,
+  ])];
   let values = null;
   try {
-    const ids = [...new Set([
-      ...contacts.fieldIdsFor(settings), ...locks.fieldIdsFor(settings),
-      ...ladderMod.MS_FIELD_IDS, ...vesting.FIELD_IDS,
-    ])];
     if (ids.length) values = await lazy.client.fieldReader(guid, ids);
   } catch (_) { /* each consumer below reports its own miss */ }
   const ms = ladderMod.msStatusOf(values);
@@ -684,7 +728,11 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
         }
         const row = await upsertDiscovered(dbc, loan, settings);
         await dbc.query('RELEASE SAVEPOINT lt_loan_row');
-        if (needsRead(row)) due.push({ id: row.id, guid: loan.encompassLoanGuid });
+        if (needsRead(row)) {
+          // The loan's own last-read stamp rides along so the slice below can drain
+          // OLDEST FIRST — see the sort there for why that is not cosmetic.
+          due.push({ id: row.id, guid: loan.encompassLoanGuid, syncedAt: row.encompass_synced_at });
+        }
       } catch (rowErr) {
         // Rewind only this row. If the rewind ITSELF fails the transaction is
         // unusable, so rethrow and let the outer catch report honestly rather than
@@ -736,7 +784,19 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
   // connection for minutes and roll back every loan because one failed.
   let read = 0;
   let failed = 0;
-  for (const item of due.slice(0, readBudget)) {
+  // DRAIN THE LONGEST-UNREAD FIRST. Discovery hands these over sorted by Encompass's
+  // own LastModified DESCENDING, so without this the same busy handful of loans would
+  // take all 25 slots on every pass and a quiet loan on the re-read rota would never
+  // reach the front — the rota would exist and starve. Never-read loans (no stamp)
+  // lead, because a file nobody has ever read is the emptiest thing on the screen.
+  const drain = due.slice().sort((a, b) => {
+    const ta = a.syncedAt ? new Date(a.syncedAt).getTime() : -Infinity;
+    const tb = b.syncedAt ? new Date(b.syncedAt).getTime() : -Infinity;
+    const na = Number.isFinite(ta) ? ta : -Infinity;
+    const nb = Number.isFinite(tb) ? tb : -Infinity;
+    return na - nb;
+  });
+  for (const item of drain.slice(0, readBudget)) {
     const out = await readLoan(item.id, item.guid, settings);
     if (out.ok) read += 1; else failed += 1;
   }

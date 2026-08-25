@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
 
@@ -111,15 +111,53 @@ function waitedFor(secs) {
   return `${d} day${d === 1 ? '' : 's'}`;
 }
 
+/**
+ * WHAT A FINISHED PULL DID, in one sentence — or null when there is nothing to say.
+ *
+ * Exported and pure so the wording can be proven without a browser. It reads the
+ * run row the screen's own last-run box reads, so the sentence somebody sees after
+ * pressing the button and the box under it can never describe two different passes.
+ *
+ * NULL, NEVER A SENTENCE, when no pass has been recorded: the box below already
+ * says "no pull has been recorded yet", and a second line inventing one would be a
+ * claim about a pass that did not happen.
+ */
+export function pullOutcomeNote(run) {
+  if (!run) return null;
+  if (run.ok === false) return `The pull did not work: ${run.reason || 'no reason was recorded.'}`;
+  const found = run.discovered == null ? null : Number(run.discovered);
+  const read = run.read_count == null ? 0 : Number(run.read_count);
+  const left = run.remaining == null ? null : Number(run.remaining);
+  // "NOTHING" IS AN ANSWER, and it is the one that says the connection is fine and
+  // the book is genuinely empty. It must never be drawn as a failure, and it must
+  // never be collapsed with "we could not ask".
+  if (found === 0) {
+    return 'The pull finished. Encompass returned no long-term loans at all — '
+      + 'the connection worked, the book is empty.';
+  }
+  return `The pull finished. ${found == null ? 'It' : `Found ${found} loans and`} read ${read} in full`
+    + `${run.failed ? `, ${run.failed} could not be read` : ''}`
+    + `${left ? `, ${left} still to go — they come round on the next pass` : ''}.`;
+}
+
 export default function LtSync() {
   const [state, setState] = useState(null);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(() => {
-    ltApi.syncState().then(setState).catch((e) => setNote(e.message || 'Could not read the sync state.'));
-  }, []);
-  useEffect(load, [load]);
+  // EVERY TIMER THIS SCREEN SETS IS HELD SO IT CAN BE CANCELLED. The full pull used
+  // to set two bare `setTimeout`s under a comment claiming an effect cleared them —
+  // there was no such effect, so walking away from the screen left them running.
+  const timers = useRef([]);
+  const later = (fn, ms) => { timers.current.push(setTimeout(fn, ms)); };
+  useEffect(() => () => { timers.current.forEach(clearTimeout); timers.current = []; }, []);
+
+  const load = useCallback(() => (
+    ltApi.syncState()
+      .then((s2) => { setState(s2); return s2; })
+      .catch((e) => { setNote(e.message || 'Could not read the sync state.'); return null; })
+  ), []);
+  useEffect(() => { load(); }, [load]);
 
   // The Condition Centre rides the same pass, so its outcome is reported in the
   // same sentence — including its REFUSAL, which is the ordinary state while the
@@ -165,12 +203,51 @@ export default function LtSync() {
     try {
       const out = await ltApi.pullFromEncompass();
       setNote(out.note || 'Pulling from Encompass now.');
-      // First refresh soon (the first loans land within seconds), then again once
-      // the drain has had a real run at it. Cleared on unmount by the effect below.
-      setTimeout(load, 4000);
-      setTimeout(load, 30000);
+      // A REFUSAL IS NOT A PASS, so nothing is watched for. The server answers
+      // `started:false` with its reason (the connection is off, a pass is already
+      // running) — watching for a pass that was never started would end in the
+      // watcher giving up and saying so, which reads as a second failure.
+      if (out && out.started === false) return;
+      // WATCH IT THROUGH, AND SAY WHAT IT DID. The pull works in the background, so
+      // answering "started" and stopping there is what earned this button "it
+      // doesn't do anything": somebody presses it, the screen says it is pulling,
+      // and nothing ever tells them it finished or what it found. The last-run box
+      // is the honest source for that — the same one the screen already draws — so
+      // the watcher simply keeps re-reading until the pass is no longer running and
+      // then reports the run in the same words.
+      watchPull();
     } catch (e) { setNote(e.message || 'Could not start the pull.'); }
     finally { setBusy(false); }
+  };
+
+  /**
+   * Re-read the sync state until the pass stops running, then say what it found.
+   *
+   * BACKS OFF rather than polling flat out: the first loans land within seconds and
+   * a whole-book pass takes minutes, so it looks quickly at first and then settles.
+   * It GIVES UP after a bounded number of looks and says so — a watcher that ran for
+   * ever would keep a screen busy on a pass that died, and "PILOT stopped watching"
+   * is an honest thing to say where a spinner that never resolves is not.
+   */
+  const watchPull = () => {
+    const DELAYS = [4000, 8000, 15000, 30000, 30000, 60000, 60000, 120000];
+    let i = 0;
+    const tick = async () => {
+      const s2 = await load();
+      if (!s2) return;                       // the read failed; `load` already said so
+      if (s2.running === true) {
+        if (i < DELAYS.length) { later(tick, DELAYS[i]); i += 1; return; }
+        setNote('The pull is still running. It works through the whole book, so leave it — '
+          + 'this screen shows what it did once it finishes.');
+        return;
+      }
+      // `lastLoanRun` is the server's own key (routes/sync.js) — the SAME one the
+      // last-run box above reads, so the watcher's sentence and that box can never
+      // describe two different passes.
+      const said = pullOutcomeNote(s2.lastLoanRun);
+      if (said) setNote(said);
+    };
+    later(tick, DELAYS[i]); i += 1;
   };
 
   const runConditions = async () => {

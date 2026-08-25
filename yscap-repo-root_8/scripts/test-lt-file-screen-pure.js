@@ -57,8 +57,18 @@ check(!/sections\s*\.\s*(sort|reverse|filter)\(/.test(ui) && !/\[\.\.\.sections\
 const sectionsBlock = (server.match(/const SECTIONS = \[([\s\S]*?)\n\];/) || [])[1] || '';
 const serverKeys = [...sectionsBlock.matchAll(/key: '([a-z_]+)'/g)].map((m) => m[1]);
 check(serverKeys.length >= 12, `the server's section list is readable (${serverKeys.length} sections)`);
-check(serverKeys[serverKeys.length - 1] === 'clickup',
-  `ClickUp syncing is the LAST section the server names (${serverKeys[serverKeys.length - 1]}) — the owner asked for it brought DOWN`);
+// THE SYNCING SECTIONS SIT AT THE BOTTOM, below everything about the loan itself
+// — the owner asked for ClickUp syncing brought DOWN, and the rule was never about
+// that one section: it is that plumbing goes under content. So this pins the
+// PROPERTY rather than one section's index, which is what let the Encompass
+// syncing section (#52) land beside it without either loosening the guard or
+// having to be squeezed in above the plumbing it belongs with.
+const SYNCING = ['clickup', 'encompass'];
+const tail = serverKeys.slice(-SYNCING.length);
+check(SYNCING.every((k) => tail.includes(k)),
+  `the syncing sections are the LAST ones the server names (${tail.join(', ')}) — the owner asked for them brought DOWN`);
+check(!serverKeys.slice(0, serverKeys.length - SYNCING.length).some((k) => SYNCING.includes(k)),
+  '…and none of them appears anywhere above the loan’s own sections');
 check(serverKeys[0] === 'summary', `the loan summary leads (${serverKeys[0]})`);
 
 // ── 2. A shut section costs nothing ──────────────────────────────────────────
@@ -118,8 +128,18 @@ check(/\.lt-utter \.lt-now\{[^}]*color:#8A6A22/.test(css),
   'the attained name is GOLD (owner: "the whole big gold name of the Milestone") — the READABLE gold #8A6A22 rather than the brand #AE8746, which measures 2.98:1 on this paper and fails even the large-text contrast bar. The owner asked for gold, not for a hex');
 check(/\.lt-utter \.lt-now\{[^}]*font-size:clamp\(/.test(css),
   'and it is sized to the viewport, so it is big on a desk and still fits a phone');
-check(/wasDifferent \? <span className="lt-was">not \{raw\}/.test(ui),
-  'the raw Encompass name is shown beside it ONLY when the two differ — "not Started — Started." explains nothing');
+// THE NEGATIVE IS GONE, AND THIS GUARD IS NOW THE OPPOSITE OF WHAT IT WAS
+// (owner-reported 2026-08-25: *"Why does it say 'Not submitted'? ... Just say the
+// finishing status that is now, which is 'Submitted'."*). It used to pin the raw
+// Encompass name being drawn beside the finished wording whenever the two differ —
+// which is nearly every step, by design, so the first word at the top of nearly
+// every file was NOT. The raw names still live in the Milestones section, under
+// Encompass's own spellings and dates, which is where somebody comparing the two
+// systems is looking.
+check(!/lt-was/.test(ui) && !/lt-law/.test(ui),
+  'THE PLATE SAYS THE STATUS ONCE — no "not <raw> —" prefix, and no law line under it');
+check(!/\.lt-utter \.lt-was\{/.test(css),
+  '…and the styling that drew it is retired too, so it cannot come back by accident');
 
 console.log('the facts strip sits on top of the file, and carries the loan number');
 check(/<div className="lt-facts">/.test(ui), 'the strip is drawn');
@@ -139,12 +159,92 @@ const iRail = ui.indexOf('<Rail rail={rail} />');
 const iSecs = ui.indexOf('className="lt-sections"');
 const iNav = ui.indexOf('className="card lt-rooms"');
 check(iRail > 0 && iSecs > 0 && iNav > 0, 'all three regions are on the page');
+// THE DOM ORDER IS DELIBERATELY NOT THE VISUAL ORDER, and both are pinned.
+//
+// On screen it is the jump menu, the file, then its details (owner-directed
+// 2026-08-25: *"the file details should go on the right side and the file, the long
+// summary, the milestones, the borrowers, the properties should go on the left side.
+// The same setup that we currently have on the RTL site."* — RTL is a menu on the
+// left with the sections beside it). That is done with `order` rather than by moving
+// the JSX, because menu → file → details is ALSO the right reading order for a
+// keyboard and a screen reader, and moving a sticky rail through a grid is a good way
+// to break it. So the source order below is not stale — it is the accessible one.
 check(iRail < iSecs && iSecs < iNav,
-  'and in this order: File Details, then the file, then the picker (owner-directed: "on the left side … file details, like the overview section that we have on the RTL side"; "on the right side … all these things for you to select assets, liabilities, click up")');
-check(/gridTemplateColumns: '300px minmax\(0,1fr\) 186px'/.test(ui),
-  'the ledger takes the first track and the picker the last');
-check(/@media\(max-width:900px\)\{\s*\.lt-rooms\{order:-1\}/.test(css),
-  'stacked on a phone the jump menu comes FIRST — a sixteen-row table of figures between the menu and the content would be a long scroll to reach the work');
+  'the source order is unchanged, which is what a keyboard and a screen reader follow');
+check(/gridTemplateColumns: '196px minmax\(0,1fr\) 300px'/.test(ui),
+  'THE COLUMNS: a narrow track for the menu, the file, then a wide one for the details — the two swapped widths with their contents, since a menu of section names does not need 300px and sixteen rows of figures cannot live in 186');
+check(/\.lt-workspace > \.lt-rooms\{order:1\}/.test(css)
+  && /\.lt-workspace > \.lt-sections\{order:2\}/.test(css)
+  && /\.lt-workspace > \.lt-ledger\{order:3\}/.test(css),
+  'THE ONE THAT MATTERS: `order` puts the menu first, the file second and the DETAILS LAST — which is what actually moves the details to the right-hand side');
+check(/@media\(max-width:900px\)\{\s*\.lt-rooms\{order:1\}/.test(css),
+  'stacked on a phone the jump menu still comes FIRST — a sixteen-row table of figures between the menu and the content would be a long scroll to reach the work');
+
+// THE SUBJECT ADDRESS ON ONE LINE (owner-directed 2026-08-25: "Subject property
+// address: make sure it goes on one line"). It used to be capped at 320px with
+// `overflow-wrap:anywhere`, so an ordinary address broke over two or three lines and
+// could split mid-word. Three things make one line work and all three are needed:
+// nowrap, an ellipsis for the overflow, and `min-width:0` — without the last of
+// those a flex item refuses to shrink below its content, `text-overflow` never fires,
+// and the cell simply pushes the row wider instead.
+check(/\.lt-fact\.wide\{[^}]*min-width:0/.test(css),
+  'the subject cell may shrink below its content, which is what lets it be trimmed at all');
+check(/\.lt-fact\.wide \.v\{[^}]*white-space:nowrap/.test(css),
+  'THE ONE THE OWNER ASKED FOR: the subject address does not wrap');
+check(/\.lt-fact\.wide \.v\{[^}]*text-overflow:ellipsis/.test(css),
+  '…and an address too long for the row is trimmed rather than cut off mid-air');
+check(/title=\{wide \? String\(v\) : undefined\}/.test(ui),
+  '…and the full text stays reachable as a tooltip, so nothing is lost to the trim');
+
+// THE PURPOSE IN WORDS, on BOTH places this screen shows one (owner-reported: it
+// "should be nicely displayed, not with these lines"). `plain` prints the stored
+// code verbatim; `purpose` is the shared formatter, so a screen that still used
+// `plain` here would quietly go on showing `rate_term_refinance`.
+check(!/\['Purpose', plain\(/.test(ui),
+  'no purpose is drawn with the raw-value formatter');
+check((ui.match(/\['Purpose', purpose\(/g) || []).length === 2,
+  'both the details rail and the header strip write the purpose in words');
+
+// EXACTLY ONE SECTION IS HIGHLIGHTED IN THE MENU (owner-directed 2026-08-25: *"I
+// don't like the way every section that you click and you go to the next section,
+// that section gets highlighted ... only that section that you click up should be the
+// highlighted section."*).
+//
+// It used to highlight every OPEN section, and a jump never closes one, so three
+// clicks left three names lit with nothing saying which you were reading. WHAT IS
+// OPEN is still worth knowing, which is why the dot and the highlight are now two
+// different facts rather than one being dropped.
+check(/const \[focusSec, setFocusSec\] = useState\(/.test(ui),
+  'the menu tracks the one section you asked for');
+check(/const here = open && s2\.key === focusSec;/.test(ui),
+  'THE ONE THAT MATTERS: the highlight is the FOCUSED section, not every open one — and only while it is still open, so closing what you were reading cannot leave its name lit');
+check(/background: here \? /.test(ui) && /fontWeight: here \? /.test(ui),
+  '…and it is the highlight (the background and the weight) that follows it');
+check(/background: open \? GOLD/.test(ui),
+  '…while the dot still says which sections are OPEN, which the owner never asked to lose');
+check(/setFocusSec\(key\);/.test(ui),
+  'clicking a name in the menu moves the highlight to it');
+
+// THE MILESTONE PLATE'S END LABELS HAVE ROOM TO HANG OVER THEIR OWN COLUMN
+// (owner-reported 2026-08-25: opening the file on a phone "was messed up ... hovering
+// on top of the other one").
+//
+// MEASURED at an iPhone-12 width in a real browser, not reasoned about: a stop label
+// is 128px wide and centred on a column that is 104px once the spine hits its minimum
+// width, so it overhangs 12px each side. At column 0 that put "Started" at x = -12 —
+// outside the scroll box and unreachable at any scroll position — and the last
+// label's right edge 12px past the scrollable width. Both ends now reserve the
+// overhang, and `minWidth` grows by the same amount so every column keeps the width
+// the two-line label spacing was measured for.
+//
+// The two must move together: padding without the extra width would squeeze every
+// column and re-break the labels the padding was added to protect.
+check(/const LABEL_OVERHANG = \d+;/.test(ui),
+  'the label overhang is named once rather than typed into two places');
+check(/paddingLeft: LABEL_OVERHANG, paddingRight: LABEL_OVERHANG/.test(ui),
+  'THE ONE THAT MATTERS: the spine reserves that overhang at BOTH ends, so the first stop label is not cut off');
+check(/minWidth: Math\.max\(360, n \* 104\) \+ 2 \* LABEL_OVERHANG/.test(ui),
+  '…and the spine grows by the same amount, so the padding cannot squeeze the columns it was added to protect');
 
 // ── 6. The ledger keeps its industry name, and the loan number is said once ──
 console.log('the ledger and the loan number');

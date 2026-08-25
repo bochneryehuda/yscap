@@ -1,10 +1,11 @@
-import { money, pct, ratio, plain, day } from './format.js';
+import { money, pct, ratio, plain, day, purpose } from './format.js';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import LtLayout from './LtLayout.jsx';
 import LtFileSection, { hasFileSection } from './LtFileSections.jsx';
 import LtConditionCenter from './LtConditionCenter.jsx';
 import LtClickupSection from './LtClickupSection.jsx';
+import LtEncompassSection from './LtEncompassSection.jsx';
 import ProductStamp from './ProductStamp.jsx';
 import { ltApi } from './api.js';
 
@@ -46,7 +47,7 @@ function Rail({ rail }) {
   // never as zero — "no DSCR on file" and "a DSCR of 0" are different loans.
   const rows = [
     ['Borrower', plain(rail.borrower)],
-    ['Purpose', plain(rail.purpose)],
+    ['Purpose', purpose(rail.purpose)],
     ['Occupancy', plain(rail.occupancy)],
     ['Loan amount', money(rail.loanAmount)],
     ['Property value', money(rail.propertyValue)],
@@ -128,18 +129,35 @@ function Rail({ rail }) {
  */
 function FileHeader({ rail, loan, file }) {
   const address = (file && file.property && file.property.address) || null;
-  const vesting = !loan || !loan.vesting_type ? null
-    : String(loan.vesting_type).trim().toLowerCase() === 'individual' ? 'Individual'
-      : (loan.vesting_entity_name || 'Entity');
+  // HOW IT VESTS COMES FROM THE SERVER'S ONE ANSWER (`src/longterm/vesting.js`),
+  // not from this screen's own reading of the loan row. It used to be decided here
+  // while the Loan summary decided it from the 1003's entity PARTY rows — two records
+  // of one fact, so the plate named the company and the middle of the same page said
+  // there wasn't one (owner-reported 2026-08-25). The rule itself is unchanged, and it
+  // is still the owner's: field 4008 saying "individual" MEANS individual.
+  const vest = (file && file.vesting) || null;
+  const vesting = vest && vest.label ? vest.label : null;
+  // THE STATUS IS SAID ONCE, IN ITS FINISHED FORM (owner-reported 2026-08-25: *"Why
+  // does it say 'Not submitted'? ... Just say the finishing status that is now, which
+  // is 'Submitted'."*).
+  //
+  // This used to draw the raw Encompass milestone beside the finished wording
+  // whenever the two differed — "not Submittal — Submitted", and on a funded file
+  // "not Funding — Funded". The intent was to show the translation; what it produced
+  // was a headline whose FIRST WORD IS NOT, on essentially every file, because the
+  // raw name and its completed form differ by design on nearly every step. Somebody
+  // glancing at the top of a file read the negative.
+  //
+  // The raw name is not lost: the Milestones section lists every step under
+  // Encompass's own names with its own dates, which is where somebody comparing the
+  // two systems is actually looking.
   const attained = (rail && rail.milestoneLabel) || (rail && rail.milestone) || null;
-  const raw = (rail && rail.milestone) || null;
-  const wasDifferent = !!(raw && attained && String(raw).trim().toLowerCase() !== String(attained).trim().toLowerCase());
 
   // key, value, gold?, wide?
   const facts = [
     ['Loan number', plain(rail && rail.loanNumber), true, false],
     ['Subject', address || '—', false, true],
-    ['Purpose', plain(rail && rail.purpose), false, false],
+    ['Purpose', purpose(rail && rail.purpose), false, false],
     ['Program', plain(rail && rail.program), false, false],
     ['Loan', money(rail && rail.loanAmount), false, false],
     ['LTV', pct(rail && rail.ltv), false, false],
@@ -150,19 +168,17 @@ function FileHeader({ rail, loan, file }) {
   return (
     <div className="card" style={{ color: INK, marginBottom: 12 }}>
       {attained ? (
-        <h1 className="lt-utter">
-          {wasDifferent ? <span className="lt-was">not {raw} &mdash;</span> : null}
-          <span className="lt-now">{attained}</span>
-        </h1>
-      ) : null}
-      {wasDifferent ? (
-        <div className="lt-law">A finished step takes the past tense &middot; the file sits in the next</div>
+        <h1 className="lt-utter"><span className="lt-now">{attained}</span></h1>
       ) : null}
       <div className="lt-facts">
         {facts.map(([k, v, gold, wide]) => (
           <div key={k} className={wide ? 'lt-fact wide' : 'lt-fact'}>
             <div className="k">{k}</div>
-            <div className={gold ? 'v gold' : 'v'}>{v}</div>
+            {/* `title` on the WIDE cell only. It is kept to ONE LINE now
+                (owner-directed 2026-08-25, "make sure it goes on one line"), so an
+                address too long for the space is trimmed on screen — and a trimmed
+                value that cannot be read in full would be worse than a wrapped one. */}
+            <div className={gold ? 'v gold' : 'v'} title={wide ? String(v) : undefined}>{v}</div>
           </div>
         ))}
       </div>
@@ -177,6 +193,12 @@ function FileHeader({ rail, loan, file }) {
  * three honest states: bought, not bought, and "Encompass has not said"
  * (dashed). The full ladder lives in the Milestones section.
  */
+/** How far a stop's label hangs past its own column, each side. A label is 128px
+ *  wide and a column is 104px at the spine's minimum width, so the overhang is 12 —
+ *  16 leaves a little air. The spine reserves this at both ends; see the note where
+ *  it is used. */
+const LABEL_OVERHANG = 16;
+
 function SevenStops({ stops, clock, sale, statusLabel }) {
   if (!stops || !stops.stops || !stops.stops.length) return null;
   // WHERE THE FILE IS vs WHAT IS UP NEXT (owner-directed 2026-08-24): the file
@@ -227,7 +249,20 @@ function SevenStops({ stops, clock, sale, statusLabel }) {
           how a table ends up unreachable off the right edge. */}
       <div style={{ overflowX: 'auto', position: 'relative' }}>
         <div style={{
-          position: 'relative', minWidth: Math.max(360, n * 104),
+          // THE END LABELS NEED ROOM TO HANG OVER THEIR OWN COLUMN, and without it
+          // the first one is cut off permanently (owner-reported 2026-08-25: opening
+          // the file on a phone "was messed up ... hovering on top of the other one").
+          //
+          // MEASURED at an iPhone-12 width rather than reasoned about: a stop label is
+          // 128px wide and centred on a column that is 104px when `minWidth` binds, so
+          // it overhangs by 12px each side. At column 0 that put "Started" at x = -12
+          // — outside the scroll box, unreachable at any scroll position — and the last
+          // label's right edge 12px past the scrollable width. The padding gives both
+          // ends that overhang, and `minWidth` grows by the same amount so every column
+          // keeps the width the label spacing was measured for.
+          position: 'relative',
+          minWidth: Math.max(360, n * 104) + 2 * LABEL_OVERHANG,
+          paddingLeft: LABEL_OVERHANG, paddingRight: LABEL_OVERHANG,
           display: 'grid', gridTemplateColumns: `repeat(${n}, 1fr)`,
           // ROOM FOR A TWO-LINE LABEL PLUS ITS DATE, on both sides. Measured, not
           // guessed: 11px label at 1.3 over two lines (~29px) + the 10px date and
@@ -667,6 +702,7 @@ const SECTION_BLURB = {
   investor: 'Who bought this loan, and when.',
   lock: 'The rate lock, and everything we have watched change on it.',
   clickup: 'What the sync does for this file on its own \u2014 and the buttons to do any of it by hand.',
+  encompass: 'What PILOT has read from Encompass and what it has not \u2014 the last pull, the last webhook, and a button to read it again now.',
 };
 
 /**
@@ -747,6 +783,17 @@ export default function LtLoan() {
   // side by side (the terms beside the income) and reading one should never close
   // the other.
   const [openSecs, setOpenSecs] = useState(() => new Set(['summary']));
+  // WHICH ONE IS HIGHLIGHTED IN THE MENU — exactly one, the one you last asked for
+  // (owner-directed 2026-08-25: *"I don't like the way every section that you click
+  // and you go to the next section, that section gets highlighted ... only that
+  // section that you click up should be the highlighted section."*).
+  //
+  // The menu used to highlight every OPEN section, and since a jump never closes one,
+  // three clicks left three names lit and no way to tell which you were reading. That
+  // is not the same question as which sections are open — WHICH IS STILL WORTH
+  // KNOWING, so an open-but-not-current section keeps a quiet filled dot beside it.
+  // The highlight is one; the dots are however many are open.
+  const [focusSec, setFocusSec] = useState('summary');
 
   const load = useCallback(() => {
     setErr(null);
@@ -770,6 +817,11 @@ export default function LtLoan() {
     setOpenSecs((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key); else next.add(key);
+      // OPENING a section makes it the one you are reading; CLOSING it does not hand
+      // the highlight to something you did not ask for, so the focus is left where it
+      // is. A closed section simply stops being highlighted (the menu checks that it
+      // is still open below).
+      if (next.has(key)) setFocusSec(key);
       return next;
     });
   }, []);
@@ -780,6 +832,7 @@ export default function LtLoan() {
   // The scroll waits a frame because the section may be opening in the same tick.
   const jumpToSection = useCallback((key) => {
     setOpenSecs((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+    setFocusSec(key);
     if (typeof window === 'undefined') return;
     window.requestAnimationFrame(() => {
       const el = document.getElementById(`lt-sec-${key}`);
@@ -812,6 +865,7 @@ export default function LtLoan() {
     }
     if (s.key === 'milestones') return <MilestoneBoard board={milestoneBoard} history={milestoneHistory} />;
     if (s.key === 'clickup') return <LtClickupSection loanId={loanId} />;
+    if (s.key === 'encompass') return <LtEncompassSection loanId={loanId} />;
     if (s.key === 'lock') return <LockCard lock={lock} bare />;
     // The Condition Center loads ITSELF. It is two Encompass feeds rather than a
     // slice of the 1003, so it is not in `file` and does not go through
@@ -894,7 +948,25 @@ export default function LtLoan() {
       <SevenStops stops={stops} clock={milestoneClock} sale={sale}
         statusLabel={rail && rail.milestoneLabel} />
 
-      <div style={{ display: 'grid', gridTemplateColumns: '300px minmax(0,1fr) 186px', gap: 14, alignItems: 'start' }}
+      {/* THE JUMP MENU LEFT, THE FILE BESIDE IT, ITS DETAILS ON THE RIGHT
+          (owner-directed 2026-08-25: *"the file details should go on the right side
+          and the file, the long summary, the milestones, the borrowers, the
+          properties should go on the left side. The same setup that we currently
+          have on the RTL site."*).
+
+          The RTL file screen is a menu on the LEFT with the file's own sections
+          beside it (`.file-layout`, 228px + 1fr), so matching it means the menu takes
+          the left-hand column and the DETAILS RAIL moves across — exactly the swap
+          the owner described. The two also swap WIDTHS with their contents: a menu of
+          section names does not need 300px, and sixteen rows of figures cannot live
+          in 186.
+
+          THE DOM IS NOT REORDERED — `order` places them (see `.lt-workspace` in
+          styles.css, where the phone stack already used the same three values). A
+          reading order of menu → file → details is right for a screen reader and a
+          keyboard too, so there is nothing to gain by moving the JSX and a real
+          chance of breaking the sticky rail while doing it. */}
+      <div style={{ display: 'grid', gridTemplateColumns: '196px minmax(0,1fr) 300px', gap: 14, alignItems: 'start' }}
         className="lt-workspace">
         {/* `gridTemplateColumns:'minmax(0,1fr)'` is load-bearing, not decoration. A grid
             with no declared column gets an IMPLICIT `auto` one, which sizes to its
@@ -903,15 +975,16 @@ export default function LtLoan() {
             the page reported no sideways scroll while half of every row was cut off and
             unreachable. `minmax(0,…)` pins the column to the container, which is what
             lets each table scroll inside its OWN box the way it was meant to. */}
-        {/* THE FILE'S OWN DETAILS, ON THE LEFT (owner-directed 2026-08-24: "on the
-            left side, there are a lot of file details, like the overview section that
-            we have on the RTL side. I want that to be on the same side"). The picker
-            takes the right-hand column it used to sit in. */}
+        {/* THE FILE'S OWN DETAILS. They moved to the RIGHT-hand column on
+            2026-08-25 at the owner's direction (see the grid above); the 2026-08-24
+            instruction that first pulled them out of the right column was about
+            getting them off a tab and onto the page beside the file, which still
+            holds. */}
         <Rail rail={rail} />
 
         {/* THE FILE ITSELF, top to bottom, each section opening in place. The order
-            is the SERVER'S (`workspace.js`), which is why ClickUp syncing — the
-            plumbing rather than the loan — sits at the bottom of the stack. */}
+            is the SERVER'S (`workspace.js`), which is why the two syncing sections —
+            plumbing rather than the loan — sit at the bottom of the stack. */}
         <div className="lt-sections" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr)', gap: 10, minWidth: 0 }}>
           {sections.map((s2) => (
             <LtSection key={s2.key} id={`lt-sec-${s2.key}`} label={s2.label}
@@ -935,24 +1008,32 @@ export default function LtLoan() {
           </div>
           <div style={{ display: 'grid', gap: 1, marginTop: 8 }}>
             {sections.map((s2) => {
-              const on = openSecs.has(s2.key);
+              const open = openSecs.has(s2.key);
+              // EXACTLY ONE is highlighted, and only while it is still open — closing
+              // the section you were reading must not leave its name lit over a
+              // section that is no longer on the page.
+              const here = open && s2.key === focusSec;
               return (
                 <button key={s2.key} type="button" title={s2.why || ''}
+                  aria-current={here ? 'true' : undefined}
                   onClick={() => jumpToSection(s2.key)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 8, width: '100%',
-                    background: on ? 'rgba(174,135,70,.08)' : 'transparent',
+                    background: here ? 'rgba(174,135,70,.10)' : 'transparent',
                     border: 0, borderRadius: 6, cursor: 'pointer',
                     padding: '6px 8px', textAlign: 'left',
                     font: 'inherit', fontSize: 12, letterSpacing: '.055em',
                     textTransform: 'uppercase',
-                    fontWeight: on ? 700 : 550,
-                    color: on ? INK : (s2.available ? MUTED : 'rgba(75,88,92,.55)'),
+                    fontWeight: here ? 700 : 550,
+                    color: here ? INK : (s2.available ? MUTED : 'rgba(75,88,92,.55)'),
                   }}>
+                  {/* The dot says OPEN, the highlight says HERE. Two different facts:
+                      the owner asked for one highlight, not for the file to stop
+                      telling them what else they have open. */}
                   <span aria-hidden="true" style={{
                     width: 6, height: 6, flex: '0 0 6px',
-                    background: on ? GOLD : 'transparent',
-                    border: on ? 0 : '1px solid rgba(20,27,34,.28)',
+                    background: open ? GOLD : 'transparent',
+                    border: open ? 0 : '1px solid rgba(20,27,34,.28)',
                   }} />
                   <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{s2.label}</span>
                 </button>

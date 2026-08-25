@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**887 objects**, and a database rebuilt from the Prisma
+**888 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 625 numbered migrations in `db/` (highest `db/628`) remain the only thing that builds this database.
+rebuild a database from them.** The 626 numbered migrations in `db/` (highest `db/629`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -20,16 +20,16 @@ the live database.
 | | |
 |---|---|
 | Tables | 385 |
-| Columns | 6203 |
+| Columns | 6206 |
 | Triggers | 35 |
 | Functions | 138 |
 | CHECK constraints | 318 |
 | Generated columns | 12 |
-| Partial indexes | 384 |
+| Partial indexes | 385 |
 | Primary keys | 385 |
 | Foreign keys | 794 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1329 |
+| Indexes (all kinds) | 1330 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -227,7 +227,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (384)
+## Partial indexes (385)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -518,6 +518,7 @@ the live database.
 - **lt_loans_clickup_push_due_idx** on `lt_loans`
 - **lt_loans_clickup_task_uk** on `lt_loans`
 - **lt_loans_clickup_unlinked_idx** on `lt_loans`
+- **lt_loans_encompass_nudged_at_idx** on `lt_loans`
 - **lt_loans_ladder_unsynced_idx** on `lt_loans`
 - **lt_loans_purchased_status_idx** on `lt_loans`
 - **lt_locks_expiration_idx** on `lt_locks`
@@ -1806,7 +1807,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 385 primary keys and 1329 indexes is
+Every one of the 385 primary keys and 1330 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

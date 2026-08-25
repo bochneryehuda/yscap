@@ -112,7 +112,16 @@ const LOAN = {
     { key: 'employment', label: 'Employment', available: false, why: 'A DSCR loan qualifies on the property’s income.' },
   ],
   contacts: [], lock: null,
-  file: { property: { address: '1 Test Ln, Sampletown, PA, 18326' }, income: {} },
+  // THE VESTING ANSWER IS BUILT BY THE REAL SERVER FUNCTION, like the milestone board
+  // above. Both the plate and the Loan summary read `file.vesting` now (the owner
+  // reported the two disagreeing: the plate named the entity and the summary said
+  // there was none, because each read a different record of the same fact).
+  file: {
+    property: { address: '1 Test Ln, Sampletown, PA, 18326' },
+    income: {},
+    vesting: requireSrv(path.join(here, '..', 'src', 'longterm', 'vesting-view.js'))
+      .vestingOf({ vesting_type: 'Individual', vesting_entity_name: null }, []),
+  },
   canReassign: false, assignableStaff: [],
 };
 
@@ -175,6 +184,31 @@ async function renderEntry(entry, propsJs = '{}') {
   ok(html.includes('YSCAP258000001'), 'the header renders the loan number in its box');
   ok(html.includes('1 Test Ln'), '…and the property address');
   ok(html.includes('Individual'), '…and the vesting answer');
+
+  // THE OWNER'S OWN CASE, reproduced (2026-08-25): Encompass field 4008 names the
+  // entity and the 1003 carries NO entity party row — which is the ordinary shape on
+  // this tenant. The plate named the company; the Loan summary, reading the party
+  // rows instead, said there was none. Both read `file.vesting` now, so this asserts
+  // the plate draws the name that the SERVER decided rather than one it worked out
+  // for itself.
+  const vestMod = requireSrv(path.join(here, '..', 'src', 'longterm', 'vesting-view.js'));
+  const entityOnly = await esbuild.build({
+    stdin: {
+      contents: `import React from 'react'; import { renderToString } from 'react-dom/server';
+        import { FileHeader } from './src/longterm/LtLoan.jsx';
+        globalThis.__ENTITY__ = renderToString(React.createElement(FileHeader, {
+          rail: ${JSON.stringify(LOAN.rail)},
+          loan: { id: 'x', vesting_type: 'entity', vesting_entity_name: 'Leifer Holdings LLC' },
+          file: { property: { address: '1 Test Ln' },
+                  vesting: ${JSON.stringify(vestMod.vestingOf({ vesting_type: 'entity', vesting_entity_name: 'Leifer Holdings LLC' }, []))} },
+        }));`,
+      resolveDir: appDir, loader: 'jsx',
+    },
+    bundle: true, write: false, format: 'cjs', platform: 'node', jsx: 'automatic', plugins,
+  });
+  new Function('require', 'module', 'exports', entityOnly.outputFiles[0].text)(requireApp, { exports: {} }, {});
+  ok(globalThis.__ENTITY__.includes('Leifer Holdings LLC'),
+    'THE ONE THE OWNER REPORTED: an entity named on the vesting line shows even with no entity party row on the 1003');
   for (const label of ['Started', 'Assigned to processor', 'Submitted to underwriting',
     'Conditionally approved', 'Clear to close', 'Closed', 'Purchased']) {
     ok(html.includes(label), `the seven-stop bar renders "${label}"`);
