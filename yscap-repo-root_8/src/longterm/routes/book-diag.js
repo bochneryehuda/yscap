@@ -1034,20 +1034,87 @@ router.get('/why-no-status', async (req, res) => {
       // answer is the LADDER's, which is the case that matters here. Said out loud
       // rather than implied, because a cancelled or on-hold file would outrank it.
       const desired = engine.desiredStatus({ ladder: ladderRows, folder: loan.loan_folder });
-      const d = statusPush.decideStatusPush({
-        desired: desired && desired.status,
+      // THE WHOLE OBJECT, exactly as push.js hands it over. Passing
+      // `desired.status` — the bare string — makes the rule read "the engine
+      // claimed nothing", because a string carries no `.status` of its own. This
+      // route shipped that way for one afternoon and answered a real report by
+      // confidently naming a guard that had never run. The irony is on the record:
+      // the header above promises this runs the real rule rather than a paraphrase,
+      // and an argument passed in the wrong shape IS a paraphrase.
+      const shared = {
+        desired,
         current: cardStatus || '',
         watermark: loan.clickup_status_event_at || null,
         latestEntered: lastEntered ? lastEntered.observed_at : null,
-        statusOrder: null,
         now: new Date(),
-      });
+      };
+      // THE DIRECTION TEST NEEDS THE LIST'S OWN ORDER. push.js peeks with no order
+      // and only pays for the read when the answer turns on it; the same two steps
+      // happen here, through the READ-ONLY client — whose `call` refuses anything
+      // but GET — so this reports the verdict the sync would actually reach.
+      let names = null; let listReadError = null;
+      let d = statusPush.decideStatusPush({ ...shared, statusOrder: null });
+      if (d.act === 'review' || d.act === 'push') {
+        const listId = card && card.list && card.list.id;
+        try {
+          const info = listId ? await clickup._internals.call(`/list/${listId}`) : null;
+          const sts = (info && info.statuses) || null;
+          const usable = Array.isArray(sts) && sts.length
+            && sts.every((st) => Number.isFinite(Number(st && st.orderindex)));
+          names = usable
+            ? sts.slice().sort((a, b) => Number(a.orderindex) - Number(b.orderindex)).map((st) => String(st.status || ''))
+            : null;
+          if (!listId) listReadError = 'the card does not name a list';
+          else if (!usable) listReadError = 'the list carried no status order this route could trust';
+        } catch (e) { listReadError = String((e && e.message) || e).slice(0, 200); }
+        d = statusPush.decideStatusPush({ ...shared, statusOrder: names });
+      }
       decision = {
         desired: desired && desired.status, desiredBecause: desired && desired.reason,
         act: d.act, reason: d.reason,
+        statusOrder: names, listReadError,
         note: 'field 1393 and the funding channel are not read here, so a cancelled or on-hold file could outrank this',
       };
     } catch (e) { decision = { error: String((e && e.message) || e).slice(0, 200) }; }
+
+    // ── 4. WHERE IN THE PUSH QUEUE THIS LOAN ACTUALLY SITS ───────────────────
+    // `dueForPush` answers "is it in the queue", which is NOT the question a person
+    // is asking when a card has not moved for two hours. The pass takes
+    // LT_CLICKUP_PUSH_PER_PASS loans per sync tick (5 by default) in one single
+    // order, and a witnessed milestone move waits its turn behind every routine
+    // field refresh — so a book of a few hundred linked loans can put HOURS between
+    // the move and the card, with nothing anywhere reading as broken. That wait is
+    // invisible from every other screen, so it is measured here: the same WHERE and
+    // the same ORDER BY as pushPass, read through row_number.
+    let queue = null;
+    try {
+      const cap = Math.max(1, parseInt(process.env.LT_CLICKUP_PUSH_PER_PASS || '5', 10) || 5);
+      // THE PASS'S OWN WHERE AND ORDER BY, never a copy of them. The first version
+      // of this block retyped the ordering, and therefore ranked by the OLD rule —
+      // reporting the opposite of what the pass would actually do, which is worse
+      // than reporting nothing at all. `queueSql` is the one definition both build
+      // from, so the two cannot disagree.
+      const { queueSql } = require('../clickup/push');
+      const q = await db.query(
+        `WITH due AS (
+           SELECT l.id,
+                  row_number() OVER (ORDER BY ${queueSql.order('l')}) AS pos,
+                  count(*) OVER () AS depth
+             FROM lt_loans l
+            WHERE ${queueSql.where('l')}
+         )
+         SELECT (SELECT max(depth) FROM due)::int AS depth,
+                (SELECT pos FROM due WHERE id = $1::uuid)::int AS position`, [loan.id]);
+      const depth = (q.rows[0] && q.rows[0].depth) || 0;
+      const position = (q.rows[0] && q.rows[0].position) || null;
+      queue = {
+        depth,
+        position,
+        capPerPass: cap,
+        passesAhead: position ? Math.ceil(position / cap) : null,
+        note: 'one pass per sync tick, capPerPass loans a pass. A loan waiting on a witnessed milestone move is served ahead of routine field refreshes; inside each group, longest-since-pushed first.',
+      };
+    } catch (e) { queue = { error: String((e && e.message) || e).slice(0, 200) }; }
 
     // ── the first link that explains it, in words ────────────────────────────
     let verdict;
@@ -1063,9 +1130,38 @@ router.get('/why-no-status', async (req, res) => {
         + ' A status is only ever written for a witnessed move (the owner\'s rule, 2026-08-24), so the card was never going to be told.';
     } else if (loan.clickup_status_event_at
         && new Date(lastEntered.observed_at).getTime() <= new Date(loan.clickup_status_event_at).getTime()) {
-      verdict = `LINK 3 — the move was witnessed at ${lastEntered.observed_at}, but the loan's status watermark is already at ${loan.clickup_status_event_at}, so that move has been answered. The card holding "${cardStatus}" is a disagreement PILOT will not overwrite; it belongs in the status-review list.`;
+      // WHO ACTUALLY WROTE IT — the automatic pass, or a person. The first version
+      // of this branch said "the push queue reached it at ...", and on the very loan
+      // this route was built for that was FALSE: the queue never arrived, and the
+      // owner wrote the status himself with the Push Updates button. `clickup_pushed_at`
+      // alone cannot tell the two apart — both stamp it — and guessing turned a
+      // two-and-a-half-hour outage into a story about it working late. The write log
+      // knows: `source` is 'manual' for the button and 'full_repush' for the pass.
+      let wroteBy = null;
+      try {
+        const { rows: w } = await db.query(
+          `SELECT source, created_at FROM lt_clickup_write_log
+            WHERE task_id = $1 AND field_key = '__status' AND changed = true
+            ORDER BY created_at DESC LIMIT 1`, [String(loan.clickup_task_id)]);
+        if (w[0]) wroteBy = { source: w[0].source || null, at: w[0].created_at };
+      } catch (e) { wroteBy = { error: String((e && e.message) || e).slice(0, 120) }; }
+      const byHand = !!(wroteBy && wroteBy.source === 'manual');
+      const agrees = decision && decision.desired && cardStatus
+        && String(cardStatus).trim().toLowerCase() === String(decision.desired).trim().toLowerCase();
+      const waited = loan.clickup_pushed_at
+        ? Math.round((new Date(loan.clickup_pushed_at).getTime()
+                      - new Date(lastEntered.observed_at).getTime()) / 60000)
+        : null;
+      const howLong = waited != null && waited > 0 ? `${waited} minutes after the milestone` : 'immediately';
+      verdict = agrees
+        ? (byHand
+          ? `A PERSON DID THIS, NOT THE SYNC — the card holds "${cardStatus}", but the write log says it was written by hand (Push Updates), ${howLong}. The automatic pass never reached this loan. Do not read the card being right as the sync working.`
+          : `ANSWERED — the move was witnessed at ${lastEntered.observed_at} and the automatic pass wrote "${cardStatus}" ${howLong}. Nothing is wrong with this loan; the only question is whether that wait is acceptable.`)
+        : `LINK 3 — the move was witnessed at ${lastEntered.observed_at}, but the loan's status watermark is already at ${loan.clickup_status_event_at}, so that move has been answered. The card holding "${cardStatus}" is a disagreement PILOT will not overwrite; it belongs in the status-review list.`;
     } else if (!dueForPush) {
       verdict = `LINK 2 — the move was witnessed, but the push pass will not pick this loan up: it was last pushed at ${loan.clickup_pushed_at} which is not older than the last read at ${loan.encompass_synced_at}.`;
+    } else if (decision && decision.act === 'push' && queue && queue.position && queue.position > (queue.capPerPass || 5)) {
+      verdict = `LINK 2 — the rule WOULD write "${decision.desired}", and nothing is refusing it. This loan is number ${queue.position} of ${queue.depth} in the push queue, and the pass takes ${queue.capPerPass} a tick — about ${queue.passesAhead} passes away. The card is not stuck; it is queued behind routine field refreshes that have no claim to go first.`;
     } else if (decision && decision.act === 'push') {
       verdict = `Everything lines up — the next push pass should write "${decision.desired}". If it has not within about ten minutes, read clickup_push_error below.`;
     } else {
@@ -1090,6 +1186,7 @@ router.get('/why-no-status', async (req, res) => {
         statusWatermark: loan.clickup_status_event_at,
         dueForPush,
       },
+      queue,
       witnessed: { lastEntered, events },
       ladder: { steps: ladderRows.length, rows: ladderRows },
       decision,

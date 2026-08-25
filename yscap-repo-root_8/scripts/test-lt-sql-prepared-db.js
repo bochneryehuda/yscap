@@ -186,6 +186,9 @@ async function main() {
     'sync/loans.js': 'test-lt-trash-db.js section H2 drives syncOnce — the never-reinsert twin check runs live there',
     'routes/borrowers.js': 'GET /api/lt/borrowers, in the route smoke test',
     'routes/my-loans.js': 'test-lt-borrower-switch-db.js drives the handler directly against the real schema',
+    // The push queue's WHERE and ORDER BY, shared with clickup/push.js so the
+    // report and the pass cannot disagree. Assembled, so it must be RUN:
+    'routes/book-diag.js': 'test-lt-why-no-status-db.js section C runs GET /why-no-status against the real schema, which executes the assembled push-queue measurement',
     'routes/sync.js': 'GET /api/lt/sync, in the route smoke test',
     // The ClickUp writer composes the SAME trash guard into its loan loads. Each
     // assembled form runs against a real Postgres in this job:
