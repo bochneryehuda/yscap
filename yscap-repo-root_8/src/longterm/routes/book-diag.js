@@ -328,6 +328,78 @@ router.get('/cards', async (req, res) => {
  * (computed here — the addresses themselves are not handed out). No token, no
  * phone, no write path.
  */
+/**
+ * CATALOG PROBE — ask Encompass, from the server that holds the credentials, which
+ * catalog addresses actually answer. READ ONLY.
+ *
+ * WHY THIS EXISTS (owner-directed 2026-08-25, after the nightly refresh reported
+ * five of six catalog reads refused with 403). "Which address works?" is a question
+ * about the VENDOR, and the only honest way to answer it is to ask the vendor — from
+ * the machine whose environment already holds the login, so nobody has to move a
+ * credential anywhere to find out. A path that is guessed and happens to answer is
+ * far worse than a 403 that says so, and this is what makes guessing unnecessary.
+ *
+ * IT IS NOT AN OPEN PROXY. The list below is FIXED in code; nothing is taken from the
+ * query string. So this can ask Encompass exactly these questions and no others, and
+ * every one of them is a GET through the read-only client, which refuses any method
+ * but GET and refuses the OAuth namespace outright.
+ *
+ * Each entry pairs a `kind` with the address the code uses today and any CANDIDATE
+ * worth asking about. Reporting a candidate's status is research; ADOPTING one is a
+ * separate, deliberate code change that only ever follows a 200 seen here.
+ */
+const CATALOG_PROBES = [
+  // The control. This one is known to work (857 fields in production), so a run
+  // where even this fails is telling us about the connection, not about the paths.
+  { kind: 'customField', role: 'in use', path: '/encompass/v3/settings/loan/customFields' },
+
+  { kind: 'standardField', role: 'was in use', path: '/encompass/v3/settings/loan/standardFields' },
+  { kind: 'standardField', role: 'probed 2026-08-14', path: '/encompass/v3/schemas/loan/standardFields?start=0&limit=5' },
+
+  { kind: 'milestone', role: 'was in use', path: '/encompass/v3/settings/loan/milestones' },
+  { kind: 'milestone', role: 'probed 2026-08-14', path: '/encompass/v3/settings/milestones?start=0&limit=5' },
+
+  // The three nobody has ever probed. Their current addresses are asked FIRST so the
+  // answer is recorded either way, then the shapes the two corrections above turned
+  // out to take — a settings path that dropped `/loan`, and a schemas path.
+  { kind: 'enum', role: 'in use', path: '/encompass/v3/settings/loan/enums' },
+  { kind: 'enum', role: 'candidate', path: '/encompass/v3/schemas/loan/enums?start=0&limit=5' },
+
+  { kind: 'folder', role: 'in use', path: '/encompass/v3/settings/loan/folders' },
+  { kind: 'folder', role: 'candidate', path: '/encompass/v3/settings/loanFolders' },
+
+  { kind: 'loanTemplate', role: 'in use', path: '/encompass/v3/settings/loan/loanTemplates' },
+  { kind: 'loanTemplate', role: 'candidate', path: '/encompass/v3/settings/templates/loanTemplates' },
+];
+
+router.get('/catalog-probe', async (_req, res) => {
+  if (!encompass.configured()) {
+    return res.status(503).json({ ok: false, error: 'Encompass is not connected on this deployment.' });
+  }
+  const results = [];
+  for (const probe of CATALOG_PROBES) {
+    try {
+      const body = await encompass.apiGet(probe.path);
+      const rows = Array.isArray(body) ? body : (body && Array.isArray(body.items) ? body.items : null);
+      results.push({
+        ...probe,
+        ok: true,
+        // The COUNT is what tells a working address from one that answers politely
+        // with nothing, and the first row's keys are what tells us the shape our
+        // reader would have to read.
+        count: rows ? rows.length : null,
+        sampleKeys: rows && rows[0] ? Object.keys(rows[0]).slice(0, 8) : null,
+        shape: rows ? 'list' : typeof body,
+      });
+    } catch (e) {
+      // The client's own error text is `Encompass <status>: <body>` — the status is
+      // the whole answer here, so it is kept rather than flattened to "failed".
+      results.push({ ...probe, ok: false, error: String((e && e.message) || e).slice(0, 200) });
+    }
+  }
+  res.json({ ok: true, probed: results.length, results });
+});
+
 router.get('/people', async (_req, res) => {
   try {
     const { rows } = await db.query(
