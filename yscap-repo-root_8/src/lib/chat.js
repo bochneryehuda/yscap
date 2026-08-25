@@ -26,7 +26,7 @@ const pii = require('./pii-guard');
 const notify = require('./notify');
 const email = require('./email');
 const storage = require('./storage');
-const { can } = require('./permissions');
+const { can, visibleOfficersSql } = require('./permissions');
 const { scrubText } = require('./borrower-safe');
 // One event, one copy (owner-directed 2026-08-09): a message that arrived BY
 // EMAIL carries who that email already reached, and those people keep their
@@ -185,20 +185,27 @@ async function getConversation(cid) {
 // their chat access too, and granting it opens chat — no code change needed.
 const SEES_ALL_ROLES = ['admin', 'super_admin', 'underwriter'];
 
-/** May this staff actor open this conversation? Members always can. seesAll
-    staff can open anything on files they can see; assigned LO/processor can
-    open any chat on their file (including customs they're not yet in). */
+/** May this staff actor open this conversation? Members always can; otherwise it
+    is the ORDINARY file scope.
+
+    THE FILE SCOPE, NOT A THIRD COPY OF IT (owner-directed 2026-08-25, asked
+    directly: internal chat is "the same as the rest of the file"). This used to
+    hand-roll three of `visibleOfficersSql`'s five branches — primary LO, primary
+    processor, assignee — so a staffer who reaches the file by DELEGATION or by a
+    workflow hand-off could read every condition, document and term sheet on it and
+    was refused its internal thread. The same one-definition rule the seven route
+    modules were put back on: never re-inline a file scope, ask permissions.js. */
 async function staffCanAccess(actor, conv) {
   if (!conv || conv.app_deleted_at) return false;
   if (can(actor, 'see_all_files')) return true;
-  if (conv.loan_officer_id === actor.id || conv.processor_id === actor.id) return true;
-  // #64: a full-access ASSISTANT assignee on the file may open its chats too.
   if (conv.application_id) {
-    const asg = await db.query(
-      `SELECT 1 FROM application_assignees WHERE application_id=$1 AND staff_id=$2 AND removed_at IS NULL`,
+    const f = await db.query(
+      `SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${visibleOfficersSql('a', '$2')}`,
       [conv.application_id, actor.id]);
-    if (asg.rows[0]) return true;
+    if (f.rows[0]) return true;
   }
+  // A conversation that hangs off no file (or one this staffer cannot reach) is
+  // still open to somebody explicitly seated in it.
   const m = await db.query(
     `SELECT 1 FROM conversation_members WHERE conversation_id=$1 AND member_kind='staff' AND member_id=$2 AND removed_at IS NULL`,
     [conv.id, actor.id]);
