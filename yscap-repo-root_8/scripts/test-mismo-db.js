@@ -105,12 +105,23 @@ async function main() {
   // AND THE ASSIGNMENT IS FORCED OFF ON A REFINANCE — you cannot be assigned a
   // purchase contract on a property you already own. `fields.assignmentFields` has
   // done this since #96 and is the same chokepoint that drops the purchase price.
-  // The PARSE still carries the assignment faithfully (parsed.extras really does
-  // hold isAssignment:true, underlyingContractPrice:400000, assignmentFee:20000),
-  // so this pins WHERE the refusal happens: at the write door, not by losing data
-  // on the way in — which is what makes it a guard rather than a coincidence.
-  assert.strictEqual(parsed.extras.isAssignment, true, 'the preview still PARSES the assignment from the file');
-  assert.strictEqual(na.is_assignment, false, '…but a refinance is never stored as an assignment');
+  //
+  // THE REFUSAL NOW HAPPENS ONE STEP EARLIER THAN IT USED TO, and this fixture is
+  // where you can see it. This block used to assert that the PARSE still carried
+  // isAssignment:true — pinning that the refusal was at the WRITE door rather than
+  // a loss on the way in. db/630 §1 made that unprovable HERE: the seed above sets
+  // is_assignment with raw SQL, and a BEFORE trigger on `applications` now forces
+  // it off (with both money columns) the moment the row names a refinance. So the
+  // source row never holds the contradiction, the export carries no assignment
+  // extension at all (build.js omits the node when the flag is false), and the
+  // parse correctly reads null. Asserting `true` here would be asserting a state
+  // the database can no longer represent.
+  //
+  // The property that assertion protected is REAL and is proven below instead, on
+  // a file where an assignment is legitimate — an assignment PURCHASE.
+  assert.strictEqual(parsed.extras.isAssignment, null,
+    'a refinance exports no assignment — db/630 refuses the contradiction at the source row');
+  assert.strictEqual(na.is_assignment, false, '…and a refinance is never stored as an assignment');
   assert.strictEqual(na.assignment_fee, null, 'no assignment fee on a refinance');
   assert.strictEqual(na.underlying_contract_price, null, 'no underlying contract price on a refinance');
   assert.strictEqual(na.source, 'mismo_import', 'new file source tag');
@@ -138,6 +149,49 @@ async function main() {
   const items = (await db.query('SELECT count(*)::int AS n FROM checklist_items WHERE application_id=$1', [applicationId])).rows[0];
   assert(items.n > 0, 'checklist/conditions generated for the imported file');
   console.log(`  ✓ imported file received its checklist (${items.n} items)`);
+
+  // ── AN ASSIGNMENT SURVIVES THE ROUND TRIP, on a file where one is LEGITIMATE ──
+  // This is the property the refinance block above used to carry and, since
+  // db/630, structurally cannot: it was proven by exporting a row the database
+  // now refuses to hold. An assignment belongs to a PURCHASE, so that is where
+  // the round trip has to happen — and it is the case that actually matters,
+  // because losing the assignment on the way in would silently mis-size a real
+  // wholesale deal (the fee reaches the frozen engine through the recognized
+  // price, `pricing.js` effective_purchase_price).
+  //
+  // It is also the CONTROL on db/630 §1: the trigger must refuse the refinance
+  // contradiction WITHOUT touching an ordinary assignment purchase. Without this,
+  // a §1 mutated to clear the flag on every loan type would leave the refinance
+  // assertions above perfectly green.
+  const asgApp = (await db.query(
+    `INSERT INTO applications (borrower_id,llc_id,program,loan_type,occupancy,property_address,
+                               purchase_price,as_is_value,arv,rehab_budget,loan_amount,
+                               is_assignment,underlying_contract_price,assignment_fee)
+     VALUES ($1,$2,'Fix & Flip','Purchase','Investment',$3,
+             420000,400000,560000,85000,375000,true,400000,20000) RETURNING id`,
+    [borrower.id, llc.id,
+     JSON.stringify({ line1: '7 Wholesale Way', city: 'Brooklyn', state: 'NY', zip: '11223' })])).rows[0];
+
+  const asgRow = (await db.query(
+    'SELECT is_assignment, underlying_contract_price, assignment_fee FROM applications WHERE id=$1',
+    [asgApp.id])).rows[0];
+  assert.strictEqual(asgRow.is_assignment, true, 'an assignment PURCHASE keeps its flag — db/630 refuses only the contradiction');
+  assert.strictEqual(Number(asgRow.underlying_contract_price), 400000, '…and keeps the underlying contract price');
+  assert.strictEqual(Number(asgRow.assignment_fee), 20000, '…and keeps the assignment fee');
+
+  const asgParsed = mismo.previewImport(await mismo.exportApplicationXml(asgApp.id));
+  assert.strictEqual(asgParsed.extras.isAssignment, true, 'the preview PARSES the assignment back out of the file');
+  assert.strictEqual(Number(asgParsed.extras.underlyingContractPrice), 400000, '…with the underlying contract price');
+  assert.strictEqual(Number(asgParsed.extras.assignmentFee), 20000, '…and the assignment fee');
+
+  const asgNew = await mismo.createFromParsed(asgParsed, {});
+  const asgNa = (await db.query(
+    'SELECT loan_type, is_assignment, underlying_contract_price, assignment_fee FROM applications WHERE id=$1',
+    [asgNew.applicationId])).rows[0];
+  assert.strictEqual(asgNa.is_assignment, true, 'and the imported purchase is STORED as an assignment');
+  assert.strictEqual(Number(asgNa.underlying_contract_price), 400000, '…with its underlying contract price');
+  assert.strictEqual(Number(asgNa.assignment_fee), 20000, '…and its assignment fee');
+  console.log('  ✓ an assignment purchase round-trips with its assignment intact (the control on db/630 §1)');
 
   console.log('\nMISMO DB integration test passed.');
   // The import fans out "needs assignment" email, and notify._track()s that write

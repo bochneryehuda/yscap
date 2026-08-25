@@ -22,7 +22,7 @@ const router = express.Router();
 const db = require('../db');
 const cfg = require('../config');
 const { requireAuth, requireStaff, requirePermission } = require('../auth');
-const { can, assigneeExistsSql } = require('../lib/permissions');
+const { can, visibleOfficersSql } = require('../lib/permissions');
 const storage = require('../lib/storage');
 const { decodeUploadBase64 } = require('../lib/upload-bytes');
 const { runAppraisalImport, undoAppraisalImport } = require('../lib/appraisal/desk');
@@ -271,7 +271,14 @@ const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 
 router.use(requireAuth, requireStaff);
 
-// Authorization: the file must exist AND the staffer must see it (see_all or assigned).
+/* THE FILE SCOPE IS THE SHARED FIVE-WAY RULE, NOT THE ASSIGNEE BRANCH ALONE
+   (owner-reported 2026-08-25: an appraisal XML import answering "not found", and a
+   processor sent to the Encompass tab from the term sheet hitting a refusal).
+   `assigneeExistsSql` is branch 4 of `visibleOfficersSql`'s five, so this tab used to
+   refuse a staffer who reaches the file by DELEGATION (staff_users.visible_officer_ids)
+   or by an OPEN workflow hand-off — while staff.js's own /applications/:id middleware,
+   which uses the full rule, let them open the whole file screen. Same person, same file,
+   one tab saying "not found". Never re-inline a file scope; ask permissions.js. */
 async function fileFor(req, appId) {
   if (!isUuid(appId)) return null;
   // `loan_type` rides along because the reprice door has to know whether this
@@ -281,7 +288,7 @@ async function fileFor(req, appId) {
     return (await db.query(`SELECT id, borrower_id, loan_type FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0] || null;
   }
   return (await db.query(
-    `SELECT a.id, a.borrower_id, a.loan_type FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`,
+    `SELECT a.id, a.borrower_id, a.loan_type FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${visibleOfficersSql('a', '$2')}`,
     [appId, req.actor.id])).rows[0] || null;
 }
 

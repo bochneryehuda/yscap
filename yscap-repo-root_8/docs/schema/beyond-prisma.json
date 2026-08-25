@@ -5,8 +5,8 @@
     "columns": 6206,
     "generatedColumns": 12,
     "checkConstraints": 318,
-    "triggers": 35,
-    "functions": 138,
+    "triggers": 37,
+    "functions": 140,
     "partialIndexes": 385,
     "primaryKeys": 385,
     "foreignKeys": 794,
@@ -1665,6 +1665,16 @@
         "definition": "CREATE TRIGGER trg_ai_suggestions_updated BEFORE UPDATE ON public.ai_suggestions FOR EACH ROW EXECUTE FUNCTION set_ai_suggestions_updated_at()"
       },
       {
+        "name": "trg_assignment_condition_is_purchase_only",
+        "table": "checklist_items",
+        "definition": "CREATE TRIGGER trg_assignment_condition_is_purchase_only BEFORE INSERT ON public.checklist_items FOR EACH ROW EXECUTE FUNCTION assignment_condition_is_purchase_only()"
+      },
+      {
+        "name": "trg_assignment_is_a_purchase_concept",
+        "table": "applications",
+        "definition": "CREATE TRIGGER trg_assignment_is_a_purchase_concept BEFORE INSERT OR UPDATE OF is_assignment, loan_type, underlying_contract_price, assignment_fee ON public.applications FOR EACH ROW EXECUTE FUNCTION assignment_is_a_purchase_concept()"
+      },
+      {
         "name": "trg_borrower_auth_one_login_per_email",
         "table": "borrower_auth",
         "definition": "CREATE TRIGGER trg_borrower_auth_one_login_per_email BEFORE INSERT ON public.borrower_auth FOR EACH ROW EXECUTE FUNCTION borrower_auth_one_login_per_email()"
@@ -1850,6 +1860,16 @@
         "name": "armor(bytea, text[], text[])",
         "returns": "text",
         "bodyHash": "e5137c2e1b640a7e"
+      },
+      {
+        "name": "assignment_condition_is_purchase_only()",
+        "returns": "trigger",
+        "bodyHash": "8e6c76d2ae5737cf"
+      },
+      {
+        "name": "assignment_is_a_purchase_concept()",
+        "returns": "trigger",
+        "bodyHash": "3b5c3d45f97fda09"
       },
       {
         "name": "borrower_auth_one_login_per_email()",
@@ -26230,8 +26250,8 @@
   ],
   "generatedFrom": {
     "migrations": {
-      "count": 626,
-      "highest": 629
+      "count": 627,
+      "highest": 630
     }
   }
 }
