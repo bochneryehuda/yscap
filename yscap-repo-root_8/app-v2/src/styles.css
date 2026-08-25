@@ -5125,7 +5125,62 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 /* The 1003 sections' label/value lists. Two columns is right on a desktop and is a
    guaranteed one-word-per-line on a phone, so they stack — the table rows inside a
    section scroll in their own box instead (the page body must never scroll sideways). */
-@media(max-width:640px){ .ltf-facts{grid-template-columns:1fr !important} }
+/* ── THE LONG-TERM SECTION LEDGER ───────────────────────────────────────────
+   Owner-directed 2026-08-25: the sections under the summary should be "more like a
+   structure, more like an order, like a rich LOS, not just flowing away everything",
+   and should "copy the same idea" as the RTL file screen "so it should look familiar".
+
+   THE IDEA COPIED IS THE LEDGER: the label on the left, the value on the RIGHT, a
+   hairline between rows so the eye runs down a column of figures, and tabular
+   numerals so the digits line up. What was there before stacked the label on top of
+   the value in a plain grid, which on a sixteen-fact section is thirty-two lines of
+   alternating small and large text with no shape at all.
+
+   THESE ARE LONG-TERM'S OWN CLASSES. RTL's `.snap-*` components are RTL's; the two
+   products do not share code, and what the owner asked for is the same IDEA so a
+   person moving between the screens recognises the shape.
+
+   EVERY COLOUR IS AN EXPLICIT DARK. In this palette every `--ink*` token is a LIGHT
+   paper colour, so one used as a text colour renders white on white. */
+
+/* A flat run of facts, in however many columns the caller asked for. `--ltf-cols` is
+   set inline by the component; the phone rule below overrides it to one. */
+.ltf-facts{display:grid;grid-template-columns:repeat(var(--ltf-cols,2),minmax(0,1fr));
+  gap:0 34px;margin:0}
+
+/* Named clusters. They AUTO-FIT rather than take a fixed count: a section with three
+   short groups should use the width it has, and one with two long ones should not be
+   forced into three thin columns. */
+.ltf-clusters{display:grid;grid-template-columns:repeat(auto-fit,minmax(var(--ltf-min,260px),1fr));
+  gap:18px 34px;margin:0}
+.ltf-cluster{min-width:0}
+.ltf-cluster-h{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;
+  color:#8A6A22;padding-bottom:7px;margin-bottom:2px;border-bottom:2px solid rgba(174,135,70,.35)}
+
+/* One fact. THE LABEL NEVER SHRINKS AND THE VALUE ABSORBS THE SQUEEZE — with
+   `min-width:0` on both sides flexbox shrinks them proportionally, and a label reading
+   "Prepayment penalty" wraps to three words per line beside a value with room to
+   spare. `min-width:0` on the value alone is what lets a long one wrap instead of
+   pushing the row wider than its column. */
+.ltf-row{display:flex;justify-content:space-between;gap:16px;padding:8px 0;
+  border-top:1px solid #E6E1D6;min-width:0}
+.ltf-row:first-of-type{border-top:none}
+.ltf-rk{color:#4B585C;font-size:13px;flex:none}
+.ltf-rv{color:#141B22;font-weight:600;font-size:14px;text-align:right;
+  min-width:0;flex:1 1 auto;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+/* The third answer — "Encompass does not record this" — is a SENTENCE, not a value:
+   it is quieter, it is not bold, and it reads left-aligned like prose. */
+.ltf-rv-note{color:#4B585C;font-weight:400;font-size:12.5px;font-style:italic;
+  text-align:left;font-variant-numeric:normal}
+
+@media(max-width:640px){
+  .ltf-facts{grid-template-columns:1fr !important}
+  .ltf-clusters{grid-template-columns:1fr !important;gap:14px}
+  /* A label and its value stay on ONE line on a phone too — that is the whole point
+     of the ledger — but the gap closes so a long label has room. */
+  .ltf-row{gap:10px}
+  .ltf-rk{font-size:12.5px}
+}
 
 /* ---- File-overview slide-over (owner-directed 2026-08-18) — .fov-* namespace.
    One component on all three file screens (staff / borrower / broker): a
