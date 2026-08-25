@@ -14990,9 +14990,9 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
                 updated_at=now()
            FROM checklist_templates t
           WHERE t.id=ci.template_id AND ci.application_id=$1
-            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND t.code = ANY($4::text[])
             AND ci.status <> 'satisfied'`,
-        [appId, req.actor.id, AUTO_NOTE]);
+        [appId, req.actor.id, AUTO_NOTE, payoffLib.FREE_AND_CLEAR_WAIVES]);
       await audit(req, 'payoff_free_and_clear_set', 'application', appId, {
         priorPayoff: a.payoff_amount, priorLender: a.payoff_lender, priorLoanNumber: a.payoff_loan_number,
         unchanged,
@@ -15021,10 +15021,10 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
                 updated_at=now()
            FROM checklist_templates t
           WHERE t.id=ci.template_id AND ci.application_id=$1
-            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND t.code = ANY($3::text[])
             AND ci.waived_at IS NOT NULL
             AND ci.notes LIKE '%' || $2 || '%'`,
-        [appId, AUTO_NOTE]);
+        [appId, AUTO_NOTE, payoffLib.FREE_AND_CLEAR_WAIVES]);
       // A row a human RE-WORKED while the flag was on (reopened + signed off) keeps its state,
       // but the now-stale auto note ("turning the flag off reopens this") is stripped so the
       // condition never carries an instruction that no longer describes it.
@@ -15033,9 +15033,9 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
             SET notes = NULLIF(TRIM(BOTH E'\n' FROM REPLACE(ci.notes, $2, '')), ''), updated_at=now()
            FROM checklist_templates t
           WHERE t.id=ci.template_id AND ci.application_id=$1
-            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND t.code = ANY($3::text[])
             AND ci.notes LIKE '%' || $2 || '%'`,
-        [appId, AUTO_NOTE]);
+        [appId, AUTO_NOTE, payoffLib.FREE_AND_CLEAR_WAIVES]);
       try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'free_and_clear_cleared' }); } catch (_) {}
       await audit(req, 'payoff_free_and_clear_cleared', 'application', appId, {
         priorPayoff: a.payoff_amount, wasFreeAndClear: !!a.property_free_and_clear, unchanged,

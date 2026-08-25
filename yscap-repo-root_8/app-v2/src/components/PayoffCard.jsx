@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { MoneyInput } from './FormattedInputs.jsx';
-import { askConfirm } from '../lib/dialog.js';
+import FreeAndClearControl from './FreeAndClearControl.jsx';
 
 /* THE PAYOFF SECTION on a refinance file (owner-directed 2026-07-31: "we should
    set up a full section for the system to understand how the payoff works and
@@ -98,6 +98,14 @@ export default function PayoffCard({ appId, app, onSaved }) {
   const d = state.derived || {};
   const missingKeys = new Set((state.missing || []).map((m) => m.key));
 
+  /* The control reports a successful flip; the card re-reads its own state and tells the page.
+     It is a function rather than `load` passed straight through so a caller that does not pass
+     `onSaved` cannot make this throw. */
+  async function afterFlip() {
+    await load();
+    if (onSaved) await onSaved();
+  }
+
   function startEdit() {
     setForm({
       payoffAmount: e.payoffAmount == null ? '' : String(e.payoffAmount),
@@ -107,21 +115,6 @@ export default function PayoffCard({ appId, app, onSaved }) {
       estimatedCashOut: e.estimatedCashOut == null ? '' : String(e.estimatedCashOut),
     });
     setEditing(true); setErr(''); setSaved(false);
-  }
-
-  async function setFreeAndClear(on) {
-    const sure = await askConfirm(on
-      ? 'Yes — this property is owned FREE AND CLEAR: there is NO existing loan to pay off. Both payoff conditions will be waived and the payoff of record becomes $0. Confirm?'
-      : 'Turn OFF free and clear? The payoff conditions reopen and the payoff details will be needed again.');
-    if (!sure) return;
-    setBusy(true); setErr(''); setSaved(false);
-    try {
-      await api.payoffFreeAndClear(appId, on);
-      await load();
-      if (onSaved) await onSaved();
-    } catch (ex) {
-      setErr((ex && ex.message) || 'Could not update the free-and-clear flag.');
-    } finally { setBusy(false); }
   }
 
   async function save() {
@@ -185,15 +178,7 @@ export default function PayoffCard({ appId, app, onSaved }) {
           away: the payoff of record is $0 and both payoff conditions are
           waived. Reversible; every flip is confirmed and audited. */}
       {state.freeAndClear && !editing && (
-        <div className="notice ok" style={{ marginTop: 12, marginBottom: 0 }}>
-          <b>Property is free and clear.</b> There is no existing loan to pay off — the payoff of
-          record is $0 and both payoff conditions are waived.
-          <div style={{ marginTop: 8 }}>
-            <button type="button" className="btn ghost small" disabled={busy} onClick={() => setFreeAndClear(false)}>
-              Turn off — there IS a loan to pay off
-            </button>
-          </div>
-        </div>
+        <FreeAndClearControl appId={appId} state={state} onChanged={afterFlip} />
       )}
 
       {!editing && !state.freeAndClear && (
@@ -253,9 +238,7 @@ export default function PayoffCard({ appId, app, onSaved }) {
             <button type="button" className="btn" onClick={startEdit}>
               {state.missing.length ? 'Enter the payoff details' : 'Edit the payoff details'}
             </button>
-            <button type="button" className="btn ghost" disabled={busy} onClick={() => setFreeAndClear(true)}>
-              Property is free and clear…
-            </button>
+            <FreeAndClearControl appId={appId} state={state} onChanged={afterFlip} />
             <button type="button" className="btn ghost small" onClick={() => setHowOpen((v) => !v)} aria-expanded={howOpen}>
               {howOpen ? 'Hide how this works' : 'How does a payoff work?'}
             </button>
