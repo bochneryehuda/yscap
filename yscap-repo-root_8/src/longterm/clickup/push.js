@@ -253,16 +253,82 @@ function providerTextSafe(ours, provider) {
   return true;
 }
 
+/**
+ * THE LINES WE WILL TRY TO PLACE ON THE MAP, best first (owner-reported
+ * 2026-08-25, YSCAP258134860 — "the subject property address was not carried
+ * over to ClickUp ... I need to enter it manually").
+ *
+ * WHAT WENT WRONG. Encompass held the street as `159 Fillmore St,, 06513` —
+ * somebody typed the ZIP onto the street line. PILOT mirrored that faithfully,
+ * which is right: Encompass is the source of truth and this module never edits
+ * it. But the one line built from it, `159 Fillmore St,, 06513, New Haven, CT
+ * 06513`, does not geocode. Measured, with a clean control either side: the
+ * messy form returns null, `159 Fillmore St` resolves instantly. `geoFor` then
+ * returned null, the field's `src` returned null, and the address was NOT
+ * WRITTEN — silently, with nothing anywhere saying it had been dropped.
+ *
+ * THE CLASS, and it is the one this whole week has been about: a value we
+ * HOLD is discarded because an ENRICHMENT step failed. Coordinates are a nicety;
+ * the address is the thing the office needs. One stray comma in Encompass should
+ * never cost a file its address on the card, and it should certainly never do it
+ * without telling anybody.
+ *
+ * So instead of one line, a short ladder of progressively tidier forms of the
+ * SAME address — never a different address:
+ *   1. exactly the line built today, so an address that already works is
+ *      untouched and this can only ever ADD successes;
+ *   2. the street with repeated commas collapsed and a trailing repeat of the
+ *      ZIP we already hold removed — the reported case;
+ *   3. the street's first comma-segment, which drops trailing junk of any shape.
+ *
+ * Nothing here invents a component: city, state and ZIP always come from the
+ * mirror's own columns, and only the STREET is tidied. Whatever resolves, the
+ * provider's text still has to pass `providerTextSafe` before it is adopted, so
+ * the corruption guards are exactly as strong as they were.
+ */
+function geoCandidates(parts = {}) {
+  const raw = (v) => String(v == null ? '' : v).trim();
+  const tail = [raw(parts.state), raw(parts.zip)].filter(Boolean).join(' ');
+  const lineFor = (street) => [street, raw(parts.city), tail].filter(Boolean).join(', ');
+
+  const street = raw(parts.street);
+  const collapsed = street
+    .replace(/\s+/g, ' ')
+    .replace(/(?:\s*,\s*)+/g, ', ')
+    .replace(/^[\s,]+|[\s,]+$/g, '');
+  const zip5 = raw(parts.zip).match(/^\d{5}/);
+  const noZip = zip5
+    ? collapsed.replace(new RegExp(`(?:,\\s*)?${zip5[0]}(?:-\\d{4})?\\s*$`), '').replace(/[\s,]+$/, '')
+    : collapsed;
+  const firstSeg = collapsed.split(',')[0].trim();
+
+  const out = [];
+  for (const s of [street, collapsed, noZip, firstSeg]) {
+    if (!s) continue;
+    const l = lineFor(s);
+    if (l && !out.includes(l)) out.push(l);
+  }
+  return out;
+}
+
 async function geoFor(parts) {
-  const line = [parts.street, parts.city, [parts.state, parts.zip].filter(Boolean).join(' ')]
-    .map((x) => String(x || '').trim()).filter(Boolean).join(', ');
-  if (!line || !String(parts.street || '').trim()) return null;
-  let g = null;
-  try { g = await addressCanon.geocode(line); } catch (_) { g = null; }
-  if (!g || g.lat == null || g.lng == null) return null;
-  const providerText = String(g.formatted || '').trim();
-  const formatted = providerText && providerTextSafe(line, providerText) ? providerText : line;
-  return { lat: Number(g.lat), lng: Number(g.lng), formatted_address: formatted };
+  const candidates = geoCandidates(parts);
+  // The line we actually HOLD — what the corruption guard compares against, and
+  // what we fall back to when the provider's text is refused. It stays the first
+  // candidate whichever line happened to resolve, so a tidier query can never
+  // quietly become a tidier ANSWER.
+  const ours = candidates[0] || '';
+  if (!ours || !String(parts.street || '').trim()) return null;
+
+  for (const q of candidates) {
+    let g = null;
+    try { g = await addressCanon.geocode(q); } catch (_) { g = null; }
+    if (!g || g.lat == null || g.lng == null) continue;
+    const providerText = String(g.formatted || '').trim();
+    const formatted = providerText && providerTextSafe(ours, providerText) ? providerText : ours;
+    return { lat: Number(g.lat), lng: Number(g.lng), formatted_address: formatted };
+  }
+  return null;
 }
 
 // ── Live Encompass extras at push time ───────────────────────────────────────
@@ -583,6 +649,38 @@ async function pushLoan(loanId, opts = {}) {
 
   const out = { ok: true, wrote: 0, suppressed: 0, blocked: 0, failed: [], plan: [] };
   let overwrites = 0;
+
+  // AN ADDRESS WE HOLD BUT COULD NOT PLACE IS REPORTED, NEVER DROPPED IN SILENCE
+  // (owner-reported 2026-08-25, YSCAP258134860). A ClickUp location field needs
+  // coordinates, so when the geocoder cannot resolve ANY form of the address
+  // (`geoFor` now tries a ladder of progressively tidier ones) there is genuinely
+  // nothing to write. What is NOT acceptable is what happened: the field quietly
+  // did not appear in the push, no error was recorded anywhere, and the office
+  // found a blank Subject Property Address with nothing to explain it.
+  //
+  // The mirror HAVING a street is what separates "we could not place it" from
+  // "there is no address yet" — only the first is a problem, and only the first
+  // is raised. It goes to the same review list every other refusal goes to, so a
+  // person can fix the address in Encompass, which is the only place it can be
+  // fixed: this module never edits Encompass.
+  if (!dryRun() && !onlyIds && !subtaskKeys
+      && String((bag.prop && bag.prop.street) || '').trim() && !bag.subjectGeo) {
+    const held = geoCandidates({
+      street: bag.prop.street, city: bag.prop.city, state: bag.prop.state, zip: bag.prop.zip,
+    })[0] || String(bag.prop.street).trim();
+    out.geoSkipped = { field: 'subject_address', held };
+    await journalFieldWrite({
+      ltLoanId: loanId, taskId: loan.clickup_task_id, fieldId: mapper.CU.subjectAddress,
+      fieldKey: 'subject_address', oldValue: undefined, newValue: held,
+      changed: false, blocked: true, source: opts.source || 'full_repush',
+    });
+    await queueReview({
+      ltLoanId: loanId, taskId: loan.clickup_task_id, fieldKey: 'subject_address',
+      currentValue: null, proposedValue: held,
+      reason: `PILOT holds this address but could not place it on the map, so the card's Subject Property Address was not written. ClickUp needs coordinates for a location field. Check the address on the file in Encompass — "${held}".`,
+    });
+  }
+
 
   for (const f of fields) {
     const oldVal = taskFieldValue(before, f.id);
@@ -1287,7 +1385,7 @@ module.exports = {
   _internals: {
     readStatusWatermark, stampStatusWatermark, raiseStatusReview, closeStatusReviews,
     circuitCheck, countWrite, seedBreakerFromDb, breakerLimit,
-    journalFieldWrite, queueReview, resolvePerson, providerTextSafe, geoFor,
+    journalFieldWrite, queueReview, resolvePerson, providerTextSafe, geoFor, geoCandidates,
     loadBag, readExtras, cardProgramLabel, taskFieldValue, taskOptionsMap,
     staffTableEntryByEmail,
     _resetBreaker: () => { _writeTimes = []; _breakerSeeded = true; },
