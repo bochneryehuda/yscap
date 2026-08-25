@@ -1246,6 +1246,65 @@ async function dbHalf() {
       '…and an unreadable subtask is NEVER written blind');
     eq(wire.createTask.length, 0, '…and it is never replaced by a fresh create');
     writerStub.getTask = beforeUnreadable;
+
+    // ── An address we HOLD but cannot PLACE is reported, never dropped in silence
+    // (owner-reported 2026-08-25, YSCAP258134860). Encompass held the street as
+    // `159 Fillmore St,, 06513`; that line does not geocode, `geoFor` returned
+    // null, and the Subject Property Address was simply absent from the push —
+    // no error, no review row, nothing to explain the blank field to the office.
+    // `geoFor` now tries a ladder of tidier forms (test-lt-geo-candidates-pure
+    // holds that half); this proves the OTHER half — that when every form fails,
+    // somebody is told.
+    //
+    // The geocoder is STUBBED here on purpose. It reaches a live provider, so
+    // asserting on its real answer would make this suite a network monitor and
+    // flake the day the provider is slow. Stubbing it is what makes "could not
+    // place" a decision this test controls rather than one the weather decides.
+    console.log('\nS. an address that cannot be placed raises a review, and never vanishes');
+    {
+      const canon = require('../src/lib/address-canon');
+      const realGeocode = canon.geocode;
+      await db.query(`DELETE FROM lt_clickup_review_queue WHERE task_id = 'task1' AND field_key = 'subject_address'`);
+      await db.query(`DELETE FROM lt_clickup_write_log WHERE task_id = 'task1' AND field_key = 'subject_address'`);
+      try {
+        canon.geocode = async () => null;                 // nothing resolves, any form
+        fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2 }) };
+        const g = await push.pushLoan(loanId, { source: 'full_repush' });
+        ok(!!g.geoSkipped, 'the push REPORTS that it skipped the address rather than returning quietly clean');
+        eq(g.geoSkipped && g.geoSkipped.field, 'subject_address', '…naming the field');
+        ok(g.geoSkipped && /\d/.test(String(g.geoSkipped.held || '')),
+          '…and carrying the address we hold, so the reader can see what failed');
+
+        const { rows: rq } = await db.query(
+          `SELECT field_key, proposed_value, reason, status FROM lt_clickup_review_queue
+            WHERE task_id = 'task1' AND field_key = 'subject_address'`);
+        eq(rq.length, 1, 'a review row lands for a person');
+        ok(/could not place it on the map/i.test(String(rq[0].reason || '')),
+          '…saying in words why the field is blank');
+        ok(/Encompass/.test(String(rq[0].reason || '')),
+          '…and pointing at Encompass, the only place the address can actually be fixed');
+        ok(String(rq[0].proposed_value || '').length > 0, '…with the address we hold recorded on the row');
+
+        const { rows: jr } = await db.query(
+          `SELECT blocked, changed FROM lt_clickup_write_log
+            WHERE task_id = 'task1' AND field_key = 'subject_address' ORDER BY created_at DESC LIMIT 1`);
+        eq(jr.length, 1, 'and the journal carries it too');
+        eq(jr[0].blocked, true, '…as a BLOCKED write, which is what it was');
+        eq(jr[0].changed, false, '…and never as a change that landed');
+
+        // The other direction: a geocoder that answers must NOT raise anything.
+        await db.query(`DELETE FROM lt_clickup_review_queue WHERE task_id = 'task1' AND field_key = 'subject_address'`);
+        canon.geocode = async () => ({ lat: 41.31, lng: -72.89, formatted: '159 Fillmore St, New Haven, CT 06513' });
+        const h = await push.pushLoan(loanId, { source: 'full_repush' });
+        ok(!h.geoSkipped, 'an address that DOES place reports no skip');
+        const { rows: rq2 } = await db.query(
+          `SELECT id FROM lt_clickup_review_queue WHERE task_id = 'task1' AND field_key = 'subject_address'`);
+        eq(rq2.length, 0, '…and raises nothing for anybody to read — a working file is silent');
+      } finally {
+        canon.geocode = realGeocode;
+        await db.query(`DELETE FROM lt_clickup_review_queue WHERE task_id = 'task1' AND field_key = 'subject_address'`).catch(() => {});
+      }
+    }
   } finally {
     await db.query(`DELETE FROM lt_loans WHERE loan_number LIKE 'TESTWR%'`).catch(() => {});
     await db.query(`DELETE FROM lt_clickup_write_log WHERE task_id IN ('task1','subtask1','stshort') OR task_id LIKE 'newtask%' OR task_id = 'co-subtask'`).catch(() => {});
