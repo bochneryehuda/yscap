@@ -889,7 +889,15 @@ router.get('/webhook-check', async (_req, res) => {
     verdict,
     // Stated every time, because it is the fact that most often explains the report
     // and it is nobody's fault on either side of the integration.
-    desktopCaveat: 'Encompass Loan events create/milestone/condition/fieldchange fire for API-originated actions ONLY. A milestone completed by a person in the Encompass desktop emits none of them. change (with filters), update, move and delete are the desktop-visible events.',
+    // NAMED BY POINTING AT THE VENDOR'S OWN LIST, NOT BY TRANSCRIBING IT — which is
+    // both more accurate and the only version this file may carry. `book-diag` is
+    // guarded to contain no write keyword ANYWHERE after comments are stripped, and
+    // a string is not a comment: spelling the desktop-visible event names out here
+    // put two of them into the file as bare words and tripped that guard. The guard
+    // is right — it is what keeps a read-only diagnostic honest — so the sentence
+    // changed rather than the rule, and `loanEvents` below is the tenant's own
+    // answer rather than my memory of the documentation.
+    desktopCaveat: 'Encompass Loan events create/milestone/condition/fieldchange fire for API-originated actions ONLY — a milestone completed by a person in the Encompass desktop emits none of them, however the subscription is configured. The events a desktop action DOES emit are the others in loanEvents below; compare that list against what subscriptions is subscribed to.',
     ...out,
   });
 });
