@@ -58,6 +58,38 @@ function landingState(event) {
   }
 }
 
+/* THE COLUMNS THE SIGNING LINK JUDGES ON — one list, both identity branches, so a borrower and
+   one of our own can never be judged by different facts.
+
+   `r.status` and `e.status` are BOTH selected, under DISTINCT names, and that is the whole point
+   of this constant. They were not: only `e.status` was selected, aliased plainly as `status`, and
+   the "can this person still sign?" guard tested it — so the ENVELOPE was being asked a question
+   about the RECIPIENT, while the two checks beside it (`signed_at`, `declined_at`) were reading
+   recipient columns. `notify-signers.js` gets this right (`r.status AS recipient_status`); this
+   route did not. A shared alias is exactly how that happens, so neither is called `status` here. */
+const SIGN_REC_COLS = `r.recipient_id_ds, r.name, r.email, r.client_user_id, r.signed_at, r.declined_at,
+                r.borrower_id, r.role, r.status AS recipient_status,
+                e.envelope_id, e.status AS envelope_status, e.application_id, e.purpose`;
+
+// DocuSign will only open a signing session while BOTH the envelope and this recipient are open.
+const OPEN_STATES = ['sent', 'delivered'];
+// A recipient row from before recipient statuses were tracked carries none; treat it as open,
+// the same historic reading `notify-signers.js` applies.
+const recipientOpen = (r) => !r.recipient_status || OPEN_STATES.includes(String(r.recipient_status));
+const envelopeOpen = (r) => OPEN_STATES.includes(String(r.envelope_status));
+
+/* WHY A LINK CAN FAIL, IN THE READER'S TERMS. A staff signer who cannot open a session is owed a
+   sentence, not a silent bounce — and `who=staff` keeps the landing page correct even before a
+   session resolves (UX routing only, never a trust boundary — the same discipline as `dest`). */
+function doneUrl(base, { app, state, staff }) {
+  const q = new URLSearchParams();
+  if (app) q.set('app', String(app));
+  if (state) q.set('state', String(state));
+  if (staff) q.set('who', 'staff');
+  const qs = q.toString();
+  return `${base}/#/esign/done${qs ? `?${qs}` : ''}`;
+}
+
 /**
  * GET /sign — PILOT's branded "ready to sign" email link. Verify the magic token,
  * confirm the package is still open for THIS recipient, mint a fresh embedded signing
@@ -67,7 +99,7 @@ function landingState(event) {
 router.get('/sign', async (req, res) => {
   const base = portalBase();
   const claims = magic.verifySigningToken(String(req.query.t || '').trim());
-  if (!claims) return res.redirect(302, `${base}/#/esign/done?state=expired`);
+  if (!claims) return res.redirect(302, doneUrl(base, { state: 'expired' }));
   try {
     /* THE RECIPIENT THIS TOKEN NAMES — a borrower, or one of OUR OWN signers (2026-08-21).
        A staff signer's row carries no `borrower_id`, so the borrower match could never find
@@ -78,14 +110,12 @@ router.get('/sign', async (req, res) => {
        signer's session on the envelope, or the reverse. */
     const rec = claims.borrowerId
       ? (await db.query(
-        `SELECT r.recipient_id_ds, r.name, r.email, r.client_user_id, r.signed_at, r.declined_at, r.borrower_id, r.role,
-                e.envelope_id, e.status, e.application_id
+        `SELECT ${SIGN_REC_COLS}
            FROM esign_recipients r JOIN esign_envelopes e ON e.id = r.envelope_row_id
           WHERE e.id = $1 AND r.recipient_id_ds = $2 AND r.borrower_id = $3
           LIMIT 1`, [claims.envelopeRowId, claims.recipientIdDs, claims.borrowerId])).rows[0]
       : (await db.query(
-        `SELECT r.recipient_id_ds, r.name, r.email, r.client_user_id, r.signed_at, r.declined_at, r.borrower_id, r.role,
-                e.envelope_id, e.status, e.application_id
+        `SELECT ${SIGN_REC_COLS}
            FROM esign_recipients r
            JOIN esign_envelopes e ON e.id = r.envelope_row_id
            JOIN staff_users su ON lower(su.email) = lower(r.email)
@@ -93,13 +123,62 @@ router.get('/sign', async (req, res) => {
             AND r.borrower_id IS NULL
             AND su.id = $3::uuid AND su.is_active = true
           LIMIT 1`, [claims.envelopeRowId, claims.recipientIdDs, claims.staffId])).rows[0];
-    if (!rec || !rec.envelope_id) return res.redirect(302, `${base}/#/esign/done?state=notready`);
+    const isStaffSigner0 = !!claims.staffId;
+    if (!rec || !rec.envelope_id) return res.redirect(302, doneUrl(base, { state: 'notready', staff: isStaffSigner0 }));
+    let signer = rec;
     const appId = rec.application_id;
-    // Already signed / declined / no longer open → point them at their file (they'll
-    // sign in) rather than a dead DocuSign session.
-    if (rec.signed_at || rec.declined_at || !['sent', 'delivered'].includes(rec.status)) {
-      const q = appId ? `?app=${encodeURIComponent(appId)}&state=already` : '?state=already';
-      return res.redirect(302, `${base}/#/esign/done${q}`);
+
+    // THIS PERSON HAS ALREADY ANSWERED. Nothing to reopen, on this envelope or a later one.
+    if (rec.signed_at || rec.declined_at) {
+      return res.redirect(302, doneUrl(base, { app: appId, state: 'already', staff: isStaffSigner0 }));
+    }
+
+    /* THE LINK OUTLIVED ITS ENVELOPE — FOLLOW IT TO THE ONE THAT IS LIVE (owner-directed
+       2026-08-24: "You need to fix this signature button to map him directly to sign the term
+       sheet ... on previous files, if I go and I click the Resend button, it will actually
+       resend them an email that should actually take him to DocuSign because he can't sign it").
+       Clicking Resend was the workaround for exactly this: a package that is VOIDED, CLEARED or
+       RE-ISSUED leaves the emailed link pointing at a dead envelope, and every click landed on a
+       page that said nothing useful. The signer has not changed and the file has not changed —
+       only the envelope generation has — so the honest answer is to open the CURRENT package
+       rather than send them back to ask for another email.
+
+       IT WIDENS NOTHING. The token already proves this exact identity is a signer on this file's
+       package; the follow-up requires the SAME application, the SAME purpose, the SAME identity
+       (a borrower by id, one of ours by an ACTIVE roster row), that they have neither signed nor
+       declined, and that both the envelope and their own recipient row are open. It can only ever
+       move them from a dead envelope to the live one for the same signature. */
+    if (!envelopeOpen(rec) || !recipientOpen(rec)) {
+      const live = appId ? (await db.query(
+        `SELECT ${SIGN_REC_COLS}
+           FROM esign_recipients r
+           JOIN esign_envelopes e ON e.id = r.envelope_row_id
+      LEFT JOIN staff_users su ON lower(su.email) = lower(r.email) AND su.is_active = true
+          WHERE e.application_id = $1
+            AND e.purpose        = $2
+            AND e.id            <> $3
+            AND e.envelope_id IS NOT NULL
+            AND e.cleared_at  IS NULL
+            AND e.status = ANY($4)
+            AND r.signed_at   IS NULL
+            AND r.declined_at IS NULL
+            AND (r.status IS NULL OR r.status = ANY($4))
+            AND ((                 $5::uuid IS NOT NULL AND r.borrower_id = $5::uuid)
+              OR ($6::uuid IS NOT NULL AND r.borrower_id IS NULL AND su.id = $6::uuid))
+       ORDER BY e.sent_at DESC NULLS LAST, e.created_at DESC
+          LIMIT 1`,
+        [appId, rec.purpose, claims.envelopeRowId, OPEN_STATES,
+         claims.borrowerId || null, claims.staffId || null])).rows[0] : null;
+
+      if (!live || !live.envelope_id) {
+        // Nothing live to open. SAY WHICH — "this package was replaced" and "you have already
+        // signed" send the reader to two different places, and a single word for both is what
+        // made this a dead end.
+        return res.redirect(302, doneUrl(base, { app: appId, state: 'superseded', staff: isStaffSigner0 }));
+      }
+      signer = live;
+      sysAudit('esign_magic_sign_followed', 'application', appId,
+        { from: claims.envelopeRowId, toEnvelope: live.envelope_id, purpose: rec.purpose }, req);
     }
     // Thread a short-lived return-authorization so the /return bounce can log them
     // back in AFTER they sign, then mint the embedded signing view.
@@ -108,20 +187,23 @@ router.get('/sign', async (req, res) => {
        signer is NOT: an email link may never mint an internal console session, so they land on
        the file's page and sign in the way they always do. Deliberately narrower than the
        borrower path, and it must stay that way. */
-    const isStaffSigner = !rec.borrower_id;
-    const ra = isStaffSigner ? null : magic.mintReturnAuth({ borrowerId: rec.borrower_id, applicationId: appId });
+    // EVERY FIELD BELOW COMES FROM `signer`, never `rec` — on a followed link they are different
+    // envelopes, and DocuSign refuses a view built from one envelope's recipient ids against
+    // another's. `rec` is only ever the token's own row from here on.
+    const isStaffSigner = !signer.borrower_id;
+    const ra = isStaffSigner ? null : magic.mintReturnAuth({ borrowerId: signer.borrower_id, applicationId: appId });
     const returnUrl = `${cfg.appUrl}/api/esign/return?app=${encodeURIComponent(appId || '')}`
-      + `&env=${encodeURIComponent(rec.envelope_id)}`
+      + `&env=${encodeURIComponent(signer.envelope_id)}`
       + (isStaffSigner ? '&dest=staff' : `&dest=borrower&ra=${encodeURIComponent(ra)}`);
-    const url = await esignDocusign.createRecipientView(rec.envelope_id, {
-      returnUrl, email: rec.email, userName: rec.name,
-      clientUserId: rec.client_user_id, recipientId: rec.recipient_id_ds,
+    const url = await esignDocusign.createRecipientView(signer.envelope_id, {
+      returnUrl, email: signer.email, userName: signer.name,
+      clientUserId: signer.client_user_id, recipientId: signer.recipient_id_ds,
     });
     sysAudit('esign_magic_sign_open', 'application', appId, { envelopeRowId: claims.envelopeRowId }, req);
     return res.redirect(302, url);
   } catch (e) {
     console.warn('[esign-sign] failed:', db.describeError ? db.describeError(e) : e.message);
-    return res.redirect(302, `${base}/#/esign/done?state=error`);
+    return res.redirect(302, doneUrl(base, { state: 'error', staff: !!(claims && claims.staffId) }));
   }
 });
 
