@@ -127,7 +127,7 @@ async function upsertDiscovered(dbc, loan, settings) {
          COALESCE(EXCLUDED.encompass_last_modified, lt_loans.encompass_last_modified),
          COALESCE(lt_loans.encompass_last_modified, EXCLUDED.encompass_last_modified)),
        updated_at = now()
-     RETURNING id, encompass_synced_at, encompass_last_modified`,
+     RETURNING id, encompass_synced_at, encompass_last_modified, milestone_name`,
     // Discovery has always READ `Loan.BorrowerName` and thrown it away. It is the
     // only thing an admin can recognise a loan's borrower BY while deciding a
     // link, and it costs nothing — it is already on the row we are writing.
@@ -136,7 +136,11 @@ async function upsertDiscovered(dbc, loan, settings) {
       loan.programName == null ? null : loan.programName,
       loan.termMonths == null ? null : loan.termMonths],
   );
-  return rows[0];
+  // WHAT THE PIPELINE SAID THIS PASS, carried out beside what we hold. The row's
+  // own `milestone_name` is the FILL-ONLY column above — deliberately unchanged by
+  // discovery — so the two together are "where Encompass says the file is" and
+  // "where we last established it". `needsRead` compares them; see its header.
+  return { ...rows[0], pipeline_milestone: milestoneName || null };
 }
 
 /** How long a loan may go unread before it is re-read on the ROTA alone, whatever
@@ -144,6 +148,13 @@ async function upsertDiscovered(dbc, loan, settings) {
 const REREAD_HOURS = (() => {
   const n = parseInt(process.env.LT_ENCOMPASS_REREAD_HOURS || '12', 10);
   return Number.isFinite(n) && n >= 0 ? n : 12;
+})();
+
+/** How long the milestone-move trigger waits before it may fire again for the same
+ *  loan. A ceiling on the pathological case only — see `needsRead`. */
+const MOVE_FLOOR_MIN = (() => {
+  const n = parseInt(process.env.LT_ENCOMPASS_MOVE_FLOOR_MIN || '10', 10);
+  return Number.isFinite(n) && n >= 0 ? n : 10;
 })();
 
 /** The same rota, for a loan whose last read left a recorded miss. Bounded by
@@ -155,6 +166,39 @@ const PARTIAL_REREAD_HOURS = (() => {
   const v = Number.isFinite(n) && n >= 0 ? n : 1;
   return REREAD_HOURS > 0 ? Math.min(v, REREAD_HOURS) : v;
 })();
+
+/**
+ * Are these two the same milestone?
+ *
+ * COMPARED ON THE NAME, AND THE NAME ONLY — MEASURED, NOT ASSUMED. The first
+ * version of this compared STAGES, on the theory that the pipeline's active-form
+ * wording and the stored form would drift ("Submittal" against "Submitted") and a
+ * strict comparison would call every loan changed on every pass. Seventeen real
+ * loans, one per distinct milestone in the book, say otherwise:
+ *
+ *     13 of 17   pipeline and stored agree EXACTLY — both sides use the same
+ *                Encompass vocabulary, with no drift at all
+ *      2 of 17   genuinely stale (pipeline "Schedule Closing" over a stored
+ *                "Clear To Close"; pipeline "Submittal" over a stored "Started")
+ *      2 of 17   the pipeline did not return the loan, so there is nothing to
+ *                compare and this never speaks
+ *
+ * So the drift the stage comparison existed to absorb does not happen, and the
+ * stage comparison ACTIVELY BROKE the feature: `Final Docs`, `Investor Delivery`
+ * and `Purchasing Conditions` all map to `post_closing`, so a file moving between
+ * them would have compared EQUAL and never been re-read — three of the busiest
+ * steps in this book, silently blind. Comparing the name is both simpler and
+ * strictly more sensitive.
+ *
+ * A missing value on either side is NOT a disagreement: a pass that could not read
+ * the milestone must stay quiet rather than declare every loan moved.
+ */
+function sameMilestone(a, b) {
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase().replace(/\s+/g, ' ');
+  const na = norm(a); const nb = norm(b);
+  if (!na || !nb) return true;
+  return na === nb;
+}
 
 /**
  * Does this loan need a full read?
@@ -183,8 +227,61 @@ const PARTIAL_REREAD_HOURS = (() => {
  * silently, with every screen insisting it had been read. An unreadable stamp is
  * treated the same way: look again.
  */
-function needsRead(row, now = Date.now()) {
+function needsRead(row, now = Date.now(), settings = {}) {
   if (!row) return false;
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // THE MILESTONE MOVED, WHATEVER THE STAMPS SAY.
+  //
+  // MEASURED on YSCAP258134720, 2026-08-25 16:01Z, after the owner reported a
+  // status they had changed half an hour earlier still not showing:
+  //
+  //     Encompass pipeline   milestone "Clear To Close"
+  //                          Loan.LastModified "8/25/2026 8:30:05 AM"
+  //     PILOT                milestone_name "Submittal"
+  //                          encompass_synced_at 13:02:27Z  (= 9:02 AM, tenant time)
+  //
+  // The stamp is converted correctly — 8:30 AM tenant time IS 12:30:05Z. The
+  // problem is that it never moved: the milestone was completed HOURS after
+  // 8:30 AM and `Loan.LastModified` still reads 8:30 AM. **Completing a milestone
+  // does not touch this tenant's LastModified.**
+  //
+  // Everything below this block compares stamps, so a milestone move was invisible
+  // to all of it. `upsertDiscovered`'s own comment states the premise out loud —
+  // *"a real move still lands, because it bumps encompass_last_modified and the
+  // full read follows on the same tick"* — and that premise is false. A file could
+  // walk the entire ladder and wait the full twelve-hour rota to be noticed.
+  //
+  // The answer costs NOTHING. Discovery already asks the pipeline for
+  // `Loan.CurrentMilestoneName` on every pass (discover.js) and already throws it
+  // away. So the fresh milestone is in hand every five minutes; it just had no way
+  // to say anything. Now a disagreement between what the pipeline reports and what
+  // we last established IS the trigger.
+  //
+  // ONLY THE TRIGGER CHANGES, NEVER THE STORED VALUE. The pipeline's milestone is
+  // the LAGGING active-form reading (it sits on the last WORKED step), while the
+  // full read establishes the SITTING milestone from the loan's own ladder — which
+  // is why discovery's write stays fill-only. This does not adopt the lagging
+  // value; it uses the DISAGREEMENT as evidence that the file moved, and sends the
+  // ladder read to find out where it really stands.
+  //
+  // A loan we have never read is caught by the next test anyway, so this one only
+  // ever speaks about a loan we have a settled milestone for.
+  //
+  // BOUNDED, SO A LOAN THAT NEVER SETTLES CANNOT SPIN. The measurement above says
+  // this converges — a read brings the two into agreement and the trigger goes
+  // quiet — but "measured to converge" is not "cannot fail to", and the failure
+  // mode is a loan re-read every five minutes for ever against a call budget
+  // shared with every other integration on this tenant. So the move trigger will
+  // not fire twice inside MOVE_FLOOR_MIN minutes. Ten is far below the twelve-hour
+  // rota it replaces and far above the five-minute sweep, so in ordinary use it
+  // never speaks; it exists to put a ceiling on the pathological case.
+  if (row.milestone_name && row.pipeline_milestone
+      && !sameMilestone(row.pipeline_milestone, row.milestone_name)) {
+    const synced = row.encompass_synced_at ? new Date(row.encompass_synced_at).getTime() : NaN;
+    if (!Number.isFinite(synced) || now - synced >= MOVE_FLOOR_MIN * 60 * 1000) return true;
+  }
+
   if (!row.encompass_synced_at) return true;
   const synced = new Date(row.encompass_synced_at).getTime();
   // A stamp we cannot read is not evidence that the loan is up to date.
@@ -840,7 +937,7 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
         }
         const row = await upsertDiscovered(dbc, loan, settings);
         await dbc.query('RELEASE SAVEPOINT lt_loan_row');
-        if (needsRead(row)) {
+        if (needsRead(row, Date.now(), settings)) {
           // The loan's own last-read stamp rides along so the slice below can drain
           // OLDEST FIRST — see the sort there for why that is not cosmetic.
           due.push({ id: row.id, guid: loan.encompassLoanGuid, syncedAt: row.encompass_synced_at });
@@ -1037,6 +1134,7 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
 module.exports = {
   DEFAULT_READ_BUDGET,
   stageFor,
+  sameMilestone,
   needsRead,
   upsertDiscovered,
   readLoan,
