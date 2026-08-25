@@ -1130,7 +1130,21 @@ router.get('/why-no-status', async (req, res) => {
         + ' A status is only ever written for a witnessed move (the owner\'s rule, 2026-08-24), so the card was never going to be told.';
     } else if (loan.clickup_status_event_at
         && new Date(lastEntered.observed_at).getTime() <= new Date(loan.clickup_status_event_at).getTime()) {
-      verdict = `LINK 3 — the move was witnessed at ${lastEntered.observed_at}, but the loan's status watermark is already at ${loan.clickup_status_event_at}, so that move has been answered. The card holding "${cardStatus}" is a disagreement PILOT will not overwrite; it belongs in the status-review list.`;
+      // AN ANSWERED MOVE HAS TWO COMPLETELY DIFFERENT ENDINGS, and calling both
+      // of them a disagreement is a lie the reader will act on. Measured on the
+      // reported loan minutes after it came good: the card had caught up to
+      // "ctc (4-email)" and this sentence still called it a disagreement bound
+      // for the status-review list. When the card HOLDS what the ladder implies,
+      // the honest answer is that it worked — late, and the timing is the story.
+      const agrees = decision && decision.desired && cardStatus
+        && String(cardStatus).trim().toLowerCase() === String(decision.desired).trim().toLowerCase();
+      const waited = loan.clickup_pushed_at
+        ? Math.round((new Date(loan.clickup_pushed_at).getTime()
+                      - new Date(lastEntered.observed_at).getTime()) / 60000)
+        : null;
+      verdict = agrees
+        ? `ANSWERED — the move was witnessed at ${lastEntered.observed_at} and the card now holds "${cardStatus}", which is what the ladder implies. Nothing is wrong with this loan${waited != null && waited > 0 ? `, but it took ${waited} minutes to get there: the push queue reached it at ${loan.clickup_pushed_at}` : ''}.`
+        : `LINK 3 — the move was witnessed at ${lastEntered.observed_at}, but the loan's status watermark is already at ${loan.clickup_status_event_at}, so that move has been answered. The card holding "${cardStatus}" is a disagreement PILOT will not overwrite; it belongs in the status-review list.`;
     } else if (!dueForPush) {
       verdict = `LINK 2 — the move was witnessed, but the push pass will not pick this loan up: it was last pushed at ${loan.clickup_pushed_at} which is not older than the last read at ${loan.encompass_synced_at}.`;
     } else if (decision && decision.act === 'push' && queue && queue.position && queue.position > (queue.capPerPass || 5)) {

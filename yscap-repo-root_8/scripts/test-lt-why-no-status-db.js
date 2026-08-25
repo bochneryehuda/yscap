@@ -94,6 +94,18 @@ async function main() {
     return { status: r.status, body: await r.json() };
   };
 
+  // ClickUp is not connected in CI, so the card read is stubbed HERE rather than
+  // faked inside the route — the handler runs unmodified and only its one outbound
+  // read is answered. Driving cardStatus is the only way to exercise both endings
+  // of the answered-move verdict.
+  const clickupClient = require('../src/longterm/clickup/client');
+  const realGetTask = clickupClient.getTask;
+  const askWithCard = async (status) => {
+    clickupClient.getTask = async () => ({ id: 'task_why_1888', status: { status }, list: { id: '901108444248' } });
+    try { return (await ask(`?loan=${LOAN}`)).body; }
+    finally { clickupClient.getTask = realGetTask; }
+  };
+
   // ── B. THE REGRESSION: the rule is asked the question properly ────────────
   console.log('\nB. the rule is handed the whole desired object, not the bare string');
   const a = await ask(`?loan=${LOAN}`);
@@ -124,6 +136,27 @@ async function main() {
   eq(b.body.queue && b.body.queue.depth, 2, 'a second due loan deepens the queue');
   eq(b.body.queue && b.body.queue.position, 1,
     'and the loan waiting on a witnessed move still comes first, though the other was pushed far longer ago');
+
+  // ── D2. AN ANSWERED MOVE: the card caught up, versus a real disagreement ──
+  // Measured on the reported loan minutes after the queue reached it: the card
+  // held "ctc (4-email)" — exactly what the ladder implies — and the verdict
+  // still called it "a disagreement PILOT will not overwrite" bound for the
+  // review list. A diagnostic that reports a healthy loan as a problem sends the
+  // reader to fix nothing, which is the cost this whole route exists to remove.
+  console.log('\nD2. an answered move reads as answered when the card agrees');
+  await db.query(
+    `UPDATE lt_loans SET clickup_status_event_at = '2026-08-25T16:19:00Z'::timestamptz,
+                         clickup_pushed_at = '2026-08-25T18:44:59Z'::timestamptz
+      WHERE loan_number = $1`, [LOAN]);
+  const agreed = await askWithCard('ctc (4-email)');
+  ok(/^ANSWERED/.test(String(agreed.verdict || '')), 'the card holding what the ladder implies reads as ANSWERED, not as a disagreement');
+  ok(!/disagreement/i.test(String(agreed.verdict || '')), 'and the word "disagreement" does not appear at all');
+  ok(/146 minutes/.test(String(agreed.verdict || '')),
+    'and it says how long the card waited — 16:19 to 18:44 is 146 minutes, which IS the story of this report');
+
+  const disagreed = await askWithCard('waiting for docs');
+  ok(/LINK 3/.test(String(disagreed.verdict || '')), 'a card that genuinely disagrees still reads as link 3');
+  ok(/disagreement/i.test(String(disagreed.verdict || '')), 'and is still named a disagreement PILOT will not overwrite');
 
   // ── D. link 1 — a loan with no witnessed move is named as such ────────────
   console.log('\nD. a loan PILOT never saw move is named at link 1, not blamed on the rule');
