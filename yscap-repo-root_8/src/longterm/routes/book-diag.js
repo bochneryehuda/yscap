@@ -41,7 +41,6 @@ const db = require('../db');
 const clickup = require('../clickup/client');
 const encompass = require('../encompass/client');
 const program = require('../clickup/program');
-const trash = require('../trash');
 const { PIPELINE, SYNC } = require('../../clickup/fields');
 
 const router = express.Router();
@@ -1090,18 +1089,19 @@ router.get('/why-no-status', async (req, res) => {
     let queue = null;
     try {
       const cap = Math.max(1, parseInt(process.env.LT_CLICKUP_PUSH_PER_PASS || '5', 10) || 5);
+      // THE PASS'S OWN WHERE AND ORDER BY, never a copy of them. The first version
+      // of this block retyped the ordering, and therefore ranked by the OLD rule —
+      // reporting the opposite of what the pass would actually do, which is worse
+      // than reporting nothing at all. `queueSql` is the one definition both build
+      // from, so the two cannot disagree.
+      const { queueSql } = require('../clickup/push');
       const q = await db.query(
         `WITH due AS (
            SELECT l.id,
-                  row_number() OVER (ORDER BY (l.clickup_push_error IS NOT NULL) ASC,
-                                              l.clickup_pushed_at ASC NULLS FIRST,
-                                              l.encompass_last_modified DESC) AS pos,
+                  row_number() OVER (ORDER BY ${queueSql.order('l')}) AS pos,
                   count(*) OVER () AS depth
              FROM lt_loans l
-            WHERE l.clickup_task_id IS NOT NULL
-              AND COALESCE(l.clickup_link_confidence, 'confirmed') = 'confirmed'
-              AND ${trash.notTrashSql('l')}
-              AND (l.clickup_pushed_at IS NULL OR l.encompass_synced_at > l.clickup_pushed_at)
+            WHERE ${queueSql.where('l')}
          )
          SELECT (SELECT max(depth) FROM due)::int AS depth,
                 (SELECT pos FROM due WHERE id = $1::uuid)::int AS position`, [loan.id]);
@@ -1112,7 +1112,7 @@ router.get('/why-no-status', async (req, res) => {
         position,
         capPerPass: cap,
         passesAhead: position ? Math.ceil(position / cap) : null,
-        note: 'one pass per sync tick, capPerPass loans a pass, longest-since-pushed first — a witnessed milestone move is given no priority whatsoever over a routine field refresh',
+        note: 'one pass per sync tick, capPerPass loans a pass. A loan waiting on a witnessed milestone move is served ahead of routine field refreshes; inside each group, longest-since-pushed first.',
       };
     } catch (e) { queue = { error: String((e && e.message) || e).slice(0, 200) }; }
 
