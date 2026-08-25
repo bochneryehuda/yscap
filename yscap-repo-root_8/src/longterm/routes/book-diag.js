@@ -705,6 +705,99 @@ router.get('/request-audit', async (req, res) => {
   });
 });
 
+/**
+ * TEMPLATE WALK — the loan-template tree, read for real before any code is written
+ * against it. READ ONLY.
+ *
+ * WHY A THIRD DIAGNOSTIC (2026-08-25). The request audit settled that
+ * `/v3/settings/loan/loanTemplates` is 403 and that
+ * `/v3/settings/templates/loanTemplateSet/folders?path=…` answers 200. It also
+ * showed the rows are nested under `contents` as
+ * `{ entityName, entityType, entityPath, hasSubFolders }` — and that
+ * `refreshFieldCatalog`'s key chain for this kind, `r.path || r.name || r.id`,
+ * matches NONE of those four names. Handed straight through, every row would key to
+ * undefined, hit `if (!key) continue`, and the catalog would report a clean refresh
+ * holding zero templates. That is the third endpoint this week with exactly that
+ * shape, so it is measured rather than assumed.
+ *
+ * WHAT IS STILL UNKNOWN AND WHY IT NEEDS A WALK. The roots answer with ONE entry
+ * each; ICE's own literal example one level down answers with eleven. So the
+ * templates are not at the root — they are somewhere in a TREE, and the only honest
+ * way to learn its shape, its depth, and which `entityType` values mark a leaf is to
+ * walk it and look. Writing a recursive reader against a tree nobody has seen is
+ * precisely the guess this whole exercise exists to stop.
+ *
+ * BOUNDED BY CONSTRUCTION. At most MAX_CALLS requests and MAX_DEPTH levels, breadth
+ * first, and every path it follows comes from an `entityPath` the vendor itself
+ * returned — never from the caller, and never assembled by us. It reports what it
+ * stopped for, so a truncated walk can never read as a complete one.
+ */
+router.get('/template-walk', async (_req, res) => {
+  if (!encompass.configured()) {
+    return res.status(503).json({ ok: false, error: 'Encompass is not connected on this deployment.' });
+  }
+  const MAX_CALLS = 40;
+  const MAX_DEPTH = 4;
+  const BASE = '/encompass/v3/settings/templates/loanTemplateSet/folders?path=';
+
+  const seen = new Set();
+  const rows = [];
+  const errors = [];
+  let calls = 0;
+  let stoppedFor = null;
+
+  const queue = [{ path: 'public', depth: 0 }, { path: 'personal', depth: 0 }];
+  while (queue.length) {
+    if (calls >= MAX_CALLS) { stoppedFor = `the ${MAX_CALLS}-call bound`; break; }
+    const { path: p, depth } = queue.shift();
+    if (seen.has(p)) continue;
+    seen.add(p);
+    calls += 1;
+    let body;
+    try {
+      body = await encompass.apiGet(BASE + encodeURIComponent(p));
+    } catch (e) {
+      errors.push({ path: p, error: String((e && e.message) || e).slice(0, 160) });
+      continue;
+    }
+    const contents = body && Array.isArray(body.contents) ? body.contents : [];
+    for (const c of contents) {
+      if (!c || typeof c !== 'object') continue;
+      rows.push({
+        askedAt: p,
+        depth,
+        entityName: c.entityName || null,
+        entityType: c.entityType || null,
+        entityPath: c.entityPath || null,
+        hasSubFolders: c.hasSubFolders === true,
+      });
+      // Follow only what the VENDOR handed back, and only while inside the bound.
+      if (c.entityPath && depth + 1 <= MAX_DEPTH && c.hasSubFolders === true) {
+        queue.push({ path: c.entityPath, depth: depth + 1 });
+      }
+    }
+  }
+  if (!stoppedFor && queue.length) stoppedFor = `the ${MAX_DEPTH}-level depth bound`;
+
+  // WHICH entityType VALUES EXIST, counted — this is what decides whether a row is a
+  // folder to walk into or a template to record, and it is the one fact a reader
+  // cannot be written without.
+  const byType = {};
+  for (const r of rows) byType[r.entityType || '(none)'] = (byType[r.entityType || '(none)'] || 0) + 1;
+
+  res.json({
+    ok: errors.length === 0,
+    calls,
+    found: rows.length,
+    // NO SILENT TRUNCATION. A walk that stopped early says so, in words.
+    complete: !stoppedFor && queue.length === 0,
+    stoppedFor,
+    entityTypes: byType,
+    errors: errors.length ? errors : null,
+    rows,
+  });
+});
+
 router.get('/people', async (_req, res) => {
   try {
     const { rows } = await db.query(
