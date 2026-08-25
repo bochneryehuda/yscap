@@ -156,7 +156,12 @@ async function applyRecipients(db, envelopeRow, envelope) {
        r.sentAt, r.deliveredAt, r.signedAt, r.declinedAt, r.declineReason])).rows[0];
     const becameActive = prev && !['sent', 'delivered'].includes(String(prev.old_status || ''))
       && ['sent', 'delivered'].includes(String(next));
-    if (becameActive && !prev.borrower_id && ['loan_officer', 'admin'].includes(String(prev.role))) {
+    /* EVERY recipient, not only our own. This was staff-only, and combined with the send
+       path skipping anyone still at 'created' it meant a BORROWER could be invited by
+       neither path — the 2026-08-25 report. Widening it is safe now because the
+       send-once guard is `invited_at` on the row rather than which caller got there
+       first, so whichever path reaches them first wins and the other skips. */
+    if (becameActive) {
       /* Best-effort, and deliberately AFTER the status write: an email that fails must never
          cost us the status update the rest of the system reads. */
       try {

@@ -52,7 +52,18 @@ async function notifyReadyToSign(envelopeRowId, opts = {}) {
               -- The FILE's borrower, for our own signers: a staff recipient has no borrower_id,
               -- so the join above answers nothing and their email would name nobody.
               fb.full_name AS file_borrower_name,
-              r.status AS recipient_status, r.routing_order,
+              r.status AS recipient_status, r.routing_order, r.invited_at,
+              /* IS IT ACTUALLY THEIR TURN? Status alone cannot answer this at SEND time.
+                 orchestrate.js inserts every recipient as 'created' and NOTHING writes
+                 recipient status until a webhook arrives (applyRecipients is called from
+                 exactly one place), so at the moment of the send the borrower on routing
+                 order 1 and the counter-signer on order 2 look identical. Routing order
+                 does answer it, and it is the same thing DocuSign itself is deciding:
+                 nobody earlier is still to sign. */
+              NOT EXISTS (SELECT 1 FROM esign_recipients e2
+                           WHERE e2.envelope_row_id = r.envelope_row_id
+                             AND e2.routing_order < r.routing_order
+                             AND e2.signed_at IS NULL AND e2.declined_at IS NULL) AS turn_now,
               e.application_id, e.purpose, e.status, e.envelope_id,
               a.ys_loan_number, a.rehab_budget,
               COALESCE(a.property_address->>'oneLine',
@@ -85,12 +96,23 @@ async function notifyReadyToSign(envelopeRowId, opts = {}) {
     if (onlyRid && String(r.recipient_id_ds) !== onlyRid) { out.skipped++; continue; }
     // Only email once the envelope is actually out for signing.
     if (!r.envelope_id || !['sent', 'delivered'].includes(r.status)) { out.skipped++; continue; }
+    /* NEVER THE SAME INVITATION TWICE. Both the send path and the webhook may legitimately
+       reach a recipient first, so the send-once guard is the RECORD of having invited them,
+       not the caller. Only an explicit `force` re-sends — today that is a corrected email
+       address, where re-inviting is the entire point. */
+    if (r.invited_at && !opts.force) { out.skipped++; continue; }
     /* AND ONLY WHEN IT IS ACTUALLY THEIR TURN. A counter-signer on routing order 2 sits at
        `created` until every earlier signer has finished; DocuSign will not let them sign before
-       then, so "your signature is needed" would be false and the link would fail. The webhook
-       invites them the moment their status becomes sent/delivered. A row from before recipient
-       statuses were tracked has none, and is treated as their turn — the historic behaviour. */
-    if (r.recipient_status && !['sent', 'delivered'].includes(String(r.recipient_status))) { out.skipped++; continue; }
+       then, so "your signature is needed" would be false and the link would fail.
+       THIS USED TO TEST recipient_status ALONE, and that is the bug the owner reported on
+       2026-08-25: the send path writes 'created' for EVERYONE and nothing moves it before
+       notifyReadyToSign runs, so the borrower was skipped on every package we sent — while the
+       webhook's recovery re-invited staff only. Since the same 2026-08-21 change stopped
+       DocuSign emailing captive recipients, the borrower received nothing at all. Ask the
+       ROUTING ORDER, which is knowable at send time; a sent/delivered status still counts on
+       its own so a later turn granted by the webhook needs no re-derivation. */
+    const theirTurn = ['sent', 'delivered'].includes(String(r.recipient_status || '')) || r.turn_now === true;
+    if (!theirTurn) { out.skipped++; continue; }
     try {
       /* WHO IS THIS SIGNER? A borrower row carries `borrower_id`; one of OUR OWN carries none and
          is matched to the staff roster by the email the envelope was addressed to. An ACTIVE
@@ -158,7 +180,27 @@ async function notifyReadyToSign(envelopeRowId, opts = {}) {
           }, { replyTo: fileReplyTo(r.application_id) || undefined });
       // ok = actually sent; skipped = provider intentionally no-op'd (EMAIL_PROVIDER=none
       // in dev) — both mean the pipeline ran; a hard failure (ok:false, not skipped) is a skip.
-      if (res && (res.ok || res.skipped)) { out.sent++; out.recipients.push(r.email); }
+      if (res && (res.ok || res.skipped)) {
+        out.sent++; out.recipients.push(r.email);
+        /* THE RECORD, and the reason a column exists at all: "was this signer ever invited,
+           and when" had no answer anywhere. The borrower's signing email is the one
+           catalog.send that passes no applicationId — deliberately, because its body carries
+           a magic link that signs the holder in AS THE BORROWER, which must not sit in a
+           staff-readable email log — so the Email Center cannot answer it either.
+           COALESCE keeps the FIRST invitation time (the audit answer) while invite_count
+           records re-nudges. Best-effort: the email has already gone, and failing to record
+           it must never look like a failure to send it. */
+        try {
+          await db.query(
+            `UPDATE esign_recipients
+                SET invited_at = COALESCE(invited_at, now()), invite_count = invite_count + 1,
+                    updated_at = now()
+              WHERE envelope_row_id = $1 AND recipient_id_ds = $2`,
+            [envelopeRowId, String(r.recipient_id_ds)]);
+        } catch (e) {
+          console.warn('[esign-notify-signers] invited_at stamp failed for', r.email, '::', e.message);
+        }
+      }
       else out.skipped++;
     } catch (e) {
       out.skipped++;

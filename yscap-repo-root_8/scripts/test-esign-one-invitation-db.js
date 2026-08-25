@@ -76,12 +76,19 @@ const TAG = 'es' + crypto.randomBytes(4).toString('hex');
       ids.envelopes.push(e.id);
       return e;
     };
+    /* BORN 'created' — THE STATE THE SEND PATH ACTUALLY WRITES. This defaulted to 'sent',
+       which `orchestrate.js` never produces for anybody: it inserts EVERY recipient as
+       'created' (line 924) and nothing moves them before `notifyReadyToSign` runs a moment
+       later. So the fixture was testing a state that only exists after a webhook, and the
+       suite could not see the 2026-08-25 defect — every real borrower was skipped while
+       every test borrower was invited. A fixture must stage what the code under test is
+       actually handed. */
     const recipient = async (envId, o) => db.query(
       `INSERT INTO esign_recipients(envelope_row_id, role, routing_order, is_countersigner, recipient_id_ds,
                                     borrower_id, name, email, embedded, client_user_id, status)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,true,$9,$10)`,
       [envId, o.role, o.order || 1, !!o.counter, String(o.rid), o.borrowerId || null,
-       o.name, o.email, `${envId}:${o.role}`, o.status || 'sent']);
+       o.name, o.email, `${envId}:${o.role}`, o.status || 'created']);
 
     // ============================================================== 1. OUR OWN SIGNER
     console.log('1. a loan officer who has to sign gets OUR email, with a working link');
@@ -106,7 +113,18 @@ const TAG = 'es' + crypto.randomBytes(4).toString('hex');
     ok(r1.sent >= 2, 'both were reported sent');
 
     // ============================================================== 2. WHOSE TURN IT IS
-    console.log('2. a counter-signer whose turn has not come is not invited');
+    /* THE OWNER'S 2026-08-25 REPORT LIVES HERE: *"borrowers are not getting email notification
+       to sign term sheet … this is the final term sheet that I'm talking about. He needs to
+       sign it."*
+
+       This is the exact package `orchestrate.js` builds and then calls `notifyReadyToSign` on,
+       staged the way it really arrives — borrower and officer on routing order 1, the lender's
+       counter-signer on order 2, EVERY ONE OF THEM at 'created'. The turn test used to ask
+       `recipient_status` alone, which is 'created' for all of them at that moment, so every
+       recipient was skipped and the run reported {sent:0}. Since the same 2026-08-21 change
+       stopped DocuSign emailing captive recipients, the borrower received NOTHING AT ALL.
+       Reverting the turn test to that reproduces the report exactly. */
+    console.log('2. the borrower is invited on a fresh send — and only when it is their turn');
     const ts = await envelope('term_sheet_package');
     await recipient(ts.id, { role: 'borrower', rid: 1, borrowerId: bor, name: 'Grace Hopper', email: `bor.${TAG}@example.com` });
     /* DocuSign holds a routing-order-2 recipient at `created` until everyone before them signs.
@@ -115,11 +133,56 @@ const TAG = 'es' + crypto.randomBytes(4).toString('hex');
     await recipient(ts.id, { role: 'admin', rid: 3, order: 2, counter: true, name: 'Moshe Officer',
       email: `lo.${TAG}@example.com`, status: 'created' });
     outbox.length = 0;
-    await notifySigners.notifyReadyToSign(ts.id, { db });
-    ok(!outbox.some((m) => to(m).some((a) => a.toLowerCase() === `lo.${TAG}@example.com`)),
-      'the counter-signer is left alone until DocuSign opens their turn');
+    const r2 = await notifySigners.notifyReadyToSign(ts.id, { db });
     ok(outbox.some((m) => to(m).some((a) => a.toLowerCase() === `bor.${TAG}@example.com`)),
-      '…while the borrower, whose turn it is, is invited');
+      'the borrower on a freshly-sent package IS emailed the invitation to sign');
+    ok(r2.sent >= 1, '…and the run reports it sent, not skipped');
+    ok(!outbox.some((m) => to(m).some((a) => a.toLowerCase() === `lo.${TAG}@example.com`)),
+      'the counter-signer is left alone until the signers before them have finished');
+
+    /* THE RECORD, and the reason `invited_at` exists at all: the owner asked *"Please audit all
+       the logs from the last few final terms that we sent out"* and there was nothing to audit.
+       This email is the one `catalog.send` that passes no applicationId — deliberately, its body
+       carries a magic link that signs the holder in AS THE BORROWER — so the Email Center cannot
+       answer it either. A timestamp answers "was this signer invited, and when" without putting
+       a bearer credential anywhere a staffer can read it. */
+    const invite = async (rid) => (await db.query(
+      `SELECT invited_at, invite_count FROM esign_recipients
+        WHERE envelope_row_id = $1 AND recipient_id_ds = $2`, [ts.id, String(rid)])).rows[0];
+    const firstInvite = await invite(1);
+    ok(!!firstInvite.invited_at, 'the invitation is recorded on the borrower’s own row');
+    eq(Number(firstInvite.invite_count), 1, '…counted once');
+    eq((await invite(3)).invited_at, null, 'and the counter-signer carries no invitation yet');
+
+    /* NEVER THE SAME INVITATION TWICE. Both the send path and the webhook may legitimately reach
+       a recipient first, so the send-once guard has to be the RECORD, not which caller arrived. */
+    outbox.length = 0;
+    const rAgain = await notifySigners.notifyReadyToSign(ts.id, { db });
+    eq(rAgain.sent, 0, 'running the send again invites nobody a second time');
+    eq(outbox.length, 0, '…and puts no second email on the wire');
+
+    /* THE ONE CASE THAT MAY RE-SEND is an explicit force — today a corrected email address,
+       where re-inviting is the entire point. `invited_at` keeps the FIRST time (the audit
+       answer) while `invite_count` records the re-nudge. */
+    outbox.length = 0;
+    const rForce = await notifySigners.notifyReadyToSign(ts.id, { db, onlyRecipientIdDs: '1', force: true });
+    eq(rForce.sent, 1, 'an explicit force does re-send — a corrected address must be re-invited');
+    const second = await invite(1);
+    eq(String(second.invited_at), String(firstInvite.invited_at),
+      '…and the FIRST invitation time is what the record keeps');
+    eq(Number(second.invite_count), 2, '…with the re-nudge counted');
+
+    /* AND THEIR TURN OPENS ON ITS OWN. Nothing writes recipient status at send time, so the
+       counter-signer's invitation cannot wait on one: the routing order answers it, and it is
+       the same thing DocuSign is deciding — nobody earlier is still to sign. */
+    await db.query(
+      `UPDATE esign_recipients SET signed_at = now(), status = 'signed'
+        WHERE envelope_row_id = $1 AND routing_order = 1`, [ts.id]);
+    outbox.length = 0;
+    await notifySigners.notifyReadyToSign(ts.id, { db });
+    ok(outbox.some((m) => to(m).some((a) => a.toLowerCase() === `lo.${TAG}@example.com`)),
+      'once the signers before them finish, the counter-signer is invited');
+    ok(!!(await invite(3)).invited_at, '…and that invitation is recorded too');
 
     // ============================================================== 3. AN UNPLACEABLE SIGNER
     console.log('3. a staff signer we cannot place is never emailed a signing bearer');
@@ -129,13 +192,30 @@ const TAG = 'es' + crypto.randomBytes(4).toString('hex');
     outbox.length = 0;
     await notifySigners.notifyReadyToSign(orphan.id, { db });
     ok(!outbox.length, 'an address on no ACTIVE staff row gets nothing — the token signs an envelope');
-    /* AND A DEPARTED OFFICER IS THE SAME CASE, which is the one that actually happens. */
+    /* AND A DEPARTED OFFICER IS THE SAME CASE, which is the one that actually happens.
+
+       IT NEEDS ITS OWN ENVELOPE, and that is the whole point of putting it here rather than
+       re-running an earlier one: every recipient on `iska` was invited back in section 1, so
+       `invited_at` would skip them and this would report a clean pass with the active-staff
+       guard deleted — a mutation masked by an unrelated rule, which is exactly the failure
+       this suite's header warns about. A fresh package makes the guard the only thing that
+       can refuse. (Its own purpose too: `uq_esign_inflight` allows one in-flight envelope per
+       file and purpose, and this file has already spent the other three.) */
     await db.query(`UPDATE staff_users SET is_active=false WHERE id=$1`, [lo]);
+    const departed = await envelope('noo_affidavit');
+    await recipient(departed.id, { role: 'loan_officer', rid: 4, name: 'Moshe Officer',
+      email: `lo.${TAG}@example.com` });
     outbox.length = 0;
-    await notifySigners.notifyReadyToSign(iska.id, { db });
+    await notifySigners.notifyReadyToSign(departed.id, { db });
     ok(!outbox.some((m) => to(m).some((a) => a.toLowerCase() === `lo.${TAG}@example.com`)),
       'a deactivated officer’s address is never sent a signing link');
     await db.query(`UPDATE staff_users SET is_active=true WHERE id=$1`, [lo]);
+    /* THE CONTROL, on the same envelope: re-activate them and the very same call DOES invite —
+       so the refusal above was the active-staff guard and not some other rule quietly biting. */
+    outbox.length = 0;
+    await notifySigners.notifyReadyToSign(departed.id, { db });
+    ok(outbox.some((m) => to(m).some((a) => a.toLowerCase() === `lo.${TAG}@example.com`)),
+      '…and an ACTIVE officer on that same package is invited — the control');
 
     // ============================================================== 4. THE EXECUTED COPY
     console.log('4. every completed package emails the borrower — with the document attached');
@@ -302,6 +382,168 @@ const TAG = 'es' + crypto.randomBytes(4).toString('hex');
     try { await webhook.applyRecipients(db, testEnv, dsEnvelope('delivered', '2026-08-21T10:00:00Z')); }
     catch (e) { threw = e; }
     ok(!threw, 'an app-less self-test envelope does not throw on the viewed path');
+
+    // ============================================ 7. THE WEBHOOK'S OWN RECOVERY
+    /* THE SECOND HALF OF THE 2026-08-25 FIX. When DocuSign opens a recipient's turn, the webhook
+       invites them — and that recovery used to run for OUR OWN STAFF ONLY. So with the send path
+       skipping everyone at 'created', a BORROWER could be invited by neither path, which is what
+       made the report "they get nothing at all" rather than "it arrives late".
+
+       Widening it is only safe because the send-once guard is now the RECORD on the row rather
+       than which caller happened to arrive first — so whichever path reaches a signer wins and
+       the other skips. Both halves are asserted here, on the wire, through the real webhook. */
+    console.log('\n7. the webhook invites whoever DocuSign has just opened — borrower included');
+    const late = await envelope6('noo_affidavit');
+    await recipient(late.id, {
+      role: 'borrower', rid: 11, borrowerId: bor, name: 'Grace Hopper',
+      email: `bor.${TAG}@example.com`, status: 'created',
+    });
+    const opened = (rid, status) => ({
+      recipients: { signers: [{
+        recipientId: String(rid), routingOrder: 1, name: 'Grace Hopper',
+        email: `bor.${TAG}@example.com`, status,
+      }] },
+    });
+    outbox.length = 0;
+    await webhook.applyRecipients(db, late, opened(11, 'sent'));
+    ok(outbox.some((m) => to(m).some((a) => a.toLowerCase() === `bor.${TAG}@example.com`)),
+      'a BORROWER whose turn DocuSign just opened is invited by the webhook, not only our staff');
+    const lateRow = async () => (await db.query(
+      `SELECT invited_at, invite_count FROM esign_recipients
+        WHERE envelope_row_id = $1 AND recipient_id_ds = '11'`, [late.id])).rows[0];
+    eq(Number((await lateRow()).invite_count), 1, '…and the invitation is recorded once');
+
+    /* AND NEITHER PATH INVITES SOMEBODY THE OTHER ALREADY DID. DocuSign redelivers freely, and
+       the send path may run again for its own reasons; the row is what stops a second copy. */
+    outbox.length = 0;
+    await webhook.applyRecipients(db, late, opened(11, 'delivered'));
+    await notifySigners.notifyReadyToSign(late.id, { db });
+    eq(outbox.filter((m) => to(m).some((a) => a.toLowerCase() === `bor.${TAG}@example.com`)
+      && /sign/i.test(String(m.subject || ''))).length, 0,
+      'a later webhook and a re-run of the send both find them already invited');
+    eq(Number((await lateRow()).invite_count), 1, '…and the count does not move');
+
+    // ================================ 8. THE PACKAGES ALREADY OUT WHEN THE DEFECT WAS LIVE
+    /* THE PREVIOUS HALF of previous-AND-future, and the owner asked for it by name: *"please
+       check it out from the previous file or two. Why didn't the borrower receive it?"* The fix
+       above only reaches the NEXT package sent — an envelope already at DocuSign has a borrower
+       who received nothing and whom nothing re-drives, because the send has happened and the
+       webhook transition that would have recovered them came and went. */
+    console.log('\n8. a package sent while the defect was live gets its invitation now');
+    const recovery = require(REPO + '/src/lib/esign/invite-recovery');
+    const app8 = (await db.query(
+      `INSERT INTO applications(borrower_id, loan_officer_id, status, ys_loan_number, property_address, loan_amount)
+       VALUES($1,$2,'approved',$3,'{"oneLine":"8 Waiting St, Town, NY 11111"}',500000) RETURNING id`,
+      [bor, lo, `YSR${TAG.toUpperCase()}`])).rows[0].id;
+    ids.apps.push(app8);
+    const stranded = async (purpose, createdAt) => {
+      const e = (await db.query(
+        `INSERT INTO esign_envelopes(application_id, provider, envelope_id, status, purpose, embedded, created_at)
+         VALUES($1,'docusign',$2,'sent',$3,true,$4) RETURNING *`,
+        [app8, `ds-${TAG}-r-${purpose}`, purpose, createdAt])).rows[0];
+      ids.envelopes.push(e.id);
+      return e;
+    };
+    const invitedOn = async (envId, rid) => (await db.query(
+      `SELECT invited_at FROM esign_recipients WHERE envelope_row_id=$1 AND recipient_id_ds=$2`,
+      [envId, String(rid)])).rows[0].invited_at;
+
+    /* SENT AFTER THE REGRESSION — the borrower is owed an email. */
+    const after = await stranded('term_sheet_package', '2026-08-23T12:00:00Z');
+    await recipient(after.id, { role: 'borrower', rid: 21, borrowerId: bor, name: 'Grace Hopper', email: `bor.${TAG}@example.com` });
+    /* SENT BEFORE IT — that borrower ALREADY received the invitation, because until 4d34752
+       notifyReadyToSign had no recipient-level turn test at all and invited everybody at send
+       time. Re-inviting them would be an unrequested nudge on a months-old package, which is
+       what the date cutoff exists to prevent. */
+    const before = await stranded('heter_iska', '2026-08-20T12:00:00Z');
+    await recipient(before.id, { role: 'borrower', rid: 22, borrowerId: bor, name: 'Grace Hopper', email: `bor.${TAG}@example.com` });
+    /* AND A COUNTER-SIGNER WHOSE TURN HAS NOT COME is legitimately uninvited — this pass must
+       not select their envelope over and over doing nothing, or it would never drain. */
+    const waiting = await stranded('draw_request', '2026-08-23T12:00:00Z');
+    await recipient(waiting.id, { role: 'borrower', rid: 23, borrowerId: bor, name: 'Grace Hopper',
+      email: `bor.${TAG}@example.com`, status: 'sent' });
+    await db.query(`UPDATE esign_recipients SET invited_at = now(), invite_count = 1
+                     WHERE envelope_row_id=$1 AND recipient_id_ds='23'`, [waiting.id]);
+    await recipient(waiting.id, { role: 'admin', rid: 24, order: 2, counter: true, name: 'Moshe Officer',
+      email: `lo.${TAG}@example.com` });
+
+    /* WHICH PACKAGES THE PASS PICKS UP is asserted on the SELECTOR ITSELF, not by watching what
+       a run happened to email. The sweep is global and bounded, so another suite's fixtures
+       share the batch and any count — or any "did this one get reached" — would be flaky; and
+       the turn term below is a DRAINING property, invisible end-to-end because notifyReadyToSign
+       enforces the same rule again downstream. Asking the query is what makes both exact. */
+    const picked = async () => new Set((await db.query(
+      recovery._internals.CANDIDATES, [recovery._internals.REGRESSION_AT, 100000])).rows.map((r) => r.id));
+    /* AND A DEAD DEAL IS NOT OWED ONE. An envelope is normally voided or cleared along with its
+       file, but not always — and "please sign your term sheet" landing on a loan that was
+       withdrawn is worse than the silence it replaces. */
+    const dead = (await db.query(
+      `INSERT INTO applications(borrower_id, loan_officer_id, status, ys_loan_number, property_address, loan_amount)
+       VALUES($1,$2,'withdrawn',$3,'{"oneLine":"9 Gone St, Town, NY 11111"}',500000) RETURNING id`,
+      [bor, lo, `YSD${TAG.toUpperCase()}`])).rows[0].id;
+    ids.apps.push(dead);
+    const deadEnv = (await db.query(
+      `INSERT INTO esign_envelopes(application_id, provider, envelope_id, status, purpose, embedded, created_at)
+       VALUES($1,'docusign',$2,'sent','term_sheet_package',true,'2026-08-23T12:00:00Z') RETURNING *`,
+      [dead, `ds-${TAG}-dead`])).rows[0];
+    ids.envelopes.push(deadEnv.id);
+    await recipient(deadEnv.id, { role: 'borrower', rid: 26, borrowerId: bor, name: 'Grace Hopper', email: `bor.${TAG}@example.com` });
+
+    const set0 = await picked();
+    ok(set0.has(after.id), 'a package sent while the defect was live is picked up');
+    ok(!set0.has(deadEnv.id), 'a package on a withdrawn file is not — a dead deal is owed nothing');
+    ok(!set0.has(before.id),
+      'a package sent BEFORE it is not — that borrower already had their email, and a nudge on a '
+      + 'months-old package is not what went wrong');
+    ok(!set0.has(waiting.id),
+      'and an envelope whose only uninvited signer is a counter-signer out of turn is not picked '
+      + 'up at all — otherwise the pass would re-select it every boot and never drain');
+
+    outbox.length = 0;
+    await recovery.recoverUninvitedOnce({ db, limit: 500 });
+    /* ASSERTED ON THE ROWS, never on the pass's own totals, for the same reason. */
+    ok(!!(await invitedOn(after.id, 21)), 'the stranded borrower is finally invited');
+    ok(outbox.some((m) => to(m).some((a) => a.toLowerCase() === `bor.${TAG}@example.com`)),
+      '…with a real email on the wire, not just a stamp');
+    eq(await invitedOn(before.id, 22), null, '…and the older package is left alone');
+    eq(await invitedOn(waiting.id, 24), null,
+      'a counter-signer whose turn has not come is still not invited early');
+
+    /* SELF-DRAINING: the stamp removes them from the set, so a second pass is a no-op. */
+    outbox.length = 0;
+    const firstAt = await invitedOn(after.id, 21);
+    await recovery.recoverUninvitedOnce({ db, limit: 500 });
+    eq(String(await invitedOn(after.id, 21)), String(firstAt), 'a second pass does not re-invite them');
+    eq(outbox.filter((m) => to(m).some((a) => a.toLowerCase() === `bor.${TAG}@example.com`)).length, 0,
+      '…and sends nothing the second time');
+
+    /* ONE INSTANCE AT A TIME. Two servers booting together — an ordinary deploy on a scaled-out
+       service — would otherwise both select the same package and both email its borrower, because
+       there is a real window between the select and the `invited_at` stamp. A second pass DROPS
+       rather than queueing behind the first: by the time it got its turn the set would already be
+       drained, so waiting only risks re-running it. */
+    const holder = await db.getClient();
+    await holder.query(`SELECT pg_advisory_lock(hashtextextended('esign-invite-recovery', 0))`);
+    const contended = await recovery.recoverUninvitedOnce({ db, limit: 500 });
+    eq(contended.reason, 'already_running', 'a second instance stands down instead of re-sending');
+    await holder.query(`SELECT pg_advisory_unlock(hashtextextended('esign-invite-recovery', 0))`);
+    holder.release();
+    /* THE CONTROL: released, the very same call runs — so the stand-down was the lock. */
+    eq((await recovery.recoverUninvitedOnce({ db, limit: 500 })).reason, null,
+      '…and once the first has finished, the next pass runs normally');
+
+    /* THE OFF SWITCH, and it is checked before anything is read. */
+    const strandedToo = await stranded('noo_affidavit', '2026-08-23T12:00:00Z');
+    await recipient(strandedToo.id, { role: 'borrower', rid: 25, borrowerId: bor, name: 'Grace Hopper', email: `bor.${TAG}@example.com` });
+    process.env.ESIGN_INVITE_RECOVERY_DISABLED = '1';
+    outbox.length = 0;
+    eq((await recovery.recoverUninvitedOnce({ db, limit: 500 })).reason, 'disabled', 'the off switch stops the pass');
+    delete process.env.ESIGN_INVITE_RECOVERY_DISABLED;
+    eq(await invitedOn(strandedToo.id, 25), null, '…and nobody was invited while it was off');
+    /* THE CONTROL: switched back on, that same package IS recovered — so the silence above was
+       the switch and not some other rule quietly excluding it. */
+    await recovery.recoverUninvitedOnce({ db, limit: 500 });
+    ok(!!(await invitedOn(strandedToo.id, 25)), '…and switching it back on recovers that same package');
 
   } finally {
     mailer.sendMail = realSend;
