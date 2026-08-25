@@ -944,6 +944,161 @@ router.get('/webhook-check', async (_req, res) => {
   });
 });
 
+/**
+ * WHY IS THIS CARD'S STATUS NOT MOVING? — the whole chain for ONE loan, in order,
+ * with the link that broke named. READ ONLY.
+ *
+ * WHY (owner-reported 2026-08-25, YSCAP258134720): *"This file was updated on pilot
+ * for clear to close, but I don't see that ClickUp was updated... don't fix the
+ * issue. Just dig in deeper. Go to the deep root cause and fix the bug in the back
+ * so it should work every time, everywhere."*
+ *
+ * A STATUS REACHING CLICKUP DEPENDS ON FOUR THINGS IN SERIES, and until now a break
+ * in any one of them looked exactly like a break in any other — from the outside, a
+ * card that simply did not move:
+ *
+ *   1. THE MOVE IS WITNESSED. `readLoan` sees the milestone change and
+ *      `milestones.writeMilestone` records an `observed_entered` row. A first
+ *      sighting records `observed_baseline` INSTEAD, which deliberately pushes
+ *      nothing — and a `redefinition` (the first successful ladder read of a loan
+ *      that already had a milestone) records NOTHING AT ALL.
+ *   2. THE LOAN IS PICKED UP. `pushPass` takes linked, confirmed, non-trash loans
+ *      where `clickup_pushed_at IS NULL OR encompass_synced_at > clickup_pushed_at`.
+ *   3. THE DECISION SAYS PUSH. `status-push` writes only for an `observed_entered`
+ *      NEWER than the loan's watermark, and only forwards unless the status is one
+ *      of the backward-allowed ones. This is the owner's own rule from 2026-08-24 —
+ *      *"Only when Encompass is changing a milestone should ClickUp be changing
+ *      milestones"* — so a card is NEVER re-asserted to reconcile it, and any
+ *      question is raised for a person instead.
+ *   4. THE STATUS EXISTS ON THE CARD'S LIST. PILOT never invents one.
+ *
+ * So this route reports all four, side by side, plus the card's ACTUAL live status
+ * read from ClickUp, and names the first link that explains the outcome. Guessing
+ * which of four silent links broke is what makes a bug like this take a day.
+ *
+ * READ ONLY: `lt_*` reads, one ClickUp GET for the card, and no write path. It does
+ * not push, does not stamp a watermark, and does not repair anything — deciding to
+ * write a status is the sync's job and is governed by rules this route only reports.
+ */
+router.get('/why-no-status', async (req, res) => {
+  const loanNumber = String(req.query.loan || '').trim();
+  if (!loanNumber) return res.status(400).json({ ok: false, error: 'pass ?loan=<loan number>' });
+  try {
+    const { rows } = await db.query(
+      `SELECT id, loan_number, milestone_name, stage_key, milestone_since,
+              milestone_since_is_baseline, ladder_synced_at, encompass_synced_at,
+              encompass_sync_error, clickup_task_id, clickup_custom_id,
+              clickup_link_confidence, clickup_pushed_at, clickup_push_error,
+              clickup_status_event_at, loan_folder
+         FROM lt_loans WHERE loan_number = $1`, [loanNumber]);
+    const loan = rows[0];
+    if (!loan) return res.status(404).json({ ok: false, error: `no loan in the book carries the number ${loanNumber}` });
+
+    // ── 1. what PILOT witnessed ──────────────────────────────────────────────
+    const { rows: events } = await db.query(
+      `SELECT event_type, from_milestone, to_milestone, observed_at
+         FROM lt_milestone_events WHERE loan_id = $1::uuid
+        ORDER BY observed_at DESC LIMIT 12`, [loan.id]);
+    const lastEntered = events.find((e) => e.event_type === 'observed_entered') || null;
+
+    // ── 2. would the push pass even pick it up? ──────────────────────────────
+    const pushed = loan.clickup_pushed_at ? new Date(loan.clickup_pushed_at).getTime() : null;
+    const synced = loan.encompass_synced_at ? new Date(loan.encompass_synced_at).getTime() : null;
+    const dueForPush = !!loan.clickup_task_id
+      && String(loan.clickup_link_confidence || 'confirmed') === 'confirmed'
+      && (pushed === null || (synced !== null && synced > pushed));
+
+    // ── 3. what the decision would say, run through the REAL rule ────────────
+    let card = null; let cardError = null;
+    if (loan.clickup_task_id) {
+      try { card = await clickup.getTask(loan.clickup_task_id); }
+      catch (e) { cardError = String((e && e.message) || e).slice(0, 200); }
+    }
+    const cardStatus = card && card.status ? String(card.status.status || '').trim() : null;
+
+    // THE REAL RULE, RUN — not a paraphrase of it. `desiredStatus` reads the
+    // mirrored LADDER (not the loan's milestone name) plus the folder, exactly as
+    // `push.js:desiredStatusFor` does; a diagnostic that approximated the call
+    // would answer confidently about a decision the sync never makes.
+    let decision = null;
+    let ladderRows = [];
+    try {
+      const lr = await db.query(
+        `SELECT milestone_name, position, done FROM lt_loan_milestones
+          WHERE loan_id = $1::uuid ORDER BY position`, [loan.id]);
+      ladderRows = lr.rows;
+      const statusPush = require('../clickup/status-push');
+      const engine = require('../clickup/status-engine');
+      // `f1393` and the funding channel ride the per-loan field bag the push
+      // builds; this route does not read Encompass, so they are left out and the
+      // answer is the LADDER's, which is the case that matters here. Said out loud
+      // rather than implied, because a cancelled or on-hold file would outrank it.
+      const desired = engine.desiredStatus({ ladder: ladderRows, folder: loan.loan_folder });
+      const d = statusPush.decideStatusPush({
+        desired: desired && desired.status,
+        current: cardStatus || '',
+        watermark: loan.clickup_status_event_at || null,
+        latestEntered: lastEntered ? lastEntered.observed_at : null,
+        statusOrder: null,
+        now: new Date(),
+      });
+      decision = {
+        desired: desired && desired.status, desiredBecause: desired && desired.reason,
+        act: d.act, reason: d.reason,
+        note: 'field 1393 and the funding channel are not read here, so a cancelled or on-hold file could outrank this',
+      };
+    } catch (e) { decision = { error: String((e && e.message) || e).slice(0, 200) }; }
+
+    // ── the first link that explains it, in words ────────────────────────────
+    let verdict;
+    if (!loan.clickup_task_id) {
+      verdict = 'This loan has no ClickUp card linked, so nothing could be written. Link it first.';
+    } else if (String(loan.clickup_link_confidence || 'confirmed') !== 'confirmed') {
+      verdict = `The card link is "${loan.clickup_link_confidence}" rather than confirmed, and the push pass only takes confirmed links. Confirm the link.`;
+    } else if (!lastEntered) {
+      verdict = 'LINK 1 — PILOT never WITNESSED a milestone move on this loan. '
+        + (events.length
+          ? `The only events recorded are ${[...new Set(events.map((e) => e.event_type))].join(', ')}, and a baseline is a first sighting rather than a move — it deliberately pushes nothing.`
+          : 'There are no milestone events at all.')
+        + ' A status is only ever written for a witnessed move (the owner\'s rule, 2026-08-24), so the card was never going to be told.';
+    } else if (loan.clickup_status_event_at
+        && new Date(lastEntered.observed_at).getTime() <= new Date(loan.clickup_status_event_at).getTime()) {
+      verdict = `LINK 3 — the move was witnessed at ${lastEntered.observed_at}, but the loan's status watermark is already at ${loan.clickup_status_event_at}, so that move has been answered. The card holding "${cardStatus}" is a disagreement PILOT will not overwrite; it belongs in the status-review list.`;
+    } else if (!dueForPush) {
+      verdict = `LINK 2 — the move was witnessed, but the push pass will not pick this loan up: it was last pushed at ${loan.clickup_pushed_at} which is not older than the last read at ${loan.encompass_synced_at}.`;
+    } else if (decision && decision.act === 'push') {
+      verdict = `Everything lines up — the next push pass should write "${decision.desired}". If it has not within about ten minutes, read clickup_push_error below.`;
+    } else {
+      verdict = `LINK 3 — the rule declined to write: ${decision && decision.reason}. That is the owner's own guard, not a fault.`;
+    }
+
+    res.json({
+      ok: true,
+      loanNumber,
+      verdict,
+      pilot: {
+        milestone: loan.milestone_name, stage: loan.stage_key,
+        milestoneSince: loan.milestone_since, sinceIsBaseline: loan.milestone_since_is_baseline,
+        ladderReadAt: loan.ladder_synced_at, lastFullRead: loan.encompass_synced_at,
+        readError: loan.encompass_sync_error, folder: loan.loan_folder,
+      },
+      clickup: {
+        taskId: loan.clickup_task_id, customId: loan.clickup_custom_id,
+        linkConfidence: loan.clickup_link_confidence,
+        cardStatusNow: cardStatus, cardReadError: cardError,
+        pushedAt: loan.clickup_pushed_at, pushError: loan.clickup_push_error,
+        statusWatermark: loan.clickup_status_event_at,
+        dueForPush,
+      },
+      witnessed: { lastEntered, events },
+      ladder: { steps: ladderRows.length, rows: ladderRows },
+      decision,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: (e && e.message) || String(e) });
+  }
+});
+
 router.get('/people', async (_req, res) => {
   try {
     const { rows } = await db.query(
