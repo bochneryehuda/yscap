@@ -329,6 +329,86 @@ router.get('/cards', async (req, res) => {
  * phone, no write path.
  */
 /**
+ * FIELD PROBE — what does Encompass actually hold for ONE loan, beside what PILOT
+ * stored for it. READ ONLY.
+ *
+ * WHY (owner-reported 2026-08-25): *"Everything was already filled in Encompass.
+ * Just didn't read. The ratios and everything was already filled."* A file screen
+ * showing a dash cannot tell you whether the far system is empty or whether OUR read
+ * dropped it — and those are opposite problems with opposite fixes. Reasoning about
+ * it from the milestone (as I did, wrongly) is exactly the guess this endpoint
+ * exists to replace.
+ *
+ * It reads the SAME field numbers the loan sync reads, by number, through the same
+ * read-only `fieldReader` the sync uses — so what comes back here is what the sync
+ * would have seen. Beside each one it prints what PILOT has stored, so a field that
+ * Encompass fills and PILOT left blank is visible at a glance.
+ *
+ * The ids are the ones the 490-loan census recorded (src/longterm/encompass/
+ * loan-anatomy.js), with the census's own fill rate quoted, so "Encompass usually
+ * fills this" is a measurement rather than an impression.
+ */
+const FIELD_PROBE = [
+  // The COLUMN names are the real ones, taken from the schema rather than from the
+  // screen's labels — the file screen says "LTV" and "Note rate" while the columns
+  // are `lt_properties.ltv_pct` and `lt_loans.note_rate_pct`, and several of these
+  // live on the PROPERTY row rather than the loan. A probe that reported "(no such
+  // column)" for half of them would be a broken instrument telling a confident story.
+  { id: '353',  what: 'LTV',                census: 'filled on 90.2% of DSCR files', on: 'property', column: 'ltv_pct' },
+  { id: '3',    what: 'Note rate',          census: 'filled on 86.9%',               on: 'loan',     column: 'note_rate_pct' },
+  { id: '1005', what: 'Gross monthly rent', census: 'filled on 65.9%',               on: 'property', column: 'gross_monthly_rent' },
+  { id: '912',  what: 'Housing expense',    census: 'filled on 92.2%',               on: 'loan',     column: 'housing_expense_total' },
+  { id: '4',    what: 'Term (months)',      census: 'filled on 100%',                on: 'loan',     column: 'term_months' },
+  { id: '2',    what: 'Loan amount',        census: 'filled ~92%',                   on: 'loan',     column: 'loan_amount' },
+  { id: '356',  what: 'Appraised value',    census: 'filled on 74.5%',               on: 'property', column: 'appraised_value' },
+  { id: '1821', what: 'Estimated value',    census: 'filled on 69.6%',               on: 'property', column: 'estimated_value' },
+  { id: '4008', what: 'Vesting type',       census: 'the vesting line',              on: 'loan',     column: 'vesting_type' },
+  { id: '1859', what: 'Vesting entity',     census: 'the entity name',               on: 'loan',     column: 'vesting_entity_name' },
+];
+
+router.get('/fields', async (req, res) => {
+  const loanNumber = String(req.query.loan || '').trim();
+  if (!loanNumber) return res.status(400).json({ ok: false, error: 'pass ?loan=<loan number>' });
+  if (!encompass.configured()) {
+    return res.status(503).json({ ok: false, error: 'Encompass is not connected on this deployment.' });
+  }
+  try {
+    const { rows } = await db.query(
+      `SELECT id, loan_number, encompass_loan_guid, encompass_synced_at, milestone_name
+         FROM lt_loans WHERE loan_number = $1`, [loanNumber]);
+    const loan = rows[0];
+    if (!loan) return res.status(404).json({ ok: false, error: 'PILOT does not hold that loan number.' });
+    if (!loan.encompass_loan_guid) {
+      return res.json({ ok: true, loanNumber, note: 'PILOT holds no Encompass id for this loan, so it can only be found by a pipeline search — nothing can be read by field number.' });
+    }
+
+    // ONE fieldReader call, exactly as the sync makes it.
+    let values = null; let readError = null;
+    try {
+      values = await encompass.fieldReader(loan.encompass_loan_guid, FIELD_PROBE.map((f) => f.id));
+    } catch (e) { readError = String((e && e.message) || e).slice(0, 300); }
+
+    const storedLoan = (await db.query('SELECT * FROM lt_loans WHERE id = $1', [loan.id])).rows[0] || {};
+    const storedProp = (await db.query('SELECT * FROM lt_properties WHERE loan_id = $1 LIMIT 1', [loan.id])).rows[0] || {};
+    const compare = FIELD_PROBE.map((f) => {
+      const row = f.on === 'property' ? storedProp : storedLoan;
+      return {
+        field: f.id,
+        what: f.what,
+        census: f.census,
+        encompass: values ? (values[f.id] === undefined ? '(not returned)' : values[f.id]) : null,
+        pilot: f.column in row ? row[f.column] : '(no such column)',
+        storedOn: f.on,
+      };
+    });
+    res.json({ ok: true, loanNumber, milestone: loan.milestone_name,
+      lastRead: loan.encompass_synced_at, readError, fields: compare });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: (e && e.message) || String(e) });
+  }
+});
+
+/**
  * CATALOG PROBE — ask Encompass, from the server that holds the credentials, which
  * catalog addresses actually answer. READ ONLY.
  *
