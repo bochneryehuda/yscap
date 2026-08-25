@@ -66,6 +66,12 @@ const MEASURED = [
     expectKey: 'My Pipeline',
   },
   {
+    kind: 'loanTemplate',
+    from: 'client.listLoanTemplates, normalised from /v3/settings/templates/loanTemplateSet/folders',
+    row: { path: 'Public:\\Companywide\\DSCR 30 YEAR FRM', name: 'DSCR 30 YEAR FRM', description: 'DSCR 30 YEAR FRM', entityType: 'LoanTemplateSet' },
+    expectKey: 'Public:\\Companywide\\DSCR 30 YEAR FRM',
+  },
+  {
     kind: 'enum',
     from: 'client.listFieldEnums, normalised from /encompass/v1/loanPipeline/fieldDefinitions',
     row: { fieldId: '4189', description: 'Co-Borr Sex No Co Applicant', requireValueFromList: true, options: [{ value: 'Y', text: 'No co-applicant' }, { value: 'N', text: 'No' }] },
@@ -110,6 +116,18 @@ check(enumSpec && !enumSpec.keyFn(RAW_PIPELINE_ROW),
 check(RAW_PIPELINE_ROW.fieldDefinition.fieldOptions.options.length === 2,
   'and that the options sit three levels down, at fieldDefinition.fieldOptions.options, where `raw.options` would never find them');
 
+console.log('\nthe raw loan-template payload, whose key names match nothing');
+
+const RAW_TEMPLATE_ROW = {
+  entityType: 'LoanTemplateSet',
+  entityName: 'DSCR 30 YEAR FRM',
+  entityPath: 'Public:\\Companywide\\DSCR 30 YEAR FRM',
+  hasSubFolders: false,
+};
+const tplSpec = KINDS.get('loanTemplate');
+check(tplSpec && !tplSpec.keyFn(RAW_TEMPLATE_ROW),
+  'the RAW template row does NOT key — its names are entityPath/entityName while the chain asks for path/name/id, so unnormalised the catalog would hold zero templates');
+
 // ── THE DEAD ADDRESSES MUST NOT COME BACK ───────────────────────────────────
 console.log('\nthe five addresses that answered 403 stay gone');
 
@@ -125,6 +143,7 @@ const DEAD = [
   ['milestones', '/encompass/v3/settings/loan/milestones'],
   ['picklists', '/encompass/v3/settings/loan/enums'],
   ['folders', '/encompass/v3/settings/loan/folders'],
+  ['loan templates', '/encompass/v3/settings/loan/loanTemplates'],
 ];
 for (const [what, dead] of DEAD) {
   check(!CODE.includes(dead), `${what}: the 403 address is not called any more (${dead})`);
@@ -136,6 +155,7 @@ const LIVE = [
   ['picklists', '/encompass/v1/loanPipeline/fieldDefinitions'],
   ['folders', '/encompass/v1/loanFolders'],
   ['custom fields', '/encompass/v3/settings/loan/customFields'],
+  ['loan templates', '/encompass/v3/settings/templates/loanTemplateSet/folders'],
 ];
 for (const [what, live] of LIVE) {
   check(CODE.includes(live), `${what}: the measured address IS called (${live})`);
@@ -206,6 +226,38 @@ check(/r\.fieldID/.test(CODE),
   check(calls.every((c) => c.includes('limit=10000')), 'each asking for the measured 10,000-row page');
   // The reverted first attempt capped at 5,000 — 21% of this catalog, silently.
   check(fields.length > 20000, 'and it is NOT silently capped part-way, which is what the first attempt did');
+
+  // ---- the loan templates: a TREE, and every folder must be opened ---------
+  console.log('\nthe loan-template walker, run against the tree measured on 2026-08-25');
+  // Transcribed from the live walk, including the folder whose `hasSubFolders` is
+  // FALSE. The walk's first run gated recursion on that flag and reported a
+  // complete tree having never looked inside it — a folder with no child folders
+  // can still hold templates, and this fixture is what keeps that fix honest.
+  const TREE = {
+    public: { contents: [{ entityType: 'TemplateFolder', entityName: 'Companywide', entityPath: 'Public:\\Companywide\\', hasSubFolders: true }] },
+    personal: { contents: [{ entityType: 'LoanTemplateSet', entityName: 'Example Purchase Loan Template', entityPath: 'Personal:\\Example Purchase Loan Template' }] },
+    'Public:\\Companywide\\': { contents: [
+      { entityType: 'TemplateFolder', entityName: 'DO NOT USE', entityPath: 'Public:\\Companywide\\DO NOT USE\\', hasSubFolders: false },
+      { entityType: 'LoanTemplateSet', entityName: 'DSCR 30 YEAR FRM', entityPath: 'Public:\\Companywide\\DSCR 30 YEAR FRM' },
+      { entityType: 'LoanTemplateSet', entityName: 'Fix & Flip', entityPath: 'Public:\\Companywide\\Fix & Flip' },
+    ] },
+    'Public:\\Companywide\\DO NOT USE\\': { contents: [
+      { entityType: 'LoanTemplateSet', entityName: 'Retired DSCR', entityPath: 'Public:\\Companywide\\DO NOT USE\\Retired DSCR' },
+    ] },
+  };
+  enc.apiGet = async (path_) => {
+    const key = new URL(`http://x${path_}`).searchParams.get('path');
+    if (!(key in TREE)) throw new Error(`Encompass 404: no such folder ${key}`);
+    return TREE[key];
+  };
+  const templates = await client.listLoanTemplates();
+  check(templates.length === 4, `every leaf comes back — ${templates.length} of 4`);
+  check(templates.every((r) => tplSpec.keyFn(r) && tplSpec.labelFn(r)),
+    'and every one of them keys AND labels through the real catalog writer');
+  check(!templates.some((r) => String(r.entityType).toLowerCase().includes('folder')),
+    'folders are followed, not stored — a folder is not a template');
+  check(templates.some((r) => r.path.includes('DO NOT USE')),
+    'a folder with hasSubFolders:false is STILL opened — that flag means no child folders, not no templates');
 
   enc.apiGet = realGet;
 
