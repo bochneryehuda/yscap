@@ -640,8 +640,17 @@ router.get('/request-audit', async (req, res) => {
   await cat('folders — in use', '/encompass/v3/settings/loan/folders');
   await cat('folders — candidate', '/encompass/v1/loanFolders');
   await cat('loan templates — in use', '/encompass/v3/settings/loan/loanTemplates');
-  await cat('loan templates — per the 400', '/encompass/v3/settings/templates/loanTemplateSet/folders?path=public');
-  await cat('loan templates — per the 400', '/encompass/v3/settings/templates/loanTemplateSet/folders?path=personal');
+  // THE FOUR SHAPES ICE ITSELF SHIPS, verbatim from its Developer Connect collection
+  // (requests 649 and 657) and from the tutorial "Retrieve Loan Template Folder
+  // Locations and Settings". The tenant's own 400 said the path must "start with
+  // public or personal", so the bare forms are asked; ICE's literal example goes a
+  // level deeper (`public\Companywide`), and its V1 spelling puts the folder in the
+  // PATH rather than the query string, which is a different request altogether.
+  // All four are asked because the difference between them is exactly what is unknown.
+  await cat('loan templates — v3, path=public', '/encompass/v3/settings/templates/loanTemplateSet/folders?path=public');
+  await cat('loan templates — v3, path=personal', '/encompass/v3/settings/templates/loanTemplateSet/folders?path=personal');
+  await cat("loan templates — v3, ICE's literal example", '/encompass/v3/settings/templates/loanTemplateSet/folders?path=public%5cCompanywide');
+  await cat('loan templates — v1, folder in the path', '/encompass/v1/settings/templates/loanTemplateSet/folders/public');
   await cat('the people in the company', '/encompass/v1/company/users?limit=5&start=0');
 
   // ── 5. THE TWO THE COVERAGE CHECK CAUGHT. Neither has ever been measured. ──
