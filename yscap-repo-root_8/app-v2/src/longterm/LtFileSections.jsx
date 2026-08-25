@@ -1,4 +1,4 @@
-import { money, money2, pct, ratio, plain, day, yesNo } from './format.js';
+import { money, money2, pct, ratio, plain, day, yesNo, purpose } from './format.js';
 import React from 'react';
 
 /**
@@ -312,7 +312,7 @@ function Terms({ data }) {
         ['Lien position', plain(data.lienPosition)],
         ['Product', plain(data.productKind)],
         ['Program', plain(data.program)],
-        ['Purpose', plain(data.purpose)],
+        ['Purpose', purpose(data.purpose)],
         ['Prepayment penalty', data.prepaymentPenaltyMonths != null ? `${data.prepaymentPenaltyMonths} months` : '—'],
         ['Penalty structure', plain(data.prepaymentPenaltyStructure)],
       ]} />
@@ -578,8 +578,13 @@ function Declarations({ data }) {
  */
 function Summary({ data, file, sections, lock, contacts, history }) {
   const b = file.borrowers || { parties: [] };
-  const people = b.parties.filter((p) => p.partyType !== 'entity');
-  const entities = b.parties.filter((p) => p.partyType === 'entity');
+  const people = (b.parties || []).filter((p) => p.partyType !== 'entity');
+  // HOW IT VESTS COMES FROM THE SERVER'S ONE ANSWER, not from a second reading of the
+  // party rows (owner-reported 2026-08-25: this said there was no vesting entity on a
+  // file whose own header named one). The header reads Encompass field 4008 and this
+  // used to read the 1003's entity PARTY rows — two records of one fact, and on this
+  // tenant the entity is routinely stated in 4008 with no party row behind it.
+  const vest = file.vesting || null;
   const cov = file.coverage || {};
   const labelFor = (k) => {
     const s = (sections || []).find((x) => x.key === k);
@@ -595,14 +600,22 @@ function Summary({ data, file, sections, lock, contacts, history }) {
   return (
     <>
       <Facts columns={3} rows={[
-        ['Borrowers', people.length ? people.map((p) => p.name || 'Name not read yet').join(' · ') : '—'],
-        ['Vesting entity', entities.length ? entities.map((e) => e.name || 'Name not read yet').join(' · ') : '—'],
+        // A loan found but not yet read in full has NO party rows and a borrower name
+        // from the pipeline search. Drawing "—" there said this file has no borrower,
+        // on a file whose header names one — so the search name is used and LABELLED,
+        // never passed off as the read application.
+        ['Borrowers', people.length
+          ? people.map((p) => p.name || 'Name not read yet').join(' · ')
+          : (b.searchName ? `${b.searchName} (from the pipeline; the application has not been read yet)` : '—')],
+        ['Vesting entity', !vest || !vest.type ? '—'
+          : vest.type === 'individual' ? 'Individual (no entity)'
+            : vest.label],
         ['Property', plain(file.property && file.property.address)],
         ['Loan amount', money(data.loanAmount)],
         ['Note rate', data.noteRatePct != null ? pct(data.noteRatePct) : '—'],
         ['Term', data.termMonths != null ? `${data.termMonths} months` : '—'],
         ['Program', plain(data.program)],
-        ['Purpose', plain(data.purpose)],
+        ['Purpose', purpose(data.purpose)],
         ['DSCR', ratio(file.income && file.income.dscr)],
         ['Rate lock', lock && lock.status ? plain(lock.status) : 'Not locked'],
         ['Team on this file', contacts && contacts.length ? String(contacts.length) : '—'],

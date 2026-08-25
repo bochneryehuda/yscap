@@ -129,9 +129,14 @@ function Rail({ rail }) {
  */
 function FileHeader({ rail, loan, file }) {
   const address = (file && file.property && file.property.address) || null;
-  const vesting = !loan || !loan.vesting_type ? null
-    : String(loan.vesting_type).trim().toLowerCase() === 'individual' ? 'Individual'
-      : (loan.vesting_entity_name || 'Entity');
+  // HOW IT VESTS COMES FROM THE SERVER'S ONE ANSWER (`src/longterm/vesting.js`),
+  // not from this screen's own reading of the loan row. It used to be decided here
+  // while the Loan summary decided it from the 1003's entity PARTY rows — two records
+  // of one fact, so the plate named the company and the middle of the same page said
+  // there wasn't one (owner-reported 2026-08-25). The rule itself is unchanged, and it
+  // is still the owner's: field 4008 saying "individual" MEANS individual.
+  const vest = (file && file.vesting) || null;
+  const vesting = vest && vest.label ? vest.label : null;
   // THE STATUS IS SAID ONCE, IN ITS FINISHED FORM (owner-reported 2026-08-25: *"Why
   // does it say 'Not submitted'? ... Just say the finishing status that is now, which
   // is 'Submitted'."*).

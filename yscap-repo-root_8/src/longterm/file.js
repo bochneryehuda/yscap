@@ -39,6 +39,7 @@
 
 const unsourced = require('./application/unsourced');
 const dscrVerdict = require('./dscr-verdict');
+const vesting = require('./vesting');
 const { num, text } = require('./num');
 
 const lazy = {
@@ -297,7 +298,21 @@ async function loadFile(loanId, loan = null, opts = {}) {
         id: p.id, number: p.pair_number, propertyUsage: text(p.property_usage_type),
       })),
       parties: people,
+      // THE NAME THE PIPELINE SEARCH RETURNS, kept beside the party rows rather than
+      // instead of them. A loan PILOT has found but not yet read in full has a
+      // borrower name and NO party rows at all, so the summary drew "—" under
+      // Borrowers on a file whose own header named the person two inches above. This
+      // is what the header is reading; the screen says which it is showing.
+      searchName: text(l.borrower_name),
     },
+
+    // HOW THIS LOAN VESTS — ONE answer (owner-reported 2026-08-25: the plate named
+    // the entity and the Loan summary said there wasn't one). The plate read Encompass
+    // field 4008; the summary read the 1003's entity PARTY rows. Both were right about
+    // their own source, which is exactly why neither may keep deciding it alone.
+    // `src/longterm/vesting.js` is the rule, and it carries the owner's own: field
+    // 4008 saying "individual" MEANS individual, whatever party rows exist.
+    vesting: vesting.vestingOf(l, people),
 
     property: {
       error: property.error,
