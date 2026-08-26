@@ -120,6 +120,12 @@ function call(server, path, token, { raw = false } = {}) {
     eq(oldRule.rows[0].n, 0, 'A4 CONTROL: the oneLine-only rule the omnibox used finds that same file ZERO times');
     const omOneLine = await call(server, `/api/staff/search?q=${encodeURIComponent('Elmwood')}`, tok);
     eq(ours(omOneLine.body && omOneLine.body.loans).length, 1, 'A5 and a oneLine address still works, unchanged');
+    /* THE OMNIBOX CARRIED THE MINIMUM AND THE CAP BUT NOT THE ESCAPING, so a
+       typed `%` was a wildcard here too. Two characters on purpose: a bare `%`
+       is refused by the minimum and would prove that rule rather than this one. */
+    const omPct = await call(server, `/api/staff/search?q=${encodeURIComponent('%%')}`, tok);
+    eq((omPct.body && omPct.body.loans || []).length, 0,
+      'A6 a typed %% in the omnibox is a LITERAL — it matches no file, rather than the first six of every file');
 
     // ── B. THE EXCEPTION REGISTER ─────────────────────────────────────────
     const regAll = await call(server, '/api/admin/exceptions?status=open', tok);

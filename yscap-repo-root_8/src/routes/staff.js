@@ -1078,7 +1078,15 @@ router.get('/search', async (req, res) => {
   try {
     const raw = String(req.query.q || '').trim();
     if (raw.length < 2) return res.json({ loans: [], borrowers: [], llcs: [], trackRecords: [], officers: [], tasks: [], chats: [] });
-    const like = '%' + raw.slice(0, 80) + '%';
+    /* The SHARED parameter, which already carried this door's own two rules (a
+       two-character minimum, an 80-character cap) and adds the one it was
+       missing: `%` and `_` are ESCAPED to literals, so typing "100%" searches
+       for a percent sign instead of matching every file in the company. For
+       ordinary text it produces the byte-identical string this line always did.
+       The early return above still answers the short case with empty lists
+       rather than an unfiltered one. */
+    const like = fileSearch.likeParam(raw);
+    if (!like) return res.json({ loans: [], borrowers: [], llcs: [], trackRecords: [], officers: [], tasks: [], chats: [] });
     const meId = req.actor && req.actor.id;
 
     // ---- loans (applications) ----
