@@ -497,6 +497,16 @@ const GOV = require('../src/lib/closing-costs');
   ok('H8a no field carries an undefined `hint` block', !/class="hint"/.test(html));
   ok('H8b the admin boxes are aligned structurally, not by keeping labels short',
     /\.ts-admin-grid2 \.field\{ justify-content:flex-end; \}/.test(html));
+  /* AND THE ORPHANED DOLLAR SIGN (owner-reported 2026-08-26: "the dollar sign comes to the next
+     line, so the field goes to the next line"). A unit marker at the end of a label is not a word
+     — when "State transfer tax — buyer ($)" wraps, the "($)" lands alone on line two and the label
+     silently becomes two lines tall. Binding it to the last word with a non-breaking space means
+     a label wraps at a real word boundary or not at all, so nobody has to keep the wording short
+     to keep the zone straight. Prose is exempt: only the LABELS are checked. */
+  const looseUnit = (html.match(/<label\b[^>]*>[\s\S]*?<\/label>/g) || [])
+    .filter(function (l) { return / \(\$\)/.test(l) || / \(%\)/.test(l); });
+  ok('H8c no label leaves its unit marker loose enough to orphan onto its own line',
+    looseUnit.length === 0, looseUnit.slice(0, 3).join(' | '));
   ok('H9 every manual box exists on the admin zone',
     /id="tsFeeUwPart"/.test(html) && /id="tsFeeLegal"/.test(html) && /id="tsFeeSettlement"/.test(html));
   ok('H9b …including the CEMA question and its amount', /id="tsCemaOn"/.test(html) && /id="tsFeeCema"/.test(html));

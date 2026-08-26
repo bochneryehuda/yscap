@@ -355,6 +355,12 @@
   /* A placeholder is a HINT, not a sentence — anything long truncates mid-word and reads as a
      broken field. The explanation lives in the label's note instead, which wraps properly. */
   .ts-admin-grid2 .input input::placeholder{ font-size:.9rem; opacity:.75; }
+  /* The box carries .9rem of side padding of its own and the input another .45rem, so ~22px of a
+     narrow two-column cell went to padding — which is what made these fields feel cramped and cut
+     their text off early. And the "$" marker stayed at the full 1rem while the number beside it
+     shrank, so the marker read larger than the figure it marks. Presentation only. */
+  .ts-admin-grid2 .input{ padding:0 .55rem; }
+  .ts-admin-grid2 .input .adorn{ font-size:.95rem; }
   .ts-admin-grid2 .field label{ font-size:.75rem; color:var(--muted); margin-bottom:.28rem; display:block; }
   .ts-admin-check{ display:flex; align-items:flex-start; gap:.5rem; font-size:.82rem; color:var(--ivory-soft); margin:.2rem 0 .1rem; cursor:pointer; line-height:1.4; }
   .ts-admin-check input{ margin-top:.15rem; flex:0 0 auto; width:auto; }
@@ -746,11 +752,11 @@
                 <div class="ts-adm-body">
                 <label class="ts-admin-check"><input type="checkbox" id="tsManualOn" data-noshare> Price as a manual scenario (admin-set basis)</label>
                 <div class="ts-admin-grid2" id="tsManualFields" hidden>
-                    <div class="field"><label for="tsMLtv">Initial / as-is LTV (%)</label><div class="input"><input id="tsMLtv" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
-                    <div class="field"><label for="tsMArv">ARV LTV (%)</label><div class="input"><input id="tsMArv" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
-                    <div class="field"><label for="tsMLtc">LTC (%)</label><div class="input"><input id="tsMLtc" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
-                    <div class="field"><label for="tsMRate">Note rate (%)</label><div class="input"><input id="tsMRate" data-noshare type="number" inputmode="decimal" step="0.125" min="0" placeholder="auto"></div></div>
-                    <div class="field"><label for="tsMIr">Interest reserve (months)</label><div class="input"><input id="tsMIr" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="from form"></div></div>
+                    <div class="field"><label for="tsMLtv">Initial / as-is LTV&nbsp;(%)</label><div class="input"><input id="tsMLtv" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsMArv">ARV LTV&nbsp;(%)</label><div class="input"><input id="tsMArv" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsMLtc">LTC&nbsp;(%)</label><div class="input"><input id="tsMLtc" data-noshare type="number" inputmode="decimal" step="1" min="0" max="100" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsMRate">Note rate&nbsp;(%)</label><div class="input"><input id="tsMRate" data-noshare type="number" inputmode="decimal" step="0.125" min="0" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsMIr">Interest reserve&nbsp;(months)</label><div class="input"><input id="tsMIr" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="from form"></div></div>
                 </div>
                 <p class="ts-admin-mnote" id="tsManualHint" hidden>Blank fields fall back to the program's computed value. Overrides may exceed program limits — the term sheet prices and exports on your basis and is marked <em>manually underwritten</em>.</p>
                 </div>
@@ -763,7 +769,7 @@
                          reopened file re-registers the same loan it was signed at rather than
                          jumping to the maximum. Adopted once by adoptLadderPick(), then blanked. -->
                     <input id="tsLadderPick" data-noshare type="hidden">
-                    <div class="field"><label for="tsTargetLoan">Loan amount ($)</label><div class="input"><span class="adorn">$</span><input id="tsTargetLoan" data-noshare type="text" inputmode="numeric" placeholder="maximum"></div></div>
+                    <div class="field"><label for="tsTargetLoan">Loan amount&nbsp;($)</label><div class="input"><span class="adorn">$</span><input id="tsTargetLoan" data-noshare type="text" inputmode="numeric" placeholder="maximum"></div></div>
                 </div>
                 <p class="ts-admin-mnote" id="tsTargetLoanHint">Blank = the deal's maximum. A <strong>smaller</strong> amount is simply taking less: no approval needed, exactly like a step on the pricing ladder. The construction budget stays fully financed and the reduction comes off the initial advance. To go <strong>above</strong> the maximum, set the basis below (LTV / LTC / ARV) — that is an exception and goes to an admin for approval.</p>
                 </div>
@@ -772,13 +778,13 @@
                 <summary><span class="ts-adm-chev" aria-hidden="true"></span><span class="ts-adm-title">Rate markup / YSP</span><span class="ts-adm-chip" hidden>In use</span></summary>
                 <div class="ts-adm-body">
                 <div class="ts-admin-grid2">
-                    <div class="field"><label for="tsYspStd">Standard (%)</label><div class="input"><input id="tsYspStd" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
-                    <div class="field"><label for="tsYspGold">Gold (%)</label><div class="input"><input id="tsYspGold" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
-                    <div class="field"><label for="tsYspSilver">Silver (%, max 1.00)</label><div class="input"><input id="tsYspSilver" data-noshare type="number" inputmode="decimal" step="0.05" min="0" max="1" placeholder="0.5"></div></div>
+                    <div class="field"><label for="tsYspStd">Standard&nbsp;(%)</label><div class="input"><input id="tsYspStd" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
+                    <div class="field"><label for="tsYspGold">Gold&nbsp;(%)</label><div class="input"><input id="tsYspGold" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0.5"></div></div>
+                    <div class="field"><label for="tsYspSilver">Silver&nbsp;(%, max 1.00)</label><div class="input"><input id="tsYspSilver" data-noshare type="number" inputmode="decimal" step="0.05" min="0" max="1" placeholder="0.5"></div></div>
                 </div>
                 <div class="ts-admin-group">Gold top tier — manual markup</div>
                 <div class="ts-admin-grid2">
-                    <div class="field"><label for="tsYspGoldT1">Gold top tier (%)</label><div class="input"><input id="tsYspGoldT1" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0 (no markup)"></div></div>
+                    <div class="field"><label for="tsYspGoldT1">Gold top tier&nbsp;(%)</label><div class="input"><input id="tsYspGoldT1" data-noshare type="number" inputmode="decimal" step="0.05" min="0" placeholder="0 (no markup)"></div></div>
                 </div>
                 <p class="ts-admin-mnote">Gold’s top-experience tier — Fix&nbsp;&amp;&nbsp;Flip / Bridge with 10+ deals, or Ground-up with 8+ — <strong>normally carries no markup (0%)</strong>. To add one for <em>this file</em>, type it in <strong>Gold top tier</strong> above; leave it blank to keep the top tier at zero. The <strong>Gold (%)</strong> field applies to every other Gold tier. For company-wide markup per tier across all programs, use the <strong>Pricing Admin Center</strong>. Enter <strong>0</strong> in any field to waive that markup entirely; leave a field blank to use the 0.5% default. On the <strong>Silver</strong> program the note buyer’s buy rate is floored at the note rate minus 1.00 point — markup above 1.00% is never earned, so the Silver markup is <strong>hard-capped at 1.00%</strong> (a larger value prices exactly as 1.00%).</p>
                 </div>
@@ -787,10 +793,10 @@
                 <summary><span class="ts-adm-chev" aria-hidden="true"></span><span class="ts-adm-title">Origination points</span><span class="ts-adm-chip" hidden>In use</span></summary>
                 <div class="ts-adm-body">
                 <div class="ts-admin-grid2">
-                    <div class="field"><label for="tsOrigStd">Standard (%)</label><div class="input"><input id="tsOrigStd" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
-                    <div class="field"><label for="tsOrigGold">Gold (%)</label><div class="input"><input id="tsOrigGold" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
-                    <div class="field"><label for="tsOrigSilver">Silver (%)</label><div class="input"><input id="tsOrigSilver" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
-                    <div class="field"><label for="tsOrigManual">Manual (%)</label><div class="input"><input id="tsOrigManual" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
+                    <div class="field"><label for="tsOrigStd">Standard&nbsp;(%)</label><div class="input"><input id="tsOrigStd" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
+                    <div class="field"><label for="tsOrigGold">Gold&nbsp;(%)</label><div class="input"><input id="tsOrigGold" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
+                    <div class="field"><label for="tsOrigSilver">Silver&nbsp;(%)</label><div class="input"><input id="tsOrigSilver" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
+                    <div class="field"><label for="tsOrigManual">Manual&nbsp;(%)</label><div class="input"><input id="tsOrigManual" data-noshare type="number" inputmode="decimal" step="0.25" min="0" placeholder="1.25"></div></div>
                 </div>
                 <p class="ts-admin-mnote">The <strong>Manual</strong> value prices the manual scenario — it applies only once a custom LTV / LTC / ARV basis is set (the Manual card lights). The Manual Program prices on the Standard engine and has no company default of its own, so leaving it blank means <strong>“same as Standard”</strong> — including a Standard value you typed above (the placeholder shows the number a blank field will use). The other three programs are unaffected by it.</p>
                 </div>
@@ -809,23 +815,23 @@
                          quote registered before the split rides that key: repurposing it would
                          have restored an old file's frozen $2,195 into the underwriting box and
                          silently re-priced it at $3,190. Typing it here overrides the split. -->
-                    <div class="field"><label for="tsFeeUwPart">Underwriting &amp; processing ($)</label><div class="input"><input id="tsFeeUwPart" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="1200"></div></div>
-                    <div class="field"><label for="tsFeeLegal">Legal fee ($) <span class="ts-admin-note">— 995 general · 1500 big heavy rehab · 2000 ground-up or NY · 2500 NYC</span></label><div class="input"><input id="tsFeeLegal" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="by deal"></div></div>
-                    <div class="field"><label for="tsFeeSettlement">NY settlement agent — optional ($)</label><div class="input"><input id="tsFeeSettlement" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="New York files only"></div></div>
+                    <div class="field"><label for="tsFeeUwPart">Underwriting &amp; processing&nbsp;($)</label><div class="input"><input id="tsFeeUwPart" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="1200"></div></div>
+                    <div class="field"><label for="tsFeeLegal">Legal fee&nbsp;($) <span class="ts-admin-note">— 995 general · 1500 big heavy rehab · 2000 ground-up or NY · 2500 NYC</span></label><div class="input"><input id="tsFeeLegal" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="by deal"></div></div>
+                    <div class="field"><label for="tsFeeSettlement">NY settlement agent — optional&nbsp;($)</label><div class="input"><input id="tsFeeSettlement" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="New York files only"></div></div>
                     <!-- THE NEW YORK CEMA (owner-directed 2026-08-26: "at the final registration
                          before clicking Register Product, you should ask a question if it's a New
                          York CEMA … It should be turned off by default … pre-filled as $1,000").
                          The whole row is HIDDEN unless the file is a New York refinance, so the
                          question is only ever put in front of the officer it can apply to. -->
                     <div class="field" id="tsCemaRow" style="display:none">
-                      <label for="tsFeeCema">New York CEMA ($)</label>
+                      <label for="tsFeeCema">New York CEMA&nbsp;($)</label>
                       <label style="display:flex;gap:.45rem;align-items:center;font-weight:600;margin:0 0 .35rem"><input id="tsCemaOn" data-noshare type="checkbox"> <span>This refinance is a New York CEMA</span></label>
                       <div class="input"><input id="tsFeeCema" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="1000"></div>
                     </div>
-                    <div class="field"><label for="tsFeeUW">Combined UW / processing / legal ($) <span class="ts-admin-note">— older files only; blank = the split above</span></label><div class="input"><input id="tsFeeUW" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="leave blank"></div></div>
-                    <div class="field"><label for="tsFeeCredit">Credit report ($)</label><div class="input"><input id="tsFeeCredit" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="150"></div></div>
-                    <div class="field"><label for="tsFeeAppr">Appraisal — POC ($)</label><div class="input"><input id="tsFeeAppr" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="800"></div></div>
-                    <div class="field"><label for="tsFeeTitle">Title / escrow ($)</label><div class="input"><input id="tsFeeTitle" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto-estimate"></div></div>
+                    <div class="field"><label for="tsFeeUW">Combined UW / processing / legal&nbsp;($) <span class="ts-admin-note">— older files only; blank = the split above</span></label><div class="input"><input id="tsFeeUW" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="leave blank"></div></div>
+                    <div class="field"><label for="tsFeeCredit">Credit report&nbsp;($)</label><div class="input"><input id="tsFeeCredit" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="150"></div></div>
+                    <div class="field"><label for="tsFeeAppr">Appraisal — POC&nbsp;($)</label><div class="input"><input id="tsFeeAppr" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="800"></div></div>
+                    <div class="field"><label for="tsFeeTitle">Title / escrow&nbsp;($)</label><div class="input"><input id="tsFeeTitle" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto-estimate"></div></div>
                     <!-- THE MANUAL CONSTRUCTION FEASIBILITY FEE (owner-directed 2026-08-21: "add
                          this fee type into the manual section in the products and pricing so we
                          can, any time, add it to any other project manually as well"). Blank =
@@ -833,7 +839,7 @@
                          Center); a typed amount overrides it on THIS file, including on a deal
                          that attracts none; a typed 0 WAIVES it. Any typed value — 0 included —
                          goes to an admin for approval like every other knob in this zone. -->
-                    <div class="field"><label for="tsFeasFee">Construction feasibility review ($) <span class="ts-admin-note">— 1250 ground-up · 750 heavy rehab</span></label><div class="input"><input id="tsFeasFee" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="by deal type"></div></div>
+                    <div class="field"><label for="tsFeasFee">Construction feasibility review&nbsp;($) <span class="ts-admin-note">— 1250 ground-up · 750 heavy rehab</span></label><div class="input"><input id="tsFeasFee" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="by deal type"></div></div>
                 </div>
                 <!-- GOVERNMENT CHARGES — THE MANUAL SECTION (owner-directed 2026-08-23:
                      "All those line items should also be able to be added to the manual
@@ -855,15 +861,15 @@
                      the difference between a warning and a number. -->
                 <div class="ts-admin-group">Government charges <span class="ts-admin-note">— mortgage tax, transfer tax, recording. Blank = calculated from the state, county, units and loan.</span></div>
                 <div class="ts-admin-grid2">
-                    <div class="field"><label for="tsTaxUnits">Units (exact) <span class="ts-admin-note">— 3 vs 4 changes the NYC rate</span></label><div class="input"><input id="tsTaxUnits" data-noshare type="number" inputmode="numeric" step="1" min="1" max="99" placeholder="e.g. 3"></div></div>
+                    <div class="field"><label for="tsTaxUnits">Units&nbsp;(exact) <span class="ts-admin-note">— 3 vs 4 changes the NYC rate</span></label><div class="input"><input id="tsTaxUnits" data-noshare type="number" inputmode="numeric" step="1" min="1" max="99" placeholder="e.g. 3"></div></div>
                     <div class="field"><label for="tsTaxCity">Property city <span class="ts-admin-note">— sets the city transfer tax</span></label><div class="input"><input id="tsTaxCity" data-noshare type="text" placeholder="e.g. Brooklyn"></div></div>
                     <div class="field"><label for="tsTaxCounty">Property county <span class="ts-admin-note">— sets the NY / MD tax</span></label><div class="input"><input id="tsTaxCounty" data-noshare type="text" placeholder="e.g. Kings"></div></div>
-                    <div class="field"><label for="tsTaxBuyerShare">Transfer tax — buyer's share (%) <span class="ts-admin-note">— per the contract — PA splits 50/50</span></label><div class="input"><input id="tsTaxBuyerShare" data-noshare type="number" inputmode="numeric" step="1" min="0" max="100" placeholder="auto"></div></div>
-                    <div class="field"><label for="tsTaxMortgage">Mortgage / recordation tax ($) <span class="ts-admin-note">— by state, county, units</span></label><div class="input"><input id="tsTaxMortgage" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
-                    <div class="field"><label for="tsTaxIntangible">Intangible tax — FL ($) <span class="ts-admin-note">— FL — 2 mills on the mortgage</span></label><div class="input"><input id="tsTaxIntangible" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
-                    <div class="field"><label for="tsTaxTransferState">State transfer tax — buyer ($) <span class="ts-admin-note">— purchases only</span></label><div class="input"><input id="tsTaxTransferState" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
-                    <div class="field"><label for="tsTaxTransferLocal">City / local transfer tax — buyer ($) <span class="ts-admin-note">— Philadelphia 3.578%, Pittsburgh</span></label><div class="input"><input id="tsTaxTransferLocal" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
-                    <div class="field"><label for="tsTaxMansion">Mansion tax ($) <span class="ts-admin-note">— NY 1% at $1M+, buyer pays</span></label><div class="input"><input id="tsTaxMansion" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsTaxBuyerShare">Transfer tax — buyer's share&nbsp;(%) <span class="ts-admin-note">— per the contract — PA splits 50/50</span></label><div class="input"><input id="tsTaxBuyerShare" data-noshare type="number" inputmode="numeric" step="1" min="0" max="100" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsTaxMortgage">Mortgage / recordation tax&nbsp;($) <span class="ts-admin-note">— by state, county, units</span></label><div class="input"><input id="tsTaxMortgage" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsTaxIntangible">Intangible tax — FL&nbsp;($) <span class="ts-admin-note">— FL — 2 mills on the mortgage</span></label><div class="input"><input id="tsTaxIntangible" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsTaxTransferState">State transfer tax — buyer&nbsp;($) <span class="ts-admin-note">— purchases only</span></label><div class="input"><input id="tsTaxTransferState" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsTaxTransferLocal">City / local transfer tax — buyer&nbsp;($) <span class="ts-admin-note">— Philadelphia 3.578%, Pittsburgh</span></label><div class="input"><input id="tsTaxTransferLocal" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsTaxMansion">Mansion tax&nbsp;($) <span class="ts-admin-note">— NY 1% at $1M+, buyer pays</span></label><div class="input"><input id="tsTaxMansion" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
                 </div>
                 </div>
                 </details>
@@ -872,7 +878,7 @@
                 <div class="ts-adm-body">
                 <div class="ts-admin-group">Assignment exception <span class="ts-admin-note">— approved effective purchase price</span></div>
                 <div class="ts-admin-grid2">
-                    <div class="field"><label for="tsEffPrice">Effective purchase price ($)</label><div class="input"><span class="adorn">$</span><input id="tsEffPrice" data-noshare type="text" inputmode="numeric" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsEffPrice">Effective purchase price&nbsp;($)</label><div class="input"><span class="adorn">$</span><input id="tsEffPrice" data-noshare type="text" inputmode="numeric" placeholder="auto"></div></div>
                 </div>
                 <p class="ts-admin-mnote" id="tsEffPriceHint"></p>
 
@@ -880,7 +886,7 @@
                 <div class="ts-admin-mnote" id="oopInfoWrap" style="display:none">When a cap has cut the initial advance, an approved exception can raise it toward the initial cap and move the leftover rehab out of pocket. On this scenario the initial is cut by <strong id="oopInitialCut">—</strong>, so up to <strong id="oopMaxRehab">—</strong> of rehab can be brought out of pocket.</div>
                 <label class="ts-admin-check"><input type="checkbox" id="tsOopRehabMax" data-noshare> Raise the initial advance to its maximum (bring the full available rehab out of pocket)</label>
                 <div class="ts-admin-grid2">
-                    <div class="field"><label for="tsOopRehab">Out-of-pocket rehab ($)</label><div class="input"><span class="adorn">$</span><input id="tsOopRehab" data-noshare type="text" inputmode="numeric" placeholder="0"></div></div>
+                    <div class="field"><label for="tsOopRehab">Out-of-pocket rehab&nbsp;($)</label><div class="input"><span class="adorn">$</span><input id="tsOopRehab" data-noshare type="text" inputmode="numeric" placeholder="0"></div></div>
                 </div>
                 <p class="ts-admin-mnote">Off by default — all rehab is financed. Any amount here (or the toggle above) needs the same admin approval as any pricing override. The total loan, rate and every cap stay the same; the amount is capped at the maximum shown, and the initial advance never exceeds its own cap.</p>
                 </div>
@@ -893,7 +899,7 @@
                         <option value="non_dutch">Non-Dutch / Drawn (default)</option>
                         <option value="dutch">Dutch / Full-Boat</option>
                     </select></div></div>
-                    <div class="field"><label for="tsDeferredOrig">Deferred origination fee (%)</label><div class="input"><input id="tsDeferredOrig" data-noshare type="number" inputmode="decimal" step="0.25" min="0" max="100" placeholder="0"></div></div>
+                    <div class="field"><label for="tsDeferredOrig">Deferred origination fee&nbsp;(%)</label><div class="input"><input id="tsDeferredOrig" data-noshare type="number" inputmode="decimal" step="0.25" min="0" max="100" placeholder="0"></div></div>
                 </div>
                 <p class="ts-admin-mnote">Accrual defaults to <strong>Non-Dutch / As-Drawn</strong> (interest on funds drawn). A deferred origination fee is paid at payoff as an exit fee — <strong>not</strong> part of cash to close or liquidity. Default 0.</p>
 
