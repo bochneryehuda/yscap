@@ -1540,6 +1540,14 @@
      hidden rather than cleared when a deal moves off fix & flip, so a bridge routinely carries a
      stale "heavy". MIRRORS `src/lib/lender-fees.legalFeeFor` — the two are run over the same
      battery by the pure test and any disagreement fails the build. */
+  /* Plain words for each rung the legal fee can land on, so the panel says WHY this file's legal
+     fee is what it is. Mirrors `lender-fees.LEGAL_BASIS_TEXT`, shortened to fit a row label. */
+  var LEGAL_RUNG_WORDS = {
+    ground_up: "ground-up", ground_up_ny: "ground-up, NY", ny_base: "New York",
+    ny_five_boroughs: "New York City", ny_construction: "NY, $100k+ construction",
+    ny_heavy_rehab: "NY heavy rehab", heavy_rehab_high: "heavy rehab over the property value",
+    manual: "set on this file"
+  };
   function legalRung() {
     var f = coLenderFees();
     var ny = isNyFile();
@@ -2221,15 +2229,24 @@
       if (w) { if (sized && d.brokerFee > 0) { w.style.display = "";
         YS.put("rBrokerLbl", "Broker origination fee (" + origPctStr(d.brokerFeePct / 100) + ")"); YS.put("rBroker", YS.fmtUSD2(d.brokerFee)); }
         else { w.style.display = "none"; } } })();
+    /* OUR FEE'S TWO PARTS, EACH ON ITS OWN ROW (owner-directed 2026-08-26: "I want this broken
+       down, not a full total"). This replaced a single combined row carrying both figures in a
+       sub-line — which is a TOTAL with an explanation, not a breakdown, and the officer reading
+       the panel wants the two numbers where every other fee's number is.
+       EXACTLY ONE SHAPE IS EVER VISIBLE: the two parts, or the combined row for a file carrying a
+       typed whole-number total (where there are no two figures to show, and inventing them would
+       put a split on a sheet nobody chose). The legal row NAMES ITS RUNG so the officer can see
+       WHY it is $2,000 rather than $995 without opening the admin zone. */
+    var split = sized && d.feeSplit;
+    var showRow = function (id, on) { var e = el(id); if (e) e.style.display = on ? "" : "none"; };
+    showRow("rUwRow", split);
+    showRow("rLegalRow", split);
+    showRow("rLenderRow", !split);
     YS.put("rLender", sized ? YS.fmtUSD2(d.lenderFee) : EM);
-    /* THE PARTS, on the panel the officer prices against — kept as ONE line whose value carries
-       both figures rather than two new rows, so the panel's row set (and every screenshot of it)
-       is unchanged on a file that carries a typed whole-number total. */
-    var lfSub = el("rLenderSub");
-    if (lfSub) {
-      lfSub.textContent = (sized && d.feeSplit)
-        ? ("underwriting & processing " + YS.fmtUSD2(d.uwFee) + " + legal " + YS.fmtUSD2(d.legalFee)) : "";
-      lfSub.style.display = (sized && d.feeSplit) ? "" : "none";
+    if (split) {
+      YS.put("rUwFee", YS.fmtUSD2(d.uwFee));
+      YS.put("rLegalFee", YS.fmtUSD2(d.legalFee));
+      YS.put("rLegalLbl", "Legal fee" + (LEGAL_RUNG_WORDS[d.legalBasis] ? " (" + LEGAL_RUNG_WORDS[d.legalBasis] + ")" : ""));
     }
     var stRow = el("rSettleRow"), stVal = el("rSettle");
     if (stVal) YS.put("rSettle", (sized && d.settleFee > 0) ? YS.fmtUSD2(d.settleFee) : EM);
