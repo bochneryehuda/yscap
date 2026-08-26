@@ -368,7 +368,7 @@ export default function StaffEscalations() {
               value={search} onChange={(e) => setSearch(e.target.value)} />
             {search && <button className="btn small ghost" onClick={() => setSearch('')}>Clear</button>}
             {q && q.length >= 2 && (
-              <span className="small" style={{ color: '#4B585C' }}>Showing matches for “{q}” — {rows.length}{more ? `+ (the first ${rows.length}; narrow the search to see the rest)` : ''}</span>
+              <span className="small" style={{ color: '#4B585C' }}>Showing matches for “{q}”{more ? ` — the first ${rows.length}; narrow the search to see the rest` : ` — ${rows.length}`}</span>
             )}
           </div>
           <div className="esc-seg" role="tablist" aria-label="Filter escalations">

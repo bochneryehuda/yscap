@@ -249,6 +249,24 @@ function call(server, path, token, { raw = false } = {}) {
       'E6 a JSONB KEY NAME finds nothing — it used to match 137 of the 547 files and flood the log');
     eq(await logHas('Zzz No Such Place'), 0, 'E7 with the same honest miss');
 
+    /* E8-E10 — THE LOG'S OWN TYPED WILDCARD. This route built its own
+       `'%' + q + '%'`, so `%` and `_` reached Postgres as LIKE wildcards:
+       MEASURED, a single `%` matched 1679 of 1679 audit rows — the entire log —
+       and one character searched nearly everything. Both now go through the same
+       `likeParam` the queues use, so the log and the queues can never disagree
+       about what a typed string means. Asserted with TWO-character wildcards,
+       because a bare `%` is refused by the minimum-length rule and would prove
+       that rule a second time rather than the escaping. */
+    const logRows = async (query) => {
+      const r = await call(server, `/api/staff/audit-log?q=${encodeURIComponent(query)}&limit=300`, tok);
+      assert.strictEqual(r.status, 200, `audit-log answered ${r.status}`);
+      return (r.body && r.body.rows || []).length;
+    };
+    const logAll = await logRows('');
+    yes(logAll > 0, 'E8 the log has rows to be flooded with');
+    eq(await logRows('%%'), 0, 'E9 a typed %% is a LITERAL — it matches nothing, rather than the whole log');
+    eq(await logRows('x'), logAll, 'E10 and one character does not filter at all, exactly as a blank search does not');
+
     console.log(`\ntest-approvals-search-routes-db: all ${n} checks passed.`);
   } finally {
     // Fixtures are committed, so they are removed by hand — children first.

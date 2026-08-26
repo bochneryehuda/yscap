@@ -270,7 +270,7 @@ export default function StaffExceptions() {
         )}
         {q && q.length >= 2 && (
           <span className="muted small" style={{ color: '#4B585C' }}>
-            Showing matches for “{q}”{rows ? ` — ${rows.length}${more ? '+ (the first ' + rows.length + '; narrow the search to see the rest)' : ''}` : ''}
+            Showing matches for “{q}”{rows ? (more ? ` — the first ${rows.length}; narrow the search to see the rest` : ` — ${rows.length}`) : ''}
           </span>
         )}
       </div>

@@ -19575,7 +19575,20 @@ router.get('/audit-log', async (req, res) => {
     if (entityType) where.push(`al.entity_type = ${P(entityType)}`);
     if (from) where.push(`al.created_at >= ${P(from)}::date`);
     if (to) where.push(`al.created_at < (${P(to)}::date + 1)`); // inclusive of the whole "to" day
-    if (q) {
+    /* A TYPED WILDCARD IS A LITERAL HERE TOO. This route built its own
+       `'%' + q + '%'`, so `%` and `_` reached Postgres as LIKE WILDCARDS —
+       MEASURED: typing a single `%` into the System log matched 1679 of 1679
+       rows, the entire log. It also had no minimum, so one character searched
+       nearly everything. Both are now the shared `likeParam`, which escapes the
+       wildcards and refuses anything under two characters — the SAME rule the
+       approvals queues apply, so the log and the queues can never disagree about
+       what a typed string means. A refused search does not filter, exactly as a
+       blank one does not.
+
+       `auditCodesMatchingText` still gets the RAW text: it matches action LABELS
+       in JavaScript, where a `%` is just a character. */
+    const qLike = q ? fileSearch.likeParam(q) : null;
+    if (qLike) {
       // Free-text across who did it (actor OR the file's loan officer), what
       // they did (action code AND human label), and which borrower / property.
       /* THE ADDRESS IS A COMPOSED HAYSTACK, NOT THE RAW JSONB CAST (2026-08-26).
@@ -19598,7 +19611,7 @@ router.get('/audit-log', async (req, res) => {
          way it is written to them — "Mordechai Scharf" — matches NEITHER
          column: measured 0 rows against 1 for the full name. The parts are kept
          beside it so a surname on its own still works. */
-      const like = P('%' + q + '%');
+      const like = P(qLike);
       const codes = P(auditCodesMatchingText(q)); // action codes whose label matches
       where.push(`(
         s.full_name ILIKE ${like} OR ab.first_name ILIKE ${like} OR ab.last_name ILIKE ${like}
