@@ -470,14 +470,33 @@ const GOV = require('../src/lib/closing-costs');
   ok('H5 the spreadsheet Gold column names them', /\bgd\.uwFee\b/.test(between('var gold;', 'var silver;')) && /\bgd\.settleFee\b/.test(between('var gold;', 'var silver;')));
   ok('H6 the spreadsheet Silver column names them', /\bsd\.uwFee\b/.test(between('var silver;', 'return {')) && /\bsd\.settleFee\b/.test(between('var silver;', 'return {')));
   // And the studio panel the officer prices against.
-  ok('H7 the studio panel names them', /rLenderSub/.test(ts) && /rSettle/.test(ts));
+  /* H7/H8 were re-pointed, not relaxed (owner-directed 2026-08-26: "I want this broken down, not
+     a full total"). The panel used to carry ONE combined row plus a sub-line spelling out both
+     figures — a total with an explanation, which is not a breakdown. It now carries a row EACH,
+     and the combined row survives only for a file with a typed whole-number total. The property
+     both guards assert is unchanged: the panel must NAME the two parts and have somewhere to put
+     them. Asserting the two new ids is strictly stronger than asserting the old sub-line. */
+  ok('H7 the studio panel names both parts on their own rows',
+    /rUwFee/.test(ts) && /rLegalFee/.test(ts) && /rSettle/.test(ts));
+  ok('H7a …and still shows a single combined row for a typed whole-number total',
+    /rLenderRow/.test(ts) && /d\.feeSplit/.test(ts));
   ok('H7b the term sheet PDF names the New York CEMA fee', /d\.cemaFee/.test(pdfBlock) && /d\.cemaLabel/.test(pdfBlock));
   ok('H7c the spreadsheet Standard column names it', /\bd\.cemaFee\b/.test(between('var std = [', 'var gold')));
   ok('H7d the spreadsheet Gold column names it', /\bgd\.cemaFee\b/.test(between('var gold;', 'var silver;')));
   ok('H7e the spreadsheet Silver column names it', /\bsd\.cemaFee\b/.test(between('var silver;', 'return {')));
   ok('H7f the studio panel names it', /rCemaRow/.test(ts));
   const html = fs.readFileSync(path.join(REPO, 'web/v2/tools/term-sheet.html'), 'utf8');
-  ok('H8 …and the panel has somewhere to put them', /id="rLenderSub"/.test(html) && /id="rSettle"/.test(html));
+  ok('H8 …and the panel has somewhere to put them',
+    /id="rUwRow"/.test(html) && /id="rLegalRow"/.test(html) && /id="rLenderRow"/.test(html) && /id="rSettle"/.test(html));
+  /* THE REGRESSION GUARD FOR THE LAYOUT (owner-reported 2026-08-26: "the entire CSS over there on
+     the term sheet studio is broken. All the fields are down"). A note was added under a field
+     using an undefined `hint` class, so it rendered as full-size unstyled body text and pushed the
+     whole admin grid down. Every note in this zone belongs in a `ts-admin-note` inside its label,
+     and the boxes are aligned by pinning each field's contents to the bottom of its grid cell —
+     which holds however long a label runs, rather than depending on nobody writing a long one. */
+  ok('H8a no field carries an undefined `hint` block', !/class="hint"/.test(html));
+  ok('H8b the admin boxes are aligned structurally, not by keeping labels short',
+    /\.ts-admin-grid2 \.field\{ justify-content:flex-end; \}/.test(html));
   ok('H9 every manual box exists on the admin zone',
     /id="tsFeeUwPart"/.test(html) && /id="tsFeeLegal"/.test(html) && /id="tsFeeSettlement"/.test(html));
   ok('H9b …including the CEMA question and its amount', /id="tsCemaOn"/.test(html) && /id="tsFeeCema"/.test(html));

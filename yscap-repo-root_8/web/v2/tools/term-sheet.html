@@ -342,6 +342,19 @@
   .ts-admin-group:first-of-type{ margin-top:.15rem; }
   .ts-admin-note{ font-weight:500; text-transform:none; letter-spacing:0; color:var(--muted-2); }
   .ts-admin-grid2{ display:grid; grid-template-columns:1fr 1fr; gap:.55rem .6rem; }
+  /* A LABEL THAT WRAPS MUST NOT PUSH ITS OWN BOX DOWN while its neighbour's stays up — that is
+     what made this zone read as "all the fields are down, it's messed up" (owner-reported
+     2026-08-26). The grid stretches every .field to the row height, so pinning the contents to the
+     BOTTOM of the cell lines every box up across the row however long a label runs. Structural:
+     it holds for a label added later, without anyone having to keep the wording short. */
+  .ts-admin-grid2 .field{ justify-content:flex-end; }
+  .ts-admin-grid2 .field label{ line-height:1.25; }
+  /* Denser, so more of the zone is on screen at once ("a little more collapsed"). */
+  .ts-admin-grid2 .input input, .ts-admin-grid2 .input select{ font-size:.95rem; padding:.55rem .45rem; }
+  .ts-admin-grid2 .field label{ font-size:.8rem; }
+  /* A placeholder is a HINT, not a sentence — anything long truncates mid-word and reads as a
+     broken field. The explanation lives in the label's note instead, which wraps properly. */
+  .ts-admin-grid2 .input input::placeholder{ font-size:.9rem; opacity:.75; }
   .ts-admin-grid2 .field label{ font-size:.75rem; color:var(--muted); margin-bottom:.28rem; display:block; }
   .ts-admin-check{ display:flex; align-items:flex-start; gap:.5rem; font-size:.82rem; color:var(--ivory-soft); margin:.2rem 0 .1rem; cursor:pointer; line-height:1.4; }
   .ts-admin-check input{ margin-top:.15rem; flex:0 0 auto; width:auto; }
@@ -797,7 +810,7 @@
                          have restored an old file's frozen $2,195 into the underwriting box and
                          silently re-priced it at $3,190. Typing it here overrides the split. -->
                     <div class="field"><label for="tsFeeUwPart">Underwriting &amp; processing ($)</label><div class="input"><input id="tsFeeUwPart" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="1200"></div></div>
-                    <div class="field"><label for="tsFeeLegal">Legal fee ($)</label><div class="input"><input id="tsFeeLegal" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="by deal — 995 general / 1500 big heavy rehab / 2000 ground-up or NY / 2500 NYC"></div></div>
+                    <div class="field"><label for="tsFeeLegal">Legal fee ($) <span class="ts-admin-note">— 995 general · 1500 big heavy rehab · 2000 ground-up or NY · 2500 NYC</span></label><div class="input"><input id="tsFeeLegal" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="by deal"></div></div>
                     <div class="field"><label for="tsFeeSettlement">NY settlement agent — optional ($)</label><div class="input"><input id="tsFeeSettlement" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="New York files only"></div></div>
                     <!-- THE NEW YORK CEMA (owner-directed 2026-08-26: "at the final registration
                          before clicking Register Product, you should ask a question if it's a New
@@ -809,7 +822,7 @@
                       <label style="display:flex;gap:.45rem;align-items:center;font-weight:600;margin:0 0 .35rem"><input id="tsCemaOn" data-noshare type="checkbox"> <span>This refinance is a New York CEMA</span></label>
                       <div class="input"><input id="tsFeeCema" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="1000"></div>
                     </div>
-                    <div class="field"><label for="tsFeeUW">Combined UW / processing / legal ($) <span class="ts-admin-note">— older files only</span></label><div class="input"><input id="tsFeeUW" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="leave blank — the two boxes above apply"></div><div class="hint">Only fill this in to charge ONE combined number instead of the split above. A blank box is the normal case: underwriting and the legal fee are quoted and printed separately.</div></div>
+                    <div class="field"><label for="tsFeeUW">Combined UW / processing / legal ($) <span class="ts-admin-note">— older files only; blank = the split above</span></label><div class="input"><input id="tsFeeUW" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="leave blank"></div></div>
                     <div class="field"><label for="tsFeeCredit">Credit report ($)</label><div class="input"><input id="tsFeeCredit" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="150"></div></div>
                     <div class="field"><label for="tsFeeAppr">Appraisal — POC ($)</label><div class="input"><input id="tsFeeAppr" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="800"></div></div>
                     <div class="field"><label for="tsFeeTitle">Title / escrow ($)</label><div class="input"><input id="tsFeeTitle" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto-estimate"></div></div>
@@ -820,7 +833,7 @@
                          Center); a typed amount overrides it on THIS file, including on a deal
                          that attracts none; a typed 0 WAIVES it. Any typed value — 0 included —
                          goes to an admin for approval like every other knob in this zone. -->
-                    <div class="field"><label for="tsFeasFee">Construction feasibility review ($)</label><div class="input"><input id="tsFeasFee" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="by deal type — 1250 ground-up / 750 heavy rehab"></div></div>
+                    <div class="field"><label for="tsFeasFee">Construction feasibility review ($) <span class="ts-admin-note">— 1250 ground-up · 750 heavy rehab</span></label><div class="input"><input id="tsFeasFee" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="by deal type"></div></div>
                 </div>
                 <!-- GOVERNMENT CHARGES — THE MANUAL SECTION (owner-directed 2026-08-23:
                      "All those line items should also be able to be added to the manual
@@ -842,15 +855,15 @@
                      the difference between a warning and a number. -->
                 <div class="ts-admin-group">Government charges <span class="ts-admin-note">— mortgage tax, transfer tax, recording. Blank = calculated from the state, county, units and loan.</span></div>
                 <div class="ts-admin-grid2">
-                    <div class="field"><label for="tsTaxUnits">Units (exact)</label><div class="input"><input id="tsTaxUnits" data-noshare type="number" inputmode="numeric" step="1" min="1" max="99" placeholder="3 vs 4 changes the NYC rate"></div></div>
-                    <div class="field"><label for="tsTaxCity">Property city</label><div class="input"><input id="tsTaxCity" data-noshare type="text" placeholder="e.g. Brooklyn, Philadelphia, Pittsburgh"></div></div>
-                    <div class="field"><label for="tsTaxCounty">Property county</label><div class="input"><input id="tsTaxCounty" data-noshare type="text" placeholder="e.g. Kings — sets the NY / MD tax rate"></div></div>
-                    <div class="field"><label for="tsTaxBuyerShare">Transfer tax — buyer's share (%)</label><div class="input"><input id="tsTaxBuyerShare" data-noshare type="number" inputmode="numeric" step="1" min="0" max="100" placeholder="per the contract — PA splits 50/50"></div></div>
-                    <div class="field"><label for="tsTaxMortgage">Mortgage / recordation tax ($)</label><div class="input"><input id="tsTaxMortgage" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto — by state, county, units"></div></div>
-                    <div class="field"><label for="tsTaxIntangible">Intangible tax — FL ($)</label><div class="input"><input id="tsTaxIntangible" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto — 2 mills on the mortgage"></div></div>
-                    <div class="field"><label for="tsTaxTransferState">State transfer tax — buyer ($)</label><div class="input"><input id="tsTaxTransferState" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto — purchases only"></div></div>
-                    <div class="field"><label for="tsTaxTransferLocal">City / local transfer tax — buyer ($)</label><div class="input"><input id="tsTaxTransferLocal" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto — Philadelphia 3.578%, Pittsburgh 4%"></div></div>
-                    <div class="field"><label for="tsTaxMansion">Mansion tax ($)</label><div class="input"><input id="tsTaxMansion" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto — NY 1% at $1M+, buyer pays"></div></div>
+                    <div class="field"><label for="tsTaxUnits">Units (exact) <span class="ts-admin-note">— 3 vs 4 changes the NYC rate</span></label><div class="input"><input id="tsTaxUnits" data-noshare type="number" inputmode="numeric" step="1" min="1" max="99" placeholder="e.g. 3"></div></div>
+                    <div class="field"><label for="tsTaxCity">Property city <span class="ts-admin-note">— sets the city transfer tax</span></label><div class="input"><input id="tsTaxCity" data-noshare type="text" placeholder="e.g. Brooklyn"></div></div>
+                    <div class="field"><label for="tsTaxCounty">Property county <span class="ts-admin-note">— sets the NY / MD tax</span></label><div class="input"><input id="tsTaxCounty" data-noshare type="text" placeholder="e.g. Kings"></div></div>
+                    <div class="field"><label for="tsTaxBuyerShare">Transfer tax — buyer's share (%) <span class="ts-admin-note">— per the contract — PA splits 50/50</span></label><div class="input"><input id="tsTaxBuyerShare" data-noshare type="number" inputmode="numeric" step="1" min="0" max="100" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsTaxMortgage">Mortgage / recordation tax ($) <span class="ts-admin-note">— by state, county, units</span></label><div class="input"><input id="tsTaxMortgage" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsTaxIntangible">Intangible tax — FL ($) <span class="ts-admin-note">— FL — 2 mills on the mortgage</span></label><div class="input"><input id="tsTaxIntangible" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsTaxTransferState">State transfer tax — buyer ($) <span class="ts-admin-note">— purchases only</span></label><div class="input"><input id="tsTaxTransferState" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsTaxTransferLocal">City / local transfer tax — buyer ($) <span class="ts-admin-note">— Philadelphia 3.578%, Pittsburgh</span></label><div class="input"><input id="tsTaxTransferLocal" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
+                    <div class="field"><label for="tsTaxMansion">Mansion tax ($) <span class="ts-admin-note">— NY 1% at $1M+, buyer pays</span></label><div class="input"><input id="tsTaxMansion" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto"></div></div>
                 </div>
                 </div>
                 </details>
@@ -1107,8 +1120,14 @@
                 <div class="ts-line"><span class="k" id="rOrigLbl">Origination (1.25%)</span><span class="v" id="rOrig">$0</span></div>
                 <!-- TPO broker origination fee — shown by the JS only on a TPO file where a broker fee is set (owner-directed 2026-08-06). -->
                 <div class="ts-line" id="rBrokerWrap" style="display:none"><span class="k" id="rBrokerLbl">Broker origination fee</span><span class="v" id="rBroker">—</span></div>
-                <div class="ts-line"><span class="k">UW / processing / legal</span><span class="v" id="rLender">$2,195</span></div>
-                <div class="ts-linesub" id="rLenderSub" style="display:none"></div>
+                <!-- OUR FEE'S TWO PARTS, EACH ITS OWN ROW (owner-directed 2026-08-26:
+                     "I want this broken down, not a full total"). The combined row below is
+                     shown ONLY for a file carrying a typed whole-number total, where there
+                     are no two figures to show and inventing them would put a split on a
+                     sheet nobody chose. Exactly one of the two shapes is ever visible. -->
+                <div class="ts-line" id="rUwRow" style="display:none"><span class="k">Underwriting &amp; processing</span><span class="v" id="rUwFee">&mdash;</span></div>
+                <div class="ts-line" id="rLegalRow" style="display:none"><span class="k" id="rLegalLbl">Legal fee</span><span class="v" id="rLegalFee">&mdash;</span></div>
+                <div class="ts-line" id="rLenderRow"><span class="k">UW / processing / legal</span><span class="v" id="rLender">$2,195</span></div>
                 <div class="ts-line" id="rSettleRow" style="display:none"><span class="k">NY settlement agent (optional)</span><span class="v" id="rSettle">&mdash;</span></div>
                 <div class="ts-line" id="rCemaRow" style="display:none"><span class="k">New York CEMA fee</span><span class="v" id="rCema">&mdash;</span></div>
                 <div class="ts-line"><span class="k">Credit report</span><span class="v" id="rCredit">$150</span></div>
@@ -1221,7 +1240,7 @@
 <script src="title-cost.js?v=admin8-tsprog1"></script>
 <script src="gov-charges.js?v=gov2"></script>
 <script src="address-autocomplete.js?v=admin9-tsprog1"></script>
-<script src="termsheet.js?v=heavyrehab1-cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1"></script>
+<script src="termsheet.js?v=feerows1-heavyrehab1-cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1"></script>
 <script src="../float-actions.js?v=admin10-applyfix-tsprog1"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

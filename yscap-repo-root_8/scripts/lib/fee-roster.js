@@ -155,7 +155,12 @@ const CLOSING_FEES = {
       xlsxStd: /d\.feeSplit\) \? \["Underwriting & processing", money2\(d\.uwFee\)[\s\S]{0,200}d\.feeSplit\) \? \["Legal fee", money2\(d\.legalFee\)/,
       xlsxGold: /gd\.feeSplit\) \? \["Underwriting & processing", money2\(gd\.uwFee\)[\s\S]{0,200}gd\.feeSplit\) \? \["Legal fee", money2\(gd\.legalFee\)/,
       xlsxSilver: /sd\.feeSplit\) \? \["Underwriting & processing", money2\(sd\.uwFee\)[\s\S]{0,200}sd\.feeSplit\) \? \["Legal fee", money2\(sd\.legalFee\)/,
-      studioPanel: /underwriting & processing " \+ YS\.fmtUSD2\(d\.uwFee\) \+ " \+ legal " \+ YS\.fmtUSD2\(d\.legalFee\)/,
+      /* RE-POINTED, NOT LOOSENED (owner-directed 2026-08-26: "I want this broken down, not a
+         full total"). The panel used to carry ONE combined row plus a sub-line spelling both
+         figures out; it now carries a row EACH. The property this token exists to hold is
+         unchanged — the structure screen must NAME both parts — and it is still keyed on
+         this surface's own data variable (`d`), so no other surface can satisfy it. */
+      studioPanel: /YS\.put\("rUwFee", YS\.fmtUSD2\(d\.uwFee\)\)[\s\S]{0,240}YS\.put\("rLegalFee", YS\.fmtUSD2\(d\.legalFee\)\)/,
       staffPanel: /cc\.lenderFeeParts\.underwritingLabel[\s\S]{0,300}cc\.lenderFeeParts\.legalLabel/,
       borrowerEmail: /lp\.underwritingLabel[\s\S]{0,200}lp\.legalLabel/,
       derivation: null,   // the derivation page records HOW a number was reached, not the fee roster
