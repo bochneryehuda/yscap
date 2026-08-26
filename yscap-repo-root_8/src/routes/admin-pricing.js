@@ -19,7 +19,7 @@ router.get('/', async (req, res) => {
     const cur = await pricingSettings.load();
     const hist = await db.query(
       `SELECT cps.id, cps.markup_std_pct, cps.markup_gold_pct, cps.markup_silver_pct, cps.orig_std_pct, cps.orig_gold_pct, cps.orig_silver_pct,
-              cps.lender_fee, cps.credit_fee, cps.appraisal_fee, cps.title_fee, cps.extra_fees, cps.markup_tiers, cps.program_availability, cps.note,
+              cps.lender_fee, cps.credit_fee, cps.appraisal_fee, cps.title_fee, cps.extra_fees, cps.markup_tiers, cps.program_availability, cps.lender_fees, cps.note,
               cps.is_current, cps.created_at, s.full_name AS updated_by_name
          FROM company_pricing_settings cps
          LEFT JOIN staff_users s ON s.id = cps.updated_by
@@ -66,6 +66,21 @@ router.put('/', async (req, res) => {
   if (cols.markup_silver_pct != null && cols.markup_silver_pct > 1) {
     return res.status(400).json({ error: 'Silver program markup is capped at 1.00% — anything above 1 point is not earned on this program.' });
   }
+  /* OUR FEE'S TWO PARTS, THE NEW YORK LEGAL LADDER AND THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE
+     (owner-directed 2026-08-26: "everything of this should not be hardwired. It should just be
+     pre-filled in the manual section. Everything can be changeable"). PRESERVE-IF-ABSENT, exactly
+     like extraFees above: the legacy V1 pricing screen never sends this key, and a caller that
+     does not mention it must never silently reset the whole fee ladder to the system numbers.
+     Cleaned by `lender-fees`' own normalizer so there is no second copy of the shape here. */
+  let lenderFees;
+  if (b.lenderFees !== undefined) {
+    lenderFees = require('../lib/lender-fees').cleanLenderFees(b.lenderFees);
+    for (const [k, v] of Object.entries(lenderFees)) {
+      if (!(Number(v) >= 0) || Number(v) > 1000000) return res.status(400).json({ error: `${k} looks out of range` });
+    }
+  } else {
+    lenderFees = (await pricingSettings.load()).lenderFees;
+  }
   // Per-experience-tier markup map (item 15). Like extraFees, a caller that does
   // NOT send markupTiers PRESERVES the current map (the legacy V1 pricing screen
   // never sends it). Same guardrails as the whole-program markups: percents 0-100,
@@ -100,6 +115,7 @@ router.put('/', async (req, res) => {
   cols.extra_fees = F.jsonbText(extraFees);
   cols.markup_tiers = markupTiers ? F.jsonbText(markupTiers) : null;
   cols.program_availability = programAvailability ? F.jsonbText(programAvailability) : null;
+  cols.lender_fees = lenderFees ? F.jsonbText(lenderFees) : null;
   const client = await db.getClient();
   try {
     await client.query('BEGIN');

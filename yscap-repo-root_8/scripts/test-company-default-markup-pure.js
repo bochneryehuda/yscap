@@ -86,15 +86,26 @@ const APP = {
 const EXP = { flips: 3, holds: 0, ground: 0 };
 const q = (app, overrides, cd, program = 'standard') =>
   pricing.quoteProgram(program, pricing.buildInputs(app, EXP, overrides || {}), { settings: cd });
-const money = (quote) => JSON.stringify({
-  noteRate: quote.noteRate, total: quote.sizing.totalLoan, initial: quote.sizing.initialAdvance,
-  holdback: quote.sizing.rehabHoldback, origination: quote.origination, cashToClose: quote.cashToClose,
-  closing: quote.closingCosts, liquidity: quote.liquidityRequired,
-});
+/* THE MONEY, and only the money — which is this section's own stated subject. `closingCosts`
+   carries ONE block that is a DESCRIPTION rather than a number: `lenderFeeParts`, the itemisation
+   of our fee (owner-directed 2026-08-26). Restating the company TOTAL in the studio's legacy
+   whole-number box deliberately prints the single combined line that number was typed as, while a
+   blank box prints the two parts — same $2,195 either way, on every surface, in every figure the
+   borrower pays. That is the rule, not a drift, so the itemisation is compared separately below
+   (B1b) on the one thing that must never differ: the total. */
+const money = (quote) => {
+  const cc = { ...quote.closingCosts };
+  delete cc.lenderFeeParts;
+  return JSON.stringify({
+    noteRate: quote.noteRate, total: quote.sizing.totalLoan, initial: quote.sizing.initialAdvance,
+    holdback: quote.sizing.rehabHoldback, origination: quote.origination, cashToClose: quote.cashToClose,
+    closing: cc, liquidity: quote.liquidityRequired,
+  });
+};
 
 console.log('\nB. normalizing a restatement is price-neutral');
 {
-  let drift = 0, checked = 0, first = null;
+  let drift = 0, checked = 0, first = null, partsDrift = 0;
   for (const state of ['TX', 'NJ', 'FL', 'OH']) {
     for (const price of [180000, 300000, 750000]) {
       for (const rehab of [0, 80000, 220000]) {
@@ -105,12 +116,18 @@ console.log('\nB. normalizing a restatement is price-neutral');
           const withBlank = money(q(app, po.normalizeCompanyDefaultKnobs(seeded, CD_NEW), CD_NEW, program));
           checked++;
           if (withSeed !== withBlank) { drift++; if (!first) first = { state, price, rehab, program, withSeed, withBlank }; }
+          // B1b: and the fee ITEMISATION, however it is written, always describes the same total.
+          const pSeed = q(app, seeded, CD_NEW, program).closingCosts.lenderFeeParts;
+          const pBlank = q(app, po.normalizeCompanyDefaultKnobs(seeded, CD_NEW), CD_NEW, program).closingCosts.lenderFeeParts;
+          if (!pSeed || !pBlank || pSeed.total !== pBlank.total) partsDrift++;
         }
       }
     }
   }
   assert(checked > 50 && drift === 0,
     `B1 across ${checked} priced deals on all three programs, normalizing every seeded knob to blank changes NOT ONE number — rate, loan, origination, every closing cost, cash to close and liquidity (drift: ${drift})`);
+  assert(partsDrift === 0,
+    `B1b …and our fee's itemisation, one combined line or two parts, always states the SAME total (drift: ${partsDrift})`);
   if (first) console.log('    first drift:', JSON.stringify(first));
 }
 

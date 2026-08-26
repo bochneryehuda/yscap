@@ -38,6 +38,20 @@ if (!fs.existsSync(TOOL)) { console.log('SKIP render-term-sheet-fees (studio not
 let pass = 0, fail = 0;
 const ok = (m, c, extra) => { if (c) { pass++; } else { fail++; console.log('  FAIL - ' + m + (extra ? ' :: ' + extra : '')); } };
 
+/* OUR OWN FEE, IN ITS TWO REAL PARTS, AND THE NEW YORK LADDER (owner-directed 2026-08-26) — the
+   same proof, one fee family further on. `test-lender-fees-pure` guards the RULE and the source
+   references; only a real render can say what the page actually printed. */
+const FEE_DEALS = [
+  { name: 'general NJ flip', uw: '$1,200.00', legal: '$995.00', settlement: null,
+    f: { dealType: 'Fix & Flip', price: '300000', construction: '60000', arv: '520000', asIs: '300000', fico: '740', expFlips: '5', propState: 'NJ', rehabScope: 'light' } },
+  { name: 'New York City flip (Brooklyn)', uw: '$1,200.00', legal: '$2,500.00', settlement: '$750.00',
+    f: { dealType: 'Fix & Flip', price: '300000', construction: '60000', arv: '520000', asIs: '300000', fico: '740', expFlips: '5', propState: 'NY', rehabScope: 'light', tsTaxCounty: 'Kings' } },
+  { name: 'New York upstate flip', uw: '$1,200.00', legal: '$2,000.00', settlement: '$750.00',
+    f: { dealType: 'Fix & Flip', price: '300000', construction: '60000', arv: '520000', asIs: '300000', fico: '740', expFlips: '5', propState: 'NY', rehabScope: 'light', tsTaxCounty: 'Albany', tsTaxCity: 'Albany' } },
+  { name: 'ground-up NJ', uw: '$1,200.00', legal: '$2,000.00', settlement: null,
+    f: { dealType: 'Ground-up Construction', price: '300000', construction: '400000', arv: '1100000', asIs: '300000', fico: '740', expGround: '3', propState: 'NJ' } },
+];
+
 /* Each deal, and what the term sheet MUST say about its construction review. */
 const DEALS = [
   { name: 'ground-up', expect: 'Ground-up construction feasibility review', amount: '$1,250.00',
@@ -114,6 +128,66 @@ const DEALS = [
       ok(`${deal.name}: carries NO construction review fee`, Number(r.feasFee || 0) === 0, `feasFee=${r.feasFee}`);
       ok(`${deal.name}: …and the page never names one`,
         !/feasibility|project review/i.test(all));
+    }
+  }
+
+  /* ── OUR OWN FEE, ON THE REAL PAGE ─────────────────────────────────────────────────────────
+     The general file must print $1,200 + $995 — which is the owner's "the total stays the same"
+     made visible — and a New York file must print the higher legal rung plus an OPTIONAL
+     settlement agent fee that SAYS it is optional. */
+  for (const deal of FEE_DEALS) {
+    await page.evaluate((f) => {
+      ['construction', 'arv', 'asIs', 'price', 'expFlips', 'expBrrrr', 'expGround', 'tsTaxCounty', 'tsTaxCity'].forEach((id) => {
+        const e = document.getElementById(id); if (e) e.value = '';
+      });
+      for (const [k, v] of Object.entries(f)) {
+        const e = document.getElementById(k); if (!e) continue;
+        e.value = v;
+        e.dispatchEvent(new Event('input', { bubbles: true }));
+        e.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }, deal.f);
+    await page.waitForTimeout(800);
+
+    const r = await page.evaluate(async () => {
+      const J = window.jspdf && window.jspdf.jsPDF;
+      if (!J) return { err: 'jsPDF did not load' };
+      const drawn = [];
+      const oT = J.API.text, oS = J.API.save, oO = J.API.output;
+      J.API.text = function (t) {
+        try {
+          if (typeof t === 'string') drawn.push(t);
+          else if (Array.isArray(t)) t.forEach((x) => typeof x === 'string' && drawn.push(x));
+        } catch (_) { /* capture is best-effort */ }
+        try { return oT.apply(this, arguments); } catch (e) { return this; }
+      };
+      J.API.save = function () { return this; };
+      J.API.output = function () { return ''; };
+      let err = null;
+      try { await window.TS.exportPdf(); } catch (e) { err = String((e && e.message) || e); }
+      await new Promise((z) => setTimeout(z, 1200));
+      J.API.text = oT; J.API.save = oS; J.API.output = oO;
+      const d = window.TS._calc(window.TS._gather());
+      return { err, drawn, uwFee: d && d.uwFee, legalFee: d && d.legalFee, settleFee: d && d.settleFee, lenderFee: d && d.lenderFee };
+    });
+    const all = (r.drawn || []).join('\n');
+    ok(`${deal.name}: the term sheet rendered`, !r.err && (r.drawn || []).length > 50, r.err || `${(r.drawn || []).length} strings`);
+    ok(`${deal.name}: "Underwriting & processing" is NAMED on the page`, all.includes('Underwriting & processing'));
+    ok(`${deal.name}: …with ${deal.uw} beside it`, all.includes(deal.uw), `uwFee=${r.uwFee}`);
+    ok(`${deal.name}: "Legal fee" is NAMED on the page`, all.includes('Legal fee'));
+    ok(`${deal.name}: …at ${deal.legal}`, all.includes(deal.legal), `legalFee=${r.legalFee}`);
+    /* AND THE TOTAL STILL RECONCILES: the two parts add up to the one number every other reader
+       of this quote takes, which is the whole safety claim of deriving the total. */
+    ok(`${deal.name}: the two parts sum to the total the rest of the system reads`,
+      Math.round((Number(r.uwFee) + Number(r.legalFee)) * 100) === Math.round(Number(r.lenderFee) * 100),
+      `${r.uwFee} + ${r.legalFee} != ${r.lenderFee}`);
+    if (deal.settlement) {
+      ok(`${deal.name}: the optional settlement agent fee is NAMED`, /settlement agent fee/i.test(all));
+      ok(`${deal.name}: …and the page SAYS it is optional`, /settlement agent fee \(optional\)/i.test(all));
+      ok(`${deal.name}: …at ${deal.settlement}`, all.includes(deal.settlement), `settleFee=${r.settleFee}`);
+    } else {
+      ok(`${deal.name}: carries NO settlement agent fee`, Number(r.settleFee || 0) === 0, `settleFee=${r.settleFee}`);
+      ok(`${deal.name}: …and the page never names one`, !/settlement agent fee/i.test(all));
     }
   }
 

@@ -3614,6 +3614,23 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
          will notice. */
       if (Object.prototype.hasOwnProperty.call(overrides, 'feasibilityFee'))
         await client.query(`UPDATE applications SET file_feasibility_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.feasibilityFee)]);
+      /* OUR FEE'S TWO PARTS AND THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE stick the same way
+         (owner-directed 2026-08-26, db/632: "it should just be pre-filled in the manual section.
+         Everything can be changeable"). A blank clears the column → the company number, this
+         deal's own New York rung, or the New York settlement pre-fill governs again; a typed 0 is
+         a deliberate WAIVER (or, for the optional fee, a DECLINE) and is stored as 0.
+
+         THESE ARE THE ONLY WRITERS OF THESE THREE COLUMNS, and that is load-bearing for the same
+         reason as the feasibility fee above: db/632 does not widen the economics-reopen trigger
+         for them precisely because they can only be written as part of a registration, so there is
+         never a stale registration for the trigger to catch. Adding another door means widening
+         that trigger — `test-lender-fees-pure` section J is what will notice. */
+      if (Object.prototype.hasOwnProperty.call(overrides, 'underwritingFee'))
+        await client.query(`UPDATE applications SET file_underwriting_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.underwritingFee)]);
+      if (Object.prototype.hasOwnProperty.call(overrides, 'legalFee'))
+        await client.query(`UPDATE applications SET file_legal_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.legalFee)]);
+      if (Object.prototype.hasOwnProperty.call(overrides, 'settlementFee'))
+        await client.query(`UPDATE applications SET file_settlement_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.settlementFee)]);
       /* THE TYPED CASH-OUT FOLLOWS THE REGISTER ONTO THE FILE (audit-found
          2026-07-31). The studio prints the officer's typed figure on the term
          sheet PDF; without this it never reached the loan file, so the file and

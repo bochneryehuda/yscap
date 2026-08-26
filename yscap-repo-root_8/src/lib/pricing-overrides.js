@@ -71,6 +71,13 @@ const DEFAULTED_OVERRIDE_KEYS = Object.freeze({
   // for a value that IS the default.
   origManualPct: { label: 'Origination points — Manual', unit: 'pct', defaultKey: 'origStdPct', revenueUp: true },
   lenderFee:     { label: 'Underwriting / processing / legal fee',     unit: 'money', revenueUp: true },
+  /* THE UNDERWRITING & PROCESSING HALF of that fee (owner-directed 2026-08-26, db/632). It has one
+     flat company default ($1,200), so it belongs among the DEFAULTED knobs beside its siblings:
+     typing 1,200 back is not a change, and charging MORE than the default earns the company more
+     and needs no approval — only a discount does. Its LEGAL sibling is not here, because that
+     one's default is keyed on the deal (the New York ladder) rather than being one number to
+     compare against; see `legalFee` in ENGAGED_OVERRIDE_KEYS. */
+  underwritingFee: { label: 'Underwriting & processing fee',           unit: 'money', revenueUp: true },
   creditFee:     { label: 'Credit-report fee',                         unit: 'money', revenueUp: true },
   appraisalFee:  { label: 'Appraisal fee (paid outside closing)',      unit: 'money', revenueUp: true },
   // The company default for title is NULL = "auto-estimate per state", so any
@@ -127,6 +134,23 @@ const ENGAGED_OVERRIDE_KEYS = Object.freeze({
      tax onto the buyer moves real cash to close. Typeable per file, and an
      exception because it changes what the borrower must bring. */
   buyerTransferShare: { label: 'Transfer tax — buyer’s share (per the contract)', unit: 'pct', zeroIsEngaged: true },
+  /* THE LEGAL FEE, typed by hand on ONE file (owner-directed 2026-08-26 — *"everything of this
+     should not be hardwired. It should just be pre-filled in the manual section. Everything can be
+     changeable"*). It lives HERE rather than among the defaulted knobs for the same reason the
+     feasibility fee does: its company default is keyed on the DEAL (general $995, ground-up
+     $2,000, New York $2,000, New York City / $100k construction / heavy rehab $2,500) rather than
+     being one number to compare against — so any typed amount is a deliberate departure from what
+     this deal would otherwise be charged. `zeroIsEngaged` because a typed 0 WAIVES a real fee. */
+  legalFee:      { label: 'Legal fee',                                 unit: 'money', zeroIsEngaged: true },
+  /* THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE. Deal-keyed like the legal fee ($750 pre-filled on
+     a New York file, nothing elsewhere), so any typed amount is a departure and needs an approval.
+
+     `zeroIsEngaged` is deliberately FALSE here, and it is the one place in this list where that is
+     the right call: the fee is OPTIONAL by the owner's own description, so declining it is its
+     ordinary state — routing every declined optional fee to an admin would fill the approval queue
+     with the non-decisions and teach people to wave it through. Typing any real amount (the $500
+     end of the owner's range, say) still asks. */
+  settlementFee: { label: 'New York settlement agent fee (optional)',  unit: 'money' },
   oopRehabMax:   { label: 'Out-of-pocket rehab — raise the initial to its max', unit: 'flag' },
   manualPricing: { label: 'Manual scenario (admin-set basis)',         unit: 'flag'  },
   forcePrice:    { label: 'Force-price past the guideline limits',     unit: 'flag'  },

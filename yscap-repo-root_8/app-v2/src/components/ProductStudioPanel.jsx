@@ -174,6 +174,11 @@ export function overridesFromSnapshot(snap, mode) {
       origStdPct: f.tsOrigStd, origGoldPct: f.tsOrigGold, origSilverPct: f.tsOrigSilver,
       origManualPct: f.tsOrigManual,
       lenderFee: f.tsFeeUW, creditFee: f.tsFeeCredit, appraisalFee: f.tsFeeAppr,
+      /* OUR FEE'S TWO PARTS and the optional New York settlement agent fee (owner-directed
+         2026-08-26). Blank means "use the company number / this deal's own rung"; a typed
+         amount (0 included, which waives that part) is a per-file override. `lenderFee`
+         above is the LEGACY whole-number total and still wins when it carries a value. */
+      underwritingFee: f.tsFeeUwPart, legalFee: f.tsFeeLegal, settlementFee: f.tsFeeSettlement,
       // The manual construction feasibility fee (owner-directed 2026-08-21) — blank means "use the
       // deal's own fee"; a typed amount (0 included, which waives it) is a per-file override.
       feasibilityFee: f.tsFeasFee,
@@ -431,7 +436,21 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
             {Number(cc.brokerFee) > 0 && (
               <Row k={`Broker origination fee${cc.brokerFeePct != null ? ` (${cc.brokerFeePct}%)` : ''}`} v={money2(cc.brokerFee)} />
             )}
-            <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />
+            {/* OUR OWN FEE, IN ITS TWO REAL PARTS (owner-directed 2026-08-26). The panel the officer
+                prices against names the same two lines the term sheet prints, and on a New York
+                file the legal line is the one that moved. A file carrying a typed whole-number
+                total — or a quote registered before the split, which has no parts at all — shows
+                the single combined line it always showed. */}
+            {cc.lenderFeeParts && cc.lenderFeeParts.split ? (
+              <>
+                <Row k={cc.lenderFeeParts.underwritingLabel || 'Underwriting & processing'} v={money2(cc.lenderFeeParts.underwriting)} />
+                <Row k={cc.lenderFeeParts.legalLabel || 'Legal fee'} v={money2(cc.lenderFeeParts.legal)} />
+              </>
+            ) : <Row k="UW / processing / legal" v={money2(cc.lenderFee)} />}
+            {/* The optional New York settlement agent fee — named, and named optional. */}
+            {cc.settlement && Number(cc.settlement.amount) > 0 && (
+              <Row k={cc.settlement.label} v={money2(cc.settlement.amount)} />
+            )}
             <Row k="Credit report" v={money2(cc.creditFee)} />
             <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
             {Array.isArray(cc.extraFees) && cc.extraFees.map((f, i) => (
@@ -1445,12 +1464,20 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       origSilverPct: 'origination points (Silver)', origManualPct: 'origination points (Manual)',
       lenderFee: 'underwriting / legal fee', creditFee: 'credit-report fee',
       appraisalFee: 'appraisal fee', titleFee: 'title / escrow fee',
+      // Our fee's underwriting half has one flat company default, so it is compared
+      // against it exactly like its siblings (owner-directed 2026-08-26).
+      underwritingFee: 'underwriting & processing fee',
     };
     const NO_DEFAULT = { ovrEffPrice: 'effective purchase price', manualPricing: 'manual scenario',
       oopRehab: 'out-of-pocket rehab', oopRehabMax: 'out-of-pocket rehab (raise initial to max)',
       // Manual Gold top-tier markup (item 15): mirrors the server's placement in
       // ENGAGED_OVERRIDE_KEYS — any non-zero value is a deliberate override → approval.
-      markupGoldT1Pct: 'Gold top-tier markup' };
+      markupGoldT1Pct: 'Gold top-tier markup',
+      /* The LEGAL fee and the OPTIONAL New York settlement agent fee have no single company
+         default to compare against — the legal fee's is the New York ladder and the settlement
+         fee's is "New York files only" — so any typed amount is a departure, mirroring the
+         server's placement of both in ENGAGED_OVERRIDE_KEYS. */
+      legalFee: 'legal fee', settlementFee: 'New York settlement agent fee' };
     // A knob with no company default of its own borrows another's — the exact
     // mirror of pricing-overrides.js `defaultKey`, which is what the server
     // re-checks with. Without it the Manual origination has no `cd` entry at

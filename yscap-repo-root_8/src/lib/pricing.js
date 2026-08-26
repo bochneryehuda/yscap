@@ -308,6 +308,15 @@ function buildInputs(app, experience, overrides) {
        as 0, which `feasibilityFeeFor` reads as "no fee on this file" — dropping it here instead
        would silently put the fee back on the next quote. */
     ...(app.file_feasibility_fee != null ? { feasibilityFee: num(app.file_feasibility_fee) } : {}),
+    /* Sticky per-file UNDERWRITING / LEGAL / optional NEW YORK SETTLEMENT amounts
+       (owner-directed 2026-08-26, db/632) — the studio's manual boxes, persisted exactly
+       like the feasibility fee above so a re-quote never drops what an admin typed.
+       NULL/absent → the company number, this deal's own New York rung, or the settlement
+       pre-fill governs, so every existing file is unchanged. A stored 0 is a deliberate
+       WAIVER (or DECLINE) and is carried through as 0. */
+    ...(app.file_underwriting_fee != null ? { underwritingFee: num(app.file_underwriting_fee) } : {}),
+    ...(app.file_legal_fee != null ? { legalFee: num(app.file_legal_fee) } : {}),
+    ...(app.file_settlement_fee != null ? { settlementFee: num(app.file_settlement_fee) } : {}),
     // Sticky per-file GOLD top-tier markup (item 15) — the studio's manual
     // top-tier section, persisted like the sticky whole-program markups above so
     // a re-quote never drops it. NULL/absent → the company per-tier default (or
@@ -384,6 +393,11 @@ function buildInputs(app, experience, overrides) {
     'markupGoldT1Pct',
     'origStdPct', 'origGoldPct', 'origSilverPct', 'origManualPct',
     'lenderFee', 'creditFee', 'appraisalFee', 'titleFee', 'feasibilityFee',
+    /* OUR FEE'S TWO PARTS AND THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE (owner-directed
+       2026-08-26). Each is a per-file amount typed in the studio's manual section; a BLANK box is
+       dropped by the loop below, which is the studio's explicit-blank contract and means "use the
+       company number / this deal's own rung". A typed 0 survives and WAIVES that part. */
+    'underwritingFee', 'legalFee', 'settlementFee',
     'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice',
     // Out-of-pocket rehab exception (owner-authorized 2026-07-31): a dollar amount
     // of the rehab budget brought OUT OF POCKET so the initial advance can rise
@@ -744,8 +758,49 @@ function normalize(program, input, ev, ladder, opts) {
   const titleOverridden = hasInput(input, 'titleFee');
   const titleTotal = titleOverridden ? num(input.titleFee)
     : (cd.titleFee != null ? num(cd.titleFee) : titleAutoTotal);
-  // Flat fees: per-file override → COMPANY default → hardcoded literal.
-  const lenderFee = numberOverride(input, 'lenderFee', cd.lenderFee != null ? cd.lenderFee : FEES.lender);
+  /* OUR OWN FEE, IN ITS TWO REAL PARTS — $1,200 underwriting & processing and a LEGAL fee that
+     is a New York ladder (owner-directed 2026-08-26, db/632). `src/lib/lender-fees.js` is the ONE
+     definition of both parts, of which rung a deal lands on, of what each is called, and of how a
+     manual amount overrides it — the studio and the admin screen read the same module, so the fee
+     on the paper and the fee in the math cannot drift.
+
+     `lenderFee` STAYS THE TOTAL and is now DERIVED from the parts, which is what makes the owner's
+     *"the total stays the same for general loans"* true BY CONSTRUCTION rather than by a test that
+     has to remember to check: 1,200 + 995 = 2,195, the exact number this line produced before.
+     Every existing reader of `lenderFee` — the closing-cost sum, the tapes, the printed sheets —
+     keeps working untouched, which is why the total was derived rather than replaced.
+
+     A per-file TOTAL typed into the legacy `lenderFee` box still wins and then nothing is split
+     (`split:false`), so a quote registered before today prints the single combined line it always
+     printed. NO FROZEN NUMBER MOVES: the loan amount, the note rate, every cap and the whole sizing
+     waterfall are computed above this line and never read it. */
+  const lenderFees = require('./lender-fees').lenderFeesFor(
+    {
+      state, city: input.taxCity || input.city, county: input.county,
+      /* A ground-up is judged by the SAME classifier the feasibility fee uses — which is itself
+         the frozen engine's own `normStrategy`, held to it by `test-feasibility-fee-pure`'s label
+         battery. Restating the test here would be a second copy of the one question that decides
+         which matrix a loan is priced on, so the two construction fees on a term sheet could
+         disagree about what kind of deal it is. */
+      groundUp: require('./feasibility-fee').isGroundUpDeal(input),
+      heavyRehab: input.heavyRehab === true,
+      construction: num(input.rehabBudget),
+    },
+    cd,
+    {
+      total: hasInput(input, 'lenderFee') ? input.lenderFee : null,
+      underwriting: hasInput(input, 'underwritingFee') ? input.underwritingFee : null,
+      legal: hasInput(input, 'legalFee') ? input.legalFee : null,
+    });
+  const lenderFee = round2(lenderFees.total);
+  /* THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE — *"on top of the regular 2,000"*, pre-filled at
+     $750, changeable per file, LABELLED optional on every surface that prints it and still counted
+     in the cash to close so the figure can never leave a borrower short. It REPLACES the mandatory
+     $2,000 NY "Settlement agent fee" that used to ride in `extraFees` (db/632 removes that row —
+     leaving both would bill a New York borrower twice). A typed 0 declines it. */
+  const settlement = require('./lender-fees').settlementFeeFor(
+    { state }, cd, { settlement: hasInput(input, 'settlementFee') ? input.settlementFee : null });
+  const settlementFee = settlement ? num(settlement.amount) : 0;
   const creditFee = numberOverride(input, 'creditFee', cd.creditFee != null ? cd.creditFee : FEES.credit);
   const appraisalFee = numberOverride(input, 'appraisalFee', cd.appraisalFee != null ? cd.appraisalFee : FEES.appraisal);
   const origination = totalLoan > 0 ? round2(totalLoan * origPct) : 0;
@@ -835,7 +890,7 @@ function normalize(program, input, ev, ladder, opts) {
     taxOverridesFrom(input));
   const govChargesTotal = num(govCharges.borrowerTotal);
 
-  const closingDueAtClose = round2(origination + brokerFee + lenderFee + creditFee + titleTotal + extraFeesTotal + feasibilityFee + govChargesTotal);
+  const closingDueAtClose = round2(origination + brokerFee + lenderFee + creditFee + titleTotal + extraFeesTotal + feasibilityFee + settlementFee + govChargesTotal);
   /* REFINANCE CASH TO CLOSE (owner-directed 2026-08-04). On a purchase this is the
      down payment (equity) plus the closing costs. On a REFINANCE there is no down
      payment (the frozen engine returns downPayment=0 for a refi), and instead the
@@ -1020,6 +1075,33 @@ function normalize(program, input, ev, ladder, opts) {
       // fee), so the retail closingCosts object is byte-identical.
       ...(brokerFee > 0 ? { brokerFee, brokerFeePct: round2(brokerFeePct * 100) } : {}),
       lenderFee,
+      /* THE TWO PARTS, NAMED — because folding an amount into a total is HALF a fee (the rule the
+         feasibility fee's own line above was written to enforce). `lenderFee` remains the total
+         every existing reader takes; this is what lets a surface ITEMISE it, and it carries the
+         rung so a screen can explain the New York number rather than only printing it. Present on
+         every quote, so no surface has to guess whether the split happened. */
+      lenderFeeParts: {
+        underwriting: round2(lenderFees.underwriting),
+        legal: round2(lenderFees.legal),
+        total: round2(lenderFees.total),
+        split: lenderFees.split,
+        legalBasis: lenderFees.legalBasis,
+        legalBasisText: require('./lender-fees').legalBasisText(lenderFees.legalBasis),
+        underwritingLabel: require('./lender-fees').LENDER_FEE_LABEL.underwriting,
+        legalLabel: require('./lender-fees').LENDER_FEE_LABEL.legal,
+        combinedLabel: require('./lender-fees').LENDER_FEE_LABEL.combined,
+        manualUnderwriting: lenderFees.manualUnderwriting,
+        manualLegal: lenderFees.manualLegal,
+      },
+      /* The optional New York settlement agent fee, as its own named line. Added ONLY when there
+         is one, so every deal that carries none reports a byte-identical closingCosts object. */
+      ...(settlement ? {
+        settlementFee: round2(settlementFee),
+        settlement: {
+          amount: round2(settlementFee), label: settlement.label, note: settlement.note,
+          optional: true, manual: settlement.manual,
+        },
+      } : {}),
       creditFee,
       titleAndSettlement: titleTotal,
       extraFees: extraFeeList.map((f) => ({ name: f.name, amount: round2(num(f.amount)) })),
@@ -1246,6 +1328,9 @@ function econVersionFor(app) {
     app.rehab_type, app.sqft_pre, app.sqft_post,
     (app.property_address && app.property_address.state) || '',
     app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct, app.file_feasibility_fee,
+    // Our fee's two parts + the optional New York settlement fee — fingerprinted siblings of
+    // the feasibility fee, so a change to one re-quotes rather than serving a stale answer.
+    app.file_underwriting_fee, app.file_legal_fee, app.file_settlement_fee,
     app.file_markup_gold_t1_pct,   // sticky per-file Gold top-tier markup (item 15) — a fingerprinted sibling
 
     // The Silver engine keys geography off the ZIP too (exclusions + NYC market).
