@@ -67,6 +67,12 @@ const SYSTEM_LENDER_FEES = Object.freeze({
   /* THE LEGAL LADDER. A ground-up carries its own base wherever it is; New York carries its own
      base and its own higher rung. See `legalFeeFor` for the order, which is load-bearing. */
   legalGroundUp: 2000,
+  /* THE HEAVY-REHAB RUNG OUTSIDE NEW YORK (owner-directed 2026-08-26): *"even if it's outside of
+     New York if it's a heavy rehab project, the rehab amount is more than $100,000, and the rehab
+     amount is more than the purchase price, it needs to be both … It's a $1,500 legal fee instead
+     of the standard $995."* Inside New York a heavy rehab is already $2,500, so this rung is
+     reachable only outside it. */
+  legalHeavyRehab: 1500,
   legalNy: 2000,
   legalNyHigh: 2500,
   /* THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE. The owner gave a RANGE ($500 to $750) and this is
@@ -101,11 +107,20 @@ const LENDER_FEE_NOTE = Object.freeze({
    they described the LOWER fee as being for *"a smaller construction (less than $100,000)"*. */
 const NY_CONSTRUCTION_STEP = 100000;
 
+/* The rehab figure at which a heavy rehab OUTSIDE New York moves to its own legal fee. It is the
+   same $100,000 as the New York step TODAY and is deliberately a SEPARATE constant: they are two
+   different rules about two different places, and the owner can move one without meaning the
+   other. Sharing one number would silently move both. The owner's words are *"more than
+   $100,000"*, so this boundary is EXCLUSIVE — unlike the New York step, which they described from
+   the other side (*"a smaller construction (less than $100,000)"*) and is therefore inclusive. */
+const HEAVY_REHAB_STEP = 100000;
+
 /** Every rung the legal ladder can land on, with the words a screen can explain the number with. */
 const LEGAL_BASIS_TEXT = Object.freeze({
   general: 'the standard legal fee',
   ground_up: 'a ground-up construction file',
   ground_up_ny: 'a ground-up construction file in New York',
+  heavy_rehab_high: 'a heavy rehab whose budget is over $100,000 and larger than the property itself',
   ny_base: 'a New York file',
   ny_five_boroughs: 'a New York City file (the five boroughs)',
   ny_construction: 'a New York file with a construction budget of $100,000 or more',
@@ -161,9 +176,19 @@ function isFiveBoroughs(deal) {
  * New York step is the same $2,500. Deciding it after the New York test would price a non-New-York
  * ground-up at the general fee.
  *
- * A NON-NEW-YORK HEAVY REHAB IS DELIBERATELY NOT ON THE LADDER. The owner named heavy rehab only
- * inside New York (*"On heavier rehab in New York…"*), so it stays at the general fee everywhere
- * else — and it is a pre-fill either way, editable on the file.
+ * A NON-NEW-YORK HEAVY REHAB HAS ITS OWN RUNG (owner-directed 2026-08-26), and it is the LAST test
+ * on the ladder because it is the narrowest: it needs ALL THREE of the owner's conditions —  the
+ * file marked heavy rehab, a rehab budget over $100,000, AND a rehab budget larger than what the
+ * property itself cost. That third test is what separates "a big renovation" from "a project where
+ * the building is almost entirely new work", which is the risk the fee is for.
+ *
+ * `priceBasis` IS RESOLVED BY THE CALLER, NOT HERE, and that is deliberate: on a refinance there is
+ * no purchase price, and *which* figure a deal is measured on is `deal-basis`'s single question to
+ * answer (the owner chose the as-is value). Restating that test here would be a second copy of it.
+ *
+ * AN UNREADABLE `priceBasis` DOES NOT FIRE THE RUNG. It falls to the general fee, matching
+ * `isFiveBoroughs`'s catch and for the same reason: the lower rung is the one that cannot
+ * over-charge a borrower for a fee nobody can justify from the file.
  *
  * @returns {{ amount:number, basis:string }} — `basis` NAMES which rung was taken, so a screen can
  *          explain the number rather than just printing it.
@@ -187,6 +212,22 @@ function legalFeeFor(deal, fees) {
     if (construction >= NY_CONSTRUCTION_STEP) return { amount: f.legalNyHigh, basis: 'ny_construction' };
     if (heavy) return { amount: f.legalNyHigh, basis: 'ny_heavy_rehab' };
     return { amount: f.legalNy, basis: 'ny_base' };
+  }
+  /* OUTSIDE NEW YORK: the heavy-rehab rung. All three of the owner's tests, and the price basis
+     must be a real positive figure — a missing or unreadable one leaves the general fee.
+     A BRIDGE IS EXCLUDED, and that is not tidiness: the rehab-scope control is HIDDEN rather than
+     CLEARED when a deal moves off fix & flip, so a bridge routinely carries a stale "heavy" —
+     which is exactly how a bridge was billed $750 to review construction that was not happening
+     (owner-reported 2026-08-26). A bridge is not a heavy-rehab PROJECT, so it cannot reach this
+     rung. The New York rungs are deliberately UNTOUCHED by this: changing them would lower a fee
+     nobody asked to lower. */
+  const priceBasis = Number(d.priceBasis);
+  if (heavy
+      && !d.bridge
+      && construction > HEAVY_REHAB_STEP
+      && Number.isFinite(priceBasis) && priceBasis > 0
+      && construction > priceBasis) {
+    return { amount: f.legalHeavyRehab, basis: 'heavy_rehab_high' };
   }
   return { amount: f.legal, basis: 'general' };
 }

@@ -1527,13 +1527,19 @@
     return { underwriting: n(f.underwriting, 1200), legal: n(f.legal, 995),
              legalGroundUp: n(f.legalGroundUp, 2000), legalNy: n(f.legalNy, 2000),
              legalNyHigh: n(f.legalNyHigh, 2500), settlementNy: n(f.settlementNy, 750),
+             legalHeavyRehab: n(f.legalHeavyRehab, 1500),
              cemaNy: n(f.cemaNy, 1000) };
   }
   /* The ladder, in the owner's own order. GROUND-UP IS DECIDED FIRST — it carries its own base
      wherever it is — and it is judged by the SAME classifier the feasibility fee uses (the frozen
      engine's `normStrategy`), so the two construction fees on one sheet cannot disagree about
-     what kind of deal it is. A non-New-York heavy rehab is deliberately NOT on the ladder: the
-     owner named heavy rehab only inside New York. */
+     what kind of deal it is. A non-New-York HEAVY REHAB has its own rung, LAST because it is the
+     narrowest — all three of the owner's tests (2026-08-26): marked heavy, a rehab over $100,000,
+     and a rehab larger than what the property itself cost (the as-is value on a refinance, which
+     is what the loan is sized on there). A BRIDGE can never reach it: the rehab-scope control is
+     hidden rather than cleared when a deal moves off fix & flip, so a bridge routinely carries a
+     stale "heavy". MIRRORS `src/lib/lender-fees.legalFeeFor` — the two are run over the same
+     battery by the pure test and any disagreement fails the build. */
   function legalRung() {
     var f = coLenderFees();
     var ny = isNyFile();
@@ -1545,6 +1551,21 @@
       if (num("construction") >= 100000) return { amount: f.legalNyHigh, basis: "ny_construction" };
       if (val("rehabScope") === "heavy") return { amount: f.legalNyHigh, basis: "ny_heavy_rehab" };
       return { amount: f.legalNy, basis: "ny_base" };
+    }
+    /* Outside New York: the heavy-rehab rung. The price basis is the purchase price, or the as-is
+       value on a refinance — an unreadable one leaves the general fee rather than over-charging.
+       IT IS THE STUDIO'S OWN `effPurchase()`, which is the SAME expression this tool already sends
+       the server as `purchasePrice` (line ~345), so the two sides compare the same figure. Writing
+       it out again here is how the first cut read a field id that does not exist (`purchase` —
+       the input is `price`), which silently made the basis 0 and the rung unreachable: the unit
+       mirror could not see it because it stubs `num`, and only the real render caught it. */
+    var basis = isRefi() ? (num("asIs") || effPurchase()) : effPurchase();
+    if (val("rehabScope") === "heavy"
+        && YSP.normStrategy(dealType()) !== "BR"
+        && num("construction") > 100000
+        && basis > 0
+        && num("construction") > basis) {
+      return { amount: f.legalHeavyRehab, basis: "heavy_rehab_high" };
     }
     return { amount: f.legal, basis: "general" };
   }
@@ -1657,7 +1678,13 @@
     // approval card named a percentage that did not govern (audit 2026-07-30).
     // Blank is the contract everywhere: studio (adminOrigPct), payload
     // (buildInputs skips ''), approval detector (hasValue false).
-    s("tsFeeUW", String(CO.lender)); s("tsFeeCredit", String(CO.credit)); s("tsFeeAppr", String(CO.appraisal));
+    /* `tsFeeUW` IS NO LONGER SEEDED. It is the LEGACY combined box, and seeding it painted
+       "2195" in as the placeholder — which reads as "this is what this file will be charged"
+       on a deal whose real fee is the split (owner-reported 2026-08-26, on a ground-up whose
+       legal fee is $2,000). Its own markup now says what a blank box does. Not seeding it
+       also makes the "In use" chip honest: any value in that box now IS a deliberate override.
+       The VALUE was never seeded — that is the 2026-08-20 rule and it is unchanged. */
+    s("tsFeeCredit", String(CO.credit)); s("tsFeeAppr", String(CO.appraisal));
     // Our fee's two parts. The LEGAL placeholder tracks THIS DEAL's rung rather than a fixed
     // literal (a New York City file pre-fills $2,500, not $995), so the officer reads the
     // number a blank box will actually price at — the same reasoning as syncManualOrigHint.

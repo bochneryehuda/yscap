@@ -804,6 +804,18 @@ function normalize(program, input, ev, ladder, opts) {
       groundUp: require('./feasibility-fee').isGroundUpDeal(input),
       heavyRehab: input.heavyRehab === true,
       construction: num(input.rehabBudget),
+      /* WHAT THE REHAB IS MEASURED AGAINST for the non-New-York heavy-rehab rung — the purchase
+         price, or on a REFINANCE the as-is value, which is the owner's own answer (2026-08-26)
+         and is also the figure the frozen engine sizes a refinance on. `sizesOnAsIsValue` is
+         deal-basis's ONE definition of that question, so this can never disagree with the
+         engine about which number the deal turns on. (`buildInputs` already carries the as-is
+         through `purchasePrice` on a refinance, so the two agree today — this states it
+         explicitly so a change there cannot silently switch the fee off.) */
+      /* A bridge never reaches the heavy-rehab rung — same classifier the feasibility fee uses. */
+      bridge: require('./feasibility-fee').isBridgeDeal(input),
+      priceBasis: sizesOnAsIsValue(input.loanType)
+        ? num(input.asIsValue) || num(input.purchasePrice)
+        : num(input.purchasePrice),
     },
     cd,
     {
