@@ -893,6 +893,16 @@ if (require.main === module) {
         require('./lib/conditions/engine').backfillTpoIntakeConditionsOnce()
           .then((r) => r && r.added && console.log('[boot] TPO intake condition backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] TPO intake condition backfill failed:', e.message));
+        /* THE BORROWERS WHO ARE STILL WAITING (owner-reported 2026-08-25, db/631). The fix
+           itself only reaches the NEXT package sent; the ones already out at DocuSign carry a
+           borrower on routing order 1 who received nothing and whom nothing re-drives. This
+           hands each of them the invitation they should have had. Scoped to the four-day
+           window the defect was live in — never the whole back book — bounded per boot,
+           self-draining, and it decides nothing itself (notifyReadyToSign still owns whose
+           turn it is and the send-once record). Off with ESIGN_INVITE_RECOVERY_DISABLED=1. */
+        require('./lib/esign/invite-recovery').recoverUninvitedOnce()
+          .then((r) => r && r.sent && console.log('[boot] e-sign invitation recovery:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] e-sign invitation recovery failed:', e.message));
         // One-shot (db/601, owner-directed 2026-08-20): every GROUND-UP CONSTRUCTION file
         // carries the feasibility report + the GC information condition, on PREVIOUS files
         // as well as future ones. The rule db/601 installs is the ONE definition of
