@@ -53,6 +53,10 @@ function addrLine(pa) {
 function OrderCell({ o, appId, kind, onChased, fileStatus }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  // The editable chase preview (owner-directed 2026-08-26). Declared HERE, above the
+  // early return below — a hook after an early return crashes React with "Rendered
+  // more hooks than during the previous render" the moment `o` flips between renders.
+  const [preview, setPreview] = useState(null);
   if (!o) return <span className="muted small">—</span>;
 
   /* WHY THIS ORDER IS NOT BEING CHASED — READ OFF THE SERVER'S OWN ANSWER.
@@ -88,7 +92,6 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
      recipient-list confirm. Same preview endpoint (the send's own pure builder) as the
      file's order card, so the queue and the card can never show different emails. The
      old recipient confirm remains only as the fallback when the preview cannot load. */
-  const [preview, setPreview] = useState(null);
   const chase = async () => {
     setBusy(true); setMsg('');
     try {
