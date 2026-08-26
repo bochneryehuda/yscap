@@ -5,6 +5,10 @@
  * track records, and assign Lead-Capture (unassigned) applications.
  */
 const express = require('express');
+// The ONE way a person finds a file by loan number / address / borrower name.
+// PURE (SQL text + a bound value). Its address expression reads whichever parts a
+// row actually holds — most files carry no `oneLine` key.
+const fileSearch = require('../lib/file-search');
 const router = require('../lib/safe-router')();
 const db = require('../db');
 const { scrubText, scrubTextExcept } = require('../lib/borrower-safe');
@@ -1083,6 +1087,14 @@ router.get('/search', async (req, res) => {
     const loanParams = [like];
     let loanScope = '';
     if (!seesAll(req)) { loanParams.push(meId); loanScope = 'AND ' + VISIBLE_OFFICERS_SQL('a', '$2'); }
+    /* THE ADDRESS HAYSTACK IS COMPOSED, NOT the 'oneLine' key ALONE (2026-08-26).
+       MEASURED on the live table: of 319 files carrying an address only 137 hold a
+       'oneLine' key — the public marketing form and the staff new-file form both
+       store {line1, city, state, zip}, and older rows use 'street' — so more than
+       half of all files could not be found by their own address, silently, and it
+       read as "no such file". The shared expression resolves 316 of the 319.
+       (The note lives OUT here: backticks inside the template literal below would
+       end it, which is exactly how the first cut of this comment broke the file.) */
     const loans = await db.query(
       `SELECT a.id, a.ys_loan_number, a.status, a.program, a.loan_amount, a.property_address,
               b.first_name, b.last_name
@@ -1090,7 +1102,7 @@ router.get('/search', async (req, res) => {
         WHERE a.deleted_at IS NULL ${loanScope}
           AND (NULLIF(b.full_name,'') ILIKE $1
                OR a.ys_loan_number ILIKE $1
-               OR COALESCE(a.property_address->>'oneLine','') ILIKE $1)
+               OR ${fileSearch.ADDRESS_TEXT_SQL('a')} ILIKE $1)
         ORDER BY a.created_at DESC LIMIT 6`, loanParams);
 
     // ---- borrowers ----

@@ -131,8 +131,11 @@ router.get('/', requirePermission('manage_pricing'), async (req, res) => {
   try {
     const status = ['open', 'approved', 'denied', 'withdrawn', 'cleared', 'expired', 'all'].includes(req.query.status) ? req.query.status : 'open';
     const type = loanExceptions.isExceptionType(req.query.type) ? req.query.type : null;
+    // What the person typed: a loan number, an address, a borrower's name. Bound,
+    // never interpolated; too short to be a search simply does not filter.
+    const q = String(req.query.q || '').trim();
     const [rows, pending] = await Promise.all([
-      loanExceptions.listExceptions({ status, type }),
+      loanExceptions.listExceptions({ status, type, q }),
       loanExceptions.pendingCount(),
     ]);
     res.json({
@@ -171,7 +174,12 @@ router.get('/export.xlsx', requirePermission('manage_pricing'), async (req, res)
   try {
     const status = ['open', 'approved', 'denied', 'withdrawn', 'cleared', 'expired', 'all'].includes(req.query.status) ? req.query.status : 'all';
     const type = loanExceptions.isExceptionType(req.query.type) ? req.query.type : null;
-    const rows = await loanExceptions.listExceptions({ status, type, limit: 500 });
+    /* THE EXPORT CARRIES THE SAME SEARCH THE SCREEN IS SHOWING. Without it the
+       button quietly hands back the WHOLE register while the screen shows six
+       rows — an export that does not match what you were looking at is worse
+       than no export, because nobody re-reads a spreadsheet they just asked for. */
+    const q = String(req.query.q || '').trim();
+    const rows = await loanExceptions.listExceptions({ status, type, q, limit: 500 });
     const labels = registryPayload().typeLabels;
     const fmtWhen = (ts) => (ts ? new Date(ts).toISOString().slice(0, 16).replace('T', ' ') : '');
     const addr = (a) => {
@@ -212,7 +220,7 @@ router.get('/export.xlsx', requirePermission('manage_pricing'), async (req, res)
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="exception-register-${new Date().toISOString().slice(0, 10)}.xlsx"`);
     res.send(buf);
-    auditSafe(req.actor.id, 'exception_register_exported', 'system', null, { status, type, rows: out.length });
+    auditSafe(req.actor.id, 'exception_register_exported', 'system', null, { status, type, q: q || null, rows: out.length });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

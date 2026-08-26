@@ -52,6 +52,9 @@
  */
 
 const db = require('../db');
+// The ONE way a person finds a file in a queue — loan number, address, borrower.
+// PURE (returns SQL text + a bound value), so requiring it here costs nothing.
+const fileSearch = require('./file-search');
 
 // Structured reasons a co-borrower's personal guaranty is waived. Free-text notes
 // still accompany the code; the code makes the exception reportable across files.
@@ -1115,12 +1118,21 @@ async function getById(id, client = db) {
  *           | 'expired' | 'all'
  *   type:   an exception_type to filter to (optional)
  */
-async function listExceptions({ status = 'open', type = null, limit = 100, offset = 0 } = {}, client = db) {
+async function listExceptions({ status = 'open', type = null, q = null, limit = 100, offset = 0 } = {}, client = db) {
   const conds = [];
   const params = [];
   if (status === 'open') conds.push(`e.status = 'requested'`);
   else if (status && status !== 'all') { params.push(status); conds.push(`e.status = $${params.length}`); }
   if (type && isExceptionType(type)) { params.push(type); conds.push(`e.exception_type = $${params.length}`); }
+  /* SEARCH BY WHAT A PERSON KNOWS — the loan number, the address, the borrower
+     (owner-directed 2026-08-26: "search by loan number, by address"). The
+     predicate is the SHARED one so this queue, the escalations queue and the
+     global omnibox all find a file the same way; in particular the address is
+     composed from whichever parts the row holds, because most files carry no
+     `oneLine` key and matching that alone misses more than half of them. A
+     value too short to be a search (or blank) simply does not filter. */
+  const like = fileSearch.likeParam(q);
+  if (like) { params.push(like); conds.push(fileSearch.fileSearchSql(params.length, { app: 'a', borrower: 'b' })); }
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
   params.push(Math.min(500, Math.max(1, Number(limit) || 100)));
   const limSql = `LIMIT $${params.length}`;

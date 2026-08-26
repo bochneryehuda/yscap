@@ -79,7 +79,8 @@ router.get('/escalations', requirePermission('manage_pricing'), async (req, res)
   try {
     const status = ['open', 'pending', 'countered', 'approved', 'declined', 'all'].includes(req.query.status) ? req.query.status : 'open';
     const [rows, pending] = await Promise.all([
-      manualProgram.listEscalations({ status }),
+      // Loan number / address / borrower — the same search the exception register takes.
+      manualProgram.listEscalations({ status, q: String(req.query.q || '').trim() }),
       manualProgram.pendingCount(),
     ]);
     // Never leak the note-buyer name into the box — the summary/overrides carry

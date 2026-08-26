@@ -25,6 +25,8 @@
  */
 
 const db = require('../db');
+// The shared file-finder for the approvals queues (pure: SQL text + a bound value).
+const fileSearch = require('./file-search');
 
 // The override keys that change the deal STRUCTURE. Engaging ANY of these makes
 // the registration a Manual Program. Rate (ovrRatePct), interest-reserve months
@@ -399,11 +401,18 @@ async function pendingForApp(appId, client = db) {
  *   'approved' | 'declined' — terminal states
  *   'all'       — everything
  */
-async function listEscalations({ status = 'open', limit = 100 } = {}, client = db) {
-  let where = '';
-  let params = [];
-  if (status === 'open') { where = `WHERE e.status IN ('pending','countered')`; }
-  else if (status && status !== 'all') { where = `WHERE e.status = $1`; params = [status]; }
+async function listEscalations({ status = 'open', q = null, limit = 100 } = {}, client = db) {
+  const conds = [];
+  const params = [];
+  if (status === 'open') { conds.push(`e.status IN ('pending','countered')`); }
+  else if (status && status !== 'all') { params.push(status); conds.push(`e.status = $${params.length}`); }
+  /* THE SAME SEARCH THE EXCEPTION REGISTER USES (owner-directed 2026-08-26) —
+     one definition, so a loan number or an address finds the file in whichever
+     approvals queue it is sitting in rather than in whichever one happened to
+     have the feature. */
+  const like = fileSearch.likeParam(q);
+  if (like) { params.push(like); conds.push(fileSearch.fileSearchSql(params.length, { app: 'a', borrower: 'b' })); }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
   const r = await client.query(
     `SELECT e.*,
             a.ys_loan_number, a.property_address, a.loan_amount, a.status AS file_status,
