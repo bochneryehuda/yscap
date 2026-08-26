@@ -71,6 +71,9 @@ export default function StaffEscalations() {
   const [settings, setSettings] = useState(null);
   const [form, setForm] = useState({ assetMonths: '', maxAcqLtv: '', maxArvLtv: '', maxLtc: '', isActive: true });
   const [rows, setRows] = useState([]);
+  /* The server MEASURES whether there is another page — never inferred from a
+     full one, and a page size is never printed as if it were a count. */
+  const [more, setMore] = useState(false);
   const [statusFilter, setStatusFilter] = useState('open');
   /* THE SAME SEARCH THE EXCEPTION REGISTER TAKES (owner-directed 2026-08-26:
      "search by loan number, by address"). Typed vs asked-for are kept apart so a
@@ -108,7 +111,7 @@ export default function StaffEscalations() {
     .catch((e) => flash(false, e.message || 'could not load manual program settings'));
 
   const loadEscalations = () => api.manualEscalations(statusFilter, q || undefined)
-    .then((d) => { setRows(d.escalations || []); setPendingCount(d.pendingCount || 0); setCanDecide(!!d.canDecide); })
+    .then((d) => { setRows(d.escalations || []); setMore(!!d.hasMore); setPendingCount(d.pendingCount || 0); setCanDecide(!!d.canDecide); })
     .catch((e) => flash(false, e.message || 'could not load escalations'));
 
   useEffect(() => { loadSettings(); /* eslint-disable-next-line */ }, [canManage]);
@@ -365,7 +368,7 @@ export default function StaffEscalations() {
               value={search} onChange={(e) => setSearch(e.target.value)} />
             {search && <button className="btn small ghost" onClick={() => setSearch('')}>Clear</button>}
             {q && q.length >= 2 && (
-              <span className="small" style={{ color: '#4B585C' }}>Showing matches for “{q}” — {rows.length}</span>
+              <span className="small" style={{ color: '#4B585C' }}>Showing matches for “{q}” — {rows.length}{more ? `+ (the first ${rows.length}; narrow the search to see the rest)` : ''}</span>
             )}
           </div>
           <div className="esc-seg" role="tablist" aria-label="Filter escalations">

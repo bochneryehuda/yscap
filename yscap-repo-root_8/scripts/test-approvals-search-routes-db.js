@@ -186,6 +186,31 @@ function call(server, path, token, { raw = false } = {}) {
     eq(ours(escHit.body && escHit.body.escalations).length, 1, 'D3 the SAME typed address narrows it — one definition, every queue');
     const escMiss = await call(server, `/api/admin/manual-programs/escalations?status=open&q=${encodeURIComponent('Zzz No Such Place')}`, tok);
     eq(ours(escMiss.body && escMiss.body.escalations).length, 0, 'D4 with the same honest miss');
+    /* THE SAME NO-SILENT-CAP RULE, on the twin queue — fixing one screen and
+       leaving its twin with the cap is the "only the instance you were shown"
+       failure this repo bans.
+
+       AND THE BULK FIXTURE HAS TO BE 101 FILES HERE TOO: this queue carries
+       `uq_manual_esc_openish_per_app`, its own one-open-per-file rule, exactly
+       like the exception register's. The database said so — the first cut of
+       this comment asserted the opposite and was wrong. */
+    eq(escHit.body.hasMore, false, 'D5 a search inside one page says so');
+    eq(escHit.body.pageSize, 100, 'D6 and names the page size, so the screen keeps no second copy of it');
+    const escBulk = [];
+    for (let i = 0; i < 101; i += 1) {
+      const id = await mkApp(bMatch, `E${i}`, { line1: '598 Pawling Ave', city: 'Troy', state: 'NY', zip: '12180' });
+      escBulk.push(id);
+      await db.query(
+        `INSERT INTO manual_program_escalations (application_id, status, requested_by)
+         VALUES ($1,'pending',$2)`, [id, adminId]);
+    }
+    const escPaged = await call(server, `/api/admin/manual-programs/escalations?status=open&q=${encodeURIComponent('598 Pawling')}`, tok);
+    eq((escPaged.body.escalations || []).length, 100, 'D7 a search matching more than a page returns exactly one page');
+    eq(escPaged.body.hasMore, true, 'D8 and SAYS there is more, rather than printing the page size as a count');
+    for (const id of escBulk) {
+      await db.query(`DELETE FROM manual_program_escalations WHERE application_id=$1`, [id]);
+      await db.query(`DELETE FROM applications WHERE id=$1`, [id]);
+    }
 
     // ── E. THE SYSTEM AUDIT LOG ───────────────────────────────────────────
     /* THE ONE SCREEN THAT IS THE SYSTEM'S LOG, and its own search was wrong in
