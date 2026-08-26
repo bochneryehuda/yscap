@@ -116,6 +116,11 @@ const FOOTER_RE = /^(Your YS Capital contact:|Indicative only|Initial term sheet
     document.head.appendChild(s);
   }));
 
+  /* How many deals named a legal rung. `general` is deliberately absent from LEGAL_RUNG_WORDS —
+     a plain $995 file shows "Legal fee" with nothing in brackets, because "(general)" tells the
+     officer nothing. So the per-deal check is the SHAPE, and the count below is what would catch
+     the rung words vanishing altogether. */
+  const rungNamed = [];
   for (const deal of DEALS) {
     /* A FIXTURE THAT NAMES A FIELD THE STUDIO DOES NOT HAVE tests a different deal than it claims
        (the lesson of the `<select>` that silently ignored a value it had no option for). */
@@ -182,7 +187,13 @@ const FOOTER_RE = /^(Your YS Capital contact:|Indicative only|Initial term sheet
         feas: shown('rFeasWrap') ? txt('rFeas') : null, settle: shown('rSettleRow') ? txt('rSettle') : null,
         cema: shown('rCemaRow') ? txt('rCema') : null, cash: shown('rCash') ? txt('rCash') : null,
         liquidity: shown('rLiquidity') ? txt('rLiquidity') : null,
-        lenderSub: shown('rLenderSub') ? txt('rLenderSub') : null, gov: shown('rGovWrap') ? txt('rGovWrap') : null };
+        /* OUR FEE'S TWO HALVES, read from the two ROWS that replaced the old combined sub-line
+           (2026-08-26). `rLenderSub` no longer exists; reading it left this assertion comparing
+           against null on every deal. */
+        uwFee: shown('rUwRow') ? txt('rUwFee') : null, legalFee: shown('rLegalRow') ? txt('rLegalFee') : null,
+        legalLbl: shown('rLegalRow') ? txt('rLegalLbl') : null,
+        combined: shown('rLenderRow') ? txt('rLender') : null,
+        gov: shown('rGovWrap') ? txt('rGovWrap') : null };
     });
     ok(`${deal.name}: the structure screen opened`, screen.open === true);
 
@@ -261,8 +272,19 @@ const FOOTER_RE = /^(Your YS Capital contact:|Indicative only|Initial term sheet
     if (Number(r.d.govLines) > 0) ok(`${deal.name}: the structure screen lists the government charges`, !!screen.gov);
     ok(`${deal.name}: the structure screen states the cash to close`, !!screen.cash && screen.cash !== '—', String(screen.cash));
     ok(`${deal.name}: …and the liquidity to show`, !!screen.liquidity && screen.liquidity !== '—', String(screen.liquidity));
-    ok(`${deal.name}: …and names our fee's two halves`, /underwriting & processing .* \+ legal /.test(String(screen.lenderSub || '')),
-      String(screen.lenderSub));
+    /* RE-POINTED, NOT RELAXED. The panel used to carry ONE combined row plus a sub-line spelling
+       both figures out — a total with an explanation. It now carries a row EACH, so this asserts
+       both AMOUNTS are on screen and that the legal row still names its rung, which is strictly
+       stronger than matching one sentence. The combined row survives only for a file with a typed
+       whole-number total, and exactly one shape may ever be visible. */
+    const bothHalves = /^\$[\d,]+\.\d\d$/.test(String(screen.uwFee || '')) && /^\$[\d,]+\.\d\d$/.test(String(screen.legalFee || ''));
+    ok(`${deal.name}: …and names our fee's two halves`, bothHalves,
+      `uw=${screen.uwFee} legal=${screen.legalFee}`);
+    ok(`${deal.name}: …and the legal row is labelled, with its rung when it has one`,
+      /^Legal fee( \(.+\))?$/.test(String(screen.legalLbl || '')), String(screen.legalLbl));
+    if (/^Legal fee \(.+\)$/.test(String(screen.legalLbl || ''))) rungNamed.push(deal.name);
+    ok(`${deal.name}: …and the old combined row is not showing at the same time`, !screen.combined,
+      String(screen.combined));
 
     /* 2 ── NO LINE LANDS ON ANOTHER */
     const visible = r.items.filter((i) => !/^(255,255,255|#ffffff|1 1 1|FFFFFF)$/i.test(String(i.colour).trim()));
@@ -306,6 +328,12 @@ const FOOTER_RE = /^(Your YS Capital contact:|Indicative only|Initial term sheet
   }
 
   await browser.close();
+  /* Four of the five fixtures sit on a NAMED rung (a ground-up, two New York deals, a NY
+     ground-up). If that ever drops, the labels stopped saying WHY a fee is what it is — which is
+     the whole reason the rung is printed. */
+  ok(`the legal rung is named on the deals that have one (${rungNamed.length}/${DEALS.length})`,
+    rungNamed.length >= 4, rungNamed.join(', '));
+
   if (fail) { console.log(`\nrender-fee-audit: ${fail} FAILURE(S), ${pass} passed`); process.exit(1); }
   console.log(`\nrender-fee-audit: all ${pass} checks passed.`);
 })();

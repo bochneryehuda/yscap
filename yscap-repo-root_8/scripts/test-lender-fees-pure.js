@@ -507,6 +507,26 @@ const GOV = require('../src/lib/closing-costs');
     .filter(function (l) { return / \(\$\)/.test(l) || / \(%\)/.test(l); });
   ok('H8c no label leaves its unit marker loose enough to orphan onto its own line',
     looseUnit.length === 0, looseUnit.slice(0, 3).join(' | '));
+  /* AND THE BREAKPOINT THAT MEASURED THE WRONG BOX (owner-reported 2026-08-26: "everything is on
+     the next line, everything is messed up"). The results grid was a hard 1fr/1fr, so each cell was
+     half of a ~460px panel and a label could not share a line with its value. A collapse rule DID
+     exist — but it keyed off the VIEWPORT, and this panel is narrow on a 1920px screen too, so on a
+     maximized browser it never fired. `auto-fit` keys off the CONTAINER instead. The `min(...,100%)`
+     floor is not decoration: a bare rem minimum would overflow a phone, which is the very failure
+     the old `minmax(0,…)` existed to prevent. Measured in a browser: 9 of 27 rows split before,
+     0 figures after, and the panel got 80px SHORTER. */
+  ok('H8d the results grid collapses on its own width, not the window\'s',
+    /\.ts-grid2\{[^}]*grid-template-columns:repeat\(auto-fit,minmax\(min\([\d.]+rem,100%\),1fr\)\)/.test(html));
+  ok('H8d2 …and the old viewport breakpoint that could never fire is gone',
+    !/@media \(max-width:520px\)\{ \.ts-grid2/.test(html));
+  /* A value that MUST wrap (the draw-fee sentence, the minimum-interest wording) has to read as a
+     label with its answer underneath. It hugs its own content so `space-between` is what puts it
+     against the right edge — not `text-align` stretching it there — so when it wraps it starts at
+     the left instead of sitting right-ragged in the middle of the panel. */
+  ok('H8e a wrapped value stacks under its label instead of floating right-ragged',
+    /\.ts-line \.v\{[^}]*text-align:left;[^}]*flex:0 1 auto;/.test(html));
+  ok('H8e2 …and the 2026-07-30 anti-clipping rules are still on that value',
+    /\.ts-line \.v\{[^}]*min-width:0;[^}]*white-space:normal;[^}]*overflow-wrap:break-word;/.test(html));
   ok('H9 every manual box exists on the admin zone',
     /id="tsFeeUwPart"/.test(html) && /id="tsFeeLegal"/.test(html) && /id="tsFeeSettlement"/.test(html));
   ok('H9b …including the CEMA question and its amount', /id="tsCemaOn"/.test(html) && /id="tsFeeCema"/.test(html));
