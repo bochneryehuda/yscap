@@ -1772,7 +1772,14 @@ export default function AppraisalPanel({ appId, readOnly = false, onSummary, rel
         className="appr-print-root"
         role="dialog" aria-modal="true"
         onClick={(e) => { if (e.target === e.currentTarget) setExpanded(false); }}
-        style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(20,27,34,.55)', display: 'flex', flexDirection: 'column', padding: 'clamp(8px,2vh,28px) clamp(8px,2vw,28px)', overflowY: 'auto' }}>
+        style={{ position: 'fixed', inset: 0,
+          /* z 190, NOT 1000 (2026-08-26): the app's message/confirm dialogs live at
+             .cv-modal-back z 200 and MUST always win — at 1000 this overlay sat on
+             top of them, so a confirm raised from inside the full report (a finding
+             resolve, the Remove/undo) rendered invisibly underneath and the screen
+             read as frozen. 190 keeps the report above the doc preview (150) and
+             the file overview (160/165) and below every dialog. */
+          zIndex: 190, background: 'rgba(20,27,34,.55)', display: 'flex', flexDirection: 'column', padding: 'clamp(8px,2vh,28px) clamp(8px,2vw,28px)', overflowY: 'auto' }}>
         <style>{PRINT_CSS}</style>
         <div style={{ maxWidth: 1080, width: '100%', margin: '0 auto', background: 'var(--paper,#F6F3EC)', border: '1px solid var(--line,#E7E1D3)', borderRadius: 16, boxShadow: '0 24px 70px rgba(0,0,0,.4)' }}>
           <div className="appr-noprint" style={{ position: 'sticky', top: 0, zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 18px', borderBottom: '1px solid var(--line,#E7E1D3)', background: 'var(--card,#fff)', borderRadius: '16px 16px 0 0' }}>
