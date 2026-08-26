@@ -1441,7 +1441,13 @@
      "NC"`), not off the rehab-scope control: the two must agree about what kind of deal this is,
      or a loan priced on the ground-up matrix is charged the heavy-rehab fee. */
   function feasKind() {
-    if (YSP.normStrategy(dealType()) === "NC") return "ground_up";
+    var st = YSP.normStrategy(dealType());
+    if (st === "NC") return "ground_up";
+    /* A BRIDGE HAS NO CONSTRUCTION TO REVIEW (owner-reported 2026-08-26). The rehab-scope control
+       is HIDDEN on a bridge rather than cleared, so a deal moved here from a heavy fix & flip kept
+       `rehabScope === "heavy"` and silently carried the $750 project-review fee. Mirrors the server's
+       `isBridgeDeal`, in the engine's own order — ground-up is decided before bridge is asked. */
+    if (st === "BR") return null;
     if (val("rehabScope") === "heavy") return "heavy_rehab";
     return null;
   }
@@ -2544,6 +2550,9 @@
         ["Credit report", gOk ? money2(gd.creditFee) : EM],
         ["Appraisal (est., POC)", gOk ? money2(gd.apprFee) : EM],
         ["Title / escrow (est.)", (gOk && gd.titleCost > 0) ? money2(gd.titleCost) : EM],
+        // Same named line as the Standard column — a fee inside the total that no column names is
+        // the defect this pair exists to prevent (owner-reported 2026-08-26).
+        (gOk && gd.feasFee > 0) ? [gd.feasLabel, money2(gd.feasFee)] : null,
         ...govXlsxRows(gOk ? gd : null),
         ["Estimated cash to close", gOk ? money2(gd.cashToClose) : EM],
         // 1% closing-cost buffer feeding the liquidity-to-show total (owner-authorized 2026-07-31)
@@ -2588,6 +2597,7 @@
         ["Credit report", sOk ? money2(sd.creditFee) : EM],
         ["Appraisal (est., POC)", sOk ? money2(sd.apprFee) : EM],
         ["Title / escrow (est.)", (sOk && sd.titleCost > 0) ? money2(sd.titleCost) : EM],
+        (sOk && sd.feasFee > 0) ? [sd.feasLabel, money2(sd.feasFee)] : null,
         ...govXlsxRows(sOk ? sd : null),
         ["Estimated cash to close", sOk ? money2(sd.cashToClose) : EM],
         // 1% closing-cost buffer feeding the liquidity-to-show total (owner-authorized 2026-07-31)
@@ -3167,6 +3177,14 @@
       yR = rowIn(xR, colW, "Credit report (avg)", sized ? money2(d.creditFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Appraisal (est., POC)", sized ? money2(d.apprFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money2(d.titleCost) : "\u2014", yR);
+      /* THE CONSTRUCTION FEASIBILITY / PROJECT REVIEW FEE, BY NAME (owner-reported 2026-08-26).
+         It shipped on 2026-08-21 folded into `closing` — so it was CHARGED, the cash-to-close
+         total included it, and no line on this page said so: the named fees above did not sum to
+         the total printed below them, on the one document that goes out for signature. Proven by
+         rendering: of the 283 strings a ground-up term sheet drew, "feasibility", "1,250" and
+         "project review" were all absent. Prints only when the deal carries one, so every sheet
+         that does not is byte-identical to before. */
+      if (sized && d.feasFee > 0) yR = rowIn(xR, colW, d.feasLabel, money2(d.feasFee), yR);
       if (sized && d.extraFees) d.extraFees.forEach(function (f) { yR = rowIn(xR, colW, f.name, money2(f.amount), yR); });
       /* GOVERNMENT CHARGES, each on its own printed line (owner-directed
          2026-08-23). On a $600,000 New York City loan the mortgage tax alone is

@@ -171,7 +171,63 @@ const O = require('../src/lib/pricing-overrides');
     }
     eq('B5 the studio and the server quote the SAME fee on every case', disagree, 0);
     ok('B6 …over a battery big enough to mean something', CASES.length >= 45);
+
+    /* B7-B10. A BRIDGE IS NEVER CHARGED TO REVIEW CONSTRUCTION THAT IS NOT HAPPENING
+       (owner-reported 2026-08-26).
+
+       AND THIS IS WHY B5 ABOVE COULD NOT CATCH IT: that check compares the two mirrors against
+       EACH OTHER, and both were equally wrong — the module's own line 88 SAID "a bridge or a
+       stabilised deal has no construction to review, whatever the rehab type says" while the code
+       under it did no such thing, and the studio kept `rehabScope === "heavy"` after a deal moved
+       off fix & flip because the control is hidden there rather than cleared. So a bridge on a
+       property whose rehab type still read "Heavy / gut rehab" was charged $750, on both sides, in
+       agreement. A MIRROR-AGREEMENT TEST PROVES CONSISTENCY, NEVER CORRECTNESS — assert the RULE
+       as well, or two copies of one mistake read as a pass. */
+    for (const deal of ['Bridge / Stabilized', 'Bridge', 'bridge / stabilized']) {
+      const server = F.feasibilityFeeFor({ strategy: deal, heavyRehab: true }, {}, {});
+      eq(`B7 the server charges a ${deal} nothing even with a heavy rehab type on file`, server, null);
+      const browser = mirror(deal, 'heavy', null, {});
+      eq(`B8 …and so does the studio`, Number(browser && browser.amount) || 0, 0);
+    }
+    /* THE CONTROL, either side of it: the exclusion must bite ONLY on a bridge. */
+    ok('B9 a heavy fix & flip still carries its fee — the exclusion is not a blanket off-switch',
+      (F.feasibilityFeeFor({ strategy: 'Fix & Flip', heavyRehab: true }, {}, {}) || {}).amount === 750);
+    ok('B9b …and a ground-up still carries its own, decided before bridge is ever asked',
+      (F.feasibilityFeeFor({ strategy: 'Ground-up Construction', heavyRehab: true }, {}, {}) || {}).amount === 1250);
+    /* A TYPED amount is a human's explicit instruction and still applies anywhere — that is the
+       entire point of the manual box, and the exclusion must not quietly disable it. */
+    ok('B10 a MANUAL fee typed onto a bridge is still honoured',
+      (F.feasibilityFeeFor({ strategy: 'Bridge / Stabilized', heavyRehab: true }, {}, { manual: 400 }) || {}).amount === 400);
   }
+}
+
+/* ── B11-B14. THE FEE IS NAMED ON EVERY SURFACE THAT PRINTS FEES ─────────────
+   The 2026-08-21 build folded the fee into `closing` — so it was CHARGED and the cash-to-close
+   total included it — and then named it on the studio panel and the spreadsheet's Standard column
+   ONLY. The term sheet PDF and the Gold and Silver columns never mentioned it, so the fees a
+   borrower can read did not add up to the total they were asked to bring. PROVEN by rendering:
+   of the 283 strings a ground-up term sheet drew, "feasibility", "1,250" and "project review"
+   were all absent (owner-reported 2026-08-26).
+
+   A SOURCE GUARD, deliberately: CI has no browser, so the rendering proof lives in
+   `scripts/render-term-sheet-fees.js`. What can be enforced on every build is that each surface
+   still REFERENCES the fee — which is exactly what went missing. */
+{
+  const ts = fs.readFileSync(path.join(REPO, 'web/v2/tools/termsheet.js'), 'utf8');
+  const between = (from, to) => {
+    const a = ts.indexOf(from); if (a < 0) return '';
+    const b = ts.indexOf(to, a); return b < 0 ? ts.slice(a) : ts.slice(a, b);
+  };
+  // The PDF's own cash-to-close block, from its heading to the liquidity line that ends it.
+  const pdfBlock = between('cardHead(xR, colW, "Estimated cash to close"', 'liqLbl');
+  ok('B11 the term sheet PDF names the feasibility fee', /d\.feasFee/.test(pdfBlock) && /d\.feasLabel/.test(pdfBlock));
+  // Each spreadsheet column, keyed on its own data variable so one column cannot cover another.
+  ok('B12 the spreadsheet Standard column names it', /\bd\.feasFee\b/.test(between('var std = [', 'var gold')));
+  ok('B13 the spreadsheet Gold column names it', /\bgd\.feasFee\b/.test(between('var gold;', 'var silver')));
+  /* ANCHORS MUST BE UNIQUE. `var silver` also matches `var silverChosenRung` 2,500 lines earlier,
+     which opened the window in the wrong place and failed on a line that was plainly there — the
+     semicolon is what makes each column's declaration its own. */
+  ok('B14 the spreadsheet Silver column names it', /\bsd\.feasFee\b/.test(between('var silver;', 'return {')));
 }
 
 // ── C + D. Runtime equivalence, against the REAL pricing path ────────────────
