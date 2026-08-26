@@ -78,7 +78,16 @@
      backstop for a single unbreakable token. Same class as the card badge/stat —
      never let a long string set a container's width. */
   .ts-line .k{ color:var(--muted-2); flex:0 0 auto; min-width:0; max-width:60%; overflow-wrap:break-word; }
-  .ts-line .v{ font-weight:600; color:var(--ivory-soft); text-align:right; flex:1 1 auto; min-width:0; white-space:normal; overflow-wrap:break-word; }
+  /* THE VALUE HUGS ITS OWN CONTENT (`flex:0 1 auto`), so `justify-content:space-between` on the
+     row is what puts it against the right edge — it is not stretched there by `text-align`. That
+     matters for the rows whose value is a SENTENCE rather than a figure (the minimum-interest
+     wording, the deferred-origination wording, the two-tier draw fee): when one of those has to
+     wrap it now starts at the left and reads as a label with its answer underneath, instead of a
+     right-ragged block floating in the middle of the panel. `min-width:0` and the wrapping rules
+     below are the 2026-07-30 fix and are deliberately UNCHANGED — a long value must still never
+     set the row's width. Measured: the wrapped draw-fee text used to start 62px in; it now
+     starts at 0, with zero rows spilling past their row and no sideways scroll. */
+  .ts-line .v{ font-weight:600; color:var(--ivory-soft); text-align:left; flex:0 1 auto; min-width:0; white-space:normal; overflow-wrap:break-word; }
   .ts-line.em{ padding:.55rem 0; }
   .ts-line.em .k{ color:var(--ivory-soft); font-weight:600; }
   .ts-line.em .v{ color:var(--ivory-soft); font-size:1.02rem; }
@@ -155,11 +164,19 @@
   .maxlev .ml .mlk{ font-size:.66rem; text-transform:uppercase; letter-spacing:.09em; color:var(--muted-2); }
   .maxlev .ml .mlv{ font-family:var(--font-d); font-weight:600; color:var(--teal-br); font-size:1.06rem; margin-top:.15rem; }
   /* compact 2-column rows for fees / snapshot */
-  /* minmax(0,1fr) — a bare `1fr` floors at MIN-CONTENT, so one long value in one
-     cell used to widen BOTH tracks and blow the grid out of the panel. */
-  .ts-grid2{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); column-gap:1.4rem; min-width:0; }
+  /* THE BREAKPOINT WAS MEASURING THE WRONG BOX (owner-reported 2026-08-26: "everything is on
+     the next line, everything is messed up"). This grid was a hard 1fr/1fr, so each cell was half
+     of a results panel that is only ~460px wide — and a label plus its value does not fit in
+     ~220px. `.ts-line` wraps, so the value dropped BELOW its own label while the pair beside it
+     stayed put. There WAS a collapse rule for this, but it keyed off the VIEWPORT
+     (`max-width:520px`), and this panel is narrow on a 1920px screen too, so on a maximized
+     browser it never fired. `auto-fit` keys off the CONTAINER instead: two columns only when the
+     panel can actually hold two, one column otherwise, with no magic number about the window.
+     `min(22rem,100%)` is the floor — a bare 22rem minimum would overflow a phone, which is the
+     very failure the old minmax(0,…) existed to prevent, so the track can never demand more
+     than the panel it sits in. Measured: 9 of 27 rows split before, 0 after. */
+  .ts-grid2{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(22rem,100%),1fr)); column-gap:1.4rem; min-width:0; }
   .ts-grid2 .ts-line{ font-size:.84rem; }
-  @media (max-width:520px){ .ts-grid2{ grid-template-columns:minmax(0,1fr); } }
   /* read-only field */
   .input.is-ro{ opacity:.85; background:rgba(255,255,255,.02); }
   .input.is-ro input{ color:var(--muted); cursor:default; }
