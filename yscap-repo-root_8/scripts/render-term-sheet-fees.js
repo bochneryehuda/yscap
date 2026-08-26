@@ -50,6 +50,14 @@ const FEE_DEALS = [
     f: { dealType: 'Fix & Flip', price: '300000', construction: '60000', arv: '520000', asIs: '300000', fico: '740', expFlips: '5', propState: 'NY', rehabScope: 'light', tsTaxCounty: 'Albany', tsTaxCity: 'Albany' } },
   { name: 'ground-up NJ', uw: '$1,200.00', legal: '$2,000.00', settlement: null,
     f: { dealType: 'Ground-up Construction', price: '300000', construction: '400000', arv: '1100000', asIs: '300000', fico: '740', expGround: '3', propState: 'NJ' } },
+  /* THE NON-NEW-YORK HEAVY-REHAB RUNG (owner-directed 2026-08-26): all three tests met — marked
+     heavy, a $400,000 rehab (over $100,000), and that rehab larger than the $150,000 price. */
+  { name: 'NJ heavy rehab, rehab over $100k AND over the price', uw: '$1,200.00', legal: '$1,500.00', settlement: null,
+    f: { dealType: 'Fix & Flip', price: '150000', construction: '400000', arv: '900000', asIs: '150000', fico: '740', expFlips: '5', propState: 'NJ', rehabScope: 'heavy' } },
+  /* THE SAME FILE with the rehab SMALLER than the property — the third test denied, so $995. This
+     pair is what proves the render reflects the RULE rather than the rehab scope alone. */
+  { name: 'NJ heavy rehab, rehab under the price', uw: '$1,200.00', legal: '$995.00', settlement: null,
+    f: { dealType: 'Fix & Flip', price: '900000', construction: '400000', arv: '1900000', asIs: '900000', fico: '740', expFlips: '5', propState: 'NJ', rehabScope: 'heavy' } },
 ];
 
 /* THE TERMS THE SHEET DISCLOSES rather than charges (owner-directed 2026-08-26): a GROUND-UP is

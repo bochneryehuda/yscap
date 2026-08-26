@@ -90,12 +90,32 @@ const GOV = require('../src/lib/closing-costs');
   eq('A11c …and an upstate heavy rehab with a big budget is explained by the budget',
     legal({ state: 'NY', city: 'Albany', heavyRehab: true, construction: 500000 }).basis, 'ny_construction');
 
-  /* A NON-NEW-YORK HEAVY REHAB IS DELIBERATELY NOT ON THE LADDER — the owner named heavy rehab
-     only inside New York. It is a PRE-FILL either way, editable on the file. */
-  eq('A12 a heavy rehab OUTSIDE New York stays at the general fee — the owner named it only for NY',
+  /* A NON-NEW-YORK HEAVY REHAB REACHES ITS OWN RUNG ONLY WITH ALL THREE of the owner's tests
+     (2026-08-26). A12 and A13 each carry ONE of them and must therefore still be the general fee —
+     they are the cases that prove the rung does not fire on a partial match. */
+  eq('A12 a heavy rehab OUTSIDE New York with no budget and no price is still the general fee',
     legal({ state: 'NJ', heavyRehab: true }), { amount: 995, basis: 'general' });
-  eq('A13 …and so does a big construction budget outside New York',
+  eq('A13 …and so does a big construction budget on a file not marked heavy rehab',
     legal({ state: 'NJ', construction: 900000 }), { amount: 995, basis: 'general' });
+  /* A12b-A12h: THE RUNG ITSELF, ON THE SERVER. Each of the owner's three tests is denied on its
+     own, because this rung RAISES what a borrower pays and a rule proven only to fire is half a
+     proof. `priceBasis` is resolved by the caller — see `legalFeeFor`'s header. */
+  const HRS = { state: 'NJ', heavyRehab: true, construction: 400000, priceBasis: 100000 };
+  eq('A12b $1,500 when the file is heavy, the rehab is over $100,000 and it exceeds the price',
+    legal(HRS), { amount: 1500, basis: 'heavy_rehab_high' });
+  eq('A12c …not when the rehab is smaller than the property itself',
+    legal({ ...HRS, priceBasis: 900000 }).basis, 'general');
+  eq('A12d …not at exactly $100,000 — the owner said "more than"',
+    legal({ ...HRS, construction: 100000, priceBasis: 50000 }).basis, 'general');
+  eq('A12e …not without the heavy-rehab mark',
+    legal({ ...HRS, heavyRehab: false }).basis, 'general');
+  eq('A12f …never on a bridge carrying a stale heavy flag',
+    legal({ ...HRS, bridge: true }).basis, 'general');
+  eq('A12g …and never on an unreadable price — the lower rung cannot over-charge',
+    [legal({ ...HRS, priceBasis: 0 }).basis, legal({ ...HRS, priceBasis: undefined }).basis,
+     legal({ ...HRS, priceBasis: 'x' }).basis], ['general', 'general', 'general']);
+  eq('A12h a ground-up and every New York rung still outrank it',
+    [legal({ ...HRS, groundUp: true }).amount, legal({ ...HRS, state: 'NY' }).amount], [2000, 2500]);
 
   // The state is matched on the code or the full name — a file can carry either.
   eq('A14 "New York" spelled out is New York', legal({ state: 'New York' }).basis, 'ny_base');
@@ -284,7 +304,17 @@ const GOV = require('../src/lib/closing-costs');
         if (id === 'rehabScope') return deal.heavyRehab ? 'heavy' : '';
         return '';
       }
-      function num(id) { return id === 'construction' ? (Number(deal.construction) || 0) : 0; }
+      function num(id) {
+        if (id === 'construction') return Number(deal.construction) || 0;
+        if (id === 'price') return Number(deal.purchase) || 0;
+        if (id === 'asIs') return Number(deal.asIs) || 0;
+        return 0;
+      }
+      function isRefi() { return !!deal.refi; }
+      /* The studio's own basis helper, verbatim from termsheet.js — the rung reads it rather than
+         a field id of its own, which is what stopped the first cut reading a field that does not
+         exist. Stubbing it keeps the mirror comparing the RULE. */
+      function effPurchase() { return isRefi() ? num('asIs') : num('price'); }
       function adminNumRaw(id) {
         var t = deal.typed || {};
         if (id === 'tsFeeUW') return t.total == null ? null : t.total;
@@ -303,9 +333,21 @@ const GOV = require('../src/lib/closing-costs');
         for (const county of ['Kings', 'Albany', '', 'Richmond']) {
           for (const strategy of ['Fix & Flip', 'Ground-up Construction', 'Bridge / Stabilized']) {
             for (const heavyRehab of [true, false]) {
-              for (const construction of [0, 40000, 100000, 400000]) {
-                for (const typed of [{}, { legal: 1500 }, { underwriting: 800 }, { total: 2195 }, { settlement: 0 }, { legal: 0 }]) {
-                  CASES.push({ state, city, county, strategy, heavyRehab, construction, typed });
+              for (const construction of [0, 40000, 100000, 100001, 400000]) {
+                /* The heavy-rehab rung compares the rehab to what the property itself cost, so the
+                   battery must carry a price BELOW it, ABOVE it, EQUAL to it and ABSENT. On a
+                   refinance the as-is value stands in for the price (the owner's own answer). */
+                for (const money of [
+                  { purchase: 0, asIs: 0, refi: false },
+                  { purchase: 100000, asIs: 0, refi: false },
+                  { purchase: 900000, asIs: 0, refi: false },
+                  { purchase: 400000, asIs: 0, refi: false },
+                  { purchase: 0, asIs: 200000, refi: true },
+                  { purchase: 250000, asIs: 900000, refi: true },
+                ]) {
+                  for (const typed of [{}, { legal: 1500 }, { underwriting: 800 }, { total: 2195 }, { settlement: 0 }, { legal: 0 }]) {
+                    CASES.push({ state, city, county, strategy, heavyRehab, construction, typed, ...money });
+                  }
                 }
               }
             }
@@ -319,7 +361,11 @@ const GOV = require('../src/lib/closing-costs');
       const server = L.lenderFeesFor({
         state: c.state, city: c.city, county: c.county,
         groundUp: require('../src/lib/feasibility-fee').isGroundUpDeal({ strategy: c.strategy }),
+        bridge: require('../src/lib/feasibility-fee').isBridgeDeal({ strategy: c.strategy }),
         heavyRehab: c.heavyRehab, construction: c.construction,
+        /* The caller resolves the basis — see `legalFeeFor`'s header. This is the SAME expression
+           pricing.js uses, so the test exercises the wiring and not a convenience of its own. */
+        priceBasis: c.refi ? (Number(c.asIs) || Number(c.purchase) || 0) : (Number(c.purchase) || 0),
       }, {}, c.typed);
       const sSet = L.settlementFeeFor({ state: c.state }, {}, c.typed);
       const sAmt = sSet ? sSet.amount : 0;
@@ -345,6 +391,32 @@ const GOV = require('../src/lib/closing-costs');
       bParts({ state: 'TX', strategy: 'Ground-up Construction' }).legal, 2000);
     eq('F7 the studio pre-fills the optional settlement fee on a New York file only',
       [mirror({ state: 'NY' }, {}, GOV).settlement, mirror({ state: 'NJ' }, {}, GOV).settlement], [750, 0]);
+
+    /* F8-F14: THE NON-NEW-YORK HEAVY-REHAB RUNG (owner-directed 2026-08-26), asserted as the RULE
+       on the browser side for the same reason F4-F6 exist. The owner's conditions are ALL THREE,
+       so each is denied on its own — a rule that fires when it should is worth little next to one
+       proven not to fire when it should not, and this rung raises what a borrower pays. */
+    const HR = { state: 'NJ', strategy: 'Fix & Flip', heavyRehab: true, construction: 400000, purchase: 100000 };
+    eq('F8 the studio charges $1,500 when all three of the owner\'s tests are met',
+      bParts(HR).legal, 1500);
+    eq('F9 …not when the rehab is smaller than the property itself',
+      bParts({ ...HR, purchase: 900000 }).legal, 995);
+    eq('F10 …not when the rehab is at or under $100,000',
+      [bParts({ ...HR, construction: 100000, purchase: 50000 }).legal,
+       bParts({ ...HR, construction: 40000, purchase: 10000 }).legal], [995, 995]);
+    eq('F11 …not on a file that is not marked heavy rehab',
+      bParts({ ...HR, heavyRehab: false }).legal, 995);
+    eq('F12 …not on a BRIDGE carrying a stale heavy flag (the rehab control is hidden, not cleared)',
+      bParts({ ...HR, strategy: 'Bridge / Stabilized' }).legal, 995);
+    eq('F13 …and never with no price to compare against — the lower rung cannot over-charge',
+      bParts({ ...HR, purchase: 0 }).legal, 995);
+    eq('F14 on a REFINANCE the as-is value stands in for the purchase price (the owner\'s answer)',
+      [bParts({ ...HR, purchase: 0, asIs: 200000, refi: true }).legal,
+       bParts({ ...HR, purchase: 0, asIs: 900000, refi: true }).legal], [1500, 995]);
+    eq('F15 …and a ground-up still outranks it — the ladder order holds',
+      bParts({ ...HR, strategy: 'Ground-up Construction' }).legal, 2000);
+    eq('F16 …as does every New York rung, which this must never lower',
+      [bParts({ ...HR, state: 'NY' }).legal, bParts({ ...HR, state: 'NY', city: 'Brooklyn' }).legal], [2500, 2500]);
   }
 }
 
