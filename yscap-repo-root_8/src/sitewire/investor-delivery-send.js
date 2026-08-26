@@ -532,8 +532,30 @@ async function deliveryPreview(appId, drawId) {
        FROM draw_investor_deliveries WHERE application_id=$1 AND sitewire_draw_id=$2
       ORDER BY sent_at DESC LIMIT 10`, [appId, drawId])).rows;
 
+  // THE EXACT WORDING THE SEND RENDERS (owner-directed 2026-08-26: "it should populate a
+  // full preview ... fully editable"). Same pure ID.deliveryEmail + the same template — only
+  // the attachment-inventory lines are absent, because the plan is built at SEND time (it
+  // renders the PDF report + the Excel packet, which a page load must not pay for); the
+  // screen says the attachments are listed at send. Best-effort — an error hides the
+  // editable body, never the preview.
+  let previewEmail = null;
+  try {
+    const wording = ID.deliveryEmail({
+      loanNo: app.loan_no, address: app.address, drawNumber,
+      borrowerName: app.borrower_name || null, coordinatorName: null, inspectionBy: null,
+    }, money);
+    const r2 = template.render({
+      title: 'Draw request for funding', kicker: 'Draw delivery',
+      intro: wording.intro, meta: [...wording.rows, ...wording.detail],
+      callout: { title: 'What we are asking for', body: wording.ask, tone: 'action' },
+      note: wording.signOff, replyable: true,
+    });
+    previewEmail = { subject: wording.subject, text: r2.text };
+  } catch (_) { previewEmail = null; }
+
   return {
     draw_id: Number(drawId), draw_number: drawNumber,
+    email: previewEmail,
     note_buyer: app.note_buyer || null,
     note_buyer_key: investorKeyFor(app.note_buyer),
     address: app.address || null, loan_no: app.loan_no || null,
@@ -584,6 +606,9 @@ async function sendInvestorDelivery(appId, drawId, {
   // Build the plan and return it WITHOUT sending. What the desk calls to show the picture before
   // anybody commits to anything.
   preflight = false,
+  // A hand-edited subject/body from the compose preview (owner-directed 2026-08-26),
+  // landed through the ONE lib/email/manual-override chokepoint below.
+  override = null,
 } = {}) {
   // REFRESH FROM SITEWIRE FIRST (owner-directed 2026-08-11: "when we click Deliver
   // to Investor, that button — before actually delivering — should run a refresh
@@ -763,8 +788,14 @@ async function sendInvestorDelivery(appId, drawId, {
       + `\n\n${wording.signOff}`,
     replyable: true,
   });
-  const html = rendered.html;
-  const text = rendered.text;
+  // A hand-edited subject/body lands through the ONE manual-override chokepoint
+  // (owner-directed 2026-08-26); no override -> byte-identical to before. The
+  // attachments themselves are never editable — only the words around them.
+  const builtEmail = require('../lib/email/manual-override').applyOverride(
+    { subject: wording.subject, html: rendered.html, text: rendered.text }, override,
+    { title: 'Draw request for funding' });
+  const html = builtEmail.html;
+  const text = builtEmail.text;
 
   let status = 'sent';
   let errText = null;
@@ -784,14 +815,14 @@ async function sendInvestorDelivery(appId, drawId, {
   const FA = require('../lib/file-address');
   const emailLog = require('../lib/email-log');
   const uniqueReplyTo = FA.fileReplyTo(appId) || DESK;
-  const threadKey = emailLog.threadKeyFor(appId, wording.subject);
+  const threadKey = emailLog.threadKeyFor(appId, builtEmail.subject);
   try {
     await email.sendMail({
       to: pre.to,
       cc: pre.cc,
       from: deskFrom(),
       replyTo: uniqueReplyTo,
-      subject: wording.subject,
+      subject: builtEmail.subject,
       text,
       html,
       attachments: items.map((i) => ({ filename: i.filename, content: i.buf.toString('base64'), contentType: i.contentType })),

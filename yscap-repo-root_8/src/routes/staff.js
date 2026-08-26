@@ -5766,10 +5766,14 @@ router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
 router.get('/applications/:id/tape-send', async (req, res) => {
   if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
   try {
-    const pre = await require('../lib/tapes/investor-send').previewTapeSend(req.params.id, db);
+    const investorSendTape = require('../lib/tapes/investor-send');
+    const pre = await investorSendTape.previewTapeSend(req.params.id, db);
     if (!pre) return res.status(404).json({ error: 'not found' });
     const { app: _app, ...safe } = pre;   // the raw row stays server-side
-    res.json(safe);
+    // The EXACT email the send would produce (owner-directed 2026-08-26: a full,
+    // editable preview) — the same pure builder sendTapeToInvestor renders with.
+    const built = investorSendTape.buildTapeEmail(pre, typeof req.query.note === 'string' ? req.query.note : '');
+    res.json({ ...safe, email: { subject: built.subject, text: built.text } });
   } catch (e) { console.error('[tape-send preview]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -5787,7 +5791,7 @@ router.post('/applications/:id/tape-send/:tapeKey', async (req, res) => {
     if (!out.ok) return;
     const sent = await investorSendTape.sendTapeToInvestor(req.params.id, db, {
       tape: { buf: out.buf, filename: out.filename, contentType: out.contentType },
-      to: rec.emails, cc: b.cc, note: b.note,
+      to: rec.emails, cc: b.cc, note: b.note, override: b.override,
       actorId: req.actor.id, actorName: req.actor.full_name || null,
     });
     await audit(req, 'tape_sent_to_investor', 'application', req.params.id, {
@@ -7199,6 +7203,30 @@ router.get('/applications/:id/orders', async (req, res) => {
 // Place (send) an order. Gated on loan number + vendor contact. Re-sending an
 // already-placed order requires ?force / {force:true} so a stray double-click
 // never re-blasts the vendor + whole CC chain.
+/* THE EDITABLE PREVIEW (owner-directed 2026-08-26: "instead of it automatically sending
+   an email, it should populate a full preview … fully editable"). The preview IS the
+   send's own pure builder — orders.buildOrderEmail — run over the same data, so what the
+   screen shows and what would go out can never be two different emails. Read-only:
+   builds nothing on the file, sends nothing. ?followup=1 previews the follow-up shape
+   (with the typed note in place); the send routes then accept {override:{subject,text}}
+   landed through the ONE lib/email/manual-override chokepoint. */
+router.get('/applications/:id/orders/:kind/email-preview', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const followup = req.query.followup === '1' || req.query.followup === 'true';
+    const note = typeof req.query.note === 'string' ? req.query.note.slice(0, 4000) : '';
+    const built = orders.buildOrderEmail(kind, data, followup ? { followup: true, fullOrder: true, note } : {});
+    const ccBorrower = await ccBorrowerFor(appId, kind, { explicit: null, storedMeta: null });
+    const { to, cc } = orders.recipientsFor(kind, data, { ccBorrower });
+    res.json(require('../lib/email/manual-override').previewShape(built, { to, cc }));
+  } catch (e) { res.status(500).json({ error: 'Could not build the preview.' }); }
+});
+
 router.post('/applications/:id/orders/:kind/place', async (req, res) => {
   const appId = req.params.id;
   const kind = req.params.kind;
@@ -7240,7 +7268,12 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
       storedMeta: existing && existing.meta,
     });
 
-    const built = orders.buildOrderEmail(kind, data, {});
+    // A hand-edited subject/body from the preview modal lands through the ONE
+    // manual-override chokepoint (owner-directed 2026-08-26); no override → the
+    // built email is byte-identical to before.
+    const built = require('../lib/email/manual-override').applyOverride(
+      orders.buildOrderEmail(kind, data, {}), req.body && req.body.override,
+      { title: `${kind === 'title' ? 'Title' : 'Insurance'} order`, replyable: true });
     const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower });
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     const vendor = data.vendors[kind];
@@ -7402,7 +7435,11 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     const note = String((req.body && req.body.message) || '').trim().slice(0, 4000);
     // The "Follow up" button restates the FULL order (all details + coverage + mortgagee clause);
     // the Email Center vendor-reply (elsewhere) stays light so a one-line reply isn't a full re-dump.
-    const built = orders.buildOrderEmail(kind, data, { followup: true, fullOrder: true, note });
+    // A hand-edited subject/body from the preview modal lands through the ONE
+    // manual-override chokepoint (owner-directed 2026-08-26).
+    const built = require('../lib/email/manual-override').applyOverride(
+      orders.buildOrderEmail(kind, data, { followup: true, fullOrder: true, note }),
+      req.body && req.body.override, { title: 'Order follow-up', replyable: true });
     // Follow-ups keep the borrower-CC footing the ORDER was placed with
     // (file_orders.meta.ccBorrower; owner-directed 2026-07-31 — title default
     // off). An order placed BEFORE this existed has no stored choice — fall to
@@ -7859,6 +7896,37 @@ function cleanEmailList(v, max = 10) {
 
 // Everything the closing-prep card needs: the deal, the documents we WOULD attach
 // (and what is missing), the recipients, the chain's address and its history.
+/* THE EDITABLE PREVIEW for the attorney closing-prep request + its follow-up
+   (owner-directed 2026-08-26). The preview IS the send's own pure builder — the same
+   buildClosingPrepEmail / buildFollowupEmail the place/followup routes run — so the
+   screen and the wire can never show two different emails. `address` is null here on a
+   file with no chain yet (a preview must never MINT a closing address; the builders
+   tolerate null and the real send mints it), so the printed reply-address line may
+   appear only on the sent copy. Read-only, sends nothing. */
+router.get('/applications/:id/closing-prep/email-preview', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await closingPrep.getClosingPrepData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const followup = req.query.followup === '1' || req.query.followup === 'true';
+    const note = typeof req.query.note === 'string' ? req.query.note.slice(0, 4000) : '';
+    const thread = await closingThread.threadFor(appId).catch(() => null);
+    const address = thread ? closingThread.addressFor(thread) : null;
+    let built;
+    if (followup) built = closingPrep.buildFollowupEmail(data, { note, address, senderName: '' });
+    else {
+      const pkg = await closingPrep.gatherPackage(appId);
+      built = closingPrep.buildClosingPrepEmail(data, pkg, { address, attach: null, note, senderName: '' });
+    }
+    const row = (await db.query(
+      `SELECT meta FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0] || null;
+    const extraEmails = (row && row.meta && Array.isArray(row.meta.extraEmails)) ? row.meta.extraEmails : [];
+    const { to, cc } = closingPrep.recipientsFor(data, { extraEmails });
+    res.json(require('../lib/email/manual-override').previewShape(built, { to, cc }));
+  } catch (e) { res.status(500).json({ error: 'Could not build the preview.' }); }
+});
+
 router.get('/applications/:id/closing-prep', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
@@ -8139,7 +8207,11 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
         bytes: pack.totalBytes || 0, budget: pack.oneMessageBytes || 0, part_count: partCount,
         compressed_n: (pack.attached || []).filter((a) => a.compression).length,
       },
-      build: ({ address }) => closingPrep.buildClosingPrepEmail(data, pkg, { address, attach, note, senderName }),
+      // A hand-edited subject/body from the preview modal lands through the ONE
+      // manual-override chokepoint (owner-directed 2026-08-26); no override → byte-identical.
+      build: ({ address }) => require('../lib/email/manual-override').applyOverride(
+        closingPrep.buildClosingPrepEmail(data, pkg, { address, attach, note, senderName }),
+        req.body && req.body.override, { title: closingPrep.CLOSING_PREP_TITLE }),
     });
     if (!sent.ok) {
       // Nothing went out, so the clock goes back to what it was.
@@ -8361,7 +8433,9 @@ router.post('/applications/:id/closing-prep/followup', async (req, res) => {
       applicationId: appId, eventKind: 'followup',
       dedupeKey: null,                       // a human follow-up may be sent again
       to, cc, fromName: senderName, staffId: req.actor.id, msgType: 'closing_followup',
-      build: ({ address }) => closingPrep.buildFollowupEmail(data, { note, address, senderName }),
+      build: ({ address }) => require('../lib/email/manual-override').applyOverride(
+        closingPrep.buildFollowupEmail(data, { note, address, senderName }),
+        req.body && req.body.override, { title: 'Closing prep follow-up' }),
     });
     if (!sent.ok) return res.status(500).json({ error: 'Could not send the follow-up.', code: sent.reason });
     await db.query(

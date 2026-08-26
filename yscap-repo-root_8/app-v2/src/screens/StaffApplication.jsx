@@ -7172,10 +7172,10 @@ function TapeExport({ appId }) {
     setSendPending(null);
     setMsg(`The ${name} tape is queued to send ${(out.scheduled && out.scheduled.sendAtText) || 'at the time you picked'}.`);
   }
-  async function runSend(tapeKey, name, answers, to, note, extra, cc) {
+  async function runSend(tapeKey, name, answers, to, note, extra, cc, override) {
     setBusy(tapeKey); setMsg('');
     try {
-      const out = await api.staffTapeSend(appId, tapeKey, { ...(answers || {}), ...(extra || {}), to, cc, note });
+      const out = await api.staffTapeSend(appId, tapeKey, { ...(answers || {}), ...(extra || {}), to, cc, note, ...(override ? { override } : {}) });
       setSendPending(null);
       setMsg(`Sent the ${name} tape to ${out.to.join(', ')}. Replies thread into this file.`);
     } catch (e) {
@@ -7184,7 +7184,7 @@ function TapeExport({ appId }) {
       // allow inline with a logged reason; everyone else asks for an exception.
       if (d.code === 'encompass_override_reason_required') {
         const reason = await askPrompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, { defaultValue: '' });
-        if (reason && reason.trim()) { await runSend(tapeKey, name, answers, to, note, { ...(extra || {}), encompassOverrideReason: reason.trim() }, cc); return; }
+        if (reason && reason.trim()) { await runSend(tapeKey, name, answers, to, note, { ...(extra || {}), encompassOverrideReason: reason.trim() }, cc, override); return; }
         setBusy(null); return;
       }
       if (d.code === 'encompass_exception_required' || d.code === 'encompass_unreconciled') {
@@ -7380,7 +7380,7 @@ function TapeExport({ appId }) {
           preview={sendPending.preview}
           busy={busy === sendPending.tapeKey}
           onCancel={() => setSendPending(null)}
-          onSend={({ to, cc, note }) => runSend(sendPending.tapeKey, sendPending.name, sendPending.answers, to, note, undefined, cc)}
+          onSend={({ to, cc, note, override }) => runSend(sendPending.tapeKey, sendPending.name, sendPending.answers, to, note, undefined, cc, override)}
           onSchedule={(payload) => runSchedule(sendPending.tapeKey, sendPending.name, payload)}
         />
       )}

@@ -3785,6 +3785,8 @@ router.post('/files/:id/draws/:drawId/investor-delivery', requirePermission('man
       acknowledgeOmissions: b.acknowledge_omissions === true,
       shareLinkKeys: Array.isArray(b.share_link_keys) ? b.share_link_keys : [],
       compressLevel: Number(b.compress_level) || null,
+      // A hand-edited subject/body from the compose preview (owner-directed 2026-08-26).
+      override: b.override || null,
     });
     // A preflight is a read: nothing was sent, nothing was journaled, nobody was notified.
     if (out && out.preflight) return res.json({ ok: true, ...out });

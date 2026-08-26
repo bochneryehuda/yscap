@@ -36,6 +36,14 @@ export default function TapeSendModal({ name, preview, busy, onCancel, onSend, o
   const [ccTyped, setCcTyped] = useState('');
   const [note, setNote] = useState('');
   const [err, setErr] = useState('');
+  /* THE EDITABLE PREVIEW (owner-directed 2026-08-26): the exact subject + body the send
+     renders (preview.email — built by the SAME buildTapeEmail the send runs), editable in
+     place. Only what was CHANGED rides as an override; untouched, the send is
+     byte-identical — and a typed note below still folds into the built body. */
+  const baseSubject = (preview && preview.email && preview.email.subject) || (preview && preview.subject) || 'New file for review';
+  const baseBody = (preview && preview.email && preview.email.text) || '';
+  const [subj, setSubj] = useState(baseSubject);
+  const [body, setBody] = useState(baseBody);
 
   const toggle = (email) => setSel((s) => {
     const n = new Set(s);
@@ -63,7 +71,11 @@ export default function TapeSendModal({ name, preview, busy, onCancel, onSend, o
   const cc = ccList.filter((e) => !to.includes(e));
 
   function payload() {
-    return { to, cc, note: note.trim() || undefined };
+    const override = {
+      ...(subj.trim() && subj.trim() !== baseSubject.trim() ? { subject: subj.trim() } : {}),
+      ...(body.trim() && baseBody && body.trim() !== baseBody.trim() ? { text: body } : {}),
+    };
+    return { to, cc, note: note.trim() || undefined, ...(Object.keys(override).length ? { override } : {}) };
   }
   function submit(e) {
     e.preventDefault();
@@ -82,8 +94,17 @@ export default function TapeSendModal({ name, preview, busy, onCancel, onSend, o
         </p>
 
         <div className="small" style={{ padding: '8px 10px', border: '1px solid #E2DCCB', borderRadius: 8, background: '#FBFAF6', color: '#141B22' }}>
-          <div><span style={{ color: '#4B585C' }}>Subject:</span> <strong>{(preview && preview.subject) || 'New file for review'}</strong></div>
-          {(preview && preview.figures || []).length > 0 && (
+          <label style={{ display: 'grid', gap: 2 }}>
+            <span style={{ color: '#4B585C' }}>Subject — editable</span>
+            <input className="input" value={subj} maxLength={300} onChange={(e) => setSubj(e.target.value)} />
+          </label>
+          {baseBody ? (
+            <label style={{ display: 'grid', gap: 2, marginTop: 8 }}>
+              <span style={{ color: '#4B585C' }}>Message — exactly what will be sent, editable</span>
+              <textarea className="input" rows={8} style={{ fontSize: 12.5, lineHeight: 1.45 }}
+                value={body} onChange={(e) => setBody(e.target.value)} />
+            </label>
+          ) : (preview && preview.figures || []).length > 0 && (
             <div style={{ marginTop: 6, display: 'grid', gap: 2 }}>
               {(preview.figures || []).map((f) => (
                 <div key={f.label}><span style={{ color: '#4B585C' }}>{f.label}:</span> {f.value}</div>

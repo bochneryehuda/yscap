@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
 import DropZone from './DropZone.jsx';
 import FileSections, { Section, goToSection } from './FileSections.jsx';
+import EmailPreview from './EmailPreview.jsx';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import { ScheduleButton, ScheduledSends } from './ScheduleSend.jsx';
 import { useLightbox } from './MediaLightbox.jsx';
@@ -3215,6 +3216,12 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
   const [ack, setAck] = useState(false);
   const [plan, setPlan] = useState(null);
   const [queued, setQueued] = useState([]);
+  /* THE EDITABLE PREVIEW (owner-directed 2026-08-26): "Deliver to the investor" opens the
+     send's OWN built email (p.email — the same ID.deliveryEmail wording the send renders),
+     editable, instead of a text confirm. The override the person made is held in a ref so
+     the consent-gate re-sends (send short / send with links) carry the SAME edited wording. */
+  const [emailPv, setEmailPv] = useState(null);
+  const overrideRef = useRef(null);
   const load = useCallback(() => {
     api.get(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`).then(setP).catch(() => {});
   }, [appId, drawId]);
@@ -3279,11 +3286,20 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
   async function send(extra) {
     if (!p) return;
     const manual = p.funding_mode === 'manual';
+    const { __go, ...extraBody } = extra || {};
     let ok;
     if (extra) ok = true;
     else if (manual) {
       ok = await askConfirm(`Record that this draw was delivered to ${p.note_buyer} outside PILOT?\n\nPILOT sends no email — this only records the delivery so the reminders stop.`);
+    } else if (p.email && p.email.text) {
+      // The editable preview replaces the text confirm (owner-directed 2026-08-26). The
+      // modal's Send re-enters here with __go, the override already held in the ref.
+      overrideRef.current = null;
+      setEmailPv({ subject: p.email.subject || '', text: p.email.text || '', to: p.to || [], cc: p.cc || [] });
+      return;
     } else {
+      // The server could not build the preview body — fall back to the plain confirm
+      // rather than a dead Send button.
       const who = p.to.join(', ');
       const modeLine = p.funding_mode === 'reimbursement'
         ? `They will be asked to REIMBURSE us ${usd2(p.money.investor_total_cents)}.`
@@ -3295,7 +3311,8 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
     try {
       const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`, {
         confirm_note_buyer: p.note_buyer, mode: p.funding_mode, note: manual ? note : undefined,
-        ...(extra || {}),
+        ...(overrideRef.current ? { override: overrideRef.current } : {}),
+        ...extraBody,
       });
       if (r.manual) {
         setMsg(`Recorded as delivered to ${p.note_buyer} manually — the "deliver to the investor" reminders will stop.`);
@@ -3515,6 +3532,19 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
                 Send without {gate.plan.omitted.length === 1 ? 'it' : 'them'}
               </button>
             </div>
+          )}
+
+          {emailPv && (
+            <EmailPreview
+              title={`Deliver draw ${p.draw_number || ''} to ${p.note_buyer || 'the investor'}`}
+              subject={emailPv.subject} text={emailPv.text} to={emailPv.to} cc={emailPv.cc}
+              busy={busy} sendLabel="Deliver to the investor"
+              warning={(p.funding_mode === 'reimbursement'
+                ? `They will be asked to REIMBURSE us ${usd2(p.money.investor_total_cents)}.`
+                : `They will be asked to release ${usd2(p.money.to_borrower_cents)} to the borrower and ${usd2(p.money.to_us_cents)} to us.`)
+                + ' The report, packet and wire form are attached at send time. The borrower is never included.'}
+              onClose={() => setEmailPv(null)}
+              onSend={(override) => { overrideRef.current = override || null; setEmailPv(null); send({ __go: true }); }} />
           )}
 
           <div className="row" style={{ gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>

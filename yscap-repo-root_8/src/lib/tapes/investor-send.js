@@ -271,7 +271,37 @@ async function saveRecipients(db, lenderLabel, emails, actorId) {
  * ONE attachment. Throws {status, message} on a refusal; returns
  * { ok, to, cc, replyTo, subject } on success.
  */
-async function sendTapeToInvestor(appId, db, { tape, to, cc: extraCc, note, actorId, actorName }) {
+/**
+ * The tape email itself — PURE, extracted so the compose modal can preview the EXACT
+ * subject + body the send produces (owner-directed 2026-08-26: "it should populate a
+ * full preview … fully editable"). One builder, two readers (preview + send), so the
+ * screen and the wire can never show two different emails.
+ */
+function buildTapeEmail(pre, note) {
+  const noteText = String(note || '').trim().slice(0, 2000);
+  const figureLines = pre.figures.map((f) => `${f.label}: ${f.value}`);
+  const bodyLines = [
+    'Please find attached a new file for your review.',
+    ...(noteText ? ['', noteText] : []),
+    '',
+    ...figureLines,
+    '',
+    // The "threads into the loan file" claim is only true of the PER-FILE inbox
+    // (pre.replyTo, which exists only when CHAT_REPLY_DOMAIN is configured) —
+    // never of the general Reply-To fallback, which lands in a shared mailbox.
+    pre.replyTo ? `Reply to this email and your response threads straight into the loan file (${pre.replyTo}).` : null,
+  ].filter((x) => x != null);
+  const rendered = template.render({
+    title: 'New file for review',
+    intro: 'Please find attached a new file for your review.' + (noteText ? ` ${noteText}` : ''),
+    meta: pre.figures.map((f) => ({ label: f.label, value: f.value })),
+    note: pre.replyTo ? `Reply to this email and your response goes straight to the loan file's team inbox (${pre.replyTo}).` : '',
+    replyable: !!(pre.replyTo || cfg.replyToDefault),
+  });
+  return { subject: pre.subject, text: bodyLines.join('\n'), html: rendered && rendered.html ? rendered.html : undefined };
+}
+
+async function sendTapeToInvestor(appId, db, { tape, to, cc: extraCc, note, actorId, actorName, override }) {
   const pre = await previewTapeSend(appId, db);
   if (!pre) { const e = new Error('file not found'); e.status = 404; throw e; }
   const { emails, problem } = cleanRecipients(to);
@@ -290,37 +320,19 @@ async function sendTapeToInvestor(appId, db, { tape, to, cc: extraCc, note, acto
   const cc = dedupe([...pre.cc, ...extra.emails]).filter((c) => !emails.includes(c));
   const replyTo = pre.replyTo || cfg.replyToDefault || null;
 
-  const noteText = String(note || '').trim().slice(0, 2000);
-  const figureLines = pre.figures.map((f) => `${f.label}: ${f.value}`);
-  const bodyLines = [
-    'Please find attached a new file for your review.',
-    ...(noteText ? ['', noteText] : []),
-    '',
-    ...figureLines,
-    '',
-    // The "threads into the loan file" claim is only true of the PER-FILE inbox
-    // (pre.replyTo, which exists only when CHAT_REPLY_DOMAIN is configured) —
-    // never of the general Reply-To fallback, which lands in a shared mailbox
-    // (audit 2026-08-18 minor: the body over-claimed threading; same gate the
-    // compose modal already applies).
-    pre.replyTo ? `Reply to this email and your response threads straight into the loan file (${pre.replyTo}).` : null,
-  ].filter((x) => x != null);
-
-  const rendered = template.render({
-    title: 'New file for review',
-    intro: 'Please find attached a new file for your review.' + (noteText ? ` ${noteText}` : ''),
-    meta: pre.figures.map((f) => ({ label: f.label, value: f.value })),
-    note: pre.replyTo ? `Reply to this email and your response goes straight to the loan file's team inbox (${pre.replyTo}).` : '',
-    replyable: !!replyTo,
-  });
+  // ONE builder for the body (buildTapeEmail — the same one the preview shows), then a
+  // hand-edited subject/body lands through the ONE manual-override chokepoint
+  // (owner-directed 2026-08-26); no override → byte-identical to before.
+  const built = require('../email/manual-override').applyOverride(
+    buildTapeEmail(pre, note), override, { title: 'New file for review', replyable: !!replyTo });
 
   await email.sendMail({
     to: emails,
     cc: cc.length ? cc : undefined,
     replyTo,
-    subject: pre.subject,
-    text: bodyLines.join('\n'),
-    html: rendered && rendered.html ? rendered.html : undefined,
+    subject: built.subject,
+    text: built.text,
+    html: built.html,
     attachments: [{ filename: tape.filename, content: tape.buf.toString('base64'), contentType: tape.contentType }],
     _ctx: {
       applicationId: appId, type: 'tape_sent_to_investor', audience: 'staff',
@@ -345,4 +357,4 @@ async function sendTapeToInvestor(appId, db, { tape, to, cc: extraCc, note, acto
   return { ok: true, to: emails, cc, replyTo, subject: pre.subject, sentBy: actorName || null, cardMoved };
 }
 
-module.exports = { subjectFor, dealFigures, cleanRecipients, extraAddresses, previewTapeSend, sendTapeToInvestor, saveRecipients, teamCc };
+module.exports = { subjectFor, dealFigures, cleanRecipients, extraAddresses, previewTapeSend, buildTapeEmail, sendTapeToInvestor, saveRecipients, teamCc };
