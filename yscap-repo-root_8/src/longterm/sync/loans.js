@@ -305,6 +305,69 @@ function needsRead(row, now = Date.now(), settings = {}) {
 }
 
 /**
+ * THE ONE SPELLING of a partial read, shared with the screen that has to tell a
+ * PARTIAL read apart from a file that could not be read at all. The owner was
+ * misled once by a heading that called both 'files we could not read', so the
+ * distinction is carried in data rather than re-derived by matching prose twice.
+ */
+const PARTIAL_READ_PREFIX = 'Read from Encompass, but';
+
+/**
+ * WHICH PARTS OF A READ ACTUALLY MISSED — and, just as importantly, which ones
+ * were CORRECTLY empty (owner-reported 2026-08-25: sixteen files listed under
+ * "Files we could not read", every one of them read perfectly).
+ *
+ * THE DEFECT THIS REPLACES WAS MINE, and it was introduced by the fix for the
+ * opposite problem. When a read used to stamp itself green before it filled the
+ * file, I made every part that wrote nothing a MISS: `r.written === false`. That
+ * conflated two completely different things —
+ *
+ *   · the part FAILED — we asked and could not get an answer, and
+ *   · the part had NOTHING TO WRITE — we asked, Encompass answered, and the
+ *     field is genuinely empty on this file.
+ *
+ * — and the second is the ordinary state of a brand-new or a withdrawn file. An
+ * investor is assigned late; a file at "Started" has none, and a withdrawn file
+ * never will. MEASURED on the sixteen: five sit at Started (Prospect, Pipeline,
+ * Pre-Approval) and eleven are Withdrawn or Trash. Asked of Encompass directly,
+ * with its own credentials: HTTP 200, all five investor fields absent from the
+ * payload, no INVESTOR contact. The read was perfect. It had nothing to write.
+ * PILOT called that a failure, showed it as unreadable, counted it as Failing,
+ * and re-read those files every hour, forever, for a field that will never fill.
+ *
+ * The old test was `r.written === false`, which was also applied unevenly:
+ * `syncBorrowerPairs` reports `{pairs: 0}` and carries no `written` key at all,
+ * so a loan with no borrowers was never flagged while a loan with no investor
+ * always was. A signal that only fires on the parts that happen to share a key
+ * is not a signal.
+ *
+ * SO: a MISS is a part that failed — nothing came back, or it answered `ok:false`.
+ * That is all. An empty part is recorded separately and alarms nobody.
+ *
+ * THE ORIGINAL PROTECTION IS KEPT, and sharpened. The defect that started this
+ * was a read that answered and filled NOTHING (owner-reported: "Sherman files
+ * read but empty"). One empty part among four is an early file; ALL FOUR empty
+ * on a read that answered is that defect, and it is still reported. Because the
+ * four parts report success in three different shapes, `filled` reads all of
+ * them rather than the one key three of them happen to share.
+ */
+function classifyParts(parts) {
+  const filled = (r) => {
+    if (!r || r.ok === false) return false;
+    if (r.written === true) return true;
+    return Number(r.pairs) > 0 || Number(r.parties) > 0 || Number(r.found) > 0;
+  };
+  const misses = [];
+  const empties = [];
+  for (const { what, result } of parts) {
+    if (!result) { misses.push(`${what}: nothing came back`); continue; }
+    if (result.ok === false) { misses.push(`${what}: ${result.reason || 'failed'}`); continue; }
+    if (!filled(result)) empties.push(`${what}: ${result.reason || 'the payload carried nothing'}`);
+  }
+  return { misses, empties, filledAny: parts.some((p) => filled(p.result)) };
+}
+
+/**
  * Read ONE loan properly and write what it says. READ-ONLY against Encompass.
  *
  * The milestone comes from the loan itself here rather than from the pipeline,
@@ -727,16 +790,12 @@ async function readLoan(loanId, guid, settings) {
   // other integration on this tenant. So the stamp is written either way and the
   // MISS is recorded beside it, which is what `needsRead` reads to bring a partly
   // read loan back in an hour instead of twelve.
-  const misses = [];
-  const miss = (what, r) => {
-    if (!r) { misses.push(`${what}: nothing came back`); return; }
-    if (r.ok === false) misses.push(`${what}: ${r.reason || 'failed'}`);
-    else if (r.written === false) misses.push(`${what}: ${r.reason || 'the payload carried nothing'}`);
-  };
-  miss('subject property', property);
-  miss('loan terms', terms);
-  miss('borrowers', pairs);
-  miss('investor', investor);
+  const { misses, empties, filledAny } = classifyParts([
+    { what: 'subject property', result: property },
+    { what: 'loan terms', result: terms },
+    { what: 'borrowers', result: pairs },
+    { what: 'investor', result: investor },
+  ]);
   // AN EMPTY ANSWER IS NOT AN ANSWER. `fieldReader` can hand back `{}` — truthy,
   // so a `values === null` test alone sails straight past the case where the batch
   // connected and returned nothing, which is the shape a single unreadable field id
@@ -747,10 +806,19 @@ async function readLoan(loanId, guid, settings) {
   }
   if (!ladder.ok) misses.push(`milestone ladder: ${ladder.reason || 'could not be read'}`);
 
+  // THE ORIGINAL DEFECT, KEPT: a read that ANSWERED and filled nothing at all.
+  // One empty part among four is an early or withdrawn file and alarms nobody;
+  // all four empty, on a batch that did answer, is the shape the owner reported
+  // as "read but empty" and it is still surfaced. `empties` carries the reasons
+  // so the sentence says which parts, not merely that there were some.
+  if (!misses.length && gotValues && !filledAny && empties.length) {
+    misses.push(`the read answered but filled nothing — ${empties.join('; ')}`);
+  }
+
   // The reason column is 500 characters (see the `getLoan` catch above), so the
   // sentence is built to fit rather than trusted to.
   const readError = misses.length
-    ? `Read from Encompass, but ${misses.length} part(s) came back empty — ${misses.join('; ')}`.slice(0, 500)
+    ? `${PARTIAL_READ_PREFIX} ${misses.length} part(s) came back empty — ${misses.join('; ')}`.slice(0, 500)
     : null;
 
   await lazy.db.query(
@@ -1132,6 +1200,8 @@ async function syncOnce({ readBudget = DEFAULT_READ_BUDGET, loanFolder = null } 
 }
 
 module.exports = {
+  PARTIAL_READ_PREFIX,
+  classifyParts,
   DEFAULT_READ_BUDGET,
   stageFor,
   sameMilestone,
