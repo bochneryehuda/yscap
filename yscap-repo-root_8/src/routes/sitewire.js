@@ -1181,6 +1181,36 @@ router.get('/files/:id/draw-request', requireDrawView, async (req, res) => {
       routing_number: w.routing_number, bank_address: w.bank_address, account_address: w.account_address,
       name_kind: w.name_kind, name_matches: w.name_matches, captured_at: w.captured_at,
     } : null;
+    // THE ACCOUNT NAME IS A DOOR, NOT JUST A VERDICT (owner-directed 2026-08-26: "populate it as
+    // a link to go directly to that entity profile … automatically bring in the operating
+    // agreement from that particular entity profile if it has an operating agreement in the
+    // operating agreement slot"). When the wire goes to an entity the borrower already has on
+    // their profile (known_entity / subject_llc), say WHICH one — id + owning borrower for the
+    // link — and whether its profile slot carries an ACCEPTED operating agreement (which the
+    // investor delivery then attaches automatically; accepted-only is the db/424 rule).
+    // Best-effort: an error renders the card without the link, never a 500.
+    if (wire && ['known_entity', 'subject_llc'].includes(String(w.name_kind || ''))) {
+      try {
+        const drawOa = require('../lib/esign/draw-oa');
+        const ent = await drawOa.matchingFileEntity(db, appId, String(w.account_name || '').trim());
+        if (ent) {
+          const oaDoc = await drawOa.profileAcceptedOa(db, ent.id);
+          // An entity linked only through llc_borrowers has no owning borrower_id of its
+          // own — the file's borrower still shows it on their Entities tab, so the link
+          // falls back there rather than going nowhere.
+          let ownerId = ent.borrower_id;
+          if (!ownerId) {
+            const ab = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0];
+            ownerId = ab && ab.borrower_id;
+          }
+          wire.entity = {
+            llc_id: String(ent.id), llc_name: ent.llc_name, is_verified: !!ent.is_verified,
+            borrower_id: ownerId ? String(ownerId) : null,
+            oa: oaDoc ? { document_id: String(oaDoc.id), filename: oaDoc.filename } : null,
+          };
+        }
+      } catch (_) { /* best-effort */ }
+    }
     // The fatal operating-agreement condition, when a new entity — with its document progress so the
     // card can say whether an agreement has been pulled/uploaded and whether it has been accepted.
     let oaCondition = null;

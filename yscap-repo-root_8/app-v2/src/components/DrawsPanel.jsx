@@ -795,7 +795,29 @@ function DrawRequestCard({ appId }) {
 
           <div style={{ marginTop: 12 }}>
             <div className="act-label" style={{ display: 'block' }}>Account name</div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>{wire.account_name || '—'}</div>
+            {/* A KNOWN entity's name is a DOOR to its profile (owner-directed 2026-08-26:
+                "populate it as a link to go directly to that entity profile"). Underlined,
+                never colour-only (WCAG 1.4.1), explicit dark text per the hard rule. */}
+            {wire.entity && wire.entity.borrower_id ? (
+              <div style={{ fontSize: 16, fontWeight: 700, marginTop: 2 }}>
+                <a href={`#/internal/borrowers/${wire.entity.borrower_id}?tab=Entities`}
+                  style={{ color: '#141B22', textDecoration: 'underline' }}
+                  title={`Open ${wire.entity.llc_name} on the borrower’s profile (Entities tab)`}>
+                  {wire.account_name || wire.entity.llc_name}
+                </a>
+                {wire.entity.is_verified && <span className="dd-chip on" style={{ marginLeft: 8, verticalAlign: 'middle' }}><span className="dot" />Verified entity</span>}
+              </div>
+            ) : (
+              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>{wire.account_name || '—'}</div>
+            )}
+            {/* The profile's own ACCEPTED operating agreement rides along automatically
+                (owner-directed 2026-08-26) — say so, so nobody chases the borrower for a
+                document the profile already carries. */}
+            {wire.entity && wire.entity.oa && (
+              <div className="act-card-sub" style={{ marginTop: 4, color: '#2E7A5E' }}>
+                Operating agreement on file — {wire.entity.oa.filename}. It’s attached to the investor delivery automatically from this entity’s profile.
+              </div>
+            )}
           </div>
 
           <div style={{ marginTop: 12, display: 'grid', gap: '11px 18px', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>

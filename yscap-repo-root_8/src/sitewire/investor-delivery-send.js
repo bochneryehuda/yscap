@@ -310,11 +310,13 @@ async function gatherAttachments(appId, drawId, mode) {
       else miss('wire', 'Signed wire instructions', 'not_on_file', 'the accepted wire instructions form is not on file yet');
     } catch (_) { miss('wire', 'Signed wire instructions', 'unreadable', 'the stored copy could not be read'); }
 
-    // --- 5. the wire-recipient entity's operating agreement, when the wire goes to a NEW entity
-    // (Task 5, owner-directed 2026-08-05: "attach the OA to the investor email when the investor
-    // receives it"). Only present when the wire named an entity that is neither the borrower nor
-    // the subject LLC — the investor uses it to confirm the entity before releasing directly to it.
-    // Only an ACCEPTED agreement is sent; an unaccepted one has not been vetted.
+    // --- 5. the wire-recipient entity's operating agreement. A NEW-entity wire attaches the
+    // agreement accepted on the wire condition (owner-directed 2026-08-05: "attach the OA to the
+    // investor email when the investor receives it"); a KNOWN-entity wire attaches the ACCEPTED
+    // agreement from that entity's own profile slot (owner-directed 2026-08-26: "automatically
+    // bring in the operating agreement from that particular entity profile if it has one") — the
+    // fallback lives inside acceptedOaForInvestor, one definition. A wire to the borrower
+    // personally attaches nothing. Only an ACCEPTED agreement is ever sent (db/424).
     try {
       const drawOa = require('../lib/esign/draw-oa');
       const oa = await drawOa.acceptedOaForInvestor(db, appId);
