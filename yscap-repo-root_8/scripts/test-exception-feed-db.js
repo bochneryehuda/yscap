@@ -211,6 +211,34 @@ function get(server, p, token) {
     eq(/\b(UPDATE|INSERT|DELETE)\b/i.test(lib), false,
       'F1 the feed module contains no write of any kind — it finds, it does not decide');
 
+    /* ── G. AN UNRECOGNISED SOURCE READS AS "NO FILTER" ────────────────────
+       `READERS.constructor` resolves through the prototype chain and is
+       perfectly truthy, so a truthiness test would call Object AS a reader and
+       put ONE junk row on the screen — shaped like the caller's own filters —
+       instead of falling back to every source. Nothing live sends this, which
+       is exactly the reasoning file-search's alias guard is written on: the
+       module is exported, and the failure mode of the next caller is a screen
+       showing something nobody wrote. A LIST may fail toward showing more; it
+       may never invent a row. */
+    for (const bogus of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'bogus']) {
+      eq(feed.hasSource(bogus), false, `G1 ${bogus} is not a source`);
+      const r = await feed.listAll({ appId, source: bogus, limit: 50 });
+      eq(r.sources.join(','), 'exception,pricing,finding',
+        `G2 ?source=${bogus} falls back to every source, never a reader nobody wrote`);
+      eq(r.rows.every((x) => feed.hasSource(x.source)), true,
+        `G3 ?source=${bogus} returns only real rows — no fabricated one`);
+    }
+    for (const real of ['exception', 'pricing', 'finding']) {
+      eq(feed.hasSource(real), true, `G4 ${real} IS a source`);
+    }
+    eq(feed.hasSource(null) || feed.hasSource(undefined) || feed.hasSource(1) || feed.hasSource(''), false,
+      'G5 a non-string, a blank and a null are all refused');
+    /* hasSource speaks for SOURCES; listAll indexes READERS. They are two
+       objects, so a source added to one and not the other would make the
+       filter silently unreachable — asserted rather than assumed. */
+    eq(Object.keys(feed.SOURCES).join(','), Object.keys(feed._internals.READERS).join(','),
+      'G6 SOURCES and READERS carry exactly the same keys, in the same order');
+
     console.log(`\ntest-exception-feed-db: all ${n} checks passed.`);
   } finally {
     for (const id of appIds) {

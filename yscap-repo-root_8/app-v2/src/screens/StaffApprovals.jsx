@@ -113,6 +113,9 @@ export default function StaffApprovals() {
      the list, so no link can dead-end. */
   const active = tabs.find((t) => t.key === (requested === 'mine' ? 'all' : requested)) || tabs[0];
   const Comp = active.Comp;
+  // The SAME count the Approvals nav badge adds in, so the badge and this line
+  // can never disagree about how much is waiting.
+  const trWaiting = counts['track-record'] || 0;
 
   return (
     <>
@@ -148,6 +151,26 @@ export default function StaffApprovals() {
           })}
         </div>
         <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 8 }}>{active.blurb}</div>
+        {/* A SIGNPOST, NOT A SECTION — and it exists because removing the tab
+            left a real hole. The owner took track-record verification out of
+            here ("I don't know why the admin has a section for track record
+            verification"), and a whole tab is what they were objecting to. But
+            the nav badge on Approvals still COUNTS these, and this screen still
+            promises "everything waiting on a decision" — so with the tab simply
+            gone, the badge would count work you could not reach from the thing
+            the badge is on, and a queue nobody can see is the being-missed
+            failure this whole rebuild is about. One line with the number and a
+            way through keeps both true: nothing is hidden, and there is no
+            second section to keep track of. */}
+        {trWaiting > 0 && (
+          <div style={{ fontSize: 12, color: '#4B585C', marginTop: 6 }}>
+            <strong style={{ color: '#141B22' }}>{trWaiting}</strong>
+            {' '}track-record {trWaiting === 1 ? 'deal is' : 'deals are'} waiting to be verified —{' '}
+            <a href="#/internal/track-record" style={{ color: '#256168', textDecoration: 'underline' }}>
+              open the track record workspace
+            </a>
+          </div>
+        )}
       </div>
       {/* The embedded screen brings its own .page wrapper. */}
       <Comp />

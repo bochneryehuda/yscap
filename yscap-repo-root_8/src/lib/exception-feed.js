@@ -73,6 +73,15 @@ const SOURCES = Object.freeze({
 });
 
 
+/* THE ONE TEST for "is this a real source", asked by this module AND by the
+   route, so a screen can never narrow to a queue the lib does not read. OWN
+   keys only — see the note in listAll. It is keyed on SOURCES (the public
+   description of what this feed offers); READERS is asserted to carry exactly
+   the same keys by the suite, so the two can never drift apart. */
+function hasSource(v) {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(SOURCES, v);
+}
+
 const STAFF_NAME = (t) => `NULLIF(btrim(COALESCE(${t}.full_name,'')),'')`;
 
 /* THE FILE IDENTITY EVERY ROW CARRIES, written once. Selected the same way for
@@ -232,7 +241,15 @@ const READERS = Object.freeze({ exception: fromExceptions, pricing: fromPricing,
 async function listAll({ q = null, state = null, source = null, mine = null, appId = null,
   limit = 100 } = {}, client = db) {
   const page = Math.min(300, Math.max(1, Number(limit) || 100));
-  const want = source && READERS[source] ? [source] : Object.keys(READERS);
+  /* A REQUEST VALUE INDEXING AN OBJECT MUST BE ITS OWN KEY, and that is not
+     pedantry here: `READERS.constructor` resolves through the prototype chain
+     and is perfectly truthy, so `?source=constructor` would call Object AS a
+     reader and put one junk row on the screen instead of falling back to every
+     source. Nothing live does this — which is exactly why it is pinned, on the
+     same reasoning file-search's alias guard is written on: the module is
+     exported, and an unrecognised source must read as "no filter", never as a
+     reader nobody wrote. */
+  const want = hasSource(source) ? [source] : Object.keys(READERS);
   const failed = [];
   /* Each store is read to page+1 so the MERGED top page is provably right: every
      source is already sorted newest-first, so the global newest `page` rows can
@@ -262,4 +279,4 @@ async function counts(f = {}, client = db) {
   return { counts: out, capped: r.hasMore, failed: r.failed };
 }
 
-module.exports = { STATES, STATE_OF, stateOf, SOURCES, listAll, counts, _internals: { common, fileCols } };
+module.exports = { STATES, STATE_OF, stateOf, SOURCES, hasSource, listAll, counts, _internals: { common, fileCols, READERS } };

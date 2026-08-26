@@ -190,10 +190,15 @@ router.get('/feed', async (req, res) => {
   try {
     if (!req.actor || req.actor.kind !== 'staff') return res.status(403).json({ error: 'forbidden' });
     const mayPricing = can(req.actor, 'manage_pricing');
-    const ALLOWED = { exception: mayPricing, pricing: mayPricing, finding: true };
-    const asked = feed.SOURCES[req.query.source] ? [req.query.source] : Object.keys(feed.SOURCES);
-    const sources = asked.filter((k) => ALLOWED[k]);
-    const withheld = asked.filter((k) => !ALLOWED[k]);
+    /* `=== true` and `hasSource`, never truthiness: each of these is a REQUEST
+       VALUE indexing an object, and `ALLOWED.constructor` is every bit as
+       truthy as a real permission. An unrecognised source reads as "no
+       filter" — a list may fail toward showing more, never toward a queue
+       nobody may see. */
+    const ALLOWED = { exception: !!mayPricing, pricing: !!mayPricing, finding: true };
+    const asked = feed.hasSource(req.query.source) ? [String(req.query.source)] : Object.keys(feed.SOURCES);
+    const sources = asked.filter((k) => ALLOWED[k] === true);
+    const withheld = asked.filter((k) => ALLOWED[k] !== true);
     if (!sources.length) {
       return res.json({ rows: [], hasMore: false, pageSize: 0, failed: [], withheld, states: feed.STATES, sourceLabels: labelsOf() });
     }
