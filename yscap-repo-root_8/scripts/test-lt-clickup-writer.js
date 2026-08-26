@@ -1331,10 +1331,17 @@ async function dbHalf() {
                          WHERE clickup_task_id IS NOT NULL AND loan_number LIKE 'TESTWR%'`);
         fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2 }) };
 
-        process.env.LT_CLICKUP_PUSH_BUDGET_MS = '1';        // already spent on entry
+        process.env.LT_CLICKUP_PUSH_BUDGET_MS = '1';        // spent almost immediately
         const starved = await push.pushPass({});
         eq(starved.stoppedBy, 'time', 'a pass out of time stops on the CLOCK');
-        eq(starved.pushed, 0, '…having done nothing, because the budget was gone before the first loan');
+        ok(starved.considered >= 2,
+          `the queue really had something to stop inside (${starved.considered} due) — otherwise the check below proves nothing`);
+        // NOT `pushed === 0`. Whether the FIRST loan slips through before a 1ms
+        // deadline trips is sub-millisecond timing, and asserting on it is a flake:
+        // it passed locally on a slower database and failed in CI on a faster one.
+        // The invariant that actually matters is that the clock cut the pass SHORT.
+        ok(starved.pushed < starved.considered,
+          `…having stopped short of the queue (${starved.pushed} of ${starved.considered}) rather than working through it`);
         eq(starved.budgetMs, 1, '…and it reports the budget it was given, so a too-small one is visible');
 
         process.env.LT_CLICKUP_PUSH_BUDGET_MS = '600000';   // ten minutes: never the limit here
