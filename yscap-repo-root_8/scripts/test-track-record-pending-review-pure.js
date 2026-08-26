@@ -169,7 +169,11 @@ console.log('\nD2. the queue has a SCREEN, in the hub for things waiting on a de
      the "re-point, do not relax" rule the D2 header states, applied to a
      component extraction instead of a screen swap. */
   const detail = read('app-v2', 'src', 'components', 'track-record', 'LineDetail.jsx');
-  const hub = read('app-v2', 'src', 'screens', 'StaffApprovals.jsx');
+  /* COMMENTS STRIPPED — the hub's own note explaining why the tab went spells
+     out the route, so a grep over the raw file matches the PROSE and would
+     pass with the link deleted. Read code, never prose. */
+  const hub = read('app-v2', 'src', 'screens', 'StaffApprovals.jsx')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const layout = read('app-v2', 'src', 'components', 'StaffLayout.jsx');
   ok(/staffTrackRecordWorkspace\(/.test(screen), 'the screen reads the queue');
   ok(/<LineDetail\b/.test(screen),
@@ -197,7 +201,11 @@ console.log('\nD2. the queue has a SCREEN, in the hub for things waiting on a de
     'it has its own full-screen route, so the queue is reachable on its own');
   ok(!/to="\/internal\/track-record"/.test(layout),
     '…and that did not cost another top-level nav link');
-  ok(/internal\/track-record/.test(hub) && /counts\['track-record'\]/.test(hub),
+  /* THE ANCHOR, not merely the string. The hub carries this route TWICE — the
+     old-bookmark redirect and the signpost — so a bare substring test is
+     satisfied by the redirect and passes with the link deleted. Proven: the
+     loose version survived its own mutation. */
+  ok(/href="#\/internal\/track-record"/.test(hub) && /counts\['track-record'\]/.test(hub),
     '…and the Approvals hub, whose badge still counts these, says how many are waiting and links to them');
   ok(/requested === 'track-record'/.test(hub),
     '…so an old ?tab=track-record bookmark still lands on the screen that owns it');
