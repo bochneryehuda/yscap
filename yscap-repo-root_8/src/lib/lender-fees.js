@@ -73,6 +73,8 @@ const SYSTEM_LENDER_FEES = Object.freeze({
      a PRE-FILL, changeable per file — so it is set at the top of the range, which is the end that
      cannot leave a borrower short of what they are asked to bring to the table. */
   settlementNy: 750,
+  /* THE NEW YORK CEMA FEE — pre-filled at $1,000 and OFF unless somebody says this is a CEMA. */
+  cemaNy: 1000,
 });
 
 /** What each part is CALLED on a term sheet. The owner's own words for each. */
@@ -82,12 +84,16 @@ const LENDER_FEE_LABEL = Object.freeze({
   /* The pre-split wording, kept verbatim, for a file carrying a typed whole-number total. */
   combined: 'Underwriting / processing / legal',
   settlement: 'New York settlement agent fee (optional)',
+  cema: 'New York CEMA fee',
 });
 
 /** The one-line explanations that ride with the parts, so nothing is charged unexplained. */
 const LENDER_FEE_NOTE = Object.freeze({
   settlement: 'Optional — a New York settlement agent attends the closing on the lender’s behalf. '
     + 'It is included in the cash to close shown here so the figure is never short.',
+  cema: 'A Consolidation, Extension and Modification Agreement consolidates the existing mortgage '
+    + 'into the new one instead of satisfying it. It carries extra legal and coordination work with '
+    + 'the current lender, and this fee covers that.',
 });
 
 /* The construction figure at which a New York file moves to the higher legal fee. The owner's own
@@ -274,6 +280,54 @@ function settlementFeeFor(deal, settings, opts) {
   };
 }
 
+/**
+ * THE NEW YORK CEMA FEE — owner-directed 2026-08-26: *"if it's a New York refinance, which means
+ * either refinance, cash-out, or rate and term, then at the final registration before clicking
+ * Register Product, you should ask a question if it's a New York CEMA. If it's a New York CEMA …
+ * then you should populate an extra $1,000 for the CEMA fee. This should also be adjustable in the
+ * manual section … It should be turned off by default … It should be pre-filled as $1,000, but
+ * it's always turned off."*
+ *
+ * OFF UNLESS SOMEBODY SAYS SO, which is the whole shape of it: `opts.cema !== true` returns null,
+ * so no file is ever charged this by accident and every existing quote is byte-identical. It is
+ * offered only on a NEW YORK REFINANCE — a CEMA consolidates an EXISTING mortgage, so there has to
+ * be one — and the caller establishes "is this a refinance" through `deal-basis.sizesOnAsIsValue`,
+ * the ONE definition the engine itself sizes on, rather than a second string test here.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT DO, and it is worth stating rather than leaving to be discovered:
+ * a real CEMA also REDUCES the New York mortgage recording tax, because the tax is charged on the
+ * new money rather than on the whole loan — that is the reason borrowers ask for one. The owner
+ * asked for the FEE and said nothing about the tax, and the tax tables are a frozen rule module, so
+ * nothing here touches them. The consequence is that a CEMA file is quoted the FULL mortgage tax,
+ * which OVERSTATES cash to close — the conservative direction, and the one that cannot leave a
+ * borrower short — and it is flagged to the owner rather than guessed at.
+ *
+ * @returns {{ amount:number, label:string, note:string, manual:boolean }|null}
+ */
+function cemaFeeFor(deal, settings, opts) {
+  const o = opts || {};
+  if (o.cema !== true) return null;                      // OFF by default, always
+  if (!isNewYork(deal && deal.state)) return null;
+  if (!(deal && deal.refinance)) return null;            // a CEMA consolidates an EXISTING mortgage
+  const fees = cleanLenderFees(settings && settings.lenderFees);
+  const typed = cleanFeeAmount(o.cemaFee);
+  const amount = typed == null ? fees.cemaNy : typed;
+  if (!(amount > 0)) return null;                        // typed 0 = waived on this file
+  return {
+    amount, label: LENDER_FEE_LABEL.cema, note: LENDER_FEE_NOTE.cema, manual: typed != null,
+  };
+}
+
+/**
+ * Should a screen ASK whether this is a CEMA? True on a New York refinance and nowhere else, so
+ * the question is put in front of the one officer it can apply to and never anybody else. Separate
+ * from `cemaFeeFor` on purpose: "may this be a CEMA?" and "is it one?" are different questions, and
+ * a prompt that only appeared once the answer was already yes would be useless.
+ */
+function cemaApplies(deal) {
+  return isNewYork(deal && deal.state) && !!(deal && deal.refinance);
+}
+
 /** Plain words for a rung, so a screen explains the number instead of only printing it. */
 function legalBasisText(basis) {
   return LEGAL_BASIS_TEXT[basis] || LEGAL_BASIS_TEXT.general;
@@ -282,5 +336,5 @@ function legalBasisText(basis) {
 module.exports = {
   SYSTEM_LENDER_FEES, LENDER_FEE_LABEL, LENDER_FEE_NOTE, NY_CONSTRUCTION_STEP, LEGAL_BASIS_TEXT,
   isNewYork, isFiveBoroughs, legalFeeFor, legalBasisText,
-  cleanFeeAmount, cleanLenderFees, lenderFeesFor, settlementFeeFor,
+  cleanFeeAmount, cleanLenderFees, lenderFeesFor, settlementFeeFor, cemaFeeFor, cemaApplies,
 };

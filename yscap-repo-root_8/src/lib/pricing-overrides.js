@@ -151,6 +151,16 @@ const ENGAGED_OVERRIDE_KEYS = Object.freeze({
      with the non-decisions and teach people to wave it through. Typing any real amount (the $500
      end of the owner's range, say) still asks. */
   settlementFee: { label: 'New York settlement agent fee (optional)',  unit: 'money' },
+  /* THE NEW YORK CEMA FEE'S AMOUNT. Its company default IS one number ($1,000), so a typed
+     amount is compared against it exactly like the defaulted knobs — but it lives HERE because it
+     is only ever charged on a file somebody answered YES on, so there is no default to restate on
+     the files where it is absent. `zeroIsEngaged` because a typed 0 waives a real fee.
+
+     THE ANSWER ITSELF (`nyCema`) IS DELIBERATELY NOT AN OVERRIDE AT ALL. It is a FACT about the
+     deal — is there an existing mortgage being consolidated — not a discount, and it can only ever
+     ADD money. Routing a factual yes to an admin would put every CEMA refinance in the approval
+     queue for saying what it is. */
+  cemaFee:       { label: 'New York CEMA fee',                         unit: 'money', zeroIsEngaged: true },
   oopRehabMax:   { label: 'Out-of-pocket rehab — raise the initial to its max', unit: 'flag' },
   manualPricing: { label: 'Manual scenario (admin-set basis)',         unit: 'flag'  },
   forcePrice:    { label: 'Force-price past the guideline limits',     unit: 'flag'  },

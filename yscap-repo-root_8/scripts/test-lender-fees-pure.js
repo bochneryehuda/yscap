@@ -223,6 +223,33 @@ const GOV = require('../src/lib/closing-costs');
     /extra_fees/.test(fs.readFileSync(path.join(REPO, 'db/632_lender_fee_split_underwriting_legal_ny_ladder_settlement.sql'), 'utf8')));
 }
 
+// ── E2. The New York CEMA ────────────────────────────────────────────────────
+{
+  const cema = (deal, opts) => L.cemaFeeFor(deal, {}, opts || {});
+  const NYR = { state: 'NY', refinance: true };
+  eq('E13 "it should be turned off by default" — a New York refinance carries none unless asked',
+    cema(NYR, {}), null);
+  ok('E14 …and answering YES populates the owner\'s $1,000',
+    (cema(NYR, { cema: true }) || {}).amount === 1000);
+  ok('E15 …named, with the explanation that rides with it',
+    /CEMA/i.test((cema(NYR, { cema: true }) || {}).label) && ((cema(NYR, { cema: true }) || {}).note || '').length > 40);
+  /* A CEMA CONSOLIDATES AN EXISTING MORTGAGE, so it can only exist on a refinance — and only in
+     New York, where the instrument is. Both are refusals, not warnings: the fee is simply absent. */
+  eq('E16 a New York PURCHASE can never be a CEMA', cema({ state: 'NY', refinance: false }, { cema: true }), null);
+  eq('E17 …and neither can a refinance outside New York', cema({ state: 'NJ', refinance: true }, { cema: true }), null);
+  eq('E18 a typed amount overrides the pre-fill', cema(NYR, { cema: true, cemaFee: 600 }).amount, 600);
+  eq('E19 …and a typed 0 waives it on that file', cema(NYR, { cema: true, cemaFee: 0 }), null);
+  eq('E20 a company-configured amount is used', L.cemaFeeFor(NYR, { lenderFees: { cemaNy: 1500 } }, { cema: true }).amount, 1500);
+  /* "Should a screen ASK?" and "is it one?" are different questions — a prompt that only appeared
+     once the answer was already yes would be useless, which is why `cemaApplies` exists. */
+  ok('E21 the question is asked on a New York refinance and nowhere else',
+    L.cemaApplies(NYR) === true && L.cemaApplies({ state: 'NY', refinance: false }) === false
+    && L.cemaApplies({ state: 'NJ', refinance: true }) === false);
+  /* ANY truthy-but-not-true answer is a NO. The flag reaches this module through a boolean
+     override, and reading a stray string as a yes would charge a fee nobody agreed to. */
+  ok('E22 only an explicit TRUE turns it on', cema(NYR, { cema: 'yes' }) === null && cema(NYR, { cema: 1 }) === null);
+}
+
 // ── F. The browser mirror agrees with the server ─────────────────────────────
 //
 // The Term Sheet Studio cannot require server code, so `web/v2/tools/termsheet.js` carries its own
@@ -372,10 +399,21 @@ const GOV = require('../src/lib/closing-costs');
   ok('H6 the spreadsheet Silver column names them', /\bsd\.uwFee\b/.test(between('var silver;', 'return {')) && /\bsd\.settleFee\b/.test(between('var silver;', 'return {')));
   // And the studio panel the officer prices against.
   ok('H7 the studio panel names them', /rLenderSub/.test(ts) && /rSettle/.test(ts));
+  ok('H7b the term sheet PDF names the New York CEMA fee', /d\.cemaFee/.test(pdfBlock) && /d\.cemaLabel/.test(pdfBlock));
+  ok('H7c the spreadsheet Standard column names it', /\bd\.cemaFee\b/.test(between('var std = [', 'var gold')));
+  ok('H7d the spreadsheet Gold column names it', /\bgd\.cemaFee\b/.test(between('var gold;', 'var silver;')));
+  ok('H7e the spreadsheet Silver column names it', /\bsd\.cemaFee\b/.test(between('var silver;', 'return {')));
+  ok('H7f the studio panel names it', /rCemaRow/.test(ts));
   const html = fs.readFileSync(path.join(REPO, 'web/v2/tools/term-sheet.html'), 'utf8');
   ok('H8 …and the panel has somewhere to put them', /id="rLenderSub"/.test(html) && /id="rSettle"/.test(html));
   ok('H9 every manual box exists on the admin zone',
     /id="tsFeeUwPart"/.test(html) && /id="tsFeeLegal"/.test(html) && /id="tsFeeSettlement"/.test(html));
+  ok('H9b …including the CEMA question and its amount', /id="tsCemaOn"/.test(html) && /id="tsFeeCema"/.test(html));
+  /* THE QUESTION IS ONLY PUT IN FRONT OF THE OFFICER IT CAN APPLY TO. An always-visible "is this a
+     New York CEMA?" on a Texas purchase is a question nobody can answer, and the row that carries
+     it starts hidden and is shown by `cemaApplies()`. */
+  ok('H9c …and the CEMA row is hidden unless the file is a New York refinance',
+    /id="tsCemaRow"[^>]*display:none/.test(html) && /cmAsk\.style\.display = cemaApplies\(\)/.test(ts));
   /* H10 THE LEGACY BOX KEEPS ITS MEANING, and this is a real hazard rather than tidiness:
      `adminStateFromEngineInputs` restores a stored `lenderFee` into `tsFeeUW`, so repurposing that
      box as the underwriting PART would have restored an old file's frozen $2,195 into it and
@@ -489,7 +527,7 @@ if (!pricing.enginesReady || !pricing.enginesReady()) {
 // added quietly invalidates it.
 {
   const skip = new Set(['db', 'node_modules', 'web', 'app', 'app-v2', '.git', 'docs', 'scripts']);
-  for (const col of ['file_underwriting_fee', 'file_legal_fee', 'file_settlement_fee']) {
+  for (const col of ['file_underwriting_fee', 'file_legal_fee', 'file_settlement_fee', 'file_cema_fee', 'ny_cema']) {
     const hits = [];
     (function walk(dir) {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {

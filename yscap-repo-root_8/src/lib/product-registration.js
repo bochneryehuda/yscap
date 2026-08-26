@@ -725,6 +725,8 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
   /* THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE — named, and named optional, exactly as on the
      term sheet. It is inside `dueAtClosing`, so without this row the table would not add up. */
   if (cc.settlement && num(cc.settlement.amount) > 0) feeRow(cc.settlement.label, cc.settlement.amount);
+  /* The New York CEMA fee — inside `dueAtClosing`, so without this row the table would not add up. */
+  if (cc.cema && num(cc.cema.amount) > 0) feeRow(cc.cema.label, cc.cema.amount);
   /* THE CONSTRUCTION FEASIBILITY / PROJECT REVIEW FEE, BY NAME — and this row was MISSING, caught
      by `test-closing-costs-pure`'s "the fee table has to add up" assertion while the split was
      being wired (2026-08-26). The fee shipped on 2026-08-21 folded into `dueAtClosing`; the

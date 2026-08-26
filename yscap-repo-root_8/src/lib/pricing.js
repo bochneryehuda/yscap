@@ -317,6 +317,8 @@ function buildInputs(app, experience, overrides) {
     ...(app.file_underwriting_fee != null ? { underwritingFee: num(app.file_underwriting_fee) } : {}),
     ...(app.file_legal_fee != null ? { legalFee: num(app.file_legal_fee) } : {}),
     ...(app.file_settlement_fee != null ? { settlementFee: num(app.file_settlement_fee) } : {}),
+    ...(app.file_cema_fee != null ? { cemaFee: num(app.file_cema_fee) } : {}),
+    ...(app.ny_cema === true ? { nyCema: true } : {}),
     // Sticky per-file GOLD top-tier markup (item 15) — the studio's manual
     // top-tier section, persisted like the sticky whole-program markups above so
     // a re-quote never drops it. NULL/absent → the company per-tier default (or
@@ -398,6 +400,9 @@ function buildInputs(app, experience, overrides) {
        dropped by the loop below, which is the studio's explicit-blank contract and means "use the
        company number / this deal's own rung". A typed 0 survives and WAIVES that part. */
     'underwritingFee', 'legalFee', 'settlementFee',
+    // The New York CEMA fee — $1,000 pre-filled, adjustable per file; only charged when the
+    // `nyCema` answer below is an explicit yes.
+    'cemaFee',
     'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice',
     // Out-of-pocket rehab exception (owner-authorized 2026-07-31): a dollar amount
     // of the rehab budget brought OUT OF POCKET so the initial advance can rise
@@ -406,6 +411,8 @@ function buildInputs(app, experience, overrides) {
     'oopRehab'];
   const STRK = ['loanType', 'strategy', 'state', 'city', 'address', 'propertyType'];
   const BOOLK = ['cashOut', 'isAssignment', 'heavyRehab', 'sqftAddition', 'forcePrice', 'manualPricing',
+    // "Is this a New York CEMA?" — the registration question. OFF unless explicitly true.
+    'nyCema',
     // "Raise the initial to max" toggle — use the full max out-of-pocket rehab
     // (exact, independent of any stale client-computed dollar). Pairs with oopRehab.
     'oopRehabMax'];
@@ -801,6 +808,16 @@ function normalize(program, input, ev, ladder, opts) {
   const settlement = require('./lender-fees').settlementFeeFor(
     { state }, cd, { settlement: hasInput(input, 'settlementFee') ? input.settlementFee : null });
   const settlementFee = settlement ? num(settlement.amount) : 0;
+  /* THE NEW YORK CEMA FEE (owner-directed 2026-08-26) — $1,000, pre-filled, adjustable, and OFF
+     unless somebody answers the registration question with a yes. `input.nyCema !== true` returns
+     nothing, so every existing quote is byte-identical. Offered only on a New York REFINANCE,
+     judged by `deal-basis.sizesOnAsIsValue` — the ONE definition the engine itself sizes on, so
+     this can never disagree with what kind of deal the loan was priced as. See `cemaFeeFor` for
+     what this deliberately does NOT do to the mortgage recording tax. */
+  const cema = require('./lender-fees').cemaFeeFor(
+    { state, refinance: sizesOnAsIsValue(input.loanType) }, cd,
+    { cema: input.nyCema === true, cemaFee: hasInput(input, 'cemaFee') ? input.cemaFee : null });
+  const cemaFee = cema ? num(cema.amount) : 0;
   const creditFee = numberOverride(input, 'creditFee', cd.creditFee != null ? cd.creditFee : FEES.credit);
   const appraisalFee = numberOverride(input, 'appraisalFee', cd.appraisalFee != null ? cd.appraisalFee : FEES.appraisal);
   const origination = totalLoan > 0 ? round2(totalLoan * origPct) : 0;
@@ -890,7 +907,7 @@ function normalize(program, input, ev, ladder, opts) {
     taxOverridesFrom(input));
   const govChargesTotal = num(govCharges.borrowerTotal);
 
-  const closingDueAtClose = round2(origination + brokerFee + lenderFee + creditFee + titleTotal + extraFeesTotal + feasibilityFee + settlementFee + govChargesTotal);
+  const closingDueAtClose = round2(origination + brokerFee + lenderFee + creditFee + titleTotal + extraFeesTotal + feasibilityFee + settlementFee + cemaFee + govChargesTotal);
   /* REFINANCE CASH TO CLOSE (owner-directed 2026-08-04). On a purchase this is the
      down payment (equity) plus the closing costs. On a REFINANCE there is no down
      payment (the frozen engine returns downPayment=0 for a refi), and instead the
@@ -1101,6 +1118,12 @@ function normalize(program, input, ev, ladder, opts) {
           amount: round2(settlementFee), label: settlement.label, note: settlement.note,
           optional: true, manual: settlement.manual,
         },
+      } : {}),
+      /* The New York CEMA fee, as its own named line. Added ONLY when the file is a CEMA, so every
+         other deal reports a byte-identical closingCosts object. */
+      ...(cema ? {
+        cemaFee: round2(cemaFee),
+        cema: { amount: round2(cemaFee), label: cema.label, note: cema.note, manual: cema.manual },
       } : {}),
       creditFee,
       titleAndSettlement: titleTotal,
@@ -1330,7 +1353,7 @@ function econVersionFor(app) {
     app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct, app.file_feasibility_fee,
     // Our fee's two parts + the optional New York settlement fee — fingerprinted siblings of
     // the feasibility fee, so a change to one re-quotes rather than serving a stale answer.
-    app.file_underwriting_fee, app.file_legal_fee, app.file_settlement_fee,
+    app.file_underwriting_fee, app.file_legal_fee, app.file_settlement_fee, app.file_cema_fee, app.ny_cema,
     app.file_markup_gold_t1_pct,   // sticky per-file Gold top-tier markup (item 15) — a fingerprinted sibling
 
     // The Silver engine keys geography off the ZIP too (exclusions + NYC market).

@@ -52,6 +52,28 @@ const FEE_DEALS = [
     f: { dealType: 'Ground-up Construction', price: '300000', construction: '400000', arv: '1100000', asIs: '300000', fico: '740', expGround: '3', propState: 'NJ' } },
 ];
 
+/* THE TERMS THE SHEET DISCLOSES rather than charges (owner-directed 2026-08-26): a GROUND-UP is
+   offered the physical draw only, and every file discloses the $500 closing reschedule fee. */
+/* THE NEW YORK CEMA — the question is only shown on a New York REFINANCE, and the fee is charged
+   only once somebody ticks it. Both halves are browser-only behaviour. */
+const CEMA_DEALS = [
+  { name: 'NY cash-out refinance, CEMA not ticked', ask: true, tick: false, expect: 0,
+    f: { dealPurpose: 'Cash-out refinance', dealType: 'Bridge / Stabilized', asIs: '600000', arv: '600000', payoff: '300000', fico: '740', expFlips: '5', propState: 'NY', tsTaxCounty: 'Albany', tsTaxCity: 'Albany' } },
+  { name: 'NY cash-out refinance, CEMA ticked', ask: true, tick: true, expect: 1000,
+    f: { dealPurpose: 'Cash-out refinance', dealType: 'Bridge / Stabilized', asIs: '600000', arv: '600000', payoff: '300000', fico: '740', expFlips: '5', propState: 'NY', tsTaxCounty: 'Albany', tsTaxCity: 'Albany' } },
+  { name: 'NY PURCHASE — a CEMA cannot exist', ask: false, tick: true, expect: 0,
+    f: { dealPurpose: 'Purchase', dealType: 'Fix & Flip', price: '300000', construction: '60000', arv: '520000', asIs: '300000', fico: '740', expFlips: '5', propState: 'NY', rehabScope: 'light', tsTaxCounty: 'Albany', tsTaxCity: 'Albany' } },
+  { name: 'NJ refinance — outside New York', ask: false, tick: true, expect: 0,
+    f: { dealPurpose: 'Cash-out refinance', dealType: 'Bridge / Stabilized', asIs: '600000', arv: '600000', payoff: '300000', fico: '740', expFlips: '5', propState: 'NJ' } },
+];
+
+const TERM_DEALS = [
+  { name: 'standard flip', hybrid: true,
+    f: { dealPurpose: 'Purchase', dealType: 'Fix & Flip', price: '300000', construction: '60000', arv: '520000', asIs: '300000', fico: '740', expFlips: '5', propState: 'NJ', rehabScope: 'light' } },
+  { name: 'ground-up', hybrid: false,
+    f: { dealPurpose: 'Purchase', dealType: 'Ground-up Construction', price: '300000', construction: '400000', arv: '1100000', asIs: '300000', fico: '740', expGround: '3', propState: 'NJ' } },
+];
+
 /* Each deal, and what the term sheet MUST say about its construction review. */
 const DEALS = [
   { name: 'ground-up', expect: 'Ground-up construction feasibility review', amount: '$1,250.00',
@@ -189,6 +211,79 @@ const DEALS = [
       ok(`${deal.name}: carries NO settlement agent fee`, Number(r.settleFee || 0) === 0, `settleFee=${r.settleFee}`);
       ok(`${deal.name}: …and the page never names one`, !/settlement agent fee/i.test(all));
     }
+  }
+
+  /* ── THE NEW YORK CEMA, ON THE REAL PAGE ───────────────────────────────────────────────────── */
+  for (const deal of CEMA_DEALS) {
+    await page.evaluate((d) => {
+      ['construction', 'arv', 'asIs', 'price', 'payoff', 'expFlips', 'expBrrrr', 'expGround', 'tsTaxCounty', 'tsTaxCity'].forEach((id) => {
+        const e = document.getElementById(id); if (e) e.value = '';
+      });
+      const box = document.getElementById('tsCemaOn'); if (box) { box.checked = false; box.dispatchEvent(new Event('change', { bubbles: true })); }
+      for (const [k, v] of Object.entries(d.f)) {
+        const e = document.getElementById(k); if (!e) continue;
+        e.value = v;
+        e.dispatchEvent(new Event('input', { bubbles: true }));
+        e.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (d.tick && box) { box.checked = true; box.dispatchEvent(new Event('change', { bubbles: true })); }
+    }, deal);
+    await page.waitForTimeout(800);
+    const r = await page.evaluate(() => {
+      const row = document.getElementById('tsCemaRow');
+      const d = window.TS._calc(window.TS._gather());
+      return { shown: !!(row && row.style.display !== 'none'), cemaFee: d && d.cemaFee, due: d && d.closing };
+    });
+    ok(`${deal.name}: the CEMA question is ${deal.ask ? 'asked' : 'hidden'}`, r.shown === deal.ask, `shown=${r.shown}`);
+    ok(`${deal.name}: the fee is ${deal.expect ? '$' + deal.expect : 'not charged'}`,
+      Number(r.cemaFee || 0) === deal.expect, `cemaFee=${r.cemaFee}`);
+  }
+
+  /* ── THE DISCLOSED TERMS, ON THE REAL PAGE ─────────────────────────────────────────────────── */
+  for (const deal of TERM_DEALS) {
+    await page.evaluate((f) => {
+      ['construction', 'arv', 'asIs', 'price', 'expFlips', 'expBrrrr', 'expGround', 'tsTaxCounty', 'tsTaxCity'].forEach((id) => {
+        const e = document.getElementById(id); if (e) e.value = '';
+      });
+      for (const [k, v] of Object.entries(f)) {
+        const e = document.getElementById(k); if (!e) continue;
+        e.value = v;
+        e.dispatchEvent(new Event('input', { bubbles: true }));
+        e.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }, deal.f);
+    await page.waitForTimeout(800);
+    const r = await page.evaluate(async () => {
+      const J = window.jspdf && window.jspdf.jsPDF;
+      if (!J) return { err: 'jsPDF did not load' };
+      const drawn = [];
+      const oT = J.API.text, oS = J.API.save, oO = J.API.output;
+      J.API.text = function (t) {
+        try {
+          if (typeof t === 'string') drawn.push(t);
+          else if (Array.isArray(t)) t.forEach((x) => typeof x === 'string' && drawn.push(x));
+        } catch (_) { /* best-effort */ }
+        try { return oT.apply(this, arguments); } catch (e) { return this; }
+      };
+      J.API.save = function () { return this; };
+      J.API.output = function () { return ''; };
+      let err = null;
+      try { await window.TS.exportPdf(); } catch (e) { err = String((e && e.message) || e); }
+      await new Promise((z) => setTimeout(z, 1200));
+      J.API.text = oT; J.API.save = oS; J.API.output = oO;
+      return { err, drawn };
+    });
+    const all = (r.drawn || []).join('\n');
+    ok(`${deal.name}: the term sheet rendered`, !r.err && (r.drawn || []).length > 50, r.err || `${(r.drawn || []).length} strings`);
+    ok(`${deal.name}: the construction draw fee is named`, /construction draw fee/i.test(all));
+    if (deal.hybrid) {
+      ok(`${deal.name}: the hybrid draw is offered`, /hybrid/i.test(all));
+    } else {
+      /* THE ONE THAT MATTERS: a ground-up must never see a price for a draw it cannot order. */
+      ok(`${deal.name}: the hybrid draw is NOT offered anywhere on the page`, !/hybrid/i.test(all));
+      ok(`${deal.name}: …and the physical draw is`, /\$499 per draw/.test(all));
+    }
+    ok(`${deal.name}: the $500 closing reschedule fee is disclosed`, /closing reschedule fee/i.test(all) && /\$500 per rescheduled closing/.test(all));
   }
 
   await browser.close();

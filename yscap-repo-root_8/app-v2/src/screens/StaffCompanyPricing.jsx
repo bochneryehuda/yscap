@@ -79,6 +79,7 @@ const LENDER_FEE_FIELDS = [
   ['legalNy', 'Legal fee — New York ($)', 'New York, outside the five boroughs'],
   ['legalNyHigh', 'Legal fee — New York City / heavy ($)', 'The five boroughs, a $100,000+ construction budget, a heavy rehab, or a New York ground-up'],
   ['settlementNy', 'New York settlement agent — optional ($)', 'Pre-filled on a New York file; the officer can change or decline it'],
+  ['cemaNy', 'New York CEMA ($)', 'Pre-filled on a New York refinance, and only charged when the officer answers that it IS a CEMA'],
 ];
 const lfToForm = (o) => {
   const src = (o && o.lenderFees) || {};

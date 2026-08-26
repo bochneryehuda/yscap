@@ -76,4 +76,39 @@ ok(withMin.meta.some((m) => m.label === 'Interest accrual' && /Non-Dutch/.test(m
 ok(withMin.meta.some((m) => m.label && /First payment/.test(m.label)), 'first payment shown in meta when set');
 ok(!noMin.meta.some((m) => m.label && /First payment/.test(m.label)), 'no first-payment meta when dates absent');
 
+/* ── A GROUND-UP IS PHYSICAL ONLY, AND THE CLOSING RESCHEDULE FEE ──────────────
+   Owner-directed 2026-08-26: *"for Ground Up products, don't give the option for hybrid draws …
+   You see that Ground Up cannot order from Sitewire virtual. Same way on the term sheet, it should
+   be wired on Ground Up products only physical."* and *"any closing reschedule has a $500 fee. In
+   general, this is across the board for all files."* */
+{
+  const T = require('../src/lib/term-options');
+  const joined = (p, o) => T.drawFeeLines(p, o).join(' | ');
+
+  ok(/hybrid/i.test(joined('standard')), 'a standard renovation still offers the hybrid draw');
+  ok(!/hybrid/i.test(joined('standard', { groundUp: true })),
+    'a GROUND-UP is never offered a hybrid draw — the draw desk cannot order one, so quoting a price for it is worse than not naming it');
+  ok(/499/.test(joined('standard', { groundUp: true })) && /physical/i.test(joined('standard', { groundUp: true })),
+    'a ground-up is quoted the physical draw fee, by name');
+  ok(joined('silver', { groundUp: true }) === joined('standard', { groundUp: true }),
+    'Silver reads the same as Standard on a ground-up — the rule is about the DEAL, not the program');
+  ok(joined('gold', { groundUp: true }) === joined('gold'),
+    'Gold is already physical-only at $250, so the ground-up rule changes nothing there');
+  // BYTE-IDENTICAL when nothing is said about the deal — every existing caller is unchanged.
+  ok(joined('standard') === '$299 per draw — hybrid inspection | $499 per draw — physical inspection'
+    && joined('standard', {}) === joined('standard') && joined('standard', { groundUp: false }) === joined('standard'),
+    'a caller that says nothing about the deal gets exactly what it always got');
+
+  ok(T.CLOSING_RESCHEDULE_FEE === 500, 'the closing reschedule fee is the owner\'s $500');
+  ok(/\$500/.test(T.CLOSING_RESCHEDULE_ROW) && /reschedul/i.test(T.CLOSING_RESCHEDULE_ROW),
+    'and it prints as a named term');
+  /* IT IS AN EVENT FEE, NOT A CASH-TO-CLOSE LINE, and the wording has to say so — most closings
+     are never rescheduled, so quoting it in cash to close would charge every borrower $500 for
+     something that has not happened. */
+  ok(/not part of the estimated cash to close/i.test(T.CLOSING_RESCHEDULE_DETAIL),
+    'the disclosure says plainly that it is not part of the cash to close');
+  ok(!/new york|gold|silver|standard|ground/i.test(T.CLOSING_RESCHEDULE_DETAIL),
+    'and it is across the board — no program, state or deal-type test anywhere in the wording');
+}
+
 console.log(`term-options pure tests passed (${n} assertions).`);

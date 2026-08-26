@@ -36,7 +36,7 @@
     // Our own fee's two parts, the New York legal ladder and the optional New York settlement
     // agent fee (owner-directed 2026-08-26). `lender` above stays the TOTAL and is derived
     // from these — 1,200 + 995 = 2,195, the number it always held.
-    lenderFees: { underwriting: 1200, legal: 995, legalGroundUp: 2000, legalNy: 2000, legalNyHigh: 2500, settlementNy: 750 } };
+    lenderFees: { underwriting: 1200, legal: 995, legalGroundUp: 2000, legalNy: 2000, legalNyHigh: 2500, settlementNy: 750, cemaNy: 1000 } };
 
   var el = function (id) { return document.getElementById(id); };
   var $ = function (s, c) { return (c || document).querySelector(s); };
@@ -720,8 +720,8 @@
        Same order and the same figures as the server (pricing.js closingDueAtClose),
        because both read the SAME engine. A state with none of them adds $0. */
     var gov = govCharges(totalLoan, inp);
-    var feeParts = lenderFeeParts(), settleFee = settlementFee();
-    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + settleFee + gov.borrowerTotal;      // + company extra fees (NY settlement etc.) + the construction feasibility review + mortgage/transfer/recording tax; appraisal is POC (excluded)
+    var feeParts = lenderFeeParts(), settleFee = settlementFee(), cemaAmt = cemaFee();
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + settleFee + cemaAmt + gov.borrowerTotal;      // + company extra fees (NY settlement etc.) + the construction feasibility review + mortgage/transfer/recording tax; appraisal is POC (excluded)
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sl.downPayment + excessOOP + closing);   // reserve is never brought to the table; OOP rehab is funded over construction, not here
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
@@ -753,6 +753,7 @@
          the total every existing line reads; these are what let a surface ITEMISE it. */
       uwFee: feeParts.underwriting, legalFee: feeParts.legal, feeSplit: feeParts.split, legalBasis: feeParts.basis,
       settleFee: settleFee, settleLabel: SETTLEMENT_LABEL,
+      cemaFee: cemaAmt, cemaLabel: CEMA_LABEL,
       closing: closing, extraFees: extraFeeList(), feasFee: feasFeeAmount(), feasKind: feasFee().kind, feasLabel: feasLabel(feasFee().kind), feasManual: feasFee().manual, cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: liquidity,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
       gov: gov, govTotal: gov.borrowerTotal, govLender: gov.lenderTotal,
@@ -804,8 +805,8 @@
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
     var gov = govCharges(totalLoan, inp);                                   // mortgage / transfer / recording tax — see calc()
-    var feeParts = lenderFeeParts(), settleFee = settlementFee();
-    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + settleFee + gov.borrowerTotal;
+    var feeParts = lenderFeeParts(), settleFee = settlementFee(), cemaAmt = cemaFee();
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + settleFee + cemaAmt + gov.borrowerTotal;
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_g.downPayment + excessOOP + closing);
     var goldReservePct = R.liquidityPct || 0.05;
@@ -834,6 +835,7 @@
          the total every existing line reads; these are what let a surface ITEMISE it. */
       uwFee: feeParts.underwriting, legalFee: feeParts.legal, feeSplit: feeParts.split, legalBasis: feeParts.basis,
       settleFee: settleFee, settleLabel: SETTLEMENT_LABEL,
+      cemaFee: cemaAmt, cemaLabel: CEMA_LABEL,
       closing: closing, extraFees: extraFeeList(), feasFee: feasFeeAmount(), feasKind: feasFee().kind, feasLabel: feasLabel(feasFee().kind), feasManual: feasFee().manual, cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
       liquidity: cashToClose + goldReserve + _g.oopRehab + closingBuffer, liquidityPct: goldReservePct,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
@@ -892,8 +894,8 @@
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
     var gov = govCharges(totalLoan, inp);                                   // mortgage / transfer / recording tax — see calc()
-    var feeParts = lenderFeeParts(), settleFee = settlementFee();
-    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + settleFee + gov.borrowerTotal;
+    var feeParts = lenderFeeParts(), settleFee = settlementFee(), cemaAmt = cemaFee();
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + settleFee + cemaAmt + gov.borrowerTotal;
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sv.downPayment + excessOOP + closing);
     var reserves = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac) * reserveMonths(totalLoan);   // same liquidity buffer as Standard
@@ -921,6 +923,7 @@
          the total every existing line reads; these are what let a surface ITEMISE it. */
       uwFee: feeParts.underwriting, legalFee: feeParts.legal, feeSplit: feeParts.split, legalBasis: feeParts.basis,
       settleFee: settleFee, settleLabel: SETTLEMENT_LABEL,
+      cemaFee: cemaAmt, cemaLabel: CEMA_LABEL,
       closing: closing, extraFees: extraFeeList(), feasFee: feasFeeAmount(), feasKind: feasFee().kind, feasLabel: feasLabel(feasFee().kind), feasManual: feasFee().manual, cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves + _sv.oopRehab + closingBuffer,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
       gov: gov, govTotal: gov.borrowerTotal, govLender: gov.lenderTotal,
@@ -1523,7 +1526,8 @@
     var n = function (v, d) { var x = Number(v); return (isFinite(x) && x >= 0) ? x : d; };
     return { underwriting: n(f.underwriting, 1200), legal: n(f.legal, 995),
              legalGroundUp: n(f.legalGroundUp, 2000), legalNy: n(f.legalNy, 2000),
-             legalNyHigh: n(f.legalNyHigh, 2500), settlementNy: n(f.settlementNy, 750) };
+             legalNyHigh: n(f.legalNyHigh, 2500), settlementNy: n(f.settlementNy, 750),
+             cemaNy: n(f.cemaNy, 1000) };
   }
   /* The ladder, in the owner's own order. GROUND-UP IS DECIDED FIRST — it carries its own base
      wherever it is — and it is judged by the SAME classifier the feasibility fee uses (the frozen
@@ -1573,6 +1577,18 @@
     return a > 0 ? a : 0;
   }
   var SETTLEMENT_LABEL = "New York settlement agent fee (optional)";
+  /* THE NEW YORK CEMA FEE (owner-directed 2026-08-26) — $1,000, pre-filled, adjustable, and OFF
+     unless somebody ticks it. Offered only on a New York REFINANCE, because a CEMA consolidates an
+     EXISTING mortgage. Mirrors `src/lib/lender-fees.cemaFeeFor`. */
+  var CEMA_LABEL = "New York CEMA fee";
+  function cemaApplies() { return isNyFile() && isRefi(); }
+  function cemaOn() { var e = el("tsCemaOn"); return !!(e && e.checked) && cemaApplies(); }
+  function cemaFee() {
+    if (!cemaOn()) return 0;
+    var typed = adminNumRaw("tsFeeCema");
+    var a = typed != null ? typed : coLenderFees().cemaNy;
+    return a > 0 ? a : 0;
+  }
   // TPO broker origination fee (owner-directed 2026-08-06). Points on the loan the
   // BROKER (firm admin) sets on their OWN files — never a rate markup — seeded onto
   // CO.brokerFeePct from the resolved firm settings (setPricingDefaults). Folded
@@ -1821,11 +1837,24 @@
   // Draw fee by program (owner-directed 2026-07-22). Gold: physical only, $250.
   // Standard AND Silver (a copy of the Standard housekeeping defaults,
   // owner-confirmed 2026-07-29): hybrid $299 / physical $499. Display only.
+  /* A GROUND-UP IS PHYSICAL ONLY (owner-directed 2026-08-26: "for Ground Up products, don't give
+     the option for hybrid draws … You see that Ground Up cannot order from Sitewire virtual. Same
+     way on the term sheet, it should be wired on Ground Up products only physical"). The DRAW desk
+     already behaves that way, so the gap was this sheet — which went on quoting a $299 hybrid draw
+     the borrower could never actually order. Mirrors `src/lib/term-options.drawFeeLines`. */
   function drawFeeLines(prog) {
-    return (prog === "gold")
-      ? ["$250 per draw — physical inspection only (no virtual inspections)"]
-      : ["$299 per draw — hybrid inspection", "$499 per draw — physical inspection"];
+    if (prog === "gold") return ["$250 per draw — physical inspection only (no virtual inspections)"];
+    if (YSP.normStrategy(dealType()) === "NC") {
+      return ["$499 per draw — physical inspection only (no virtual inspections on ground-up construction)"];
+    }
+    return ["$299 per draw — hybrid inspection", "$499 per draw — physical inspection"];
   }
+  /* THE CLOSING RESCHEDULE FEE (owner-directed 2026-08-26: "any closing reschedule has a $500 fee.
+     In general, this is across the board for all files"). A DISCLOSED TERM, not a cash-to-close
+     line: it is charged on an event that may never happen, so quoting it in cash to close would
+     charge every borrower $500 for a reschedule that has not occurred. Mirrors term-options.js. */
+  var CLOSING_RESCHEDULE_ROW = "$500 per rescheduled closing";
+  var CLOSING_RESCHEDULE_DETAIL = "If the scheduled closing is postponed or rescheduled once it has been set, a $500 closing reschedule fee applies. It is charged only if a closing is actually rescheduled, so it is not part of the estimated cash to close shown above.";
   // Full-precision percent (owner-directed 2026-07-22): the EXACT figure, up to 2
   // decimals with trailing zeros trimmed (87.5 stays 87.5, 70 stays 70, 83.33
   // keeps both places) — never rounded to a whole number. Display only.
@@ -2178,6 +2207,13 @@
     var stRow = el("rSettleRow"), stVal = el("rSettle");
     if (stVal) YS.put("rSettle", (sized && d.settleFee > 0) ? YS.fmtUSD2(d.settleFee) : EM);
     if (stRow) stRow.style.display = (sized && d.settleFee > 0) ? "" : "none";
+    var cmRow = el("rCemaRow");
+    if (el("rCema")) YS.put("rCema", (sized && d.cemaFee > 0) ? YS.fmtUSD2(d.cemaFee) : EM);
+    if (cmRow) cmRow.style.display = (sized && d.cemaFee > 0) ? "" : "none";
+    /* The CEMA question is only put in front of the one officer it can apply to — a New York
+       refinance — and it is hidden everywhere else rather than sitting unanswered on every file. */
+    var cmAsk = el("tsCemaRow");
+    if (cmAsk) cmAsk.style.display = cemaApplies() ? "" : "none";
     YS.put("rCredit", sized ? YS.fmtUSD2(d.creditFee) : EM);
     YS.put("rAppr", sized ? (YS.fmtUSD2(d.apprFee) + " POC") : EM);
     YS.put("rTitle", (sized && d.titleCost > 0) ? YS.fmtUSD2(d.titleCost) : EM);
@@ -2664,6 +2700,7 @@
       (!stdOk) ? ["UW / processing / legal", EM] : null,
       // The optional New York settlement agent fee — named, and named optional.
       (stdOk && d.settleFee > 0) ? [d.settleLabel, money2(d.settleFee)] : null,
+      (stdOk && d.cemaFee > 0) ? [d.cemaLabel, money2(d.cemaFee)] : null,
       ["Credit report", stdOk ? money2(d.creditFee) : EM],
       ["Appraisal (est., POC)", stdOk ? money2(d.apprFee) : EM],
       ["Title / escrow (est.)", (stdOk && d.titleCost > 0) ? money2(d.titleCost) : EM],
@@ -2708,6 +2745,7 @@
         (!gOk) ? ["UW / processing / legal", EM] : null,
         // The optional New York settlement agent fee — named, and named optional.
         (gOk && gd.settleFee > 0) ? [gd.settleLabel, money2(gd.settleFee)] : null,
+        (gOk && gd.cemaFee > 0) ? [gd.cemaLabel, money2(gd.cemaFee)] : null,
         ["Credit report", gOk ? money2(gd.creditFee) : EM],
         ["Appraisal (est., POC)", gOk ? money2(gd.apprFee) : EM],
         ["Title / escrow (est.)", (gOk && gd.titleCost > 0) ? money2(gd.titleCost) : EM],
@@ -2764,6 +2802,7 @@
         (!sOk) ? ["UW / processing / legal", EM] : null,
         // The optional New York settlement agent fee — named, and named optional.
         (sOk && sd.settleFee > 0) ? [sd.settleLabel, money2(sd.settleFee)] : null,
+        (sOk && sd.cemaFee > 0) ? [sd.cemaLabel, money2(sd.cemaFee)] : null,
         ["Credit report", sOk ? money2(sd.creditFee) : EM],
         ["Appraisal (est., POC)", sOk ? money2(sd.apprFee) : EM],
         ["Title / escrow (est.)", (sOk && sd.titleCost > 0) ? money2(sd.titleCost) : EM],
@@ -3360,6 +3399,8 @@
          should be included in calculating the cash to close"). Prints only when the deal carries
          one, so every sheet outside New York is byte-identical to before. */
       if (sized && d.settleFee > 0) yR = rowIn(xR, colW, d.settleLabel, money2(d.settleFee), yR);
+      /* The New York CEMA fee — named, and only on a file somebody answered YES on. */
+      if (sized && d.cemaFee > 0) yR = rowIn(xR, colW, d.cemaLabel, money2(d.cemaFee), yR);
       yR = rowIn(xR, colW, "Credit report (avg)", sized ? money2(d.creditFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Appraisal (est., POC)", sized ? money2(d.apprFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money2(d.titleCost) : "\u2014", yR);
@@ -3454,9 +3495,25 @@
       var _def = deferredOrigPct();
       if (_def > 0) rowFull("Deferred origination fee \u2014 paid at payoff (exit fee)", pc(_def / 100) + " of the loan; not part of cash to close");
       if (!isBridge) {   // a bridge / as-is loan has no construction draws
-        rowFull("Construction draw fee", d.gold ? "$250 per draw" : "$299 (hybrid) / $499 (physical)");
-        para(d.gold ? "Gold Standard construction draws require a physical inspection (no virtual inspections) at $250 per draw." : (d.silver ? "Silver Program construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection." : "Standard construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection."), 7);
+        /* THE DRAW FEES COME FROM `drawFeeLines`, NOT FROM A SECOND COPY OF THE RULE. These two
+           lines used to spell the fees out again, so the 2026-08-26 ground-up rule ("only
+           physical") would have been true on the studio panel and the spreadsheet and FALSE on the
+           one document that goes out for signature — the same one-surface-behind class the
+           feasibility fee shipped with. */
+        var _dfProg = progOf(d);
+        var _dfLines = drawFeeLines(_dfProg);
+        rowFull("Construction draw fee", _dfLines.join(" · "));
+        var _dfIsNC = YSP.normStrategy(dealType()) === "NC";
+        para(d.gold
+          ? "Gold Standard construction draws require a physical inspection (no virtual inspections) at $250 per draw."
+          : (_dfIsNC
+            ? "Ground-up construction draws require a physical inspection (no virtual inspections) at $499 per draw."
+            : ((d.silver ? "Silver Program" : "Standard") + " construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection.")), 7);
       }
+      /* THE CLOSING RESCHEDULE FEE (owner-directed 2026-08-26) — across the board, on every file,
+         and stated as an event fee rather than folded into cash to close (see the constant). */
+      rowFull("Closing reschedule fee", CLOSING_RESCHEDULE_ROW);
+      para(CLOSING_RESCHEDULE_DETAIL, 7);
 
       band("Terms, conditions & disclosures");
       para("1.  Nature of this document.  This Preliminary Term Sheet is an indicative summary of potential financing terms only. It is NOT a loan commitment, approval, pre-approval, rate lock or guarantee to lend, and it creates no obligation on the part of " + LENDER.name + " or the prospective borrower.", 7.5);

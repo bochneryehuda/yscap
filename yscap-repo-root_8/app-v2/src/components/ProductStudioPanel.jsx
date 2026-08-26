@@ -179,6 +179,15 @@ export function overridesFromSnapshot(snap, mode) {
          amount (0 included, which waives that part) is a per-file override. `lenderFee`
          above is the LEGACY whole-number total and still wins when it carries a value. */
       underwritingFee: f.tsFeeUwPart, legalFee: f.tsFeeLegal, settlementFee: f.tsFeeSettlement,
+      /* THE NEW YORK CEMA (owner-directed 2026-08-26). The AMOUNT is an ordinary manual box; the
+         ANSWER is a real yes/no and BOTH are sent. `compact` drops '' and null but KEEPS a bare
+         `false` (checked, not assumed), which is what lets un-ticking the box take a CEMA back off
+         a file that had been marked one — sending only the yes would make that impossible. This
+         studio IS the door that asks the question, so it always states its answer; a door that
+         does NOT ask (the borrower and TPO registers) never carries the key at all — their
+         allowlist builds its output from scratch — so neither can clobber a staff answer. */
+      nyCema: f.tsCemaOn === true,
+      cemaFee: f.tsFeeCema,
       // The manual construction feasibility fee (owner-directed 2026-08-21) — blank means "use the
       // deal's own fee"; a typed amount (0 included, which waives it) is a per-file override.
       feasibilityFee: f.tsFeasFee,
@@ -450,6 +459,10 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
             {/* The optional New York settlement agent fee — named, and named optional. */}
             {cc.settlement && Number(cc.settlement.amount) > 0 && (
               <Row k={cc.settlement.label} v={money2(cc.settlement.amount)} />
+            )}
+            {/* The New York CEMA fee — only on a file somebody answered YES on. */}
+            {cc.cema && Number(cc.cema.amount) > 0 && (
+              <Row k={cc.cema.label} v={money2(cc.cema.amount)} />
             )}
             <Row k="Credit report" v={money2(cc.creditFee)} />
             <Row k="Title / escrow (est.)" v={money2(cc.titleAndSettlement)} />
@@ -1477,7 +1490,8 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
          default to compare against — the legal fee's is the New York ladder and the settlement
          fee's is "New York files only" — so any typed amount is a departure, mirroring the
          server's placement of both in ENGAGED_OVERRIDE_KEYS. */
-      legalFee: 'legal fee', settlementFee: 'New York settlement agent fee' };
+      legalFee: 'legal fee', settlementFee: 'New York settlement agent fee',
+      cemaFee: 'New York CEMA fee' };
     // A knob with no company default of its own borrows another's — the exact
     // mirror of pricing-overrides.js `defaultKey`, which is what the server
     // re-checks with. Without it the Manual origination has no `cd` entry at

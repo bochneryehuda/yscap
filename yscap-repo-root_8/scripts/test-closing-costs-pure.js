@@ -346,7 +346,7 @@ if (pricing) {
   const nq = pricing.quoteProgram('standard', pricing.buildInputs(nyApp, { flips: 3, holds: 0, ground: 0 }, {}));
   const c = nq.closingCosts;
   // Exactly the rows product-registration.borrowerTermsEmail builds, in its order.
-  const rowsOf = (cc) => [cc.origination, cc.lenderFee, cc.settlementFee, cc.feasibilityFee, cc.creditFee, cc.titleAndSettlement]
+  const rowsOf = (cc) => [cc.origination, cc.lenderFee, cc.settlementFee, cc.cemaFee, cc.feasibilityFee, cc.creditFee, cc.titleAndSettlement]
     .concat((cc.extraFees || []).map((f) => f.amount))
     .concat((cc.governmentChargeLines || []).map((g) => g.amount))
     .reduce((n, v) => n + (Number(v) || 0), 0);
@@ -393,6 +393,33 @@ if (pricing) {
         'and the optional New York settlement agent fee is named AND marked optional');
       ok(table.rows.some((r) => /underwriting/i.test(r[0])) && table.rows.some((r) => /^legal fee/i.test(r[0])),
         'and our own fee is itemised into the two parts the term sheet prints');
+    }
+  }
+
+  /* AND A NEW YORK CEMA REFINANCE, which the fixture above structurally cannot be — a CEMA
+     consolidates an EXISTING mortgage, so it only exists on a refinance, and the every-fee deal
+     above is a purchase. Without this case the CEMA could be charged inside the total and named
+     nowhere, which is exactly the hole the feasibility fee shipped with. */
+  {
+    const rq = pricing.quoteProgram('standard', pricing.buildInputs({
+      ...nyApp, loan_type: 'Cash-Out Refinance', program: 'Bridge / Stabilized',
+      purchase_price: null, rehab_budget: 0, payoff: 400000,
+    }, { flips: 3, holds: 0, ground: 0 }, { nyCema: true }));
+    const rc = rq.closingCosts;
+    ok(Number(rc.cemaFee) > 0, 'the CEMA fixture really does carry the New York CEMA fee');
+    near(rowsOf(rc), rc.dueAtClosing,
+      'a New York CEMA refinance still sums to the total the borrower is shown', 0.01);
+    const pr2 = require('../src/lib/product-registration');
+    const m2 = pr2.borrowerTermsEmail({ ctx: { subjectTag: 't' }, quote: rq, total: rq.sizing.totalLoan, termMonths: 12 });
+    const t2 = (m2.table && /closing costs/i.test(m2.table.title || '')) ? m2.table : null;
+    ok(!!t2 && t2.rows.some((r) => /CEMA/i.test(r[0])), 'and the borrower\'s email NAMES the CEMA fee');
+    if (t2) {
+      const cash = (v) => Number(String(v).replace(/[$,]/g, '')) || 0;
+      const stated2 = t2.rows.find((r) => /total due at closing/i.test(r[0]));
+      const listed2 = t2.rows.filter((r) => r !== stated2 && !/appraisal \(paid when ordered|deferred origination/i.test(r[0]))
+        .reduce((n, r) => n + cash(r[1]), 0);
+      near(listed2, cash(stated2 && stated2[1]),
+        'and that email\'s own rows add up to its own stated total', 0.01);
     }
   }
   ok((c.governmentChargeLines || []).length >= 1,

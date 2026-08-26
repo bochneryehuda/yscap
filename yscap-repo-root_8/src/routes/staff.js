@@ -3631,6 +3631,14 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
         await client.query(`UPDATE applications SET file_legal_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.legalFee)]);
       if (Object.prototype.hasOwnProperty.call(overrides, 'settlementFee'))
         await client.query(`UPDATE applications SET file_settlement_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.settlementFee)]);
+      /* THE NEW YORK CEMA — the ANSWER and the AMOUNT, sticking the same way. The answer is a
+         boolean the registrant gave to a question ("is this a New York CEMA?"), so it is written
+         only when the register carried it: a door that does not ask must never quietly answer NO
+         on a file somebody already said yes on. */
+      if (Object.prototype.hasOwnProperty.call(overrides, 'cemaFee'))
+        await client.query(`UPDATE applications SET file_cema_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.cemaFee)]);
+      if (Object.prototype.hasOwnProperty.call(overrides, 'nyCema'))
+        await client.query(`UPDATE applications SET ny_cema=$2 WHERE id=$1`, [appId, overrides.nyCema === true]);
       /* THE TYPED CASH-OUT FOLLOWS THE REGISTER ONTO THE FILE (audit-found
          2026-07-31). The studio prints the officer's typed figure on the term
          sheet PDF; without this it never reached the loan file, so the file and

@@ -799,6 +799,16 @@
                     <div class="field"><label for="tsFeeUwPart">Underwriting &amp; processing ($)</label><div class="input"><input id="tsFeeUwPart" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="1200"></div></div>
                     <div class="field"><label for="tsFeeLegal">Legal fee ($)</label><div class="input"><input id="tsFeeLegal" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="by deal — 995 general / 2000 ground-up or NY / 2500 NYC"></div></div>
                     <div class="field"><label for="tsFeeSettlement">NY settlement agent — optional ($)</label><div class="input"><input id="tsFeeSettlement" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="New York files only"></div></div>
+                    <!-- THE NEW YORK CEMA (owner-directed 2026-08-26: "at the final registration
+                         before clicking Register Product, you should ask a question if it's a New
+                         York CEMA … It should be turned off by default … pre-filled as $1,000").
+                         The whole row is HIDDEN unless the file is a New York refinance, so the
+                         question is only ever put in front of the officer it can apply to. -->
+                    <div class="field" id="tsCemaRow" style="display:none">
+                      <label for="tsFeeCema">New York CEMA ($)</label>
+                      <label style="display:flex;gap:.45rem;align-items:center;font-weight:600;margin:0 0 .35rem"><input id="tsCemaOn" data-noshare type="checkbox"> <span>This refinance is a New York CEMA</span></label>
+                      <div class="input"><input id="tsFeeCema" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="1000"></div>
+                    </div>
                     <div class="field"><label for="tsFeeUW">Combined UW / processing / legal ($)</label><div class="input"><input id="tsFeeUW" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="2195"></div></div>
                     <div class="field"><label for="tsFeeCredit">Credit report ($)</label><div class="input"><input id="tsFeeCredit" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="150"></div></div>
                     <div class="field"><label for="tsFeeAppr">Appraisal — POC ($)</label><div class="input"><input id="tsFeeAppr" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="800"></div></div>
@@ -1100,6 +1110,7 @@
                 <div class="ts-line"><span class="k">UW / processing / legal</span><span class="v" id="rLender">$2,195</span></div>
                 <div class="ts-linesub" id="rLenderSub" style="display:none"></div>
                 <div class="ts-line" id="rSettleRow" style="display:none"><span class="k">NY settlement agent (optional)</span><span class="v" id="rSettle">&mdash;</span></div>
+                <div class="ts-line" id="rCemaRow" style="display:none"><span class="k">New York CEMA fee</span><span class="v" id="rCema">&mdash;</span></div>
                 <div class="ts-line"><span class="k">Credit report</span><span class="v" id="rCredit">$150</span></div>
                 <div class="ts-line"><span class="k">Appraisal (est.)</span><span class="v" id="rAppr">$800 POC</span></div>
                 <div class="ts-line"><span class="k">Title / escrow (est.)<span class="tip" tabindex="0" role="note" aria-label="A rough estimate only, used to approximate your cash to close — your actual title cost depends on your title vendor. It scales with the loan amount, your state and the transaction type (transfer and mortgage taxes are separate).">i<span class="tip-bub">A rough estimate only, used to approximate your cash to close — your actual title cost depends on your title vendor. It scales with the loan amount, your state and the transaction type (transfer and mortgage taxes are separate).</span></span></span><span class="v" id="rTitle">—</span></div>
@@ -1210,7 +1221,7 @@
 <script src="title-cost.js?v=admin8-tsprog1"></script>
 <script src="gov-charges.js?v=gov2"></script>
 <script src="address-autocomplete.js?v=admin9-tsprog1"></script>
-<script src="termsheet.js?v=feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1"></script>
+<script src="termsheet.js?v=cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1"></script>
 <script src="../float-actions.js?v=admin10-applyfix-tsprog1"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

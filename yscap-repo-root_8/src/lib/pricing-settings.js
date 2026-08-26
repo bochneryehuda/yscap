@@ -28,7 +28,7 @@ const SYSTEM_DEFAULTS = Object.freeze({
   lenderFees: {
     underwriting: 1200, legal: 995,
     legalGroundUp: 2000, legalNy: 2000, legalNyHigh: 2500,
-    settlementNy: 750,
+    settlementNy: 750, cemaNy: 1000,
   },
   // The flat underwriting & processing number, restated here ONLY so the approval
   // detector has a scalar company default to compare a typed box against (typing
