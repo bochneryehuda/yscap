@@ -1305,6 +1305,70 @@ async function dbHalf() {
         await db.query(`DELETE FROM lt_clickup_review_queue WHERE task_id = 'task1' AND field_key = 'subject_address'`).catch(() => {});
       }
     }
+
+    // ── T. A PASS IS BOUNDED BY THE CLOCK, AND SAYS WHY IT STOPPED ──────────
+    // Owner-directed 2026-08-26: "make sure that, from pilot to clickup, it takes
+    // quickly". Measured on the live service first: the tick is 300s, the whole
+    // tick's work was ~34s, and clickup_push did FIVE loans in eight seconds and
+    // then slept for the rest of the five minutes. A 152-deep queue needed two and
+    // a half hours to come round — not because anything was rate-limited, but
+    // because the cap was a twentieth of the available budget.
+    //
+    // A COUNT IS THE WRONG LIMIT: a loan costs 1.6s typically and 10s at worst, so
+    // any fixed count is either too slow on a normal day or overruns the tick on a
+    // bad one. The clock is honest about the only constraint that matters. These
+    // checks drive the REAL `pushPass` — the SQL, the ordering, the loop — with the
+    // budget turned down, which is the only way to prove the stop actually happens
+    // rather than that a constant exists.
+    console.log('\nT. the push pass is bounded by a clock, not a magic number');
+    {
+      const savedBudget = process.env.LT_CLICKUP_PUSH_BUDGET_MS;
+      const savedCap = process.env.LT_CLICKUP_PUSH_PER_PASS;
+      try {
+        // Make every linked loan due, so there is genuinely a queue to stop inside.
+        await db.query(`UPDATE lt_loans SET clickup_pushed_at = now() - interval '1 day',
+                                            encompass_synced_at = now()
+                         WHERE clickup_task_id IS NOT NULL AND loan_number LIKE 'TESTWR%'`);
+        fakeTask = { id: 'task1', custom_fields: mkCustomFields({ program: 2 }) };
+
+        process.env.LT_CLICKUP_PUSH_BUDGET_MS = '1';        // spent almost immediately
+        const starved = await push.pushPass({});
+        eq(starved.stoppedBy, 'time', 'a pass out of time stops on the CLOCK');
+        ok(starved.considered >= 2,
+          `the queue really had something to stop inside (${starved.considered} due) — otherwise the check below proves nothing`);
+        // NOT `pushed === 0`. Whether the FIRST loan slips through before a 1ms
+        // deadline trips is sub-millisecond timing, and asserting on it is a flake:
+        // it passed locally on a slower database and failed in CI on a faster one.
+        // The invariant that actually matters is that the clock cut the pass SHORT.
+        ok(starved.pushed < starved.considered,
+          `…having stopped short of the queue (${starved.pushed} of ${starved.considered}) rather than working through it`);
+        eq(starved.budgetMs, 1, '…and it reports the budget it was given, so a too-small one is visible');
+
+        process.env.LT_CLICKUP_PUSH_BUDGET_MS = '600000';   // ten minutes: never the limit here
+        const drained = await push.pushPass({});
+        ok(drained.stoppedBy !== 'time', `a pass with room does NOT stop on the clock (${drained.stoppedBy})`);
+        ok(drained.pushed >= 1, `…and actually pushes (${drained.pushed})`);
+
+        // The count survives as a backstop for a cheap-but-endless queue.
+        process.env.LT_CLICKUP_PUSH_PER_PASS = '1';
+        await db.query(`UPDATE lt_loans SET clickup_pushed_at = now() - interval '1 day'
+                         WHERE clickup_task_id IS NOT NULL AND loan_number LIKE 'TESTWR%'`);
+        const capped = await push.pushPass({});
+        eq(capped.considered, 1, 'the count still caps how many a pass will even look at');
+
+        // The shipped defaults must fit inside a 300s tick, with room for the
+        // create pass and for the RTL sync sharing the same ClickUp budget.
+        const { pushBudgetMs, createBudgetMs } = push._internals;
+        delete process.env.LT_CLICKUP_PUSH_BUDGET_MS;
+        ok(pushBudgetMs() + createBudgetMs() < 300000 / 2,
+          `push + create budgets (${pushBudgetMs()}ms + ${createBudgetMs()}ms) leave over half the 300s tick free`);
+      } finally {
+        if (savedBudget === undefined) delete process.env.LT_CLICKUP_PUSH_BUDGET_MS;
+        else process.env.LT_CLICKUP_PUSH_BUDGET_MS = savedBudget;
+        if (savedCap === undefined) delete process.env.LT_CLICKUP_PUSH_PER_PASS;
+        else process.env.LT_CLICKUP_PUSH_PER_PASS = savedCap;
+      }
+    }
   } finally {
     await db.query(`DELETE FROM lt_loans WHERE loan_number LIKE 'TESTWR%'`).catch(() => {});
     await db.query(`DELETE FROM lt_clickup_write_log WHERE task_id IN ('task1','subtask1','stshort') OR task_id LIKE 'newtask%' OR task_id = 'co-subtask'`).catch(() => {});
