@@ -60,13 +60,18 @@ router.get('/', async (req, res) => {
     );
     // Name what is failing rather than only counting it — a count sends somebody
     // hunting, and the reason is already stored on the loan.
+    // PARTIAL IS NOT UNREADABLE, and the screen must not have to guess which it is
+    // by matching prose (owner-reported 2026-08-25: sixteen files that read
+    // PERFECTLY were listed under "Files we could not read"). `partial` is
+    // computed from the ONE prefix `readLoan` writes, so the two can never drift.
     const { rows: failing } = await db.query(
-      `SELECT loan_number, encompass_loan_guid, encompass_sync_error, updated_at
+      `SELECT loan_number, encompass_loan_guid, encompass_sync_error, updated_at,
+              (encompass_sync_error LIKE $1 || '%') AS partial
          FROM lt_loans
         WHERE encompass_sync_error IS NOT NULL
           AND ${trash.notTrashSql('lt_loans')}
         ORDER BY updated_at DESC
-        LIMIT 20`,
+        LIMIT 20`, [require('../sync/loans').PARTIAL_READ_PREFIX],
     );
     // LOANS STILL WAITING FOR THEIR FIRST READ — named, not merely subtracted
     // (owner-reported 2026-08-24: "All these files somehow are not updating in

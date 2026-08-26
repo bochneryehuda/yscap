@@ -66,14 +66,107 @@ check(!/loan_amount = COALESCE\(\$17::numeric, loan_amount\),\s*\n\s*encompass_s
   'the mid-read UPDATE no longer stamps the loan as fully read');
 
 // THE MISS IS RECORDED, and specifically NOT as a bare success.
-check(/const misses = \[\]/.test(loansSrc), 'the read collects what it failed to fill');
-check(/r\.written === false/.test(loansSrc),
-  'a sync that answered "found nothing" counts as a miss, not just one that threw');
+check(/const misses/.test(loansSrc), 'the read collects what it failed to fill');
 check(/encompass_sync_error = \$2/.test(loansSrc),
   'the reason is written to the loan, not returned into a value nobody reads');
 check(!/encompass_sync_error = NULL/.test(loansSrc),
   'nothing clears the error column unconditionally any more');
 check(/partial: misses\.length > 0/.test(loansSrc), 'readLoan reports a partial read as partial');
+
+// ── WHAT COUNTS AS A MISS — asserted on the FUNCTION, never on the source ────
+// The previous version of this section grepped for `r.written === false`, which
+// is how it came to guarantee a defect instead of preventing one: it pinned the
+// implementation without ever asking what the implementation DECIDED. Sixteen
+// files that read perfectly were reported unreadable for a year of hourly
+// re-reads, and this test was green throughout. The shapes below are the REAL
+// ones the four sync functions return, copied from src/longterm/application/sync.js.
+{
+  const { classifyParts } = require('../src/longterm/sync/loans');
+  const P = (result) => [{ what: 'investor', result }];
+
+  // A part that FAILED is a miss.
+  check(classifyParts(P(null)).misses.length === 1, 'nothing coming back at all is a miss');
+  check(/nothing came back/.test(classifyParts(P(null)).misses[0]), '…and it says so');
+  check(classifyParts(P({ ok: false, reason: 'no loan payload' })).misses.length === 1,
+    'a part that answered ok:false is a miss');
+  check(/no loan payload/.test(classifyParts(P({ ok: false, reason: 'no loan payload' })).misses[0]),
+    '…carrying its own reason, not a generic one');
+
+  // A part that COMPLETED with nothing to write is NOT a miss.
+  const noInvestor = { ok: true, written: false, reason: 'the payload named no investor' };
+  check(classifyParts(P(noInvestor)).misses.length === 0,
+    'a file with no investor is NOT a miss — measured on 16 real files, all Started or Withdrawn, '
+    + 'and confirmed against Encompass itself: the fields are absent from the payload');
+  check(classifyParts(P(noInvestor)).empties.length === 1,
+    '…it is recorded as EMPTY, so the fact is not lost, only de-alarmed');
+
+  // Every real success shape counts as filled — including the two that carry no
+  // `written` key, which is what the old test could never see.
+  const filled = (r) => classifyParts([{ what: 'x', result: r }]).filledAny;
+  check(filled({ ok: true, written: true, found: 3 }), 'property/terms/investor report filled as written:true');
+  check(filled({ ok: true, pairs: 1, parties: 2, reason: 'read' }),
+    'borrowers report filled as pairs/parties — they carry NO `written` key, so a test that '
+    + 'looked only at `written` never checked them at all');
+  check(!filled({ ok: true, pairs: 0, parties: 0, reason: 'the payload carried no applications' }),
+    'and zero pairs is genuinely empty');
+  check(!filled({ ok: false, reason: 'failed' }), 'a failed part is never counted as filled');
+
+  // The ORIGINAL defect is still caught: answered, but filled nothing anywhere.
+  const all = classifyParts([
+    { what: 'subject property', result: { ok: true, written: false, reason: 'no property figures' } },
+    { what: 'loan terms', result: { ok: true, written: false, reason: 'no terms' } },
+    { what: 'borrowers', result: { ok: true, pairs: 0, parties: 0, reason: 'no applications' } },
+    { what: 'investor', result: { ok: true, written: false, reason: 'no investor' } },
+  ]);
+  check(all.misses.length === 0 && all.empties.length === 4 && all.filledAny === false,
+    'a read that filled NOTHING reports four empties and no filled part — which is what the '
+    + 'all-empty guard in readLoan turns into a miss');
+  const one = classifyParts([
+    { what: 'subject property', result: { ok: true, written: true, found: 9 } },
+    { what: 'investor', result: noInvestor },
+  ]);
+  check(one.filledAny === true && one.misses.length === 0,
+    'while a file that filled its property and simply has no investor is clean — the 16-file case');
+  check(/the read answered but filled nothing/.test(loansSrc),
+    'and readLoan still turns the all-empty case into a reported miss');
+}
+
+// ── EVERY COLUMN `needsRead` CONSULTS MUST ACTUALLY BE ON THE ROW ────────────
+// The freshness decision is made on the row `upsertDiscovered` RETURNS, and a
+// column missing from that RETURNING list is not an error anywhere: it reads as
+// `undefined`, the branch that needs it goes quiet, and the loan is simply never
+// re-read. Measured in production, 2026-08-26: `encompass_sync_error` was absent
+// from the list, so the one-hour re-read for a partly-read loan had NEVER fired
+// — every such loan silently waited the full twelve-hour rota instead. Nothing
+// logged, nothing failed, and `read=0` on every pass looked like a quiet book.
+//
+// So this asserts the JOIN between the two, not either one alone. Adding a test
+// to `needsRead` without adding its column to the query would leave exactly the
+// same dead branch, which is why the check is written this way round.
+{
+  const body = (() => {
+    const i = loansSrc.indexOf('function needsRead(');
+    const j = loansSrc.indexOf('\nfunction ', i + 10);
+    return loansSrc.slice(i, j > 0 ? j : undefined);
+  })();
+  const strip = body.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  const reads = [...new Set([...strip.matchAll(/\brow\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]))];
+  check(reads.length >= 4, `needsRead's row columns were found (${reads.length}: ${reads.join(', ')})`);
+
+  const ret = (() => {
+    const m = loansSrc.match(/RETURNING([\s\S]*?)`/);
+    return m ? m[1] : '';
+  })();
+  check(/encompass_synced_at/.test(ret), 'the RETURNING list was found and carries the sync stamp');
+
+  // `pipeline_milestone` is attached by the spread AFTER the query, deliberately —
+  // it is the pipeline's lagging value, not a column of ours.
+  const addedAfter = new Set(['pipeline_milestone']);
+  const missing = reads.filter((c) => !addedAfter.has(c) && !new RegExp(`\\b${c}\\b`).test(ret));
+  check(missing.length === 0,
+    'every column needsRead consults is on the row upsertDiscovered returns'
+    + (missing.length ? ` — MISSING: ${missing.join(', ')}` : ''));
+}
 
 // An EMPTY answer is not an answer — the `{}` case the batch can return.
 check(/Object\.keys\(values\)\.length > 0/.test(loansSrc),
