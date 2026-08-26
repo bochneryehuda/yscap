@@ -1,7 +1,7 @@
 'use strict';
 /*
- * THE SEARCH REACHES THE SCREEN — the three approvals doors and the global
- * omnibox, driven over REAL HTTP against a REAL Postgres.
+ * THE SEARCH REACHES THE SCREEN — every door where a person types what they
+ * know about a file, driven over REAL HTTP against a REAL Postgres.
  *
  * `test-approvals-search-db` proves the two list FUNCTIONS find a file. It
  * cannot see whether a route actually passes `q` down to them, and neither can
@@ -19,6 +19,10 @@
  *                                                    register while the screen
  *                                                    shows six rows
  *   GET /api/admin/manual-programs/escalations     — the other queue
+ *   GET /api/staff/audit-log                       — the system log, whose own
+ *                                                    search rendered the address
+ *                                                    as raw JSONB and matched a
+ *                                                    borrower's name in parts
  *
  * Requires DATABASE_URL with migrations applied; SKIPs cleanly otherwise.
  * Fixtures are COMMITTED (the server runs on its own pool, so a transaction
@@ -128,6 +132,37 @@ function call(server, path, token, { raw = false } = {}) {
     const regMiss = await call(server, `/api/admin/exceptions?status=open&q=${encodeURIComponent('Zzz No Such Place')}`, tok);
     eq(ours(regMiss.body && regMiss.body.exceptions).length, 0, 'B5 a genuine miss returns nothing, not everything');
 
+    /* B6 — NO SILENT CAP. The list is paged, so a screen printing `rows.length`
+       beside "showing matches for …" reads a LIMIT as a COUNT: a search matching
+       150 files would say "100" and nobody would learn there are 50 more. The
+       server MEASURES the next page (asks for one more than the page and drops
+       it) rather than inferring it from a full one — a full page can equally BE
+       the whole answer, which is the trap `trailEvents` was written to fix.
+       Asserted on a search that matches only this fixture, so the rest of the
+       table cannot decide the outcome either way. */
+    eq(regHit.body.hasMore, false, 'B6 a search inside one page says so — nothing is being withheld');
+    /* 101 FILES, not 101 exceptions on one file: `uq_loan_exc_open_per_app`
+       allows exactly ONE open exception per (file, type) — the register's own
+       rule — so a bulk fixture has to be files. They share the street, so the
+       ONE typed search reaches all of them. */
+    const bulkIds = [];
+    for (let i = 0; i < 101; i += 1) {
+      const id = await mkApp(bMatch, `P${i}`, { line1: '598 Pawling Ave', city: 'Troy', state: 'NY', zip: '12180' });
+      bulkIds.push(id);
+      await db.query(
+        `INSERT INTO loan_exceptions (application_id, exception_type, status, reason_code, requested_by, requested_by_kind)
+         VALUES ($1,'guaranty_waiver','requested','other',$2,'staff')`, [id, adminId]);
+    }
+    const paged = await call(server, `/api/admin/exceptions?status=open&q=${encodeURIComponent('598 Pawling')}`, tok);
+    eq((paged.body.exceptions || []).length, 100, 'B7 a search matching more than a page returns exactly one page');
+    eq(paged.body.hasMore, true, 'B8 and SAYS there is more, rather than printing the page size as a count');
+    eq(paged.body.pageSize, 100, 'B9 naming the page size, so the screen never keeps a second copy of it');
+    // Put the queue back to two so the sections after this read what they expect.
+    for (const id of bulkIds) {
+      await db.query(`DELETE FROM loan_exceptions WHERE application_id=$1`, [id]);
+      await db.query(`DELETE FROM applications WHERE id=$1`, [id]);
+    }
+
     // ── C. THE EXPORT CARRIES THE SAME SEARCH ─────────────────────────────
     /* buildXlsx writes a STORE-only zip (lib/zip.js compresses nothing — its
        members are already-compressed bytes), so the sheet's own strings sit in
@@ -152,10 +187,48 @@ function call(server, path, token, { raw = false } = {}) {
     const escMiss = await call(server, `/api/admin/manual-programs/escalations?status=open&q=${encodeURIComponent('Zzz No Such Place')}`, tok);
     eq(ours(escMiss.body && escMiss.body.escalations).length, 0, 'D4 with the same honest miss');
 
+    // ── E. THE SYSTEM AUDIT LOG ───────────────────────────────────────────
+    /* THE ONE SCREEN THAT IS THE SYSTEM'S LOG, and its own search was wrong in
+       BOTH directions. It rendered the address as `property_address::text` — the
+       STORAGE, not the address — so a real address typed the way a person writes
+       it could never match (the raw JSON puts `","city":"` between the street and
+       the city), while a JSON KEY NAME matched nearly everything. MEASURED on the
+       live table of 547 files before this was changed: "9 Oak St, Lakewood"
+       matched 0 rows and "state" matched 280. And a borrower's name was matched
+       in PARTS, so typing it the way it is written to you matched neither column.
+
+       A log you cannot search is a log nobody reads, which is why this belongs
+       to the owner's logging ask rather than to a tidy-up. */
+    await db.query(
+      `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, entity_id)
+       VALUES ('staff',$1,'edit_application','application',$2)`, [adminId, appMatch]);
+
+    const logHas = async (query) => {
+      const r = await call(server, `/api/staff/audit-log?q=${encodeURIComponent(query)}&limit=300`, tok);
+      assert.strictEqual(r.status, 200, `audit-log answered ${r.status} for ${JSON.stringify(query)}`);
+      return (r.body && r.body.rows || []).filter((row) => row.entity_id === appMatch).length;
+    };
+
+    eq(await logHas('598 Pawling'), 1,
+      'E1 a real address, typed as a street alone, finds its row in the system log');
+    eq(await logHas('598 Pawling Ave, Troy'), 1,
+      'E2 and typed the way a person actually writes one — street, comma, city — which the raw-JSONB cast could NEVER match');
+    eq(await logHas(`YSCAP${tag}A`), 1,
+      'E3 the loan number finds it too, which the log did not offer at all');
+    eq(await logHas(`Mordechai Scharf${tag}`), 1,
+      'E4 and the borrower\'s WHOLE name, which the parts-only rule matched in neither column');
+    eq(await logHas(`Scharf${tag}`), 1, 'E5 while the surname on its own still works');
+    /* THE CONTROL that makes E1/E2 mean something, and the flood in the other
+       direction: a JSON key name is not an address and must find nothing. */
+    eq(await logHas('oneLine'), 0,
+      'E6 a JSONB KEY NAME finds nothing — it used to match 137 of the 547 files and flood the log');
+    eq(await logHas('Zzz No Such Place'), 0, 'E7 with the same honest miss');
+
     console.log(`\ntest-approvals-search-routes-db: all ${n} checks passed.`);
   } finally {
     // Fixtures are committed, so they are removed by hand — children first.
     for (const id of appIds) {
+      await db.query(`DELETE FROM audit_log WHERE entity_id=$1`, [id]).catch(() => {});
       await db.query(`DELETE FROM manual_program_escalations WHERE application_id=$1`, [id]).catch(() => {});
       await db.query(`DELETE FROM loan_exceptions WHERE application_id=$1`, [id]).catch(() => {});
     }
@@ -165,7 +238,7 @@ function call(server, path, token, { raw = false } = {}) {
     server.close();
     // The request-audit writer flushes on a timer of its own; give it a beat so
     // the run does not end on a noisy "pool after end" from a background write.
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 900));
     await db.pool.end().catch(() => {});
   }
 })().catch((e) => { console.error(e); process.exit(1); });

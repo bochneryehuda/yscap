@@ -25,6 +25,10 @@ export default function StaffExceptions() {
   const focusAppId = new URLSearchParams(location.search).get('app') || '';
 
   const [rows, setRows] = useState([]);
+  /* THE SERVER MEASURES whether there is another page — the screen must never
+     infer it from a full one, and must never print a page size as if it were a
+     count. `hasMore` is what stops "100" reading as "there are 100". */
+  const [more, setMore] = useState(false);
   const [reasonCodes, setReasonCodes] = useState({});
   const [reasonCodesByType, setReasonCodesByType] = useState({});
   const [typeLabels, setTypeLabels] = useState({});
@@ -114,6 +118,7 @@ export default function StaffExceptions() {
   const load = () => api.loanExceptions(statusFilter, typeFilter || undefined, q || undefined)
     .then((d) => {
       setRows(d.exceptions || []);
+      setMore(!!d.hasMore);
       setPendingCount(d.pendingCount || 0);
       setCanDecide(!!d.canDecide);
       setCanDecideOwn(!!d.canDecideOwn);
@@ -265,7 +270,7 @@ export default function StaffExceptions() {
         )}
         {q && q.length >= 2 && (
           <span className="muted small" style={{ color: '#4B585C' }}>
-            Showing matches for “{q}”{rows ? ` — ${rows.length}` : ''}
+            Showing matches for “{q}”{rows ? ` — ${rows.length}${more ? '+ (the first ' + rows.length + '; narrow the search to see the rest)' : ''}` : ''}
           </span>
         )}
       </div>

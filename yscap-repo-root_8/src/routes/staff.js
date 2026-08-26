@@ -19578,15 +19578,39 @@ router.get('/audit-log', async (req, res) => {
     if (q) {
       // Free-text across who did it (actor OR the file's loan officer), what
       // they did (action code AND human label), and which borrower / property.
+      /* THE ADDRESS IS A COMPOSED HAYSTACK, NOT THE RAW JSONB CAST (2026-08-26).
+         `property_address::text` renders the STORAGE, not the address, and it is
+         wrong in BOTH directions. MEASURED on the live table (547 files):
+           · a real address typed the way a person writes it — "9 Oak St,
+             Lakewood" — matches **0** rows, because the raw JSON reads
+             {"line1":"9 Oak St","city":"Lakewood"} and the `","city":"` between
+             them can never match the comma-space somebody types. The composed
+             haystack finds both files.
+           · a JSON KEY NAME floods the log: "state" matches **280 of 547**
+             files and "oneLine" matches 137, so searching the log for a person
+             or a note containing one of those words returns half the pipeline.
+         The shared expression reads whichever address parts a row actually
+         holds and none of the key names, so both directions are answered at
+         once. Same module the approvals queues and the omnibox use.
+
+         AND THE BORROWER'S NAME IS THE GENERATED `full_name`. Matching
+         first_name and last_name separately means a person typing the name the
+         way it is written to them — "Mordechai Scharf" — matches NEITHER
+         column: measured 0 rows against 1 for the full name. The parts are kept
+         beside it so a surname on its own still works. */
       const like = P('%' + q + '%');
       const codes = P(auditCodesMatchingText(q)); // action codes whose label matches
       where.push(`(
         s.full_name ILIKE ${like} OR ab.first_name ILIKE ${like} OR ab.last_name ILIKE ${like}
+        OR NULLIF(ab.full_name,'') ILIKE ${like}
         OR al.action ILIKE ${like} OR al.action = ANY(${codes}::text[])
         OR appb.first_name ILIKE ${like} OR appb.last_name ILIKE ${like}
+        OR NULLIF(appb.full_name,'') ILIKE ${like}
         OR eb.first_name ILIKE ${like} OR eb.last_name ILIKE ${like}
+        OR NULLIF(eb.full_name,'') ILIKE ${like}
         OR lo.full_name ILIKE ${like}
-        OR app.property_address::text ILIKE ${like}
+        OR ${fileSearch.ADDRESS_TEXT_SQL('app')} ILIKE ${like}
+        OR COALESCE(app.ys_loan_number,'') ILIKE ${like}
       )`);
     }
     const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';

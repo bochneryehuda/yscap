@@ -168,7 +168,7 @@ export default function StaffAuditLog() {
         <div className="grid cols-2" style={{ gap: 10 }}>
           <div style={{ gridColumn: '1 / -1' }}>
             <label className="muted small">Search</label>
-            <input className="input" placeholder="Borrower, property address, officer, or action…"
+            <input className="input" placeholder="Loan number, address, borrower, officer, or action…"
               value={qInput} onChange={e => setQInput(e.target.value)} />
           </div>
           <div>

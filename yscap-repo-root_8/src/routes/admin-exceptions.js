@@ -134,12 +134,24 @@ router.get('/', requirePermission('manage_pricing'), async (req, res) => {
     // What the person typed: a loan number, an address, a borrower's name. Bound,
     // never interpolated; too short to be a search simply does not filter.
     const q = String(req.query.q || '').trim();
-    const [rows, pending] = await Promise.all([
-      loanExceptions.listExceptions({ status, type, q }),
+    /* NO SILENT CAP ON A SEARCH RESULT. The list is paged, and a screen that
+       prints `rows.length` beside "showing matches for …" reads a LIMIT as a
+       COUNT — so a search matching 150 files says "100" and nobody learns there
+       are 50 more. Ask for one MORE than the page and drop it, which MEASURES
+       whether there is another page instead of inferring it from a full one
+       (the trap `trailEvents` documents: a full page can equally be the whole
+       answer). The rows returned are exactly the page, unchanged. */
+    const PAGE = 100;
+    const [raw, pending] = await Promise.all([
+      loanExceptions.listExceptions({ status, type, q, limit: PAGE + 1 }),
       loanExceptions.pendingCount(),
     ]);
+    const hasMore = raw.length > PAGE;
+    const rows = hasMore ? raw.slice(0, PAGE) : raw;
     res.json({
       exceptions: rows,
+      hasMore,
+      pageSize: PAGE,
       pendingCount: pending,
       canDecide: can(req.actor, 'manage_pricing'),
       // A super-admin may decide their OWN request (owner-directed 2026-07-31);
