@@ -206,10 +206,14 @@ function bust() { _cache = { at: 0, val: _cache.val || SYSTEM_DEFAULTS }; }
  * Center existed. NEVER throws: an unreadable history returns null, and every
  * caller must read that as "cannot classify", never as "it was the default".
  */
-async function asOf(when) {
+/* The repo's usual optional trailing `client`: a caller already inside a
+   transaction must be able to ask this the same question against ITS OWN
+   snapshot, or the two reads answer about different databases. Defaults to
+   the pool, so every existing caller is byte-identical. */
+async function asOf(when, client = db) {
   if (!when) return null;
   try {
-    const r = await db.query(
+    const r = await client.query(
       /* THE COMPARISON IS WIDENED BY ONE MILLISECOND, AND THAT IS NOT A FUDGE.
          Postgres stores `timestamptz` to the MICROSECOND; a JavaScript Date holds only
          MILLISECONDS, so a timestamp that has been through node-pg (which is how every caller gets

@@ -163,6 +163,23 @@ function shapeTpoChannel(row) {
 
 // The current TPO-channel settings + the retail defaults each field falls back to,
 // so the UI can show "TPO value, defaults to retail X".
+/* WHICH FILES STILL PRICE AT A MARKUP THE COMPANY NO LONGER SETS — and why.
+   Owner-reported 2026-08-26: *"I still see sometimes … automatic exception
+   requests that people want to move down the price from 0.5 to 0.4 markup … I
+   think there's still a bug in the system … maybe it's only on old files."*
+
+   READ-ONLY. The studio no longer freezes a default onto a file and db/600
+   already released it from every file whose economics are still open, so what
+   is left is the files db/600 SPARED on purpose — settled, or with a term sheet
+   out for signature — where raising the markup would move terms a borrower has
+   been shown or signed. This answers the question and changes nothing; whether
+   to touch those files is the owner's call, and this is what makes it a
+   decidable one instead of a hunch. */
+router.get('/markup-drift', async (req, res) => {
+  try { res.json(await require('../lib/markup-drift').report({})); }
+  catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 router.get('/tpo', async (req, res) => {
   try {
     const retail = await pricingSettings.load();
