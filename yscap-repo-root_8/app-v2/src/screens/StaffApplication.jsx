@@ -3224,9 +3224,10 @@ function VestingLlcOwners({ appId, app }) {
 // #65 — the second borrower on a file. Shows the linked co-borrower (name,
 // The loan team (#64): the PRIMARY loan officer + processor plus any full-access
 // ASSISTANTS. Shows every teammate with a "Primary" badge; assistants carry a
-// remove (×). Add-assistant pickers below. The PRIMARY is changed through the
-// admin-only Assign controls, not here. `officers`/`processors` are the roster
-// lists already loaded by the parent; `onChanged` refreshes the file.
+// remove (×). Add-assistant pickers below. The LOAN OFFICER primary is changed
+// through the admin-only Assign control; the PROCESSOR primary is open to
+// anyone on the file (owner-directed 2026-08-26). `officers`/`processors` are
+// the roster lists already loaded by the parent; `onChanged` refreshes the file.
 function TeamAssignees({ appId, officers, processors, closers = [], drawCoordinators = [], onChanged }) {
   const [rows, setRows] = useState(null);
   const [busy, setBusy] = useState('');
@@ -3247,9 +3248,11 @@ function TeamAssignees({ appId, officers, processors, closers = [], drawCoordina
     try { await api.staffRemoveAssignee(appId, staffId, role); await load(); onChanged && onChanged(); }
     catch (e) { setErr(e.message || 'Could not remove'); } finally { setBusy(''); }
   }
-  // Closer / draw-coordinator primaries CAN be cleared here (db/392) — only the
-  // LO/processor primaries stay locked to the Assign selects above.
-  const primaryRemovable = (role) => role === 'closer' || role === 'draw_coordinator';
+  // Closer / draw-coordinator primaries CAN be cleared here (db/392), and so
+  // can the PROCESSOR primary (owner-directed 2026-08-26: "everybody should be
+  // able to … remove processors from files") — only the LOAN OFFICER primary
+  // stays locked to the admin Assign select above.
+  const primaryRemovable = (role) => role === 'closer' || role === 'draw_coordinator' || role === 'processor';
   const Chip = ({ r }) => (
     <span className="asg-chip">
       {r.full_name}
@@ -6104,12 +6107,15 @@ export default function StaffApplication() {
           drawCoordinators={team.filter(m => m.role === 'draw_coordinator')}
           onChanged={load} />
         {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
-        {/* Reassigning a file is an admin function (S3-02) — the server 403s a
-            non-admin, so the control is not offered to them. Side by side rather
-            than stacked: they are two halves of one action, and the Assign button
-            sits with them instead of floating under a tall column. */}
-        {isAdmin ? (
-          <div className="team-assign">
+        {/* Reassigning the LOAN OFFICER is an admin function (S3-02) — the
+            server 403s a non-admin, so that control is only offered to admins.
+            The PROCESSOR is open to everyone on the file (owner-directed
+            2026-08-26: "everybody should be able to … change the processor").
+            Side by side rather than stacked: they are two halves of one action,
+            and the Assign button sits with them instead of floating under a
+            tall column. */}
+        <div className="team-assign">
+          {isAdmin && (
             <div className="field" style={{ marginBottom: 0 }}>
               <label>Loan officer</label>
               <select className="input" value={lo} onChange={e => setLo(e.target.value)}>
@@ -6117,20 +6123,21 @@ export default function StaffApplication() {
                 {officers.map(m => <option key={m.id} value={m.id}>{m.full_name} ({m.role})</option>)}
               </select>
             </div>
-            <div className="field" style={{ marginBottom: 0 }}>
-              <label>Processor</label>
-              <select className="input" value={proc} onChange={e => setProc(e.target.value)}>
-                <option value="">— select —</option>
-                {processors.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
-              </select>
-            </div>
-            <button className="btn primary" onClick={assign} disabled={(!lo && !proc) || busyAct === 'assign'}>
-              {busyAct === 'assign' ? 'Assigning…' : 'Assign'}
-            </button>
+          )}
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Processor</label>
+            <select className="input" value={proc} onChange={e => setProc(e.target.value)}>
+              <option value="">— select —</option>
+              {processors.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+            </select>
           </div>
-        ) : (
+          <button className="btn primary" onClick={assign} disabled={((isAdmin ? !lo : true) && !proc) || busyAct === 'assign'}>
+            {busyAct === 'assign' ? 'Assigning…' : 'Assign'}
+          </button>
+        </div>
+        {!isAdmin && (
           <p className="small" style={{ color: '#4B585C', marginBottom: 0 }}>
-            Only an admin can change who this file is assigned to.
+            Anyone on the file can change the processor. Changing the loan officer is an admin action.
           </p>
         )}
       </div>

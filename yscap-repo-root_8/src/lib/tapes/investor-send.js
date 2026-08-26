@@ -107,10 +107,34 @@ function dealFigures(app, quote) {
     oop = (Number.isFinite(budget) && Number.isFinite(financed) && budget - financed > 0.5) ? budget - financed : 0;
   }
   add('Out-of-pocket rehab (borrower-funded)', oop > 0 ? usd(oop) : (rows.some((r) => /holdback/i.test(r.label)) ? '$0' : null));
-  // The engine's acquisition denominator is min(price, as-is) on a purchase, so
-  // the label says "acquisition value" — not "as-is value", which is wrong
-  // whenever the price is the lower figure (audit 98b8fac note 7).
-  add('Initial LTV (initial advance ÷ acquisition value)', pct(s.acqLtvPct));
+  /* INITIAL LTV — the initial advance against the LOWER of the purchase price
+     and the as-is value (owner-directed 2026-08-26: "if the as-is value is
+     more than the purchase price, then the initial LTV should be calculated
+     from the purchase price … if the as-is is less than the purchase price,
+     then I should put a note that it's calculated from the as-is … it's
+     basically from the lower of the two"). Recomputed DISPLAY-ONLY from the
+     file's own columns: the stored engine ratio is whatever was registered,
+     and the owner's live report was an email reading 2.1% (a high as-is value
+     as the denominator) on a loan that is 90% of the purchase price. A
+     refinance carries no purchase price (db/399) and sizes on the as-is by
+     definition, so the as-is IS the denominator there and the label says so.
+     NO frozen number moves — the engine's sizing is untouched; this is what
+     the email prints, and it falls back to the stored ratio when the file's
+     own figures are missing. */
+  const ppN = Number(app.purchase_price), aivN = Number(app.as_is_value);
+  const hasPp = Number.isFinite(ppN) && ppN > 0, hasAiv = Number.isFinite(aivN) && aivN > 0;
+  const initAdv = Number(s.initialAdvance);
+  const ltvDenom = isRefi ? (hasAiv ? aivN : null)
+    : (hasPp && hasAiv ? Math.min(ppN, aivN) : (hasPp ? ppN : (hasAiv ? aivN : null)));
+  const ltvFromAsIs = isRefi ? hasAiv : (hasAiv && (!hasPp || aivN < ppN));
+  if (Number.isFinite(initAdv) && initAdv > 0 && ltvDenom != null) {
+    add(`Initial LTV (initial advance ÷ ${ltvFromAsIs ? 'as-is value' : 'purchase price'})`, pct(initAdv / ltvDenom));
+    // The owner's note, exactly when the as-is is the (lower) denominator on a
+    // purchase — so the reader knows which figure the ratio was taken from.
+    if (ltvFromAsIs && !isRefi) add('Initial LTV basis', 'Calculated from the as-is value — it is lower than the purchase price.');
+  } else {
+    add('Initial LTV (initial advance ÷ acquisition value)', pct(s.acqLtvPct));
+  }
   add('ARV LTV (total loan ÷ after-repair value)', pct(s.arvPct));
   // TOTAL LTC — the whole loan against the whole COST, which is the third leverage
   // figure this deal actually has (owner-directed 2026-08-21).

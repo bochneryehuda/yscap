@@ -71,8 +71,9 @@ module.exports = {
         },
         body: JSON.stringify(Object.assign({
           // #150 — LO branding: an optional per-message From display name
-          // ("Chaim Klein — YS Capital <no-reply@…>"). The ADDRESS is always
-          // ours (the verified sending domain); only the display name varies.
+          // ("Chaim Klein — YS Capital <notifications@…>"). The ADDRESS is
+          // always ours (the verified sending domain — never a no-reply; the
+          // config guard repairs one); only the display name varies.
           // Absent → the corporate default, unchanged.
           from: from || cfg.notifyFrom,
           to: recipients,

@@ -606,9 +606,9 @@ async function maybeNotifyCountersign(db, envelopeRow) {
   const label = purposeLabel(envelopeRow.purpose);
   const opts = {
     type: 'status_change',
-    title: `Borrower signed — counter-signature needed on the ${label}`,
-    badge: { text: 'Counter-sign needed', tone: 'gold' },
-    body: `The borrower has signed the ${label}. It now needs the lender's counter-signature to finish. The signer has been emailed the counter-signing link; open the file's e-signature section to counter-sign.`,
+    title: `Borrower signed — the ${label} is ready for counter-signature`,
+    badge: { text: 'Counter-signature', tone: 'gold' },
+    body: `The borrower has signed the ${label}. The lender's counter-signature completes it. The signer has been emailed the counter-signing link; open the file's e-signature section to counter-sign.`,
     applicationId: envelopeRow.application_id,
     link: `${cfg.appUrl || ''}${cfg.portalPath}/#/internal/app/${envelopeRow.application_id}`,
   };

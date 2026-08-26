@@ -1,6 +1,6 @@
 /**
  * #150 — loan-officer branding in outbound email: per-message From display
- * name ("<Officer> — YS Capital <no-reply@…>"), officer contact block on the
+ * name ("<Officer> — YS Capital <notifications@…>"), officer contact block on the
  * invites, and the NEW borrower terms email on staff register (type
  * 'term_sheet', from/reply-to the assigned officer).
  * Run: node scripts/test-lo-branding.js
@@ -9,6 +9,9 @@ process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://yscap:yscap@1
 process.env.JWT_SECRET = 'test-secret-branding';
 process.env.EMAIL_PROVIDER = 'none';
 process.env.NODE_ENV = 'test';
+// DELIBERATELY a no-reply address: the config guard (owner-directed 2026-08-26,
+// src/config.js resolveNotifyFrom) must repair it to the monitored local part on
+// the same domain — the assertions below double as the live proof of that guard.
 process.env.NOTIFY_FROM = 'YS Capital Group <no-reply@yscapgroup.com>';
 
 const http = require('http');
@@ -37,11 +40,11 @@ async function main() {
   await require(__dirname + "/lib/db-gate").skipUnlessDb("lo-branding");
   // (1) fromWithName unit checks.
   const email = require(REPO + '/src/lib/email');
-  ok(email.fromWithName('Chaim Klein') === '"Chaim Klein — YS Capital" <no-reply@yscapgroup.com>',
-    `fromWithName formats the branded From (got ${email.fromWithName('Chaim Klein')})`);
+  ok(email.fromWithName('Chaim Klein') === '"Chaim Klein — YS Capital" <notifications@yscapgroup.com>',
+    `fromWithName formats the branded From AND the no-reply env value was repaired to the monitored address (got ${email.fromWithName('Chaim Klein')})`);
   ok(email.fromWithName('') === null && email.fromWithName(null) === null, 'empty name → null (default From)');
   const evil = email.fromWithName('Evil <spoof@x.com>');
-  ok(/^"[^"<>]*" <no-reply@yscapgroup\.com>$/.test(evil), `angle brackets stripped from the display name (no header injection) — got ${evil}`);
+  ok(/^"[^"<>]*" <notifications@yscapgroup\.com>$/.test(evil), `angle brackets stripped from the display name (no header injection) — got ${evil}`);
 
   // (2) the invite builders carry the officer contact block.
   const mail = require(REPO + '/src/lib/email/catalog');

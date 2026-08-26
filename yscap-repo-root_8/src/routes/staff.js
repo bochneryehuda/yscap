@@ -10120,10 +10120,14 @@ router.post('/applications/:id/assign', async (req, res) => {
   const { loanOfficerId, processorId } = req.body || {};
   if (!loanOfficerId && !processorId) return res.status(400).json({ error: 'loanOfficerId or processorId required' });
   try {
-    // Reassigning a file is a manager function (audit S3-02). A non-admin may
-    // ONLY claim a currently-EMPTY slot for THEMSELVES — never take over a file
-    // already assigned to another officer/processor. Admins may (re)assign
-    // freely. The audit records both the previous and new owner.
+    // Reassigning the LOAN OFFICER is a manager function (audit S3-02): a
+    // non-admin may ONLY claim a currently-EMPTY officer slot for THEMSELVES.
+    // The PROCESSOR is different (owner-directed 2026-08-26: "everybody should
+    // be able to, when something is assigned to a processor, change the
+    // processor" — it used to be admin-only): ANY staff who can open the file
+    // (the /applications/:id path middleware already scopes that) may set,
+    // change or remove the processor. The audit records both the previous and
+    // new holder either way.
     const cur = await db.query(`SELECT loan_officer_id, processor_id, status, deleted_at FROM applications WHERE id=$1`, [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'application not found' });
     const admin = isAdmin(req);
@@ -10193,12 +10197,9 @@ router.post('/applications/:id/assign', async (req, res) => {
       await audit(req, 'assign_application', 'application', req.params.id, { from: cur.rows[0].loan_officer_id || null, to: loanOfficerId });
     }
     if (processorId) {
-      const selfClaimEmpty = !cur.rows[0].processor_id && String(processorId) === String(req.actor.id);
-      if (!admin && !selfClaimEmpty) {
-        return res.status(403).json({ error: cur.rows[0].processor_id
-          ? 'Only an admin can reassign the processor on a file.'
-          : 'Only an admin can assign this file to another processor — you may claim an unassigned file for yourself.' });
-      }
+      // No admin gate here (owner-directed 2026-08-26): anyone on the file may
+      // change the processor. The person picked must still genuinely BE an
+      // active processor — that validation is what keeps this safe to open up.
       const p = await db.query(`SELECT full_name FROM staff_users WHERE id=$1 AND is_active=true AND role='processor'`, [processorId]);
       if (!p.rows[0]) return res.status(404).json({ error: 'processor not found' });
       const u = await db.query(`UPDATE applications SET processor_id=$2, updated_at=now() WHERE id=$1`,
@@ -10324,13 +10325,21 @@ router.delete('/applications/:id/assignees/:staffId', async (req, res) => {
       [req.params.id, role, req.params.staffId]);
     if (!row.rows[0]) return res.status(404).json({ error: 'not an active assignee on this file' });
     if (row.rows[0].is_primary) {
-      // LO / processor primaries move through Assign (unchanged). The NEW roles
-      // (db/392) can be cleared here: the closer primary clears the pointer
-      // (the trigger retires the row); a draw-coordinator primary retires
-      // directly (no pointer exists). The file then falls back to the role's
-      // whole-desk inbox — the pre-assignment default.
+      // The LOAN OFFICER primary moves through Assign (unchanged — a file must
+      // not silently lose its officer). Every other primary can be cleared
+      // here: the closer AND the processor primaries clear their pointer (the
+      // db/103 / db/392 trigger retires the assignee row); a draw-coordinator
+      // primary retires directly (no pointer exists). The processor case is
+      // owner-directed 2026-08-26 ("everybody should be able to … remove
+      // processors from files"). NOTE the ClickUp push deliberately never
+      // clears a ClickUp field (the wipe-proof rule), so a card still naming
+      // this processor in BOTH its processor fields is re-adopted by the next
+      // inbound sync — a true removal on a synced file is finished by clearing
+      // the Processor field on the ClickUp card too.
       if (role === 'closer') {
         await db.query(`UPDATE applications SET closer_id=NULL WHERE id=$1 AND closer_id=$2`, [req.params.id, req.params.staffId]);
+      } else if (role === 'processor') {
+        await db.query(`UPDATE applications SET processor_id=NULL WHERE id=$1 AND processor_id=$2`, [req.params.id, req.params.staffId]);
       } else if (role === 'draw_coordinator') {
         await db.query(
           `UPDATE application_assignees SET is_primary=false, removed_at=now()

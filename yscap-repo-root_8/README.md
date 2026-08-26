@@ -51,9 +51,12 @@ creation.** The web service can't reach Postgres. Check the boot logs:
 
 **2. Emails not sending.** Set **`RESEND_API_KEY`** in the dashboard — that's
 enough, `EMAIL_PROVIDER=auto` detects it. Then:
-- Verify your sending domain in Resend (Dashboard → Domains). `NOTIFY_FROM` uses
-  `no-reply@yscapgroup.com`, so **`yscapgroup.com` must be a verified domain** or
-  Resend rejects sends with a 403.
+- Verify your sending domain in Resend (Dashboard → Domains). `NOTIFY_FROM`
+  defaults to `PILOT by YS Capital <notifications@yscapgroup.com>` — a real,
+  monitored address, **never a no-reply** (a no-reply value in the env is
+  auto-repaired to `notifications@` on the same domain and logged; see
+  `src/config.js` `resolveNotifyFrom`). **`yscapgroup.com` must be a verified
+  domain** or Resend rejects sends with a 403.
 - Set `APP_URL` to the portal's public URL so verify/reset links point to the
   right place.
 - Confirm delivery: log in as an admin and `POST /api/admin/test-email`
