@@ -54,6 +54,10 @@ const { can } = require('../lib/permissions');
 const loanExceptions = require('../lib/loan-exceptions');
 const notify = require('../lib/notify');
 const { buildXlsx } = require('../lib/xlsx');
+// Every place a request to deviate can land, read as ONE list.
+const feed = require('../lib/exception-feed');
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const labelsOf = () => Object.fromEntries(Object.keys(feed.SOURCES).map((k) => [k, feed.SOURCES[k].label]));
 
 function auditSafe(actorId, action, entityType, entityId, detail) {
   db.query(
@@ -159,6 +163,61 @@ router.get('/', requirePermission('manage_pricing'), async (req, res) => {
       canDecideOwn: req.actor.role === 'super_admin',
       actorId: req.actor.id,
       ...registryPayload(),
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/* ── THE ONE LIST ──────────────────────────────────────────────────────────
+   Owner-directed 2026-08-26: *"There are too many separate sections, and it is
+   very hard to keep track of it … merge everything into one place with filters
+   for exceptions … All exceptions at that address should come up, and you
+   should be able to filter by statuses."*
+
+   EVERY SOURCE KEEPS ITS OWN GATE. The three queues this reads are not equally
+   sensitive and never were: pricing exceptions and manual programs are
+   `manage_pricing`, while a finding sent up for a second opinion is visible to
+   any staffer on the file. Putting the merged list behind ONE permission would
+   either widen the pricing queues to everybody or take the findings queue away
+   from the loan officers who use it, so the viewer's own permissions decide
+   which sources they get — the merge is about ONE SCREEN, never about one gate.
+
+   AND A SOURCE THEY MAY NOT SEE IS NAMED, NOT OMITTED. `withheld` tells the
+   screen "there are pricing approvals here you cannot see" rather than letting
+   an empty list read as "there is nothing" — the same reason `failed` names a
+   store that could not be read. A merged list that quietly drops a queue looks
+   exactly like a quiet queue, and being missed is the problem this replaces. */
+router.get('/feed', async (req, res) => {
+  try {
+    if (!req.actor || req.actor.kind !== 'staff') return res.status(403).json({ error: 'forbidden' });
+    const mayPricing = can(req.actor, 'manage_pricing');
+    const ALLOWED = { exception: mayPricing, pricing: mayPricing, finding: true };
+    const asked = feed.SOURCES[req.query.source] ? [req.query.source] : Object.keys(feed.SOURCES);
+    const sources = asked.filter((k) => ALLOWED[k]);
+    const withheld = asked.filter((k) => !ALLOWED[k]);
+    if (!sources.length) {
+      return res.json({ rows: [], hasMore: false, pageSize: 0, failed: [], withheld, states: feed.STATES, sourceLabels: labelsOf() });
+    }
+    const state = feed.STATES.includes(req.query.state) ? req.query.state : null;
+    const mine = req.query.mine === '1' ? req.actor.id : null;
+    const appId = UUID_RE.test(String(req.query.app || '')) ? String(req.query.app) : null;
+    const q = String(req.query.q || '').trim();
+    /* One source at a time when the caller narrowed it; otherwise every source
+       this viewer may read. The lib takes ONE source or all, so a permitted
+       subset is read source-by-source and merged here — newest first, the same
+       total order the lib uses, so paging is stable. */
+    const parts = await Promise.all(sources.map((k) => feed.listAll({ q, state, source: k, mine, appId, limit: 100 })));
+    const rows = parts.flatMap((p) => p.rows).sort((x, y) => {
+      const ax = x.requested_at ? new Date(x.requested_at).getTime() : 0;
+      const ay = y.requested_at ? new Date(y.requested_at).getTime() : 0;
+      return ay !== ax ? ay - ax : String(y.id).localeCompare(String(x.id));
+    });
+    const PAGE = 100;
+    const hasMore = rows.length > PAGE || parts.some((p) => p.hasMore);
+    res.json({
+      rows: rows.slice(0, PAGE),
+      hasMore, pageSize: PAGE,
+      failed: parts.flatMap((p) => p.failed),
+      withheld, sources, states: feed.STATES, sourceLabels: labelsOf(),
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });

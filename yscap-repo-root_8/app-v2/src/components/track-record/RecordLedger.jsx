@@ -152,7 +152,7 @@ export default function RecordLedger({
           <b>{waiting} {waiting === 1 ? 'deal is' : 'deals are'} waiting for review.</b>{' '}
           <span>Nothing counts toward {lens === 'borrower' ? 'experience' : 'this file’s experience'} until
           it is verified — open each one, check the records, then verify it.</span>{' '}
-          <a href="#/internal/approvals?tab=track-record">Every borrower&rsquo;s waiting deals →</a>
+          <a href="#/internal/track-record">Every borrower&rsquo;s waiting deals →</a>
         </div>
       )}
       <p className="tr-led-intro">The record — open any project to see every detail, run the Elementix check, review its documents, and verify it.</p>

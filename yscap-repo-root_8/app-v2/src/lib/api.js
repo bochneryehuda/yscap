@@ -1311,6 +1311,9 @@ export const api = {
   // Ask an admin/super-admin to waive a specific condition (owner-directed 2026-08-04).
   requestConditionWaiver:    (appId, itemId, body) => req('POST', `/api/staff/applications/${appId}/conditions/${itemId}/request-waiver`, body || {}),
   withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
+  // Every request to deviate, from every queue, as ONE list (owner-directed
+  // 2026-08-26). Read-only: each queue still decides where its rules live.
+  exceptionFeed:             (p) => req('GET', `/api/admin/exceptions/feed${qs(p || {})}`),
   loanExceptions:            (status, type, q) => req('GET', `/api/admin/exceptions${qs({ status, type, q })}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
   /* Investor Suite saved scenarios (owner-directed 2026-07-30) — a staffer's own
