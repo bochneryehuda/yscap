@@ -281,6 +281,63 @@ for (const [key, fee] of Object.entries(R.OUTSIDE_CLOSING)) {
   }
 }
 
+/* ── J. A FEE CAN NEVER LEAVE THE LIQUIDITY CONDITION STALE ─────────────────────────────────── */
+/* The owner asked that *"the liquidity condition updates"*. It reads `dueAtClosing` — the total —
+   so it can never be SHORT of a fee; what it can be is OUT OF DATE, if some door were able to
+   change a fee without re-pricing the file. That is the claim db/632 and db/609 both rest on when
+   they decline to widen the economics-reopen trigger: the per-file fee columns *can only be
+   written as part of a registration*. This asserts it mechanically instead of trusting the note,
+   and it is DERIVED — it finds the writers rather than naming them, so a sixth fee column or a
+   second writer added later is caught without anybody updating a list. */
+{
+  const fs = require('fs');
+  const FEE_COLS = ['file_underwriting_fee', 'file_legal_fee', 'file_settlement_fee', 'file_cema_fee', 'file_feasibility_fee'];
+  const walk = (dir, out = []) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const f = path.join(dir, e.name);
+      if (e.isDirectory()) walk(f, out); else if (e.name.endsWith('.js')) out.push(f);
+    }
+    return out;
+  };
+  const files = walk(path.join(R.REPO, 'src'));
+  const writers = {};
+  for (const f of files) {
+    const src = R.stripComments(fs.readFileSync(f, 'utf8'));
+    for (const col of FEE_COLS) {
+      const re = new RegExp(`UPDATE\\s+applications\\s+SET\\s+${col}\\s*=`, 'g');
+      const n = (src.match(re) || []).length;
+      if (n) (writers[col] = writers[col] || []).push({ f: path.relative(R.REPO, f), n });
+    }
+  }
+  for (const col of FEE_COLS) {
+    const w = writers[col] || [];
+    const total = w.reduce((a, x) => a + x.n, 0);
+    ok(`J1 ${col} has exactly ONE writer`, total === 1,
+      w.length ? w.map((x) => `${x.f} x${x.n}`).join(', ') : 'nobody writes it — the column is dead or the pattern moved');
+  }
+  /* AND THAT WRITER RE-PRICES THE FILE. Derived from the writers found above, not from a list of
+     doors — a fee changed without a re-sync is a liquidity requirement quoting yesterday's fees. */
+  const writerFiles = [...new Set(Object.values(writers).flat().map((x) => x.f))];
+  ok('J2 the fee columns really are written somewhere', writerFiles.length >= 1);
+  for (const rel of writerFiles) {
+    const src = R.stripComments(fs.readFileSync(path.join(R.REPO, rel), 'utf8'));
+    ok(`J3 ${rel} re-syncs the liquidity condition in the same door that writes a fee`,
+      /syncLiquidityCondition\(/.test(src) || /resyncLiquidityForFile\(/.test(src));
+  }
+  /* THE REGISTER DOORS. Each of these persists a quote a borrower is shown, so each has to leave
+     the condition agreeing with it. Derived the same way: every file that calls
+     `persistProductRegistration` must re-sync. */
+  const registerFiles = files.filter((f) => /persistProductRegistration\s*\(/.test(R.stripComments(fs.readFileSync(f, 'utf8'))))
+    .map((f) => path.relative(R.REPO, f))
+    .filter((rel) => !rel.startsWith('src/lib/product-registration'));
+  ok('J4 the register doors were found', registerFiles.length >= 3, registerFiles.join(', '));
+  for (const rel of registerFiles) {
+    const src = R.stripComments(fs.readFileSync(path.join(R.REPO, rel), 'utf8'));
+    ok(`J5 ${rel} re-syncs the liquidity condition after registering`,
+      /syncLiquidityCondition\(/.test(src) || /resyncLiquidityForFile\(/.test(src));
+  }
+}
+
 /* ── H. THE ROSTER'S OWN GUARDS ─────────────────────────────────────────────────────────────── */
 ok('H1 every surface token is a regular expression, never a bare string',
   Object.values(R.CLOSING_FEES).every((f) => Object.values(f.surfaces).every((v) => v === null || v instanceof RegExp)));
