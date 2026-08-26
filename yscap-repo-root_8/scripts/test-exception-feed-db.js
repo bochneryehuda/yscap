@@ -133,6 +133,17 @@ function get(server, p, token) {
     eq(mine((await feed.listAll({ q: `Scharf${tag}`, limit: 100 })).rows).length, 3, 'C3 and the borrower');
     eq(mine((await feed.listAll({ q: 'Zzz No Such Place', limit: 100 })).rows).length, 0,
       'C4 a genuine miss returns nothing rather than everything');
+    /* "search by loan number, by address, or BY ANYTHING" — the owner's own
+       words. A queue of requests is also looked through by WHO raised it and by
+       what it SAYS, which is how somebody finds one they half-remember. */
+    eq(mine((await feed.listAll({ q: 'guaranty', limit: 100 })).rows).length, 1,
+      'C4b the KIND of request is searchable — "guaranty" finds the guaranty waiver');
+    eq(mine((await feed.listAll({ q: 'asis_mismatch', limit: 100 })).rows).length, 1,
+      'C4c so is a finding\u2019s own code');
+    eq(mine((await feed.listAll({ q: 'As-is disagrees', limit: 100 })).rows).length, 1,
+      'C4d and the words a person would actually remember reading');
+    eq(mine((await feed.listAll({ q: 'Feed Admin', limit: 100 })).rows).length, 3,
+      'C4e and WHO raised it finds everything they raised, across all three stores');
     eq(mine((await feed.listAll({ appId, mine: adminId, limit: 50 })).rows).length, 3,
       'C5 "raised by me" narrows to one person — which is all the retired My-requests tab ever was');
     eq(mine((await feed.listAll({ appId, mine: loId, limit: 50 })).rows).length, 0,

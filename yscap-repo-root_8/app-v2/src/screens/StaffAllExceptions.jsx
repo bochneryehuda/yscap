@@ -103,7 +103,7 @@ export default function StaffAllExceptions() {
     <div>
       <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
         <input className="input" type="search" style={{ minWidth: 260, maxWidth: 360 }}
-          placeholder="Search loan number, address or borrower…"
+          placeholder="Search a loan number, address, borrower, who raised it, or what it says…"
           value={search} onChange={(e) => setSearch(e.target.value)} />
         <select className="input" style={{ maxWidth: 180 }} value={state} onChange={(e) => setState(e.target.value)}>
           <option value="">Any status</option>

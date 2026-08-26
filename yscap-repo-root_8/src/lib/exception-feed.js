@@ -73,6 +73,8 @@ const SOURCES = Object.freeze({
 });
 
 
+const STAFF_NAME = (t) => `NULLIF(btrim(COALESCE(${t}.full_name,'')),'')`;
+
 /* THE FILE IDENTITY EVERY ROW CARRIES, written once. Selected the same way for
    all three stores so a row reads identically wherever it came from. */
 function fileCols(a = 'a', b = 'b') {
@@ -80,17 +82,29 @@ function fileCols(a = 'a', b = 'b') {
           ${a}.status AS file_status, ${a}.loan_amount,
           NULLIF(btrim(COALESCE(${b}.first_name,'') || ' ' || COALESCE(${b}.last_name,'')),'') AS borrower_name`;
 }
-const STAFF_NAME = (t) => `NULLIF(btrim(COALESCE(${t}.full_name,'')),'')`;
 
 /* One WHERE builder for all three, so the search and the status filter cannot
    drift between queues — the drift is exactly what made six tabs six different
    answers to one question. */
-function common({ q, state, appId, mine }, statusCol, requesterCol, params) {
+function common({ q, state, appId, mine }, statusCol, requesterCol, params, extraSearch = []) {
   const conds = [];
   const like = fileSearch.likeParam(q);
   if (like) {
     params.push(like);
-    conds.push(fileSearch.fileSearchSql(params.length, { app: 'a', borrower: 'b' }));
+    const p = `$${params.length}`;
+    /* "search by loan number, by address, or BY ANYTHING" (owner's words). The
+       shared file predicate answers the first two and the borrower; a queue of
+       requests is also searched by WHO raised it, WHO decided it, and what it
+       SAYS — which is how somebody actually looks for one they half-remember.
+       The extra terms are ADDED here rather than pushed into the shared
+       predicate, because the approvals queues search FILES and widening that
+       one would change what every other caller means by a search. */
+    const extra = [
+      `COALESCE(${STAFF_NAME('rq')},'') ILIKE ${p}`,
+      `COALESCE(${STAFF_NAME('dc')},'') ILIKE ${p}`,
+      ...extraSearch.map((c) => `COALESCE(${c},'') ILIKE ${p}`),
+    ];
+    conds.push(`(${fileSearch.fileSearchSql(params.length, { app: 'a', borrower: 'b' })} OR ${extra.join(' OR ')})`);
   }
   if (appId) { params.push(appId); conds.push(`a.id = $${params.length}::uuid`); }
   if (mine) { params.push(mine); conds.push(`${requesterCol} = $${params.length}::uuid`); }
@@ -110,7 +124,8 @@ const row = (o) => ({ ...o, state: stateOf(o.status), source_label: (SOURCES[o.s
 
 async function fromExceptions(f, limit, client) {
   const params = [];
-  const conds = common(f, 'e.status', 'e.requested_by', params);
+  const conds = common(f, 'e.status', 'e.requested_by', params,
+    ['e.exception_type', 'e.reason_code', 'e.reason_note', 'e.decision_note']);
   params.push(limit);
   const r = await client.query(
     `SELECT e.id, e.status, e.exception_type AS type_key, e.exception_seq AS seq,
@@ -142,7 +157,8 @@ async function fromExceptions(f, limit, client) {
 
 async function fromPricing(f, limit, client) {
   const params = [];
-  const conds = common(f, 'e.status', 'e.requested_by', params);
+  const conds = common(f, 'e.status', 'e.requested_by', params,
+    [`e.summary->>'kind'`, 'e.decision_note']);
   params.push(limit);
   const r = await client.query(
     `SELECT e.id, e.status, e.summary, e.decision_note, e.created_at, e.decided_at, e.requested_by,
@@ -173,7 +189,8 @@ async function fromPricing(f, limit, client) {
 
 async function fromFindings(f, limit, client) {
   const params = [];
-  const conds = common(f, 'e.status', 'e.requested_by', params);
+  const conds = common(f, 'e.status', 'e.requested_by', params,
+    ['e.code', 'e.title', 'e.question', 'e.decision_note']);
   params.push(limit);
   const r = await client.query(
     `SELECT e.id, e.status, e.code, e.title, e.severity, e.question, e.decision, e.decision_note,
