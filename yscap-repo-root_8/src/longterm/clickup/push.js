@@ -1165,6 +1165,52 @@ async function createForLoan(loanId) {
   return { ok: true, created: true, taskId, listId, linked, fields: fields.length };
 }
 
+/**
+ * HOW MUCH CLICKUP WORK ONE PASS MAY DO (owner-directed 2026-08-26: "make sure
+ * that, from pilot to clickup, it takes quickly — creating new tasks, updating
+ * fields and stuff like that").
+ *
+ * MEASURED ON THE LIVE SERVICE before any of this was changed:
+ *
+ *   tick interval                300s exactly (POLL_MIN = 5)
+ *   whole tick's work            ~34s median  -> IDLE 89% of every tick
+ *   clickup_push                 8s median for 5 loans (~1.6s/loan), 50s worst
+ *   clickup_create               0.9s median for 2, 5.4s worst
+ *   push queue depth             152 loans
+ *
+ * At five loans a tick that queue needs TWO AND A HALF HOURS to come round, and
+ * a new file waits on a create pass that does two. Neither limit was protecting
+ * anything: the pass finished in eight seconds and then slept for the rest of
+ * the five minutes. The ceiling that DOES matter is further out —
+ *
+ *   writer pace     900ms between calls   -> ~333 calls per 300s tick
+ *   circuit breaker 300 field writes/10min -> 150 per tick
+ *
+ * — so the old caps were spending about a twentieth of the available budget.
+ *
+ * A COUNT IS THE WRONG LIMIT, though, which is why this is a CLOCK. What a loan
+ * costs varies by more than six times (1.6s typical, 10s worst), so any fixed
+ * count is either too slow on a normal day or overruns the tick on a bad one. A
+ * wall-clock budget is honest about the only thing that actually matters — the
+ * pass must finish inside its tick — and it adapts by itself: cheap work goes
+ * fast, expensive work stops early, and the tick is never overrun either way.
+ *
+ * The counts stay as a backstop, raised well past what the clock will normally
+ * reach, so a pathological cheap-but-endless queue still cannot run away.
+ *
+ * 75s + 40s = 115s of ClickUp work inside a 300s tick, worst case about 128
+ * calls against a 333-call pace budget and a 150-write breaker allowance. The
+ * headroom is deliberate: this budget is shared with the RTL sync.
+ */
+// Read at CALL time, like `breakerLimit()` — so an operator changing the budget
+// does not depend on module-load order, and so a test can drive it.
+function msBudget(name, fallback) {
+  const n = parseInt(process.env[name] || String(fallback), 10);
+  return Math.max(1, Number.isFinite(n) ? n : fallback);
+}
+const pushBudgetMs = () => msBudget('LT_CLICKUP_PUSH_BUDGET_MS', 75000);
+const createBudgetMs = () => msBudget('LT_CLICKUP_CREATE_BUDGET_MS', 40000);
+
 // ── The worker passes ────────────────────────────────────────────────────────
 
 /**
@@ -1250,7 +1296,9 @@ async function pushQueue({ limit } = {}) {
 async function pushPass({ limit } = {}) {
   if (!writer.configured()) return { ok: true, skipped: 'not_configured' };
   if (!writeEnabled() && !dryRun()) return { ok: true, skipped: 'off' };
-  const cap = Math.max(1, parseInt(process.env.LT_CLICKUP_PUSH_PER_PASS || String(limit || 5), 10) || 5);
+  // The COUNT is now only a backstop; the CLOCK below is the real limit.
+  const cap = Math.max(1, parseInt(process.env.LT_CLICKUP_PUSH_PER_PASS || String(limit || 60), 10) || 60);
+  const deadline = Date.now() + pushBudgetMs();
   // A LOAN WITH A RECORDED PROBLEM SORTS LAST (pre-merge audit 2026-08-24,
   // defect 3). `NULLS FIRST` alone let a handful of never-pushable heads (a
   // deleted card, a short-term-classified card — pushed_at stays NULL forever)
@@ -1261,6 +1309,10 @@ async function pushPass({ limit } = {}) {
   const { rows } = await pushQueue({ limit: cap });
   const out = { ok: true, considered: rows.length, pushed: 0, problems: [] };
   for (const r of rows) {
+    // OUT OF TIME IS A RESULT, NOT A SILENCE. The pass stops cleanly and SAYS so,
+    // so a queue that is not draining reads as a budget that is too small rather
+    // than as a sync that mysteriously does five loans and stops.
+    if (Date.now() >= deadline) { out.stoppedBy = 'time'; out.budgetMs = pushBudgetMs(); break; }
     try {
       const res = await pushLoan(r.id, { source: 'full_repush' });
       if (res && res.statusError) out.problems.push({ loanId: r.id, statusError: res.statusError });
@@ -1297,6 +1349,7 @@ async function pushPass({ limit } = {}) {
     }
   }
   if (!rows.length) out.note = 'nothing to push';
+  if (!out.stoppedBy) out.stoppedBy = rows.length >= cap ? 'cap' : 'queue drained';
   return out;
 }
 
@@ -1304,7 +1357,11 @@ async function pushPass({ limit } = {}) {
 async function createPass({ limit } = {}) {
   if (!writer.configured()) return { ok: true, skipped: 'not_configured' };
   if (!writeEnabled() && !dryRun()) return { ok: true, skipped: 'off' };
-  const cap = Math.max(1, parseInt(process.env.LT_CLICKUP_CREATE_PER_PASS || String(limit || 2), 10) || 2);
+  // As in pushPass: the COUNT is the backstop, the CLOCK is the real limit. A
+  // create is dearer than a push — it also costs an Encompass read — so it gets
+  // its own, smaller budget rather than sharing one.
+  const cap = Math.max(1, parseInt(process.env.LT_CLICKUP_CREATE_PER_PASS || String(limit || 20), 10) || 20);
+  const deadline = Date.now() + createBudgetMs();
   // NO HEAD-OF-LINE STARVATION (pre-merge audit 2026-08-24, defect 2). The old
   // shape — LIMIT cap, oldest first, nothing stamped on a skip — meant two
   // permanently-unskippable heads (an officer with no folder, a placeholder
@@ -1340,6 +1397,7 @@ async function createPass({ limit } = {}) {
   let attempts = 0;
   for (const r of rows) {
     if (out.created >= cap || attempts >= maxAttempts) break;
+    if (Date.now() >= deadline) { out.stoppedBy = 'time'; out.budgetMs = createBudgetMs(); break; }
     attempts++;
     try {
       const res = await createForLoan(r.id);
@@ -1388,7 +1446,8 @@ module.exports = {
     journalFieldWrite, queueReview, resolvePerson, providerTextSafe, geoFor, geoCandidates,
     loadBag, readExtras, cardProgramLabel, taskFieldValue, taskOptionsMap,
     staffTableEntryByEmail,
-    _resetBreaker: () => { _writeTimes = []; _breakerSeeded = true; },
+      pushBudgetMs, createBudgetMs,
+  _resetBreaker: () => { _writeTimes = []; _breakerSeeded = true; },
     _unseed: () => { _writeTimes = []; _breakerSeeded = false; },
     _windowSize: () => _writeTimes.length,
     _seedWrites: (times) => { _writeTimes = times.slice(); _breakerSeeded = true; },
