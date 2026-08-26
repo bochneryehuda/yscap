@@ -36,11 +36,23 @@ export const CONTACT_TYPE = ['Investor', 'Primary', 'Co-Borrower', 'Guarantor', 
 // back". Labels stay friendly; only the stored VALUE has to be canonical.
 //
 // 'Fix & Hold' and 'DSCR / Rental' are real PILOT programs (pricing.js prices
-// Fix & Hold, the EMCAP tape exports it, the Encompass map compares it) that
-// ClickUp genuinely has no dropdown option for. They stay on the list — the
-// owner asked for exactly this change — and are now PROTECTED from being
-// reverted by the sync (src/lib/inbound-enum-guard.js), with the editor telling
-// the officer the value is kept in PILOT but has no ClickUp twin yet.
+// Fix & Hold, the EMCAP tape exports it, the Encompass map compares it). They
+// stay on the list — the owner asked for exactly this change — and are PROTECTED
+// from being reverted by the sync (src/lib/inbound-enum-guard.js), with the
+// editor telling the officer when a value has no ClickUp twin.
+//
+// UPDATED 2026-08-26 (verified LIVE through the ClickUp connector, captured in
+// scripts/fixtures/clickup-deal-dropdowns.json): ClickUp DOES now carry a
+// 'Fix & Hold With Construction' option — the owner added it — so Fix & Hold
+// round-trips normally and is no longer a no-twin value. 'DSCR / Rental' still
+// is: the dropdown's only DSCR entry is 'Non-QM - DSCR Ratio', a LONG-TERM
+// product, and mapping an RTL rental onto it would file the wrong loan.
+//
+// THIS LIST IS THE ONE PROGRAM PICKER. Apply.jsx, StaffNewFile.jsx and the
+// StaffApplication completeness panel all read it (they each kept a hand-typed
+// copy until 2026-08-26, and all three had gone stale — Fix & Hold was missing
+// from every one of them, so the owner could not record a fix & hold file as one
+// on any screen where a program is actually set).
 export const PROGRAMS = [
   { value: 'Fix & Flip w/ Construction', label: 'Fix & Flip (with construction)' },
   { value: 'Fix & Hold', label: 'Fix & Hold (BRRRR)' },

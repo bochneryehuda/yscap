@@ -160,13 +160,29 @@ ok(!X.unmappableToClickUp('not_a_field', 'whatever'), 'unknown crosswalk key nev
 // Tolerant match: casing/spacing differences still map (they resolve to a label).
 ok(!X.unmappableToClickUp('program', 'bridge'), 'lowercase bridge still maps');
 
-// The OTHER values the same form used to offer — each was silently reverted too.
-ok(X.unmappableToClickUp('property_type', 'SFR'), "'SFR' is not the canonical 'SFR (1 unit)'");
+/* RE-POINTED 2026-08-26, NOT LOOSENED. These three lines used to pin 'SFR' and
+   'Multi 2-4' as UNMAPPABLE, which was true and was also the bug the owner then
+   reported from the other end (YSCAP258134859): those are the spellings the
+   public form and the completeness panel actually WRITE, so "unmappable" meant
+   the ClickUp field was left blank in silence on real files. src/lib/enum-vocab.js
+   now folds a producer's dialect onto the canonical value on the WRITE side, so
+   they map — and asserting the old verdict here would be asserting the defect.
+
+   WHAT IS STILL TRUE, and is what this block is really for: a value with NO
+   ClickUp option at all is still unmappable, is still kept in PILOT, and still
+   parks a review. 'PUD' is the honest example — the live dropdown has no PUD
+   option (captured in scripts/fixtures/clickup-deal-dropdowns.json) and folding
+   it into Townhouse or SFR would file a property type nobody chose. */
+ok(!X.unmappableToClickUp('property_type', 'SFR'), "'SFR' now folds to the canonical 'SFR (1 unit)' and maps");
 ok(!X.unmappableToClickUp('property_type', 'SFR (1 unit)'), 'canonical SFR maps');
-ok(X.unmappableToClickUp('property_type', 'Multi 2-4'), 'hyphen Multi 2-4 is not the en-dash canonical');
+ok(!X.unmappableToClickUp('property_type', 'Multi 2-4'), 'a hyphenated Multi 2-4 folds to the en-dash canonical and maps');
 ok(!X.unmappableToClickUp('property_type', 'Multi 2–4'), 'en-dash Multi 2–4 maps');
+ok(X.unmappableToClickUp('property_type', 'PUD'), "'PUD' has no ClickUp option at all — still unmappable, still kept in PILOT");
+ok(X.unmappableToClickUp('program', 'DSCR / Rental'), "'DSCR / Rental' has no RTL ClickUp option — still unmappable");
 ok(X.unmappableToClickUp('loan_type', 'Refinance'), "bare 'Refinance' has no ClickUp twin");
 ok(!X.unmappableToClickUp('loan_type', 'Refinance — Cash-Out'), 'Refinance — Cash-Out maps');
+// The owner's own file: the public form's spelling now reaches an option.
+ok(!X.unmappableToClickUp('program', 'Fix & Hold (BRRRR)'), "the public form's 'Fix & Hold (BRRRR)' maps to the live Fix & Hold option");
 // `term` carries a defaultLabel, so an odd term still writes something.
 ok(!X.unmappableToClickUp('term', 'something odd'), 'a field with a defaultLabel is never unmappable');
 

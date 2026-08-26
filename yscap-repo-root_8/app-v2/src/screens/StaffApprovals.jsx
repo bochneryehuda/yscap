@@ -6,8 +6,7 @@ import StaffEscalations from './StaffEscalations.jsx';
 import StaffExceptions from './StaffExceptions.jsx';
 import StaffFindingEscalations from './StaffFindingEscalations.jsx';
 import SyncReviews from './SyncReviews.jsx';
-import StaffMyExceptions from './StaffMyExceptions.jsx';
-import StaffTrackRecordWorkspace from './StaffTrackRecordWorkspace.jsx';
+import StaffAllExceptions from './StaffAllExceptions.jsx';
 
 /**
  * Approvals — ONE place for everything waiting on a human decision (owner-directed
@@ -21,26 +20,37 @@ import StaffTrackRecordWorkspace from './StaffTrackRecordWorkspace.jsx';
  * reads ?app=<id> from location.search).
  */
 
+/* ONE LIST FIRST, then the queues that DECIDE (owner-directed 2026-08-26:
+   "There are too many separate sections, and it is very hard to keep track of
+   it … merge everything into one place with filters for exceptions").
+
+   The landing tab reads EVERY store where a request to deviate can land and
+   filters across all of them at once. The queues behind it are kept because
+   that is where each one's decision rules live — requester≠approver with its
+   super-admin exemption, per-queue permissions, counter-offers — and merging a
+   LIST is not merging a DECISION. What is gone is the browsing you had to do to
+   find something: you no longer pick the right tab before you can look.
+
+   TWO TABS WERE REMOVED OUTRIGHT.
+   · "My requests" was this same list narrowed to you, so it is the "Raised by
+     me" tick-box on the one list — the owner named it as one of the too-many
+     sections ("My requests and my exceptions have separate sections too").
+   · "Track record" never belonged here (owner: "I don't know why the admin has
+     a section for track record verification. I don't know where it's coming
+     into play in the approvals section"). Nothing is lost: it has its own
+     full-screen route at /internal/track-record and mounts on the borrower
+     profile and the loan file.
+
+   Sync reviews STAYS its own tab — the owner said so in the same breath
+   ("the sync review, which is good that it's separate"). */
 const TABS = [
-  { key: 'escalations', label: 'Manual / Escalations', blurb: 'Pricing outside the guidelines — manual programs, pricing overrides, counter-offers.', min: 'pricing', Comp: StaffEscalations },
-  { key: 'exceptions', label: 'Exceptions', blurb: 'Every request to deviate from a loan policy — guaranty waivers, early sends, pricing exceptions, overrides.', min: 'pricing', Comp: StaffExceptions },
+  { key: 'all', label: 'All requests', blurb: 'Every request to deviate, from every queue — search by loan number, address or borrower, and filter by status.', min: 'all', Comp: StaffAllExceptions },
+  { key: 'escalations', label: 'Manual / Escalations', blurb: 'Pricing outside the guidelines — decide manual programs, pricing overrides and counter-offers here.', min: 'pricing', Comp: StaffEscalations },
+  { key: 'exceptions', label: 'Exceptions', blurb: 'Decide a policy exception — guaranty waivers, early sends, pricing exceptions, overrides.', min: 'pricing', Comp: StaffExceptions },
   { key: 'findings', label: 'Findings to review', blurb: 'Findings a teammate could not decide and sent up for a second opinion.', min: 'all', Comp: StaffFindingEscalations },
   { key: 'sync', label: 'Sync reviews', blurb: 'PILOT ⇄ ClickUp disagreements waiting for a human to pick a side.', min: 'all', Comp: SyncReviews },
-  /* A deal a BORROWER typed onto their track record is self-reported until
-     somebody reads the closing statement behind it (owner-directed 2026-08-03).
-     It belongs here rather than in a nav link of its own: it is a queue waiting
-     on a human decision, which is what this hub is. Open to every staff role —
-     anyone can ask for a document or reject a check; only somebody with sign-off
-     can CONFIRM one, and the server enforces that, not the tab.
-
-     REPLACED 2026-08-09 by the WORKSPACE, which is the owner's "two stacked
-     track records, combine into ONE": the same queue, grouped the same way, plus
-     the three checks per project with their evidence and the typed document ask.
-     The old screen is retired rather than kept alongside — two of them on one
-     screen is the complaint this rebuild started from. */
-  { key: 'track-record', label: 'Track record', blurb: 'Every past project, its three checks, and the documents behind them — one screen.', min: 'all', Comp: StaffTrackRecordWorkspace },
-  { key: 'mine', label: 'My requests', blurb: 'Exception requests you raised — withdraw or track them here.', min: 'all', Comp: StaffMyExceptions },
 ];
+
 
 // 'pricing' mirrors StaffLayout's escalation/exception nav gate EXACTLY
 // (manage_pricing holders + super_admin); 'all' = every staff role.
@@ -68,7 +78,6 @@ export default function StaffApprovals() {
       }
       api.findingEscalationsCount().then((r) => put('findings', (r && r.pendingCount) || 0)).catch(() => {});
       api.get('/api/staff/sync-reviews/count').then((r) => put('sync', (r && r.open) || 0)).catch(() => {});
-      api.myExceptionsCount().then((r) => put('mine', (r && r.openCount) || 0)).catch(() => {});
       api.staffTrackRecordReviewsCount().then((r) => put('track-record', (r && r.pending) || 0)).catch(() => {});
     };
     poll();
@@ -77,14 +86,35 @@ export default function StaffApprovals() {
     // `can` is memoized on the permission list, so this re-runs once when perms
     // arrive — without it the gate would be frozen at its mount-time value.
   }, [can, role]);
+  const requested = params.get('tab');
+  /* A ?tab=track-record bookmark belongs to the screen that owns it now.
+
+     THIS HOOK SITS ABOVE THE EARLY RETURN BELOW, and that placement is the whole
+     point: React counts hooks per render, so a render that takes the return
+     would call one fewer than the render before it and crash the whole page
+     with "Rendered more hooks than during the previous render". The return is
+     unreachable today, which is exactly why it is worth pinning — the guard
+     (scripts/test-react-hook-order.js) catches it whether or not anybody can
+     reach it. */
+  useEffect(() => {
+    if (requested === 'track-record') window.location.assign('#/internal/track-record');
+  }, [requested]);
   const tabs = TABS.filter((t) => allowed(t.min, role, can));
   if (!tabs.length) {
     // Unreachable in practice — tabs 3–5 are open to every staff role.
     return <div className="page"><div className="notice">Nothing here needs your approval.</div></div>;
   }
-  const requested = params.get('tab');
-  const active = tabs.find((t) => t.key === requested) || tabs[0];
+  /* THE TWO RETIRED TABS KEEP THEIR MEANING RATHER THAN LANDING SOMEWHERE.
+     `?tab=mine` was this same list narrowed to you, so an old bookmark opens the
+     one list with "Raised by me" already ticked — the intent survives even
+     though the tab does not. `?tab=track-record` is sent to the screen that
+     owns it now. Anything else unknown falls back to the landing tab, which is
+     the list, so no link can dead-end. */
+  const active = tabs.find((t) => t.key === (requested === 'mine' ? 'all' : requested)) || tabs[0];
   const Comp = active.Comp;
+  // The SAME count the Approvals nav badge adds in, so the badge and this line
+  // can never disagree about how much is waiting.
+  const trWaiting = counts['track-record'] || 0;
 
   return (
     <>
@@ -120,6 +150,26 @@ export default function StaffApprovals() {
           })}
         </div>
         <div style={{ fontSize: 12, color: 'var(--muted,#4B585C)', marginTop: 8 }}>{active.blurb}</div>
+        {/* A SIGNPOST, NOT A SECTION — and it exists because removing the tab
+            left a real hole. The owner took track-record verification out of
+            here ("I don't know why the admin has a section for track record
+            verification"), and a whole tab is what they were objecting to. But
+            the nav badge on Approvals still COUNTS these, and this screen still
+            promises "everything waiting on a decision" — so with the tab simply
+            gone, the badge would count work you could not reach from the thing
+            the badge is on, and a queue nobody can see is the being-missed
+            failure this whole rebuild is about. One line with the number and a
+            way through keeps both true: nothing is hidden, and there is no
+            second section to keep track of. */}
+        {trWaiting > 0 && (
+          <div style={{ fontSize: 12, color: '#4B585C', marginTop: 6 }}>
+            <strong style={{ color: '#141B22' }}>{trWaiting}</strong>
+            {' '}track-record {trWaiting === 1 ? 'deal is' : 'deals are'} waiting to be verified —{' '}
+            <a href="#/internal/track-record" style={{ color: '#256168', textDecoration: 'underline' }}>
+              open the track record workspace
+            </a>
+          </div>
+        )}
       </div>
       {/* The embedded screen brings its own .page wrapper. */}
       <Comp />

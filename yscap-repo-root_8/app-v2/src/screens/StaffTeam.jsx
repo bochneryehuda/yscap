@@ -124,8 +124,14 @@ function FileGrants({ staffer, flash, onError }) {
 }
 
 export default function StaffTeam() {
-  const { can } = useAuth();
+  const { can, role, actor, startStaffView } = useAuth();
   const isAdmin = can('manage_team');
+  /* SEE THEIR SCREEN is SUPER-ADMIN ONLY — the server refuses anyone else, so
+     drawing it for an ordinary admin would only produce a refusal they cannot
+     act on. `manage_team` (which opens this whole screen) is deliberately NOT
+     the test: it is held by admins too. */
+  const canSeeTheirScreen = role === 'super_admin';
+  const myId = actor && actor.id;
   const [rows, setRows] = useState(null);
   const [meta, setMeta] = useState({ roles: FALLBACK_ROLES, capabilities: [], roleDefaults: {} });
   // `err` is the ADD-FORM's own banner and stays in flow next to that form (it
@@ -361,6 +367,42 @@ export default function StaffTeam() {
                       {ROLES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
                     </select>
                   </label>
+                  {/* SEE THEIR SCREEN (owner-directed 2026-08-26: "on the RTL side of
+                      the team section … I should also have the button to make myself,
+                      like anyone on the team, a login to see what they see when they
+                      are logged in. The same way we have it for long term, the same way
+                      we have for TPOs and for borrowers"). The whole machinery already
+                      existed — the read-only guard, the session register, the banner and
+                      the exit in StaffLayout — and the only button that started one was
+                      on the LONG-TERM People screen, so a super admin could step into a
+                      teammate's console from one product and not the other.
+
+                      Hidden rather than disabled for the two cases that are not a
+                      refusal but a nonsense: your OWN row (you are already looking at
+                      your screen) and a deactivated person (there is no session to
+                      see). Everything else the server decides and reports honestly. */}
+                  {canSeeTheirScreen && s.id !== myId && !!s.is_active && (
+                    <button className="btn link" disabled={mailBusy === `v${s.id}`}
+                      title="Open their console exactly as they see it — read-only, and recorded"
+                      onClick={async () => {
+                        if (mailBusy) return;
+                        setMailBusy(`v${s.id}`);
+                        try {
+                          await startStaffView(s.id);
+                          // The console is a HashRouter app served under /portal/, so a
+                          // bare path falls through to the wildcard and lands on the
+                          // wrong screen. The token just changed, and a hash-only assign
+                          // does not reload, so the reload is explicit.
+                          window.location.assign('/portal/#/internal');
+                          window.location.reload();
+                        } catch (e) {
+                          flashErr(e.message || 'Could not open their screen.');
+                          setMailBusy(null);
+                        }
+                      }}>
+                      See their screen
+                    </button>
+                  )}
                   <button className="btn link" onClick={() => setPermFor(permFor === s.id ? null : s.id)}>
                     {permFor === s.id ? 'Hide permissions' : 'Permissions'}
                   </button>

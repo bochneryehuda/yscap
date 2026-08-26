@@ -147,22 +147,42 @@ function plainReason(raw) {
   return r;  // already plain (our self-heal wording) or an unrecognized reason — show as-is.
 }
 
+// DOES THIS FIELD APPLY TO THIS LOAN? THE SERVER DECIDES — this reads its verdict.
+// It used to be re-derived here, in two places, from `naWhenOursMissing` + a blank
+// our-side; that was a second copy of a server rule, and it could only ever express
+// HALF of it. The server now also answers the deal-shape half (owner-directed
+// 2026-08-26: the purchase price, effective purchase price, seller/contract price and
+// assignment fee do not apply to a refinance — there is no purchase and no contract),
+// which no client-side test could reach: on a refinance Encompass often HOLDS a
+// purchase price, so the row is not "our side is blank", it is "this is the wrong
+// question to ask about this loan".
+//
+// The `||` branch is the compatibility fallback, not a duplicate rule: a freshly
+// built bundle can be served against a server that has not deployed yet, and this
+// keeps the bridge / individual-vested rows reading correctly in that window.
+function notApplicableTo(f) {
+  if (f.notApplicable) return true;
+  if (f.status === 'not_applicable') return true;
+  return !!(f.status === 'incomparable' && f.naWhenOursMissing
+    && (f.oursNorm === null || f.oursNorm === undefined || f.oursNorm === ''));
+}
+
 // The status pill for one field. Owner-directed 2026-07-26: everything must MATCH,
 // so a difference OR a "no data to compare" both read as attention-needed — only a
 // real match is green.
 function statusOf(f) {
   if (f.status === 'match') return { fg: V.good, bg: V.goodBg, text: f.resolution === 'replaced' ? 'Matches (pulled)' : 'Matches' };
   if (f.status === 'reference') return { fg: V.muted, bg: V.paper, text: 'Reference (not checked)' };
+  // NOT APPLICABLE — this field cannot exist on this kind of loan (an exit plan on a
+  // bridge deal; the purchase price on a refinance). There is nothing to go and enter
+  // and the section does NOT wait on it, so it must never look like an
+  // attention-needed "no data" row. Checked before the exception pills: a field that
+  // never applied is not something anybody had to ask permission for.
+  if (notApplicableTo(f)) return { fg: V.muted, bg: V.paper, text: "Doesn't apply to this loan" };
   // A super-admin granted an exception on this field — it passes the gate. A pending
   // request is awaiting the super admin and still blocks.
   if (f.excepted) return { fg: V.teal, bg: '#E3EEF0', text: 'Exception granted' };
   if (f.exceptionRequested) return { fg: V.amber, bg: V.amberBg, text: 'Exception requested' };
-  // NOT APPLICABLE — this field can't exist on this kind of loan (an exit plan on a
-  // bridge / ground-up deal). There is nothing to go and enter, and the section does
-  // NOT wait on it, so it must not look like an attention-needed "no data" row.
-  if (f.status === 'incomparable' && f.naWhenOursMissing && (f.oursNorm === null || f.oursNorm === undefined || f.oursNorm === '')) {
-    return { fg: V.muted, bg: V.paper, text: "Doesn't apply to this loan" };
-  }
   if (f.status === 'incomparable') return { fg: V.amber, bg: V.amberBg, text: 'No data to compare' };
   // mismatch — any difference now needs to be fixed so the two sides match
   if (f.resolution === 'accepted') return { fg: V.crit, bg: V.critBg, text: 'Still differs' };
@@ -542,8 +562,8 @@ function Row({ f, busy, onReplace, withActions, isSuper = false, onRequestExcept
   const s = statusOf(f);
   const canReplace = withActions && f.writable && f.status === 'mismatch' && f.open && f.theirs != null && f.theirs !== '';
   // "Doesn't apply to this loan" fields never block, so they are not escalatable.
-  const naDoesntApply = f.status === 'incomparable' && f.naWhenOursMissing && (f.oursNorm === null || f.oursNorm === undefined || f.oursNorm === '');
-  const isBlocking = !f.excepted && (f.status === 'mismatch' || (f.status === 'incomparable' && !naDoesntApply));
+  const naDoesntApply = notApplicableTo(f);
+  const isBlocking = !f.excepted && !naDoesntApply && (f.status === 'mismatch' || f.status === 'incomparable');
   const rowBusy = busy === f.key;
   const outBtn = (color) => ({ fontSize: 11, fontWeight: 700, color, background: 'transparent', border: `1px solid ${color}66`, borderRadius: 7, padding: '4px 9px', cursor: rowBusy ? 'default' : 'pointer', whiteSpace: 'nowrap' });
   return (
@@ -561,6 +581,13 @@ function Row({ f, busy, onReplace, withActions, isSuper = false, onRequestExcept
             channel carry one; it never rendered anywhere before 2026-08-18. */}
         {f.detail && f.status !== 'match' && (
           <div style={{ color: V.amber, fontSize: 10, maxWidth: 360 }}>{f.detail}</div>
+        )}
+        {/* WHY a grey row is grey. A person looking at a refinance sees four purchase
+            fields sitting there not being checked; saying nothing invites "did the sync
+            miss these?", which is the question this whole panel exists to answer. The
+            sentence is the SERVER's — never re-worded here. */}
+        {naDoesntApply && f.naReason && (
+          <div style={{ color: V.muted, fontSize: 10, maxWidth: 360 }}>{f.naReason}</div>
         )}
       </td>
       <td style={{ padding: '7px 10px', color: V.ink, fontVariantNumeric: 'tabular-nums' }}>{fmtVal(f, 'ours')}</td>

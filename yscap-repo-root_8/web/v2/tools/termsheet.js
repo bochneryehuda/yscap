@@ -32,7 +32,11 @@
   // for every retail / borrower / marketing sheet it stays 0 → the broker-fee line
   // and its cash-to-close / liquidity contribution are INERT and every retail
   // number is byte-identical.
-  var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [], markupTiers: null, brokerFeePct: 0, feasibilityFees: { groundUp: 1250, heavyRehab: 750 } };
+  var CO = { markupStd: 0.5, markupGold: 0.5, markupSilver: 0.5, origStd: 1.25, origGold: 1.25, origSilver: 1.25, lender: 2195, credit: 150, appraisal: 800, title: null, extraFees: [], markupTiers: null, brokerFeePct: 0, feasibilityFees: { groundUp: 1250, heavyRehab: 750 },
+    // Our own fee's two parts, the New York legal ladder and the optional New York settlement
+    // agent fee (owner-directed 2026-08-26). `lender` above stays the TOTAL and is derived
+    // from these — 1,200 + 995 = 2,195, the number it always held.
+    lenderFees: { underwriting: 1200, legal: 995, legalGroundUp: 2000, legalNy: 2000, legalNyHigh: 2500, settlementNy: 750, cemaNy: 1000 } };
 
   var el = function (id) { return document.getElementById(id); };
   var $ = function (s, c) { return (c || document).querySelector(s); };
@@ -716,7 +720,8 @@
        Same order and the same figures as the server (pricing.js closingDueAtClose),
        because both read the SAME engine. A state with none of them adds $0. */
     var gov = govCharges(totalLoan, inp);
-    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + gov.borrowerTotal;      // + company extra fees (NY settlement etc.) + the construction feasibility review + mortgage/transfer/recording tax; appraisal is POC (excluded)
+    var feeParts = lenderFeeParts(), settleFee = settlementFee(), cemaAmt = cemaFee();
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + settleFee + cemaAmt + gov.borrowerTotal;      // + company extra fees (NY settlement etc.) + the construction feasibility review + mortgage/transfer/recording tax; appraisal is POC (excluded)
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sl.downPayment + excessOOP + closing);   // reserve is never brought to the table; OOP rehab is funded over construction, not here
     var reserves = fullPayment * reserveMonths(totalLoan);  // Standard liquidity buffer: months of interest on top of cash to close
@@ -744,6 +749,11 @@
       totalCost: displayCost, downPayment: _sl.downPayment, excessOOP: excessOOP,
       oopRehab: _sl.oopRehab, maxOopRehab: _sl.maxOopRehab, initialCut: _sl.initialCut, maxInitial: _sl.maxInitial,
       origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
+      /* THE TWO PARTS, NAMED — folding an amount into a total is HALF a fee. `lenderFee` stays
+         the total every existing line reads; these are what let a surface ITEMISE it. */
+      uwFee: feeParts.underwriting, legalFee: feeParts.legal, feeSplit: feeParts.split, legalBasis: feeParts.basis,
+      settleFee: settleFee, settleLabel: SETTLEMENT_LABEL,
+      cemaFee: cemaAmt, cemaLabel: CEMA_LABEL,
       closing: closing, extraFees: extraFeeList(), feasFee: feasFeeAmount(), feasKind: feasFee().kind, feasLabel: feasLabel(feasFee().kind), feasManual: feasFee().manual, cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: liquidity,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
       gov: gov, govTotal: gov.borrowerTotal, govLender: gov.lenderTotal,
@@ -795,7 +805,8 @@
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
     var gov = govCharges(totalLoan, inp);                                   // mortgage / transfer / recording tax — see calc()
-    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + gov.borrowerTotal;
+    var feeParts = lenderFeeParts(), settleFee = settlementFee(), cemaAmt = cemaFee();
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + settleFee + cemaAmt + gov.borrowerTotal;
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_g.downPayment + excessOOP + closing);
     var goldReservePct = R.liquidityPct || 0.05;
@@ -820,6 +831,11 @@
       downPayment: _g.downPayment, excessOOP: excessOOP,
       oopRehab: _g.oopRehab, maxOopRehab: _g.maxOopRehab, initialCut: _g.initialCut, maxInitial: _g.maxInitial,
       origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
+      /* THE TWO PARTS, NAMED — folding an amount into a total is HALF a fee. `lenderFee` stays
+         the total every existing line reads; these are what let a surface ITEMISE it. */
+      uwFee: feeParts.underwriting, legalFee: feeParts.legal, feeSplit: feeParts.split, legalBasis: feeParts.basis,
+      settleFee: settleFee, settleLabel: SETTLEMENT_LABEL,
+      cemaFee: cemaAmt, cemaLabel: CEMA_LABEL,
       closing: closing, extraFees: extraFeeList(), feasFee: feasFeeAmount(), feasKind: feasFee().kind, feasLabel: feasLabel(feasFee().kind), feasManual: feasFee().manual, cashToClose: cashToClose, reserves: goldReserve, reserveMo: 0,
       liquidity: cashToClose + goldReserve + _g.oopRehab + closingBuffer, liquidityPct: goldReservePct,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
@@ -878,7 +894,8 @@
     var lenderFee = adminFeeUW(), creditFee = adminFeeCredit(), apprFee = adminFeeAppr();
     var brokerFee = brokerFeeAmt(totalLoan);   // TPO broker origination points (0 off a TPO file → inert)
     var gov = govCharges(totalLoan, inp);                                   // mortgage / transfer / recording tax — see calc()
-    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + gov.borrowerTotal;
+    var feeParts = lenderFeeParts(), settleFee = settlementFee(), cemaAmt = cemaFee();
+    var closing = origFee + brokerFee + lenderFee + creditFee + titleCost + extraFeesTotal() + feasFeeAmount() + settleFee + cemaAmt + gov.borrowerTotal;
     var excessOOP = (s.assignmentExcessOOP != null ? s.assignmentExcessOOP : (R.assignment && R.assignment.excessOOP)) || 0;
     var cashToClose = isRefi() ? refiCashToClose(initialAdvance, closing) : (_sv.downPayment + excessOOP + closing);
     var reserves = (s.fullPayment != null ? Number(s.fullPayment) : totalLoan * rFrac) * reserveMonths(totalLoan);   // same liquidity buffer as Standard
@@ -902,6 +919,11 @@
       downPayment: _sv.downPayment, excessOOP: excessOOP,
       oopRehab: _sv.oopRehab, maxOopRehab: _sv.maxOopRehab, initialCut: _sv.initialCut, maxInitial: _sv.maxInitial,
       origFee: origFee, origPct: origPct, brokerFee: brokerFee, brokerFeePct: brokerFeeFrac() * 100, lenderFee: lenderFee, creditFee: creditFee, apprFee: apprFee, titleCost: titleCost, titleInfo: title,
+      /* THE TWO PARTS, NAMED — folding an amount into a total is HALF a fee. `lenderFee` stays
+         the total every existing line reads; these are what let a surface ITEMISE it. */
+      uwFee: feeParts.underwriting, legalFee: feeParts.legal, feeSplit: feeParts.split, legalBasis: feeParts.basis,
+      settleFee: settleFee, settleLabel: SETTLEMENT_LABEL,
+      cemaFee: cemaAmt, cemaLabel: CEMA_LABEL,
       closing: closing, extraFees: extraFeeList(), feasFee: feasFeeAmount(), feasKind: feasFee().kind, feasLabel: feasLabel(feasFee().kind), feasManual: feasFee().manual, cashToClose: cashToClose, reserves: reserves, reserveMo: reserveMonths(totalLoan), liquidity: cashToClose + reserves + _sv.oopRehab + closingBuffer,
       closingBuffer: closingBuffer, closingBufferWaived: liqBufferWaived(),
       gov: gov, govTotal: gov.borrowerTotal, govLender: gov.lenderTotal,
@@ -1417,7 +1439,10 @@
   // PDF, the Excel and the derivation page can never disagree about which
   // percentage priced `d`.
   function liveOrigPct() { return adminOrigPct(manualBasisOn() ? "manual" : "standard"); }
-  function adminFeeUW() { return adminNum("tsFeeUW", CO.lender); }
+  /* THE TOTAL, DERIVED FROM THE PARTS — which is what makes the owner's "the total stays the same
+     for general loans" true by construction: 1,200 + 995 = 2,195, the number this returned before
+     the split. Every caller below (the three calc functions' `closing` sums) is untouched. */
+  function adminFeeUW() { return lenderFeeParts().total; }
   function adminFeeCredit() { return adminNum("tsFeeCredit", CO.credit); }
   // Company "extra fees" (e.g. the NY settlement-agent fee) that apply to this
   // deal's state (empty state = all files). A real closing cost, so it flows into
@@ -1441,7 +1466,13 @@
      "NC"`), not off the rehab-scope control: the two must agree about what kind of deal this is,
      or a loan priced on the ground-up matrix is charged the heavy-rehab fee. */
   function feasKind() {
-    if (YSP.normStrategy(dealType()) === "NC") return "ground_up";
+    var st = YSP.normStrategy(dealType());
+    if (st === "NC") return "ground_up";
+    /* A BRIDGE HAS NO CONSTRUCTION TO REVIEW (owner-reported 2026-08-26). The rehab-scope control
+       is HIDDEN on a bridge rather than cleared, so a deal moved here from a heavy fix & flip kept
+       `rehabScope === "heavy"` and silently carried the $750 project-review fee. Mirrors the server's
+       `isBridgeDeal`, in the engine's own order — ground-up is decided before bridge is asked. */
+    if (st === "BR") return null;
     if (val("rehabScope") === "heavy") return "heavy_rehab";
     return null;
   }
@@ -1463,6 +1494,101 @@
     return { amount: a, kind: kind, manual: false };
   }
   function feasFeeAmount() { return Number(feasFee().amount) || 0; }
+  /* ─────────────────────────────────────────────────────────────────────────────────────────
+     OUR OWN FEE, IN ITS TWO REAL PARTS, AND THE NEW YORK LEGAL LADDER (owner-directed
+     2026-08-26) — $1,200 underwriting & processing plus a legal fee that is $995 in general,
+     $2,000 on a ground-up, $2,000 in New York and $2,500 in New York City / on a $100,000+
+     construction budget / on a heavy rehab in New York. Plus the OPTIONAL New York settlement
+     agent fee that replaces the mandatory $2,000 one.
+
+     THIS IS A BROWSER MIRROR of `src/lib/lender-fees.js`, and it exists for the reason every
+     mirror in this tool exists: the studio cannot require server code. The two are held together
+     by `scripts/test-lender-fees-pure.js`, which runs BOTH over the same battery and fails the
+     moment they disagree — a studio that prints one fee while the register books another is
+     exactly the drift the "one definition" rule is about.
+
+     THE FIVE BOROUGHS ARE NOT RESTATED HERE, AND THAT IS THE WHOLE POINT. `YSGov` — the same
+     module the server reaches through `src/lib/closing-costs.js` — already answers "is this
+     property in New York City?", because that question decides the NYC mortgage recording tax,
+     the largest single number on a New York City closing. Asking it here means a term sheet can
+     never tax a file as Brooklyn and bill it as upstate.
+     ───────────────────────────────────────────────────────────────────────────────────────── */
+  function isNyFile() { var st = (val("propState") || "").trim().toLowerCase(); return st === "ny" || st === "new york"; }
+  function nycFile() {
+    if (typeof YSGov === "undefined" || !YSGov) return false;
+    try {
+      if (YSGov.NYC_COUNTIES && YSGov.NYC_COUNTIES.has(YSGov.normCounty(val("tsTaxCounty")))) return true;
+      return !!YSGov.isNycCity(govCity());
+    } catch (e) { return false; }   // never claim a borough we cannot prove — the lower rung cannot over-charge
+  }
+  function coLenderFees() {
+    var f = CO.lenderFees || {};
+    var n = function (v, d) { var x = Number(v); return (isFinite(x) && x >= 0) ? x : d; };
+    return { underwriting: n(f.underwriting, 1200), legal: n(f.legal, 995),
+             legalGroundUp: n(f.legalGroundUp, 2000), legalNy: n(f.legalNy, 2000),
+             legalNyHigh: n(f.legalNyHigh, 2500), settlementNy: n(f.settlementNy, 750),
+             cemaNy: n(f.cemaNy, 1000) };
+  }
+  /* The ladder, in the owner's own order. GROUND-UP IS DECIDED FIRST — it carries its own base
+     wherever it is — and it is judged by the SAME classifier the feasibility fee uses (the frozen
+     engine's `normStrategy`), so the two construction fees on one sheet cannot disagree about
+     what kind of deal it is. A non-New-York heavy rehab is deliberately NOT on the ladder: the
+     owner named heavy rehab only inside New York. */
+  function legalRung() {
+    var f = coLenderFees();
+    var ny = isNyFile();
+    if (feasKind() === "ground_up" || YSP.normStrategy(dealType()) === "NC") {
+      return ny ? { amount: f.legalNyHigh, basis: "ground_up_ny" } : { amount: f.legalGroundUp, basis: "ground_up" };
+    }
+    if (ny) {
+      if (nycFile()) return { amount: f.legalNyHigh, basis: "ny_five_boroughs" };
+      if (num("construction") >= 100000) return { amount: f.legalNyHigh, basis: "ny_construction" };
+      if (val("rehabScope") === "heavy") return { amount: f.legalNyHigh, basis: "ny_heavy_rehab" };
+      return { amount: f.legalNy, basis: "ny_base" };
+    }
+    return { amount: f.legal, basis: "general" };
+  }
+  /* The two parts and their total. A TYPED WHOLE-NUMBER TOTAL (`tsFeeUW`, the box this tool has
+     always had) still wins and then NOTHING is split — a quote registered before the split rides
+     that key, and inventing two figures nobody chose for a number somebody typed as one would put
+     a split on a term sheet that was signed without it. */
+  function lenderFeeParts() {
+    var f = coLenderFees();
+    var typedTotal = adminNumRaw("tsFeeUW");
+    if (typedTotal != null) {
+      return { underwriting: typedTotal, legal: 0, total: typedTotal, basis: "typed_total", split: false };
+    }
+    var typedUw = adminNumRaw("tsFeeUwPart");
+    var typedLegal = adminNumRaw("tsFeeLegal");
+    var rung = legalRung();
+    var uw = typedUw != null ? typedUw : f.underwriting;
+    var lg = typedLegal != null ? typedLegal : rung.amount;
+    return { underwriting: uw, legal: lg, total: Math.round((uw + lg) * 100) / 100,
+             basis: typedLegal != null ? "manual" : rung.basis, split: true };
+  }
+  /* THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE — pre-filled at $750, changeable, LABELLED optional
+     on every surface that prints it, and still counted in the cash to close so the figure can
+     never leave a borrower short. A typed 0 declines it. */
+  function settlementFee() {
+    var typed = adminNumRaw("tsFeeSettlement");
+    if (typed != null) return typed;
+    if (!isNyFile()) return 0;
+    var a = coLenderFees().settlementNy;
+    return a > 0 ? a : 0;
+  }
+  var SETTLEMENT_LABEL = "New York settlement agent fee (optional)";
+  /* THE NEW YORK CEMA FEE (owner-directed 2026-08-26) — $1,000, pre-filled, adjustable, and OFF
+     unless somebody ticks it. Offered only on a New York REFINANCE, because a CEMA consolidates an
+     EXISTING mortgage. Mirrors `src/lib/lender-fees.cemaFeeFor`. */
+  var CEMA_LABEL = "New York CEMA fee";
+  function cemaApplies() { return isNyFile() && isRefi(); }
+  function cemaOn() { var e = el("tsCemaOn"); return !!(e && e.checked) && cemaApplies(); }
+  function cemaFee() {
+    if (!cemaOn()) return 0;
+    var typed = adminNumRaw("tsFeeCema");
+    var a = typed != null ? typed : coLenderFees().cemaNy;
+    return a > 0 ? a : 0;
+  }
   // TPO broker origination fee (owner-directed 2026-08-06). Points on the loan the
   // BROKER (firm admin) sets on their OWN files — never a rate markup — seeded onto
   // CO.brokerFeePct from the resolved firm settings (setPricingDefaults). Folded
@@ -1532,11 +1658,34 @@
     // Blank is the contract everywhere: studio (adminOrigPct), payload
     // (buildInputs skips ''), approval detector (hasValue false).
     s("tsFeeUW", String(CO.lender)); s("tsFeeCredit", String(CO.credit)); s("tsFeeAppr", String(CO.appraisal));
+    // Our fee's two parts. The LEGAL placeholder tracks THIS DEAL's rung rather than a fixed
+    // literal (a New York City file pre-fills $2,500, not $995), so the officer reads the
+    // number a blank box will actually price at — the same reasoning as syncManualOrigHint.
+    s("tsFeeUwPart", String(coLenderFees().underwriting));
+    syncFeeHints();
     if (CO.title != null) s("tsFeeTitle", String(CO.title));
     syncManualOrigHint();
   }
   // Show the staffer WHICH number a blank Manual field will actually use — it
   // tracks the Standard field, not a fixed literal.
+  /* Show the officer WHICH legal fee and WHICH settlement fee a blank box will actually use. Both
+     track the DEAL (the New York ladder, the New York-only settlement pre-fill) rather than a fixed
+     literal, so a placeholder of "995" on a Brooklyn file would be a lie about what registering
+     will book. Placeholders only — never a typed value, which is the 2026-08-20 rule that a
+     restated default must never FREEZE onto a file. */
+  function syncFeeHints() {
+    var f = coLenderFees();
+    var lg = el("tsFeeLegal");
+    if (lg) { try { var r = legalRung(); lg.placeholder = String(r.amount); lg.setAttribute("data-ts-seeded", String(r.amount)); } catch (_) { /* cosmetic */ } }
+    var st = el("tsFeeSettlement");
+    if (st) {
+      try {
+        var on = isNyFile() && f.settlementNy > 0;
+        st.placeholder = on ? String(f.settlementNy) : "New York files only";
+        if (on) st.setAttribute("data-ts-seeded", String(f.settlementNy)); else st.removeAttribute("data-ts-seeded");
+      } catch (_) { /* cosmetic */ }
+    }
+  }
   function syncManualOrigHint() {
     var e = el("tsOrigManual"); if (!e) return;
     try { e.placeholder = String(adminNum("tsOrigStd", CO.origStd)); } catch (_) { /* cosmetic only */ }
@@ -1557,6 +1706,9 @@
     if (d.origGoldPct != null) CO.origGold = Number(d.origGoldPct);
     if (d.origSilverPct != null) CO.origSilver = Number(d.origSilverPct);
     if (d.lenderFee != null) CO.lender = Number(d.lenderFee);
+    // Our fee's parts + the New York ladder. PRESERVE-IF-ABSENT, like feasibilityFees below:
+    // a payload that does not carry the key must never silently drop a real fee to nothing.
+    if (d.lenderFees && typeof d.lenderFees === "object") CO.lenderFees = d.lenderFees;
     if (d.creditFee != null) CO.credit = Number(d.creditFee);
     if (d.appraisalFee != null) CO.appraisal = Number(d.appraisalFee);
     CO.title = (d.titleFee != null ? Number(d.titleFee) : null);
@@ -1685,11 +1837,24 @@
   // Draw fee by program (owner-directed 2026-07-22). Gold: physical only, $250.
   // Standard AND Silver (a copy of the Standard housekeeping defaults,
   // owner-confirmed 2026-07-29): hybrid $299 / physical $499. Display only.
+  /* A GROUND-UP IS PHYSICAL ONLY (owner-directed 2026-08-26: "for Ground Up products, don't give
+     the option for hybrid draws … You see that Ground Up cannot order from Sitewire virtual. Same
+     way on the term sheet, it should be wired on Ground Up products only physical"). The DRAW desk
+     already behaves that way, so the gap was this sheet — which went on quoting a $299 hybrid draw
+     the borrower could never actually order. Mirrors `src/lib/term-options.drawFeeLines`. */
   function drawFeeLines(prog) {
-    return (prog === "gold")
-      ? ["$250 per draw — physical inspection only (no virtual inspections)"]
-      : ["$299 per draw — hybrid inspection", "$499 per draw — physical inspection"];
+    if (prog === "gold") return ["$250 per draw — physical inspection only (no virtual inspections)"];
+    if (YSP.normStrategy(dealType()) === "NC") {
+      return ["$499 per draw — physical inspection only (no virtual inspections on ground-up construction)"];
+    }
+    return ["$299 per draw — hybrid inspection", "$499 per draw — physical inspection"];
   }
+  /* THE CLOSING RESCHEDULE FEE (owner-directed 2026-08-26: "any closing reschedule has a $500 fee.
+     In general, this is across the board for all files"). A DISCLOSED TERM, not a cash-to-close
+     line: it is charged on an event that may never happen, so quoting it in cash to close would
+     charge every borrower $500 for a reschedule that has not occurred. Mirrors term-options.js. */
+  var CLOSING_RESCHEDULE_ROW = "$500 per rescheduled closing";
+  var CLOSING_RESCHEDULE_DETAIL = "If the scheduled closing is postponed or rescheduled once it has been set, a $500 closing reschedule fee applies. It is charged only if a closing is actually rescheduled, so it is not part of the estimated cash to close shown above.";
   // Full-precision percent (owner-directed 2026-07-22): the EXACT figure, up to 2
   // decimals with trailing zeros trimmed (87.5 stays 87.5, 70 stays 70, 83.33
   // keeps both places) — never rounded to a whole number. Display only.
@@ -1946,6 +2111,7 @@
     adoptLadderPick();
     syncAdminMarkup();
     syncManualOrigHint();          // a blank Manual field hints the Standard value it will use
+    syncFeeHints();                // and the legal / settlement boxes hint THIS deal's own rung
     updateConditionals();
     var miss = missingFields();
     var ready = miss.length === 0;                                // all required fields present
@@ -2029,6 +2195,25 @@
         YS.put("rBrokerLbl", "Broker origination fee (" + origPctStr(d.brokerFeePct / 100) + ")"); YS.put("rBroker", YS.fmtUSD2(d.brokerFee)); }
         else { w.style.display = "none"; } } })();
     YS.put("rLender", sized ? YS.fmtUSD2(d.lenderFee) : EM);
+    /* THE PARTS, on the panel the officer prices against — kept as ONE line whose value carries
+       both figures rather than two new rows, so the panel's row set (and every screenshot of it)
+       is unchanged on a file that carries a typed whole-number total. */
+    var lfSub = el("rLenderSub");
+    if (lfSub) {
+      lfSub.textContent = (sized && d.feeSplit)
+        ? ("underwriting & processing " + YS.fmtUSD2(d.uwFee) + " + legal " + YS.fmtUSD2(d.legalFee)) : "";
+      lfSub.style.display = (sized && d.feeSplit) ? "" : "none";
+    }
+    var stRow = el("rSettleRow"), stVal = el("rSettle");
+    if (stVal) YS.put("rSettle", (sized && d.settleFee > 0) ? YS.fmtUSD2(d.settleFee) : EM);
+    if (stRow) stRow.style.display = (sized && d.settleFee > 0) ? "" : "none";
+    var cmRow = el("rCemaRow");
+    if (el("rCema")) YS.put("rCema", (sized && d.cemaFee > 0) ? YS.fmtUSD2(d.cemaFee) : EM);
+    if (cmRow) cmRow.style.display = (sized && d.cemaFee > 0) ? "" : "none";
+    /* The CEMA question is only put in front of the one officer it can apply to — a New York
+       refinance — and it is hidden everywhere else rather than sitting unanswered on every file. */
+    var cmAsk = el("tsCemaRow");
+    if (cmAsk) cmAsk.style.display = cemaApplies() ? "" : "none";
     YS.put("rCredit", sized ? YS.fmtUSD2(d.creditFee) : EM);
     YS.put("rAppr", sized ? (YS.fmtUSD2(d.apprFee) + " POC") : EM);
     YS.put("rTitle", (sized && d.titleCost > 0) ? YS.fmtUSD2(d.titleCost) : EM);
@@ -2505,7 +2690,17 @@
       ["Leverage \u2014 LTC / as-is / ARV", stdOk ? (pct(d.ltcPct) + " / " + pct(d.ltvPct) + " / " + pct(d.arvPct)) : EM],
       xlsxTierMaxRow(d, pct), xlsxPricedRow(d, pct),
       ["Origination (" + origPctStr((d.origPct != null ? d.origPct : 0.0125)) + ")", (stdOk && d.totalLoan) ? money2(d.origFee) : EM],
-      ["UW / processing / legal", stdOk ? money2(d.lenderFee) : EM],
+      /* OUR FEE'S TWO PARTS, EACH NAMED — keyed on THIS column's own data variable, so one
+         column can never cover for another (the lesson of the feasibility fee, which was
+         named in the Standard column only and silently absent from Gold and Silver). A file
+         carrying a typed WHOLE-NUMBER total prints the single combined line instead. */
+      (stdOk && d.feeSplit) ? ["Underwriting & processing", money2(d.uwFee)] : null,
+      (stdOk && d.feeSplit) ? ["Legal fee", money2(d.legalFee)] : null,
+      (stdOk && !d.feeSplit) ? ["UW / processing / legal", money2(d.lenderFee)] : null,
+      (!stdOk) ? ["UW / processing / legal", EM] : null,
+      // The optional New York settlement agent fee — named, and named optional.
+      (stdOk && d.settleFee > 0) ? [d.settleLabel, money2(d.settleFee)] : null,
+      (stdOk && d.cemaFee > 0) ? [d.cemaLabel, money2(d.cemaFee)] : null,
       ["Credit report", stdOk ? money2(d.creditFee) : EM],
       ["Appraisal (est., POC)", stdOk ? money2(d.apprFee) : EM],
       ["Title / escrow (est.)", (stdOk && d.titleCost > 0) ? money2(d.titleCost) : EM],
@@ -2540,10 +2735,23 @@
         ["Leverage \u2014 LTC / as-is / ARV", gOk ? (pct(gd.ltcPct) + " / " + pct(gd.ltvPct) + " / " + pct(gd.arvPct)) : EM],
         xlsxTierMaxRow(gd, pct), xlsxPricedRow(gd, pct),
         ["Origination (" + origPctStr((gd.origPct != null ? gd.origPct : 0.0125)) + ")", (gOk && gd.totalLoan) ? money2(gd.origFee) : EM],
-        ["UW / processing / legal", gOk ? money2(gd.lenderFee) : EM],
+        /* OUR FEE'S TWO PARTS, EACH NAMED — keyed on THIS column's own data variable, so one
+           column can never cover for another (the lesson of the feasibility fee, which was
+           named in the Standard column only and silently absent from Gold and Silver). A file
+           carrying a typed WHOLE-NUMBER total prints the single combined line instead. */
+        (gOk && gd.feeSplit) ? ["Underwriting & processing", money2(gd.uwFee)] : null,
+        (gOk && gd.feeSplit) ? ["Legal fee", money2(gd.legalFee)] : null,
+        (gOk && !gd.feeSplit) ? ["UW / processing / legal", money2(gd.lenderFee)] : null,
+        (!gOk) ? ["UW / processing / legal", EM] : null,
+        // The optional New York settlement agent fee — named, and named optional.
+        (gOk && gd.settleFee > 0) ? [gd.settleLabel, money2(gd.settleFee)] : null,
+        (gOk && gd.cemaFee > 0) ? [gd.cemaLabel, money2(gd.cemaFee)] : null,
         ["Credit report", gOk ? money2(gd.creditFee) : EM],
         ["Appraisal (est., POC)", gOk ? money2(gd.apprFee) : EM],
         ["Title / escrow (est.)", (gOk && gd.titleCost > 0) ? money2(gd.titleCost) : EM],
+        // Same named line as the Standard column — a fee inside the total that no column names is
+        // the defect this pair exists to prevent (owner-reported 2026-08-26).
+        (gOk && gd.feasFee > 0) ? [gd.feasLabel, money2(gd.feasFee)] : null,
         ...govXlsxRows(gOk ? gd : null),
         ["Estimated cash to close", gOk ? money2(gd.cashToClose) : EM],
         // 1% closing-cost buffer feeding the liquidity-to-show total (owner-authorized 2026-07-31)
@@ -2584,10 +2792,21 @@
         ["Leverage — LTC / as-is / ARV", sOk ? (pct(sd.ltcPct) + " / " + pct(sd.ltvPct) + " / " + pct(sd.arvPct)) : EM],
         xlsxTierMaxRow(sd, pct), xlsxPricedRow(sd, pct),
         ["Origination (" + origPctStr((sd.origPct != null ? sd.origPct : 0.0125)) + ")", (sOk && sd.totalLoan) ? money2(sd.origFee) : EM],
-        ["UW / processing / legal", sOk ? money2(sd.lenderFee) : EM],
+        /* OUR FEE'S TWO PARTS, EACH NAMED — keyed on THIS column's own data variable, so one
+           column can never cover for another (the lesson of the feasibility fee, which was
+           named in the Standard column only and silently absent from Gold and Silver). A file
+           carrying a typed WHOLE-NUMBER total prints the single combined line instead. */
+        (sOk && sd.feeSplit) ? ["Underwriting & processing", money2(sd.uwFee)] : null,
+        (sOk && sd.feeSplit) ? ["Legal fee", money2(sd.legalFee)] : null,
+        (sOk && !sd.feeSplit) ? ["UW / processing / legal", money2(sd.lenderFee)] : null,
+        (!sOk) ? ["UW / processing / legal", EM] : null,
+        // The optional New York settlement agent fee — named, and named optional.
+        (sOk && sd.settleFee > 0) ? [sd.settleLabel, money2(sd.settleFee)] : null,
+        (sOk && sd.cemaFee > 0) ? [sd.cemaLabel, money2(sd.cemaFee)] : null,
         ["Credit report", sOk ? money2(sd.creditFee) : EM],
         ["Appraisal (est., POC)", sOk ? money2(sd.apprFee) : EM],
         ["Title / escrow (est.)", (sOk && sd.titleCost > 0) ? money2(sd.titleCost) : EM],
+        (sOk && sd.feasFee > 0) ? [sd.feasLabel, money2(sd.feasFee)] : null,
         ...govXlsxRows(sOk ? sd : null),
         ["Estimated cash to close", sOk ? money2(sd.cashToClose) : EM],
         // 1% closing-cost buffer feeding the liquidity-to-show total (owner-authorized 2026-07-31)
@@ -2856,7 +3075,19 @@
         doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186);
         doc.text(LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Issued " + fmtD(today), W - M, 65, { align: "right", charSpace: 0.3 });
       }
+      /* A PAGE CARRIES ITS FOOTER ONCE (found by the fee audit's render, 2026-08-26). Two callers
+         legitimately footer "the page we are leaving" — `brk()` before it adds a page, and
+         `disclosuresPage()` at its end — and on a signable sheet BOTH ran on the disclosures page,
+         because that function footers and does NOT add a page, so the acceptance section that
+         follows footered the same page again on its first break. The result is the disclaimer and
+         the term-sheet identity line drawn twice at identical coordinates: double-struck, smeared
+         text on the page that carries the legal wording. Keyed on the page rather than on the
+         caller, so a third caller added later cannot re-introduce it. */
+      var footered = {};
       function footer() {
+        var _fp = 1; try { _fp = doc.internal.getCurrentPageInfo().pageNumber; } catch (e) { /* first page */ }
+        if (footered[_fp]) return;
+        footered[_fp] = true;
         var _ob = window.YSBRAND;
         if (_ob) {
           doc.setFontSize(7.6); doc.setFont("helvetica", "bold"); doc.setTextColor(60, 66, 72);
@@ -3163,10 +3394,36 @@
       // where a broker fee is set; brokerFee is 0 on every other sheet, so this row
       // never prints on a retail term sheet.
       if (sized && d.brokerFee > 0) yR = rowIn(xR, colW, "Broker origination fee (" + origPctStr(d.brokerFeePct / 100) + ")", money2(d.brokerFee), yR);
-      yR = rowIn(xR, colW, "Underwriting / processing / legal", sized ? money2(d.lenderFee) : "\u2014", yR);
+      /* OUR OWN FEE, IN ITS TWO REAL PARTS (owner-directed 2026-08-26). The borrower reads what
+         each half is for, and on a New York file the legal line is the one that moved — printing
+         a single $3,700 "underwriting / processing / legal" would leave them no way to see why.
+         A file carrying a typed WHOLE-NUMBER total prints the single combined line it always
+         printed (`d.feeSplit === false`), so a sheet re-issued on an old registration is
+         byte-identical to the one already signed. */
+      if (sized && d.feeSplit) {
+        yR = rowIn(xR, colW, "Underwriting & processing", money2(d.uwFee), yR);
+        yR = rowIn(xR, colW, "Legal fee", money2(d.legalFee), yR);
+      } else {
+        yR = rowIn(xR, colW, "Underwriting / processing / legal", sized ? money2(d.lenderFee) : "\u2014", yR);
+      }
+      /* THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE — named, and named OPTIONAL, exactly as the
+         owner asked ("it should say on the term sheet everywhere that it's optional, but it
+         should be included in calculating the cash to close"). Prints only when the deal carries
+         one, so every sheet outside New York is byte-identical to before. */
+      if (sized && d.settleFee > 0) yR = rowIn(xR, colW, d.settleLabel, money2(d.settleFee), yR);
+      /* The New York CEMA fee — named, and only on a file somebody answered YES on. */
+      if (sized && d.cemaFee > 0) yR = rowIn(xR, colW, d.cemaLabel, money2(d.cemaFee), yR);
       yR = rowIn(xR, colW, "Credit report (avg)", sized ? money2(d.creditFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Appraisal (est., POC)", sized ? money2(d.apprFee) : "\u2014", yR);
       yR = rowIn(xR, colW, "Title / escrow / settlement (est.)", sized && d.titleCost > 0 ? money2(d.titleCost) : "\u2014", yR);
+      /* THE CONSTRUCTION FEASIBILITY / PROJECT REVIEW FEE, BY NAME (owner-reported 2026-08-26).
+         It shipped on 2026-08-21 folded into `closing` — so it was CHARGED, the cash-to-close
+         total included it, and no line on this page said so: the named fees above did not sum to
+         the total printed below them, on the one document that goes out for signature. Proven by
+         rendering: of the 283 strings a ground-up term sheet drew, "feasibility", "1,250" and
+         "project review" were all absent. Prints only when the deal carries one, so every sheet
+         that does not is byte-identical to before. */
+      if (sized && d.feasFee > 0) yR = rowIn(xR, colW, d.feasLabel, money2(d.feasFee), yR);
       if (sized && d.extraFees) d.extraFees.forEach(function (f) { yR = rowIn(xR, colW, f.name, money2(f.amount), yR); });
       /* GOVERNMENT CHARGES, each on its own printed line (owner-directed
          2026-08-23). On a $600,000 New York City loan the mortgage tax alone is
@@ -3250,9 +3507,25 @@
       var _def = deferredOrigPct();
       if (_def > 0) rowFull("Deferred origination fee \u2014 paid at payoff (exit fee)", pc(_def / 100) + " of the loan; not part of cash to close");
       if (!isBridge) {   // a bridge / as-is loan has no construction draws
-        rowFull("Construction draw fee", d.gold ? "$250 per draw" : "$299 (hybrid) / $499 (physical)");
-        para(d.gold ? "Gold Standard construction draws require a physical inspection (no virtual inspections) at $250 per draw." : (d.silver ? "Silver Program construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection." : "Standard construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection."), 7);
+        /* THE DRAW FEES COME FROM `drawFeeLines`, NOT FROM A SECOND COPY OF THE RULE. These two
+           lines used to spell the fees out again, so the 2026-08-26 ground-up rule ("only
+           physical") would have been true on the studio panel and the spreadsheet and FALSE on the
+           one document that goes out for signature — the same one-surface-behind class the
+           feasibility fee shipped with. */
+        var _dfProg = progOf(d);
+        var _dfLines = drawFeeLines(_dfProg);
+        rowFull("Construction draw fee", _dfLines.join(" · "));
+        var _dfIsNC = YSP.normStrategy(dealType()) === "NC";
+        para(d.gold
+          ? "Gold Standard construction draws require a physical inspection (no virtual inspections) at $250 per draw."
+          : (_dfIsNC
+            ? "Ground-up construction draws require a physical inspection (no virtual inspections) at $499 per draw."
+            : ((d.silver ? "Silver Program" : "Standard") + " construction draws are $299 per draw with a hybrid inspection, or $499 per draw with a physical inspection.")), 7);
       }
+      /* THE CLOSING RESCHEDULE FEE (owner-directed 2026-08-26) — across the board, on every file,
+         and stated as an event fee rather than folded into cash to close (see the constant). */
+      rowFull("Closing reschedule fee", CLOSING_RESCHEDULE_ROW);
+      para(CLOSING_RESCHEDULE_DETAIL, 7);
 
       band("Terms, conditions & disclosures");
       para("1.  Nature of this document.  This Preliminary Term Sheet is an indicative summary of potential financing terms only. It is NOT a loan commitment, approval, pre-approval, rate lock or guarantee to lend, and it creates no obligation on the part of " + LENDER.name + " or the prospective borrower.", 7.5);
@@ -3928,23 +4201,50 @@
     var _dpProg = progOf(d);
     var _dpClose = estClosingYMD(), _dpFp = firstPaymentYMD(_dpClose), _dpMat = maturityYMD(_dpFp, inp.term || 12);
 
-    // header
-    doc.setFillColor.apply(doc, INK); doc.rect(0, 0, W, 66, "F");
-    doc.setFillColor.apply(doc, GOLD); doc.rect(0, 66, W, 2, "F");
-    doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.5); doc.line(0, 69.2, W, 69.2);   // fine warm hairline beneath the gold rule
-    var lg = logoData(); if (lg) { var h = 27, w = lg.w * (h / lg.h); try { doc.addImage(lg.dataURI, "PNG", M, 20, w, h); } catch (e) {} }
-    doc.setTextColor(244, 240, 231); doc.setFont("times", "bold"); doc.setFontSize(11.5);
-    doc.text(pdfSafe(title), W - M, 33, { align: "right" });
-    doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186);
-    doc.text(LENDER.name + "  \u00b7  NMLS " + LENDER.nmls, W - M, 48, { align: "right", charSpace: 0.3 });
+    /* THE HEADER AND THE FOOTNOTE ARE FUNCTIONS BECAUSE THIS PAGE CAN NOW RUN TO TWO
+       (owner-reported 2026-08-26: *"the term sheet prints nicely and it's not overlapping. One
+       line on the other."*).
+
+       WHAT WAS WRONG. `section()` grew `y` and NOTHING ever checked the bottom of the paper, while
+       the footnote was drawn at a FIXED H-34. So as this page gained content — the government
+       charges block on 2026-08-23 added a row PLUS a rate/basis sub-row per charge — the Key-dates
+       rows were drawn straight through the footnote and then past the edge of the sheet. MEASURED
+       on a New York ground-up carrying five tax lines: rows at y=790, 804, 817 and 840 on a 792pt
+       page — the government-charges TOTAL and the whole Key-dates section simply were not on the
+       printed document, and the two rows above them were struck through the disclaimer. */
+    function pageTop(cont) {
+      doc.setFillColor.apply(doc, INK); doc.rect(0, 0, W, 66, "F");
+      doc.setFillColor.apply(doc, GOLD); doc.rect(0, 66, W, 2, "F");
+      doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.5); doc.line(0, 69.2, W, 69.2);   // fine warm hairline beneath the gold rule
+      var lg = logoData(); if (lg) { var h = 27, w = lg.w * (h / lg.h); try { doc.addImage(lg.dataURI, "PNG", M, 20, w, h); } catch (e) {} }
+      doc.setTextColor(244, 240, 231); doc.setFont("times", "bold"); doc.setFontSize(11.5);
+      doc.text(pdfSafe(title + (cont ? " (continued)" : "")), W - M, 33, { align: "right" });
+      doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186);
+      doc.text(LENDER.name + "  \u00b7  NMLS " + LENDER.nmls, W - M, 48, { align: "right", charSpace: 0.3 });
+    }
+    function footNote() {
+      doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.8); doc.line(M, H - 46, W - M, H - 46);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(150, 158, 162);
+      doc.text(pdfSafe((minInterestOn(_dpProg) ? MIN_INTEREST_DETAIL + " " : "") + "Figures are indicative, derived from the inputs above, and subject to full underwriting, appraisal/valuation, title and final credit approval. " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + "."), M, H - 34, { maxWidth: W - 2 * M });
+    }
+    pageTop(false);
 
     var y = 92;
+    /* The content floor is H-56, the same convention the term sheet's own `brk()` uses: it clears
+       the footnote rule at H-46 and the two lines of small print beneath it. */
+    function ensure(need) {
+      if (y + need <= H - 56) return;
+      footNote(); doc.addPage(); pageTop(true); y = 92;
+    }
     if (intro) {
       doc.setFont("helvetica", "italic"); doc.setFontSize(8.6); doc.setTextColor.apply(doc, GRAY);
       var il = doc.splitTextToSize(pdfSafe(intro), W - 2 * M);
       for (var i = 0; i < il.length; i++) { doc.text(il[i], M, y); y += 12; } y += 8;
     }
     function section(label, rows) {
+      /* A HEADING NEVER PRINTS ALONE at the foot of a page — it reserves room for itself and the
+         first row under it, so a section can never be split from its own first line. */
+      ensure(16 + 15);
       doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor.apply(doc, TEAL);
       doc.text(pdfSafe(label.toUpperCase()), M, y, { charSpace: 0.8 });
       doc.setDrawColor.apply(doc, GOLD); doc.setLineWidth(1.3); doc.line(M, y + 4, M + 30, y + 4);
@@ -3956,6 +4256,9 @@
         // total row's ivory band grows with it instead of half-covering it.
         var vf = fitSlotLines(doc, pdfSafe(rows[r][1]), (W - 2 * M) * 0.56, "helvetica", "bold", isSub ? 8 : 8.9, 7.5, 2);
         var vExtra = (vf.lines.length - 1) * 11;
+        /* Break BEFORE drawing, on the row's MEASURED height — a wrapped value makes a row taller,
+           and a row measured after it is drawn is a row already on top of the footnote. */
+        ensure((isSub ? 12.5 : 14.5) + vExtra + (isTot ? 4 : 0));
         if (isTot) { doc.setFillColor(248, 245, 238); doc.rect(M, y - 10.5, W - 2 * M, 15 + vExtra, "F"); doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.7); doc.line(M, y - 9, W - M, y - 9); }
         doc.setFont("helvetica", isTot ? "bold" : "normal"); doc.setFontSize(isSub ? 8 : 8.9); doc.setTextColor.apply(doc, isSub ? GRAY : (isTot ? DARK : BODY));
         doc.text(pdfSafe(rows[r][0]), M + (isSub ? 12 : 0), y);
@@ -4081,10 +4384,7 @@
       ["Maturity date", _dpMat ? fmtDateLong(_dpMat) : "\u2014"]
     ]);
 
-    // footer
-    doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.8); doc.line(M, H - 46, W - M, H - 46);
-    doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(150, 158, 162);
-    doc.text(pdfSafe((minInterestOn(_dpProg) ? MIN_INTEREST_DETAIL + " " : "") + "Figures are indicative, derived from the inputs above, and subject to full underwriting, appraisal/valuation, title and final credit approval. " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + "."), M, H - 34, { maxWidth: W - 2 * M });
+    footNote();
   }
 
   /* ===================== wiring ===================== */

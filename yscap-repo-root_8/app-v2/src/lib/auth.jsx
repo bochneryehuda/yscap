@@ -186,6 +186,50 @@ export function AuthProvider({ children }) {
     return false;
   }, []);
 
+  /* STAFF VIEW — the third sibling, and the one the OWNER asked for on the RTL
+     team screen (2026-08-26): *"on the RTL side of the team section … I should
+     also have the button to make myself, like anyone on the team, a login to see
+     what they see when they are logged in. The same way we have it for long
+     term, the same way we have for TPOs and for borrowers."*
+
+     THE SERVER ALREADY HELD EVERY RULE — super-admin only, read-only wholesale,
+     an active internal target, never yourself, no nesting, recorded in the
+     session register — and the console-wide banner and exit were already in
+     StaffLayout. What was missing was the DOOR: the only button that started one
+     lived on the LONG-TERM People screen, so a super admin could step into a
+     teammate's console from one product and not the other.
+
+     This is the RTL half of the handoff, written exactly like its two siblings so
+     the three cannot drift. The LONG-TERM screen keeps its own inline copy on
+     purpose: LT front-end code may not import an RTL module (the product
+     separation rule), and the client half is only "park my token, take theirs" —
+     every decision that matters is the server's. */
+  const startStaffView = useCallback(async (staffId) => {
+    const r = await api.staffViewStart(staffId);
+    stashStaffToken(getToken());          // park my own console session
+    setToken(r.token); setTok(r.token);
+    return r;
+  }, []);
+
+  /* Step back OUT of a teammate's console. Same handoff as the other two: the
+     server mints a fresh token for the REAL viewer (authoritative — it works even
+     if the parked copy expired while we were inside), with the parked copy as the
+     offline fallback so a network blip can never strand somebody inside another
+     person's console. Neither path producing a session means sign in again; we
+     never leave the target's session in place. */
+  const exitStaffView = useCallback(async () => {
+    let own = '';
+    try {
+      const r = await api.staffViewExit();
+      own = r?.token || '';
+    } catch { /* fall through to the parked token */ }
+    if (!own) own = readStaffToken();
+    stashStaffToken('');
+    if (own) { setToken(own); setTok(own); return true; }
+    clearToken(); setTok('');
+    return false;
+  }, []);
+
   return (
     <Ctx.Provider value={{
       token,
@@ -210,6 +254,12 @@ export function AuthProvider({ children }) {
       // TPO view: a staffer standing inside a BROKER's portal.
       isTpoView: isTpo && !!impersonation,
       startTpoView, exitTpoView,
+      // Staff view: a super admin standing inside ANOTHER STAFFER's console. The
+      // envelope is a different one (impStaff* rather than imp*) so no reader can
+      // mistake one surface for another, which is why this is not derived from
+      // `impersonation` here — StaffLayout probes /api/staff-view/session, the
+      // server's own answer, and renders the banner from that.
+      startStaffView, exitStaffView,
       // Borrower helper (assistant): truthy when this is a helper login, plus who
       // they are helping (for the banner). Drives the PII banner + sign disabling.
       isAssistant,

@@ -711,7 +711,36 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
   const origPctStr = quote.origPct != null
     ? `${Math.round(Number(quote.origPct) * 10000) / 100}%` : null;
   feeRow(`Origination fee${origPctStr ? ` (${origPctStr} of the loan)` : ''}`, cc.origination);
-  feeRow('Underwriting / processing / legal', cc.lenderFee);
+  /* THE TPO BROKER'S OWN ORIGINATION FEE — and this row was MISSING, found by the fee audit engine
+     (owner-directed 2026-08-26). It is a real borrower closing cost the broker sets on their own
+     firm's files and it has been inside `dueAtClosing` since 2026-08-06, named on the term sheet,
+     all three spreadsheet columns, the studio panel, the staff panel and the derivation page — and
+     not here. It is 0 on every retail file, so this row appears only where it is charged. */
+  feeRow(`Broker origination fee${cc.brokerFeePct != null ? ` (${cc.brokerFeePct}% of the loan)` : ''}`, cc.brokerFee);
+  /* OUR OWN FEE, IN ITS TWO REAL PARTS (owner-directed 2026-08-26) — the same two lines the term
+     sheet prints, so the borrower's email and the document they sign name the same fees. A file
+     carrying a typed WHOLE-NUMBER total prints the single combined line it always printed, and a
+     quote from before the split (which carries no parts) falls back to it too. */
+  const lp = cc.lenderFeeParts;
+  if (lp && lp.split) {
+    feeRow(lp.underwritingLabel || 'Underwriting & processing', lp.underwriting);
+    feeRow(lp.legalLabel || 'Legal fee', lp.legal);
+  } else {
+    feeRow('Underwriting / processing / legal', cc.lenderFee);
+  }
+  /* THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE — named, and named optional, exactly as on the
+     term sheet. It is inside `dueAtClosing`, so without this row the table would not add up. */
+  if (cc.settlement && num(cc.settlement.amount) > 0) feeRow(cc.settlement.label, cc.settlement.amount);
+  /* The New York CEMA fee — inside `dueAtClosing`, so without this row the table would not add up. */
+  if (cc.cema && num(cc.cema.amount) > 0) feeRow(cc.cema.label, cc.cema.amount);
+  /* THE CONSTRUCTION FEASIBILITY / PROJECT REVIEW FEE, BY NAME — and this row was MISSING, caught
+     by `test-closing-costs-pure`'s "the fee table has to add up" assertion while the split was
+     being wired (2026-08-26). The fee shipped on 2026-08-21 folded into `dueAtClosing`; the
+     2026-08-26 pass named it on the term sheet PDF and all three spreadsheet columns and did not
+     reach THIS table, so on a ground-up file the borrower's own "your terms are ready" email
+     listed fees $1,250 short of the total stated directly beneath them. Same class, one surface
+     further out: folding an amount into a total is HALF a fee. */
+  if (cc.feasibility && num(cc.feasibility.amount) > 0) feeRow(cc.feasibility.label, cc.feasibility.amount);
   feeRow('Credit report', cc.creditFee);
   feeRow('Title & settlement (estimated)', cc.titleAndSettlement);
   for (const f of (Array.isArray(cc.extraFees) ? cc.extraFees : [])) {

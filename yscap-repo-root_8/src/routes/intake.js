@@ -168,7 +168,26 @@ async function siteIntake(p, opts = {}) {
     // Same shared invariant as every other create path (#96): the ticked flag is
     // truth, underlying/fee hard-null off a non-assignment, purchase = underlying
     // + fee. The public form uses looser key names, so normalize them first.
-    const loanTypeIn = F.sanitizeLoanType(p.loanType || p.purpose);
+    /* THE PUBLIC FORM SPEAKS ITS OWN DIALECT, AND THIS IS WHERE IT CROSSES INTO
+       OURS (owner-reported 2026-08-26, YSCAP258134859: a fix & hold whose ClickUp
+       *Program field was blank). The form's `<option value>` attributes were
+       written for DISPLAY and were never made the values the system stores, so
+       this door filed 'Fix & Hold (BRRRR)' / 'Cash-Out Refi' / '2–4 Unit' /
+       'Heavy' — spellings the ClickUp crosswalk has no key for, so the push
+       dropped each field in silence. Measured against the live dropdowns it is
+       four fields, not one: 3 of 4 program options, BOTH refinances, 5 of 7
+       property types and 2 of 5 rehab types.
+
+       Canonicalized HERE rather than in the form because those exact strings are
+       compared a dozen times inside the page's own script and three of those
+       comparisons feed the FROZEN pricing engine — a missed one would silently
+       change what the marketing site quotes. This is also where the repo's
+       standing rule puts it: a value must fit its column, and the column decides.
+       An unrecognised spelling passes through UNCHANGED (never blanked, never
+       nudged into a neighbouring option), so a value we do not know still reaches
+       the file exactly as typed and is reported by the enum guard. */
+    const VOCAB = require('../lib/enum-vocab');
+    const loanTypeIn = VOCAB.canonicalEnum('loan_type', F.sanitizeLoanType(p.loanType || p.purpose));
     const asg = F.assignmentFields({
       // The loan PURPOSE governs both invariants the helper enforces: an
       // assignment is a purchase concept, and a refinance carries no purchase
@@ -226,12 +245,12 @@ async function siteIntake(p, opts = {}) {
           source,raw_intake,status,submitted_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
                $28,$29,$30,$31,$32,$33,$26,$27,'new',now()) RETURNING id`,
-      [borrowerId, officerId, officerName, p.program || p.dealType || null, loanTypeIn,   // #95: public form can't persist a program as a loan type
+      [borrowerId, officerId, officerName, VOCAB.canonicalEnum('program', p.program || p.dealType || null), loanTypeIn,   // #95: public form can't persist a program as a loan type
        /* jsonbText, not JSON.stringify — a NUL byte anywhere in a PUBLIC form post is
           refused by Postgres and would strand the lead with a 500, the same failure
           mode as an unstorable number above (audit 2026-08-02). */
        F.jsonbText(p.propertyAddress || { line1: p.pStreet, city: p.pCity, state: p.pState, zip: p.pZip }),
-       p.propertyType || p.propType || null, int(p.units || p.units24 || p.unitsN),
+       VOCAB.canonicalEnum('property_type', p.propertyType || p.propType || null), int(p.units || p.units24 || p.unitsN),
        asg.purchasePrice, num(p.asIsValue || p.asIs), num(p.arv),
        // `ltv` is numeric(6,3) — a PERCENT, not money — so `num()`'s
        // numeric(14,2) calibration is three orders of magnitude too loose for it
@@ -241,7 +260,7 @@ async function siteIntake(p, opts = {}) {
        // value on this door.
        num(p.rehabBudget || p.rehab), num(p.loanAmount), pct(p.ltv),
        asg.isAssignment, asg.underlying, asg.assignFee,
-       p.rehabType || null, int(p.sqftPre || p.sqftCurrent), int(p.sqftPost),
+       VOCAB.canonicalEnum('rehab_type', p.rehabType || null), int(p.sqftPre || p.sqftCurrent), int(p.sqftPost),
        irMonths, irAmount,
        int(p.expFlips) || 0, int(p.expHolds != null ? p.expHolds : p.expBrrrr) || 0, int(p.expGround) || 0,
        source, F.jsonbText(redactPII(p)),

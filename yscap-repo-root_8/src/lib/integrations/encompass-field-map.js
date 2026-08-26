@@ -165,10 +165,17 @@ const REGISTRY = Object.freeze([
   pull({ key: 'oop_rehab', encompassFieldId: 'CX.OUTOFPOCKETREHAB', type: 'money', category: 'rehab', compare: 'money', zeroMeansNone: true, our: 'derive(rehab_budget − quote:rehabHoldback)', note: 'Out-of-pocket rehab (borrower-funded; 0 unless the OOP-rehab exception was approved)' }),
 
   // ── Purchase / assignment / cost (money) ──────────────────────────────────
-  pull({ key: 'purchase_price', encompassFieldId: '136', loanPath: 'purchasePriceAmount', type: 'money', category: 'loan', compare: 'money', our: 'column:purchase_price', note: 'Real final purchase price (build-spec §5). NOTE: the discovery doc read 136/purchasePriceAmount as the EFFECTIVE price on assignment deals — confirm which the tenant populates before relying on this on an assignment file' }),
-  pull({ key: 'effective_purchase', encompassFieldId: 'CX.EFFECTIVEPURCHASE', type: 'money', category: 'cost', compare: 'money', wholeDollar: true, our: 'quote:assignment.recognizedPrice (seller price + financeable fee)', note: 'Effective purchase (LTC basis) — compute-only' }),
-  pull({ key: 'contract_price', encompassFieldId: 'CX.ORIGINALCONTRACTPURCHASEP', type: 'money', category: 'cost', compare: 'money', our: 'column:underlying_contract_price (falls back to purchase_price when no assignment)', note: 'Seller / underlying contract price (assignment basis)' }),
-  pull({ key: 'assignment_fee', encompassFieldId: 'CX.ASSIGNMENTFEE', type: 'money', category: 'cost', compare: 'money', zeroMeansNone: true, our: 'column:assignment_fee', note: 'Assignment fee (financeable per frozen engine: lesser of 15% of contract / $75k)' }),
+  // THE FOUR PURCHASE-SIDE FIELDS DO NOT APPLY TO A REFINANCE (owner-directed
+  // 2026-08-26) — there is no purchase, no seller and no contract to assign, so
+  // `naOnDealShape: 'refinance'` makes each read "Doesn't apply" on a refinance
+  // instead of holding the term sheet and the tape export on a disagreement nobody
+  // can resolve. See notApplicableReason() near compareField for the full reasoning
+  // and for why `naWhenOursMissing` is the wrong tool here. A PURCHASE is untouched:
+  // all four still have to match, exactly as they always have.
+  pull({ key: 'purchase_price', encompassFieldId: '136', loanPath: 'purchasePriceAmount', type: 'money', category: 'loan', compare: 'money', naOnDealShape: 'refinance', our: 'column:purchase_price', note: 'Real final purchase price (build-spec §5). NOTE: the discovery doc read 136/purchasePriceAmount as the EFFECTIVE price on assignment deals — confirm which the tenant populates before relying on this on an assignment file' }),
+  pull({ key: 'effective_purchase', encompassFieldId: 'CX.EFFECTIVEPURCHASE', type: 'money', category: 'cost', compare: 'money', wholeDollar: true, naOnDealShape: 'refinance', our: 'quote:assignment.recognizedPrice (seller price + financeable fee)', note: 'Effective purchase (LTC basis) — compute-only' }),
+  pull({ key: 'contract_price', encompassFieldId: 'CX.ORIGINALCONTRACTPURCHASEP', type: 'money', category: 'cost', compare: 'money', naOnDealShape: 'refinance', our: 'column:underlying_contract_price (falls back to purchase_price when no assignment)', note: 'Seller / underlying contract price (assignment basis)' }),
+  pull({ key: 'assignment_fee', encompassFieldId: 'CX.ASSIGNMENTFEE', type: 'money', category: 'cost', compare: 'money', zeroMeansNone: true, naOnDealShape: 'refinance', our: 'column:assignment_fee', note: 'Assignment fee (financeable per frozen engine: lesser of 15% of contract / $75k)' }),
   pull({ key: 'financed_interest_reserve', encompassFieldId: 'CX.FINANCEDINTERESTRESERVE', type: 'money', category: 'cost', compare: 'money', zeroMeansNone: true, wholeDollar: true, our: 'quote:financedReserve$ (from requested_ir_months / requested_ir_amount)', note: 'Financed interest reserve $ — compute-only; can be 0' }),
   pull({ key: 'total_cost', encompassFieldId: 'CX.TOTALCOST', type: 'money', category: 'cost', compare: 'money', wholeDollar: true, our: 'derive(min(effective purchase, as-is) + rehab + financed reserve + program extras)', note: 'Total cost (LTC basis) — no column, derive' }),
 
@@ -835,6 +842,54 @@ const EPS = 1e-9;
  * absent on either side (or an unmapped enum) is 'incomparable' (skipped, never
  * a spurious finding). This is a read/compare helper ONLY — it writes nothing.
  */
+/* ── A FIELD THAT DOES NOT APPLY TO THIS KIND OF LOAN ──────────────────────────
+   `naWhenOursMissing` answers "we could not derive our side, so there is nothing
+   for anybody to enter" — a fact about ONE FILE's data. This answers a different
+   question: "this field is meaningless on this SHAPE of deal", which is a fact
+   about the DEAL, decided the same way whatever either system happens to hold.
+
+   Owner-directed 2026-08-26: *"Encompass sync for rtl for refinance transactions,
+   any cash-out or rate and term, certain fields don't need to match, for example
+   Purchase price - Effective purchase price - Seller / contract price - Assignment
+   fee, because there is no purchase and there is no contract, it's a refinance, so
+   we need to fix this logic."*
+
+   WHY IT CANNOT BE `naWhenOursMissing`, which looks like it would do the job:
+     · That flag is STATIC. Setting it on the purchase price would ALSO stop the
+       check on a PURCHASE whose price we simply have not entered — a real gap the
+       section exists to hold. This rule is per-FILE, so a purchase still matches.
+     · It only fires when OUR side is blank. On a refinance the assignment fee is a
+       real, deliberate ZERO (`is_assignment` is forced false on a refinance by
+       db/630), so it is never blank — a stale non-zero fee in Encompass would go on
+       reading as an honest MISMATCH and hold the term sheet on a deal that has no
+       assignment at all.
+     · And it says nothing when THEIR side carries a value. Encompass routinely holds
+       a purchase price on a refinance (the property was bought at some point). Our
+       blank against their number reads "Our file has no value for this yet — enter
+       it on the file", which is advice nobody can act on: db/399 CLEARED the purchase
+       price off every refinance on purpose, and the details door refuses to store one.
+
+   So the flag names the deal SHAPE the field does not apply to, and the caller
+   supplies the facts. Adding another shape is one entry in NA_REASON plus the flag
+   on the fields it reaches — never a second copy of a rule, and never per-field
+   prose. PURE: the CALLER decides whether the loan is a refinance (reconcile.js asks
+   `deal-basis.sizesOnAsIsValue`, the ONE definition the frozen engine itself sizes
+   on), so this module keeps its no-requires purity and the two can never disagree
+   about what a refinance is. */
+const NA_REASON = Object.freeze({
+  refinance: 'This is a refinance — there is no purchase and no contract, so this field does not apply.',
+});
+
+/* Does `entry` apply to a loan with these facts? Returns the plain-language REASON
+   it does not, or null when it does. An unknown/absent fact reads as "it applies":
+   never silence a compared field on a shape we could not establish. */
+function notApplicableReason(entryOrKey, facts) {
+  const e = typeof entryOrKey === 'string' ? BY_KEY[entryOrKey] : entryOrKey;
+  if (!e || !e.naOnDealShape) return null;
+  const f = facts || {};
+  return f[e.naOnDealShape] === true ? (NA_REASON[e.naOnDealShape] || null) : null;
+}
+
 function compareField(entryOrKey, ourValue, encValue) {
   const e = typeof entryOrKey === 'string' ? BY_KEY[entryOrKey] : entryOrKey;
   if (!e) throw new Error(`compareField: unknown field ${entryOrKey}`);
@@ -848,6 +903,9 @@ function compareField(entryOrKey, ourValue, encValue) {
     // Surfaced so summarize() can treat an underivable OUR side as "not
     // applicable" rather than "missing data" (see the exit_plan entry).
     naWhenOursMissing: !!e.naWhenOursMissing,
+    // The deal SHAPE this field does not apply to ('refinance'), if any. reconcile.js
+    // turns it into a `not_applicable` row once it knows the file's own shape.
+    naOnDealShape: e.naOnDealShape || null,
     ours: ourValue == null ? null : ourValue,
     theirs: encValue == null ? null : encValue,
     oursNorm: null,
@@ -951,6 +1009,8 @@ module.exports = {
   fieldReaderToMap,
   mapValue,
   compareField,
+  notApplicableReason,
+  NA_REASON,
   // The Encompass date normalizer — tolerant of the fieldReader's MM/DD/YYYY
   // display format AND ISO. closing.readEncompassFundedDate uses it so a funded
   // date read out of Encompass reduces to a 'YYYY-MM-DD' the reconciliation gate

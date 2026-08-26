@@ -64,6 +64,7 @@
   .exp-total-val{ font-family:var(--font-d); font-weight:600; font-size:1.05rem; color:var(--teal-br); }
   .ts-sub{ font-family:var(--font-b); font-size:.7rem; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); margin:1.25rem 0 .55rem; padding-top:1rem; border-top:1px solid var(--line-2); }
   .ts-sub.first{ border-top:0; padding-top:.2rem; margin-top:.4rem; }
+  .ts-linesub{ font-size:.78rem; color:#4B585C; margin:-.35rem 0 .45rem; padding-left:.1rem; }
   .ts-line{ display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:.15rem 1rem; padding:.42rem 0; border-bottom:1px solid var(--line-2); font-size:.9rem; min-width:0; }
   .ts-line:last-child{ border-bottom:0; }
   /* A ROW IS NEVER SIZED BY ITS VALUE (owner-reported 2026-07-30: the ADDITIONAL
@@ -785,7 +786,30 @@
                 <summary><span class="ts-adm-chev" aria-hidden="true"></span><span class="ts-adm-title">Closing-cost overrides <span class="ts-admin-note">— all programs</span></span><span class="ts-adm-chip" hidden>In use</span></summary>
                 <div class="ts-adm-body">
                 <div class="ts-admin-grid2">
-                    <div class="field"><label for="tsFeeUW">UW / processing / legal ($)</label><div class="input"><input id="tsFeeUW" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="2195"></div></div>
+                    <!-- OUR OWN FEE, IN ITS TWO REAL PARTS (owner-directed 2026-08-26: "I want to
+                         split it up for: general products: $1,200 underwriting, processing; $995
+                         legal fee for general files"). Blank = the company number / this deal's
+                         own rung; a typed amount overrides that ONE part on THIS file; a typed 0
+                         waives it. The LEGAL placeholder tracks the New York ladder live, so a
+                         Brooklyn file hints $2,500 rather than $995.
+                         `tsFeeUW` KEEPS ITS OLD MEANING — the whole fee as ONE number — because a
+                         quote registered before the split rides that key: repurposing it would
+                         have restored an old file's frozen $2,195 into the underwriting box and
+                         silently re-priced it at $3,190. Typing it here overrides the split. -->
+                    <div class="field"><label for="tsFeeUwPart">Underwriting &amp; processing ($)</label><div class="input"><input id="tsFeeUwPart" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="1200"></div></div>
+                    <div class="field"><label for="tsFeeLegal">Legal fee ($)</label><div class="input"><input id="tsFeeLegal" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="by deal — 995 general / 2000 ground-up or NY / 2500 NYC"></div></div>
+                    <div class="field"><label for="tsFeeSettlement">NY settlement agent — optional ($)</label><div class="input"><input id="tsFeeSettlement" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="New York files only"></div></div>
+                    <!-- THE NEW YORK CEMA (owner-directed 2026-08-26: "at the final registration
+                         before clicking Register Product, you should ask a question if it's a New
+                         York CEMA … It should be turned off by default … pre-filled as $1,000").
+                         The whole row is HIDDEN unless the file is a New York refinance, so the
+                         question is only ever put in front of the officer it can apply to. -->
+                    <div class="field" id="tsCemaRow" style="display:none">
+                      <label for="tsFeeCema">New York CEMA ($)</label>
+                      <label style="display:flex;gap:.45rem;align-items:center;font-weight:600;margin:0 0 .35rem"><input id="tsCemaOn" data-noshare type="checkbox"> <span>This refinance is a New York CEMA</span></label>
+                      <div class="input"><input id="tsFeeCema" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="1000"></div>
+                    </div>
+                    <div class="field"><label for="tsFeeUW">Combined UW / processing / legal ($)</label><div class="input"><input id="tsFeeUW" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="2195"></div></div>
                     <div class="field"><label for="tsFeeCredit">Credit report ($)</label><div class="input"><input id="tsFeeCredit" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="150"></div></div>
                     <div class="field"><label for="tsFeeAppr">Appraisal — POC ($)</label><div class="input"><input id="tsFeeAppr" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="800"></div></div>
                     <div class="field"><label for="tsFeeTitle">Title / escrow ($)</label><div class="input"><input id="tsFeeTitle" data-noshare type="number" inputmode="numeric" step="1" min="0" placeholder="auto-estimate"></div></div>
@@ -1084,6 +1108,9 @@
                 <!-- TPO broker origination fee — shown by the JS only on a TPO file where a broker fee is set (owner-directed 2026-08-06). -->
                 <div class="ts-line" id="rBrokerWrap" style="display:none"><span class="k" id="rBrokerLbl">Broker origination fee</span><span class="v" id="rBroker">—</span></div>
                 <div class="ts-line"><span class="k">UW / processing / legal</span><span class="v" id="rLender">$2,195</span></div>
+                <div class="ts-linesub" id="rLenderSub" style="display:none"></div>
+                <div class="ts-line" id="rSettleRow" style="display:none"><span class="k">NY settlement agent (optional)</span><span class="v" id="rSettle">&mdash;</span></div>
+                <div class="ts-line" id="rCemaRow" style="display:none"><span class="k">New York CEMA fee</span><span class="v" id="rCema">&mdash;</span></div>
                 <div class="ts-line"><span class="k">Credit report</span><span class="v" id="rCredit">$150</span></div>
                 <div class="ts-line"><span class="k">Appraisal (est.)</span><span class="v" id="rAppr">$800 POC</span></div>
                 <div class="ts-line"><span class="k">Title / escrow (est.)<span class="tip" tabindex="0" role="note" aria-label="A rough estimate only, used to approximate your cash to close — your actual title cost depends on your title vendor. It scales with the loan amount, your state and the transaction type (transfer and mortgage taxes are separate).">i<span class="tip-bub">A rough estimate only, used to approximate your cash to close — your actual title cost depends on your title vendor. It scales with the loan amount, your state and the transaction type (transfer and mortgage taxes are separate).</span></span></span><span class="v" id="rTitle">—</span></div>
@@ -1194,7 +1221,7 @@
 <script src="title-cost.js?v=admin8-tsprog1"></script>
 <script src="gov-charges.js?v=gov2"></script>
 <script src="address-autocomplete.js?v=admin9-tsprog1"></script>
-<script src="termsheet.js?v=gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1"></script>
+<script src="termsheet.js?v=cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1"></script>
 <script src="../float-actions.js?v=admin10-applyfix-tsprog1"></script>
 <script>
 /* Property-address autocomplete (owner-directed 2026-07-17): same shared YSAddr

@@ -71,7 +71,15 @@ export default function StaffEscalations() {
   const [settings, setSettings] = useState(null);
   const [form, setForm] = useState({ assetMonths: '', maxAcqLtv: '', maxArvLtv: '', maxLtc: '', isActive: true });
   const [rows, setRows] = useState([]);
+  /* The server MEASURES whether there is another page — never inferred from a
+     full one, and a page size is never printed as if it were a count. */
+  const [more, setMore] = useState(false);
   const [statusFilter, setStatusFilter] = useState('open');
+  /* THE SAME SEARCH THE EXCEPTION REGISTER TAKES (owner-directed 2026-08-26:
+     "search by loan number, by address"). Typed vs asked-for are kept apart so a
+     keystroke does not fire a request per letter. */
+  const [search, setSearch] = useState('');
+  const [q, setQ] = useState('');
   const [pendingCount, setPendingCount] = useState(0);
   const [canDecide, setCanDecide] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -102,12 +110,17 @@ export default function StaffEscalations() {
     })
     .catch((e) => flash(false, e.message || 'could not load manual program settings'));
 
-  const loadEscalations = () => api.manualEscalations(statusFilter)
-    .then((d) => { setRows(d.escalations || []); setPendingCount(d.pendingCount || 0); setCanDecide(!!d.canDecide); })
+  const loadEscalations = () => api.manualEscalations(statusFilter, q || undefined)
+    .then((d) => { setRows(d.escalations || []); setMore(!!d.hasMore); setPendingCount(d.pendingCount || 0); setCanDecide(!!d.canDecide); })
     .catch((e) => flash(false, e.message || 'could not load escalations'));
 
   useEffect(() => { loadSettings(); /* eslint-disable-next-line */ }, [canManage]);
-  useEffect(() => { loadEscalations(); /* eslint-disable-next-line */ }, [statusFilter]);
+  useEffect(() => { loadEscalations(); /* eslint-disable-next-line */ }, [statusFilter, q]);
+  // 300ms after the last keystroke — this query joins four tables.
+  useEffect(() => {
+    const t = setTimeout(() => setQ(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
   async function saveSettings() {
     setBusy(true);
@@ -347,6 +360,16 @@ export default function StaffEscalations() {
               <h3>Escalations {pendingCount > 0 && <span className="ts-badge warn" style={{ marginLeft: 6 }}>{pendingCount} open</span>}</h3>
               <div className="dd-sub" style={{ marginTop: 1 }}>Manual products and pricing changed from the defaults, waiting for an admin to approve, counter, or decline.</div>
             </div>
+          </div>
+          {/* Find the file: loan number, address, or borrower — one box. */}
+          <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input className="input" type="search" style={{ maxWidth: 300 }}
+              placeholder="Search loan number, address or borrower…"
+              value={search} onChange={(e) => setSearch(e.target.value)} />
+            {search && <button className="btn small ghost" onClick={() => setSearch('')}>Clear</button>}
+            {q && q.length >= 2 && (
+              <span className="small" style={{ color: '#4B585C' }}>Showing matches for “{q}”{more ? ` — the first ${rows.length}; narrow the search to see the rest` : ` — ${rows.length}`}</span>
+            )}
           </div>
           <div className="esc-seg" role="tablist" aria-label="Filter escalations">
             {FILTERS.map((s) => (

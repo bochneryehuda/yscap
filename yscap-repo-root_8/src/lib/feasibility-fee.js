@@ -77,15 +77,39 @@ function isGroundUpDeal(input) {
 }
 
 /**
+ * Is this a BRIDGE deal? Mirrors the frozen engine's `normStrategy` second test, and it is only
+ * ever asked AFTER ground-up has been ruled out — exactly the order the engine uses, where
+ * "ground"/"construction" wins before "bridge" is considered.
+ */
+function isBridgeDeal(input) {
+  const s = low(input && (input.strategy || input.program));
+  if (!s) return false;
+  return s.indexOf('bridge') > -1 || s === 'br';
+}
+
+/**
  * WHICH fee this deal attracts, or null for one that attracts none.
  *
  * GROUND-UP FIRST — see the header: the heavy-rehab flag is true on a ground-up too, so the other
  * order silently prices every ground-up at $750.
+ *
+ * THEN THE BRIDGE EXCLUSION, AND IT IS A REAL RULE RATHER THAN A COMMENT (owner-reported
+ * 2026-08-26). The line below used to SAY "a bridge or a stabilised deal has no construction to
+ * review, whatever the rehab type says" while the code did no such thing: `heavyRehab` is derived
+ * from `applications.rehab_type` by a regex, so a bridge on a property whose rehab type still read
+ * "Heavy / gut rehab" fell straight through to the $750 and was charged for a construction review
+ * of construction that is not happening. Reproduced on both sides before the fix — the server
+ * returned heavy_rehab for `{strategy:'Bridge / Stabilized', heavyRehab:true}`, and the studio did
+ * the same because its own rehab-scope control keeps its value after the deal type moves off fix
+ * & flip (the control is hidden there, not cleared).
+ *
+ * A MANUAL amount still applies on a bridge, deliberately — `feasibilityFeeFor` falls back to the
+ * project-review kind for a typed fee, which is the whole point of the manual box.
  */
 function feasibilityKind(input) {
   if (!input) return null;
   if (isGroundUpDeal(input)) return KIND.GROUND_UP;
-  // A bridge or a stabilised deal has no construction to review, whatever the rehab type says.
+  if (isBridgeDeal(input)) return null;
   if (input.heavyRehab === true) return KIND.HEAVY_REHAB;
   return null;
 }
@@ -145,5 +169,5 @@ function feasibilityFeeFor(input, settings, { manual = null } = {}) {
 
 module.exports = {
   SYSTEM_FEASIBILITY_FEES, KIND, FEASIBILITY_LABEL, FEASIBILITY_NOTE,
-  isGroundUpDeal, feasibilityKind, cleanFeeAmount, cleanFeasibilityFees, feasibilityFeeFor,
+  isGroundUpDeal, isBridgeDeal, feasibilityKind, cleanFeeAmount, cleanFeasibilityFees, feasibilityFeeFor,
 };

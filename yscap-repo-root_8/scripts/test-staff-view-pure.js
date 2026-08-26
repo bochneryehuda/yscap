@@ -67,4 +67,58 @@ console.log('\nD. the guard verifies the bearer ITSELF — it cannot be starved 
     'and never trusts a field auth would only set AFTER it — the first draft did, and would have allowed every write');
 }
 
+
+/* ── E. THE DOOR, ON BOTH PRODUCTS' TEAM SCREENS ────────────────────────────
+   Owner-directed 2026-08-26: *"on the RTL side of the team section … I should
+   also have the button to make myself, like anyone on the team, a login to see
+   what they see when they are logged in. The same way we have it for long term,
+   the same way we have for TPOs and for borrowers."*
+
+   EVERYTHING ELSE ALREADY EXISTED — the read-only wall above, the session
+   register, the console-wide banner and the way out. What was missing was the
+   BUTTON: the only one that started a view lived on the LONG-TERM People screen,
+   so a super admin could step into a teammate's console from one product and not
+   the other. A back end nobody can reach is not a feature, which is why this is
+   asserted on the source: no unit test of the guard can see whether a screen
+   offers the door. */
+console.log('\nE. the door: a super admin can start a view from EITHER team screen');
+{
+  const fs = require('fs');
+  const path = require('path');
+  const read = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
+  /* Comments necessarily NAME what they explain, so a "must not appear" check
+     that read them would fail on its own explanation. */
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  const team = strip(read('app-v2/src/screens/StaffTeam.jsx'));
+  ok(/See their screen/.test(team), 'the RTL team screen offers "See their screen"');
+  ok(/startStaffView\(s\.id\)/.test(team), 'and it starts the view through the SHARED handoff, not a hand-rolled token swap');
+  ok(!/ys_portal_staff_token/.test(team), 'the RTL screen touches no storage key of its own — auth.jsx owns that dance');
+  // Super-admin only. `manage_team` opens this whole screen and is held by
+  // ordinary admins too, so gating on it would draw a button the server refuses.
+  ok(/canSeeTheirScreen = role === 'super_admin'/.test(team), 'the button is gated on SUPER ADMIN, not on manage_team');
+  ok(/canSeeTheirScreen && s\.id !== myId && !!s\.is_active/.test(team),
+     'and it is hidden for your own row and for a deactivated person — neither is a refusal, both are a nonsense');
+
+  const auth = strip(read('app-v2/src/lib/auth.jsx'));
+  ok(/const startStaffView = useCallback/.test(auth) && /const exitStaffView = useCallback/.test(auth),
+     'the RTL handoff lives in ONE place beside its borrower and broker siblings');
+  ok(/startStaffView, exitStaffView,/.test(auth), 'and both are handed to the screens through the auth context');
+
+  const layout = strip(read('app-v2/src/components/StaffLayout.jsx'));
+  ok(/staffViewSession\(\)/.test(layout), 'the banner still asks the SERVER whether this console is somebody else’s');
+  ok(/exitStaffView\(\)/.test(layout), 'and the way out goes through that same shared handoff');
+  ok(!/ys_portal_staff_token/.test(layout), 'the layout no longer reads the parked-token key itself');
+
+  /* PRODUCT SEPARATION. The LONG-TERM screen keeps its OWN inline copy on
+     purpose: LT front-end code may not import an RTL module, and the client half
+     is only "park my token, take theirs" — every decision that matters is the
+     server's. Asserted so a future tidy-up does not "helpfully" make LT import
+     the RTL helper and break the separation rule. */
+  const lt = read('app-v2/src/longterm/LtPeople.jsx');
+  ok(/\/api\/staff-view\/start/.test(lt), 'the long-term People screen still has its own button');
+  ok(!/from '\.\.\/lib\/auth/.test(lt) && !/from '\.\.\/lib\/api/.test(lt),
+     'and it imports NO RTL module — the two front ends share only the server door and the storage key');
+}
+
 console.log(`\nall good — ${checks} checks`);

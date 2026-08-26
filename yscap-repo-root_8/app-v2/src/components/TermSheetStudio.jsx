@@ -284,6 +284,14 @@ export function readSnapshot(win) {
       tsOrigStd: val('tsOrigStd'), tsOrigGold: val('tsOrigGold'), tsOrigSilver: val('tsOrigSilver'),
       tsOrigManual: val('tsOrigManual'),
       tsFeeUW: moneyVal('tsFeeUW'), tsFeeCredit: moneyVal('tsFeeCredit'),
+      /* OUR FEE'S TWO PARTS + the optional New York settlement agent fee (owner-directed
+         2026-08-26). `tsFeeUW` above KEEPS its old meaning — the whole fee typed as ONE
+         number — so a quote registered before the split restores and re-registers exactly
+         as it always did; these are the new per-part boxes. */
+      tsFeeUwPart: moneyVal('tsFeeUwPart'), tsFeeLegal: moneyVal('tsFeeLegal'),
+      tsFeeSettlement: moneyVal('tsFeeSettlement'),
+      /* The New York CEMA — the ANSWER and the AMOUNT (owner-directed 2026-08-26). */
+      tsCemaOn: chk('tsCemaOn'), tsFeeCema: moneyVal('tsFeeCema'),
       tsFeeAppr: moneyVal('tsFeeAppr'), tsFeeTitle: moneyVal('tsFeeTitle'),
       tsFeasFee: moneyVal('tsFeasFee'),
       /* GOVERNMENT CHARGES — the manual section (owner-directed 2026-08-23). Each
@@ -354,6 +362,10 @@ export function adminStateFromEngineInputs(inp) {
   put('tsOrigStd', inp.origStdPct); put('tsOrigGold', inp.origGoldPct); put('tsOrigSilver', inp.origSilverPct);
   put('tsOrigManual', inp.origManualPct);
   put('tsFeeUW', inp.lenderFee); put('tsFeeCredit', inp.creditFee);
+  put('tsFeeUwPart', inp.underwritingFee); put('tsFeeLegal', inp.legalFee);
+  put('tsFeeSettlement', inp.settlementFee);
+  put('tsFeeCema', inp.cemaFee);
+  { const e = document.getElementById('tsCemaOn'); if (e) e.checked = inp.nyCema === true; }
   put('tsFeeAppr', inp.appraisalFee); put('tsFeeTitle', inp.titleFee);
   put('tsFeasFee', inp.feasibilityFee);
   put('tsMLtv', inp.ovrAcqLTVPct); put('tsMArv', inp.ovrARLTVPct);
