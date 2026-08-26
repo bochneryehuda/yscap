@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { PROGRAMS, PROPERTY_TYPES, LOAN_TYPES } from '../lib/enums.js';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
@@ -473,9 +474,19 @@ const APP_COMPLETENESS_FIELDS = (app) => [
     altNote: 'Saved — this file closes in the borrower’s own name. The signed non-owner-occupied affidavit is now asked for on its own condition.',
     altBlocked: app.vesting_individual_blocked || '',
     hint: 'The entity taking title — type the name, or say it closes in the borrower’s own name.' },
-  { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
-  { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
-  { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
+  /* THESE THREE LISTS COME FROM THE SHARED ENUM (owner-reported 2026-08-26,
+     YSCAP258134859). Hand-copied, all three had drifted and two of them wrote
+     values the rest of the system does not use: the property types were the
+     CLICKUP LABELS ('SFR', 'Multi 2-4' with a hyphen, 'Mixed Use') rather than
+     the portal's own spellings, so filling a missing property type here stored a
+     value the ClickUp push then dropped in silence; and 'Fix & Hold' — a real
+     program the engine prices and ClickUp now has an option for — was missing
+     from the program list, so an officer looking at a fix & hold file could not
+     record it as one. The value is the canonical spelling; the label is what a
+     person reads. */
+  { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: PROPERTY_TYPES },
+  { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: PROGRAMS.filter((o) => o.value !== 'Not sure yet') },
+  { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: LOAN_TYPES },
   /* THE FILE IS ASKED FOR THE FIGURE IT IS SIZED ON (owner-directed 2026-08-02).
      A refinance is sized on the AS-IS VALUE — the frozen engine's own denominator
      (`acqDenom = purchase ? min(pp, aiv) : aiv`) — so demanding a purchase price
@@ -678,7 +689,12 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
                 {f.type === 'select'
                   ? <select className="input" style={{ maxWidth: 200 }} value={val} onChange={(e) => setVal(e.target.value)} autoFocus>
                       <option value="" disabled>{f.label}…</option>
-                      {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+                      {/* An option is either a plain string (citizenship) or the shared
+                          enum's {value,label} pair, where the stored value and the words
+                          a person reads are deliberately different. */}
+                      {f.options.map((o) => (typeof o === 'string'
+                        ? <option key={o} value={o}>{o}</option>
+                        : <option key={o.value} value={o.value}>{o.label}</option>))}
                     </select>
                   : f.type === 'notebuyer'
                   ? <input className="input" style={{ maxWidth: 200 }} autoFocus list={nbListId}

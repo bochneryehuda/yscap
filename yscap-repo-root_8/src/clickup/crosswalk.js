@@ -8,6 +8,12 @@
  * handled by the orchestrator; this module is pure per-field label mapping.
  */
 const T = require('./transforms');
+/* THE ONE alias table for the four crosswalked DEAL enums. PURE (no pg), so
+   requiring it eagerly here keeps this module's own no-database contract.
+   Consulted on the WRITE side only — `inverseFor` (the read side) is untouched,
+   so the inbound pull keeps landing on our canonical spelling and the two
+   directions cannot drift. See enum-vocab.js for the full reasoning. */
+const VOCAB = require('../lib/enum-vocab');
 
 // fieldId = ClickUp custom_field id; to = { portalValue: clickupLabel }.
 // `NEW:` labels are options the owner is adding (Ground-Up, Condo, Townhouse).
@@ -190,10 +196,16 @@ function inverseFor(key) {
 }
 
 /** Portal value -> ClickUp option label (write side). null = leave field blank. */
-function toClickUpLabel(key, portalValue) {
+function toClickUpLabel(key, rawValue) {
   const f = FIELDS[key];
   if (!f) return null;
-  if (portalValue == null || portalValue === '') return f.defaultLabel || null;
+  if (rawValue == null || rawValue === '') return f.defaultLabel || null;
+  /* A value stored in another producer's dialect ('Fix & Hold (BRRRR)' from the
+     public form) means the SAME program as our canonical spelling, so it must
+     push to the same option instead of being dropped in silence — which is what
+     left the owner's card with an empty *Program field. Unrecognised values pass
+     through unchanged, so nothing is ever guessed into a neighbouring option. */
+  const portalValue = VOCAB.canonicalEnum(key, rawValue);
   if (Object.prototype.hasOwnProperty.call(f.to, portalValue)) return f.to[portalValue];
   // tolerant match (case/space)
   const want = _norm(portalValue);
@@ -236,10 +248,14 @@ function fromClickUpLabel(key, clickupLabel) {
  *        owner added it) is unmappable too — that write silently vanishes the
  *        same way. Omitted/empty ⇒ crosswalk-only check, never a false positive.
  */
-function unmappableToClickUp(key, portalValue, optionList) {
+function unmappableToClickUp(key, rawValue, optionList) {
   const f = FIELDS[key];
   if (!f) return false;                                   // not a crosswalked enum
-  if (portalValue == null || portalValue === '') return false;  // nothing to push
+  if (rawValue == null || rawValue === '') return false;  // nothing to push
+  // Same canonicalization the write uses, or a dialect that NOW pushes correctly
+  // would still be reported as having no ClickUp twin and park a review for
+  // nothing (and the enum guard would hold a field that syncs perfectly well).
+  const portalValue = VOCAB.canonicalEnum(key, rawValue);
   const want = _norm(portalValue);
   const hit = Object.prototype.hasOwnProperty.call(f.to, portalValue)
     ? portalValue
@@ -299,7 +315,9 @@ function resolveWriteId(key, portalValue, optionList) {
   const hit = T.dropdownLabelToId(optionList, label);
   if (hit) return hit;
   const f = FIELDS[key] || {};
-  const alts = (f.toAlt && f.toAlt[_norm(portalValue)]) || [];
+  // The alternate spellings are keyed on the CANONICAL value, so a dialect value
+  // must be folded first or its alternates would silently not be tried.
+  const alts = (f.toAlt && f.toAlt[_norm(VOCAB.canonicalEnum(key, portalValue))]) || [];
   for (const alt of alts) {
     const h = T.dropdownLabelToId(optionList, alt);
     if (h) return h;

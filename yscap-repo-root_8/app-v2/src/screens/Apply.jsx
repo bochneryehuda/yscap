@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { PROGRAMS as ENUM_PROGRAMS } from '../lib/enums.js';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import { formatSSN, cleanFICO, ficoValid } from '../lib/validators.js';
@@ -31,7 +32,17 @@ const STUDIO_LOCKED = [
 ];
 // Ground-Up is a PROGRAM (not a loan type/purpose). DSCR Rental is intentionally
 // not offered here for now.
-const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction', 'Not sure yet'];
+//
+// THE LIST COMES FROM THE SHARED ENUM, NOT FROM HERE (owner-reported 2026-08-26,
+// YSCAP258134859: "this is a fix and hold, not a fix and flip"). 'Fix & Hold' is
+// a first-class PILOT program — pricing.js prices it, the EMCAP tape exports it,
+// the Encompass map compares it and ClickUp now carries the matching option — and
+// it was simply absent from this picker, from the staff new-file form and from
+// the completeness panel, so nobody could choose it on the three screens where a
+// file's program is actually set. Hand-copied lists are how a program goes
+// missing from three of five doors without anybody noticing; this one is derived
+// so adding a program means editing enums.js and nothing else.
+const PROGRAMS = ENUM_PROGRAMS.filter((o) => o.value !== 'DSCR / Rental');
 const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out', 'Delayed Purchase Financing'];
 const PROP_TYPES = ['SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use'];
 const REHAB_TYPES = ['Cosmetic', 'Moderate', 'Heavy / gut rehab', 'Adding square footage', 'Ground-up construction'];
@@ -580,7 +591,7 @@ export default function Apply() {
             <div className="grid cols-2">
               <div className="field"><label>Program</label>
                 <select className="input" value={form.program || ''} onChange={e => set('program', e.target.value)}>
-                  <option value="">Select…</option>{PROGRAMS.map(p => <option key={p}>{p}</option>)}
+                  <option value="">Select…</option>{PROGRAMS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select></div>
               <div className="field"><label>Loan type</label>
                 <select className="input" value={form.loanType || ''} onChange={e => setLoanType(e.target.value)}>
