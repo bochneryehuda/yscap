@@ -140,8 +140,13 @@ async function changeRecipientEmail(p) {
   let pilotEmail = null;
   if (plan.isBorrowerRecipient) {
     try {
-      pilotEmail = await notify.notifyReadyToSign(p.envelopeRowId, { db, onlyRecipientIdDs: recipient.recipient_id_ds });
-    } catch (_) { /* the magic-link nudge is a nicety; DocuSign's own email is the invitation */ }
+      /* `force` because this recipient has almost certainly been invited already — at the
+         OLD address, which is exactly what is being corrected. It is the one case that may
+         legitimately re-send. And this is no longer a "nicety": since 2026-08-21 DocuSign
+         does not email a captive recipient at all, so PILOT's email IS the invitation. */
+      pilotEmail = await notify.notifyReadyToSign(p.envelopeRowId, {
+        db, onlyRecipientIdDs: recipient.recipient_id_ds, force: true });
+    } catch (_) { /* best-effort — the address correction itself has already been recorded */ }
   }
 
   // The warning input: does the corrected address match the borrower's email ON FILE?
