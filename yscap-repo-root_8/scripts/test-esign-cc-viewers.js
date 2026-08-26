@@ -170,7 +170,7 @@ async function main() {
     // "when you're sending out the term sheet package, when you're sending out the ISKA,
     // and when you're sending out the draw form, then the draw coordinator ... should be
     // looped in as viewers".
-    console.log('\n5. the draw coordinator is copied on the term sheet + Heter Iska');
+    console.log('\n5. the draw coordinator is copied on the term sheet (and deliberately NOT the Heter Iska)');
     const coordId = crypto.randomUUID();
     await db.query(`INSERT INTO staff_users (id, email, full_name, role) VALUES ($1,$2,'Cora Coordinator','draw_coordinator')`,
       [coordId, `dc+${TAG}@ys.com`]);
@@ -196,9 +196,21 @@ async function main() {
        VALUES ($1,'co_borrower',1,'2',$2,'Chris Co',$3,true,$4,'created')
        ON CONFLICT DO NOTHING`,
       [envRowId, cbId, `co+${TAG}@example.com`, `${envRowId}:co_borrower`]).catch(() => {});
+    /* THE HETER ISKA IS NARROWER (owner-directed 2026-08-26, superseding the
+       2026-08-21 coordinator loop-in for THIS package only): "Only the loan
+       officer and the processor and the borrower, obviously." So on the ISKA:
+       no draw coordinator, and — the reported bug — no ADMIN, even one seated
+       as an assignee (admin file-grants store them with aa.role='processor',
+       so the filter must judge the STAFF role). dupAdmin (staff role 'admin',
+       seated as a processor-assignee in section 3) is the exact fixture. */
     const idef = await orchestrate.buildDefinition(row, { db });
-    ok((idef.carbonCopies || []).map((c) => c.email).includes(`dc+${TAG}@ys.com`),
-      'the file’s draw coordinator is copied on the HETER ISKA ("ISKA") package');
+    const iskaCc = (idef.carbonCopies || []).map((c) => c.email);
+    ok(!iskaCc.includes(`dc+${TAG}@ys.com`),
+      'the draw coordinator is NOT copied on the HETER ISKA (owner-directed 2026-08-26 — ISKA is LO + processor + borrower only)');
+    ok(!iskaCc.includes(adminEmail),
+      'an ADMIN seated as an assignee is NOT copied on the HETER ISKA — the "Esther and Yehuda get every signed ISKA" report, fixed');
+    ok(iskaCc.includes(`lo+${TAG}@ys.com`) && iskaCc.includes(`pr+${TAG}@ys.com`),
+      '…while the loan officer and the processor still are');
 
     // THE DESK FALLBACK MUST NOT REACH AN ORIGINATION PACKAGE. A file has no draw
     // project until it FUNDS, so at term-sheet time the file has no coordinator EVERY

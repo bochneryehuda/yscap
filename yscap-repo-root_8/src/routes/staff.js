@@ -157,8 +157,12 @@ async function recordTapeSuperOverride(req, appId, tape, encGate, reason) {
 // The borrower DIRECTORY / CRM has a WIDER audience than file-level see_all_files
 // (owner-directed): admins, underwriters, loan_coordinators (seesAll) AND
 // processors may open ANY borrower's full profile; loan_officers stay limited to
-// borrowers they've done a loan for. File-level access (/applications/:id) is
-// unchanged — a processor still opens individual files only where assigned.
+// borrowers they've done a loan for. NOTE processors now ALSO hold see_all_files
+// by role default (owner-directed 2026-08-26: the back-office persona sees the
+// entire pipeline like admins), so the explicit processor carve-out below is
+// belt-and-suspenders — it keeps the borrower directory whole for a processor
+// whose see_all_files was individually revoked, which is the pre-existing
+// owner-directed state (2026-07-26).
 const seesAllBorrowers = (req) => seesAll(req) || (req.actor && req.actor.role === 'processor');
 // A file that is NOT actionable work: funded/closed (done), declined/withdrawn
 // (dead), or ON HOLD (paused — owner-directed 2026-07-14). None of these should

@@ -147,6 +147,14 @@ function LoRequestDraw({ appId, onSubmitted }) {
         <div className="muted small" style={{ marginTop: 8 }}>
           A draw request is already open on this file. The next one can be submitted once it is finished.
         </div>
+      ) : st.parked ? (
+        /* THE COMPOSER IS PARKED (owner-directed 2026-08-26, compliance): draw
+           requests come in through Sitewire only — the note says why instead of
+           a dead button (the parked.js house pattern). Requests in flight keep
+           moving above. */
+        <div className="dd-note warn" style={{ marginTop: 10 }}>
+          {st.parked_reason || 'Draw requests are submitted through Sitewire for now — the composer here is parked (compliance).'}
+        </div>
       ) : !open ? (
         <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           <button className="btn btn-sm primary" disabled={!st.eligible} onClick={() => { setMsg(''); setOpen(true); }}>

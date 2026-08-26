@@ -146,6 +146,18 @@ function PayoffDemandBanner({ payoff, started }) {
   );
 }
 
+/* A rail Section around a card that only SOME files carry (owner-directed 2026-08-26:
+   the TrustPoint / portal-request cards left the top of the desk and became left-rail
+   sections). Only the card knows whether it applies — it fetches its own state and
+   self-hides — and `Section hidden` UNMOUNTS its children, so an unmounted card could
+   never fetch and presence would deadlock. This keeps the card mounted (display:none,
+   where the self-hidden card renders nothing anyway) until it reports presence, then
+   wraps it in the real section chrome. */
+function CardSection({ id, title, present, children }) {
+  if (present !== true) return <div style={{ display: 'none' }}>{children}</div>;
+  return <Section id={id} title={title} defaultOpen={false}>{children}</Section>;
+}
+
 export default function DrawsPanel({ appId }) {
   const openReport = useReportOpener();   // the in-app report panel (see ReportOpener.jsx)
   const { can } = useAuth();
@@ -155,6 +167,15 @@ export default function DrawsPanel({ appId }) {
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState('');
   const [quickStatuses, setQuickStatuses] = useState([]); // Sitewire pipeline status labels
+  // Which draw-intake surfaces exist on this file (owner-directed 2026-08-26: the
+  // Trinity / portal-request / TrustPoint cards left the top of the page and became
+  // left-rail sections). Only the CARD knows whether it applies — it fetches its own
+  // state and self-hides — so each reports presence up and the rail lists only the
+  // sections that are really there. Trinity is deliberately NOT here: that card is on
+  // EVERY file (owner-directed 2026-08-21), so its section always shows.
+  const [present, setPresent] = useState({});
+  const onPortalPresence = useCallback((v) => setPresent((p) => (p.portal === v ? p : { ...p, portal: v })), []);
+  const onTpPresence = useCallback((v) => setPresent((p) => (p.tp === v ? p : { ...p, tp: v })), []);
   // Mirrors `data` so load() can tell a first load from a background refresh without
   // taking `data` as a dependency (which would re-create load and re-run every child's
   // effect). Reset when the file changes so a new file gets its first-load spinner.
@@ -227,6 +248,13 @@ export default function DrawsPanel({ appId }) {
   const drawSections = [
     { id: 'dsec-overview', label: 'Overview', group: 'Draw' },
     { id: 'dsec-draws', label: 'Draws', group: 'Draw', badge: draws.length || '' },
+    // The three intake surfaces are ordinary rail sections now (owner-directed
+    // 2026-08-26: "make it a section on the left side" — they used to sit as huge
+    // cards ABOVE the rail). Trinity is on every file; the other two appear only
+    // when the card itself reports it applies here.
+    { id: 'dsec-trinity', label: 'Trinity orders', group: 'Draw' },
+    ...(present.portal === true ? [{ id: 'dsec-portal-requests', label: 'Portal draw requests', group: 'Draw' }] : []),
+    ...(present.tp === true ? [{ id: 'dsec-trustpoint', label: 'TrustPoint draws', group: 'Draw' }] : []),
     { id: 'dsec-sow', label: 'Scope of Work', group: 'Draw' },
     { id: 'dsec-ledger', label: 'Money ledger', group: 'Money' },
     { id: 'dsec-waivers', label: 'Retainage & waivers', group: 'Money' },
@@ -273,21 +301,21 @@ export default function DrawsPanel({ appId }) {
             </div>
           )}
           <StartDrawCard appId={appId} onStarted={load} />
-          <TrustpointPanel appId={appId} />
-          <PortalDrawsCard appId={appId} />
-          <TrinityInspectionCard appId={appId} />
           {/* Send the DocuSign Draw Request & Wire Instructions form right from the start-draw screen. */}
           <DrawRequestCard appId={appId} />
           {/* The draw email center is visible on the construction-draw screen even BEFORE the file is
               pushed to Sitewire — the draw-request form + any early draw messages already show here. */}
           <DrawEmailCenter appId={appId} />
+          {/* The intake cards sit BELOW the setup work on a not-yet-started file (owner-directed
+              2026-08-26: they were "massive on top") — Start-draw is the job here. Each still
+              self-hides when it does not apply; Trinity stays on every file (2026-08-21). */}
+          <TrustpointPanel appId={appId} />
+          <PortalDrawsCard appId={appId} />
+          <TrinityInspectionCard appId={appId} />
         </>
       ) : (
         <>
           {msg && <div className="dd-card" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
-          <TrustpointPanel appId={appId} />
-          <PortalDrawsCard appId={appId} />
-          <TrinityInspectionCard appId={appId} />
 
           {/* Redesigned draw desk: a sticky left section rail (like the loan file) + collapsible sections,
               so the whole draw process is scannable without endless scrolling. Each section opens on demand;
@@ -381,6 +409,23 @@ export default function DrawsPanel({ appId }) {
                   answers={data.investor_answers || []} />
               ))}
             </Section>
+
+            {/* THE THREE INTAKE SURFACES ARE RAIL SECTIONS NOW (owner-directed 2026-08-26:
+                "Trinity Manual Physical Inspections … should be made a section on the left
+                side — Trinity orders"; portal + TrustPoint draw requests likewise came off
+                the top). Trinity renders on EVERY file (owner-directed 2026-08-21); the
+                other two exist only on some files and only the CARD knows — it fetches its
+                own state — so CardSection keeps the card mounted and shows the section
+                chrome once the card reports it applies. */}
+            <Section id="dsec-trinity" title="Trinity orders" defaultOpen={false}>
+              <TrinityInspectionCard appId={appId} />
+            </Section>
+            <CardSection id="dsec-portal-requests" title="Portal draw requests" present={present.portal}>
+              <PortalDrawsCard appId={appId} onPresence={onPortalPresence} />
+            </CardSection>
+            <CardSection id="dsec-trustpoint" title="Administered draws (TrustPoint)" present={present.tp}>
+              <TrustpointPanel appId={appId} onPresence={onTpPresence} />
+            </CardSection>
 
             {/* SCOPE OF WORK — budget vs. drawn rollup + (super-admin) line wording/description editor. */}
             <Section id="dsec-sow" title="Scope of Work — budget vs. drawn" defaultOpen={false}>
@@ -1833,8 +1878,12 @@ function TrinityInspectionCard({ appId }) {
   );
 }
 
-function PortalDrawsCard({ appId }) {
+function PortalDrawsCard({ appId, onPresence }) {
   const [data, setData] = useState(null);
+  // Presence report for the rail (CardSection). A ref so `load` never depends on the
+  // callback identity — a parent re-render must not re-trigger the fetch effect.
+  const presRef = useRef(onPresence);
+  useEffect(() => { presRef.current = onPresence; });
   const [openForm, setOpenForm] = useState(false);
   const [amounts, setAmounts] = useState({});
   const [note, setNote] = useState('');
@@ -1847,7 +1896,9 @@ function PortalDrawsCard({ appId }) {
   const usd = (c) => c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
   const cents = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : 0; };
   const load = useCallback(() => {
-    api.get(`/api/sitewire/files/${appId}/portal-draws`).then(setData).catch(() => setData(null));
+    api.get(`/api/sitewire/files/${appId}/portal-draws`)
+      .then((d) => { setData(d); if (presRef.current) presRef.current(!!(d && d.state && d.state.physical)); })
+      .catch(() => { setData(null); if (presRef.current) presRef.current(false); });
   }, [appId]);
   useEffect(() => { load(); }, [load]);
   if (!data || !data.state || !data.state.physical) return null;
@@ -1912,8 +1963,18 @@ function PortalDrawsCard({ appId }) {
       </div>
       {msg && <div className="small" style={{ marginTop: 8, fontWeight: 600 }}>{msg}</div>}
 
+      {/* THE COMPOSER IS PARKED (owner-directed 2026-08-26, compliance): draw
+          requests come in through Sitewire only — the note says why instead of
+          a dead button, and the desk levers / history below keep working, so a
+          request already in flight keeps moving instead of its controls
+          vanishing (the parked.js house pattern). */}
+      {!st.open_portal_request && st.parked && (
+        <div className="dd-note warn" style={{ marginTop: 10 }}>
+          {st.parked_reason || 'Draw requests are submitted through Sitewire for now — the composer here is parked (compliance).'}
+        </div>
+      )}
       {/* the composer */}
-      {!st.open_portal_request && (
+      {!st.open_portal_request && !st.parked && (
         !openForm ? (
           <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <button className="btn btn-sm primary" disabled={busy || !st.set_up || !st.funded} onClick={() => { setMsg(''); setOpenForm(true); }}>Compose a draw request</button>
@@ -2040,9 +2101,12 @@ function PortalDrawsCard({ appId }) {
 }
 
 // per-line entry (transcribed from TrustPoint's console) + the push-to-Sitewire button.
-function TrustpointPanel({ appId }) {
+function TrustpointPanel({ appId, onPresence }) {
   const openReport = useReportOpener();   // the in-app report panel (see ReportOpener.jsx)
   const [ov, setOv] = useState(null);
+  // Presence report for the rail (CardSection) — see PortalDrawsCard for the ref rule.
+  const presRef = useRef(onPresence);
+  useEffect(() => { presRef.current = onPresence; });
   const [openLines, setOpenLines] = useState(null);   // tp_draw_id whose entry form is open
   const [lineData, setLineData] = useState(null);
   const [amounts, setAmounts] = useState({});
@@ -2050,7 +2114,9 @@ function TrustpointPanel({ appId }) {
   const [msg, setMsg] = useState('');
   const usd = (c) => c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
   const load = useCallback(() => {
-    api.get(`/api/trustpoint/files/${appId}/overview`).then(setOv).catch(() => setOv(null));
+    api.get(`/api/trustpoint/files/${appId}/overview`)
+      .then((r) => { setOv(r); if (presRef.current) presRef.current(!!(r && r.linked)); })
+      .catch(() => { setOv(null); if (presRef.current) presRef.current(false); });
   }, [appId]);
   useEffect(() => { load(); }, [load]);
   if (!ov || !ov.linked) return null;
