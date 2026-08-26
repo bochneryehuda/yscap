@@ -127,7 +127,8 @@ async function upsertDiscovered(dbc, loan, settings) {
          COALESCE(EXCLUDED.encompass_last_modified, lt_loans.encompass_last_modified),
          COALESCE(lt_loans.encompass_last_modified, EXCLUDED.encompass_last_modified)),
        updated_at = now()
-     RETURNING id, encompass_synced_at, encompass_last_modified, milestone_name`,
+     RETURNING id, encompass_synced_at, encompass_last_modified, milestone_name,
+               encompass_sync_error`,
     // Discovery has always READ `Loan.BorrowerName` and thrown it away. It is the
     // only thing an admin can recognise a loan's borrower BY while deciding a
     // link, and it costs nothing — it is already on the row we are writing.

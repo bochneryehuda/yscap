@@ -131,6 +131,43 @@ check(/partial: misses\.length > 0/.test(loansSrc), 'readLoan reports a partial 
     'and readLoan still turns the all-empty case into a reported miss');
 }
 
+// ── EVERY COLUMN `needsRead` CONSULTS MUST ACTUALLY BE ON THE ROW ────────────
+// The freshness decision is made on the row `upsertDiscovered` RETURNS, and a
+// column missing from that RETURNING list is not an error anywhere: it reads as
+// `undefined`, the branch that needs it goes quiet, and the loan is simply never
+// re-read. Measured in production, 2026-08-26: `encompass_sync_error` was absent
+// from the list, so the one-hour re-read for a partly-read loan had NEVER fired
+// — every such loan silently waited the full twelve-hour rota instead. Nothing
+// logged, nothing failed, and `read=0` on every pass looked like a quiet book.
+//
+// So this asserts the JOIN between the two, not either one alone. Adding a test
+// to `needsRead` without adding its column to the query would leave exactly the
+// same dead branch, which is why the check is written this way round.
+{
+  const body = (() => {
+    const i = loansSrc.indexOf('function needsRead(');
+    const j = loansSrc.indexOf('\nfunction ', i + 10);
+    return loansSrc.slice(i, j > 0 ? j : undefined);
+  })();
+  const strip = body.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+  const reads = [...new Set([...strip.matchAll(/\brow\.([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]))];
+  check(reads.length >= 4, `needsRead's row columns were found (${reads.length}: ${reads.join(', ')})`);
+
+  const ret = (() => {
+    const m = loansSrc.match(/RETURNING([\s\S]*?)`/);
+    return m ? m[1] : '';
+  })();
+  check(/encompass_synced_at/.test(ret), 'the RETURNING list was found and carries the sync stamp');
+
+  // `pipeline_milestone` is attached by the spread AFTER the query, deliberately —
+  // it is the pipeline's lagging value, not a column of ours.
+  const addedAfter = new Set(['pipeline_milestone']);
+  const missing = reads.filter((c) => !addedAfter.has(c) && !new RegExp(`\\b${c}\\b`).test(ret));
+  check(missing.length === 0,
+    'every column needsRead consults is on the row upsertDiscovered returns'
+    + (missing.length ? ` — MISSING: ${missing.join(', ')}` : ''));
+}
+
 // An EMPTY answer is not an answer — the `{}` case the batch can return.
 check(/Object\.keys\(values\)\.length > 0/.test(loansSrc),
   'an empty {} from the field batch counts as a miss, not as values');
