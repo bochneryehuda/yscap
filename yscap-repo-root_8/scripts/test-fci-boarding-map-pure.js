@@ -160,6 +160,37 @@ ok('exactly one spelling of the reinstatement approval can ship', () => {
     + 'means we stopped noticing that FCI contradicts itself here');
 });
 
+ok('the counts quoted in docs/FCI-START-SERVICING.md are the map\'s real counts', () => {
+  // A count typed into prose is wrong the moment a question is answered, and wrong SILENTLY —
+  // which is the whole failure mode this repo builds generators to avoid. The doc has to state
+  // these numbers to be readable, so the build checks them instead.
+  const fs = require('fs');
+  const docPath = path.join(ROOT, 'docs', 'FCI-START-SERVICING.md');
+  if (!fs.existsSync(docPath)) return; // the map stands on its own; the doc is a reader for it
+  const doc = fs.readFileSync(docPath, 'utf8');
+  const counts = {};
+  for (const r of BOARDING_MAP) counts[r.kind] = (counts[r.kind] || 0) + 1;
+  const claims = [
+    [counts.PILOT || 0, 'fields come from PILOT columns'],
+    [counts.CONSTANT || 0, 'are constants on every RTL loan'],
+    [counts.OWNER || 0, "are the owner's to supply"],
+    [counts.DOCUMENT || 0, 'live in the executed note'],
+    [counts.OMIT || 0, 'are deliberately not sent'],
+    [counts.ASK || 0, 'are open questions'],
+    [QUESTIONS.length, 'distinct questions'],
+  ];
+  for (const [n, phrase] of claims) {
+    // Match the bolded number that introduces the phrase, allowing the wording between them to
+    // be edited freely — the NUMBER is what must not drift, not the sentence around it. The gap
+    // spans NEWLINES on purpose: prose wraps, and a number can end a line with its phrase
+    // starting the next one, which a same-line-only match reports as a stale figure.
+    const re = new RegExp(`\\*\\*${n}\\*\\*[\\s\\S]{0,80}?${phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`);
+    assert.ok(re.test(doc),
+      `docs/FCI-START-SERVICING.md does not say **${n}** for "${phrase}" — the map now has ${n}. `
+      + 'Update the prose (or the map), then re-run.');
+  }
+});
+
 ok('the map covers every block FCI publishes, in full', () => {
   for (const b of BLOCKS) {
     const fciCount = inventory.filter((r) => r.block === b).length;
