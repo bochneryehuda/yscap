@@ -469,6 +469,17 @@ export function RegisteredProductDetails({ reg, compactView = false, showAdmin =
             {Array.isArray(cc.extraFees) && cc.extraFees.map((f, i) => (
               <Row key={i} k={f.name} v={money2(f.amount)} />
             ))}
+            {/* THE CONSTRUCTION FEASIBILITY / PROJECT REVIEW FEE, BY NAME — and this row was
+                MISSING, found by the fee audit engine (owner-directed 2026-08-26). The fee has
+                been inside `dueAtClosing` since 2026-08-21; the 2026-08-26 pass named it on the
+                term sheet PDF and all three spreadsheet columns, a later pass reached the
+                borrower's email, and NEITHER reached the panel the officer prices against — so on
+                a ground-up file this list read $1,250 short of the total printed directly beneath
+                it. Same class, one surface further out: folding an amount into a total is HALF a
+                fee. */}
+            {cc.feasibility && Number(cc.feasibility.amount) > 0 && (
+              <Row k={cc.feasibility.label} v={money2(cc.feasibility.amount)} />
+            )}
             {/* GOVERNMENT CHARGES, EACH ON ITS OWN LINE (owner-directed 2026-08-23:
                 *"New York City mortgage tax needs to be a line item calculated
                 separately"*). These used to be missing entirely — the title

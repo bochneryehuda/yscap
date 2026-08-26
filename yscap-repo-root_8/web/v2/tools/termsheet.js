@@ -3075,7 +3075,19 @@
         doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186);
         doc.text(LENDER.name + " \u00b7 NMLS " + LENDER.nmls + " \u00b7 Issued " + fmtD(today), W - M, 65, { align: "right", charSpace: 0.3 });
       }
+      /* A PAGE CARRIES ITS FOOTER ONCE (found by the fee audit's render, 2026-08-26). Two callers
+         legitimately footer "the page we are leaving" — `brk()` before it adds a page, and
+         `disclosuresPage()` at its end — and on a signable sheet BOTH ran on the disclosures page,
+         because that function footers and does NOT add a page, so the acceptance section that
+         follows footered the same page again on its first break. The result is the disclaimer and
+         the term-sheet identity line drawn twice at identical coordinates: double-struck, smeared
+         text on the page that carries the legal wording. Keyed on the page rather than on the
+         caller, so a third caller added later cannot re-introduce it. */
+      var footered = {};
       function footer() {
+        var _fp = 1; try { _fp = doc.internal.getCurrentPageInfo().pageNumber; } catch (e) { /* first page */ }
+        if (footered[_fp]) return;
+        footered[_fp] = true;
         var _ob = window.YSBRAND;
         if (_ob) {
           doc.setFontSize(7.6); doc.setFont("helvetica", "bold"); doc.setTextColor(60, 66, 72);
@@ -4189,23 +4201,50 @@
     var _dpProg = progOf(d);
     var _dpClose = estClosingYMD(), _dpFp = firstPaymentYMD(_dpClose), _dpMat = maturityYMD(_dpFp, inp.term || 12);
 
-    // header
-    doc.setFillColor.apply(doc, INK); doc.rect(0, 0, W, 66, "F");
-    doc.setFillColor.apply(doc, GOLD); doc.rect(0, 66, W, 2, "F");
-    doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.5); doc.line(0, 69.2, W, 69.2);   // fine warm hairline beneath the gold rule
-    var lg = logoData(); if (lg) { var h = 27, w = lg.w * (h / lg.h); try { doc.addImage(lg.dataURI, "PNG", M, 20, w, h); } catch (e) {} }
-    doc.setTextColor(244, 240, 231); doc.setFont("times", "bold"); doc.setFontSize(11.5);
-    doc.text(pdfSafe(title), W - M, 33, { align: "right" });
-    doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186);
-    doc.text(LENDER.name + "  \u00b7  NMLS " + LENDER.nmls, W - M, 48, { align: "right", charSpace: 0.3 });
+    /* THE HEADER AND THE FOOTNOTE ARE FUNCTIONS BECAUSE THIS PAGE CAN NOW RUN TO TWO
+       (owner-reported 2026-08-26: *"the term sheet prints nicely and it's not overlapping. One
+       line on the other."*).
+
+       WHAT WAS WRONG. `section()` grew `y` and NOTHING ever checked the bottom of the paper, while
+       the footnote was drawn at a FIXED H-34. So as this page gained content — the government
+       charges block on 2026-08-23 added a row PLUS a rate/basis sub-row per charge — the Key-dates
+       rows were drawn straight through the footnote and then past the edge of the sheet. MEASURED
+       on a New York ground-up carrying five tax lines: rows at y=790, 804, 817 and 840 on a 792pt
+       page — the government-charges TOTAL and the whole Key-dates section simply were not on the
+       printed document, and the two rows above them were struck through the disclaimer. */
+    function pageTop(cont) {
+      doc.setFillColor.apply(doc, INK); doc.rect(0, 0, W, 66, "F");
+      doc.setFillColor.apply(doc, GOLD); doc.rect(0, 66, W, 2, "F");
+      doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.5); doc.line(0, 69.2, W, 69.2);   // fine warm hairline beneath the gold rule
+      var lg = logoData(); if (lg) { var h = 27, w = lg.w * (h / lg.h); try { doc.addImage(lg.dataURI, "PNG", M, 20, w, h); } catch (e) {} }
+      doc.setTextColor(244, 240, 231); doc.setFont("times", "bold"); doc.setFontSize(11.5);
+      doc.text(pdfSafe(title + (cont ? " (continued)" : "")), W - M, 33, { align: "right" });
+      doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(176, 184, 186);
+      doc.text(LENDER.name + "  \u00b7  NMLS " + LENDER.nmls, W - M, 48, { align: "right", charSpace: 0.3 });
+    }
+    function footNote() {
+      doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.8); doc.line(M, H - 46, W - M, H - 46);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(150, 158, 162);
+      doc.text(pdfSafe((minInterestOn(_dpProg) ? MIN_INTEREST_DETAIL + " " : "") + "Figures are indicative, derived from the inputs above, and subject to full underwriting, appraisal/valuation, title and final credit approval. " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + "."), M, H - 34, { maxWidth: W - 2 * M });
+    }
+    pageTop(false);
 
     var y = 92;
+    /* The content floor is H-56, the same convention the term sheet's own `brk()` uses: it clears
+       the footnote rule at H-46 and the two lines of small print beneath it. */
+    function ensure(need) {
+      if (y + need <= H - 56) return;
+      footNote(); doc.addPage(); pageTop(true); y = 92;
+    }
     if (intro) {
       doc.setFont("helvetica", "italic"); doc.setFontSize(8.6); doc.setTextColor.apply(doc, GRAY);
       var il = doc.splitTextToSize(pdfSafe(intro), W - 2 * M);
       for (var i = 0; i < il.length; i++) { doc.text(il[i], M, y); y += 12; } y += 8;
     }
     function section(label, rows) {
+      /* A HEADING NEVER PRINTS ALONE at the foot of a page — it reserves room for itself and the
+         first row under it, so a section can never be split from its own first line. */
+      ensure(16 + 15);
       doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor.apply(doc, TEAL);
       doc.text(pdfSafe(label.toUpperCase()), M, y, { charSpace: 0.8 });
       doc.setDrawColor.apply(doc, GOLD); doc.setLineWidth(1.3); doc.line(M, y + 4, M + 30, y + 4);
@@ -4217,6 +4256,9 @@
         // total row's ivory band grows with it instead of half-covering it.
         var vf = fitSlotLines(doc, pdfSafe(rows[r][1]), (W - 2 * M) * 0.56, "helvetica", "bold", isSub ? 8 : 8.9, 7.5, 2);
         var vExtra = (vf.lines.length - 1) * 11;
+        /* Break BEFORE drawing, on the row's MEASURED height — a wrapped value makes a row taller,
+           and a row measured after it is drawn is a row already on top of the footnote. */
+        ensure((isSub ? 12.5 : 14.5) + vExtra + (isTot ? 4 : 0));
         if (isTot) { doc.setFillColor(248, 245, 238); doc.rect(M, y - 10.5, W - 2 * M, 15 + vExtra, "F"); doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.7); doc.line(M, y - 9, W - M, y - 9); }
         doc.setFont("helvetica", isTot ? "bold" : "normal"); doc.setFontSize(isSub ? 8 : 8.9); doc.setTextColor.apply(doc, isSub ? GRAY : (isTot ? DARK : BODY));
         doc.text(pdfSafe(rows[r][0]), M + (isSub ? 12 : 0), y);
@@ -4342,10 +4384,7 @@
       ["Maturity date", _dpMat ? fmtDateLong(_dpMat) : "\u2014"]
     ]);
 
-    // footer
-    doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.8); doc.line(M, H - 46, W - M, H - 46);
-    doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(150, 158, 162);
-    doc.text(pdfSafe((minInterestOn(_dpProg) ? MIN_INTEREST_DETAIL + " " : "") + "Figures are indicative, derived from the inputs above, and subject to full underwriting, appraisal/valuation, title and final credit approval. " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + "."), M, H - 34, { maxWidth: W - 2 * M });
+    footNote();
   }
 
   /* ===================== wiring ===================== */

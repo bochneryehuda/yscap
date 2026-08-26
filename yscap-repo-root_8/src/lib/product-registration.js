@@ -711,6 +711,12 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
   const origPctStr = quote.origPct != null
     ? `${Math.round(Number(quote.origPct) * 10000) / 100}%` : null;
   feeRow(`Origination fee${origPctStr ? ` (${origPctStr} of the loan)` : ''}`, cc.origination);
+  /* THE TPO BROKER'S OWN ORIGINATION FEE — and this row was MISSING, found by the fee audit engine
+     (owner-directed 2026-08-26). It is a real borrower closing cost the broker sets on their own
+     firm's files and it has been inside `dueAtClosing` since 2026-08-06, named on the term sheet,
+     all three spreadsheet columns, the studio panel, the staff panel and the derivation page — and
+     not here. It is 0 on every retail file, so this row appears only where it is charged. */
+  feeRow(`Broker origination fee${cc.brokerFeePct != null ? ` (${cc.brokerFeePct}% of the loan)` : ''}`, cc.brokerFee);
   /* OUR OWN FEE, IN ITS TWO REAL PARTS (owner-directed 2026-08-26) — the same two lines the term
      sheet prints, so the borrower's email and the document they sign name the same fees. A file
      carrying a typed WHOLE-NUMBER total prints the single combined line it always printed, and a
