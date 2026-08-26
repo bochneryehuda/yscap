@@ -87,12 +87,24 @@ export default function StaffApprovals() {
     // `can` is memoized on the permission list, so this re-runs once when perms
     // arrive — without it the gate would be frozen at its mount-time value.
   }, [can, role]);
+  const requested = params.get('tab');
+  /* A ?tab=track-record bookmark belongs to the screen that owns it now.
+
+     THIS HOOK SITS ABOVE THE EARLY RETURN BELOW, and that placement is the whole
+     point: React counts hooks per render, so a render that takes the return
+     would call one fewer than the render before it and crash the whole page
+     with "Rendered more hooks than during the previous render". The return is
+     unreachable today, which is exactly why it is worth pinning — the guard
+     (scripts/test-react-hook-order.js) catches it whether or not anybody can
+     reach it. */
+  useEffect(() => {
+    if (requested === 'track-record') window.location.assign('#/internal/track-record');
+  }, [requested]);
   const tabs = TABS.filter((t) => allowed(t.min, role, can));
   if (!tabs.length) {
     // Unreachable in practice — tabs 3–5 are open to every staff role.
     return <div className="page"><div className="notice">Nothing here needs your approval.</div></div>;
   }
-  const requested = params.get('tab');
   /* THE TWO RETIRED TABS KEEP THEIR MEANING RATHER THAN LANDING SOMEWHERE.
      `?tab=mine` was this same list narrowed to you, so an old bookmark opens the
      one list with "Raised by me" already ticked — the intent survives even
@@ -100,10 +112,6 @@ export default function StaffApprovals() {
      owns it now. Anything else unknown falls back to the landing tab, which is
      the list, so no link can dead-end. */
   const active = tabs.find((t) => t.key === (requested === 'mine' ? 'all' : requested)) || tabs[0];
-  // A ?tab=track-record bookmark belongs to the screen that owns it now.
-  useEffect(() => {
-    if (requested === 'track-record') window.location.assign('#/internal/track-record');
-  }, [requested]);
   const Comp = active.Comp;
 
   return (
