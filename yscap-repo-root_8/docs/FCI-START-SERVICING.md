@@ -356,25 +356,132 @@ answer.
 
 ---
 
-## 7. What is UNPROVEN
+## 7. What the live sandbox told us — 2026-08-26
 
-Everything below rests on a live call nobody has made. **No FCI credential exists in this
-repository.**
+The owner supplied a sandbox key. It is **not yet carrying its scopes**, so no loan data has been
+read; but a handful of things were established that FCI documents nowhere, and two of them change
+how the boarding payload has to be built. **No mutation was ever executed** — see the safety note
+below.
 
-1. Whether `insertBoarding` accepts `approvalReinstatement` or `approvaleReinstatement`.
+### 7.1 The connection works, and the two environments identify themselves
+
+`getApiVersion` answers on both hosts:
+
+| Host | Reports |
+|---|---|
+| `tapi.myfci.com` | `environment: Integration`, `version: v 26.8.25.1:1` |
+| `fapi.myfci.com` | `environment: Production`, `version: v 26.8.17.1:1` |
+
+So the sandbox runs a **newer build than production** — worth remembering when something behaves
+one way in testing and another way live.
+
+**`getApiVersion` is UNAUTHENTICATED.** It answers with no key at all, and with a deliberately
+wrong key. So reaching it proves connectivity and nothing else — it must never be used as a
+credential check or a health probe that claims the key works.
+
+Two errors in FCI's own published sample, both found here: they show `getApiVersion` returning an
+**object** (it returns a **String**, so their sample query is invalid as written), and they spell
+the key `enviroment` while the API returns `environment`. The value is a **JSON document inside a
+JSON string** — double-encoded, so it needs parsing twice.
+
+### 7.2 The key is decoded, and its scopes are not live yet
+
+`getLoanPortfolio` refuses with:
+
+> `Required claim 'scope' with any value of 'loaninformation_pull' is not present.`
+
+The key is therefore being read and its claims inspected — it is simply not carrying
+`loaninformation_pull` yet. That matches FCI's own "up to 24 hours" warning, and it is the only
+thing standing between us and answering question A1.
+
+**The portal's scope names do not match what the API checks.** The DDR query refuses with
+`Required claim 'scope' with any value of 'ddr_read, ddr_centurion, centurionddr'` — while the
+portal lists that scope as `ddr_pull`. Three names, none of them the one on the screen. Worth
+asking FCI which spelling actually grants what.
+
+### 7.3 Introspection is off, but validation talks
+
+`__schema` is refused (`Introspection is not allowed for the current request`). However **GraphQL
+validates the whole document before it authorizes and before it executes**, so an invalid document
+reports what is wrong with the *input* even without any scope at all. That is how everything below
+was learned without reading a single loan.
+
+### 7.4 Boarding has REQUIRED fields, and FCI documents none of them
+
+Their published sample is a payload, not a schema: it marks nothing required and gives no types.
+The API names them. Confirmed required so far:
+
+`prevAccount` · `lienPosition` · `fundingDate` · `firstPaymentDate` · `paidToDate` · `nextDueDate`
+
+**This list is INCOMPLETE.** The API reports five at a time, and enumerating the rest means
+repeatedly re-asking with the previous answers filled in. That was not finished, so treat these six
+as a floor and not as the set. Every one of them is already mapped, and `prevAccount` — our own loan
+number — being required is a small piece of good news: FCI *insists* on the field that makes a
+loan we board self-identifying afterwards.
+
+### 7.5 THE DANGEROUS ONE: a misspelled field is silently ignored
+
+An input field FCI does not recognise produces **no error at all**. A payload carrying
+`pilotProbeXyzNotAField` was accepted for validation exactly as if it had not been there.
+
+This changes the standing of question **B7**. It was "which of the two spellings does the server
+take?" — a question with a wrong answer that we assumed would announce itself. It will not. Send
+`approvaleReinstatement` when the server wants `approvalReinstatement` and **the field is dropped
+in silence and the loan boards with FCI's default reinstatement authority**, with nothing anywhere
+saying so.
+
+And it generalises past that one field: **any typo in any of the 146 is silent.** So the payload
+builder cannot simply be careful — the field names have to be verified against the server, one
+by one, before the first live board. The good news is that the technique in §7.3 can do exactly
+that without ever executing anything.
+
+### 7.6 The safety rule that made this possible
+
+`insertBoarding` returns a **scalar**, so asking for a selection set on it
+(`insertBoarding(...) { neverExecutes }`) is a validation error that can never be satisfied.
+GraphQL validates the entire document before running any resolver, so a request carrying that
+error **cannot execute** — whatever the input, on any run. Every probe against a mutation carried
+it, and each response was checked to confirm it came back.
+
+**No mutation was executed, nothing was boarded, and nothing was written to FCI.** Any future
+probing of a write endpoint must carry the same guard.
+
+---
+
+## 8. What is UNPROVEN
+
+Everything below still rests on a call nobody has made. **No FCI credential is stored in this
+repository, and none ever will be** — the sandbox key used on 2026-08-26 was held in a shell
+variable for that session only and written to no file.
+
+Now answerable with the technique in §7.3, as soon as somebody runs it — none of these needs the
+scopes to be live, because validation happens before authorization:
+
+1. Whether `insertBoarding` accepts `approvalReinstatement` or `approvaleReinstatement`. **Now
+   urgent rather than tidy:** §7.5 shows the wrong one is dropped in silence, so the loan boards
+   with FCI's default reinstatement authority and nothing reports it.
 2. Whether `originalVendor` is accepted by the single-loan mutation (it appears only in the
-   documentation and the bulk form).
-3. What `loanType`, `roundError`, `gSTaxUse`, `startingBalance` and the five undocumented
-   default-interest enums do.
-4. Whether `boardingDate` filters on-or-after or exact-day.
-5. Whether the address filters are prefix, substring or something else — and their behaviour on
+   documentation and the bulk form) — and by the same silence, sending it when it is not accepted
+   loses the interest strip's vendor account with no error.
+3. **Every one of the 146 field names**, for the same reason. A typo anywhere is silent.
+4. The complete required-field list. §7.4 has six of them; the API reports five at a time.
+
+Still needs the scopes, or FCI:
+
+5. What `loanType`, `roundError`, `gSTaxUse`, `startingBalance` and the five undocumented
+   default-interest enums *mean*. Validation can confirm a field exists and what type it takes;
+   it cannot say what the value does to a loan.
+6. Whether `boardingDate` filters on-or-after or exact-day.
+7. Whether the address filters are prefix, substring or something else — and their behaviour on
    a street FCI spells differently from us.
-6. Whether the funding block's `rateType` uses the same legend as the loan block's (the generated
+8. Whether the funding block's `rateType` uses the same legend as the loan block's (the generated
    inventory flags this as our inference, not FCI's statement).
-7. Whether a loan can be re-boarded or corrected after the fact, and by what mechanism.
-8. How the lender of record changes when a loan sells — no published mutation does it, and the
-   boarding mutation would create a second live loan. This is the long-standing open item from
-   §5 of the blueprint and it is unchanged.
-9. Everything in `insertBoarding` beyond what FCI's own samples show. Their published collection
-   is a sample payload, not a schema: it lists no field as required, gives no types, and states
-   no validation rules.
+9. Whether a loan can be re-boarded or corrected after the fact, and by what mechanism. **This is
+   now the most important one after B1**: with silent field-dropping, the first live board is
+   likelier than not to get something wrong, and whether that is fixable decides how cautious the
+   first one has to be.
+10. How the lender of record changes when a loan sells — no published mutation does it, and the
+    boarding mutation would create a second live loan. Long-standing, from §5 of the blueprint,
+    unchanged.
+11. Which scope names actually grant what. The portal says `ddr_pull`; the API asks for
+    `ddr_read, ddr_centurion, centurionddr` (§7.2).
