@@ -404,18 +404,43 @@ export default function LtSync() {
         </div>
       )}
 
-      {state && state.failing && state.failing.length > 0 && (
-        <div className="card" style={{ marginTop: 16, color: '#141B22' }}>
-          <h2 style={{ margin: '0 0 8px', fontSize: 16, color: '#141B22' }}>Files we could not read</h2>
-          <ul style={{ margin: 0, paddingLeft: 18, color: '#4B585C', lineHeight: 1.6 }}>
-            {state.failing.map((f) => (
-              <li key={f.encompass_loan_guid}>
-                <strong style={{ color: '#141B22' }}>{f.loan_number || f.encompass_loan_guid}</strong> — {f.encompass_sync_error}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {state && state.failing && state.failing.length > 0 && (() => {
+        // TWO DIFFERENT THINGS, AND THEY SEND YOU TO TWO DIFFERENT PLACES
+        // (owner-reported 2026-08-25). One heading called both "Files we could
+        // not read", so sixteen files that read PERFECTLY — brand-new and
+        // withdrawn files that simply have no investor yet — were presented as
+        // broken. A file PILOT could not open is a problem to chase; a file it
+        // read where a part of the payload is empty is usually just an early
+        // file, and saying so is the difference between a task and a panic.
+        const unread = state.failing.filter((f) => !f.partial);
+        const partial = state.failing.filter((f) => f.partial);
+        const block = (title, note, rows) => (
+          <div className="card" style={{ marginTop: 16, color: '#141B22' }}>
+            <h2 style={{ margin: '0 0 4px', fontSize: 16, color: '#141B22' }}>{title}</h2>
+            <p style={{ margin: '0 0 8px', fontSize: 13, color: '#4B585C' }}>{note}</p>
+            <ul style={{ margin: 0, paddingLeft: 18, color: '#4B585C', lineHeight: 1.6 }}>
+              {rows.map((f) => (
+                <li key={f.encompass_loan_guid}>
+                  <strong style={{ color: '#141B22' }}>{f.loan_number || f.encompass_loan_guid}</strong> — {f.encompass_sync_error}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+        return (
+          <>
+            {unread.length > 0 && block(
+              'Files PILOT could not read',
+              'PILOT could not open these in Encompass. This is worth chasing.',
+              unread)}
+            {partial.length > 0 && block(
+              'Files read, with parts of the payload empty',
+              'PILOT read these successfully. Some part of the file is simply empty in Encompass — '
+              + 'usually because the file is new or withdrawn and has not got that far yet. Nothing is broken.',
+              partial)}
+          </>
+        );
+      })()}
     </LtLayout>
   );
 }
