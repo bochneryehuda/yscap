@@ -143,6 +143,25 @@ const yes = (v, m) => { assert.ok(v, m); ok(m); };
     eq(pct.rows[0].n, 0,
       'C11 and bound against the REAL column, "YSCAP_" matches no row — while unescaped it would match every YSCAP number there is');
 
+    /* THE TWO THINGS THIS MODULE INTERPOLATES INTO SQL ARE PROVEN TO BE WHAT
+       THEY CLAIM. The typed VALUE is always bound, never interpolated — but the
+       table ALIAS and the PARAMETER POSITION are written into the statement, and
+       the module is exported. Every caller today passes a literal, which is
+       exactly why this is worth pinning: the cost of a future one passing a
+       request value is SQL injection rather than a wrong answer. */
+    for (const bad of ['a; DROP TABLE applications --', 'a b', '', null, 1]) {
+      let threw = false;
+      try { S.ADDRESS_TEXT_SQL(bad); } catch (_) { threw = true; }
+      eq(threw, true, `C12 a table alias of ${JSON.stringify(bad)} is refused, never written into the statement`);
+    }
+    for (const bad of ['1; DROP TABLE x', 0, -1, 1.5, null, '2']) {
+      let threw = false;
+      try { S.fileSearchSql(bad); } catch (_) { threw = true; }
+      eq(threw, true, `C13 a parameter position of ${JSON.stringify(bad)} is refused`);
+    }
+    yes(/\$7/.test(S.fileSearchSql(7, { app: 'a', borrower: 'b' })),
+      'C14 while a real position still builds the predicate it always built');
+
     // ── D. THE SEARCH COMPOSES WITH THE FILTERS, IT DOES NOT REPLACE THEM ─
     await c.query(`UPDATE loan_exceptions SET status='approved' WHERE application_id=$1`, [appLine1]);
     eq(mine(await loanExceptions.listExceptions({ status: 'open', q: '598 Pawling' }, c)).length, 0,

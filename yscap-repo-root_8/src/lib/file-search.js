@@ -22,13 +22,28 @@
  * it did not write.
  */
 
+/* A TABLE ALIAS IS INTERPOLATED INTO SQL, so it is proven to BE an alias before
+   it gets there. Every caller today hands over a literal ('a', 'app', 'b'), and
+   that is exactly why this is worth pinning: the module is exported, and the
+   cost of a future caller passing something from a request is SQL injection
+   rather than a wrong answer. Refuse loudly — a bad alias is a programming
+   error, and a broken query would surface as an unexplained 500 far from it. */
+const ALIAS_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+function safeAlias(v) {
+  const s = String(v == null ? '' : v);
+  if (!ALIAS_RE.test(s)) {
+    throw new TypeError(`file-search: table alias must be a plain identifier, got ${JSON.stringify(v)}`);
+  }
+  return s;
+}
+
 /* THE ADDRESS HAYSTACK. `oneLine` when the row has one (it is the canonical,
    already-formatted string), otherwise composed from the parts — accepting BOTH
    `line1` and `street`, because both spellings are live in this table and a
    search that knows only one of them is the bug this exists to fix. Kept as a
    single expression so a caller cannot half-adopt it. */
 function ADDRESS_TEXT_SQL(alias = 'a') {
-  const p = `${alias}.property_address`;
+  const p = `${safeAlias(alias)}.property_address`;
   return `COALESCE(
             NULLIF(${p}->>'oneLine',''),
             NULLIF(concat_ws(', ',
@@ -65,14 +80,25 @@ function likeParam(raw, { min = 2, max = 80 } = {}) {
    both halves separately also lets "scharf" find a person whose first name is
    stored with a middle name attached. */
 function fileSearchSql(idx, { app = 'a', borrower = 'b' } = {}) {
+  /* THE PARAMETER POSITION IS INTERPOLATED, so it must be proven to be a
+     position and not text. Every caller today passes `params.length`, but this
+     module is a public surface and the failure mode of a future one passing a
+     request value here is SQL injection, not a wrong answer. A throw is right:
+     an unusable index is a programming error, and answering with a broken query
+     would surface as an unexplained 500 far from its cause. */
+  if (!Number.isInteger(idx) || idx < 1) {
+    throw new TypeError(`fileSearchSql: the parameter position must be a positive integer, got ${JSON.stringify(idx)}`);
+  }
+  const a = safeAlias(app);
+  const b = safeAlias(borrower);
   const p = `$${idx}`;
   return `(
-      COALESCE(${app}.ys_loan_number,'')            ILIKE ${p}
-   OR ${ADDRESS_TEXT_SQL(app)}                      ILIKE ${p}
-   OR COALESCE(${borrower}.first_name,'')           ILIKE ${p}
-   OR COALESCE(${borrower}.last_name,'')            ILIKE ${p}
-   OR COALESCE(${borrower}.first_name,'') || ' ' || COALESCE(${borrower}.last_name,'') ILIKE ${p}
+      COALESCE(${a}.ys_loan_number,'')             ILIKE ${p}
+   OR ${ADDRESS_TEXT_SQL(a)}                        ILIKE ${p}
+   OR COALESCE(${b}.first_name,'')                  ILIKE ${p}
+   OR COALESCE(${b}.last_name,'')                   ILIKE ${p}
+   OR COALESCE(${b}.first_name,'') || ' ' || COALESCE(${b}.last_name,'') ILIKE ${p}
   )`;
 }
 
-module.exports = { ADDRESS_TEXT_SQL, likeParam, fileSearchSql };
+module.exports = { ADDRESS_TEXT_SQL, likeParam, fileSearchSql, _internals: { safeAlias } };
