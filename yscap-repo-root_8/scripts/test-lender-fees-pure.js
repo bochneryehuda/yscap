@@ -510,6 +510,25 @@ if (!pricing.enginesReady || !pricing.enginesReady()) {
       Math.round((b.cashToClose - a.cashToClose) * 100) / 100, 9000 - a.closingCosts.lenderFeeParts.legal);
   }
 
+  /* I13b A BLANKED BOX CLEARS THE STICKY VALUE — and this is the defect the NUMK loop looks like
+     it covers and does not. That loop SKIPS a blank, which stops a blank OVERWRITING anything; but
+     `fileInputs` has already put the sticky per-file amount on the base object, so skipping leaves
+     the stale amount standing. A box the officer deliberately emptied would silently re-apply what
+     they cleared, the studio would print it against an empty box, and the registered quote would
+     disagree with the column the register then clears. Same class as the 2026-07-16 sticky markup. */
+  {
+    const sticky = mk({
+      property_address: { state: 'NY', city: 'Albany', county: 'Albany' },
+      file_legal_fee: 1500, file_settlement_fee: 400, file_underwriting_fee: 700,
+    });
+    const held = quote(sticky);
+    eq('I13b a sticky per-file amount applies on its own', [held.closingCosts.lenderFeeParts.legal, held.closingCosts.settlementFee, held.closingCosts.lenderFeeParts.underwriting], [1500, 400, 700]);
+    const cleared = quote(sticky, { legalFee: '', settlementFee: '', underwritingFee: '' });
+    eq('I13c …and a BLANKED box clears it back to the deal\'s own rung / the company number',
+      [cleared.closingCosts.lenderFeeParts.legal, cleared.closingCosts.settlementFee, cleared.closingCosts.lenderFeeParts.underwriting], [2000, 750, 1200]);
+    eq('I13d …while a typed 0 still WAIVES rather than clears', quote(sticky, { legalFee: 0 }).closingCosts.lenderFeeParts.legal, 0);
+  }
+
   // I13: the legacy typed total still governs, so an old registration re-prices identically.
   {
     const q = quote(mk({ property_address: { state: 'NY', city: 'Brooklyn' } }), { lenderFee: 2195 });

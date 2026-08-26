@@ -449,6 +449,18 @@ function buildInputs(app, experience, overrides) {
     if (overrides.markupGoldPct === '') delete out.markupGoldPct;
     if (overrides.markupSilverPct === '') delete out.markupSilverPct;
     if (overrides.markupGoldT1Pct === '') delete out.markupGoldT1Pct;
+    /* OUR FEE'S TWO PARTS, THE OPTIONAL SETTLEMENT FEE AND THE CEMA AMOUNT need the SAME explicit
+       delete, and it is not the NUMK loop that provides it. That loop SKIPS a blank, which stops a
+       blank overwriting anything — but the base object has already been given the STICKY per-file
+       value by `fileInputs`, so skipping leaves the stale amount standing and a box the officer
+       deliberately emptied would silently re-apply what they cleared: the studio would print $1,500
+       of legal fee against an empty box, and the registered quote would disagree with the column
+       the register then clears. Exactly the 2026-07-16 sticky-markup defect, one fee family on.
+       (`nyCema` needs nothing — it is a BOOLEAN and the BOOLK loop assigns `false` over the base.) */
+    if (overrides.underwritingFee === '') delete out.underwritingFee;
+    if (overrides.legalFee === '') delete out.legalFee;
+    if (overrides.settlementFee === '') delete out.settlementFee;
+    if (overrides.cemaFee === '') delete out.cemaFee;
     if (overrides.irMonths === '') out.irMonths = 0;
   }
   out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization

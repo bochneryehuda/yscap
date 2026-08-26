@@ -118,9 +118,19 @@ function shape(row) {
    derives, and `cd.underwritingFee` gives that detector the scalar it needs to recognise a typed
    box as a restatement of the company default rather than an exception. A general file's total is
    1,200 + 995 = 2,195, which is byte-for-byte what the column held. */
-function withDerivedTotals(shaped) {
+function withDerivedTotals(shaped, row) {
   const p = shaped.lenderFees || SYSTEM_DEFAULTS.lenderFees;
-  return { ...shaped, underwritingFee: Number(p.underwriting), lenderFee: Number(p.underwriting) + Number(p.legal) };
+  const out = { ...shaped, underwritingFee: Number(p.underwriting) };
+  /* THE TOTAL IS DERIVED ONLY FROM PARTS THE ROW ACTUALLY CARRIED. `cleanLenderFees` falls back
+     to the system numbers for a row that has none, which is right for PRICING (a blank column must
+     never make a real fee vanish) and wrong for HISTORY: `asOf()` answers "what was the company
+     default on the day this file registered?", and a settings row written before db/632 has no
+     parts — answering with today's parts would report a total that company never had, and the
+     approval detector would then read an honest restatement of their old total as a discount.
+     db/632 seeds every row from its own `lender_fee`, so in practice the two agree; this makes
+     that a property rather than a coincidence. */
+  if (row && row.lender_fees != null) out.lenderFee = Number(p.underwriting) + Number(p.legal);
+  return out;
 }
 
 // Normalize a per-tier markup map (jsonb column or an API body) into
@@ -165,7 +175,7 @@ async function load() {
               lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability,
               feasibility_fees, lender_fees
          FROM company_pricing_settings WHERE is_current LIMIT 1`);
-    _cache = { at: Date.now(), val: withDerivedTotals(shape(r.rows[0])) };
+    _cache = { at: Date.now(), val: withDerivedTotals(shape(r.rows[0]), r.rows[0]) };
   } catch (e) {
     // Never let a settings hiccup break pricing — keep the last good value.
     if (!_cache.val) _cache = { at: Date.now(), val: SYSTEM_DEFAULTS };
@@ -200,13 +210,25 @@ async function asOf(when) {
   if (!when) return null;
   try {
     const r = await db.query(
+      /* THE COMPARISON IS WIDENED BY ONE MILLISECOND, AND THAT IS NOT A FUDGE.
+         Postgres stores `timestamptz` to the MICROSECOND; a JavaScript Date holds only
+         MILLISECONDS, so a timestamp that has been through node-pg (which is how every caller gets
+         one — a registration's `created_at`, a settings row's own) is the stored value TRUNCATED
+         DOWN. Compared with a bare `<=`, a settings row written in the same millisecond as the
+         moment being asked about is EXCLUDED, and the answer becomes the PREVIOUS default — so a
+         knob that honestly restated the default in force would be classified as a deviation and
+         file an exception nobody asked for. MEASURED: `asOf(row.created_at)` on a row stored at
+         `…33.362795` returned the NEXT row's numbers, because the Date carried `…33.362`.
+         Widening by 1ms cannot reach any other row: two settings rows written inside one
+         millisecond of each other would need two saves in the same instant, and even then the
+         later one is the one in force at that instant, which is what this returns. */
       `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct,
               lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability,
               feasibility_fees, lender_fees
          FROM company_pricing_settings
-        WHERE created_at <= $1
+        WHERE created_at < $1::timestamptz + interval '1 millisecond'
         ORDER BY created_at DESC LIMIT 1`, [when]);
-    return r.rows[0] ? withDerivedTotals(shape(r.rows[0])) : SYSTEM_DEFAULTS;
+    return r.rows[0] ? withDerivedTotals(shape(r.rows[0]), r.rows[0]) : SYSTEM_DEFAULTS;
   } catch (_) { return null; }
 }
 
