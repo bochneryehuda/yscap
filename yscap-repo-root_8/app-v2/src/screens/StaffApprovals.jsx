@@ -78,7 +78,6 @@ export default function StaffApprovals() {
       }
       api.findingEscalationsCount().then((r) => put('findings', (r && r.pendingCount) || 0)).catch(() => {});
       api.get('/api/staff/sync-reviews/count').then((r) => put('sync', (r && r.open) || 0)).catch(() => {});
-      api.myExceptionsCount().then((r) => put('mine', (r && r.openCount) || 0)).catch(() => {});
       api.staffTrackRecordReviewsCount().then((r) => put('track-record', (r && r.pending) || 0)).catch(() => {});
     };
     poll();
