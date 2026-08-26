@@ -41,16 +41,19 @@ check(discover.parseAmount('') === null && discover.parseAmount(null) === null
 check(discover.parseAmount('0') === 0,
   '…while a real zero is still a real zero');
 
-// The probe's exact string.
+// The probe's exact string. THE DIGITS COME BACK FOUR HOURS LATER ON PURPOSE:
+// Encompass states this as a bare wall clock in the tenant's own timezone with no
+// offset, so 10:48 AM in New York is 14:48Z in summer. These lines used to expect
+// the digits verbatim — the defect `test-lt-tenant-time-pure.js` reproduces.
 const d = discover.parsePipelineDate('8/14/2026 10:48:18 AM');
-check(d === '2026-08-14T10:48:18.000Z',
+check(d === '2026-08-14T14:48:18.000Z',
   'the US-locale pipeline date is taken apart explicitly, not handed to new Date()');
-check(discover.parsePipelineDate('8/14/2026 1:05:00 PM') === '2026-08-14T13:05:00.000Z',
+check(discover.parsePipelineDate('8/14/2026 1:05:00 PM') === '2026-08-14T17:05:00.000Z',
   'PM is added on…');
-check(discover.parsePipelineDate('8/14/2026 12:30:00 AM') === '2026-08-14T00:30:00.000Z',
+check(discover.parsePipelineDate('8/14/2026 12:30:00 AM') === '2026-08-14T04:30:00.000Z',
   '…and midnight is 00:30, not 12:30 — the one hour every date parser gets wrong');
-check(discover.parsePipelineDate('12/31/2026 11:59:59 PM') === '2026-12-31T23:59:59.000Z',
-  'noon/midnight aside, PM is otherwise a straight +12');
+check(discover.parsePipelineDate('12/31/2026 11:59:59 PM') === '2027-01-01T04:59:59.000Z',
+  'noon/midnight aside, PM is otherwise a straight +12 — and the last minute of the year lands in the NEXT year once the zone is applied, which a UTC reading hides');
 check(discover.parsePipelineDate('2026-08-14T10:48:18Z') === '2026-08-14T10:48:18.000Z',
   'an ISO stamp from a differently-configured tenant is read too');
 check(discover.parsePipelineDate('') === null && discover.parsePipelineDate('not a date') === null
@@ -117,21 +120,41 @@ check(loans.stageFor(null, {}).milestoneName === null,
 // ── What is worth re-reading ────────────────────────────────────────────────
 console.log('\nwhat is worth re-reading');
 
-check(loans.needsRead({ encompass_synced_at: null }) === true,
+// EVERY CASE BELOW STATES ITS OWN `now`. These used to let `now` default to the wall
+// clock, which was harmless while the only question was "did the stamp move" and is a
+// flake the moment a ROTA is involved: fixtures dated 2026-08-14 are days stale by the
+// time anybody runs this, so every one of them would answer "due" for the wrong reason.
+const NOW = Date.parse('2026-08-14T12:30:00Z');
+
+check(loans.needsRead({ encompass_synced_at: null }, NOW) === true,
   'a loan we have never read is read');
 check(loans.needsRead({
   encompass_synced_at: '2026-08-14T10:00:00Z',
   encompass_last_modified: '2026-08-14T11:00:00Z',
-}) === true, 'a loan Encompass changed since our last read is re-read');
+}, NOW) === true, 'a loan Encompass changed since our last read is re-read');
 check(loans.needsRead({
   encompass_synced_at: '2026-08-14T12:00:00Z',
   encompass_last_modified: '2026-08-14T11:00:00Z',
-}) === false, 'a loan nothing has happened to is left alone — this is what makes a 700-loan pass cheap');
+}, NOW) === false, 'a loan nothing has happened to is left alone — this is what makes a 700-loan pass cheap');
+
+// THE SECOND FREEZE, and this assertion is the one that recorded it. It used to read
+// "read once and then left" — for ever — and the reasoning stated in its own message
+// was only half right: an absent stamp really does say nothing about change, so it
+// must not mean "re-read on every tick"; but it does not mean "never look again"
+// either, and a loan whose stamp Encompass stops returning was abandoned in whatever
+// state it was found in. `needsRead` now re-reads on a ROTA regardless of the stamps,
+// which keeps the cheap pass cheap AND cannot strand a loan. The original concern is
+// pinned by the SECOND case: an hour after a read, an unstamped loan is still left be.
+check(loans.needsRead({
+  encompass_synced_at: '2026-08-14T00:00:00Z',
+  encompass_last_modified: null,
+}, NOW) === true,
+  'a loan with NO Encompass stamp is re-read once the rota comes round — the old rule read an absent stamp as "never look again" and abandoned it');
 check(loans.needsRead({
   encompass_synced_at: '2026-08-14T12:00:00Z',
   encompass_last_modified: null,
-}) === false,
-  'a loan with NO Encompass stamp is read once and then left — an absent stamp says nothing about change, and reading it as "changed" re-reads it on every tick for ever');
+}, NOW) === false,
+  '…but one read half an hour ago is still left alone, so the rota is a backstop and never a re-read of the whole book on every tick');
 check(loans.needsRead(null) === false, 'a missing row asks for nothing');
 
 console.log(`\n${failures ? `${failures} FAILED` : 'all passed'}`);

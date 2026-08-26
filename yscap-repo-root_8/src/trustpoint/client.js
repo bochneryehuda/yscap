@@ -18,11 +18,23 @@
 
 const cfg = require('../config');
 const switches = require('../lib/integrations/switches');
+const parked = require('./parked');
 
 const PREFIX = () => String(cfg.trustpointPathPrefix || '/public-api').replace(/\/+$/, '');
 
 function available() { return !!cfg.trustpointApiKey; }
-function enabled() { return switches.on('TRUSTPOINT_ENABLED'); }
+// PARKED BEATS THE SWITCH, deliberately — `switches.on` resolves through `lib/flags`, where a
+// stored `integration_flags` row overrides the environment, so TRUSTPOINT_ENABLED=0 alone is not
+// proof the integration is off. See ./parked.js. Every outbound call, the poller and the mirror
+// already funnel through here, so one line parks all three.
+//
+// HONEST NOTE, MEASURED not assumed: this `!parked.isParked()` is REDUNDANT today. `switches.on`
+// already returns false while parked, so removing it here does NOT turn the suite red (mutation
+// M2, run 2026-08-24: 41 assertions, all green). It is kept as defence in depth — a future
+// change to `switches.on`, or a caller reaching a client method some other way, would otherwise
+// re-open the integration silently — but nothing proves it bites, so do not read it as a
+// guard that does.
+function enabled() { return !parked.isParked() && switches.on('TRUSTPOINT_ENABLED'); }
 
 /** Dollars-double or decimal-string → integer cents. null/garbage → null (never 0). */
 function centsFromTp(v) {

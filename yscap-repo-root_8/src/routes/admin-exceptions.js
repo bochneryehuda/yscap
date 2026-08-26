@@ -54,6 +54,10 @@ const { can } = require('../lib/permissions');
 const loanExceptions = require('../lib/loan-exceptions');
 const notify = require('../lib/notify');
 const { buildXlsx } = require('../lib/xlsx');
+// Every place a request to deviate can land, read as ONE list.
+const feed = require('../lib/exception-feed');
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const labelsOf = () => Object.fromEntries(Object.keys(feed.SOURCES).map((k) => [k, feed.SOURCES[k].label]));
 
 function auditSafe(actorId, action, entityType, entityId, detail) {
   db.query(
@@ -131,12 +135,27 @@ router.get('/', requirePermission('manage_pricing'), async (req, res) => {
   try {
     const status = ['open', 'approved', 'denied', 'withdrawn', 'cleared', 'expired', 'all'].includes(req.query.status) ? req.query.status : 'open';
     const type = loanExceptions.isExceptionType(req.query.type) ? req.query.type : null;
-    const [rows, pending] = await Promise.all([
-      loanExceptions.listExceptions({ status, type }),
+    // What the person typed: a loan number, an address, a borrower's name. Bound,
+    // never interpolated; too short to be a search simply does not filter.
+    const q = String(req.query.q || '').trim();
+    /* NO SILENT CAP ON A SEARCH RESULT. The list is paged, and a screen that
+       prints `rows.length` beside "showing matches for …" reads a LIMIT as a
+       COUNT — so a search matching 150 files says "100" and nobody learns there
+       are 50 more. Ask for one MORE than the page and drop it, which MEASURES
+       whether there is another page instead of inferring it from a full one
+       (the trap `trailEvents` documents: a full page can equally be the whole
+       answer). The rows returned are exactly the page, unchanged. */
+    const PAGE = 100;
+    const [raw, pending] = await Promise.all([
+      loanExceptions.listExceptions({ status, type, q, limit: PAGE + 1 }),
       loanExceptions.pendingCount(),
     ]);
+    const hasMore = raw.length > PAGE;
+    const rows = hasMore ? raw.slice(0, PAGE) : raw;
     res.json({
       exceptions: rows,
+      hasMore,
+      pageSize: PAGE,
       pendingCount: pending,
       canDecide: can(req.actor, 'manage_pricing'),
       // A super-admin may decide their OWN request (owner-directed 2026-07-31);
@@ -144,6 +163,66 @@ router.get('/', requirePermission('manage_pricing'), async (req, res) => {
       canDecideOwn: req.actor.role === 'super_admin',
       actorId: req.actor.id,
       ...registryPayload(),
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/* ── THE ONE LIST ──────────────────────────────────────────────────────────
+   Owner-directed 2026-08-26: *"There are too many separate sections, and it is
+   very hard to keep track of it … merge everything into one place with filters
+   for exceptions … All exceptions at that address should come up, and you
+   should be able to filter by statuses."*
+
+   EVERY SOURCE KEEPS ITS OWN GATE. The three queues this reads are not equally
+   sensitive and never were: pricing exceptions and manual programs are
+   `manage_pricing`, while a finding sent up for a second opinion is visible to
+   any staffer on the file. Putting the merged list behind ONE permission would
+   either widen the pricing queues to everybody or take the findings queue away
+   from the loan officers who use it, so the viewer's own permissions decide
+   which sources they get — the merge is about ONE SCREEN, never about one gate.
+
+   AND A SOURCE THEY MAY NOT SEE IS NAMED, NOT OMITTED. `withheld` tells the
+   screen "there are pricing approvals here you cannot see" rather than letting
+   an empty list read as "there is nothing" — the same reason `failed` names a
+   store that could not be read. A merged list that quietly drops a queue looks
+   exactly like a quiet queue, and being missed is the problem this replaces. */
+router.get('/feed', async (req, res) => {
+  try {
+    if (!req.actor || req.actor.kind !== 'staff') return res.status(403).json({ error: 'forbidden' });
+    const mayPricing = can(req.actor, 'manage_pricing');
+    /* `=== true` and `hasSource`, never truthiness: each of these is a REQUEST
+       VALUE indexing an object, and `ALLOWED.constructor` is every bit as
+       truthy as a real permission. An unrecognised source reads as "no
+       filter" — a list may fail toward showing more, never toward a queue
+       nobody may see. */
+    const ALLOWED = { exception: !!mayPricing, pricing: !!mayPricing, finding: true };
+    const asked = feed.hasSource(req.query.source) ? [String(req.query.source)] : Object.keys(feed.SOURCES);
+    const sources = asked.filter((k) => ALLOWED[k] === true);
+    const withheld = asked.filter((k) => ALLOWED[k] !== true);
+    if (!sources.length) {
+      return res.json({ rows: [], hasMore: false, pageSize: 0, failed: [], withheld, states: feed.STATES, sourceLabels: labelsOf() });
+    }
+    const state = feed.STATES.includes(req.query.state) ? req.query.state : null;
+    const mine = req.query.mine === '1' ? req.actor.id : null;
+    const appId = UUID_RE.test(String(req.query.app || '')) ? String(req.query.app) : null;
+    const q = String(req.query.q || '').trim();
+    /* One source at a time when the caller narrowed it; otherwise every source
+       this viewer may read. The lib takes ONE source or all, so a permitted
+       subset is read source-by-source and merged here — newest first, the same
+       total order the lib uses, so paging is stable. */
+    const parts = await Promise.all(sources.map((k) => feed.listAll({ q, state, source: k, mine, appId, limit: 100 })));
+    const rows = parts.flatMap((p) => p.rows).sort((x, y) => {
+      const ax = x.requested_at ? new Date(x.requested_at).getTime() : 0;
+      const ay = y.requested_at ? new Date(y.requested_at).getTime() : 0;
+      return ay !== ax ? ay - ax : String(y.id).localeCompare(String(x.id));
+    });
+    const PAGE = 100;
+    const hasMore = rows.length > PAGE || parts.some((p) => p.hasMore);
+    res.json({
+      rows: rows.slice(0, PAGE),
+      hasMore, pageSize: PAGE,
+      failed: parts.flatMap((p) => p.failed),
+      withheld, sources, states: feed.STATES, sourceLabels: labelsOf(),
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -171,7 +250,12 @@ router.get('/export.xlsx', requirePermission('manage_pricing'), async (req, res)
   try {
     const status = ['open', 'approved', 'denied', 'withdrawn', 'cleared', 'expired', 'all'].includes(req.query.status) ? req.query.status : 'all';
     const type = loanExceptions.isExceptionType(req.query.type) ? req.query.type : null;
-    const rows = await loanExceptions.listExceptions({ status, type, limit: 500 });
+    /* THE EXPORT CARRIES THE SAME SEARCH THE SCREEN IS SHOWING. Without it the
+       button quietly hands back the WHOLE register while the screen shows six
+       rows — an export that does not match what you were looking at is worse
+       than no export, because nobody re-reads a spreadsheet they just asked for. */
+    const q = String(req.query.q || '').trim();
+    const rows = await loanExceptions.listExceptions({ status, type, q, limit: 500 });
     const labels = registryPayload().typeLabels;
     const fmtWhen = (ts) => (ts ? new Date(ts).toISOString().slice(0, 16).replace('T', ' ') : '');
     const addr = (a) => {
@@ -212,7 +296,7 @@ router.get('/export.xlsx', requirePermission('manage_pricing'), async (req, res)
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="exception-register-${new Date().toISOString().slice(0, 10)}.xlsx"`);
     res.send(buf);
-    auditSafe(req.actor.id, 'exception_register_exported', 'system', null, { status, type, rows: out.length });
+    auditSafe(req.actor.id, 'exception_register_exported', 'system', null, { status, type, q: q || null, rows: out.length });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

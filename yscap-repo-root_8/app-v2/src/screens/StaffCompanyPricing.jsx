@@ -68,6 +68,33 @@ const toForm = (o) => {
   for (const k of KEYS) f[k] = (o && o[k] != null) ? String(o[k]) : '';
   return f;
 };
+/* OUR FEE'S TWO PARTS AND THE NEW YORK LEGAL LADDER (owner-directed 2026-08-26).
+   The KEY LIST is the RULE MODULE's own shape, restated here only as labels — a
+   rung added there and forgotten in a hand-typed list would silently become
+   un-editable, which is the one thing a settings screen must never be. */
+const LENDER_FEE_FIELDS = [
+  ['underwriting', 'Underwriting & processing ($)', 'Every file'],
+  ['legal', 'Legal fee — general ($)', 'Every file outside New York'],
+  ['legalGroundUp', 'Legal fee — ground-up ($)', 'Ground-up construction, outside New York'],
+  ['legalNy', 'Legal fee — New York ($)', 'New York, outside the five boroughs'],
+  ['legalNyHigh', 'Legal fee — New York City / heavy ($)', 'The five boroughs, a $100,000+ construction budget, a heavy rehab, or a New York ground-up'],
+  ['settlementNy', 'New York settlement agent — optional ($)', 'Pre-filled on a New York file; the officer can change or decline it'],
+  ['cemaNy', 'New York CEMA ($)', 'Pre-filled on a New York refinance, and only charged when the officer answers that it IS a CEMA'],
+];
+const lfToForm = (o) => {
+  const src = (o && o.lenderFees) || {};
+  const out = {};
+  for (const [k] of LENDER_FEE_FIELDS) out[k] = src[k] == null ? '' : String(src[k]);
+  return out;
+};
+const lfToBody = (f) => {
+  const out = {};
+  for (const [k] of LENDER_FEE_FIELDS) {
+    const n = Number(f[k]);
+    if (f[k] !== '' && isFinite(n) && n >= 0) out[k] = n;
+  }
+  return out;
+};
 // Build the editable per-tier grid from a settings object's markupTiers map.
 const tiersToForm = (o) => {
   const mt = (o && o.markupTiers) || {};
@@ -229,6 +256,7 @@ export default function StaffCompanyPricing() {
   const [tiers, setTiers] = useState(tiersToForm(null));   // per-tier markup grid
   const [fees, setFees] = useState([]);         // extra fees: [{ name, amount, state }]
   const [avail, setAvail] = useState(availToForm(null));   // program ON/OFF switches
+  const [lf, setLf] = useState(lfToForm(null));            // our fee's parts + the New York legal ladder
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);         // { ok, text }
@@ -239,7 +267,7 @@ export default function StaffCompanyPricing() {
     .map((f) => ({ name: String(f.name || ''), amount: String(f.amount == null ? '' : f.amount), state: String(f.state || '') }));
 
   const load = () => api.adminPricingGet()
-    .then((d) => { setData(d); setForm(toForm(d.current)); setTiers(tiersToForm(d.current)); setFees(feesFrom(d.current)); setAvail(availToForm(d.current)); })
+    .then((d) => { setData(d); setForm(toForm(d.current)); setTiers(tiersToForm(d.current)); setFees(feesFrom(d.current)); setAvail(availToForm(d.current)); setLf(lfToForm(d.current)); })
     .catch((e) => flash(false, e.message || 'could not load pricing settings'));
   useEffect(() => { if (isAdmin) load(); /* eslint-disable-next-line */ }, [isAdmin]);
 
@@ -247,6 +275,14 @@ export default function StaffCompanyPricing() {
   if (!data) return <div className="panel">Loading pricing…</div>;
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: String(v).replace(/[^0-9.]/g, '') }));
+  /* The live value of one fee box, falling back to the system number so the sentence above never
+     reads NaN while somebody is mid-edit or has cleared a box. */
+  const lfNum = (k) => {
+    const n = Number(lf[k]);
+    if (lf[k] !== '' && isFinite(n) && n >= 0) return n;
+    const sys = (data.systemDefaults && data.systemDefaults.lenderFees) || {};
+    return Number(sys[k]) || 0;
+  };
   const cur = data.current || {};
   // Fee-list editing (name / amount / state). state '' = every file; a 2-letter
   // code = that state only. The seeded NY settlement fee is just the first row.
@@ -269,12 +305,13 @@ export default function StaffCompanyPricing() {
   const feesDirty = JSON.stringify(cleanFees(fees)) !== JSON.stringify(cleanFees(feesFrom(cur)));
   const tiersDirty = JSON.stringify(tiersToBody(tiers)) !== JSON.stringify(tiersToBody(tiersToForm(cur)));
   const availDirty = JSON.stringify(availToBody(avail)) !== JSON.stringify(availToBody(availToForm(cur)));
-  const dirty = feesDirty || tiersDirty || availDirty || KEYS.some((k) => String(cur[k] == null ? '' : cur[k]) !== String(form[k] == null ? '' : form[k]));
+  const lfDirty = JSON.stringify(lfToBody(lf)) !== JSON.stringify(lfToBody(lfToForm(cur)));
+  const dirty = feesDirty || tiersDirty || availDirty || lfDirty || KEYS.some((k) => String(cur[k] == null ? '' : cur[k]) !== String(form[k] == null ? '' : form[k]));
 
   async function save() {
     setBusy(true);
     try {
-      const body = { note: note.trim() || undefined, extraFees: cleanFees(fees), markupTiers: tiersToBody(tiers), programAvailability: availToBody(avail) };
+      const body = { note: note.trim() || undefined, extraFees: cleanFees(fees), markupTiers: tiersToBody(tiers), programAvailability: availToBody(avail), lenderFees: lfToBody(lf) };
       for (const k of KEYS) body[k] = form[k] === '' ? null : Number(form[k]);
       await api.adminPricingPut(body);
       setNote('');
@@ -396,6 +433,26 @@ export default function StaffCompanyPricing() {
           <Field form={form} set={set} k="creditFee" label="Credit report fee ($)" />
           <Field form={form} set={set} k="appraisalFee" label="Appraisal fee ($)" />
           <Field form={form} set={set} k="titleFee" label="Title fee ($)" hint="Blank = auto-estimate per state" />
+        </div>
+
+        <h3 style={{ margin: '18px 0 0' }}>Our fee — the two parts, and the New York ladder</h3>
+        <p className="muted small" style={{ margin: '2px 0 10px' }}>
+          Our own fee is quoted as <strong>underwriting &amp; processing</strong> plus a
+          <strong> legal fee</strong>, and the legal fee depends on the deal. A general file is
+          ${'{'}fmtMoney(lf.underwriting){'}'} + ${'{'}fmtMoney(lf.legal){'}'} = <strong>${'{'}fmtMoney(lfTotal){'}'}</strong>.
+          Every number here is a <em>pre-fill</em> — an officer can change it on any single file from
+          the manual section of Products &amp; Pricing.
+        </p>
+        <div className="grid cols-2">
+          {LENDER_FEE_FIELDS.map(([k, label, hint]) => (
+            <label key={k} className="field">
+              <span>{label}</span>
+              <input className="input" inputMode="decimal" value={lf[k]}
+                placeholder={String((data.systemDefaults && data.systemDefaults.lenderFees && data.systemDefaults.lenderFees[k]) ?? '')}
+                onChange={(e) => setLf((o) => ({ ...o, [k]: String(e.target.value).replace(/[^0-9.]/g, '') }))} />
+              <small className="muted">{hint}</small>
+            </label>
+          ))}
         </div>
 
         <h3 style={{ margin: '18px 0 0' }}>Additional fees</h3>

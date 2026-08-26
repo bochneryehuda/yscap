@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
 
@@ -99,15 +99,65 @@ function LastPull({ state }) {
  * It NAMES what is failing rather than only counting it — the reason is already
  * stored on the loan, and a bare count sends somebody hunting.
  */
+/** How long a loan has waited, in words. Seconds are never shown — nobody acts on
+ *  "waiting 94 seconds", and rounding up to "under a minute" is honest either way. */
+function waitedFor(secs) {
+  const n = Number(secs);
+  if (!Number.isFinite(n) || n < 0) return 'an unknown time';
+  if (n < 60) return 'under a minute';
+  if (n < 3600) { const m = Math.floor(n / 60); return `${m} minute${m === 1 ? '' : 's'}`; }
+  if (n < 86400) { const h = Math.floor(n / 3600); return `${h} hour${h === 1 ? '' : 's'}`; }
+  const d = Math.floor(n / 86400);
+  return `${d} day${d === 1 ? '' : 's'}`;
+}
+
+/**
+ * WHAT A FINISHED PULL DID, in one sentence — or null when there is nothing to say.
+ *
+ * Exported and pure so the wording can be proven without a browser. It reads the
+ * run row the screen's own last-run box reads, so the sentence somebody sees after
+ * pressing the button and the box under it can never describe two different passes.
+ *
+ * NULL, NEVER A SENTENCE, when no pass has been recorded: the box below already
+ * says "no pull has been recorded yet", and a second line inventing one would be a
+ * claim about a pass that did not happen.
+ */
+export function pullOutcomeNote(run) {
+  if (!run) return null;
+  if (run.ok === false) return `The pull did not work: ${run.reason || 'no reason was recorded.'}`;
+  const found = run.discovered == null ? null : Number(run.discovered);
+  const read = run.read_count == null ? 0 : Number(run.read_count);
+  const left = run.remaining == null ? null : Number(run.remaining);
+  // "NOTHING" IS AN ANSWER, and it is the one that says the connection is fine and
+  // the book is genuinely empty. It must never be drawn as a failure, and it must
+  // never be collapsed with "we could not ask".
+  if (found === 0) {
+    return 'The pull finished. Encompass returned no long-term loans at all — '
+      + 'the connection worked, the book is empty.';
+  }
+  return `The pull finished. ${found == null ? 'It' : `Found ${found} loans and`} read ${read} in full`
+    + `${run.failed ? `, ${run.failed} could not be read` : ''}`
+    + `${left ? `, ${left} still to go — they come round on the next pass` : ''}.`;
+}
+
 export default function LtSync() {
   const [state, setState] = useState(null);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(() => {
-    ltApi.syncState().then(setState).catch((e) => setNote(e.message || 'Could not read the sync state.'));
-  }, []);
-  useEffect(load, [load]);
+  // EVERY TIMER THIS SCREEN SETS IS HELD SO IT CAN BE CANCELLED. The full pull used
+  // to set two bare `setTimeout`s under a comment claiming an effect cleared them —
+  // there was no such effect, so walking away from the screen left them running.
+  const timers = useRef([]);
+  const later = (fn, ms) => { timers.current.push(setTimeout(fn, ms)); };
+  useEffect(() => () => { timers.current.forEach(clearTimeout); timers.current = []; }, []);
+
+  const load = useCallback(() => (
+    ltApi.syncState()
+      .then((s2) => { setState(s2); return s2; })
+      .catch((e) => { setNote(e.message || 'Could not read the sync state.'); return null; })
+  ), []);
+  useEffect(() => { load(); }, [load]);
 
   // The Condition Centre rides the same pass, so its outcome is reported in the
   // same sentence — including its REFUSAL, which is the ordinary state while the
@@ -153,12 +203,51 @@ export default function LtSync() {
     try {
       const out = await ltApi.pullFromEncompass();
       setNote(out.note || 'Pulling from Encompass now.');
-      // First refresh soon (the first loans land within seconds), then again once
-      // the drain has had a real run at it. Cleared on unmount by the effect below.
-      setTimeout(load, 4000);
-      setTimeout(load, 30000);
+      // A REFUSAL IS NOT A PASS, so nothing is watched for. The server answers
+      // `started:false` with its reason (the connection is off, a pass is already
+      // running) — watching for a pass that was never started would end in the
+      // watcher giving up and saying so, which reads as a second failure.
+      if (out && out.started === false) return;
+      // WATCH IT THROUGH, AND SAY WHAT IT DID. The pull works in the background, so
+      // answering "started" and stopping there is what earned this button "it
+      // doesn't do anything": somebody presses it, the screen says it is pulling,
+      // and nothing ever tells them it finished or what it found. The last-run box
+      // is the honest source for that — the same one the screen already draws — so
+      // the watcher simply keeps re-reading until the pass is no longer running and
+      // then reports the run in the same words.
+      watchPull();
     } catch (e) { setNote(e.message || 'Could not start the pull.'); }
     finally { setBusy(false); }
+  };
+
+  /**
+   * Re-read the sync state until the pass stops running, then say what it found.
+   *
+   * BACKS OFF rather than polling flat out: the first loans land within seconds and
+   * a whole-book pass takes minutes, so it looks quickly at first and then settles.
+   * It GIVES UP after a bounded number of looks and says so — a watcher that ran for
+   * ever would keep a screen busy on a pass that died, and "PILOT stopped watching"
+   * is an honest thing to say where a spinner that never resolves is not.
+   */
+  const watchPull = () => {
+    const DELAYS = [4000, 8000, 15000, 30000, 30000, 60000, 60000, 120000];
+    let i = 0;
+    const tick = async () => {
+      const s2 = await load();
+      if (!s2) return;                       // the read failed; `load` already said so
+      if (s2.running === true) {
+        if (i < DELAYS.length) { later(tick, DELAYS[i]); i += 1; return; }
+        setNote('The pull is still running. It works through the whole book, so leave it — '
+          + 'this screen shows what it did once it finishes.');
+        return;
+      }
+      // `lastLoanRun` is the server's own key (routes/sync.js) — the SAME one the
+      // last-run box above reads, so the watcher's sentence and that box can never
+      // describe two different passes.
+      const said = pullOutcomeNote(s2.lastLoanRun);
+      if (said) setNote(said);
+    };
+    later(tick, DELAYS[i]); i += 1;
   };
 
   const runConditions = async () => {
@@ -274,18 +363,84 @@ export default function LtSync() {
         </div>
       )}
 
-      {state && state.failing && state.failing.length > 0 && (
+      {/* LOANS STILL WAITING FOR THEIR FIRST READ (owner-reported 2026-08-24, three
+          Sherman Ave files: "All these files somehow are not updating in pilot. I
+          don't know why I'm not getting the information").
+
+          A loan reaches PILOT in two steps. Discovery finds it and stores what the
+          pipeline SEARCH returns — number, officer, address, program, amount,
+          borrower. The full read then opens the file and brings back everything
+          else. Between the two the row is real and half empty, and until now that
+          state was named on no screen: the count was implicit and the loans
+          themselves were listed nowhere, so a file that arrived an hour ago and one
+          that has been stuck for days looked exactly the same.
+
+          THE WAIT IS WHAT TELLS THEM APART, so it is the thing shown. */}
+      {state && state.waiting_count > 0 && (
         <div className="card" style={{ marginTop: 16, color: '#141B22' }}>
-          <h2 style={{ margin: '0 0 8px', fontSize: 16, color: '#141B22' }}>Files we could not read</h2>
+          <h2 style={{ margin: '0 0 4px', fontSize: 16, color: '#141B22' }}>
+            Waiting for their first read ({state.waiting_count})
+          </h2>
+          <p style={{ margin: '0 0 8px', color: '#4B585C', fontSize: 13, lineHeight: 1.5 }}>
+            PILOT has found these loans in Encompass but has not opened the files themselves yet, so
+            only what the pipeline search returns is filled in. They are in the queue and fill in on
+            their own &mdash; a loan that has been waiting minutes is the queue working, one that has
+            been waiting days is worth looking at.
+          </p>
           <ul style={{ margin: 0, paddingLeft: 18, color: '#4B585C', lineHeight: 1.6 }}>
-            {state.failing.map((f) => (
-              <li key={f.encompass_loan_guid}>
-                <strong style={{ color: '#141B22' }}>{f.loan_number || f.encompass_loan_guid}</strong> — {f.encompass_sync_error}
+            {(state.waiting || []).map((w) => (
+              <li key={w.encompass_loan_guid}>
+                <strong style={{ color: '#141B22' }}>{w.loan_number || w.encompass_loan_guid}</strong>
+                {' '}&mdash; waiting {waitedFor(w.waiting_secs)}
               </li>
             ))}
           </ul>
+          {state.waiting_count > (state.waiting || []).length && (
+            <p style={{ margin: '8px 0 0', color: '#4B585C', fontSize: 12 }}>
+              The {state.waiting_count - (state.waiting || []).length} others are not listed here &mdash;
+              the oldest twenty are the ones worth looking at.
+            </p>
+          )}
         </div>
       )}
+
+      {state && state.failing && state.failing.length > 0 && (() => {
+        // TWO DIFFERENT THINGS, AND THEY SEND YOU TO TWO DIFFERENT PLACES
+        // (owner-reported 2026-08-25). One heading called both "Files we could
+        // not read", so sixteen files that read PERFECTLY — brand-new and
+        // withdrawn files that simply have no investor yet — were presented as
+        // broken. A file PILOT could not open is a problem to chase; a file it
+        // read where a part of the payload is empty is usually just an early
+        // file, and saying so is the difference between a task and a panic.
+        const unread = state.failing.filter((f) => !f.partial);
+        const partial = state.failing.filter((f) => f.partial);
+        const block = (title, note, rows) => (
+          <div className="card" style={{ marginTop: 16, color: '#141B22' }}>
+            <h2 style={{ margin: '0 0 4px', fontSize: 16, color: '#141B22' }}>{title}</h2>
+            <p style={{ margin: '0 0 8px', fontSize: 13, color: '#4B585C' }}>{note}</p>
+            <ul style={{ margin: 0, paddingLeft: 18, color: '#4B585C', lineHeight: 1.6 }}>
+              {rows.map((f) => (
+                <li key={f.encompass_loan_guid}>
+                  <strong style={{ color: '#141B22' }}>{f.loan_number || f.encompass_loan_guid}</strong> — {f.encompass_sync_error}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+        return (
+          <>
+            {unread.length > 0 && block(
+              'Files PILOT could not read',
+              'PILOT could not open these in Encompass. This is worth chasing.',
+              unread)}
+            {partial.length > 0 && block(
+              'Files read, with parts of the payload empty',
+              'PILOT read these successfully. Some part of the file is simply empty in Encompass — '
+              + 'usually because the file is new or withdrawn and has not got that far yet. Nothing is broken.',
+              partial)}
+          </>
+        );
+      })()}
     </LtLayout>
   );
 }

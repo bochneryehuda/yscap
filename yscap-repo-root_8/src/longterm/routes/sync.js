@@ -51,20 +51,47 @@ router.get('/', async (req, res) => {
               count(*) FILTER (WHERE ${trash.trashSql('lt_loans')})::int AS archived,
               count(*) FILTER (WHERE encompass_synced_at IS NOT NULL AND ${trash.notTrashSql('lt_loans')})::int AS read_at_least_once,
               count(*) FILTER (WHERE encompass_sync_error IS NOT NULL AND ${trash.notTrashSql('lt_loans')})::int AS failing,
+              count(*) FILTER (WHERE encompass_synced_at IS NULL
+                                 AND encompass_sync_error IS NULL
+                                 AND ${trash.notTrashSql('lt_loans')})::int AS waiting_count,
               max(encompass_synced_at) AS last_synced_at,
               min(encompass_synced_at) FILTER (WHERE encompass_synced_at IS NOT NULL) AS oldest_synced_at
          FROM lt_loans`,
     );
     // Name what is failing rather than only counting it — a count sends somebody
     // hunting, and the reason is already stored on the loan.
+    // PARTIAL IS NOT UNREADABLE, and the screen must not have to guess which it is
+    // by matching prose (owner-reported 2026-08-25: sixteen files that read
+    // PERFECTLY were listed under "Files we could not read"). `partial` is
+    // computed from the ONE prefix `readLoan` writes, so the two can never drift.
     const { rows: failing } = await db.query(
-      `SELECT loan_number, encompass_loan_guid, encompass_sync_error, updated_at
+      `SELECT loan_number, encompass_loan_guid, encompass_sync_error, updated_at,
+              (encompass_sync_error LIKE $1 || '%') AS partial
          FROM lt_loans
         WHERE encompass_sync_error IS NOT NULL
           AND ${trash.notTrashSql('lt_loans')}
         ORDER BY updated_at DESC
+        LIMIT 20`, [require('../sync/loans').PARTIAL_READ_PREFIX],
+    );
+    // LOANS STILL WAITING FOR THEIR FIRST READ — named, not merely subtracted
+    // (owner-reported 2026-08-24: "All these files somehow are not updating in
+    // pilot. I don't know why I'm not getting the information"). A discovered loan
+    // carries only what the pipeline SEARCH returned until the full read opens the
+    // file itself, and until now the count of those was implicit (loans minus
+    // read_at_least_once) and the loans themselves were named nowhere. THE OLDEST
+    // FIRST, because a loan that arrived an hour ago is a queue and one that has
+    // waited three days is a fault — and the wait itself is what tells them apart.
+    const { rows: waiting } = await db.query(
+      `SELECT loan_number, encompass_loan_guid, created_at,
+              EXTRACT(EPOCH FROM (now() - created_at))::bigint AS waiting_secs
+         FROM lt_loans
+        WHERE encompass_synced_at IS NULL
+          AND encompass_sync_error IS NULL
+          AND ${trash.notTrashSql('lt_loans')}
+        ORDER BY created_at ASC
         LIMIT 20`,
     );
+
     // How fresh the CONDITION CENTRE is, on the same screen and for the same
     // reason: a condition list is only as trustworthy as its last read, and
     // "why does this centre look empty?" has to be answerable without asking
@@ -114,6 +141,10 @@ router.get('/', async (req, res) => {
     res.json({
       ...rows[0],
       failing,
+      // The loans still waiting for their first read, oldest first, each with how
+      // long it has waited. `waitingCount` is derived from the SAME two counts the
+      // row above already carries, so the number and the list cannot disagree.
+      waiting,
       canRun,
       // Keyed by pass so the screen can lead with the one that matters — the loans —
       // and still say something about the others without a second request.

@@ -74,6 +74,8 @@ const DISCOVERY_FIELDS = [
 const CLASSIFY_FIELDS = ['Fields.1401', 'Fields.4'];
 
 /** The one place the discovery page size lives. */
+const tenantTime = require('./tenant-time');
+
 const PAGE = 100;
 // A runaway guard, not a limit: the long-term book is ~700 loans. Hitting it is
 // REPORTED, never a silent short read.
@@ -86,6 +88,13 @@ const MAX_PAGES = 60;
  * everywhere, so it is taken apart explicitly. Returns null on anything it cannot
  * read — a freshness stamp we cannot trust must be absent, never a guess, because
  * the sync pages on it and a wrong one silently skips loans.
+ *
+ * THE DIGITS ARE A WALL CLOCK IN THE TENANT'S OWN TIMEZONE, NOT UTC (owner-reported
+ * 2026-08-25). Encompass puts no offset on this string, and reading it as UTC put
+ * every stamp four hours early — which made `loans.needsRead` answer NOT DUE for a
+ * loan somebody had just edited, and froze three brand-new files in the state they
+ * were discovered in. `tenant-time` is the one place that conversion lives; the
+ * whole story, and the reproduction, are in its header.
  */
 function parsePipelineDate(v) {
   const s = String(v == null ? '' : v).trim();
@@ -103,8 +112,9 @@ function parsePipelineDate(v) {
     if (upper === 'PM' && hour < 12) hour += 12;
     if (upper === 'AM' && hour === 12) hour = 0;
   }
-  const dt = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), hour, Number(mi || 0), Number(ss || 0)));
-  return Number.isFinite(dt.getTime()) ? dt.toISOString() : null;
+  const ms = tenantTime.wallClockToUtcMs(
+    Number(y), Number(mo), Number(d), hour, Number(mi || 0), Number(ss || 0));
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
 /**

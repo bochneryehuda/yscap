@@ -1364,7 +1364,12 @@ export default function Application() {
                     title={q ? 'Assets & liquidity — your registered requirement' : assetsItem.label}
                     subtitle={q
                       ? `Your ${app.registered_program === 'gold' ? 'Gold Standard' : app.registered_program === 'silver' ? 'Silver' : app.registered_program === 'manual' ? 'Manual Program' : 'Standard'} registration: verify ${money2(liq)} in liquidity`
-                        + (q.reserveRequirement ? ` (incl. ${money(q.reserveRequirement)} reserve${q.reserveBasis ? ` — ${q.reserveBasis}` : ''})` : '')
+                        /* The reserve is part of the liquidity total stated one clause
+                           earlier and of the cash to close stated one clause later, both
+                           of which already showed cents — so rounding this one figure left
+                           a single sentence whose three numbers did not reconcile with each
+                           other (owner-directed 2026-08-24). */
+                        + (q.reserveRequirement ? ` (incl. ${money2(q.reserveRequirement)} reserve${q.reserveBasis ? ` — ${q.reserveBasis}` : ''})` : '')
                         + (q.cashToClose ? ` · estimated cash to close ${money2(q.cashToClose)}` : '')
                         + '. Upload the bank statements that show it.'
                       : [lh.loud ? lh.rest : assetsItem.hint, assetsItem.notes].filter(Boolean).join(' · ') || 'Bank statements showing your required liquidity.'}

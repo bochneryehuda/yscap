@@ -177,6 +177,12 @@ const noTestMode = { testMode: false, testEmailAllowlist: [] };
   eq(db.updates[0].params[1], 'new@x.com', 'recipient email persisted');
   eq(notify.calls.length, 1, 'PILOT re-nudge sent');
   eq(notify.calls[0].opts.onlyRecipientIdDs, '1', 're-nudge scoped to the corrected recipient only');
+  /* AND IT MUST BE A FORCED RE-SEND. This recipient has almost certainly been invited already —
+     at the OLD address, which is exactly what is being corrected — and since 2026-08-25 the
+     send-once guard is `invited_at` on the row. Without `force` the correction would update the
+     address on DocuSign and then quietly decline to tell the borrower, which since 2026-08-21
+     (DocuSign no longer emails a captive recipient) means nobody is invited at all. */
+  eq(notify.calls[0].opts.force, true, 'the corrected address is genuinely re-invited, not skipped as already-invited');
   eq(out.differsFromFile, true, 'differsFromFile true when the file still shows the old address');
   eq(out.fileEmail, 'old@x.com', 'the file email is reported for the warning');
   eq(out.email, 'new@x.com', 'result carries the new email');

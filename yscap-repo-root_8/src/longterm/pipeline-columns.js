@@ -63,7 +63,10 @@ const COLUMNS = {
   dscr: { label: 'DSCR', field: 'dscr_ratio', sort: null, align: 'right', kind: 'dscr' },
   ltv: { label: 'LTV', field: 'ltv_pct', sort: null, align: 'right', kind: 'pct' },
   stage: { label: 'Stage', field: 'stage_key', sort: 'stage' },
-  milestone: { label: 'Milestone', field: 'milestone_name', sort: 'milestone' },
+  // The completed-form label (owner-directed 2026-08-24: "Funded", never
+  // "Funding") — decorated onto every row by pipeline.js loadPipeline from
+  // milestone_name, so `source:'route'`: the query does not SELECT it.
+  milestone: { label: 'Milestone', field: 'milestone_label', sort: 'milestone', source: 'route' },
   // The plan calls this "Days in milestone". It is blank on a loan PILOT only ever
   // baselined — see milestones.js; the clock refuses to age a first sighting.
   days_in_stage: { label: 'At milestone', field: 'milestone_days', sort: 'milestone_since', align: 'right', kind: 'milestone_days' },

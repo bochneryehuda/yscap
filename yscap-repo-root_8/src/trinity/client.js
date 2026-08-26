@@ -28,6 +28,7 @@
 
 const cfg = require('../config');
 const switches = require('../lib/integrations/switches');
+const FORM = require('./form');
 
 const AUTH_PATH = '/api/v1.1/auth';
 const P = '/api/v1.1';
@@ -218,6 +219,26 @@ async function call(path, { method = 'GET', body, noRetry = false, _reauthed = f
 // ---------------------------------------------------------------------------
 async function defaultCompany() { return call(`${P}/companies/default`); }
 async function forms() { return call(`${P}/forms`); }
+
+/**
+ * The same catalogue, cached for a few minutes — ONE cache, shared by the admin health page, the
+ * coordinator's products list and the form picker on the order door.
+ *
+ * A catalogue changes only when Trinity changes our account, and every caller here shares one rate
+ * bucket with the orders and the pollers, so three surfaces each fetching it on every page load is
+ * spend for nothing. It NEVER throws and NEVER caches a failure: an unreadable catalogue answers
+ * null, which every reader is required to treat as "we could not check" — a different statement
+ * from "they sell nothing", and the two must never be shown as the same thing.
+ */
+let _formsCache = { at: 0, value: null };
+const FORMS_TTL_MS = 10 * 60 * 1000;
+async function formsCached() {
+  if (_formsCache.value && Date.now() - _formsCache.at < FORMS_TTL_MS) return _formsCache.value;
+  let v = null;
+  try { v = await forms(); } catch (_) { v = null; }
+  if (v) _formsCache = { at: Date.now(), value: v };
+  return v;
+}
 async function orderStatuses() { return call(`${P}/orders/statuses`); }
 async function documentGroups() { return call(`${P}/documents/groups`); }
 
@@ -235,7 +256,7 @@ async function companyId() {
 // ---------------------------------------------------------------------------
 // orders
 // ---------------------------------------------------------------------------
-function formId() { return (cfg.trinity && cfg.trinity.formId) || 19; }
+function formId() { return (cfg.trinity && cfg.trinity.formId) || FORM.PRODUCTION_DRAW_FORM_ID; }
 
 /** Create the project+order in one call. NEVER retried in-call (see call()). */
 /**
@@ -253,7 +274,20 @@ async function createOrder(payload, { form = null } = {}) {
   return call(`${P}/forms/${encodeURIComponent(f)}/new`, { method: 'POST', body: payload });
 }
 async function getOrder(id) { return call(`${P}/orders/${encodeURIComponent(id)}`); }
-async function getBudget(id) { return call(`${P}/forms/${formId()}/orders/${encodeURIComponent(id)}/budget`); }
+/**
+ * The order's budget — the inspector's own per-line answer, and the whole point of the integration.
+ *
+ * THE FORM SEGMENT IS THE ORDER'S OWN, NOT THE CONFIGURED DEFAULT. An order placed on form 19 is
+ * readable ONLY at /forms/19/..., so reading it back at whatever the default happens to be today
+ * returns nothing the day the default moves — and the inspector's approved figures would silently
+ * stop arriving on every order still in flight, with nothing anywhere saying why. Callers pass
+ * `trinity_inspection_orders.trinity_form_id` (db/628); the default remains the fallback so a
+ * caller with no record in hand behaves exactly as it always did.
+ */
+async function getBudget(id, form = null) {
+  const f = form == null ? formId() : form;
+  return call(`${P}/forms/${encodeURIComponent(f)}/orders/${encodeURIComponent(id)}/budget`);
+}
 /**
  * The same budget, grouped into named sections. Verified live: it answers
  * `{ groups: [{ name, lineItems, subTotal }], total }` and, for an order created
@@ -261,7 +295,10 @@ async function getBudget(id) { return call(`${P}/forms/${formId()}/orders/${enco
  * here — we create ungrouped — and it is the natural home for a category-grouped budget
  * if the desk ever wants one.
  */
-async function getGroupedBudget(id) { return call(`${P}/forms/${formId()}/grouped/orders/${encodeURIComponent(id)}/budget`); }
+async function getGroupedBudget(id, form = null) {
+  const f = form == null ? formId() : form;
+  return call(`${P}/forms/${encodeURIComponent(f)}/grouped/orders/${encodeURIComponent(id)}/budget`);
+}
 
 /**
  * Update an order in flight. This is a PARTIAL patch: send ONLY what you intend to
@@ -381,7 +418,7 @@ async function ping() {
 module.exports = {
   available, enabled, outboundEnabled, dryrun,
   authenticate, resetToken, call,
-  defaultCompany, forms, orderStatuses, documentGroups, companyId, formId,
+  defaultCompany, forms, formsCached, orderStatuses, documentGroups, companyId, formId,
   createOrder, getOrder, getBudget, getGroupedBudget, getPhotos, getDocuments, getReport, getProjectOrders,
   patchOrder, patchProject, getProject, getInvoice,
   findOrderByCustomerKey, findProjectByNumber, requestCancel,

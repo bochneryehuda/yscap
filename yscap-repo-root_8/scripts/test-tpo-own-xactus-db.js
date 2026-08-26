@@ -72,10 +72,17 @@ function call(server, method, p, token, body) {
       `INSERT INTO borrowers (first_name,last_name,email,ssn_encrypted,ssn_last4,ssn_hash,current_address,origin)
        VALUES ('Cy','Ox',$1,$2,$3,$4,$5,'tpo') RETURNING id`,
       [mail('cy'), ssn.encrypted, ssn.last4, ssn.hash, JSON.stringify({ line1: '1 Main St', city: 'Lakewood', state: 'NJ', zip: '08701' })])).rows[0].id;
+    // The loan number here is never read or asserted — it only has to be UNIQUE, because
+    // `applications.ys_loan_number` carries a UNIQUE index. It used to be distinguished by the
+    // first THREE characters of the firm's uuid, so the two TPO files collided whenever firm A
+    // and firm B happened to share 3 leading hex characters — 1 run in 4,096, at random, on
+    // anybody's pull request (observed 2026-08-24: both uuids began "820", giving two files the
+    // same "OX4980-402711820"). A per-call counter cannot collide at all.
+    let appSeq = 0;
     const mkApp = async (isTpo, firm) => (await db.query(
       `INSERT INTO applications (borrower_id, is_tpo, tpo_firm_id, loan_officer_id, ys_loan_number, status, loan_type, source)
        VALUES ($1,$2,$3,$4,$5,'in_review','Purchase','tpo') RETURNING id`,
-      [borId, isTpo, firm, isTpo ? brokerA : null, `OX${sfx}${isTpo ? firm.slice(0, 3) : 'R'}`.slice(0, 20)])).rows[0].id;
+      [borId, isTpo, firm, isTpo ? brokerA : null, `OX${sfx}-${++appSeq}`.slice(0, 20)])).rows[0].id;
     const tpoAppA = await mkApp(true, firmA);
     const tpoAppB = await mkApp(true, firmB);
     const retailApp = await mkApp(false, null);

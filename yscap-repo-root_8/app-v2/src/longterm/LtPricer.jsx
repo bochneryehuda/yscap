@@ -5,7 +5,7 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
-import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor } from './priceBuild.js';
+import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey } from './priceBuild.js';
 // The compensation OVERLAY (owner-directed 2026-08-23) — display math on top of the numbers
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
@@ -20,7 +20,7 @@ import {
   formatMoney, digitsOf, toNumber, searchProblem, searchChips,
 } from './scenarioFields.js';
 import {
-  INK, MUTED, SLATE, GOLD, PAPER, DANGER, CAUTION, card, eyebrow, sub, input, label,
+  INK, MUTED, SLATE, GOLD, GOLD_TEXT, PAPER, DANGER, CAUTION, card, eyebrow, sub, input, label,
   band, bandHead, bandBody, fieldLabel, fieldHint, control, select as selectStyle,
   moneyWrap, moneyMark, moneyInput, segTrack, segBtn, checkRow, checkBox, fieldNote, LINE, WASH,
 } from './ppeStyles.js';
@@ -195,6 +195,10 @@ export function buildRateStack(programs) {
         key: `${pi}:${oi}`,
         lender: p.lender, investor: p.investor, program: p.program, product: p.product,
         rateGridId: p.rateGridId, option: o,
+        // §38 — the rate sheet this quote priced from. One lender can quote the SAME programme
+        // name from two sheets (non-del vs wholesale — measured on ResiCentral), and two identical
+        // labels with different prices read as a glitch unless the sheet is there to tell them apart.
+        sheet: (o && o.rateSheet && o.rateSheet.name) || null,
         noteRate: nn(b.noteRate) ? b.noteRate : null,
         price: nn(b.price) ? b.price : null,
         adjustedPoints: nn(b.adjustedPoints) ? b.adjustedPoints : null,
@@ -875,6 +879,14 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
             const many = g.programCount > 1;
             const gOpen = many && openLenders.has(gKey);
             const shown = gOpen ? g.quotes : [g.best];
+            /* §38 — labels this lender quotes from MORE THAN ONE rate sheet at this rate. Only
+               those rows say their sheet: an identical programme name at two different prices is
+               otherwise unreadable, and it is exactly what the vendor returns when a lender prices
+               through two channels (measured: ResiCentral non-del vs wholesale). */
+            const dupLabels = ambiguousProgramLabels(g.quotes);
+            const sheetNote = (q) => (q && q.sheet && dupLabels.has(programLabelKey(q))
+              ? <div style={{ fontSize: 11, color: MUTED }} title={q.sheet}>via {q.sheet.length > 58 ? q.sheet.slice(0, 55) + '…' : q.sheet}</div>
+              : null);
             return (
               <div key={g.key}>
                 {/* THE LENDER LINE — one per lender, showing their BEST price.
@@ -895,14 +907,14 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                         disagree. */}
                     {gi === 0 && (
                       <span aria-hidden="true" title="the best price at this rate"
-                        style={{ color: GOLD, marginRight: 6, fontSize: 11 }}>●</span>
+                        style={{ color: GOLD_TEXT, marginRight: 6, fontSize: 11 }}>●</span>
                     )}
                     <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{g.lender || '—'}</span>
                     {many && (
                       <button type="button" onClick={() => onToggleLender(gKey)} aria-expanded={gOpen}
                         style={{
                           border: 0, background: 'none', padding: '0 0 0 8px', cursor: 'pointer',
-                          font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD,
+                          font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD_TEXT,
                           textDecoration: 'underline', textUnderlineOffset: 3,
                         }}>{
                         /* ONE template string: react-dom puts `<!-- -->` between adjacent JSX
@@ -914,6 +926,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                       {g.best && g.best.investor && g.best.investor !== g.lender ? `${g.best.investor} · ` : ''}
                       {(g.best && g.best.program) || '—'}{g.best && g.best.product ? ` · ${g.best.product}` : ''}
                     </div>
+                    {sheetNote(g.best)}
                     {g.best && g.best.expired && (
                       <div style={{ fontSize: 11, color: CAUTION, fontWeight: 700 }}>
                         this lender&rsquo;s rate sheet is expired
@@ -945,6 +958,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                       }}>
                         <span style={{ flex: '2 1 200px', minWidth: 170 }}>
                           <div style={{ fontSize: 13, color: INK }}>{q.program || '—'}{q.product ? ` · ${q.product}` : ''}</div>
+                          {sheetNote(q)}
                           {q.investor && q.investor !== q.lender && (
                             <div style={{ fontSize: 11.5, color: MUTED }}>{q.investor}</div>
                           )}
@@ -1216,7 +1230,7 @@ function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
                                   <button type="button" onClick={() => toggleLender(gKey)} aria-expanded={gOpen}
                                     style={{
                                       border: 0, background: 'none', padding: '0 0 0 8px', cursor: 'pointer',
-                                      font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD,
+                                      font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD_TEXT,
                                       textDecoration: 'underline', textUnderlineOffset: 3,
                                     }}>
                                     {gOpen ? 'hide' : `${g.programCount} programmes`}
@@ -1710,7 +1724,7 @@ export default function LtPricer() {
                   style={{
                     border: 0, background: 'none', padding: 0, cursor: 'pointer', font: 'inherit',
                     fontSize: 10.5, fontWeight: 800, letterSpacing: '.07em', textTransform: 'uppercase',
-                    color: GOLD, textDecoration: 'underline', textUnderlineOffset: 3,
+                    color: GOLD_TEXT, textDecoration: 'underline', textUnderlineOffset: 3,
                   }}>
                   {calcOpen ? 'Close' : 'Calculate'}
                 </button>

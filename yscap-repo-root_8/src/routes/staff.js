@@ -5,6 +5,10 @@
  * track records, and assign Lead-Capture (unassigned) applications.
  */
 const express = require('express');
+// The ONE way a person finds a file by loan number / address / borrower name.
+// PURE (SQL text + a bound value). Its address expression reads whichever parts a
+// row actually holds — most files carry no `oneLine` key.
+const fileSearch = require('../lib/file-search');
 const router = require('../lib/safe-router')();
 const db = require('../db');
 const { scrubText, scrubTextExcept } = require('../lib/borrower-safe');
@@ -1074,7 +1078,15 @@ router.get('/search', async (req, res) => {
   try {
     const raw = String(req.query.q || '').trim();
     if (raw.length < 2) return res.json({ loans: [], borrowers: [], llcs: [], trackRecords: [], officers: [], tasks: [], chats: [] });
-    const like = '%' + raw.slice(0, 80) + '%';
+    /* The SHARED parameter, which already carried this door's own two rules (a
+       two-character minimum, an 80-character cap) and adds the one it was
+       missing: `%` and `_` are ESCAPED to literals, so typing "100%" searches
+       for a percent sign instead of matching every file in the company. For
+       ordinary text it produces the byte-identical string this line always did.
+       The early return above still answers the short case with empty lists
+       rather than an unfiltered one. */
+    const like = fileSearch.likeParam(raw);
+    if (!like) return res.json({ loans: [], borrowers: [], llcs: [], trackRecords: [], officers: [], tasks: [], chats: [] });
     const meId = req.actor && req.actor.id;
 
     // ---- loans (applications) ----
@@ -1083,6 +1095,14 @@ router.get('/search', async (req, res) => {
     const loanParams = [like];
     let loanScope = '';
     if (!seesAll(req)) { loanParams.push(meId); loanScope = 'AND ' + VISIBLE_OFFICERS_SQL('a', '$2'); }
+    /* THE ADDRESS HAYSTACK IS COMPOSED, NOT the 'oneLine' key ALONE (2026-08-26).
+       MEASURED on the live table: of 319 files carrying an address only 137 hold a
+       'oneLine' key — the public marketing form and the staff new-file form both
+       store {line1, city, state, zip}, and older rows use 'street' — so more than
+       half of all files could not be found by their own address, silently, and it
+       read as "no such file". The shared expression resolves 316 of the 319.
+       (The note lives OUT here: backticks inside the template literal below would
+       end it, which is exactly how the first cut of this comment broke the file.) */
     const loans = await db.query(
       `SELECT a.id, a.ys_loan_number, a.status, a.program, a.loan_amount, a.property_address,
               b.first_name, b.last_name
@@ -1090,7 +1110,7 @@ router.get('/search', async (req, res) => {
         WHERE a.deleted_at IS NULL ${loanScope}
           AND (NULLIF(b.full_name,'') ILIKE $1
                OR a.ys_loan_number ILIKE $1
-               OR COALESCE(a.property_address->>'oneLine','') ILIKE $1)
+               OR ${fileSearch.ADDRESS_TEXT_SQL('a')} ILIKE $1)
         ORDER BY a.created_at DESC LIMIT 6`, loanParams);
 
     // ---- borrowers ----
@@ -3614,6 +3634,31 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
          will notice. */
       if (Object.prototype.hasOwnProperty.call(overrides, 'feasibilityFee'))
         await client.query(`UPDATE applications SET file_feasibility_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.feasibilityFee)]);
+      /* OUR FEE'S TWO PARTS AND THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE stick the same way
+         (owner-directed 2026-08-26, db/632: "it should just be pre-filled in the manual section.
+         Everything can be changeable"). A blank clears the column → the company number, this
+         deal's own New York rung, or the New York settlement pre-fill governs again; a typed 0 is
+         a deliberate WAIVER (or, for the optional fee, a DECLINE) and is stored as 0.
+
+         THESE ARE THE ONLY WRITERS OF THESE THREE COLUMNS, and that is load-bearing for the same
+         reason as the feasibility fee above: db/632 does not widen the economics-reopen trigger
+         for them precisely because they can only be written as part of a registration, so there is
+         never a stale registration for the trigger to catch. Adding another door means widening
+         that trigger — `test-lender-fees-pure` section J is what will notice. */
+      if (Object.prototype.hasOwnProperty.call(overrides, 'underwritingFee'))
+        await client.query(`UPDATE applications SET file_underwriting_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.underwritingFee)]);
+      if (Object.prototype.hasOwnProperty.call(overrides, 'legalFee'))
+        await client.query(`UPDATE applications SET file_legal_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.legalFee)]);
+      if (Object.prototype.hasOwnProperty.call(overrides, 'settlementFee'))
+        await client.query(`UPDATE applications SET file_settlement_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.settlementFee)]);
+      /* THE NEW YORK CEMA — the ANSWER and the AMOUNT, sticking the same way. The answer is a
+         boolean the registrant gave to a question ("is this a New York CEMA?"), so it is written
+         only when the register carried it: a door that does not ask must never quietly answer NO
+         on a file somebody already said yes on. */
+      if (Object.prototype.hasOwnProperty.call(overrides, 'cemaFee'))
+        await client.query(`UPDATE applications SET file_cema_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.cemaFee)]);
+      if (Object.prototype.hasOwnProperty.call(overrides, 'nyCema'))
+        await client.query(`UPDATE applications SET ny_cema=$2 WHERE id=$1`, [appId, overrides.nyCema === true]);
       /* THE TYPED CASH-OUT FOLLOWS THE REGISTER ONTO THE FILE (audit-found
          2026-07-31). The studio prints the officer's typed figure on the term
          sheet PDF; without this it never reached the loan file, so the file and
@@ -14990,9 +15035,9 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
                 updated_at=now()
            FROM checklist_templates t
           WHERE t.id=ci.template_id AND ci.application_id=$1
-            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND t.code = ANY($4::text[])
             AND ci.status <> 'satisfied'`,
-        [appId, req.actor.id, AUTO_NOTE]);
+        [appId, req.actor.id, AUTO_NOTE, payoffLib.FREE_AND_CLEAR_WAIVES]);
       await audit(req, 'payoff_free_and_clear_set', 'application', appId, {
         priorPayoff: a.payoff_amount, priorLender: a.payoff_lender, priorLoanNumber: a.payoff_loan_number,
         unchanged,
@@ -15021,10 +15066,10 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
                 updated_at=now()
            FROM checklist_templates t
           WHERE t.id=ci.template_id AND ci.application_id=$1
-            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND t.code = ANY($3::text[])
             AND ci.waived_at IS NOT NULL
             AND ci.notes LIKE '%' || $2 || '%'`,
-        [appId, AUTO_NOTE]);
+        [appId, AUTO_NOTE, payoffLib.FREE_AND_CLEAR_WAIVES]);
       // A row a human RE-WORKED while the flag was on (reopened + signed off) keeps its state,
       // but the now-stale auto note ("turning the flag off reopens this") is stripped so the
       // condition never carries an instruction that no longer describes it.
@@ -15033,9 +15078,9 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
             SET notes = NULLIF(TRIM(BOTH E'\n' FROM REPLACE(ci.notes, $2, '')), ''), updated_at=now()
            FROM checklist_templates t
           WHERE t.id=ci.template_id AND ci.application_id=$1
-            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND t.code = ANY($3::text[])
             AND ci.notes LIKE '%' || $2 || '%'`,
-        [appId, AUTO_NOTE]);
+        [appId, AUTO_NOTE, payoffLib.FREE_AND_CLEAR_WAIVES]);
       try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'free_and_clear_cleared' }); } catch (_) {}
       await audit(req, 'payoff_free_and_clear_cleared', 'application', appId, {
         priorPayoff: a.payoff_amount, wasFreeAndClear: !!a.property_free_and_clear, unchanged,
@@ -19538,18 +19583,55 @@ router.get('/audit-log', async (req, res) => {
     if (entityType) where.push(`al.entity_type = ${P(entityType)}`);
     if (from) where.push(`al.created_at >= ${P(from)}::date`);
     if (to) where.push(`al.created_at < (${P(to)}::date + 1)`); // inclusive of the whole "to" day
-    if (q) {
+    /* A TYPED WILDCARD IS A LITERAL HERE TOO. This route built its own
+       `'%' + q + '%'`, so `%` and `_` reached Postgres as LIKE WILDCARDS —
+       MEASURED: typing a single `%` into the System log matched 1679 of 1679
+       rows, the entire log. It also had no minimum, so one character searched
+       nearly everything. Both are now the shared `likeParam`, which escapes the
+       wildcards and refuses anything under two characters — the SAME rule the
+       approvals queues apply, so the log and the queues can never disagree about
+       what a typed string means. A refused search does not filter, exactly as a
+       blank one does not.
+
+       `auditCodesMatchingText` still gets the RAW text: it matches action LABELS
+       in JavaScript, where a `%` is just a character. */
+    const qLike = q ? fileSearch.likeParam(q) : null;
+    if (qLike) {
       // Free-text across who did it (actor OR the file's loan officer), what
       // they did (action code AND human label), and which borrower / property.
-      const like = P('%' + q + '%');
+      /* THE ADDRESS IS A COMPOSED HAYSTACK, NOT THE RAW JSONB CAST (2026-08-26).
+         `property_address::text` renders the STORAGE, not the address, and it is
+         wrong in BOTH directions. MEASURED on the live table (547 files):
+           · a real address typed the way a person writes it — "9 Oak St,
+             Lakewood" — matches **0** rows, because the raw JSON reads
+             {"line1":"9 Oak St","city":"Lakewood"} and the `","city":"` between
+             them can never match the comma-space somebody types. The composed
+             haystack finds both files.
+           · a JSON KEY NAME floods the log: "state" matches **280 of 547**
+             files and "oneLine" matches 137, so searching the log for a person
+             or a note containing one of those words returns half the pipeline.
+         The shared expression reads whichever address parts a row actually
+         holds and none of the key names, so both directions are answered at
+         once. Same module the approvals queues and the omnibox use.
+
+         AND THE BORROWER'S NAME IS THE GENERATED `full_name`. Matching
+         first_name and last_name separately means a person typing the name the
+         way it is written to them — "Mordechai Scharf" — matches NEITHER
+         column: measured 0 rows against 1 for the full name. The parts are kept
+         beside it so a surname on its own still works. */
+      const like = P(qLike);
       const codes = P(auditCodesMatchingText(q)); // action codes whose label matches
       where.push(`(
         s.full_name ILIKE ${like} OR ab.first_name ILIKE ${like} OR ab.last_name ILIKE ${like}
+        OR NULLIF(ab.full_name,'') ILIKE ${like}
         OR al.action ILIKE ${like} OR al.action = ANY(${codes}::text[])
         OR appb.first_name ILIKE ${like} OR appb.last_name ILIKE ${like}
+        OR NULLIF(appb.full_name,'') ILIKE ${like}
         OR eb.first_name ILIKE ${like} OR eb.last_name ILIKE ${like}
+        OR NULLIF(eb.full_name,'') ILIKE ${like}
         OR lo.full_name ILIKE ${like}
-        OR app.property_address::text ILIKE ${like}
+        OR ${fileSearch.ADDRESS_TEXT_SQL('app')} ILIKE ${like}
+        OR COALESCE(app.ys_loan_number,'') ILIKE ${like}
       )`);
     }
     const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';

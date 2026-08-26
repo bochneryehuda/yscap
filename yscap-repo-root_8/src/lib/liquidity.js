@@ -117,8 +117,16 @@ async function syncLiquidityCondition(appId, quote, client = db, opts = {}) {
       // 2026-08-23), kept as line items on the condition's own payload so the
       // requirement can be reconciled against a settlement statement later
       // without re-pricing the deal.
-      governmentCharges: Number(quote.governmentCharges) || 0,
-      governmentChargeLines: Array.isArray(quote.governmentChargeLines) ? quote.governmentChargeLines : [],
+      /* READ OFF `closingCosts`, WHICH IS WHERE THEY LIVE. These two read `quote.governmentCharges`
+         at the TOP LEVEL until 2026-08-26 — a key `normalize()` has never produced — so the
+         liquidity condition recorded $0 of government charges on every file ever registered, and
+         the hint below never named the mortgage recording tax even where it is the single largest
+         number in the cash to close (MEASURED: $20,880 on a Brooklyn flip, recorded as zero). The
+         REQUIRED figure was always right — it comes from `dueAtClosing`, which carries them — so
+         nothing was ever under-collected; what was lost is the breakdown a reviewer reconciles
+         against a settlement statement, and `asset-ledger` reads that stored breakdown too. */
+      governmentCharges: Number(cc.governmentCharges) || 0,
+      governmentChargeLines: Array.isArray(cc.governmentChargeLines) ? cc.governmentChargeLines : [],
       reserveRequirement: Number(quote.reserveRequirement) || 0,
       reserveBasis: quote.reserveBasis || null,
       // 1% closing-cost buffer (owner-authorized 2026-07-31) — extra cash the
@@ -307,8 +315,13 @@ async function setClosingBufferWaiver(appId, waived, client = db) {
    read the same. Returns '' when the deal carries none, leaving every existing
    sentence in a state with no such tax byte-identical. */
 function governmentChargeLine(quote) {
-  const lines = (quote && Array.isArray(quote.governmentChargeLines)) ? quote.governmentChargeLines : [];
-  const total = Number(quote && quote.governmentCharges) || 0;
+  /* TWO SHAPES REACH HERE, AND BOTH ARE LEGITIMATE. A live or stored QUOTE carries these on
+     `closingCosts`; `asset-ledger` passes the FLAT pair straight off the condition's saved
+     liquidity breakdown. Reading only the flat form is what made this silently print nothing on
+     every quote for as long as it has existed. */
+  const src = (quote && quote.closingCosts) || quote || {};
+  const lines = Array.isArray(src.governmentChargeLines) ? src.governmentChargeLines : [];
+  const total = Number(src.governmentCharges) || 0;
   if (!lines.length || !(total > 0)) return '';
   const sorted = lines.slice().filter((l) => l && Number(l.amount) > 0)
     .sort((a, b) => Number(b.amount) - Number(a.amount));

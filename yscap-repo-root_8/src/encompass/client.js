@@ -119,12 +119,200 @@ async function getMilestoneLog(guid) {
 // the picklist labels, the milestone list, the folder list. Pulled nightly by
 // the worker into `encompass_field_catalog` so we can verify the mapping doc.
 
+/**
+ * EVERY ADDRESS BELOW WAS ASKED OF THE LIVE TENANT ON 2026-08-25 AND THE STATUS IT
+ * ANSWERED WITH IS WRITTEN BESIDE IT.
+ *
+ * The nightly catalog refresh had been reporting five of these six refused with 403
+ * for long enough that it read as a permissions problem — the API user simply not
+ * being allowed to see the tenant's own field catalog. It was not. Five of the six
+ * addresses had MOVED, and the 403 is what this instance answers for a path that is
+ * not there. The owner said so plainly and was right: *"you actually independently
+ * accessed all those fields in the past through this same integration, same
+ * credentials."*
+ *
+ * These are not adopted on the strength of research. Each was asked through
+ * `GET /api/lt/_diag/book/catalog-probe`, from the server that already holds the
+ * login, with the address in use asked FIRST so the comparison is measured rather
+ * than assumed:
+ *
+ *     kind            was                                    now                                    result
+ *     customField     /v3/settings/loan/customFields          (unchanged)                            200, 857 rows
+ *     standardField   /v3/settings/loan/standardFields  403   /v3/schemas/loan/standardFields        200, 10,000 rows
+ *     milestone       /v3/settings/loan/milestones      403   /v3/settings/milestones                200
+ *     enum            /v3/settings/loan/enums           403   /v1/loanPipeline/fieldDefinitions      200
+ *     folder          /v3/settings/loan/folders         403   /v1/loanFolders                        200, 22 folders
+ *     loanTemplate    /v3/settings/loan/loanTemplates   403   — still unknown —                      see below
+ *
+ * The key names each answer carries were measured too, because a 200 that the reader
+ * cannot key is the same as a 403 with extra steps. `refreshFieldCatalog`'s existing
+ * key functions all resolve against what came back — standardFields answer with `id`
+ * (third in that chain), folders with `name` (second) — so none of them needed
+ * changing, and none were changed on a guess.
+ */
 async function listCustomFields() { return encompass.apiGet('/encompass/v3/settings/loan/customFields'); }
-async function listStandardFields() { return encompass.apiGet('/encompass/v3/settings/loan/standardFields'); }
-async function listFieldEnums() { return encompass.apiGet('/encompass/v3/settings/loan/enums'); }
-async function listMilestoneCatalog() { return encompass.apiGet('/encompass/v3/settings/loan/milestones'); }
-async function listLoanFolders() { return encompass.apiGet('/encompass/v3/settings/loan/folders'); }
-async function listLoanTemplates() { return encompass.apiGet('/encompass/v3/settings/loan/loanTemplates'); }
+
+/**
+ * PAGED, AND THE PAGE SIZE IS MEASURED RATHER THAN GUESSED. The probe asked for
+ * 10,000 in a single call and got 10,000 rows back, so the tenant's ~23,700-field
+ * catalog is three calls rather than the fifty a 500-row default would cost. Asked at
+ * 1,000 first, deliberately, so that a page coming back empty-handed could be told
+ * apart from our own fifteen-second client timeout — both answered, so the size is
+ * the vendor's answer and not our clock.
+ */
+async function listStandardFields() {
+  const limit = Math.max(1, parseInt(process.env.ENCOMPASS_STANDARD_FIELD_PAGE || '10000', 10) || 10000);
+  const max = Math.max(limit, parseInt(process.env.ENCOMPASS_STANDARD_FIELD_MAX || '40000', 10) || 40000);
+  const out = [];
+  for (let start = 0; start < max; start += limit) {
+    const page = await encompass.apiGet(`/encompass/v3/schemas/loan/standardFields?start=${start}&limit=${limit}`);
+    const rows = Array.isArray(page) ? page : (page && Array.isArray(page.items) ? page.items : []);
+    out.push(...rows);
+    // A short page is the last page. Stopping on it is what keeps this three calls
+    // rather than four, and what stops it looping if `max` is ever raised.
+    if (rows.length < limit) break;
+  }
+  return out;
+}
+
+/**
+ * THE ENUM ENDPOINT DOES NOT EXIST, AND SAYING SO IS THE HONEST ANSWER.
+ *
+ * `/v3/settings/loan/enums` is 403 here, and there is no enum endpoint anywhere in
+ * ICE's own 800-request Developer Connect collection under any name. What this tenant
+ * DOES publish is the pipeline's field definitions, and that payload is where its
+ * picklists live. Measured, and recorded in `docs/longterm/ENCOMPASS-LIVE-API-PROBE.md`
+ * §10.1: 200, `{ pipelineLoanReportFieldDefs: [ … ] }`, 3,159 entries, ~4 MB, of which
+ * **790 carry a dropdown option list**.
+ *
+ * THREE THINGS ABOUT THAT PAYLOAD WOULD EACH HAVE SILENTLY STORED NOTHING, and all
+ * three are handled here rather than in `reader.js` — the reader's job is to store
+ * rows, and the shape of one vendor's answer is this client's business:
+ *
+ *   1. IT IS AN OBJECT, not a list. `refreshFieldCatalog` understands an array or
+ *      `{items:[…]}` and nothing else, so the rows are lifted out by name here.
+ *   2. THE KEY IS `fieldID`, WITH A CAPITAL D. The reader's key function asks for
+ *      `r.fieldId`, which is a different string — every row would have keyed to
+ *      `undefined`, hit the reader's `if (!key) continue`, and been dropped. The
+ *      catalog would have reported success and stored zero enums.
+ *   3. THE OPTIONS ARE THREE LEVELS DOWN, at `fieldDefinition.fieldOptions.options`,
+ *      while the reader looks for `raw.options`. Same silent outcome: rows stored
+ *      with no options, which is an enum catalog with no enums in it.
+ *
+ * SO IT RETURNS ONLY THE FIELDS THAT ACTUALLY HAVE A PICKLIST, in the shape the
+ * reader already reads. `requireValueFromList` is the vendor's own authoritative
+ * "is this an enum" flag; an option list without it is still returned, because a
+ * field offering choices is a picklist whatever the flag says, and dropping 700-odd
+ * of them to honour a boolean would lose the very thing this call is for.
+ */
+async function listFieldEnums() {
+  const body = await encompass.apiGet('/encompass/v1/loanPipeline/fieldDefinitions');
+  const rows = Array.isArray(body)
+    ? body
+    : (body && Array.isArray(body.pipelineLoanReportFieldDefs) ? body.pipelineLoanReportFieldDefs
+      : (body && Array.isArray(body.items) ? body.items : []));
+
+  const out = [];
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue;
+    const def = r.fieldDefinition && typeof r.fieldDefinition === 'object' ? r.fieldDefinition : {};
+    const opts = def.fieldOptions && Array.isArray(def.fieldOptions.options) ? def.fieldOptions.options : null;
+    if (!opts || !opts.length) continue;
+    // Normalised to what `reader.js` already reads — `fieldId`, `description`,
+    // `options` — so the catalog needs no special case for this vendor's spelling.
+    out.push({
+      fieldId: String(r.fieldID || def.fieldID || r.fieldId || '').trim(),
+      description: r.description || r.name || def.description || null,
+      requireValueFromList: def.fieldOptions.requireValueFromList === true,
+      options: opts,
+    });
+  }
+  return out.filter((r) => r.fieldId);
+}
+
+async function listMilestoneCatalog() { return encompass.apiGet('/encompass/v3/settings/milestones'); }
+async function listLoanFolders() { return encompass.apiGet('/encompass/v1/loanFolders'); }
+
+/**
+ * THE LOAN TEMPLATES, WALKED — MEASURED 2026-08-25, THE LAST OF THE SIX.
+ *
+ * `/v3/settings/loan/loanTemplates` is 403: it does not exist. The address that
+ * answers is `/v3/settings/templates/loanTemplateSet/folders?path=…`, and the
+ * tenant's own 400 named the parameter before the probe confirmed the value —
+ * *"Folder path is empty. Default parent directory should start with public or
+ * personal."*
+ *
+ * IT IS A TREE, NOT A LIST, so one call cannot answer it. Walked live: two roots,
+ * three calls, 13 rows — 2 folders and **11 loan template sets**, which are this
+ * tenant's real programs (DSCR 30 YEAR FRM, DSCR 40 YEAR FRM, DSCR I/O, Fix & Flip,
+ * Conventional, Closed End Second, Investor Alt Doc, and the rest).
+ *
+ * AND ITS ROWS WOULD HAVE KEYED TO NOTHING. Each is
+ * `{entityType, entityName, entityPath, hasSubFolders}`, while `refreshFieldCatalog`
+ * keys this kind with `r.path || r.name || r.id` — not one of those three names is
+ * in the payload. Handed straight through, every row keys to `undefined`, hits the
+ * reader's `if (!key) continue`, and the catalog reports a clean refresh holding
+ * zero templates. That is the THIRD endpoint this week with that exact shape, after
+ * the picklists and the standard fields, so it is normalised here like the others:
+ * the reader stores rows, and one vendor's spelling is this client's problem.
+ *
+ * ONLY THE LEAVES ARE RETURNED. `TemplateFolder` rows are navigation — they are
+ * followed, not stored, because a folder is not a template and a catalog listing
+ * both would answer "which templates exist?" with a mixture of two kinds of thing.
+ *
+ * EVERY FOLDER IS OPENED, including one whose `hasSubFolders` is false: that flag
+ * means "no child FOLDERS", and a folder with none can still hold templates. The
+ * walk's first run gated on it and duly missed a branch while reporting a complete
+ * tree.
+ *
+ * BOUNDED, and the bound is reported rather than silent. At most 40 calls and 4
+ * levels — comfortably above the 3 calls and 2 levels this tenant actually needs —
+ * and only `entityPath` values Encompass itself returned are ever followed, never a
+ * path this code assembles.
+ */
+const TEMPLATE_ROOTS = ['public', 'personal'];
+const TEMPLATE_MAX_CALLS = 40;
+const TEMPLATE_MAX_DEPTH = 4;
+
+async function listLoanTemplates() {
+  const out = [];
+  const seen = new Set();
+  const queue = TEMPLATE_ROOTS.map((path) => ({ path, depth: 0 }));
+  let calls = 0;
+
+  while (queue.length && calls < TEMPLATE_MAX_CALLS) {
+    const { path, depth } = queue.shift();
+    if (seen.has(path)) continue;
+    seen.add(path);
+    calls += 1;
+
+    let body;
+    try {
+      body = await encompass.apiGet(`/encompass/v3/settings/templates/loanTemplateSet/folders?path=${encodeURIComponent(path)}`);
+    } catch (e) {
+      // A branch that will not open must not cost the branches that will. The root
+      // failing is a real failure and is thrown; a sub-folder failing is recorded by
+      // its absence, and `refreshFieldCatalog` reports the kind's count either way.
+      if (depth === 0) throw e;
+      continue;
+    }
+
+    const contents = body && Array.isArray(body.contents) ? body.contents : [];
+    for (const c of contents) {
+      if (!c || typeof c !== 'object') continue;
+      const type = String(c.entityType || '');
+      if (type.toLowerCase().includes('folder')) {
+        if (c.entityPath && depth + 1 <= TEMPLATE_MAX_DEPTH) queue.push({ path: c.entityPath, depth: depth + 1 });
+        continue;
+      }
+      const templatePath = String(c.entityPath || '').trim();
+      if (!templatePath) continue;
+      // Normalised to what `reader.js` already reads — `path` first in its chain.
+      out.push({ path: templatePath, name: c.entityName || null, description: c.entityName || null, entityType: type });
+    }
+  }
+  return out;
+}
 
 // Ping + config passthroughs so consumers don't need two imports.
 const configured = encompass.configured;

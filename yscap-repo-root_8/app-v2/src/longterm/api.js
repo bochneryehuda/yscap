@@ -164,6 +164,34 @@ export const ltApi = {
   // (borrower-paid / raw / lender-paid) overlays on the displayed numbers. Display only:
   // the Lender Price search itself never changes (owner-directed 2026-08-23).
   dscrCompPlan: () => ltGet(lt('/dscr/comp-plan')),
+
+  // THE CLICKUP SYNCING SECTION (#36): everything the writer does automatically,
+  // visible + manually drivable per file. Every write goes through the guarded
+  // writer on the server — these calls only press its buttons.
+  clickupSection: (loanId, { compare = false } = {}) => ltGet(
+    lt(`/clickup/loans/${encodeURIComponent(loanId)}${compare ? '?compare=1' : ''}`)),
+  clickupPush: (loanId) => ltPost(lt(`/clickup/loans/${encodeURIComponent(loanId)}/push`), {}),
+  clickupPushField: (loanId, key) => ltPost(lt(`/clickup/loans/${encodeURIComponent(loanId)}/push-field`), { key }),
+  clickupCreate: (loanId) => ltPost(lt(`/clickup/loans/${encodeURIComponent(loanId)}/create`), {}),
+  clickupLink: (loanId, taskId, confirm = false) => ltPost(
+    lt(`/clickup/loans/${encodeURIComponent(loanId)}/link`), { taskId, confirm }),
+  clickupReview: (loanId, reviewId, decision) => ltPost(
+    lt(`/clickup/loans/${encodeURIComponent(loanId)}/reviews/${encodeURIComponent(reviewId)}/${decision === 'approve' ? 'approve' : 'reject'}`), {}),
+
+  // THE ENCOMPASS SYNCING SECTION (#52, owner-directed 2026-08-25): what has been
+  // read for this loan and what has not, when Encompass last changed it, when a
+  // webhook last asked us to look, and a button that reads it again on the spot.
+  // READ-ONLY towards Encompass — `encompassFileRead` opens the loan and reads it;
+  // nothing here can write to Encompass.
+  encompassFileSection: (loanId) => ltGet(lt(`/encompass-file/loans/${encodeURIComponent(loanId)}`)),
+  encompassFileRead: (loanId) => ltPost(lt(`/encompass-file/loans/${encodeURIComponent(loanId)}/read`), {}),
+
+  // Every file where the ClickUp status and the Encompass milestones disagree, as
+  // of the last time PILOT looked at that card. Scoped by the server exactly like
+  // the pipeline, and it reads OUR OWN rows — no ClickUp call, so it can never be
+  // rate-limited into being wrong.
+  clickupStatusReviews: (limit) => ltGet(
+    lt(`/clickup/status-reviews${limit ? `?limit=${encodeURIComponent(limit)}` : ''}`)),
   dscrDisqualifications: (searchKey, params) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') q.set(k, String(v));

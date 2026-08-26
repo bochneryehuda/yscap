@@ -1294,7 +1294,9 @@ export const api = {
   // Manual Program admin config + the super-admin escalation box.
   manualProgramSettings:     () => req('GET', '/api/admin/manual-programs/settings'),
   saveManualProgramSettings: (b) => req('PUT', '/api/admin/manual-programs/settings', b),
-  manualEscalations:         (status) => req('GET', `/api/admin/manual-programs/escalations${status ? `?status=${status}` : ''}`),
+  // `q` searches the FILE — loan number, address, borrower — the same search the
+  // exception register takes, so one typed string finds a file in either queue.
+  manualEscalations:         (status, q) => req('GET', `/api/admin/manual-programs/escalations${qs({ status, q })}`),
   manualEscalationsCount:    () => req('GET', '/api/admin/manual-programs/escalations/count'),
   decideManualEscalation:    (id, decision, note) => req('POST', `/api/admin/manual-programs/escalations/${id}/decide`, { decision, note }),
   counterManualEscalation:   (id, counterTerms, counterNote) => req('POST', `/api/admin/manual-programs/escalations/${id}/counter`, { counterTerms, counterNote }),
@@ -1309,7 +1311,10 @@ export const api = {
   // Ask an admin/super-admin to waive a specific condition (owner-directed 2026-08-04).
   requestConditionWaiver:    (appId, itemId, body) => req('POST', `/api/staff/applications/${appId}/conditions/${itemId}/request-waiver`, body || {}),
   withdrawException:         (appId, eid) => req('POST', `/api/staff/applications/${appId}/exceptions/${eid}/withdraw`, {}),
-  loanExceptions:            (status, type) => req('GET', `/api/admin/exceptions${qs({ status, type })}`),
+  // Every request to deviate, from every queue, as ONE list (owner-directed
+  // 2026-08-26). Read-only: each queue still decides where its rules live.
+  exceptionFeed:             (p) => req('GET', `/api/admin/exceptions/feed${qs(p || {})}`),
+  loanExceptions:            (status, type, q) => req('GET', `/api/admin/exceptions${qs({ status, type, q })}`),
   loanExceptionsCount:       () => req('GET', '/api/admin/exceptions/count'),
   /* Investor Suite saved scenarios (owner-directed 2026-07-30) — a staffer's own
      named working states for the suite tools, so they can price a deal that is not
@@ -1325,7 +1330,9 @@ export const api = {
   // The register report (counts, approval rate, time-to-decision, aging) and the
   // diligence-ready xlsx export of the register (redesign 2026-07-24).
   loanExceptionMetrics:      () => req('GET', '/api/admin/exceptions/metrics'),
-  exportExceptionRegister:   async (status, type) => { const { blob, filename } = await download(`/api/admin/exceptions/export.xlsx${qs({ status, type })}`); saveBlob(blob, filename); },
+  // The export carries the SEARCH too — a spreadsheet that does not match the
+  // screen you asked it from is worse than no spreadsheet.
+  exportExceptionRegister:   async (status, type, q) => { const { blob, filename } = await download(`/api/admin/exceptions/export.xlsx${qs({ status, type, q })}`); saveBlob(blob, filename); },
   // decide: `waivedCodes` (esign_before_ctc approvals, 2026-07-24) names EXACTLY
   // which outstanding requirements the super-admin waives; omitted → legacy meaning.
   // `expiresAt` (redesign) sets an approval validity on expirable types.

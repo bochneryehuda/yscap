@@ -30,6 +30,14 @@ const path = require('path');
 const reg = require('../conditions/field-registry');
 // One wording for "what does this file vest in" across every tape + screen.
 const { vestingCell } = require('../vesting-label');
+/* The shared display formats (xlsx-template.FMT). The Bid Tape's sample row
+   formats the Interest Rate + Total Points cells 0.00% and the LTAIV/LTC/LTARV
+   ratio cells 0.0% — so a 10.625% rate DISPLAYED as "10.63%", 1.125 points as
+   "1.13%", and an 84.375% LTC as "84.4%" (the owner-banned rate-format
+   truncation class, reaching the tape). The stored values were always exact;
+   these overrides fix only what the investor SEES: rates/points show every
+   decimal they carry, ratios show the house two decimals. */
+const { FMT } = require('./xlsx-template');
 
 // The originator/seller name as it appears on the MLPA (Blue Lake column E).
 // Owner-directed: use our company name.
@@ -135,8 +143,11 @@ function economics(loan) {
 }
 
 // ---- the Bid Tape column map (B..BS) ---------------------------------------
-// [column, type, styleOverride|null, getter]. type 'f' = per-row formula ({r}
-// becomes the row number). style is null → inherited from the sample row.
+// [column, type, styleOverride|null, getter, displayFmt?]. type 'f' = per-row
+// formula ({r} becomes the row number). style is null → inherited from the
+// sample row; the optional 5th element is a display number-format override
+// resolved against that inherited style (fonts/borders survive — see
+// xlsx-template.makeFormatResolver).
 const COLUMNS = [
   ['B', 'd', null, (l) => l.asOf || new Date()],                                   // As-of Date (export date)
   ['C', 's', null, () => 'Y'],                                                     // Pre-Approval Flag — always flagged (owner-directed)
@@ -171,7 +182,7 @@ const COLUMNS = [
   ['AB', 'n', null, (l, e) => (l.seasoning ? l.seasoning.currentBalance : e.totalDisbursed)],        // Total Loan Amount Disbursed
   ['AC', 'n', null, (l, e) => (l.seasoning ? l.seasoning.interestBearing : e.interestBearing)],      // Interest Bearing Balance
   ['AD', 'n', null, (l, e) => (l.seasoning ? l.seasoning.currentBalance : e.upb)],                   // UPB (current balance)
-  ['AE', 'f', null, (l, e) => ({ f: 'IFERROR(X{r}/U{r},"")', v: ratio(l.seasoning ? l.seasoning.disbursedHoldback : e.disbursedHoldback, e.holdback) })], // Completion % (disbursed ÷ total holdback)
+  ['AE', 'f', null, (l, e) => ({ f: 'IFERROR(X{r}/U{r},"")', v: ratio(l.seasoning ? l.seasoning.disbursedHoldback : e.disbursedHoldback, e.holdback) }), FMT.RATIO], // Completion % (disbursed ÷ total holdback; sample formats it 0% — whole percents)
   ['AF', 'n', null, (l, e) => e.purchasePrice],                                   // Purchase Price
   ['AG', 'd', null, (l) => l.app.acquisition_date || l.app.actual_closing || l.app.est_closing_date], // Purchase Date
   ['AH', 'n', null, (l, e) => e.rehabBudget],                                     // Rehab Budget
@@ -184,9 +195,9 @@ const COLUMNS = [
   // value so the actual Initial LTV / LTC / Final (after-repair) LTV show even in a
   // viewer that doesn't recalculate (owner-reported 2026-07-26 "missing the actual
   // initial LTV, LTC, final LTC"). Excel still recomputes them on open.
-  ['AN', 'f', null, (l, e) => ({ f: 'T{r}/AK{r}', v: ratio(e.day1, e.aiv) })],            // LTAIV — Initial LTV (day-1 loan ÷ As-Is Value)
-  ['AO', 'f', null, (l, e) => ({ f: 'W{r}/AJ{r}', v: ratio(e.totalLoan, sum2(e.purchasePrice, e.rehabBudget)) })], // LTC (total loan ÷ total cost)
-  ['AP', 'f', null, (l, e) => ({ f: 'W{r}/AL{r}', v: ratio(e.totalLoan, e.arv) })],        // LTARV — Final LTV (total loan ÷ ARV)
+  ['AN', 'f', null, (l, e) => ({ f: 'T{r}/AK{r}', v: ratio(e.day1, e.aiv) }), FMT.RATIO],            // LTAIV — Initial LTV (day-1 loan ÷ As-Is Value)
+  ['AO', 'f', null, (l, e) => ({ f: 'W{r}/AJ{r}', v: ratio(e.totalLoan, sum2(e.purchasePrice, e.rehabBudget)) }), FMT.RATIO], // LTC (total loan ÷ total cost)
+  ['AP', 'f', null, (l, e) => ({ f: 'W{r}/AL{r}', v: ratio(e.totalLoan, e.arv) }), FMT.RATIO],        // LTARV — Final LTV (total loan ÷ ARV)
   ['AQ', 'n', null, (l) => (n(l.app.sqft_pre) != null ? n(l.app.sqft_pre) : (l.appraisal && n(l.appraisal.gla)))], // Pre-Rehab Sqft
   ['AR', 'n', null, (l) => n(l.app.sqft_post)],                                   // Post-Rehab Sqft
   ['AS', 'n', null, (l) => termMonths(l)],                                        // Term (months)
@@ -196,10 +207,10 @@ const COLUMNS = [
   ['AW', 'd', null, (l) => ((l.seasoning && l.seasoning.nextDue) || l.app.first_payment_date)], // Next Due Date (advances for a seasoned loan)
   ['AX', 's', null, (l) => yn(dutch(l))],                                         // Dutch Flag
   ['AY', 's', null, () => '30/360'],                                              // Interest Days Method
-  ['AZ', 'n', null, (l, e) => e.interestRate],                                    // Interest Rate
+  ['AZ', 'n', null, (l, e) => e.interestRate, FMT.RATE],                          // Interest Rate (displays every decimal it carries)
   ['BA', 's', null, () => ''],                                                     // Purchase Rate — Blue Lake completes
   ['BB', 's', null, () => ''],                                                     // Lender Retained Spread — Blue Lake completes
-  ['BC', 'n', null, (l, e) => e.origPct],                                          // Total Points = origination fee % (fraction)
+  ['BC', 'n', null, (l, e) => e.origPct, FMT.RATE],                                // Total Points = origination fee % (fraction; 1.125 shows as 1.125, never 1.13)
   ['BD', 's', null, () => ''],                                                     // Borrower Liquidity — left blank (owner-directed)
   // FICO — the PRIMARY guarantor's score (per the dictionary), which is the named
   // guarantor (BQ); falls back to the pricing FICO if the primary's isn't stored.
@@ -222,7 +233,7 @@ const COLUMNS = [
 
 function buildRow(loan) {
   const econ = economics(loan);
-  return COLUMNS.map(([col, type, style, get]) => ({ col, type, style, value: get(loan, econ) }));
+  return COLUMNS.map(([col, type, style, get, fmt]) => ({ col, type, style, value: get(loan, econ), fmt }));
 }
 
 function filename(loan) {

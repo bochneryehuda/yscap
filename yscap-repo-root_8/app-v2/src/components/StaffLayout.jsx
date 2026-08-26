@@ -285,7 +285,7 @@ function GlobalSearch() {
 }
 
 export default function StaffLayout({ children }) {
-  const { signOut, role, can } = useAuth();
+  const { signOut, role, can, exitStaffView } = useAuth();
   // THE ARENA. Its nav entry exists ONLY while the master switch is on, and
   // `seesArena` is the server's answer -- never a role check here, or the rule
   // "when it's off, nobody should even see it" would have two definitions and
@@ -462,20 +462,18 @@ export default function StaffLayout({ children }) {
     }).catch(() => {});
     return () => { alive = false; };
   }, []);
-  const exitStaffView = async () => {
-    let own = '';
-    try { const r = await api.staffViewExit(); own = (r && r.token) || ''; } catch { /* parked below */ }
-    try { if (!own) own = sessionStorage.getItem('ys_portal_staff_token') || ''; } catch { /* private mode */ }
-    try { sessionStorage.removeItem('ys_portal_staff_token'); } catch { /* private mode */ }
-    if (own) {
-      try { localStorage.setItem('ys_portal_token', own); } catch { /* private mode */ }
-      window.location.assign('/internal');
-      return;
-    }
-    // Neither the server nor the parked copy produced a session — sign in again,
-    // never stay inside somebody else's console.
-    try { localStorage.removeItem('ys_portal_token'); } catch { /* private mode */ }
-    window.location.assign('/');
+  /* LEAVING A STAFF VIEW GOES THROUGH THE SHARED HANDOFF (auth.jsx), which is the
+     same one the borrower and broker views use: ask the server for a fresh token
+     for the REAL viewer, fall back to the copy parked in sessionStorage when the
+     network is unavailable, and — if NEITHER produces a session — drop the token
+     and make them sign in rather than leave them sitting inside somebody else's
+     console. This used to be a fourth hand-rolled copy of that dance reading the
+     storage keys directly; it now reads none. The navigation stays explicit
+     because the token has changed under the running app. */
+  const leaveStaffView = async () => {
+    const restored = await exitStaffView();
+    window.location.assign(restored ? '/portal/#/internal' : '/');
+    window.location.reload();
   };
 
   return (
@@ -487,7 +485,7 @@ export default function StaffLayout({ children }) {
           <span>You are seeing <strong>{staffViewOf.name || 'a team member'}</strong>’s screen — read-only.
             Switch Long-term / Short-term above to see everything they see.</span>
           <button className="btn small" style={{ background: '#fff', color: '#141B22', border: 'none' }}
-            onClick={exitStaffView}>Back to my own screen</button>
+            onClick={leaveStaffView}>Back to my own screen</button>
         </div>
       )}
       {staleBuild && (
@@ -516,6 +514,7 @@ export default function StaffLayout({ children }) {
             <NavLink className="sb-link" to="/internal/lt/people"><NavIcon name="team" />Team</NavLink>
             <NavLink className="sb-link" to="/internal/lt/borrowers" title="Which client each long-term file belongs to — what puts it on their own login."><NavIcon name="borrowers" />Borrowers</NavLink>
             <NavLink className="sb-link" to="/internal/lt/statuses" title="Encompass's milestones, our own stage names, and what the borrower is told — side by side."><NavIcon name="conditions" />Statuses</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/status-reviews" title="Every file where the ClickUp status and the Encompass milestones disagree — PILOT reports these and never settles them itself."><NavIcon name="health" />Status disagreements</NavLink>
             <NavLink className="sb-link" to="/internal/lt/conditions"><NavIcon name="conditions" />Condition Center</NavLink>
             <NavLink className="sb-link" to="/internal/lt/pricer" title="Price a scenario through Lender Price and see every rate, every investor at each rate, and the whole build behind each price."><NavIcon name="pricing" />Pricing Engine</NavLink>
             {/* The rules/parity console is PARKED FOR REAL now (owner-directed 2026-08-23,

@@ -248,7 +248,13 @@ ok(/<script src="gov-charges\.js/.test(src('web/v2/tools/term-sheet.html')),
 // liquidity to show carry them without a second formula anywhere.
 {
   const ts = src('web/v2/tools/termsheet.js');
-  const folded = (ts.match(/var closing = origFee \+ brokerFee \+ lenderFee \+ creditFee \+ titleCost \+ extraFeesTotal\(\) \+ feasFeeAmount\(\) \+ gov\.borrowerTotal;/g) || []).length;
+  /* ANCHORED AT BOTH ENDS, TOLERANT IN THE MIDDLE. This guard's subject is that the government
+     charges reach EVERY program's closing sum — not the exact roster of fees in that sum, which
+     grows whenever the owner authorizes a new one (the feasibility fee did, and our fee's split
+     plus the optional New York settlement agent fee did again). Pinning the whole literal made
+     this read as a broken feature every time a fee was ADDED, which is how a guard gets loosened
+     for the wrong reason. `gov.borrowerTotal;` as the closing term is the property. */
+  const folded = (ts.match(/var closing = origFee \+ brokerFee \+ lenderFee \+[^;\n]*\+ gov\.borrowerTotal;/g) || []).length;
   ok(folded === 3, `all three programs add the government charges to closing costs (found ${folded}, want 3 — Standard, Gold, Silver)`);
   ok(/var gov = govCharges\(totalLoan, inp\);/.test(ts), 'and each computes them from the sized loan');
   ok(/YSGov\.resolveUnits\(/.test(ts) && !/propType"\) === "2-4" \? 4 : 1/.test(ts),
@@ -340,11 +346,82 @@ if (pricing) {
   const nq = pricing.quoteProgram('standard', pricing.buildInputs(nyApp, { flips: 3, holds: 0, ground: 0 }, {}));
   const c = nq.closingCosts;
   // Exactly the rows product-registration.borrowerTermsEmail builds, in its order.
-  const rowSum = [c.origination, c.lenderFee, c.creditFee, c.titleAndSettlement]
-    .concat((c.extraFees || []).map((f) => f.amount))
-    .concat((c.governmentChargeLines || []).map((g) => g.amount))
+  const rowsOf = (cc) => [cc.origination, cc.lenderFee, cc.settlementFee, cc.cemaFee, cc.feasibilityFee, cc.creditFee, cc.titleAndSettlement]
+    .concat((cc.extraFees || []).map((f) => f.amount))
+    .concat((cc.governmentChargeLines || []).map((g) => g.amount))
     .reduce((n, v) => n + (Number(v) || 0), 0);
-  near(rowSum, c.dueAtClosing, 'every closing cost the borrower is shown sums to the total they are shown', 0.01);
+  near(rowsOf(c), c.dueAtClosing, 'every closing cost the borrower is shown sums to the total they are shown', 0.01);
+
+  /* AND ON A DEAL THAT CARRIES EVERY OPTIONAL FEE. The fixture above is a New York flip, which
+     attracts no construction feasibility review — so when that fee shipped folded into the total
+     and unnamed on this table, this assertion could not see it (found 2026-08-26, one surface
+     after the term sheet PDF had already been fixed for the same reason). A GROUND-UP in New York
+     City carries the whole set: our fee's two parts, the optional settlement agent fee, the
+     feasibility review and the New York City taxes. */
+  {
+    const gq = pricing.quoteProgram('standard', pricing.buildInputs({
+      ...nyApp, program: 'Ground-up Construction', rehab_type: 'Ground-up',
+    }, { flips: 3, holds: 0, ground: 3 }, {}));
+    const gc = gq.closingCosts;
+    ok(Number(gc.feasibilityFee) > 0, 'the belt-and-braces fixture really does attract a feasibility review');
+    ok(Number(gc.settlementFee) > 0, 'and the optional New York settlement agent fee');
+    near(rowsOf(gc), gc.dueAtClosing,
+      'a deal carrying EVERY optional fee still sums to the total the borrower is shown', 0.01);
+
+    /* AND THE EMAIL ITSELF, NOT ONLY THE QUOTE IT IS BUILT FROM. Everything above proves the
+       QUOTE's numbers reconcile; it says nothing about whether `borrowerTermsEmail` actually
+       builds a row for each of them — which is exactly how the feasibility fee reached a
+       borrower's inbox inside a total with no line naming it. So the real table is rendered and
+       its own rows are added up against its own stated total. */
+    const pr = require('../src/lib/product-registration');
+    const mail = pr.borrowerTermsEmail({
+      ctx: { subjectTag: 'test' }, quote: gq, total: gq.sizing.totalLoan, termMonths: 12,
+    });
+    const table = (mail.table && /closing costs/i.test(mail.table.title || '')) ? mail.table : null;
+    ok(!!table, 'the borrower\'s "your terms are ready" email carries the closing-cost table');
+    if (table) {
+      const cash = (v) => Number(String(v).replace(/[$,]/g, '')) || 0;
+      const stated = table.rows.find((r) => /total due at closing/i.test(r[0]));
+      const listed = table.rows.filter((r) => r !== stated && !/appraisal \(paid when ordered|deferred origination/i.test(r[0]))
+        .reduce((n, r) => n + cash(r[1]), 0);
+      ok(!!stated, 'and it states a total');
+      near(listed, cash(stated && stated[1]),
+        'EVERY fee inside that total has its own named row — the table the borrower reads adds up', 0.01);
+      ok(table.rows.some((r) => /feasibility|project review/i.test(r[0])),
+        'the construction feasibility review is NAMED in the email, not only charged');
+      ok(table.rows.some((r) => /settlement agent/i.test(r[0]) && /optional/i.test(r[0])),
+        'and the optional New York settlement agent fee is named AND marked optional');
+      ok(table.rows.some((r) => /underwriting/i.test(r[0])) && table.rows.some((r) => /^legal fee/i.test(r[0])),
+        'and our own fee is itemised into the two parts the term sheet prints');
+    }
+  }
+
+  /* AND A NEW YORK CEMA REFINANCE, which the fixture above structurally cannot be — a CEMA
+     consolidates an EXISTING mortgage, so it only exists on a refinance, and the every-fee deal
+     above is a purchase. Without this case the CEMA could be charged inside the total and named
+     nowhere, which is exactly the hole the feasibility fee shipped with. */
+  {
+    const rq = pricing.quoteProgram('standard', pricing.buildInputs({
+      ...nyApp, loan_type: 'Cash-Out Refinance', program: 'Bridge / Stabilized',
+      purchase_price: null, rehab_budget: 0, payoff: 400000,
+    }, { flips: 3, holds: 0, ground: 0 }, { nyCema: true }));
+    const rc = rq.closingCosts;
+    ok(Number(rc.cemaFee) > 0, 'the CEMA fixture really does carry the New York CEMA fee');
+    near(rowsOf(rc), rc.dueAtClosing,
+      'a New York CEMA refinance still sums to the total the borrower is shown', 0.01);
+    const pr2 = require('../src/lib/product-registration');
+    const m2 = pr2.borrowerTermsEmail({ ctx: { subjectTag: 't' }, quote: rq, total: rq.sizing.totalLoan, termMonths: 12 });
+    const t2 = (m2.table && /closing costs/i.test(m2.table.title || '')) ? m2.table : null;
+    ok(!!t2 && t2.rows.some((r) => /CEMA/i.test(r[0])), 'and the borrower\'s email NAMES the CEMA fee');
+    if (t2) {
+      const cash = (v) => Number(String(v).replace(/[$,]/g, '')) || 0;
+      const stated2 = t2.rows.find((r) => /total due at closing/i.test(r[0]));
+      const listed2 = t2.rows.filter((r) => r !== stated2 && !/appraisal \(paid when ordered|deferred origination/i.test(r[0]))
+        .reduce((n, r) => n + cash(r[1]), 0);
+      near(listed2, cash(stated2 && stated2[1]),
+        'and that email\'s own rows add up to its own stated total', 0.01);
+    }
+  }
   ok((c.governmentChargeLines || []).length >= 1,
     'and on a New York City deal the mortgage tax is among those rows, by name');
   const fs2 = require('fs');

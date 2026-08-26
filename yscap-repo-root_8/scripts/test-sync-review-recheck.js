@@ -27,9 +27,9 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok(R2.valuesAgree('email', 'a@x.com', 'b@y.com') === false, 'email: genuinely different do not agree');
   ok(R2.valuesAgree('email', '', 'a@x.com') === false, 'email: one-sided blank never agrees');
   // phone — last 10 digits
-  ok(R2.valuesAgree('cell_phone', '+1 (347) 907-0483', '347-9070483') === true, 'phone: same last-10 agree');
-  ok(R2.valuesAgree('cell_phone', '3479070483', '2120001111') === false, 'phone: different numbers do not agree');
-  ok(R2.valuesAgree('cell_phone', '', '3479070483') === false, 'phone: blank never agrees');
+  ok(R2.valuesAgree('cell_phone', '+1 (555) 555-0142', '555-5550142') === true, 'phone: same last-10 agree');
+  ok(R2.valuesAgree('cell_phone', '5555550142', '2120001111') === false, 'phone: different numbers do not agree');
+  ok(R2.valuesAgree('cell_phone', '', '5555550142') === false, 'phone: blank never agrees');
   // name — normalized
   ok(R2.valuesAgree('first_name', 'Yakov  Klein', 'yakov klein') === true, 'name: spacing/case agree');
   ok(R2.valuesAgree('first_name', 'Yakov Klein', 'Yakov Klain') === false, 'name: different spelling differs');

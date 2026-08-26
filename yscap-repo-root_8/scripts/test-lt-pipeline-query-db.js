@@ -109,12 +109,29 @@ const check = (cond, msg) => {
     );
     check(after[0].loan_number === `${stamp}-A`,
       'THE COALESCE DIRECTION: a pipeline row missing the loan number does NOT blank the one we already hold');
-    check(after[0].milestone_name === 'Funding' && after[0].stage_key === 'funded',
-      'the Encompass milestone and OUR stage move together');
+    // FILL-ONLY since db/623: the pipeline's milestone column is the LAGGING
+    // active-form reading, so discovery never moves a milestone we already hold —
+    // the full read's ladder is what moves it (test-lt-milestone-ladder.js F/G).
+    check(after[0].milestone_name === 'Processing' && after[0].stage_key === 'underwriting',
+      'discovery is FILL-ONLY on the milestone — the lagging pipeline reading never overwrites the held one (db/623)');
     check(Number(after[0].loan_amount) === 500000,
       'a blank amount is filled from the pipeline…');
     check(loans.needsRead(row) === true,
       '…and the loan is queued for a full read, because we have never read it');
+    // …and the FILL half: a loan holding NO milestone takes discovery's.
+    const rowB = await loans.upsertDiscovered(c, {
+      encompassLoanGuid: `guid-${stamp}-B`,
+      loanNumber: `${stamp}-B`,
+      loanAmount: null,
+      loanFolder: 'Pipeline',
+      milestoneName: 'Funding',
+      lastModified: '2026-08-14T10:00:00Z',
+    }, {});
+    check(!!rowB, 'the second upsert runs');
+    const { rows: afterB } = await c.query(
+      'SELECT milestone_name FROM lt_loans WHERE encompass_loan_guid = $1', [`guid-${stamp}-B`]);
+    check(afterB[0].milestone_name === 'Funding',
+      '…while a loan with NO milestone is still FILLED by discovery');
 
     await c.query('ROLLBACK');
   } catch (e) {

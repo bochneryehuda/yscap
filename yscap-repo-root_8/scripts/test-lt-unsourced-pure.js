@@ -185,8 +185,16 @@ check(/unsourced/.test(fileSrc) && /notSourcedFor/.test(fileSrc),
   'the file screen\'s data is built with the list attached — a dash beside "In a flood zone" reads as "no", which is an answer nobody gave');
 
 const ui = read('app-v2/src/longterm/LtFileSections.jsx');
-check(/\{notSourced && blank \?/.test(ui),
+// WHITESPACE-TOLERANT, because this used to pin the exact ternary and went red when
+// the fact list was rebuilt as a ledger (#58) without the behaviour moving an inch.
+// A source check can only ever say the branch is still written; that it still DRAWS
+// is proven by rendering, in the "Encompass does not record this" section of
+// scripts/test-lt-section-ledger-pure.mjs — including the half a source check cannot
+// see at all, that a REAL value gives way to it rather than being hidden by it.
+check(/notSourced\s*&&\s*blank/.test(ui),
   '…and the screen DRAWS that reason in place of the value, so the reader learns "PILOT never reads this" instead of inferring "there is nothing there"');
+check(/ltf-rv-note/.test(ui),
+  '…drawn as a SENTENCE rather than as a value, so it never reads as the figure it is standing in for');
 check(/const blank = value == null \|\| value === '' \|\| value === '—';/.test(ui),
   '…only where the value is actually empty, so the sentence gives way the moment a real figure arrives');
 for (const field of ['in_flood_zone', 'flood_zone', 'actual_monthly_rent']) {

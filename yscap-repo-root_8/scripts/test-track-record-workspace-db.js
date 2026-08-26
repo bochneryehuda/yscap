@@ -213,9 +213,32 @@ const tag = `trws_${process.pid}`;
     const fs = require('fs'); const path = require('path');
     ok(!fs.existsSync(path.join(__dirname, '../app-v2/src/screens/StaffTrackRecordReviews.jsx')),
       'the previous track-record screen is retired — two of them on one screen is the complaint this rebuild started from');
-    const approvals = fs.readFileSync(path.join(__dirname, '../app-v2/src/screens/StaffApprovals.jsx'), 'utf8');
-    ok(/StaffTrackRecordWorkspace/.test(approvals) && !/StaffTrackRecordReviews/.test(approvals),
-      'and the Approvals hub mounts the workspace in its place');
+    /* COMMENTS STRIPPED — for the FOURTH time in this rebuild, and this one was
+       caught by its own mutation test rather than by review. The note in the hub
+       explaining WHY the tab went necessarily spells the route out, so a naive
+       grep matches the prose and the assertion passes with the link deleted.
+       Read code, never prose. */
+    const approvals = fs.readFileSync(path.join(__dirname, '../app-v2/src/screens/StaffApprovals.jsx'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    ok(!/StaffTrackRecordReviews/.test(approvals),
+      'and the retired screen is not mounted in the Approvals hub either');
+    /* THE WORKSPACE LEFT THE HUB, AND THE REQUIREMENT DID NOT — re-pointed, not
+       relaxed, the same way its twin in test-track-record-pending-review-pure
+       was. The owner took the tab out on 2026-08-26 ("I don't know why the
+       admin has a section for track record verification"), so asserting the
+       hub MOUNTS it now pins a decision they reversed. This section's subject
+       is "the old screen is gone, not left alongside" — that is the line
+       above, and it is untouched. What the mount was additionally proving is
+       that the workspace is REACHABLE, so that is asserted where it now lives:
+       its own full-screen route, plus the hub still naming it and offering the
+       way through (it keeps counting these in its badge, so it must). */
+    const appjsx = fs.readFileSync(path.join(__dirname, '../app-v2/src/App.jsx'), 'utf8');
+    ok(/path="\/internal\/track-record"/.test(appjsx) && /StaffTrackRecordWorkspace/.test(appjsx),
+      '…and the workspace is reachable on its own full-screen route');
+    // The ANCHOR — the route also appears in the old-bookmark redirect, so a
+    // bare substring test passes with the link deleted (proven by mutation).
+    ok(/href="#\/internal\/track-record"/.test(approvals),
+      '…with the Approvals hub, which still counts these, linking through to it');
   }
 
   console.log('\n8. The scope check still holds');

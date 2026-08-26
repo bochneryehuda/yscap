@@ -1,0 +1,202 @@
+{
+  "_captured": "2026-08-26 from the LIVE ClickUp workspace, task 868ktrmy8 (FILLE-2068 / YSCAP258134859), via the ClickUp connector — the owner asked for the ACTUAL dropdown, so this is it, verbatim.",
+  "_note": "The option ORDERINDEX is what a ClickUp read returns for a dropdown; the option NAME is what the crosswalk maps to. Re-capture with clickup_get_task + include:[custom_fields] when the owner adds or renames an option.",
+  "fields": {
+    "rehab_type": {
+      "id": "fb8814d4-c457-4b8f-af42-671e1e1ad752",
+      "name": "Rehab Type",
+      "options": [
+        {
+          "orderindex": 0,
+          "name": "Cosmetic"
+        },
+        {
+          "orderindex": 1,
+          "name": "Moderate"
+        },
+        {
+          "orderindex": 2,
+          "name": "Heavy"
+        },
+        {
+          "orderindex": 3,
+          "name": "Adding SF"
+        },
+        {
+          "orderindex": 4,
+          "name": "Ground-up"
+        }
+      ]
+    },
+    "loan_type": {
+      "id": "ee1b564f-13cb-4841-af4c-e0f762cbcf52",
+      "name": "*Loan type",
+      "options": [
+        {
+          "orderindex": 0,
+          "name": "Purchase"
+        },
+        {
+          "orderindex": 1,
+          "name": "Refi Rate & Term"
+        },
+        {
+          "orderindex": 2,
+          "name": "Refi Cash-Out"
+        },
+        {
+          "orderindex": 3,
+          "name": "Delayed Purchase Financing"
+        },
+        {
+          "orderindex": 4,
+          "name": "HELOC"
+        },
+        {
+          "orderindex": 5,
+          "name": "Second Closed end Mortgage"
+        }
+      ]
+    },
+    "program": {
+      "id": "50eb857a-d8b1-4c48-9ffe-20b15cdf1338",
+      "name": "*Program",
+      "options": [
+        {
+          "orderindex": 0,
+          "name": "Fix & Flip With Construction"
+        },
+        {
+          "orderindex": 1,
+          "name": "Fix & Hold With Construction"
+        },
+        {
+          "orderindex": 2,
+          "name": "Ground-Up"
+        },
+        {
+          "orderindex": 3,
+          "name": "Non-QM - DSCR Ratio"
+        },
+        {
+          "orderindex": 4,
+          "name": "FHA"
+        },
+        {
+          "orderindex": 5,
+          "name": "bridge Without Construction"
+        },
+        {
+          "orderindex": 6,
+          "name": "Private hard money"
+        },
+        {
+          "orderindex": 7,
+          "name": "Non-QM -  No Ratio"
+        },
+        {
+          "orderindex": 8,
+          "name": "Conventional"
+        },
+        {
+          "orderindex": 9,
+          "name": "Jumbo"
+        },
+        {
+          "orderindex": 10,
+          "name": "Non-QM - Full Doc"
+        },
+        {
+          "orderindex": 11,
+          "name": "Non-QM - P&L"
+        },
+        {
+          "orderindex": 12,
+          "name": "Non-QM - Personal Bank Statements 12 Months"
+        },
+        {
+          "orderindex": 13,
+          "name": "Non-QM - Personal Bank Statements 24 Months"
+        },
+        {
+          "orderindex": 14,
+          "name": "Non-QM - Business Bank Statements 12 Months"
+        },
+        {
+          "orderindex": 15,
+          "name": "Non-QM - Business Bank Statements 24 Months"
+        },
+        {
+          "orderindex": 16,
+          "name": "Non QM"
+        },
+        {
+          "orderindex": 17,
+          "name": "HELOC"
+        },
+        {
+          "orderindex": 18,
+          "name": "HELOAN"
+        },
+        {
+          "orderindex": 19,
+          "name": "HELOC - Bank Statements"
+        },
+        {
+          "orderindex": 20,
+          "name": "HELOAN - Bank Statements"
+        },
+        {
+          "orderindex": 21,
+          "name": "HELOC - DSCR"
+        }
+      ]
+    },
+    "property_type": {
+      "id": "541524d9-255f-4484-ac6d-1011ac60e87b",
+      "name": "*Property Type",
+      "options": [
+        {
+          "orderindex": 0,
+          "name": "SFR"
+        },
+        {
+          "orderindex": 1,
+          "name": "Multi 2-4"
+        },
+        {
+          "orderindex": 2,
+          "name": "Multi 5+"
+        },
+        {
+          "orderindex": 3,
+          "name": "Non-warrantable condo"
+        },
+        {
+          "orderindex": 4,
+          "name": "Warrantable condo"
+        },
+        {
+          "orderindex": 5,
+          "name": "Mixed Use"
+        },
+        {
+          "orderindex": 6,
+          "name": "Co-Op"
+        },
+        {
+          "orderindex": 7,
+          "name": "New Construction"
+        },
+        {
+          "orderindex": 8,
+          "name": "Condo"
+        },
+        {
+          "orderindex": 9,
+          "name": "Townhouse"
+        }
+      ]
+    }
+  }
+}

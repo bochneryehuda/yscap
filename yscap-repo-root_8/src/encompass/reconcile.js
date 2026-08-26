@@ -32,6 +32,13 @@ const ADDR = require('../lib/address');
 // Which note buyers may fund on which channel, and what "table funded" means for the
 // sold status. Pure (it requires only the field map above), so eager is safe.
 const FC = require('../lib/funding-channel');
+// THE ONE definition of "is this loan sized on the as-is value rather than a
+// purchase price" — i.e. is it a refinance. Pure (no pg). It is the SAME predicate
+// the frozen engine sizes on and the same one that decided a refinance may not
+// store a purchase price at all, which is exactly why the sync must ask IT rather
+// than re-test /refi/ here: a second copy is how the panel ends up demanding a
+// field the details door refuses to accept.
+const dealBasis = require('../lib/deal-basis');
 
 // Our-side deal type is NOT a column — applications stores it as `program`
 // ("Fix & Flip w/ Construction" / "Bridge" / "DSCR") + `loan_type` ("Ground up"
@@ -261,7 +268,7 @@ const WRITABLE = {
 // `theirs` = extractFields(encompass_extra); `ours` = buildOurValues(...);
 // `resolutions` = { field_key: { resolution, ours_snapshot, theirs_snapshot } }.
 // Returns { fields:[…], summary:{…} }. Pure — no DB, no side effects.
-function compareAll(ours, theirs, resolutions) {
+function compareAll(ours, theirs, resolutions, facts) {
   const res = resolutions || {};
   const fields = [];
   for (const e of map.REGISTRY) {
@@ -284,6 +291,10 @@ function compareAll(ours, theirs, resolutions) {
       // Carried through so summarize() can tell NOT APPLICABLE (an underivable
       // our-side, e.g. exit plan on a bridge deal) from genuinely missing data.
       naWhenOursMissing: cmp.naWhenOursMissing,
+      // The deal SHAPE this field does not apply to, if any ('refinance'). Carried
+      // so markNotApplicable can ask the FILE about it — the registry states which
+      // shape, the file states which shape it is.
+      naOnDealShape: cmp.naOnDealShape,
       ours: cmp.ours,
       theirs: cmp.theirs,
       oursNorm: cmp.oursNorm,
@@ -294,7 +305,61 @@ function compareAll(ours, theirs, resolutions) {
       resolution,                  // 'replaced' | 'accepted' | null
     });
   }
+  // Applied here too, so a caller that only uses compareAll's OWN summary still gets
+  // the rule. computeFindings runs it again over every field family (identity, funding
+  // channel, A/B piece) — the marker is idempotent, so a second pass is a no-op on a
+  // row it has already decided.
+  markNotApplicable(fields, facts);
   return { fields, summary: summarize(fields) };
+}
+
+/* ── NOT APPLICABLE IS A STATUS, NOT A SILENCE (owner-directed 2026-08-26) ─────
+   Two different facts land a row here, and they are deliberately answered in ONE
+   place so a future field family cannot be given one and forgotten the other:
+
+   (a) THE DEAL SHAPE. The owner, on the sync panel: *"for refinance transactions,
+       any cash-out or rate and term, certain fields don't need to match, for example
+       Purchase price - Effective purchase price - Seller / contract price - Assignment
+       fee, because there is no purchase and there is no contract, it's a refinance."*
+       The registry names the shape (`naOnDealShape`) and this asks the file about it.
+       It fires WHATEVER either side holds — Encompass routinely carries a purchase
+       price on a refinance (the property was bought at some point), and our side is
+       deliberately empty (db/399 cleared it) or a deliberate ZERO (the assignment fee,
+       which db/630 forces off on a refinance). Both of those read as a disagreement
+       under the ordinary rules, and neither has a fix anybody can perform.
+
+   (b) NOTHING TO DERIVE. The pre-existing `naWhenOursMissing` case (an exit plan on a
+       bridge deal, the vesting name on an individual-vested file). summarize() has
+       always SKIPPED it; what it never did was SAY so — the panel re-derived the very
+       same test in two places to draw its "Doesn't apply" chip. That is two copies of
+       one rule, and the copy that drifts is the one a person reads. The verdict is
+       computed HERE now and the screen renders what the server decided.
+
+   THE SKIP CONDITION FOR (b) IS BYTE-FOR-BYTE WHAT summarize() ALREADY APPLIED, so no
+   file's gate verdict moves because of the tidy-up; only (a) is new behaviour.
+
+   A not-applicable row is still SHOWN — with both sides and a plain reason — because
+   hiding it would leave a person wondering whether the sync had simply missed it.
+   PURE; never throws. */
+function markNotApplicable(fields, facts) {
+  for (const f of fields) {
+    if (!f || f.status === 'reference' || f.status === 'not_applicable') continue;
+    let reason = null;
+    // Ask about the ROW, not its key: a computed row (the funding channel, the three
+    // A/B-piece facts) is not in the registry at all, so a key lookup would silently
+    // never reach one. The row carries the flag compareField put on it.
+    if (f.naOnDealShape) reason = map.notApplicableReason(f, facts);
+    if (!reason && f.naWhenOursMissing && f.status === 'incomparable'
+        && (f.oursNorm === null || f.oursNorm === undefined || f.oursNorm === '')) {
+      reason = "Doesn't apply to this kind of loan — nothing to compare.";
+    }
+    if (!reason) continue;
+    f.status = 'not_applicable';
+    f.notApplicable = true;
+    f.naReason = reason;
+    f.open = false;              // there is no disagreement to resolve
+  }
+  return fields;
 }
 
 // Roll the fields up into the numbers the panel + the term-sheet gate need.
@@ -310,6 +375,13 @@ function summarize(fields) {
   const exceptedKeys = [];
   for (const f of fields) {
     if (f.compare === 'reference' || f.status === 'reference') continue;
+    // A field that does not apply to this deal is not a disagreement and not missing
+    // data — there is nothing for anybody to enter and nothing to reconcile, so it is
+    // skipped exactly as a reference row is. markNotApplicable is the ONE place that
+    // verdict is reached (deal shape, or an underivable our-side); the old inline
+    // naWhenOursMissing test below is kept as a BACKSTOP for any caller that summarizes
+    // fields without having run the marker over them first.
+    if (f.status === 'not_applicable') continue;
     // NOT APPLICABLE ≠ missing data. A field flagged `naWhenOursMissing` whose OUR
     // side can't be derived at all (exit plan on a bridge / ground-up deal) has
     // nothing for staff to enter anywhere, so it is skipped rather than counted as
@@ -368,7 +440,10 @@ function applyFieldExceptions(fields, resolutions) {
   for (const f of fields) {
     const r = res[f.key];
     if (!r || (r.resolution !== 'excepted' && r.resolution !== 'exception_requested')) continue;
-    if (f.status === 'match' || f.status === 'reference') continue;
+    // A not-applicable row already passes the gate, so there is nothing to except —
+    // and marking one would leave a granted exception on the panel implying somebody
+    // had to ask for a field that never applied.
+    if (f.status === 'match' || f.status === 'reference' || f.status === 'not_applicable') continue;
     const holds = snap(f.oursNorm) === snap(r.ours_snapshot) && snap(f.theirsNorm) === snap(r.theirs_snapshot);
     if (!holds) continue; // stale — values moved since the request/grant; the field re-blocks
     if (r.resolution === 'excepted') {
@@ -1160,6 +1235,14 @@ async function computeFindings(appId, dbc, opts) {
   // reconciled or excepted) — see compareAbPiece above.
   const abPieceFields = loan ? compareAbPiece(row, loan, quote ? quote.quote : null) : [];
   const fields = econFields.concat(idFields, ruleFields, abPieceFields);
+  // WHICH FIELDS DO NOT APPLY TO THIS DEAL — asked ONCE, over EVERY family, so a
+  // future computed row family cannot be given the deal-shape rule and forgotten
+  // the underivable-our-side one (or the reverse). The refinance test is
+  // `deal-basis.sizesOnAsIsValue`, the SAME predicate the frozen engine sizes on
+  // and the same one that decided the file may not store a purchase price in the
+  // first place — so "is this a refinance?" has ONE answer across the system and
+  // the sync panel can never disagree with the door that cleared the column.
+  markNotApplicable(fields, { refinance: dealBasis.sizesOnAsIsValue(row.loan_type) });
   // Super-admin FIELD EXCEPTIONS (owner-directed 2026-08-02): a not-matching / "no
   // data to compare" field can be escalated to a super admin, who GRANTS an exception
   // (resolution 'excepted') so it no longer blocks the term sheet — or a staffer has
@@ -1248,12 +1331,18 @@ async function rawDiagnostic(appId, dbc, opts) {
   // Registry fields Encompass returned NOTHING for — the "no data to compare"
   // rows, which is exactly where a wrong field id or JSON path shows up.
   const missing = c.fields
+    // `not_applicable` is excluded by the status test itself — such a row is never
+    // 'incomparable' — so a refinance is not reported as "Encompass is missing your
+    // purchase price", which is the advice that started this.
     .filter((f) => f.status === 'incomparable' && (f.theirsNorm === null || f.theirsNorm === undefined || f.theirsNorm === ''))
     .map((f) => ({ key: f.key, label: f.label, encompassFieldId: f.encompassFieldId, ours: f.ours, theirs: f.theirs }));
 
   const rows = c.fields.map((f) => ({
     key: f.key, label: f.label, encompassFieldId: f.encompassFieldId,
     compare: f.compare, gate: f.gate, status: f.status,
+    // The SERVER decides "does this apply?" and the screen renders it — the panel used
+    // to re-derive the naWhenOursMissing half itself, in two places.
+    notApplicable: !!f.notApplicable, naReason: f.naReason || null,
     ours: f.ours, theirs: f.theirs, oursNorm: f.oursNorm, theirsNorm: f.theirsNorm,
     why: _whyNotMatching(f),
   }));
@@ -1269,6 +1358,7 @@ async function rawDiagnostic(appId, dbc, opts) {
 function _whyNotMatching(f) {
   if (f.status === 'match') return 'Both sides agree.';
   if (f.status === 'reference') return 'Shown for reference only — never compared.';
+  if (f.status === 'not_applicable') return f.naReason || "Doesn't apply to this kind of loan — nothing to compare.";
   if (f.status === 'incomparable') {
     const oursBlank = f.oursNorm === null || f.oursNorm === undefined || f.oursNorm === '';
     const theirsBlank = f.theirsNorm === null || f.theirsNorm === undefined || f.theirsNorm === '';
@@ -1574,5 +1664,6 @@ module.exports = {
   // compareIdentity is exported for the name-split regression test: a borrower
   // whose Encompass copy is correctly split must MATCH our three columns, and a
   // legacy merged first name must match too rather than hold the term sheet.
+  markNotApplicable,
   _internals: { snap, deriveDealType, tapeGateDecision, tapeGateError, compareIdentity, compareFundingChannel, _collectParties, _matchParty, _matchBySsn, _matchByName, _phones, _emails, _pairLabel, _partyFromFieldValues, applyFieldExceptions },
 };

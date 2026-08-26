@@ -14,19 +14,28 @@ const router = require('../lib/safe-router')();
 const db = require('../db');
 const cfg = require('../config');
 const { requireAuth, requireStaff, requirePermission } = require('../auth');
-const { can, assigneeExistsSql } = require('../lib/permissions');
+const { can, visibleOfficersSql } = require('../lib/permissions');
 const client = require('../trustpoint/client');
 const mirror = require('../trustpoint/mirror');
 const discovery = require('../trustpoint/discovery');
+const parked = require('../trustpoint/parked');
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s || ''));
+/* THE FILE SCOPE IS THE SHARED FIVE-WAY RULE, NOT THE ASSIGNEE BRANCH ALONE
+   (owner-reported 2026-08-25: an appraisal XML import answering "not found", and a
+   processor sent to the Encompass tab from the term sheet hitting a refusal).
+   `assigneeExistsSql` is branch 4 of `visibleOfficersSql`'s five, so this tab used to
+   refuse a staffer who reaches the file by DELEGATION (staff_users.visible_officer_ids)
+   or by an OPEN workflow hand-off — while staff.js's own /applications/:id middleware,
+   which uses the full rule, let them open the whole file screen. Same person, same file,
+   one tab saying "not found". Never re-inline a file scope; ask permissions.js. */
 async function canSeeFile(req, appId) {
   if (!isUuid(appId)) return false;
   if (can(req.actor, 'see_all_files')) {
     const r = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
     return r.rowCount > 0;
   }
-  const r = await db.query(`SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`, [appId, req.actor.id]);
+  const r = await db.query(`SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${visibleOfficersSql('a', '$2')}`, [appId, req.actor.id]);
   return r.rowCount > 0;
 }
 
@@ -34,6 +43,23 @@ async function canSeeFile(req, appId) {
 // mounted separately before the JSON parser). requirePermission alone never authenticates —
 // it needs req.actor from requireAuth (phase-2 audit BLOCKER #1).
 router.use(requireAuth, requireStaff);
+
+// ---- PARKED: the whole surface is closed (owner-directed 2026-08-24) --------------------
+// Every route under /api/trustpoint is about the TrustPoint mirror — status, the linking desk,
+// per-file reads, per-line entry, write-back, the report, webhook registration — so while the
+// integration is parked they are refused as ONE gate rather than shape-by-shape. That also
+// removes the TrustPoint SCREEN from the draw centre for free: `TrustpointPanel` loads
+// `/files/:id/overview`, does `.catch(() => setOv(null))`, and renders nothing on null — so a
+// refusal here hides the panel at BOTH of its mount points with no front-end change, and it
+// comes back the moment the integration is un-parked. See ../trustpoint/parked.js.
+//
+// This does NOT touch the Blue Lake workflow the owner kept: the coordinator's "enter it in
+// TrustPoint" task and email come from sitewire/trustpoint-intake.js off the SITEWIRE reconcile
+// and never load this router, and the manual approve + release controls are /api/sitewire.
+router.use((req, res, next) => {
+  if (!parked.isParked()) return next();
+  return res.status(410).json({ error: 'trustpoint_parked', parked: true, linked: false, message: parked.PARKED_REASON });
+});
 
 // ---- staff: status ----
 router.get('/status', requirePermission('manage_draws'), async (req, res) => {
@@ -116,8 +142,16 @@ router.get('/files/:id/overview', requirePermission('manage_draws'), async (req,
         for (const d of draws) threads.set(d.tp_draw_id, await comments.threadFor(appId, d.tp_draw_id));
       } catch (e) { console.warn('[trustpoint] thread read failed:', e && e.message); threads = new Map(); }
     }
+    // WAS THIS DRAW ACTUALLY WIRED? Answered on the SERVER, by the same predicate the
+    // money mirror gates its ledger row on (`mirror.releaseConfirmed`), so the desk can
+    // never call a draw released on evidence the ledger refuses. The screen used to test
+    // `disbursed_cents > 0` itself — TrustPoint's projected net, pre-populated at
+    // submission — and printed "✓ Released $6,200.00" against a $6,450 DRAFT on
+    // YSCAP258134629 (owner-reported 2026-08-24). Never re-derive this in a component.
+    const tpMirror = require('../trustpoint/mirror');
     const draws2 = draws.map((d) => ({
       ...d, status_info: ds.drawStatus(d), messages: threads.get(d.tp_draw_id) || [],
+      release_confirmed: tpMirror.releaseConfirmed(d),
     }));
     const sos2 = serviceOrders.map((s) => ({ ...s, status_info: ds.serviceStatus(s) }));
     // The newest draw is the one the file is "on" — its headline answers "what's happening now?"

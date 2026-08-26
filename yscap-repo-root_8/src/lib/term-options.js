@@ -112,11 +112,49 @@ function guarantySummary({ borrowerName, coBorrowerName, pgWaived } = {}) {
 }
 
 /* ---------------- draw fee (program default) ---------------- */
-function drawFeeLines(program) {
-  return String(program || '').toLowerCase() === 'gold'
-    ? ['$250 per draw — physical inspection only (no virtual inspections)']
-    : ['$299 per draw — hybrid inspection', '$499 per draw — physical inspection'];
+/**
+ * The draw fees this deal is quoted, as printed lines.
+ *
+ * A GROUND-UP IS PHYSICAL ONLY (owner-directed 2026-08-26: *"for Ground Up products, don't give
+ * the option for hybrid draws. The same way you understand, look in the draw center. You see that
+ * Ground Up cannot order from Sitewire virtual. Same way on the term sheet, it should be wired on
+ * Ground Up products only physical."*). The DRAW desk already behaves that way — its inspection
+ * method is admin-rule-driven (`sitewire_inspection_rules.allow_virtual`) and the rules are set so
+ * a ground-up cannot order a virtual one — so the gap was the TERM SHEET, which went on offering a
+ * $299 hybrid draw the borrower could never actually order. Offering a price for a service that
+ * cannot be delivered is worse than not naming it.
+ *
+ * @param {string} program  'gold' | 'standard' | 'silver'
+ * @param {{groundUp?:boolean}} [opts]  the deal's own kind; absent = unchanged (every existing
+ *        caller is byte-identical, which is why this is an option rather than a new argument).
+ */
+function drawFeeLines(program, opts) {
+  if (String(program || '').toLowerCase() === 'gold') {
+    return ['$250 per draw — physical inspection only (no virtual inspections)'];
+  }
+  if (opts && opts.groundUp) {
+    return ['$499 per draw — physical inspection only (no virtual inspections on ground-up construction)'];
+  }
+  return ['$299 per draw — hybrid inspection', '$499 per draw — physical inspection'];
 }
+
+/* THE CLOSING RESCHEDULE FEE (owner-directed 2026-08-26: *"any closing reschedule has a $500 fee.
+   In general, this is across the board for all files."*).
+
+   IT IS A DISCLOSED TERM, NOT A CASH-TO-CLOSE LINE, and that is a deliberate reading rather than a
+   shortcut. It is charged on an EVENT that may never happen — most closings are not rescheduled —
+   so putting it in cash-to-close would charge every borrower $500 for a reschedule that has not
+   occurred, and overstate what they must bring to the table on every single file. It sits with the
+   other event-driven fees this term sheet already discloses: the per-draw inspection fees above,
+   and the deferred origination fee paid at exit.
+
+   ACROSS THE BOARD — no program, state or deal-type test, which is the owner's own wording. */
+const CLOSING_RESCHEDULE_FEE = 500;
+const CLOSING_RESCHEDULE_ROW = '$500 per rescheduled closing';
+const CLOSING_RESCHEDULE_DETAIL =
+  'If the scheduled closing is postponed or rescheduled once it has been set, a $500 closing '
+  + 'reschedule fee applies. It is charged only if a closing is actually rescheduled, so it is not '
+  + 'part of the estimated cash to close shown above.';
 
 /* ---------------- estimated key dates ----------------
    All dates are calendar 'YYYY-MM-DD' STRINGS end-to-end (never a JS Date /
@@ -177,5 +215,6 @@ module.exports = {
   resolveDeferredOrigPct,
   GUARANTY_ROW_LABEL, guarantySummary,
   drawFeeLines,
+  CLOSING_RESCHEDULE_FEE, CLOSING_RESCHEDULE_ROW, CLOSING_RESCHEDULE_DETAIL,
   parseYMD, fmtYMD, firstPaymentDate, maturityDate, keyDates,
 };

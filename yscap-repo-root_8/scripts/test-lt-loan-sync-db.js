@@ -169,6 +169,72 @@ async function main() {
     eq(settled.loan_number, 'LN-1-RENAMED',
       '…while the loan NUMBER does take the newest value, which is the asymmetry the upsert is written for');
 
+    // ── F2. …AND THE FULL READ IS WHAT CARRIES IT ─────────────────────────
+    //
+    // The sentence above has been in this suite since it shipped, and until
+    // 2026-08-24 it was ASPIRATIONAL: `loan_amount` was written ONLY by the
+    // discovery upsert, fill-only, so the figure was taken once when a loan was
+    // first seen and never corrected — on the pipeline's own lagging copy. Every
+    // other decision-bearing figure (rate, DSCR, the ARM terms, the expenses) is
+    // refreshed by the application sync inside the full read; this one column was
+    // missed. Owner-reported: *"The loan amounts always need to update."*
+    //
+    // Field 1109 is the authority, read BY NUMBER exactly as term (4) and program
+    // (1401) are, because the same field number sits at a different JSON path from
+    // loan to loan.
+    stub.loanById[guid(1)] = { id: guid(1), _fieldValues: { 1109: '750000' } };
+    stub.loans = [discovered(1)];
+    // Force the loan DUE: `needsRead` turns on the freshness stamps, and by this
+    // point in the suite the loan has already been read, so without this the
+    // pass would legitimately skip it and the assertion would pass or fail for
+    // a reason that has nothing to do with the amount.
+    await db.query('UPDATE lt_loans SET encompass_synced_at = NULL WHERE encompass_loan_guid = $1', [guid(1)]);
+    await sync.syncOnce({ readBudget: 5 });
+    const repriced = await loanRow(1);
+    eq(Number(repriced.loan_amount), 750000,
+      'THE ONE THAT MATTERS: a full read CORRECTS the loan amount — before this it was written once at discovery and never again');
+
+    // A read that could not see the amount must never blank one we hold. This is
+    // the direction that costs money: a blanked amount is a mortgage with no
+    // figure on the pipeline, the file screen and the ClickUp card at once.
+    stub.loanById[guid(1)] = { id: guid(1) };
+    stub.loans = [discovered(1)];
+    // Force the loan DUE: `needsRead` turns on the freshness stamps, and by this
+    // point in the suite the loan has already been read, so without this the
+    // pass would legitimately skip it and the assertion would pass or fail for
+    // a reason that has nothing to do with the amount.
+    await db.query('UPDATE lt_loans SET encompass_synced_at = NULL WHERE encompass_loan_guid = $1', [guid(1)]);
+    await sync.syncOnce({ readBudget: 5 });
+    eq(Number((await loanRow(1)).loan_amount), 750000,
+      '…and a read that saw no amount leaves the one we hold alone');
+
+    // Junk states NOTHING rather than writing a 0 over a real amount.
+    for (const bad of ['', '   ', 'not a number', '-5']) {
+      stub.loanById[guid(1)] = { id: guid(1), _fieldValues: { 1109: bad } };
+      stub.loans = [discovered(1)];
+      // FORCE THE READ INSIDE THE LOOP TOO. Without this the loan is not due, no
+      // read happens, and the assertion below passes because nothing ran — which
+      // is exactly what it looked like until a mutation that made junk write 0
+      // sailed through it. A test that cannot fail is not a test.
+      await db.query('UPDATE lt_loans SET encompass_synced_at = NULL WHERE encompass_loan_guid = $1', [guid(1)]);
+      const readBack = await sync.syncOnce({ readBudget: 5 });
+      eq(readBack.read, 1, `…the loan really was re-read for ${JSON.stringify(bad)}`);
+      eq(Number((await loanRow(1)).loan_amount), 750000,
+        `…and an unreadable amount (${JSON.stringify(bad)}) never overwrites it`);
+    }
+
+    // A formatted figure is still a figure — Encompass hands these back as text.
+    stub.loanById[guid(1)] = { id: guid(1), _fieldValues: { 1109: '$1,250,000.00' } };
+    stub.loans = [discovered(1)];
+    // Force the loan DUE: `needsRead` turns on the freshness stamps, and by this
+    // point in the suite the loan has already been read, so without this the
+    // pass would legitimately skip it and the assertion would pass or fail for
+    // a reason that has nothing to do with the amount.
+    await db.query('UPDATE lt_loans SET encompass_synced_at = NULL WHERE encompass_loan_guid = $1', [guid(1)]);
+    await sync.syncOnce({ readBudget: 5 });
+    eq(Number((await loanRow(1)).loan_amount), 1250000,
+      '…while a formatted amount is read as the number it is');
+
     // ── G. THE PEOPLE STEPS MAY NEVER COST THE MIRROR ─────────────────────
     stub.loans = [discovered(3)];
     stub.roster = async () => { throw new Error('roster is down'); };

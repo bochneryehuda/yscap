@@ -185,6 +185,23 @@ async function main() {
       // exactly the kind of door this smoke test exists to open. On a fresh
       // database it answers the DECLARED defaults (source 'standard' throughout).
       '/api/lt/dscr/comp-plan',
+      // The ClickUp syncing section (#36). On the no-such-loan id the scoped
+      // loader answers its own 404 — the route's uuid check + SELECT both run,
+      // so a phantom column in either would surface here as a 500.
+      `/api/lt/clickup/loans/${NO_LOAN}`,
+      // The ENCOMPASS syncing section (#52), the sibling of the ClickUp one above.
+      // On the no-such-loan id the SHARED scoped loader answers its own 404 — the
+      // uuid check and the SELECT both run, so a phantom column in either surfaces
+      // here as a 500. It is also the only thing in this job that assembles
+      // `routes/scoped-loan.js`'s interpolated statement, which is why
+      // test-lt-sql-prepared-db.js reports that module as unexercised without it.
+      `/api/lt/encompass-file/loans/${NO_LOAN}`,
+      // The status DISAGREEMENT list (db/626) — every file where the ClickUp
+      // status and the Encompass milestones do not match. It runs a real join
+      // with the officer scope ANDed on, so a phantom column on either side, or
+      // a scope fragment whose placeholder arithmetic is off (Postgres 42P18),
+      // surfaces here rather than on the screen.
+      '/api/lt/clickup/status-reviews',
     ];
 
     // ── WHAT THE LIST OMITS, SAID OUT LOUD ──────────────────────────────────

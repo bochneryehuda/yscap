@@ -161,6 +161,13 @@ async function listArchive(dbc = null) {
        FROM lt_loans l
       WHERE ${trashSql('l')}
       ORDER BY l.encompass_last_modified DESC NULLS LAST, l.loan_number NULLS LAST`);
+  // The completed-form status label (owner-directed 2026-08-24) — same
+  // decoration the live pipeline rows carry, so the archive reads "Funded",
+  // never "Funding". Required HERE rather than at module scope only to keep
+  // this module's load surface small; `stages.js` has no requires of its own,
+  // so there is no cycle to avoid (an earlier comment here said there was).
+  const stages = require('./stages');
+  for (const r of rows) r.milestone_label = stages.completedFormLabel(r.milestone_name);
   return rows;
 }
 
@@ -177,6 +184,11 @@ async function listArchive(dbc = null) {
 const NON_CASCADE_CHILD_TABLES = [
   { table: 'lt_clickup_link_log', column: 'lt_loan_id' },
   { table: 'lt_milestone_events', column: 'loan_id' },
+  // The writer's journal + review queue (db/625) key on the loan with a bare
+  // uuid — no FK, so nothing cascades. A permanently deleted mirror row keeps
+  // no ClickUp write history and no open reviews (the link-log precedent).
+  { table: 'lt_clickup_write_log', column: 'lt_loan_id' },
+  { table: 'lt_clickup_review_queue', column: 'lt_loan_id' },
 ];
 
 /**
