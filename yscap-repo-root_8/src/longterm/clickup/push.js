@@ -1407,15 +1407,22 @@ async function pushPass({ limit } = {}) {
  * @param {number} scan  how many rows to look at (wider than the create budget)
  * @param {string} since override the go-live cutoff (tests only)
  */
+/* REVERTED 2026-08-27 — a milestone clause was OR'd beside the date here and it
+   created SIX DUPLICATE CARDS on closed historical loans within four minutes.
+   `clickup_task_id IS NULL` does NOT mean "this loan has no card"; it means no
+   LINK is held to the card it may already have (link.js does the matching). The
+   date is therefore load-bearing beyond its stated go-live purpose: it keeps the
+   whole UNLINKED HISTORICAL BOOK out of this pass. It is ANDed and must stay
+   ANDed — guarded by scripts/test-lt-clickup-create-cutoff-db.js.
+   NOTE: keep prose like this OUTSIDE the SQL template below — the separation
+   gate scans that string for table names and the product's own name in a
+   comment there reads as an RTL table. */
 async function createCandidates({ scan, since } = {}) {
   return db.query(
     `SELECT l.id, l.loan_number FROM lt_loans l
       WHERE l.clickup_task_id IS NULL
         AND ${trash.notTrashSql('l')}
-        /* REVERTED 2026-08-27 — see the block above createCandidates. The
-           milestone clause created SIX DUPLICATE CARDS on historical closed
-           loans and is withdrawn until it can tell "has no card" from
-           "PILOT has not LINKED the card it already has". */
+        /* REVERTED 2026-08-27 — see the note above createCandidates. */
         AND l.created_at >= $2::date
         AND l.loan_number IS NOT NULL AND l.loan_number <> ''
         AND l.encompass_synced_at IS NOT NULL
