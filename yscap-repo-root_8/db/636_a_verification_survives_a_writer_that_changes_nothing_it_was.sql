@@ -85,6 +85,7 @@ DECLARE
   snap          track_record_verifications%ROWTYPE;  -- db/636: what a human actually verified
   new_material  jsonb;   -- db/636: this row's material values, after this statement
   restored      boolean := false;  -- db/636: did we just put a verification back?
+  pillars_withdrawn boolean;  -- db/500: was the evidence this line stood on withdrawn?
 BEGIN
   IF TG_OP = 'INSERT' THEN
     -- NOTHING ARRIVES VERIFIED. Unchanged from db/485.
@@ -125,7 +126,10 @@ BEGIN
      completing the three checks would un-verify the line they were completing.
      Only the withdrawal direction is a restatement: a pillar that was confirmed
      and now is not means the evidence this line stood on is gone. */
-  IF (COALESCE(OLD.pillars_met, false) AND NOT COALESCE(NEW.pillars_met, false))
+  pillars_withdrawn := (COALESCE(OLD.pillars_met, false)
+                        AND NOT COALESCE(NEW.pillars_met, false));
+
+  IF pillars_withdrawn
      OR addr_restated
      /* db/501 — THE ONE NARROW EXEMPTION, and it is transaction-local.
         Connecting a line to the entity its own free text ALREADY NAMED is a
@@ -190,7 +194,19 @@ BEGIN
      ORDER BY v.verified_at DESC, v.id DESC
      LIMIT 1;
 
-    IF snap.track_record_id IS NOT NULL AND snap.material = new_material THEN
+    /* db/500 IS NOT EXCUSABLE BY THE SNAPSHOT, and this is the one exception to
+       the rule above. Every other material column is AUTHORED — a writer moved it
+       and moved it back, so matching the snapshot proves the row still holds what
+       the reviewer approved. `pillars_met` is DERIVED (db/500 recomputes it from
+       track_record_pillars), and it is routinely false AT THE MOMENT OF
+       VERIFICATION because nobody has answered a pillar yet. So a human REJECTING
+       a pillar returns it to the very value the snapshot holds — the row matches,
+       and the verification would be restored on the exact statement that took its
+       evidence away. Matching here is a coincidence of when the verification was
+       granted, never proof the evidence still stands. The withdrawal direction
+       therefore always bites, exactly as db/500 wrote it. */
+    IF NOT pillars_withdrawn
+       AND snap.track_record_id IS NOT NULL AND snap.material = new_material THEN
       /* The row holds exactly what was approved. There is nothing to re-review,
          so the verification stands — and if an earlier pass had already dropped
          it, it is PUT BACK. Restoring is never silent: it is audited on the same

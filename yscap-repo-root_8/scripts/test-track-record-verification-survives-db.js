@@ -31,6 +31,7 @@ process.env.EMAIL_PROVIDER = 'none';
 
 const crypto = require('crypto');
 const db = require('../src/db');
+const { ensureSchema } = require('../src/migrate-boot');
 
 let fail = 0;
 const ok = (c, m) => { if (c) console.log(`  ok  ${m}`); else { fail++; console.error(`  FAIL ${m}`); } };
@@ -83,6 +84,15 @@ const audits = async (id, action) => (await db.query(
   const sfx = crypto.randomBytes(4).toString('hex');
   let borrowerId, staffId;
   try {
+    /* APPLY THE MIGRATIONS RATHER THAN TRUST THE AMBIENT DATABASE. db/485, 493,
+       500, 501, 516 and 635 EACH re-create track_record_verify_guard() on every
+       boot, and db/636 wins only because it is numbered last — so what has to be
+       proven here is that the chain CONVERGES on this file's definition, not that
+       some earlier run happened to leave a good function behind. Without this the
+       suite grades whatever is already in the database: a mutation of db/636 was
+       caught by test-track-record-phase1-db (which does call ensureSchema) while
+       this suite reported all-passed against the previous, unmutated function. */
+    await ensureSchema();
     borrowerId = (await db.query(
       `INSERT INTO borrowers (first_name, last_name, email)
        VALUES ('Survive', 'Guard', $1) RETURNING id`, [`survive+${sfx}@example.test`])).rows[0].id;
@@ -222,6 +232,37 @@ const audits = async (id, action) => (await db.query(
       ok((await state(p)).is_verified === false, 'F2 db/500 a withdrawn pillar still un-verifies');
       ok((await audits(p, 'track_record_verification_restored')).length === 0,
         'F2b …and db/636 does NOT restore it — the evidence it stood on is gone');
+
+      /* F2c-e — THE ORDER PRODUCTION ACTUALLY USES, and the one F2 above cannot see.
+         F2 confirms the pillars BEFORE verifying, so the snapshot holds
+         pillars_met=true and withdrawing makes NEW differ from it — the drop comes
+         from the snapshot MISMATCH, not from db/500's withdrawal rule, so that
+         fixture passes even with the rule removed. It passed for the wrong reason.
+
+         In production a reviewer verifies the line FIRST and the three pillar
+         checks are completed afterwards, so the snapshot holds pillars_met=FALSE.
+         Rejecting a pillar then returns the column to the very value the snapshot
+         carries — the row MATCHES what was approved — and without the explicit
+         withdrawal guard db/636 restores the verification on the exact statement
+         that took its evidence away. This is the shape that shipped broken and was
+         caught by test-track-record-phase1-db; it is asserted here too, because
+         this is the suite somebody edits when they change the snapshot rule. */
+      const q = await line(borrowerId);
+      await verify(q, staffId);
+      ok((await db.query(`SELECT pillars_met FROM track_records WHERE id=$1`, [q])).rows[0].pillars_met === false,
+        'F2c (staged) the line is verified BEFORE any pillar is answered — snapshot holds pillars_met=false');
+      await db.query(
+        `UPDATE track_record_pillars SET human_verdict='confirmed', updated_at=now()
+          WHERE track_record_id=$1`, [q]);
+      ok((await state(q)).is_verified === true,
+        'F2d finishing the pillar work does not un-verify the line being finished (db/500 is asymmetric)');
+      await db.query(
+        `UPDATE track_record_pillars SET human_verdict='rejected', updated_at=now()
+          WHERE track_record_id=$1 AND pillar='ownership'`, [q]);
+      ok((await state(q)).is_verified === false,
+        'F2e …and withdrawing one re-opens it, even though pillars_met now MATCHES the snapshot');
+      ok((await audits(q, 'track_record_verification_restored')).length === 0,
+        'F2f …with nothing restored — a match here is a coincidence of timing, not proof');
 
       // db/501 — the transaction-local entity-backfill fill.
       const e = await line(borrowerId);
