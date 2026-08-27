@@ -54,11 +54,18 @@ function applyOverride(built, override, opts = {}) {
     // Subject-only edit (or a body posted back unchanged): the rich built body stands.
     return { subject, html: built.html, text: built.text, edited: subject !== built.subject };
   }
+  // PHYSICAL lines, not only blank-line paragraphs (post-merge audit): template.para()
+  // escapes without converting \n, so a paragraph passed whole renders its internal
+  // single newlines as collapsed whitespace — every "Label: value" block in a preview
+  // body (single-newline separated) became one run-on line in the HTML. Each physical
+  // line is its own template line, so the edited body keeps its shape.
   const paras = o.text.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+  const firstLines = (paras[0] || '').split('\n').map((s) => s.trim()).filter(Boolean);
+  const restLines = paras.slice(1).flatMap((p) => p.split('\n').map((s) => s.trim()).filter(Boolean));
   const r = tpl.render({
     title: opts.title || subject,
-    intro: paras[0] || '',
-    lines: paras.slice(1),
+    intro: firstLines[0] || '',
+    lines: [...firstLines.slice(1), ...restLines],
     replyable: opts.replyable !== false,
     note: opts.note || '',
     cta: opts.cta || null,

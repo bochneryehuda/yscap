@@ -7227,8 +7227,29 @@ router.get('/applications/:id/orders/:kind/email-preview', async (req, res) => {
     const followup = req.query.followup === '1' || req.query.followup === 'true';
     const note = typeof req.query.note === 'string' ? req.query.note.slice(0, 4000) : '';
     const built = orders.buildOrderEmail(kind, data, followup ? { followup: true, fullOrder: true, note } : {});
-    const ccBorrower = await ccBorrowerFor(appId, kind, { explicit: null, storedMeta: null });
-    const { to, cc } = orders.recipientsFor(kind, data, { ccBorrower });
+    // THE SAME recipient derivation the send routes run (post-merge audit W6): the
+    // panel's ccBorrower choice (?ccBorrower=) + the order's stored per-order footing,
+    // and — on a follow-up — the vendor-thread participants too. This used to pass
+    // {explicit:null, storedMeta:null} and skip threadParticipants, so the To/Cc the
+    // preview showed could disagree with the recipients the send actually uses.
+    const row = (await db.query(
+      `SELECT meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    const explicit = req.query.ccBorrower === '1' || req.query.ccBorrower === 'true' ? true
+      : (req.query.ccBorrower === '0' || req.query.ccBorrower === 'false' ? false : null);
+    // A follow-up keeps the footing the order was placed with (no explicit override —
+    // exactly the follow-up send's own rule).
+    const ccBorrower = await ccBorrowerFor(appId, kind,
+      followup ? { storedMeta: row && row.meta } : { explicit, storedMeta: row && row.meta });
+    const base = orders.recipientsFor(kind, data, { ccBorrower });
+    let { to, cc } = base;
+    if (followup) {
+      const parties = await threadParticipants.replyRecipients({
+        applicationId: appId, msgTypes: [`${kind}_message`],
+        to: base.to, cc: base.cc,
+        never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+      });
+      to = parties.to; cc = parties.cc;
+    }
     res.json(require('../lib/email/manual-override').previewShape(built, { to, cc }));
   } catch (e) { res.status(500).json({ error: 'Could not build the preview.' }); }
 });
@@ -7373,6 +7394,11 @@ router.post('/applications/:id/orders/:kind/schedule', async (req, res) => {
     // at send time rather than being frozen to whatever it happened to be tonight.
     const payload = { force: !!force };
     if (b.ccBorrower != null) payload.ccBorrower = b.ccBorrower === true || b.ccBorrower === 'true';
+    // A subject/body edited in the preview rides the stored intent — the dispatcher's
+    // re-post lands it through the place route's own applyOverride door (the same
+    // contract as the tape / closing-prep / investor-delivery schedulers).
+    const override = require('../lib/email/manual-override').cleanOverride(b.override);
+    if (override) payload.override = override;
 
     const out = await require('../lib/scheduled-sends').schedule({
       appId, kind: kind === 'title' ? 'title_order' : 'insurance_order',

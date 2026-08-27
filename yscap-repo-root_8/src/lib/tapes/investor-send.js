@@ -328,9 +328,13 @@ async function sendTapeToInvestor(appId, db, { tape, to, cc: extraCc, note, acto
 
   // ONE builder for the body (buildTapeEmail — the same one the preview shows), then a
   // hand-edited subject/body lands through the ONE manual-override chokepoint
-  // (owner-directed 2026-08-26); no override → byte-identical to before.
+  // (owner-directed 2026-08-26); no override → byte-identical to before. The typed
+  // note rides opts.note too: buildTapeEmail folds it into the BODY, so an edited
+  // body used to silently drop a note typed in the same modal (post-merge audit) —
+  // the re-render now carries it in the template's note slot instead.
   const built = require('../email/manual-override').applyOverride(
-    buildTapeEmail(pre, note), override, { title: 'New file for review', replyable: !!replyTo });
+    buildTapeEmail(pre, note), override,
+    { title: 'New file for review', replyable: !!replyTo, note: String(note || '').trim().slice(0, 2000) });
 
   await email.sendMail({
     to: emails,

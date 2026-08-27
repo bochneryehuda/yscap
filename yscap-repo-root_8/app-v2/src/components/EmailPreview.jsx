@@ -75,7 +75,9 @@ export default function EmailPreview({
               onChange={(e) => setSubj(e.target.value)} />
           )}
           <label className="small" style={{ display: 'block', fontWeight: 600, color: '#141B22', marginTop: 10 }}>Message</label>
-          <textarea className="input" style={{ width: '100%', minHeight: 260, fontSize: 13, lineHeight: 1.45, whiteSpace: 'pre-wrap' }}
+          {/* 20,000 = the server's own cap (manual-override SUBJECT/BODY_MAX) — enforced
+              here so a longer paste stops visibly instead of being silently truncated. */}
+          <textarea className="input" maxLength={20000} style={{ width: '100%', minHeight: 260, fontSize: 13, lineHeight: 1.45, whiteSpace: 'pre-wrap' }}
             value={body} onChange={(e) => setBody(e.target.value)} />
           <div className="small" style={{ color: '#4B585C', marginTop: 4 }}>
             {edited

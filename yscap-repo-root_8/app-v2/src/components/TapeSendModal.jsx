@@ -104,7 +104,9 @@ export default function TapeSendModal({ name, preview, busy, onCancel, onSend, o
           {baseBody ? (
             <label style={{ display: 'grid', gap: 2, marginTop: 8 }}>
               <span style={{ color: '#4B585C' }}>Message — exactly what will be sent, editable</span>
-              <textarea className="input" rows={8} style={{ fontSize: 12.5, lineHeight: 1.45 }}
+              {/* 20,000 = the server's own body cap, enforced here so a longer paste
+                  stops visibly instead of being silently truncated at the send. */}
+              <textarea className="input" rows={8} maxLength={20000} style={{ fontSize: 12.5, lineHeight: 1.45 }}
                 value={body} onChange={(e) => setBody(e.target.value)} />
             </label>
           ) : (preview && preview.figures || []).length > 0 && (
