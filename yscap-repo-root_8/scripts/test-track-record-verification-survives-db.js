@@ -81,6 +81,12 @@ const audits = async (id, action) => (await db.query(
 )).rows.map((r) => r.detail);
 
 (async () => {
+    /* NO DATABASE, NO FAILURE. `npm test` is ONE chain and BOTH CI jobs run it —
+       `test` has no Postgres at all — so a *-db suite must SKIP rather than hang.
+       It must come before ensureSchema(), which does not throw when the database
+       is unreachable: it retries for ~75s and then RESOLVES, so the suite sails
+       past it and dies on its first query with the wrong cause named. */
+    await require(__dirname + '/lib/db-gate').skipUnlessDb('track-record-verification-survives');
   const sfx = crypto.randomBytes(4).toString('hex');
   let borrowerId, staffId;
   try {

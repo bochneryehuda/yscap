@@ -34,6 +34,12 @@ const PRE = '2026-08-13';   // discovered before go-live, like the reported file
 const POST = '2026-08-25';
 
 (async () => {
+    /* NO DATABASE, NO FAILURE. `npm test` is ONE chain and BOTH CI jobs run it —
+       `test` has no Postgres at all — so a *-db suite must SKIP rather than hang.
+       It must come before ensureSchema(), which does not throw when the database
+       is unreachable: it retries for ~75s and then RESOLVES, so the suite sails
+       past it and dies on its first query with the wrong cause named. */
+    await require(__dirname + '/lib/db-gate').skipUnlessDb('lt-clickup-handoff-create');
   const tag = `hoff${Math.random().toString(36).slice(2, 8)}`;
   try {
     await ensureSchema();
