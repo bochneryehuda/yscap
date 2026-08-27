@@ -989,7 +989,7 @@ router.get('/why-no-status', async (req, res) => {
               milestone_since_is_baseline, ladder_synced_at, encompass_synced_at,
               encompass_sync_error, clickup_task_id, clickup_custom_id,
               clickup_link_confidence, clickup_pushed_at, clickup_push_error,
-              clickup_status_event_at, loan_folder
+              clickup_status_event_at, loan_folder, created_at
          FROM lt_loans WHERE loan_number = $1`, [loanNumber]);
     const loan = rows[0];
     if (!loan) return res.status(404).json({ ok: false, error: `no loan in the book carries the number ${loanNumber}` });
@@ -1119,7 +1119,37 @@ router.get('/why-no-status', async (req, res) => {
     // ── the first link that explains it, in words ────────────────────────────
     let verdict;
     if (!loan.clickup_task_id) {
-      verdict = 'This loan has no ClickUp card linked, so nothing could be written. Link it first.';
+      /* WHY there is no card, not merely THAT there is none (owner-reported
+         2026-08-27, file YSCAP258134841 / 300 Apple St). This branch used to say
+         "Link it first", which names the symptom, blames nobody in particular and
+         sends whoever is reading it to do by hand the very thing that was supposed
+         to happen automatically. That is how a create pass that had silently
+         stopped considering a whole population of loans stayed invisible for three
+         days. Every answer below names the cause and what will happen next. */
+      let why;
+      try {
+        // Lazy, like queueSql below — this route is required at boot.
+        const clickupPush = require('../clickup/push');
+        const cand = await clickupPush.createCandidates({ scan: 100000 });
+        const queued = (cand.rows || []).some((r) => String(r.id) === String(loan.id));
+        if (queued) {
+          why = loan.clickup_push_error
+            ? `it IS in the create queue, and the last attempt was refused: ${loan.clickup_push_error}. Fix that and the next pass will make the card.`
+            : 'it IS in the create queue and no attempt has been refused — the next create pass should make the card. If it has not within about ten minutes, read clickup_push_error below.';
+        } else {
+          const handoff = (await db.query(
+            `SELECT 1 FROM lt_loan_milestones m
+              WHERE m.loan_id = $1::uuid AND m.done = true
+                AND ${clickupPush.MILESTONE_NORM_SQL('m.milestone_name')} = ANY($2::text[]) LIMIT 1`,
+            [loan.id, clickupPush.HANDOFF_MILESTONES()])).rowCount > 0;
+          why = handoff
+            ? 'it has finished the hand-off to the processor but the create pass still will not take it — read clickup_push_error below, and check the loan carries a loan number and has been read from Encompass.'
+            : `PILOT first saw this loan on ${loan.created_at}, which is before the create cutoff (${clickupPush.createSince()}), and it has not finished LO Prep — so the automatic pass does not consider it. It gets a card when it reaches the processor, or immediately if somebody makes one by hand.`;
+        }
+      } catch (e) {
+        why = `and PILOT could not work out why (${e.message}).`;
+      }
+      verdict = `NO CARD — this loan has no ClickUp card, so no status could be written: ${why}`;
     } else if (String(loan.clickup_link_confidence || 'confirmed') !== 'confirmed') {
       verdict = `The card link is "${loan.clickup_link_confidence}" rather than confirmed, and the push pass only takes confirmed links. Confirm the link.`;
     } else if (!lastEntered) {
