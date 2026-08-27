@@ -720,15 +720,29 @@ console.log('LT Pricing Engine — structural guards\n');
   // (5) THE PRE-MERGE AUDIT'S FOUR DEFECTS, each pinned so it cannot come back
   //     (audit 2026-08-27). The picker slice is the component's own body.
   const picker = code.slice(code.indexOf('function InvestorPicker'), code.indexOf('function InvestorStripRow'));
-  ok(/e\.key === 'Enter'/.test(picker) && /e\.preventDefault\(\)/.test(picker) && /onSaveGroup\(\)/.test(picker),
-    'PE-164 Enter in the group-name box is CAUGHT and saves the group — it sits inside the scenario form, whose submit is a PAID search');
+  // The EXACT shape is pinned (re-audit 2026-08-27): preventDefault must be
+  // UNCONDITIONAL on Enter — moving the groupBusy test outside the brace
+  // (`if (e.key === 'Enter' && !groupBusy)`) would re-arm the paid search on
+  // Enter mid-save, and a three-token pin could not see that inversion.
+  ok(/if \(e\.key === 'Enter'\) \{ e\.preventDefault\(\); if \(!groupBusy\) onSaveGroup\(\); \}/.test(picker),
+    'PE-164 Enter in the group-name box is CAUGHT unconditionally and saves the group — it sits inside the scenario form, whose submit is a PAID search');
+  // COUNTED, not spot-checked (re-audit): the ONLY `setInvSel(` call in the
+  // file is the one inside changeInvSel — so ANY door regressing to a bare
+  // call (Reset, applyGroup, a Show-all button, a prop mount) fails this,
+  // not just the two onSel props the first cut looked at.
   ok(/const changeInvSel = \(next\) => \{ setInvSel\(next\); setOpenQuote\(null\); \};/.test(code)
-    && !/onSel=\{setInvSel\}/.test(code),
-  'PE-165 every selection door closes the positional quote-Details key — a stale index must never show a build nobody opened');
+    && (code.match(/setInvSel\(/g) || []).length === 1,
+  'PE-165 every selection door closes the positional quote-Details key — exactly one setInvSel call exists, inside changeInvSel');
   ok(/rosterStatus === 'loading'/.test(picker),
     'PE-166 loading and failure are two facts — the picker never claims "could not be loaded" about a list that is on its way');
-  ok(/investorsUnmapped[\s\S]{0,1400}selectionActive\(invSel\)/.test(code.slice(code.indexOf('investorsUnmapped\) && res.investorsUnmapped'))) || /No white-label program name yet[\s\S]{0,1400}selectionActive\(invSel\)/.test(code),
-    'PE-167 the unmapped note stays TRUE under an active selection — hidden by the filter, never "shows normally"');
+  // BOTH unmapped sub-shapes (re-audit): a RESOLVED investor off the sheet is
+  // said hidden under a selection; a registry-UNKNOWN lender (key null) is
+  // KEPT by the overlay (PE-161) and must be said KEPT — the first cut's one
+  // sentence was true for one shape and the inverse lie for the other.
+  ok(/const offSheet = res\.investorsUnmapped\.filter\(\(u\) => u\.key\);/.test(code)
+    && /const unknown = res\.investorsUnmapped\.filter\(\(u\) => !u\.key\);/.test(code)
+    && /never hidden/.test(code) && /selectionActive\(invSel\)/.test(code),
+  'PE-167 the unmapped note stays TRUE under an active selection for BOTH sub-shapes — off-sheet said hidden, registry-unknown said kept');
   ok(/consumerLabel/.test(code) && /investorKey: p\.investorKey/.test(code),
     'PE-154 the stack carries the server\'s investorKey + consumer labels through to the rows');
 

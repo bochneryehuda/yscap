@@ -2359,20 +2359,34 @@ export default function LtPricer() {
                       only, so the real name is fine — because on the consumer side it would
                       have nothing it may be called. Silence would read as "everybody is on
                       the sheet", which stops being true the day the vendor adds a lender. */}
-                  {Array.isArray(res.investorsUnmapped) && res.investorsUnmapped.length > 0 && (
-                    <div style={{ fontSize: 12, color: CAUTION, marginTop: 4 }}>
-                      {`No white-label program name yet for: ${res.investorsUnmapped
-                        .map((u) => u.investor || u.lender || '(unnamed)').join(', ')} — `}
-                      {/* The sentence must stay TRUE under an active selection (pre-merge
-                          audit 2026-08-27, defect 4): an unmapped investor is not on the
-                          sheet, so it cannot be ticked, and the overlay hides its rows
-                          like any other un-ticked investor — "shows normally" would be
-                          the screen lying about a reachable state. */}
-                      {selectionActive(invSel)
-                        ? 'your investor selection hides their rows (not on the sheet, so they cannot be ticked; counted in the hidden figure — Show all investors brings them back). They need a name before any consumer surface can show them.'
-                        : 'they show normally here, and need a name before any consumer surface can show them.'}
-                    </div>
-                  )}
+                  {Array.isArray(res.investorsUnmapped) && res.investorsUnmapped.length > 0 && (() => {
+                    /* The sentence must stay TRUE under an active selection, for BOTH
+                       unmapped sub-shapes (pre-merge audit defect 4 + the re-audit's
+                       inversion catch, 2026-08-27). A RESOLVED investor off the sheet
+                       (Amwest: investorKey set) cannot be ticked and IS hidden by any
+                       selection, counted in the hidden figure. A lender the registry
+                       cannot PLACE (key null) is KEPT whatever is ticked — hiding a row
+                       nobody could choose to hide is the silent drop (PE-161) — so
+                       claiming the selection hides it would be the same lie inverted. */
+                    const nameOf = (u) => u.investor || u.lender || '(unnamed)';
+                    const offSheet = res.investorsUnmapped.filter((u) => u.key);
+                    const unknown = res.investorsUnmapped.filter((u) => !u.key);
+                    const sel = selectionActive(invSel);
+                    let clause;
+                    if (!sel) clause = 'they show normally here';
+                    else if (offSheet.length && unknown.length) {
+                      clause = `your selection hides ${offSheet.map(nameOf).join(', ')} (not on the sheet, so they cannot be ticked; counted in the hidden figure), while ${unknown.map(nameOf).join(', ')} stays on the board whatever is ticked — a lender the registry cannot place is never hidden`;
+                    } else if (offSheet.length) {
+                      clause = 'your investor selection hides their rows (not on the sheet, so they cannot be ticked; counted in the hidden figure — Show all investors brings them back)';
+                    } else {
+                      clause = 'they stay on the board whatever is ticked — a lender the registry cannot place is never hidden';
+                    }
+                    return (
+                      <div style={{ fontSize: 12, color: CAUTION, marginTop: 4 }}>
+                        {`No white-label program name yet for: ${res.investorsUnmapped.map(nameOf).join(', ')} — ${clause}. They need a name before any consumer surface can show them.`}
+                      </div>
+                    );
+                  })()}
                 </div>
                 {/* THE BUSINESS-PURPOSE LINE, WHICH IS WHY THERE IS NO APR ON THIS SCREEN
                     (owner-directed 2026-08-23: "you can remove all the details from every borrower
