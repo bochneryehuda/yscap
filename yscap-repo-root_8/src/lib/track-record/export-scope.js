@@ -118,6 +118,83 @@ function rowStamp(row) {
   return verified ? null : { text: NOT_VERIFIED_STAMP, short: NOT_VERIFIED_SHORT };
 }
 
+/* ── WHAT THE EXPORT LEFT BEHIND ──────────────────────────────────────────────
+   A verified-only export is a FILTER, and a filter that says nothing about what
+   it removed is indistinguishable from a record that never had the line.
+
+   That is not hypothetical. On 2026-08-26 a loan team verified a borrower's third
+   project at 20:25:07, exported the investor package at 20:43:39, and got a
+   workbook headed "VERIFIED EXPERIENCE ONLY" carrying two projects — because
+   between those two moments the db/485 verify guard had silently returned the
+   third line to `pending`. Nothing on the document, in the download response or
+   in the audit row said a line had been left out, so the only way to notice was
+   to count the rows by hand against the screen. The file was delivered, priced
+   and taped as two deals when the borrower had three.
+
+   The document side of the TPR package has answered this since 2026-08-10 — it
+   reports `heldBack` and `missing` so "a package quietly one document short" is
+   impossible. The track-record side did not. It does now, on the same terms:
+   EVERY export states how many projects are on the record, how many it carried,
+   and NAMES each one it held back with the reason.
+
+   The wording lives HERE, once, because the Excel writer, the PDF writer, the
+   staff export door and the investor package all say it — and four copies is how
+   a workbook comes to disagree with the audit row about the same borrower. */
+
+/** Why one line is not in this report. Keyed by SCOPE, not by the row's status:
+ *  the question a reader is asking is "why is this shorter than the record", and
+ *  the answer is the instruction the export was given. */
+const HELD_BACK_REASON = {
+  verified: 'not verified yet — this report carries only verified projects',
+  unverified: 'already verified — this report carries only the not-yet-verified projects',
+  all: null,   // `all` holds nothing back, so it can never need a reason
+};
+
+/**
+ * Split rows the database already decided on into the ones this export CARRIES
+ * and the ones it HOLDS BACK.
+ *
+ * The decision is NOT re-made here. Both export queries select every line on the
+ * record and carry `scopePredicate()` itself as an `in_scope` column, so Postgres
+ * answers with the SAME expression that used to be the WHERE clause. A JS twin of
+ * that predicate would be a second definition, and the twin that drifts is the one
+ * that leaks — which is the whole failure this module exists to prevent.
+ *
+ * @param {Array}  rows   every line on the record, in the export's own order
+ * @param {string} scope
+ * @param {function} label  row -> the property's name for a human (the caller's
+ *                          `addrText`; never re-derived here)
+ * @returns {{carried: Array, heldBack: Array, total: number}}
+ */
+function partitionInScope(rows, scope, label) {
+  const s = normalizeScope(scope);
+  const all = Array.isArray(rows) ? rows : [];
+  const carried = [], heldBack = [];
+  for (const r of all) {
+    if (r && r.in_scope === true) { carried.push(r); continue; }
+    heldBack.push({
+      id: (r && r.id) || null,
+      property: (typeof label === 'function' ? label(r) : '') || 'Project (no address on the line)',
+      reason: HELD_BACK_REASON[s] || HELD_BACK_REASON.verified,
+      verification_status: (r && r.verification_status) || null,
+    });
+  }
+  return { carried, heldBack, total: all.length };
+}
+
+/** The one sentence that opens the held-back block. Stated once; the Excel and the
+ *  PDF both print THIS, so they cannot come to describe the same gap differently. */
+function heldBackHeadline(heldBackCount, total) {
+  const n = Number(heldBackCount) || 0;
+  const t = Number(total) || 0;
+  return `ON THIS RECORD BUT NOT IN THIS REPORT — ${n} of ${t} project(s) held back:`;
+}
+
+/** The line for one held-back project. */
+function heldBackLine(h) {
+  return `${(h && h.property) || 'Project'} — ${(h && h.reason) || HELD_BACK_REASON.verified}`;
+}
+
 /** Does this set of section rows contain anything unverified? Decides whether the banner and
  *  the per-row stamp column appear at all — an all-blank column on a verified-only export is
  *  noise, and that export must stay byte-identical to what shipped before. */
@@ -131,4 +208,5 @@ function hasUnverified(sections) {
 module.exports = {
   SCOPES, DEFAULT_SCOPE, SCOPE_META, NOT_VERIFIED_STAMP, NOT_VERIFIED_SHORT,
   normalizeScope, isScope, scopeMeta, scopeSql, scopePredicate, rowStamp, hasUnverified,
+  HELD_BACK_REASON, partitionInScope, heldBackHeadline, heldBackLine,
 };
