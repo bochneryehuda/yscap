@@ -662,7 +662,7 @@ console.log('LT Pricing Engine — structural guards\n');
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   20) PE-143..PE-160 — THE INVESTOR FILTER, GROUPS AND EXPAND ALL
+   20) PE-143..PE-167 — THE INVESTOR FILTER, GROUPS AND EXPAND ALL
    (owner-directed 2026-08-27).
 
    The owner: a dropdown to price "this investor or … this this this this
@@ -694,8 +694,12 @@ console.log('LT Pricing Engine — structural guards\n');
   ok(/overlaySummary\(invSel/.test(code), 'PE-147 the narrowed board states the overlay');
   ok(/Lender Price was asked for everything/.test(filterSrc),
     'PE-148 …and the wording says the SEARCH was never narrowed');
-  ok(/investor filter is hiding every one/.test(src),
-    'PE-149 an overlay that empties the board says so — never "no priced rungs" about an answer that has plenty');
+  // Re-pointed 2026-08-27 (audit): the sentence now states hidden-OF-returned,
+  // because a KEPT programme with no note rate is off the ladder without being
+  // hidden — "every one" was false in that reachable state.
+  ok(/investor filter is hiding \$\{filteredRes\.hidden === filteredRes\.total/.test(src)
+    && /every one of the \$\{filteredRes\.total\}/.test(src),
+  'PE-149 an overlay that empties the board says so, counting hidden-of-returned — never "no priced rungs" about an answer that has plenty');
   ok(/missingFromAnswer/.test(code) && /didn(&rsquo;|')t price here/.test(src),
     'PE-150 a selected investor that returned nothing is NAMED, never silently absent');
 
@@ -712,6 +716,19 @@ console.log('LT Pricing Engine — structural guards\n');
   ok(/<WhiteLabelTag name=\{g\.best && g\.best\.whiteLabel\}/
     .test(code.slice(code.indexOf('function IneligibleBoard'))),
   'PE-163 the INELIGIBLE board carries the white-label tag beside the real name too');
+
+  // (5) THE PRE-MERGE AUDIT'S FOUR DEFECTS, each pinned so it cannot come back
+  //     (audit 2026-08-27). The picker slice is the component's own body.
+  const picker = code.slice(code.indexOf('function InvestorPicker'), code.indexOf('function InvestorStripRow'));
+  ok(/e\.key === 'Enter'/.test(picker) && /e\.preventDefault\(\)/.test(picker) && /onSaveGroup\(\)/.test(picker),
+    'PE-164 Enter in the group-name box is CAUGHT and saves the group — it sits inside the scenario form, whose submit is a PAID search');
+  ok(/const changeInvSel = \(next\) => \{ setInvSel\(next\); setOpenQuote\(null\); \};/.test(code)
+    && !/onSel=\{setInvSel\}/.test(code),
+  'PE-165 every selection door closes the positional quote-Details key — a stale index must never show a build nobody opened');
+  ok(/rosterStatus === 'loading'/.test(picker),
+    'PE-166 loading and failure are two facts — the picker never claims "could not be loaded" about a list that is on its way');
+  ok(/investorsUnmapped[\s\S]{0,1400}selectionActive\(invSel\)/.test(code.slice(code.indexOf('investorsUnmapped\) && res.investorsUnmapped'))) || /No white-label program name yet[\s\S]{0,1400}selectionActive\(invSel\)/.test(code),
+    'PE-167 the unmapped note stays TRUE under an active selection — hidden by the filter, never "shows normally"');
   ok(/consumerLabel/.test(code) && /investorKey: p\.investorKey/.test(code),
     'PE-154 the stack carries the server\'s investorKey + consumer labels through to the rows');
 

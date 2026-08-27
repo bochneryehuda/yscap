@@ -543,7 +543,7 @@ export function GroupChips({ groups, onApply, onDelete, confirmDeleteId, compact
  * selection can be saved as a new one.
  */
 export function InvestorPicker({
-  roster, sel, onSel, groups, onApplyGroup, onDeleteGroup, confirmDeleteId,
+  roster, rosterStatus, sel, onSel, groups, onApplyGroup, onDeleteGroup, confirmDeleteId,
   groupName, onGroupName, onSaveGroup, groupBusy, groupNote,
 }) {
   const active = selectionActive(sel);
@@ -556,7 +556,9 @@ export function InvestorPicker({
             ? 'The board will show ONLY the ticked investors. Display only — Lender Price is still asked for every investor, and one press brings the rest back.'
             : 'Searching every investor. Tick any to narrow what the board shows — display only; Lender Price is always asked for everything.'}
         </div>
-        {(!roster || roster.length === 0) ? (
+        {rosterStatus === 'loading' ? (
+          <div style={{ fontSize: 12, color: MUTED }}>Loading the investor list…</div>
+        ) : (!roster || roster.length === 0) ? (
           <div style={{ fontSize: 12.5, color: CAUTION }}>
             The investor list could not be loaded, so the board will show everybody.
           </div>
@@ -583,6 +585,15 @@ export function InvestorPicker({
           )}
           <GroupChips groups={groups} onApply={onApplyGroup} onDelete={onDeleteGroup} confirmDeleteId={confirmDeleteId} />
           <input value={groupName} onChange={(e) => onGroupName(e.target.value)}
+            onKeyDown={(e) => {
+              /* This input sits INSIDE the scenario <form>, whose submit button is
+                 "Price it" — a PAID vendor search. HTML implicit submission would
+                 make Enter here fire that search and wipe the board (pre-merge
+                 audit 2026-08-27, defect 1). Enter means the gesture the person
+                 is mid-way through: save the group. saveGroup validates, so an
+                 empty name or selection answers with its note, never a search. */
+              if (e.key === 'Enter') { e.preventDefault(); if (!groupBusy) onSaveGroup(); }
+            }}
             placeholder="Name this set" aria-label="Name for the new investor group"
             style={{ ...control, height: 32, fontSize: 12.5, width: 160, flex: '0 1 160px' }} />
           <button type="button" className="btn ghost" style={{ fontSize: 12 }}
@@ -1612,6 +1623,10 @@ export default function LtPricer() {
      free reads of OUR server, so fetching them from an effect is allowed. */
   const [invSel, setInvSel] = useState(null);
   const [invRoster, setInvRoster] = useState([]);
+  /* Loading and failure are two different facts (pre-merge audit 2026-08-27,
+     defect 3): the picker must never claim "could not be loaded" about a list
+     that is merely on its way — that sentence flashed on every page load. */
+  const [invRosterStatus, setInvRosterStatus] = useState('loading');
   const [invGroups, setInvGroups] = useState([]);
   const [groupName, setGroupName] = useState('');
   const [groupBusy, setGroupBusy] = useState(false);
@@ -1703,17 +1718,24 @@ export default function LtPricer() {
   useEffect(() => {
     let live = true;
     ltApi.dscrInvestors()
-      .then((r) => { if (live) setInvRoster((r && r.investors) || []); })
-      .catch(() => { if (live) setInvRoster([]); });
+      .then((r) => { if (live) { setInvRoster((r && r.investors) || []); setInvRosterStatus('ok'); } })
+      .catch(() => { if (live) { setInvRoster([]); setInvRosterStatus('failed'); } });
     ltApi.dscrInvestorGroups()
       .then((r) => { if (live) setInvGroups((r && r.groups) || []); })
       .catch(() => { if (live) setInvGroups([]); });
     return () => { live = false; };
   }, []);
 
+  /* EVERY DOOR THAT CHANGES THE SELECTION GOES THROUGH HERE (pre-merge audit
+     2026-08-27, defect 2). The quote-Details key is POSITIONAL over the FILTERED
+     list, so a selection change re-numbers it — a stale "0:0" would show a
+     different lender's price build as though somebody had opened it. Rate and
+     lender keys are value-stable and keep their open state. */
+  const changeInvSel = (next) => { setInvSel(next); setOpenQuote(null); };
+
   /* Saving / applying / removing a group. Applying REPLACES the selection — a group
      is "price this set", not "add these to whatever was ticked". */
-  const applyGroup = (g) => { setInvSel(new Set(g.investors)); setGroupNote(null); };
+  const applyGroup = (g) => { changeInvSel(new Set(g.investors)); setGroupNote(null); };
   async function saveGroup() {
     const nm = String(groupName || '').trim();
     if (!selectionActive(invSel)) { setGroupNote({ tone: 'bad', text: 'Tick at least one investor first.' }); return; }
@@ -2218,7 +2240,7 @@ export default function LtPricer() {
               press. The whole white-label sheet, an investor not yet live in Lender
               Price included; a display overlay, never a search input. */}
           <InvestorPicker
-            roster={invRoster} sel={invSel} onSel={setInvSel}
+            roster={invRoster} rosterStatus={invRosterStatus} sel={invSel} onSel={changeInvSel}
             groups={invGroups} onApplyGroup={applyGroup} onDeleteGroup={deleteGroup}
             confirmDeleteId={confirmDeleteId}
             groupName={groupName} onGroupName={setGroupName}
@@ -2237,7 +2259,7 @@ export default function LtPricer() {
                 THIS property, so leaving them behind on a fresh scenario would quietly work out a
                 ratio from the last deal's numbers. */}
             <button type="button" className="btn ghost" disabled={busy}
-              onClick={() => { setF(START); setCalc(CALC_START); setCalcOpen(false); setInvSel(null); }}>
+              onClick={() => { setF(START); setCalc(CALC_START); setCalcOpen(false); changeInvSel(null); }}>
               Reset to the starting scenario
             </button>
             {/* WHAT IS ACTUALLY GOING ON THE WIRE, in one line. The amount triangle means the
@@ -2307,7 +2329,7 @@ export default function LtPricer() {
                 <InvestorStripRow
                   roster={res.investorRoster || []}
                   fullRoster={invRoster}
-                  sel={invSel} onSel={setInvSel}
+                  sel={invSel} onSel={changeInvSel}
                   groups={invGroups} onApplyGroup={applyGroup}
                   hidden={filteredRes ? filteredRes.hidden : 0}
                 />
@@ -2341,7 +2363,14 @@ export default function LtPricer() {
                     <div style={{ fontSize: 12, color: CAUTION, marginTop: 4 }}>
                       {`No white-label program name yet for: ${res.investorsUnmapped
                         .map((u) => u.investor || u.lender || '(unnamed)').join(', ')} — `}
-                      they show normally here, and need a name before any consumer surface can show them.
+                      {/* The sentence must stay TRUE under an active selection (pre-merge
+                          audit 2026-08-27, defect 4): an unmapped investor is not on the
+                          sheet, so it cannot be ticked, and the overlay hides its rows
+                          like any other un-ticked investor — "shows normally" would be
+                          the screen lying about a reachable state. */}
+                      {selectionActive(invSel)
+                        ? 'your investor selection hides their rows (not on the sheet, so they cannot be ticked; counted in the hidden figure — Show all investors brings them back). They need a name before any consumer surface can show them.'
+                        : 'they show normally here, and need a name before any consumer surface can show them.'}
                     </div>
                   )}
                 </div>
@@ -2408,7 +2437,7 @@ export default function LtPricer() {
                     fontSize: 12.5, color: '#7A5C25', margin: '2px 0 8px',
                   }}>
                     <span>{overlaySummary(invSel, filteredRes.hidden)}</span>
-                    <button type="button" className="btn ghost" style={{ fontSize: 12 }} onClick={() => setInvSel(null)}>
+                    <button type="button" className="btn ghost" style={{ fontSize: 12 }} onClick={() => changeInvSel(null)}>
                       Show all investors
                     </button>
                   </div>
@@ -2418,8 +2447,14 @@ export default function LtPricer() {
                     {/* Two different facts, never collapsed: an empty VENDOR answer and a
                         board the OVERLAY has emptied. The second must say so — "no priced
                         rungs" about an answer that has plenty would be the screen lying. */}
+                    {/* The count is stated as hidden-of-returned, because the two can
+                        differ: a KEPT programme with no note rate is off the ladder yet
+                        was never hidden, so "every one of the N" would overstate what
+                        the filter did (pre-merge audit 2026-08-27). */}
                     {filteredRes && filteredRes.hidden > 0
-                      ? `Your investor filter is hiding every one of the ${filteredRes.hidden} programmes Lender Price returned — none of the ticked investors priced this scenario. Press Show all investors above to see the whole board.`
+                      ? `Your investor filter is hiding ${filteredRes.hidden === filteredRes.total
+                        ? `every one of the ${filteredRes.total}`
+                        : `${filteredRes.hidden} of the ${filteredRes.total}`} programmes Lender Price returned — none of the ticked investors priced this scenario. Press Show all investors above to see the whole board.`
                       : 'Lender Price returned no priced rungs for this scenario. The Ineligible view says which products it looked at and why each was ruled out.'}
                   </div>
                 ) : stack.rates.map((row) => (
