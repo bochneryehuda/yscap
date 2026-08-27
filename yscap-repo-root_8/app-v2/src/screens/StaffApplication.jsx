@@ -7167,8 +7167,8 @@ function TapeExport({ appId }) {
   /* SCHEDULE the same send for later. It stores the INTENT only — no tape is
      built and no email is composed now; the server re-enters the send route at
      the due moment, so every gate runs against the file as it stands then. */
-  async function runSchedule(tapeKey, name, { to, cc, note, day, time }) {
-    const out = await api.staffTapeSendSchedule(appId, tapeKey, { to, cc, note, day, time });
+  async function runSchedule(tapeKey, name, { to, cc, note, day, time, override }) {
+    const out = await api.staffTapeSendSchedule(appId, tapeKey, { to, cc, note, day, time, ...(override ? { override } : {}) });
     setSendPending(null);
     setMsg(`The ${name} tape is queued to send ${(out.scheduled && out.scheduled.sendAtText) || 'at the time you picked'}.`);
   }

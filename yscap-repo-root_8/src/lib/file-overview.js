@@ -222,7 +222,11 @@ async function buildFileOverview(appId, { audience = 'internal' } = {}, client =
          unregistered file has no loan amount to claim). money() — whole
          dollars, the frozen loan-figure rounding rule. */
       loanAmount: money(s.totalLoan),
-      purpose: kindLabel || safe(a.loan_type),
+      /* A blank loan_type states nothing: refiKind's deliberate purchase FALLBACK
+         (right for the payoff section's "does a payoff apply") must not become a
+         confident "Purchase" chip here — the header's own contract is "omitted
+         when unknown". Only a file that actually carries a purpose gets one. */
+      purpose: safe(a.loan_type) ? (kindLabel || safe(a.loan_type)) : null,
     },
     sections,
   };

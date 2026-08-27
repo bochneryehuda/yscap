@@ -180,10 +180,12 @@ async function getConversation(cid) {
   return r.rows[0] || null;
 }
 
-// Default roles that see every file (mirrors permissions.ROLE_DEFAULTS). Live
-// checks use the see_all_files CAPABILITY so revoking it from a staffer scopes
-// their chat access too, and granting it opens chat — no code change needed.
-const SEES_ALL_ROLES = ['admin', 'super_admin', 'underwriter'];
+// Default roles that see every file — DERIVED from permissions.ROLE_DEFAULTS, never
+// hand-kept: the hand-typed copy went stale the day the processor role gained
+// see_all_files (back-office persona, 2026-08-26). Live checks still use the
+// see_all_files CAPABILITY so a per-person revocation/grant applies with no code change.
+const SEES_ALL_ROLES = require('./permissions').ROLE_KEYS
+  .filter((r) => require('./permissions').defaultsFor(r).has('see_all_files'));
 
 /** May this staff actor open this conversation? Members always can; otherwise it
     is the ORDINARY file scope.
