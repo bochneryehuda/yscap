@@ -85,7 +85,10 @@ export default function TapeSendModal({ name, preview, busy, onCancel, onSend, o
 
   return (
     <div onClick={busy ? undefined : onCancel}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(20,27,34,.55)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      /* z 190, deliberately UNDER .cv-modal-back (200): the app's own dialogs (askPrompt /
+         showMessage / askConfirm) must always paint above this overlay — a 1000 here buried
+         them behind the compose screen (the task-13 AppraisalPanel class). */
+      style={{ position: 'fixed', inset: 0, background: 'rgba(20,27,34,.55)', zIndex: 190, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
       <form onClick={(e) => e.stopPropagation()} onSubmit={submit}
         className="panel" style={{ width: 'min(560px, 96vw)', maxHeight: '90vh', overflowY: 'auto', background: 'var(--paper, #fff)' }}>
         <h3 style={{ marginTop: 0, color: '#141B22' }}>Send the {name} tape to the investor</h3>

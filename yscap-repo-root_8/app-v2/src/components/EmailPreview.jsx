@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
+import { ScheduleButton } from './ScheduleSend.jsx';
 
 /**
  * THE EDITABLE EMAIL PREVIEW (owner-directed 2026-08-26: "instead of it automatically
@@ -26,6 +27,11 @@ import { createPortal } from 'react-dom';
 export default function EmailPreview({
   title, subject, text, to = [], cc = [], subjectLocked = false, lockNote = '',
   busy = false, sendLabel = 'Send', onSend, onClose, children, warning = null,
+  // SEND IT LATER, WITH THE EDIT (post-merge audit 2026-08-26): when the caller's send
+  // can also be scheduled, it passes onSchedule(override, {day, time}) and the shared
+  // ScheduleButton renders beside Send — so an edited subject/body rides the scheduled
+  // payload instead of being silently dropped by scheduling outside the preview.
+  onSchedule = null, scheduleWhat = 'this email',
 }) {
   const [subj, setSubj] = useState(subject || '');
   const [body, setBody] = useState(text || '');
@@ -78,8 +84,13 @@ export default function EmailPreview({
           </div>
           {children}
         </div>
-        <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+        <div className="row" style={{ justifyContent: 'flex-end', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <button className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
+          {onSchedule && (
+            <ScheduleButton what={scheduleWhat} busy={busy}
+              disabled={busy || !body.trim() || (!subjectLocked && !subj.trim())}
+              onSchedule={({ day, time }) => onSchedule(edited ? changed : null, { day, time })} />
+          )}
           <button className="btn primary" disabled={busy || !body.trim() || (!subjectLocked && !subj.trim())}
             onClick={() => onSend(edited ? changed : null)}>
             {busy ? 'Sending…' : sendLabel}

@@ -5830,9 +5830,15 @@ router.post('/applications/:id/tape-send/:tapeKey/schedule', async (req, res) =>
     const bad = sched.whenProblem(at);
     if (bad) return res.status(400).json({ error: bad.error, code: bad.code });
 
+    // A hand-edited subject/body rides the stored payload so the dispatcher's re-post
+    // lands it through the send route's own override chokepoint at the due moment
+    // (manual-override.js's contract). cleanOverride strips NULs + caps sizes, so
+    // nothing unstorable reaches the jsonb column; null = nothing was really edited.
+    const override = require('../lib/email/manual-override').cleanOverride(b.override);
     const out = await sched.schedule({
       appId, kind: 'tape_to_investor', targetKey: String(req.params.tapeKey || ''),
-      at, payload: { to: rec.emails, cc: extra.emails, note: String(b.note || '').slice(0, 2000) },
+      at, payload: { to: rec.emails, cc: extra.emails, note: String(b.note || '').slice(0, 2000),
+        ...(override ? { override } : {}) },
       actorId: req.actor.id,
     });
     if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
@@ -8372,14 +8378,18 @@ router.post('/applications/:id/closing-prep/schedule', async (req, res) => {
       return res.status(409).json({ error: 'The closing-prep request has already gone out. Use Follow-up, or force a re-send.', code: 'already_ordered' });
     }
 
-    // The extra addresses and the note are the person's own words and travel
-    // verbatim; the DOCUMENTS deliberately do not — they are gathered at send
-    // time, which is the whole point of scheduling the intent.
+    // The extra addresses, the note and a hand-edited subject/body are the person's
+    // own words and travel verbatim; the DOCUMENTS deliberately do not — they are
+    // gathered at send time, which is the whole point of scheduling the intent.
     const payload = { force: !!force };
     const extra = cleanEmailList(b.extraEmails);
     if (extra.length) payload.extraEmails = extra;
     const note = String(b.note || '').trim().slice(0, 4000);
     if (note) payload.note = note;
+    // The dispatcher re-posts this payload through the place route, which lands the
+    // edit through manual-override.applyOverride — the stored-override contract.
+    const override = require('../lib/email/manual-override').cleanOverride(b.override);
+    if (override) payload.override = override;
 
     const out = await sched.schedule({ appId, kind: 'closing_prep', at, payload, actorId: req.actor.id });
     if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
@@ -16601,7 +16611,8 @@ router.patch('/applications/:id/closing/checklist-items/:iid', async (req, res) 
 });
 
 // The CLOSING QUEUE — every file in the closing workflow, scoped to the actor
-// (closers/admins see all via see_all_files; officers/processors see their files).
+// (closers/admins/processors see all via see_all_files — the processor role holds it
+// by default since the 2026-08-26 back-office persona; officers see their files).
 router.get('/closing', async (req, res) => {
   try {
     const params = [];

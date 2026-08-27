@@ -129,9 +129,15 @@ function dealFigures(app, quote) {
   const ltvFromAsIs = isRefi ? hasAiv : (hasAiv && (!hasPp || aivN < ppN));
   if (Number.isFinite(initAdv) && initAdv > 0 && ltvDenom != null) {
     add(`Initial LTV (initial advance ÷ ${ltvFromAsIs ? 'as-is value' : 'purchase price'})`, pct(initAdv / ltvDenom));
-    // The owner's note, exactly when the as-is is the (lower) denominator on a
-    // purchase — so the reader knows which figure the ratio was taken from.
-    if (ltvFromAsIs && !isRefi) add('Initial LTV basis', 'Calculated from the as-is value — it is lower than the purchase price.');
+    // The owner's note, exactly when the as-is is the denominator on a purchase —
+    // so the reader knows which figure the ratio was taken from. "Lower than the
+    // purchase price" is only claimed when BOTH figures exist; a purchase with no
+    // recorded price gets the honest reason instead of a comparison to nothing.
+    if (ltvFromAsIs && !isRefi) {
+      add('Initial LTV basis', hasPp
+        ? 'Calculated from the as-is value — it is lower than the purchase price.'
+        : 'Calculated from the as-is value — the file has no purchase price recorded.');
+    }
   } else {
     add('Initial LTV (initial advance ÷ acquisition value)', pct(s.acqLtvPct));
   }
@@ -354,7 +360,7 @@ async function sendTapeToInvestor(appId, db, { tape, to, cc: extraCc, note, acto
   const cardMoved = await require('../../clickup/post-closing-stage')
     .advanceCard(appId, 'investor_delivered', { client: db, reason: 'tape_sent_to_investor' });
 
-  return { ok: true, to: emails, cc, replyTo, subject: pre.subject, sentBy: actorName || null, cardMoved };
+  return { ok: true, to: emails, cc, replyTo, subject: built.subject, sentBy: actorName || null, cardMoved };
 }
 
 module.exports = { subjectFor, dealFigures, cleanRecipients, extraAddresses, previewTapeSend, buildTapeEmail, sendTapeToInvestor, saveRecipients, teamCc };
