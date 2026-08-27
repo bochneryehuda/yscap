@@ -57,6 +57,17 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   };
   let seq = 0;
   const uniq = (p) => `${p}-${sfx}-${++seq}`;
+
+  /* THE REQUIREMENTS, WITHOUT THE IDENTIFIER HEADER. Line 0 is
+     "Appraisal requirements for this loan — Loan #<number> · <address>", and the
+     loan number is built from `sfx`, which embeds the PROCESS PID. Testing a
+     rent-schedule regex against the WHOLE body therefore matched digits in the
+     loan number: a run whose pid+random happened to contain 1025 (observed:
+     YSCAP-11025-145766-gwzaas) failed "a Purchase file is told nothing at all
+     about a rent schedule" with nothing wrong in the message, and a stray 1007
+     would have made the RENTAL assertion pass for the wrong reason. The claim in
+     both cases is about the REQUIREMENTS, so that is what is read. */
+  const reqsOnly = (body) => String(body || '').split('\n').slice(1).join('\n');
   const mkAmcOrder = async (appId) => (await db.query(
     `INSERT INTO amc_orders (application_id, status, cdg_order_number, sp_order_number, client_order_number)
      VALUES ($1,'ordered',$2,$3,$4) RETURNING *`, [appId, uniq('CDG'), uniq('SP'), uniq('CO')])).rows[0];
@@ -87,7 +98,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
       'the posted message spells the anchor comp out as three criteria');
     // AND NOTHING ABOUT RENT ON A NON-RENTAL FILE — read through the file's real
     // program / loan type, not a hand-passed flag.
-    ok(!/rent(al)? (analysis|schedule)|1007|1025/i.test(nanBody),
+    ok(!/rent(al)? (analysis|schedule)|1007|1025/i.test(reqsOnly(nanBody)),
       'a Purchase file is told nothing at all about a rent schedule');
     ok(sent.length === 1, 'exactly one AddComment was built for the vendor');
 
@@ -137,7 +148,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
     const rentalOrder = await mkAmcOrder(rentalApp);
     await poster.postForAmcOrder(db, rentalOrder, { deps });
     const rentalBody = (await db.query(`SELECT body FROM amc_order_comments WHERE order_id=$1`, [rentalOrder.id])).rows[0];
-    ok(rentalBody && /1007/.test(rentalBody.body), 'a rental-exit file is told a rent schedule is required');
+    ok(rentalBody && /1007/.test(reqsOnly(rentalBody.body)), 'a rental-exit file is told a rent schedule is required');
 
     // ── 7. BOTH PLACEMENT PATHS ACTUALLY CALL IT ──────────────────────────
     // A poster nobody calls is the entire bug this feature exists to avoid, and
