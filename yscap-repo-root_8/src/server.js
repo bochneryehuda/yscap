@@ -1241,6 +1241,29 @@ if (require.main === module) {
           .then((r) => r && (r.rekeyed || r.proposed)
             && console.log('[boot] track-record duplicates for review:', JSON.stringify({ ...r, left: r.left.length })))
           .catch((e) => console.error('[boot] track-record dedupe failed:', e.message));
+        // TWO PROFILES, ONE PERSON (owner-directed 2026-08-27: "Profiles should
+        // automatically be merged if it matches … make sure in the future it's not
+        // happening again"). The root cause is fixed at the two doors that let a
+        // human keep two profiles on one mailbox (they now RECORD that decision);
+        // this is the "previous files" half — it merges only a pair it can PROVE is
+        // one person and names its refusal for every other pair, so a duplicate is
+        // never merged on a guess and never silently left unexplained. NOT the
+        // track-record rule above: that one merges nothing on its own because two
+        // similar ADDRESSES are a judgement; one Social Security number is a fact.
+        // Bounded per boot, self-draining (a merged pair stops being a pair);
+        // never blocks boot.
+        if (process.env.BORROWER_AUTO_MERGE_DISABLED !== '1') {
+          require('./lib/borrower-dedupe').autoMergeOnce({
+            limit: Number(process.env.BORROWER_AUTO_MERGE_LIMIT || 200),
+            dryRun: process.env.BORROWER_AUTO_MERGE_DRYRUN === '1',
+          })
+            /* Logged whenever there were any pairs at all — a REFUSAL is the
+               answer to "why is this duplicate still here?", so it must never
+               be the silent case. */
+            .then((r) => r && r.pairs
+              && console.log('[boot] duplicate borrower profiles:', JSON.stringify(r)))
+            .catch((e) => console.error('[boot] borrower auto-merge failed:', e.message));
+        }
         // Previous files (owner-reported 2026-08-02: the borrower's own deals with
         // US were the ones missing from their track record). Both funded doors now
         // record the deal going forward; this walks the loans already funded, once,

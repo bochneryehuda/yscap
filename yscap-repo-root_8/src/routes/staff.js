@@ -11355,6 +11355,13 @@ router.patch('/borrowers/:id', async (req, res) => {
           }
           try {
             await db.query(`UPDATE borrowers SET ${sets.join(', ')}, shares_email=true WHERE id=$1`, vals);
+            /* RECORD THE DECISION, not just its side effect. `shares_email` is
+               also set by machines to get past the address's unique index, so on
+               its own it cannot be read as "a person decided these are two
+               people" — which is why the automatic de-duplication deliberately
+               ignores it and reads `borrower_profile_links` instead. */
+            await require('../lib/borrower-dedupe')
+              .recordSharedEmailDecision(req.params.id, b.email, req.actor.id);
           } catch (e2) {
             if (e2.code === '23505') return res.status(409).json({ error: 'this profile holds the portal login for that email — give it a different address first' });
             throw e2;
@@ -12397,6 +12404,12 @@ async function promoteContact(req, res, kind, value) {
         });
       }
       await db.query(`UPDATE borrowers SET ${col}=$2, shares_email=true, updated_at=now() WHERE id=$1`, [req.params.id, value]);
+      // Same reason as the profile editor above: the decision is the record,
+      // never the flag a machine also sets.
+      if (kind === 'email') {
+        await require('../lib/borrower-dedupe')
+          .recordSharedEmailDecision(req.params.id, value, req.actor.id);
+      }
     } else throw e;
   }
   // Keep the OLD primary in the contact list — it is still a way to reach them.
