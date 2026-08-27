@@ -2529,7 +2529,7 @@
       {
         "name": "track_record_verify_guard()",
         "returns": "trigger",
-        "bodyHash": "43cacc8c51ce8e57"
+        "bodyHash": "f5b7ff96e484f2bd"
       },
       {
         "name": "translate(citext, citext, text)",
@@ -26306,8 +26306,8 @@
   ],
   "generatedFrom": {
     "migrations": {
-      "count": 631,
-      "highest": 634
+      "count": 632,
+      "highest": 635
     }
   }
 }
