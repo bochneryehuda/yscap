@@ -109,8 +109,16 @@ router.use('/me', require('./routes/me'));
 // /api/lt/settings
 router.use('/settings', require('./routes/settings'));
 
+// The Pricing Engine's saved INVESTOR GROUPS (owner-directed 2026-08-27) — a
+// person's own named sets of investors for the DISPLAY-ONLY board filter.
+// Registered BEFORE the /dscr mount so it wins the match, and deliberately NOT
+// inside makeRouter: that router is also mounted on the secret-gated
+// diagnostics seam, where there is no signed-in person to own a group.
+//   /api/lt/dscr/investor-groups
+router.use('/dscr/investor-groups', require('./routes/pricer-groups'));
+
 // DSCR pricer (Lender Price backend) — staff-gated at the mount:
-//   /api/lt/dscr/{health,login-check,price,selftest}
+//   /api/lt/dscr/{health,login-check,price,investors,selftest}
 router.use('/dscr', require('./routes/dscr-pricer').makeRouter());
 
 // The Product & Pricing Engine. Lender Price stays AUTHORITATIVE — our engine

@@ -775,25 +775,31 @@ async function sendInvestorDelivery(appId, drawId, {
   // template.render returns { subject, html, text } — take BOTH bodies from it so the HTML and the
   // plain-text alternative are generated from one set of inputs and can never say different things.
   // Our own subject wins (render's is built from `title`).
+  // The links go in the NOTE beside the attachment list, so the reader sees one inventory of what
+  // came with this email rather than an attachment list that quietly omits two documents. ONE
+  // variable, because the override re-render below must carry the SAME note: an edited body used
+  // to be re-rendered with no note at all, so the PILOT link URLs — which live ONLY here —
+  // silently vanished from an email whose delivery record still claimed they were sent
+  // (post-merge audit W5). The inventory is not editable words; it is what the email carries.
+  const inventoryNote = `Attached: ${items.map((i) => i.what).join(', ') || (links.length ? 'see the links below' : 'no documents could be attached')}.`
+    + (links.length ? `\n\n${links.map((l) => `${l.what}: ${l.url}`).join('\n')}` : '')
+    + `\n\n${wording.signOff}`;
   const rendered = template.render({
     title: 'Draw request for funding',
     kicker: 'Draw delivery',
     intro: lines.join(' '),
     meta,
     callout: { title: 'What we are asking for', body: wording.ask, tone: 'action' },
-    // The links go in the NOTE beside the attachment list, so the reader sees one inventory of what
-    // came with this email rather than an attachment list that quietly omits two documents.
-    note: `Attached: ${items.map((i) => i.what).join(', ') || (links.length ? 'see the links below' : 'no documents could be attached')}.`
-      + (links.length ? `\n\n${links.map((l) => `${l.what}: ${l.url}`).join('\n')}` : '')
-      + `\n\n${wording.signOff}`,
+    note: inventoryNote,
     replyable: true,
   });
   // A hand-edited subject/body lands through the ONE manual-override chokepoint
   // (owner-directed 2026-08-26); no override -> byte-identical to before. The
-  // attachments themselves are never editable — only the words around them.
+  // attachments themselves are never editable — only the words around them, which is
+  // exactly why the inventory note rides opts.note into the edited-body re-render.
   const builtEmail = require('../lib/email/manual-override').applyOverride(
     { subject: wording.subject, html: rendered.html, text: rendered.text }, override,
-    { title: 'Draw request for funding' });
+    { title: 'Draw request for funding', note: inventoryNote });
   const html = builtEmail.html;
   const text = builtEmail.text;
 

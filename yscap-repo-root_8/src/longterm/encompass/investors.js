@@ -77,7 +77,11 @@ const INVESTORS = [
       'American heritage', 'AHL', 'ahl'] },
 
   { key: 'onslow_bay', label: 'Onslow Bay Financial', seen: 20,
-    aliases: ['Onslow Bay', 'onslow Bay', 'Onslow', 'onslow', 'ONSLOW'] },
+    aliases: ['Onslow Bay', 'onslow Bay', 'Onslow', 'onslow', 'ONSLOW',
+      'Onslow Bay Financial LLC', 'Annaly', 'annaly', 'Annaly / Onslow Bay', 'Annaly / onslow bay'],
+    note: 'Annaly Capital Management is Onslow Bay\'s parent; the owner treats '
+      + '"Annaly / onslow bay" as ONE investor (white-label sheet 2026-08-27). Lender '
+      + 'Price quotes lender "Onslow", investor "Onslow Bay Financial LLC".' },
 
   { key: 'corrfirst', label: 'CorrFirst', seen: 20, alsoOnRtl: 'CorrFirst',
     aliases: ['CorrFirst', 'Corrfirst', 'corrfirst', 'Corr first'] },
@@ -111,9 +115,14 @@ const INVESTORS = [
     aliases: ['Foundation Mortgage', 'Foundation'] },
 
   { key: 'pennymac', label: 'PennyMac TPO', seen: 3,
-    aliases: ['PennyMac TPO (PMTPO)', 'pennymac'] },
+    aliases: ['PennyMac TPO (PMTPO)', 'pennymac', 'Pennymac'] },
 
-  { key: 'phh', label: 'PHH Mortgage', seen: 3, aliases: ['PHH'] },
+  { key: 'phh', label: 'PHH Mortgage', seen: 3,
+    aliases: ['PHH', 'Onity', 'onity', 'Onity Mortgage Corp', 'Onity Mortgage', 'Onity / phh'],
+    note: 'Onity is the renamed PHH (2024 rebrand); the owner treats "Onity / phh" as ONE '
+      + 'investor (white-label sheet 2026-08-27), and Lender Price quotes it as '
+      + '"Onity Mortgage Corp". The key stays phh because lt_loan_investors.canonical_key '
+      + 'already stores it.' },
   { key: 'cake', label: 'Cake Mortgage Corp', seen: 4,
     aliases: ['Cake Mortgage Corp (Cake Mortgage)'] },
   { key: 'amwest', label: 'Amwest Funding Corporation', seen: 2,
@@ -127,6 +136,45 @@ const INVESTORS = [
   { key: 'selene', label: 'Selene Finance LP', seen: 1, aliases: ['Selene Finance LP'] },
   { key: 'amb', label: 'A Mortgage Boutique', seen: 1, aliases: ['A Mortgage Boutique (AMB)'] },
   { key: 'npb', label: 'NPB', seen: 1, aliases: ['NPB – Operations Center', 'NPB - Operations Center'] },
+
+  // ── Seen in LENDER PRICE (the DSCR pricing engine) and on the owner's white-label
+  // sheet of 2026-08-27, not (yet) in the Encompass free-text fields — which is why
+  // `seen` is 0. They are REAL investors the PPE quotes (or that the owner expects to
+  // come online there), and every one of them is under the same never-reaches-a-client
+  // rule as the rest of this registry: recording them HERE is what makes audience.js
+  // scrub their names automatically. The live Lender Price spellings were captured by
+  // running scenarios against the live system on 2026-08-27.
+  { key: 'verus', label: 'Verus Mortgage Capital', seen: 0,
+    aliases: ['Verus', 'verus', 'Verus Mortgage Capital'],
+    note: 'Lender Price quotes lender "Verus", investor "Verus  Mortgage Capital" '
+      + '(with a doubled space — normalize() absorbs it).' },
+  { key: 'newrez', label: 'NewRez LLC', seen: 0,
+    aliases: ['NewRez', 'newrez', 'NewRez, LLC Wholesale', 'New Rez'],
+    note: 'Lender Price spelling: "NewRez, LLC Wholesale".' },
+  { key: 'loanstream', label: 'LoanStream Mortgage', seen: 0,
+    aliases: ['LoanStream', 'loanstream', 'Loan Stream', 'LoanStream Mortgage'] },
+  { key: 'lakeview', label: 'Lakeview Loan Servicing', seen: 0,
+    aliases: ['Lakeview', 'lakeview', 'Bayview', 'bayview', 'Lakeview / Bayview'],
+    note: 'The owner treats "Lakeview / Bayview" as ONE investor (Bayview is Lakeview\'s '
+      + 'parent). Not yet quoting in Lender Price on 2026-08-27 — expected.' },
+  { key: 'ellington', label: 'Ellington Financial', seen: 0,
+    aliases: ['Ellington', 'ellington', 'Ellington Financial'],
+    note: 'Not yet quoting in Lender Price on 2026-08-27 — expected.' },
+  { key: 'redwood_trust', label: 'Redwood Trust', seen: 0,
+    aliases: ['Redwood Trust', 'redwood trust', 'Redwood', 'redwood'],
+    note: 'A bare "Redwood" is an English word AND this investor\'s short name; the '
+      + 'scrub doctrine (audience.js) is that a recorded spelling the scrubber cannot '
+      + 'see is a leak, so it is caught in every case and the odd mangled street name '
+      + 'is the accepted cheap direction. Not yet in Lender Price on 2026-08-27.' },
+  { key: 'sgcg', label: 'SGCG', seen: 0,
+    aliases: ['SGCG', 'sgcg'],
+    note: 'Not yet quoting in Lender Price on 2026-08-27 — expected.' },
+  { key: 'adams_nymt', label: 'Adams / NYMT', seen: 0,
+    aliases: ['adams NYMT', 'Adams NYMT', 'NYMT', 'nymt', 'New York Mortgage Trust'],
+    note: 'The owner\'s sheet writes it "adams NYMT" (NYMT = New York Mortgage Trust). '
+      + 'A bare "Adams" is DELIBERATELY not an alias — it is an ordinary surname and '
+      + 'scrubbing it would redact real borrowers\' names. Not yet in Lender Price on '
+      + '2026-08-27.' },
 
   { key: 'icecap', label: 'IceCap / ICE Lender Holdings', seen: 3,
     aliases: ['icecap', 'Ice Cap', 'ice lender holdings'],

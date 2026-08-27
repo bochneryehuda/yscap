@@ -336,11 +336,14 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
      which a boolean could not see. Same idiom as OrdersPanel's own cards. */
   const orderStatus = ((data && data.order) || {}).status;
   const sched = useScheduledSends(appId, [orderStatus]);
-  const scheduleIt = async ({ day, time }) => {
+  const scheduleIt = async ({ day, time, override }) => {
     const r = await api.staffScheduleClosingPrep(appId, {
       day, time, force: isPlacedStatus(orderStatus),
       extraEmails: extra.split(/[,;\s]+/).filter(Boolean),
       note,
+      // A subject/body edited in the preview rides the stored intent, so the
+      // dispatcher's re-post lands it through the place route's own override door.
+      ...(override ? { override } : {}),
     });
     await sched.reload();
     setMsg({ tone: (r.warnings && r.warnings.length) ? 'warn' : 'ok',
@@ -657,6 +660,13 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
           onClose={() => setPreview(null)}
           onSend={async (override) => {
             if (preview.mode === 'followup') await followup(override); else await place(preview.force, override);
+            setPreview(null);
+          }}
+          /* Scheduling from INSIDE the preview keeps the edit — the outside ScheduleButton
+             has no edit to carry. A follow-up cannot be scheduled (no such kind). */
+          scheduleWhat="the closing-prep request"
+          onSchedule={preview.mode === 'followup' ? null : async (override, { day, time }) => {
+            await scheduleIt({ day, time, override });
             setPreview(null);
           }} />
       )}

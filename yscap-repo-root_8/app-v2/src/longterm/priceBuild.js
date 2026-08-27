@@ -257,6 +257,11 @@ export function buildIneligibleStack(lenders) {
         // `lender` is the key `groupByLender` groups on — the vendor's own spelling, never normalized.
         lender: (g && g.lender) || null,
         investor: (g && g.investor) || null,
+        // The server's white-label decoration rides the LENDER entry (decorateDisqualifiedLenders);
+        // it is copied onto every item entry so the board reads it off `g.best` exactly as the
+        // eligible board does — the internal screen shows the real name AND the white-label name
+        // on BOTH boards (owner-directed 2026-08-27).
+        whiteLabel: (g && g.whiteLabel) || null,
         program: it.program || null,
         product: it.product || null,
         rate: Number.isFinite(it.rate) ? it.rate : null,

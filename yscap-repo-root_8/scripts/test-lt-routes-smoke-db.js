@@ -185,6 +185,13 @@ async function main() {
       // exactly the kind of door this smoke test exists to open. On a fresh
       // database it answers the DECLARED defaults (source 'standard' throughout).
       '/api/lt/dscr/comp-plan',
+      // The Pricing Engine's white-label roster (owner-directed 2026-08-27) — a
+      // pure read of the committed sheet, no vendor call, no database.
+      '/api/lt/dscr/investors',
+      // …and the signed-in person's saved investor GROUPS (db/634): one indexed
+      // SELECT on lt_pricer_investor_groups, so a phantom column there would
+      // surface here as a 500 rather than on the screen.
+      '/api/lt/dscr/investor-groups',
       // The ClickUp syncing section (#36). On the no-such-loan id the scoped
       // loader answers its own 404 — the route's uuid check + SELECT both run,
       // so a phantom column in either would surface here as a 500.

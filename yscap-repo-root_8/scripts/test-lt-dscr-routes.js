@@ -128,5 +128,36 @@ ok(g.nexted && g.code === null, 'gate passes through on correct token');
   ok(phantom.length === 0, `DOC-2 §3 promises no field the route would reject (phantom: ${phantom.join(', ') || 'none'})`);
 }
 
+// 2d) THE WHITE-LABEL DECORATION RIDES THE ANSWERS (owner-directed 2026-08-27).
+// The behaviour of the sheet itself is test-lt-investor-programs-pure.js; what is
+// held HERE is that the ROUTE actually carries it — a decorated group survives the
+// pager, the roster door answers the whole sheet, and the price/ineligible handlers
+// still call the decoration (a one-word deletion there would leave the sheet
+// perfect and every response bare).
+{
+  const IP = require('../src/longterm/lenderprice/investor-programs');
+  const deco = IP.decorateDisqualifiedLenders([
+    { lender: 'NewRez, LLC Wholesale', investor: 'NewRez, LLC Wholesale', lenderId: 'x', itemCount: 1, items: [1] },
+  ]);
+  const s = shapeDisqualified({ ready: true, lenderCount: 1, itemCount: 1, reasonCount: 1, lenders: deco }).disqualified;
+  ok(s.lenders[0].investorKey === 'newrez' && s.lenders[0].whiteLabel === 'Onyx',
+    'a decorated declined group keeps its investorKey + white-label through the pager');
+
+  let sent = null;
+  dp.handlers.investorsRoster({}, { json: (b) => { sent = b; } });
+  ok(sent && sent.ok === true && Array.isArray(sent.investors) && sent.investors.length === 24,
+    `GET /investors answers the whole 24-name sheet (${sent && sent.investors ? sent.investors.length : 0})`);
+
+  const routeSrc = require('fs').readFileSync(require('path').join(__dirname, '../src/longterm/routes/dscr-pricer.js'), 'utf8');
+  ok(/investorPrograms\.decorate\(full\.programs\)/.test(routeSrc) && /investorRoster: deco\.roster/.test(routeSrc),
+    'the FULL price answer is decorated and carries the investor roster');
+  ok(/decorateDisqualifiedLenders\(parsed\.lenders\)/.test(routeSrc)
+    && /decorateDisqualifiedLenders\(pd\.lenders\)/.test(routeSrc)
+    && /decorateDisqualifiedLenders\(pdFull\.lenders\)/.test(routeSrc),
+  'every ineligible door decorates before shaping — poll-by-key, poll-by-scenario and the blocking door');
+  ok(/const decoDq = \{ \.\.\.parsed, lenders:/.test(routeSrc),
+    'the poll-by-key door decorates a COPY — the client\'s cached parse is never mutated');
+}
+
 console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
 process.exit(failures ? 1 : 0);

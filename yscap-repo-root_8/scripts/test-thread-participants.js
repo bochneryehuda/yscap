@@ -75,7 +75,14 @@ console.log('\n4. Every reply/follow-up door uses it — a door that re-derives 
 {
   const src = fs.readFileSync(path.join(__dirname, '../src/routes/staff.js'), 'utf8');
   const calls = (src.match(/threadParticipants\.replyRecipients\(/g) || []).length;
-  ok(calls === 3, `all three doors go through it — the order reply, the order follow-up and the closing reply (found ${calls})`);
+  ok(calls === 4, `all four doors go through it — the order reply, the order follow-up, the follow-up PREVIEW and the closing reply (found ${calls})`);
+  // The follow-up PREVIEW consults it too (post-merge audit W6, 2026-08-27): the To/Cc
+  // the editable-preview modal shows must be the follow-up send's OWN derivation,
+  // vendor-thread participants included — a preview that re-derived (or skipped) them
+  // showed a recipient list the send would not use.
+  const previewRoute = src.slice(src.indexOf('orders/:kind/email-preview'));
+  ok(/threadParticipants\.replyRecipients\(/.test(previewRoute.slice(0, 4000)),
+    'the follow-up preview shows the same participants the follow-up send will use');
   // The PLACE door is the FIRST message on a thread; there is no inbound history yet,
   // so it deliberately does not consult this.
   const place = src.slice(src.indexOf('const built = orders.buildOrderEmail(kind, data, {});'));
