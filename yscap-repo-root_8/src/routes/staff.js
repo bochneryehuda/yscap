@@ -157,8 +157,12 @@ async function recordTapeSuperOverride(req, appId, tape, encGate, reason) {
 // The borrower DIRECTORY / CRM has a WIDER audience than file-level see_all_files
 // (owner-directed): admins, underwriters, loan_coordinators (seesAll) AND
 // processors may open ANY borrower's full profile; loan_officers stay limited to
-// borrowers they've done a loan for. File-level access (/applications/:id) is
-// unchanged — a processor still opens individual files only where assigned.
+// borrowers they've done a loan for. NOTE processors now ALSO hold see_all_files
+// by role default (owner-directed 2026-08-26: the back-office persona sees the
+// entire pipeline like admins), so the explicit processor carve-out below is
+// belt-and-suspenders — it keeps the borrower directory whole for a processor
+// whose see_all_files was individually revoked, which is the pre-existing
+// owner-directed state (2026-07-26).
 const seesAllBorrowers = (req) => seesAll(req) || (req.actor && req.actor.role === 'processor');
 // A file that is NOT actionable work: funded/closed (done), declined/withdrawn
 // (dead), or ON HOLD (paused — owner-directed 2026-07-14). None of these should
@@ -5762,10 +5766,14 @@ router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
 router.get('/applications/:id/tape-send', async (req, res) => {
   if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
   try {
-    const pre = await require('../lib/tapes/investor-send').previewTapeSend(req.params.id, db);
+    const investorSendTape = require('../lib/tapes/investor-send');
+    const pre = await investorSendTape.previewTapeSend(req.params.id, db);
     if (!pre) return res.status(404).json({ error: 'not found' });
     const { app: _app, ...safe } = pre;   // the raw row stays server-side
-    res.json(safe);
+    // The EXACT email the send would produce (owner-directed 2026-08-26: a full,
+    // editable preview) — the same pure builder sendTapeToInvestor renders with.
+    const built = investorSendTape.buildTapeEmail(pre, typeof req.query.note === 'string' ? req.query.note : '');
+    res.json({ ...safe, email: { subject: built.subject, text: built.text } });
   } catch (e) { console.error('[tape-send preview]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -5783,7 +5791,7 @@ router.post('/applications/:id/tape-send/:tapeKey', async (req, res) => {
     if (!out.ok) return;
     const sent = await investorSendTape.sendTapeToInvestor(req.params.id, db, {
       tape: { buf: out.buf, filename: out.filename, contentType: out.contentType },
-      to: rec.emails, cc: b.cc, note: b.note,
+      to: rec.emails, cc: b.cc, note: b.note, override: b.override,
       actorId: req.actor.id, actorName: req.actor.full_name || null,
     });
     await audit(req, 'tape_sent_to_investor', 'application', req.params.id, {
@@ -7195,6 +7203,30 @@ router.get('/applications/:id/orders', async (req, res) => {
 // Place (send) an order. Gated on loan number + vendor contact. Re-sending an
 // already-placed order requires ?force / {force:true} so a stray double-click
 // never re-blasts the vendor + whole CC chain.
+/* THE EDITABLE PREVIEW (owner-directed 2026-08-26: "instead of it automatically sending
+   an email, it should populate a full preview … fully editable"). The preview IS the
+   send's own pure builder — orders.buildOrderEmail — run over the same data, so what the
+   screen shows and what would go out can never be two different emails. Read-only:
+   builds nothing on the file, sends nothing. ?followup=1 previews the follow-up shape
+   (with the typed note in place); the send routes then accept {override:{subject,text}}
+   landed through the ONE lib/email/manual-override chokepoint. */
+router.get('/applications/:id/orders/:kind/email-preview', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const followup = req.query.followup === '1' || req.query.followup === 'true';
+    const note = typeof req.query.note === 'string' ? req.query.note.slice(0, 4000) : '';
+    const built = orders.buildOrderEmail(kind, data, followup ? { followup: true, fullOrder: true, note } : {});
+    const ccBorrower = await ccBorrowerFor(appId, kind, { explicit: null, storedMeta: null });
+    const { to, cc } = orders.recipientsFor(kind, data, { ccBorrower });
+    res.json(require('../lib/email/manual-override').previewShape(built, { to, cc }));
+  } catch (e) { res.status(500).json({ error: 'Could not build the preview.' }); }
+});
+
 router.post('/applications/:id/orders/:kind/place', async (req, res) => {
   const appId = req.params.id;
   const kind = req.params.kind;
@@ -7236,7 +7268,12 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
       storedMeta: existing && existing.meta,
     });
 
-    const built = orders.buildOrderEmail(kind, data, {});
+    // A hand-edited subject/body from the preview modal lands through the ONE
+    // manual-override chokepoint (owner-directed 2026-08-26); no override → the
+    // built email is byte-identical to before.
+    const built = require('../lib/email/manual-override').applyOverride(
+      orders.buildOrderEmail(kind, data, {}), req.body && req.body.override,
+      { title: `${kind === 'title' ? 'Title' : 'Insurance'} order`, replyable: true });
     const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower });
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     const vendor = data.vendors[kind];
@@ -7398,7 +7435,11 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     const note = String((req.body && req.body.message) || '').trim().slice(0, 4000);
     // The "Follow up" button restates the FULL order (all details + coverage + mortgagee clause);
     // the Email Center vendor-reply (elsewhere) stays light so a one-line reply isn't a full re-dump.
-    const built = orders.buildOrderEmail(kind, data, { followup: true, fullOrder: true, note });
+    // A hand-edited subject/body from the preview modal lands through the ONE
+    // manual-override chokepoint (owner-directed 2026-08-26).
+    const built = require('../lib/email/manual-override').applyOverride(
+      orders.buildOrderEmail(kind, data, { followup: true, fullOrder: true, note }),
+      req.body && req.body.override, { title: 'Order follow-up', replyable: true });
     // Follow-ups keep the borrower-CC footing the ORDER was placed with
     // (file_orders.meta.ccBorrower; owner-directed 2026-07-31 — title default
     // off). An order placed BEFORE this existed has no stored choice — fall to
@@ -7855,6 +7896,37 @@ function cleanEmailList(v, max = 10) {
 
 // Everything the closing-prep card needs: the deal, the documents we WOULD attach
 // (and what is missing), the recipients, the chain's address and its history.
+/* THE EDITABLE PREVIEW for the attorney closing-prep request + its follow-up
+   (owner-directed 2026-08-26). The preview IS the send's own pure builder — the same
+   buildClosingPrepEmail / buildFollowupEmail the place/followup routes run — so the
+   screen and the wire can never show two different emails. `address` is null here on a
+   file with no chain yet (a preview must never MINT a closing address; the builders
+   tolerate null and the real send mints it), so the printed reply-address line may
+   appear only on the sent copy. Read-only, sends nothing. */
+router.get('/applications/:id/closing-prep/email-preview', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await closingPrep.getClosingPrepData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const followup = req.query.followup === '1' || req.query.followup === 'true';
+    const note = typeof req.query.note === 'string' ? req.query.note.slice(0, 4000) : '';
+    const thread = await closingThread.threadFor(appId).catch(() => null);
+    const address = thread ? closingThread.addressFor(thread) : null;
+    let built;
+    if (followup) built = closingPrep.buildFollowupEmail(data, { note, address, senderName: '' });
+    else {
+      const pkg = await closingPrep.gatherPackage(appId);
+      built = closingPrep.buildClosingPrepEmail(data, pkg, { address, attach: null, note, senderName: '' });
+    }
+    const row = (await db.query(
+      `SELECT meta FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0] || null;
+    const extraEmails = (row && row.meta && Array.isArray(row.meta.extraEmails)) ? row.meta.extraEmails : [];
+    const { to, cc } = closingPrep.recipientsFor(data, { extraEmails });
+    res.json(require('../lib/email/manual-override').previewShape(built, { to, cc }));
+  } catch (e) { res.status(500).json({ error: 'Could not build the preview.' }); }
+});
+
 router.get('/applications/:id/closing-prep', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
@@ -8135,7 +8207,11 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
         bytes: pack.totalBytes || 0, budget: pack.oneMessageBytes || 0, part_count: partCount,
         compressed_n: (pack.attached || []).filter((a) => a.compression).length,
       },
-      build: ({ address }) => closingPrep.buildClosingPrepEmail(data, pkg, { address, attach, note, senderName }),
+      // A hand-edited subject/body from the preview modal lands through the ONE
+      // manual-override chokepoint (owner-directed 2026-08-26); no override → byte-identical.
+      build: ({ address }) => require('../lib/email/manual-override').applyOverride(
+        closingPrep.buildClosingPrepEmail(data, pkg, { address, attach, note, senderName }),
+        req.body && req.body.override, { title: closingPrep.CLOSING_PREP_TITLE }),
     });
     if (!sent.ok) {
       // Nothing went out, so the clock goes back to what it was.
@@ -8357,7 +8433,9 @@ router.post('/applications/:id/closing-prep/followup', async (req, res) => {
       applicationId: appId, eventKind: 'followup',
       dedupeKey: null,                       // a human follow-up may be sent again
       to, cc, fromName: senderName, staffId: req.actor.id, msgType: 'closing_followup',
-      build: ({ address }) => closingPrep.buildFollowupEmail(data, { note, address, senderName }),
+      build: ({ address }) => require('../lib/email/manual-override').applyOverride(
+        closingPrep.buildFollowupEmail(data, { note, address, senderName }),
+        req.body && req.body.override, { title: 'Closing prep follow-up' }),
     });
     if (!sent.ok) return res.status(500).json({ error: 'Could not send the follow-up.', code: sent.reason });
     await db.query(
@@ -10120,10 +10198,14 @@ router.post('/applications/:id/assign', async (req, res) => {
   const { loanOfficerId, processorId } = req.body || {};
   if (!loanOfficerId && !processorId) return res.status(400).json({ error: 'loanOfficerId or processorId required' });
   try {
-    // Reassigning a file is a manager function (audit S3-02). A non-admin may
-    // ONLY claim a currently-EMPTY slot for THEMSELVES — never take over a file
-    // already assigned to another officer/processor. Admins may (re)assign
-    // freely. The audit records both the previous and new owner.
+    // Reassigning the LOAN OFFICER is a manager function (audit S3-02): a
+    // non-admin may ONLY claim a currently-EMPTY officer slot for THEMSELVES.
+    // The PROCESSOR is different (owner-directed 2026-08-26: "everybody should
+    // be able to, when something is assigned to a processor, change the
+    // processor" — it used to be admin-only): ANY staff who can open the file
+    // (the /applications/:id path middleware already scopes that) may set,
+    // change or remove the processor. The audit records both the previous and
+    // new holder either way.
     const cur = await db.query(`SELECT loan_officer_id, processor_id, status, deleted_at FROM applications WHERE id=$1`, [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'application not found' });
     const admin = isAdmin(req);
@@ -10193,12 +10275,9 @@ router.post('/applications/:id/assign', async (req, res) => {
       await audit(req, 'assign_application', 'application', req.params.id, { from: cur.rows[0].loan_officer_id || null, to: loanOfficerId });
     }
     if (processorId) {
-      const selfClaimEmpty = !cur.rows[0].processor_id && String(processorId) === String(req.actor.id);
-      if (!admin && !selfClaimEmpty) {
-        return res.status(403).json({ error: cur.rows[0].processor_id
-          ? 'Only an admin can reassign the processor on a file.'
-          : 'Only an admin can assign this file to another processor — you may claim an unassigned file for yourself.' });
-      }
+      // No admin gate here (owner-directed 2026-08-26): anyone on the file may
+      // change the processor. The person picked must still genuinely BE an
+      // active processor — that validation is what keeps this safe to open up.
       const p = await db.query(`SELECT full_name FROM staff_users WHERE id=$1 AND is_active=true AND role='processor'`, [processorId]);
       if (!p.rows[0]) return res.status(404).json({ error: 'processor not found' });
       const u = await db.query(`UPDATE applications SET processor_id=$2, updated_at=now() WHERE id=$1`,
@@ -10324,13 +10403,21 @@ router.delete('/applications/:id/assignees/:staffId', async (req, res) => {
       [req.params.id, role, req.params.staffId]);
     if (!row.rows[0]) return res.status(404).json({ error: 'not an active assignee on this file' });
     if (row.rows[0].is_primary) {
-      // LO / processor primaries move through Assign (unchanged). The NEW roles
-      // (db/392) can be cleared here: the closer primary clears the pointer
-      // (the trigger retires the row); a draw-coordinator primary retires
-      // directly (no pointer exists). The file then falls back to the role's
-      // whole-desk inbox — the pre-assignment default.
+      // The LOAN OFFICER primary moves through Assign (unchanged — a file must
+      // not silently lose its officer). Every other primary can be cleared
+      // here: the closer AND the processor primaries clear their pointer (the
+      // db/103 / db/392 trigger retires the assignee row); a draw-coordinator
+      // primary retires directly (no pointer exists). The processor case is
+      // owner-directed 2026-08-26 ("everybody should be able to … remove
+      // processors from files"). NOTE the ClickUp push deliberately never
+      // clears a ClickUp field (the wipe-proof rule), so a card still naming
+      // this processor in BOTH its processor fields is re-adopted by the next
+      // inbound sync — a true removal on a synced file is finished by clearing
+      // the Processor field on the ClickUp card too.
       if (role === 'closer') {
         await db.query(`UPDATE applications SET closer_id=NULL WHERE id=$1 AND closer_id=$2`, [req.params.id, req.params.staffId]);
+      } else if (role === 'processor') {
+        await db.query(`UPDATE applications SET processor_id=NULL WHERE id=$1 AND processor_id=$2`, [req.params.id, req.params.staffId]);
       } else if (role === 'draw_coordinator') {
         await db.query(
           `UPDATE application_assignees SET is_primary=false, removed_at=now()

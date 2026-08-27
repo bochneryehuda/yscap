@@ -685,7 +685,7 @@ router.get('/action-items', async (req, res) => {
         kind: 'sign', id: `sign:${s.envelopeRowId}`, applicationId: s.applicationId,
         loanNumber: s.loanNumber || null, property: propLabelOf(s.propertyAddress),
         label: `Sign your ${ACTION_PKG_LABEL[s.purpose] || 'documents'}`,
-        hint: 'A quick, secure signature is needed to move your loan forward.',
+        hint: 'Review and sign securely online to keep your loan moving forward.',
         priority: 0, route: `/app/${s.applicationId}?esign=1`,
       });
     }

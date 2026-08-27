@@ -84,7 +84,7 @@ async function matchingBorrowerLlc(db, borrowerId, entityName) {
 async function matchingFileEntity(db, appId, entityName) {
   if (!appId || !entityName) return null;
   const llcs = (await db.query(
-    `SELECT DISTINCT x.id, x.llc_name, x.is_verified
+    `SELECT DISTINCT x.id, x.llc_name, x.is_verified, x.borrower_id
        FROM applications a
        JOIN llcs x ON ( x.borrower_id IN (a.borrower_id, a.co_borrower_id)
                      OR EXISTS (SELECT 1 FROM llc_borrowers lb
@@ -95,6 +95,23 @@ async function matchingFileEntity(db, appId, entityName) {
     if (drawWire.entityMatch(entityName, l.llc_name) === true) return l;
   }
   return null;
+}
+
+/**
+ * The ACCEPTED operating agreement sitting on an entity's own profile slot, or null.
+ * ONE definition (owner-directed 2026-08-26: the wire card, the autofill and the
+ * investor-delivery attachment all ask "does this entity's profile carry an accepted
+ * operating agreement?", and three copies of that query would drift — the accepted-only
+ * test is the db/424 rule and must never be re-inlined).
+ */
+async function profileAcceptedOa(db, llcId) {
+  if (!llcId) return null;
+  return (await db.query(
+    `SELECT d.id, d.filename, d.storage_ref, d.storage_provider FROM documents d
+       JOIN checklist_items ci ON ci.id = d.checklist_item_id
+       JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.llc_id=$1 AND t.code=$2 AND d.is_current AND ${ACCEPT.ACCEPTED_SQL('d')}
+      ORDER BY d.created_at DESC LIMIT 1`, [llcId, LLC_OA_SLOT])).rows[0] || null;
 }
 
 /**
@@ -164,12 +181,7 @@ async function autofillFromProfile(db, appId, actorId = null) {
     const llc = await matchingFileEntity(db, appId, entityName);
     if (!llc) return { filled: false, reason: 'no_matching_profile_entity' };
 
-    const oa = (await db.query(
-      `SELECT d.id FROM documents d
-         JOIN checklist_items ci ON ci.id = d.checklist_item_id
-         JOIN checklist_templates t ON t.id = ci.template_id
-        WHERE ci.llc_id=$1 AND t.code=$2 AND d.is_current AND ${ACCEPT.ACCEPTED_SQL('d')}
-        ORDER BY d.created_at DESC LIMIT 1`, [llc.id, LLC_OA_SLOT])).rows[0];
+    const oa = await profileAcceptedOa(db, llc.id);
     if (!oa) return { filled: false, reason: 'profile_entity_has_no_accepted_oa' };
 
     const r = await copyDocumentToItem(db, {
@@ -352,17 +364,32 @@ async function acceptedOaForInvestor(db, appId) {
     const item = (await db.query(
       `SELECT id FROM checklist_items WHERE application_id=$1 AND field_key=$2 LIMIT 1`,
       [appId, OA_MARKER(appId)])).rows[0];
-    if (!item) return null;
-    return (await db.query(
-      `SELECT id, filename, storage_ref, storage_provider FROM documents d
-        WHERE d.checklist_item_id=$1 AND d.is_current AND ${ACCEPT.ACCEPTED_SQL('d')}
-        ORDER BY d.created_at DESC LIMIT 1`, [item.id])).rows[0] || null;
+    if (item) {
+      const onCondition = (await db.query(
+        `SELECT id, filename, storage_ref, storage_provider FROM documents d
+          WHERE d.checklist_item_id=$1 AND d.is_current AND ${ACCEPT.ACCEPTED_SQL('d')}
+          ORDER BY d.created_at DESC LIMIT 1`, [item.id])).rows[0];
+      if (onCondition) return onCondition;
+    }
+    // KNOWN-ENTITY wires carry no OA condition (the fatal is only for a NEW entity), but the
+    // owner's rule reaches them too (2026-08-26: "automatically bring in the operating agreement
+    // from that particular entity profile if it has an operating agreement in the operating
+    // agreement slot") — so a wire to an entity already on the borrower's profile attaches the
+    // profile's own ACCEPTED agreement. Accepted-only is the db/424 rule: a document nobody
+    // vouched for never leaves the building.
+    const w = (await db.query(
+      `SELECT account_name, name_kind FROM draw_wire_instructions WHERE application_id=$1`, [appId])).rows[0];
+    if (!w || !['known_entity', 'subject_llc'].includes(String(w.name_kind || ''))) return null;
+    const llc = await matchingFileEntity(db, appId, String(w.account_name || '').trim());
+    if (!llc) return null;
+    return await profileAcceptedOa(db, llc.id);
   } catch (_) { return null; }
 }
 
 module.exports = {
   OA_MARKER, LLC_OA_SLOT, OA_TEMPLATE,
   drawOaConditionOf, wireEntityName, matchingBorrowerLlc, matchingFileEntity,
+  profileAcceptedOa,
   autofillFromProfile, onAccepted, afterAcceptCommit, acceptedOaForInvestor,
   ensureWireEntityOnProfile,
   // PUBLIC on purpose (2026-08-18): sitewire/plans-permits.js pre-fills the first-draw

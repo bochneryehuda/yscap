@@ -248,6 +248,28 @@ console.log(`EMCAP pricing tool recalculation — using ${SOFFICE}`);
 }
 
 // ===========================================================================
+// CASE A2 — the SAME eligible loan, now carrying a financed interest reserve.
+// This is the reported symptom (owner 2026-08-26): EMCAP's workbook has no
+// interest-reserve slot, so a reserve-carrying loan used to inflate C17 with
+// nothing on the other side of their math and came back INELIGIBLE. With the
+// ENTIRE holdback in C19 (construction 400,000 + reserve 10,000 = 410,000)
+// their own sheet computes the same acq-LTV and LTC our engine sized, and the
+// loan is ELIGIBLE again.
+// ===========================================================================
+{
+  const L = loanFixture({
+    app: { loan_amount: 610000 },
+    quote: { noteRate: 0.0925, sizing: { totalLoan: 610000, rehabHoldback: 400000, financedReserve: 10000, initialAdvance: 200000 } },
+  });
+  const r = recalculate(L, 'A2');
+  eq(r.at('C19'), '410000', 'A2: the whole holdback went out — construction 400,000 + interest reserve 10,000');
+  ok(/^80(\.0+)?%$/.test(r.at('C27')), 'A2: their acquisition LTV reads the true 80% initial advance, not one inflated by the reserve');
+  eq(r.at('C34'), '90.00%-92.50%', 'A2: their LTC band includes the reserve in the cost basis, exactly like ours');
+  eq(r.at('C38'), 'ELIGIBLE', 'A2: EMCAP\'s own sheet prices the reserve-carrying loan ELIGIBLE — the reported symptom, fixed');
+  eq(r.at('K39'), '0', 'A2: with no hard fails');
+}
+
+// ===========================================================================
 // CASE B — the same loan in an excluded market. Only the ZIP moves.
 // ===========================================================================
 {

@@ -326,8 +326,11 @@ function MismoImport() {
 
 export default function StaffNewFile() {
   const nav = useNavigate();
-  const { role, actor } = useAuth();
-  const seesAll = ['admin', 'super_admin', 'underwriter'].includes(role);
+  const { role, actor, can } = useAuth();
+  // The SAME signal the backend uses (see_all_files), never a hardcoded role
+  // list — the list here had already drifted (it predated the closer /
+  // coordinator / processor grants). StaffQueue documents this as canonical.
+  const seesAll = can('see_all_files');
   // The staffer opening the file is put on it by default (owner-directed
   // 2026-07-20) — no need to pick, never Lead Capture — when they hold an
   // officer-eligible role (the roles the officer dropdown offers). A

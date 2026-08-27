@@ -63,9 +63,13 @@ function call(server, method, path, token, body) {
     ok('B1 a purchase leads with the purchase price', by['Purchase price'] === '$300,000');
     ok('B2 the loan structure figures ride', by['Loan amount'] === '$360,000' && by['Construction holdback'] === '$80,000'
       && by['Interest reserve (financed)'] === '$32,000' && by['Interest rate'] === '10.50%');
-    ok('B3 the three ratios are labelled with their formulas',
-      by['Initial LTV (initial advance ÷ acquisition value)'] === '80%' && by['ARV LTV (total loan ÷ after-repair value)'] === '80%'
+    // INITIAL LTV — owner-directed 2026-08-26: the initial advance against the
+    // LOWER of the purchase price and the as-is value, recomputed from the
+    // file's own figures (248,000 ÷ 300,000 here — the price is the lower).
+    ok('B3 the three ratios are labelled with their formulas — the initial LTV against the LOWER figure (the purchase price here)',
+      by['Initial LTV (initial advance ÷ purchase price)'] === '82.67%' && by['ARV LTV (total loan ÷ after-repair value)'] === '80%'
       && /Total LTC/.test(rows.map((r) => r.label).join('|')));
+    ok('B3b the as-is is ABOVE the price, so no as-is basis note rides', !rows.some((r) => /Initial LTV basis/.test(r.label)));
     // OWNER-DIRECTED 2026-08-21, replacing the old "Effective LTV" assertion.
     // That figure divided the WHOLE loan (which finances the rehab) by a value
     // that does NOT include the rehab, so on a real construction deal it printed
@@ -89,9 +93,22 @@ function call(server, method, path, token, body) {
     }
   }
   {
+    // The as-is BELOW the price: the as-is is the denominator, the label says
+    // so, and the owner's note rides ("calculated from the as-is").
+    const rows = IS.dealFigures({ loan_type: 'Purchase', purchase_price: 300000, as_is_value: 250000, rehab_budget: 80000 }, QUOTE);
+    const by = Object.fromEntries(rows.map((r) => [r.label, r.value]));
+    ok('B3c the as-is BELOW the price flips the denominator to the as-is (248,000 ÷ 250,000)',
+      by['Initial LTV (initial advance ÷ as-is value)'] === '99.2%');
+    ok('B3d and the basis note states it in words',
+      /calculated from the as-is value/i.test(String(by['Initial LTV basis'] || '')));
+  }
+  {
     const rows = IS.dealFigures({ loan_type: 'Refinance - Cash-Out', as_is_value: 400000 }, QUOTE);
     ok('B6 a refinance leads with the as-is value, never a purchase price',
       rows.some((r) => r.label === 'As-is value' && r.value === '$400,000') && !rows.some((r) => r.label === 'Purchase price'));
+    const by = Object.fromEntries(rows.map((r) => [r.label, r.value]));
+    ok('B6b a refinance\'s initial LTV is against the as-is by definition (248,000 ÷ 400,000), with no note',
+      by['Initial LTV (initial advance ÷ as-is value)'] === '62%' && !rows.some((r) => /Initial LTV basis/.test(r.label)));
   }
   {
     const rows = IS.dealFigures({ loan_type: 'Purchase' }, null);

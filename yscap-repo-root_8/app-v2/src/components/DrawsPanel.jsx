@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth.jsx';
 import EmailCenter from './EmailCenter.jsx';
 import DropZone from './DropZone.jsx';
 import FileSections, { Section, goToSection } from './FileSections.jsx';
+import EmailPreview from './EmailPreview.jsx';
 import { captureScrollAnchor, restoreScrollAnchor } from '../lib/keep-scroll.js';
 import { ScheduleButton, ScheduledSends } from './ScheduleSend.jsx';
 import { useLightbox } from './MediaLightbox.jsx';
@@ -146,6 +147,18 @@ function PayoffDemandBanner({ payoff, started }) {
   );
 }
 
+/* A rail Section around a card that only SOME files carry (owner-directed 2026-08-26:
+   the TrustPoint / portal-request cards left the top of the desk and became left-rail
+   sections). Only the card knows whether it applies — it fetches its own state and
+   self-hides — and `Section hidden` UNMOUNTS its children, so an unmounted card could
+   never fetch and presence would deadlock. This keeps the card mounted (display:none,
+   where the self-hidden card renders nothing anyway) until it reports presence, then
+   wraps it in the real section chrome. */
+function CardSection({ id, title, present, children }) {
+  if (present !== true) return <div style={{ display: 'none' }}>{children}</div>;
+  return <Section id={id} title={title} defaultOpen={false}>{children}</Section>;
+}
+
 export default function DrawsPanel({ appId }) {
   const openReport = useReportOpener();   // the in-app report panel (see ReportOpener.jsx)
   const { can } = useAuth();
@@ -155,6 +168,15 @@ export default function DrawsPanel({ appId }) {
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState('');
   const [quickStatuses, setQuickStatuses] = useState([]); // Sitewire pipeline status labels
+  // Which draw-intake surfaces exist on this file (owner-directed 2026-08-26: the
+  // Trinity / portal-request / TrustPoint cards left the top of the page and became
+  // left-rail sections). Only the CARD knows whether it applies — it fetches its own
+  // state and self-hides — so each reports presence up and the rail lists only the
+  // sections that are really there. Trinity is deliberately NOT here: that card is on
+  // EVERY file (owner-directed 2026-08-21), so its section always shows.
+  const [present, setPresent] = useState({});
+  const onPortalPresence = useCallback((v) => setPresent((p) => (p.portal === v ? p : { ...p, portal: v })), []);
+  const onTpPresence = useCallback((v) => setPresent((p) => (p.tp === v ? p : { ...p, tp: v })), []);
   // Mirrors `data` so load() can tell a first load from a background refresh without
   // taking `data` as a dependency (which would re-create load and re-run every child's
   // effect). Reset when the file changes so a new file gets its first-load spinner.
@@ -227,6 +249,13 @@ export default function DrawsPanel({ appId }) {
   const drawSections = [
     { id: 'dsec-overview', label: 'Overview', group: 'Draw' },
     { id: 'dsec-draws', label: 'Draws', group: 'Draw', badge: draws.length || '' },
+    // The three intake surfaces are ordinary rail sections now (owner-directed
+    // 2026-08-26: "make it a section on the left side" — they used to sit as huge
+    // cards ABOVE the rail). Trinity is on every file; the other two appear only
+    // when the card itself reports it applies here.
+    { id: 'dsec-trinity', label: 'Trinity orders', group: 'Draw' },
+    ...(present.portal === true ? [{ id: 'dsec-portal-requests', label: 'Portal draw requests', group: 'Draw' }] : []),
+    ...(present.tp === true ? [{ id: 'dsec-trustpoint', label: 'TrustPoint draws', group: 'Draw' }] : []),
     { id: 'dsec-sow', label: 'Scope of Work', group: 'Draw' },
     { id: 'dsec-ledger', label: 'Money ledger', group: 'Money' },
     { id: 'dsec-waivers', label: 'Retainage & waivers', group: 'Money' },
@@ -273,21 +302,21 @@ export default function DrawsPanel({ appId }) {
             </div>
           )}
           <StartDrawCard appId={appId} onStarted={load} />
-          <TrustpointPanel appId={appId} />
-          <PortalDrawsCard appId={appId} />
-          <TrinityInspectionCard appId={appId} />
           {/* Send the DocuSign Draw Request & Wire Instructions form right from the start-draw screen. */}
           <DrawRequestCard appId={appId} />
           {/* The draw email center is visible on the construction-draw screen even BEFORE the file is
               pushed to Sitewire — the draw-request form + any early draw messages already show here. */}
           <DrawEmailCenter appId={appId} />
+          {/* The intake cards sit BELOW the setup work on a not-yet-started file (owner-directed
+              2026-08-26: they were "massive on top") — Start-draw is the job here. Each still
+              self-hides when it does not apply; Trinity stays on every file (2026-08-21). */}
+          <TrustpointPanel appId={appId} />
+          <PortalDrawsCard appId={appId} />
+          <TrinityInspectionCard appId={appId} />
         </>
       ) : (
         <>
           {msg && <div className="dd-card" style={{ marginTop: 12, background: 'var(--paper,#f6f3ec)' }}>{msg}</div>}
-          <TrustpointPanel appId={appId} />
-          <PortalDrawsCard appId={appId} />
-          <TrinityInspectionCard appId={appId} />
 
           {/* Redesigned draw desk: a sticky left section rail (like the loan file) + collapsible sections,
               so the whole draw process is scannable without endless scrolling. Each section opens on demand;
@@ -381,6 +410,23 @@ export default function DrawsPanel({ appId }) {
                   answers={data.investor_answers || []} />
               ))}
             </Section>
+
+            {/* THE THREE INTAKE SURFACES ARE RAIL SECTIONS NOW (owner-directed 2026-08-26:
+                "Trinity Manual Physical Inspections … should be made a section on the left
+                side — Trinity orders"; portal + TrustPoint draw requests likewise came off
+                the top). Trinity renders on EVERY file (owner-directed 2026-08-21); the
+                other two exist only on some files and only the CARD knows — it fetches its
+                own state — so CardSection keeps the card mounted and shows the section
+                chrome once the card reports it applies. */}
+            <Section id="dsec-trinity" title="Trinity orders" defaultOpen={false}>
+              <TrinityInspectionCard appId={appId} />
+            </Section>
+            <CardSection id="dsec-portal-requests" title="Portal draw requests" present={present.portal}>
+              <PortalDrawsCard appId={appId} onPresence={onPortalPresence} />
+            </CardSection>
+            <CardSection id="dsec-trustpoint" title="Administered draws (TrustPoint)" present={present.tp}>
+              <TrustpointPanel appId={appId} onPresence={onTpPresence} />
+            </CardSection>
 
             {/* SCOPE OF WORK — budget vs. drawn rollup + (super-admin) line wording/description editor. */}
             <Section id="dsec-sow" title="Scope of Work — budget vs. drawn" defaultOpen={false}>
@@ -750,7 +796,29 @@ function DrawRequestCard({ appId }) {
 
           <div style={{ marginTop: 12 }}>
             <div className="act-label" style={{ display: 'block' }}>Account name</div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>{wire.account_name || '—'}</div>
+            {/* A KNOWN entity's name is a DOOR to its profile (owner-directed 2026-08-26:
+                "populate it as a link to go directly to that entity profile"). Underlined,
+                never colour-only (WCAG 1.4.1), explicit dark text per the hard rule. */}
+            {wire.entity && wire.entity.borrower_id ? (
+              <div style={{ fontSize: 16, fontWeight: 700, marginTop: 2 }}>
+                <a href={`#/internal/borrowers/${wire.entity.borrower_id}?tab=Entities`}
+                  style={{ color: '#141B22', textDecoration: 'underline' }}
+                  title={`Open ${wire.entity.llc_name} on the borrower’s profile (Entities tab)`}>
+                  {wire.account_name || wire.entity.llc_name}
+                </a>
+                {wire.entity.is_verified && <span className="dd-chip on" style={{ marginLeft: 8, verticalAlign: 'middle' }}><span className="dot" />Verified entity</span>}
+              </div>
+            ) : (
+              <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>{wire.account_name || '—'}</div>
+            )}
+            {/* The profile's own ACCEPTED operating agreement rides along automatically
+                (owner-directed 2026-08-26) — say so, so nobody chases the borrower for a
+                document the profile already carries. */}
+            {wire.entity && wire.entity.oa && (
+              <div className="act-card-sub" style={{ marginTop: 4, color: '#2E7A5E' }}>
+                Operating agreement on file — {wire.entity.oa.filename}. It’s attached to the investor delivery automatically from this entity’s profile.
+              </div>
+            )}
           </div>
 
           <div style={{ marginTop: 12, display: 'grid', gap: '11px 18px', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
@@ -1833,8 +1901,12 @@ function TrinityInspectionCard({ appId }) {
   );
 }
 
-function PortalDrawsCard({ appId }) {
+function PortalDrawsCard({ appId, onPresence }) {
   const [data, setData] = useState(null);
+  // Presence report for the rail (CardSection). A ref so `load` never depends on the
+  // callback identity — a parent re-render must not re-trigger the fetch effect.
+  const presRef = useRef(onPresence);
+  useEffect(() => { presRef.current = onPresence; });
   const [openForm, setOpenForm] = useState(false);
   const [amounts, setAmounts] = useState({});
   const [note, setNote] = useState('');
@@ -1847,7 +1919,9 @@ function PortalDrawsCard({ appId }) {
   const usd = (c) => c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
   const cents = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : 0; };
   const load = useCallback(() => {
-    api.get(`/api/sitewire/files/${appId}/portal-draws`).then(setData).catch(() => setData(null));
+    api.get(`/api/sitewire/files/${appId}/portal-draws`)
+      .then((d) => { setData(d); if (presRef.current) presRef.current(!!(d && d.state && d.state.physical)); })
+      .catch(() => { setData(null); if (presRef.current) presRef.current(false); });
   }, [appId]);
   useEffect(() => { load(); }, [load]);
   if (!data || !data.state || !data.state.physical) return null;
@@ -1912,8 +1986,18 @@ function PortalDrawsCard({ appId }) {
       </div>
       {msg && <div className="small" style={{ marginTop: 8, fontWeight: 600 }}>{msg}</div>}
 
+      {/* THE COMPOSER IS PARKED (owner-directed 2026-08-26, compliance): draw
+          requests come in through Sitewire only — the note says why instead of
+          a dead button, and the desk levers / history below keep working, so a
+          request already in flight keeps moving instead of its controls
+          vanishing (the parked.js house pattern). */}
+      {!st.open_portal_request && st.parked && (
+        <div className="dd-note warn" style={{ marginTop: 10 }}>
+          {st.parked_reason || 'Draw requests are submitted through Sitewire for now — the composer here is parked (compliance).'}
+        </div>
+      )}
       {/* the composer */}
-      {!st.open_portal_request && (
+      {!st.open_portal_request && !st.parked && (
         !openForm ? (
           <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
             <button className="btn btn-sm primary" disabled={busy || !st.set_up || !st.funded} onClick={() => { setMsg(''); setOpenForm(true); }}>Compose a draw request</button>
@@ -2040,9 +2124,12 @@ function PortalDrawsCard({ appId }) {
 }
 
 // per-line entry (transcribed from TrustPoint's console) + the push-to-Sitewire button.
-function TrustpointPanel({ appId }) {
+function TrustpointPanel({ appId, onPresence }) {
   const openReport = useReportOpener();   // the in-app report panel (see ReportOpener.jsx)
   const [ov, setOv] = useState(null);
+  // Presence report for the rail (CardSection) — see PortalDrawsCard for the ref rule.
+  const presRef = useRef(onPresence);
+  useEffect(() => { presRef.current = onPresence; });
   const [openLines, setOpenLines] = useState(null);   // tp_draw_id whose entry form is open
   const [lineData, setLineData] = useState(null);
   const [amounts, setAmounts] = useState({});
@@ -2050,7 +2137,9 @@ function TrustpointPanel({ appId }) {
   const [msg, setMsg] = useState('');
   const usd = (c) => c == null ? '—' : '$' + (Number(c) / 100).toLocaleString('en-US', { minimumFractionDigits: 2 });
   const load = useCallback(() => {
-    api.get(`/api/trustpoint/files/${appId}/overview`).then(setOv).catch(() => setOv(null));
+    api.get(`/api/trustpoint/files/${appId}/overview`)
+      .then((r) => { setOv(r); if (presRef.current) presRef.current(!!(r && r.linked)); })
+      .catch(() => { setOv(null); if (presRef.current) presRef.current(false); });
   }, [appId]);
   useEffect(() => { load(); }, [load]);
   if (!ov || !ov.linked) return null;
@@ -3127,6 +3216,12 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
   const [ack, setAck] = useState(false);
   const [plan, setPlan] = useState(null);
   const [queued, setQueued] = useState([]);
+  /* THE EDITABLE PREVIEW (owner-directed 2026-08-26): "Deliver to the investor" opens the
+     send's OWN built email (p.email — the same ID.deliveryEmail wording the send renders),
+     editable, instead of a text confirm. The override the person made is held in a ref so
+     the consent-gate re-sends (send short / send with links) carry the SAME edited wording. */
+  const [emailPv, setEmailPv] = useState(null);
+  const overrideRef = useRef(null);
   const load = useCallback(() => {
     api.get(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`).then(setP).catch(() => {});
   }, [appId, drawId]);
@@ -3191,11 +3286,20 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
   async function send(extra) {
     if (!p) return;
     const manual = p.funding_mode === 'manual';
+    const { __go, ...extraBody } = extra || {};
     let ok;
     if (extra) ok = true;
     else if (manual) {
       ok = await askConfirm(`Record that this draw was delivered to ${p.note_buyer} outside PILOT?\n\nPILOT sends no email — this only records the delivery so the reminders stop.`);
+    } else if (p.email && p.email.text) {
+      // The editable preview replaces the text confirm (owner-directed 2026-08-26). The
+      // modal's Send re-enters here with __go, the override already held in the ref.
+      overrideRef.current = null;
+      setEmailPv({ subject: p.email.subject || '', text: p.email.text || '', to: p.to || [], cc: p.cc || [] });
+      return;
     } else {
+      // The server could not build the preview body — fall back to the plain confirm
+      // rather than a dead Send button.
       const who = p.to.join(', ');
       const modeLine = p.funding_mode === 'reimbursement'
         ? `They will be asked to REIMBURSE us ${usd2(p.money.investor_total_cents)}.`
@@ -3207,7 +3311,8 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
     try {
       const r = await api.post(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`, {
         confirm_note_buyer: p.note_buyer, mode: p.funding_mode, note: manual ? note : undefined,
-        ...(extra || {}),
+        ...(overrideRef.current ? { override: overrideRef.current } : {}),
+        ...extraBody,
       });
       if (r.manual) {
         setMsg(`Recorded as delivered to ${p.note_buyer} manually — the "deliver to the investor" reminders will stop.`);
@@ -3427,6 +3532,19 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
                 Send without {gate.plan.omitted.length === 1 ? 'it' : 'them'}
               </button>
             </div>
+          )}
+
+          {emailPv && (
+            <EmailPreview
+              title={`Deliver draw ${p.draw_number || ''} to ${p.note_buyer || 'the investor'}`}
+              subject={emailPv.subject} text={emailPv.text} to={emailPv.to} cc={emailPv.cc}
+              busy={busy} sendLabel="Deliver to the investor"
+              warning={(p.funding_mode === 'reimbursement'
+                ? `They will be asked to REIMBURSE us ${usd2(p.money.investor_total_cents)}.`
+                : `They will be asked to release ${usd2(p.money.to_borrower_cents)} to the borrower and ${usd2(p.money.to_us_cents)} to us.`)
+                + ' The report, packet and wire form are attached at send time. The borrower is never included.'}
+              onClose={() => setEmailPv(null)}
+              onSend={(override) => { overrideRef.current = override || null; setEmailPv(null); send({ __go: true }); }} />
           )}
 
           <div className="row" style={{ gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>

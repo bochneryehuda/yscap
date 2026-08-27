@@ -39,7 +39,9 @@
  *   C15 GC-only experience?          ← always "No" (owner-directed; see below)
  *   C17 Total Loan Amount
  *   C18 Purchase / Acquisition Cost
- *   C19 Rehab / Construction Budget
+ *   C19 Rehab / Construction Budget  ← the ENTIRE holdback: construction budget
+ *                                      + financed interest reserve (their sheet
+ *                                      has no reserve slot — see the C19 note)
  *   C20 After-Repair Value (ARV)
  *   C21 Note Rate                    ← the file's final note rate
  *   C24 Cash-Out Amount              ← REFINANCE only
@@ -478,8 +480,28 @@ function buildPricingToolCells(loan, opts = {}) {
     });
   }
 
-  put('C19', 'Rehab / Construction Budget ($)', n(econ.totalRehab), 'n');
-  if (n(econ.totalRehab) == null) gaps.push({ cell: 'C19', label: 'Rehab / Construction Budget ($)', why: 'no rehab / construction budget on the file' });
+  /* C19 carries the ENTIRE holdback — the construction holdback PLUS the financed
+     interest reserve (owner-directed 2026-08-26: "don't put in the construction
+     holdback by itself. Put in the entire holdback … if the construction holdback
+     is $75,000 and the interest reserve is $10,000, you put in over there the
+     total of $85,000"). EMCAP's workbook has NO input slot for an interest
+     reserve, and C19 is on BOTH sides of their math: the acquisition advance is
+     (C17−C19)/C18 and the cost basis is C18+C19. A loan whose C17 carries a
+     financed reserve with nothing in C19 therefore reads over-leveraged on both
+     checks and comes back INELIGIBLE — while EMCAP's own program finances the
+     reserve into the loan "as part of the cost basis" (docs/SILVER-PROGRAM-EMCAP.md
+     §Interest reserve), i.e. it is calculated the same way as LTC. Summing the two
+     here makes their sheet's acq-LTV and LTC equal our frozen engine's. A loan
+     with no financed reserve is byte-identical to before. */
+  const rehabBudget = n(econ.totalRehab);
+  const reserveInHoldback = n(econ.financedReserve) || 0;
+  const totalHoldback = rehabBudget != null ? rehabBudget + reserveInHoldback
+    : (reserveInHoldback > 0 ? reserveInHoldback : null);
+  put('C19', 'Rehab / Construction Budget ($)', totalHoldback, 'n',
+    totalHoldback != null && reserveInHoldback > 0
+      ? `$${totalHoldback.toLocaleString('en-US')} (construction holdback $${(rehabBudget || 0).toLocaleString('en-US')} + financed interest reserve $${reserveInHoldback.toLocaleString('en-US')} — EMCAP's sheet has no reserve slot, so the whole holdback goes here)`
+      : undefined);
+  if (totalHoldback == null) gaps.push({ cell: 'C19', label: 'Rehab / Construction Budget ($)', why: 'no rehab / construction budget on the file' });
 
   put('C20', 'After-Repair Value — ARV ($)', n(econ.arv), 'n');
   if (n(econ.arv) == null) gaps.push({ cell: 'C20', label: 'After-Repair Value — ARV ($)', why: 'no ARV on the file or its appraisal — EMCAP’s AR-LTV band, and therefore the rate, cannot compute without it' });

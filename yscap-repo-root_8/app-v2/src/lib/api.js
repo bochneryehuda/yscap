@@ -1119,6 +1119,9 @@ export const api = {
   // Orders desk (#orders) — title + insurance orders on a file.
   staffOrders:        (appId) => req('GET', `/api/staff/applications/${appId}/orders`),
   staffPlaceOrder:    (appId, kind, body) => req('POST', `/api/staff/applications/${appId}/orders/${kind}/place`, body || {}),
+  // THE EDITABLE PREVIEW (owner-directed 2026-08-26): the send's own pure builder, read-only.
+  staffOrderEmailPreview: (appId, kind, q) => req('GET', `/api/staff/applications/${appId}/orders/${kind}/email-preview${q ? `?${new URLSearchParams(q)}` : ''}`),
+  staffClosingPrepEmailPreview: (appId, q) => req('GET', `/api/staff/applications/${appId}/closing-prep/email-preview${q ? `?${new URLSearchParams(q)}` : ''}`),
   // SEND IT LATER (owner-directed 2026-08-20). The scheduling doors mirror the
   // send doors one for one — same file, same kind, same body — because the
   // dispatcher re-enters the very route `staffPlaceOrder` posts to.
