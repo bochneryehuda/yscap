@@ -1412,17 +1412,17 @@ async function createCandidates({ scan, since } = {}) {
     `SELECT l.id, l.loan_number FROM lt_loans l
       WHERE l.clickup_task_id IS NULL
         AND ${trash.notTrashSql('l')}
-        AND ( l.created_at >= $2::date
-              OR EXISTS (SELECT 1 FROM lt_loan_milestones m
-                          WHERE m.loan_id = l.id
-                            AND m.done = true
-                            AND ${MILESTONE_NORM_SQL('m.milestone_name')} = ANY($3::text[])) )
+        /* REVERTED 2026-08-27 — see the block above createCandidates. The
+           milestone clause created SIX DUPLICATE CARDS on historical closed
+           loans and is withdrawn until it can tell "has no card" from
+           "PILOT has not LINKED the card it already has". */
+        AND l.created_at >= $2::date
         AND l.loan_number IS NOT NULL AND l.loan_number <> ''
         AND l.encompass_synced_at IS NOT NULL
       ORDER BY (l.clickup_push_error IS NOT NULL) ASC,
                (CASE WHEN l.clickup_push_error IS NOT NULL THEN l.updated_at END) ASC,
                l.created_at ASC
-      LIMIT $1`, [scan, since || createSince(), HANDOFF_MILESTONES()]);
+      LIMIT $1`, [scan, since || createSince()]);
 }
 
 /** Brand-new files (discovered after the go-live day) that still have no card. */
