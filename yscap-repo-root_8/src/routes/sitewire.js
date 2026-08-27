@@ -1195,14 +1195,12 @@ router.get('/files/:id/draw-request', requireDrawView, async (req, res) => {
         const ent = await drawOa.matchingFileEntity(db, appId, String(w.account_name || '').trim());
         if (ent) {
           const oaDoc = await drawOa.profileAcceptedOa(db, ent.id);
-          // An entity linked only through llc_borrowers has no owning borrower_id of its
-          // own — the file's borrower still shows it on their Entities tab, so the link
-          // falls back there rather than going nowhere.
-          let ownerId = ent.borrower_id;
-          if (!ownerId) {
-            const ab = (await db.query(`SELECT borrower_id FROM applications WHERE id=$1`, [appId])).rows[0];
-            ownerId = ab && ab.borrower_id;
-          }
+          // Every llcs row has an OWNING borrower (llcs.borrower_id is NOT NULL — an
+          // entity reached through llc_borrowers still carries its owner's id), so the
+          // link goes to the profile the entity actually lives on. The audit found the
+          // old "no owning borrower" fallback here unreachable; it was removed rather
+          // than left implying it bites.
+          const ownerId = ent.borrower_id;
           wire.entity = {
             llc_id: String(ent.id), llc_name: ent.llc_name, is_verified: !!ent.is_verified,
             borrower_id: ownerId ? String(ownerId) : null,
@@ -3727,6 +3725,10 @@ router.post('/files/:id/draws/:drawId/investor-delivery/schedule', requirePermis
     if (b.acknowledge_omissions === true) payload.acknowledge_omissions = true;
     if (Array.isArray(b.share_link_keys) && b.share_link_keys.length) payload.share_link_keys = b.share_link_keys;
     if (Number(b.compress_level)) payload.compress_level = Number(b.compress_level);
+    // A hand-edited subject/body rides the stored payload — the dispatcher re-posts it
+    // through the delivery route above, which lands it via manual-override.applyOverride.
+    const override = require('../lib/email/manual-override').cleanOverride(b.override);
+    if (override) payload.override = override;
 
     const out = await sched.schedule({
       appId, kind: 'investor_delivery', targetKey: String(drawId), at,

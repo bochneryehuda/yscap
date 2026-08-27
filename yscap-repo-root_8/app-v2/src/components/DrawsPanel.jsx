@@ -183,7 +183,9 @@ export default function DrawsPanel({ appId }) {
   const dataRef = useRef(null);
   // On a file switch (if this panel is reused rather than remounted), drop the prior file's data so
   // the new file shows the spinner instead of the previous file's draws (pre-merge audit B).
-  useEffect(() => { dataRef.current = null; setData(null); }, [appId]);
+  // `present` resets too: a stale true from the previous file would list a rail section whose
+  // card (mounted display:none until presence re-confirms) never renders on this file.
+  useEffect(() => { dataRef.current = null; setData(null); setPresent({}); }, [appId]);
 
   const load = useCallback(() => {
     // ONLY the first load blanks the panel to a spinner. Every refresh AFTER an action
@@ -3222,6 +3224,13 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
      the consent-gate re-sends (send short / send with links) carry the SAME edited wording. */
   const [emailPv, setEmailPv] = useState(null);
   const overrideRef = useRef(null);
+  // Has the person seen the editable preview this compose session? The consent gate can be
+  // reached WITHOUT it (Check documents → preflight → gate), and its buttons used to send
+  // directly — the one manual-send path that skipped the owner's "full preview before every
+  // manual send". Gate decisions made before any preview are parked here so the preview's
+  // own Send carries them.
+  const previewSeenRef = useRef(false);
+  const pendingExtraRef = useRef(null);
   const load = useCallback(() => {
     api.get(`/api/sitewire/files/${appId}/draws/${drawId}/investor-delivery`).then(setP).catch(() => {});
   }, [appId, drawId]);
@@ -3268,6 +3277,9 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
       day, time, confirm_note_buyer: p.note_buyer, mode: p.funding_mode,
       ...(ack ? { acknowledge_omissions: true } : {}),
       ...(linkKeys.length ? { share_link_keys: linkKeys } : {}),
+      // The edit held from the preview rides the stored intent, exactly as it rides a send —
+      // scheduling must never quietly drop wording the person already approved.
+      ...(overrideRef.current ? { override: overrideRef.current } : {}),
     });
     loadQueue();
     setMsg(`Scheduled for ${r.scheduled.sendAtText}. Everything is checked again when it goes out.`);
@@ -3288,13 +3300,26 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
     const manual = p.funding_mode === 'manual';
     const { __go, ...extraBody } = extra || {};
     let ok;
-    if (extra) ok = true;
+    if (extra) {
+      // A gate decision (send short / send with links / compress) re-enters here. When the
+      // gate was reached through Check documents the person has never seen the editable
+      // preview, so it is shown FIRST — their gate decisions ride pendingExtraRef and the
+      // preview's Send re-enters with them. A gate reached from a refused send already went
+      // through the preview (previewSeenRef), and __go IS the preview's own send.
+      if (!__go && !previewSeenRef.current && !manual && p.email && p.email.text) {
+        pendingExtraRef.current = extraBody;
+        setEmailPv({ subject: p.email.subject || '', text: p.email.text || '', to: p.to || [], cc: p.cc || [] });
+        return;
+      }
+      ok = true;
+    }
     else if (manual) {
       ok = await askConfirm(`Record that this draw was delivered to ${p.note_buyer} outside PILOT?\n\nPILOT sends no email — this only records the delivery so the reminders stop.`);
     } else if (p.email && p.email.text) {
       // The editable preview replaces the text confirm (owner-directed 2026-08-26). The
       // modal's Send re-enters here with __go, the override already held in the ref.
       overrideRef.current = null;
+      pendingExtraRef.current = null;
       setEmailPv({ subject: p.email.subject || '', text: p.email.text || '', to: p.to || [], cc: p.cc || [] });
       return;
     } else {
@@ -3544,7 +3569,21 @@ function InvestorDeliveryCard({ appId, drawId, reload }) {
                 : `They will be asked to release ${usd2(p.money.to_borrower_cents)} to the borrower and ${usd2(p.money.to_us_cents)} to us.`)
                 + ' The report, packet and wire form are attached at send time. The borrower is never included.'}
               onClose={() => setEmailPv(null)}
-              onSend={(override) => { overrideRef.current = override || null; setEmailPv(null); send({ __go: true }); }} />
+              onSend={(override) => {
+                overrideRef.current = override || null;
+                previewSeenRef.current = true;
+                const pending = pendingExtraRef.current; pendingExtraRef.current = null;
+                setEmailPv(null);
+                send({ __go: true, ...(pending || {}) });
+              }}
+              scheduleWhat={`the draw delivery to ${p.note_buyer || 'the investor'}`}
+              onSchedule={async (override, { day, time }) => {
+                overrideRef.current = override || null;
+                previewSeenRef.current = true;
+                pendingExtraRef.current = null;
+                setEmailPv(null);
+                await scheduleIt({ day, time });
+              }} />
           )}
 
           <div className="row" style={{ gap: 10, marginTop: 14, alignItems: 'center', flexWrap: 'wrap' }}>

@@ -528,10 +528,13 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
      what is queued tonight is exactly what pressing the button now would do —
      and it is the send ROUTE, not a rendered email, that runs in the morning. */
   const sched = useScheduledSends(appId, [order.status]);
-  const scheduleIt = async ({ day, time }) => {
+  const scheduleIt = async ({ day, time, override }) => {
     const body = { day, time };
     if (placed) body.force = true;
     if (ccBorrower != null) body.ccBorrower = !!ccBorrower;
+    // An edit approved in the preview rides the stored intent (post-merge audit):
+    // scheduling must never quietly drop wording the person already approved.
+    if (override) body.override = override;
     const r = await api.staffScheduleOrder(appId, kind, body);
     await sched.reload();
     setMsg({ tone: (r.warnings && r.warnings.length) ? 'warn' : 'ok',
@@ -551,7 +554,12 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
   const openSendPreview = async (mode, force) => {
     setBusy('preview'); setMsg(null);
     try {
-      const q = mode === 'followup' ? { followup: '1', ...(followMsg.trim() ? { note: followMsg.trim() } : {}) } : null;
+      // The panel's ccBorrower choice rides the preview request, so the To/Cc shown is
+      // the send's own derivation (post-merge audit W6) — a follow-up keeps the footing
+      // the order was placed with, so it sends no explicit choice.
+      const q = mode === 'followup'
+        ? { followup: '1', ...(followMsg.trim() ? { note: followMsg.trim() } : {}) }
+        : (ccBorrower != null ? { ccBorrower: ccBorrower ? '1' : '0' } : null);
       const pv = await api.staffOrderEmailPreview(appId, kind, q);
       setPreview({ mode, force: !!force, subject: pv.subject || '', text: pv.text || '', to: pv.to || [], cc: pv.cc || [] });
     } catch (e) {
@@ -781,6 +789,14 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
           onClose={() => setPreview(null)}
           onSend={async (override) => {
             if (preview.mode === 'followup') await followup(override); else await place(preview.force, override);
+            setPreview(null);
+          }}
+          /* Scheduling from INSIDE the preview keeps the edit (post-merge audit) — the
+             outside ScheduleButton has no edit to carry. A follow-up cannot be
+             scheduled (no such kind). */
+          scheduleWhat={`the ${kind} order`}
+          onSchedule={preview.mode === 'followup' ? null : async (override, { day, time }) => {
+            await scheduleIt({ day, time, override });
             setPreview(null);
           }} />
       )}

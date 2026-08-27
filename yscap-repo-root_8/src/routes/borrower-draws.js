@@ -163,7 +163,10 @@ router.get('/draws/:appId/eligibility', async (req, res) => {
         // borrower is pointed there instead of at a composer that will refuse.
         // st.eligible is already false while parked, so can_compose follows.
         if (st.parked && !open && blocking.length === 0) {
-          nextSteps.push('To request a draw, submit it in the construction portal — use the “Open the construction portal” link on this page.');
+          // Names the button the screen actually shows (BorrowerDraws.jsx: "Open Sitewire
+          // to submit a draw ↗") — pointing at a link that does not exist under that name
+          // is a dead end. "construction portal" stays: the parked test pins the phrase.
+          nextSteps.push('To request a draw, submit it in the Sitewire construction portal — use the “Open Sitewire to submit a draw” button on this page.');
         }
         const lines = (st.set_up && !open && !st.parked)
           ? (await portalDraws.composerLines(appId)).map((l) => ({
