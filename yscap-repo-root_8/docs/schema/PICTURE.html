@@ -110,14 +110,14 @@ footer p{max-width:74ch;margin:0 0 9px}
   <p class="lede">Every table in the system, what it holds, and what it is connected to.
   This is a picture of a copy — nothing here can change anything.</p>
   <div class="figs">
-    <div class="fig"><b>386</b><span>tables</span></div>
-    <div class="fig"><b>6,221</b><span>fields</span></div>
-    <div class="fig"><b>795</b><span>connections</span></div>
+    <div class="fig"><b>387</b><span>tables</span></div>
+    <div class="fig"><b>6,228</b><span>fields</span></div>
+    <div class="fig"><b>796</b><span>connections</span></div>
     <div class="fig"><b>37</b><span>automatic rules</span></div>
     <div class="fig"><b>318</b><span>value guards</span></div>
-    <div class="fig"><b>1,334</b><span>lookups</span></div>
+    <div class="fig"><b>1,336</b><span>lookups</span></div>
   </div>
-  <p class="stamp">Generated from the committed schema map — built from 632 migration files, up to db/635. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
+  <p class="stamp">Generated from the committed schema map — built from 633 migration files, up to db/636. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
 </div></header>
 
 <section><div class="wrap">
@@ -165,19 +165,19 @@ footer p{max-width:74ch;margin:0 0 9px}
     <div class="note">One long-term loan file. The long-term product is a separate system that shares only the login and the person, so this is its own spine — nothing here touches a short-term loan.</div>
     <div class="meta"><span>76 fields</span><span>9 things depend on it</span><span>3 it depends on</span></div>
   </div><div class="card">
+    <div class="nm mono">track_records</div>
+    <div class="note">Deals a borrower has done before — what their experience level is built from.</div>
+    <div class="meta"><span>38 fields</span><span>9 things depend on it</span><span>3 it depends on</span></div>
+  </div><div class="card">
     <div class="nm mono">amc_orders</div>
     <div class="note">An appraisal ordered through an appraisal management company, and where that order has got to.</div>
     <div class="meta"><span>63 fields</span><span>6 things depend on it</span><span>5 it depends on</span></div>
-  </div><div class="card">
-    <div class="nm mono">closing_workflow</div>
-    <div class="note">The run-up to the closing table for one file.</div>
-    <div class="meta"><span>40 fields</span><span>0 things depend on it</span><span>11 it depends on</span></div>
   </div></div>
 </div></section>
 
 <section><div class="wrap">
   <h2>Everything, by what it is for</h2>
-  <p class="sub">All 386 tables, grouped. Open a group, then open a table to see its
+  <p class="sub">All 387 tables, grouped. Open a group, then open a table to see its
   fields and what it connects to. <strong>“Deleted with it”</strong> marks a connection where removing the
   parent record removes these too — the single most consequential thing a connection can say.</p>
   <div class="search">
@@ -1041,7 +1041,7 @@ footer p{max-width:74ch;margin:0 0 9px}
   </div>
 </div></details></div>
   </details><details class="grp">
-    <summary><span class="gn">People, entities and track record</span><span class="gc">30 tables</span></summary>
+    <summary><span class="gn">People, entities and track record</span><span class="gc">31 tables</span></summary>
     <div class="body"><p class="blurb">The borrower as a person rather than as a loan file — their login, their companies, the deals they have done before, and our own staff.</p><details class="tbl" data-name="staff_users" data-note="The team roster. Also where an outside broker’s login lives, flagged as external.">
 <summary><span class="tn">staff_users</span>
 <span class="tm">40 fields · 291 links</span>
@@ -1074,13 +1074,13 @@ footer p{max-width:74ch;margin:0 0 9px}
   </div>
 </div></details><details class="tbl" data-name="track_records" data-note="Deals a borrower has done before — what their experience level is built from.">
 <summary><span class="tn">track_records</span>
-<span class="tm">38 fields · 11 links</span>
+<span class="tm">38 fields · 12 links</span>
 <span class="tnote">Deals a borrower has done before — what their experience level is built from.</span></summary>
 <div class="detail">
   <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">address_key</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">borrower_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">client_row_id</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">counts_from</td><td class="t">date</td><td class="t"></td></tr><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">current_value</td><td class="t">numeric</td><td class="t"></td></tr><tr><td class="c">deal_type</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">docs_status <span class="req">required</span></td><td class="t">text</td><td class="t">'outstanding'::text</td></tr><tr><td class="c">entered_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">entered_by_kind</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">entity_name</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">hold_days</td><td class="t">integer</td><td class="t"></td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t">gen_random_uuid()</td></tr><tr><td class="c">inferred <span class="req">required</span></td><td class="t">boolean</td><td class="t">false</td></tr><tr><td class="c">is_verified <span class="req">required</span></td><td class="t">boolean</td><td class="t">false</td></tr><tr><td class="c">llc_id</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">lo_notes</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">notes</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">origin <span class="req">required</span></td><td class="t">text</td><td class="t">'portal'::text</td></tr><tr><td class="c">owned_personally <span class="req">required</span></td><td class="t">boolean</td><td class="t">false</td></tr><tr><td class="c">pillars_met <span class="req">required</span></td><td class="t">boolean</td><td class="t">false</td></tr><tr><td class="c">property_address</td><td class="t">jsonb</td><td class="t"></td></tr><tr><td class="c">property_type</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">purchase_date</td><td class="t">date</td><td class="t"></td></tr><tr><td class="c">purchase_price</td><td class="t">numeric</td><td class="t"></td></tr><tr><td class="c">refi_amount</td><td class="t">numeric</td><td class="t"></td></tr><tr><td class="c">refi_date</td><td class="t">date</td><td class="t"></td></tr><tr><td class="c">rehab_amount</td><td class="t">numeric</td><td class="t"></td></tr><tr><td class="c">rent_amount</td><td class="t">numeric</td><td class="t"></td></tr><tr><td class="c">rent_date</td><td class="t">date</td><td class="t"></td></tr><tr><td class="c">sale_date</td><td class="t">date</td><td class="t"></td></tr><tr><td class="c">sale_price</td><td class="t">numeric</td><td class="t"></td></tr><tr><td class="c">seller_name</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">source_task_id</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">updated_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">verification_status <span class="req">required</span></td><td class="t">text</td><td class="t">'pending'::text</td></tr><tr><td class="c">verified_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">verified_by</td><td class="t">uuid</td><td class="t"></td></tr></tbody></table></div>
   <div class="links">
     <div><h4>Depends on</h4><ul><li><span class="a">borrower_id</span> → <span class="a">borrowers</span><span class="tag cascade">on delete cascade</span></li><li><span class="a">llc_id</span> → <span class="a">llcs</span><span class="tag">on delete set null</span></li><li><span class="a">verified_by</span> → <span class="a">staff_users</span></li></ul></div>
-    <div><h4>Depended on by</h4><ul><li><span class="a">checklist_items</span></li><li><span class="a">documents</span><span class="tag cascade">deleted with it</span></li><li><span class="a">elementix_address_links</span><span class="tag cascade">deleted with it</span></li><li><span class="a">track_record_candidates</span></li><li><span class="a">track_record_candidates</span></li><li><span class="a">track_record_findings</span><span class="tag cascade">deleted with it</span></li><li><span class="a">track_record_findings</span><span class="tag cascade">deleted with it</span></li><li><span class="a">track_record_pillars</span><span class="tag cascade">deleted with it</span></li></ul></div>
+    <div><h4>Depended on by</h4><ul><li><span class="a">checklist_items</span></li><li><span class="a">documents</span><span class="tag cascade">deleted with it</span></li><li><span class="a">elementix_address_links</span><span class="tag cascade">deleted with it</span></li><li><span class="a">track_record_candidates</span></li><li><span class="a">track_record_candidates</span></li><li><span class="a">track_record_findings</span><span class="tag cascade">deleted with it</span></li><li><span class="a">track_record_findings</span><span class="tag cascade">deleted with it</span></li><li><span class="a">track_record_pillars</span><span class="tag cascade">deleted with it</span></li><li><span class="a">track_record_verifications</span><span class="tag cascade">deleted with it</span></li></ul></div>
   </div>
 </div></details><details class="tbl" data-name="service_contacts" data-note="">
 <summary><span class="tn">service_contacts</span>
@@ -1330,6 +1330,16 @@ footer p{max-width:74ch;margin:0 0 9px}
   <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t">gen_random_uuid()</td></tr><tr><td class="c">name <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">staff_user_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">state <span class="req">required</span></td><td class="t">jsonb</td><td class="t"></td></tr><tr><td class="c">state_kind <span class="req">required</span></td><td class="t">text</td><td class="t">'suite'::text</td></tr><tr><td class="c">tool_slug <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">updated_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr></tbody></table></div>
   <div class="links">
     <div><h4>Depends on</h4><ul><li><span class="a">staff_user_id</span> → <span class="a">staff_users</span><span class="tag cascade">on delete cascade</span></li></ul></div>
+    <div><h4>Depended on by</h4><ul><li style="color:var(--ink-3)">Nothing points at this table.</li></ul></div>
+  </div>
+</div></details><details class="tbl" data-name="track_record_verifications" data-note="">
+<summary><span class="tn">track_record_verifications</span>
+<span class="tm">7 fields · 1 link</span>
+</summary>
+<div class="detail">
+  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">bigint</td><td class="t">nextval('track_record_verifications_id_seq'::regclass)</td></tr><tr><td class="c">material <span class="req">required</span></td><td class="t">jsonb</td><td class="t"></td></tr><tr><td class="c">track_record_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">verification_status</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">verified_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">verified_by</td><td class="t">uuid</td><td class="t"></td></tr></tbody></table></div>
+  <div class="links">
+    <div><h4>Depends on</h4><ul><li><span class="a">track_record_id</span> → <span class="a">track_records</span><span class="tag cascade">on delete cascade</span></li></ul></div>
     <div><h4>Depended on by</h4><ul><li style="color:var(--ink-3)">Nothing points at this table.</li></ul></div>
   </div>
 </div></details><details class="tbl" data-name="usps_address_verifications" data-note="">
