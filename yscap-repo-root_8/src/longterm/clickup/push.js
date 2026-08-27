@@ -56,34 +56,37 @@ const writeEnabled = () => String(process.env.LT_CLICKUP_WRITE_ENABLED || '').tr
 const dryRun = () => String(process.env.LT_CLICKUP_WRITE_DRYRUN || '').trim() === '1';
 const createSince = () => String(process.env.LT_CLICKUP_CREATE_SINCE || '2026-08-24').trim();
 
-/* THE HAND-OFF TO THE PROCESSOR ALWAYS HAS A CARD (owner-directed 2026-08-27,
-   file YSCAP258134841 / 300 Apple St): *"Any file that finishes the LO_PREP
-   status, if it's not linked already to a ClickUp task, then it should create a
-   new task ... If it's linked already to a task in ClickUp, then you're good."*
+/* WHAT "THE FILE HAS FINISHED THE HAND-OFF TO THE PROCESSOR" MEANS.
+   READ-ONLY. These two are used by the book-diag no-card EXPLANATION, which
+   tells a person why a loan has no card. They must NEVER be wired back into
+   createCandidates.
 
-   WHY THE DATE GATE ALONE WAS WRONG. `createSince` keys on lt_loans.created_at,
-   which is when PILOT FIRST DISCOVERED the loan (the discovery INSERT takes the
-   column default), not on anything Encompass says. It was written as a go-live
-   guard — "brand-new files, discovered after the go-live day" — so the whole
-   historical book would not get cards at once. That intent is right and is kept.
-   Its flaw is that it also excludes every loan that was ALREADY IN FLIGHT on
-   go-live day: 300 Apple St started 8/13, was discovered before the 8/24 cutoff,
-   finished LO Prep on the 24th, and was therefore never once considered for a
-   card — silently, because the query simply never selected it. Three days later
-   a person had to open it by hand.
+   THEY ONCE WERE, on 2026-08-27, as an `OR` beside the date cutoff — the owner
+   had asked for "any file that finishes LO_PREP, if it's not linked already to
+   a ClickUp task, should create a new task" — and within four minutes it created
+   SIX DUPLICATE CARDS on closed 2025/2026 loans that already had them.
 
-   So the milestone is a SECOND way in, never a replacement: the clause is OR'd,
-   so it can only ever ADD loans and a post-cutoff loan behaves byte-identically.
-   Nothing else about the pass changes — the per-pass cap, the attempt budget,
-   the deadline and the circuit breaker all still apply, so this drains a few at
-   a time rather than writing a card for every eligible loan at once.
+   WHY IT LOOKED SAFE AND WAS NOT. `clickup_task_id IS NULL` does NOT mean "this
+   loan has no card". It means PILOT is not HOLDING A LINK to the card it may
+   already have — matching a loan to its existing card is a SEPARATE pass
+   (link.js). So the create pass's duplicate guard only ever protected loans
+   PILOT had ALREADY LINKED, never the unlinked ones, which are the whole
+   population at risk. And the date cutoff was doing a SECOND job its own comment
+   never stated: keeping the entire UNLINKED HISTORICAL BOOK out of this pass.
+   Every closed deal ever done is past LO Prep, so widening on the milestone
+   pointed the pass straight at loans that already had cards.
 
-   DERIVED FROM THE STATUS ENGINE, NEVER RETYPED: the milestones that mean "this
-   file has been handed to the processor" are exactly the ones whose completion
-   drives that ClickUp status, so asking MILESTONE_STATUS is what stops this list
-   and the status ladder disagreeing about what LO Prep is. A file further along
-   (Cond Approval, CTC) still has LO Prep done=true on its ladder, so it is
-   covered too — which is the owner's rule read literally. */
+   THE RULE NOW (owner-directed, same day): "stick to the original date that we
+   set the rule so that it doesn't go backwards." The cutoff is ANDed and
+   absolute. A human may still create a card deliberately from the file
+   (routes/clickup.js) — that is a person looking at one loan, not this pass.
+   Guarded by scripts/test-lt-clickup-create-cutoff-db.js.
+
+   BEFORE RE-IMPLEMENTING ANY VERSION OF THAT RULE it must prove the loan has
+   been through the LINK pass and no card was found — never infer "no card" from
+   "no link" — and its test must stage an existing-but-UNLINKED card and assert
+   nothing is created. The test that missed this staged only an already-linked
+   loan, the one case never at risk. */
 const HANDOFF_STATUS = 'assigned to processor';
 const HANDOFF_MILESTONES = () => {
   const m = statusEngine._internals.MILESTONE_STATUS;
