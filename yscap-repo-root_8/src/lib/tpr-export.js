@@ -582,7 +582,8 @@ async function buildTprExport(appId) {
 
   // The borrower's (and co-borrower's) operational track record.
   const borrowerIds = [app.borrower_id, app.co_borrower_id].filter(Boolean);
-  const records = (await db.query(
+  const SCOPE = require('./track-record/export-scope');
+  const allRecords = (await db.query(
     // DELIVERY IS VERIFIED-ONLY (owner-directed 2026-08-12, SUPERSEDES the
     // 2026-08-10 #40/db/519 "ship every non-rejected line with a status stamp"
     // rule for the investor export): only a CLEARLY VERIFIED line (is_verified =
@@ -592,15 +593,24 @@ async function buildTprExport(appId) {
     // only and never appears on the delivered Excel or PDF. (is_verified = true
     // already excludes rejected, so the old <> 'rejected' guard is subsumed.) The
     // on-screen / internal track record still shows every line.
+    //
+    // THE RULE HAS NOT MOVED — ONLY WHERE IT IS ASKED (owner-directed 2026-08-27).
+    // It used to be a WHERE, so the package could come out a line short and say
+    // nothing; it is now `in_scope`, computed by the SAME `export-scope` predicate
+    // the staff export uses, so this statement also returns the lines the package
+    // does NOT deliver and `heldBack` can name them. Every row Postgres marks
+    // false is left out of the document exactly as the WHERE left it out.
     `SELECT id, borrower_id, property_address, deal_type, purchase_price, sale_price, rehab_amount,
             purchase_date, sale_date, rent_amount, rent_date, refi_amount, refi_date, current_value,
             is_verified, verified_at, verification_status, entered_by_kind, notes,
+            (${SCOPE.scopePredicate('verified', 't')}) AS in_scope,
             ${require('./track-record/records-stamp').stampSelect('t')}
        FROM track_records t
       WHERE borrower_id = ANY($1::uuid[])
-        AND is_verified = true
       ORDER BY COALESCE(sale_date, refi_date, rent_date, purchase_date) DESC NULLS LAST, created_at DESC`,
     [borrowerIds])).rows;
+  const { carried: records, heldBack: trackHeldBack, total: trackRecordTotal } =
+    SCOPE.partitionInScope(allRecords, 'verified', (r) => addrText(r && r.property_address));
 
   // Per-line-item verification documents (current, non-chat).
   const trDocs = await selectTrackRecordDocs(records.map(r => r.id));
@@ -689,7 +699,8 @@ async function buildTprExport(appId) {
   const trExport = require('./track-record-export');
   // The investor package is VERIFIED-ONLY (owner-directed 2026-08-12) — its SELECT above says
   // so, and naming the scope here makes the document say so on its face too.
-  const trMeta = { borrowerName, generatedDate: dateStr(generatedAt), scope: 'verified' };
+  const trMeta = { borrowerName, generatedDate: dateStr(generatedAt), scope: 'verified',
+    heldBack: trackHeldBack, recordTotal: trackRecordTotal };
   // Nicer, sectioned Excel (reuses the proven style-free writer — no corruption risk).
   files.push({ name: `${REO}/Track Record.xlsx`, data: buildXlsx(trExport.trackRecordAoa(trSections, trMeta), 'Track Record') });
   // Branded PDF report ("the PDF export from our track record section"). Best-effort:
@@ -778,7 +789,11 @@ async function buildTprExport(appId) {
   // are still gathered (cheap, and handy for logging) but no longer written in.
 
   const filename = `TPR_${sanitize(app.ys_loan_number || app.last_name || 'file')}_${generatedAt.slice(0, 10)}.zip`;
-  return { zip: zip(files), filename, includedCount: manifestDocs.length, missing, heldBack };
+  return { zip: zip(files), filename, includedCount: manifestDocs.length, missing, heldBack,
+    // The PROJECTS this package does not deliver, and why. Named on the download response and
+    // on the audit row for the same reason `heldBack` (documents) already is: a package quietly
+    // one line short is the failure this whole contract exists to prevent.
+    trackHeldBack, trackRecordTotal };
 }
 
 /**

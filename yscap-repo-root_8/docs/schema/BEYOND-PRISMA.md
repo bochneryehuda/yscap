@@ -9,7 +9,7 @@ columns or partial indexes. On this database that is
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 631 numbered migrations in `db/` (highest `db/634`) remain the only thing that builds this database.
+rebuild a database from them.** The 633 numbered migrations in `db/` (highest `db/636`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 386 |
-| Columns | 6221 |
+| Tables | 387 |
+| Columns | 6228 |
 | Triggers | 37 |
 | Functions | 140 |
 | CHECK constraints | 318 |
 | Generated columns | 12 |
 | Partial indexes | 386 |
-| Primary keys | 386 |
-| Foreign keys | 795 |
+| Primary keys | 387 |
+| Foreign keys | 796 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1334 |
+| Indexes (all kinds) | 1336 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -941,7 +941,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (795)
+## Foreign keys (796)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1686,6 +1686,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **track_record_pillars** → `track_records` — `FOREIGN KEY (track_record_id) REFERENCES track_records(id) ON DELETE CASCADE`
 - **track_record_searches** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
 - **track_record_searches** → `staff_users` — `FOREIGN KEY (run_by) REFERENCES staff_users(id)`
+- **track_record_verifications** → `track_records` — `FOREIGN KEY (track_record_id) REFERENCES track_records(id) ON DELETE CASCADE`
 - **track_records** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
 - **track_records** → `llcs` — `FOREIGN KEY (llc_id) REFERENCES llcs(id) ON DELETE SET NULL`
 - **track_records** → `staff_users` — `FOREIGN KEY (verified_by) REFERENCES staff_users(id)`
@@ -1813,7 +1814,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 386 primary keys and 1334 indexes is
+Every one of the 387 primary keys and 1336 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

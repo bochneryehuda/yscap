@@ -186,5 +186,89 @@ ok('C10 a section with no rows does not throw', S.hasUnverified([{}]) === false)
   }
 }
 
+
+// ---------------------------------------------------------------- F. what the export left behind
+{
+  // The 2026-08-26 investor package went out headed "VERIFIED EXPERIENCE ONLY" carrying two of
+  // the borrower's three projects and said nothing about the third. These are the rules that
+  // make that impossible — and the last two are the ones that keep a COMPLETE export unchanged.
+  const rows = [
+    { id: 'a', in_scope: true,  property_address: { oneLine: '22 Sylvanus St' } },
+    { id: 'b', in_scope: false, property_address: { oneLine: '3017 Market St' }, verification_status: 'pending' },
+    { id: 'c', in_scope: true,  property_address: { oneLine: '1346 Monsey Ave' } },
+  ];
+  const label = (r) => (r && r.property_address && r.property_address.oneLine) || '';
+  const part = S.partitionInScope(rows, 'verified', label);
+  eq('F1 the rows the database marked in scope are the ones carried', part.carried.map((r) => r.id), ['a', 'c']);
+  eq('F2 …and every other line is HELD BACK, never dropped', part.heldBack.map((h) => h.id), ['b']);
+  eq('F3 the total is the whole record, which is the denominator a reader checks', part.total, 3);
+  ok('F4 a held-back line is NAMED — a count alone is the same phone call',
+    part.heldBack[0].property === '3017 Market St');
+  ok('F5 …and carries the reason the export was given, not the row\'s own status text',
+    part.heldBack[0].reason === S.HELD_BACK_REASON.verified);
+  ok('F6 the reason is keyed on the SCOPE, so the unverified export explains itself the other way',
+    S.partitionInScope(rows, 'unverified', label).heldBack[0].reason === S.HELD_BACK_REASON.unverified);
+  eq('F7 "all" holds nothing back, so it can never need a reason', S.HELD_BACK_REASON.all, null);
+  ok('F8 a line with no readable address still gets a name rather than a blank',
+    S.partitionInScope([{ id: 'x', in_scope: false }], 'verified', label).heldBack[0].property.length > 0);
+  ok('F9 the decision is READ from the row, never re-made here — only an explicit true carries',
+    S.partitionInScope([{ id: 'y', in_scope: 'yes' }], 'verified', label).heldBack.length === 1);
+
+  ok('F10 the headline states BOTH halves — how many were held back, out of how many',
+    /1 of 3 project\(s\)/.test(S.heldBackHeadline(1, 3)));
+  ok('F11 …and a line pairs the property with its reason',
+    S.heldBackLine(part.heldBack[0]).startsWith('3017 Market St') &&
+    S.heldBackLine(part.heldBack[0]).includes(S.HELD_BACK_REASON.verified));
+
+  // STATED ONCE. Four surfaces say this — the Excel, the PDF, the staff door and the investor
+  // package — and four copies is how a workbook comes to disagree with the audit row.
+  const trx = read('src/lib/track-record-export.js');
+  ok('F12 the Excel + PDF writers ask export-scope for the headline',
+    (trx.match(/SCOPE\.heldBackHeadline\(/g) || []).length >= 2);
+  ok('F13 …and for each held-back line', (trx.match(/SCOPE\.heldBackLine\(/g) || []).length >= 2);
+  const stripped = trx.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  ok('F14 …and neither writer states the wording in its own words',
+    !/held back|not in this report/i.test(stripped));
+
+  // Both export doors ask the DATABASE which rows are in scope — one query, one predicate, no
+  // JavaScript twin of `is_verified` to drift out of step with the SQL.
+  for (const [what, file] of [['the staff door', 'src/lib/track-record/export-doc.js'],
+    ['the investor package', 'src/lib/tpr-export.js']]) {
+    const src = read(file);
+    ok(`F15 ${what} carries the scope as a column, not a WHERE`, /\) AS in_scope/.test(src));
+    ok(`F16 ${what} partitions through the ONE rule`, /SCOPE\.partitionInScope\(/.test(src));
+    ok(`F17 ${what} no longer filters the rows away in SQL`,
+      !/AND\s+is_verified\s*=\s*true/i.test(src) && !/AND \$\{SCOPE\.scopePredicate/.test(src));
+  }
+  ok('F18 the investor package reports what it held back to its caller',
+    /trackHeldBack/.test(read('src/lib/tpr-export.js')));
+  ok('F19 …and the staff door does too', /heldBack, recordTotal/.test(read('src/lib/track-record/export-doc.js')));
+  const staffRoutes = read('src/routes/staff.js');
+  ok('F20 both audit rows record it, because a downloaded file lives outside PILOT',
+    /trackHeldBack: \(trackHeldBack \|\| \[\]\)/.test(staffRoutes)
+    && /heldBack: \(out\.heldBack \|\| \[\]\)/.test(staffRoutes));
+
+  // AND A COMPLETE EXPORT IS UNCHANGED. Anything else would rewrite every verified-only
+  // workbook in existence for a case that never happens on a clean record.
+  const TRX = require('../src/lib/track-record-export');
+  const sections = [
+    { title: 'FIX & FLIP EXPERIENCE   (exit = sale)', columns: [{ header: 'Property', key: 'property' }], rows: [] },
+    { title: 'FIX & HOLD / RENTAL EXPERIENCE   (exit = lease-up / refinance)',
+      columns: [{ header: 'Property', key: 'property' }],
+      rows: [{ property: '22 Sylvanus St', __verified: true, __status: 'verified' }] },
+  ];
+  const clean = TRX.trackRecordAoa(sections, { scope: 'verified', generatedDate: '2026-08-27' });
+  const cleanWithEmpty = TRX.trackRecordAoa(sections, { scope: 'verified', generatedDate: '2026-08-27', heldBack: [], recordTotal: 1 });
+  eq('F21 a workbook holding nothing back is byte-identical to what shipped before',
+    JSON.stringify(cleanWithEmpty), JSON.stringify(clean));
+  const short = TRX.trackRecordAoa(sections, { scope: 'verified', generatedDate: '2026-08-27',
+    heldBack: [{ property: '3017 Market St', reason: S.HELD_BACK_REASON.verified }], recordTotal: 2 });
+  const flat = short.map((r) => (r || []).join(' | ')).join('\n');
+  ok('F22 …and one that IS short says so before the first row', /⚠ ON THIS RECORD BUT NOT IN THIS REPORT — 1 of 2/.test(flat));
+  ok('F23 …and NAMES the project under the summary', /3017 Market St —/.test(flat));
+  ok('F24 …stating the total as the RECORD\'s, not the report\'s',
+    (flat.match(/1 of 2 project\(s\) held back/g) || []).length === 2);
+}
+
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

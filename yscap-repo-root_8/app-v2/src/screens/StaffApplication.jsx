@@ -6861,6 +6861,31 @@ function TprExport({ appId }) {
               </div>
             </div>
           )}
+          {/* AND THE PROJECTS, on the same terms (owner-reported 2026-08-26). A file
+              whose track record has three verified projects and whose package
+              carried two said so NOWHERE — not on the document, not here, not in
+              the audit row — so the only way to notice was to count the rows
+              against the screen. Named, never counted, for the same reason the
+              documents above are. */}
+          {(prev.trackHeldBack || []).length > 0 && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--gold,#AE8746)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>
+                {prev.trackHeldBack.length} of {prev.trackRecordTotal} project{prev.trackRecordTotal === 1 ? '' : 's'} on this
+                borrower&rsquo;s record {prev.trackHeldBack.length === 1 ? 'is' : 'are'} NOT in the package:
+              </b>
+              <ul style={{ margin: '3px 0 0 18px', padding: 0, color: '#4B585C' }}>
+                {prev.trackHeldBack.slice(0, 15).map((h, i) => (
+                  <li key={i} className="small">{h.property} — {h.reason}</li>
+                ))}
+              </ul>
+              {prev.trackHeldBack.length > 15 && (
+                <div className="small" style={{ color: '#4B585C' }}>…and {prev.trackHeldBack.length - 15} more.</div>
+              )}
+              <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>
+                Verify each one on the track record and it will be in the next export. The package states this too.
+              </div>
+            </div>
+          )}
           {prev.missing.length > 0 && (
             <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
               <span className="muted small">Would ship empty:</span>

@@ -56,6 +56,51 @@ const writeEnabled = () => String(process.env.LT_CLICKUP_WRITE_ENABLED || '').tr
 const dryRun = () => String(process.env.LT_CLICKUP_WRITE_DRYRUN || '').trim() === '1';
 const createSince = () => String(process.env.LT_CLICKUP_CREATE_SINCE || '2026-08-24').trim();
 
+/* WHAT "THE FILE HAS FINISHED THE HAND-OFF TO THE PROCESSOR" MEANS.
+   READ-ONLY. These two are used by the book-diag no-card EXPLANATION, which
+   tells a person why a loan has no card. They must NEVER be wired back into
+   createCandidates.
+
+   THEY ONCE WERE, on 2026-08-27, as an `OR` beside the date cutoff — the owner
+   had asked for "any file that finishes LO_PREP, if it's not linked already to
+   a ClickUp task, should create a new task" — and within four minutes it created
+   SIX DUPLICATE CARDS on closed 2025/2026 loans that already had them.
+
+   WHY IT LOOKED SAFE AND WAS NOT. `clickup_task_id IS NULL` does NOT mean "this
+   loan has no card". It means PILOT is not HOLDING A LINK to the card it may
+   already have — matching a loan to its existing card is a SEPARATE pass
+   (link.js). So the create pass's duplicate guard only ever protected loans
+   PILOT had ALREADY LINKED, never the unlinked ones, which are the whole
+   population at risk. And the date cutoff was doing a SECOND job its own comment
+   never stated: keeping the entire UNLINKED HISTORICAL BOOK out of this pass.
+   Every closed deal ever done is past LO Prep, so widening on the milestone
+   pointed the pass straight at loans that already had cards.
+
+   THE RULE NOW (owner-directed, same day): "stick to the original date that we
+   set the rule so that it doesn't go backwards." The cutoff is ANDed and
+   absolute. A human may still create a card deliberately from the file
+   (routes/clickup.js) — that is a person looking at one loan, not this pass.
+   Guarded by scripts/test-lt-clickup-create-cutoff-db.js.
+
+   BEFORE RE-IMPLEMENTING ANY VERSION OF THAT RULE it must prove the loan has
+   been through the LINK pass and no card was found — never infer "no card" from
+   "no link" — and its test must stage an existing-but-UNLINKED card and assert
+   nothing is created. The test that missed this staged only an already-linked
+   loan, the one case never at risk. */
+const HANDOFF_STATUS = 'assigned to processor';
+const HANDOFF_MILESTONES = () => {
+  const m = statusEngine._internals.MILESTONE_STATUS;
+  return [...m.entries()].filter(([, v]) => v === HANDOFF_STATUS).map(([k]) => k);
+};
+
+/* The SQL twin of statusEngine's own `norm` (lowercase, non-alphanumerics to
+   spaces, collapse, trim) so 'LO Prep', 'LO_PREP' and 'lo  prep' all read as one
+   milestone. Proven equal to the JS function case-for-case in the test — a drift
+   here would silently stop matching the ladder and the hand-off would go quiet
+   again, which is the failure this whole block exists to end. */
+const MILESTONE_NORM_SQL = (col) =>
+  `btrim(regexp_replace(regexp_replace(lower(${col}), '[^a-z0-9 ]', ' ', 'g'), '\\s+', ' ', 'g'))`;
+
 // ── The volume circuit breaker (G24) — LT's own budget, seeded on boot ──────
 const BREAKER_WINDOW_MS = 10 * 60 * 1000;
 function breakerLimit() {
@@ -1353,6 +1398,43 @@ async function pushPass({ limit } = {}) {
   return out;
 }
 
+/**
+ * WHICH CARD-LESS LOANS THE CREATE PASS WILL CONSIDER — the ONE definition.
+ *
+ * Extracted so the test exercises THE REAL QUERY. It was first written inline
+ * here with the test carrying its own copy, and that test reported all-passed
+ * with the whole hand-off clause reverted: a suite that re-declares the SQL it
+ * is checking grades itself, which is the defect it exists to catch wearing a
+ * different hat. There must be exactly one copy, and the test must call it.
+ *
+ * @param {number} scan  how many rows to look at (wider than the create budget)
+ * @param {string} since override the go-live cutoff (tests only)
+ */
+/* REVERTED 2026-08-27 — a milestone clause was OR'd beside the date here and it
+   created SIX DUPLICATE CARDS on closed historical loans within four minutes.
+   `clickup_task_id IS NULL` does NOT mean "this loan has no card"; it means no
+   LINK is held to the card it may already have (link.js does the matching). The
+   date is therefore load-bearing beyond its stated go-live purpose: it keeps the
+   whole UNLINKED HISTORICAL BOOK out of this pass. It is ANDed and must stay
+   ANDed — guarded by scripts/test-lt-clickup-create-cutoff-db.js.
+   NOTE: keep prose like this OUTSIDE the SQL template below — the separation
+   gate scans that string for table names and the product's own name in a
+   comment there reads as an RTL table. */
+async function createCandidates({ scan, since } = {}) {
+  return db.query(
+    `SELECT l.id, l.loan_number FROM lt_loans l
+      WHERE l.clickup_task_id IS NULL
+        AND ${trash.notTrashSql('l')}
+        /* REVERTED 2026-08-27 — see the note above createCandidates. */
+        AND l.created_at >= $2::date
+        AND l.loan_number IS NOT NULL AND l.loan_number <> ''
+        AND l.encompass_synced_at IS NOT NULL
+      ORDER BY (l.clickup_push_error IS NOT NULL) ASC,
+               (CASE WHEN l.clickup_push_error IS NOT NULL THEN l.updated_at END) ASC,
+               l.created_at ASC
+      LIMIT $1`, [scan, since || createSince()]);
+}
+
 /** Brand-new files (discovered after the go-live day) that still have no card. */
 async function createPass({ limit } = {}) {
   if (!writer.configured()) return { ok: true, skipped: 'not_configured' };
@@ -1382,17 +1464,7 @@ async function createPass({ limit } = {}) {
   // least-recently-ATTEMPTED loans first: attempted heads sink, and every
   // stamped loan comes round within ceil(cohort/attempts) passes. Fresh
   // (unstamped) loans still come first, oldest first, exactly as before.
-  const { rows } = await db.query(
-    `SELECT l.id FROM lt_loans l
-      WHERE l.clickup_task_id IS NULL
-        AND ${trash.notTrashSql('l')}
-        AND l.created_at >= $2::date
-        AND l.loan_number IS NOT NULL AND l.loan_number <> ''
-        AND l.encompass_synced_at IS NOT NULL
-      ORDER BY (l.clickup_push_error IS NOT NULL) ASC,
-               (CASE WHEN l.clickup_push_error IS NOT NULL THEN l.updated_at END) ASC,
-               l.created_at ASC
-      LIMIT $1`, [scan, createSince()]);
+  const { rows } = await createCandidates({ scan });
   const out = { ok: true, considered: rows.length, created: 0, skipped: [], problems: [] };
   let attempts = 0;
   for (const r of rows) {
@@ -1439,7 +1511,7 @@ async function createPass({ limit } = {}) {
 
 module.exports = {
   pushLoan, createForLoan, pushPass, pushQueue, queueSql, createPass, desiredStatusFor,
-  writeEnabled, dryRun, createSince,
+  writeEnabled, dryRun, createSince, HANDOFF_MILESTONES, MILESTONE_NORM_SQL, createCandidates,
   _internals: {
     readStatusWatermark, stampStatusWatermark, raiseStatusReview, closeStatusReviews,
     circuitCheck, countWrite, seedBreakerFromDb, breakerLimit,
