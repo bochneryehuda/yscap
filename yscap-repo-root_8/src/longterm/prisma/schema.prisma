@@ -1260,6 +1260,30 @@ model LtPipelineView {
   @@map("lt_pipeline_views")
 }
 
+/// A user's named investor groups for the Pricing Engine's display-only investor
+/// filter (owner-directed 2026-08-27). `investors` holds CANONICAL registry keys
+/// (src/longterm/encompass/investors.js), never spellings. Personal only — the
+/// owner's words were "every user should be able to set up by themselves groups"
+/// — with the identity FK ON DELETE SET NULL like every LT identity link (the
+/// one uniform invariant test-lt-loan-schema-db holds), so `staffId` is
+/// nullable and an orphaned group simply stops appearing (every read is scoped
+/// to the signed-in person). The name uniqueness is really on
+/// (staff_id, lower(name)) — an expression Prisma cannot state.
+model LtPricerInvestorGroup {
+  id        String  @id @default(uuid()) @db.Uuid
+  staffId   String? @map("staff_id") @db.Uuid
+  name      String
+  investors Json   @default("[]") @db.JsonB
+  sortOrder Int    @default(100) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([staffId, name])
+  @@index([staffId, sortOrder, name])
+  @@map("lt_pricer_investor_groups")
+}
+
 /// The current lock posture, mirrored. READ-ONLY from Encompass.
 ///
 /// HARD RULE: TRUST `expirationDate`. Never recompute it from lock date plus

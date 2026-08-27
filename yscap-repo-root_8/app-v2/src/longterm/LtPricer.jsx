@@ -10,6 +10,14 @@ import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, p
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
 import { COMP_MODES, DEFAULT_COMP_MODE, compShiftPoints, shiftedPrice, shiftBuild, quoteCharges, closingSheet } from './compOverlay.js';
+// The INVESTOR FILTER (owner-directed 2026-08-27) — a display overlay on top of the
+// answer. The search itself is NEVER narrowed: Lender Price is always asked for
+// everything, and these rules only decide which rows the board draws. Plain `.js`
+// so CI runs them (test-lt-investor-filter-pure.mjs).
+import {
+  selectionActive, filterPrograms, filterDisqualifiedLenders, toggleKey,
+  missingFromAnswer, overlaySummary, expandAllKeys,
+} from './investorFilter.js';
 import { perMonth, monthlyPI, dscrFrom } from './dscrCalc.js';
 // The form's own rules — which options exist, when a field appears, and the amount triangle. Also a
 // plain `.js` module, and for the same reason: CI can run it, and a rule CI cannot run is a rule
@@ -194,6 +202,13 @@ export function buildRateStack(programs) {
       const entry = {
         key: `${pi}:${oi}`,
         lender: p.lender, investor: p.investor, program: p.program, product: p.product,
+        // The canonical investor identity + white-label the SERVER resolved
+        // (owner-directed 2026-08-27). Carried, never derived here: the registry
+        // that turns 151 spellings into one key lives server-side, and a browser
+        // copy of it would drift.
+        investorKey: p.investorKey != null ? p.investorKey : null,
+        whiteLabel: p.whiteLabel || null,
+        consumerLabel: p.consumerLabel || null,
         rateGridId: p.rateGridId, option: o,
         // §38 — the rate sheet this quote priced from. One lender can quote the SAME programme
         // name from two sheets (non-del vs wholesale — measured on ResiCentral), and two identical
@@ -237,6 +252,22 @@ function Row({ k, v, strong, indent, tone, title }) {
       <span style={{ fontSize: 12.5, color: tone === 'bad' ? DANGER : SLATE, fontWeight: strong ? 700 : 400 }}>{k}</span>
       <span style={{ fontSize: 13, color: tone === 'bad' ? DANGER : INK, fontWeight: strong ? 700 : 600, ...NUM }}>{v}</span>
     </div>
+  );
+}
+
+/** The WHITE-LABEL tag beside an investor's real name (owner-directed 2026-08-27:
+ *  "on our dropdown, it is going to have the investor's name - white-labeled name").
+ *  This is a STAFF screen, so the real name leads and the white-label rides beside
+ *  it; the consumer build, when it exists, shows ONLY the white-label. Nothing to
+ *  show → nothing rendered, never a blank pill. */
+function WhiteLabelTag({ name }) {
+  if (!name) return null;
+  return (
+    <span style={{
+      marginLeft: 8, fontSize: 10, fontWeight: 800, letterSpacing: '.06em',
+      textTransform: 'uppercase', color: GOLD_TEXT, border: `1px solid ${GOLD}66`,
+      borderRadius: 999, padding: '1px 8px 2px', whiteSpace: 'nowrap',
+    }}>{name}</span>
   );
 }
 
@@ -431,6 +462,178 @@ export function CompSwitch({ mode, onMode, waive, onWaive, planProblem }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   THE INVESTOR FILTER (owner-directed 2026-08-27) — the display overlay, on both
+   sides of the search.
+
+   The owner: *"when you search you should be able to … search for all investors.
+   But you should have a drop-down where you can select that you only want to
+   search this investor or … this this this this investor. And every user should
+   be able to set up by themselves groups … This should all be on overlays on top
+   of Lender Price … You should just hide the rest of the data that you're
+   getting and only display the data that the person wants to see. This should be
+   available in the search right away before you click the search button … after
+   you have all the results, you should also be able to switch them out."*
+
+   ⛔ IT NEVER TOUCHES THE WIRE. The selection lives OUTSIDE the scenario, is not
+   part of `toScenario`, and cannot mark the board stale — Lender Price is always
+   asked for everything, and the overlay hides rows AFTER the answer lands. The
+   screen says so wherever it narrows anything.
+
+   ⛔ THE PRE-SEARCH LIST IS THE WHOLE WHITE-LABEL SHEET — the owner's rule that
+   an investor not yet live in Lender Price ("CorrFirst is not available yet") is
+   still on the list, so it is simply there the day it comes online. AFTER the
+   results, the strip's chips are only the investors that actually populated
+   ("it shouldn't come up with investors that are not available for the
+   scenarios"), and a selected investor that returned nothing is NAMED in a
+   sentence rather than silently absent.
+   ────────────────────────────────────────────────────────────────────────── */
+export function InvestorChip({ on, label, sub, onClick }) {
+  return (
+    <button type="button" onClick={onClick} aria-pressed={!!on} style={{
+      display: 'inline-flex', alignItems: 'baseline', gap: 6, cursor: 'pointer', font: 'inherit',
+      border: `1px solid ${on ? GOLD : 'rgba(20,27,34,.18)'}`,
+      background: on ? 'rgba(174,135,70,.12)' : '#fff',
+      borderRadius: 999, padding: '4px 11px',
+    }}>
+      <span style={{ fontSize: 12, fontWeight: 700, color: INK }}>{label}</span>
+      {sub && <span style={{ fontSize: 10.5, color: MUTED }}>{sub}</span>}
+    </button>
+  );
+}
+
+/** The saved-groups row — shared by the form picker and the results strip, so a
+ *  group is one press away on both sides of the search. Deleting asks ONCE, on
+ *  the button itself (this side may not import RTL's dialog helper, and a
+ *  browser confirm() is banned app-wide). */
+export function GroupChips({ groups, onApply, onDelete, confirmDeleteId, compact }) {
+  if (!groups || groups.length === 0) return null;
+  return (
+    <>
+      {groups.map((g) => (
+        <span key={g.id} style={{
+          display: 'inline-flex', alignItems: 'center', gap: 2,
+          border: `1px solid ${GOLD}55`, borderRadius: 999, padding: '2px 4px 2px 2px', background: '#fff',
+        }}>
+          <button type="button" onClick={() => onApply(g)} title={`Show only: ${g.investors.join(', ')}`}
+            style={{ border: 0, background: 'none', cursor: 'pointer', font: 'inherit', fontSize: 12, fontWeight: 700, color: GOLD_TEXT, padding: '2px 6px' }}>
+            {g.name}
+            <span style={{ color: MUTED, fontWeight: 600 }}> · {g.investors.length}</span>
+          </button>
+          {!compact && onDelete && (
+            <button type="button" onClick={() => onDelete(g)}
+              aria-label={confirmDeleteId === g.id ? `Really remove the group ${g.name}` : `Remove the group ${g.name}`}
+              style={{
+                border: 0, background: 'none', cursor: 'pointer', font: 'inherit',
+                fontSize: confirmDeleteId === g.id ? 10.5 : 13,
+                fontWeight: 700, color: confirmDeleteId === g.id ? DANGER : MUTED, padding: '2px 6px',
+              }}>
+              {confirmDeleteId === g.id ? 'sure?' : '×'}
+            </button>
+          )}
+        </span>
+      ))}
+    </>
+  );
+}
+
+/**
+ * THE FORM'S PICKER — on the scenario, before the press, exactly where the owner
+ * asked for it. Nothing ticked = every investor (the default, said in words);
+ * ticking narrows the BOARD only. Groups apply with one press and the current
+ * selection can be saved as a new one.
+ */
+export function InvestorPicker({
+  roster, sel, onSel, groups, onApplyGroup, onDeleteGroup, confirmDeleteId,
+  groupName, onGroupName, onSaveGroup, groupBusy, groupNote,
+}) {
+  const active = selectionActive(sel);
+  return (
+    <section style={band}>
+      <div style={bandHead}>Investors</div>
+      <div style={{ padding: '10px 12px' }}>
+        <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5, marginBottom: 8 }}>
+          {active
+            ? 'The board will show ONLY the ticked investors. Display only — Lender Price is still asked for every investor, and one press brings the rest back.'
+            : 'Searching every investor. Tick any to narrow what the board shows — display only; Lender Price is always asked for everything.'}
+        </div>
+        {(!roster || roster.length === 0) ? (
+          <div style={{ fontSize: 12.5, color: CAUTION }}>
+            The investor list could not be loaded, so the board will show everybody.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {roster.map((r) => (
+              <InvestorChip key={r.key} on={!!(sel && sel.has(r.key))}
+                label={r.whiteLabel} sub={r.investorLabel}
+                onClick={() => onSel(toggleKey(sel, r.key))} />
+            ))}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
+          {active && (
+            <button type="button" className="btn ghost" style={{ fontSize: 12 }} onClick={() => onSel(null)}>
+              Show all investors
+            </button>
+          )}
+          <span style={{ fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
+            My groups
+          </span>
+          {(!groups || groups.length === 0) && (
+            <span style={{ fontSize: 11.5, color: MUTED }}>none yet — tick investors and save them as a group</span>
+          )}
+          <GroupChips groups={groups} onApply={onApplyGroup} onDelete={onDeleteGroup} confirmDeleteId={confirmDeleteId} />
+          <input value={groupName} onChange={(e) => onGroupName(e.target.value)}
+            placeholder="Name this set" aria-label="Name for the new investor group"
+            style={{ ...control, height: 32, fontSize: 12.5, width: 160, flex: '0 1 160px' }} />
+          <button type="button" className="btn ghost" style={{ fontSize: 12 }}
+            disabled={groupBusy || !active} onClick={onSaveGroup}
+            title={active ? 'Save the ticked investors under this name' : 'Tick at least one investor first'}>
+            {groupBusy ? 'Saving…' : 'Save selection as a group'}
+          </button>
+          {groupNote && <span style={{ fontSize: 12, color: groupNote.tone === 'bad' ? DANGER : MUTED }}>{groupNote.text}</span>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * THE RESULTS-SIDE SWITCHER — a row on the sticky strip, so "see only this
+ * investor, this group, compare" stays one press away however far the board
+ * scrolls. Chips are ONLY the investors that populated in THIS answer; a
+ * selected investor that returned nothing is said in a sentence instead.
+ */
+export function InvestorStripRow({ roster, fullRoster, sel, onSel, groups, onApplyGroup, hidden }) {
+  const active = selectionActive(sel);
+  const missing = missingFromAnswer(sel, roster, fullRoster);
+  const summary = overlaySummary(sel, hidden);
+  return (
+    <div style={{
+      marginTop: 8, paddingTop: 8, borderTop: `1px solid ${GOLD}33`,
+      display: 'flex', gap: '6px 8px', alignItems: 'center', flexWrap: 'wrap',
+    }}>
+      <span style={{ fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
+        Investors
+      </span>
+      <InvestorChip on={!active} label="All" onClick={() => onSel(null)} />
+      {(roster || []).map((r) => (
+        <InvestorChip key={r.key} on={!!(sel && sel.has(r.key))}
+          label={r.whiteLabel} sub={r.investorLabel}
+          onClick={() => onSel(toggleKey(sel, r.key))} />
+      ))}
+      <GroupChips groups={groups} onApply={onApplyGroup} compact />
+      {summary && <span style={{ fontSize: 11.5, color: '#7A5C25' }}>{summary}</span>}
+      {missing.length > 0 && (
+        <span style={{ fontSize: 11.5, color: CAUTION, flexBasis: '100%' }}>
+          {`Nothing populated on this scenario for ${missing.map((m) => `${m.whiteLabel} (${m.investorLabel})`).join(', ')} — `}
+          their products didn&rsquo;t price here, so they have no rows to show.
+        </span>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    THE STICKY SEARCH STRIP (owner-directed 2026-08-23): *"that section should stay on top of the
    page while you scroll through the pricing as the header and should not go away. On that header,
    you should see the main details of what you're pricing now … The header should always be able
@@ -449,7 +652,7 @@ export function CompSwitch({ mode, onMode, waive, onWaive, planProblem }) {
    convention (their results page stamps its time and offers modify-and-update in place). Nothing
    ever re-prices on its own; both doors still cost a vendor call and still fire only from a press.
    ────────────────────────────────────────────────────────────────────────── */
-export function SearchStrip({ chips, pricedAt, stale, busy, onEdit, onReprice, view, onView, dqLabel, compProps }) {
+export function SearchStrip({ chips, pricedAt, stale, busy, onEdit, onReprice, view, onView, dqLabel, compProps, invRow }) {
   return (
     <div className="lt-strip" style={{ padding: '10px 14px' }}>
       <div style={{ display: 'flex', gap: '6px 14px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -500,6 +703,10 @@ export function SearchStrip({ chips, pricedAt, stale, busy, onEdit, onReprice, v
           </button>
         </div>
       </div>
+
+      {/* THE INVESTOR SWITCHER (owner-directed 2026-08-27) — a lens exactly like the
+          comp switch above it, so it lives on the same pinned strip. */}
+      {invRow}
     </div>
   );
 }
@@ -910,6 +1117,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                         style={{ color: GOLD_TEXT, marginRight: 6, fontSize: 11 }}>●</span>
                     )}
                     <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{g.lender || '—'}</span>
+                    <WhiteLabelTag name={g.best && g.best.whiteLabel} />
                     {many && (
                       <button type="button" onClick={() => onToggleLender(gKey)} aria-expanded={gOpen}
                         style={{
@@ -925,6 +1133,12 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                     <div style={{ fontSize: 12, color: SLATE }}>
                       {g.best && g.best.investor && g.best.investor !== g.lender ? `${g.best.investor} · ` : ''}
                       {(g.best && g.best.program) || '—'}{g.best && g.best.product ? ` · ${g.best.product}` : ''}
+                      {/* The CONSUMER label for THIS programme ("Pearl-2") — the back-office
+                          answer to "which real programme was priced under which client name"
+                          (owner-directed 2026-08-27). Shown only when it says more than the
+                          tag above (a multi-programme investor's -N suffix). */}
+                      {g.best && g.best.consumerLabel && g.best.consumerLabel !== g.best.whiteLabel
+                        ? <span style={{ color: MUTED }}> · {g.best.consumerLabel}</span> : null}
                     </div>
                     {sheetNote(g.best)}
                     {g.best && g.best.expired && (
@@ -957,7 +1171,11 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                         borderLeft: `2px solid ${GOLD}55`,
                       }}>
                         <span style={{ flex: '2 1 200px', minWidth: 170 }}>
-                          <div style={{ fontSize: 13, color: INK }}>{q.program || '—'}{q.product ? ` · ${q.product}` : ''}</div>
+                          <div style={{ fontSize: 13, color: INK }}>
+                            {q.program || '—'}{q.product ? ` · ${q.product}` : ''}
+                            {q.consumerLabel && q.consumerLabel !== q.whiteLabel
+                              ? <span style={{ color: MUTED, fontSize: 11.5 }}> · {q.consumerLabel}</span> : null}
+                          </div>
                           {sheetNote(q)}
                           {q.investor && q.investor !== q.lender && (
                             <div style={{ fontSize: 11.5, color: MUTED }}>{q.investor}</div>
@@ -1288,8 +1506,13 @@ function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
   );
 }
 
-export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp }) {
-  const d = dq.data && dq.data.disqualified ? dq.data.disqualified : null;
+export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp, invSel }) {
+  const d0 = dq.data && dq.data.disqualified ? dq.data.disqualified : null;
+  /* THE SAME INVESTOR OVERLAY AS THE PRICED BOARD (owner-directed 2026-08-27) — one
+     selection drives both sides, so "show me only Pearl" means the refusals too.
+     Applied to the ANSWER, said out loud below, never sent anywhere. */
+  const dqFiltered = d0 ? filterDisqualifiedLenders(d0.lenders, invSel) : null;
+  const d = d0 ? { ...d0, lenders: dqFiltered.lenders } : null;
   // ⛔ THE ONLY NUMBER THAT MEANS ANYTHING IS THE ONE FROM A READY ANSWER. See the header note.
   const ruledOut = dq.status === 'ready' && d && d.itemCount != null ? d.itemCount : null;
 
@@ -1329,6 +1552,11 @@ export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp }) {
         <div style={{ marginTop: 10, fontSize: 13, color: DANGER }}>{dq.message}</div>
       )}
 
+      {dq.status === 'ready' && dqFiltered && dqFiltered.hidden > 0 && (
+        <div style={{ marginTop: 8, fontSize: 12.5, color: '#7A5C25' }}>
+          {`Your investor filter is hiding ${dqFiltered.hidden} of the ${dqFiltered.total} lenders on this side — display only; Lender Price reported them all.`}
+        </div>
+      )}
       {dq.status === 'ready' && d && (
         <IneligibleBoard d={d} loanAmount={loanAmount} initialOpen={initialOpen} comp={comp} />
       )}
@@ -1343,7 +1571,11 @@ export default function LtPricer() {
   const [err, setErr] = useState(null);
   const [res, setRes] = useState(null);
   const [view, setView] = useState('priced');
-  const [openRate, setOpenRate] = useState(null);
+  /* WHICH RATE ROWS ARE OPEN — a SET, not a single key (owner-directed 2026-08-27:
+     "Expand All, and every section should expand to its max"). One row was all the
+     old single-key state could hold, so Expand All is what forced the widening;
+     ordinary clicks still toggle one row at a time. */
+  const [openRates, setOpenRates] = useState(() => new Set());
   const [openQuote, setOpenQuote] = useState(null);
   const [elapsed, setElapsed] = useState(0);
   const [showScenario, setShowScenario] = useState(false);
@@ -1368,6 +1600,19 @@ export default function LtPricer() {
   const [compMode, setCompMode] = useState(DEFAULT_COMP_MODE);
   const [waiveFees, setWaiveFees] = useState(false);
   const [compPlan, setCompPlan] = useState({ status: 'loading', plan: null });
+  /* THE INVESTOR FILTER (owner-directed 2026-08-27). `invSel` is null (all
+     investors — the default) or a Set of canonical keys; it lives OUTSIDE the
+     scenario, is never sent to Lender Price, and never marks the board stale —
+     it is a lens, exactly like the comp switch. The roster is the owner's whole
+     white-label sheet; the groups are this person's own saved sets. Both are
+     free reads of OUR server, so fetching them from an effect is allowed. */
+  const [invSel, setInvSel] = useState(null);
+  const [invRoster, setInvRoster] = useState([]);
+  const [invGroups, setInvGroups] = useState([]);
+  const [groupName, setGroupName] = useState('');
+  const [groupBusy, setGroupBusy] = useState(false);
+  const [groupNote, setGroupNote] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
   // WHICH LENDERS ARE OPENED OUT, keyed `<rate>|<lender>` so opening a lender on one rate row does
   // not open the same lender on every other. A Set rather than a single key: comparing two lenders'
   // programme lists side by side is the whole reason the dropdown exists.
@@ -1447,6 +1692,54 @@ export default function LtPricer() {
     return () => { live = false; };
   }, []);
 
+  /* The white-label roster + this person's groups, ONCE. Both are free reads of our
+     own server (no vendor call, no billing), like the ZIP lookup — the two doors
+     that DO cost money still fire only from a press. A failure leaves the lists
+     empty and the picker says so; the board simply shows everybody. */
+  useEffect(() => {
+    let live = true;
+    ltApi.dscrInvestors()
+      .then((r) => { if (live) setInvRoster((r && r.investors) || []); })
+      .catch(() => { if (live) setInvRoster([]); });
+    ltApi.dscrInvestorGroups()
+      .then((r) => { if (live) setInvGroups((r && r.groups) || []); })
+      .catch(() => { if (live) setInvGroups([]); });
+    return () => { live = false; };
+  }, []);
+
+  /* Saving / applying / removing a group. Applying REPLACES the selection — a group
+     is "price this set", not "add these to whatever was ticked". */
+  const applyGroup = (g) => { setInvSel(new Set(g.investors)); setGroupNote(null); };
+  async function saveGroup() {
+    const nm = String(groupName || '').trim();
+    if (!selectionActive(invSel)) { setGroupNote({ tone: 'bad', text: 'Tick at least one investor first.' }); return; }
+    if (!nm) { setGroupNote({ tone: 'bad', text: 'Give the group a name first.' }); return; }
+    setGroupBusy(true); setGroupNote(null);
+    try {
+      const out = await ltApi.dscrSaveInvestorGroup(nm, [...invSel]);
+      setGroupName('');
+      setGroupNote({ text: `Saved “${out.name}”.` });
+      const g = await ltApi.dscrInvestorGroups();
+      setInvGroups((g && g.groups) || []);
+    } catch (e2) {
+      setGroupNote({ tone: 'bad', text: (e2 && e2.message) || 'Could not save that group.' });
+    } finally { setGroupBusy(false); }
+  }
+  async function deleteGroup(g) {
+    // Deleting asks ONCE, on the button itself (the LT inline pattern — this side
+    // may not import RTL's dialog helper, and a browser confirm() is banned).
+    if (confirmDeleteId !== g.id) { setConfirmDeleteId(g.id); return; }
+    setConfirmDeleteId(null); setGroupNote(null);
+    try {
+      await ltApi.dscrDeleteInvestorGroup(g.id);
+      const out = await ltApi.dscrInvestorGroups();
+      setInvGroups((out && out.groups) || []);
+      setGroupNote({ text: `Removed “${g.name}”.` });
+    } catch (e2) {
+      setGroupNote({ tone: 'bad', text: (e2 && e2.message) || 'Could not remove that group.' });
+    }
+  }
+
   const set = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.value }));
   const setBool = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.checked }));
   /** A value handed straight in rather than read off an event — the money boxes format as you type,
@@ -1467,6 +1760,14 @@ export default function LtPricer() {
     if (next.has(k)) next.delete(k); else next.add(k);
     return next;
   });
+  const toggleRate = (k) => {
+    setOpenRates((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k); else next.add(k);
+      return next;
+    });
+    setOpenQuote(null);
+  };
 
   /* CHANGING THE PROPERTY TYPE MOVES THE UNIT COUNT WITH IT. A 4 left over from a 2–4 family riding
      into a single-family is a contradiction the server refuses (`units_conflict`) — so the form
@@ -1496,7 +1797,29 @@ export default function LtPricer() {
      typed box so it still works the moment a property value has not been entered. */
   const formLoanAmount = toNumber(amt && amt.loan != null ? amt.loan : f.loan);
   const um = unitsMode(f.propertyType);
-  const stack = res ? buildRateStack(res.programs) : null;
+  /* THE OVERLAY, APPLIED — on the ANSWER, never the request. With nothing selected
+     `filterPrograms` returns the programs untouched, so the unfiltered board is
+     byte-for-byte what it always was. When it narrows, the board SAYS how much it
+     is hiding (nothing is ever silently dropped). */
+  const filteredRes = res ? filterPrograms(res.programs, invSel) : null;
+  const stack = res ? buildRateStack(filteredRes.programs) : null;
+
+  /* EXPAND ALL / COLLAPSE ALL (owner-directed 2026-08-27: "click 'Expand All', and
+     every section should expand to its max"). Max = every rate row open AND every
+     multi-programme lender opened out; the per-quote Details panels stay a
+     one-at-a-time press, because a hundred full price builds at once is not a
+     board anybody can read. Collapse closes everything, details included. */
+  const expandAllRates = () => {
+    if (!stack) return;
+    const { rateKeys, lenderKeys } = expandAllKeys(stack.rates, groupByLender);
+    setOpenRates(new Set(rateKeys));
+    setOpenLenders(new Set(lenderKeys));
+  };
+  const collapseAllRates = () => {
+    setOpenRates(new Set());
+    setOpenLenders(new Set());
+    setOpenQuote(null);
+  };
 
   /* THE LOAN AMOUNT THE DOLLAR COLUMN IS COUNTED AGAINST.
      ⛔ IT IS THE ONE LENDER PRICE ACTUALLY PRICED, not the one in the box. On an LTV scenario the
@@ -1555,7 +1878,7 @@ export default function LtPricer() {
     if (problem) { setGateMsg(problem); return; }
     setGateMsg(null);
     setBusy(true); setErr(null); setRes(null); setElapsed(0);
-    setOpenRate(null); setOpenQuote(null); setOpenLenders(new Set()); setView('priced');
+    setOpenRates(new Set()); setOpenQuote(null); setOpenLenders(new Set()); setView('priced');
     // A new scenario means a new searchKey, so the last scenario's refusals go with it. Leaving
     // them beside a fresh price would attribute one search's declines to another.
     setDq({ status: 'idle', tries: 0, data: null, message: null, auto: false });
@@ -1583,9 +1906,11 @@ export default function LtPricer() {
       } else {
         dqAuto.current = { key: null, tries: 0, timer: null };
       }
-      // Open the cheapest rate so the answer is readable the moment it lands.
-      const s = buildRateStack(r && r.programs);
-      if (s.rates.length) setOpenRate(s.rates[0].key);
+      // Open the cheapest rate so the answer is readable the moment it lands —
+      // the cheapest rate the person will actually SEE, so a pre-search investor
+      // selection opens a row that is on the board rather than one it is hiding.
+      const s = buildRateStack(filterPrograms(r && r.programs, invSel).programs);
+      if (s.rates.length) setOpenRates(new Set([s.rates[0].key]));
     } catch (e2) {
       setErr((e2 && e2.message) || 'Lender Price could not be reached.');
     } finally {
@@ -1885,6 +2210,17 @@ export default function LtPricer() {
             </Field>
           </Group>
 
+          {/* ── INVESTORS (owner-directed 2026-08-27) — on the scenario, BEFORE the
+              press. The whole white-label sheet, an investor not yet live in Lender
+              Price included; a display overlay, never a search input. */}
+          <InvestorPicker
+            roster={invRoster} sel={invSel} onSel={setInvSel}
+            groups={invGroups} onApplyGroup={applyGroup} onDeleteGroup={deleteGroup}
+            confirmDeleteId={confirmDeleteId}
+            groupName={groupName} onGroupName={setGroupName}
+            onSaveGroup={saveGroup} groupBusy={groupBusy} groupNote={groupNote}
+          />
+
           <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginTop: 14, flexWrap: 'wrap' }}>
             {/* THE HOUSE PRIMARY, not a button this screen invents. `.btn` on its own is the
                 neutral base — transparent border, no fill — so the one action the page exists for
@@ -1897,7 +2233,7 @@ export default function LtPricer() {
                 THIS property, so leaving them behind on a fresh scenario would quietly work out a
                 ratio from the last deal's numbers. */}
             <button type="button" className="btn ghost" disabled={busy}
-              onClick={() => { setF(START); setCalc(CALC_START); setCalcOpen(false); }}>
+              onClick={() => { setF(START); setCalc(CALC_START); setCalcOpen(false); setInvSel(null); }}>
               Reset to the starting scenario
             </button>
             {/* WHAT IS ACTUALLY GOING ON THE WIRE, in one line. The amount triangle means the
@@ -1963,6 +2299,15 @@ export default function LtPricer() {
                 mode: compMode, onMode: setCompMode,
                 waive: waiveFees, onWaive: setWaiveFees, planProblem: compProblem,
               }}
+              invRow={(
+                <InvestorStripRow
+                  roster={res.investorRoster || []}
+                  fullRoster={invRoster}
+                  sel={invSel} onSel={setInvSel}
+                  groups={invGroups} onApplyGroup={applyGroup}
+                  hidden={filteredRes ? filteredRes.hidden : 0}
+                />
+              )}
             />
             <div style={card}>
               <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'baseline' }}>
@@ -1981,6 +2326,18 @@ export default function LtPricer() {
                       {stack.unpriced.length} {stack.unpriced.length === 1 ? 'quote' : 'quotes'} came
                       back with no note rate, so {stack.unpriced.length === 1 ? 'it is' : 'they are'} not
                       on the ladder below.
+                    </div>
+                  )}
+                  {/* AN INVESTOR NOBODY HAS NAMED YET (owner-directed 2026-08-27). A lender
+                      quoting in Lender Price with no white-label name is NAMED here — staff
+                      only, so the real name is fine — because on the consumer side it would
+                      have nothing it may be called. Silence would read as "everybody is on
+                      the sheet", which stops being true the day the vendor adds a lender. */}
+                  {Array.isArray(res.investorsUnmapped) && res.investorsUnmapped.length > 0 && (
+                    <div style={{ fontSize: 12, color: CAUTION, marginTop: 4 }}>
+                      {`No white-label program name yet for: ${res.investorsUnmapped
+                        .map((u) => u.investor || u.lender || '(unnamed)').join(', ')} — `}
+                      they show normally here, and need a name before any consumer surface can show them.
                     </div>
                   )}
                 </div>
@@ -2019,25 +2376,57 @@ export default function LtPricer() {
 
             {view === 'priced' ? (
               <div style={card}>
-                <div style={eyebrow}>Every rate, and every investor at it</div>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={eyebrow}>Every rate, and every investor at it</div>
+                  <span style={{ flex: 1 }} />
+                  {/* EXPAND ALL (owner-directed 2026-08-27) — the whole ladder open in one
+                      press, and the way back beside it. House buttons, gold-accented so
+                      the pair reads as the board's own control. */}
+                  <button type="button" className="btn ghost" style={{ fontSize: 12, borderColor: `${GOLD}66` }}
+                    onClick={expandAllRates} disabled={!stack || stack.rates.length === 0}>
+                    Expand all
+                  </button>
+                  <button type="button" className="btn ghost" style={{ fontSize: 12 }}
+                    onClick={collapseAllRates} disabled={!stack || stack.rates.length === 0}>
+                    Collapse all
+                  </button>
+                </div>
                 <div style={{ ...sub, marginTop: 6 }}>
                   Lowest rate first. Within a rate, the best price first — a higher price is worth
                   more to the borrower. Open a line to see the whole build behind that price.
                 </div>
+                {/* THE OVERLAY, SAID OUT LOUD. A narrowed board must state what it is
+                    hiding and that the SEARCH was never narrowed — and offer the one
+                    press back to everything. */}
+                {selectionActive(invSel) && filteredRes && (
+                  <div style={{
+                    display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+                    fontSize: 12.5, color: '#7A5C25', margin: '2px 0 8px',
+                  }}>
+                    <span>{overlaySummary(invSel, filteredRes.hidden)}</span>
+                    <button type="button" className="btn ghost" style={{ fontSize: 12 }} onClick={() => setInvSel(null)}>
+                      Show all investors
+                    </button>
+                  </div>
+                )}
                 {stack.rates.length === 0 ? (
                   <div style={{ fontSize: 13, color: MUTED }}>
-                    Lender Price returned no priced rungs for this scenario. The Ineligible view
-                    says which products it looked at and why each was ruled out.
+                    {/* Two different facts, never collapsed: an empty VENDOR answer and a
+                        board the OVERLAY has emptied. The second must say so — "no priced
+                        rungs" about an answer that has plenty would be the screen lying. */}
+                    {filteredRes && filteredRes.hidden > 0
+                      ? `Your investor filter is hiding every one of the ${filteredRes.hidden} programmes Lender Price returned — none of the ticked investors priced this scenario. Press Show all investors above to see the whole board.`
+                      : 'Lender Price returned no priced rungs for this scenario. The Ineligible view says which products it looked at and why each was ruled out.'}
                   </div>
                 ) : stack.rates.map((row) => (
                   <RateRow key={row.key} row={row} loanAmount={loanAmount} comp={comp}
-                    open={openRate === row.key}
-                    onToggle={() => { setOpenRate(openRate === row.key ? null : row.key); setOpenQuote(null); }}
+                    open={openRates.has(row.key)}
+                    onToggle={() => toggleRate(row.key)}
                     openQuote={openQuote} onOpenQuote={setOpenQuote} openLenders={openLenders} onToggleLender={toggleLender} />
                 ))}
               </div>
             ) : (
-              <IneligibleView dq={dq} onAsk={askDisqualified} loanAmount={loanAmount} comp={comp} />
+              <IneligibleView dq={dq} onAsk={askDisqualified} loanAmount={loanAmount} comp={comp} invSel={invSel} />
             )}
           </>
         )}

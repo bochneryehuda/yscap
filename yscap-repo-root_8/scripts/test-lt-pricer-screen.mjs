@@ -205,9 +205,16 @@ console.log('LT Pricing Engine — structural guards\n');
   }
   ok(/starting point you can change/.test(src),
     'PE-37 …and the screen says they are a starting point, never a fact about a loan');
-  // NOTHING NARROWS THE ANSWER. The ask is to see all rates and all products.
-  ok(!/maxRate|minPrice|hideExpired|lenderFilter/.test(code),
-    'PE-38 the screen applies no filter of its own — every rate and every product comes back');
+  // NOTHING NARROWS THE ANSWER — *the ask*, that is. The vendor is always asked for
+  // every rate and every product. What changed (owner-directed 2026-08-27) is that the
+  // BOARD can now be narrowed by investor as a DISPLAY OVERLAY — "You should just hide
+  // the rest of the data that you're getting" — so this guard split in two: the
+  // request-narrowing knobs stay banned outright, and the investor filter is proven to
+  // run on the ANSWER (section 20 below holds the rest of that contract).
+  ok(!/maxRate|minPrice|hideExpired/.test(code),
+    'PE-38 no request-narrowing knob of ours — every rate and every product still comes back');
+  ok(!/invest/i.test(fieldsSrc),
+    'PE-38a …and the scenario builder knows nothing about investors, so a selection can never reach the wire');
   // A blank is OMITTED rather than sent as "", which the pricer would have to guess at. The rule
   // lives in scenarioFields.js now; `test-lt-pricer-fields.mjs` D9 proves the BEHAVIOUR, and this
   // stays as the source guard so the line cannot quietly disappear.
@@ -652,6 +659,86 @@ console.log('LT Pricing Engine — structural guards\n');
     ok(/\.lt-strip\{[^}]*background:#fff/.test(css),
       'PE-142 …with an explicit opaque background, or the board reads straight through it');
   }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   20) PE-143..PE-160 — THE INVESTOR FILTER, GROUPS AND EXPAND ALL
+   (owner-directed 2026-08-27).
+
+   The owner: a dropdown to price "this investor or … this this this this
+   investor", per-user named GROUPS, "all be on overlays on top of Lender Price
+   … just hide the rest of the data", available BEFORE the press and switchable
+   AFTER the results, plus "Expand All, and every section should expand to its
+   max". The behavioural half is test-lt-investor-filter-pure.mjs (which RUNS
+   the rules); what lives here is the wiring the screen must keep.
+   ────────────────────────────────────────────────────────────────────────── */
+{
+  const filterSrc = read('app-v2/src/longterm/investorFilter.js');
+  const filterCode = filterSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  // (1) THE OVERLAY RUNS ON THE ANSWER, NEVER THE REQUEST. The screen filters
+  //     res.programs — data that already came back — and the selection lives
+  //     OUTSIDE the scenario, so staleness and the wire are both untouched.
+  ok(/from '\.\/investorFilter\.js'/.test(code),
+    'PE-143 the filter rules come from the shared plain-JS module CI can run');
+  ok(/filterPrograms\(res\.programs, invSel\)/.test(code),
+    'PE-144 the priced board filters the ANSWER (res.programs) — never the scenario');
+  ok(/filterPrograms\(filterPrograms|dscrPrice\([^)]*invSel/.test(code) === false,
+    'PE-145 …and the selection is never an argument to the price call');
+  ok(!/invSel/.test(fieldsSrc) && !/investors:/.test((code.match(/const START = \{[\s\S]*?\};/) || [''])[0]),
+    'PE-146 the selection lives outside the form state, so it cannot mark the board stale or ride toScenario');
+
+  // (2) NOTHING IS SILENTLY DROPPED. A narrowed board says so, in words that name
+  //     the wire ("Lender Price was asked for everything"), and an overlay that
+  //     empties the board says THAT rather than "no priced rungs".
+  ok(/overlaySummary\(invSel/.test(code), 'PE-147 the narrowed board states the overlay');
+  ok(/Lender Price was asked for everything/.test(filterSrc),
+    'PE-148 …and the wording says the SEARCH was never narrowed');
+  ok(/investor filter is hiding every one/.test(src),
+    'PE-149 an overlay that empties the board says so — never "no priced rungs" about an answer that has plenty');
+  ok(/missingFromAnswer/.test(code) && /didn(&rsquo;|')t price here/.test(src),
+    'PE-150 a selected investor that returned nothing is NAMED, never silently absent');
+
+  // (3) THE WHITE-LABEL SHEET LIVES ON THE SERVER. The screen fetches the roster
+  //     and carries per-row annotations; a browser copy of the map would drift.
+  ok(/ltApi\.dscrInvestors\(\)/.test(code), 'PE-151 the roster is fetched from the server');
+  ok(!/Platinum|Emerald|Bluewater|Sequoia/.test(code),
+    'PE-152 …and no white-label name is typed into the screen — one sheet, server-side');
+  ok(/<WhiteLabelTag name=\{g\.best && g\.best\.whiteLabel\}/.test(code),
+    'PE-153 the lender line carries the white-label tag beside the real name (staff screen: real name leads)');
+  ok(/consumerLabel/.test(code) && /investorKey: p\.investorKey/.test(code),
+    'PE-154 the stack carries the server\'s investorKey + consumer labels through to the rows');
+
+  // (4) BOTH BOARDS, ONE SELECTION. The ineligible side filters by the same set
+  //     and names what the overlay hides there too.
+  ok(/filterDisqualifiedLenders\(d0\.lenders, invSel\)/.test(code),
+    'PE-155 the ineligible board runs the SAME selection');
+  ok(/hiding \$\{dqFiltered\.hidden\} of the \$\{dqFiltered\.total\} lenders/.test(code),
+    'PE-156 …and says how many lenders the overlay is holding back there');
+
+  // (5) GROUPS are the person's own, through the API — saved, applied, removed.
+  ok(/ltApi\.dscrInvestorGroups\(\)/.test(code) && /ltApi\.dscrSaveInvestorGroup\(/.test(code)
+    && /ltApi\.dscrDeleteInvestorGroup\(/.test(code),
+    'PE-157 groups list/save/delete all go through the API — never local-only state that dies with the tab');
+
+  // (6) BEFORE THE PRESS AND AFTER THE RESULTS — the picker is on the form, the
+  //     switcher rides the sticky strip.
+  ok(/<InvestorPicker\b/.test(code) && /<InvestorStripRow\b/.test(code) && /invRow=\{/.test(code),
+    'PE-158 the picker is on the scenario form AND the switcher rides the sticky strip');
+
+  // (7) EXPAND ALL / COLLAPSE ALL — a Set of open rates, filled by the shared rule.
+  ok(/const \[openRates, setOpenRates\] = useState\(\(\) => new Set\(\)\)/.test(code),
+    'PE-159 the open rows are a SET, so every section can be open at once');
+  ok(/expandAllKeys\(stack\.rates, groupByLender\)/.test(code)
+    && /onClick=\{expandAllRates\}/.test(code) && /onClick=\{collapseAllRates\}/.test(code),
+    'PE-160 Expand all opens every rate AND every multi-programme lender, and Collapse all is beside it');
+
+  // (8) The module itself keeps the two hard rules on its face: kept-not-dropped for
+  //     an unmapped row, and untouched pass-through with no selection.
+  ok(/p\.investorKey == null \|\| sel\.has\(p\.investorKey\)/.test(filterCode),
+    'PE-161 a row the server could not resolve is KEPT whatever the selection — hiding a row nobody chose to hide is the silent drop');
+  ok(/if \(!selectionActive\(sel\)\) return \{ programs: list, hidden: 0/.test(filterCode),
+    'PE-162 no selection = the answer untouched, byte for byte');
 }
 
 console.log(`\n${failures === 0 ? 'OFFLINE: all passed' : `FAILURES: ${failures}`}`);
