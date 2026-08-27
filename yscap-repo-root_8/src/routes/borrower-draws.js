@@ -158,13 +158,21 @@ router.get('/draws/:appId/eligibility', async (req, res) => {
       if (st.physical) {
         const open = st.open_portal_request;
         if (open) nextSteps.push('Your draw request is in — the site inspection and review are the next steps. We’ll keep you posted.');
-        const lines = (st.set_up && !open)
+        // THE COMPOSER IS PARKED (owner-directed 2026-08-26, compliance): new
+        // draw requests are submitted in the construction portal, so the
+        // borrower is pointed there instead of at a composer that will refuse.
+        // st.eligible is already false while parked, so can_compose follows.
+        if (st.parked && !open && blocking.length === 0) {
+          nextSteps.push('To request a draw, submit it in the construction portal — use the “Open the construction portal” link on this page.');
+        }
+        const lines = (st.set_up && !open && !st.parked)
           ? (await portalDraws.composerLines(appId)).map((l) => ({
               sitewire_job_item_id: l.sitewire_job_item_id, name: scrub(l.name), remaining_cents: l.remaining_cents,
             }))
           : [];
         composer = {
           can_compose: !!(st.eligible && !st.open_sitewire_draw && blocking.length === 0),
+          parked: !!st.parked,
           open_request: open ? {
             id: open.id, status: open.status, source: open.source,
             total_requested_cents: Number(open.total_requested_cents),

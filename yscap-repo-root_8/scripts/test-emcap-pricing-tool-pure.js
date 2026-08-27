@@ -171,7 +171,7 @@ for (const [name, over] of scenarios) {
   eq(val('C13'), 740, 'the FICO is the file\'s pricing score');
   eq(val('C17'), 600000, 'the total loan is the registered figure');
   eq(val('C18'), 250000, 'the acquisition cost');
-  eq(val('C19'), 400000, 'the FULL construction budget');
+  eq(val('C19'), 400000, 'the FULL construction budget (no financed reserve on this fixture)');
   eq(val('C20'), 900000, 'the ARV');
   eq(val('C21'), 0.0925, 'the note rate goes in as the fraction the percent cell stores');
   eq(val('C10'), '08561', 'a leading-zero ZIP survives as text');
@@ -184,6 +184,29 @@ for (const [name, over] of scenarios) {
   const nv = PT.buildPricingToolCells(noneVerified);
   eq(nv.cells.C14.value, 0, 'nine CLAIMED projects with none verified sends 0 — a pending project never reaches an investor');
   ok(nv.gaps.some((g) => g.cell === 'C14'), 'and the staffer is told that will tier the borrower at Tier 3');
+
+  /* C19 IS THE ENTIRE HOLDBACK (owner-directed 2026-08-26). EMCAP's workbook has
+     no interest-reserve input slot, and C19 sits on BOTH sides of their math —
+     the acquisition advance (C17−C19)/C18 and the cost basis C18+C19 — so a loan
+     whose C17 carries a financed reserve with nothing in C19 read over-leveraged
+     and came back INELIGIBLE on exactly the loans that carry a reserve. The
+     owner's own example: construction holdback $75,000 + interest reserve
+     $10,000 → $85,000 in the cell. */
+  const withReserve = loanFixture({
+    app: { rehab_budget: 75000, loan_amount: 300000 },
+    quote: { noteRate: 0.0925, sizing: { totalLoan: 300000, rehabHoldback: 75000, financedReserve: 10000, initialAdvance: 215000 } },
+  });
+  const wr = PT.buildPricingToolCells(withReserve);
+  eq(wr.cells.C19.value, 85000, 'a financed interest reserve rides in the holdback cell: $75,000 + $10,000 = $85,000 (the owner\'s own example)');
+  const wrFilled = wr.filled.find((f) => f.cell === 'C19');
+  ok(wrFilled && /interest reserve/i.test(String(wrFilled.display)), 'and the staff summary states the reserve is included, so nothing goes to the note buyer unannounced');
+  // The reserve can also come from the requested-amount column when no sized quote exists.
+  const wrReq = loanFixture({
+    app: { rehab_budget: 75000, requested_ir_amount: 10000 },
+    quote: { noteRate: 0.0925, sizing: { totalLoan: 300000, rehabHoldback: 75000, initialAdvance: 215000 } },
+  });
+  delete wrReq.quote.sizing.financedReserve;
+  eq(PT.buildPricingToolCells(wrReq).cells.C19.value, 85000, 'with no sized reserve, the requested reserve amount still rides in the holdback');
 
   // C15 is never derived.
   ok(/^no$/i.test(String(val('C15'))), 'GC-only experience always goes out as No');
@@ -347,7 +370,7 @@ for (const [name, over] of scenarios) {
   const econ = emcapTape.economics(L);
   const out = PT.buildPricingToolCells(L);
   eq(out.cells.C17.value, econ.totalLoan, 'the total loan is the tape\'s own figure');
-  eq(out.cells.C19.value, econ.totalRehab, 'the rehab budget is the tape\'s own figure');
+  eq(out.cells.C19.value, econ.totalRehab + econ.financedReserve, 'the holdback cell is the tape\'s own budget + financed reserve (equal to the budget when there is no reserve)');
   eq(out.cells.C20.value, econ.arv, 'the ARV is the tape\'s own figure');
   eq(out.cells.C21.value, econ.noteRate, 'the note rate is the tape\'s own figure');
   ok(typeof emcapTape.termMonths === 'function', 'the term months come from the tape too');

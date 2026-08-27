@@ -13,8 +13,9 @@ switch ((cfg.emailProvider || 'none').toLowerCase()) {
   default:       provider = require('./noop');   break;
 }
 
-/** #150 — LO-branded From: "<Officer Name> — YS Capital <no-reply@…>".
-    The ADDRESS is always our verified sender (taken from NOTIFY_FROM); only
+/** #150 — LO-branded From: "<Officer Name> — YS Capital <notifications@…>".
+    The ADDRESS is always our verified sender (taken from NOTIFY_FROM — never a
+    no-reply address; config repairs one, owner-directed 2026-08-26); only
     the display name changes, so deliverability/DMARC is untouched. Providers
     that can't rebrand the sender (Graph mailboxes) simply ignore `from`.
     Returns null when no name is given → callers fall back to the default. */

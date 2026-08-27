@@ -318,14 +318,17 @@ function esignReadyToSign({ firstName, propertyLabel, loanNumber, packageLabel, 
     audience: 'borrower',
     title: 'Your documents are ready to sign',
     subjectTag: fileTag(loanNumber, propertyLabel),
-    badge: { text: 'Signature needed', tone: 'gold' },
+    badge: { text: 'Signature requested', tone: 'gold' },
     replyable: true,
-    preheader: 'A secure electronic signature is needed on your loan documents.',
+    preheader: 'Your loan documents are ready for electronic signature.',
     greeting: greet(firstName),
     intro: 'Your ' + (packageLabel ? packageLabel.toLowerCase() : 'loan documents')
       + ' ' + (packageLabel && !/s$/i.test(packageLabel) ? 'is' : 'are') + ' ready for your electronic signature with YS Capital Group.',
     lines: [
-      'Tap the button below to review and sign securely — it opens your signing session right away, and brings you back to your loan file when you\'re done.',
+      /* Professional register (owner-directed 2026-08-26: the "signature is
+         needed" / "straight away — no login" family reads as cheap urgency copy
+         and describes our own mechanics; state the action plainly instead). */
+      'Select “Review & sign” below to review your documents and sign them securely. You will be returned to your loan file when you are finished.',
       /* THE ONE LINK, AND ONLY ONE (owner-reported 2026-08-21). This used to promise a second
          email "directly from DocuSign" — which arrived, led to a page they could not sign on,
          and taught people to distrust both. Recipients are captive now, so DocuSign sends
@@ -356,16 +359,20 @@ function esignStaffReadyToSign({ firstName, role, packageLabel, borrowerName, pr
   if (packageLabel) meta.push({ label: 'To sign', value: packageLabel });
   return render({
     audience: 'staff',
-    title: 'Your signature is needed',
+    /* Professional register (owner-directed 2026-08-26): "Your signature is
+       needed" + "no login, no hunting for the envelope" read as cheap urgency
+       copy — the phishing-lure register — and leaked our own e-sign mechanics
+       ("envelope" is DocuSign's internal term). State the request plainly. */
+    title: 'Signature requested',
     subjectTag: fileTag(loanNumber, propertyLabel),
-    badge: { text: 'Signature needed', tone: 'gold' },
+    badge: { text: 'Signature requested', tone: 'gold' },
     replyable: true,
-    preheader: `${packageLabel || 'A package'} is waiting for your signature.`,
+    preheader: `${packageLabel || 'A package'} is ready for your signature.`,
     greeting: greet(firstName || ''),
-    intro: `${packageLabel || 'A package'}${borrowerName ? ` for ${borrowerName}` : ''} is out for signature and needs yours`
+    intro: `${packageLabel || 'A package'}${borrowerName ? ` for ${borrowerName}` : ''} is ready for your signature`
       + (role ? ` as the ${role}` : '') + '.',
     lines: [
-      'The button below opens the signing session straight away — no login, no hunting for the envelope.',
+      'Select “Review & sign” below to open the document for your review and signature.',
       ...(waitingOn ? [waitingOn] : []),
     ],
     meta,

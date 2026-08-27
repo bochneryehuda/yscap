@@ -252,15 +252,19 @@ async function main() {
     // desk plus the shared inbox on every borrower's loan documents. The wire form keeps
     // its cover (asserted three lines up); the origination packages take only a
     // coordinator the file actually has.
+    /* THE HETER ISKA IS NARROWER SINCE 2026-08-26 (owner-directed, superseding
+       the 2026-08-21 loop-in for THIS package only: "Only the loan officer and
+       the processor and the borrower, obviously" — no coordinator, no admins).
+       The term-sheet package keeps the 2026-08-21 coordinator loop-in. */
     const iska = (await orchestrate.loadCcViewers(db, appA, 'heter_iska')).map((v) => lower(v.email));
-    ok(iska.includes(coordA.email),
-      'an ORIGINATION package (Heter Iska) copies the file\'s OWN draw coordinator');
+    ok(!iska.includes(coordA.email),
+      'the HETER ISKA does NOT copy the draw coordinator (owner-directed 2026-08-26 — LO + processor + borrower only)');
     ok(!iska.includes(dr.DRAW_DESK_INBOX),
-      '…but never the shared draw desk — that fallback belongs to the wire form alone');
+      '…and never the shared draw desk either');
     const ts = (await orchestrate.loadCcViewers(db, appA, 'term_sheet_package')).map((v) => lower(v.email));
     ok(ts.includes(coordA.email) && !ts.includes(dr.DRAW_DESK_INBOX),
-      '…and the term-sheet package behaves the same way');
-    ok(iska.includes(lo.email), '…the origination package still copies the file team exactly as before');
+      '…while the TERM SHEET package still copies the file\'s own coordinator (2026-08-21, unchanged) and never the desk');
+    ok(iska.includes(lo.email), '…and the Heter Iska still copies the loan officer');
   }
 
   {

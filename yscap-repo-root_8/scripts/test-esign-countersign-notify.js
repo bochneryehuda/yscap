@@ -51,7 +51,7 @@ async function main() {
   let appId, envRowId;
   const env = (id) => db.query(`SELECT * FROM esign_envelopes WHERE id=$1`, [id]).then((r) => r.rows[0]);
   const noteCount = () => db.query(
-    `SELECT count(*)::int n FROM notifications WHERE application_id=$1 AND title ILIKE '%counter-signature needed%'`, [appId]).then((r) => r.rows[0].n);
+    `SELECT count(*)::int n FROM notifications WHERE application_id=$1 AND title ILIKE '%counter-signature%'`, [appId]).then((r) => r.rows[0].n);
   try {
     await db.query(`INSERT INTO staff_users (id, email, full_name, role) VALUES ($1,$2,'LO Tester','loan_officer')`, [loId, `lo+${TAG}@ys.com`]);
     await db.query(`INSERT INTO borrowers (id, first_name, last_name, email) VALUES ($1,'Pat','Borrower',$2)`, [bId, `b+${TAG}@example.com`]);
@@ -85,13 +85,13 @@ async function main() {
     };
     await webhook.reconcileEnvelope(db, dsUnsigned, fakeStorage, await env(envRowId));
     ok(!(await env(envRowId)).countersign_notified_at, 'no milestone fired while the borrower has not signed');
-    ok((await noteCount()) === 0, 'no "counter-signature needed" notification before the borrower signs');
+    ok((await noteCount()) === 0, 'no counter-signature notification before the borrower signs');
 
     // --- 2. borrower signed, admin pending → fire the milestone ONCE -------------
     await webhook.reconcileEnvelope(db, fakeDs(false), fakeStorage, await env(envRowId));
     const stampedAt = (await env(envRowId)).countersign_notified_at;
     ok(stampedAt, 'countersign_notified_at is stamped when the borrower signs + admin is pending');
-    ok((await noteCount()) === 1, 'the loan officer got exactly one "counter-signature needed" notification');
+    ok((await noteCount()) === 1, 'the loan officer got exactly one counter-signature notification');
 
     // --- 3. idempotent: another reconcile pass does NOT re-notify ---------------
     await webhook.reconcileEnvelope(db, fakeDs(false), fakeStorage, await env(envRowId));

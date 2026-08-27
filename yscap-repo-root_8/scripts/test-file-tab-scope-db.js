@@ -118,7 +118,12 @@ ok(/wi\.status <> 'cancelled'/.test(strip(read('src/lib/permissions.js'))),
     const delegated = await mk('processor', 'deleg');
     const handoff = await mk('processor', 'hand');
     const assignee = await mk('processor', 'assn');
-    const stranger = await mk('processor', 'stranger');
+    // The stranger must hold a role WITHOUT see_all_files, or the scope rule
+    // this suite proves never gets asked. It was a processor until 2026-08-26,
+    // when the owner gave processors whole-pipeline visibility ("the back
+    // office sees the entire pipeline") — a loan officer is now the honest
+    // no-path fixture.
+    const stranger = await mk('loan_officer', 'stranger');
     await db.query(`UPDATE staff_users SET visible_officer_ids = ARRAY[$1]::uuid[] WHERE id=$2`, [officer, delegated]);
 
     const bor = (await db.query(
@@ -135,11 +140,16 @@ ok(/wi\.status <> 'cancelled'/.test(strip(read('src/lib/permissions.js'))),
       `INSERT INTO application_assignees (application_id, staff_id, role) VALUES ($1,$2,'processor')`, [appId, assignee]);
 
     // The owner's second symptom: a processor who FINISHED and handed the file back.
-    const returned = await mk('processor', 'returned');
+    // Loan officers, not processors, since 2026-08-26 (processors hold
+    // see_all_files by role default now, so a processor fixture would pass
+    // these hand-off assertions through the WRONG branch and B6's refusal
+    // could never be observed). The hand-off branch matches to_staff_id, so
+    // the staffer's own role does not matter to the rule under test.
+    const returned = await mk('loan_officer', 'returned');
     await db.query(
       `INSERT INTO workflow_items (application_id, submission_type, status, to_staff_id, to_role, from_staff_id)
        VALUES ($1,'processing','returned',$2,'processor',$3)`, [appId, returned, officer]);
-    const cancelled = await mk('processor', 'cancelled');
+    const cancelled = await mk('loan_officer', 'cancelled');
     await db.query(
       `INSERT INTO workflow_items (application_id, submission_type, status, to_staff_id, to_role, from_staff_id)
        VALUES ($1,'processing','cancelled',$2,'processor',$3)`, [appId, cancelled, officer]);

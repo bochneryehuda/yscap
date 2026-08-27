@@ -85,6 +85,26 @@ const valOf = (card, label) => { const r = rowsOf(card).find((x) => x.label === 
     ok('A5 origination points show their CENTS + rate', valOf(card, 'Origination points') === '1.50% · $5,512.50' && valOf(card, 'Interest rate') === '9.25%');
     ok('A6 leverage', valOf(card, 'Initial LTV') === '90%' && valOf(card, 'ARV LTV') === '75%');
     ok('A7 the header names the file', card.header.loanNumber === 'YSCAP-FOV-1' && /Overview Ave/.test(card.header.address || ''));
+    // Owner-directed 2026-08-26: the loan's basics ride in the HEADER too —
+    // amount + purchase/refinance/cash-out — without leaving the sections below.
+    ok('A7b the header carries the loan amount + purpose (and the sections keep theirs)',
+      card.header.loanAmount === '$367,500' && card.header.purpose === 'Purchase'
+      && valOf(card, 'Total loan') === '$367,500' && /Purchase/.test(valOf(card, 'Transaction type') || ''));
+    // Owner-directed 2026-08-26: the Program row leads with the program's NAME,
+    // never the raw registration key.
+    ok('A7c the Program row is the program\'s NAME, not the key',
+      valOf(card, 'Program') === 'Gold Standard Program' && !rowsOf(card).some((r) => r.value === 'gold'));
+    // The case that used to leak the raw key: a registration with NO product
+    // label (product_label predates or was never set). A Silver file must read
+    // "Silver Program", never literally "silver".
+    await db.query(
+      `INSERT INTO product_registrations (application_id, program, inputs, quote, is_current)
+       VALUES ($1,'silver','{}'::jsonb,$2,true)`,
+      [bareId, JSON.stringify({ sizing: { totalLoan: 250000 } })]);
+    const silverCard = await FO.buildFileOverview(bareId, { audience: 'internal' });
+    ok('A7d a label-less Silver registration reads "Silver Program", never the raw key',
+      valOf(silverCard, 'Program') === 'Silver Program' && !rowsOf(silverCard).some((r) => r.value === 'silver'));
+    await db.query(`DELETE FROM product_registrations WHERE application_id=$1`, [bareId]);
 
     const bare = await FO.buildFileOverview(bareId, { audience: 'internal' });
     ok('A8 an unregistered file OMITS the loan figures rather than guessing $0',
@@ -129,8 +149,15 @@ const valOf = (card, label) => { const r = rowsOf(card).find((x) => x.label === 
     const bCard = await FO.buildFileOverview(appId, { audience: 'borrower' });
     ok('B1 the borrower audience carries the same deal facts', valOf(bCard, 'Total loan') === '$367,500'
       && valOf(bCard, 'Purchase price') === '$360,000');
-    ok('B2 the NOTE BUYER appears in NO audience\'s payload',
-      !/blue\s*lake/i.test(JSON.stringify(card)) && !/blue\s*lake/i.test(JSON.stringify(bCard)));
+    /* B2 — re-pointed 2026-08-26 (owner-directed: "add another line for the
+       name of the investor that this note is being sold to" on the STAFF
+       overview). The INTERNAL card now names the investor — an RTL staff
+       surface may show a real note-buyer name — while the borrower (and, via
+       the same audience flag, the TPO broker) still never sees it. */
+    ok('B2 the INTERNAL card names the investor the note is sold to',
+      valOf(card, 'Investor') === 'Blue Lake');
+    ok('B2b …and the note buyer appears NOWHERE in the borrower audience\'s payload',
+      !/blue\s*lake/i.test(JSON.stringify(bCard)));
     ok('B3 an unknown file answers null, never throws', (await FO.buildFileOverview(crypto.randomUUID(), {})) === null
       && (await FO.buildFileOverview('garbage', {})) === null);
 

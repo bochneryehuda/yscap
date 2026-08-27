@@ -5222,6 +5222,11 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .fov-eyebrow{font:600 11px/1 'Hanken Grotesk',system-ui,sans-serif;letter-spacing:.1em;text-transform:uppercase;color:#AE8746}
 .fov-title{font:600 15px/1.35 'Fraunces',Georgia,serif;color:#141B22;margin-top:4px;overflow-wrap:anywhere}
 .fov-loanno{display:block;font:500 12px/1.4 'Hanken Grotesk',system-ui,sans-serif;color:#4B585C}
+/* The header's loan basics (owner-directed 2026-08-26: loan amount + purpose
+   at the top). Explicit dark text on the white card — never an --ink* token. */
+.fov-basics{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.fov-basic{display:inline-block;font:600 12px/1.3 'Hanken Grotesk',system-ui,sans-serif;color:#141B22;
+  background:#F6F3EC;border:1px solid #E7E1D3;border-radius:999px;padding:3px 9px}
 .fov-close{background:none;border:1px solid #D9D4C8;border-radius:8px;color:#4B585C;cursor:pointer;
   padding:4px 9px;font-size:14px;line-height:1}
 .fov-close:hover{color:#141B22;border-color:#AE8746}

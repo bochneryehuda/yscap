@@ -10,8 +10,12 @@ import { useAuth } from '../lib/auth.jsx';
    replies. Reply to any file's thread right here. Reuses the shared EmailCenter
    component in "global" mode. */
 export default function StaffEmails() {
-  const { role } = useAuth();
-  const seesAll = ['admin', 'super_admin', 'underwriter'].includes(role);
+  const { can } = useAuth();
+  // The SAME signal the backend uses (see_all_files), never a hardcoded role
+  // list — the old list here had drifted past the closer / coordinator /
+  // processor grants (processors see the whole pipeline, owner-directed
+  // 2026-08-26).
+  const seesAll = can('see_all_files');
   return (
     <>
       <div className="page-head">

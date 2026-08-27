@@ -73,6 +73,34 @@ function resolveEmailProvider() {
   return 'none';
 }
 
+/* A NO-REPLY SENDER CANNOT BE CONFIGURED IN (owner-directed 2026-08-26: "No
+   email should come from a no-reply because it technically is a reply" — every
+   email carries a real, unique reply-to, and a mail client shows the FROM
+   header, so the sender must be a monitored address). The code default has
+   been notifications@ since 2026-07-20, but the Render DASHBOARD value of
+   NOTIFY_FROM overrides render.yaml and was set to no-reply@yscapgroup.com —
+   which is exactly how "why is it saying no-reply?" happened while every
+   reply-to was correct. So the rule is enforced HERE, where the env value
+   lands: a no-reply-family NOTIFY_FROM is rewritten to the monitored local
+   part on the SAME verified domain (deliverability-neutral on Resend, which
+   verifies the domain, not the address) and the boot log says so loudly.
+   GRAPH is the one exception — there the From must be a REAL mailbox UPN in
+   the tenant, so a rewrite to a mailbox that may not exist would fail every
+   send; it warns instead of rewriting, and the fix is the env var. */
+function resolveNotifyFrom(provider) {
+  const raw = process.env.NOTIFY_FROM || 'PILOT by YS Capital <notifications@yscapgroup.com>';
+  const noReply = require('./lib/email/no-reply');
+  if (!noReply.isNoReplyAddress(raw)) return raw;
+  if (provider === 'graph') {
+    console.warn(`[email] NOTIFY_FROM ("${raw}") is a no-reply address. Our emails are repliable and must not send as no-reply — set NOTIFY_FROM to a real monitored mailbox in the Render environment. (Not auto-rewritten under Graph: the From must be an existing mailbox in the tenant.)`);
+    return raw;
+  }
+  const r = noReply.repairNoReplyFrom(raw);
+  console.warn(`[email] NOTIFY_FROM ("${raw}") is a no-reply address — sending as "${r.from}" instead (our emails are repliable; the no-reply framing is untrue). Update NOTIFY_FROM in the Render environment to make this permanent.`);
+  return r.from;
+}
+const EMAIL_PROVIDER_RESOLVED = resolveEmailProvider();
+
 // The public base URL used for EVERY link that leaves the system (emails, reset
 // links, redirects) AND for server-to-server callbacks (the DocuSign Connect
 // webhook + the embedded-signing return bounce). NEVER emit an onrender.com link —
@@ -135,12 +163,14 @@ module.exports = {
   //   MS_* client-credential set    -> graph
   //   nothing / EMAIL_PROVIDER=none -> none (logs only; in-app still works)
   // An explicit EMAIL_PROVIDER always wins.
-  emailProvider: resolveEmailProvider(),
+  emailProvider: EMAIL_PROVIDER_RESOLVED,
   // Owner-directed 2026-07-20: our notification emails ARE repliable, so the
   // sender must not pretend otherwise. Default the From to a real, monitored
   // address (no "no-reply"). For Resend only the DOMAIN must be verified; for
-  // Graph this must be a real mailbox UPN in the tenant.
-  notifyFrom:    process.env.NOTIFY_FROM || 'PILOT by YS Capital <notifications@yscapgroup.com>',
+  // Graph this must be a real mailbox UPN in the tenant. A no-reply-family
+  // NOTIFY_FROM from the environment is repaired by resolveNotifyFrom above
+  // (owner-directed 2026-08-26) — the rule is enforced, not just documented.
+  notifyFrom:    resolveNotifyFrom(EMAIL_PROVIDER_RESOLVED),
   // A guaranteed Reply-To for every notification when no more-specific one is
   // set (a per-file file+<id>@ address, or an officer's own inbox). This makes
   // "just hit reply" always reach a human, so no email is ever a dead end.

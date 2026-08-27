@@ -87,10 +87,20 @@ async function composerState(appId) {
     `SELECT sitewire_draw_id, number, status FROM sitewire_draws
       WHERE application_id=$1 AND COALESCE(historical,false)=false
         AND status IN ('drafting','pending_borrower','inspecting','pending','pending_capital_partner') LIMIT 1`, [appId])).rows[0] || null;
+  /* THE COMPOSER IS PARKED (owner-directed 2026-08-26, compliance): the only
+     way a draw request comes in is through Sitewire, for now. The park rides
+     the composer STATE — which is what all three UIs (borrower composer, staff
+     desk composer, LO view) key visibility on — so the screens follow the
+     server with no hand-kept second copy of the rule. In-flight requests keep
+     flowing: open_portal_request / open_sitewire_draw still report, and the
+     desk levers never consult eligibility. */
+  const parked = require('../sitewire/portal-draws-parked');
+  const composerParked = parked.isParked();
   return {
-    eligible: a.status === 'funded' && physical && setUp && !openPortal,
+    eligible: a.status === 'funded' && physical && setUp && !openPortal && !composerParked,
     funded: a.status === 'funded', physical, platform, set_up: setUp,
     open_portal_request: openPortal, open_sitewire_draw: openSitewire,
+    parked: composerParked, parked_reason: composerParked ? parked.PARKED_REASON : null,
   };
 }
 
@@ -100,6 +110,13 @@ async function composerState(appId) {
  * @param opts { source: 'staff'|'borrower', staffId?, borrowerId?, allowOver?, allowParallel?, note? }
  */
 async function createRequest(appId, entries, opts = {}) {
+  // PARKED FIRST (owner-directed 2026-08-26): whoever is asking — the borrower
+  // door, the staff desk, the LO view — the one chokepoint refuses with the one
+  // wording. This is what makes the Sitewire intake the ONLY intake.
+  {
+    const parked = require('../sitewire/portal-draws-parked');
+    if (parked.isParked()) throw err(409, parked.PARKED_REASON);
+  }
   const st = await composerState(appId);
   if (!st.funded) throw err(409, 'Draws can be requested once the loan is funded.');
   if (!st.physical) throw err(422, 'This file is not on the physical-inspection draw program.');
