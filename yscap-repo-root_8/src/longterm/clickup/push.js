@@ -56,6 +56,48 @@ const writeEnabled = () => String(process.env.LT_CLICKUP_WRITE_ENABLED || '').tr
 const dryRun = () => String(process.env.LT_CLICKUP_WRITE_DRYRUN || '').trim() === '1';
 const createSince = () => String(process.env.LT_CLICKUP_CREATE_SINCE || '2026-08-24').trim();
 
+/* THE HAND-OFF TO THE PROCESSOR ALWAYS HAS A CARD (owner-directed 2026-08-27,
+   file YSCAP258134841 / 300 Apple St): *"Any file that finishes the LO_PREP
+   status, if it's not linked already to a ClickUp task, then it should create a
+   new task ... If it's linked already to a task in ClickUp, then you're good."*
+
+   WHY THE DATE GATE ALONE WAS WRONG. `createSince` keys on lt_loans.created_at,
+   which is when PILOT FIRST DISCOVERED the loan (the discovery INSERT takes the
+   column default), not on anything Encompass says. It was written as a go-live
+   guard — "brand-new files, discovered after the go-live day" — so the whole
+   historical book would not get cards at once. That intent is right and is kept.
+   Its flaw is that it also excludes every loan that was ALREADY IN FLIGHT on
+   go-live day: 300 Apple St started 8/13, was discovered before the 8/24 cutoff,
+   finished LO Prep on the 24th, and was therefore never once considered for a
+   card — silently, because the query simply never selected it. Three days later
+   a person had to open it by hand.
+
+   So the milestone is a SECOND way in, never a replacement: the clause is OR'd,
+   so it can only ever ADD loans and a post-cutoff loan behaves byte-identically.
+   Nothing else about the pass changes — the per-pass cap, the attempt budget,
+   the deadline and the circuit breaker all still apply, so this drains a few at
+   a time rather than writing a card for every eligible loan at once.
+
+   DERIVED FROM THE STATUS ENGINE, NEVER RETYPED: the milestones that mean "this
+   file has been handed to the processor" are exactly the ones whose completion
+   drives that ClickUp status, so asking MILESTONE_STATUS is what stops this list
+   and the status ladder disagreeing about what LO Prep is. A file further along
+   (Cond Approval, CTC) still has LO Prep done=true on its ladder, so it is
+   covered too — which is the owner's rule read literally. */
+const HANDOFF_STATUS = 'assigned to processor';
+const HANDOFF_MILESTONES = () => {
+  const m = statusEngine._internals.MILESTONE_STATUS;
+  return [...m.entries()].filter(([, v]) => v === HANDOFF_STATUS).map(([k]) => k);
+};
+
+/* The SQL twin of statusEngine's own `norm` (lowercase, non-alphanumerics to
+   spaces, collapse, trim) so 'LO Prep', 'LO_PREP' and 'lo  prep' all read as one
+   milestone. Proven equal to the JS function case-for-case in the test — a drift
+   here would silently stop matching the ladder and the hand-off would go quiet
+   again, which is the failure this whole block exists to end. */
+const MILESTONE_NORM_SQL = (col) =>
+  `btrim(regexp_replace(regexp_replace(lower(${col}), '[^a-z0-9 ]', ' ', 'g'), '\\s+', ' ', 'g'))`;
+
 // ── The volume circuit breaker (G24) — LT's own budget, seeded on boot ──────
 const BREAKER_WINDOW_MS = 10 * 60 * 1000;
 function breakerLimit() {
@@ -1353,6 +1395,36 @@ async function pushPass({ limit } = {}) {
   return out;
 }
 
+/**
+ * WHICH CARD-LESS LOANS THE CREATE PASS WILL CONSIDER — the ONE definition.
+ *
+ * Extracted so the test exercises THE REAL QUERY. It was first written inline
+ * here with the test carrying its own copy, and that test reported all-passed
+ * with the whole hand-off clause reverted: a suite that re-declares the SQL it
+ * is checking grades itself, which is the defect it exists to catch wearing a
+ * different hat. There must be exactly one copy, and the test must call it.
+ *
+ * @param {number} scan  how many rows to look at (wider than the create budget)
+ * @param {string} since override the go-live cutoff (tests only)
+ */
+async function createCandidates({ scan, since } = {}) {
+  return db.query(
+    `SELECT l.id, l.loan_number FROM lt_loans l
+      WHERE l.clickup_task_id IS NULL
+        AND ${trash.notTrashSql('l')}
+        AND ( l.created_at >= $2::date
+              OR EXISTS (SELECT 1 FROM lt_loan_milestones m
+                          WHERE m.loan_id = l.id
+                            AND m.done = true
+                            AND ${MILESTONE_NORM_SQL('m.milestone_name')} = ANY($3::text[])) )
+        AND l.loan_number IS NOT NULL AND l.loan_number <> ''
+        AND l.encompass_synced_at IS NOT NULL
+      ORDER BY (l.clickup_push_error IS NOT NULL) ASC,
+               (CASE WHEN l.clickup_push_error IS NOT NULL THEN l.updated_at END) ASC,
+               l.created_at ASC
+      LIMIT $1`, [scan, since || createSince(), HANDOFF_MILESTONES()]);
+}
+
 /** Brand-new files (discovered after the go-live day) that still have no card. */
 async function createPass({ limit } = {}) {
   if (!writer.configured()) return { ok: true, skipped: 'not_configured' };
@@ -1382,17 +1454,7 @@ async function createPass({ limit } = {}) {
   // least-recently-ATTEMPTED loans first: attempted heads sink, and every
   // stamped loan comes round within ceil(cohort/attempts) passes. Fresh
   // (unstamped) loans still come first, oldest first, exactly as before.
-  const { rows } = await db.query(
-    `SELECT l.id FROM lt_loans l
-      WHERE l.clickup_task_id IS NULL
-        AND ${trash.notTrashSql('l')}
-        AND l.created_at >= $2::date
-        AND l.loan_number IS NOT NULL AND l.loan_number <> ''
-        AND l.encompass_synced_at IS NOT NULL
-      ORDER BY (l.clickup_push_error IS NOT NULL) ASC,
-               (CASE WHEN l.clickup_push_error IS NOT NULL THEN l.updated_at END) ASC,
-               l.created_at ASC
-      LIMIT $1`, [scan, createSince()]);
+  const { rows } = await createCandidates({ scan });
   const out = { ok: true, considered: rows.length, created: 0, skipped: [], problems: [] };
   let attempts = 0;
   for (const r of rows) {
@@ -1439,7 +1501,7 @@ async function createPass({ limit } = {}) {
 
 module.exports = {
   pushLoan, createForLoan, pushPass, pushQueue, queueSql, createPass, desiredStatusFor,
-  writeEnabled, dryRun, createSince,
+  writeEnabled, dryRun, createSince, HANDOFF_MILESTONES, MILESTONE_NORM_SQL, createCandidates,
   _internals: {
     readStatusWatermark, stampStatusWatermark, raiseStatusReview, closeStatusReviews,
     circuitCheck, countWrite, seedBreakerFromDb, breakerLimit,

@@ -51,18 +51,25 @@ async function buildBorrowerTrackRecordExport(borrowerIds, opts = {}) {
 
   const TPR = require('../tpr-export');
   const stamps = require('./records-stamp');
-  // The SAME columns the investor package selects, and the SAME ordering — only the scope
-  // predicate differs, and that comes from the one definition rather than from a literal here.
-  const records = (await c.query(
+  // The SAME columns the investor package selects, and the SAME ordering.
+  /* ONE QUERY, AND THE SCOPE IS A COLUMN RATHER THAN A FILTER (owner-directed 2026-08-27).
+     The rows this export CARRIES are still chosen by the ONE predicate — it is simply asked as
+     `in_scope` instead of as a WHERE, so the same statement also hands back the lines it does
+     NOT carry. That is what lets the document name what it held back; filtering them away in
+     SQL is exactly why an export could come out a line short and say nothing.
+     Postgres evaluates the predicate, so there is no JS twin of it to drift. */
+  const all = (await c.query(
     `SELECT id, borrower_id, property_address, deal_type, purchase_price, sale_price, rehab_amount,
             purchase_date, sale_date, rent_amount, rent_date, refi_amount, refi_date, current_value,
             is_verified, verified_at, verification_status, entered_by_kind, notes,
+            (${SCOPE.scopePredicate(scope, 't')}) AS in_scope,
             ${stamps.stampSelect('t')}
        FROM track_records t
       WHERE borrower_id = ANY($1::uuid[])
-        AND ${SCOPE.scopePredicate(scope, 't')}
       ORDER BY COALESCE(sale_date, refi_date, rent_date, purchase_date) DESC NULLS LAST, created_at DESC`,
     [ids])).rows;
+  const { carried: records, heldBack, total: recordTotal } =
+    SCOPE.partitionInScope(all, scope, (r) => TPR.addrText(r && r.property_address));
 
   // Which lines carry documentation — the same read the package does, so the "Docs" column and
   // the review status mean the same thing on both.
@@ -75,19 +82,19 @@ async function buildBorrowerTrackRecordExport(borrowerIds, opts = {}) {
 
   const sections = require('./export-build').buildTrackRecordSections(records, docsByTr);
   const day = new Date().toISOString().slice(0, 10);
-  const meta = { borrowerName: opts.borrowerName || '', generatedDate: day, scope };
+  const meta = { borrowerName: opts.borrowerName || '', generatedDate: day, scope, heldBack, recordTotal };
   const trExport = require('../track-record-export');
 
   const filename = exportFilename(opts.borrowerName, scope, format, day);
   if (format === 'pdf') {
     const data = await trExport.buildTrackRecordPdf(sections, meta);
-    return { filename, contentType: 'application/pdf', data, rows: records.length, scope, format };
+    return { filename, contentType: 'application/pdf', data, rows: records.length, heldBack, recordTotal, scope, format };
   }
   const data = TPR.buildXlsx(trExport.trackRecordAoa(sections, meta), 'Track Record');
   return {
     filename,
     contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    data, rows: records.length, scope, format,
+    data, rows: records.length, heldBack, recordTotal, scope, format,
   };
 }
 

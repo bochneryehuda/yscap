@@ -64,6 +64,14 @@ function recordsStampLine(sections) {
   return require('./track-record/records-stamp').summaryLine(rows);
 }
 
+// How many project rows a built book actually carries — the denominator for "N of M held
+// back" when a caller did not state the record's own total. One definition, both writers.
+function countRows(sections) {
+  let n = 0;
+  for (const sec of (sections || [])) n += ((sec && sec.rows) || []).length;
+  return n;
+}
+
 // Build the array-of-arrays for the workbook. Money cells stay NUMERIC (so they
 // sum + right-align in Excel), everything else is a string. Fed straight into
 // tpr-export.buildXlsx — the same proven, style-free writer the package already
@@ -82,6 +90,13 @@ function trackRecordAoa(sections, meta = {}) {
   aoa.push([scope.title]);
   aoa.push([scope.note]);
   if (scope.banner) aoa.push(['⚠ ' + scope.banner]);
+  // WHAT THE FILTER REMOVED, BEFORE THE FIRST ROW. A reader comparing this workbook to the
+  // screen must not have to count rows by hand to discover a project is missing — the top of
+  // the page answers "why is this shorter than the record" and the block under the summary
+  // names each one. Absent when nothing was held back, so a complete export is unchanged.
+  const heldBack = Array.isArray(meta.heldBack) ? meta.heldBack : [];
+  const onRecord = Number(meta.recordTotal) || (heldBack.length + countRows(sections));
+  if (heldBack.length) aoa.push(['⚠ ' + SCOPE.heldBackHeadline(heldBack.length, onRecord)]);
   aoa.push([]);
   const stamped = SCOPE.hasUnverified(sections);
   for (const sec of sections) {
@@ -125,6 +140,13 @@ function trackRecordAoa(sections, meta = {}) {
   // printed only when a row actually carries it; an unstamped export is unchanged.
   const stampLine = recordsStampLine(sections);
   if (stampLine) aoa.push(['  ' + stampLine]);
+  // …AND THE PROJECTS THIS REPORT DOES NOT CARRY, BY NAME. The count alone would say a line is
+  // missing without saying WHICH, which is the same phone call.
+  if (heldBack.length) {
+    aoa.push([]);
+    aoa.push([SCOPE.heldBackHeadline(heldBack.length, onRecord)]);
+    for (const h of heldBack) aoa.push(['  ' + SCOPE.heldBackLine(h)]);
+  }
   aoa.push([]);
   aoa.push(['Status key:  Verified = confirmed by the loan team.  Docs in — review = a document is attached and is being reviewed (not yet verified).  Pending review = the borrower entered this and it is waiting on the loan team.  Not verified = nothing attached and not yet reviewed.']);
   return aoa;
@@ -160,10 +182,20 @@ async function buildTrackRecordPdf(sections, meta = {}) {
   // moment it is.
   const SCOPE = require('./track-record/export-scope');
   const scope = SCOPE.scopeMeta(meta.scope);
-  const stamped = SCOPE.hasUnverified(sections);
   const warn = rgb(0.706, 0.271, 0.235);
+  const stamped = SCOPE.hasUnverified(sections);
   page.drawText(scope.title, { x: ML, y, size: 8, font: bold, color: ink }); y -= 11;
   page.drawText(scope.note, { x: ML, y, size: 7.5, font, color: muted }); y -= 13;
+  // WHAT THE FILTER REMOVED, BEFORE THE FIRST ROW — the same rule, the same wording and the same
+  // placement as the Excel writer, so the two documents can never describe one gap differently.
+  const heldBack = Array.isArray(meta.heldBack) ? meta.heldBack : [];
+  const onRecord = Number(meta.recordTotal) || (heldBack.length + countRows(sections));
+  if (heldBack.length) {
+    // NO WARNING GLYPH HERE. This font is WinAnsi and a ⚠ throws when the PDF is drawn — the
+    // same reason the records stamp's ✓/○ are absent from this writer. The Excel keeps it.
+    page.drawText(SCOPE.heldBackHeadline(heldBack.length, onRecord),
+      { x: ML, y, size: 8, font: bold, color: warn }); y -= 12;
+  }
   if (scope.banner) {
     // A flat block, never angled — the stamp design spec this repo already follows.
     page.drawRectangle({ x: ML, y: y - 3, width: usableW, height: 13, color: warn });
@@ -203,6 +235,16 @@ async function buildTrackRecordPdf(sections, meta = {}) {
       page.drawText(stampLine, { x: ML + 7, y, size: 7.5, font: bold, color: teal });
       y -= 13;
     }
+  }
+  // …AND THE PROJECTS BY NAME. A count without the names is the same phone call.
+  if (heldBack.length) {
+    page.drawText(SCOPE.heldBackHeadline(heldBack.length, onRecord),
+      { x: ML, y, size: 8, font: bold, color: warn }); y -= 11;
+    for (const h of heldBack) {
+      page.drawText('· ' + SCOPE.heldBackLine(h), { x: ML + 6, y, size: 7.5, font, color: ink });
+      y -= 10;
+    }
+    y -= 3;
   }
   y -= 5;
 

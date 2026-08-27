@@ -5360,14 +5360,20 @@ router.get('/applications/:id/export/tpr', async (req, res) => {
       await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tpr', tier: issuance.tier, reason: issuance.override.reason });
       await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_tpr: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tpr', tier: issuance.tier || null, at: new Date().toISOString() } });
     }
-    const { zip, filename, includedCount, heldBack } = await require('../lib/tpr-export').buildTprExport(req.params.id);
+    const { zip, filename, includedCount, heldBack, trackHeldBack, trackRecordTotal } =
+      await require('../lib/tpr-export').buildTprExport(req.params.id);
     // The held-back count is on the AUDIT ROW as well as the preview: a ZIP is a
     // stream of bytes with nowhere to put a note, so this is the only durable
     // record of "the package went out one document short, and here is why".
+    // The TRACK-RECORD lines it held back are recorded the same way, for the same
+    // reason (2026-08-27): a package one PROJECT short was invisible everywhere.
     await audit(req, 'export_tpr', 'application', req.params.id, {
       bytes: zip.length, includedCount,
       heldBackForReview: (heldBack || []).length,
       heldBackFiles: (heldBack || []).slice(0, 25).map((d) => d.filename),
+      trackRecordTotal: trackRecordTotal || 0,
+      trackRecordDelivered: Math.max(0, (trackRecordTotal || 0) - (trackHeldBack || []).length),
+      trackHeldBack: (trackHeldBack || []).slice(0, 25).map((h) => ({ property: h.property, reason: h.reason })),
     });
     // Owner-directed (2026-07-13): every export is also kept on the file and
     // mirrored into SharePoint ("YS portal syncing/TPR Exports", versioned on
@@ -5409,10 +5415,26 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
         id: d.id, filename: d.filename, requirement: 'REO / track record',
       })),
     ];
+    /* AND THE PROJECTS, for the same reason (owner-reported 2026-08-26). A package
+       one PROJECT short was invisible everywhere until somebody counted the rows
+       against the screen. The scope is asked through the ONE `export-scope`
+       predicate the package itself uses, so the warning and the package can never
+       disagree about which lines are delivered. */
+    const SCOPE = require('../lib/track-record/export-scope');
+    const trRows = (await db.query(
+      `SELECT id, property_address, (${SCOPE.scopePredicate('verified', 't')}) AS in_scope
+         FROM track_records t WHERE t.id = ANY($1::uuid[])`, [trIds])).rows;
+    const trPart = SCOPE.partitionInScope(trRows, 'verified',
+      (r) => tpr.addrText(r && r.property_address));
     res.json({
       includedCount: included, trackDocs, missing,
       pending, pendingCount: pending.length,
       pendingNote: require('../lib/document-acceptance').heldBackNote(pending.length),
+      trackRecordTotal: trPart.total,
+      trackDelivered: trPart.carried.length,
+      trackHeldBack: trPart.heldBack.map((h) => ({ property: h.property, reason: h.reason })),
+      trackHeldBackNote: trPart.heldBack.length
+        ? SCOPE.heldBackHeadline(trPart.heldBack.length, trPart.total) : null,
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -11333,6 +11355,13 @@ router.patch('/borrowers/:id', async (req, res) => {
           }
           try {
             await db.query(`UPDATE borrowers SET ${sets.join(', ')}, shares_email=true WHERE id=$1`, vals);
+            /* RECORD THE DECISION, not just its side effect. `shares_email` is
+               also set by machines to get past the address's unique index, so on
+               its own it cannot be read as "a person decided these are two
+               people" — which is why the automatic de-duplication deliberately
+               ignores it and reads `borrower_profile_links` instead. */
+            await require('../lib/borrower-dedupe')
+              .recordSharedEmailDecision(req.params.id, b.email, req.actor.id);
           } catch (e2) {
             if (e2.code === '23505') return res.status(409).json({ error: 'this profile holds the portal login for that email — give it a different address first' });
             throw e2;
@@ -11889,7 +11918,14 @@ router.get('/borrowers/:id/track-record/export', async (req, res) => {
       borrowerName: b.full_name || '',
     });
     if (!out || !out.data) return res.status(500).json({ error: 'Could not build that export.' });
-    await audit(req, 'track_record_export', 'borrower', b.id, { scope: out.scope, format: out.format, rows: out.rows });
+    // The DOCUMENT states what it held back, on its face. The audit row records the same
+    // thing, because a downloaded file goes on to live outside PILOT and this row is the
+    // only durable answer to "what did that export actually contain, and what did it not?"
+    await audit(req, 'track_record_export', 'borrower', b.id, {
+      scope: out.scope, format: out.format, rows: out.rows,
+      recordTotal: out.recordTotal || 0,
+      heldBack: (out.heldBack || []).slice(0, 25).map((h) => ({ property: h.property, reason: h.reason })),
+    });
     res.setHeader('Content-Type', out.contentType);
     setContentDisposition(res, out.filename);
     res.send(Buffer.isBuffer(out.data) ? out.data : Buffer.from(out.data));
@@ -12368,6 +12404,12 @@ async function promoteContact(req, res, kind, value) {
         });
       }
       await db.query(`UPDATE borrowers SET ${col}=$2, shares_email=true, updated_at=now() WHERE id=$1`, [req.params.id, value]);
+      // Same reason as the profile editor above: the decision is the record,
+      // never the flag a machine also sets.
+      if (kind === 'email') {
+        await require('../lib/borrower-dedupe')
+          .recordSharedEmailDecision(req.params.id, value, req.actor.id);
+      }
     } else throw e;
   }
   // Keep the OLD primary in the contact list — it is still a way to reach them.
