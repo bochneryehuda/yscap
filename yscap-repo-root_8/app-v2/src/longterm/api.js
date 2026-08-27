@@ -164,6 +164,16 @@ export const ltApi = {
   // (borrower-paid / raw / lender-paid) overlays on the displayed numbers. Display only:
   // the Lender Price search itself never changes (owner-directed 2026-08-23).
   dscrCompPlan: () => ltGet(lt('/dscr/comp-plan')),
+  // THE INVESTOR FILTER'S TWO FREE READS (owner-directed 2026-08-27). The roster is the
+  // owner's whole white-label sheet — every investor, live in Lender Price or not — and
+  // the groups are the signed-in person's own named sets. Both are reads of OUR server
+  // (no vendor call, no billing), which is why the screen may fetch them from an effect.
+  // The filter they drive is DISPLAY ONLY: nothing about the selection ever reaches the
+  // Lender Price search.
+  dscrInvestors: () => ltGet(lt('/dscr/investors')),
+  dscrInvestorGroups: () => ltGet(lt('/dscr/investor-groups')),
+  dscrSaveInvestorGroup: (name, investors) => ltPost(lt('/dscr/investor-groups'), { name, investors }),
+  dscrDeleteInvestorGroup: (id) => ltDel(lt(`/dscr/investor-groups/${encodeURIComponent(id)}`)),
 
   // THE CLICKUP SYNCING SECTION (#36): everything the writer does automatically,
   // visible + manually drivable per file. Every write goes through the guarded

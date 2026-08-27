@@ -116,15 +116,73 @@ plumbing first.
 a one-press reset. A prefilled scenario nobody can tell is a prefill is how somebody quotes a
 borrower off a number nobody chose.
 
-**Nothing narrows the answer.** There is no rate window, no price target, no lender filter and no
-"hide expired" — the ask is to see **all rates and all products**, the vendor returns every rung of
-every ladder it will quote, and the board shows all of them. A guard fails the build if a filter
-appears.
+**Nothing narrows the ASK.** There is no rate window, no price target and no "hide expired" — the
+vendor is always asked for **all rates and all products** and returns every rung of every ladder it
+will quote. A guard fails the build if a request-narrowing knob appears. **What the BOARD shows can
+now be narrowed by investor — as a display overlay only (owner-directed 2026-08-27; SUPERSEDES the
+original "no lender filter" reading of this rule):** see *The investor filter* below. The overlay
+runs on the answer, never the request, and the guard holds that line instead
+(`test-lt-pricer-screen.mjs` PE-38/PE-143…).
 
 **A blank field is OMITTED from the request**, never sent as `""`. An empty string is a value, and
 the pricer would have to guess what it meant. **LTV is the page's own arithmetic, is labelled as
 such, and is never sent** — the pricer derives its own from value and loan, and shipping a rounded
 copy would let two LTVs disagree about one loan.
+
+## The investor filter, the white-label sheet, and the groups
+
+**Owner-directed 2026-08-27.** In the owner's own words: *"you should have a drop-down where you can
+select that you only want to search this investor or … this this this this investor. And every user
+should be able to set up by themselves groups … This should all be on overlays on top of Lender
+Price … You should just hide the rest of the data that you're getting and only display the data that
+the person wants to see. This should be available in the search right away before you click the
+search button … after you have all the results, you should also be able to switch them out and see
+only this investor, this investor group … compare."* And on the names: *"Every investor gets a name
+… never … display the investor's name [to a consumer]. You are only going to display the white-label
+name … certain investors have more than one program … display it as -1-2 … We should be able to
+check in the back which program each of them is in."*
+
+- **The overlay never touches the wire.** The selection lives outside the scenario, is never sent to
+  Lender Price, and cannot mark the board stale. The vendor is asked for everything, every time; the
+  board hides rows AFTER the answer lands and SAYS how much it is hiding ("display only; Lender
+  Price was asked for everything"), with one press back to all. An overlay that empties the board
+  says exactly that — never "no priced rungs" about an answer that has plenty. A row the server
+  could not resolve to a known investor is KEPT whatever the selection: hiding a row nobody chose to
+  hide is a silent drop.
+- **One identity, one sheet.** Which investor a row belongs to is resolved SERVER-SIDE through the
+  one investor registry (`src/longterm/encompass/investors.js` — every live Lender Price spelling
+  was captured by running scenarios against the live system on 2026-08-27 and recorded there, which
+  also puts each name under the audience scrub automatically). The white-label sheet is
+  `src/longterm/lenderprice/investor-programs.js` — the owner's 24 names, verbatim (Eresi→Platinum …
+  adams NYMT→Empire) — and the browser never carries a copy: the price response arrives annotated
+  (`investorKey`, `whiteLabel`, `consumerLabel`, `investorRoster`, `investorsUnmapped`) and
+  `GET /api/lt/dscr/investors` serves the roster. A multi-program investor's consumer labels are
+  the -1/-2 suffixes, numbered by the vendor's own sorted program names WITHIN an answer, with the
+  real program carried beside each label — the back-office "which program is Pearl-2". An investor
+  quoting with NO name (Amwest, on 2026-08-27) is NAMED as unmapped on the screen so the owner can
+  christen it; a consumer surface has nothing it may print for it. Every white-label name is proven
+  to pass the borrower/TPO scrub untouched — consumer-safe by construction.
+- **Before the press and after the results.** The scenario form carries the WHOLE sheet — an
+  investor not yet live in Lender Price included ("CorrFirst is not available yet … when they come
+  up, they should be there"); there is deliberately no hand-kept live flag, because what populated
+  is a fact about each answer. The sticky strip carries the switcher after the results, chips being
+  ONLY the investors that populated ("it shouldn't come up with investors that are not available for
+  the scenarios"), and a selected investor that returned nothing is named in a sentence. The SAME
+  selection drives the ineligible board.
+- **Groups are personal rows** — `lt_pricer_investor_groups` (db/634), one row per named set of
+  canonical keys per person, the `lt_pipeline_views` shape with the owner's two differences (no
+  shared form; the members are validated registry keys, refusals named). CRUD at
+  `/api/lt/dscr/investor-groups`, staff mount only — deliberately NOT in the pricer's own router,
+  which is also mounted on the secret diagnostics seam where nobody is signed in.
+- **Expand all** — *"click 'Expand All', and every section should expand to its max"* — opens every
+  rate row AND every multi-programme lender's dropdown (the per-quote Details panels stay
+  one-at-a-time; a hundred full price builds at once is not a board anybody can read), with Collapse
+  all beside it.
+
+Guards: `test-lt-investor-programs-pure.js` (the sheet verbatim, the live spellings, unmapped
+reported never guessed, the -N labels, scrub-safety), `test-lt-investor-filter-pure.mjs` (the
+overlay rules run for real), `test-lt-pricer-groups-db.js` (the rows, the isolation, the refusals,
+over real HTTP), and PE-143…PE-162 in `test-lt-pricer-screen.mjs` (the wiring).
 
 ## Staff only
 

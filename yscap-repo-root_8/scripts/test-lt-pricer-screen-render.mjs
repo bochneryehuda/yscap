@@ -100,7 +100,7 @@ export default ltApi;
 const entry = `
 import React from 'react';
 import { renderToString } from 'react-dom/server';
-import LtPricer, { PriceBuild, RateRow, IneligibleView, DscrCalc, CompSwitch, ChargeList, buildRateStack, toScenario, ltvOf } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtPricer.jsx'))};
+import LtPricer, { PriceBuild, RateRow, IneligibleView, DscrCalc, CompSwitch, ChargeList, buildRateStack, toScenario, ltvOf, InvestorPicker, InvestorStripRow } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtPricer.jsx'))};
 globalThis.__React = React;
 globalThis.__renderToString = renderToString;
 globalThis.__LtPricer = LtPricer;
@@ -113,6 +113,8 @@ globalThis.__ChargeList = ChargeList;
 globalThis.__buildRateStack = buildRateStack;
 globalThis.__toScenario = toScenario;
 globalThis.__ltvOf = ltvOf;
+globalThis.__InvestorPicker = InvestorPicker;
+globalThis.__InvestorStripRow = InvestorStripRow;
 `;
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lt-pricer-render-'));
@@ -711,6 +713,61 @@ for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/ppeSty
   ok(!plain.err && /102\.000/.test(plain.html) && />Comp</.test(plain.html)
     && !/What this quote charges/.test(plain.html),
     'R81 with no overlay the build is the vendor verbatim: 102.000, comp block back, no charge list');
+}
+
+/* ── R82..R90 — THE INVESTOR FILTER'S TWO SURFACES (owner-directed 2026-08-27) ──
+   The rules are run by test-lt-investor-filter-pure.mjs; what is proven HERE is
+   that the two components genuinely DRAW them: the picker on the form and the
+   switcher on the strip, real names beside white-labels, the display-only
+   wording, and a selected-but-absent investor named in a sentence. */
+{
+  const InvestorPicker = globalThis.__InvestorPicker;
+  const InvestorStripRow = globalThis.__InvestorStripRow;
+  const roster = [
+    { key: 'verus', whiteLabel: 'Pearl', investorLabel: 'Verus Mortgage Capital' },
+    { key: 'corrfirst', whiteLabel: 'Prime', investorLabel: 'CorrFirst' },
+  ];
+  const groups = [{ id: 'g1', name: 'My Three', investors: ['verus'] }];
+
+  const picker = attempt(() => render(React.createElement(InvestorPicker, {
+    roster, sel: null, onSel: () => {}, groups, onApplyGroup: () => {}, onDeleteGroup: () => {},
+    confirmDeleteId: null, groupName: '', onGroupName: () => {}, onSaveGroup: () => {},
+    groupBusy: false, groupNote: null,
+  })));
+  ok(!picker.err, `R82 the form picker renders (${picker.err ? picker.err.message : 'ok'})`);
+  ok(/Pearl/.test(picker.html) && /Verus Mortgage Capital/.test(picker.html),
+    'R83 …each chip carries the white-label AND the real name — this is a staff screen');
+  ok(/display only/.test(picker.html) && /always asked for everything/.test(picker.html),
+    'R84 …and says the filter is display only, in words');
+  ok(/My Three/.test(picker.html) && /Save selection as a group/.test(picker.html),
+    'R85 …with the saved groups and the save box on it');
+
+  const active = attempt(() => render(React.createElement(InvestorPicker, {
+    roster, sel: new Set(['verus']), onSel: () => {}, groups, onApplyGroup: () => {},
+    onDeleteGroup: () => {}, confirmDeleteId: null, groupName: '', onGroupName: () => {},
+    onSaveGroup: () => {}, groupBusy: false, groupNote: null,
+  })));
+  ok(!active.err && /aria-pressed="true"/.test(active.html) && /Show all investors/.test(active.html),
+    'R86 a ticked picker presses its chip and offers the one-press way back');
+
+  const empty = attempt(() => render(React.createElement(InvestorPicker, {
+    roster: [], sel: null, onSel: () => {}, groups: [], onApplyGroup: () => {}, onDeleteGroup: () => {},
+    confirmDeleteId: null, groupName: '', onGroupName: () => {}, onSaveGroup: () => {},
+    groupBusy: false, groupNote: null,
+  })));
+  ok(!empty.err && /could not be loaded/.test(empty.html),
+    'R87 a roster that failed to load says so — the board simply shows everybody');
+
+  const strip = attempt(() => render(React.createElement(InvestorStripRow, {
+    roster: [roster[0]], fullRoster: roster, sel: new Set(['verus', 'corrfirst']), onSel: () => {},
+    groups, onApplyGroup: () => {}, hidden: 3,
+  })));
+  ok(!strip.err, `R88 the strip switcher renders (${strip.err ? strip.err.message : 'ok'})`);
+  ok(/Showing 2 investors — display only/.test(strip.html) && /3 programmes hidden/.test(strip.html)
+    && /Lender Price was asked for everything/.test(strip.html),
+  'R89 …stating the overlay and the un-narrowed search');
+  ok(/Nothing populated on this scenario for Prime \(CorrFirst\)/.test(strip.html),
+    'R90 …and NAMING the selected investor that returned nothing, white-label and real name both');
 }
 
 console.log(`\n${failures === 0 ? `OFFLINE: all ${n} passed` : `FAILURES: ${failures} of ${n}`}`);
