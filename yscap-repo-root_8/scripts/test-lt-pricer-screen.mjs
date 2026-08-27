@@ -706,6 +706,12 @@ console.log('LT Pricing Engine — structural guards\n');
     'PE-152 …and no white-label name is typed into the screen — one sheet, server-side');
   ok(/<WhiteLabelTag name=\{g\.best && g\.best\.whiteLabel\}/.test(code),
     'PE-153 the lender line carries the white-label tag beside the real name (staff screen: real name leads)');
+  // Owner 2026-08-27, confirming: internally the team sees the REAL investor name AND the
+  // white-label name AND the vendor's real programme name — on BOTH boards. The ineligible
+  // board is pinned on its OWN function body, because PE-153's regex is satisfied by either.
+  ok(/<WhiteLabelTag name=\{g\.best && g\.best\.whiteLabel\}/
+    .test(code.slice(code.indexOf('function IneligibleBoard'))),
+  'PE-163 the INELIGIBLE board carries the white-label tag beside the real name too');
   ok(/consumerLabel/.test(code) && /investorKey: p\.investorKey/.test(code),
     'PE-154 the stack carries the server\'s investorKey + consumer labels through to the rows');
 

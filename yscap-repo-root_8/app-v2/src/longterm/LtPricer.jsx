@@ -1444,6 +1444,10 @@ function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
                             }}>
                               <span style={{ flex: '2 1 200px', minWidth: 180 }}>
                                 {first && <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{g.lender || '—'}</span>}
+                                {/* The white-label tag beside the real name, SAME as the eligible
+                                    board — internally the team always sees both (owner-directed
+                                    2026-08-27); only clients ever see the white-label alone. */}
+                                {first && <WhiteLabelTag name={g.best && g.best.whiteLabel} />}
                                 {first && many && (
                                   <button type="button" onClick={() => toggleLender(gKey)} aria-expanded={gOpen}
                                     style={{

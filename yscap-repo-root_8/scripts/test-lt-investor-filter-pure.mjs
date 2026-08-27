@@ -134,5 +134,26 @@ const PROGRAMS = [
     'IF-22 with no grouping handed in, the rates still open and no lender key is invented');
 }
 
+// 8) THE INELIGIBLE BOARD CARRIES BOTH NAMES TOO — the server's white-label decoration on a
+//    disqualified LENDER entry survives the reshape, so the board's tag reads it off `best`
+//    exactly as the eligible board does (owner-directed 2026-08-27: internally the team sees the
+//    REAL name AND the white-label name on BOTH boards; only clients see the white-label alone).
+{
+  const stack = PB.buildIneligibleStack([
+    { lender: 'Deephaven', investorKey: 'deephaven', whiteLabel: 'Diamond',
+      items: [{ program: 'DSCR 30yr Fixed', rate: 7.5, reasons: ['dscr'] }] },
+    { lender: 'Amwest', items: [{ program: 'Mystery', rate: 7.5, reasons: [] }] },
+  ]);
+  const row = stack.rates[0];
+  const dh = row && row.lenders.find((g) => g.lender === 'Deephaven');
+  const aw = row && row.lenders.find((g) => g.lender === 'Amwest');
+  ok(dh && dh.best && dh.best.whiteLabel === 'Diamond',
+    'IF-23 a disqualified lender\'s white-label rides the reshape onto `best`, where the board\'s tag reads it');
+  ok(dh && dh.best && dh.best.program === 'DSCR 30yr Fixed',
+    'IF-24 …beside the vendor\'s REAL programme name, which is never replaced');
+  ok(aw && aw.best && aw.best.whiteLabel === null,
+    'IF-25 …and an unmapped lender carries NULL — never a guessed name');
+}
+
 console.log(`\n${failures === 0 ? 'OK — the overlay rules hold' : `FAILURES: ${failures}`}`);
 process.exit(failures ? 1 : 0);
