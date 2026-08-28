@@ -5,6 +5,7 @@
  * breaks before you wire a provider.
  */
 const cfg = require('../../config');
+const rateLimit = require('./rate-limit');
 let provider;
 switch ((cfg.emailProvider || 'none').toLowerCase()) {
   case 'graph':  provider = require('./graph');  break;
@@ -12,8 +13,9 @@ switch ((cfg.emailProvider || 'none').toLowerCase()) {
   default:       provider = require('./noop');   break;
 }
 
-/** #150 — LO-branded From: "<Officer Name> — YS Capital <no-reply@…>".
-    The ADDRESS is always our verified sender (taken from NOTIFY_FROM); only
+/** #150 — LO-branded From: "<Officer Name> — YS Capital <notifications@…>".
+    The ADDRESS is always our verified sender (taken from NOTIFY_FROM — never a
+    no-reply address; config repairs one, owner-directed 2026-08-26); only
     the display name changes, so deliverability/DMARC is untouched. Providers
     that can't rebrand the sender (Graph mailboxes) simply ignore `from`.
     Returns null when no name is given → callers fall back to the default. */
@@ -45,11 +47,38 @@ async function sendMail(opts = {}) {
   // Center (e.g. notify's pixel-free loan-officer BCC copy — the borrower send
   // already captured that notification's history; a second capture on the same
   // notification_id would clobber the recorded recipient).
-  const { _ctx, _skipCapture, ...send } = opts || {};
+  const { _ctx, _skipCapture, _maxWaitMs, ...send } = opts || {};
   const ctx = _ctx || {};
   let res, err;
+  /* THE RATE GATE (owner-reported 2026-08-23: "Resend 429, too many requests …
+     We need to stick with this rate limit and set up a queue").
+
+     It belongs HERE, at the one chokepoint every send site already flows
+     through, and nowhere else. Putting it in the Resend client would leave the
+     Graph provider unmetered; putting it at the call sites would mean 37 copies
+     of the same rule, and the 38th would be the one that bursts. One definition,
+     applied to every provider, with no call-site change anywhere in the app.
+
+     `schedule` serializes the send into a FIFO, spends one token from the budget
+     shared by every process (db/619), and — if the provider refuses anyway —
+     pauses the whole fleet for the provider's stated reset and re-offers this
+     same message. The `note` callback it hands back is threaded to the provider
+     as `onRate` so the provider's own ratelimit headers train the budget.
+
+     A PROVIDER THAT CONTACTS NOTHING IS NOT METERED. The limit belongs to the
+     REMOTE service — it is Resend's ceiling, not ours — so a provider that
+     issues no request to anyone has nothing for it to protect, and pacing it
+     only throttles us. `outbound === false` (today: ./noop.js) says so on the
+     provider itself rather than as a `=== 'none'` string test here, because it
+     is a fact about the provider. Anything that does NOT declare the flag is
+     metered, so a provider added later errs toward the limit, never past it. */
+  const metered = provider.outbound !== false;
   try {
-    res = await provider.sendMail(send);
+    res = metered
+      ? await rateLimit.schedule(
+        (note) => provider.sendMail(Object.assign({}, send, { onRate: note })),
+        { maxWaitMs: _maxWaitMs })
+      : await provider.sendMail(send);
   } catch (e) { err = e; }
   const status = err ? 'error' : (res && res.ok ? 'sent' : 'skipped');
   // THE ATTACHMENT LINE (owner-directed 2026-08-14: "every single thing here should
@@ -84,4 +113,9 @@ async function sendMail(opts = {}) {
   return res;
 }
 
-module.exports = Object.assign({}, provider, { fromWithName, sendMail });
+/* The outbound queue's live state, for the admin health surface: how fast we are
+   allowed to send, how deep the queue is, how often a send waited, and whether the
+   provider has actually refused us. Read-only and never throws. */
+function rateStatus() { return rateLimit.snapshot(); }
+
+module.exports = Object.assign({}, provider, { fromWithName, sendMail, rateStatus, rateLimit });

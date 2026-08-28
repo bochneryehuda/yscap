@@ -26,8 +26,11 @@ function cleanHeaders(headers) {
 
 module.exports = {
   name: 'resend',
+  // A real remote service with a real quota — metered by the shared send-rate
+  // queue at the ./index.js chokepoint. See ./noop.js for why the flag exists.
+  outbound: true,
   cleanHeaders,
-  async sendMail({ to, subject, text, html, attachments, replyTo, from, bcc, cc, headers }) {
+  async sendMail({ to, subject, text, html, attachments, replyTo, from, bcc, cc, headers, onRate }) {
     if (!cfg.resendApiKey) {
       throw new Error('RESEND_API_KEY is not set — add it in the Render environment to send email.');
     }
@@ -68,8 +71,9 @@ module.exports = {
         },
         body: JSON.stringify(Object.assign({
           // #150 — LO branding: an optional per-message From display name
-          // ("Chaim Klein — YS Capital <no-reply@…>"). The ADDRESS is always
-          // ours (the verified sending domain); only the display name varies.
+          // ("Chaim Klein — YS Capital <notifications@…>"). The ADDRESS is
+          // always ours (the verified sending domain — never a no-reply; the
+          // config guard repairs one); only the display name varies.
           // Absent → the corporate default, unchanged.
           from: from || cfg.notifyFrom,
           to: recipients,
@@ -97,10 +101,27 @@ module.exports = {
       clearTimeout(timer);
     }
 
+    /* THE PROVIDER'S OWN RATE HEADERS (owner-reported 429, 2026-08-23).
+       Resend answers every call — success or refusal — with the IETF headers
+       `ratelimit-limit` / `ratelimit-remaining` / `ratelimit-reset`. Handing them
+       back lets src/lib/email/rate-limit.js meter against the ceiling the
+       provider ACTUALLY states rather than one typed into a constant, and lets a
+       429 back off for exactly as long as the provider asked for instead of a
+       number we invented. `onRate` is supplied by the limiter; a caller that does
+       not pass one is byte-identical to before. */
+    if (typeof onRate === 'function') { try { onRate(r.headers); } catch (_) { /* never break a send to read a header */ } }
+
     const j = await r.json().catch(() => ({}));
     if (!r.ok) {
       // Resend returns {name, message} on error, e.g. 403 domain-not-verified.
-      throw new Error(`Resend ${r.status}: ${j.message || j.name || 'send failed'}`);
+      // The STATUS rides on the error so the limiter can recognise a rate refusal
+      // by its code instead of by matching the message text, and the headers ride
+      // with it so the back-off is the provider's stated reset, not a guess.
+      const err = new Error(`Resend ${r.status}: ${j.message || j.name || 'send failed'}`);
+      err.status = r.status;
+      err.provider = 'resend';
+      try { err.rateHeaders = require('./rate-limit').readRateHeaders(r.headers); } catch (_) { /* optional */ }
+      throw err;
     }
     return { ok: true, id: j.id };
   },

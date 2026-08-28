@@ -15,9 +15,16 @@ const express = require('express');
 const router = express.Router();
 
 const loanSync = require('../sync/loans');
+const conditionSync = require('../conditions/sync');
+const milestoneCatalogSync = require('../sync/milestone-catalog');
+const worker = require('../sync/worker');
 const access = require('../access');
 const settingsStore = require('../settings/store');
 const db = require('../db');
+const encClient = require('../encompass/client');
+const killSwitch = require('../encompass/enabled');
+const runLog = require('../sync/run-log');
+const trash = require('../trash');
 
 async function requireSyncAdmin(req, res, next) {
   try {
@@ -36,28 +43,120 @@ async function requireSyncAdmin(req, res, next) {
 router.get('/', async (req, res) => {
   try {
     const { rows } = await db.query(
-      `SELECT count(*)::int AS loans,
-              count(*) FILTER (WHERE encompass_synced_at IS NOT NULL)::int AS read_at_least_once,
-              count(*) FILTER (WHERE encompass_sync_error IS NOT NULL)::int AS failing,
+      // The BOOK is the live loans; Encompass's deleted files (its trash folder)
+      // are counted SEPARATELY as the archive, or this screen's total disagrees
+      // with the pipeline's by exactly the number of deleted files and reads as a
+      // sync problem (owner-directed 2026-08-23).
+      `SELECT count(*) FILTER (WHERE ${trash.notTrashSql('lt_loans')})::int AS loans,
+              count(*) FILTER (WHERE ${trash.trashSql('lt_loans')})::int AS archived,
+              count(*) FILTER (WHERE encompass_synced_at IS NOT NULL AND ${trash.notTrashSql('lt_loans')})::int AS read_at_least_once,
+              count(*) FILTER (WHERE encompass_sync_error IS NOT NULL AND ${trash.notTrashSql('lt_loans')})::int AS failing,
+              count(*) FILTER (WHERE encompass_synced_at IS NULL
+                                 AND encompass_sync_error IS NULL
+                                 AND ${trash.notTrashSql('lt_loans')})::int AS waiting_count,
               max(encompass_synced_at) AS last_synced_at,
               min(encompass_synced_at) FILTER (WHERE encompass_synced_at IS NOT NULL) AS oldest_synced_at
          FROM lt_loans`,
     );
     // Name what is failing rather than only counting it — a count sends somebody
     // hunting, and the reason is already stored on the loan.
+    // PARTIAL IS NOT UNREADABLE, and the screen must not have to guess which it is
+    // by matching prose (owner-reported 2026-08-25: sixteen files that read
+    // PERFECTLY were listed under "Files we could not read"). `partial` is
+    // computed from the ONE prefix `readLoan` writes, so the two can never drift.
     const { rows: failing } = await db.query(
-      `SELECT loan_number, encompass_loan_guid, encompass_sync_error, updated_at
+      `SELECT loan_number, encompass_loan_guid, encompass_sync_error, updated_at,
+              (encompass_sync_error LIKE $1 || '%') AS partial
          FROM lt_loans
         WHERE encompass_sync_error IS NOT NULL
+          AND ${trash.notTrashSql('lt_loans')}
         ORDER BY updated_at DESC
+        LIMIT 20`, [require('../sync/loans').PARTIAL_READ_PREFIX],
+    );
+    // LOANS STILL WAITING FOR THEIR FIRST READ — named, not merely subtracted
+    // (owner-reported 2026-08-24: "All these files somehow are not updating in
+    // pilot. I don't know why I'm not getting the information"). A discovered loan
+    // carries only what the pipeline SEARCH returned until the full read opens the
+    // file itself, and until now the count of those was implicit (loans minus
+    // read_at_least_once) and the loans themselves were named nowhere. THE OLDEST
+    // FIRST, because a loan that arrived an hour ago is a queue and one that has
+    // waited three days is a fault — and the wait itself is what tells them apart.
+    const { rows: waiting } = await db.query(
+      `SELECT loan_number, encompass_loan_guid, created_at,
+              EXTRACT(EPOCH FROM (now() - created_at))::bigint AS waiting_secs
+         FROM lt_loans
+        WHERE encompass_synced_at IS NULL
+          AND encompass_sync_error IS NULL
+          AND ${trash.notTrashSql('lt_loans')}
+        ORDER BY created_at ASC
         LIMIT 20`,
     );
+
+    // How fresh the CONDITION CENTRE is, on the same screen and for the same
+    // reason: a condition list is only as trustworthy as its last read, and
+    // "why does this centre look empty?" has to be answerable without asking
+    // somebody. Reported even while the feature is off — an all-zero row plus
+    // the switch state is the honest answer, and hiding it would leave the
+    // owner unable to tell "nothing to read" from "nothing ever read it".
+    const { rows: cond } = await db.query(
+      `SELECT count(*) FILTER (WHERE conditions_synced_at IS NOT NULL)::int AS loans_read,
+              count(*) FILTER (WHERE conditions_sync_error IS NOT NULL
+                                  OR documents_sync_error IS NOT NULL)::int AS failing,
+              max(GREATEST(conditions_synced_at, documents_synced_at)) AS last_synced_at
+         FROM lt_loans`,
+    );
+    const { rows: mirrored } = await db.query(
+      `SELECT (SELECT count(*) FROM lt_conditions WHERE is_removed = false)::int AS conditions,
+              (SELECT count(*) FROM lt_documents  WHERE is_removed = false)::int AS documents`,
+    );
+
+    // HOW FRESH THE MILESTONE CATALOG IS, for the same reason as the conditions:
+    // the stepper on every file screen is drawn from it, and a catalog nobody has
+    // ever confirmed against Encompass is a different fact from one confirmed this
+    // morning. `live` says how many rows a real read has touched — with none, the
+    // whole catalog is still db/547's 2026-08-14 photograph, which is worth
+    // knowing before somebody wonders why a new step is missing.
+    const { rows: cat } = await db.query(
+      `SELECT count(*)::int AS total,
+              count(*) FILTER (WHERE COALESCE(is_archived, false) = false)::int AS live_steps,
+              count(*) FILTER (WHERE catalog_source = 'live')::int AS live,
+              max(catalog_synced_at) AS last_synced_at
+         FROM lt_encompass_milestones`,
+    ).catch(() => ({ rows: [{}] }));
+
     let canRun = false;
+    let conditionsEnabled = false;
     try {
       const { settings } = await settingsStore.load();
       canRun = access.mayManagePeople(req.actor, settings);
+      conditionsEnabled = settings['conditions.enabled'] === true;
     } catch (_) { /* the figures are still worth showing; the button simply stays off */ }
-    res.json({ ...rows[0], failing, canRun });
+    // WHAT THE LAST PASS ACTUALLY DID (db/616) — the one thing every figure above
+    // cannot say. Everything else on this response is counted out of `lt_loans`, so a
+    // pass that produced no loans (Encompass refused, the switch is off, the search
+    // came back empty) renders as an untouched screen with no explanation anywhere.
+    // This is the explanation. It is best-effort: a diary we cannot read must not
+    // cost the figures we can.
+    const lastRuns = await runLog.latest();
+    res.json({
+      ...rows[0],
+      failing,
+      // The loans still waiting for their first read, oldest first, each with how
+      // long it has waited. `waitingCount` is derived from the SAME two counts the
+      // row above already carries, so the number and the list cannot disagree.
+      waiting,
+      canRun,
+      // Keyed by pass so the screen can lead with the one that matters — the loans —
+      // and still say something about the others without a second request.
+      lastRuns,
+      lastLoanRun: lastRuns.find((r) => r.kind === 'loans') || null,
+      // A pass in flight is a different state from a pass that finished, and an
+      // empty screen during the first drain is the moment somebody most wants to
+      // know which one they are looking at.
+      running: worker.isRunning(),
+      conditions: { enabled: conditionsEnabled, ...cond[0], ...mirrored[0] },
+      milestoneCatalog: cat[0] || {},
+    });
   } catch (e) {
     console.error('[lt] sync state failed:', (e && e.message) || e);
     res.status(500).json({ error: 'Could not read the sync state.' });
@@ -77,10 +176,139 @@ router.post('/', requireSyncAdmin, async (req, res) => {
       loanFolder: body.loanFolder ? String(body.loanFolder) : null,
     });
     if (!out.ok) return res.status(502).json({ error: out.reason });
-    res.json(out);
+
+    // THE CONDITION CENTRE RIDES THE SAME PASS. Refreshing the book and
+    // refreshing what each loan is waiting on are one job to the person pressing
+    // the button, and a mirror nothing ever calls is a mirror that stays empty —
+    // which is exactly how the read side shipped able to answer only "nothing".
+    //
+    // BEST-EFFORT, ALWAYS: it is bounded by its OWN budget, it refuses politely
+    // while `conditions.enabled` is off (so this call is safe on every
+    // deployment as it stands), and its failure is REPORTED beside the loan
+    // pass rather than replacing it. Reading conditions is a READ of Encompass;
+    // nothing here writes to Encompass.
+    let conditions = null;
+    try {
+      conditions = await conditionSync.syncOnce({});
+    } catch (e) {
+      conditions = { ok: false, reason: (e && e.message) || String(e) };
+    }
+
+    // The tenant's own milestone catalog rides along too, and skips itself unless
+    // a day has passed — so pressing the button costs its twenty reads at most
+    // once a day. It is what stops a step a buyer added from blanking the
+    // progress bar on every file sitting at it. Best-effort, like the conditions.
+    let milestoneCatalog = null;
+    try {
+      milestoneCatalog = await milestoneCatalogSync.refreshOnce({});
+    } catch (e) {
+      milestoneCatalog = { ok: false, reason: (e && e.message) || String(e) };
+    }
+
+    res.json({ ...out, conditions, milestoneCatalog });
   } catch (e) {
     console.error('[lt] sync failed:', (e && e.message) || e);
     res.status(500).json({ error: 'Could not run the sync.' });
+  }
+});
+
+/**
+ * POST /api/lt/sync/pull — PULL EVERYTHING FROM ENCOMPASS, NOW.
+ *
+ * Owner-directed 2026-08-23: *"Add, for the super admin, a syncing button. Like we
+ * have 'pull from click up', you should have a button to pull from Encompass as well.
+ * That should trigger it right away."*
+ *
+ * WHY THIS IS NOT THE BUTTON THAT ALREADY EXISTED. `POST /` runs ONE pass — 25 loans
+ * — which is right for "refresh what moved" and is the wrong answer entirely for
+ * somebody who has just been told the book is empty: they would press it, watch 25 of
+ * 772 files arrive, and reasonably conclude it was broken. This runs the SAME drain
+ * the background worker runs (`worker.tickOnce`), which keeps calling until the book
+ * is caught up or its budget is spent, and brings the conditions and the milestone
+ * catalog with it.
+ *
+ * IT ANSWERS IMMEDIATELY AND WORKS IN THE BACKGROUND, and that is a correctness
+ * requirement rather than a nicety: a full drain is bounded at TEN MINUTES, and no
+ * browser, proxy or load balancer between here and the user will hold a request open
+ * that long. Waiting would give them a timeout on a pull that is in fact running
+ * perfectly — the worst possible reading. So the answer is "started", and the Sync
+ * screen's own state query is what shows the numbers climbing.
+ *
+ * IT CANNOT STACK. `tickOnce` refuses while a pass is already running (its own
+ * `running` flag), so a second press — or a press that lands while the 20-minute
+ * timer is mid-pass — is a no-op that says so rather than a second sweep of the
+ * tenant's shared API budget.
+ *
+ * ENCOMPASS STAYS ONE-WAY: every call this schedules is a read.
+ */
+router.post('/pull', requireSyncAdmin, async (req, res) => {
+  // A CONNECTION THAT IS SWITCHED OFF IS ANSWERED HERE, NOT IN THE BACKGROUND.
+  // Everything below answers "started" and then works out of sight, which is right
+  // for a real pull and wrong for a refusal: the person would be told the book is
+  // being pulled, watch nothing arrive, and have no way to learn why. So the one
+  // state we can know instantly is reported instantly, in the words that say what
+  // to change. A 200 on purpose — a deliberate setting is not a fault, and a 5xx
+  // would send the screen down its "something is broken" path.
+  const offReason = !killSwitch.encompassEnabled() ? killSwitch.OFF_REASON
+    : (encClient.configured() ? null : 'Encompass is not connected yet — add the long-term Encompass credentials first.');
+  if (offReason) return res.json({ started: false, reason: offReason, note: offReason });
+
+  // A PASS ALREADY RUNNING IS SAID OUT LOUD. `tickOnce` refuses one, but it refuses
+  // by RETURN VALUE — and the call below is fired through setImmediate, where nothing
+  // reads it. So without this the button answers "pulling now" and then quietly does
+  // nothing, which is the one answer worse than a refusal.
+  if (worker.isRunning()) {
+    const busy = 'A pull is already running. Give it a minute and refresh this screen — '
+      + 'starting a second one would only make both slower.';
+    return res.json({ started: false, reason: busy, note: busy });
+  }
+
+  // Answer first, then work. Nothing after this line may reach the response.
+  res.json({
+    started: true,
+    note: 'Pulling from Encompass now. This runs in the background and works through the whole book — '
+      + 'refresh this screen in a minute or two to watch the count climb.',
+  });
+  setImmediate(() => {
+    worker.tickOnce({ trigger: 'manual' }).catch((e) => {
+      // The pass reports its own failures on the loans themselves and in the log;
+      // this catch exists only so a rejection can never take the process down.
+      console.error('[lt] manual Encompass pull failed:', (e && e.message) || e);
+    });
+  });
+});
+
+/**
+ * POST /api/lt/sync/conditions — the Condition Centre's own pass, on its own.
+ *
+ * The whole-book sync above already runs it, so this is for reading the centre
+ * again WITHOUT re-reading every loan: the switch was just turned on, a loan's
+ * last read failed, or somebody wants the newest conditions on a busy file.
+ *
+ * A refusal (the feature is off, Encompass is not connected) is a 200 carrying
+ * its own reason — it is a state of the configuration, not a fault, and a 502
+ * would send the screen down its "something is broken" path for a deliberate
+ * setting.
+ */
+router.post('/conditions', requireSyncAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const budget = Number(body.readBudget);
+    const out = await conditionSync.syncOnce({
+      // A caller may ask for a smaller pass; it may not ask for an unbounded one.
+      readBudget: Number.isFinite(budget) && budget > 0
+        ? Math.min(Math.floor(budget), 200)
+        : conditionSync.DEFAULT_READ_BUDGET,
+      // Handed through RAW. `refreshHoursFor` is the one definition of what an
+      // age means — 0 is "re-read everything now", which is the point of asking
+      // for this pass by hand, and junk falls back to the ordinary refresh age.
+      // Deciding it a second time here is how the button and the sweep drift.
+      refreshHours: body.refreshHours,
+    });
+    res.json(out);
+  } catch (e) {
+    console.error('[lt] condition sync failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not read the conditions.' });
   }
 });
 

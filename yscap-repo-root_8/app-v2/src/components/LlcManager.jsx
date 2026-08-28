@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import DocPreview from './DocPreview.jsx';
-import { fileToBase64 } from '../lib/files.js';
 import { onFilesDropped } from '../lib/drop-files.js';
 import { EmailInput } from './FormattedInputs.jsx';
 import { ENTITY_TYPES, describeEntity, entityTypeAssumed, titlesFor, subtypesFor } from '../lib/entityType.js';
@@ -188,9 +187,14 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
     setBusy('upload'); setErr('');
     try {
       for (const file of files) {
+        /* THE FILE ITSELF, STREAMED (owner-directed 2026-08-21). An operating agreement or a
+           set of articles is a multi-page SCAN — routinely the largest thing filed on a loan —
+           and reading it into base64 first cost the server about five times the file to parse.
+           Both `staffUploadLlcDoc` and the borrower's `uploadDoc` take the streaming door
+           whenever they are handed a File. */
         await A.upload({
           llcId, checklistItemId: slot.item_id,
-          filename: file.name, contentType: file.type, dataBase64: await fileToBase64(file),
+          filename: file.name, contentType: file.type, size: file.size, file,
         });
       }
       flash(files.length > 1 ? `Uploaded ${files.length} files ✓` : 'Uploaded ✓'); await load(); onChanged && onChanged();

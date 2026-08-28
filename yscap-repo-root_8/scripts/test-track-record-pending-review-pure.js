@@ -169,7 +169,11 @@ console.log('\nD2. the queue has a SCREEN, in the hub for things waiting on a de
      the "re-point, do not relax" rule the D2 header states, applied to a
      component extraction instead of a screen swap. */
   const detail = read('app-v2', 'src', 'components', 'track-record', 'LineDetail.jsx');
-  const hub = read('app-v2', 'src', 'screens', 'StaffApprovals.jsx');
+  /* COMMENTS STRIPPED — the hub's own note explaining why the tab went spells
+     out the route, so a grep over the raw file matches the PROSE and would
+     pass with the link deleted. Read code, never prose. */
+  const hub = read('app-v2', 'src', 'screens', 'StaffApprovals.jsx')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const layout = read('app-v2', 'src', 'components', 'StaffLayout.jsx');
   ok(/staffTrackRecordWorkspace\(/.test(screen), 'the screen reads the queue');
   ok(/<LineDetail\b/.test(screen),
@@ -181,8 +185,30 @@ console.log('\nD2. the queue has a SCREEN, in the hub for things waiting on a de
   ok(/e && e\.message/.test(detail), '…and shows the server\'s own refusal wording, never a summary');
   ok(/maySignOff/.test(detail) && /sign_off_conditions/.test(screen),
     'verifying is offered only to somebody with sign-off — the same rule the route enforces');
-  ok(/StaffTrackRecordWorkspace/.test(hub) && /'track-record'/.test(hub),
-    'it is a TAB of the Approvals hub, not another top-level nav link');
+  /* IT MOVED OUT OF THE HUB, AND THE REQUIREMENT DID NOT — re-pointed, not
+     relaxed, exactly as this section's header says to do. The owner took the
+     tab out on 2026-08-26 ("I don't know why the admin has a section for track
+     record verification. I don't know where it's coming into play in the
+     approvals section"), so asserting the TAB now pins a decision they
+     reversed. What the line was ever protecting is two things, and both are
+     asserted below on the surfaces that now carry them: the queue has a screen
+     you can actually reach, and reaching it did not cost another top-level nav
+     link. The third assertion is the one the move made necessary — the hub
+     still counts these in its badge, so it must still SAY so and offer a way
+     through, or the badge counts work you cannot get to from it. */
+  const app = read('app-v2', 'src', 'App.jsx');
+  ok(/path="\/internal\/track-record"/.test(app) && /StaffTrackRecordWorkspace/.test(app),
+    'it has its own full-screen route, so the queue is reachable on its own');
+  ok(!/to="\/internal\/track-record"/.test(layout),
+    '…and that did not cost another top-level nav link');
+  /* THE ANCHOR, not merely the string. The hub carries this route TWICE — the
+     old-bookmark redirect and the signpost — so a bare substring test is
+     satisfied by the redirect and passes with the link deleted. Proven: the
+     loose version survived its own mutation. */
+  ok(/href="#\/internal\/track-record"/.test(hub) && /counts\['track-record'\]/.test(hub),
+    '…and the Approvals hub, whose badge still counts these, says how many are waiting and links to them');
+  ok(/requested === 'track-record'/.test(hub),
+    '…so an old ?tab=track-record bookmark still lands on the screen that owns it');
   ok(!/StaffTrackRecordReviews/.test(hub),
     '…and the screen it replaced is not mounted alongside it — two of them is the complaint this rebuild started from');
   ok(/staffTrackRecordReviewsCount/.test(hub) && /staffTrackRecordReviewsCount/.test(layout),

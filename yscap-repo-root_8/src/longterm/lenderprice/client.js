@@ -446,19 +446,6 @@ async function apiGet(path, { retryOn401 = true } = {}) {
   return { ok: true, data: r.json != null ? r.json : r.text };
 }
 
-// ---- enrichment (blueprint step 3): zip → county / limits / AMI ------------
-// These are the confirmed lookup endpoints seen in the login HAR. companyId/userId come
-// from the session. All read-only.
-async function enrichZip(zip, { loanAmount = 0, units = 1 } = {}) {
-  const s = await getSession();
-  if (!s.ok) return { ok: false, ...s };
-  const out = { ok: true, zip: String(zip) };
-  // Conforming/limit lookup by zip (public pricing path; units + loanAmount as the app sends).
-  const lim = await apiGet(`/rest/v1/lp-ppe-integration/pricing/mortgageLimitByZip/1/${encodeURIComponent(zip)}/${encodeURIComponent(units)}/${encodeURIComponent(Math.round(loanAmount) || 0)}`);
-  if (lim.ok) out.mortgageLimit = lim.data;
-  return out;
-}
-
 // ---- canonical pricing foundation (blueprint step 4): defaultSearch + smo --
 // The Lender Price web app never hand-builds a search: it GETs the company's full default
 // search model and its special-mortgage-option registry, then overlays only the scenario.
@@ -1053,7 +1040,11 @@ function mapPrepay(months) {
   if (!m) return { PrepayTerm: null, PrePayment_Plan_Type: null, ppp: 'No PPP' };
   return { PrepayTerm: m + ' Months', PrePayment_Plan_Type: 'Standard', ppp: (m / 12) + ' Yr PPP' };
 }
-function num(v) { if (v == null || v === '') return null; const n = parseFloat(String(v).replace(/[^0-9.]/g, '')); return isFinite(n) ? n : null; }
+// The vendor number parse is ONE definition, shared with search-model + field-registry.
+// It used to live here as `parseFloat(String(v).replace(/[^0-9.]/g, ''))`, which
+// deleted the MINUS SIGN — so every negative LLPA and every negative margin was
+// read as its positive twin, a credit shown as a charge. See parse-num.js.
+const { num } = require('./parse-num');
 
 // ---- parser (blueprint step 6): flatten the raw tree to clean ladders ------
 // The raw searchRaw response is a deep nested tree. This flattens it to a per-lender/
@@ -1281,15 +1272,29 @@ function rateSheetSummary(raw, options) {
   };
 }
 
+// §38 — A PROGRAM IS IDENTIFIED BY ITS RATE SHEET, NOT ONLY ITS NAME (owner-reported 2026-08-24:
+// "on high rates you price on 109, and then on the next rate one higher, you price the same lender
+// as 106"). MEASURED live on the default CT search: Lender Price returns ResiCentral's
+// "DSCR Select 30 Year Fixed" TWICE — once from the "ResiCentral Non-Del Parent - NEW" rate period
+// and once from "Resicentral Wholesale Parent" — two DIFFERENT ladders (104.275 vs 101.2 at the
+// same coupon) under ONE program name. Keying on lender+program alone merged the two channels'
+// rungs into one ladder, so after the rate sort the board read "same lender, 104.3 then 98.5 at
+// the next rate" — a price jumping DOWN as the rate went up, which no real ladder does. The key
+// therefore includes the vendor's own grid + rate-period identity, which is exactly how Lender
+// Price itself keeps them apart; the two channels become two programs, each ladder monotone,
+// each stamped with the sheet it priced from (`rateSheetName`) so a reader can tell them apart.
+function programKeyOf(o) {
+  return o.lender + '||' + o.program + '||' + (o.rateGridId || '') + '||' + ((o.rateSheet && o.rateSheet.id) || '');
+}
 function parse(raw) {
   const { options } = collectOptions(raw);
   if (!options.length) return parseFallback(raw); // synthetic / non-grouped shapes
   const seen = new Map();
   const programs = [];
   for (const o of options) {
-    const key = o.lender + '||' + o.program;
+    const key = programKeyOf(o);
     let p = seen.get(key);
-    if (!p) { p = { lender: o.lender, investor: o.investor, lenderId: o.lenderId, program: o.program, product: o.product, rungs: [] }; seen.set(key, p); programs.push(p); }
+    if (!p) { p = { lender: o.lender, investor: o.investor, lenderId: o.lenderId, program: o.program, product: o.product, rateGridId: o.rateGridId || null, rateSheetName: (o.rateSheet && o.rateSheet.name) || null, rungs: [] }; seen.set(key, p); programs.push(p); }
     const pb = o.priceBuild;
     p.rungs.push({
       rate: pb.noteRate, price: pb.price, points: pb.adjustedPoints, priceDerivedFromPoints: pb.priceDerivedFromPoints,
@@ -1334,9 +1339,9 @@ function parseFull(raw, opts = {}) {
   const seen = new Map();
   const programs = [];
   for (const o of options) {
-    const key = o.lender + '||' + o.program;
+    const key = programKeyOf(o); // §38 — same rule as parse(): one program per rate sheet, never a merged ladder
     let p = seen.get(key);
-    if (!p) { p = { lender: o.lender, investor: o.investor, lenderId: o.lenderId, lenderShort: o.lenderShort, program: o.program, product: o.product, rateGridId: o.rateGridId, options: [] }; seen.set(key, p); programs.push(p); }
+    if (!p) { p = { lender: o.lender, investor: o.investor, lenderId: o.lenderId, lenderShort: o.lenderShort, program: o.program, product: o.product, rateGridId: o.rateGridId, rateSheetName: (o.rateSheet && o.rateSheet.name) || null, options: [] }; seen.set(key, p); programs.push(p); }
     p.options.push(o);
   }
   for (const p of programs) {
@@ -1437,8 +1442,10 @@ function disqualifyRulesOf(leaf) {
   if (!out.length) { const set = new Set(); collectReasons(leaf, set, 0); for (const r of set) add(r); }
   return out;
 }
-// Parse the DISQUALIFIED tree: which lender/investor declined which program, and the exact rules
-// that failed. Same Program→Rate→Lender grouping and lender identity as the qualified parser.
+// Parse the DISQUALIFIED tree: which lender/investor declined which program, at what rate, read
+// exactly as the qualified side reads it, and the exact rules that failed. It really does walk the
+// same Program→Rate→Lender grouping now — `RateKey` included — and describes each leaf through the
+// SAME `optionOf` the qualified parser uses, so the two boards can never disagree about one leaf.
 function parseDisqualified(raw) {
   const R = (raw && typeof raw === 'object' && raw.results) ? raw.results : null;
   const root = R && R.disqualifiedData;
@@ -1453,6 +1460,14 @@ function parseDisqualified(raw) {
     if (node.plenderId) next.plenderId = node.plenderId;
     if (node.type === 'CriteriaFromLineResultKey' && node.keyLabel) next.program = node.keyLabel;
     else if (node.type === 'LenderKey' && node.keyLabel) next.lender = node.keyLabel;
+    // ⛔ THE RATE COMES FROM THE TREE, and not reading it is what made the ineligible side
+    // un-stackable. `disqualifiedData` is the SAME Program → Rate → Lender → leaf tree the
+    // qualified containers use (docs/longterm/LENDERPRICE-RESPONSE-SCHEMA.md §2), and a declined
+    // leaf frequently carries no rate field of its own — the rate is the `RateKey` GROUPING NODE
+    // above it. This parser's header claimed "Same Program→Rate→Lender grouping" while reading only
+    // two of the three, so an ineligible item's rate was null unless its leaf happened to repeat
+    // it, and the screen had no rate to group by.
+    else if (node.type === 'RateKey' && node.keyLabel != null) next.rate = node.keyLabel;
     if (Array.isArray(node.leafs)) for (const lf of node.leafs) {
       if (!lf || typeof lf !== 'object') continue;
       const plenderId = unquote(next.plenderId) || lf.companyId || null;
@@ -1462,7 +1477,21 @@ function parseDisqualified(raw) {
       const rules = disqualifyRulesOf(lf);
       let g = lenders.get(lender);
       if (!g) { g = { lender, investor: dto ? dto.name : null, lenderId: plenderId, items: [] }; lenders.set(lender, g); }
-      g.items.push({ program, product: lf.productName || null, rate: firstNum(lf, RATE_KEYS), reasons: rules });
+      // ⛔ THE SAME READER AS THE ELIGIBLE SIDE — `optionOf`, never a second description of a
+      // programme. Owner-directed 2026-08-23: the ineligible side shows "everything the same as on
+      // the eligible side ... only a few more lines ... which is the ineligibility". A declined
+      // leaf carries `groupAdjustmentProperties` (its LLPAs) and `borrowerPaidDetails` (its comp)
+      // exactly as a priced leaf does — MEASURED on the captured leaf in
+      // scripts/fixtures/lp-disqualify-leaf.json — so reading it any other way would be a second
+      // definition of one thing, and the one that drifts is the one somebody quotes off.
+      const option = optionOf(lf, next, dtoMap, false);
+      // The rate, in order of authority: the leaf's own price build, then a rate field on the leaf,
+      // then the RateKey grouping node above it. NEVER a guess — all three absent leaves it null,
+      // and the screen lists such an item under "no rate given" rather than inventing one.
+      const pbRate = option.priceBuild ? num(option.priceBuild.noteRate) : null;
+      const leafRate = firstNum(lf, RATE_KEYS);
+      const rate = pbRate != null ? pbRate : (leafRate != null ? leafRate : num(unquote(next.rate)));
+      g.items.push({ program, product: lf.productName || null, rate, option, reasons: rules });
       itemCount += 1; reasonCount += rules.length;
     }
     if (Array.isArray(node.childs)) for (const c of node.childs) walk(c, next);
@@ -1651,7 +1680,7 @@ function foundationReadiness(f) {
 }
 
 module.exports = {
-  configured, login, getSession, apiGet, enrichZip, price, priceDisqualified, pollDisqualified, pollDisqualifiedByKey,
+  configured, login, getSession, apiGet, price, priceDisqualified, pollDisqualified, pollDisqualifiedByKey,
   hasStoredSearch, searchKeyFor, parse, parseFull, parseDisqualified, summarizeRaw, pricingReadiness,
   hasDisqualifyData, buildSearchPayload, buildSearch, fetchDefaultSearch, fetchSmoRegistry,
   loginSelfTest,

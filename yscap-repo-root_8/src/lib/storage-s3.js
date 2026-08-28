@@ -119,7 +119,7 @@ function urlFor(key) {
  * or (when opts.stream) { statusCode, headers, stream } without buffering the body. Never signs a
  * streaming upload — the caller always passes a Buffer body for PUT (documents are ≤ maxUploadMb).
  */
-function s3Request(method, key, { body = null, extraHeaders = {}, stream = false, clock = () => new Date() } = {}) {
+function s3Request(method, key, { body = null, extraHeaders = {}, stream = false, query = {}, clock = () => new Date() } = {}) {
   return new Promise((resolve, reject) => {
     if (!configured()) { reject(new Error('s3 storage not configured')); return; }
     const loc = urlFor(key);
@@ -135,7 +135,7 @@ function s3Request(method, key, { body = null, extraHeaders = {}, stream = false
     if (method === 'PUT') headers['content-length'] = String(payload.length);
 
     const { authorization } = signV4({
-      method, path: loc.path, query: {}, headers, payloadHash,
+      method, path: loc.path, query, headers, payloadHash,
       service: SERVICE, region: S3.region || 'auto',
       accessKeyId: S3.accessKeyId, secretAccessKey: S3.secretAccessKey,
       dateStamp, amzDate,
@@ -149,8 +149,14 @@ function s3Request(method, key, { body = null, extraHeaders = {}, stream = false
     // [A-Za-z0-9]); it matters only if a key is ever derived from a human filename. Same fix, same
     // reason, as src/lib/backup/vault.js — the two clients share the signer, so they share the trap.
     const transport = loc.protocol === 'http:' ? http : https;
+    /* THE QUERY ON THE WIRE MUST BE THE QUERY THAT WAS SIGNED, character for character.
+       `canonicalQuery` sorts and RFC-3986-encodes; re-building the string any other way
+       here (URLSearchParams, say, which encodes a space as '+') signs one request and
+       sends another, and S3 answers 403 SignatureDoesNotMatch with nothing to see. */
+    const qs = canonicalQuery(query);
+    const wirePath = canonicalUri(loc.path) + (qs ? `?${qs}` : '');
     const req = transport.request({
-      method, host: loc.hostname, port: loc.port || undefined, path: canonicalUri(loc.path), headers,
+      method, host: loc.hostname, port: loc.port || undefined, path: wirePath, headers,
     }, (res) => {
       if (stream) { resolve({ statusCode: res.statusCode, headers: res.headers, stream: res }); return; }
       const chunks = [];
@@ -165,6 +171,11 @@ function s3Request(method, key, { body = null, extraHeaders = {}, stream = false
     req.end();
   });
 }
+
+/* Multipart thresholds. S3 requires every part except the last to be at least 5 MB, so
+   PART_BYTES must stay at or above that; 8 MB is the peak memory one upload costs here. */
+const PART_BYTES = 8 * 1024 * 1024;
+const MULTIPART_MIN = 8 * 1024 * 1024;
 
 // Server-generated, opaque, sharded object key — same shape the local provider uses, so a document's
 // ref is provider-agnostic. Never derived from user input (only a short sanitized extension is kept).
@@ -193,6 +204,91 @@ const s3 = {
       throw new Error(`s3 save failed (HTTP ${res.statusCode})`);
     }
     return { ref, provider: 's3', bytes: buf.length };
+  },
+
+  /**
+   * SAVE A FILE THAT IS ALREADY ON DISK, WITHOUT EVER HOLDING IT IN MEMORY.
+   *
+   * Owner-directed 2026-08-21: *"we need to increase the limit of megabytes that we can upload
+   * to unlimit it … The sky is the limit."* The base64-in-JSON door cannot answer that, and the
+   * reason is MEASURED, not assumed: parsing a base64 upload costs about five times the file
+   * (wire body + the JSON string + the parsed string + the decoded Buffer), so on this service —
+   * Render `starter`, 512 MB — a 25 MB file peaks around 168 MB, a 50 MB file 294 MB and a
+   * 100 MB file 410 MB *before* the app's own footprint. That is an out-of-memory kill of the
+   * whole site, not a failed upload.
+   *
+   * So a large upload is STREAMED to a temp file (see `lib/upload-stream.js`) and handed here as
+   * a path. Below `MULTIPART_MIN` a single PUT is cheapest and simplest; above it the file goes
+   * up in `PART_BYTES` pieces, so peak memory is one part no matter how big the document is.
+   *
+   * ANY FAILURE ABORTS THE MULTIPART UPLOAD. An abandoned multipart upload is invisible in a
+   * bucket listing and is still billed — the same rule the backup vault states.
+   */
+  async saveFile(tmpPath, { filename } = {}) {
+    const fs = require('fs');
+    const size = fs.statSync(tmpPath).size;
+    const ref = newRef(filename);
+    if (size <= MULTIPART_MIN) {
+      const res = await s3Request('PUT', ref, { body: fs.readFileSync(tmpPath) });
+      if (!res.statusCode || res.statusCode >= 300) throw new Error(`s3 save failed (HTTP ${res.statusCode})`);
+      return { ref, provider: 's3', bytes: size };
+    }
+    const start = await s3Request('POST', ref, { query: { uploads: '' }, body: Buffer.alloc(0) });
+    if (!start.statusCode || start.statusCode >= 300) {
+      throw new Error(`s3 multipart start failed (HTTP ${start.statusCode})`);
+    }
+    const uploadId = (String(start.body || '').match(/<UploadId>([^<]+)<\/UploadId>/) || [])[1];
+    if (!uploadId) throw new Error('s3 multipart start returned no upload id');
+
+    const abort = async () => {
+      try { await s3Request('DELETE', ref, { query: { uploadId } }); } catch (_) { /* best-effort */ }
+    };
+    try {
+      const fd = fs.openSync(tmpPath, 'r');
+      const parts = [];
+      try {
+        let offset = 0, partNumber = 1;
+        const chunk = Buffer.allocUnsafe(PART_BYTES);
+        while (offset < size) {
+          const read = fs.readSync(fd, chunk, 0, Math.min(PART_BYTES, size - offset), offset);
+          if (!read) throw new Error('s3 multipart: unexpected end of file');
+          const res = await s3Request('PUT', ref, {
+            query: { partNumber: String(partNumber), uploadId },
+            body: chunk.subarray(0, read),
+          });
+          if (!res.statusCode || res.statusCode >= 300) {
+            throw new Error(`s3 multipart part ${partNumber} failed (HTTP ${res.statusCode})`);
+          }
+          const etag = res.headers && (res.headers.etag || res.headers.ETag);
+          if (!etag) throw new Error(`s3 multipart part ${partNumber} returned no ETag`);
+          parts.push({ partNumber, etag });
+          offset += read; partNumber += 1;
+        }
+      } finally { fs.closeSync(fd); }
+
+      const xml = '<CompleteMultipartUpload>'
+        + parts.map((p) => `<Part><PartNumber>${p.partNumber}</PartNumber><ETag>${p.etag}</ETag></Part>`).join('')
+        + '</CompleteMultipartUpload>';
+      const done = await s3Request('POST', ref, {
+        query: { uploadId }, body: Buffer.from(xml),
+        extraHeaders: { 'content-type': 'application/xml' },
+      });
+      if (!done.statusCode || done.statusCode >= 300) {
+        throw new Error(`s3 multipart complete failed (HTTP ${done.statusCode})`);
+      }
+      /* S3 CAN ANSWER 200 AND STILL HAVE FAILED. CompleteMultipartUpload streams whitespace
+         while it finishes and then writes either <CompleteMultipartUploadResult> or an
+         <Error> — into a 200 response. Treating the status alone as success records a
+         document whose bytes are not there. */
+      if (/<Error>/.test(String(done.body || ''))) {
+        const code = (String(done.body).match(/<Code>([^<]+)<\/Code>/) || [])[1] || 'unknown';
+        throw new Error(`s3 multipart complete failed (${code})`);
+      }
+      return { ref, provider: 's3', bytes: size };
+    } catch (e) {
+      await abort();
+      throw e;
+    }
   },
 
   // Write bytes at an EXACT existing key (not a new one) — used by the one-time local→S3 copy job
@@ -278,4 +374,4 @@ const s3 = {
 };
 
 module.exports = s3;
-module.exports._internals = { signV4, sha256hex, encodeRfc3986, canonicalUri, canonicalQuery, amzDates, newRef, safeKey, configured };
+module.exports._internals = { signV4, sha256hex, encodeRfc3986, canonicalUri, canonicalQuery, amzDates, newRef, safeKey, configured, PART_BYTES, MULTIPART_MIN };

@@ -40,6 +40,10 @@
 // path, the caps) never opens a pool or needs a driver on disk. That is what lets
 // the whole shape of the roster read be unit-tested with no Postgres in reach.
 const match = require('./match');
+// The master on/off switch. Asked DIRECTLY rather than through the Encompass client,
+// because the tests replace that module wholesale in require.cache and a stub carries
+// only the handful of methods the test needs — this one is pure and is never stubbed.
+const killSwitch = require('../encompass/enabled');
 const lazy = {
   get db() { return require('../db'); },
   get client() { return require('../encompass/client'); },
@@ -200,6 +204,7 @@ async function loadStaff(dbc) {
  * can say what happened.
  */
 async function syncRoster() {
+  if (!killSwitch.encompassEnabled()) return { ok: false, reason: killSwitch.OFF_REASON };
   if (!lazy.client.configured()) {
     return { ok: false, reason: 'Encompass is not connected yet — add the long-term Encompass credentials first.' };
   }
@@ -270,9 +275,36 @@ async function listPeople() {
       personas: u.personas || [],
       active: u.is_active,
       syncedAt: u.encompass_synced_at,
+      // WHAT THIS PERSON DOES IN ENCOMPASS. The roster writes `personas` and
+      // `role_names` on every sync and nothing read the roles at all — yet they are
+      // the evidence somebody confirming a link is meant to weigh: "is this
+      // Nussbaum the loan officer or the closer?" is answered by the roles, and
+      // without them a reviewer is matching on a name alone.
+      roles: Array.isArray(u.role_names) ? u.role_names : [],
       status: link ? link.status : 'none',
       matchMethod: link ? link.match_method : null,
       confirmedAt: link ? link.confirmed_at : null,
+      // WHO CONFIRMED IT. Written by both link writers since the day they shipped,
+      // read by nothing — and confirming a link decides whose pipeline this
+      // person's files land in, so it is the same kind of record as the file
+      // reassignment. Resolved from the roster's OWN staff list, which is already
+      // loaded, so this costs no query.
+      //
+      // A DEACTIVATED DECIDER IS STILL NAMED. `loadStaff` filters on external
+      // accounts only, never on active, so somebody who has left is still resolved
+      // — which is the point: who made a decision does not change when they go.
+      //
+      // This comment used to promise that an id we could not put a name to would
+      // travel AS THE ID rather than as a blank. That state cannot occur, and
+      // saying it could sent somebody (me) looking for it: `confirmed_by` is
+      // ON DELETE SET NULL, so a hard-deleted staff row takes the id with it
+      // before this code ever sees it — and the application never hard-deletes
+      // staff, it deactivates them. So the reachable answers are exactly two:
+      // named, or null because a row was removed straight from the database.
+      confirmedBy: link && link.confirmed_by ? String(link.confirmed_by) : null,
+      confirmedByName: link && link.confirmed_by
+        ? (staffBy.get(String(link.confirmed_by)) ? match.staffName(staffBy.get(String(link.confirmed_by))) : null)
+        : null,
       staff: person
         ? { id: String(person.id), name: match.staffName(person), email: person.email, role: person.role }
         : null,

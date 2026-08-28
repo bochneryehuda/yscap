@@ -73,6 +73,34 @@ function resolveEmailProvider() {
   return 'none';
 }
 
+/* A NO-REPLY SENDER CANNOT BE CONFIGURED IN (owner-directed 2026-08-26: "No
+   email should come from a no-reply because it technically is a reply" — every
+   email carries a real, unique reply-to, and a mail client shows the FROM
+   header, so the sender must be a monitored address). The code default has
+   been notifications@ since 2026-07-20, but the Render DASHBOARD value of
+   NOTIFY_FROM overrides render.yaml and was set to no-reply@yscapgroup.com —
+   which is exactly how "why is it saying no-reply?" happened while every
+   reply-to was correct. So the rule is enforced HERE, where the env value
+   lands: a no-reply-family NOTIFY_FROM is rewritten to the monitored local
+   part on the SAME verified domain (deliverability-neutral on Resend, which
+   verifies the domain, not the address) and the boot log says so loudly.
+   GRAPH is the one exception — there the From must be a REAL mailbox UPN in
+   the tenant, so a rewrite to a mailbox that may not exist would fail every
+   send; it warns instead of rewriting, and the fix is the env var. */
+function resolveNotifyFrom(provider) {
+  const raw = process.env.NOTIFY_FROM || 'PILOT by YS Capital <notifications@yscapgroup.com>';
+  const noReply = require('./lib/email/no-reply');
+  if (!noReply.isNoReplyAddress(raw)) return raw;
+  if (provider === 'graph') {
+    console.warn(`[email] NOTIFY_FROM ("${raw}") is a no-reply address. Our emails are repliable and must not send as no-reply — set NOTIFY_FROM to a real monitored mailbox in the Render environment. (Not auto-rewritten under Graph: the From must be an existing mailbox in the tenant.)`);
+    return raw;
+  }
+  const r = noReply.repairNoReplyFrom(raw);
+  console.warn(`[email] NOTIFY_FROM ("${raw}") is a no-reply address — sending as "${r.from}" instead (our emails are repliable; the no-reply framing is untrue). Update NOTIFY_FROM in the Render environment to make this permanent.`);
+  return r.from;
+}
+const EMAIL_PROVIDER_RESOLVED = resolveEmailProvider();
+
 // The public base URL used for EVERY link that leaves the system (emails, reset
 // links, redirects) AND for server-to-server callbacks (the DocuSign Connect
 // webhook + the embedded-signing return bounce). NEVER emit an onrender.com link —
@@ -135,12 +163,14 @@ module.exports = {
   //   MS_* client-credential set    -> graph
   //   nothing / EMAIL_PROVIDER=none -> none (logs only; in-app still works)
   // An explicit EMAIL_PROVIDER always wins.
-  emailProvider: resolveEmailProvider(),
+  emailProvider: EMAIL_PROVIDER_RESOLVED,
   // Owner-directed 2026-07-20: our notification emails ARE repliable, so the
   // sender must not pretend otherwise. Default the From to a real, monitored
   // address (no "no-reply"). For Resend only the DOMAIN must be verified; for
-  // Graph this must be a real mailbox UPN in the tenant.
-  notifyFrom:    process.env.NOTIFY_FROM || 'PILOT by YS Capital <notifications@yscapgroup.com>',
+  // Graph this must be a real mailbox UPN in the tenant. A no-reply-family
+  // NOTIFY_FROM from the environment is repaired by resolveNotifyFrom above
+  // (owner-directed 2026-08-26) — the rule is enforced, not just documented.
+  notifyFrom:    resolveNotifyFrom(EMAIL_PROVIDER_RESOLVED),
   // A guaranteed Reply-To for every notification when no more-specific one is
   // set (a per-file file+<id>@ address, or an officer's own inbox). This makes
   // "just hit reply" always reach a human, so no email is ever a dead end.
@@ -322,7 +352,21 @@ module.exports = {
   // On Render, set STORAGE_DIR to a mounted persistent disk (e.g. /var/data/uploads)
   // so documents survive deploys — the default filesystem is ephemeral.
   storageDir:      process.env.STORAGE_DIR || 'uploads',
-  maxUploadMb:     parseInt(process.env.MAX_UPLOAD_MB || '20', 10),   // per-file cap
+  /* THE DOCUMENT CEILING — what a single upload may be, in megabytes (owner-directed
+     2026-08-21: *"we need to increase the limit of megabytes that we can upload to unlimit
+     it … The sky is the limit."*). This is now enforced on the STREAMING door
+     (`lib/upload-stream.js`), which never holds a document in memory, so raising it costs
+     no RAM: the real bound is disk/bucket space, not the process. Raise it as far as the
+     owner wants — nothing about the transport changes. */
+  maxUploadMb:     parseInt(process.env.MAX_UPLOAD_MB || '1024', 10),
+  /* WHAT A BASE64-IN-JSON BODY MAY CARRY, which is a completely different question and
+     must never follow the number above. express buffers and parses such a body whole, and
+     the cost is MEASURED at about five times the file (wire body + express's string + the
+     parsed base64 string + the decoded Buffer): 25 MB → 168 MB peak, 50 MB → 294 MB,
+     100 MB → 410 MB, on a 512 MB instance. Tying the parser's ceiling to the document
+     ceiling is how "unlimited uploads" becomes an out-of-memory kill of the whole site.
+     Documents go through the streaming door; this governs only the legacy JSON doors. */
+  maxJsonUploadMb: parseInt(process.env.MAX_JSON_UPLOAD_MB || '25', 10),
   // S3-compatible object storage (AWS S3 / Cloudflare R2 / Backblaze B2 / …). Used only when
   // STORAGE_PROVIDER=s3. Credentials come from Render env ONLY (never source). The adapter signs
   // requests itself (AWS SigV4, Node crypto — no SDK, no new deps). `region` defaults to 'auto'
@@ -535,11 +579,20 @@ module.exports = {
     // Our company on Trinity's side (GET /companies/default). Left null = resolve once
     // and cache, so a fresh tenant needs no env change.
     companyId:      process.env.TRINITY_COMPANY_ID ? parseInt(process.env.TRINITY_COMPANY_ID, 10) : null,
-    // Form 19 — "Blank General Purpose Line Item Draw", the DOLLAR-based draw. The only
-    // shape whose line items carry itemCost + previousPercentCompleted, which is what
-    // lets the construction budget AND the historical draws travel. Configurable so a
-    // production company enabled on a different draw form needs no deploy.
-    formId:         parseInt(process.env.TRINITY_FORM_ID || '19', 10),
+    // The DOLLAR-based line-item draw — the only shape whose line items carry itemCost +
+    // previousPercentCompleted, which is what lets the construction budget AND the
+    // historical draws travel.
+    //
+    // 1079 ("General Purpose Line Item Draw PCR") is the PRODUCTION form; 19 ("Blank
+    // General Purpose Line Item Draw") is the SANDBOX one and is not on the production
+    // account at all (owner-directed 2026-08-24 — "Form 19 is only for the test
+    // environment"). Same product, same request schema to the field, different id. Set
+    // TRINITY_FORM_ID=19 to point a sandbox deployment back at the test form.
+    //
+    // This is the DEFAULT a new order goes out on. It is NEVER what a placed order is read
+    // back at — that is `trinity_inspection_orders.trinity_form_id`, recorded per order
+    // (db/628), because an order placed on 19 is only readable at /forms/19/.
+    formId:         parseInt(process.env.TRINITY_FORM_ID || String(require('./trinity/form').PRODUCTION_DRAW_FORM_ID), 10),
     pollSec:        parseInt(process.env.TRINITY_POLL_SEC || '600', 10),   // open-order status sweep
     // Trinity webhooks carry NO signature, so the receiver authenticates on a secret
     // path token we choose and then hydrates every fact with an authenticated GET.

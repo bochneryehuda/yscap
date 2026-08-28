@@ -78,10 +78,19 @@ router.put('/settings', requirePermission('manage_pricing'), async (req, res) =>
 router.get('/escalations', requirePermission('manage_pricing'), async (req, res) => {
   try {
     const status = ['open', 'pending', 'countered', 'approved', 'declined', 'all'].includes(req.query.status) ? req.query.status : 'open';
-    const [rows, pending] = await Promise.all([
-      manualProgram.listEscalations({ status }),
+    /* NO SILENT CAP, the same rule as the exception register: a screen printing
+       `rows.length` beside "showing matches for …" reads a LIMIT as a COUNT.
+       Ask for one MORE than the page and drop it, so the next page is MEASURED
+       rather than inferred from a full one — a full page can equally BE the
+       whole answer. */
+    const PAGE = 100;
+    const [raw, pending] = await Promise.all([
+      // Loan number / address / borrower — the same search the exception register takes.
+      manualProgram.listEscalations({ status, q: String(req.query.q || '').trim(), limit: PAGE + 1 }),
       manualProgram.pendingCount(),
     ]);
+    const hasMore = raw.length > PAGE;
+    const rows = hasMore ? raw.slice(0, PAGE) : raw;
     // Never leak the note-buyer name into the box — the summary/overrides carry
     // only leverage numbers, and the property/loan identity is staff-only anyway.
     // canDecide: any admin / super-admin may decide (owner-directed 2026-07-27 —
@@ -89,6 +98,8 @@ router.get('/escalations', requirePermission('manage_pricing'), async (req, res)
     // request unless you are the super-admin (see mayDecide below).
     res.json({
       escalations: rows.map((r) => ({ ...r, canDecide: mayDecide(req.actor, r) })),
+      hasMore,
+      pageSize: PAGE,
       pendingCount: pending,
       canDecide: perms.can(req.actor, 'manage_pricing'),
       viewerId: req.actor.id,

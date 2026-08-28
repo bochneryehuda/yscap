@@ -1,14 +1,18 @@
 'use strict';
 /**
- * PROOF that the borrower's long-term switch is BUILT AND SWITCHED OFF — and that
- * when it is switched on it shows a client only what a human confirmed is theirs,
- * only the long-term files, and never an investor's name.
+ * PROOF that the borrower's long-term switch is BUILT AND ON — and that it shows a
+ * client only what a human confirmed is theirs, only the long-term files, and
+ * never an investor's name.
  *
- * The owner asked for the switch and then, asked whether to turn it on, said
- * *"build it ready"*. So "off" is not an incidental default here, it is the
- * requirement — and a requirement nothing tests is a requirement one careless
- * `default: true` away from putting an unfinished product in front of every
- * client. Section A is that test.
+ * The owner asked for the switch and, asked whether to turn it on, first said
+ * *"build it ready"*; on 2026-08-17 they said *"turn switch on"*. So the state of
+ * this switch is not an incidental default, it is a decision — and section A
+ * asserts the declared default matches the decision, so it cannot move in either
+ * direction without somebody having said so.
+ *
+ * This header said "BUILT AND SWITCHED OFF" until 2026-08-18, four lines above its
+ * own assertion that the default is `true`. Section A was updated when the owner
+ * changed their mind and the sentence describing it was not.
  *
  * The other three things only a database can settle:
  *   · a loan attached to NOBODY reaches nobody — the whole reason the mapping is
@@ -210,6 +214,71 @@ async function main() {
     eq(bareRow.status, null, 'with no wording anywhere the door invents nothing');
 
     // -------------------------------------------------------------------------
+    // G2. THE BORROWER'S WORDING IS KEYED ON THE STEP BEING WAITED ON — NOT the
+    //     one just finished (audit round 3, D1).
+    //
+    // db/547's consumer_status was authored against the ORIGINAL first-not-done
+    // reading of `milestone_name`; its own rows prove it (Cond. Approval carries
+    // "Submitted for Approval", Processing carries "Conditionally Approved").
+    // #44 redefined `milestone_name` as the LAST COMPLETED step for every staff
+    // surface, which would have shifted this client-facing column one step
+    // BACKWARD — a loan clear to close telling its borrower "Final Approval".
+    // -------------------------------------------------------------------------
+    const ctcId = await seedLoan('ctc', me, 360, 'Investor DSCR 30 YEAR FRM');
+    // The loan STANDS at Clear To Close (done) and is WAITING on Schedule Closing.
+    await db.query(
+      `UPDATE lt_loans SET milestone_name = 'Clear To Close', stage_key = 'clear_to_close'
+        WHERE id = $1::uuid`, [ctcId]);
+    for (const [name, pos, done] of [['Clear To Close', 9, true], ['Schedule Closing', 10, false]]) {
+      await db.query(
+        `INSERT INTO lt_loan_milestones (loan_id, milestone_name, position, done)
+         VALUES ($1::uuid, $2, $3, $4)
+         ON CONFLICT (loan_id, milestone_name) DO UPDATE SET position = EXCLUDED.position, done = EXCLUDED.done`,
+        [ctcId, name, pos, done]);
+    }
+    const ctc = await call(me);
+    const ctcRow = ctc.body.loans.find((l) => l.file.endsWith('ctc'));
+    ok(ctcRow, 'the clear-to-close loan is returned');
+    eq(ctcRow.status, 'Closing Scheduled',
+      "the borrower reads the AWAITED step's wording — never the finished step's \"Final Approval\" (D1)");
+    eq(ctcRow.milestone, 'Clear To Close',
+      '…while the milestone itself still reports the last COMPLETED step, as every staff surface does');
+
+    // A GAPPED LADDER (audit round 4, C2). A not-done row may sit BEHIND a done
+    // one — an optional step left unticked, or one reopened for rework while
+    // later steps stay done. "First not-done anywhere" then reads five steps
+    // back; the awaited step is the first not-done AFTER the standing one.
+    const gapId = await seedLoan('gap', me, 360, 'Investor DSCR 30 YEAR FRM');
+    await db.query(
+      `UPDATE lt_loans SET milestone_name = 'Clear To Close', stage_key = 'clear_to_close'
+        WHERE id = $1::uuid`, [gapId]);
+    for (const [name, pos, done] of [
+      ['Started', 0, true], ['LO Prep', 1, true], ['Loan Setup', 2, true], ['Submittal', 3, true],
+      ['Cond. Approval', 4, false],   // ← left unticked, BEHIND later done steps
+      ['Processing', 5, true], ['Clear To Close', 8, true], ['Schedule Closing', 9, false],
+    ]) {
+      await db.query(
+        `INSERT INTO lt_loan_milestones (loan_id, milestone_name, position, done)
+         VALUES ($1::uuid, $2, $3, $4)
+         ON CONFLICT (loan_id, milestone_name) DO UPDATE SET position = EXCLUDED.position, done = EXCLUDED.done`,
+        [gapId, name, pos, done]);
+    }
+    const gap = await call(me);
+    const gapRow = gap.body.loans.find((l) => l.file.endsWith('gap'));
+    eq(gapRow && gapRow.status, 'Closing Scheduled',
+      'a GAPPED ladder still reads the step after the STANDING one — never five steps back (C2)');
+
+    // A loan with NO ladder mirror still answers, falling back to milestone_name.
+    const noLadderId = await seedLoan('noladder', me, 360, 'Investor DSCR 30 YEAR FRM');
+    await db.query(
+      `UPDATE lt_loans SET milestone_name = 'Submittal', stage_key = 'submitted' WHERE id = $1::uuid`,
+      [noLadderId]);
+    const nl = await call(me);
+    const nlRow = nl.body.loans.find((l) => l.file.endsWith('noladder'));
+    eq(nlRow && nlRow.status, 'Submitted for Approval',
+      'a loan with no ladder mirror still gets its wording from the milestone it holds');
+
+    // -------------------------------------------------------------------------
     // F. THE SETTINGS READ FAILS CLOSED. An unreadable setting is not permission to
     //    show a client an unfinished product.
     // -------------------------------------------------------------------------
@@ -235,6 +304,12 @@ async function main() {
       await db.query('DELETE FROM borrowers WHERE id = ANY($1::uuid[])', [borrowerIds]).catch(() => {});
     }
     await db.pool.end().catch(() => {});
+    // AND THE RTL POOL. These suites require the app, which opens `src/db`'s pool
+    // transitively; `db` here is the LONG-TERM one. Leaving the other open kept a
+    // Postgres socket alive until its 30-second idle timeout, so the suite printed
+    // its result and then sat there doing nothing. Across nine suites that was 270
+    // of the 286 seconds the long-term database suites took.
+    await require('../src/db').pool.end().catch(() => {});
   }
 
   console.log(`\n✓ lt borrower-switch (db): ${checks} assertions passed`);

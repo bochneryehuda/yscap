@@ -86,6 +86,15 @@ model LtEncompassMilestone {
   isArchived Boolean @default(false) @map("is_archived")
 
   /// LT-owned bookkeeping.
+  /// WHEN Encompass last confirmed this row, and WHERE it came from — 'live' for a
+  /// row read from the tenant's own catalog, 'seed' for one still standing on
+  /// db/547's 2026-08-14 export. NULL means nobody has ever refreshed it, which is
+  /// a different fact from "refreshed and unchanged" and the one a screen must be
+  /// able to tell apart: a catalog nobody has confirmed is a stepper waiting to go
+  /// blank the day a buyer adds a step.
+  catalogSyncedAt DateTime? @map("catalog_synced_at") @db.Timestamptz(6)
+  catalogSource String? @map("catalog_source")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -143,7 +152,14 @@ model LtLoan {
 
   // ── Identity ──────────────────────────────────────────────────────────────
   /// Our own loan number. Encompass field 364.
-  loanNumber String? @unique @map("loan_number")
+  ///
+  /// A LABEL, NOT AN IDENTITY, and deliberately not unique (db/617). Encompass does
+  /// not enforce it: a duplicated loan file carries its source's number until
+  /// somebody edits it, and a cancelled file that is re-created keeps the number it
+  /// had — so two real loans sharing one number is an ordinary state of that system.
+  /// Declaring it unique made that ordinary state refuse the whole discovery pass,
+  /// which emptied the pipeline. Identity is `encompassLoanGuid`, below.
+  loanNumber String? @map("loan_number")
   /// The Encompass loan GUID this file mirrors, when it has one. The join key back
   /// to the system of record. Nullable: a file can be started here first.
   encompassLoanGuid String? @unique @map("encompass_loan_guid")
@@ -161,8 +177,16 @@ model LtLoan {
   borrowerFirstName String? @map("borrower_first_name")
   borrowerLastName String? @map("borrower_last_name")
   borrowerEmail String? @map("borrower_email")
-  /// The assigned officer — the shared `staff_users` roster. Authorized crossing
-  /// `sql-ref staff_users` (ledger, 2026-08-03).
+  /// NOT THE OFFICER, AND NOTHING HAS EVER WRITTEN IT. Left from the phase-1 shape,
+  /// before the loan TEAM was mirrored. Who the officer is lives in
+  /// `lt_loan_contacts` — one row per role, carrying Encompass's answer and the
+  /// local override beside it — and the effective person is
+  /// `access.effectiveStaffSql`. The owner's census read THIS column until
+  /// 2026-08-18 and therefore reported "no loan officer" on every long-term file.
+  /// Nothing reads it now. It is kept rather than dropped because dropping a column
+  /// is not something to do to a live database on an inference; the decision is
+  /// recorded for the owner in the plan's §11. Do not wire it up — write a contact.
+  /// Authorized crossing `sql-ref staff_users` (ledger, 2026-08-03).
   loanOfficerId String? @map("loan_officer_id") @db.Uuid
 
   // ── Program and purpose (URLA 4a) ─────────────────────────────────────────
@@ -275,10 +299,35 @@ model LtLoan {
   // comes from the milestone's own consumerStatus (db/547), so our internal
   // renaming can never leak into what a borrower reads.
 
-  /// The Encompass milestone NAME, mirrored verbatim. Read it from MS.STATUS —
-  /// the pipeline's own Loan.CurrentMilestone column is BLANK on every loan in
-  /// this tenant.
+  /// The milestone this file is SITTING in — the first not-done step of the
+  /// loan's own ladder (db/623, owner-directed 2026-08-23: a completed milestone
+  /// means the file sits in the NEXT one). Written from GET /loans/{id}/milestones
+  /// by the sync; the lagging `Log.MS.CurrentMilestone` reading is only the
+  /// fallback for a loan whose ladder has not been read yet.
   milestoneName String? @map("milestone_name")
+
+  // ── How title vests (db/624, owner-directed 2026-08-23) ───────────────────
+  /// Field 4008, VERBATIM ("Officer" / "Individual"). Whether that means an
+  /// entity is decided by ONE rule (src/longterm/vesting.js), never re-read off
+  /// this text.
+  vestingType String? @map("vesting_type")
+  /// Field 1859 — the vesting entity's legal name, stored ONLY when 4008 says
+  /// the loan vests in an entity. On an Individual vesting it stays NULL even if
+  /// 1859 carries text: "individual" means individual, and a stale company name
+  /// on a re-vested loan is exactly the trap the owner's rule closes.
+  vestingEntityName String? @map("vesting_entity_name")
+
+  /// The tenant's own status WORDING (virtual field MS.STATUS — "Funded" once the
+  /// Funding step completes), stamped by Encompass at each milestone transition.
+  /// This is the field the tenant's own webhook automation fires on. Verbatim.
+  msStatus String? @map("ms_status")
+  /// MS.STATUSDATE, verbatim ("08/23/2026 04:07:53 PM" — US format, no timezone,
+  /// so it is mirrored as text and never parsed into a guess).
+  msStatusDate String? @map("ms_status_date")
+  /// When this loan's milestone LADDER (lt_loan_milestones) was last mirrored.
+  /// The backfill pass drains on IS NULL, so it doubles as the "never laddered"
+  /// marker for the already-mirrored book.
+  ladderSyncedAt DateTime? @map("ladder_synced_at") @db.Timestamptz(6)
 
   /// OUR stage. Stored rather than derived on read so the pipeline can group and
   /// sort on it in SQL. A milestone with no mapping leaves this NULL, and an
@@ -290,6 +339,44 @@ model LtLoan {
   /// a read-only sweep on 2026-08-14 found every condition in the tenant sits in the
   /// correspondent post-close folders and NONE in the active Pipeline folder.
   loanFolder String? @map("loan_folder")
+
+  // ── The archive (db/621, owner-directed 2026-08-23) ───────────────────────
+  // "Whatever is in the trash can should not be visible in the pipeline" — and
+  // Encompass has a SECOND way a file leaves the working book besides the
+  // (Trash) folder: the archive flag on the loan itself. These two columns are
+  // that second way, computed by the sync, read by ONE definition
+  // (src/longterm/trash.js) so the pipeline, the archive screen and the counts
+  // can never disagree about what is out.
+
+  /// Whether Encompass itself holds this loan as ARCHIVED — computed each sync by
+  /// diffing a flag-less discovery (which omits archived loans) against the full
+  /// sweep. FAIL CLOSED: an errored or truncated flag-less read marks nothing.
+  encompassArchived Boolean @default(false) @map("encompass_archived")
+
+  /// PILOT's own conclusion that this archived loan is a stale COPY of a live
+  /// twin — same loan number, another live row holds it (the duplicated-record
+  /// shape the owner reported on YSCAP258134474). Marked and CLEARED by
+  /// trash.sweepArchivedDuplicates, self-healing in both directions; a marked
+  /// row leaves the pipeline (trash.notTrashSql) and shows on the archive screen
+  /// with the reason "archived copy of a live file".
+  archivedDuplicate Boolean @default(false) @map("archived_duplicate")
+
+  // ── The PURCHASED step (db/615) ───────────────────────────────────────────
+  // The owner's workflow carries a step Encompass's nineteen milestones do not
+  // (owner-directed 2026-08-23). It is the one step in the ladder marked from a
+  // FACT rather than from a position, and these two columns are that fact.
+
+  /// Encompass field 2031 (`rateLock.sellSideInvestorStatus`), verbatim. Whether
+  /// the word means PURCHASED is decided by `milestones.purchasedStatusValues` and
+  /// never stored — a boolean here would be a second answer, free to drift from the
+  /// word beside it, and "not purchased" covers four states a boolean cannot tell
+  /// apart (unassigned, assigned, shipped, rejected).
+  purchasedStatus String? @map("purchased_status")
+
+  /// Encompass field 2370 (the purchase advice date) — the day the investor bought
+  /// the loan, from Encompass rather than from the day we happened to look. NULL
+  /// means unknown, NEVER "not sold".
+  purchasedAt DateTime? @map("purchased_at") @db.Date
 
   // ── Bookkeeping ───────────────────────────────────────────────────────────
   /// When Encompass was last read for this file. Encompass is the source of truth;
@@ -303,6 +390,36 @@ model LtLoan {
   /// visible rather than silently stale.
   encompassSyncError String? @map("encompass_sync_error")
 
+  // ── Did the webhook actually fire for this loan (db/629) ──────────────────
+  // The owner asked to see "last webhooks" on every file, and the nudge was
+  // recorded NOWHERE: the hook cleared `encompass_synced_at` and logged a line.
+  // So "is the webhook firing?" had no answer on any screen, and a webhook that
+  // silently stopped looked exactly like one that never fired.
+
+  /// When Encompass last asked PILOT to re-read this loan. NULL means never —
+  /// which is a real answer ABOUT the webhook, never missing data.
+  encompassNudgedAt DateTime? @map("encompass_nudged_at") @db.Timestamptz(6)
+
+  /// How that nudge identified the loan: guid | loan_number | sweep | manual.
+  /// The SHAPE of the ping, never a status.
+  encompassNudgedVia String? @map("encompass_nudged_via")
+
+  /// How many nudges in total. A recent stamp with a count of 1 and an old stamp
+  /// with a count of 41 are different stories about the same webhook.
+  encompassNudgeCount Int @default(0) @map("encompass_nudge_count")
+
+  /// The Condition Center's own freshness, kept apart from the loan's because the
+  /// two are separate reads on separate cadences: a loan can be perfectly current
+  /// while its conditions have not been asked for since yesterday, and a screen
+  /// that reported one as the other would be confidently wrong about which.
+  /// A failure is RECORDED HERE rather than swallowed — one unreadable file must
+  /// never stop the rest, and a sync that fails silently is worse than one that
+  /// fails loudly (db/612).
+  conditionsSyncedAt  DateTime? @map("conditions_synced_at") @db.Timestamptz(6)
+  conditionsSyncError String?   @map("conditions_sync_error")
+  documentsSyncedAt   DateTime? @map("documents_synced_at") @db.Timestamptz(6)
+  documentsSyncError  String?   @map("documents_sync_error")
+
   /// When the CURRENT milestone was first observed. Denormalised from
   /// LtMilestoneEvent so the pipeline can sort on "longest at its milestone".
   milestoneSince DateTime? @map("milestone_since") @db.Timestamptz(6)
@@ -310,6 +427,46 @@ model LtLoan {
   /// when the loan arrived. A consumer that ignores this reports a stale figure
   /// as a fresh one — see db/554.
   milestoneSinceIsBaseline Boolean @default(true) @map("milestone_since_is_baseline")
+
+  /// WHICH CLICKUP CARD BELONGS TO THIS LOAN (db/618). Long-Term is becoming
+  /// Encompass-first — the office opens the file in Encompass and PILOT opens its
+  /// ClickUp card — so a loan that cannot say which card is already its own would
+  /// have a SECOND one opened for it on the first pass.
+  /// `clickupTaskId` is ClickUp's own id and is unique across the book: one card,
+  /// one loan. `clickupCustomId`/`clickupUrl` are display copies of what ClickUp
+  /// holds and nothing keys on them.
+  clickupTaskId    String? @map("clickup_task_id")
+  clickupCustomId  String? @map("clickup_custom_id")
+  clickupUrl       String? @map("clickup_url")
+  clickupLinkedAt  DateTime? @map("clickup_linked_at") @db.Timestamptz(6)
+  /// 'reconciliation' (the one-time pass over the book that already existed),
+  /// 'created' (PILOT opened the card, so the link is a fact not a match), 'manual'.
+  clickupLinkSource String? @map("clickup_link_source")
+  /// 'confirmed' or 'probable'. Only a CONFIRMED link may carry a stamp time — the
+  /// database refuses the other combination, so a guess can never be written into
+  /// ClickUp as though it were settled.
+  clickupLinkConfidence String? @map("clickup_link_confidence")
+  clickupStampedAt DateTime? @map("clickup_stamped_at") @db.Timestamptz(6)
+  clickupStampError String? @map("clickup_stamp_error")
+
+  /// db/625 — the ClickUp FIELD WRITER's stamps. clickup_pushed_at is the last
+  /// CLEAN push (every intended field landed; a lossy push is never marked done,
+  /// so the drain retries it). The drain is
+  /// `encompass_synced_at > clickup_pushed_at OR clickup_pushed_at IS NULL` on
+  /// linked, confirmed, non-trash loans.
+  clickupPushedAt DateTime? @map("clickup_pushed_at") @db.Timestamptz(6)
+  /// The last push failure, plain text; cleared on the next clean push.
+  clickupPushError String? @map("clickup_push_error")
+
+  /// db/626 — the STATUS watermark. A ClickUp status is written only for an
+  /// `lt_milestone_events` row of type 'observed_entered' NEWER than this, so a
+  /// status follows a milestone FIRING and is never written to reconcile a card
+  /// that merely disagrees (owner-directed 2026-08-24, correcting #39's
+  /// "Encompass always wins"). Both a push and a raised review row answer the
+  /// event and advance this. NULL = never baselined; the writer takes the
+  /// watermark and writes nothing, so a newly linked loan's back history can
+  /// never fire a status nobody asked for.
+  clickupStatusEventAt DateTime? @map("clickup_status_event_at") @db.Timestamptz(6)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -321,6 +478,9 @@ model LtLoan {
   lock          LtLock?
   lockEvents    LtLockEvent[]
   milestoneEvents LtMilestoneEvent[]
+  ladder        LtLoanMilestone[]
+  conditions    LtCondition[]
+  documents     LtDocument[]
 
   @@index([borrowerId])
   @@index([loanOfficerId])
@@ -328,6 +488,11 @@ model LtLoan {
   @@index([productKind])
   @@index([stageKey])
   @@index([loanFolder])
+  /// Kept under its historic `_key` name on purpose (db/617): db/549 replays on
+  /// every boot with `CREATE UNIQUE INDEX IF NOT EXISTS` on that name, and
+  /// `IF NOT EXISTS` tests the NAME, not the shape — so re-creating it under a new
+  /// name would make that statement fail forever against the duplicates.
+  @@index([loanNumber], map: "lt_loans_loan_number_key")
   @@map("lt_loans")
 }
 
@@ -471,6 +636,13 @@ model LtParty {
   entityTitle String? @map("entity_title")
   entityOwnershipPct Decimal? @map("entity_ownership_pct") @db.Decimal(6, 3)
 
+  /// Encompass's own party id, kept BESIDE the identity rather than as it: the slot
+  /// (pair + role) is the key, because a name changes and a slot does not. This is
+  /// what a later reader needs to tie a residence, an employment or an income row
+  /// back to the person when the payload names the party rather than the pair.
+  /// Indexed, deliberately NOT unique — db/613 says why.
+  encompassId String? @map("encompass_id")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -515,6 +687,13 @@ model LtResidence {
   /// What they pay each month when renting. Meaningless when they own.
   monthlyRent Decimal? @map("monthly_rent") @db.Decimal(14, 2)
 
+  /// Encompass's OWN id for this row — what lets a second read of the same loan
+  /// UPDATE it instead of adding a duplicate. Nullable because the payload omits it
+  /// on some rows, which is why db/613's unique index on (party_id, encompass_id) is
+  /// PARTIAL — a shape Prisma cannot express, so it lives in the migration alone and
+  /// any writer keying on it must repeat the `WHERE encompass_id IS NOT NULL`.
+  encompassId String? @map("encompass_id")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -557,6 +736,13 @@ model LtEmployment {
   employerZip    String? @map("employer_zip")
   employerPhone  String? @map("employer_phone")
 
+  /// Encompass's OWN id for this row — what lets a second read of the same loan
+  /// UPDATE it instead of adding a duplicate. Nullable because the payload omits it
+  /// on some rows, which is why db/613's unique index on (party_id, encompass_id) is
+  /// PARTIAL — a shape Prisma cannot express, so it lives in the migration alone and
+  /// any writer keying on it must repeat the `WHERE encompass_id IS NOT NULL`.
+  encompassId String? @map("encompass_id")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -577,6 +763,13 @@ model LtOtherIncome {
   incomeType    String  @map("income_type")
   monthlyAmount Decimal @map("monthly_amount") @db.Decimal(14, 2)
   description   String?
+
+  /// Encompass's OWN id for this row — what lets a second read of the same loan
+  /// UPDATE it instead of adding a duplicate. Nullable because the payload omits it
+  /// on some rows, which is why db/613's unique index on (party_id, encompass_id) is
+  /// PARTIAL — a shape Prisma cannot express, so it lives in the migration alone and
+  /// any writer keying on it must repeat the `WHERE encompass_id IS NOT NULL`.
+  encompassId String? @map("encompass_id")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -609,6 +802,13 @@ model LtAsset {
   /// Whether a document has been seen for it. An asset nobody verified is a claim.
   isVerified Boolean @default(false) @map("is_verified")
 
+  /// Encompass's OWN id for this row — what lets a second read of the same loan
+  /// UPDATE it instead of adding a duplicate. Nullable because the payload omits it
+  /// on some rows, which is why db/613's unique index on (party_id, encompass_id) is
+  /// PARTIAL — a shape Prisma cannot express, so it lives in the migration alone and
+  /// any writer keying on it must repeat the `WHERE encompass_id IS NOT NULL`.
+  encompassId String? @map("encompass_id")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -640,6 +840,13 @@ model LtLiability {
   /// makes an REO schedule reconcile against the credit report.
   reoPropertyId String? @map("reo_property_id") @db.Uuid
   reoProperty   LtReoProperty? @relation(fields: [reoPropertyId], references: [id], onDelete: SetNull)
+
+  /// Encompass's OWN id for this row — what lets a second read of the same loan
+  /// UPDATE it instead of adding a duplicate. Nullable because the payload omits it
+  /// on some rows, which is why db/613's unique index on (party_id, encompass_id) is
+  /// PARTIAL — a shape Prisma cannot express, so it lives in the migration alone and
+  /// any writer keying on it must repeat the `WHERE encompass_id IS NOT NULL`.
+  encompassId String? @map("encompass_id")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -689,6 +896,13 @@ model LtReoProperty {
   /// Whether a document has been seen for it. Experience counted from an unverified
   /// claim is how a file gets priced on leverage it did not earn.
   isVerified Boolean @default(false) @map("is_verified")
+
+  /// Encompass's OWN id for this row — what lets a second read of the same loan
+  /// UPDATE it instead of adding a duplicate. Nullable because the payload omits it
+  /// on some rows, which is why db/613's unique index on (party_id, encompass_id) is
+  /// PARTIAL — a shape Prisma cannot express, so it lives in the migration alone and
+  /// any writer keying on it must repeat the `WHERE encompass_id IS NOT NULL`.
+  encompassId String? @map("encompass_id")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1046,6 +1260,30 @@ model LtPipelineView {
   @@map("lt_pipeline_views")
 }
 
+/// A user's named investor groups for the Pricing Engine's display-only investor
+/// filter (owner-directed 2026-08-27). `investors` holds CANONICAL registry keys
+/// (src/longterm/encompass/investors.js), never spellings. Personal only — the
+/// owner's words were "every user should be able to set up by themselves groups"
+/// — with the identity FK ON DELETE SET NULL like every LT identity link (the
+/// one uniform invariant test-lt-loan-schema-db holds), so `staffId` is
+/// nullable and an orphaned group simply stops appearing (every read is scoped
+/// to the signed-in person). The name uniqueness is really on
+/// (staff_id, lower(name)) — an expression Prisma cannot state.
+model LtPricerInvestorGroup {
+  id        String  @id @default(uuid()) @db.Uuid
+  staffId   String? @map("staff_id") @db.Uuid
+  name      String
+  investors Json   @default("[]") @db.JsonB
+  sortOrder Int    @default(100) @map("sort_order")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([staffId, name])
+  @@index([staffId, sortOrder, name])
+  @@map("lt_pricer_investor_groups")
+}
+
 /// The current lock posture, mirrored. READ-ONLY from Encompass.
 ///
 /// HARD RULE: TRUST `expirationDate`. Never recompute it from lock date plus
@@ -1135,6 +1373,49 @@ model LtMilestoneEvent {
 
   @@index([loanId, observedAt])
   @@map("lt_milestone_events")
+}
+
+/// THE LOAN'S OWN MILESTONE LADDER (db/623) — every step of THIS loan's workflow,
+/// mirrored from GET /loans/{id}/milestones. This is what settles where a file
+/// actually is: the file SITS in the first row whose `done` is false (Birch: the
+/// Funding step done → sitting in "Investor Delivery"), while the old
+/// `Log.MS.CurrentMilestone` reading lags on the last WORKED step.
+///
+/// It is also the per-milestone PERSONA record: each step carries WHO is assigned
+/// to it (the associate's name, Encompass login, role, email, phone) — which is
+/// how "I was assigned only to the Closer and Funder milestone" becomes a fact a
+/// pipeline filter can honour.
+model LtLoanMilestone {
+  loanId        String @map("loan_id") @db.Uuid
+  milestoneName String @map("milestone_name")
+
+  /// The ladder's own order, as Encompass returned it (0-based).
+  position Int     @default(0)
+  done     Boolean @default(false)
+
+  /// One date per step, Encompass's own: the actual start for a step that has
+  /// been worked, the PLANNED/expected date for one that has not. `done` says
+  /// which reading applies.
+  startDate DateTime? @map("start_date") @db.Timestamptz(6)
+
+  /// The assigned associate on THIS step. `associateId` is the Encompass LOGIN id
+  /// — the same join key the people map (lt_staff_links) is built on.
+  associateId    String? @map("associate_id")
+  associateName  String? @map("associate_name")
+  associateRole  String? @map("associate_role")
+  associateEmail String? @map("associate_email")
+  associatePhone String? @map("associate_phone")
+  roleRequired   String? @map("role_required")
+
+  encompassSyncedAt DateTime @default(now()) @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  loan LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([loanId, milestoneName])
+  @@index([loanId, position], map: "lt_loan_milestones_loan_pos_idx")
+  @@map("lt_loan_milestones")
 }
 
 /// A mapping is either awaiting a human, accepted, or refused. The one enum this
@@ -1562,4 +1843,398 @@ model LtBorrowerLink {
   @@index([borrowerId])
   @@index([status])
   @@map("lt_borrower_links")
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE CONDITION CENTER'S MIRROR — conditions and the eFolder (db/612).
+//
+// Encompass is the source of truth; all five of these are a MIRROR, keyed on
+// Encompass's own ids and stamped with when we last read them. Nothing here is
+// ever written back: reading conditions and the eFolder is a READ, and the
+// eFolder UPLOAD is a write that stays blocked until its request shape is
+// verified on docs/ENCOMPASS-WRITE-AUTHORIZATIONS.md.
+//
+// The shape follows what was MEASURED rather than what the phrase "condition
+// centre" usually implies: every condition in this tenant sits on a loan that is
+// already closed and sold, so these are investor POST-PURCHASE conditions, while
+// the live day-to-day work happens in the eFolder. Both are mirrored, and the
+// file decides which face it shows.
+// ════════════════════════════════════════════════════════════════════════════
+
+/// One Encompass ENHANCED condition, mirrored.
+///
+/// Read from `GET /encompass/v3/loans/{id}/conditions` — never the four v1
+/// condition routes, which answer 200 with an empty array on every loan here and
+/// would read as "no conditions" on a file that plainly has them.
+model LtCondition {
+  id     String @id @default(uuid()) @db.Uuid
+  loanId String @map("loan_id") @db.Uuid
+
+  /// Encompass's condition GUID. This, with the loan, IS the identity of the row.
+  encompassConditionId String @map("encompass_condition_id")
+
+  /// All TEXT, not enums. 197 condition templates and 19 condition sets were
+  /// counted in this tenant: the vocabulary is a buyer's configuration, and an
+  /// enum would be a migration every time somebody spells their workflow
+  /// differently — the same reasoning that keeps LtLoanContact.role text.
+  conditionType       String? @map("condition_type")
+  title               String?
+  internalDescription String? @map("internal_description")
+  /// What the borrower / TPO sees. The one to surface outward — and the investor
+  /// name rule still applies to it in full.
+  externalDescription String? @map("external_description")
+  category            String?
+  /// The gate it blocks: Approval | Docs | Funding | Closing | Submittal | Purchase.
+  priorTo             String? @map("prior_to")
+
+  status String?
+
+  /// MIRRORED, NEVER DERIVED. Encompass computes whether a condition is still
+  /// outstanding; deriving our own from the status word is how our screen ends up
+  /// disagreeing with theirs about the same condition.
+  statusOpen Boolean?  @map("status_open")
+  statusDate DateTime? @map("status_date") @db.Timestamptz(6)
+
+  source            String?
+  sourceOfCondition String? @map("source_of_condition")
+  printDefinitions  Json?   @map("print_definitions")
+  /// Which borrower pair it belongs to ('All' for file-level).
+  applicationRef    String? @map("application_ref")
+  ownerRole         String? @map("owner_role")
+  assignedTo        String? @map("assigned_to")
+  recipient         String?
+  daysToReceive     Int?    @map("days_to_receive")
+  commentsCount     Int?    @map("comments_count")
+  /// The template's short code, e.g. 'UW'.
+  internalId        String? @map("internal_id")
+
+  /// Soft-deleted upstream. Mirrored and filtered on READ, never deleted here —
+  /// the record of what was once asked for is part of the story of the loan.
+  isRemoved Boolean @default(false) @map("is_removed")
+
+  encompassCreatedBy  String?   @map("encompass_created_by")
+  encompassCreatedAt  DateTime? @map("encompass_created_at") @db.Timestamptz(6)
+  encompassModifiedBy String?   @map("encompass_modified_by")
+  encompassModifiedAt DateTime? @map("encompass_modified_at") @db.Timestamptz(6)
+
+  /// The whole condition as Encompass sent it. A mirror that keeps only the
+  /// fields today's screen reads cannot answer tomorrow's question without
+  /// re-reading the tenant.
+  raw Json?
+
+  encompassSyncedAt DateTime? @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  loan     LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  comments LtConditionComment[]
+  documentLinks LtDocumentCondition[]
+
+  @@unique([loanId, encompassConditionId])
+  @@index([loanId])
+  @@map("lt_conditions")
+}
+
+/// The thread on one condition. Its own table rather than a blob on the
+/// condition, because a comment is the unit a person reads and answers.
+model LtConditionComment {
+  id                 String  @id @default(uuid()) @db.Uuid
+  conditionId        String  @map("condition_id") @db.Uuid
+  encompassCommentId String? @map("encompass_comment_id")
+
+  body        String?
+  authorName  String?   @map("author_name")
+  authorId    String?   @map("author_id")
+  commentedAt DateTime? @map("commented_at") @db.Timestamptz(6)
+
+  raw               Json?
+  encompassSyncedAt DateTime? @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  condition LtCondition @relation(fields: [conditionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  /// PARTIAL in the migration (only where the id is present): a comment id is not
+  /// guaranteed on every payload, and a blanket unique over a nullable column
+  /// would collapse two real comments that both arrive without one.
+  @@unique([conditionId, encompassCommentId])
+  @@index([conditionId, commentedAt])
+  @@map("lt_condition_comments")
+}
+
+/// An eFolder DOCUMENT — the SLOT ("Appraisal"), not the paper.
+///
+/// 20,569 of these were counted across 673 loans, holding 28,822 attachments, so
+/// one-document-many-attachments is the ordinary case rather than an edge one.
+model LtDocument {
+  id                  String @id @default(uuid()) @db.Uuid
+  loanId              String @map("loan_id") @db.Uuid
+  encompassDocumentId String @map("encompass_document_id")
+
+  title          String?
+  titleWithIndex String? @map("title_with_index")
+  applicationRef String? @map("application_ref")
+  applicationName String? @map("application_name")
+  milestoneId    String? @map("milestone_id")
+  milestoneName  String? @map("milestone_name")
+
+  /// The eFolder's own vocabulary — needed / received / ordered / reordered /
+  /// expected / expected! / expired! / ready to ship / ready for UW / reviewed.
+  /// Mirrored verbatim: the moment we translate it into our own words, our screen
+  /// and theirs can disagree about the same document.
+  status String?
+
+  roles Json?
+
+  /// What Encompass believes about who may see this document. Mirrored as a FACT,
+  /// never used as an authorization here — long-term access is decided by
+  /// src/longterm/access.js.
+  webCenterAllowed  Boolean? @map("web_center_allowed")
+  tpoAllowed        Boolean? @map("tpo_allowed")
+  thirdPartyAllowed Boolean? @map("third_party_allowed")
+  isProtected       Boolean? @map("is_protected")
+
+  daysDue         Int? @map("days_due")
+  daysTillExpire  Int? @map("days_till_expire")
+  attachmentCount Int? @map("attachment_count")
+
+  isRemoved Boolean @default(false) @map("is_removed")
+
+  encompassCreatedBy String?   @map("encompass_created_by")
+  encompassCreatedAt DateTime? @map("encompass_created_at") @db.Timestamptz(6)
+
+  raw               Json?
+  encompassSyncedAt DateTime? @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  loan           LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  attachments    LtDocumentAttachment[]
+  conditionLinks LtDocumentCondition[]
+
+  @@unique([loanId, encompassDocumentId])
+  @@index([loanId])
+  @@map("lt_documents")
+}
+
+/// The paper — METADATA ONLY. We keep the URI, never the bytes: Encompass is the
+/// system of record for the file itself, a copy starts drifting the moment
+/// somebody replaces the original there, and pulling borrower paper into a second
+/// store is a decision about where PII lives that nobody has asked for.
+model LtDocumentAttachment {
+  id                    String @id @default(uuid()) @db.Uuid
+  documentId            String @map("document_id") @db.Uuid
+  encompassAttachmentId String @map("encompass_attachment_id")
+
+  title       String?
+  fileName    String? @map("file_name")
+  contentType String? @map("content_type")
+  fileSize    BigInt? @map("file_size")
+  pageCount   Int?    @map("page_count")
+
+  /// A POINTER. Reading it later is a fresh authenticated GET, exactly as it is
+  /// today — never a copy of the document sitting in our database.
+  encompassUri String? @map("encompass_uri")
+
+  isRemoved Boolean @default(false) @map("is_removed")
+
+  encompassCreatedBy String?   @map("encompass_created_by")
+  encompassCreatedAt DateTime? @map("encompass_created_at") @db.Timestamptz(6)
+
+  raw               Json?
+  encompassSyncedAt DateTime? @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  document LtDocument @relation(fields: [documentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([documentId, encompassAttachmentId])
+  @@index([documentId])
+  @@map("lt_document_attachments")
+}
+
+/// THE INVERTED LINK. The link lives on the DOCUMENT (`document.conditions[]`)
+/// and Encompass exposes no condition->documents endpoint, so "which documents
+/// satisfy this condition" is built by inverting the mapping — a many-to-many,
+/// and therefore a table rather than a column on either side.
+model LtDocumentCondition {
+  id         String @id @default(uuid()) @db.Uuid
+  documentId String @map("document_id") @db.Uuid
+
+  /// THE LINK ITSELF. Encompass can name a condition we have not mirrored yet —
+  /// the two reads are separate calls that can land in either order, and a removed
+  /// condition is still referenced by the documents that answered it. Keying on
+  /// the Encompass id records the FACT whatever we happen to hold.
+  encompassConditionId String @map("encompass_condition_id")
+
+  /// Only the RESOLUTION of that fact, filled in when the condition row exists.
+  /// SET NULL rather than cascade, for the same reason.
+  conditionId String? @map("condition_id") @db.Uuid
+
+  entityType String? @map("entity_type")
+  entityName String? @map("entity_name")
+  entityUri  String? @map("entity_uri")
+
+  encompassSyncedAt DateTime? @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  document  LtDocument   @relation(fields: [documentId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  condition LtCondition? @relation(fields: [conditionId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@unique([documentId, encompassConditionId])
+  @@index([conditionId])
+  @@map("lt_document_conditions")
+}
+
+/// WHAT EVERY SYNC PASS ACTUALLY DID — so an empty book can say why (db/616).
+///
+/// `GET /api/lt/sync` builds its whole answer out of `lt_loans`: how many rows, how
+/// many were read, how many carry an error. That is a fine report on loans we HAVE
+/// and says nothing at all about a pass that never got a loan — a refused login, an
+/// Encompass outage, a search that answered with an empty list, the feature switched
+/// off. Every one of those rendered identically to "Encompass has nothing for us".
+/// A report built only from the rows a job PRODUCED can never explain a job that
+/// produced none, so this records the RUN rather than its output.
+///
+/// A LOG, not a single current-state row: "it is failing right now" and "it has been
+/// failing since Tuesday" are different facts, and the second is the one that tells
+/// somebody whether an outage explains an empty book. Pruned by its own writer
+/// (newest N per kind), so it is bounded without a scheduled job.
+model LtSyncRun {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Which pass: loans | conditions | milestone_catalog | pilot_roles. Deliberately
+  /// free text rather than an enum — a pass added later must be able to record
+  /// itself without a migration, and the cost of an unrecognised kind is a row the
+  /// screen groups under its own name, never a lost write on the one table whose job
+  /// is to explain a failure.
+  kind String
+
+  /// 'worker' (the timer) or 'manual' (somebody pressed the button). "The button did
+  /// nothing" and "the timer has not run" send you to two different places.
+  trigger String @default("worker")
+
+  startedAt DateTime @default(now()) @map("started_at") @db.Timestamptz(6)
+
+  /// NULL while a pass is still running. A row that never gains a finish IS the
+  /// record of a pass that died mid-flight, which no summary count could show.
+  finishedAt DateTime? @map("finished_at") @db.Timestamptz(6)
+
+  ok Boolean?
+
+  /// WHY, in the words a person reads. Filled on a refusal or a failure and left
+  /// NULL on a clean pass — a reason on a successful run would train people to
+  /// ignore the column.
+  reason String?
+
+  discovered Int?
+  readCount  Int? @map("read_count")
+  failed     Int?
+
+  /// Loans deliberately not mirrored — today, files the product rule proved are
+  /// short-term and belong to the other product.
+  skipped   Int?
+  remaining Int?
+  passes    Int?
+
+  /// The pass's own shape, verbatim, so a question nobody thought to ask today is
+  /// still answerable from what was captured — today, WHICH loans the database
+  /// refused.
+  detail Json?
+
+  /// The only question ever asked of this table: "what did the last pass of this
+  /// kind do?"
+  @@index([kind, startedAt(sort: Desc)], map: "lt_sync_runs_kind_started_idx")
+  @@map("lt_sync_runs")
+}
+
+
+/// EVERY TIME A LONG-TERM LOAN GAINED, CHANGED, LOST OR STAMPED ITS CLICKUP CARD
+/// (db/618). The loan row holds the CURRENT answer; this holds how it got there.
+///
+/// It exists because a link that changes silently is the one thing that could
+/// quietly re-point a deal at somebody else's card, and the loan row alone can
+/// never answer "who tied these two together, and what did they match on?".
+model LtClickupLinkLog {
+  id       String @id @default(uuid()) @db.Uuid
+  ltLoanId String @map("lt_loan_id") @db.Uuid
+
+  /// linked | relinked | unlinked | confirmed | stamped | stamp_failed. Free text
+  /// for the same reason LtSyncRun.kind is: a new action must be able to record
+  /// itself without a migration, and an unrecognised one costs a row grouped under
+  /// its own name, never a lost write on the table whose job is to explain.
+  action String
+
+  fromTaskId String? @map("from_task_id")
+  toTaskId   String? @map("to_task_id")
+  confidence String?
+  source     String?
+
+  /// Plain language: what it was matched on, or what refused. Read by a person.
+  reason String?
+
+  /// The staff_users row that did it. NULL for a pass PILOT ran on its own.
+  actedBy String? @map("acted_by") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ltLoanId, createdAt(sort: Desc)], map: "lt_clickup_link_log_loan_idx")
+  @@map("lt_clickup_link_log")
+}
+
+/// db/625 — the ClickUp field writer's JOURNAL: every outbound field write,
+/// before + after values (SSN masked BEFORE insert — a readable Social never
+/// lands here), including writes a guardrail refused (blocked=true). Append-
+/// only and best-effort: a journal failure never blocks a push. The volume
+/// circuit breaker seeds its rolling 10-minute window from this table on boot,
+/// so a restart mid-storm cannot reset the budget.
+model LtClickupWriteLog {
+  id       BigInt  @id @default(autoincrement())
+  ltLoanId String? @map("lt_loan_id") @db.Uuid
+  taskId   String  @map("task_id")
+  /// NULL for a non-field event (e.g. a refused short-term card).
+  fieldId  String? @map("field_id")
+  /// The mapper's logical key ('ssn', 'loan_amount', …).
+  fieldKey String? @map("field_key")
+  /// ClickUp's value immediately before (NULL = unknown / a brand-new card).
+  oldValue Json?   @map("old_value")
+  /// What we wrote — or tried to, or were refused to.
+  newValue Json?   @map("new_value")
+  /// false = nothing landed on the card.
+  changed  Boolean @default(true)
+  /// true = a guardrail refused it (PII shield, DOB gate, wire failure).
+  blocked  Boolean @default(false)
+  /// 'create' | 'scoped_push' | 'full_repush'
+  source   String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([taskId, createdAt(sort: Desc)], map: "lt_cu_write_log_task_idx")
+  @@index([ltLoanId, createdAt(sort: Desc)], map: "lt_cu_write_log_loan_idx")
+  @@map("lt_clickup_write_log")
+}
+
+/// db/625 — outbound ClickUp writes a guardrail held for a PERSON: a differing
+/// identity field a push may only FILL (pii_overwrite_blocked), or a change to
+/// an existing ClickUp DOB (dob_change_blocked_pending_review). Values arrive
+/// MASKED — an SSN is never stored here. One OPEN row per (task, field,
+/// proposal) — the partial unique index dedupes a retried pass. Resolving one
+/// re-pushes the single field with approvedReview; rejecting keeps the card.
+model LtClickupReviewQueue {
+  id            BigInt  @id @default(autoincrement())
+  ltLoanId      String? @map("lt_loan_id") @db.Uuid
+  taskId        String  @map("task_id")
+  direction     String  @default("outbound")
+  fieldKey      String  @map("field_key")
+  /// What the card holds (masked where PII).
+  currentValue  String? @map("current_value")
+  /// What the mirror wanted to write (masked).
+  proposedValue String? @map("proposed_value")
+  reason        String
+  /// 'open' | 'resolved' | 'rejected' (CHECK lt_cu_review_status_chk)
+  status        String  @default("open")
+  resolvedBy    String?   @map("resolved_by") @db.Uuid
+  resolvedAt    DateTime? @map("resolved_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([ltLoanId, createdAt(sort: Desc)], map: "lt_cu_review_loan_idx")
+  @@map("lt_clickup_review_queue")
 }

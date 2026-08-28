@@ -9,17 +9,17 @@
 // *** IT IS INCOMPLETE, AND THAT IS NOT A DEFECT — IT IS A PROPERTY OF THE
 // *** PRISMA SCHEMA LANGUAGE. It cannot express triggers, functions, CHECK
 // *** constraints, generated columns or partial indexes. On this database
-// *** that is 848 objects it cannot see, listed in full in
+// *** that is 893 objects it cannot see, listed in full in
 // *** BEYOND-PRISMA.md next to this file.
 //
 // *** SO: NEVER REBUILD A DATABASE FROM THIS FILE. Doing so produces SQL that
 // *** runs without a single error and silently leaves out every one of those
-// *** 848 objects — including the guard that keeps a budget
+// *** 893 objects — including the guard that keeps a budget
 // *** condition from being signed off unless the totals match to the cent.
-// *** The 604 numbered migrations in db/ (highest db/607) are the only
+// *** The 633 numbered migrations in db/ (highest db/636) are the only
 // *** thing that builds this database.
 //
-// Snapshot: 372 tables, 5970 columns.
+// Snapshot: 387 tables, 6228 columns.
 // ===========================================================================
 datasource db {
   provider = "postgresql"
@@ -631,6 +631,16 @@ model applications {
   ab_piece_enabled                                                                         Boolean                          @default(false)
   a_piece_amount                                                                           Decimal?                         @db.Decimal(14, 2)
   program_exceptions                                                                       Json?
+  purchase_advice_read_at                                                                  DateTime?                        @db.Timestamptz(6)
+  purchase_advice_read_state                                                               String?
+  purchase_advice_field_id                                                                 String?
+  file_feasibility_fee                                                                     Decimal?                         @db.Decimal
+  sold_at                                                                                  DateTime?                        @db.Date
+  sold_source                                                                              String?
+  payoff_demand_requested_at                                                               DateTime?                        @db.Timestamptz(6)
+  payoff_demand_requested_by                                                               String?                          @db.Uuid
+  payoff_demand_note                                                                       String?
+  payoff_date                                                                              DateTime?                        @db.Date
   ai_admin_questions                                                                       ai_admin_questions[]
   ai_cost_events                                                                           ai_cost_events[]
   ai_suggestions                                                                           ai_suggestions[]
@@ -648,6 +658,7 @@ model applications {
   staff_users_applications_free_and_clear_byTostaff_users                                  staff_users?                     @relation("applications_free_and_clear_byTostaff_users", fields: [free_and_clear_by], references: [id], onUpdate: NoAction)
   llcs_applications_llc_idTollcs                                                           llcs?                            @relation("applications_llc_idTollcs", fields: [llc_id], references: [id], onUpdate: NoAction)
   staff_users_applications_loan_officer_idTostaff_users                                    staff_users?                     @relation("applications_loan_officer_idTostaff_users", fields: [loan_officer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  staff_users_applications_payoff_demand_requested_byTostaff_users                         staff_users?                     @relation("applications_payoff_demand_requested_byTostaff_users", fields: [payoff_demand_requested_by], references: [id], onUpdate: NoAction)
   staff_users_applications_pipeline_removed_byTostaff_users                                staff_users?                     @relation("applications_pipeline_removed_byTostaff_users", fields: [pipeline_removed_by], references: [id], onUpdate: NoAction)
   staff_users_applications_processor_idTostaff_users                                       staff_users?                     @relation("applications_processor_idTostaff_users", fields: [processor_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   tpo_firms                                                                                tpo_firms?                       @relation(fields: [tpo_firm_id], references: [id], onUpdate: NoAction)
@@ -657,6 +668,7 @@ model applications {
   appraisal_payment_intents                                                                appraisal_payment_intents[]
   appraisal_xml_waivers                                                                    appraisal_xml_waivers?
   appraisals                                                                               appraisals[]
+  arena_claims                                                                             arena_claims[]
   asset_ledger_entries                                                                     asset_ledger_entries[]
   borrower_view_sessions                                                                   borrower_view_sessions[]
   change_requests                                                                          change_requests[]
@@ -750,6 +762,7 @@ model applications {
   rv_orders                                                                                rv_orders[]
   rv_status_events                                                                         rv_status_events[]
   rv_write_log                                                                             rv_write_log[]
+  scheduled_sends                                                                          scheduled_sends[]
   section_1071_coverage                                                                    section_1071_coverage[]
   sent_emails                                                                              sent_emails[]
   shadow_decisions                                                                         shadow_decisions[]
@@ -763,6 +776,7 @@ model applications {
   term_sheet_offers                                                                        term_sheet_offers[]
   tpo_view_sessions                                                                        tpo_view_sessions[]
   track_record_findings                                                                    track_record_findings[]
+  trinity_budget_reviews                                                                   trinity_budget_reviews[]
   trinity_inspection_orders                                                                trinity_inspection_orders[]
   trinity_order_comments                                                                   trinity_order_comments[]
   trinity_order_events                                                                     trinity_order_events[]
@@ -1632,6 +1646,9 @@ model borrowers {
   portal_invite_count                                                                Int                                  @default(0)
   portal_invited_by                                                                  String?                              @db.Uuid
   portal_invited_email                                                               String?                              @db.Citext
+  elementix_person_id                                                                String?
+  elementix_history_imported_at                                                      DateTime?                            @db.Timestamptz(6)
+  elementix_history_import_attempts                                                  Int                                  @default(0)
   application_drafts                                                                 application_drafts[]
   application_payment_cards                                                          application_payment_cards[]
   applications_applications_borrower_idToborrowers                                   applications[]                       @relation("applications_borrower_idToborrowers")
@@ -1660,6 +1677,7 @@ model borrowers {
   document_extractions                                                               document_extractions[]
   document_findings                                                                  document_findings[]
   documents_documents_borrower_idToborrowers                                         documents[]                          @relation("documents_borrower_idToborrowers")
+  elementix_skip_traces                                                              elementix_skip_traces[]
   email_tokens                                                                       email_tokens[]
   esign_recipients                                                                   esign_recipients[]
   leads                                                                              leads[]
@@ -1808,12 +1826,16 @@ model checklist_items {
   delete_requested_at                                                       DateTime?                    @db.Timestamptz(6)
   delete_request_reason                                                     String?
   extra_slots                                                               Json?
+  external_note                                                             String?
+  external_note_by                                                          String?                      @db.Uuid
+  external_note_at                                                          DateTime?                    @db.Timestamptz(6)
   ai_suggestions_ai_suggestions_checklist_item_idTochecklist_items          ai_suggestions[]             @relation("ai_suggestions_checklist_item_idTochecklist_items")
   ai_suggestions_ai_suggestions_linked_condition_idTochecklist_items        ai_suggestions[]             @relation("ai_suggestions_linked_condition_idTochecklist_items")
   amc_orders                                                                amc_orders[]
   applications                                                              applications?                @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   staff_users_checklist_items_assignee_staff_idTostaff_users                staff_users?                 @relation("checklist_items_assignee_staff_idTostaff_users", fields: [assignee_staff_id], references: [id], onUpdate: NoAction)
   borrowers                                                                 borrowers?                   @relation(fields: [borrower_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users_checklist_items_external_note_byTostaff_users                 staff_users?                 @relation("checklist_items_external_note_byTostaff_users", fields: [external_note_by], references: [id], onUpdate: NoAction)
   llcs                                                                      llcs?                        @relation(fields: [llc_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   loan_exceptions_checklist_items_loan_exception_idToloan_exceptions        loan_exceptions?             @relation("checklist_items_loan_exception_idToloan_exceptions", fields: [loan_exception_id], references: [id], onUpdate: NoAction)
   staff_users_checklist_items_override_byTostaff_users                      staff_users?                 @relation("checklist_items_override_byTostaff_users", fields: [override_by], references: [id], onUpdate: NoAction)
@@ -2309,6 +2331,7 @@ model company_pricing_settings {
   orig_silver_pct      Decimal?     @db.Decimal
   markup_tiers         Json?
   program_availability Json?
+  feasibility_fees     Json?
   staff_users          staff_users? @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
 }
 
@@ -3569,6 +3592,11 @@ model elementix_oauth {
   last_error_at                                         DateTime?    @db.Timestamptz(6)
   created_at                                            DateTime     @default(now()) @db.Timestamptz(6)
   updated_at                                            DateTime     @default(now()) @db.Timestamptz(6)
+  elx_user_label                                        String?
+  elx_user_email                                        String?      @db.Citext
+  elx_org_label                                         String?
+  identity_at                                           DateTime?    @db.Timestamptz(6)
+  identity_raw                                          Json?
   staff_users_elementix_oauth_connected_byTostaff_users staff_users? @relation("elementix_oauth_connected_byTostaff_users", fields: [connected_by], references: [id], onUpdate: NoAction)
   staff_users_elementix_oauth_staff_idTostaff_users     staff_users? @relation("elementix_oauth_staff_idTostaff_users", fields: [staff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 }
@@ -4476,7 +4504,10 @@ model investor_delivery_contacts {
   created_by  String?      @db.Uuid
   created_at  DateTime     @default(now()) @db.Timestamptz(6)
   updated_at  DateTime     @default(now()) @db.Timestamptz(6)
+  purposes    String[]     @default(["draw"])
   staff_users staff_users? @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+
+  @@index([purposes], map: "idx_inv_contact_purposes", type: Gin)
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -4611,30 +4642,31 @@ model lead_tasks {
   @@index([lead_id, done, due_at], map: "idx_lead_tasks_lead")
 }
 
+/// A person who might become a borrower — the CRM record of them before there is a loan file.
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model leads {
-  id                                                 String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id                                                 String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tool                                               String
   name                                               String?
-  email                                              String?           @db.Citext
+  email                                              String?                    @db.Citext
   phone                                              String?
   officer_code                                       String?
-  officer_id                                         String?           @db.Uuid
+  officer_id                                         String?                    @db.Uuid
   subject                                            String?
   message                                            String?
   payload                                            Json?
-  source                                             String            @default("marketing_site")
-  status                                             String            @default("new")
-  application_id                                     String?           @db.Uuid
-  borrower_id                                        String?           @db.Uuid
-  emailed_officer                                    Boolean           @default(false)
-  emailed_submitter                                  Boolean           @default(false)
-  ip_address                                         String?           @db.Inet
+  source                                             String                     @default("marketing_site")
+  status                                             String                     @default("new")
+  application_id                                     String?                    @db.Uuid
+  borrower_id                                        String?                    @db.Uuid
+  emailed_officer                                    Boolean                    @default(false)
+  emailed_submitter                                  Boolean                    @default(false)
+  ip_address                                         String?                    @db.Inet
   user_agent                                         String?
-  created_at                                         DateTime          @default(now()) @db.Timestamptz(6)
-  updated_at                                         DateTime          @default(now()) @db.Timestamptz(6)
-  next_follow_up                                     DateTime?         @db.Date
+  created_at                                         DateTime                   @default(now()) @db.Timestamptz(6)
+  updated_at                                         DateTime                   @default(now()) @db.Timestamptz(6)
+  next_follow_up                                     DateTime?                  @db.Date
   first_name                                         String?
   last_name                                          String?
   company                                            String?
@@ -4643,26 +4675,30 @@ model leads {
   property_address                                   Json?
   property_type                                      String?
   program                                            String?
-  loan_amount                                        Decimal?          @db.Decimal(14, 2)
+  loan_amount                                        Decimal?                   @db.Decimal(14, 2)
   lead_source                                        String?
   referral_partner                                   String?
-  tags                                               String[]          @default([])
-  estimated_close                                    DateTime?         @db.Date
+  tags                                               String[]                   @default([])
+  estimated_close                                    DateTime?                  @db.Date
   lost_reason                                        String?
-  lost_at                                            DateTime?         @db.Timestamptz(6)
-  last_activity_at                                   DateTime?         @db.Timestamptz(6)
-  created_by_staff_id                                String?           @db.Uuid
-  first_contact_at                                   DateTime?         @db.Timestamptz(6)
+  lost_at                                            DateTime?                  @db.Timestamptz(6)
+  last_activity_at                                   DateTime?                  @db.Timestamptz(6)
+  created_by_staff_id                                String?                    @db.Uuid
+  first_contact_at                                   DateTime?                  @db.Timestamptz(6)
   assigned_via                                       String?
   session_id                                         String?
+  elementix_person_id                                String?
   documents                                          documents[]
+  elementix_backfill_queue                           elementix_backfill_queue[]
+  elementix_skip_traces                              elementix_skip_traces[]
   lead_activities                                    lead_activities[]
   lead_notes                                         lead_notes[]
+  lead_phone_marks                                   lead_phone_marks[]
   lead_tasks                                         lead_tasks[]
-  applications                                       applications?     @relation(fields: [application_id], references: [id], onUpdate: NoAction)
-  borrowers                                          borrowers?        @relation(fields: [borrower_id], references: [id], onUpdate: NoAction)
-  staff_users_leads_created_by_staff_idTostaff_users staff_users?      @relation("leads_created_by_staff_idTostaff_users", fields: [created_by_staff_id], references: [id], onUpdate: NoAction)
-  staff_users_leads_officer_idTostaff_users          staff_users?      @relation("leads_officer_idTostaff_users", fields: [officer_id], references: [id], onUpdate: NoAction)
+  applications                                       applications?              @relation(fields: [application_id], references: [id], onUpdate: NoAction)
+  borrowers                                          borrowers?                 @relation(fields: [borrower_id], references: [id], onUpdate: NoAction)
+  staff_users_leads_created_by_staff_idTostaff_users staff_users?               @relation("leads_created_by_staff_idTostaff_users", fields: [created_by_staff_id], references: [id], onUpdate: NoAction)
+  staff_users_leads_officer_idTostaff_users          staff_users?               @relation("leads_officer_idTostaff_users", fields: [officer_id], references: [id], onUpdate: NoAction)
 
   @@index([created_at(sort: Desc)], map: "idx_leads_created")
   @@index([first_contact_at], map: "idx_leads_first_contact")
@@ -5122,6 +5158,7 @@ model lt_assets {
   is_verified      Boolean          @default(false)
   created_at       DateTime         @default(now()) @db.Timestamptz(6)
   updated_at       DateTime         @default(now()) @db.Timestamptz(6)
+  encompass_id     String?
   lt_parties       lt_parties       @relation(fields: [party_id], references: [id], onDelete: Cascade)
 
   @@index([party_id, section])
@@ -5186,6 +5223,7 @@ model lt_employments {
   employer_phone            String?
   created_at                DateTime           @default(now()) @db.Timestamptz(6)
   updated_at                DateTime           @default(now()) @db.Timestamptz(6)
+  encompass_id              String?
   lt_parties                lt_parties         @relation(fields: [party_id], references: [id], onDelete: Cascade)
 
   @@index([party_id, employment_type])
@@ -5204,6 +5242,8 @@ model lt_encompass_milestones {
   is_archived         Boolean    @default(false)
   created_at          DateTime   @default(now()) @db.Timestamptz(6)
   updated_at          DateTime   @default(now()) @db.Timestamptz(6)
+  catalog_synced_at   DateTime?  @db.Timestamptz(6)
+  catalog_source      String?
   lt_loans            lt_loans[]
 
   @@index([sequence])
@@ -5238,6 +5278,7 @@ model lt_liabilities {
   reo_property_id   String?              @db.Uuid
   created_at        DateTime             @default(now()) @db.Timestamptz(6)
   updated_at        DateTime             @default(now()) @db.Timestamptz(6)
+  encompass_id      String?
   lt_parties        lt_parties           @relation(fields: [party_id], references: [id], onDelete: Cascade)
   lt_reo_properties lt_reo_properties?   @relation(fields: [reo_property_id], references: [id])
 
@@ -5286,10 +5327,11 @@ model lt_loan_investors {
   @@index([investor_loan_number])
 }
 
+/// One long-term loan file. The long-term product is a separate system that shares only the login and the person, so this is its own spine — nothing here touches a short-term loan.
 /// This model contains an index with non-default null sort order and requires additional setup for migrations. Visit https://pris.ly/d/default-index-null-ordering for more info.
 model lt_loans {
   id                              String                   @id @db.Uuid
-  loan_number                     String?                  @unique
+  loan_number                     String?
   encompass_loan_guid             String?                  @unique
   borrower_id                     String?                  @db.Uuid
   loan_officer_id                 String?                  @db.Uuid
@@ -5337,7 +5379,15 @@ model lt_loans {
   borrower_first_name             String?
   borrower_last_name              String?
   borrower_email                  String?
+  conditions_synced_at            DateTime?                @db.Timestamptz(6)
+  conditions_sync_error           String?
+  documents_synced_at             DateTime?                @db.Timestamptz(6)
+  documents_sync_error            String?
+  purchased_status                String?
+  purchased_at                    DateTime?                @db.Date
   lt_borrower_pairs               lt_borrower_pairs[]
+  lt_conditions                   lt_conditions[]
+  lt_documents                    lt_documents[]
   lt_loan_contacts                lt_loan_contacts[]
   lt_loan_investors               lt_loan_investors?
   borrowers                       borrowers?               @relation(fields: [borrower_id], references: [id], onUpdate: NoAction)
@@ -5355,6 +5405,8 @@ model lt_loans {
   @@index([stage_key], map: "lt_loans_stage_idx")
   @@index([encompass_synced_at], map: "lt_loans_synced_idx")
   @@index([borrower_email])
+  @@index([conditions_synced_at], map: "lt_loans_cond_synced_idx")
+  @@index([loan_number], map: "lt_loans_loan_number_key")
 }
 
 model lt_lock_events {
@@ -5399,6 +5451,7 @@ model lt_other_incomes {
   description    String?
   created_at     DateTime   @default(now()) @db.Timestamptz(6)
   updated_at     DateTime   @default(now()) @db.Timestamptz(6)
+  encompass_id   String?
   lt_parties     lt_parties @relation(fields: [party_id], references: [id], onDelete: Cascade)
 
   @@index([party_id])
@@ -5436,6 +5489,7 @@ model lt_parties {
   entity_ownership_pct      Decimal?            @db.Decimal(6, 3)
   created_at                DateTime            @default(now()) @db.Timestamptz(6)
   updated_at                DateTime            @default(now()) @db.Timestamptz(6)
+  encompass_id              String?
   lt_assets                 lt_assets[]
   lt_declarations           lt_declarations?
   lt_employments            lt_employments[]
@@ -5510,6 +5564,7 @@ model lt_reo_properties {
   is_verified               Boolean          @default(false)
   created_at                DateTime         @default(now()) @db.Timestamptz(6)
   updated_at                DateTime         @default(now()) @db.Timestamptz(6)
+  encompass_id              String?
   lt_liabilities            lt_liabilities[]
   lt_parties                lt_parties       @relation(fields: [party_id], references: [id], onDelete: Cascade)
 
@@ -5530,6 +5585,7 @@ model lt_residences {
   monthly_rent    Decimal?           @db.Decimal(14, 2)
   created_at      DateTime           @default(now()) @db.Timestamptz(6)
   updated_at      DateTime           @default(now()) @db.Timestamptz(6)
+  encompass_id    String?
   lt_parties      lt_parties         @relation(fields: [party_id], references: [id], onDelete: Cascade)
 
   @@index([party_id, residency_type])
@@ -7000,6 +7056,7 @@ model service_contacts {
   merged_into_id                                             String?                        @db.Uuid
   merged_at                                                  DateTime?                      @db.Timestamptz(6)
   application_service_contacts                               application_service_contacts[]
+  contractor_credentials                                     contractor_credentials?
   file_orders                                                file_orders[]
   borrowers_service_contacts_added_by_borrower_idToborrowers borrowers?                     @relation("service_contacts_added_by_borrower_idToborrowers", fields: [added_by_borrower_id], references: [id], onUpdate: NoAction)
   staff_users                                                staff_users?                   @relation(fields: [added_by_staff_id], references: [id], onUpdate: NoAction)
@@ -7364,6 +7421,7 @@ model staff_users {
   applications_applications_experience_exception_byTostaff_users                        applications[]                   @relation("applications_experience_exception_byTostaff_users")
   applications_applications_free_and_clear_byTostaff_users                              applications[]                   @relation("applications_free_and_clear_byTostaff_users")
   applications_applications_loan_officer_idTostaff_users                                applications[]                   @relation("applications_loan_officer_idTostaff_users")
+  applications_applications_payoff_demand_requested_byTostaff_users                     applications[]                   @relation("applications_payoff_demand_requested_byTostaff_users")
   applications_applications_pipeline_removed_byTostaff_users                            applications[]                   @relation("applications_pipeline_removed_byTostaff_users")
   applications_applications_processor_idTostaff_users                                   applications[]                   @relation("applications_processor_idTostaff_users")
   applications_applications_underwriter_idTostaff_users                                 applications[]                   @relation("applications_underwriter_idTostaff_users")
@@ -7372,6 +7430,32 @@ model staff_users {
   appraisal_xml_waivers                                                                 appraisal_xml_waivers[]
   appraisals_appraisals_arv_confirmed_byTostaff_users                                   appraisals[]                     @relation("appraisals_arv_confirmed_byTostaff_users")
   appraisals_appraisals_as_is_confirmed_byTostaff_users                                 appraisals[]                     @relation("appraisals_as_is_confirmed_byTostaff_users")
+  arena_awards                                                                          arena_awards[]
+  arena_challenge_entries_arena_challenge_entries_decided_byTostaff_users               arena_challenge_entries[]        @relation("arena_challenge_entries_decided_byTostaff_users")
+  arena_challenge_entries_arena_challenge_entries_staff_idTostaff_users                 arena_challenge_entries[]        @relation("arena_challenge_entries_staff_idTostaff_users")
+  arena_challenges                                                                      arena_challenges[]
+  arena_checkins_arena_checkins_decided_byTostaff_users                                 arena_checkins[]                 @relation("arena_checkins_decided_byTostaff_users")
+  arena_checkins_arena_checkins_staff_idTostaff_users                                   arena_checkins[]                 @relation("arena_checkins_staff_idTostaff_users")
+  arena_claims_arena_claims_decided_byTostaff_users                                     arena_claims[]                   @relation("arena_claims_decided_byTostaff_users")
+  arena_claims_arena_claims_staff_idTostaff_users                                       arena_claims[]                   @relation("arena_claims_staff_idTostaff_users")
+  arena_draws_arena_draws_created_byTostaff_users                                       arena_draws[]                    @relation("arena_draws_created_byTostaff_users")
+  arena_draws_arena_draws_stop_holder_staff_idTostaff_users                             arena_draws[]                    @relation("arena_draws_stop_holder_staff_idTostaff_users")
+  arena_draws_arena_draws_winner_staff_idTostaff_users                                  arena_draws[]                    @relation("arena_draws_winner_staff_idTostaff_users")
+  arena_entries_arena_entries_decided_byTostaff_users                                   arena_entries[]                  @relation("arena_entries_decided_byTostaff_users")
+  arena_entries_arena_entries_staff_idTostaff_users                                     arena_entries[]                  @relation("arena_entries_staff_idTostaff_users")
+  arena_messages_arena_messages_deleted_byTostaff_users                                 arena_messages[]                 @relation("arena_messages_deleted_byTostaff_users")
+  arena_messages_arena_messages_staff_idTostaff_users                                   arena_messages[]                 @relation("arena_messages_staff_idTostaff_users")
+  arena_prizes                                                                          arena_prizes[]
+  arena_session_members_arena_session_members_added_byTostaff_users                     arena_session_members[]          @relation("arena_session_members_added_byTostaff_users")
+  arena_session_members_arena_session_members_staff_idTostaff_users                     arena_session_members[]          @relation("arena_session_members_staff_idTostaff_users")
+  arena_sessions                                                                        arena_sessions[]
+  arena_settings                                                                        arena_settings[]
+  arena_spins                                                                           arena_spins[]
+  arena_suggestion_votes                                                                arena_suggestion_votes[]
+  arena_suggestions_arena_suggestions_decided_byTostaff_users                           arena_suggestions[]              @relation("arena_suggestions_decided_byTostaff_users")
+  arena_suggestions_arena_suggestions_staff_idTostaff_users                             arena_suggestions[]              @relation("arena_suggestions_staff_idTostaff_users")
+  arena_tickets_arena_tickets_created_byTostaff_users                                   arena_tickets[]                  @relation("arena_tickets_created_byTostaff_users")
+  arena_tickets_arena_tickets_staff_idTostaff_users                                     arena_tickets[]                  @relation("arena_tickets_staff_idTostaff_users")
   asset_ledger_entries                                                                  asset_ledger_entries[]
   borrower_assistants_borrower_assistants_disabled_byTostaff_users                      borrower_assistants[]            @relation("borrower_assistants_disabled_byTostaff_users")
   borrower_assistants_borrower_assistants_invited_by_staffTostaff_users                 borrower_assistants[]            @relation("borrower_assistants_invited_by_staffTostaff_users")
@@ -7385,6 +7469,7 @@ model staff_users {
   borrowers_borrowers_primary_officer_idTostaff_users                                   borrowers[]                      @relation("borrowers_primary_officer_idTostaff_users")
   change_requests                                                                       change_requests[]
   checklist_items_checklist_items_assignee_staff_idTostaff_users                        checklist_items[]                @relation("checklist_items_assignee_staff_idTostaff_users")
+  checklist_items_checklist_items_external_note_byTostaff_users                         checklist_items[]                @relation("checklist_items_external_note_byTostaff_users")
   checklist_items_checklist_items_override_byTostaff_users                              checklist_items[]                @relation("checklist_items_override_byTostaff_users")
   checklist_items_checklist_items_reviewed_byTostaff_users                              checklist_items[]                @relation("checklist_items_reviewed_byTostaff_users")
   checklist_items_checklist_items_signed_off_byTostaff_users                            checklist_items[]                @relation("checklist_items_signed_off_byTostaff_users")
@@ -7418,6 +7503,7 @@ model staff_users {
   conditions_conditions_created_byTostaff_users                                         conditions[]                     @relation("conditions_created_byTostaff_users")
   conditions_conditions_override_byTostaff_users                                        conditions[]                     @relation("conditions_override_byTostaff_users")
   conditions_conditions_reviewed_byTostaff_users                                        conditions[]                     @relation("conditions_reviewed_byTostaff_users")
+  contractor_credentials                                                                contractor_credentials[]
   credit_import_waivers                                                                 credit_import_waivers[]
   credit_reports_credit_reports_consent_byTostaff_users                                 credit_reports[]                 @relation("credit_reports_consent_byTostaff_users")
   credit_reports_credit_reports_pulled_byTostaff_users                                  credit_reports[]                 @relation("credit_reports_pulled_byTostaff_users")
@@ -7441,11 +7527,19 @@ model staff_users {
   draw_lien_waivers                                                                     draw_lien_waivers[]
   draw_stage_events                                                                     draw_stage_events[]
   elementix_address_links                                                               elementix_address_links[]
+  elementix_addresses                                                                   elementix_addresses[]
   elementix_calls                                                                       elementix_calls[]
+  elementix_contacts                                                                    elementix_contacts[]
   elementix_oauth_elementix_oauth_connected_byTostaff_users                             elementix_oauth[]                @relation("elementix_oauth_connected_byTostaff_users")
   elementix_oauth_elementix_oauth_staff_idTostaff_users                                 elementix_oauth[]                @relation("elementix_oauth_staff_idTostaff_users")
   elementix_oauth_pending_elementix_oauth_pending_staff_idTostaff_users                 elementix_oauth_pending[]        @relation("elementix_oauth_pending_staff_idTostaff_users")
   elementix_oauth_pending_elementix_oauth_pending_started_byTostaff_users               elementix_oauth_pending[]        @relation("elementix_oauth_pending_started_byTostaff_users")
+  elementix_person_aliases_elementix_person_aliases_confirmed_byTostaff_users           elementix_person_aliases[]       @relation("elementix_person_aliases_confirmed_byTostaff_users")
+  elementix_person_aliases_elementix_person_aliases_rejected_byTostaff_users            elementix_person_aliases[]       @relation("elementix_person_aliases_rejected_byTostaff_users")
+  elementix_persons                                                                     elementix_persons[]
+  elementix_skip_traces                                                                 elementix_skip_traces[]
+  elementix_users_elementix_users_linked_byTostaff_users                                elementix_users[]                @relation("elementix_users_linked_byTostaff_users")
+  elementix_users_elementix_users_staff_idTostaff_users                                 elementix_users[]                @relation("elementix_users_staff_idTostaff_users")
   email_tokens                                                                          email_tokens[]
   encompass_bulk_pull_runs                                                              encompass_bulk_pull_runs[]
   encompass_flood_orders                                                                encompass_flood_orders[]
@@ -7477,6 +7571,7 @@ model staff_users {
   label_training_runs                                                                   label_training_runs[]
   lead_activities                                                                       lead_activities[]
   lead_notes                                                                            lead_notes[]
+  lead_phone_marks                                                                      lead_phone_marks[]
   lead_tasks_lead_tasks_assignee_staff_idTostaff_users                                  lead_tasks[]                     @relation("lead_tasks_assignee_staff_idTostaff_users")
   lead_tasks_lead_tasks_created_by_staff_idTostaff_users                                lead_tasks[]                     @relation("lead_tasks_created_by_staff_idTostaff_users")
   leads_leads_created_by_staff_idTostaff_users                                          leads[]                          @relation("leads_created_by_staff_idTostaff_users")
@@ -7549,6 +7644,8 @@ model staff_users {
   rv_orders_rv_orders_placed_byTostaff_users                                            rv_orders[]                      @relation("rv_orders_placed_byTostaff_users")
   rv_orders_rv_orders_values_applied_byTostaff_users                                    rv_orders[]                      @relation("rv_orders_values_applied_byTostaff_users")
   rv_write_log                                                                          rv_write_log[]
+  scheduled_sends_scheduled_sends_cancelled_byTostaff_users                             scheduled_sends[]                @relation("scheduled_sends_cancelled_byTostaff_users")
+  scheduled_sends_scheduled_sends_created_byTostaff_users                               scheduled_sends[]                @relation("scheduled_sends_created_byTostaff_users")
   service_contacts                                                                      service_contacts[]
   sitewire_partner_links                                                                sitewire_partner_links[]
   sitewire_property_links_sitewire_property_links_coordinator_staff_idTostaff_users     sitewire_property_links[]        @relation("sitewire_property_links_coordinator_staff_idTostaff_users")
@@ -7576,6 +7673,9 @@ model staff_users {
   track_record_searches                                                                 track_record_searches[]
   track_records                                                                         track_records[]
   training_proposals                                                                    training_proposals[]
+  trinity_budget_reviews_trinity_budget_reviews_ordered_byTostaff_users                 trinity_budget_reviews[]         @relation("trinity_budget_reviews_ordered_byTostaff_users")
+  trinity_budget_reviews_trinity_budget_reviews_requested_byTostaff_users               trinity_budget_reviews[]         @relation("trinity_budget_reviews_requested_byTostaff_users")
+  trinity_inspection_orders_trinity_inspection_orders_manual_override_byTostaff_users   trinity_inspection_orders[]      @relation("trinity_inspection_orders_manual_override_byTostaff_users")
   trinity_inspection_orders                                                             trinity_inspection_orders[]
   trinity_inspection_orders_trinity_inspection_orders_rescheduled_byTostaff_users       trinity_inspection_orders[]      @relation("trinity_inspection_orders_rescheduled_byTostaff_users")
   trinity_order_comments                                                                trinity_order_comments[]
@@ -8027,56 +8127,60 @@ model training_proposals {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model trinity_inspection_orders {
-  id                                                                BigInt                   @id @default(autoincrement())
-  application_id                                                    String                   @db.Uuid
-  portal_draw_request_id                                            BigInt?
-  sitewire_draw_id                                                  BigInt?
-  status                                                            String                   @default("requested")
-  ordered_at                                                        DateTime?                @db.Timestamptz(6)
-  ordered_by                                                        String?                  @db.Uuid
-  report_document_id                                                String?                  @db.Uuid
-  note                                                              String?
-  created_at                                                        DateTime                 @default(now()) @db.Timestamptz(6)
-  updated_at                                                        DateTime                 @default(now()) @db.Timestamptz(6)
-  trinity_order_id                                                  BigInt?
-  trinity_project_id                                                BigInt?
-  customer_key                                                      String?
-  trinity_status_id                                                 Int?
-  trinity_status                                                    String?
-  trinity_substatus                                                 String?
-  status_changed_at                                                 DateTime?                @db.Timestamptz(6)
-  scheduled_at                                                      DateTime?                @db.Timestamptz(6)
-  completed_at                                                      DateTime?                @db.Timestamptz(6)
-  polled_at                                                         DateTime?                @db.Timestamptz(6)
-  cancel_requested_at                                               DateTime?                @db.Timestamptz(6)
-  approved_cents                                                    BigInt?
-  results_read_at                                                   DateTime?                @db.Timestamptz(6)
-  notified_ready_at                                                 DateTime?                @db.Timestamptz(6)
-  blocked_reason                                                    String?
-  order_claimed_at                                                  DateTime?                @db.Timestamptz(6)
-  documents_sent_at                                                 DateTime?                @db.Timestamptz(6)
-  inspect_on                                                        DateTime?                @db.Timestamptz(6)
-  rush                                                              Boolean                  @default(false)
-  reschedule_count                                                  Int                      @default(0)
-  rescheduled_at                                                    DateTime?                @db.Timestamptz(6)
-  rescheduled_by                                                    String?                  @db.Uuid
-  invoice_document_id                                               String?                  @db.Uuid
-  invoice_read_at                                                   DateTime?                @db.Timestamptz(6)
-  project_synced_at                                                 DateTime?                @db.Timestamptz(6)
-  budget_verified_at                                                DateTime?                @db.Timestamptz(6)
-  budget_mismatch                                                   String?
-  remote_budget_cents                                               BigInt?
-  remote_drawn_cents                                                BigInt?
-  writeback_fingerprint                                             String?
-  writeback_at                                                      DateTime?                @db.Timestamptz(6)
-  applications                                                      applications             @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  staff_users                                                       staff_users?             @relation(fields: [ordered_by], references: [id], onUpdate: NoAction)
-  portal_draw_requests                                              portal_draw_requests?    @relation(fields: [portal_draw_request_id], references: [id], onUpdate: NoAction)
-  staff_users_trinity_inspection_orders_rescheduled_byTostaff_users staff_users?             @relation("trinity_inspection_orders_rescheduled_byTostaff_users", fields: [rescheduled_by], references: [id], onUpdate: NoAction)
-  trinity_order_comments                                            trinity_order_comments[]
-  trinity_order_events                                              trinity_order_events[]
-  trinity_order_lines                                               trinity_order_lines[]
-  trinity_order_media                                               trinity_order_media[]
+  id                                                                    BigInt                   @id @default(autoincrement())
+  application_id                                                        String                   @db.Uuid
+  portal_draw_request_id                                                BigInt?
+  sitewire_draw_id                                                      BigInt?
+  status                                                                String                   @default("requested")
+  ordered_at                                                            DateTime?                @db.Timestamptz(6)
+  ordered_by                                                            String?                  @db.Uuid
+  report_document_id                                                    String?                  @db.Uuid
+  note                                                                  String?
+  created_at                                                            DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at                                                            DateTime                 @default(now()) @db.Timestamptz(6)
+  trinity_order_id                                                      BigInt?
+  trinity_project_id                                                    BigInt?
+  customer_key                                                          String?
+  trinity_status_id                                                     Int?
+  trinity_status                                                        String?
+  trinity_substatus                                                     String?
+  status_changed_at                                                     DateTime?                @db.Timestamptz(6)
+  scheduled_at                                                          DateTime?                @db.Timestamptz(6)
+  completed_at                                                          DateTime?                @db.Timestamptz(6)
+  polled_at                                                             DateTime?                @db.Timestamptz(6)
+  cancel_requested_at                                                   DateTime?                @db.Timestamptz(6)
+  approved_cents                                                        BigInt?
+  results_read_at                                                       DateTime?                @db.Timestamptz(6)
+  notified_ready_at                                                     DateTime?                @db.Timestamptz(6)
+  blocked_reason                                                        String?
+  order_claimed_at                                                      DateTime?                @db.Timestamptz(6)
+  documents_sent_at                                                     DateTime?                @db.Timestamptz(6)
+  inspect_on                                                            DateTime?                @db.Timestamptz(6)
+  rush                                                                  Boolean                  @default(false)
+  reschedule_count                                                      Int                      @default(0)
+  rescheduled_at                                                        DateTime?                @db.Timestamptz(6)
+  rescheduled_by                                                        String?                  @db.Uuid
+  invoice_document_id                                                   String?                  @db.Uuid
+  invoice_read_at                                                       DateTime?                @db.Timestamptz(6)
+  project_synced_at                                                     DateTime?                @db.Timestamptz(6)
+  budget_verified_at                                                    DateTime?                @db.Timestamptz(6)
+  budget_mismatch                                                       String?
+  remote_budget_cents                                                   BigInt?
+  remote_drawn_cents                                                    BigInt?
+  writeback_fingerprint                                                 String?
+  writeback_at                                                          DateTime?                @db.Timestamptz(6)
+  manual_override_reason                                                String?
+  manual_override_by                                                    String?                  @db.Uuid
+  manual_override_at                                                    DateTime?                @db.Timestamptz(6)
+  applications                                                          applications             @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users_trinity_inspection_orders_manual_override_byTostaff_users staff_users?             @relation("trinity_inspection_orders_manual_override_byTostaff_users", fields: [manual_override_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  staff_users                                                           staff_users?             @relation(fields: [ordered_by], references: [id], onUpdate: NoAction)
+  portal_draw_requests                                                  portal_draw_requests?    @relation(fields: [portal_draw_request_id], references: [id], onUpdate: NoAction)
+  staff_users_trinity_inspection_orders_rescheduled_byTostaff_users     staff_users?             @relation("trinity_inspection_orders_rescheduled_byTostaff_users", fields: [rescheduled_by], references: [id], onUpdate: NoAction)
+  trinity_order_comments                                                trinity_order_comments[]
+  trinity_order_events                                                  trinity_order_events[]
+  trinity_order_lines                                                   trinity_order_lines[]
+  trinity_order_media                                                   trinity_order_media[]
 
   @@index([application_id, created_at(sort: Desc)], map: "idx_tio_app")
 }
@@ -9041,6 +9145,815 @@ model lt_ppe_shadow_run {
 
   @@unique([scope, investor, program, day_ms], map: "lt_ppe_shadow_run_key_uk")
   @@index([scope, investor, program, day_ms], map: "lt_ppe_shadow_run_series_idx")
+}
+
+model arena_awards {
+  id              String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  session_id      String         @db.Uuid
+  spin_id         String         @db.Uuid
+  staff_id        String         @db.Uuid
+  prize_label     String
+  prize_kind      String         @default("personal")
+  value_cents     Int            @default(0)
+  reason          String?
+  entry_id        String?        @db.Uuid
+  awarded_at      DateTime       @default(now()) @db.Timestamptz(6)
+  acknowledged_at DateTime?      @db.Timestamptz(6)
+  arena_entries   arena_entries? @relation(fields: [entry_id], references: [id], onUpdate: NoAction)
+  arena_sessions  arena_sessions @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  arena_spins     arena_spins    @relation(fields: [spin_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users     staff_users    @relation(fields: [staff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([spin_id, staff_id], map: "arena_awards_spin_staff_idx")
+  @@index([session_id, awarded_at(sort: Desc)], map: "arena_awards_session_idx")
+  @@index([staff_id, awarded_at(sort: Desc)], map: "arena_awards_staff_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model arena_challenge_entries {
+  id                                                          String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  challenge_id                                                String           @db.Uuid
+  staff_id                                                    String           @db.Uuid
+  note                                                        String
+  evidence_ref                                                String?
+  evidence_name                                               String?
+  evidence_mime                                               String?
+  evidence_bytes                                              Int?
+  count_value                                                 Int?
+  status                                                      String           @default("pending")
+  place                                                       Int?
+  tickets_awarded                                             Int              @default(0)
+  decided_by                                                  String?          @db.Uuid
+  decided_at                                                  DateTime?        @db.Timestamptz(6)
+  decline_reason                                              String?
+  created_at                                                  DateTime         @default(now()) @db.Timestamptz(6)
+  arena_challenges                                            arena_challenges @relation(fields: [challenge_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users_arena_challenge_entries_decided_byTostaff_users staff_users?     @relation("arena_challenge_entries_decided_byTostaff_users", fields: [decided_by], references: [id], onUpdate: NoAction)
+  staff_users_arena_challenge_entries_staff_idTostaff_users   staff_users      @relation("arena_challenge_entries_staff_idTostaff_users", fields: [staff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  arena_tickets                                               arena_tickets[]
+
+  @@unique([challenge_id, staff_id], map: "arena_challenge_entries_one_idx")
+  @@index([staff_id], map: "arena_challenge_entries_staff_idx")
+}
+
+/// A timed task the room is set during the day, and what winning it is worth.
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model arena_challenges {
+  id                      String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  session_id              String                    @db.Uuid
+  spin_id                 String?                   @db.Uuid
+  library_key             String?
+  seq                     Int                       @default(0)
+  title                   String
+  prompt                  String
+  detail                  String?
+  tier                    Int                       @default(1)
+  proof_type              String                    @default("text")
+  award_mode              String                    @default("everyone")
+  slots                   Int                       @default(1)
+  tickets_awarded         Int                       @default(1)
+  prize_cap_cents         Int                       @default(0)
+  opens_at                DateTime?                 @db.Timestamptz(6)
+  closes_at               DateTime?                 @db.Timestamptz(6)
+  state                   String                    @default("scheduled")
+  created_by              String?                   @db.Uuid
+  created_at              DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime                  @default(now()) @db.Timestamptz(6)
+  closed_reason           String?
+  arena_challenge_entries arena_challenge_entries[]
+  staff_users             staff_users?              @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+  arena_sessions          arena_sessions            @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  arena_spins             arena_spins?              @relation(fields: [spin_id], references: [id], onUpdate: NoAction)
+  arena_tickets           arena_tickets[]
+
+  @@index([session_id, opens_at], map: "arena_challenges_session_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model arena_checkins {
+  id                                                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spin_id                                            String       @db.Uuid
+  staff_id                                           String       @db.Uuid
+  status                                             String       @default("pending")
+  note                                               String?
+  checked_in_at                                      DateTime     @default(now()) @db.Timestamptz(6)
+  decided_by                                         String?      @db.Uuid
+  decided_at                                         DateTime?    @db.Timestamptz(6)
+  decline_reason                                     String?
+  attested                                           String?
+  staff_users_arena_checkins_decided_byTostaff_users staff_users? @relation("arena_checkins_decided_byTostaff_users", fields: [decided_by], references: [id], onUpdate: NoAction)
+  arena_spins                                        arena_spins  @relation(fields: [spin_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users_arena_checkins_staff_idTostaff_users   staff_users  @relation("arena_checkins_staff_idTostaff_users", fields: [staff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([spin_id, staff_id], map: "arena_checkins_spin_staff_idx")
+  @@index([staff_id], map: "arena_checkins_staff_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model arena_claims {
+  id                                               String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spin_id                                          String           @db.Uuid
+  qualifier_id                                     String           @db.Uuid
+  staff_id                                         String           @db.Uuid
+  evidence                                         String?
+  application_id                                   String?          @db.Uuid
+  status                                           String           @default("pending")
+  decided_by                                       String?          @db.Uuid
+  decided_at                                       DateTime?        @db.Timestamptz(6)
+  decline_reason                                   String?
+  created_at                                       DateTime         @default(now()) @db.Timestamptz(6)
+  applications                                     applications?    @relation(fields: [application_id], references: [id], onUpdate: NoAction)
+  staff_users_arena_claims_decided_byTostaff_users staff_users?     @relation("arena_claims_decided_byTostaff_users", fields: [decided_by], references: [id], onUpdate: NoAction)
+  arena_qualifiers                                 arena_qualifiers @relation(fields: [qualifier_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  arena_spins                                      arena_spins      @relation(fields: [spin_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users_arena_claims_staff_idTostaff_users   staff_users      @relation("arena_claims_staff_idTostaff_users", fields: [staff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([qualifier_id, staff_id], map: "arena_claims_one_per_qualifier_idx")
+  @@index([spin_id, status], map: "arena_claims_spin_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model arena_draws {
+  id                                                        String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spin_id                                                   String         @db.Uuid
+  seq                                                       Int
+  title                                                     String         @default("Draw")
+  pool                                                      String         @default("people")
+  state                                                     String         @default("committed")
+  commit_hash                                               String
+  server_seed                                               String?
+  client_seed                                               String?
+  nonce                                                     Int            @default(1)
+  roster                                                    Json?
+  roster_hash                                               String?
+  winner_index                                              Int?
+  winner_key                                                String?
+  winner_label                                              String?
+  winner_staff_id                                           String?        @db.Uuid
+  winner_entry_id                                           String?        @db.Uuid
+  target_rotation_deg                                       Decimal?       @db.Decimal(12, 4)
+  duration_ms                                               Int            @default(7000)
+  spin_started_at                                           DateTime?      @db.Timestamptz(6)
+  revealed_at                                               DateTime?      @db.Timestamptz(6)
+  created_by                                                String?        @db.Uuid
+  created_at                                                DateTime       @default(now()) @db.Timestamptz(6)
+  stop_holder_staff_id                                      String?        @db.Uuid
+  stopped_at                                                DateTime?      @db.Timestamptz(6)
+  stop_mode                                                 String?
+  staff_users_arena_draws_created_byTostaff_users           staff_users?   @relation("arena_draws_created_byTostaff_users", fields: [created_by], references: [id], onUpdate: NoAction)
+  arena_spins                                               arena_spins    @relation(fields: [spin_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users_arena_draws_stop_holder_staff_idTostaff_users staff_users?   @relation("arena_draws_stop_holder_staff_idTostaff_users", fields: [stop_holder_staff_id], references: [id], onUpdate: NoAction)
+  arena_entries                                             arena_entries? @relation(fields: [winner_entry_id], references: [id], onUpdate: NoAction)
+  staff_users_arena_draws_winner_staff_idTostaff_users      staff_users?   @relation("arena_draws_winner_staff_idTostaff_users", fields: [winner_staff_id], references: [id], onUpdate: NoAction)
+
+  @@unique([spin_id, seq], map: "arena_draws_spin_seq_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model arena_entries {
+  id                                                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spin_id                                           String         @db.Uuid
+  staff_id                                          String         @db.Uuid
+  kind                                              String         @default("personal")
+  label                                             String
+  detail                                            String?
+  value_cents                                       Int            @default(0)
+  weight                                            Int            @default(1)
+  status                                            String         @default("pending")
+  decided_by                                        String?        @db.Uuid
+  decided_at                                        DateTime?      @db.Timestamptz(6)
+  decline_reason                                    String?
+  created_at                                        DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at                                        DateTime       @default(now()) @db.Timestamptz(6)
+  unlocked_by_tickets                               Int?
+  arena_awards                                      arena_awards[]
+  arena_draws                                       arena_draws[]
+  staff_users_arena_entries_decided_byTostaff_users staff_users?   @relation("arena_entries_decided_byTostaff_users", fields: [decided_by], references: [id], onUpdate: NoAction)
+  arena_spins                                       arena_spins    @relation(fields: [spin_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users_arena_entries_staff_idTostaff_users   staff_users    @relation("arena_entries_staff_idTostaff_users", fields: [staff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([spin_id, status], map: "arena_entries_spin_idx")
+  @@index([staff_id], map: "arena_entries_staff_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model arena_messages {
+  id                                                 BigInt         @id @default(autoincrement())
+  session_id                                         String         @db.Uuid
+  spin_id                                            String?        @db.Uuid
+  staff_id                                           String?        @db.Uuid
+  kind                                               String         @default("chat")
+  body                                               String
+  reaction_counts                                    Json           @default("{}")
+  pinned_at                                          DateTime?      @db.Timestamptz(6)
+  deleted_at                                         DateTime?      @db.Timestamptz(6)
+  deleted_by                                         String?        @db.Uuid
+  created_at                                         DateTime       @default(now()) @db.Timestamptz(6)
+  staff_users_arena_messages_deleted_byTostaff_users staff_users?   @relation("arena_messages_deleted_byTostaff_users", fields: [deleted_by], references: [id], onUpdate: NoAction)
+  arena_sessions                                     arena_sessions @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  arena_spins                                        arena_spins?   @relation(fields: [spin_id], references: [id], onUpdate: NoAction)
+  staff_users_arena_messages_staff_idTostaff_users   staff_users?   @relation("arena_messages_staff_idTostaff_users", fields: [staff_id], references: [id], onUpdate: NoAction)
+
+  @@index([session_id, id(sort: Desc)], map: "arena_messages_session_idx")
+}
+
+model arena_notices {
+  id             BigInt      @id @default(autoincrement())
+  spin_id        String      @db.Uuid
+  kind           String
+  offset_minutes Int         @default(0)
+  recipients     Int         @default(0)
+  sent_at        DateTime    @default(now()) @db.Timestamptz(6)
+  arena_spins    arena_spins @relation(fields: [spin_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([spin_id, kind, offset_minutes], map: "arena_notices_claim_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model arena_prizes {
+  id          String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug        String?
+  label       String
+  description String?
+  kind        String       @default("personal")
+  value_cents Int          @default(0)
+  is_active   Boolean      @default(true)
+  sort_order  Int          @default(100)
+  created_by  String?      @db.Uuid
+  created_at  DateTime     @default(now()) @db.Timestamptz(6)
+  staff_users staff_users? @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+}
+
+model arena_qualifiers {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  spin_id       String         @db.Uuid
+  seq           Int            @default(1)
+  label         String
+  description   String?
+  evidence_hint String?
+  weight        Int            @default(1)
+  created_at    DateTime       @default(now()) @db.Timestamptz(6)
+  arena_claims  arena_claims[]
+  arena_spins   arena_spins    @relation(fields: [spin_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([spin_id, seq], map: "arena_qualifiers_spin_idx")
+}
+
+model arena_session_members {
+  session_id                                              String         @db.Uuid
+  staff_id                                                String         @db.Uuid
+  added_by                                                String?        @db.Uuid
+  added_at                                                DateTime       @default(now()) @db.Timestamptz(6)
+  removed_at                                              DateTime?      @db.Timestamptz(6)
+  staff_users_arena_session_members_added_byTostaff_users staff_users?   @relation("arena_session_members_added_byTostaff_users", fields: [added_by], references: [id], onUpdate: NoAction)
+  arena_sessions                                          arena_sessions @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users_arena_session_members_staff_idTostaff_users staff_users    @relation("arena_session_members_staff_idTostaff_users", fields: [staff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([session_id, staff_id])
+  @@index([staff_id], map: "arena_session_members_staff_idx")
+}
+
+/// One sales day of the staff game — who is playing, and whether it has started.
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model arena_sessions {
+  id                    String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                  String
+  subtitle              String?
+  state                 String                  @default("draft")
+  theme                 String                  @default("midnight")
+  starts_at             DateTime?               @db.Timestamptz(6)
+  ends_at               DateTime?               @db.Timestamptz(6)
+  opened_at             DateTime?               @db.Timestamptz(6)
+  closed_at             DateTime?               @db.Timestamptz(6)
+  settings              Json                    @default("{}")
+  created_by            String?                 @db.Uuid
+  created_at            DateTime                @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime                @default(now()) @db.Timestamptz(6)
+  setup_day             DateTime?               @db.Date
+  paused_at             DateTime?               @db.Timestamptz(6)
+  arena_awards          arena_awards[]
+  arena_challenges      arena_challenges[]
+  arena_messages        arena_messages[]
+  arena_session_members arena_session_members[]
+  staff_users           staff_users?            @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+  arena_spins           arena_spins[]
+  arena_suggestions     arena_suggestions[]
+  arena_tickets         arena_tickets[]
+
+  @@index([created_at(sort: Desc)], map: "arena_sessions_created_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model arena_settings {
+  id          Boolean      @id @default(true)
+  enabled     Boolean      @default(false)
+  settings    Json         @default("{}")
+  updated_by  String?      @db.Uuid
+  updated_at  DateTime     @default(now()) @db.Timestamptz(6)
+  staff_users staff_users? @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+}
+
+/// One draw in that day: the wheel, what is being won, and how the winner is picked.
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model arena_spins {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  session_id         String             @db.Uuid
+  seq                Int
+  title              String
+  subtitle           String?
+  kind               String             @default("classic_raffle")
+  state              String             @default("draft")
+  config             Json               @default("{}")
+  entry_opens_at     DateTime?          @db.Timestamptz(6)
+  entry_deadline_at  DateTime?          @db.Timestamptz(6)
+  locked_at          DateTime?          @db.Timestamptz(6)
+  decided_at         DateTime?          @db.Timestamptz(6)
+  outcome_note       String?
+  created_by         String?            @db.Uuid
+  created_at         DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime           @default(now()) @db.Timestamptz(6)
+  launch_at          DateTime?          @db.Timestamptz(6)
+  template_key       String?
+  excluded_staff_ids String[]           @default([]) @db.Uuid
+  arena_awards       arena_awards[]
+  arena_challenges   arena_challenges[]
+  arena_checkins     arena_checkins[]
+  arena_claims       arena_claims[]
+  arena_draws        arena_draws[]
+  arena_entries      arena_entries[]
+  arena_messages     arena_messages[]
+  arena_notices      arena_notices[]
+  arena_qualifiers   arena_qualifiers[]
+  staff_users        staff_users?       @relation(fields: [created_by], references: [id], onUpdate: NoAction)
+  arena_sessions     arena_sessions     @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  arena_tickets      arena_tickets[]
+
+  @@unique([session_id, seq], map: "arena_spins_session_seq_idx")
+  @@index([session_id, state], map: "arena_spins_session_state_idx")
+}
+
+model arena_suggestion_votes {
+  suggestion_id     String            @db.Uuid
+  staff_id          String            @db.Uuid
+  created_at        DateTime          @default(now()) @db.Timestamptz(6)
+  staff_users       staff_users       @relation(fields: [staff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  arena_suggestions arena_suggestions @relation(fields: [suggestion_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([suggestion_id, staff_id])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model arena_suggestions {
+  id                                                    String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  session_id                                            String?                  @db.Uuid
+  staff_id                                              String?                  @db.Uuid
+  body                                                  String
+  kind                                                  String                   @default("spin_idea")
+  status                                                String                   @default("new")
+  decided_by                                            String?                  @db.Uuid
+  decided_at                                            DateTime?                @db.Timestamptz(6)
+  created_at                                            DateTime                 @default(now()) @db.Timestamptz(6)
+  arena_suggestion_votes                                arena_suggestion_votes[]
+  staff_users_arena_suggestions_decided_byTostaff_users staff_users?             @relation("arena_suggestions_decided_byTostaff_users", fields: [decided_by], references: [id], onUpdate: NoAction)
+  arena_sessions                                        arena_sessions?          @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users_arena_suggestions_staff_idTostaff_users   staff_users?             @relation("arena_suggestions_staff_idTostaff_users", fields: [staff_id], references: [id], onUpdate: NoAction)
+
+  @@index([session_id, created_at(sort: Desc)], map: "arena_suggestions_session_idx")
+}
+
+/// The chances a person has earned in the game. A ledger — a mistake is reversed by adding the opposite, never by editing history.
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model arena_tickets {
+  id                                                BigInt                   @id @default(autoincrement())
+  session_id                                        String                   @db.Uuid
+  spin_id                                           String?                  @db.Uuid
+  staff_id                                          String                   @db.Uuid
+  challenge_id                                      String?                  @db.Uuid
+  entry_id                                          String?                  @db.Uuid
+  count                                             Int                      @default(1)
+  source                                            String                   @default("challenge")
+  reason                                            String?
+  created_by                                        String?                  @db.Uuid
+  created_at                                        DateTime                 @default(now()) @db.Timestamptz(6)
+  arena_challenges                                  arena_challenges?        @relation(fields: [challenge_id], references: [id], onUpdate: NoAction)
+  staff_users_arena_tickets_created_byTostaff_users staff_users?             @relation("arena_tickets_created_byTostaff_users", fields: [created_by], references: [id], onUpdate: NoAction)
+  arena_challenge_entries                           arena_challenge_entries? @relation(fields: [entry_id], references: [id], onUpdate: NoAction)
+  arena_sessions                                    arena_sessions           @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  arena_spins                                       arena_spins?             @relation(fields: [spin_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users_arena_tickets_staff_idTostaff_users   staff_users              @relation("arena_tickets_staff_idTostaff_users", fields: [staff_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([spin_id, staff_id], map: "arena_tickets_spin_idx")
+  @@index([session_id, staff_id], map: "arena_tickets_who_idx")
+}
+
+model contractor_credentials {
+  service_contact_id String           @id @db.Uuid
+  license_number     String?
+  license_state      String?
+  license_expires_on DateTime?        @db.Date
+  gl_carrier         String?
+  gl_policy_number   String?
+  gl_expires_on      DateTime?        @db.Date
+  wc_carrier         String?
+  wc_policy_number   String?
+  wc_expires_on      DateTime?        @db.Date
+  ein                String?
+  website            String?
+  notes              String?
+  updated_by         String?          @db.Uuid
+  created_at         DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime         @default(now()) @db.Timestamptz(6)
+  service_contacts   service_contacts @relation(fields: [service_contact_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users        staff_users?     @relation(fields: [updated_by], references: [id], onUpdate: NoAction)
+}
+
+model elementix_address_sections {
+  address_id          String
+  section             String
+  payload             Json?
+  row_count           Int?
+  truncated           Boolean             @default(false)
+  fetched_at          DateTime            @default(now()) @db.Timestamptz(6)
+  calls_spent         Int                 @default(0)
+  last_error          String?
+  unverified          Boolean             @default(false)
+  elementix_addresses elementix_addresses @relation(fields: [address_id], references: [address_id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([address_id, section])
+  @@index([fetched_at], map: "idx_elx_addr_sections_fetched")
+}
+
+model elementix_addresses {
+  address_id                 String                       @id
+  address_full               String?
+  city                       String?
+  county_name                String?
+  state                      String?
+  zip_code                   String?
+  latitude                   Decimal?                     @db.Decimal(12, 7)
+  longitude                  Decimal?                     @db.Decimal(12, 7)
+  refreshed_at               DateTime?                    @db.Timestamptz(6)
+  refreshed_by               String?                      @db.Uuid
+  last_error                 String?
+  last_error_at              DateTime?                    @db.Timestamptz(6)
+  first_seen_at              DateTime                     @default(now()) @db.Timestamptz(6)
+  elementix_address_sections elementix_address_sections[]
+  staff_users                staff_users?                 @relation(fields: [refreshed_by], references: [id], onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model elementix_backfill_queue {
+  person_id         String    @id
+  person_name       String?
+  person_state      String?
+  unlocked_by_email String?   @db.Citext
+  unlocked_at       DateTime? @db.Timestamptz(6)
+  status            String    @default("pending")
+  attempts          Int       @default(0)
+  detail            String?
+  lead_id           String?   @db.Uuid
+  listed_at         DateTime  @default(now()) @db.Timestamptz(6)
+  worked_at         DateTime? @db.Timestamptz(6)
+  leads             leads?    @relation(fields: [lead_id], references: [id], onUpdate: NoAction)
+
+  @@index([unlocked_by_email], map: "idx_elx_backfill_email")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model elementix_contacts {
+  person_id          String            @id
+  phones             Json              @default("[]")
+  emails             Json              @default("[]")
+  addresses          Json              @default("[]")
+  raw                Json?
+  unlocked_by        String?           @db.Uuid
+  unlocked_at        DateTime?         @db.Timestamptz(6)
+  source             String            @default("pilot_skip_trace")
+  refreshed_at       DateTime?         @db.Timestamptz(6)
+  created_at         DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime          @default(now()) @db.Timestamptz(6)
+  unlocked_by_email  String?           @db.Citext
+  vendor_unlocked_at DateTime?         @db.Timestamptz(6)
+  elementix_persons  elementix_persons @relation(fields: [person_id], references: [person_id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users        staff_users?      @relation(fields: [unlocked_by], references: [id], onUpdate: NoAction)
+
+  @@index([unlocked_by, unlocked_at(sort: Desc)], map: "idx_elx_contacts_by")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model elementix_person_aliases {
+  person_id                                                      String
+  alias_person_id                                                String
+  alias_state                                                    String?
+  alias_name                                                     String?
+  origin                                                         String       @default("vendor_cross_state")
+  confirmed_by                                                   String?      @db.Uuid
+  confirmed_at                                                   DateTime?    @db.Timestamptz(6)
+  rejected_by                                                    String?      @db.Uuid
+  rejected_at                                                    DateTime?    @db.Timestamptz(6)
+  created_at                                                     DateTime     @default(now()) @db.Timestamptz(6)
+  staff_users_elementix_person_aliases_confirmed_byTostaff_users staff_users? @relation("elementix_person_aliases_confirmed_byTostaff_users", fields: [confirmed_by], references: [id], onUpdate: NoAction)
+  staff_users_elementix_person_aliases_rejected_byTostaff_users  staff_users? @relation("elementix_person_aliases_rejected_byTostaff_users", fields: [rejected_by], references: [id], onUpdate: NoAction)
+
+  @@id([person_id, alias_person_id])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model elementix_person_sections {
+  person_id         String
+  section           String
+  state             String            @default("")
+  payload           Json?
+  row_count         Int?
+  truncated         Boolean           @default(false)
+  fetched_at        DateTime          @default(now()) @db.Timestamptz(6)
+  calls_spent       Int               @default(0)
+  last_error        String?
+  unverified        Boolean           @default(false)
+  elementix_persons elementix_persons @relation(fields: [person_id], references: [person_id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([person_id, section, state])
+  @@index([person_id, fetched_at(sort: Desc)], map: "idx_elx_sections_person")
+}
+
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model elementix_persons {
+  person_id                 String                      @id
+  display_name              String?
+  primary_state             String?
+  states                    String[]                    @default([])
+  summary                   Json?
+  primary_person_id         String?
+  first_seen_at             DateTime                    @default(now()) @db.Timestamptz(6)
+  refreshed_at              DateTime?                   @db.Timestamptz(6)
+  refreshed_by              String?                     @db.Uuid
+  last_error                String?
+  last_error_at             DateTime?                   @db.Timestamptz(6)
+  created_at                DateTime                    @default(now()) @db.Timestamptz(6)
+  updated_at                DateTime                    @default(now()) @db.Timestamptz(6)
+  elementix_contacts        elementix_contacts?
+  elementix_person_sections elementix_person_sections[]
+  elementix_persons         elementix_persons?          @relation("elementix_personsToelementix_persons", fields: [primary_person_id], references: [person_id], onUpdate: NoAction)
+  other_elementix_persons   elementix_persons[]         @relation("elementix_personsToelementix_persons")
+  staff_users               staff_users?                @relation(fields: [refreshed_by], references: [id], onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model elementix_skip_traces {
+  id                BigInt       @id @default(autoincrement())
+  person_id         String
+  staff_id          String?      @db.Uuid
+  lead_id           String?      @db.Uuid
+  borrower_id       String?      @db.Uuid
+  person_name       String?
+  state             String?
+  source            String       @default("pilot_skip_trace")
+  reason            String?
+  charged           Boolean      @default(false)
+  status            String       @default("complete")
+  detail            String?
+  completed_at      DateTime?    @db.Timestamptz(6)
+  occurred_at       DateTime     @default(now()) @db.Timestamptz(6)
+  unlocked_by_email String?      @db.Citext
+  borrowers         borrowers?   @relation(fields: [borrower_id], references: [id], onUpdate: NoAction)
+  leads             leads?       @relation(fields: [lead_id], references: [id], onUpdate: NoAction)
+  staff_users       staff_users? @relation(fields: [staff_id], references: [id], onUpdate: NoAction)
+
+  @@index([staff_id, occurred_at(sort: Desc)], map: "idx_elx_skip_staff")
+}
+
+model elementix_users {
+  email                                              String       @id @db.Citext
+  staff_id                                           String?      @db.Uuid
+  linked_by                                          String?      @db.Uuid
+  linked_at                                          DateTime?    @db.Timestamptz(6)
+  ignored                                            Boolean      @default(false)
+  unlock_count                                       Int          @default(0)
+  first_unlock_at                                    DateTime?    @db.Timestamptz(6)
+  last_unlock_at                                     DateTime?    @db.Timestamptz(6)
+  last_seen_at                                       DateTime     @default(now()) @db.Timestamptz(6)
+  created_at                                         DateTime     @default(now()) @db.Timestamptz(6)
+  updated_at                                         DateTime     @default(now()) @db.Timestamptz(6)
+  staff_users_elementix_users_linked_byTostaff_users staff_users? @relation("elementix_users_linked_byTostaff_users", fields: [linked_by], references: [id], onUpdate: NoAction)
+  staff_users_elementix_users_staff_idTostaff_users  staff_users? @relation("elementix_users_staff_idTostaff_users", fields: [staff_id], references: [id], onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model lead_phone_marks {
+  lead_id      String       @db.Uuid
+  phone_key    String
+  status       String?
+  right_person Boolean?
+  marked_by    String?      @db.Uuid
+  marked_at    DateTime     @default(now()) @db.Timestamptz(6)
+  created_at   DateTime     @default(now()) @db.Timestamptz(6)
+  leads        leads        @relation(fields: [lead_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users  staff_users? @relation(fields: [marked_by], references: [id], onUpdate: NoAction)
+
+  @@id([lead_id, phone_key])
+}
+
+model lt_condition_comments {
+  id                   String        @id @db.Uuid
+  condition_id         String        @db.Uuid
+  encompass_comment_id String?
+  body                 String?
+  author_name          String?
+  author_id            String?
+  commented_at         DateTime?     @db.Timestamptz(6)
+  raw                  Json?
+  encompass_synced_at  DateTime?     @db.Timestamptz(6)
+  created_at           DateTime      @default(now()) @db.Timestamptz(6)
+  lt_conditions        lt_conditions @relation(fields: [condition_id], references: [id], onDelete: Cascade, map: "lt_condition_comments_cond_fkey")
+
+  @@index([condition_id, commented_at], map: "lt_condition_comments_cond_idx")
+}
+
+model lt_conditions {
+  id                     String                   @id @db.Uuid
+  loan_id                String                   @db.Uuid
+  encompass_condition_id String
+  condition_type         String?
+  title                  String?
+  internal_description   String?
+  external_description   String?
+  category               String?
+  prior_to               String?
+  status                 String?
+  status_open            Boolean?
+  status_date            DateTime?                @db.Timestamptz(6)
+  source                 String?
+  source_of_condition    String?
+  print_definitions      Json?
+  application_ref        String?
+  owner_role             String?
+  assigned_to            String?
+  recipient              String?
+  days_to_receive        Int?
+  comments_count         Int?
+  internal_id            String?
+  is_removed             Boolean                  @default(false)
+  encompass_created_by   String?
+  encompass_created_at   DateTime?                @db.Timestamptz(6)
+  encompass_modified_by  String?
+  encompass_modified_at  DateTime?                @db.Timestamptz(6)
+  raw                    Json?
+  encompass_synced_at    DateTime?                @db.Timestamptz(6)
+  created_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at             DateTime                 @default(now()) @db.Timestamptz(6)
+  lt_condition_comments  lt_condition_comments[]
+  lt_loans               lt_loans                 @relation(fields: [loan_id], references: [id], onDelete: Cascade, map: "lt_conditions_loan_fkey")
+  lt_document_conditions lt_document_conditions[]
+
+  @@unique([loan_id, encompass_condition_id], map: "lt_conditions_loan_enc_uk")
+  @@index([loan_id], map: "lt_conditions_loan_idx")
+}
+
+model lt_document_attachments {
+  id                      String       @id @db.Uuid
+  document_id             String       @db.Uuid
+  encompass_attachment_id String
+  title                   String?
+  file_name               String?
+  content_type            String?
+  file_size               BigInt?
+  page_count              Int?
+  encompass_uri           String?
+  is_removed              Boolean      @default(false)
+  encompass_created_by    String?
+  encompass_created_at    DateTime?    @db.Timestamptz(6)
+  raw                     Json?
+  encompass_synced_at     DateTime?    @db.Timestamptz(6)
+  created_at              DateTime     @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime     @default(now()) @db.Timestamptz(6)
+  lt_documents            lt_documents @relation(fields: [document_id], references: [id], onDelete: Cascade, map: "lt_document_attachments_doc_fkey")
+
+  @@unique([document_id, encompass_attachment_id], map: "lt_document_attachments_enc_uk")
+}
+
+model lt_document_conditions {
+  id                     String         @id @db.Uuid
+  document_id            String         @db.Uuid
+  encompass_condition_id String
+  condition_id           String?        @db.Uuid
+  entity_type            String?
+  entity_name            String?
+  entity_uri             String?
+  encompass_synced_at    DateTime?      @db.Timestamptz(6)
+  created_at             DateTime       @default(now()) @db.Timestamptz(6)
+  lt_conditions          lt_conditions? @relation(fields: [condition_id], references: [id], map: "lt_document_conditions_cond_fkey")
+  lt_documents           lt_documents   @relation(fields: [document_id], references: [id], onDelete: Cascade, map: "lt_document_conditions_doc_fkey")
+
+  @@unique([document_id, encompass_condition_id], map: "lt_document_conditions_uk")
+}
+
+model lt_documents {
+  id                      String                    @id @db.Uuid
+  loan_id                 String                    @db.Uuid
+  encompass_document_id   String
+  title                   String?
+  title_with_index        String?
+  application_ref         String?
+  application_name        String?
+  milestone_id            String?
+  milestone_name          String?
+  status                  String?
+  roles                   Json?
+  web_center_allowed      Boolean?
+  tpo_allowed             Boolean?
+  third_party_allowed     Boolean?
+  is_protected            Boolean?
+  days_due                Int?
+  days_till_expire        Int?
+  attachment_count        Int?
+  is_removed              Boolean                   @default(false)
+  encompass_created_by    String?
+  encompass_created_at    DateTime?                 @db.Timestamptz(6)
+  raw                     Json?
+  encompass_synced_at     DateTime?                 @db.Timestamptz(6)
+  created_at              DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime                  @default(now()) @db.Timestamptz(6)
+  lt_document_attachments lt_document_attachments[]
+  lt_document_conditions  lt_document_conditions[]
+  lt_loans                lt_loans                  @relation(fields: [loan_id], references: [id], onDelete: Cascade, map: "lt_documents_loan_fkey")
+
+  @@unique([loan_id, encompass_document_id], map: "lt_documents_loan_enc_uk")
+  @@index([loan_id], map: "lt_documents_loan_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model scheduled_sends {
+  id                                                    String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  application_id                                        String       @db.Uuid
+  kind                                                  String
+  target_key                                            String       @default("")
+  send_at                                               DateTime     @db.Timestamptz(6)
+  status                                                String       @default("scheduled")
+  payload                                               Json         @default("{}")
+  created_by                                            String?      @db.Uuid
+  created_at                                            DateTime     @default(now()) @db.Timestamptz(6)
+  updated_at                                            DateTime     @default(now()) @db.Timestamptz(6)
+  attempts                                              Int          @default(0)
+  claimed_at                                            DateTime?    @db.Timestamptz(6)
+  sent_at                                               DateTime?    @db.Timestamptz(6)
+  last_error                                            String?
+  last_error_code                                       String?
+  cancelled_at                                          DateTime?    @db.Timestamptz(6)
+  cancelled_by                                          String?      @db.Uuid
+  applications                                          applications @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users_scheduled_sends_cancelled_byTostaff_users staff_users? @relation("scheduled_sends_cancelled_byTostaff_users", fields: [cancelled_by], references: [id], onUpdate: NoAction)
+  staff_users_scheduled_sends_created_byTostaff_users   staff_users? @relation("scheduled_sends_created_byTostaff_users", fields: [created_by], references: [id], onUpdate: NoAction)
+
+  @@index([application_id, status], map: "scheduled_sends_app_idx")
+  @@index([created_by, created_at(sort: Desc)], map: "scheduled_sends_creator_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model trinity_budget_reviews {
+  id                                                           BigInt       @id @default(autoincrement())
+  application_id                                               String       @db.Uuid
+  customer_key                                                 String?      @unique
+  status                                                       String       @default("requested")
+  trinity_order_id                                             BigInt?
+  trinity_project_id                                           BigInt?
+  appraisal_id                                                 String?      @db.Uuid
+  appraisal_document_id                                        String?      @db.Uuid
+  report_document_id                                           String?      @db.Uuid
+  blocked_reason                                               String?
+  order_claimed_at                                             DateTime?    @db.Timestamptz(6)
+  requested_by                                                 String?      @db.Uuid
+  ordered_at                                                   DateTime?    @db.Timestamptz(6)
+  ordered_by                                                   String?      @db.Uuid
+  note                                                         String?
+  created_at                                                   DateTime     @default(now()) @db.Timestamptz(6)
+  updated_at                                                   DateTime     @default(now()) @db.Timestamptz(6)
+  applications                                                 applications @relation(fields: [application_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  staff_users_trinity_budget_reviews_ordered_byTostaff_users   staff_users? @relation("trinity_budget_reviews_ordered_byTostaff_users", fields: [ordered_by], references: [id], onUpdate: NoAction)
+  staff_users_trinity_budget_reviews_requested_byTostaff_users staff_users? @relation("trinity_budget_reviews_requested_byTostaff_users", fields: [requested_by], references: [id], onUpdate: NoAction)
+
+  @@index([application_id, created_at(sort: Desc)], map: "idx_tbrv_app")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model lt_sync_runs {
+  id          String    @id @db.Uuid
+  kind        String
+  trigger     String    @default("worker")
+  started_at  DateTime  @default(now()) @db.Timestamptz(6)
+  finished_at DateTime? @db.Timestamptz(6)
+  ok          Boolean?
+  reason      String?
+  discovered  Int?
+  read_count  Int?
+  failed      Int?
+  skipped     Int?
+  remaining   Int?
+  passes      Int?
+  detail      Json?
+
+  @@index([kind, started_at(sort: Desc)], map: "lt_sync_runs_kind_started_idx")
 }
 
 enum lt_amortization_type {

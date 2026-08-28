@@ -64,11 +64,17 @@ console.log('LT pricing-engine screen — structural guards');
 ok(/import\s+LtPpe\s+from\s+'\.\/longterm\/LtPpe\.jsx'/.test(app), 'ROUTE-1 App.jsx imports the screen');
 ok(/path="\/internal\/lt\/ppe"[^>]*element=\{<StaffPrivate><LtPpe\s*\/><\/StaffPrivate>\}/.test(app),
   'ROUTE-2 …and routes it at /internal/lt/ppe behind StaffPrivate');
-ok(/to="\/internal\/lt\/ppe"/.test(layout), 'ROUTE-3 …and the long-term nav links to it (an unlinked screen is unreachable)');
+// PARKED (owner-directed 2026-08-23, second pass): the console has NO nav entry — "parked"
+// means not on anybody's screen, not a link wearing a "(parked)" label. The route above stays
+// so a deliberate URL still opens it when the parity work resumes. Comments are stripped
+// before the absence test, because the note explaining the removal necessarily names the path
+// and a guard that read comments would fail on its own explanation.
 {
-  // it must sit in the LONG-TERM nav block, not the RTL one
-  const ltBlock = layout.slice(layout.indexOf('<div className="sb-sec">Long-term</div>'), layout.indexOf('<div className="sb-sec">Main</div>'));
-  ok(ltBlock.includes('/internal/lt/ppe'), 'ROUTE-4 …inside the long-term nav block specifically');
+  const layoutCode = layout.replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  ok(!/to="\/internal\/lt\/ppe"/.test(layoutCode),
+    'ROUTE-3 the nav does NOT link to the parked console — removed by owner direction');
+  ok(/PARKED FOR REAL/.test(layout),
+    'ROUTE-4 …and the layout records WHY, so the link is not quietly re-added as a tidy-up');
 }
 
 // ---------------------------------------------------------------------------

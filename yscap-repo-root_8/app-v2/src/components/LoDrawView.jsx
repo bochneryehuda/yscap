@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { moneyCents } from '../lib/money.js';
+import { useLightbox } from './MediaLightbox.jsx';
+import { useReportOpener } from './ReportOpener.jsx';
 
 /* LOAN-OFFICER VIEW-ONLY DRAW VIEW (owner-directed 2026-08-12).
    A loan officer holds `view_draws`, not `manage_draws`, so on their own files they SEE the whole
@@ -33,7 +35,7 @@ const FINDING_BADGE = {
 /* One inspection photo/video, fetched WITH the bearer token (an <img src> can't carry it) and handed
    the browser an object URL. Mirrors the staff desk's AuthImg — the durable copy in PILOT storage, so
    it never breaks when Sitewire's pre-signed link expires. */
-function AuthMedia({ appId, drawId, media }) {
+function AuthMedia({ appId, drawId, media, onOpen }) {
   const [src, setSrc] = useState(null);
   const path = `/api/sitewire/files/${appId}/draws/${drawId}/media/${media.id}`;
   useEffect(() => {
@@ -41,12 +43,14 @@ function AuthMedia({ appId, drawId, media }) {
     api.authedBlob(path).then((b) => { if (!live) { return; } url = URL.createObjectURL(b); setSrc(url); }).catch(() => {});
     return () => { live = false; if (url) URL.revokeObjectURL(url); };
   }, [path]);
-  const open = () => { const w = window.open('', '_blank'); api.authedBlob(path).then((b) => { const u = URL.createObjectURL(b); if (w) w.location = u; }).catch(() => {}); };
+  /* OPENS THE IN-APP VIEWER, not a new browser tab (owner-reported 2026-08-23).
+     Navigating a blank tab to a blob URL left the user outside PILOT looking at one
+     raw file, with no way back and no next — which is exactly what was reported. */
   if (media.kind === 'video') {
-    return <button type="button" className="btn btn-xs ghost" onClick={open} title="Play inspection video" style={{ padding: '3px 7px' }}>▶ video</button>;
+    return <button type="button" className="btn btn-xs ghost" onClick={onOpen} title="Play inspection video" style={{ padding: '3px 7px' }}>▶ video</button>;
   }
   if (!src) return <span style={{ display: 'inline-block', width: 34, height: 34, borderRadius: 6, background: 'var(--line)' }} />;
-  return <button type="button" onClick={open} title="Open full size" style={{ padding: 0, border: 'none', background: 'none', cursor: 'pointer' }}>
+  return <button type="button" onClick={onOpen} title="Open full size" style={{ padding: 0, border: 'none', background: 'none', cursor: 'pointer' }}>
     <img src={src} alt="Inspection photo" loading="lazy" style={{ width: 34, height: 34, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--line)', verticalAlign: 'middle' }} />
   </button>;
 }
@@ -54,9 +58,20 @@ function AuthMedia({ appId, drawId, media }) {
 /* Durable inspection photos for one draw's line, grouped by the Sitewire request (draw line) they belong
    to. Prefers PILOT's archived copies (the desk pattern); shows the count when nothing is archived yet. */
 function LineMedia({ appId, drawId, line, byReq }) {
+  const lb = useLightbox('Draw inspection media');
   const items = (byReq.get(String(line.sitewire_request_id)) || []).filter((m) => m.kind === 'image' || m.kind === 'video').slice(0, 8);
   if (!items.length) return <span className="muted small">{(Number(line.photo_count) || 0) + (Number(line.video_count) || 0) || '—'}</span>;
-  return <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>{items.map((m) => <AuthMedia key={m.id} appId={appId} drawId={drawId} media={m} />)}</div>;
+  const viewerItems = items.map((m) => ({
+    id: m.id, kind: m.kind === 'video' ? 'video' : 'image',
+    path: `/api/sitewire/files/${appId}/draws/${drawId}/media/${m.id}`,
+    title: line.name || line.job_item_name || 'Inspection', meta: 'Saved to PILOT',
+  }));
+  return (
+    <div className="row" style={{ gap: 4, flexWrap: 'wrap' }}>
+      {items.map((m, i) => <AuthMedia key={m.id} appId={appId} drawId={drawId} media={m} onOpen={() => lb.open(viewerItems, i)} />)}
+      {lb.node}
+    </div>
+  );
 }
 
 /* SUBMIT A DRAW REQUEST — the one thing an officer may START (owner-directed 2026-08-17:
@@ -132,6 +147,14 @@ function LoRequestDraw({ appId, onSubmitted }) {
         <div className="muted small" style={{ marginTop: 8 }}>
           A draw request is already open on this file. The next one can be submitted once it is finished.
         </div>
+      ) : st.parked ? (
+        /* THE COMPOSER IS PARKED (owner-directed 2026-08-26, compliance): draw
+           requests come in through Sitewire only — the note says why instead of
+           a dead button (the parked.js house pattern). Requests in flight keep
+           moving above. */
+        <div className="dd-note warn" style={{ marginTop: 10 }}>
+          {st.parked_reason || 'Draw requests are submitted through Sitewire for now — the composer here is parked (compliance).'}
+        </div>
       ) : !open ? (
         <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
           <button className="btn btn-sm primary" disabled={!st.eligible} onClick={() => { setMsg(''); setOpen(true); }}>
@@ -183,6 +206,7 @@ function LoRequestDraw({ appId, onSubmitted }) {
 }
 
 export default function LoDrawView({ appId }) {
+  const openReport = useReportOpener();   // opens the PDF in PILOT, with progress
   const [rollup, setRollup] = useState(null);
   const [findings, setFindings] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -225,6 +249,7 @@ export default function LoDrawView({ appId }) {
 
   return (
     <div className="dd-wrap">
+      {openReport.node}
       {/* VIEW-ONLY notice — the officer sees everything and runs nothing, except acting for the borrower. */}
       <div className="notice" role="note" style={{ background: 'var(--paper,#f6f3ec)', border: '1px solid var(--line)', borderRadius: 10, padding: '10px 12px' }}>
         <b style={{ color: '#141B22' }}>View-only draw access.</b>
@@ -299,7 +324,13 @@ export default function LoDrawView({ appId }) {
               <div className="act-card-title">Full inspection report</div>
               <div className="act-card-sub">Every draw, what was approved, the inspector’s notes and photos — one PDF.</div>
             </div>
-            <button className="btn btn-sm ghost" onClick={() => { const w = window.open('', '_blank'); api.sitewireProjectReport(appId, 'staff', w); }}>Download PDF</button>
+            <button className="btn btn-sm ghost" disabled={openReport.busy}
+              onClick={() => openReport.start({
+                title: 'Whole-project inspection report',
+                subtitle: 'Every draw, the schedule of values, inspector notes and photos.',
+                status: () => api.sitewireProjectReportStatus(appId, 'staff'),
+                fetch: (onP) => api.sitewireProjectReportBytes(appId, 'staff', onP),
+              })}>Open PDF</button>
           </div>
         </div>
       )}
@@ -315,6 +346,7 @@ export default function LoDrawView({ appId }) {
    per-draw report PDF, and the two borrower-behalf actions. The officer confirms it is on the borrower's
    behalf with a required note; the server records it as staff-on-behalf. */
 function LoFindingCard({ appId, finding, money, onChanged }) {
+  const openReport = useReportOpener();   // opens the PDF in PILOT, with progress
   const [detail, setDetail] = useState(null);       // { finding, lines }
   const [mediaByReq, setMediaByReq] = useState(new Map());
   const [mode, setMode] = useState(null);           // null | 'accept' | 'dispute'
@@ -363,6 +395,7 @@ function LoFindingCard({ appId, finding, money, onChanged }) {
 
   return (
     <div className="dd-card">
+      {openReport.node}
       <div className="dd-card-h" style={{ justifyContent: 'space-between' }}>
         <div className="row" style={{ gap: 10, alignItems: 'center' }}>
           <span className="dd-card-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: 16, height: 16 }}><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg></span>
@@ -433,9 +466,15 @@ function LoFindingCard({ appId, finding, money, onChanged }) {
         {mode === 'dispute' && <button className="btn btn-sm ghost" disabled={busy} onClick={() => { setMode(null); setErr(''); }}>Cancel</button>}
         {mode === null && (<>
           {canAct && <span className="act-sep" aria-hidden="true" />}
-          <button className="btn btn-sm soft" title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and photos."
-            onClick={() => { const w = window.open('', '_blank'); api.sitewireDrawReport(appId, drawId, 'staff', w); }}>
-            Download report (PDF)
+          <button className="btn btn-sm soft" disabled={openReport.busy}
+            title="A PILOT-branded PDF for this draw — schedule of values, approved vs not-approved, inspector notes and photos."
+            onClick={() => openReport.start({
+              title: 'Draw inspection report',
+              subtitle: 'Schedule of values, approved vs not approved, inspector notes and photos.',
+              status: () => api.sitewireDrawReportStatus(appId, drawId, 'staff'),
+              fetch: (onP) => api.sitewireDrawReportBytes(appId, drawId, 'staff', onP),
+            })}>
+            Open report (PDF)
           </button>
         </>)}
       </div>

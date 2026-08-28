@@ -294,13 +294,24 @@ async function loadApplication(db, applicationId) {
  * recipient — DocuSign notifies them as the envelope is sent/viewed/signed and delivers the
  * executed copy + Certificate of Completion, which is exactly what was asked for.
  *
- * THE ORIGINATION PACKAGES COPY THE COORDINATOR TOO (owner-directed 2026-08-21, which
+ * THE TERM SHEET PACKAGE COPIES THE COORDINATOR TOO (owner-directed 2026-08-21, which
  * REVERSES the `draw_request`-only scoping this function shipped with on 2026-07-28):
  * "when you're sending out the term sheet package, when you're sending out the ISKA, and
  * when you're sending out the draw form, then the draw coordinator and the loan officer
  * should be looped in as viewers in the Docusign envelope." The old comment's reasoning —
  * that the coordinator has no part in an origination package — was ours, not the owner's,
  * and the owner has now said otherwise; it is kept above only so nobody re-derives it.
+ *
+ * BUT THE HETER ISKA IS NARROWER NOW (owner-directed 2026-08-26, SUPERSEDING the
+ * 2026-08-21 line above for the ISKA alone: "The ISKA package is always getting to all
+ * the admins as viewers, and Esther and myself, Yehuda, are getting emails when it's
+ * signed … remove us from being the reviewer on that package. Only the loan officer and
+ * the processor and the borrower, obviously."). On a `heter_iska` envelope the viewer
+ * list is the file's LOAN OFFICER + PROCESSOR assignees ONLY — judged by the STAFF
+ * role, not the assignee role, because an admin granted file access is seated as an
+ * aa.role='processor' assignee (admin.js grantBucket), so an aa.role filter would keep
+ * exactly the admins the owner asked to remove — and no draw coordinator either. The
+ * term sheet package and the wire form are unchanged.
  *
  * "ISKA" here is the HETER ISKA envelope (`heter_iska`), not ISAOA — ISAOA exists in this
  * codebase only as the lender's mortgagee-clause text and has no envelope at all.
@@ -317,17 +328,22 @@ async function loadApplication(db, applicationId) {
  */
 async function loadCcViewers(db, applicationId, purpose) {
   if (!applicationId) return [];
+  // The Heter Iska's viewer list is LO + processor ONLY (owner-directed
+  // 2026-08-26 — see the header); every other purpose keeps the whole team.
+  const iskaOnly = purpose === 'heter_iska';
   const r = await db.query(
     `SELECT DISTINCT ON (lower(su.email)) su.email, su.full_name
        FROM application_assignees aa JOIN staff_users su ON su.id = aa.staff_id
       WHERE aa.application_id = $1 AND aa.removed_at IS NULL AND su.is_active = true
         AND su.email IS NOT NULL AND su.email <> ''
+        ${iskaOnly ? `AND su.role IN ('loan_officer','processor')` : ''}
       ORDER BY lower(su.email)`, [applicationId]);
   const out = r.rows.map((x) => ({ email: x.email, name: x.full_name || x.email }));
-  // Which resolver — see the header. The wire form keeps its desk fallback; the origination
-  // packages take only a coordinator the file actually has.
+  // Which resolver — see the header. The wire form keeps its desk fallback; the term
+  // sheet takes only a coordinator the file actually has; the Heter Iska takes none
+  // (owner-directed 2026-08-26).
   const coordinatorViewers = purpose === 'draw_request' ? 'drawEnvelopeViewers'
-    : (purpose === 'term_sheet_package' || purpose === 'heter_iska') ? 'drawEnvelopeViewersAssigned'
+    : purpose === 'term_sheet_package' ? 'drawEnvelopeViewersAssigned'
       : null;
   if (coordinatorViewers) {
     try {
@@ -1100,8 +1116,25 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     name: r.name,
     email: r.email,
     routingOrder: r.routing_order,
-    clientUserId: r.client_user_id,                      // embedded (in-portal) signing
-    embeddedRecipientStartURL: 'SIGN_AT_DOCUSIGN',       // hybrid: ALSO send the DocuSign email
+    /* CAPTIVE (embedded) SIGNING, AND NOTHING ELSE — DocuSign sends NO email of its own.
+     *
+     * Owner-reported 2026-08-21: *"they're receiving an email from DocuSign directly to sign,
+     * and they're also receiving an email from Pilot to sign. When they're clicking on the
+     * DocuSign link, it comes up an error, which is that they can't sign. The only link that
+     * works is the link that is coming directly from Pilot."*
+     *
+     * `embeddedRecipientStartURL: 'SIGN_AT_DOCUSIGN'` was the whole cause, and it was
+     * deliberate once: it makes DocuSign email a CAPTIVE recipient as well, which was wanted
+     * as a belt-and-braces fallback in 2026-07. In practice that second email is the one that
+     * fails — a recipient carrying a `clientUserId` is ours to authenticate, and DocuSign's
+     * hosted page has no session for them — so the fallback was not a fallback, it was a dead
+     * link arriving beside the working one and teaching people to distrust both.
+     *
+     * With the property removed, a recipient with a `clientUserId` is purely captive: DocuSign
+     * sends nothing, and PILOT's own branded email (esign/notify-signers.js) is the ONE
+     * invitation, for borrowers and staff signers alike. Do NOT re-add this without also
+     * removing PILOT's email — one signer, one link. */
+    clientUserId: r.client_user_id,                      // captive: WE authenticate, DocuSign never emails
     tabsByDoc: tabsFor(r.role, spec, documentIdByKind),
   }));
   // The roster must be COMPLETE before sending. A concurrent claim (or the poller)

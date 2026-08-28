@@ -70,15 +70,52 @@ function isPlaceholderEmail(email, settings = {}) {
  * person. Never used to produce a suggestion; see the header.
  */
 function nameLooksLike(a, b) {
+  // PUNCTUATION IS STRIPPED FIRST, and that single line is the whole of a bug the
+  // owner reported on 2026-08-23: EVERY row on the borrower-match screen read "the
+  // names are spelled differently — worth a second look", including
+  // "Bluming, Yisroel" against "Yisroel bluming".
+  //
+  // Case and word order were already handled. What was not is that ENCOMPASS WRITES
+  // A NAME AS "Last, First" — so `split(' ')` produced the token `"bluming,"`, with
+  // the comma still attached, which equals nothing on the other side. The flag
+  // therefore fired on every single loan in the book, which is worse than not having
+  // it: a warning that is always on is a warning nobody reads, and it asked a human
+  // to second-guess four hundred matches that were all correct.
+  //
+  // A period goes with it, for "Yisroel M. Bluming"; hyphens and apostrophes are
+  // deliberately turned into nothing rather than a space, so "Bat-Sheva" still reads
+  // as one word and "O'Brien" does not become "o brien".
   const norm = (v) => String(v == null ? '' : v)
+    .replace(/[.,]/g, ' ')
+    .replace(/['\u2019-]/g, '')
     .trim().replace(/\s+/g, ' ').toLowerCase();
   const x = norm(a);
   const y = norm(b);
   if (!x || !y) return false;
   if (x === y) return true;
   // Same words in a different order — "Katz Malky" vs "Malky Katz".
-  const words = (s) => s.split(' ').filter(Boolean).sort().join(' ');
-  return words(x) === words(y);
+  const words = (s) => s.split(' ').filter(Boolean).sort();
+  const wx = words(x);
+  const wy = words(y);
+  if (wx.join(' ') === wy.join(' ')) return true;
+  // ONE SIDE CARRYING A MIDDLE NAME IS THE SAME PERSON. "Yisroel M Bluming" and
+  // "Yisroel Bluming" are not two people, and this flag exists to say when a second
+  // look is WORTH IT — it gates nothing, a human still answers yes or no on every
+  // row. So the expensive direction is a false warning, not a missing one, and the
+  // smaller name being wholly contained in the larger counts as agreement.
+  //
+  // Both sides must carry at least two words: a lone surname inside a full name is
+  // not evidence of anything, and treating it as agreement would quietly wave
+  // through two different people who share one.
+  const [small, large] = wx.length <= wy.length ? [wx, wy] : [wy, wx];
+  if (small.length < 2) return false;
+  const pool = large.slice();
+  return small.every((w) => {
+    const at = pool.indexOf(w);
+    if (at < 0) return false;
+    pool.splice(at, 1);   // consume it, so a repeated word needs a repeat to match
+    return true;
+  });
 }
 
 /** The display name for a PILOT person, tolerating either shape of row. */

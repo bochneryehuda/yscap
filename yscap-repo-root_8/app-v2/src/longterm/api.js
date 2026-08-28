@@ -30,6 +30,12 @@ export const ltApi = {
   },
   loan: (id) => ltGet(lt(`/pipeline/${encodeURIComponent(id)}`)),
 
+  // The archive — Encompass's deleted loans, out of every pipeline view. Listing is
+  // for admins; the permanent delete is the super-admin's (the server enforces both).
+  archive: () => ltGet(lt('/archive')),
+  archiveDelete: (id) => ltDel(lt(`/archive/${encodeURIComponent(id)}`)),
+  archiveDeleteAll: () => ltPost(lt('/archive/delete-all'), {}),
+
   // Reassign one role on one file to a PILOT person — or, with `staffId` null,
   // clear the reassignment and go back to what Encompass says. Nothing is written
   // to Encompass either way; this only decides whose pipeline the file is in here.
@@ -78,6 +84,14 @@ export const ltApi = {
   // The loan sync.
   syncState: () => ltGet(lt('/sync')),
   runSync: (body = {}) => ltPost(lt('/sync'), body),
+  // The FULL pull — the whole book, not one 25-loan pass. It answers straight away
+  // and works in the background, because a drain can run for ten minutes and no
+  // browser will hold a request open that long.
+  pullFromEncompass: () => ltPost(lt('/sync/pull'), {}),
+  // The Condition Center's own pass, without re-reading every loan. Admin-only
+  // on the server; called anyway from a non-admin's screen so the REFUSAL is
+  // shown — a hidden button is indistinguishable from a broken one.
+  runConditionSync: (body = {}) => ltPost(lt('/sync/conditions'), body),
 
   // Saved pipeline views. A view carries FILTERS and never a scope — the server
   // appends them to whatever the signed-in person is allowed to see — so opening
@@ -98,6 +112,13 @@ export const ltApi = {
   mySettings: () => ltGet(lt('/settings/mine')),
   saveMySettings: (settings) => ltPatch(lt('/settings/mine'), { settings }),
 
+  // The Condition Center, READ side. One call per loan gives BOTH feeds — this
+  // loan's conditions with the documents that answer each one, and the eFolder
+  // needs list — plus `face`, which says which of the two this file's work
+  // actually is. There is deliberately no write here: nothing in the Condition
+  // Center writes to Encompass or to us (the eFolder upload stays blocked).
+  conditionCenter: (loanId) => ltGet(lt(`/conditions/${encodeURIComponent(loanId)}`)),
+
   // The Product & Pricing Engine. Lender Price stays authoritative — these read
   // the SHADOW: what our engine disagreed with, and how far it is from ready.
   // Every list is served pre-ordered by the server's own review queue, so this
@@ -116,6 +137,77 @@ export const ltApi = {
   // Admin-only on the server. Called anyway from a non-admin's screen so the
   // REFUSAL is shown — a hidden button is indistinguishable from a broken one.
   ppeDecideFinding: (key, body) => ltPost(lt(`/ppe/findings/${encodeURIComponent(key)}/decide`), body),
+
+  // ---- THE PRICING ENGINE (owner-directed 2026-08-23) --------------------------
+  // Two doors, and they are the whole engine. Both have been shipping, staff-gated,
+  // since the DSCR pricer was written, and nothing in the product could reach them:
+  // this file had exactly one `/dscr` method, the field manifest. The engine was
+  // never a missing integration — it was a missing wire.
+  //
+  // ⛔ BOTH COST A LIVE VENDOR CALL. Never fire one from an effect, never on a
+  // keystroke, only on a deliberate press. A search that runs itself on render bills
+  // us for every mounted screen, and a debounce on a money call is a slow leak.
+  //
+  // `dscrPrice` answers the ELIGIBLE side — every lender, every programme, every rung
+  // of every rate ladder, with the whole build behind each price — plus `understood`,
+  // the vendor's own confirmation of the scenario it actually ran, and a `searchKey`.
+  //
+  // The INELIGIBLE side is computed by the vendor AFTER the price, so it is polled by
+  // that key rather than re-searched: 200 once ready, 202 while it is still computing
+  // (surfaced as an ordinary body, `ready:false`), 409 once the key has expired.
+  dscrPrice: (scenario, opts) => ltPost(lt('/dscr/price'), { scenario, ...(opts || {}) }),
+  // The ONE door here that costs NOTHING. A ZIP resolves its state, county and county FIPS out of a
+  // committed Census table on our own server — no vendor call, no session, no billing — which is
+  // why this one MAY be fired as somebody types, unlike the two above.
+  dscrZip: (zip) => ltGet(lt(`/dscr/zip/${encodeURIComponent(String(zip || '').trim())}`)),
+  // The signed-in person's COMPENSATION PLAN — what the pricing engine's three-way switch
+  // (borrower-paid / raw / lender-paid) overlays on the displayed numbers. Display only:
+  // the Lender Price search itself never changes (owner-directed 2026-08-23).
+  dscrCompPlan: () => ltGet(lt('/dscr/comp-plan')),
+  // THE INVESTOR FILTER'S TWO FREE READS (owner-directed 2026-08-27). The roster is the
+  // owner's whole white-label sheet — every investor, live in Lender Price or not — and
+  // the groups are the signed-in person's own named sets. Both are reads of OUR server
+  // (no vendor call, no billing), which is why the screen may fetch them from an effect.
+  // The filter they drive is DISPLAY ONLY: nothing about the selection ever reaches the
+  // Lender Price search.
+  dscrInvestors: () => ltGet(lt('/dscr/investors')),
+  dscrInvestorGroups: () => ltGet(lt('/dscr/investor-groups')),
+  dscrSaveInvestorGroup: (name, investors) => ltPost(lt('/dscr/investor-groups'), { name, investors }),
+  dscrDeleteInvestorGroup: (id) => ltDel(lt(`/dscr/investor-groups/${encodeURIComponent(id)}`)),
+
+  // THE CLICKUP SYNCING SECTION (#36): everything the writer does automatically,
+  // visible + manually drivable per file. Every write goes through the guarded
+  // writer on the server — these calls only press its buttons.
+  clickupSection: (loanId, { compare = false } = {}) => ltGet(
+    lt(`/clickup/loans/${encodeURIComponent(loanId)}${compare ? '?compare=1' : ''}`)),
+  clickupPush: (loanId) => ltPost(lt(`/clickup/loans/${encodeURIComponent(loanId)}/push`), {}),
+  clickupPushField: (loanId, key) => ltPost(lt(`/clickup/loans/${encodeURIComponent(loanId)}/push-field`), { key }),
+  clickupCreate: (loanId) => ltPost(lt(`/clickup/loans/${encodeURIComponent(loanId)}/create`), {}),
+  clickupLink: (loanId, taskId, confirm = false) => ltPost(
+    lt(`/clickup/loans/${encodeURIComponent(loanId)}/link`), { taskId, confirm }),
+  clickupReview: (loanId, reviewId, decision) => ltPost(
+    lt(`/clickup/loans/${encodeURIComponent(loanId)}/reviews/${encodeURIComponent(reviewId)}/${decision === 'approve' ? 'approve' : 'reject'}`), {}),
+
+  // THE ENCOMPASS SYNCING SECTION (#52, owner-directed 2026-08-25): what has been
+  // read for this loan and what has not, when Encompass last changed it, when a
+  // webhook last asked us to look, and a button that reads it again on the spot.
+  // READ-ONLY towards Encompass — `encompassFileRead` opens the loan and reads it;
+  // nothing here can write to Encompass.
+  encompassFileSection: (loanId) => ltGet(lt(`/encompass-file/loans/${encodeURIComponent(loanId)}`)),
+  encompassFileRead: (loanId) => ltPost(lt(`/encompass-file/loans/${encodeURIComponent(loanId)}/read`), {}),
+
+  // Every file where the ClickUp status and the Encompass milestones disagree, as
+  // of the last time PILOT looked at that card. Scoped by the server exactly like
+  // the pipeline, and it reads OUR OWN rows — no ClickUp call, so it can never be
+  // rate-limited into being wrong.
+  clickupStatusReviews: (limit) => ltGet(
+    lt(`/clickup/status-reviews${limit ? `?limit=${encodeURIComponent(limit)}` : ''}`)),
+  dscrDisqualifications: (searchKey, params) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') q.set(k, String(v));
+    const s = q.toString();
+    return ltGet(lt(`/dscr/disqualifications/${encodeURIComponent(searchKey)}${s ? `?${s}` : ''}`));
+  },
 };
 
 export default ltApi;

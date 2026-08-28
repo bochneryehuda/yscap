@@ -33,6 +33,7 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'testsecrettestsecrettestsecr
 const R = require('path').resolve(__dirname, '..');
 const db = require(R + '/src/db');
 const { ensureSchema } = require(R + '/src/migrate-boot');
+const P = require(R + '/src/lib/permissions');
 const staffRouter = require(R + '/src/routes/staff');   // the route module, canSeeDocument is exported on it
 const canSeeDocument = staffRouter.canSeeDocument;
 
@@ -41,8 +42,12 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
 const tag = `csd_${process.pid}`;
 const q = (t, p) => db.query(t, p);
 
-// A staffer req the way authenticate() shapes it: kind + id + role is all the gate reads.
-const asStaff = (id, role) => ({ actor: { kind: 'staff', id, role } });
+// A staffer req the way authenticate() shapes it: kind + id + role + the resolved
+// perms Set (authenticate runs effectivePermissions(role, permissions_jsonb) onto
+// the actor; can() only falls back to role defaults when perms are absent, so
+// building the Set here is the faithful shape — and the only way a per-person
+// see_all_files revocation is visible to the gate).
+const asStaff = (id, role, ovr) => ({ actor: { kind: 'staff', id, role, perms: P.effectivePermissions(role, ovr || null) } });
 // A document the way the route loads it before calling the gate.
 const doc = (o) => ({ application_id: null, borrower_id: null, llc_id: null, ...o });
 
@@ -68,7 +73,7 @@ async function borrower(extra = {}) {
   const LO3 = await staff('loan_officer');       // owns borrower P's PROFILE, has no file with them
   const STRANGER = await staff('loan_officer');  // unrelated to everyone
   const ADMIN = await staff('admin');            // see_all_files
-  const PROC = await staff('processor');          // seesAllBorrowers (sees every PERSON, not every FILE)
+  const PROC = await staff('processor');          // back-office persona (2026-08-26): the ROLE now holds see_all_files
 
   const B = await borrower();                    // primary borrower on A and A2
   const C = await borrower();                    // CO-borrower on A — never a primary anywhere
@@ -126,10 +131,20 @@ async function borrower(extra = {}) {
     'a processor (seesAllBorrowers) opens any borrower-scoped document — consistent with the profile/SSN gate');
   ok(await canSeeDocument(asStaff(PROC, 'processor'), docP) === true,
     '…including for a file-less, profile-owned person');
-  // …but seesAllBorrowers is about PEOPLE, not FILES: a processor does NOT get every
-  // application document just for being a processor.
-  ok(await canSeeDocument(asStaff(PROC, 'processor'), docAppA) === false,
-    'a processor does NOT reach an application document they are not assigned to — the file branch stays file-scoped');
+  // Since 2026-08-26 (back-office persona) the processor ROLE holds see_all_files
+  // by default — whole-pipeline access like admins — so a DEFAULT processor DOES
+  // reach any application document.
+  ok(await canSeeDocument(asStaff(PROC, 'processor'), docAppA) === true,
+    'a default processor reaches any application document — the back-office persona (role-level see_all_files)');
+  // The supported revocation path is PER PERSON via the permissions jsonb (Team
+  // screen). A revoked processor keeps seesAllBorrowers (a role carve-out — sees
+  // every PERSON) but the FILE branch goes back to file-scoped, which keeps that
+  // branch observable.
+  const revoked = { see_all_files: false };
+  ok(await canSeeDocument(asStaff(PROC, 'processor', revoked), docC) === true,
+    'a see_all_files-REVOKED processor still opens a borrower-scoped document (seesAllBorrowers is a role carve-out)');
+  ok(await canSeeDocument(asStaff(PROC, 'processor', revoked), docAppA) === false,
+    'a see_all_files-REVOKED processor does NOT reach an application document they are not assigned to — the file branch stays file-scoped');
 
   // ── cleanup ──
   await q(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [[A, A2]]).catch(() => {});

@@ -298,6 +298,26 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
   const claimBelowNeed = !!registered && (
     required.flips < gateNeed.flips || required.holds < gateNeed.holds || required.ground < gateNeed.ground);
   const registeredAt = registered ? registered.created_at : null;
+  /* AND WHETHER THE ADVICE CAN ACTUALLY BE FOLLOWED (owner-reported 2026-08-21, file
+     YSCAP258134810 — 5705 Melvin St; the claim was lowered to three and the condition went
+     on demanding five). Telling somebody to "re-register Products & Pricing" is only useful
+     while the file can BE re-registered: past a sent term sheet, or at clear-to-close /
+     funded, the register route refuses and the reader is left with a remedy that cannot
+     produce the state the refusal demands — the dead-end class this codebase names
+     elsewhere (`term-sheet-stamp.REGENERATE_MESSAGE`). So the stuck state carries the
+     freeze with it, and the screen says what clears it instead of repeating advice that
+     will bounce.
+
+     Asked ACTOR-LESS on purpose: this is a description of the file, not a permission
+     check, so it must never inherit a super-admin's unlock and read "you can re-register"
+     to somebody who cannot. Best-effort — an unreadable lock leaves the plain advice
+     standing, never a false "this file is frozen". */
+  let reRegisterBlockedBy = null;
+  if (claimBelowNeed) {
+    try {
+      reRegisterBlockedBy = await require('./file-lock').structuralLockReason(appId, client) || null;
+    } catch (_) { reRegisterBlockedBy = null; }
+  }
   // Per-borrower breakdown (#103) — on a co-borrower file the experience
   // condition shows BOTH borrowers, each named, with their OWN 3-year-window
   // counts and a link to their OWN track record. The requirement is still the
@@ -398,7 +418,7 @@ async function syncExperienceChecklistForApplication(appId, client = db) {
     autoExperienceTask: true, notApplicable, required, gateNeed, counts, verifiedCounts, satisfied,
     enteredMet, verifiedMet: met,
     // Explanation only — see the note by needFrom. Never feeds met/required.
-    needFrom, claimBelowNeed, registeredAt,
+    needFrom, claimBelowNeed, registeredAt, reRegisterBlockedBy,
     perBorrower,
     checkedAt: new Date().toISOString(),
   };

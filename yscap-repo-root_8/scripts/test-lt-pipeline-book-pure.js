@@ -28,6 +28,10 @@ const check = (cond, msg) => {
 
 const VIEWER = { seesAll: true, scope: 'all' };
 const CLOSED = ['Adverse', 'Trash'];
+const WITHDRAWN = ['Withdrawn files'];
+const EXCLUDED = ['Training'];
+/** The tenant config in the shape the pipeline now takes it. */
+const CFG = { closed: CLOSED, withdrawn: WITHDRAWN, excluded: EXCLUDED };
 
 // ── Reading the setting ─────────────────────────────────────────────────────
 console.log('what the tenant said is over');
@@ -40,9 +44,31 @@ check(bookMod.inactiveFolders({}).length === 0,
 // the one that skips itself when no database is in reach.
 const declared = require('../src/longterm/settings/encompass-settings')
   .SETTINGS.find((s) => s.key === 'pipeline.inactiveFolders');
-check(!!declared && Array.isArray(declared.default) && declared.default.length === 0,
-  'THE ONE THAT MATTERS: the setting ships with an EMPTY list — a guessed folder name in the default would hide '
-  + 'live loans on every tenant that installed it, on the first boot, with nobody having asked for it');
+// CHANGED 2026-08-23, and the reason is the whole point. This used to assert the
+// default was EMPTY, because which folder means "over" was a business rule nobody
+// here could guess. The owner answered it (§11 q13), so it is no longer a guess and
+// the default now carries the answer.
+//
+// WHAT THAT TEST WAS REALLY PROTECTING is asserted directly below instead, which is
+// strictly stronger: a proxy ("the list is empty") is replaced by the property it
+// stood for ("a tenant whose folders are not these sees every file live"). A named
+// default is only safe BECAUSE an unmatched folder falls through to live, and that
+// is now proven rather than arranged.
+check(!!declared && Array.isArray(declared.default) && declared.default.length > 0,
+  'the closed-folder list ships with the owner\'s 2026-08-23 answer, not a guess and not a blank');
+{
+  const foreign = pipeline.buildPipelineQuery(VIEWER, null, { book: 'live' },
+    { books: { closed: declared.default, withdrawn: [], excluded: [] } });
+  const foreignClosed = pipeline.buildPipelineQuery(VIEWER, null, { book: 'closed' },
+    { books: { closed: declared.default, withdrawn: [], excluded: [] } });
+  // The live clause is a NEGATION of a list this tenant has no folder in, so it is
+  // true for every row: a buyer who installs this and whose folders are named
+  // something else sees their whole book, exactly as before the default was filled.
+  check(/NOT \(/.test(foreign.sql) && !/NOT \(/.test(foreignClosed.sql),
+    'THE ONE THAT MATTERS: a shipped default can only ever SUBTRACT from the closed book — the live book is a '
+    + 'negation, so a tenant whose folders are not these names keeps every file live, which is why naming '
+    + 'them in the default is safe at all');
+}
 check(bookMod.inactiveFolders({ 'pipeline.inactiveFolders': 'Adverse' }).length === 0,
   'THE ONE THAT MATTERS: a value that is not a list reads as EMPTY, never as an error and never as a guess — '
   + 'an administrator who mistypes the setting must not be answered by a pipeline that hides files');
@@ -73,7 +99,7 @@ console.log('\nwith no folder named, every book is the same book');
 
 const base = pipeline.buildPipelineQuery(VIEWER, null, {});
 for (const b of ['live', 'closed', 'all', undefined]) {
-  const q = pipeline.buildPipelineQuery(VIEWER, null, { book: b }, { inactiveFolders: [] });
+  const q = pipeline.buildPipelineQuery(VIEWER, null, { book: b }, { books: { closed: [], withdrawn: [], excluded: [] } });
   check(q.sql === base.sql && JSON.stringify(q.params) === JSON.stringify(base.params),
     `book=${b === undefined ? '(unset)' : b} produces the SAME statement and the SAME parameters as before the split existed`);
 }
@@ -85,17 +111,68 @@ check(bookMod.bookSplitApplies([]) === false && bookMod.bookSplitApplies(undefin
 // ── Configured: the split turns on ──────────────────────────────────────────
 console.log('\nonce a folder is named, the books differ');
 
-const live = pipeline.buildPipelineQuery(VIEWER, null, { book: 'live' }, { inactiveFolders: CLOSED });
-const closed = pipeline.buildPipelineQuery(VIEWER, null, { book: 'closed' }, { inactiveFolders: CLOSED });
-const both = pipeline.buildPipelineQuery(VIEWER, null, { book: 'all' }, { inactiveFolders: CLOSED });
+const live = pipeline.buildPipelineQuery(VIEWER, null, { book: 'live' }, { books: CFG });
+const closed = pipeline.buildPipelineQuery(VIEWER, null, { book: 'closed' }, { books: CFG });
+const withdrawn = pipeline.buildPipelineQuery(VIEWER, null, { book: 'withdrawn' }, { books: CFG });
+const both = pipeline.buildPipelineQuery(VIEWER, null, { book: 'all' }, { books: CFG });
 
-check(live.sql !== base.sql && closed.sql !== base.sql,
-  'the live and closed books each add a clause');
-check(both.sql === base.sql,
-  'THE ONE THAT MATTERS: "both" adds NOTHING — it is the whole table, so it must be the same statement '
-  + 'the unsplit pipeline ran, not a clause that happens to select everything');
-check(/NOT \(/.test(live.sql) && !/NOT \(/.test(closed.sql),
-  'the live book is literally the NEGATION of the closed one, so no loan can fall into neither');
+check(live.sql !== base.sql && closed.sql !== base.sql && withdrawn.sql !== base.sql,
+  'the live, closed and withdrawn books each add a clause');
+{
+  // NOT compared as SQL TEXT, and that is the point: both books ask the same question
+  // ("is the folder in this list") so the STATEMENT is identical by construction and
+  // only the bound list differs. Comparing the strings would have passed for the wrong
+  // reason on the day the two books were accidentally given the same list.
+  const listOf = (q) => (q.params.find((x) => Array.isArray(x)) || []).join('|');
+  check(listOf(closed) !== listOf(withdrawn),
+    'THE ONE THAT MATTERS: closed and withdrawn are bound to DIFFERENT folder lists — a deal that completed '
+    + 'and a deal that died are separate facts, and the owner ruled out mixing them (2026-08-23)');
+  check(listOf(closed) === 'adverse|trash' && listOf(withdrawn) === 'withdrawn files',
+    'and each is bound to its OWN list, not to the other\'s');
+}
+// CHANGED 2026-08-23. "All" used to be the whole table full stop. It is now the three
+// BOOKS together — and a hidden folder is not a book, it is hidden, so "all" subtracts
+// exactly the excluded list and nothing else. With no folder hidden the old property
+// holds exactly as before, which is asserted first because it is the one that says the
+// feature is still inert on an unconfigured tenant.
+{
+  const allNoHidden = pipeline.buildPipelineQuery(VIEWER, null, { book: 'all' },
+    { books: { closed: CLOSED, withdrawn: WITHDRAWN, excluded: [] } });
+  check(allNoHidden.sql === base.sql,
+    'THE ONE THAT MATTERS: with nothing hidden, "all" adds NOTHING — it is the whole table, so it must be the '
+    + 'same statement the unsplit pipeline ran, not a clause that happens to select everything');
+  check(both.sql !== base.sql && (both.sql.match(/NOT \(/g) || []).length === 1,
+    'and once a folder IS hidden, "all" subtracts exactly that one list and nothing else — a training file is '
+    + 'not a deal in any state, so counting it into the total would inflate a number somebody reports');
+}
+// THE PARTITION, now four-way rather than two. Every loan is in exactly one of
+// {live, closed, withdrawn, excluded} — asserted by construction here and against
+// real rows in the database suite. `live` is the negation of ALL THREE named lists,
+// which is what makes "in none of them" mean live rather than mean nothing.
+check(/NOT \(/.test(live.sql) && !/NOT \(/.test(closed.sql) && !/NOT \(/.test(withdrawn.sql),
+  'the live book is the NEGATION of every named list, so a loan in no list falls into live and never into '
+  + 'nothing');
+check((live.sql.match(/NOT \(/g) || []).length === 3,
+  'THE ONE THAT MATTERS: live negates all THREE lists — closed, withdrawn AND excluded. Negating only the '
+  + 'closed one is how a withdrawn file reappears in somebody\'s active pipeline');
+{
+  // Precedence, proven rather than documented: a folder an administrator has typed
+  // into BOTH lists is withdrawn, because that is the more specific claim.
+  const both2 = bookMod.bookFolders({
+    'pipeline.inactiveFolders': ['Overlap'], 'pipeline.withdrawnFolders': ['Overlap'],
+  });
+  check(both2.withdrawn.includes('overlap') && !both2.closed.includes('overlap'),
+    'THE ONE THAT MATTERS: a folder on both lists is WITHDRAWN and not closed, so a typo cannot make a file\'s '
+    + 'book depend on which branch the SQL reaches first');
+  // And the hidden list LOSES to both, because it is the only one that makes a file
+  // vanish from every screen.
+  const clash = bookMod.bookFolders({
+    'pipeline.inactiveFolders': ['Gone'], 'pipeline.excludedFolders': ['Gone'],
+  });
+  check(clash.closed.includes('gone') && !clash.excluded.includes('gone'),
+    'THE ONE THAT MATTERS: a folder that is both closed and hidden stays VISIBLE in the closed book — given '
+    + 'contradictory configuration the safe reading is the one that still shows the file somewhere');
+}
 const folderParam = live.params.find((x) => Array.isArray(x));
 check(!!folderParam,
   'the folder list travels as a bound PARAMETER — a tenant\'s typed folder name never reaches the query text');
@@ -103,7 +180,8 @@ check(folderParam && folderParam.join('|') === 'adverse|trash',
   'THE ONE THAT MATTERS: the list is NORMALIZED where the clause is built, not trusted from the caller — the SQL '
   + 'lower-cases only its own side, so a raw "Adverse" would match nothing and the closed book would read empty '
   + 'while the live book quietly became the whole table');
-check(pipeline.buildFacetQueries(VIEWER, null, { book: 'live' }, { inactiveFolders: ['  ADVERSE  '] })
+check(pipeline.buildFacetQueries(VIEWER, null, { book: 'live' },
+  { books: { closed: ['  ADVERSE  '], withdrawn: [], excluded: [] } })
   .bookParams.find((x) => Array.isArray(x)).join('|') === 'adverse',
 '…and the COUNT query normalizes it too, or the chip would read 0 finished on a tenant with plenty');
 check(/COALESCE\(l\.loan_folder, ''\)/.test(live.sql),
@@ -129,8 +207,8 @@ console.log('\nthe placeholders still line up');
 // of distinct placeholders must equal the count of parameters, in every combination.
 for (const [label, q] of [
   ['live, no other filter', live],
-  ['closed + stage + search', pipeline.buildPipelineQuery(VIEWER, 'a1b2', { book: 'closed', stage: 'underwriting', search: 'smith', mine: true }, { inactiveFolders: CLOSED })],
-  ['scoped viewer, live', pipeline.buildPipelineQuery({ seesAll: false, scope: 'own' }, 'a1b2', { book: 'live' }, { inactiveFolders: CLOSED })],
+  ['closed + stage + search', pipeline.buildPipelineQuery(VIEWER, 'a1b2', { book: 'closed', stage: 'underwriting', search: 'smith', mine: true }, { books: CFG })],
+  ['scoped viewer, live', pipeline.buildPipelineQuery({ seesAll: false, scope: 'own' }, 'a1b2', { book: 'live' }, { books: CFG })],
 ]) {
   const used = new Set((q.sql.match(/\$\d+/g) || []).map((s) => Number(s.slice(1))));
   const max = used.size ? Math.max(...used) : 0;
@@ -141,11 +219,11 @@ for (const [label, q] of [
 // ── The facet counts ────────────────────────────────────────────────────────
 console.log('\nthe chip counts say what clicking would show');
 
-const fOff = pipeline.buildFacetQueries(VIEWER, null, { book: 'closed' }, { inactiveFolders: [] });
+const fOff = pipeline.buildFacetQueries(VIEWER, null, { book: 'closed' }, { books: { closed: [], withdrawn: [], excluded: [] } });
 check(fOff.bookSql === null,
   'no folder named → NO book count query at all; a "0 finished" chip would be a claim nobody measured');
 
-const fOn = pipeline.buildFacetQueries(VIEWER, null, { book: 'closed' }, { inactiveFolders: CLOSED });
+const fOn = pipeline.buildFacetQueries(VIEWER, null, { book: 'closed' }, { books: CFG });
 check(!!fOn.bookSql, 'a configured tenant gets one');
 // The real property: the book filter is LIFTED for its own counts, so asking for the
 // closed book still counts the live one. If it were applied, `live_n` would be 0.
@@ -159,12 +237,20 @@ const scopeFrag = fOn.bookSql.slice(fOn.bookSql.indexOf('FROM'));
 // wrongly APPLIED would appear here WITHOUT the negation — the check would sail past the
 // exact bug it is named after. Proven: applying the filter to its own facet leaves this
 // assertion green and only the database suite red.
-const closedFrag = bookMod.closedFolderSql('l', '$1').slice(0, 40);
+//
+// The marker is normalisation + MEMBERSHIP (`= ANY(`), placeholder-agnostic. It used
+// to be a 40-character prefix — which stopped meaning "the book filter" the day the
+// archive guard (trash.notTrashSql, 2026-08-23) started composing the SAME
+// folderNormSql into every WHERE: the prefix matched that always-on guard and this
+// check cried wolf on a correctly LIFTED filter. Membership is what the lift removes;
+// the shared normalisation legitimately stays.
+const closedFrag = `${bookMod.folderNormSql('l')} = ANY(`;
 check(!scopeFrag.includes(closedFrag),
   'THE ONE THAT MATTERS: the book filter is LIFTED from its own WHERE — with "Finished" selected, a "Live" chip '
   + 'counted under the closed filter would read zero and the way back would be the chip claiming there is nothing there');
-check(closedFrag.length === 40 && live.sql.includes(closedFrag),
-  '…and that fragment is the real one, so the check above could actually have failed');
+check(live.sql.includes(closedFrag) && bookMod.folderInSql('l', '$9').includes(closedFrag),
+  '…and that fragment is the real one — it appears verbatim where the filter IS applied, '
+  + 'and it prefixes folderInSql whatever the placeholder — so the check above could actually have failed');
 check(/ = ANY\(\$\d+::text\[\]\)/.test(live.sql),
   'the loan\'s folder is tested for MEMBERSHIP of the finished list — an inverted operator would put every '
   + 'unlisted folder in the finished book, which is the whole thing this module exists to prevent');
@@ -173,7 +259,7 @@ check(/count\(\*\) FILTER \(WHERE NOT \(/.test(fOn.bookSql) && /count\(\*\) FILT
 
 // The stage counts must still narrow BY the book — a stage chip is a question about
 // the book you are looking at, not about the whole table.
-const fStage = pipeline.buildFacetQueries(VIEWER, null, { book: 'closed' }, { inactiveFolders: CLOSED });
+const fStage = pipeline.buildFacetQueries(VIEWER, null, { book: 'closed' }, { books: CFG });
 check(/loan_folder/.test(fStage.stagesSql),
   'the STAGE counts still carry the book filter — a stage chip describes the book you are in, not the whole table');
 check(/loan_folder/.test(fStage.scopeSql),

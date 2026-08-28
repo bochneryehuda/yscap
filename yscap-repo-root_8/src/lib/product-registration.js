@@ -18,6 +18,27 @@ function claimExpVal(claimedExp, key) {
   return Number.isFinite(n) ? Math.max(0, Math.round(n)) : null;
 }
 function money(v) { return '$' + Math.round(num(v)).toLocaleString('en-US'); }
+/* THE FEE / CASH-TO-CLOSE / LIQUIDITY MONEY SHOWS ITS CENTS, AND IT MATCHES THE
+   TERM SHEET BYTE FOR BYTE (owner-reported 2026-08-24, file YSCAP258134663;
+   the standing rule is owner-directed 2026-07-16, "Fees / cash-to-close /
+   liquidity show EXACT cents").
+
+   This email is the companion to the term sheet the borrower is about to sign,
+   and the two were formatting the SAME figures two different ways: the PDF
+   renders every fee, the cash to close and the liquidity through fmtUSD2 (always
+   two decimals) while this email rounded all of them. So 1.50% of $367,500 —
+   $5,512.50 — reached the borrower as "$5,513", half a dollar they are not being
+   charged, and the closing-cost table could not add up: four rounded rows against
+   a separately-rounded total, each off by up to fifty cents in either direction.
+
+   money() above stays exactly where the term sheet keeps it: the LOAN AMOUNT, its
+   three pieces and the monthly payment, which are whole dollars BY RULE (the
+   frozen 2026-07-09 reconciliation floors the loan, the advance and the holdback,
+   and termsheet.js prints those same rows through its own whole-dollar money()).
+   Everything a borrower BRINGS or must SHOW goes through money2. */
+function money2(v) {
+  return '$' + num(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 function pct(v, digits = 1) { return num(v) > 0 ? (num(v) * 100).toFixed(digits) + '%' : 'n/a'; }
 function productName(quote) {
   return [quote.programLabel, quote.productLabel].filter(Boolean).join(' - ') || 'Registered product';
@@ -32,19 +53,26 @@ function assetDetail(quote) {
   // so the "payoff − advanced" equation would sum negative; state the cash-out.
   // Rate-and-term reconciles as the payoff shortfall the borrower brings. Must read
   // the same as liquidity.js.
+  // The government charges inside those closing costs, in the SAME words the
+  // liquidity condition uses — one definition, so the approval email an admin reads
+  // and the condition the borrower reads cannot describe the same money differently.
+  const govSeg = require('./liquidity').governmentChargeLine(quote);
+  // Every figure in this block is money the borrower BRINGS or must SHOW, so it
+  // carries its cents — and each breakdown must reconcile to the sentence's own
+  // total, which rounding the parts and the total separately cannot guarantee.
   const cashToCloseDetail = quote.refi
     ? (quote.refi.cashOut > 0
-        ? `Cash to close: ${money(quote.cashToClose)} — the new loan covers the existing payoff and closing costs; the borrower takes ${money(quote.refi.cashOut)} cash out.`
-        : `Cash to close: ${money(quote.cashToClose)} (${money(quote.refi.payoff)} loan payoff + ${money(quote.refi.closing)} estimated closing costs − ${money(quote.refi.fundedAtClose)} advanced at closing).`)
-    : `Cash to close: ${money(quote.cashToClose)} (${money(s.downPayment)} down payment + ${money(cc.dueAtClosing)} estimated closing costs${s.assignmentExcessOOP > 0 ? ` + ${money(s.assignmentExcessOOP)} assignment excess` : ''}).`;
+        ? `Cash to close: ${money2(quote.cashToClose)} — the new loan covers the existing payoff and closing costs; the borrower takes ${money2(quote.refi.cashOut)} cash out.`
+        : `Cash to close: ${money2(quote.cashToClose)} (${money2(quote.refi.payoff)} loan payoff + ${money2(quote.refi.closing)} estimated closing costs${govSeg} − ${money2(quote.refi.fundedAtClose)} advanced at closing).`)
+    : `Cash to close: ${money2(quote.cashToClose)} (${money2(s.downPayment)} down payment + ${money2(cc.dueAtClosing)} estimated closing costs${govSeg}${s.assignmentExcessOOP > 0 ? ` + ${money2(s.assignmentExcessOOP)} assignment excess` : ''}).`;
   const lines = [
     `Registered product: ${productName(quote)}`,
     `Loan amount: ${money(s.totalLoan)}${quote.noteRate != null ? ` at ${fmtRatePct(quote.noteRate)}%` : ''}.`,
     cashToCloseDetail,
-    `Assets/liquidity to verify: ${money(quote.liquidityRequired || quote.liquidity)} (${money(quote.cashToClose)} cash to close + ${money(quote.reserveRequirement)} reserve requirement).`,
+    `Assets/liquidity to verify: ${money2(quote.liquidityRequired || quote.liquidity)} (${money2(quote.cashToClose)} cash to close + ${money2(quote.reserveRequirement)} reserve requirement).`,
   ];
   if (quote.reserveBasis) lines.push(`Reserve basis: ${quote.reserveBasis}.`);
-  if (cc.appraisalPoc > 0) lines.push(`Appraisal estimate: ${money(cc.appraisalPoc)} paid outside closing.`);
+  if (cc.appraisalPoc > 0) lines.push(`Appraisal estimate: ${money2(cc.appraisalPoc)} paid outside closing.`);
   return lines.join('\n');
 }
 
@@ -627,7 +655,7 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     hasHoldback ? { label: 'Rehab holdback (drawn as work completes)', value: money(s.rehabHoldback) } : null,
     // Out-of-pocket rehab exception (owner-authorized 2026-07-31): the rehab the
     // borrower funds themselves over construction (0 unless an approved exception).
-    num(s.oopRehab) > 0 ? { label: 'Rehab paid out of pocket (funded as the work is done)', value: money(s.oopRehab) } : null,
+    num(s.oopRehab) > 0 ? { label: 'Rehab paid out of pocket (funded as the work is done)', value: money2(s.oopRehab) } : null,
     num(s.financedReserve) > 0 ? { label: 'Financed interest reserve', value: money(s.financedReserve) } : null,
     // On a CASH-OUT refinance the borrower RECEIVES money at closing, so cash-to-close
     // is $0 and the figure they actually care about is "cash to you". Showing the plain
@@ -641,12 +669,12 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
     // cash-out entered on a rate-and-term (a real shortfall the borrower BRINGS)
     // suppress that shortfall — the web tool gates the same line on isCashOut().
     (quote.refi && quote.refi.cashOut > 0 && num(cashOut) > 0)
-      ? { label: 'Estimated cash to you (paid to you at closing)', value: money(cashOut) }
-      : (quote.cashToClose != null ? { label: 'Estimated cash to close', value: money(quote.cashToClose) } : null),
+      ? { label: 'Estimated cash to you (paid to you at closing)', value: money2(cashOut) }
+      : (quote.cashToClose != null ? { label: 'Estimated cash to close', value: money2(quote.cashToClose) } : null),
     // 1% closing-cost buffer (owner-authorized 2026-07-31): shown so the borrower
     // knows the extra cushion is part of what they must show. Hidden when waived.
-    num(quote.closingBuffer) > 0 ? { label: 'Closing cost buffer (1% of loan — extra cash to have on hand)', value: money(quote.closingBuffer) } : null,
-    (quote.liquidityRequired ?? quote.liquidity) != null ? { label: 'Reserves to verify', value: money(quote.liquidityRequired ?? quote.liquidity) } : null,
+    num(quote.closingBuffer) > 0 ? { label: 'Closing cost buffer (1% of loan — extra cash to have on hand)', value: money2(quote.closingBuffer) } : null,
+    (quote.liquidityRequired ?? quote.liquidity) != null ? { label: 'Reserves to verify', value: money2(quote.liquidityRequired ?? quote.liquidity) } : null,
     { label: 'Guaranty', value: to.coBorrowerPgWaived === true
         ? 'Full recourse — co-borrower’s personal guarantee waived (approved exception)'
         : 'Full recourse — personal guarantee required' },
@@ -674,15 +702,64 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
      (the card on file is charged when it is ordered), so folding it into "due at closing" would
      overstate what they bring to the table. */
   const feeRows = [];
-  const feeRow = (label, amount) => { if (num(amount) > 0) feeRows.push([label, money(amount)]); };
+  /* EVERY ROW AND THE TOTAL GO THROUGH money2, TOGETHER — that is what makes the
+     table ADD UP. Rounding each fee and the total independently is not merely
+     imprecise, it is arithmetically unsound: four rows each up to half a dollar
+     out against a total rounded on its own, in the one table on the page whose
+     whole job is to reconcile. Never move a row here back to money() on its own. */
+  const feeRow = (label, amount) => { if (num(amount) > 0) feeRows.push([label, money2(amount)]); };
   const origPctStr = quote.origPct != null
     ? `${Math.round(Number(quote.origPct) * 10000) / 100}%` : null;
   feeRow(`Origination fee${origPctStr ? ` (${origPctStr} of the loan)` : ''}`, cc.origination);
-  feeRow('Underwriting / processing / legal', cc.lenderFee);
+  /* THE TPO BROKER'S OWN ORIGINATION FEE — and this row was MISSING, found by the fee audit engine
+     (owner-directed 2026-08-26). It is a real borrower closing cost the broker sets on their own
+     firm's files and it has been inside `dueAtClosing` since 2026-08-06, named on the term sheet,
+     all three spreadsheet columns, the studio panel, the staff panel and the derivation page — and
+     not here. It is 0 on every retail file, so this row appears only where it is charged. */
+  feeRow(`Broker origination fee${cc.brokerFeePct != null ? ` (${cc.brokerFeePct}% of the loan)` : ''}`, cc.brokerFee);
+  /* OUR OWN FEE, IN ITS TWO REAL PARTS (owner-directed 2026-08-26) — the same two lines the term
+     sheet prints, so the borrower's email and the document they sign name the same fees. A file
+     carrying a typed WHOLE-NUMBER total prints the single combined line it always printed, and a
+     quote from before the split (which carries no parts) falls back to it too. */
+  const lp = cc.lenderFeeParts;
+  if (lp && lp.split) {
+    feeRow(lp.underwritingLabel || 'Underwriting & processing', lp.underwriting);
+    feeRow(lp.legalLabel || 'Legal fee', lp.legal);
+  } else {
+    feeRow('Underwriting / processing / legal', cc.lenderFee);
+  }
+  /* THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE — named, and named optional, exactly as on the
+     term sheet. It is inside `dueAtClosing`, so without this row the table would not add up. */
+  if (cc.settlement && num(cc.settlement.amount) > 0) feeRow(cc.settlement.label, cc.settlement.amount);
+  /* The New York CEMA fee — inside `dueAtClosing`, so without this row the table would not add up. */
+  if (cc.cema && num(cc.cema.amount) > 0) feeRow(cc.cema.label, cc.cema.amount);
+  /* THE CONSTRUCTION FEASIBILITY / PROJECT REVIEW FEE, BY NAME — and this row was MISSING, caught
+     by `test-closing-costs-pure`'s "the fee table has to add up" assertion while the split was
+     being wired (2026-08-26). The fee shipped on 2026-08-21 folded into `dueAtClosing`; the
+     2026-08-26 pass named it on the term sheet PDF and all three spreadsheet columns and did not
+     reach THIS table, so on a ground-up file the borrower's own "your terms are ready" email
+     listed fees $1,250 short of the total stated directly beneath them. Same class, one surface
+     further out: folding an amount into a total is HALF a fee. */
+  if (cc.feasibility && num(cc.feasibility.amount) > 0) feeRow(cc.feasibility.label, cc.feasibility.amount);
   feeRow('Credit report', cc.creditFee);
   feeRow('Title & settlement (estimated)', cc.titleAndSettlement);
   for (const f of (Array.isArray(cc.extraFees) ? cc.extraFees : [])) {
     if (f && f.name) feeRow(f.name, f.amount);
+  }
+  /* THE GOVERNMENT CHARGES, EACH BY NAME (owner-directed 2026-08-23).
+
+     This table lists the fees and then states a total, and that total is
+     `cc.dueAtClosing` — which carries the mortgage tax, the transfer tax and the
+     recording fees the moment the deal is in a state that levies them. So without
+     these rows the table would not ADD UP: on a New York City loan the listed fees
+     come to about $19,000 against a stated total of about $34,000, and the borrower
+     would be looking at a $15,000 hole in a document from their lender. Naming them
+     is not a nicety here; leaving them out breaks the only arithmetic on the page.
+
+     They come off the quote like every other row — nothing is computed here — and a
+     deal in a state with no such tax adds no rows at all. */
+  for (const g of (Array.isArray(cc.governmentChargeLines) ? cc.governmentChargeLines : [])) {
+    if (g && g.label) feeRow(g.label, g.amount);
   }
   const feeTable = feeRows.length && num(cc.dueAtClosing) > 0
     ? {
@@ -691,8 +768,8 @@ function borrowerTermsEmail({ ctx, quote, total, termMonths, officer, termOption
       align: ['left', 'right'],
       rows: [
         ...feeRows,
-        ['Total due at closing', money(cc.dueAtClosing)],
-        ...(num(cc.appraisalPoc) > 0 ? [['Appraisal (paid when ordered, not at closing)', money(cc.appraisalPoc)]] : []),
+        ['Total due at closing', money2(cc.dueAtClosing)],
+        ...(num(cc.appraisalPoc) > 0 ? [['Appraisal (paid when ordered, not at closing)', money2(cc.appraisalPoc)]] : []),
         ...(Number(to.deferredOrigPct) > 0 ? [[`Deferred origination fee (${Number(to.deferredOrigPct)}% — paid at payoff, not at closing)`, '—']] : []),
       ],
       note: 'These are estimates. Title and settlement charges are set by your title company and are confirmed on your closing disclosure; your own attorney’s fees are separate and are paid by you.',

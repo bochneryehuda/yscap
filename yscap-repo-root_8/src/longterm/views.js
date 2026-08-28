@@ -50,6 +50,10 @@ const FILTER_KEYS = {
   folder: (v) => str(v),
   search: (v) => str(v),
   officerStaffId: (v) => uuid(v),
+  // The unlinked twin — an officer picked by their Encompass LOGIN because nobody
+  // has confirmed their PILOT link yet. A plain token, same length rule as any
+  // other stored filter string.
+  officerLoginId: (v) => str(v),
   unassigned: (v) => (v === true || v === 'true' ? true : null),
   // `mine` is stored as a FLAG, never as a staff id, and that is what makes a SHARED
   // view of it behave sensibly: it resolves against whoever is looking, so "Mine, at
@@ -117,6 +121,16 @@ function sanitizeName(v) {
  * Ordered shared-last so somebody's own arrangement is what they see first. Every
  * stored filter set is re-sanitised on the way out.
  */
+// WHICH VIEW A PERSON OPENS ON IS ANSWERED HERE, AND ONLY HERE.
+//
+// `listViews` already carries `isDefault` on every row, and the pipeline screen
+// picks its default out of that one answer. There used to be a `defaultView()`
+// beside it doing the same lookup again — exported, and called by nothing in the
+// application, the screens or the tests. Two ways to ask one question is how they
+// come to disagree: that one was `WHERE is_default LIMIT 1` with no ORDER BY, so
+// on a row-pair this code is careful to prevent it would have returned whichever
+// the planner happened to hand back first.
+
 async function listViews(staffId, dbc = null) {
   const q = dbc || lazy.db;
   const { rows } = await q.query(
@@ -215,18 +229,6 @@ async function deleteView(id, staffId, { allowShared = false } = {}) {
   return { ok: rowCount > 0, removed: rowCount || 0 };
 }
 
-/** The view a person opens on, if they set one. */
-async function defaultView(staffId) {
-  if (!staffId) return null;
-  const { rows } = await lazy.db.query(
-    'SELECT id, name, filters FROM lt_pipeline_views WHERE staff_id = $1::uuid AND is_default LIMIT 1',
-    [staffId],
-  );
-  if (!rows.length) return null;
-  const { filters } = sanitizeFilters(rows[0].filters);
-  return { id: rows[0].id, name: rows[0].name, filters };
-}
-
 module.exports = {
   FILTER_KEYS,
   sanitizeFilters,
@@ -234,5 +236,4 @@ module.exports = {
   listViews,
   saveView,
   deleteView,
-  defaultView,
 };

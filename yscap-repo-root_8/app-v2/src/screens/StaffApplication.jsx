@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { PROGRAMS, PROPERTY_TYPES, LOAN_TYPES } from '../lib/enums.js';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
@@ -22,6 +23,7 @@ import StaffPropertyWorkbench from './StaffPropertyWorkbench.jsx';
 import ExperienceHeader from '../components/track-record/ExperienceHeader.jsx';
 import RecordLedger from '../components/track-record/RecordLedger.jsx';
 import ExportRecord from '../components/track-record/ExportRecord.jsx';
+import SpreadsheetEditor from '../components/track-record/SpreadsheetEditor.jsx';
 import DropZone from '../components/DropZone.jsx';
 import ActivityFeed from '../components/ActivityFeed.jsx';
 import DocumentsPanel from '../components/DocumentsPanel.jsx';
@@ -32,6 +34,7 @@ import DealSnapshot from '../components/DealSnapshot.jsx';
 import NoteBuyerCard from '../components/NoteBuyerCard.jsx';
 import AbPieceCard from '../components/AbPieceCard.jsx';
 import PayoffCard from '../components/PayoffCard.jsx';
+import FreeAndClearControl from '../components/FreeAndClearControl.jsx';
 import { payoffApplies, payoffMissingKeys } from '../lib/payoff.js';
 import { sizesOnAsIsValue } from '../lib/dealBasis.js';
 import WhatsLeftPanel from '../components/WhatsLeftPanel.jsx';
@@ -69,6 +72,8 @@ import RateTermCashCard from '../components/RateTermCashCard.jsx';
 import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import AppraisalOrderSection from '../components/AppraisalOrderSection.jsx';
+import TrinityBudgetReview from '../components/TrinityBudgetReview.jsx';
+import CriticalDates from '../components/CriticalDates.jsx';
 import AppraisalCardEntry from '../components/AppraisalCardEntry.jsx';
 import UnderwritingPanel from '../components/UnderwritingPanel.jsx';
 import EncompassSyncPanel from '../components/EncompassSyncPanel.jsx';
@@ -83,6 +88,8 @@ import DraftingPanel from '../components/DraftingPanel.jsx';
 import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import LoudHint from '../components/LoudHint.jsx';
+import { statusLabel } from '../lib/soldStage.js';
+import UploadRows from '../components/UploadRows.jsx';
 
 /* The draft-commit closing-date input that used to live here ("you can't even
    type in dates" — a date input fires change with each intermediate value while
@@ -376,6 +383,16 @@ function CondInlineEntry({ it, appId, onChanged, indent }) {
        sec-payoff section mounts, so the two can never disagree. The condition's
        own wording is untouched; this renders UNDER it. */
     case 'cond_payoff_internal':     box = <PayoffCard appId={appId} app={{}} onSaved={onChanged} />; break;
+    /* THE PAYOFF CONDITION ITSELF OFFERS FREE AND CLEAR (owner-directed 2026-08-24: "if you mark
+       over there in that condition … you should be able to attach that logic and mark over there
+       that the property is free and clear"). The logic has existed since db/575; the place had
+       not. This is the BORROWER-facing "Current mortgage / payoff statement" row — the condition
+       a processor is looking at when they find out there is no mortgage — and it offered nothing,
+       so the only way through was the Payoff section or the separate STAFF condition above.
+       COMPACT on purpose: this condition is about the borrower sending a statement, so it gets the
+       one action that answers it, not the whole payoff section. Same component, same confirmation,
+       same server rule as the section — a second surface here is a mount, never a copy. */
+    case 'cond_payoff_external':     box = <FreeAndClearControl appId={appId} compact onChanged={onChanged} />; break;
     default: return null;   // never an empty wrapper — Item is a gapped flex column
   }
   return indent ? <div style={{ width: '100%', paddingLeft: 20 }}>{box}</div> : box;
@@ -457,9 +474,19 @@ const APP_COMPLETENESS_FIELDS = (app) => [
     altNote: 'Saved — this file closes in the borrower’s own name. The signed non-owner-occupied affidavit is now asked for on its own condition.',
     altBlocked: app.vesting_individual_blocked || '',
     hint: 'The entity taking title — type the name, or say it closes in the borrower’s own name.' },
-  { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: ['SFR', 'Multi 2-4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed Use'] },
-  { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction'] },
-  { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'] },
+  /* THESE THREE LISTS COME FROM THE SHARED ENUM (owner-reported 2026-08-26,
+     YSCAP258134859). Hand-copied, all three had drifted and two of them wrote
+     values the rest of the system does not use: the property types were the
+     CLICKUP LABELS ('SFR', 'Multi 2-4' with a hyphen, 'Mixed Use') rather than
+     the portal's own spellings, so filling a missing property type here stored a
+     value the ClickUp push then dropped in silence; and 'Fix & Hold' — a real
+     program the engine prices and ClickUp now has an option for — was missing
+     from the program list, so an officer looking at a fix & hold file could not
+     record it as one. The value is the canonical spelling; the label is what a
+     person reads. */
+  { key: 'property_type', label: 'Property type', ok: !!app.property_type, type: 'select', options: PROPERTY_TYPES },
+  { key: 'program', label: 'Program', ok: !!app.program, type: 'select', options: PROGRAMS.filter((o) => o.value !== 'Not sure yet') },
+  { key: 'loan_type', label: 'Loan type', ok: !!app.loan_type, type: 'select', options: LOAN_TYPES },
   /* THE FILE IS ASKED FOR THE FIGURE IT IS SIZED ON (owner-directed 2026-08-02).
      A refinance is sized on the AS-IS VALUE — the frozen engine's own denominator
      (`acqDenom = purchase ? min(pp, aiv) : aiv`) — so demanding a purchase price
@@ -662,7 +689,12 @@ function CompletenessPanel({ app, borrower, endpoint, onSaved, heading = 'Applic
                 {f.type === 'select'
                   ? <select className="input" style={{ maxWidth: 200 }} value={val} onChange={(e) => setVal(e.target.value)} autoFocus>
                       <option value="" disabled>{f.label}…</option>
-                      {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+                      {/* An option is either a plain string (citizenship) or the shared
+                          enum's {value,label} pair, where the stored value and the words
+                          a person reads are deliberately different. */}
+                      {f.options.map((o) => (typeof o === 'string'
+                        ? <option key={o} value={o}>{o}</option>
+                        : <option key={o.value} value={o.value}>{o.label}</option>))}
                     </select>
                   : f.type === 'notebuyer'
                   ? <input className="input" style={{ maxWidth: 200 }} autoFocus list={nbListId}
@@ -987,6 +1019,102 @@ function sowUrl(appId, itemId, app) {
    never from the portal. */
 const APP_STATUSES = ['file_intake', 'new', 'in_review', 'processing', 'underwriting', 'approved', 'clear_to_close', 'funded', 'on_hold', 'declined', 'withdrawn'];
 const APP_STATUS_LABEL = { file_intake: 'File intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
+/* SOLD IS A STAGE ON TOP OF FUNDED, NOT A STORED STATUS (owner-directed 2026-08-21, db/611).
+   `applications.status` is the SERVICING state and 139 places read it — draws, investor delivery,
+   the data tapes and the purchase-advice sweep all test `funded` — so a sold loan stays funded and
+   the stage rides on `sold_at`. What a person SEES is the stage, which is what the owner asked for:
+   *"The files that are being sold should have a status of 'Sold'."* Table-funded loans never get
+   one; that exclusion is decided server-side (`lib/sold-status.js`), never re-derived here. */
+/* WHAT WE CALL THE FILE INTERNALLY. Sold is a stage on top of funded, so this is the internal
+   word — never the borrower's. ONE definition, shared with the pipeline list: lib/soldStage.js. */
+const appStatusLabel = (a) => statusLabel(a, APP_STATUS_LABEL);
+/* WHAT THE BORROWER ACTUALLY SEES, which is a DIFFERENT question and used to be answered with the
+   line above (it was printed under the words "Borrower sees"). It was wrong, and wrong in the
+   direction that matters: `clickup/post-closing-stage.js` and `clickup/status.js` hold the frozen
+   rule that EVERY post-closing stage — `pa issued-post closing.`, `waiting for final docs`,
+   `closed reconciled` — derives back to the borrower-facing word `funded`, precisely so an
+   automatic push can never move what a borrower is looking at. The screen was telling staff that
+   a borrower could see the loan had been sold to an investor. They cannot, and must not. */
+const borrowerStatusLabel = (a) => (APP_STATUS_LABEL[a && a.status] || (a && a.status) || '—');
+/* THE TRACK-RECORD CONDITION, IN THREE SHORT LINES (owner-directed 2026-08-23).
+
+   *"The condition needs to come directly from the registration, because if you're lowering the
+   application it doesn't help you — the registration is still built on the higher one. It always
+   needs to come from the registration, but the condition can start from what you put in the
+   application… Make it very simple and very user-friendly, not ugly."*
+
+   THE RULE DOES NOT CHANGE — it was already right. What changes is that the screen now SAYS it,
+   always, instead of only in the one stuck case. Three lines, in the order a person reads them:
+
+     1. WHERE IT STANDS — how many are verified out of how many are needed. The number, first.
+     2. WHERE THE NUMBER COMES FROM — the registered product, or (before there is a registration)
+        the application. This line is always present. It is the whole answer to "why does it say
+        five?", and printing it only when something is wrong meant the question could only be
+        answered by someone who already knew.
+     3. WHAT TO DO — only when there IS something to do.
+
+   The server does every judgement (`lib/experience.js` stamps `gateNeed`, `needFrom`,
+   `claimBelowNeed`, `reRegisterBlockedBy` onto the condition); this reads them. Nothing here
+   re-derives a requirement, so the screen and the sign-off gate cannot disagree. */
+function TrackRecordLine({ it }) {
+  const p = it.tool_payload || {};
+  if (p.notApplicable) {
+    return (
+      <span>No experience required on this file — this comes back the moment experience is entered
+        on the application or in Products &amp; Pricing.</span>
+    );
+  }
+  const entered = p.counts;
+  const verified = p.verifiedCounts || {};
+  // What must actually be VERIFIED to sign off. Falls back to the claim on payloads written
+  // before `gateNeed` existed, exactly as the old line did.
+  const need = p.gateNeed || p.required;
+  if (!entered) return <span>Verified from the borrower’s general track record (panel below)</span>;
+
+  const fmt = (x) => [
+    `${x.flips || 0} flip${x.flips === 1 ? '' : 's'}`,
+    `${x.holds || 0} hold${x.holds === 1 ? '' : 's'}`,
+    x.ground ? `${x.ground} ground-up` : null,
+  ].filter(Boolean).join(' · ');
+
+  const needsAny = need && (need.flips + need.holds + need.ground > 0);
+  const short = needsAny ? [
+    need.flips > (verified.flips || 0) ? `${need.flips - (verified.flips || 0)} flip${need.flips - (verified.flips || 0) === 1 ? '' : 's'}` : null,
+    need.holds > (verified.holds || 0) ? `${need.holds - (verified.holds || 0)} hold${need.holds - (verified.holds || 0) === 1 ? '' : 's'}` : null,
+    need.ground > (verified.ground || 0) ? `${need.ground - (verified.ground || 0)} ground-up` : null,
+  ].filter(Boolean) : [];
+
+  // LINE 2 — always shown. `needFrom` is the server's own answer to which of the two decided.
+  const fromRegistration = p.needFrom === 'registration';
+  const where = fromRegistration
+    ? <>Required by the <b>registered product</b> ({fmt(need)}).</>
+    : <>Required by the <b>application</b> ({fmt(need)}) — once a product is registered, the
+        registration sets this number instead.</>;
+
+  // LINE 3 — only when there is something to do about it.
+  let todo = null;
+  if (p.claimBelowNeed) {
+    todo = p.reRegisterBlockedBy
+      ? <>The file now claims {fmt(p.required || {})}. To bring this number down the product has to be
+          re-registered on the lower experience — and that is blocked right now: {p.reRegisterBlockedBy}</>
+      : <>The file now claims {fmt(p.required || {})}. To bring this number down, open
+          <b> Products &amp; Pricing</b> and register again on the lower experience.</>;
+  } else if (short.length) {
+    todo = <>Verify {short.join(', ')} on the track record — or re-register on experience the
+      borrower can prove.</>;
+  }
+
+  return (
+    <span>
+      <span>Verified <b>{fmt(verified)}</b> of {fmt(need)}{!short.length && needsAny ? ' — met ✓' : ''}
+        {' '}<span className="muted">(entered: {fmt(entered)})</span>
+      </span>
+      <br />{where}
+      {todo && <><br />{todo}</>}
+    </span>
+  );
+}
+
 const PHASE_LABEL = {
   p1_intake: 'Phase 1 · Borrower Intake', p2_setup: 'Phase 2 · File Setup',
   p3_verify: 'Phase 3 · Verifications', p4_appraisal: 'Phase 4 · Appraisal & Numbers',
@@ -1608,7 +1736,7 @@ function RequestSlotButton({ appId, it, onChanged }) {
   );
 }
 
-function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false, onRequestWaiver, expanded = false, onToggleExpand }) {
+function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc, onDownloadDoc, dlBusy, onPreview, appId, onChanged, canImportCredit, fullscreen = false, onRequestWaiver, expanded = false, onToggleExpand, uploadNote = null }) {
   const [open, setOpen] = useState(false);
   // EVERY condition is a compact line until you open it (owner-directed
   // 2026-07-28: "one compact line each, click to open the one you're working").
@@ -1639,6 +1767,19 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   // Full screen opens everything — the parent seeds `expandedConds` with every
   // visible row on the way in and restores the normal state on the way out, so an
   // internal condition now behaves exactly like every other one.
+  /* WHAT HAPPENED TO THE UPLOAD YOU JUST STARTED HERE (owner-reported 2026-08-21:
+     *"it's not popping up in the place where you want to upload. It's popping up on top
+     of the file."*). The server's own sentence — which names the file, its size and the
+     limit — is rendered ON THIS CONDITION, both collapsed and open, because from beside
+     the row you were working the old top-of-page banner was off screen and the upload
+     read as having silently done nothing. */
+  const myUploadNote = uploadNote && uploadNote.itemId === it.id ? uploadNote : null;
+  const uploadNoteEl = myUploadNote ? (
+    <div className={`notice${myUploadNote.tone === 'err' ? ' err' : ''}`}
+      role="status" aria-live="polite" style={{ marginTop: 6 }}>
+      {myUploadNote.text}
+    </div>
+  ) : null;
   if (!expanded) {
     return (
       // data-keep-scroll: a stable handle so a refresh can put this row back
@@ -1646,6 +1787,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ padding: '2px 10px' }}>
         <ConditionLine it={it} role={role} docs={itemDocs} open={false} done={myDone}
           onToggle={onToggleExpand} onPatch={onPatch} />
+        {uploadNoteEl}
       </div>
     );
   }
@@ -1655,6 +1797,7 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
   // null/absent for a FREE-FORM multi-document condition (Title).
   return (
     <div className="checkitem" data-keep-scroll={`item-${it.id}`} style={{ alignItems: 'flex-start', flexDirection: 'column', gap: 8 }}>
+      {uploadNoteEl}
       <div className="row" style={{ width: '100%', gap: 8, alignItems: 'flex-start' }}>
         <span className={`dot ${signed ? 'cond-satisfied' : conditionStatusClass(it.status)}`} style={{ marginTop: 4 }} />
         <div style={{ flex: 1 }}>
@@ -1838,6 +1981,14 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
               )}
             </>
           )}
+          {/* THE DOCUMENT, ON ITS BAR, BEFORE IT HAS FINISHED UPLOADING
+              (owner-reported 2026-08-23: *"in the condition center, you upload a
+              document. It waits till it actually uploads a document, and only then
+              does it populate … it already has the document over there with a bar
+              and a percentage"*). It sits at the foot of this condition's document
+              list — exactly where the finished row appears — and is fed by the
+              transport, so nothing here has to track anything. */}
+          <UploadRows target={`condition:${it.id}`} />
         </div>
       )}
 
@@ -1852,6 +2003,18 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       {/* Flood condition — order the flood certificate from Encompass (flood only). */}
       {it.template_code === 'rtl_cond_flood' && (
         <OrderFloodButton appId={appId} itemId={it.id} onChanged={onChanged} onUploadTo={onUploadTo} />
+      )}
+
+      {/* Feasibility review — order Trinity's construction budget review straight from the
+          condition that asks for it (owner-directed 2026-08-21: "on ground-ups where we post
+          the condition for feasibility review, that condition should get a button where, from
+          that button, we can order this report directly"). It is the SAME card the Orders room
+          mounts — never a second copy, so what it says about readiness cannot differ by which
+          screen you are standing on. */}
+      {it.template_code === 'rtl_cond_feasibility' && (
+        <div style={{ paddingLeft: 20 }}>
+          <TrinityBudgetReview appId={appId} compact onChanged={onChanged} />
+        </div>
       )}
 
       {/* Title / insurance — order it from right here. */}
@@ -2377,6 +2540,8 @@ function LlcReview({ appId, app, onReviewDoc, onDownloadDoc, dlBusy, onChanged, 
                           )
                         )}
                         {rs === 'rejected' && s.rejection_reason && <span className="small" style={{ color: 'var(--danger)', width: '100%', paddingLeft: 170 }}>{s.rejection_reason}</span>}
+                        {/* the file, on its bar, in the slot it is going into */}
+                        <div style={{ width: '100%', paddingLeft: 170 }}><UploadRows target={`condition:${s.item_id}`} /></div>
                       </div>
                     );
                   })}
@@ -2733,7 +2898,6 @@ function StaffTrackRecordPanel({ app, role }) {
   const borrowerId = people.some(p => p.id === selected) ? selected : app.borrower_id;
   const [snap, setSnap] = useState(null);
   const [dl, setDl] = useState(false);
-  const [full, setFull] = useState(false);   // the legacy spreadsheet-editor tool sheet (bulk grid + xlsx import/export)
   // Per-line-item list so staff can raise an issue/request against a SPECIFIC
   // past project — it becomes a named condition on this file the borrower answers.
   const [trs, setTrs] = useState([]);
@@ -2862,10 +3026,14 @@ function StaffTrackRecordPanel({ app, role }) {
           title="This borrower's projects in the full-screen track-record workspace — every check, the documents, the actions, and the public-records search.">
           Open full screen
         </Link>
-        <button className="btn ghost small" onClick={() => setFull(true)}
-          title="The spreadsheet-style editor (the legacy tool sheet) — bulk-edit the grid, import or export Excel.">
-          Spreadsheet editor
-        </button>
+        {/* THE SAME control the profile and the workspace mount (owner-directed 2026-08-24) — the
+            legacy tool with its Excel import, and the ONE place its URL is built. */}
+        {/* KEYED ON THE BORROWER, and that is not decoration: the sheet used to be closed by hand
+            when somebody switched between the borrower and the co-borrower below, so it could not
+            be left open on one person's record while the page had moved to the other's. The key
+            remounts it closed instead, which does the same job without a second piece of state
+            for the component to disagree with. */}
+        <SpreadsheetEditor key={borrowerId} borrowerId={borrowerId} onClosed={refreshSnap} />
         {/* #82: the "Preview" of a saved static copy was removed — it opened a
             stale snapshot. The workspace link is the live record; the HTML
             export below stays for a static copy on hand. */}
@@ -2883,7 +3051,7 @@ function StaffTrackRecordPanel({ app, role }) {
           {people.map(p => (
             <button key={p.id} type="button"
               className={`btn small ${p.id === borrowerId ? 'primary' : 'ghost'}`}
-              onClick={() => { setFull(false); setSelected(p.id); }}
+              onClick={() => setSelected(p.id)}
               title={`${p.role} — deals you add here save to ${p.label}'s profile`}>
               {p.label} <span className="muted" style={{ fontWeight: 400 }}>· {p.role}</span>
             </button>
@@ -2951,8 +3119,9 @@ function StaffTrackRecordPanel({ app, role }) {
           now navigates to the REAL workspace (/internal/track-record?borrower=,
           owner-directed 2026-08-19: the full screen must be the live center,
           never the static-copy tool), and the legacy grid survives behind the
-          "Spreadsheet editor" button (the ToolModal below — still the only
-          bulk-edit grid / xlsx import). The borrower's saved copy is rebuilt
+          "Spreadsheet editor" button — the shared `SpreadsheetEditor` control, still
+          the only bulk-edit grid / xlsx import, now mounted on the profile and the
+          workspace too (owner-directed 2026-08-24). The borrower's saved copy is rebuilt
           SERVER-SIDE on every write (src/lib/track-record/html-copy.js), so
           nothing depends on this page hosting the tool any more. The borrower's
           own tool sheet and the ?internal=1 bridge are untouched (A13). */}
@@ -2962,12 +3131,7 @@ function StaffTrackRecordPanel({ app, role }) {
           one fetch, not two. */}
       <TrackRecordTodo appId={app.id} borrowerId={borrowerId} reloadKey={todoKey}
         preloaded={todoFailed ? undefined : todo} />
-      {full && (
-        <ToolModal
-          title="Borrower track record"
-          url={`/tools/track-record.html?internal=1&borrower=${borrowerId}&embed=1`}
-          onClose={() => { setFull(false); refreshSnap(); }} />
-      )}
+
     </div>
   );
 }
@@ -3060,9 +3224,10 @@ function VestingLlcOwners({ appId, app }) {
 // #65 — the second borrower on a file. Shows the linked co-borrower (name,
 // The loan team (#64): the PRIMARY loan officer + processor plus any full-access
 // ASSISTANTS. Shows every teammate with a "Primary" badge; assistants carry a
-// remove (×). Add-assistant pickers below. The PRIMARY is changed through the
-// admin-only Assign controls, not here. `officers`/`processors` are the roster
-// lists already loaded by the parent; `onChanged` refreshes the file.
+// remove (×). Add-assistant pickers below. The LOAN OFFICER primary is changed
+// through the admin-only Assign control; the PROCESSOR primary is open to
+// anyone on the file (owner-directed 2026-08-26). `officers`/`processors` are
+// the roster lists already loaded by the parent; `onChanged` refreshes the file.
 function TeamAssignees({ appId, officers, processors, closers = [], drawCoordinators = [], onChanged }) {
   const [rows, setRows] = useState(null);
   const [busy, setBusy] = useState('');
@@ -3083,9 +3248,11 @@ function TeamAssignees({ appId, officers, processors, closers = [], drawCoordina
     try { await api.staffRemoveAssignee(appId, staffId, role); await load(); onChanged && onChanged(); }
     catch (e) { setErr(e.message || 'Could not remove'); } finally { setBusy(''); }
   }
-  // Closer / draw-coordinator primaries CAN be cleared here (db/392) — only the
-  // LO/processor primaries stay locked to the Assign selects above.
-  const primaryRemovable = (role) => role === 'closer' || role === 'draw_coordinator';
+  // Closer / draw-coordinator primaries CAN be cleared here (db/392), and so
+  // can the PROCESSOR primary (owner-directed 2026-08-26: "everybody should be
+  // able to … remove processors from files") — only the LOAN OFFICER primary
+  // stays locked to the admin Assign select above.
+  const primaryRemovable = (role) => role === 'closer' || role === 'draw_coordinator' || role === 'processor';
   const Chip = ({ r }) => (
     <span className="asg-chip">
       {r.full_name}
@@ -3513,7 +3680,7 @@ function DeleteRequestBanner({ it, appId, onChanged }) {
   );
 }
 
-function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, onRequestWaiver, team, canImportCredit, fullscreen = false, closingActive = false }) {
+function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onDownloadDoc, dlBusy, role, onUploadTo, onDropTo, onChanged, onPreview, onOpenStudio, onRequestWaiver, team, canImportCredit, fullscreen = false, closingActive = false, uploadNote = null }) {
   const completer = canComplete(role);
   const [sowOpen, setSowOpen] = useState(null);   // itemId of the SOW being edited
   const [card, setCard] = useState(null);         // decrypted appraisal card (revealed on demand)
@@ -3883,7 +4050,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                 docs={docs} onUploadTo={onUploadTo} onDropTo={onDropTo} onReviewDoc={onReviewDoc}
                 onDownloadDoc={onDownloadDoc} dlBusy={dlBusy} onPreview={onPreview} appId={appId}
                 onChanged={onChanged} canImportCredit={canImportCredit} fullscreen={fullscreen}
-                onRequestWaiver={onRequestWaiver}
+                onRequestWaiver={onRequestWaiver} uploadNote={uploadNote}
                 expanded={expandedConds.has(it.id)} onToggleExpand={() => toggleCond(it.id)} />
             );
         const itemDocs = docsFor(it.id);
@@ -3948,46 +4115,7 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
                     })()
                     : it.tool_key === 'esign' ? `E-signature${it.esign_doc ? ` — ${it.esign_doc}` : ''} (activates with the e-sign integration)`
                     : it.tool_key === 'rehab_budget' ? `Scope of Work builder${app.rehab_budget != null ? ` · total ${money(app.rehab_budget)}` : ''}`
-                    : it.tool_key === 'track_record' ? (() => {
-                        // live counts stamped on the condition by the server on
-                        // every track-record change — no need to open the panel.
-                        // ENTERED (on record) vs VERIFIED are shown side by side;
-                        // the condition can only be signed off on VERIFIED
-                        // experience (owner-directed 2026-07-20).
-                        const p = it.tool_payload || {};
-                        // Shortfall is measured against what must actually be VERIFIED
-                        // to sign off — the REGISTERED product's experience (gateNeed),
-                        // matching the sign-off gate. Falls back to the claim on older
-                        // payloads that predate gateNeed.
-                        const c = p.counts, v = p.verifiedCounts || {}, r = p.gateNeed || p.required;
-                        // No experience priced/claimed on this file → nothing to
-                        // verify. It reactivates the moment experience is entered
-                        // on the application or in Products & Pricing.
-                        if (p.notApplicable) return 'No experience required on this file — reactivates if experience is entered on the application or in Products & Pricing';
-                        if (!c) return 'Verified from the borrower\'s general track record (panel below)';
-                        const fmt = (x) => `${x.flips || 0} flip${x.flips === 1 ? '' : 's'} · ${x.holds || 0} hold${x.holds === 1 ? '' : 's'}${x.ground ? ` · ${x.ground} ground-up` : ''}`;
-                        const have = `Entered: ${fmt(c)} · Verified: ${fmt(v)}`;
-                        const needsAny = r && (r.flips + r.holds + r.ground > 0);
-                        // Shortfall is judged on VERIFIED — entering deals is not
-                        // enough; they must be verified before sign-off.
-                        const short = needsAny ? [
-                          r.flips > (v.flips || 0) ? `${r.flips - (v.flips || 0)} flip${r.flips - (v.flips || 0) === 1 ? '' : 's'}` : null,
-                          r.holds > (v.holds || 0) ? `${r.holds - (v.holds || 0)} hold${r.holds - (v.holds || 0) === 1 ? '' : 's'}` : null,
-                          r.ground > (v.ground || 0) ? `${r.ground - (v.ground || 0)} ground-up` : null,
-                        ].filter(Boolean) : [];
-                        /* WHERE THE NUMBER CAME FROM — owner-reported 2026-08-21: "we changed
-                           the application to only three experiences, we changed the products and
-                           prices to only three, but the condition is still requiring five and we
-                           can't sign off". The requirement is deliberately the REGISTERED
-                           product's experience (a lowered claim only relaxes it once the product
-                           is re-registered), and that rule stands — but the screen never SAID so,
-                           so a file whose re-register did not carry the lower number showed a
-                           stubborn "5" with nothing to act on. Saying it is the way out. */
-                        const why = p.claimBelowNeed
-                          ? ` — this comes from the REGISTERED product (priced on ${fmt(r)}); the file itself now claims ${fmt(p.required || {})}, so re-register Products & Pricing to bring the requirement down`
-                          : '';
-                        return `${have}${needsAny ? (short.length ? ` — still needs ${short.join(', ')} verified` : ' — requirement met ✓ (verified)') : ''}${why}`;
-                      })()
+                    : it.tool_key === 'track_record' ? <TrackRecordLine it={it} />
                     : it.tool_key === 'product_pricing' ? (app.registered_program ? `Registered · ${app.registered_program === 'gold' ? 'Gold Standard' : app.registered_program === 'silver' ? 'Silver' : app.registered_program === 'manual' ? 'Manual' : 'Standard'} · ${money(app.registered_total_loan)}` : 'No product registered yet')
                     : it.tool_key === 'appraisal_card' ? 'Card for ordering the appraisal (reveal is audited)'
                     : ['title_contact', 'insurance_contact'].includes(it.tool_key) ? (() => {
@@ -4470,7 +4598,8 @@ function ClickupSyncPanel({ app, canSetup, isAdmin, onResynced }) {
       </div>
       <div className="row" style={{ gap: 16, flexWrap: 'wrap', marginTop: 8 }}>
         <span className="muted small">Internal status (ClickUp mirror): <b>{app.internal_status || '—'}</b></span>
-        <span className="muted small">Borrower sees: <b>{app.status || '—'}</b></span>
+        <span className="muted small">In PILOT: <b>{appStatusLabel(app)}</b></span>
+        <span className="muted small">Borrower sees: <b>{borrowerStatusLabel(app)}</b></span>
         {app.ys_loan_number && <span className="muted small">YS loan #: <b>{app.ys_loan_number}</b></span>}
         <NoteBuyerRef value={app.lender} />
         {app.clickup_last_synced_at && <span className="muted small">Last synced: {new Date(app.clickup_last_synced_at).toLocaleString()}</span>}
@@ -4984,13 +5113,21 @@ export default function StaffApplication() {
   // the same one-click the borrower has (#79), from inside the conditions list.
   const studioRef = useRef(null);
   const [uploadTarget, setUploadTarget] = useState(null);   // {itemId, slotBase|slot, replaceDocumentId}
+  /* WHAT HAPPENED TO THE LAST UPLOAD, AND WHICH CONDITION IT WAS FOR (owner-reported
+     2026-08-21: *"I do see the notification pop up on top, but it's not popping up in the
+     place where you want to upload."*). A refusal used to go to `setErr`, which renders a
+     banner at the top of a very long file screen — so from beside the condition you were
+     working, the upload simply appeared to do nothing. This carries the message back to
+     the row that started it; the top banner stays for the case where no row can be
+     identified (a loose upload). */
+  const [uploadNote, setUploadNote] = useState(null);   // {itemId, tone:'err'|'ok', text}
   const pickUpload = (t) => { setUploadTarget(t || {}); staffFileRef.current && staffFileRef.current.click(); };
   // Shared by the file picker AND drag-and-drop — target passed explicitly.
   async function uploadStaffFiles(fileList, tgt) {
     const all = Array.from(fileList || []);
     if (!all.length || !tgt) return;
     const files = tgt.replaceDocumentId ? all.slice(0, 1) : all;
-    setBusyAct('upload'); setErr('');
+    setBusyAct('upload'); setErr(''); setUploadNote(null);
     try {
       const slotBase = Number.isFinite(tgt.slotBase) ? tgt.slotBase : null;
       let appraisal = null;
@@ -5006,7 +5143,11 @@ export default function StaffApplication() {
           slot: (tgt.replaceDocumentId || tgt.llcId) ? (tgt.slot || undefined)
             : slotBase != null ? `Document ${slotBase + i + 1}` : (tgt.slot || undefined),
           replaceDocumentId: tgt.replaceDocumentId || undefined,
-          filename: files[i].name, contentType: files[i].type, dataBase64: await fileToBase64(files[i]),
+          /* THE FILE ITSELF, STREAMED (owner-directed 2026-08-21). Reading it into base64
+             first cost this tab a copy and the SERVER about five times the file to parse —
+             which is why a 23 MB contract could not be uploaded at all. `api` picks the
+             streaming door whenever a caller hands it a File. */
+          filename: files[i].name, contentType: files[i].type, file: files[i],
         });
         if (resp && resp.appraisal) appraisal = resp.appraisal;   // XML dropped on the appraisal condition auto-built the findings
         // The server is the only thing that knows: visibility is derived from the
@@ -5034,7 +5175,14 @@ export default function StaffApplication() {
         flash(`${many ? `${files.length} files uploaded ✓` : 'Uploaded ✓'}${tail}`);
       }
       setUploadTarget(null); await load();
-    } catch (e2) { setErr(e2.message || 'Upload failed'); }
+    } catch (e2) {
+      /* SAY EXACTLY WHAT WENT WRONG, AND SAY IT WHERE IT HAPPENED. The server's own
+         sentence is used verbatim — it names the file, the size and the limit — because
+         "Upload failed" tells nobody anything they can act on. */
+      const text = (e2 && e2.data && (e2.data.error || e2.data.message)) || e2.message || 'The upload did not go through.';
+      if (tgt && tgt.itemId) setUploadNote({ itemId: tgt.itemId, tone: 'err', text });
+      else setErr(text);
+    }
     finally { setBusyAct(''); if (staffFileRef.current) staffFileRef.current.value = ''; }
   }
   const onStaffFile = (e) => uploadStaffFiles(e.target.files, uploadTarget);
@@ -5613,6 +5761,12 @@ export default function StaffApplication() {
     { id: 'sec-order-insurance', label: 'Insurance', group: 'Orders',
       badge: nInsToAssign ? `${nInsToAssign} to assign` : '' },
     { id: 'sec-order-appraisal', label: 'Appraisal', group: 'Orders', badge: '' },
+    /* The Trinity construction budget review (owner-directed 2026-08-21) — its own
+       order, not a draw: it reads the construction PLAN before the loan closes. It
+       lives in Orders because that is where the owner asked for it ("should be
+       available in the order section"), and the card says on its face that it is
+       only for ground-ups and, case by case, real heavy rehabs. */
+    { id: 'sec-order-budget-review', label: 'Construction budget review', group: 'Orders', badge: '' },
     { id: 'sec-order-closing', label: 'Attorney closing prep', group: 'Orders', badge: '' },
     // E-signatures BEFORE closing (owner-directed 2026-08-02).
     { id: 'sec-esign', label: 'E-signatures', group: 'Signing & closing' },
@@ -5889,6 +6043,11 @@ export default function StaffApplication() {
           switching would change. It used to live only as a pencil icon on a muted
           line inside the ClickUp panel, which is not a path anyone would find. */}
       <div id="note-buyer-slot"><NoteBuyerCard appId={id} value={app.lender} onSaved={load} /></div>
+      {/* THE FILE'S CRITICAL DATES (owner-directed 2026-08-21) — application, clear to close,
+          funded, purchase advice, sold, and the payoff-demand stamp that locks the draw centre.
+          On the overview because these are the dates the team reconciles against Encompass and
+          ClickUp by hand, and the overview is where they already look for the file's shape. */}
+      <CriticalDates appId={id} onChanged={load} />
       {/* A-piece / B-piece split (owner-directed 2026-08-18) — internal-only,
           manual-program; self-hides elsewhere. Saving never reopens pricing. */}
       <AbPieceCard appId={id} />
@@ -5948,12 +6107,15 @@ export default function StaffApplication() {
           drawCoordinators={team.filter(m => m.role === 'draw_coordinator')}
           onChanged={load} />
         {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
-        {/* Reassigning a file is an admin function (S3-02) — the server 403s a
-            non-admin, so the control is not offered to them. Side by side rather
-            than stacked: they are two halves of one action, and the Assign button
-            sits with them instead of floating under a tall column. */}
-        {isAdmin ? (
-          <div className="team-assign">
+        {/* Reassigning the LOAN OFFICER is an admin function (S3-02) — the
+            server 403s a non-admin, so that control is only offered to admins.
+            The PROCESSOR is open to everyone on the file (owner-directed
+            2026-08-26: "everybody should be able to … change the processor").
+            Side by side rather than stacked: they are two halves of one action,
+            and the Assign button sits with them instead of floating under a
+            tall column. */}
+        <div className="team-assign">
+          {isAdmin && (
             <div className="field" style={{ marginBottom: 0 }}>
               <label>Loan officer</label>
               <select className="input" value={lo} onChange={e => setLo(e.target.value)}>
@@ -5961,20 +6123,21 @@ export default function StaffApplication() {
                 {officers.map(m => <option key={m.id} value={m.id}>{m.full_name} ({m.role})</option>)}
               </select>
             </div>
-            <div className="field" style={{ marginBottom: 0 }}>
-              <label>Processor</label>
-              <select className="input" value={proc} onChange={e => setProc(e.target.value)}>
-                <option value="">— select —</option>
-                {processors.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
-              </select>
-            </div>
-            <button className="btn primary" onClick={assign} disabled={(!lo && !proc) || busyAct === 'assign'}>
-              {busyAct === 'assign' ? 'Assigning…' : 'Assign'}
-            </button>
+          )}
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Processor</label>
+            <select className="input" value={proc} onChange={e => setProc(e.target.value)}>
+              <option value="">— select —</option>
+              {processors.map(m => <option key={m.id} value={m.id}>{m.full_name}</option>)}
+            </select>
           </div>
-        ) : (
+          <button className="btn primary" onClick={assign} disabled={((isAdmin ? !lo : true) && !proc) || busyAct === 'assign'}>
+            {busyAct === 'assign' ? 'Assigning…' : 'Assign'}
+          </button>
+        </div>
+        {!isAdmin && (
           <p className="small" style={{ color: '#4B585C', marginBottom: 0 }}>
-            Only an admin can change who this file is assigned to.
+            Anyone on the file can change the processor. Changing the loan officer is an admin action.
           </p>
         )}
       </div>
@@ -6227,7 +6390,7 @@ export default function StaffApplication() {
           closingActive={!!app.closer_id || ['clear_to_close', 'funded'].includes(app.status)}
           onPatch={patch} onReviewDoc={reviewDoc} onDownloadDoc={downloadDoc} dlBusy={dlBusy}
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
-          onOpenStudio={openStudioAnywhere} onRequestWaiver={requestWaiver} />
+          onOpenStudio={openStudioAnywhere} onRequestWaiver={requestWaiver} uploadNote={uploadNote} />
         <StaffChangeRequests appId={id} onChanged={load} />
         <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
         <div className="stack" style={{ marginTop: 14 }}>
@@ -6362,6 +6525,11 @@ export default function StaffApplication() {
           RENDERS NOTHING until an appraisal has actually been ordered. */}
       <OrdersPanel appId={id} canAccept={canComplete(role)} only="appraisal" />
       <AppraisalOrderSection appId={id} onChanged={load} />
+      </Section>
+
+      <Section hidden={!show('sec-order-budget-review')} id="sec-order-budget-review" title="Construction budget review"
+        info="Order Trinity's construction budget review (form 159) — an independent read of the plans, the permits, the contractor's numbers and the schedule, before the loan closes. Only for ground-up construction, and heavy rehabs case by case. It is not a draw: no money is requested and nothing is released.">
+      <TrinityBudgetReview appId={id} onChanged={load} />
       </Section>
 
       <Section hidden={!show('sec-order-closing')} id="sec-order-closing" summary={summaries['sec-order-closing']} title="Attorney closing prep"
@@ -6693,6 +6861,31 @@ function TprExport({ appId }) {
               </div>
             </div>
           )}
+          {/* AND THE PROJECTS, on the same terms (owner-reported 2026-08-26). A file
+              whose track record has three verified projects and whose package
+              carried two said so NOWHERE — not on the document, not here, not in
+              the audit row — so the only way to notice was to count the rows
+              against the screen. Named, never counted, for the same reason the
+              documents above are. */}
+          {(prev.trackHeldBack || []).length > 0 && (
+            <div className="notice" style={{ marginTop: 8, borderLeft: '3px solid var(--gold,#AE8746)', padding: '6px 10px' }}>
+              <b style={{ color: '#141B22' }}>
+                {prev.trackHeldBack.length} of {prev.trackRecordTotal} project{prev.trackRecordTotal === 1 ? '' : 's'} on this
+                borrower&rsquo;s record {prev.trackHeldBack.length === 1 ? 'is' : 'are'} NOT in the package:
+              </b>
+              <ul style={{ margin: '3px 0 0 18px', padding: 0, color: '#4B585C' }}>
+                {prev.trackHeldBack.slice(0, 15).map((h, i) => (
+                  <li key={i} className="small">{h.property} — {h.reason}</li>
+                ))}
+              </ul>
+              {prev.trackHeldBack.length > 15 && (
+                <div className="small" style={{ color: '#4B585C' }}>…and {prev.trackHeldBack.length - 15} more.</div>
+              )}
+              <div className="small" style={{ color: '#4B585C', marginTop: 3 }}>
+                Verify each one on the track record and it will be in the next export. The package states this too.
+              </div>
+            </div>
+          )}
           {prev.missing.length > 0 && (
             <div className="row" style={{ gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
               <span className="muted small">Would ship empty:</span>
@@ -6999,15 +7192,15 @@ function TapeExport({ appId }) {
   /* SCHEDULE the same send for later. It stores the INTENT only — no tape is
      built and no email is composed now; the server re-enters the send route at
      the due moment, so every gate runs against the file as it stands then. */
-  async function runSchedule(tapeKey, name, { to, cc, note, day, time }) {
-    const out = await api.staffTapeSendSchedule(appId, tapeKey, { to, cc, note, day, time });
+  async function runSchedule(tapeKey, name, { to, cc, note, day, time, override }) {
+    const out = await api.staffTapeSendSchedule(appId, tapeKey, { to, cc, note, day, time, ...(override ? { override } : {}) });
     setSendPending(null);
     setMsg(`The ${name} tape is queued to send ${(out.scheduled && out.scheduled.sendAtText) || 'at the time you picked'}.`);
   }
-  async function runSend(tapeKey, name, answers, to, note, extra, cc) {
+  async function runSend(tapeKey, name, answers, to, note, extra, cc, override) {
     setBusy(tapeKey); setMsg('');
     try {
-      const out = await api.staffTapeSend(appId, tapeKey, { ...(answers || {}), ...(extra || {}), to, cc, note });
+      const out = await api.staffTapeSend(appId, tapeKey, { ...(answers || {}), ...(extra || {}), to, cc, note, ...(override ? { override } : {}) });
       setSendPending(null);
       setMsg(`Sent the ${name} tape to ${out.to.join(', ')}. Replies thread into this file.`);
     } catch (e) {
@@ -7016,7 +7209,7 @@ function TapeExport({ appId }) {
       // allow inline with a logged reason; everyone else asks for an exception.
       if (d.code === 'encompass_override_reason_required') {
         const reason = await askPrompt(`${d.message || 'This loan doesn’t fully match Encompass yet.'}\n\nAs a super admin you can allow it — type a short reason (this is logged):`, { defaultValue: '' });
-        if (reason && reason.trim()) { await runSend(tapeKey, name, answers, to, note, { ...(extra || {}), encompassOverrideReason: reason.trim() }, cc); return; }
+        if (reason && reason.trim()) { await runSend(tapeKey, name, answers, to, note, { ...(extra || {}), encompassOverrideReason: reason.trim() }, cc, override); return; }
         setBusy(null); return;
       }
       if (d.code === 'encompass_exception_required' || d.code === 'encompass_unreconciled') {
@@ -7212,7 +7405,7 @@ function TapeExport({ appId }) {
           preview={sendPending.preview}
           busy={busy === sendPending.tapeKey}
           onCancel={() => setSendPending(null)}
-          onSend={({ to, cc, note }) => runSend(sendPending.tapeKey, sendPending.name, sendPending.answers, to, note, undefined, cc)}
+          onSend={({ to, cc, note, override }) => runSend(sendPending.tapeKey, sendPending.name, sendPending.answers, to, note, undefined, cc, override)}
           onSchedule={(payload) => runSchedule(sendPending.tapeKey, sendPending.name, payload)}
         />
       )}

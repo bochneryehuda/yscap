@@ -53,7 +53,29 @@ const DISCOVERY_FIELDS = [
   'Loan.LastModified',
 ];
 
+/**
+ * TWO MORE FIELDS, ASKED FOR SEPARATELY, SO WE CAN TELL WHOSE LOAN THIS IS BEFORE
+ * SPENDING A READ ON IT.
+ *
+ * Owner-directed 2026-08-23: *"make sure it's only gonna pull according to our rule:
+ * only long-term files."* No folder separates the two products at the source, so the
+ * only way to know is the PROGRAM (field 1401, `loanProgramName`, filled on 754 of
+ * 772) or the TERM (field 4, `loanAmortizationTermMonths`, filled on 760) — which is
+ * exactly what `product-term.classifyProduct` decides on.
+ *
+ * THEY ARE SEPARATE FROM THE LIST ABOVE BECAUSE THEY MUST BE ABLE TO FAIL. The list
+ * above is proven against this tenant; these two are not, and the probe recorded that
+ * an unknown field id "rejects the whole batch" (ENCOMPASS-LIVE-API-PROBE §2.3). A
+ * rejected discovery is not a smaller sync — it is NO sync, the entire book gone from
+ * every screen. So `discoverLoans` asks for them, and if the enriched request fails it
+ * retries ONCE with the proven list and says so; the caller then knows it cannot tell
+ * the products apart this pass and mirrors everything, exactly as it did before.
+ */
+const CLASSIFY_FIELDS = ['Fields.1401', 'Fields.4'];
+
 /** The one place the discovery page size lives. */
+const tenantTime = require('./tenant-time');
+
 const PAGE = 100;
 // A runaway guard, not a limit: the long-term book is ~700 loans. Hitting it is
 // REPORTED, never a silent short read.
@@ -66,6 +88,13 @@ const MAX_PAGES = 60;
  * everywhere, so it is taken apart explicitly. Returns null on anything it cannot
  * read — a freshness stamp we cannot trust must be absent, never a guess, because
  * the sync pages on it and a wrong one silently skips loans.
+ *
+ * THE DIGITS ARE A WALL CLOCK IN THE TENANT'S OWN TIMEZONE, NOT UTC (owner-reported
+ * 2026-08-25). Encompass puts no offset on this string, and reading it as UTC put
+ * every stamp four hours early — which made `loans.needsRead` answer NOT DUE for a
+ * loan somebody had just edited, and froze three brand-new files in the state they
+ * were discovered in. `tenant-time` is the one place that conversion lives; the
+ * whole story, and the reproduction, are in its header.
  */
 function parsePipelineDate(v) {
   const s = String(v == null ? '' : v).trim();
@@ -83,8 +112,9 @@ function parsePipelineDate(v) {
     if (upper === 'PM' && hour < 12) hour += 12;
     if (upper === 'AM' && hour === 12) hour = 0;
   }
-  const dt = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d), hour, Number(mi || 0), Number(ss || 0)));
-  return Number.isFinite(dt.getTime()) ? dt.toISOString() : null;
+  const ms = tenantTime.wallClockToUtcMs(
+    Number(y), Number(mo), Number(d), hour, Number(mi || 0), Number(ss || 0));
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
 }
 
 /**
@@ -123,6 +153,10 @@ function rowToLoan(row) {
     milestoneName: str(f['Loan.CurrentMilestoneName']) || str(f['Fields.CoreMilestone']),
     loanOfficerLoginId: str(f['Fields.LOID']),
     lastModified: parsePipelineDate(f['Loan.LastModified']),
+    // What `product-term` needs to say whose loan this is. Both are `null` when the
+    // enrichment was refused, which reads as "we cannot tell" — never as "short-term".
+    programName: str(f['Fields.1401']),
+    termMonths: parseAmount(f['Fields.4']),
   };
 }
 
@@ -144,12 +178,39 @@ function buildFilter({ loanFolder } = {}) {
  * Returns `{loans, pages, truncated}`. `truncated` says the cap was reached, so a
  * caller reports a partial sweep as partial instead of as a shrinking pipeline.
  */
-async function discoverLoans({ loanFolder = null, limit = PAGE, maxPages = MAX_PAGES } = {}) {
+async function discoverLoans({ loanFolder = null, limit = PAGE, maxPages = MAX_PAGES,
+                               includeArchived = true } = {}) {
+  // THE FIRST PAGE DECIDES WHETHER THE ENRICHED READ IS SAFE, and it is asked for
+  // separately from the loop so a refusal costs ONE call rather than a whole sweep.
+  // If Encompass will not answer with the two classifying fields, we fall back to the
+  // proven list and REPORT it — the caller then knows it cannot tell the two products
+  // apart this pass, and mirrors everything rather than guessing.
+  let fields = [...DISCOVERY_FIELDS, ...CLASSIFY_FIELDS];
+  let classifyFields = 'asked';
   const request = {
-    fields: DISCOVERY_FIELDS,
+    fields,
     filter: buildFilter({ loanFolder }),
     sortOrder: [{ canonicalName: 'Loan.LastModified', order: 'Descending' }],
+    // ARCHIVED LOANS ARE STILL OUR LOANS, and leaving this unset is how a withdrawn
+    // file becomes invisible. Our own research says so plainly — "funded/old loans
+    // are commonly moved to Archive-type folders and are OTHERWISE INVISIBLE to the
+    // query" (docs/encompass-research/findings/C3.md), and the API atlas calls the
+    // flag essential.
+    //
+    // WHY IT MATTERS MORE THAN A MISSING ROW: the upsert only runs for loans this
+    // sweep DISCOVERS. A loan that drops out of the result set is not marked
+    // withdrawn and is not deleted — it FREEZES at whatever folder it was last seen
+    // in, and keeps reading as a working file forever. Under the go-forward plan
+    // that frozen row would go on driving its ClickUp card as a live deal.
+    //
+    // NOT YET PROVEN TO BE THE CAUSE of the case that prompted this, and the honest
+    // reason is that a 2026-07 probe on the appraisal side measured 746 loans with
+    // the flag and 746 without — identical. That probe may simply have run against a
+    // book with nothing archived. `/probe` (book-diag) asks BOTH ways for one loan
+    // and prints the difference, so the next answer is measured rather than argued.
+    includeArchivedLoans: true,
   };
+  if (includeArchived === false) delete request.includeArchivedLoans;
 
   const loans = [];
   const seen = new Set();
@@ -159,7 +220,20 @@ async function discoverLoans({ loanFolder = null, limit = PAGE, maxPages = MAX_P
 
   for (;;) {
     if (pages >= maxPages) { truncated = true; break; }
-    const body = await lazy.client.pipelineSearch(request, { limit, start });
+    let body;
+    try {
+      body = await lazy.client.pipelineSearch(request, { limit, start });
+      if (classifyFields === 'asked') classifyFields = 'answered';
+    } catch (e) {
+      // Only ever retried ONCE, and only for the enrichment. A failure after the
+      // fallback is a real failure and is thrown to the caller as before — a sync
+      // that silently reported an empty book would be far worse than one that stops.
+      if (classifyFields !== 'asked') throw e;
+      classifyFields = 'refused';
+      fields = [...DISCOVERY_FIELDS];
+      request.fields = fields;
+      body = await lazy.client.pipelineSearch(request, { limit, start });
+    }
     const batch = Array.isArray(body) ? body : (body && Array.isArray(body.loans) ? body.loans : []);
     pages += 1;
     for (const r of batch) {
@@ -176,11 +250,15 @@ async function discoverLoans({ loanFolder = null, limit = PAGE, maxPages = MAX_P
     start += batch.length;
   }
 
-  return { loans, pages, truncated };
+  // `classifyFields` is what the caller reads to decide whether it may act on the
+  // product rule at all. 'refused' means every loan comes back unclassifiable, which
+  // must read as "mirror it" and never as "it is short-term".
+  return { loans, pages, truncated, classifyFields };
 }
 
 module.exports = {
   DISCOVERY_FIELDS,
+  CLASSIFY_FIELDS,
   PAGE,
   MAX_PAGES,
   parsePipelineDate,

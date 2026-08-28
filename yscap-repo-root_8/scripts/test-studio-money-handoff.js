@@ -175,7 +175,12 @@ const MONEY_FIELDS = [
   'desired',
 ];
 // `\??\.` so optional chaining (`f?.price`) cannot walk around the guard.
-const BARE = new RegExp(`Number\\(\\s*[A-Za-z_$][\\w$]*\\??\\.(${MONEY_FIELDS.join('|')})\\b`, 'g');
+// `(?<![\w$])` so the SANCTIONED parsers cannot trip it: `toNumber(eff.purchasePrice)` and
+// `moneyNum(v.price)` both CONTAIN the substring `Number(<money field>` — and the first real
+// call of that shape (the LT pricer's closing-sheet dealValue, 2026-08-24) turned this guard
+// red on exactly the code it exists to steer people toward. A guard that fires on the shared
+// parser is the cries-wolf failure this file's own section-4 header warns about.
+const BARE = new RegExp(`(?<![\\w$])Number\\(\\s*[A-Za-z_$][\\w$]*\\??\\.(${MONEY_FIELDS.join('|')})\\b`, 'g');
 const files = [];
 (function walk(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -210,7 +215,10 @@ assert(files.length > 50, `the guard actually walked the tree (${files.length} f
     'Number(f.irAmount)', 'Number( f.price )', 'Number(f?.price)', 'Number(x.tsEffPrice)'];
   const MUST_NOT = ['Number(f.units)', 'Number(f.fico)', 'Number(f.priceHistory)', 'Number(f.sqftPre)',
     'Number(x.termMonths)', 'Number(f.irMonths)', 'Number(s.loanAmount)', 'Number(o.routingOrder)',
-    'Number(p.pricePerSqft)', 'Number(n)', 'Number(v)'];
+    'Number(p.pricePerSqft)', 'Number(n)', 'Number(v)',
+    // the sanctioned parsers — each CONTAINS `Number(` as a substring, and each is exactly
+    // what this guard funnels people toward, so firing on one is the guard crying wolf
+    'toNumber(eff.purchasePrice)', 'toNumber(f.asIsValue)', 'moneyNum(v.price)', 'x.toNumber(f.arv)'];
   const missed = MUST_CATCH.filter((s) => !fires(s));
   const falseFired = MUST_NOT.filter((s) => fires(s));
   assert(missed.length === 0, `the guard catches every way a money field gets re-Number()'d${missed.length ? ' — MISSES ' + missed.join(', ') : ''}`);

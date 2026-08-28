@@ -9,6 +9,7 @@ import { fmtDay } from '../lib/dates.js';
 // own order card — the decision itself is the server's (order-sla.orderState).
 import { dormantMarker } from '../lib/orderDormant.js';
 import { askConfirm } from '../lib/dialog.js';
+import EmailPreview from '../components/EmailPreview.jsx';
 import { useUrlState } from '../lib/useUrlState.js';
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -52,6 +53,10 @@ function addrLine(pa) {
 function OrderCell({ o, appId, kind, onChased, fileStatus }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  // The editable chase preview (owner-directed 2026-08-26). Declared HERE, above the
+  // early return below — a hook after an early return crashes React with "Rendered
+  // more hooks than during the previous render" the moment `o` flips between renders.
+  const [preview, setPreview] = useState(null);
   if (!o) return <span className="muted small">—</span>;
 
   /* WHY THIS ORDER IS NOT BEING CHASED — READ OFF THE SERVER'S OWN ANSWER.
@@ -82,8 +87,19 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
      always shown its CC list; this is that same disclosure, asked for at the
      moment of sending. The recipients come from the server's own preview, so this
      screen can never describe a different audience from the one that receives it. */
+  /* THE EDITABLE PREVIEW (owner-directed 2026-08-26) — the chase now opens the send's
+     OWN built follow-up email, subject + body + recipients, editable, instead of a bare
+     recipient-list confirm. Same preview endpoint (the send's own pure builder) as the
+     file's order card, so the queue and the card can never show different emails. The
+     old recipient confirm remains only as the fallback when the preview cannot load. */
   const chase = async () => {
     setBusy(true); setMsg('');
+    try {
+      const pv = await api.staffOrderEmailPreview(appId, kind, { followup: '1' });
+      setPreview({ subject: pv.subject || '', text: pv.text || '', to: pv.to || [], cc: pv.cc || [] });
+      setBusy(false);
+      return;
+    } catch (_) { /* fall through to the plain confirm below */ }
     try {
       let to = [];
       try {
@@ -97,6 +113,16 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
       if (!(await askConfirm(who))) { setBusy(false); return; }
       const r = await api.staffOrderFollowup(appId, kind, {});
       setMsg(r.unconfirmed ? 'Sent — but unconfirmed, check the thread' : 'Chased');
+      onChased && onChased();
+    } catch (e) { setMsg((e && e.message) || 'Could not send'); }
+    finally { setBusy(false); }
+  };
+  const sendChase = async (override) => {
+    setBusy(true); setMsg('');
+    try {
+      const r = await api.staffOrderFollowup(appId, kind, override ? { override } : {});
+      setMsg(r.unconfirmed ? 'Sent — but unconfirmed, check the thread' : 'Chased');
+      setPreview(null);
       onChased && onChased();
     } catch (e) { setMsg((e && e.message) || 'Could not send'); }
     finally { setBusy(false); }
@@ -134,6 +160,14 @@ function OrderCell({ o, appId, kind, onChased, fileStatus }) {
             </button>
       )}
       {msg && <span className="muted small">{msg}</span>}
+      {preview && (
+        <EmailPreview
+          title={`Follow-up on the ${kind} order`}
+          subject={preview.subject} text={preview.text} to={preview.to} cc={preview.cc}
+          subjectLocked lockNote="A follow-up stays on the vendor's original order conversation, so its subject is kept."
+          busy={busy} sendLabel="Send follow-up"
+          onClose={() => setPreview(null)} onSend={sendChase} />
+      )}
     </div>
   );
 }

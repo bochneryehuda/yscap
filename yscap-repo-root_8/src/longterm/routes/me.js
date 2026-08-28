@@ -42,14 +42,26 @@ async function resolveProduct(staffId) {
     settingsStore.load(),
   ]);
   // The per-user store starts from the DECLARED defaults, so it always holds a
-  // value — which would mask the company's. Only a genuine per-user OVERRIDE counts,
-  // and `describe` is what can tell the two apart.
-  const mine = await settingsStore.describe(scopeFor(staffId));
-  const row = mine.groups.flatMap((g) => g.settings).find((s) => s.key === 'ui.defaultProduct');
-  const chosen = row && row.isOverridden ? row.value : company.settings['ui.defaultProduct'];
+  // value — which would mask the company's. Only a genuine per-user choice counts.
+  //
+  // THE QUESTION IS "DID THEY CHOOSE", NOT "IS IT DIFFERENT FROM OURS". This read
+  // `describe(...).isOverridden`, which answers the second — and the two part
+  // company on exactly the case the PUT below passes `keepDefault: true` to
+  // protect. Somebody deliberately picking the side that HAPPENS to be the
+  // company default stored a row, that row read as "not overridden" because its
+  // value matched ours, their choice was discarded in favour of the company
+  // value, and the day an admin moved that default they were moved with it —
+  // having explicitly asked not to be. Proven end to end before it was changed:
+  // the row was there the whole time and nothing read it.
+  // ONE test, deliberately. `load` always returns `stored`, so a second lookup
+  // beside this could never be reached, and a guard no mutation can reach is
+  // decoration — the rule `conditions/read.js doneStatusesFrom` records for the
+  // same reason.
+  const chosenByUser = me.stored.has('ui.defaultProduct');
+  const chosen = chosenByUser ? me.settings['ui.defaultProduct'] : company.settings['ui.defaultProduct'];
   return {
     product: PRODUCTS.includes(chosen) ? chosen : 'rtl',
-    chosenByUser: !!(row && row.isOverridden),
+    chosenByUser: !!chosenByUser,
     degraded: me.degraded || company.degraded,
   };
 }

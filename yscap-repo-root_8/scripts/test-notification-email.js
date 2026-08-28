@@ -181,7 +181,7 @@ let n = 0; const ok = (m) => { n++; console.log('  ok -', m); };
   assert.ok(bc.html.includes('Churchill Weiss'), 'a staff name colliding with a partner word is preserved');
 
   const es = mail.esignReadyToSign({ firstName: 'Y', propertyLabel: '392 Columbia Ave', loanNumber: 'YS-1042', packageLabel: 'Term Sheet', signUrl: 'https://x' });
-  assert.ok(/· YS-1042 · 392 Columbia Ave/.test(es.subject) && es.html.includes('Signature needed'), 'esign email is file-tagged + badged');
+  assert.ok(/· YS-1042 · 392 Columbia Ave/.test(es.subject) && es.html.includes('Signature requested'), 'esign email is file-tagged + badged');
 
   const lr = mail.leadReceived({ firstName: 'Y', toolLabel: 'Loan Application' });
   assert.ok(lr.html.includes('Received') && /reply directly to this email/i.test(lr.html), 'leadReceived badged + repliable');

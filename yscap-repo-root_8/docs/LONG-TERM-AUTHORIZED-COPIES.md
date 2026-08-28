@@ -76,6 +76,35 @@ sql-ref   borrower_officers
 sql-write borrower_officers
 
 # ---------------------------------------------------------------------------
+# CLICKUP FOR LONG-TERM — authorized in writing by the owner, 2026-08-23:
+#   "Bring over the basic details of the ClickUp connector and actual
+#    credentials from the ClickUp connector from the RTL side over to the
+#    long-term side … You already have the officer syncing and all the
+#    folders … you can just take it over and bring it over to the long-term
+#    side the correct folder ids for every officer."
+#
+# WHAT CROSSES, AND WHY IT IS THESE TWO FILES AND NOT THE INTEGRATION. The
+# ClickUp WORKSPACE is the company's, not RTL's: both products' files sit in
+# one Loan Pipeline space, in the same per-officer folders. So the field ids
+# and the officer->folder map are FACTS ABOUT THE TENANT, not RTL behaviour,
+# and a second copy of them in src/longterm would be two hand-kept lists of
+# the same ids drifting apart — the failure this ledger exists to prevent.
+# Both modules are pure data with no requires and no behaviour.
+#
+# WHAT DOES NOT CROSS: the RTL ClickUp CLIENT, orchestrator, ingest, mapper,
+# crosswalk, enqueue and status machinery. Long-Term gets its own client under
+# src/longterm/clickup/, exactly as it has its own Encompass client, reading
+# LT_CLICKUP_* and falling back to the shared CLICKUP_* environment values —
+# which is what "the actual credentials" means: the same token, named in the
+# environment, never a value in code.
+# ---------------------------------------------------------------------------
+
+# The tenant's ClickUp custom-field ids (including the YS loan number and the
+# portal-file-id stamp) and the per-officer folder routing. Data, not logic.
+import src/clickup/fields.js
+import src/clickup/routing.js
+
+# ---------------------------------------------------------------------------
 # THE FRONT-END MOUNT SEAM — authorized in writing by the owner, 2026-08-14:
 #   "You were authorized to touch that switch of the short-term shell."
 #
@@ -200,3 +229,87 @@ stops a "no" quietly turning into a "yes" months later.
 | 2026-08-02 | Sharing the database connection pool (`src/db.js`) with Long-Term | **Not asked yet** — until it is, Long-Term opens its own pool in `src/longterm/db.js`, which needs no authorization (open question 11 in the charter) |
 | 2026-08-03 | **Long-Term WRITING the borrower record** (`sql-write borrowers`) | **No — confirmed by the owner: "keep borrower read only".** An officer CAN change a borrower profile from a long-term file, but through the ONE shared editor and the existing borrower endpoint — not through Long-Term write code. The person record keeps a single owner, which matters because a dozen RTL modules already heal, enrich and de-duplicate it (Encompass enrich, ClickUp sync, credit store, name-heal, merge). |
 | 2026-08-03 | Long-Term re-using RTL's **workflow, statuses, document sets, conditions or integrations** | **No — explicitly.** *"the workflow will be different, the sets will be different, integrations will be different, it will be a brand new build."* **EXCEPTION (2026-08-14): the Encompass integration was later authorized to be brought into Long-Term** (see the log row above). That exception is Encompass-only; every other integration (ClickUp, SharePoint, DocuSign, Sitewire, Trustpoint) still stays separate unless the owner authorizes it by name. |
+
+# ---------------------------------------------------------------------------
+# THE CLICKUP WRITER'S INHERITANCE — authorized in writing by the owner,
+# 2026-08-23, before any of it is copied:
+#
+#   "for the click-up syncing, we put in a lot of hours and effort to make sure
+#    the RTL side works perfectly and a lot of guards are in place ... Bring over
+#    that logic over here ... Use all the logic from there, all the mapping from
+#    here, and all the requests from there. You can bring everything over and use
+#    what we need."
+#
+# and, same day, on the shape of the tie itself:
+#
+#   "please use the same kind of logic that we're using on the RTL side, where
+#    everything is stamped in pilot and everything is stamped and clicked up and
+#    holding them together tied."
+#
+# WHAT THIS AUTHORIZES: copying the RTL ClickUp machinery's PROVEN logic into
+# src/longterm/clickup/** as the Long-Term field writer is built — the date rule
+# (4 AM America/New_York epochs, round-trip asserted), the chokepoint guards
+# (no deletion, no field clearing, allowlisted task updates), read-before-write
+# with no-op suppression, the write journal, the overwrite storm alarm and the
+# volume circuit breaker, the dropdown read/write asymmetry, and the per-field
+# type transforms. Each file copied under this authorization still gets its own
+# entry here naming source and destination, per the standing rule — this block
+# is the owner's sanction those entries cite, not a blanket import license.
+# LT copies stay copies: no LT file imports RTL logic modules directly.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# FILES COPIED UNDER THE CLICKUP WRITER'S INHERITANCE (owner, 2026-08-23 — the
+# sanction quoted above). BY-VALUE copies: each destination imports ZERO RTL
+# logic modules and touches NO RTL table, so none of these is a machine-read
+# `import` entry (the Encompass-copy precedent, 2026-08-14). One line per file,
+# source -> destination, added in the same PR as the copy (2026-08-24):
+#
+#   copy src/clickup/transforms.js   -> src/longterm/clickup/transforms.js
+#        (the 4AM America/New_York date rule + round-trip assert, dropdown
+#         read/write asymmetry, money/phone/marital transforms, placeholder +
+#         shadow-email + loan-number sentinels, SSN masking. LT additions: the
+#         US 'MM/DD/YYYY' parse and Encompass's '//' unreached-date convention.
+#         The RTL-only card-line and marital-AI hooks did NOT cross.)
+#   copy src/clickup/client.js       -> src/longterm/clickup/writer-client.js
+#        (the wire chokepoint guards: no task deletion — v2 AND v3 — no field
+#         clearing incl. the nested-null JSON class, status-only task updates,
+#         the retry/idempotency contract, value-free errors. MINUS the RTL
+#         assignment-clear carve-out — the LT writer clears NOTHING, ever —
+#         and MINUS the shared lib/api-rate-limit bucket: LT self-paces.)
+#   copy src/clickup/registry.js     -> src/longterm/clickup/registry.js
+#        (the live dropdown option map, 10-min TTL — dropdowns READ orderindex
+#         ints and WRITE option UUIDs, and the UUIDs churn, so write-ids are
+#         resolved live, never hardcoded.)
+#   copy src/clickup/mapper.js       -> src/longterm/clickup/mapper.js
+#        (writeValue per type, isBlankClickupValue, the addressField finite-
+#         coordinate refusal, fieldValueEquivalent per-type no-op suppression,
+#         resolveOnly, the DOB-change detector, the PII-shield/review-key
+#         shape. The FIELD MAP DATA is Long-Term's own — every ClickUp id read
+#         off the live catalog, every Encompass id live-verified 2026-08-24.
+#         LT departure, SAFER: locations are fill-only, never rewritten, so
+#         the RTL address comparator was not needed and did not cross.)
+#   copy src/clickup/orchestrator.js -> src/longterm/clickup/push.js
+#        (read-before-write with fail-closed scoped pushes, no-op suppression,
+#         the PII overwrite shield + review queue, fill-only mode, the write
+#         journal, the volume circuit breaker + boot seed, the overwrite-storm
+#         alarm, push-failure accounting — a lossy push is never marked done —
+#         and the create-then-link flow. Journal/review/breaker state lives in
+#         LT's OWN tables (db/625) — never RTL's.)
+#
+# The queue-dedupe shape in db/625's lt_clickup_review_queue open-row partial
+# unique index follows src/lib/sync-review.js's dedupe design (one open row
+# per task+field+proposal) — recorded here since the shape, not the text, was
+# reused. src/lib/address.js was NOT copied and is NOT imported: the fill-only
+# location posture removed the need.
+#
+# PURPOSE NOTE for the existing `import src/lib/address-canon.js` grant
+# (pre-merge audit 2026-08-24): src/longterm/clickup/push.js reads
+# addressCanon.geocode() to resolve coordinates for the two ClickUp LOCATION
+# fields (a ClickUp location write requires real lat/lng). That is a READ of
+# the shared geocoder whose own permanent cache (address_canon_cache) it fills
+# as designed — the same behavior every RTL caller gets. The 2026-08-16 grant
+# above was worded for the DSCR pricer's ZIP lookup; this records the writer's
+# use of the SAME authorized import for geocoding, so the per-item rule stays
+# honest. No RTL address RECORD is read or written — only the geocode cache.
+# ---------------------------------------------------------------------------

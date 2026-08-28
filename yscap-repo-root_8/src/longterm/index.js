@@ -72,6 +72,34 @@ router.use('/book', require('./routes/book'));
 // /api/lt/views
 router.use('/views', require('./routes/views'));
 
+// The archive — Encompass's deleted loans (its `(Trash)` folder), out of every
+// pipeline view and totaled here, with the super-admin's permanent delete
+// (owner-directed 2026-08-23).
+router.use('/archive', require('./routes/archive'));
+
+// The ClickUp SYNCING section of every file (owner-directed 2026-08-23:
+// "Every feature that we build up that should happen automatically, we should
+// have the option over there") — the synced-field plan, the card link, manual
+// link / push / per-field push / Create New Task, and the writer's review
+// queue. Every write still goes through the guarded writer. /api/lt/clickup
+router.use('/clickup', require('./routes/clickup'));
+
+// The ENCOMPASS SYNCING section of every file (owner-directed 2026-08-25: "the
+// pull, the refresh, the last pull, last refresh, last webhooks, and stuff like
+// that") — what has been read for this loan and what has not, when Encompass last
+// changed it, when a webhook last asked us to look, and a button that reads the
+// loan again on the spot. READ-ONLY towards Encompass; the read-only gate covers
+// it like every other module. /api/lt/encompass-file
+router.use('/encompass-file', require('./routes/encompass-file'));
+
+// The Condition Center, READ side: this loan's conditions with the documents that
+// answer each one, plus the eFolder needs list — which is where the work actually
+// is on a live file, since every condition in this tenant sits on a loan that is
+// already sold. Behind `conditions.enabled` (off by default) and the same file
+// scope as the workspace. READ-ONLY: no route here writes to Encompass or to us.
+// /api/lt/conditions
+router.use('/conditions', require('./routes/conditions'));
+
 // The signed-in person's own long-term preferences — today, which product side
 // they open on (the owner's switch), remembered per user. /api/lt/me
 router.use('/me', require('./routes/me'));
@@ -81,8 +109,16 @@ router.use('/me', require('./routes/me'));
 // /api/lt/settings
 router.use('/settings', require('./routes/settings'));
 
+// The Pricing Engine's saved INVESTOR GROUPS (owner-directed 2026-08-27) — a
+// person's own named sets of investors for the DISPLAY-ONLY board filter.
+// Registered BEFORE the /dscr mount so it wins the match, and deliberately NOT
+// inside makeRouter: that router is also mounted on the secret-gated
+// diagnostics seam, where there is no signed-in person to own a group.
+//   /api/lt/dscr/investor-groups
+router.use('/dscr/investor-groups', require('./routes/pricer-groups'));
+
 // DSCR pricer (Lender Price backend) — staff-gated at the mount:
-//   /api/lt/dscr/{health,login-check,price,selftest}
+//   /api/lt/dscr/{health,login-check,price,investors,selftest}
 router.use('/dscr', require('./routes/dscr-pricer').makeRouter());
 
 // The Product & Pricing Engine. Lender Price stays AUTHORITATIVE — our engine
@@ -91,5 +127,17 @@ router.use('/dscr', require('./routes/dscr-pricer').makeRouter());
 // admin-gated inside the router. /api/lt/ppe/{health,settings,investors,
 // findings,scoreboard,quote,canary}
 router.use('/ppe', require('./routes/ppe'));
+
+// THE PASS THAT RUNS ON ITS OWN.
+//
+// Started HERE rather than from src/server.js on purpose: this module is the one
+// seam RTL is permitted to touch, and having it schedule its own background work
+// keeps the whole of Long-Term behind that one door. A second call from server.js
+// would be a second seam — exactly what the separation gate refuses.
+//
+// OFF by default (`LT_SYNC_ENABLED`), and it says so in the log either way. With
+// the switch off nothing is scheduled, so requiring this module — which a test or
+// a script may do — starts no timers and reads nothing.
+require('./sync/worker').start();
 
 module.exports = { router };

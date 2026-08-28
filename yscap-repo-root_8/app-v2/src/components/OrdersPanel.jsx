@@ -4,6 +4,7 @@ import { PhoneInput, EmailInput } from './FormattedInputs.jsx';
 import EmailCenter from './EmailCenter.jsx';
 import ClosingPrepCard from './ClosingPrepCard.jsx';
 import DocPreview from './DocPreview.jsx';
+import EmailPreview from './EmailPreview.jsx';
 // A due date is a calendar 'YYYY-MM-DD' STRING end-to-end, so it is rendered
 // through the shared formatter — `new Date('2026-08-07')` parses as UTC midnight
 // and prints the day BEFORE for anybody west of Greenwich, which is the exact
@@ -527,10 +528,13 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
      what is queued tonight is exactly what pressing the button now would do —
      and it is the send ROUTE, not a rendered email, that runs in the morning. */
   const sched = useScheduledSends(appId, [order.status]);
-  const scheduleIt = async ({ day, time }) => {
+  const scheduleIt = async ({ day, time, override }) => {
     const body = { day, time };
     if (placed) body.force = true;
     if (ccBorrower != null) body.ccBorrower = !!ccBorrower;
+    // An edit approved in the preview rides the stored intent (post-merge audit):
+    // scheduling must never quietly drop wording the person already approved.
+    if (override) body.override = override;
     const r = await api.staffScheduleOrder(appId, kind, body);
     await sched.reload();
     setMsg({ tone: (r.warnings && r.warnings.length) ? 'warn' : 'ok',
@@ -540,10 +544,33 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
     onChanged && onChanged();
   };
 
-  const place = async (force) => {
+  /* THE EDITABLE PREVIEW (owner-directed 2026-08-26): the Order / Re-send / Follow-up
+     buttons open the send's OWN built email — subject + body, fully editable — and the
+     send carries only what was actually changed. The preview endpoint runs the same
+     pure builder the send runs, so this can never show a different email. If the
+     preview cannot be fetched, the modal still opens with an honest note rather than
+     silently sending unseen. */
+  const [preview, setPreview] = useState(null);   // {mode:'place'|'followup', force, subject, text, to, cc}
+  const openSendPreview = async (mode, force) => {
+    setBusy('preview'); setMsg(null);
+    try {
+      // The panel's ccBorrower choice rides the preview request, so the To/Cc shown is
+      // the send's own derivation (post-merge audit W6) — a follow-up keeps the footing
+      // the order was placed with, so it sends no explicit choice.
+      const q = mode === 'followup'
+        ? { followup: '1', ...(followMsg.trim() ? { note: followMsg.trim() } : {}) }
+        : (ccBorrower != null ? { ccBorrower: ccBorrower ? '1' : '0' } : null);
+      const pv = await api.staffOrderEmailPreview(appId, kind, q);
+      setPreview({ mode, force: !!force, subject: pv.subject || '', text: pv.text || '', to: pv.to || [], cc: pv.cc || [] });
+    } catch (e) {
+      setMsg({ tone: 'err', text: (e && e.message) || 'Could not build the email preview.' });
+    } finally { setBusy(''); }
+  };
+  const place = async (force, override) => {
     setBusy('place'); setMsg(null);
     try {
       const body = force ? { force: true } : {};
+      if (override) body.override = override;
       if (ccBorrower != null) body.ccBorrower = !!ccBorrower;
       const r = await api.staffPlaceOrder(appId, kind, body);
       // AN UNCONFIRMED SEND IS NOT A GREEN TICK. The server distinguishes a send
@@ -573,10 +600,10 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
       } else setMsg({ tone: 'err', text: (e && e.message) || 'Could not send the order.' });
     } finally { setBusy(''); }
   };
-  const followup = async () => {
+  const followup = async (override) => {
     setBusy('follow'); setMsg(null);
     try {
-      const r = await api.staffOrderFollowup(appId, kind, { message: followMsg });
+      const r = await api.staffOrderFollowup(appId, kind, { message: followMsg, ...(override ? { override } : {}) });
       setMsg(r.unconfirmed
         ? { tone: 'warn', text: r.warning || 'The follow-up may or may not have gone out — check the Email Center before sending it again.' }
         : { tone: 'ok', text: `Follow-up sent to ${(r.sent_to || []).join(', ')}.` });
@@ -690,7 +717,7 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
       {/* Actions */}
       <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 6 }}>
         {!placed && (
-          <button className="btn primary small" disabled={!!busy || blocked} onClick={() => place(false)}
+          <button className="btn primary small" disabled={!!busy || blocked} onClick={() => openSendPreview('place', false)}
             title={needsLoan ? 'Add the loan number first' : needsContact ? `Add the ${CONTACT_ASK[kind]} first` : needsUsps ? 'Import the USPS-verified address first — see the step above' : blocked ? 'Finish the steps listed above first' : `Send the ${kind} order to the vendor`}>
             {busy === 'place' ? 'Sending…' : `Order ${kind}`}
           </button>
@@ -706,7 +733,7 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
         {placed && (
           <>
             <button className="btn primary small" disabled={!!busy} onClick={() => setFollowOpen(o => !o)}>Follow up</button>
-            <button className="btn ghost small" disabled={!!busy || needsContact || needsUsps} onClick={() => place(true)}
+            <button className="btn ghost small" disabled={!!busy || needsContact || needsUsps} onClick={() => openSendPreview('place', true)}
               title={needsUsps ? 'Import the USPS-verified address first — see the step above' : 'Re-send the full order to the vendor + CC chain'}>
               {busy === 'place' ? 'Sending…' : 'Re-send order'}
             </button>
@@ -745,16 +772,39 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
           <textarea className="input" rows={3} value={followMsg} onChange={e => setFollowMsg(e.target.value)}
             placeholder={kind === 'title' ? 'Following up on the title order…' : 'Following up on the insurance quote…'} />
           <div className="row" style={{ gap: 8, marginTop: 8 }}>
-            <button className="btn primary small" disabled={busy === 'follow'} onClick={followup}>{busy === 'follow' ? 'Sending…' : 'Send follow-up'}</button>
+            <button className="btn primary small" disabled={busy === 'follow'} onClick={() => openSendPreview('followup')}>{busy === 'follow' ? 'Sending…' : 'Preview & send follow-up'}</button>
             <button className="btn ghost small" onClick={() => { setFollowOpen(false); setFollowMsg(''); }}>Cancel</button>
           </div>
         </div>
       )}
 
+      {preview && (
+        <EmailPreview
+          title={preview.mode === 'followup' ? `Follow-up on the ${kind} order` : `${KIND_LABEL[kind]} order email`}
+          subject={preview.subject} text={preview.text} to={preview.to} cc={preview.cc}
+          subjectLocked={preview.mode === 'followup'}
+          lockNote="A follow-up stays on the vendor's original order conversation, so its subject is kept."
+          busy={busy === 'place' || busy === 'follow'}
+          sendLabel={preview.mode === 'followup' ? 'Send follow-up' : (preview.force ? 'Re-send order' : 'Send order')}
+          onClose={() => setPreview(null)}
+          onSend={async (override) => {
+            if (preview.mode === 'followup') await followup(override); else await place(preview.force, override);
+            setPreview(null);
+          }}
+          /* Scheduling from INSIDE the preview keeps the edit (post-merge audit) — the
+             outside ScheduleButton has no edit to carry. A follow-up cannot be
+             scheduled (no such kind). */
+          scheduleWhat={`the ${kind} order`}
+          onSchedule={preview.mode === 'followup' ? null : async (override, { day, time }) => {
+            await scheduleIt({ day, time, override });
+            setPreview(null);
+          }} />
+      )}
+
       {msg && (
         <div className={`notice ${msg.tone === 'ok' ? 'ok' : msg.tone === 'warn' ? '' : 'err'}`} style={{ marginTop: 10 }} role="status">
           {msg.text}
-          {msg.canForce && <> <button className="btn link small" onClick={() => place(true)}>Force re-send</button></>}
+          {msg.canForce && <> <button className="btn link small" onClick={() => openSendPreview('place', true)}>Force re-send</button></>}
         </div>
       )}
 

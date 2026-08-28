@@ -17,7 +17,7 @@
  * transaction, matching the rest of the underwriting store.
  */
 const db = require('../../db');
-const { assigneeExistsSql } = require('../permissions');
+const { visibleOfficersSql } = require('../permissions');
 const { underwriterActions } = require('./actions');
 
 const TARGET_ROLES = ['super_admin', 'processor', 'underwriter'];
@@ -229,10 +229,10 @@ function viewerScope(viewer, anyOnFile, startAt = 0) {
   const me = `$${startAt + 1}`;
   let onFile;
   if (anyOnFile) {
-    onFile = assigneeExistsSql('a', me);
+    onFile = visibleOfficersSql('a', me);
   } else {
     params.push(viewer.role || '');
-    onFile = `(e.target_role = $${startAt + 2} AND ${assigneeExistsSql('a', me)})`;
+    onFile = `(e.target_role = $${startAt + 2} AND ${visibleOfficersSql('a', me)})`;
   }
   return { sql: `(e.assigned_to = ${me} OR e.requested_by = ${me} OR ${onFile})`, params };
 }

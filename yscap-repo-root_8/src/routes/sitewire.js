@@ -16,7 +16,7 @@ const db = require('../db');
 const cfg = require('../config');
 const switches = require('../lib/integrations/switches'); // runtime on/off (env default unless flipped on the API Health page)
 const { requireAuth, requireStaff, requirePermission } = require('../auth');
-const { can, assigneeExistsSql } = require('../lib/permissions');
+const { can, visibleOfficersSql } = require('../lib/permissions');
 const client = require('../sitewire/client');
 const orchestrator = require('../sitewire/orchestrator');
 const sowLineEdit = require('../sitewire/sow-line-edit');
@@ -76,7 +76,7 @@ const { buildXlsx } = require('../lib/xlsx');
 const mediaArchive = require('../sitewire/media-archive');
 const drawReport = require('../sitewire/draw-report');
 const storage = require('../lib/storage');
-const { setMediaHeaders } = require('../lib/media-headers');
+const { serveMedia } = require('../lib/media-headers');
 const { serveDocument } = require('../lib/serve-document');
 const { computeRelease, waiverGate } = require('../sitewire/money');
 // THE INVESTOR'S CUT OF OUR DRAW FEE — pure, and the ONE place the CorrFirst/Blue Lake rates live.
@@ -126,10 +126,17 @@ async function variancePct() {
 }
 const buildReallocationCells = rollupMod.buildReallocationCells;
 
-// scope helper: see_all_files -> everything; else only assigned files
+/* THE FILE SCOPE IS THE SHARED FIVE-WAY RULE, NOT THE ASSIGNEE BRANCH ALONE
+   (owner-reported 2026-08-25: an appraisal XML import answering "not found", and a
+   processor sent to the Encompass tab from the term sheet hitting a refusal).
+   `assigneeExistsSql` is branch 4 of `visibleOfficersSql`'s five, so this tab used to
+   refuse a staffer who reaches the file by DELEGATION (staff_users.visible_officer_ids)
+   or by an OPEN workflow hand-off — while staff.js's own /applications/:id middleware,
+   which uses the full rule, let them open the whole file screen. Same person, same file,
+   one tab saying "not found". Never re-inline a file scope; ask permissions.js. */
 function fileScope(req, alias, startIdx) {
   if (can(req.actor, 'see_all_files')) return { where: '', params: [] };
-  return { where: ` AND ${assigneeExistsSql(alias, '$' + startIdx)}`, params: [req.actor.id] };
+  return { where: ` AND ${visibleOfficersSql(alias, '$' + startIdx)}`, params: [req.actor.id] };
 }
 // A robust one-line property address from the property_address jsonb. Files store the
 // address several ways — a ready `oneLine`, a geocoded `formatted_address`, structured
@@ -155,7 +162,7 @@ async function canSeeFile(req, appId) {
     const r = await db.query(`SELECT 1 FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId]);
     return r.rowCount > 0;
   }
-  const r = await db.query(`SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${assigneeExistsSql('a', '$2')}`, [appId, req.actor.id]);
+  const r = await db.query(`SELECT 1 FROM applications a WHERE a.id=$1 AND a.deleted_at IS NULL AND ${visibleOfficersSql('a', '$2')}`, [appId, req.actor.id]);
   return r.rowCount > 0;
 }
 
@@ -251,8 +258,11 @@ router.get('/files/:id/draws/:drawId/media/:mediaId', requireDrawView, async (re
   if (!m || !m.storage_ref) return res.status(404).end();
   let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
   if (!buf || !buf.length) return res.status(404).end();
-  setMediaHeaders(res, m.content_type);   // safe-type allowlist + sandbox CSP (never serve a dangerous type inline)
-  return res.end(buf);
+  // ONE door for every stored media byte: safe-type allowlist, the real type
+  // derived from the bytes when the stored label was lost on the way in, and HTTP
+  // range support so a <video> can actually stream and seek instead of showing a
+  // black frame (owner-reported 2026-08-23).
+  return serveMedia(req, res, buf, m.content_type);
 });
 
 // ---- PILOT-branded inspection reports (phase 2b) ----
@@ -276,6 +286,40 @@ async function generateAndServeReport(req, res, { sitewireDrawId, scope }) {
     return serveDocument(res, r.doc, { inline: true });
   } catch (e) { res.status(500).json({ error: 'Could not build the report — please try again.' }); }
 }
+/* IS IT ALREADY BUILT? (owner-reported 2026-08-23: *"it's going to a blank page …
+   If it needs time, in the pilot, you should see that it takes time loading."*)
+
+   The screen used to open a blank browser tab and only THEN start a request that
+   might take thirty seconds to render a PDF full of photos — so the user watched an
+   empty white page with no way to tell a slow build from a broken link. It cannot
+   tell the difference because the old flow never asked: the only thing it could do
+   was wait for bytes.
+
+   This is the question that makes an honest progress state possible, and it is
+   cheap — the same metadata the builder loads, the row lookup, and NOT one photo
+   byte or one line of PDF rendering. The client calls it on the click, then shows
+   either "opening" (already built) or "building this report — 43 photos" with a
+   real bar, in PILOT, where the owner asked for it. */
+async function serveReportStatus(req, res, { sitewireDrawId, scope }) {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const mode = req.query.mode === 'borrower' ? 'borrower' : 'staff';
+  try {
+    const st = await drawReport.reportStatus(appId, { sitewireDrawId, scope, mode });
+    return res.json(st);
+  } catch (e) {
+    console.warn('[sitewire] report status error:', e && e.message);
+    return res.status(500).json({ error: 'Could not check the report — please try again.' });
+  }
+}
+router.get('/files/:id/draws/:drawId/report/status', requireDrawView, async (req, res) => {
+  if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
+  return serveReportStatus(req, res, { sitewireDrawId: req.params.drawId, scope: 'draw' });
+});
+router.get('/files/:id/report/status', requireDrawView, async (req, res) => {
+  return serveReportStatus(req, res, { sitewireDrawId: null, scope: 'project' });
+});
+
 // per-draw report
 router.get('/files/:id/draws/:drawId/report', requireDrawView, async (req, res) => {
   if (!/^\d+$/.test(req.params.drawId)) return res.status(404).json({ error: 'draw not found' });
@@ -846,6 +890,13 @@ router.post('/files/:id/start-draw', requirePermission('manage_draws'), async (r
     const a = await orchestrator.loadFile(appId);
     if (!a) return res.status(404).json({ error: 'file not found' });
     if (a.status !== 'funded') return res.status(409).json({ error: 'the draw process starts once the loan is funded' });
+    /* A PAYOFF DEMAND LOCKS THE DRAW CENTRE (owner-directed 2026-08-21). This is the owner's
+       first workflow — draws NEVER set up: *"when you tried to set up draws on this one, it
+       should come out big that there was a Pay Off Demand on this one, so you can't request the
+       set of draws on this file anymore."* The refusal carries the whole sentence, and the
+       screen shows it large. `payoffDemandBlock` fails CLOSED. */
+    const payoffHold = await require('../lib/payoff-demand').payoffDemandBlock(db, appId);
+    if (payoffHold.blocked) return res.status(409).json({ error: payoffHold.message, code: 'payoff_demand', payoffDemand: payoffHold });
     const program = /gold/i.test(String(a.registered_program || '')) ? 'gold' : 'standard';
     const cp = await orchestrator.resolveCapitalPartnerId(a.lender);
     const rule = await orchestrator.resolveRule(a.lender, cp.id, program);
@@ -1130,6 +1181,34 @@ router.get('/files/:id/draw-request', requireDrawView, async (req, res) => {
       routing_number: w.routing_number, bank_address: w.bank_address, account_address: w.account_address,
       name_kind: w.name_kind, name_matches: w.name_matches, captured_at: w.captured_at,
     } : null;
+    // THE ACCOUNT NAME IS A DOOR, NOT JUST A VERDICT (owner-directed 2026-08-26: "populate it as
+    // a link to go directly to that entity profile … automatically bring in the operating
+    // agreement from that particular entity profile if it has an operating agreement in the
+    // operating agreement slot"). When the wire goes to an entity the borrower already has on
+    // their profile (known_entity / subject_llc), say WHICH one — id + owning borrower for the
+    // link — and whether its profile slot carries an ACCEPTED operating agreement (which the
+    // investor delivery then attaches automatically; accepted-only is the db/424 rule).
+    // Best-effort: an error renders the card without the link, never a 500.
+    if (wire && ['known_entity', 'subject_llc'].includes(String(w.name_kind || ''))) {
+      try {
+        const drawOa = require('../lib/esign/draw-oa');
+        const ent = await drawOa.matchingFileEntity(db, appId, String(w.account_name || '').trim());
+        if (ent) {
+          const oaDoc = await drawOa.profileAcceptedOa(db, ent.id);
+          // Every llcs row has an OWNING borrower (llcs.borrower_id is NOT NULL — an
+          // entity reached through llc_borrowers still carries its owner's id), so the
+          // link goes to the profile the entity actually lives on. The audit found the
+          // old "no owning borrower" fallback here unreachable; it was removed rather
+          // than left implying it bites.
+          const ownerId = ent.borrower_id;
+          wire.entity = {
+            llc_id: String(ent.id), llc_name: ent.llc_name, is_verified: !!ent.is_verified,
+            borrower_id: ownerId ? String(ownerId) : null,
+            oa: oaDoc ? { document_id: String(oaDoc.id), filename: oaDoc.filename } : null,
+          };
+        }
+      } catch (_) { /* best-effort */ }
+    }
     // The fatal operating-agreement condition, when a new entity — with its document progress so the
     // card can say whether an agreement has been pulled/uploaded and whether it has been accepted.
     let oaCondition = null;
@@ -1381,8 +1460,8 @@ router.post('/files/:id/draw-request/upload-manual', requirePermission('manage_d
     let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
     try { ({ buf } = require('../lib/upload-bytes').decodeUploadBase64(b.dataBase64)); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
+    if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
     // Ensure the draw condition exists so the manual form has somewhere to file back to.
     const itemId = await drawWire.ensureDrawRequestCondition(db, appId, req.actor && req.actor.id);
     const filename = String(b.filename || 'wire-instructions.pdf').slice(0, 200);
@@ -1653,6 +1732,14 @@ router.post('/disbursements', requirePermission('manage_draws'), async (req, res
   // ownership FIRST (never do work for a file the actor can't see), then validate the money —
   // a NaN/garbage amount must 400, never be coerced to $0 and recorded (audit E-NAN-MONEY-DISB).
   if (!application_id || !(await canSeeFile(req, application_id))) return res.status(403).json({ error: 'forbidden' });
+  /* AND OUR OWN RELEASE IS HELD TOO (owner-directed 2026-08-21) — the owner's second workflow:
+     *"If the file is already set up for draws … You need to stop our system from [releasing]
+     draws."* Blocking only the REQUEST would leave a draw already in flight able to pay out
+     against a payoff figure that was quoted without it. Fails CLOSED. */
+  {
+    const payoffHold = await require('../lib/payoff-demand').payoffDemandBlock(db, application_id);
+    if (payoffHold.blocked) return res.status(409).json({ error: payoffHold.message, code: 'payoff_demand' });
+  }
   const approvedRaw = Number(req.body.approved_cents), feeRaw = Number(req.body.fee_cents);
   if (!Number.isFinite(approvedRaw) || approvedRaw < 0 || !Number.isFinite(feeRaw) || feeRaw < 0) {
     return res.status(400).json({ error: 'approved_cents and fee_cents must be non-negative whole numbers of cents' });
@@ -2634,6 +2721,15 @@ router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
     // "already in Sitewire — not managed" banner), or another setup blocker (no SOW, budget mismatch, …).
     const setupStatus = (link && link.raw && link.raw.setup_status) ? link.raw.setup_status : null;
     const preexisting = !!(setupStatus && setupStatus.preexisting_property_id);
+    /* Read through the SAME helper every door refuses with, so the banner and the refusal can
+       never disagree about whether this file is held. Best-effort on the READ only: an
+       unreadable answer still blocks at the door (it fails closed there), and here it simply
+       shows nothing rather than crying wolf on a screen. */
+    let payoffState = null;
+    try {
+      const h = await require('../lib/payoff-demand').payoffDemandBlock(db, appId);
+      if (h && h.blocked && !h.unreadable) payoffState = { at: h.at, by: h.by || null, note: h.note || null, message: h.message };
+    } catch (_) { /* the banner is a read, never a gate */ }
     const draws = (await db.query(`SELECT sitewire_draw_id, number, name, status, risk_level, risk_flags, submitted_at, approved_at, pdf_src, quick_notify_status_id, coordinator_id FROM sitewire_draws WHERE application_id=$1 ORDER BY number DESC NULLS LAST`, [appId])).rows;
     // Owner-directed 2026-07-22 (file 1053 Ella T Grasso Blvd): the request's own job_item_name
     // can arrive null from Sitewire (drafting-state draws often omit it); fall back FIRST to the
@@ -2802,6 +2898,17 @@ router.get('/files/:id/rollup', requireDrawView, async (req, res) => {
       // Sitewire property PILOT didn't create; setup_status = the last birth-phase outcome (inline, not a
       // global error row); managed_since = when PILOT pushed (born) this property.
       preexisting, setup_status: setupStatus, managed_since: link ? link.pushed_at : null, go_live_date: cfg.sitewireGoLiveDate,
+      /* THE PAYOFF DEMAND, ON THE COORDINATOR'S OWN SCREEN (owner-directed 2026-08-21: *"In the
+         Draw Coordinator section AND ALSO in the Critical Date section … it should come out big
+         that there was a Pay Off Demand on this one, so you can't request the set of draws on
+         this file anymore"*).
+
+         It was enforced at every door from the day it was built and shown on NEITHER — a
+         coordinator learnt about it only by pressing Start and being refused, which is the
+         worst moment to find out and says nothing until you act. The refusal is unchanged; this
+         is the same fact, read the same way (`payoffDemandBlock`, which FAILS CLOSED), returned
+         so the screen can lead with it. */
+      payoff_demand: payoffState,
       // so the desk can show a proactive read-only banner + disable write buttons when writes are off
       // (an approve/release/finding write 503s unless BOTH the master switch and the write gate are on).
       switches: { enabled: switches.on('SITEWIRE_ENABLED'), outbound: switches.on('SITEWIRE_OUTBOUND_ENABLED'), dryrun: cfg.sitewireDryrun } });
@@ -3199,8 +3306,8 @@ router.get('/findings/lines/:lineId/dispute-media/:idx', requireDrawView, async 
   if (!m || !m.storage_ref) return res.status(404).end();
   let buf; try { buf = await storage.read(m.storage_ref); } catch (_) { return res.status(404).end(); }
   if (!buf || !buf.length) return res.status(404).end();
-  setMediaHeaders(res, m.content_type);   // borrower-uploaded evidence: type is server-derived, but clamp on serve too
-  return res.end(buf);
+  // borrower-uploaded evidence: the type is server-derived at intake, but clamp on serve too.
+  return serveMedia(req, res, buf, m.content_type);
 });
 
 // ---- POST /findings/:findingId/lines/:lineId/decide — admin decides a disputed line ----
@@ -3618,6 +3725,10 @@ router.post('/files/:id/draws/:drawId/investor-delivery/schedule', requirePermis
     if (b.acknowledge_omissions === true) payload.acknowledge_omissions = true;
     if (Array.isArray(b.share_link_keys) && b.share_link_keys.length) payload.share_link_keys = b.share_link_keys;
     if (Number(b.compress_level)) payload.compress_level = Number(b.compress_level);
+    // A hand-edited subject/body rides the stored payload — the dispatcher re-posts it
+    // through the delivery route above, which lands it via manual-override.applyOverride.
+    const override = require('../lib/email/manual-override').cleanOverride(b.override);
+    if (override) payload.override = override;
 
     const out = await sched.schedule({
       appId, kind: 'investor_delivery', targetKey: String(drawId), at,
@@ -3676,6 +3787,8 @@ router.post('/files/:id/draws/:drawId/investor-delivery', requirePermission('man
       acknowledgeOmissions: b.acknowledge_omissions === true,
       shareLinkKeys: Array.isArray(b.share_link_keys) ? b.share_link_keys : [],
       compressLevel: Number(b.compress_level) || null,
+      // A hand-edited subject/body from the compose preview (owner-directed 2026-08-26).
+      override: b.override || null,
     });
     // A preflight is a read: nothing was sent, nothing was journaled, nobody was notified.
     if (out && out.preflight) return res.json({ ok: true, ...out });

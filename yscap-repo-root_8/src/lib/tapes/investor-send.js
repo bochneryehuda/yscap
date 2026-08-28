@@ -107,10 +107,40 @@ function dealFigures(app, quote) {
     oop = (Number.isFinite(budget) && Number.isFinite(financed) && budget - financed > 0.5) ? budget - financed : 0;
   }
   add('Out-of-pocket rehab (borrower-funded)', oop > 0 ? usd(oop) : (rows.some((r) => /holdback/i.test(r.label)) ? '$0' : null));
-  // The engine's acquisition denominator is min(price, as-is) on a purchase, so
-  // the label says "acquisition value" — not "as-is value", which is wrong
-  // whenever the price is the lower figure (audit 98b8fac note 7).
-  add('Initial LTV (initial advance ÷ acquisition value)', pct(s.acqLtvPct));
+  /* INITIAL LTV — the initial advance against the LOWER of the purchase price
+     and the as-is value (owner-directed 2026-08-26: "if the as-is value is
+     more than the purchase price, then the initial LTV should be calculated
+     from the purchase price … if the as-is is less than the purchase price,
+     then I should put a note that it's calculated from the as-is … it's
+     basically from the lower of the two"). Recomputed DISPLAY-ONLY from the
+     file's own columns: the stored engine ratio is whatever was registered,
+     and the owner's live report was an email reading 2.1% (a high as-is value
+     as the denominator) on a loan that is 90% of the purchase price. A
+     refinance carries no purchase price (db/399) and sizes on the as-is by
+     definition, so the as-is IS the denominator there and the label says so.
+     NO frozen number moves — the engine's sizing is untouched; this is what
+     the email prints, and it falls back to the stored ratio when the file's
+     own figures are missing. */
+  const ppN = Number(app.purchase_price), aivN = Number(app.as_is_value);
+  const hasPp = Number.isFinite(ppN) && ppN > 0, hasAiv = Number.isFinite(aivN) && aivN > 0;
+  const initAdv = Number(s.initialAdvance);
+  const ltvDenom = isRefi ? (hasAiv ? aivN : null)
+    : (hasPp && hasAiv ? Math.min(ppN, aivN) : (hasPp ? ppN : (hasAiv ? aivN : null)));
+  const ltvFromAsIs = isRefi ? hasAiv : (hasAiv && (!hasPp || aivN < ppN));
+  if (Number.isFinite(initAdv) && initAdv > 0 && ltvDenom != null) {
+    add(`Initial LTV (initial advance ÷ ${ltvFromAsIs ? 'as-is value' : 'purchase price'})`, pct(initAdv / ltvDenom));
+    // The owner's note, exactly when the as-is is the denominator on a purchase —
+    // so the reader knows which figure the ratio was taken from. "Lower than the
+    // purchase price" is only claimed when BOTH figures exist; a purchase with no
+    // recorded price gets the honest reason instead of a comparison to nothing.
+    if (ltvFromAsIs && !isRefi) {
+      add('Initial LTV basis', hasPp
+        ? 'Calculated from the as-is value — it is lower than the purchase price.'
+        : 'Calculated from the as-is value — the file has no purchase price recorded.');
+    }
+  } else {
+    add('Initial LTV (initial advance ÷ acquisition value)', pct(s.acqLtvPct));
+  }
   add('ARV LTV (total loan ÷ after-repair value)', pct(s.arvPct));
   // TOTAL LTC — the whole loan against the whole COST, which is the third leverage
   // figure this deal actually has (owner-directed 2026-08-21).
@@ -247,7 +277,37 @@ async function saveRecipients(db, lenderLabel, emails, actorId) {
  * ONE attachment. Throws {status, message} on a refusal; returns
  * { ok, to, cc, replyTo, subject } on success.
  */
-async function sendTapeToInvestor(appId, db, { tape, to, cc: extraCc, note, actorId, actorName }) {
+/**
+ * The tape email itself — PURE, extracted so the compose modal can preview the EXACT
+ * subject + body the send produces (owner-directed 2026-08-26: "it should populate a
+ * full preview … fully editable"). One builder, two readers (preview + send), so the
+ * screen and the wire can never show two different emails.
+ */
+function buildTapeEmail(pre, note) {
+  const noteText = String(note || '').trim().slice(0, 2000);
+  const figureLines = pre.figures.map((f) => `${f.label}: ${f.value}`);
+  const bodyLines = [
+    'Please find attached a new file for your review.',
+    ...(noteText ? ['', noteText] : []),
+    '',
+    ...figureLines,
+    '',
+    // The "threads into the loan file" claim is only true of the PER-FILE inbox
+    // (pre.replyTo, which exists only when CHAT_REPLY_DOMAIN is configured) —
+    // never of the general Reply-To fallback, which lands in a shared mailbox.
+    pre.replyTo ? `Reply to this email and your response threads straight into the loan file (${pre.replyTo}).` : null,
+  ].filter((x) => x != null);
+  const rendered = template.render({
+    title: 'New file for review',
+    intro: 'Please find attached a new file for your review.' + (noteText ? ` ${noteText}` : ''),
+    meta: pre.figures.map((f) => ({ label: f.label, value: f.value })),
+    note: pre.replyTo ? `Reply to this email and your response goes straight to the loan file's team inbox (${pre.replyTo}).` : '',
+    replyable: !!(pre.replyTo || cfg.replyToDefault),
+  });
+  return { subject: pre.subject, text: bodyLines.join('\n'), html: rendered && rendered.html ? rendered.html : undefined };
+}
+
+async function sendTapeToInvestor(appId, db, { tape, to, cc: extraCc, note, actorId, actorName, override }) {
   const pre = await previewTapeSend(appId, db);
   if (!pre) { const e = new Error('file not found'); e.status = 404; throw e; }
   const { emails, problem } = cleanRecipients(to);
@@ -266,37 +326,23 @@ async function sendTapeToInvestor(appId, db, { tape, to, cc: extraCc, note, acto
   const cc = dedupe([...pre.cc, ...extra.emails]).filter((c) => !emails.includes(c));
   const replyTo = pre.replyTo || cfg.replyToDefault || null;
 
-  const noteText = String(note || '').trim().slice(0, 2000);
-  const figureLines = pre.figures.map((f) => `${f.label}: ${f.value}`);
-  const bodyLines = [
-    'Please find attached a new file for your review.',
-    ...(noteText ? ['', noteText] : []),
-    '',
-    ...figureLines,
-    '',
-    // The "threads into the loan file" claim is only true of the PER-FILE inbox
-    // (pre.replyTo, which exists only when CHAT_REPLY_DOMAIN is configured) —
-    // never of the general Reply-To fallback, which lands in a shared mailbox
-    // (audit 2026-08-18 minor: the body over-claimed threading; same gate the
-    // compose modal already applies).
-    pre.replyTo ? `Reply to this email and your response threads straight into the loan file (${pre.replyTo}).` : null,
-  ].filter((x) => x != null);
-
-  const rendered = template.render({
-    title: 'New file for review',
-    intro: 'Please find attached a new file for your review.' + (noteText ? ` ${noteText}` : ''),
-    meta: pre.figures.map((f) => ({ label: f.label, value: f.value })),
-    note: pre.replyTo ? `Reply to this email and your response goes straight to the loan file's team inbox (${pre.replyTo}).` : '',
-    replyable: !!replyTo,
-  });
+  // ONE builder for the body (buildTapeEmail — the same one the preview shows), then a
+  // hand-edited subject/body lands through the ONE manual-override chokepoint
+  // (owner-directed 2026-08-26); no override → byte-identical to before. The typed
+  // note rides opts.note too: buildTapeEmail folds it into the BODY, so an edited
+  // body used to silently drop a note typed in the same modal (post-merge audit) —
+  // the re-render now carries it in the template's note slot instead.
+  const built = require('../email/manual-override').applyOverride(
+    buildTapeEmail(pre, note), override,
+    { title: 'New file for review', replyable: !!replyTo, note: String(note || '').trim().slice(0, 2000) });
 
   await email.sendMail({
     to: emails,
     cc: cc.length ? cc : undefined,
     replyTo,
-    subject: pre.subject,
-    text: bodyLines.join('\n'),
-    html: rendered && rendered.html ? rendered.html : undefined,
+    subject: built.subject,
+    text: built.text,
+    html: built.html,
     attachments: [{ filename: tape.filename, content: tape.buf.toString('base64'), contentType: tape.contentType }],
     _ctx: {
       applicationId: appId, type: 'tape_sent_to_investor', audience: 'staff',
@@ -305,7 +351,20 @@ async function sendTapeToInvestor(appId, db, { tape, to, cc: extraCc, note, acto
   });
 
   await saveRecipients(db, pre.app.lender, emails, actorId);
-  return { ok: true, to: emails, cc, replyTo, subject: pre.subject, sentBy: actorName || null };
+
+  /* THE TAPE IS THE DELIVERY, SO THE CARD MOVES WITH IT (owner-directed 2026-08-21: *"when
+     we mark our system investor delivered, ClickUp changes to in purchase review"*).
+     Sending the tape to the note buyer IS marking the file delivered — there is no separate
+     button, and inventing one would be a second place the same fact lives.
+
+     AFTER the send, deliberately: the card must never claim a delivery that failed to go
+     out. `advanceCard` refuses a file that is not funded yet (a tape sent before closing
+     moves nothing), refuses to drag a card back from a later stage, and never throws — so a
+     ClickUp problem can never turn a delivered tape into a failed request. */
+  const cardMoved = await require('../../clickup/post-closing-stage')
+    .advanceCard(appId, 'investor_delivered', { client: db, reason: 'tape_sent_to_investor' });
+
+  return { ok: true, to: emails, cc, replyTo, subject: built.subject, sentBy: actorName || null, cardMoved };
 }
 
-module.exports = { subjectFor, dealFigures, cleanRecipients, extraAddresses, previewTapeSend, sendTapeToInvestor, saveRecipients, teamCc };
+module.exports = { subjectFor, dealFigures, cleanRecipients, extraAddresses, previewTapeSend, buildTapeEmail, sendTapeToInvestor, saveRecipients, teamCc };

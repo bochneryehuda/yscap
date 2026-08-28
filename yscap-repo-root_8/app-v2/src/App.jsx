@@ -32,14 +32,17 @@ import NotificationSettings from './screens/NotificationSettings.jsx';
 // ("rtl-import app-v2/src/App.jsx" in docs/LONG-TERM-AUTHORIZED-COPIES.md).
 import LtPipeline from './longterm/LtPipeline.jsx';
 import LtPeople from './longterm/LtPeople.jsx';
+import LtArchive from './longterm/LtArchive.jsx';
 import LtBook from './longterm/LtBook.jsx';
 import LtBorrowers from './longterm/LtBorrowers.jsx';
 import LtStatuses from './longterm/LtStatuses.jsx';
+import LtStatusReviews from './longterm/LtStatusReviews.jsx';
 import BorrowerLongTermScreen from './longterm/BorrowerLongTerm.jsx';
 import LtConditions from './longterm/LtConditions.jsx';
 import LtSync from './longterm/LtSync.jsx';
 import LtSettings from './longterm/LtSettings.jsx';
 import LtPpe from './longterm/LtPpe.jsx';
+import LtPricer from './longterm/LtPricer.jsx';
 import LtLoan from './longterm/LtLoan.jsx';
 import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
@@ -260,12 +263,18 @@ export default function App() {
           <Route path="/internal/lt" element={<StaffPrivate><LtPipeline /></StaffPrivate>} />
           <Route path="/internal/lt/book" element={<StaffPrivate><LtBook /></StaffPrivate>} />
           <Route path="/internal/lt/people" element={<StaffPrivate><LtPeople /></StaffPrivate>} />
+          <Route path="/internal/lt/archive" element={<StaffPrivate><LtArchive /></StaffPrivate>} />
           <Route path="/internal/lt/borrowers" element={<StaffPrivate><LtBorrowers /></StaffPrivate>} />
           <Route path="/internal/lt/statuses" element={<StaffPrivate><LtStatuses /></StaffPrivate>} />
+          <Route path="/internal/lt/status-reviews" element={<StaffPrivate><LtStatusReviews /></StaffPrivate>} />
           <Route path="/internal/lt/conditions" element={<StaffPrivate><LtConditions /></StaffPrivate>} />
           <Route path="/internal/lt/sync" element={<StaffPrivate><LtSync /></StaffPrivate>} />
           <Route path="/internal/lt/settings" element={<StaffPrivate><LtSettings /></StaffPrivate>} />
           <Route path="/internal/lt/ppe" element={<StaffPrivate><LtPpe /></StaffPrivate>} />
+          {/* THE PRICING ENGINE. Staff-only, and the investor name is why: every line on it
+              names a lender and an investor, and an investor name never reaches a borrower
+              or a TPO. It is inside StaffPrivate and the API sits behind the staff guard. */}
+          <Route path="/internal/lt/pricer" element={<StaffPrivate><LtPricer /></StaffPrivate>} />
           <Route path="/internal/lt/loan/:loanId" element={<StaffPrivate><LtLoan /></StaffPrivate>} />
           <Route path="/internal/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
           <Route path="/internal/tasks" element={<StaffPrivate><StaffTasks /></StaffPrivate>} />

@@ -740,7 +740,7 @@ function fieldValueEquivalent(fieldId, oldVal, newVal, options, pushOpts) {
       }
       return false;  // unknown object shape — always write
     }
-    // PHONE fields: '347-9070483', '+13479070483', '(347) 907-0483' are the
+    // PHONE fields: '555-5550142', '+15555550142', '(555) 555-0142' are the
     // SAME number (owner-reported 2026-07-15 night, Asher Salamon — a repush
     // saw a formatting difference, the PII shield read it as an overwrite,
     // and a pointless review row landed). Compare by the last 10 digits;

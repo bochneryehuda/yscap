@@ -1,4 +1,4 @@
-import { money, money2, pct, ratio, plain, day, yesNo } from './format.js';
+import { money, money2, pct, ratio, plain, day, yesNo, purpose } from './format.js';
 import React from 'react';
 
 /**
@@ -41,22 +41,70 @@ export { money, money2, pct, ratio, plain, day, yesNo };
 
 const num = (v) => (v == null || v === '' ? '—' : String(Number(v)));
 
-/** A label/value list. Two columns on a desktop, one on a phone. */
-export function Facts({ rows, columns = 2 }) {
-  const shown = rows.filter(Boolean);
-  if (!shown.length) return null;
+/**
+ * A LABEL/VALUE LIST, LAID OUT LIKE A LEDGER (owner-directed 2026-08-25: *"set it up
+ * nicer, better to the eye, more user-friendly ... more like a structure, more like an
+ * order, like a rich LOS, not just flowing away everything"*, and *"on the RTL side ...
+ * try to copy the same idea so it should look familiar"*).
+ *
+ * IT USED TO STACK THE LABEL ON TOP OF THE VALUE in a plain two-column grid, so a
+ * sixteen-fact section read as thirty-two lines of alternating small and large text
+ * with no shape — the "flowing away" the owner described. The RTL file screen sets its
+ * facts out as a LEDGER instead: the label on the left, the value on the RIGHT, a
+ * hairline between rows so the eye can run down a column of figures, and the figures
+ * on tabular numerals so the digits line up. That is the idea copied here.
+ *
+ * IT IS LT'S OWN MARKUP AND ITS OWN CLASSES, deliberately. RTL's `.snap-*` components
+ * are RTL's; the two products do not share code, and the owner asked for the same
+ * IDEA so a person moving between the two screens recognises the shape — not for one
+ * product's components to be wired into the other.
+ *
+ * A `rows` entry may also be a GROUP — `{ group: 'Payments', rows: [...] }` — which
+ * draws its own gold-underlined heading. That is what turns one long list into a
+ * structure; a flat array still works exactly as it did, so no caller had to change.
+ */
+function FactRow([label, value, notSourced]) {
+  // A THIRD ANSWER, BESIDE A VALUE AND A DASH. Some of these fields can never fill —
+  // Encompass does not record the fact, or nobody has decided where it is read from —
+  // and a dash there reads as an ANSWER: "not in a flood zone", "no rent". So the
+  // server sends the reason and it is shown IN PLACE of the value, in the reader's own
+  // language. It never hides a real value: the moment one arrives the sentence gives
+  // way to it.
+  const blank = value == null || value === '' || value === '—';
   return (
-    <dl className="ltf-facts" style={{
-      display: 'grid', gridTemplateColumns: `repeat(${columns}, minmax(0,1fr))`,
-      gap: '8px 18px', margin: 0,
-    }}>
-      {shown.map(([label, value]) => (
-        <div key={label} style={{ minWidth: 0 }}>
-          <dt style={{ fontSize: 11, letterSpacing: '.04em', textTransform: 'uppercase', color: MUTED }}>{label}</dt>
-          <dd style={{ margin: 0, color: INK, fontSize: 14, overflowWrap: 'anywhere' }}>{value}</dd>
-        </div>
-      ))}
-    </dl>
+    <div className="ltf-row" key={label}>
+      <span className="ltf-rk">{label}</span>
+      {notSourced && blank
+        ? <span className="ltf-rv ltf-rv-note">{notSourced}</span>
+        : <span className="ltf-rv">{value}</span>}
+    </div>
+  );
+}
+
+export function Facts({ rows, columns = 2 }) {
+  const shown = (rows || []).filter(Boolean);
+  if (!shown.length) return null;
+  const groups = shown.filter((r) => r && r.group);
+  // MIXED IS NOT A SHAPE. A caller either lists facts or groups them; drawing a bare
+  // row beside a titled cluster would leave that row belonging to nothing, so a mixed
+  // array is read as the flat list it mostly is and the group's rows are folded in.
+  if (groups.length && groups.length === shown.length) {
+    return (
+      <div className="ltf-clusters" style={{ '--ltf-min': columns >= 3 ? '210px' : '260px' }}>
+        {groups.map((g) => (
+          <section className="ltf-cluster" key={g.group}>
+            <div className="ltf-cluster-h">{g.group}</div>
+            {(g.rows || []).filter(Boolean).map(FactRow)}
+          </section>
+        ))}
+      </div>
+    );
+  }
+  const flat = shown.flatMap((r) => (r && r.group ? (r.rows || []).filter(Boolean) : [r]));
+  return (
+    <div className="ltf-facts" style={{ '--ltf-cols': columns }}>
+      {flat.map(FactRow)}
+    </div>
   );
 }
 
@@ -102,10 +150,16 @@ export function Rows({ cols, rows, empty }) {
   );
 }
 
+/**
+ * A NAMED BLOCK INSIDE A SECTION — the same gold-underlined heading the fact clusters
+ * use, so a section reads as a few named parts rather than one run of content. The
+ * heading and the cluster heading are deliberately the same mark: they are the same
+ * kind of thing, and giving them two treatments is what makes a screen look busy.
+ */
 const Group = ({ title, note, children }) => (
-  <section style={{ marginTop: 14 }}>
-    <h3 style={{ margin: '0 0 2px', fontSize: 14, color: INK }}>{title}</h3>
-    {note ? <p style={{ margin: '0 0 6px', color: MUTED, fontSize: 12.5 }}>{note}</p> : null}
+  <section style={{ marginTop: 18 }}>
+    <h3 className="ltf-cluster-h" style={{ margin: '0 0 8px', fontSize: 11 }}>{title}</h3>
+    {note ? <p style={{ margin: '-4px 0 8px', color: MUTED, fontSize: 12.5, lineHeight: 1.5 }}>{note}</p> : null}
     {children}
   </section>
 );
@@ -215,77 +269,164 @@ function Borrowers({ data }) {
 }
 
 function Property({ data }) {
+  // What PILOT knowingly does not hold, keyed by column, straight from the one
+  // ledger on the server (src/longterm/application/unsourced.js).
+  const ns = data.notSourced || {};
   if (data.error) return <Unreadable error={data.error} />;
   if (!data.recorded) {
     return <p style={{ margin: 0, color: MUTED, fontSize: 13 }}>No property has been read from Encompass for this loan yet.</p>;
   }
   return (
-    <Facts rows={[
-      ['Address', plain(data.address)],
-      ['County', plain(data.county)],
-      ['Property type', plain(data.propertyType)],
-      ['Units', num(data.unitCount)],
-      ['Occupancy', plain(data.occupancy)],
-      ['Occupancy rate', data.occupancyRatePct != null ? pct(data.occupancyRatePct) : '—'],
-      ['Appraised value', money(data.appraisedValue)],
-      ['Estimated value', money(data.estimatedValue)],
-      ['Purchase price', money(data.purchasePrice)],
-      ['Original cost', money(data.originalCost)],
-      ['LTV', data.ltvPct != null ? pct(data.ltvPct) : '—'],
-      ['CLTV', data.cltvPct != null ? pct(data.cltvPct) : '—'],
-      // A determination that the property is NOT in a flood zone is a real answer and
-      // reads as "No"; one nobody has made yet reads as a dash.
-      ['In a flood zone', yesNo(data.inFloodZone)],
-      ['Flood zone', plain(data.floodZone)],
+    // GROUPED, not one run of fourteen (owner-directed 2026-08-25: "more like a
+    // structure, more like an order, like a rich LOS"). What the property IS, what it
+    // is WORTH, and how much of that we are lending against are three questions, and a
+    // flat list makes somebody read all fourteen to answer any one of them.
+    <Facts columns={3} rows={[
+      { group: 'The property', rows: [
+        ['Address', plain(data.address)],
+        ['County', plain(data.county)],
+        ['Property type', plain(data.propertyType)],
+        ['Units', num(data.unitCount)],
+        ['Occupancy', plain(data.occupancy)],
+        ['Occupancy rate', data.occupancyRatePct != null ? pct(data.occupancyRatePct) : '—'],
+      ] },
+      { group: 'What it is worth', rows: [
+        ['Appraised value', money(data.appraisedValue)],
+        ['Estimated value', money(data.estimatedValue)],
+        ['Purchase price', money(data.purchasePrice)],
+        ['Original cost', money(data.originalCost)],
+        ['LTV', data.ltvPct != null ? pct(data.ltvPct) : '—'],
+        ['CLTV', data.cltvPct != null ? pct(data.cltvPct) : '—'],
+      ] },
+      { group: 'Flood', rows: [
+        // A determination that the property is NOT in a flood zone is a real answer and
+        // reads as "No". PILOT has no field it can read one from, so rather than a
+        // dash — which reads as "No" too — the reason says so in words.
+        ['In a flood zone', yesNo(data.inFloodZone), ns.in_flood_zone],
+        ['Flood zone', plain(data.floodZone), ns.flood_zone],
+      ] },
     ]} />
+  );
+}
+
+/**
+ * The adjustable-rate terms, or ONE sentence saying we do not hold them.
+ *
+ * Eight rows of dashes under "Adjustable-rate terms" is not an empty table — it is
+ * eight answers nobody gave: no cap, no floor, no margin. And repeating the same
+ * explanation in all eight rows is just as bad in the other direction, so when we
+ * hold NONE of them the block says it once, in the reader's language, with the
+ * reason the server sent.
+ *
+ * It gives way field by field: the moment any term is written the table draws, and
+ * whichever terms are still missing carry the reason on their own row through
+ * `Facts`, exactly as the property section does.
+ */
+function ArmTerms({ arm }) {
+  const ns = arm.notSourced || {};
+  if (arm.notHeld) {
+    return (
+      <Group title="Adjustable-rate terms">
+        <p style={{ margin: 0, color: MUTED, fontSize: 13, fontStyle: 'italic', overflowWrap: 'anywhere' }}>
+          {ns.arm_index_name || 'PILOT does not hold this loan\'s adjustable-rate terms.'}
+        </p>
+      </Group>
+    );
+  }
+  return (
+    <Group title="Adjustable-rate terms">
+      <Facts rows={[
+        ['Index', plain(arm.indexName), ns.arm_index_name],
+        ['Margin', arm.marginPct != null ? pct(arm.marginPct) : '—', ns.arm_margin_pct],
+        ['First adjustment', arm.firstAdjustmentMonths != null ? `${arm.firstAdjustmentMonths} months` : '—', ns.arm_first_adjustment_months],
+        ['Adjusts every', arm.adjustmentFrequencyMonths != null ? `${arm.adjustmentFrequencyMonths} months` : '—', ns.arm_adjustment_frequency_months],
+        ['Initial cap', arm.initialCapPct != null ? pct(arm.initialCapPct) : '—', ns.arm_initial_cap_pct],
+        ['Periodic cap', arm.periodicCapPct != null ? pct(arm.periodicCapPct) : '—', ns.arm_periodic_cap_pct],
+        ['Lifetime cap', arm.lifetimeCapPct != null ? pct(arm.lifetimeCapPct) : '—', ns.arm_lifetime_cap_pct],
+        ['Floor', arm.floorPct != null ? pct(arm.floorPct) : '—', ns.arm_floor_pct],
+      ]} />
+    </Group>
   );
 }
 
 function Terms({ data }) {
   return (
     <>
-      <Facts rows={[
-        ['Loan amount', money(data.loanAmount)],
-        ['Note rate', data.noteRatePct != null ? pct(data.noteRatePct) : '—'],
-        ['Term', data.termMonths != null ? `${data.termMonths} months` : '—'],
-        ['Interest-only', data.interestOnlyMonths != null ? `${data.interestOnlyMonths} months` : '—'],
-        ['Amortization', plain(data.amortizationType)],
-        ['Lien position', plain(data.lienPosition)],
-        ['Product', plain(data.productKind)],
-        ['Program', plain(data.program)],
-        ['Purpose', plain(data.purpose)],
-        ['Prepayment penalty', data.prepaymentPenaltyMonths != null ? `${data.prepaymentPenaltyMonths} months` : '—'],
-        ['Penalty structure', plain(data.prepaymentPenaltyStructure)],
+      <Facts columns={3} rows={[
+        { group: 'The money', rows: [
+          ['Loan amount', money(data.loanAmount)],
+          ['Note rate', data.noteRatePct != null ? pct(data.noteRatePct) : '—'],
+          ['Term', data.termMonths != null ? `${data.termMonths} months` : '—'],
+          ['Interest-only', data.interestOnlyMonths != null ? `${data.interestOnlyMonths} months` : '—'],
+        ] },
+        { group: 'What kind of loan', rows: [
+          ['Program', plain(data.program)],
+          ['Purpose', purpose(data.purpose)],
+          ['Product', plain(data.productKind)],
+          ['Amortization', plain(data.amortizationType)],
+          ['Lien position', plain(data.lienPosition)],
+        ] },
+        { group: 'Paying it off early', rows: [
+          ['Prepayment penalty', data.prepaymentPenaltyMonths != null ? `${data.prepaymentPenaltyMonths} months` : '—'],
+          ['Penalty structure', plain(data.prepaymentPenaltyStructure)],
+        ] },
       ]} />
       {/* The ARM block appears only on an adjustable loan. A fixed loan showing a row
           of empty ARM fields reads as data we failed to fetch rather than terms that
           do not exist — so the server returns it as null and nothing renders. */}
-      {data.arm ? (
-        <Group title="Adjustable-rate terms">
-          <Facts rows={[
-            ['Index', plain(data.arm.indexName)],
-            ['Margin', data.arm.marginPct != null ? pct(data.arm.marginPct) : '—'],
-            ['First adjustment', data.arm.firstAdjustmentMonths != null ? `${data.arm.firstAdjustmentMonths} months` : '—'],
-            ['Adjusts every', data.arm.adjustmentFrequencyMonths != null ? `${data.arm.adjustmentFrequencyMonths} months` : '—'],
-            ['Initial cap', data.arm.initialCapPct != null ? pct(data.arm.initialCapPct) : '—'],
-            ['Periodic cap', data.arm.periodicCapPct != null ? pct(data.arm.periodicCapPct) : '—'],
-            ['Lifetime cap', data.arm.lifetimeCapPct != null ? pct(data.arm.lifetimeCapPct) : '—'],
-            ['Floor', data.arm.floorPct != null ? pct(data.arm.floorPct) : '—'],
-          ]} />
-        </Group>
-      ) : null}
+      {data.arm ? <ArmTerms arm={data.arm} /> : null}
     </>
   );
 }
 
+/**
+ * The DSCR, and which side of THIS COMPANY'S own thresholds it fell on.
+ *
+ * A bare 1.28 means one thing to somebody who works these loans every day and
+ * nothing at all to anybody else. The verdict comes from the server, computed
+ * against the company's configured minimum and comfortable lines, and the
+ * threshold travels with it — so this says what was compared rather than
+ * pronouncing on the loan, and a buyer who works to a different figure changes a
+ * setting rather than this file.
+ *
+ * NO VERDICT ON A RATIO WE DO NOT HOLD: the server sends none, and a mark on a
+ * loan nobody has measured would be worse than no mark.
+ */
+function DscrFigure({ value, verdict }) {
+  const shown = ratio(value);
+  if (!verdict) return <span>{shown}</span>;
+  const tone = verdict.level === 'below' ? '#8A2D2D'
+    : verdict.level === 'thin' ? '#8A6A22' : '#2C5E3F';
+  const word = verdict.level === 'below' ? 'below the minimum'
+    : verdict.level === 'thin' ? 'thin' : 'comfortable';
+  // WHOSE NUMBER. "this company set" is a claim about authorship, and it is false
+  // whenever the company has not configured that threshold — we fall back to the
+  // shipped one, which is right, but saying they chose it is not. The verdict now
+  // says which, so a red mark is never attributed to a rule nobody wrote.
+  const whose = (isCompany) => (isCompany ? ' this company set' : ' PILOT ships by default');
+  const comfortWhose = (isCompany) => (isCompany ? 'this company calls comfortable' : 'PILOT treats as comfortable by default');
+  const why = verdict.level === 'below'
+    ? `Under the ${verdict.minimum} minimum${whose(verdict.minimumIsCompany)} — on these figures the property does not cover its own debt service.`
+    : verdict.level === 'thin'
+      ? `Over the ${verdict.minimum} minimum${whose(verdict.minimumIsCompany)} but under the ${verdict.comfort} ${comfortWhose(verdict.comfortIsCompany)}.`
+      : `At or over the ${verdict.comfort} ${comfortWhose(verdict.comfortIsCompany)}.`;
+  return (
+    <span style={{ color: tone, fontWeight: 700 }} title={why}>
+      {shown}
+      <span style={{ color: MUTED, fontWeight: 400, fontSize: 12 }}> · {word}</span>
+    </span>
+  );
+}
+
 function Income({ data }) {
+  const ns = data.notSourced || {};
   const e = data.housingExpense || {};
   return (
     <>
       <Facts columns={3} rows={[
-        ['DSCR', ratio(data.dscr)],
+        ['DSCR', <DscrFigure key="dscr" value={data.dscr} verdict={data.dscrVerdict} />],
         ['Gross monthly rent', money2(data.grossMonthlyRent)],
-        ['Actual monthly rent', money2(data.actualMonthlyRent)],
+        ['Actual monthly rent', money2(data.actualMonthlyRent), ns.actual_monthly_rent],
       ]} />
       <Group
         title="Monthly housing expense"
@@ -492,8 +633,13 @@ function Declarations({ data }) {
  */
 function Summary({ data, file, sections, lock, contacts, history }) {
   const b = file.borrowers || { parties: [] };
-  const people = b.parties.filter((p) => p.partyType !== 'entity');
-  const entities = b.parties.filter((p) => p.partyType === 'entity');
+  const people = (b.parties || []).filter((p) => p.partyType !== 'entity');
+  // HOW IT VESTS COMES FROM THE SERVER'S ONE ANSWER, not from a second reading of the
+  // party rows (owner-reported 2026-08-25: this said there was no vesting entity on a
+  // file whose own header named one). The header reads Encompass field 4008 and this
+  // used to read the 1003's entity PARTY rows — two records of one fact, and on this
+  // tenant the entity is routinely stated in 4008 with no party row behind it.
+  const vest = file.vesting || null;
   const cov = file.coverage || {};
   const labelFor = (k) => {
     const s = (sections || []).find((x) => x.key === k);
@@ -508,18 +654,36 @@ function Summary({ data, file, sections, lock, contacts, history }) {
 
   return (
     <>
+      {/* THREE NAMED CLUSTERS, not one run of eleven (owner-directed 2026-08-25).
+          Who is on it, what it is secured by, and what the loan is — which is the
+          order somebody actually asks them in, and the shape the RTL file screen
+          already uses so the two look familiar. */}
       <Facts columns={3} rows={[
-        ['Borrowers', people.length ? people.map((p) => p.name || 'Name not read yet').join(' · ') : '—'],
-        ['Vesting entity', entities.length ? entities.map((e) => e.name || 'Name not read yet').join(' · ') : '—'],
-        ['Property', plain(file.property && file.property.address)],
-        ['Loan amount', money(data.loanAmount)],
-        ['Note rate', data.noteRatePct != null ? pct(data.noteRatePct) : '—'],
-        ['Term', data.termMonths != null ? `${data.termMonths} months` : '—'],
-        ['Program', plain(data.program)],
-        ['Purpose', plain(data.purpose)],
-        ['DSCR', ratio(file.income && file.income.dscr)],
-        ['Rate lock', lock && lock.status ? plain(lock.status) : 'Not locked'],
-        ['Team on this file', contacts && contacts.length ? String(contacts.length) : '—'],
+        { group: 'Parties', rows: [
+          // A loan found but not yet read in full has NO party rows and a borrower name
+          // from the pipeline search. Drawing "—" there said this file has no borrower,
+          // on a file whose header names one — so the search name is used and LABELLED,
+          // never passed off as the read application.
+          ['Borrowers', people.length
+            ? people.map((p) => p.name || 'Name not read yet').join(' · ')
+            : (b.searchName ? `${b.searchName} (from the pipeline; the application has not been read yet)` : '—')],
+          ['Vesting entity', !vest || !vest.type ? '—'
+            : vest.type === 'individual' ? 'Individual (no entity)'
+              : vest.label],
+          ['Team on this file', contacts && contacts.length ? String(contacts.length) : '—'],
+        ] },
+        { group: 'Property', rows: [
+          ['Address', plain(file.property && file.property.address)],
+          ['DSCR', ratio(file.income && file.income.dscr)],
+        ] },
+        { group: 'The loan', rows: [
+          ['Loan amount', money(data.loanAmount)],
+          ['Note rate', data.noteRatePct != null ? pct(data.noteRatePct) : '—'],
+          ['Term', data.termMonths != null ? `${data.termMonths} months` : '—'],
+          ['Program', plain(data.program)],
+          ['Purpose', purpose(data.purpose)],
+          ['Rate lock', lock && lock.status ? plain(lock.status) : 'Not locked'],
+        ] },
       ]} />
 
       {/* HOW THIS FILE HAS MOVED — what PILOT watched, in order.
@@ -566,27 +730,91 @@ function Summary({ data, file, sections, lock, contacts, history }) {
             {missing.map((e) => labelFor(e.key)).join(', ')}.
           </p>
         ) : null}
-        {!broken.length && !missing.length ? (
-          <p style={{ margin: '0 0 6px', color: INK, fontSize: 13 }}>
-            Every section that applies to this loan has something on it.
+        {/* WITH NOTHING TO REPORT ON, SAY ONE THING. With no coverage from the server
+            this block used to print two sentences that contradict each other —
+            "Every section that applies to this loan has something on it." directly
+            above "No sections apply to this loan." — because the summary line and the
+            table each answered from a different half of the same absence. The two are
+            mutually exclusive now, and the empty case says plainly that PILOT has not
+            worked it out rather than making a claim about the loan. */}
+        {!entries.length ? (
+          <p style={{ margin: 0, color: MUTED, fontSize: 13, lineHeight: 1.55 }}>
+            PILOT has not worked out which sections this loan has yet — that comes with
+            the full read. Nothing here is a statement about the loan itself.
           </p>
-        ) : null}
-        <Rows
-          cols={[
-            { key: 'sec', label: 'Section', render: (r) => labelFor(r.key) },
-            {
-              key: 'state',
-              label: 'Read from Encompass',
-              render: (r) => (r.state === 'read' ? 'Yes'
-                : r.state === 'empty' ? 'Nothing on file'
-                  : 'Could not be read'),
-            },
-            { key: 'n', label: 'Entries', align: 'right', render: (r) => (r.count == null ? '—' : String(r.count)) },
-          ]}
-          rows={entries}
-          empty="No sections apply to this loan."
-        />
+        ) : (
+          <>
+            {!broken.length && !missing.length ? (
+              <p style={{ margin: '0 0 6px', color: INK, fontSize: 13 }}>
+                Every section that applies to this loan has something on it.
+              </p>
+            ) : null}
+            <Rows
+              cols={[
+                { key: 'sec', label: 'Section', render: (r) => labelFor(r.key) },
+                {
+                  key: 'state',
+                  label: 'Read from Encompass',
+                  render: (r) => (r.state === 'read' ? 'Yes'
+                    : r.state === 'empty' ? 'Nothing on file'
+                      : 'Could not be read'),
+                },
+                { key: 'n', label: 'Entries', align: 'right', render: (r) => (r.count == null ? '—' : String(r.count)) },
+              ]}
+              rows={entries}
+              empty="No sections apply to this loan."
+            />
+          </>
+        )}
       </Group>
+    </>
+  );
+}
+
+/**
+ * WHO BOUGHT THIS LOAN — INTERNAL. Never a borrower or a TPO surface.
+ *
+ * The investor's name, their own loan number, their email and the funding channel
+ * are internal knowledge (CLAUDE.md rule 10). The channel counts because it names
+ * HOW a loan is funded, which implies WHO. This screen is behind the staff mount
+ * and there is no client version of it; if one is ever built it takes its strings
+ * through `audience.js`, never from here.
+ *
+ * The two names are shown SEPARATELY on purpose. The shorthand is typed early and
+ * the accurate name arrives later, and the difference between them is often the
+ * question — 117 recorded spellings resolve to about thirty companies, so seeing
+ * both is how somebody spots that a file is filed under a name nobody else uses.
+ * The canonical key is what the system compares; it is shown because it is the
+ * answer to "are these two files with the same investor?".
+ */
+function Investor({ data }) {
+  if (data.error) return <Unreadable error={data.error} />;
+  if (!data.recorded) {
+    return (
+      <p style={{ margin: 0, color: MUTED, fontSize: 13 }}>
+        Encompass names no investor on this loan yet — either it has not been sold,
+        or the investor has not been recorded on the file.
+      </p>
+    );
+  }
+  return (
+    <>
+      <Facts rows={[
+        ['Investor', plain(data.accurateName || data.shorthandName)],
+        ['Their loan number', plain(data.investorLoanNumber)],
+        ['Name typed early', plain(data.shorthandName)],
+        ['Name on the file', plain(data.accurateName)],
+        ['Contact', plain(data.investorEmail)],
+        ['Funding channel', plain(data.fundingChannel)],
+      ]} />
+      <p style={{ margin: '10px 0 0', color: MUTED, fontSize: 12 }}>
+        Internal only — an investor’s name never reaches a borrower or a broker.
+        {data.canonicalKey ? <> PILOT files this one under <code>{data.canonicalKey}</code>,
+          which is what it compares rather than the spelling.</> : <> PILOT does not
+          recognise this spelling, so it is stored as typed and compared to nothing —
+          worth a look if you expected a match.</>}
+        {data.readAt ? <> Read from Encompass {data.readAt}.</> : null}
+      </p>
     </>
   );
 }
@@ -603,6 +831,7 @@ const RENDERERS = {
   assets: Assets,
   reo: Reo,
   declarations: Declarations,
+  investor: Investor,
 };
 
 /** The section key each renderer takes its own slice from. */

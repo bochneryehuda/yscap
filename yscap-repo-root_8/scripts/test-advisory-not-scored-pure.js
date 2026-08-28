@@ -82,10 +82,12 @@ const sqlStatementAround = (src, idx) => {
   return sp ? src.slice(sp[0], sp[1]) : null;
 };
 
+/* THREE SITES LEFT THIS LIST ON 2026-08-21, and they were REMOVED rather than filtered.
+   The pipeline's two red stamps — the open-fatal chip and the 0-100 risk score — were taken off
+   the list screen by owner direction ("take them off the pipeline"), and the three correlated
+   subqueries that fed them went with them. A site that no longer exists cannot be guarded, so the
+   guard against them coming back is the assertion below the table, not an entry in it. */
 const SITES = [
-  ['src/routes/staff.js', /open_fatal_ai,/, 'the pipeline "fatal AI" chip'],
-  ['src/routes/staff.js', /open_fatal_ai_oldest_days,/, 'the pipeline aged-fatal chip'],
-  ['src/routes/staff.js', /AS ai_risk_score/, 'the pipeline risk score'],
   ['src/lib/notification-digests.js', /ORDER BY score DESC[\s\S]{0,40}?LIMIT 5/, 'the admin top-5-riskiest email'],
   ['src/lib/notification-digests.js', /FROM staff_users u/, 'the LO-digest officer discovery'],
   ['src/lib/notification-digests.js', /ORDER BY score DESC, a\.id\s*\n\s*LIMIT 10/, 'the per-officer file list'],
@@ -95,6 +97,30 @@ const SITES = [
   // are note-buyer advisories headlines the admin's overview as "oldest 30 days".
   ['src/routes/admin-insights.js', /AS open_fatal,/, 'the admin aged-fatal-files tile'],
 ];
+
+t('the PIPELINE does not score files at all — the stamps were removed, not filtered', () => {
+  /* Owner-directed 2026-08-21, after reviewing the two red stamps on the pipeline list: *"take
+     them off the pipeline"*. The reason they were worth reviewing is the standing HARD RULE that
+     AI findings are ADVISORY and never block — a red stamp on the one screen the whole team scans
+     reads as a STOP on that file. The findings themselves are untouched and still render on the
+     FILE, where the person who can resolve one is looking.
+
+     So this asserts ABSENCE, in both places, which a filter-carrying entry in SITES could not:
+     re-adding a scoring subquery would pass that table (it would carry the filter) while putting
+     the stamp straight back on the pipeline. */
+  const sql = read('src/routes/staff.js');
+  for (const gone of ['open_fatal_ai', 'ai_risk_score']) {
+    assert.ok(!sql.includes(gone),
+      `the pipeline query must not compute ${gone} — the stamp it fed was removed by owner direction`);
+  }
+  const screen = read('app-v2/src/screens/StaffQueue.jsx');
+  for (const gone of ['FatalAiChip', 'RiskScoreChip']) {
+    // Stripped of comments first: the change that removed these necessarily NAMES them in the
+    // note explaining why, and a guard that read comments would fail on its own explanation.
+    const code = screen.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    assert.ok(!code.includes(gone), `the pipeline row must not render ${gone}`);
+  }
+});
 
 t('every KNOWN fatal-counting / scoring consumer carries its OWN filter', () => {
   const byStatement = new Map();      // "file@start" → { stmt, labels[] }

@@ -59,18 +59,26 @@ function call(server, method, p, token, body) {
 
 (async () => {
   // ---------------------------------------------------------------- 1. the gate, pure
+  /* THE GATE, since 2026-08-23: Encompass must carry the date, and the advice DOCUMENT must be on
+     the file. The old third check — PILOT's own hand-typed date matching Encompass's — is gone
+     because nobody types one any more, so the two can no longer disagree. */
   eq('1a nothing at all → Encompass first', PP.adviceGate({}).code, 'no_encompass_advice');
-  eq('1b Encompass only → record it here', PP.adviceGate({ encompassDate: '2026-07-31' }).code, 'no_pilot_advice');
-  eq('1c two different days → refused', PP.adviceGate({ encompassDate: '2026-07-31', pilotDate: '2026-07-30' }).code, 'advice_dates_differ');
-  eq('1d the same day → allowed', PP.adviceGate({ encompassDate: '2026-07-31', pilotDate: '2026-07-31' }).ok, true);
-  // Compared as calendar days, through the same parser the sold signal uses — so the shape a date
-  // happens to be stored in can never fail a file that is actually correct.
-  eq('1e a US-typed date and an ISO one are the same day',
-    PP.adviceGate({ encompassDate: '07/31/2026', pilotDate: '2026-07-31' }).ok, true);
-  eq('1f …and so is a full timestamp', PP.adviceGate({ encompassDate: '2026-07-31T00:00:00Z', pilotDate: '2026-07-31' }).ok, true);
-  const differ = PP.adviceGate({ encompassDate: '2026-07-31', pilotDate: '2026-07-30' });
-  ok('1g the refusal names BOTH dates, so the person can see which is wrong',
-    /07\/30\/2026/.test(differ.message) && /07\/31\/2026/.test(differ.message));
+  eq('1b Encompass date but no advice document → refused on the document',
+    PP.adviceGate({ encompassDate: '2026-07-31' }).code, 'no_advice_document');
+  eq('1c both → allowed', PP.adviceGate({ encompassDate: '2026-07-31', adviceDocumentId: 'doc-1' }).ok, true);
+  eq('1d a document with no Encompass date is still refused — the sale is not recorded yet',
+    PP.adviceGate({ adviceDocumentId: 'doc-1' }).code, 'no_encompass_advice');
+  // Read as calendar days through the same parser the sold signal uses, so the shape Encompass
+  // happens to return can never fail a file that is actually correct.
+  eq('1e a US-typed Encompass date reads as the same day',
+    PP.adviceGate({ encompassDate: '07/31/2026', adviceDocumentId: 'doc-1' }).ok, true);
+  eq('1f …and so does a full timestamp',
+    PP.adviceGate({ encompassDate: '2026-07-31T00:00:00Z', adviceDocumentId: 'doc-1' }).ok, true);
+  const noDoc = PP.adviceGate({ encompassDate: '2026-07-31' });
+  ok('1g the document refusal quotes the date it DID find, so the reader knows it landed',
+    /07\/31\/2026/.test(noDoc.message) && noDoc.encompass_date === '2026-07-31');
+  ok('1h no refusal sends the reader to a PILOT date field that would refuse them',
+    !/enter the same|type the date/i.test(`${PP.adviceGate({}).message} ${noDoc.message}`));
 
   const server = app.listen(0);
   await new Promise((r) => server.once('listening', r));
@@ -128,38 +136,43 @@ function call(server, method, p, token, body) {
       eq('2c …and the file is still outstanding', await statusOf(f), 'outstanding');
 
       await db.query(`UPDATE applications SET purchase_advice_date='2026-07-31' WHERE id=$1`, [f]);
-      const noOurs = await setComplete(f);
-      eq('2d with no date recorded HERE it still cannot', [noOurs.status, noOurs.body.code], [422, 'no_pilot_advice']);
+      const noDocRoute = await setComplete(f);
+      eq('2d with no advice document it still cannot', [noDocRoute.status, noDocRoute.body.code], [422, 'no_advice_document']);
+      ok('2e …and it quotes the date Encompass already has', /07\/31\/2026/.test(noDocRoute.body.error));
 
-      await db.query(
-        `INSERT INTO purchasing_advice (application_id, advice_date) VALUES ($1,'2026-07-30')
-         ON CONFLICT (application_id) DO UPDATE SET advice_date=EXCLUDED.advice_date`, [f]);
-      const mismatch = await setComplete(f);
-      eq('2e two different dates are refused', [mismatch.status, mismatch.body.code], [422, 'advice_dates_differ']);
-      ok('2f …naming both, in plain words', /07\/30\/2026/.test(mismatch.body.error) && /07\/31\/2026/.test(mismatch.body.error));
+      /* THE DATE FIELD IS SHUT. Proving it HERE, on the live route, is the point: the pure test
+         proves the library refuses, and this proves the door in front of it does too — the
+         2026-08-09 audit's lesson was that a gate tested below its route can be bypassed at it. */
+      const typed = await call(server, 'POST', `/api/staff/applications/${f}/purchasing/advice`, token, { date: '2026-07-31' });
+      eq('2f typing the date through the API is refused', [typed.status, typed.body.code], [422, 'advice_date_is_encompass']);
+      ok('2g …and the refusal names Encompass', /Encompass/.test(typed.body.error || ''));
 
-      await db.query(`UPDATE purchasing_advice SET advice_date='2026-07-31' WHERE application_id=$1`, [f]);
+      const advDoc = (await db.query(
+        `INSERT INTO documents (application_id, filename, content_type, doc_kind)
+         VALUES ($1,'purchase-advice.pdf','application/pdf','purchase_advice') RETURNING id`, [f])).rows[0];
+      const designated = await call(server, 'POST', `/api/staff/applications/${f}/purchasing/advice`, token, { documentId: advDoc.id });
+      eq('2h …while the DOCUMENT still saves through the same door', designated.status, 200);
+
       const good = await setComplete(f);
-      eq('2g matching dates complete the purchase', good.status, 200);
-      eq('2h …and the desk shows it', await statusOf(f), 'complete');
+      eq('2i with the date in Encompass and the advice on file, the purchase completes', good.status, 200);
+      eq('2j …and the desk shows it', await statusOf(f), 'complete');
 
       // Going BACK to outstanding is never gated — that is how a mistake is corrected.
       const back = await call(server, 'POST', `/api/staff/applications/${f}/purchasing/status`, token, { status: 'outstanding' });
-      eq('2i moving back to outstanding is always allowed', [back.status, await statusOf(f)], [200, 'outstanding']);
+      eq('2k moving back to outstanding is always allowed', [back.status, await statusOf(f)], [200, 'outstanding']);
     }
 
     // ---------------------------------------------------------------- 3. the way through, for a super admin
     {
       const f = await mkFile();
+      // Encompass has the date; the advice document has NOT been filed. That is the state the
+      // override exists for — the paperwork is elsewhere and the file has to be closed out.
       await db.query(`UPDATE applications SET purchase_advice_date='2026-07-31' WHERE id=$1`, [f]);
-      await db.query(
-        `INSERT INTO purchasing_advice (application_id, advice_date) VALUES ($1,'2026-07-30')
-         ON CONFLICT (application_id) DO UPDATE SET advice_date=EXCLUDED.advice_date`, [f]);
       eq('3a an override with no reason is refused', (await setComplete(f, token, { override: true })).status, 400);
       eq('3b …and a non-super-admin cannot override at all',
-        (await setComplete(f, plainToken, { override: true, override_reason: 'Encompass has the wrong day' })).status, 403);
+        (await setComplete(f, plainToken, { override: true, override_reason: 'the advice is filed in SharePoint' })).status, 403);
       eq('3c …the file is still outstanding after both', await statusOf(f), 'outstanding');
-      const forced = await setComplete(f, token, { override: true, override_reason: 'Encompass has the wrong day; investor confirmed 7/30' });
+      const forced = await setComplete(f, token, { override: true, override_reason: 'the advice is filed in SharePoint; nothing to upload here' });
       eq('3d a super admin with a reason can finish it', forced.status, 200);
       eq('3e …and it is recorded', await statusOf(f), 'complete');
       const audited = (await db.query(
@@ -169,7 +182,40 @@ function call(server, method, p, token, body) {
 
     // ---------------------------------------------------------------- 4. the announcement
     {
+      /* NOBODY ON THE LIST → NOTHING IS ANNOUNCED, AND NOTHING IS BURNT.
+         Until 2026-08-23 the once-only stamp was claimed BEFORE the recipients were read, so a
+         deployment with an empty notify list marked the sale "announced", emailed nobody, and
+         could never announce that file again — not even after an admin filled the list in.
+
+         THE LIST IS EMPTIED ON PURPOSE HERE, and that correction matters. The first cut of this
+         test simply ran before the list was populated, on the belief that `post_purchase_notify`
+         ships empty. It does NOT: db/546 SEEDS it with the two people the owner named, whenever
+         the roster carries them. So the test asserted a state the database never actually starts
+         in, and it went red the moment it met a real Postgres. An empty list is still a REAL
+         state — an admin can remove everybody, and the seed finds nobody on a roster without
+         those two — it just is not the default. Empty it, prove the behaviour, put it back. */
+      const seeded = (await db.query(`SELECT staff_id FROM post_purchase_notify`)).rows.map((r) => r.staff_id);
+      await db.query(`DELETE FROM post_purchase_notify`);
+      const quiet = await mkFile();
+      const emptyList = await PP.announceSold(quiet, '2026-07-31');
+      eq('4-0a with nobody on the notify list, nothing is announced', emptyList.announced, false);
+      eq('4-0b …and it says why, rather than reporting success', emptyList.reason, 'no_recipients');
+      ok('4-0c …and the once-only stamp is NOT burnt, so it can still fire later',
+        !(await db.query(`SELECT purchase_advice_notified_at FROM applications WHERE id=$1`, [quiet]))
+          .rows[0].purchase_advice_notified_at);
+      /* THE WORK IS STILL LEFT ON THE DESK. Nothing about the job depends on whether anybody's
+         email address has been configured — only the telling does. */
+      eq('4-0c2 …but the outstanding task is left anyway', emptyList.task, true);
+
+      /* PUT BACK WHAT db/546 SEEDED, then add this run's own recipient — so the rest of the
+         section runs against the list a real deployment has, not a list this test invented. */
+      for (const id of seeded) {
+        await db.query(`INSERT INTO post_purchase_notify (staff_id) VALUES ($1) ON CONFLICT DO NOTHING`, [id]);
+      }
       await db.query(`INSERT INTO post_purchase_notify (staff_id) VALUES ($1) ON CONFLICT DO NOTHING`, [post]);
+      eq('4-0d …and once somebody IS on the list, that same file announces',
+        (await PP.announceSold(quiet, '2026-07-31')).announced, true);
+
       const f = await mkFile();
       const first = await PP.announceSold(f, '2026-07-31');
       eq('4a the post-purchase team is told', first.announced, true);
@@ -178,6 +224,7 @@ function call(server, method, p, token, body) {
       const task = (await db.query(
         `SELECT label FROM purchasing_tasks WHERE application_id=$1 AND done_at IS NULL`, [f])).rows[0];
       ok('4d …worded as the thing to actually do', task && /upload the purchase advice/i.test(task.label));
+      ok('4d2 …and it does NOT ask for a date nobody can type any more', task && !/date/i.test(task.label));
       ok('4e …and it says so in the message', /mark the purchase complete/i.test(PP.TASK_LABEL));
 
       eq('4f a second look never emails again', (await PP.announceSold(f, '2026-07-31')).reason, 'already_announced');

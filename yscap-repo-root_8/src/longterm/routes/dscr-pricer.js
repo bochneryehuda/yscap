@@ -13,7 +13,15 @@
  */
 const express = require('express');
 const lp = require('../lenderprice/client');
+// The white-label sheet + investor identity for every answer (owner-directed
+// 2026-08-27). Decoration only: it annotates what Lender Price returned and
+// never filters, narrows or re-orders anything — the display overlay lives on
+// the screen, and the search always asks for everything.
+const investorPrograms = require('../lenderprice/investor-programs');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
+const zipCounty = require('../lenderprice/zip-county');
+const settingsStore = require('../settings/store');
+const { resolveCompPlan } = require('../comp-plan');
 const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
@@ -30,7 +38,16 @@ function trimPrograms(parsed, limit = 60) {
     meta: { programCount: parsed.programCount, lenderCount: parsed.lenderCount, rungCount: parsed.rungCount, disqualifiedCount: parsed.disqualifiedCount },
     programs: parsed.programs.slice(0, limit).map((p) => ({
       lender: p.lender, investor: p.investor || null, lenderId: p.lenderId || null,
+      // The canonical investor identity + white-label (2026-08-27) — null when
+      // the caller did not run the answer through investorPrograms.decorate.
+      investorKey: p.investorKey != null ? p.investorKey : null,
+      whiteLabel: p.whiteLabel != null ? p.whiteLabel : null,
+      consumerLabel: p.consumerLabel != null ? p.consumerLabel : null,
       program: p.program, product: p.product || null,
+      // §38 — the sheet this program priced from. Two channels of one lender can share a program
+      // NAME with different ladders (measured: ResiCentral non-del vs wholesale), so a summary
+      // that names the program without its sheet is ambiguous about which ladder it describes.
+      rateSheetName: p.rateSheetName || null,
       minRate: p.minRate, minPoints: p.minPoints, maxPrice: p.maxPrice, rungCount: p.rungCount,
     })),
   };
@@ -277,12 +294,18 @@ async function price(req, res) {
   // separate status route (GET /disqualifications/:searchKey) instead of ever restarting the search.
   if (req.body && req.body.full) {
     const full = lp.parseFull(r.raw, { raw: !!req.body.raw });
-    const out = { ok: true, ...full, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+    // The white-label decoration (2026-08-27): the SAME programs, annotated with the
+    // canonical investor key + white-label / consumer labels, plus the roster of
+    // investors PRESENT in this answer and anything that resolved to no name — named,
+    // never dropped, so the owner can christen a new investor the day it appears.
+    const deco = investorPrograms.decorate(full.programs);
+    const out = { ok: true, ...full, programs: deco.programs, investorRoster: deco.roster, investorsUnmapped: deco.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
     if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
     return res.json(out);
   }
   const parsed = lp.parse(r.raw);
-  const out = { ok: true, ...trimPrograms(parsed), requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+  const decoSummary = investorPrograms.decorate(parsed.programs);
+  const out = { ok: true, ...trimPrograms({ ...parsed, programs: decoSummary.programs }), investorRoster: decoSummary.roster, investorsUnmapped: decoSummary.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
   // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
   // caller asks, include a structural summary of the raw response so we can see whether Lender
   // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
@@ -314,6 +337,10 @@ function shapeDisqualified(d, opts = {}) {
     returnedItemCount += items.length;
     const consumed = itemOffset + items.length;
     return { lender: g.lender, investor: g.investor || null, lenderId: g.lenderId || null,
+      // Canonical identity + white-label (2026-08-27), so the ONE investor filter
+      // can drive the ineligible board too. Null when the group was not decorated.
+      investorKey: g.investorKey != null ? g.investorKey : null,
+      whiteLabel: g.whiteLabel != null ? g.whiteLabel : null,
       itemCount: g.itemCount,
       itemTruncated: consumed < allItems.length,
       itemOffset,
@@ -353,7 +380,10 @@ async function disqualifications(req, res) {
   if (!pr.ok) { const code = (pr.http && pr.http >= 500) ? 502 : 400; return res.status(code).json({ ok: false, error: pr.error, http: pr.http || null, message: pr.message, upstream: pr.upstream || pr.body || null }); }
   if (!pr.ready) { res.set('Retry-After', '2'); return res.status(202).json({ ok: true, ready: false, searchKey, retryAfterMs: 2000, message: 'Ineligible results still computing — poll again shortly.' }); }
   const parsed = pr.parsed || lp.parseDisqualified(pr.raw);
-  return res.json({ ok: true, ready: true, searchKey, cached: !!pr.cached, ...shapeDisqualified(parsed, { debug: body.debug, rawSummary: pr.rawSummary, ...pageOptsOf(req) }) });
+  // A COPY, never a mutation — pr.parsed can be the client's cached object, and
+  // decorating it in place would grow annotations on a cache nobody asked to change.
+  const decoDq = { ...parsed, lenders: investorPrograms.decorateDisqualifiedLenders(parsed.lenders) };
+  return res.json({ ok: true, ready: true, searchKey, cached: !!pr.cached, ...shapeDisqualified(decoDq, { debug: body.debug, rawSummary: pr.rawSummary, ...pageOptsOf(req) }) });
 }
 
 // POST /disqualify — body is a scenario (or { scenario }). Returns the QUALIFIED summary plus the
@@ -379,7 +409,8 @@ async function disqualify(req, res) {
     }
     if (rejectInvalidValues(pr.request, res)) return;
     if (!pr.ready) return res.status(202).json({ ok: true, ready: false, retryAfterMs: 2000, message: 'Disqualify reasons still computing — poll again shortly.' });
-    const shaped = shapeDisqualified(lp.parseDisqualified(pr.raw), { debug: body.debug, rawSummary: body.debug ? lp.summarizeRaw(pr.raw) : null, ...pageOptsOf(req) });
+    const pd = lp.parseDisqualified(pr.raw);
+    const shaped = shapeDisqualified({ ...pd, lenders: investorPrograms.decorateDisqualifiedLenders(pd.lenders) }, { debug: body.debug, rawSummary: body.debug ? lp.summarizeRaw(pr.raw) : null, ...pageOptsOf(req) });
     return res.json({ ok: true, ready: true, ...shaped });
   }
   const opts = {};
@@ -389,7 +420,8 @@ async function disqualify(req, res) {
   if (!r.ok) return res.status((r.http && r.http >= 500) ? 502 : 400).json(priceErrorBody(r));
   if (rejectInvalidValues(r.request, res)) return;
   const qualified = trimPrograms(lp.parse(r.qualified));
-  const shaped = shapeDisqualified(lp.parseDisqualified(r.disqualified), { debug: body.debug, rawSummary: body.debug ? lp.summarizeRaw(r.disqualified) : null, ...pageOptsOf(req) });
+  const pdFull = lp.parseDisqualified(r.disqualified);
+  const shaped = shapeDisqualified({ ...pdFull, lenders: investorPrograms.decorateDisqualifiedLenders(pdFull.lenders) }, { debug: body.debug, rawSummary: body.debug ? lp.summarizeRaw(r.disqualified) : null, ...pageOptsOf(req) });
   const out = { ok: true, ready: r.ready, polls: r.polls, message: r.message || null, qualified, ...shaped };
   res.json(out);
 }
@@ -408,11 +440,91 @@ async function selftest(req, res) {
   res.json({ ok: results.every((x) => x.ok), count: results.length, results });
 }
 
+// ---- ZIP -> state / county / county FIPS -------------------------------------
+// WHAT IT IS FOR: the vendor's own screen fills the state and county in from a five-digit ZIP
+// before it searches, and the owner asked for the same here. It is a LOOKUP, not a price — it costs
+// no vendor call and touches no session, so it is safe to fire as somebody types.
+//
+// IT NEVER GUESSES. A ZIP the table does not carry (a PO-box-only ZIP has no ZCTA) answers 404 with
+// a plain reason, so the screen says "we do not know this ZIP" instead of showing a county nobody
+// resolved. And a ZIP that genuinely SPANS more than one county — 28% of them do — answers with the
+// dominant one AND `split: true`, so the screen can say the county was inferred and let a human
+// override it. Hiding that would put a confident county on a quote that nobody chose.
+function zipLookup(req, res) {
+  const raw = String((req.params && req.params.zip) || '').trim();
+  if (!/^\d{5}$/.test(raw)) {
+    return res.status(400).json({ ok: false, error: 'invalid_zip', message: 'A ZIP code is five digits.' });
+  }
+  // ⛔ AN UNEXPECTED THROW HERE MUST NOT LEAVE THE SCREEN WITH "something went wrong at our end".
+  // The lookup is a pure read of a committed table and every one of the 33,791 ZIPs in it was swept
+  // through this function without one throwing — but an unhandled throw in an Express handler ends
+  // as a bare 500 with no reason attached, and a bare 500 on this field is indistinguishable to the
+  // person in front of it from the connector being down. Catching it turns "we cannot tell you why"
+  // into a sentence that names the field and tells them what they can do instead, which is what the
+  // state/county boxes on the screen are for. It NEVER guesses a county: an unreadable table
+  // answers as unreadable.
+  let hit = null;
+  try {
+    hit = zipCounty.lookupZip(raw);
+  } catch (e) {
+    return res.status(500).json({
+      ok: false, error: 'zip_lookup_failed',
+      message: `We could not read the ZIP table just now. Type the state and county for ${raw} instead.`,
+    });
+  }
+  if (!hit) {
+    return res.status(404).json({ ok: false, error: 'unknown_zip',
+      message: `We do not have a county on file for ZIP ${raw}. Type the state and county instead.` });
+  }
+  return res.json({ ok: true, zip: hit.zip, state: hit.state, county: hit.countyName, countyFps: hit.countyFps, split: !!hit.split });
+}
+
+// GET /comp-plan — the COMPENSATION PLAN the signed-in person prices with (owner-directed
+// 2026-08-23). The pricing engine's three-way switch (borrower-paid / raw / lender-paid) is a
+// DISPLAY overlay: Lender Price is always searched borrower-paid and nothing about the search
+// changes — this endpoint only says which figures the overlay applies. Resolution per figure:
+// the person's own settings row → the company's value → the declared default (comp-plan.js).
+// The two lender fees are company-only. A caller with no session (the diagnostics mount) gets
+// the company plan — there is nobody to resolve a personal figure for.
+async function compPlanHandler(req, res) {
+  const staffId = req.actor && req.actor.id != null ? String(req.actor.id) : null;
+  const [company, user] = await Promise.all([
+    settingsStore.load(),
+    staffId
+      ? settingsStore.load(`user:${staffId}`)
+      : Promise.resolve({ settings: {}, stored: new Set(), degraded: false }),
+  ]);
+  const { plan, source } = resolveCompPlan({
+    defaults: settingsStore.defaults(),
+    company: company.settings,
+    user: user.settings,
+    userStored: user.stored,
+  });
+  res.json({ ok: true, plan, source, degraded: !!(company.degraded || user.degraded) });
+}
+
+// GET /investors — the FULL white-label roster (owner-directed 2026-08-27): every
+// investor on the owner's sheet, live in Lender Price or not, so the pre-search
+// dropdown lists them all and an investor that comes online later "is already
+// there". A pure read of the committed sheet — no vendor call, no database — so
+// the screen may fetch it from an effect.
+function investorsRoster(req, res) {
+  res.json({ ok: true, investors: investorPrograms.fullRoster() });
+}
+
 // A router with the endpoints wired. Auth is applied by the mount (staff at /api/lt, or the
 // secret gate at /api/lt/_diag/lenderprice).
 function makeRouter() {
   const router = express.Router();
   router.use(express.json({ limit: '256kb' }));
+  router.get('/zip/:zip', zipLookup);
+  router.get('/investors', investorsRoster);
+  router.get('/comp-plan', (req, res) => compPlanHandler(req, res).catch((e) => {
+    console.error('[lt-dscr] comp-plan failed:', (e && e.message) || e);
+    // ⛔ NO PLAN IS THE ANSWER, never a guessed one — the screen falls back to raw pricing
+    // with a notice, which is the fail-safe the whole overlay is built around.
+    res.status(500).json({ ok: false, error: 'lt_dscr_comp_plan_error' });
+  }));
   router.get('/health', (req, res) => health(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_health_error' })));
   router.get('/login-check', (req, res) => loginCheck(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_login_error' })));
   router.post('/price', (req, res) => price(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_error' })));
@@ -424,5 +536,5 @@ function makeRouter() {
   return router;
 }
 
-module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
+module.exports = { makeRouter, handlers: { health, loginCheck, price, disqualify, disqualifications, selftest, zipLookup, investorsRoster }, BATTERY, SUPPORTED_FIELDS, META_FIELDS,
   _internals: { shapeDisqualified, effectiveOf, cashoutNote, pageOptsOf, unsupportedFields, requestedOf, derivedOf } };

@@ -107,7 +107,7 @@ const SUBJECT_PROPERTY = {
     originalCost: { fieldId: '25', dscrFill: '41.4%', note: 'Refinance original cost.' },
   },
   rent: { fieldId: '1005', path: 'loan.subjectPropertyGrossRentalIncomeAmount', dscrFill: '65.9%',
-    note: 'Gross monthly market rent. The NUMERATOR of the DSCR ratio.' },
+    note: 'The MONTHLY QUALIFYING RENT — the figure the loan qualifies on, which is not necessarily the market rent an appraiser supports (owner-named 2026-08-23). The NUMERATOR of the DSCR ratio.' },
   ltv: { fieldId: '353', path: 'loan.ltv', dscrFill: '90.2%' },
 };
 

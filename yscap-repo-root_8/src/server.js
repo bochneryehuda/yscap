@@ -40,10 +40,15 @@ app.use(require('./lib/security').securityHeaders);
 // 5xx body: a reference for everyone, the real reason for staff. See
 // src/lib/http-fail.js for what may be shown and to whom.
 app.use(require('./lib/http-fail').middleware);
-// Body limit must comfortably exceed a max-size upload AFTER base64 inflation:
-// a MAX_UPLOAD_MB-byte file becomes ~1.37x that as base64 inside the JSON body,
-// plus envelope. A flat 25mb limit silently 413'd legitimate ~19-20MB uploads.
-const JSON_LIMIT_MB = Math.max(25, Math.ceil(cfg.maxUploadMb * 1.4) + 4);
+/* THE JSON BODY LIMIT FOLLOWS `maxJsonUploadMb`, NEVER THE DOCUMENT CEILING (2026-08-21).
+   A base64 upload becomes ~1.37x the file inside the body, plus envelope — but the cost that
+   matters is the PEAK, which is about five times the file once express has buffered it,
+   stringified it, parsed it and decoded it (measured: 25 MB → 168 MB, 100 MB → 410 MB, on a
+   512 MB instance). Documents now go through the streaming door (`lib/upload-stream.js`),
+   which holds nothing in memory, so the document ceiling can be raised to anything without
+   this number moving. Deriving this from `maxUploadMb` is how a bigger upload limit turns
+   into an out-of-memory kill of the whole site. */
+const JSON_LIMIT_MB = Math.max(25, Math.ceil(cfg.maxJsonUploadMb * 1.4) + 4);
 // ClickUp webhook is mounted BEFORE the JSON parser — it needs the RAW body to
 // verify the HMAC signature (it applies its own express.raw()).
 app.use('/api/clickup/webhook', require('./routes/clickup-webhook'));
@@ -353,6 +358,9 @@ app.get('/api/health', async (req, res) => {
 // the first line unless the bearer token actually carries a borrower-view
 // envelope. See src/lib/borrower-view.js.
 app.use(require('./lib/borrower-view').guard);
+// STAFF VIEW read-only wall — the third sibling, same mount, same reason: every
+// write is refused structurally while a super-admin is inside somebody's console.
+app.use(require('./lib/staff-view').guard);
 // Same shape for a TPO VIEW — an internal AE/AM/admin stepped into a broker's
 // login. Inert unless the bearer token carries a tpo-view envelope. See
 // src/lib/tpo-view.js.
@@ -457,6 +465,7 @@ app.use('/api/term-sheet-offers',
 // Start / leave / audit a borrower view. Mounted outside /api/staff because the
 // leave + status calls are made while holding a BORROWER-kind token.
 app.use('/api/borrower-view', require('./routes/borrower-view'));
+app.use('/api/staff-view', require('./routes/staff-view'));
 // Start / leave / audit a TPO (broker) view. Mounted outside /api/staff because
 // the leave + status calls are made while holding a TPO-kind token.
 app.use('/api/tpo-view', require('./routes/tpo-view'));
@@ -480,6 +489,19 @@ app.use('/api/tpo', require('./routes/tpo'));
   // staff login; it is OFF (404s) unless LP_DIAG_TOKEN is set. Still src/server.js →
   // src/longterm/routes/ — the permitted seam.
   app.use('/api/lt/_diag/lenderprice', require('./longterm/routes/lenderprice-diag'));
+  // Secret-gated LT BOOK read (match keys only) — the same shape and the same seam,
+  // for the one-time job of telling every long-term loan which ClickUp card is already
+  // its own before PILOT starts opening cards itself. OFF (404s) unless
+  // LT_BOOK_DIAG_TOKEN is set, and removing that variable turns it off again with no
+  // deploy. Read-only: there is no write path inside it.
+  app.use('/api/lt/_diag/book', require('./longterm/routes/book-diag'));
+  // The Encompass WEBHOOK receiver (#42) — Encompass's advanced-code rule posts
+  // "this loan changed" here. PUBLIC of necessity (Encompass holds no PILOT
+  // session) and authenticated by the X-Encompass-Secret shared-secret header
+  // (LT_ENCOMPASS_WEBHOOK_SECRET; unset = the endpoint refuses everything).
+  // NUDGE-ONLY: nothing in the body is ever applied — it only marks the loan
+  // for re-read over the authenticated read-only connection. Same seam.
+  app.use('/api/lt/encompass-hook', require('./longterm/routes/encompass-hook'));
   const { requireAuth, requireStaff, requireBorrower } = require('./auth');
   // THE BORROWER'S OWN long-term files — the client-facing half of the owner's
   // switch (2026-08-16). Mounted BEFORE the staff-gated /api/lt because that one
@@ -871,6 +893,16 @@ if (require.main === module) {
         require('./lib/conditions/engine').backfillTpoIntakeConditionsOnce()
           .then((r) => r && r.added && console.log('[boot] TPO intake condition backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] TPO intake condition backfill failed:', e.message));
+        /* THE BORROWERS WHO ARE STILL WAITING (owner-reported 2026-08-25, db/631). The fix
+           itself only reaches the NEXT package sent; the ones already out at DocuSign carry a
+           borrower on routing order 1 who received nothing and whom nothing re-drives. This
+           hands each of them the invitation they should have had. Scoped to the four-day
+           window the defect was live in — never the whole back book — bounded per boot,
+           self-draining, and it decides nothing itself (notifyReadyToSign still owns whose
+           turn it is and the send-once record). Off with ESIGN_INVITE_RECOVERY_DISABLED=1. */
+        require('./lib/esign/invite-recovery').recoverUninvitedOnce()
+          .then((r) => r && r.sent && console.log('[boot] e-sign invitation recovery:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] e-sign invitation recovery failed:', e.message));
         // One-shot (db/601, owner-directed 2026-08-20): every GROUND-UP CONSTRUCTION file
         // carries the feasibility report + the GC information condition, on PREVIOUS files
         // as well as future ones. The rule db/601 installs is the ONE definition of
@@ -879,6 +911,16 @@ if (require.main === module) {
         require('./lib/conditions/engine').backfillGroundUpConstructionConditionsOnce()
           .then((r) => r && r.added && console.log('[boot] ground-up condition backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] ground-up condition backfill failed:', e.message));
+        /* THE SOLD STAGE ON THE BACK BOOK (owner-directed 2026-08-21, db/611: *"You can
+           backfill this on the table. All the previous files that have a PA date filled …
+           update the status."*). SILENT by construction — every file it reaches was sold
+           weeks or months ago, so announcing them would fan a "this loan is now Sold" notice
+           across the whole funded book and move every ClickUp card at once. Bounded and
+           self-draining (funded + has a purchase advice date + no stage yet), so once the
+           book is stamped the pass costs one index scan. Fire-and-forget. */
+        require('./lib/sold-status').backfillSoldOnce(require('./db'))
+          .then((r) => r && r.marked && console.log('[boot] sold-stage backfill:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] sold-stage backfill failed:', e.message));
         // One-shot: recompute the experience condition on co-borrower files so it
         // carries the per-borrower breakdown + each borrower's track-record link
         // (#103). Idempotent, preserves sign-offs; fire-and-forget.
@@ -1199,6 +1241,29 @@ if (require.main === module) {
           .then((r) => r && (r.rekeyed || r.proposed)
             && console.log('[boot] track-record duplicates for review:', JSON.stringify({ ...r, left: r.left.length })))
           .catch((e) => console.error('[boot] track-record dedupe failed:', e.message));
+        // TWO PROFILES, ONE PERSON (owner-directed 2026-08-27: "Profiles should
+        // automatically be merged if it matches … make sure in the future it's not
+        // happening again"). The root cause is fixed at the two doors that let a
+        // human keep two profiles on one mailbox (they now RECORD that decision);
+        // this is the "previous files" half — it merges only a pair it can PROVE is
+        // one person and names its refusal for every other pair, so a duplicate is
+        // never merged on a guess and never silently left unexplained. NOT the
+        // track-record rule above: that one merges nothing on its own because two
+        // similar ADDRESSES are a judgement; one Social Security number is a fact.
+        // Bounded per boot, self-draining (a merged pair stops being a pair);
+        // never blocks boot.
+        if (process.env.BORROWER_AUTO_MERGE_DISABLED !== '1') {
+          require('./lib/borrower-dedupe').autoMergeOnce({
+            limit: Number(process.env.BORROWER_AUTO_MERGE_LIMIT || 200),
+            dryRun: process.env.BORROWER_AUTO_MERGE_DRYRUN === '1',
+          })
+            /* Logged whenever there were any pairs at all — a REFUSAL is the
+               answer to "why is this duplicate still here?", so it must never
+               be the silent case. */
+            .then((r) => r && r.pairs
+              && console.log('[boot] duplicate borrower profiles:', JSON.stringify(r)))
+            .catch((e) => console.error('[boot] borrower auto-merge failed:', e.message));
+        }
         // Previous files (owner-reported 2026-08-02: the borrower's own deals with
         // US were the ones missing from their track record). Both funded doors now
         // record the deal going forward; this walks the loans already funded, once,

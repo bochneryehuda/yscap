@@ -285,7 +285,7 @@ function GlobalSearch() {
 }
 
 export default function StaffLayout({ children }) {
-  const { signOut, role, can } = useAuth();
+  const { signOut, role, can, exitStaffView } = useAuth();
   // THE ARENA. Its nav entry exists ONLY while the master switch is on, and
   // `seesArena` is the server's answer -- never a role check here, or the rule
   // "when it's off, nobody should even see it" would have two definitions and
@@ -449,8 +449,45 @@ export default function StaffLayout({ children }) {
   // roles, so they stay 0 for everyone else and the sum is naturally scoped.
   const approvalsCount = escCount + excCount + fescCount + reviewCount + myExcCount + trReviewCount;
   const roleLabel = ROLE_LABEL[role] || role || 'Internal';
+
+  // STAFF VIEW BANNER — when this console is somebody ELSE'S, seen through a
+  // super-admin's read-only session, it must say so on every screen, both
+  // products, unmissably. Probed once per mount: the answer cannot change
+  // without the token changing, and a token change remounts the app.
+  const [staffViewOf, setStaffViewOf] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    api.staffViewSession().then((s) => {
+      if (alive && s && s.active) setStaffViewOf(s.viewing || {});
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  /* LEAVING A STAFF VIEW GOES THROUGH THE SHARED HANDOFF (auth.jsx), which is the
+     same one the borrower and broker views use: ask the server for a fresh token
+     for the REAL viewer, fall back to the copy parked in sessionStorage when the
+     network is unavailable, and — if NEITHER produces a session — drop the token
+     and make them sign in rather than leave them sitting inside somebody else's
+     console. This used to be a fourth hand-rolled copy of that dance reading the
+     storage keys directly; it now reads none. The navigation stays explicit
+     because the token has changed under the running app. */
+  const leaveStaffView = async () => {
+    const restored = await exitStaffView();
+    window.location.assign(restored ? '/portal/#/internal' : '/');
+    window.location.reload();
+  };
+
   return (
     <div className="app">
+      {staffViewOf && (
+        <div role="alert" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1001,
+          background: '#1F3864', color: '#fff', padding: '8px 14px', display: 'flex',
+          alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14 }}>
+          <span>You are seeing <strong>{staffViewOf.name || 'a team member'}</strong>’s screen — read-only.
+            Switch Long-term / Short-term above to see everything they see.</span>
+          <button className="btn small" style={{ background: '#fff', color: '#141B22', border: 'none' }}
+            onClick={leaveStaffView}>Back to my own screen</button>
+        </div>
+      )}
       {staleBuild && (
         <div role="alert" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1000,
           background: '#AE8746', color: '#fff', padding: '8px 14px', display: 'flex',
@@ -474,11 +511,19 @@ export default function StaffLayout({ children }) {
             <div className="sb-sec">Long-term</div>
             <NavLink className="sb-link" to="/internal/lt" end><NavIcon name="pipeline" />Pipeline</NavLink>
             <NavLink className="sb-link" to="/internal/lt/book" title="Every long-term file, with the folder, the status and the milestone it sits in."><NavIcon name="book" />The book</NavLink>
-            <NavLink className="sb-link" to="/internal/lt/people"><NavIcon name="team" />People</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/people"><NavIcon name="team" />Team</NavLink>
             <NavLink className="sb-link" to="/internal/lt/borrowers" title="Which client each long-term file belongs to — what puts it on their own login."><NavIcon name="borrowers" />Borrowers</NavLink>
             <NavLink className="sb-link" to="/internal/lt/statuses" title="Encompass's milestones, our own stage names, and what the borrower is told — side by side."><NavIcon name="conditions" />Statuses</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/status-reviews" title="Every file where the ClickUp status and the Encompass milestones disagree — PILOT reports these and never settles them itself."><NavIcon name="health" />Status disagreements</NavLink>
             <NavLink className="sb-link" to="/internal/lt/conditions"><NavIcon name="conditions" />Condition Center</NavLink>
-            <NavLink className="sb-link" to="/internal/lt/ppe"><NavIcon name="pricing" />Pricing engine</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/pricer" title="Price a scenario through Lender Price and see every rate, every investor at each rate, and the whole build behind each price."><NavIcon name="pricing" />Pricing Engine</NavLink>
+            {/* The rules/parity console is PARKED FOR REAL now (owner-directed 2026-08-23,
+                second pass: "It's just written that it's parked, but it's not really parked.
+                Just get that removed from that screen and park it."). Its nav entry is GONE —
+                parked means not on anybody's screen, not a link wearing a "(parked)" label.
+                The route itself stays behind StaffPrivate, so a deliberate URL still opens the
+                console when the parity work resumes; nothing was deleted. Do not re-add a nav
+                link here without the owner asking for the console back. */}
             <NavLink className="sb-link" to="/internal/lt/sync"><NavIcon name="health" />Sync</NavLink>
             <NavLink className="sb-link" to="/internal/lt/settings"><NavIcon name="settings" />Settings</NavLink>
           </>

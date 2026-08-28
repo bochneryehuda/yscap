@@ -159,6 +159,26 @@ async function autoRegisterFromIntake(appId, rawProgram, client) {
       isManual: false,
       needsApproval: false,           // an ELIGIBLE, default-priced scenario needs none
     });
+    /* THE SIDE EFFECTS OF REGISTERING, which every other register door runs and this one did not
+       (found by the fee audit engine, 2026-08-26). `routes/intake.js` builds the file's conditions
+       at `ensureFileConditions` and only THEN calls this — so a registration here lands after the
+       conditions were decided, and nothing told them about it:
+
+         · THE LIQUIDITY CONDITION kept its generic pre-registration wording and recorded no
+           required-liquidity figure at all, on every file the public form has ever
+           self-registered. That is the owner's *"the liquidity condition updates"* — it does on
+           four doors and did not on the fifth.
+         · THE NOTE BUYER is stamped BY the registration (`noteBuyerForProgram`), and it is a rule
+           field: the EMD, Social-Security-verification and flood conditions are keyed on it. Rules
+           evaluated before the stamp cannot have seen it.
+
+       BEST-EFFORT, EACH IN ITS OWN CATCH, exactly as the borrower and staff doors run them — this
+       file's own contract is NEVER THROWS, NEVER BLOCKS, and a lead is worth incomparably more
+       than a condition refresh. `enforceSowContingency` is deliberately NOT here: a file created
+       by the public form has no Scope of Work to measure, so there is nothing yet to enforce, and
+       reopening a rehab-budget condition from an anonymous door is its own decision to make. */
+    try { await require('./conditions/engine').evaluateApplication(appId, { reason: 'product_registered' }); } catch (_) { /* advisory */ }
+    try { await require('./liquidity').syncLiquidityCondition(appId, quote); } catch (_) { /* advisory */ }
     return { registered: true, program };
   } catch (e) {
     try {

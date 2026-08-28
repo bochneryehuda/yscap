@@ -21,6 +21,7 @@
 const rollupMod = require('./rollup');
 const APPROVAL = require('./approval');
 const drawEmail = require('../lib/email/draw-email');
+const parked = require('../trustpoint/parked');
 
 /**
  * A TrustPoint-administered draw, expressed in the ONE money vocabulary.
@@ -34,8 +35,25 @@ const drawEmail = require('../lib/email/draw-email');
  */
 function moneyFromTrustpoint(row) {
   if (!row) return null;
+  // PARKED → a TrustPoint figure never reaches a reader (owner-directed 2026-08-24). The mirror
+  // is already switched off upstream, so in practice nothing calls this while parked — this is
+  // the belt to that brace, and it belongs HERE rather than at the callers because this is the
+  // ONE place a TrustPoint row becomes money in an email. Rows already mirrored stay in the
+  // database; they simply stop being stated. Required at the top, not lazily: `parked` is pure
+  // with no requires of its own, so it cannot cycle and cannot fail to load — and a lazy require
+  // wrapped in a catch would fail OPEN, stating the very figure this exists to withhold.
+  if (parked.isParked()) return null;
   const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
   const approved = n(row.approved_cents);
+  // The administrator's own fee lines on THIS draw, through the mirror's one reader (which already
+  // rejects a boolean/array/object in an amount slot — Number(true) === 1). Lazily required: this
+  // module is loaded on email paths that have nothing to do with TrustPoint, and a failure here may
+  // never cost the email — an unreadable fee is simply unknown.
+  let tpFee = null;
+  try {
+    const lines = require('../trustpoint/mirror')._feeLinesCents(row.fees);
+    if (Array.isArray(lines) && lines.length) tpFee = Math.max(0, lines.reduce((s, c) => s + n(c), 0));
+  } catch (_) { tpFee = null; }
   const m = APPROVAL.drawMoney({
     draw: {
       total_requested_cents: n(row.requested_cents),
@@ -50,6 +68,16 @@ function moneyFromTrustpoint(row) {
     // their fees. It is authoritative for what actually wires, so it is passed as the net rather
     // than recomputed from a fee we did not charge.
     netReleaseCents: row.to_disburse_cents != null ? n(row.to_disburse_cents) : null,
+    // THE FEE TRUSTPOINT ITSELF STATES, off the draw's own fee lines. Passing nothing here had two
+    // consequences and both reached the reader: the email printed "no draw fee on this release" on
+    // a draw whose wire IS net of the administrator's fee, and — whenever `to_disburse_cents` is
+    // absent, which `mirror.mirrorDisbursement` records TrustPoint does not always publish — the
+    // net fell back to the approved total, OVERSTATING the wire by exactly that fee. Same source
+    // `verifyPartnerFee` compares against the agreed rule, so the email and that check can never
+    // read different fees. Nothing readable → the fee is UNKNOWN, not zero, and the wording says so.
+    feeCents: tpFee != null ? tpFee : 0,
+    feeKnown: tpFee != null,
+    feeRecorded: tpFee != null,
     released: !!row.disbursed_at,
   });
   m.number = row.number;

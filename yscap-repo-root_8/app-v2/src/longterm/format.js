@@ -57,6 +57,47 @@ export const rate = (v) => (typeof v === 'number' && Number.isFinite(v) ? `${(v 
  * places, and four surfaces agreeing matters more than which convention is nicer.
  * Changing how a DSCR is quoted is a product decision, not a side effect of tidying up.
  */
+/**
+ * A NOTE RATE — a whole percent to three places. 5.875 → "5.875%".
+ *
+ * ⛔ IT IS NOT `rate`, AND THE TWO MUST NEVER BE SWAPPED. `rate` above takes a FRACTION
+ * (0.97 → "97.0%") because that is what dividing two counts gives you; this takes a whole
+ * percent, because that is how a rate sheet quotes a note rate and how the column holds it.
+ * Feed a note rate to `rate` and 5.875 prints as "587.5%"; feed an agreement fraction to
+ * this one and 0.97 prints as "0.970%". Neither is a rounding difference — both are simply
+ * the wrong number, which is why they are named separately and each says what it takes.
+ *
+ * THREE PLACES, not two: rate ladders step in eighths (5.875, 6.125), and two places would
+ * print two different rungs as the same rate.
+ *
+ * Non-finite is a DASH. A rate the vendor never quoted must never be drawn as 0.000%.
+ */
+export const noteRate = (v) => (typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(3)}%` : '—');
+
+/**
+ * A PRICE — three places, no percent sign. 100.061 → "100.061".
+ *
+ * A price is not a percent even though it looks like one: par is 100, and 98.5 means the
+ * buyer pays 98.5% of par. Printing it with a "%" invites somebody to read 98.5 as a rate.
+ *
+ * Non-finite is a DASH, for the standing reason: a price nobody quoted is not 0.000, and a
+ * price of zero is a real (catastrophic) figure that must stay distinguishable from it.
+ */
+export const price = (v) => (typeof v === 'number' && Number.isFinite(v) ? v.toFixed(3) : '—');
+
+/**
+ * POINTS — three places, SIGNED, with the plus kept. -0.689 → "-0.689", 2 → "+2.000".
+ *
+ * The sign is the whole meaning: points ADDED to a price cost the borrower money and points
+ * SUBTRACTED pay them. An unsigned "2.000" beside a "0.689" reads as two costs when one of
+ * them is a credit, so the plus is printed rather than left implied.
+ *
+ * Non-finite is a DASH: an adjustment the vendor never itemized is not a zero adjustment.
+ */
+export const points = (v) => (typeof v === 'number' && Number.isFinite(v)
+  ? (v > 0 ? `+${v.toFixed(3)}` : v.toFixed(3))
+  : '—');
+
 export const ratio = (v) => (v == null || v === ''
   ? '—' : Number(v).toFixed(3).replace(/0+$/, '').replace(/\.$/, ''));
 
@@ -74,9 +115,111 @@ export const day = (v) => {
 };
 
 /**
+ * How big a file is, in the units a person reads.
+ *
+ * A size nobody stated is a DASH, and a stated ZERO is "0 KB" — those are different
+ * facts about a document, and an empty file somebody uploaded by mistake is worth
+ * seeing rather than hiding behind the same dash as "we do not know". Rounded up to
+ * the KB so a 400-byte file does not read as nothing at all.
+ */
+export const fileSize = (v) => {
+  if (v == null || v === '' || !Number.isFinite(Number(v))) return '—';
+  const n = Number(v);
+  if (n < 1024) return `${Math.max(0, Math.round(n))} B`;
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+/**
  * A yes/no that was ANSWERED false is "No"; one nobody answered is a dash.
  *
  * Strictly booleans, deliberately: anything else — a 0, a '', an 'N' — is a value we
  * do not understand, and reading it as "No" would state a determination nobody made.
  */
 export const yesNo = (v) => (v === true ? 'Yes' : v === false ? 'No' : '—');
+
+/**
+ * A TIMESTAMP, day AND time, or null when there isn't one.
+ *
+ * Deliberately returns NULL rather than a dash: on a sync screen "never read" and
+ * "read, and here is when" are different sentences, not the same sentence with a
+ * different value in it, so the CALLER words the absence. A sync stamp is an
+ * INSTANT (unlike `day`, which reads a calendar column), so it is read as one.
+ */
+/**
+ * A CODE FROM ENCOMPASS, WRITTEN THE WAY A PERSON WRITES IT — `rate_term_refinance`
+ * becomes "Rate & term refinance" (owner-reported 2026-08-25: the purpose "should be
+ * nicely displayed, not with these lines").
+ *
+ * TWO LAYERS, and the order matters. A small table gives the RIGHT English for the
+ * handful of values where simply removing the underscores would not — "Cash-out
+ * refinance" carries a hyphen a de-underscoring cannot invent, and "Rate & term"
+ * reads as a pair rather than three words. EVERYTHING ELSE falls through to a
+ * de-underscored, sentence-cased reading, which can never change what a value MEANS:
+ * it only stops a screen printing a database code at somebody.
+ *
+ * A VALUE NOBODY HAS WORDS FOR IS STILL SHOWN. Dropping it would hide a real purpose
+ * because we had not met that spelling yet, which is worse than an unpolished one.
+ */
+const PURPOSE_WORDS = {
+  purchase: 'Purchase',
+  refinance: 'Refinance',
+  rate_term_refinance: 'Rate & term refinance',
+  ratetermrefinance: 'Rate & term refinance',
+  rate_and_term_refinance: 'Rate & term refinance',
+  no_cash_out_refinance: 'Rate & term refinance',
+  cash_out_refinance: 'Cash-out refinance',
+  cashoutrefinance: 'Cash-out refinance',
+  limited_cash_out_refinance: 'Limited cash-out refinance',
+  construction: 'Construction',
+  construction_to_permanent: 'Construction to permanent',
+  delayed_purchase: 'Delayed purchase',
+  delayed_financing: 'Delayed financing',
+};
+
+export const humanCode = (v) => {
+  if (v == null || v === '') return '—';
+  const raw = String(v).trim();
+  if (!raw) return '—';
+  const key = raw.toLowerCase().replace(/[\s-]+/g, '_');
+  if (PURPOSE_WORDS[key]) return PURPOSE_WORDS[key];
+  // The generic reading. Underscores become spaces, the first letter is raised, and
+  // NOTHING else is touched — a word already capitalised keeps its capital, because
+  // lower-casing "DSCR" or "LLC" to look tidy would be a change to the value.
+  const words = raw.replace(/_+/g, ' ').replace(/\s+/g, ' ').trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : '—';
+};
+
+/** The loan purpose, in words. A thin name over `humanCode` so the four screens
+ *  that show a purpose read as though they mean it, and so the table above has an
+ *  obvious home if a purpose ever needs wording nothing else does. */
+export const purpose = (v) => humanCode(v);
+
+export const stamp = (v) => {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isFinite(d.getTime()) ? d.toLocaleString('en-US') : null;
+};
+
+/**
+ * How long ago, in words — "12 minutes ago", "3 days ago".
+ *
+ * Null when there is nothing to measure, and null for a FUTURE stamp too: the only
+ * way that happens is a clock disagreement, and "in -4 hours ago" on a screen about
+ * timing would undermine the one thing it is there to explain. `stamp` still prints
+ * the real value beside it either way.
+ */
+export const ago = (v, now = Date.now()) => {
+  if (!v) return null;
+  const t = new Date(v).getTime();
+  if (!Number.isFinite(t)) return null;
+  const secs = Math.floor((now - t) / 1000);
+  if (secs < 0) return null;
+  if (secs < 60) return 'just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins} minute${mins === 1 ? '' : 's'} ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+};

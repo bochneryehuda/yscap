@@ -109,7 +109,14 @@ const ROLE_DEFAULTS = {
   // — instead of being forced to escalate it to a super-admin. The decision is still
   // fully attributed (who/why/when on the finding + the audit log), and an admin can
   // revoke it for a specific person from the Team screen.
-  processor: ['review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_draws', 'export_data_tapes', 'waive_conditions', 'waive_vesting_llc', 'send_term_sheet'],
+  // AND they see the WHOLE pipeline (owner-directed 2026-08-26: "anyone with the
+  // back office persona should technically have access to the entire pipeline,
+  // not only the files that they are assigned … all the files and all the
+  // borrower profiles … the same way admins have"). Their assigned-files
+  // WORKFLOW is untouched — the personal queue, my-tasks and the ?mine=1
+  // pipeline lens are id-keyed, not visibility-keyed. Revocable per person from
+  // the Team screen like every capability.
+  processor: ['see_all_files', 'review_conditions', 'sign_off_conditions', 'pull_credit', 'manage_draws', 'export_data_tapes', 'waive_conditions', 'waive_vesting_llc', 'send_term_sheet'],
   // Loan officers can REVIEW conditions (the lighter stamp) but NOT sign them off.
   // They CAN pull_credit (owner-directed 2026-07-23): the LO pulls credit at point of
   // sale, then marks the credit condition Done (the reviewed stamp) — the processor
@@ -190,7 +197,19 @@ const assigneeExistsSql = (alias, p) =>
 //   1. they are the primary loan officer,           2. they are the primary processor,
 //   3. the file's officer is on their delegation list (staff_users.visible_officer_ids),
 //   4. they are an active assignee (primary or full-access assistant, db/103),
-//   5. a workflow hand-off was routed to them and is still open/in-progress (db/212).
+//   5. a workflow hand-off was routed to them — WHETHER OR NOT IT IS STILL OPEN.
+//
+// BRANCH 5 IS NOT LIMITED TO AN OPEN HAND-OFF (owner-directed 2026-08-25, asked
+// directly: "once they worked it, they keep it"). It used to read
+// `status IN ('open','in_progress')`, so the moment a processor RETURNED the file
+// — which is how they finish their step — they became a stranger to it: the file
+// screen answered `forbidden`, and the term sheet's own "See what doesn't match"
+// button led them straight into that refusal. `workflow_items` is a record that
+// this person was given this file to work, and returning it does not un-work it;
+// they are still the person to ask about what they did. `removed_at IS NULL`
+// stays — and a CANCELLED hand-off is excluded too, because cancelling one means
+// the person was never given the work: "once they worked it" does not describe
+// them. Withdrawing or cancelling the hand-off is how the access is withdrawn.
 //
 // `${alias}.id` must be selectable, and `p` is the acting staff-id param PLACEHOLDER —
 // a function, not a fixed string, because a see_all_files caller drops this clause
@@ -201,7 +220,8 @@ const visibleOfficersSql = (alias, p) =>
   ` OR ${alias}.loan_officer_id IN (SELECT unnest(visible_officer_ids) FROM staff_users WHERE id=${p})` +
   ` OR ${assigneeExistsSql(alias, p)}` +
   ` OR EXISTS (SELECT 1 FROM workflow_items wi` +
-  ` WHERE wi.application_id=${alias}.id AND wi.to_staff_id=${p} AND wi.status IN ('open','in_progress')))`;
+  ` WHERE wi.application_id=${alias}.id AND wi.to_staff_id=${p}` +
+  ` AND wi.status <> 'cancelled' AND wi.removed_at IS NULL))`;
 
 // Which BORROWERS an internal staffer may see. MOVED HERE from routes/staff.js so
 // a second door can ask the question without re-inlining it — the standing rule

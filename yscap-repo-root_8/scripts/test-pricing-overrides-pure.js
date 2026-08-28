@@ -136,8 +136,24 @@ assert(!engaged(false) && !engaged(null) && !engaged('') && !engaged(undefined) 
   const list = pricingOverridesEngaged({ origStdPct: 0.5, lenderFee: 1000 }, CD);
   assert(keysOf(list).join(',') === 'lenderFee,origStdPct',
     'reduced origination points AND a discounted underwriting fee both need approval');
-  assert(describeOverrides(list).includes('Underwriting / processing / legal fee: $2,195 → $1,000'),
-    'a money change reads as dollars');
+  // TO THE CENT (owner-reported 2026-08-24). A money knob here is a FEE somebody typed, and
+  // rounding it made the approval card, its notification and the audit trail disagree with what
+  // was actually entered — "$1,995 → $2,000" for a typed $1,999.50. The whole-dollar wording this
+  // line used to pin is the bug, not the contract.
+  assert(describeOverrides(list).includes('Underwriting / processing / legal fee: $2,195.00 → $1,000.00'),
+    'a money change reads as dollars and cents');
+  assert(describeOverrides([{ label: 'Underwriting / processing / legal fee', unit: 'money', value: 1999.5, defaultValue: 2195 }])[0]
+    === 'Underwriting / processing / legal fee: $2,195.00 → $1,999.50',
+    'a fee with real cents is recorded as it was typed, never rounded away');
+  // ONE definition, two surfaces: `email/pricing-email.fmtOverrideValue` renders the SAME change
+  // in the approval email. A drift between them is three surfaces describing one typed fee three
+  // ways, so they are compared here rather than trusted to stay in step.
+  {
+    const { fmtOverrideValue } = require('../src/lib/email/pricing-email');
+    const battery = [0, 0.5, 150, 1999.5, 2195, 12345.67, 1000000];
+    assert(battery.every((v) => describeOverrides([{ label: 'X', unit: 'money', value: v }])[0] === `X: ${fmtOverrideValue('money', v)}`),
+      'the approval card and the approval email format a money knob identically');
+  }
 }
 
 // ---- RAISING a fee / markup / origination is NOT a change (owner-directed

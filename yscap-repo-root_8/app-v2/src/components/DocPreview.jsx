@@ -70,8 +70,17 @@ export default function DocPreview({ title, filename, contentType, load, onDownl
         const isPdf = type.includes('pdf') || name.endsWith('.pdf');
         const isImg = type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name);
         const isHtml = type.includes('html') || /\.html?$/.test(name);
+        // XML is recognised EXPLICITLY (owner-reported 2026-08-26: "the XML appraisal
+        // preview close button doesn't work — I have to exit the loan"). A MISMO
+        // appraisal XML embeds the whole report PDF as base64 — one unbroken
+        // multi-megabyte line — and the doors store the browser's own 'text/xml', so
+        // it used to fall into the generic text branch, `blob.text()` the WHOLE file
+        // and lay it out with break-word: the main thread froze and Close/Esc/backdrop
+        // (all correctly wired) simply never ran. The fix is the CAP below, at this one
+        // chokepoint, so every caller and every already-stored row is covered.
+        const isXml = !isHtml && (type.includes('xml') || /\.(xml|mismo)$/.test(name));
         const isText = !isHtml && (type.startsWith('text/') || /\.(txt|csv|json|md|log)$/.test(name));
-        let kind = 'other', data = null, pdfUrl = null;
+        let kind = 'other', data = null, pdfUrl = null, truncated = 0;
         if (isPdf) {
           kind = 'pdf';
           data = await blob.arrayBuffer();
@@ -82,9 +91,19 @@ export default function DocPreview({ title, filename, contentType, load, onDownl
         }
         else if (isImg) { kind = 'image'; data = URL.createObjectURL(blob); urlRef.current = data; }
         else if (isHtml) { kind = 'html'; data = await blob.text(); }
-        else if (isText) { kind = 'text'; data = await blob.text(); }
+        else if (isXml || isText) {
+          // CAPPED, always: rendering more than ~256 KB of text into one <pre> with
+          // break-word can lock the tab (the frozen-Close class), and any huge
+          // .txt/.csv/.json with a text/* type freezes identically — so the cap sits
+          // on the branch, not on XML alone. The note under the viewer says honestly
+          // that the rest is in the download.
+          const CAP = 256 * 1024;
+          kind = 'text';
+          truncated = blob.size > CAP ? blob.size : 0;
+          data = await (truncated ? blob.slice(0, CAP) : blob).text();
+        }
         if (!alive) { if (urlRef.current) URL.revokeObjectURL(urlRef.current); return; }
-        setState({ status: 'ready', kind, data, pdfUrl, filename: fn || filename });
+        setState({ status: 'ready', kind, data, pdfUrl, truncated, filename: fn || filename });
       })
       .catch((e) => { if (alive) setState({ status: 'error', error: e.message || 'Could not load the document.' }); });
     return () => {
@@ -139,7 +158,14 @@ export default function DocPreview({ title, filename, contentType, load, onDownl
               style={{ width: '100%', height: '100%', border: 0, background: '#fff' }} />
           )}
           {state.status === 'ready' && state.kind === 'text' && (
-            <pre style={{ width: '100%', height: '100%', margin: 0, overflow: 'auto', padding: 16, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: '#fff', color: '#111' }}>{state.data}</pre>
+            <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: '#fff' }}>
+              {state.truncated > 0 && (
+                <div className="small" style={{ padding: '8px 16px', background: '#FBF4E4', borderBottom: '1px solid #E7E1D3', color: '#141B22' }}>
+                  Showing the first 256 KB of this {Math.round(state.truncated / 1048576 * 10) / 10} MB file — download it to read the rest.
+                </div>
+              )}
+              <pre style={{ width: '100%', flex: 1, margin: 0, overflow: 'auto', padding: 16, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: '#fff', color: '#111' }}>{state.data}</pre>
+            </div>
           )}
           {state.status === 'ready' && !previewable && (
             <div style={{ textAlign: 'center', padding: 24 }}>

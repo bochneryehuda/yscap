@@ -1,0 +1,301 @@
+'use strict';
+/**
+ * render-term-sheet-fees — EVERY FEE THE DEAL CARRIES IS NAMED ON THE TERM SHEET.
+ *
+ * WHY THIS EXISTS (owner-reported 2026-08-26: *"There need to be added lines for these fees.
+ * Please do the research exactly why it's not populating on the files that we're doing right
+ * now."*). The construction feasibility fee shipped on 2026-08-21 folded into `closing` — so it
+ * was CHARGED, the cash-to-close total included it — and named on the studio panel and the
+ * spreadsheet's Standard column only. The term sheet PDF never mentioned it, so the fees a
+ * borrower can read did not add up to the total they were asked to bring, on the one document
+ * that goes out for signature.
+ *
+ * READING THE SOURCE CANNOT PROVE THIS. The PDF is drawn by jsPDF at run time out of a long
+ * sequence of row calls, so the only honest check is to RUN the export and record what actually
+ * landed on the page. This loads the real studio, drives a battery of deals through the real
+ * inputs, wraps `jsPDF.API.text` to capture every string drawn, and asserts that a deal carrying
+ * a fee NAMES it — and that a deal carrying none is unchanged.
+ *
+ * It also re-proves the second defect the same render exposed: a BRIDGE was being charged the
+ * $750 project-review fee, because the studio's rehab-scope control is HIDDEN rather than cleared
+ * when a deal moves off fix & flip, so it kept `heavy` and fed the fee.
+ *
+ * Run: node scripts/render-term-sheet-fees.js
+ * SKIPs (exit 0) without Playwright/Chromium — CI has no browser, which is why this is not in the
+ * `npm test` chain; `test-feasibility-fee-pure` carries the source guards that CI can enforce.
+ */
+const path = require('path');
+const fs = require('fs');
+
+let chromium = null;
+for (const m of ['/opt/node22/lib/node_modules/playwright', 'playwright']) {
+  try { ({ chromium } = require(m)); break; } catch (_) { /* try the next */ }
+}
+if (!chromium) { console.log('SKIP render-term-sheet-fees (no playwright)'); process.exit(0); }
+const TOOL = path.resolve(__dirname, '../web/v2/tools/term-sheet.html');
+if (!fs.existsSync(TOOL)) { console.log('SKIP render-term-sheet-fees (studio not found)'); process.exit(0); }
+
+let pass = 0, fail = 0;
+const ok = (m, c, extra) => { if (c) { pass++; } else { fail++; console.log('  FAIL - ' + m + (extra ? ' :: ' + extra : '')); } };
+
+/* OUR OWN FEE, IN ITS TWO REAL PARTS, AND THE NEW YORK LADDER (owner-directed 2026-08-26) — the
+   same proof, one fee family further on. `test-lender-fees-pure` guards the RULE and the source
+   references; only a real render can say what the page actually printed. */
+const FEE_DEALS = [
+  { name: 'general NJ flip', uw: '$1,200.00', legal: '$995.00', settlement: null,
+    f: { dealType: 'Fix & Flip', price: '300000', construction: '60000', arv: '520000', asIs: '300000', fico: '740', expFlips: '5', propState: 'NJ', rehabScope: 'light' } },
+  { name: 'New York City flip (Brooklyn)', uw: '$1,200.00', legal: '$2,500.00', settlement: '$750.00',
+    f: { dealType: 'Fix & Flip', price: '300000', construction: '60000', arv: '520000', asIs: '300000', fico: '740', expFlips: '5', propState: 'NY', rehabScope: 'light', tsTaxCounty: 'Kings' } },
+  { name: 'New York upstate flip', uw: '$1,200.00', legal: '$2,000.00', settlement: '$750.00',
+    f: { dealType: 'Fix & Flip', price: '300000', construction: '60000', arv: '520000', asIs: '300000', fico: '740', expFlips: '5', propState: 'NY', rehabScope: 'light', tsTaxCounty: 'Albany', tsTaxCity: 'Albany' } },
+  { name: 'ground-up NJ', uw: '$1,200.00', legal: '$2,000.00', settlement: null,
+    f: { dealType: 'Ground-up Construction', price: '300000', construction: '400000', arv: '1100000', asIs: '300000', fico: '740', expGround: '3', propState: 'NJ' } },
+  /* THE NON-NEW-YORK HEAVY-REHAB RUNG (owner-directed 2026-08-26): all three tests met — marked
+     heavy, a $400,000 rehab (over $100,000), and that rehab larger than the $150,000 price. */
+  { name: 'NJ heavy rehab, rehab over $100k AND over the price', uw: '$1,200.00', legal: '$1,500.00', settlement: null,
+    f: { dealType: 'Fix & Flip', price: '150000', construction: '400000', arv: '900000', asIs: '150000', fico: '740', expFlips: '5', propState: 'NJ', rehabScope: 'heavy' } },
+  /* THE SAME FILE with the rehab SMALLER than the property — the third test denied, so $995. This
+     pair is what proves the render reflects the RULE rather than the rehab scope alone. */
+  { name: 'NJ heavy rehab, rehab under the price', uw: '$1,200.00', legal: '$995.00', settlement: null,
+    f: { dealType: 'Fix & Flip', price: '900000', construction: '400000', arv: '1900000', asIs: '900000', fico: '740', expFlips: '5', propState: 'NJ', rehabScope: 'heavy' } },
+];
+
+/* THE TERMS THE SHEET DISCLOSES rather than charges (owner-directed 2026-08-26): a GROUND-UP is
+   offered the physical draw only, and every file discloses the $500 closing reschedule fee. */
+/* THE NEW YORK CEMA — the question is only shown on a New York REFINANCE, and the fee is charged
+   only once somebody ticks it. Both halves are browser-only behaviour. */
+const CEMA_DEALS = [
+  { name: 'NY cash-out refinance, CEMA not ticked', ask: true, tick: false, expect: 0,
+    f: { dealPurpose: 'Cash-out refinance', dealType: 'Bridge / Stabilized', asIs: '600000', arv: '600000', payoff: '300000', fico: '740', expFlips: '5', propState: 'NY', tsTaxCounty: 'Albany', tsTaxCity: 'Albany' } },
+  { name: 'NY cash-out refinance, CEMA ticked', ask: true, tick: true, expect: 1000,
+    f: { dealPurpose: 'Cash-out refinance', dealType: 'Bridge / Stabilized', asIs: '600000', arv: '600000', payoff: '300000', fico: '740', expFlips: '5', propState: 'NY', tsTaxCounty: 'Albany', tsTaxCity: 'Albany' } },
+  { name: 'NY PURCHASE — a CEMA cannot exist', ask: false, tick: true, expect: 0,
+    f: { dealPurpose: 'Purchase', dealType: 'Fix & Flip', price: '300000', construction: '60000', arv: '520000', asIs: '300000', fico: '740', expFlips: '5', propState: 'NY', rehabScope: 'light', tsTaxCounty: 'Albany', tsTaxCity: 'Albany' } },
+  { name: 'NJ refinance — outside New York', ask: false, tick: true, expect: 0,
+    f: { dealPurpose: 'Cash-out refinance', dealType: 'Bridge / Stabilized', asIs: '600000', arv: '600000', payoff: '300000', fico: '740', expFlips: '5', propState: 'NJ' } },
+];
+
+const TERM_DEALS = [
+  { name: 'standard flip', hybrid: true,
+    f: { dealPurpose: 'Purchase', dealType: 'Fix & Flip', price: '300000', construction: '60000', arv: '520000', asIs: '300000', fico: '740', expFlips: '5', propState: 'NJ', rehabScope: 'light' } },
+  { name: 'ground-up', hybrid: false,
+    f: { dealPurpose: 'Purchase', dealType: 'Ground-up Construction', price: '300000', construction: '400000', arv: '1100000', asIs: '300000', fico: '740', expGround: '3', propState: 'NJ' } },
+];
+
+/* Each deal, and what the term sheet MUST say about its construction review. */
+const DEALS = [
+  { name: 'ground-up', expect: 'Ground-up construction feasibility review', amount: '$1,250.00',
+    f: { dealType: 'Ground-up Construction', price: '300000', construction: '400000', arv: '1100000', asIs: '300000', fico: '740', expGround: '3', propState: 'NJ' } },
+  { name: 'heavy fix & flip', expect: 'Construction feasibility & project review', amount: '$750.00',
+    f: { dealType: 'Fix & Flip', price: '300000', construction: '150000', arv: '650000', asIs: '300000', fico: '740', expFlips: '5', propState: 'NJ', rehabScope: 'heavy' } },
+  { name: 'light fix & flip', expect: null,
+    f: { dealType: 'Fix & Flip', price: '300000', construction: '60000', arv: '520000', asIs: '300000', fico: '740', expFlips: '5', propState: 'NJ', rehabScope: 'light' } },
+  /* THE BRIDGE, entered straight after a heavy fix & flip — the exact sequence that produced the
+     overcharge, because the rehab-scope control keeps its value when it is hidden. */
+  { name: 'bridge (after a heavy rehab deal)', expect: null,
+    f: { dealType: 'Bridge / Stabilized', price: '400000', asIs: '400000', fico: '740', expFlips: '3', propState: 'NJ' } },
+];
+
+(async () => {
+  const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium/chrome-linux/chrome' })
+    .catch(() => chromium.launch());
+  const page = await browser.newPage();
+  await page.goto('file://' + TOOL, { waitUntil: 'load' });
+  await page.waitForTimeout(900);
+  // jsPDF is loaded on demand by the export, so pre-load it or there is nothing to wrap.
+  await page.evaluate(() => new Promise((res) => {
+    if (window.jspdf && window.jspdf.jsPDF) return res();
+    const s = document.createElement('script');
+    s.src = 'vendor/jspdf.umd.min.js'; s.onload = res; s.onerror = res;
+    document.head.appendChild(s);
+  }));
+
+  for (const deal of DEALS) {
+    await page.evaluate((f) => {
+      ['construction', 'arv', 'asIs', 'price', 'expFlips', 'expBrrrr', 'expGround'].forEach((id) => {
+        const e = document.getElementById(id); if (e) e.value = '';
+      });
+      for (const [k, v] of Object.entries(f)) {
+        const e = document.getElementById(k); if (!e) continue;
+        e.value = v;
+        e.dispatchEvent(new Event('input', { bubbles: true }));
+        e.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }, deal.f);
+    await page.waitForTimeout(800);
+
+    const r = await page.evaluate(async () => {
+      const J = window.jspdf && window.jspdf.jsPDF;
+      if (!J) return { err: 'jsPDF did not load' };
+      const drawn = [];
+      const oT = J.API.text, oS = J.API.save, oO = J.API.output;
+      J.API.text = function (t) {
+        try {
+          if (typeof t === 'string') drawn.push(t);
+          else if (Array.isArray(t)) t.forEach((x) => typeof x === 'string' && drawn.push(x));
+        } catch (_) { /* capture is best-effort */ }
+        try { return oT.apply(this, arguments); } catch (e) { return this; }
+      };
+      J.API.save = function () { return this; };      // never actually download
+      J.API.output = function () { return ''; };
+      let err = null;
+      try { await window.TS.exportPdf(); } catch (e) { err = String((e && e.message) || e); }
+      await new Promise((z) => setTimeout(z, 1200));
+      J.API.text = oT; J.API.save = oS; J.API.output = oO;
+      const d = window.TS._calc(window.TS._gather());
+      return { err, drawn, feasFee: d && d.feasFee, cashToClose: d && d.cashToClose };
+    });
+
+    const all = (r.drawn || []).join('\n');
+    ok(`${deal.name}: the term sheet rendered`, !r.err && (r.drawn || []).length > 50, r.err || `${(r.drawn || []).length} strings`);
+    if (deal.expect) {
+      ok(`${deal.name}: the fee is NAMED on the page`, all.includes(deal.expect));
+      ok(`${deal.name}: …with its amount beside it`, all.includes(deal.amount));
+      ok(`${deal.name}: …and the deal actually carries it`, Number(r.feasFee) > 0);
+    } else {
+      /* A deal with no construction to review must not be charged for one, and must not print a
+         line for a fee it does not carry. */
+      ok(`${deal.name}: carries NO construction review fee`, Number(r.feasFee || 0) === 0, `feasFee=${r.feasFee}`);
+      ok(`${deal.name}: …and the page never names one`,
+        !/feasibility|project review/i.test(all));
+    }
+  }
+
+  /* ── OUR OWN FEE, ON THE REAL PAGE ─────────────────────────────────────────────────────────
+     The general file must print $1,200 + $995 — which is the owner's "the total stays the same"
+     made visible — and a New York file must print the higher legal rung plus an OPTIONAL
+     settlement agent fee that SAYS it is optional. */
+  for (const deal of FEE_DEALS) {
+    await page.evaluate((f) => {
+      ['construction', 'arv', 'asIs', 'price', 'expFlips', 'expBrrrr', 'expGround', 'tsTaxCounty', 'tsTaxCity'].forEach((id) => {
+        const e = document.getElementById(id); if (e) e.value = '';
+      });
+      for (const [k, v] of Object.entries(f)) {
+        const e = document.getElementById(k); if (!e) continue;
+        e.value = v;
+        e.dispatchEvent(new Event('input', { bubbles: true }));
+        e.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }, deal.f);
+    await page.waitForTimeout(800);
+
+    const r = await page.evaluate(async () => {
+      const J = window.jspdf && window.jspdf.jsPDF;
+      if (!J) return { err: 'jsPDF did not load' };
+      const drawn = [];
+      const oT = J.API.text, oS = J.API.save, oO = J.API.output;
+      J.API.text = function (t) {
+        try {
+          if (typeof t === 'string') drawn.push(t);
+          else if (Array.isArray(t)) t.forEach((x) => typeof x === 'string' && drawn.push(x));
+        } catch (_) { /* capture is best-effort */ }
+        try { return oT.apply(this, arguments); } catch (e) { return this; }
+      };
+      J.API.save = function () { return this; };
+      J.API.output = function () { return ''; };
+      let err = null;
+      try { await window.TS.exportPdf(); } catch (e) { err = String((e && e.message) || e); }
+      await new Promise((z) => setTimeout(z, 1200));
+      J.API.text = oT; J.API.save = oS; J.API.output = oO;
+      const d = window.TS._calc(window.TS._gather());
+      return { err, drawn, uwFee: d && d.uwFee, legalFee: d && d.legalFee, settleFee: d && d.settleFee, lenderFee: d && d.lenderFee };
+    });
+    const all = (r.drawn || []).join('\n');
+    ok(`${deal.name}: the term sheet rendered`, !r.err && (r.drawn || []).length > 50, r.err || `${(r.drawn || []).length} strings`);
+    ok(`${deal.name}: "Underwriting & processing" is NAMED on the page`, all.includes('Underwriting & processing'));
+    ok(`${deal.name}: …with ${deal.uw} beside it`, all.includes(deal.uw), `uwFee=${r.uwFee}`);
+    ok(`${deal.name}: "Legal fee" is NAMED on the page`, all.includes('Legal fee'));
+    ok(`${deal.name}: …at ${deal.legal}`, all.includes(deal.legal), `legalFee=${r.legalFee}`);
+    /* AND THE TOTAL STILL RECONCILES: the two parts add up to the one number every other reader
+       of this quote takes, which is the whole safety claim of deriving the total. */
+    ok(`${deal.name}: the two parts sum to the total the rest of the system reads`,
+      Math.round((Number(r.uwFee) + Number(r.legalFee)) * 100) === Math.round(Number(r.lenderFee) * 100),
+      `${r.uwFee} + ${r.legalFee} != ${r.lenderFee}`);
+    if (deal.settlement) {
+      ok(`${deal.name}: the optional settlement agent fee is NAMED`, /settlement agent fee/i.test(all));
+      ok(`${deal.name}: …and the page SAYS it is optional`, /settlement agent fee \(optional\)/i.test(all));
+      ok(`${deal.name}: …at ${deal.settlement}`, all.includes(deal.settlement), `settleFee=${r.settleFee}`);
+    } else {
+      ok(`${deal.name}: carries NO settlement agent fee`, Number(r.settleFee || 0) === 0, `settleFee=${r.settleFee}`);
+      ok(`${deal.name}: …and the page never names one`, !/settlement agent fee/i.test(all));
+    }
+  }
+
+  /* ── THE NEW YORK CEMA, ON THE REAL PAGE ───────────────────────────────────────────────────── */
+  for (const deal of CEMA_DEALS) {
+    await page.evaluate((d) => {
+      ['construction', 'arv', 'asIs', 'price', 'payoff', 'expFlips', 'expBrrrr', 'expGround', 'tsTaxCounty', 'tsTaxCity'].forEach((id) => {
+        const e = document.getElementById(id); if (e) e.value = '';
+      });
+      const box = document.getElementById('tsCemaOn'); if (box) { box.checked = false; box.dispatchEvent(new Event('change', { bubbles: true })); }
+      for (const [k, v] of Object.entries(d.f)) {
+        const e = document.getElementById(k); if (!e) continue;
+        e.value = v;
+        e.dispatchEvent(new Event('input', { bubbles: true }));
+        e.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      if (d.tick && box) { box.checked = true; box.dispatchEvent(new Event('change', { bubbles: true })); }
+    }, deal);
+    await page.waitForTimeout(800);
+    const r = await page.evaluate(() => {
+      const row = document.getElementById('tsCemaRow');
+      const d = window.TS._calc(window.TS._gather());
+      return { shown: !!(row && row.style.display !== 'none'), cemaFee: d && d.cemaFee, due: d && d.closing };
+    });
+    ok(`${deal.name}: the CEMA question is ${deal.ask ? 'asked' : 'hidden'}`, r.shown === deal.ask, `shown=${r.shown}`);
+    ok(`${deal.name}: the fee is ${deal.expect ? '$' + deal.expect : 'not charged'}`,
+      Number(r.cemaFee || 0) === deal.expect, `cemaFee=${r.cemaFee}`);
+  }
+
+  /* ── THE DISCLOSED TERMS, ON THE REAL PAGE ─────────────────────────────────────────────────── */
+  for (const deal of TERM_DEALS) {
+    await page.evaluate((f) => {
+      ['construction', 'arv', 'asIs', 'price', 'expFlips', 'expBrrrr', 'expGround', 'tsTaxCounty', 'tsTaxCity'].forEach((id) => {
+        const e = document.getElementById(id); if (e) e.value = '';
+      });
+      for (const [k, v] of Object.entries(f)) {
+        const e = document.getElementById(k); if (!e) continue;
+        e.value = v;
+        e.dispatchEvent(new Event('input', { bubbles: true }));
+        e.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }, deal.f);
+    await page.waitForTimeout(800);
+    const r = await page.evaluate(async () => {
+      const J = window.jspdf && window.jspdf.jsPDF;
+      if (!J) return { err: 'jsPDF did not load' };
+      const drawn = [];
+      const oT = J.API.text, oS = J.API.save, oO = J.API.output;
+      J.API.text = function (t) {
+        try {
+          if (typeof t === 'string') drawn.push(t);
+          else if (Array.isArray(t)) t.forEach((x) => typeof x === 'string' && drawn.push(x));
+        } catch (_) { /* best-effort */ }
+        try { return oT.apply(this, arguments); } catch (e) { return this; }
+      };
+      J.API.save = function () { return this; };
+      J.API.output = function () { return ''; };
+      let err = null;
+      try { await window.TS.exportPdf(); } catch (e) { err = String((e && e.message) || e); }
+      await new Promise((z) => setTimeout(z, 1200));
+      J.API.text = oT; J.API.save = oS; J.API.output = oO;
+      return { err, drawn };
+    });
+    const all = (r.drawn || []).join('\n');
+    ok(`${deal.name}: the term sheet rendered`, !r.err && (r.drawn || []).length > 50, r.err || `${(r.drawn || []).length} strings`);
+    ok(`${deal.name}: the construction draw fee is named`, /construction draw fee/i.test(all));
+    if (deal.hybrid) {
+      ok(`${deal.name}: the hybrid draw is offered`, /hybrid/i.test(all));
+    } else {
+      /* THE ONE THAT MATTERS: a ground-up must never see a price for a draw it cannot order. */
+      ok(`${deal.name}: the hybrid draw is NOT offered anywhere on the page`, !/hybrid/i.test(all));
+      ok(`${deal.name}: …and the physical draw is`, /\$499 per draw/.test(all));
+    }
+    ok(`${deal.name}: the $500 closing reschedule fee is disclosed`, /closing reschedule fee/i.test(all) && /\$500 per rescheduled closing/.test(all));
+  }
+
+  await browser.close();
+  console.log(fail ? `\nrender-term-sheet-fees: ${pass} passed, ${fail} FAILED`
+    : `\nrender-term-sheet-fees: all ${pass} checks passed.`);
+  process.exit(fail ? 1 : 0);
+})().catch((e) => { console.error('render-term-sheet-fees threw:', e); process.exit(1); });

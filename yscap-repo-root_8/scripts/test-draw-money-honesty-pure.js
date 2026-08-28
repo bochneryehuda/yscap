@@ -114,9 +114,27 @@ ok('D4 …and no heads-up row', !counted.rows.some((r) => /isn’t counted|isn't
     && !/content: (?:buf|content|bytes)\s*[,}]/.test(deliverMod));
   ok('F5 the Sitewire inspector PDF is sourced from the durable draw_media archive',
     /kind='draw_pdf' AND storage_ref IS NOT NULL/.test(deliverMod));
+  /* F6 — THE BYTES DECIDE THE TYPE, never the CDN's archived header.
+     media-archive stores whatever content type the Sitewire CDN happened to send —
+     routinely `application/octet-stream` or nothing — and under nosniff a non-image
+     type makes the browser REFUSE to render perfectly good JPEG bytes (owner-reported
+     2026-08-10: every photo tile came up broken).
+
+     THIS ASSERTION USED TO NAME THE IMPLEMENTATION (`sniffKind(buf)`), and it fired
+     on 2026-08-23 when that private mime table was folded into the one shared media
+     door — a change that STRENGTHENED the property, because the private table covered
+     only images and the same defect had reappeared on videos ("those videos are
+     blacked out"). A guard that names a call rather than a property fails on the fix
+     for the bug it is guarding. So it now asserts the property in both places: this
+     route must serve through the shared door, and that door must derive the type from
+     the bytes. */
   const pub = src('src/routes/draw-findings-public.js');
-  ok('F6 the public media route sniffs the BYTES for the content type (nosniff-safe)',
-    /sniffKind\(buf\)/.test(pub));
+  const doorSrc = src('src/lib/media-headers.js');
+  ok('F6 the public media route serves through the one media door (no private copy of the rule)',
+    /serveMedia\(req, res, buf,/.test(pub) && !/sniffKind\(buf\)/.test(pub));
+  ok('F6b that door derives the content type from the BYTES, not the stored header (nosniff-safe)',
+    /function sniffMediaMime\(buf\)/.test(doorSrc)
+    && /const sniffed = buf \? sniffMediaMime\(buf\) : null;/.test(doorSrc));
 
   // ---------------------------------------------------------------- G. the PER-LINE tri-state
   // (db/518) A finding line the inspector never ANSWERED is not a line the inspector DENIED.

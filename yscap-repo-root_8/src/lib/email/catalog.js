@@ -318,19 +318,110 @@ function esignReadyToSign({ firstName, propertyLabel, loanNumber, packageLabel, 
     audience: 'borrower',
     title: 'Your documents are ready to sign',
     subjectTag: fileTag(loanNumber, propertyLabel),
-    badge: { text: 'Signature needed', tone: 'gold' },
+    badge: { text: 'Signature requested', tone: 'gold' },
     replyable: true,
-    preheader: 'A secure electronic signature is needed on your loan documents.',
+    preheader: 'Your loan documents are ready for electronic signature.',
     greeting: greet(firstName),
     intro: 'Your ' + (packageLabel ? packageLabel.toLowerCase() : 'loan documents')
       + ' ' + (packageLabel && !/s$/i.test(packageLabel) ? 'is' : 'are') + ' ready for your electronic signature with YS Capital Group.',
     lines: [
-      'Tap the button below to review and sign securely — it opens your signing session right away, and brings you back to your loan file when you\'re done.',
-      'Your signature is handled through our e-signature partner (DocuSign). You may also receive a separate email directly from DocuSign for the same documents — either one takes you to the same place.',
+      /* Professional register (owner-directed 2026-08-26: the "signature is
+         needed" / "straight away — no login" family reads as cheap urgency copy
+         and describes our own mechanics; state the action plainly instead). */
+      'Select “Review & sign” below to review your documents and sign them securely. You will be returned to your loan file when you are finished.',
+      /* THE ONE LINK, AND ONLY ONE (owner-reported 2026-08-21). This used to promise a second
+         email "directly from DocuSign" — which arrived, led to a page they could not sign on,
+         and taught people to distrust both. Recipients are captive now, so DocuSign sends
+         nothing; this is the only invitation there is, and the copy says so. */
+      'Your signature is handled securely through our e-signature partner. This email is the only place your signing link comes from — you will not receive a separate one.',
     ],
     meta,
     cta: signUrl ? { label: 'Review & sign', url: signUrl } : null,
     note: 'If you were not expecting this, you can disregard it — nothing is signed until you review and approve it yourself.',
+  });
+}
+
+/**
+ * OUR OWN SIGNER'S INVITATION — the loan officer on a Heter Iska, the admin who counter-signs a
+ * term sheet (owner-directed 2026-08-21: *"The Loan Officers and the Admins that are signing
+ * certain documents, Term Sheets, and packages are only getting the DocuSign. We want to make
+ * them a nice Pilot email, very high-end. They should not receive the DocuSign emails."*).
+ *
+ * It is the STAFF audience deliberately — this is an internal person doing an internal job, so it
+ * reads like the console's own mail rather than a borrower letter, names the borrower and the file
+ * they are signing on, and skips the "if you were not expecting this" reassurance a borrower needs.
+ */
+function esignStaffReadyToSign({ firstName, role, packageLabel, borrowerName, propertyLabel, loanNumber, signUrl, waitingOn } = {}) {
+  const meta = [];
+  if (borrowerName) meta.push({ label: 'Borrower', value: borrowerName });
+  if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
+  if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
+  if (packageLabel) meta.push({ label: 'To sign', value: packageLabel });
+  return render({
+    audience: 'staff',
+    /* Professional register (owner-directed 2026-08-26): "Your signature is
+       needed" + "no login, no hunting for the envelope" read as cheap urgency
+       copy — the phishing-lure register — and leaked our own e-sign mechanics
+       ("envelope" is DocuSign's internal term). State the request plainly. */
+    title: 'Signature requested',
+    subjectTag: fileTag(loanNumber, propertyLabel),
+    badge: { text: 'Signature requested', tone: 'gold' },
+    replyable: true,
+    preheader: `${packageLabel || 'A package'} is ready for your signature.`,
+    greeting: greet(firstName || ''),
+    intro: `${packageLabel || 'A package'}${borrowerName ? ` for ${borrowerName}` : ''} is ready for your signature`
+      + (role ? ` as the ${role}` : '') + '.',
+    lines: [
+      'Select “Review & sign” below to open the document for your review and signature.',
+      ...(waitingOn ? [waitingOn] : []),
+    ],
+    meta,
+    cta: signUrl ? { label: 'Review & sign', url: signUrl } : null,
+  });
+}
+
+/**
+ * THE DOCUMENT IS EXECUTED — with the executed copy attached.
+ *
+ * Owner-directed 2026-08-21: *"we need to add a notification for every document that is
+ * completed. The [borrower] should also get a notification after it was signed … the ISKA once
+ * they sign · the Wire Form once they sign · the Term Sheet Package once everyone has signed.
+ * They should receive a nice Pilot email … with the document attached."*
+ *
+ * THE INDUSTRY SHAPE, and why each part is here. An execution notice is a RECORD, not a request:
+ * every e-signature provider's own completion notice leads with WHICH document, states that it is
+ * fully executed and WHEN, attaches the executed copy, and tells the signer where the permanent
+ * copy lives — because the attachment is what most people keep and the portal is what they come
+ * back to. It carries NO call to action beyond "keep this", and it never asks for anything, which
+ * is what separates it from every other email in a loan file. When the file has more signers, the
+ * timing rule the owner named applies: the term sheet package is announced only once EVERYONE has
+ * signed, so "fully executed" is never said while a signature is still outstanding.
+ */
+function esignCompleted({ firstName, packageLabel, propertyLabel, loanNumber, completedOn, portalUrl, officer, attached = true } = {}) {
+  const meta = [];
+  if (propertyLabel) meta.push({ label: 'Property', value: propertyLabel });
+  if (loanNumber) meta.push({ label: 'Loan #', value: loanNumber });
+  if (packageLabel) meta.push({ label: 'Document', value: packageLabel });
+  if (completedOn) meta.push({ label: 'Completed', value: completedOn });
+  officerMeta(meta, officer);
+  return render({
+    audience: 'borrower',
+    title: `Signed and complete: ${packageLabel || 'your documents'}`,
+    subjectTag: fileTag(loanNumber, propertyLabel),
+    badge: { text: 'Fully executed', tone: 'teal' },
+    replyable: true,
+    preheader: `${packageLabel || 'Your documents'} — signed, complete, and attached for your records.`,
+    greeting: greet(firstName),
+    intro: `${packageLabel || 'Your documents'} ${packageLabel && !/s$/i.test(packageLabel) ? 'has' : 'have'} been signed by everyone and ${packageLabel && !/s$/i.test(packageLabel) ? 'is' : 'are'} now fully executed.`,
+    lines: [
+      attached
+        ? 'The executed copy is attached to this email for your records.'
+        : 'The executed copy is on your loan file in the portal — it was too large to attach here.',
+      'A permanent copy is kept on your loan file, so you can download it again at any time.',
+    ],
+    meta,
+    cta: portalUrl ? { label: 'Open your loan file', url: portalUrl } : null,
+    note: 'Nothing further is needed from you on this document.',
   });
 }
 
@@ -543,7 +634,7 @@ const builders = {
   welcome, verifyEmail, loginCode,
   passwordReset, passwordChanged, mfaEnabled, newSignIn,
   staffInvite, tpoInvite, staffWelcome, staffPasswordReset, leadReceived, coBorrowerInvite, borrowerInvite, assistantInvite, drawRequest, trustpointImport,
-  esignReadyToSign, drawWireReadyToSign,
+  esignReadyToSign, esignStaffReadyToSign, esignCompleted, drawWireReadyToSign,
 };
 
 /** Deliver an already-rendered { subject, html, text } to one/many recipients.

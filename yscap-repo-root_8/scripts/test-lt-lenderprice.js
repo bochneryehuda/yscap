@@ -191,6 +191,68 @@ async function offline() {
   ok(dq.lenders[0].investor === 'Acme Capital' && dq.lenders[0].items[0].reasons[0].rule === 'FICO 660 < min 680', 'parseDisqualified carries investor + rule text');
   ok(lp.hasDisqualifyData(dqRaw) === true && lp.hasDisqualifyData({ results: { disqualifiedData: { childs: [] } } }) === false, 'hasDisqualifyData detects populated vs empty tree');
 
+  // 13a) THE FALLBACK — a lender whose refusal is free text and nothing else.
+  //
+  // `disqualifyRulesOf` reads the itemized rules first (13 above covers both of
+  // those shapes). Only when it finds NONE does it sweep the leaf for any
+  // reason-shaped string it can find. That sweep is the safety net for a lender
+  // whose payload does not match the shape we expect — and until now nothing
+  // reached it, so on those lenders an officer would have been shown "declined"
+  // with no reason at all, which is the one thing this screen exists to avoid.
+  const freeText = { results: { disqualifiedData: { keyLabel: 'ROOT', childs: [
+    { type: 'CriteriaFromLineResultKey', keyLabel: 'DSCR 30yr', childs: [
+      { type: 'LenderKey', keyLabel: 'Loose Shape Capital', leafs: [
+        { companyName: 'Loose Shape Capital', programName: 'DSCR 30yr', rate: 9.1,
+          // No groupAdjustmentProperties, no conditionActions, no holdBackResult.
+          detail: { failReason: 'Property state not licensed' },
+          messages: ['Reserves below the 6 months required'] }] }] },
+  ] } } };
+  const ft = lp.parseDisqualified(freeText);
+  const ftReasons = ft.lenders[0].items[0].reasons.map((r) => r.rule);
+  ok(ftReasons.includes('Property state not licensed') && ftReasons.includes('Reserves below the 6 months required'),
+    'THE ONE THAT MATTERS: a lender whose refusal is free text and nothing else still produces reasons — without the fallback that lender reads as "declined" with nothing said, on the one screen whose whole job is to say why');
+
+  // The fallback is a FALLBACK. A leaf that DID yield itemized rules must not also
+  // be swept, or every reason would arrive twice and the count would overstate.
+  const both = { results: { disqualifiedData: { childs: [
+    { type: 'LenderKey', keyLabel: 'Acme', leafs: [
+      { companyName: 'Acme', programName: 'P', reason: 'a loose string nobody should reach',
+        groupAdjustmentProperties: [{ name: 'g', disqualifyAdjustments: [{ key: 'FICO below floor' }] }] }] },
+  ] } } };
+  const bothOut = lp.parseDisqualified(both);
+  const bothRules = bothOut.lenders[0].items[0].reasons.map((r) => r.rule);
+  ok(bothRules.length === 1 && bothRules[0] === 'FICO below floor',
+    'and the sweep is a FALLBACK, not an addition — a leaf with itemized rules is not also swept, so no reason arrives twice and the count never overstates what a lender actually said');
+
+  // A leaf carrying a nested tree must not have its NEIGHBOURS' refusals collected
+  // into it. `childs` / `leafs` / `key` are excluded from the sweep by name, and
+  // this is why: attributing another lender's "no" to this program is worse than
+  // showing none.
+  const nested = { results: { disqualifiedData: { childs: [
+    { type: 'LenderKey', keyLabel: 'Odd', leafs: [
+      { companyName: 'Odd', programName: 'P', message: 'ours',
+        childs: [{ message: 'somebody else\'s refusal' }],
+        leafs: [{ message: 'and another lender\'s' }] }] },
+  ] } } };
+  const nestedRules = lp.parseDisqualified(nested).lenders[0].items[0].reasons.map((r) => r.rule);
+  ok(nestedRules.includes('ours') && !nestedRules.some((r) => /somebody else|another lender/.test(r)),
+    'THE ONE THAT MATTERS: and the sweep does not descend into `childs` or `leafs`, so one lender\'s refusal can never be attributed to another\'s program');
+
+  // A reason longer than the cap is truncated rather than carried whole — these
+  // land on a screen, and one vendor string can be a whole guideline document.
+  const longOne = 'x'.repeat(900);
+  const capped = { results: { disqualifiedData: { childs: [
+    { type: 'LenderKey', keyLabel: 'Wordy', leafs: [{ companyName: 'Wordy', programName: 'P', reason: longOne }] },
+  ] } } };
+  const cappedRule = lp.parseDisqualified(capped).lenders[0].items[0].reasons[0].rule;
+  // 300, not 400. The cap that governs what a reader sees is the one in `add`;
+  // the 400 inside the sweep is a bound on what the intermediate Set may hold, and
+  // sits behind the tighter one, so no test can tell whether it is there. Asserted
+  // at 400 this stayed GREEN when the sweep's cap was removed — a looser assertion
+  // than the code guarantees is a test agreeing with itself.
+  ok(cappedRule.length === 300 && cappedRule.startsWith('xxx'),
+    'a very long reason is capped at 300 rather than carried whole — one vendor string can be an entire guideline document');
+
   // 13b) Rich capture: parse()/parseFull() read lender+investor identity and the full pricing build.
   const richLeaf = {
     companyName: 'AD Mortgage LLC', companyId: 'L1', programName: 'DSCR 30 Year Fixed - IO', productName: '30yr IO', rateGridId: 'G1',
@@ -219,6 +281,49 @@ async function offline() {
   ok(opt.terms.dscr === 1.25 && opt.terms.interestOnly === true && opt.monthlyPayment.monthlyPI === 2416.67, 'parseFull captures ratios + monthly payment');
   const rfRaw = lp.parseFull(richRaw, { raw: true });
   ok(Object.keys(rfRaw.programs[0].options[0].raw).length > 20, 'parseFull raw:true attaches the untouched leaf');
+
+  // 13c) §38 — ONE PROGRAM NAME, TWO RATE SHEETS, TWO PROGRAMS (owner-reported 2026-08-24:
+  // "you price on 109, and then on the next rate one higher, you price the same lender as 106").
+  // MEASURED live: Lender Price returns ResiCentral "DSCR Select 30 Year Fixed" from BOTH its
+  // non-delegated and its wholesale rate periods — two different ladders under one program name.
+  // Keying on lender+program alone merged them into one ladder that read non-monotonic after the
+  // rate sort. The key now includes the vendor's own grid + rate-period identity, so each channel
+  // is its own program with its own monotone ladder, stamped with the sheet it priced from.
+  const chanLeaf = (gridId, rpId, rpName, rate, adjPts) => ({
+    companyName: 'ResiCentral Mortgage', companyId: 'RC1', programName: 'DSCR Select 30 Year Fixed',
+    productName: '30 Year Fixed', rateGridId: gridId, rate, adjustedRates: rate,
+    basePoints: adjPts + 0.25, adjustmentPoints: -0.25, adjustedPoints: adjPts, dayLock: 30,
+    ratePeriod: { id: rpId, name: rpName, validAsOf: '2026-08-24' },
+    groupAdjustmentProperties: [], monthlyPayment: { monthlyPI: 2000, total: 2000 },
+  });
+  const twoChannels = { results: { lenderDtos: { lenderDtoNonQm: [{ id: 'RC1', name: 'ResiCentral Mortgage' }] },
+    qualifiedNonQMData: { keyLabel: 'ROOT', childs: [{ type: 'CriteriaFromLineResultKey', keyLabel: 'DSCR Select 30 Year Fixed', childs: [
+      { type: 'RateKey', keyLabel: '7.125', childs: [{ type: 'LenderKey', keyLabel: 'ResiCentral Mortgage', plenderId: '"RC1"', leafs: [
+        chanLeaf('G-NONDEL', 'RP-NONDEL', 'ResiCentral Non-Del Parent - NEW', 7.125, -4.275),
+        chanLeaf('G-WHOLESALE', 'RP-WHOLESALE', 'Resicentral Wholesale Parent', 7.125, -2.451),
+      ] }] },
+      { type: 'RateKey', keyLabel: '7.25', childs: [{ type: 'LenderKey', keyLabel: 'ResiCentral Mortgage', plenderId: '"RC1"', leafs: [
+        chanLeaf('G-NONDEL', 'RP-NONDEL', 'ResiCentral Non-Del Parent - NEW', 7.25, -4.275),
+        chanLeaf('G-WHOLESALE', 'RP-WHOLESALE', 'Resicentral Wholesale Parent', 7.25, -2.014),
+      ] }] },
+    ] }] } } };
+  const twoP = lp.parse(twoChannels);
+  ok(twoP.programCount === 2, '§38 two rate sheets sharing a program name parse as TWO programs, never one merged ladder');
+  for (const p of twoP.programs) {
+    ok(p.rungCount === 2, `§38 each channel keeps its own two rungs (${p.rateSheetName})`);
+    ok(typeof p.rateSheetName === 'string' && p.rateSheetName.length > 0, '§38 each program is stamped with the sheet it priced from');
+    // THE INVARIANT IS NO MERGING, NOT MONOTONICITY: a sheet's own ladder is the vendor's to shape
+    // (the real wholesale ladder genuinely falls as the rate rises — mirrored, never "corrected").
+    // What a merged ladder produced, and what may never come back, is TWO prices at ONE rate.
+    ok(new Set(p.rungs.map((r) => r.rate)).size === p.rungs.length,
+      `§38 one price per rate inside a program — no other sheet's rung interleaved (${p.rateSheetName})`);
+  }
+  const twoF = lp.parseFull(twoChannels);
+  ok(twoF.programCount === 2, '§38 parseFull applies the same rate-sheet key as parse');
+  ok(new Set(twoF.programs.map((p) => p.rateSheetName)).size === 2, '§38 parseFull programs carry both sheet names');
+  // The single-sheet board is UNCHANGED: the rich capture above still parses as exactly one program.
+  ok(lp.parse(richRaw).programCount === 1 && lp.parseFull(richRaw).programCount === 1,
+    '§38 an ordinary one-sheet lender still parses as one program — the key change is inert there');
 
   // 14) No-prepay (months=0) must send "No PPP" / PrepayTerm "None" — never "0 Yr PPP" (live HTTP 400).
   const noPpp = lp.buildSearch({ purpose: 'Purchase', value: 5e5, loan: 4e5, dscr: 1.25, prepayMonths: 0 });

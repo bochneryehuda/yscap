@@ -84,6 +84,50 @@ const formToken = require('../src/lib/form-token');
   const dupB = (await db.query(`SELECT email FROM borrowers WHERE id=$1`, [outDup.borrowerId])).rows[0];
   assert(/@clickup\.local$/.test(dupB.email), 'dup profile carries a placeholder email (real one preserved as contact)', dupB.email);
 
+  /* ---- THE PUBLIC FORM'S OWN DIALECT IS STORED CANONICALLY -------------------
+     Owner-reported 2026-08-26 (YSCAP258134859): a fix & hold whose ClickUp
+     *Program field was blank. The form's <option value> attributes were written
+     for DISPLAY and were never made the values the system stores, so this door
+     filed them raw and the ClickUp push had no key for them — it dropped each
+     field in silence. Measured against the live dropdowns it was four fields:
+     3 of 4 programs, BOTH refinances, 5 of 7 property types, 2 of 5 rehab types.
+
+     Posted here through the REAL door with the REAL strings the shipped form
+     sends, because a unit test of the folder proves the rule and not the wiring. */
+  const XW = require('../src/clickup/crosswalk');
+  const formPost = await siteIntake({
+    ...p,
+    pStreet: '25 Intake Core Way',
+    dealType: 'Fix & Hold (BRRRR)',      // #dealType, verbatim from the form
+    purpose: 'Cash-Out Refi',            // radio name="purpose"
+    propType: '2–4 Unit',           // #propType (en dash, as the form writes it)
+    rehabType: 'Heavy',                  // #rehabType — note this is ClickUp's label, not ours
+    // A refinance carries no purchase side; keep the post honest.
+    isAssignment: false, underlyingContractPrice: null, assignmentFee: null,
+  }, { source: 'website_form' });
+  const fp = (await db.query(
+    `SELECT program, loan_type, property_type, rehab_type FROM applications WHERE id=$1`,
+    [formPost.applicationId])).rows[0];
+  assert(fp.program === 'Fix & Hold', 'the form\'s "Fix & Hold (BRRRR)" is stored as the canonical Fix & Hold', fp.program);
+  assert(fp.loan_type === 'Refinance — Cash-Out', 'the form\'s "Cash-Out Refi" is stored canonically', fp.loan_type);
+  assert(fp.property_type === 'Multi 2–4', 'the form\'s "2–4 Unit" is stored canonically', fp.property_type);
+  assert(fp.rehab_type === 'Heavy / gut rehab', 'the form\'s "Heavy" (a ClickUp label) is stored as our own value', fp.rehab_type);
+  // And every one of them now reaches a real ClickUp option — the actual symptom.
+  for (const [col, val, want] of [
+    ['program', fp.program, 'Fix & Hold With Construction'],
+    ['loan_type', fp.loan_type, 'Refi Cash-Out'],
+    ['property_type', fp.property_type, 'Multi 2-4'],
+    ['rehab_type', fp.rehab_type, 'Heavy'],
+  ]) {
+    assert(XW.toClickUpLabel(col, val) === want, `${col} pushes to the ClickUp option "${want}" instead of being dropped`, XW.toClickUpLabel(col, val));
+  }
+  // A value we do not recognise still reaches the file exactly as typed — never
+  // blanked, never nudged into a neighbouring option (the 'Heavy Reno' case above
+  // is the same rule on the rehab type).
+  const oddPost = await siteIntake({ ...p, pStreet: '26 Intake Core Way', dealType: 'Some Brand New Program' }, { source: 'website_form' });
+  const odd = (await db.query(`SELECT program FROM applications WHERE id=$1`, [oddPost.applicationId])).rows[0];
+  assert(odd.program === 'Some Brand New Program', 'an unrecognised program is stored unchanged, never blanked', odd.program);
+
   console.log(failures ? `\n${failures} FAILURES` : '\nALL PASS');
   process.exit(failures ? 1 : 0);
 })().catch((e) => { console.error('test-public-apply-db crashed:', e); process.exit(2); });

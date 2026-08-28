@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import ProductStamp from './ProductStamp.jsx';
+import { useNavigate, Link } from 'react-router-dom';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
 // One definition of how a value is written down, shared with the file screen — two
@@ -57,37 +56,6 @@ function LockCell({ row }) {
   );
 }
 
-/**
- * One control chip.
- *
- * THE COUNT IS ABSENT, NEVER ZERO, WHEN WE DO NOT HAVE ONE. The counting is a
- * convenience on top of the list and is allowed to fail without costing anybody their
- * pipeline — but a chip that then reads "0" would tell them the book is empty, which
- * is exactly what the rows underneath it disprove. So `null` draws no number at all.
- *
- * Colours are explicit darks: every `--ink*` token in this palette is a LIGHT paper
- * colour and would render white on white.
- */
-function Chip({ on, onClick, label, count, note, group }) {
-  return (
-    <button type="button" onClick={onClick} title={note || undefined}
-      aria-pressed={on} data-chip={group}
-      style={{
-        display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
-        padding: '5px 12px', borderRadius: 999, fontSize: 13, fontWeight: on ? 700 : 550,
-        background: on ? '#141B22' : '#FFFFFF',
-        color: on ? '#FFFFFF' : '#141B22',
-        border: `1px solid ${on ? '#141B22' : '#EAE4D7'}`,
-        whiteSpace: 'nowrap',
-      }}>
-      <span>{label}</span>
-      {count != null && (
-        <span style={{ fontSize: 11, fontWeight: 700, opacity: on ? 0.85 : 1,
-          color: on ? '#FFFFFF' : '#4B585C' }}>{count}</span>
-      )}
-    </button>
-  );
-}
 
 /**
  * What to draw when the server did not say — the nine columns this screen carried
@@ -97,15 +65,128 @@ function Chip({ on, onClick, label, count, note, group }) {
  */
 const FALLBACK_COLUMNS = [
   { key: 'loan_number', label: 'Loan #', field: 'loan_number', kind: 'text', sort: 'loan_number', align: 'left', emphasis: true },
-  { key: 'borrower', label: 'Borrower', field: 'borrower_name', kind: 'text', sort: 'borrower', align: 'left' },
+  { key: 'borrower', label: 'Borrower', field: 'borrower_name', kind: 'borrower', sort: 'borrower', align: 'left' },
   { key: 'loan_amount', label: 'Amount', field: 'loan_amount', kind: 'money', sort: 'loan_amount', align: 'right' },
   { key: 'stage', label: 'Stage', field: 'stage_key', kind: 'text', sort: 'stage', align: 'left' },
-  { key: 'milestone', label: 'Milestone', field: 'milestone_name', kind: 'text', sort: 'milestone', align: 'left' },
+  // `milestone_label` is the server's completed-form wording (owner-directed
+  // 2026-08-24: "Funded", never "Funding") — pipeline.js decorates every row.
+  { key: 'milestone', label: 'Milestone', field: 'milestone_label', kind: 'text', sort: 'milestone', align: 'left' },
   { key: 'days_in_stage', label: 'At milestone', field: 'milestone_days', kind: 'milestone_days', sort: 'milestone_since', align: 'right' },
   { key: 'loan_officer', label: 'Loan officer', field: 'loan_officer', kind: 'contact', sort: null, align: 'left' },
   { key: 'lock_status', label: 'Lock', field: 'lock_status', kind: 'lock', sort: 'lock_expiration', align: 'left' },
   { key: 'updated', label: 'Updated', field: 'encompass_last_modified', kind: 'day', sort: 'last_modified', align: 'left' },
 ];
+
+/**
+ * What is outstanding on this file — the plan's "a red count means a user triages
+ * urgency from the list without opening a file".
+ *
+ * FOUR ANSWERS, AND THEY ARE NOT THE SAME. A file with work shows the number in
+ * red. A file that has been read and has nothing left says "Clear" in words. A file
+ * PILOT holds nothing about yet says "not read yet" — because a 0 there would be a
+ * claim that the file is clear, which is exactly the confident blank this side
+ * keeps finding. And a file the sweep has read that genuinely carries neither a
+ * condition nor an eFolder document says "none", which is a different fact again.
+ *
+ * WHICH FEED IT COUNTED IS ON THE FACE OF IT. Every Encompass condition in this
+ * tenant sits on a loan that is already sold, while a live file's work is its
+ * eFolder needs list — so a column that counted only conditions would read zero
+ * down the whole working book. The server decides which feed this file's work is,
+ * with the same rule the file screen uses, and the cell says which one it counted
+ * rather than leaving "4" to mean either.
+ */
+function OutstandingCell({ counts }) {
+  const muted = { color: '#4B585C' };
+  if (!counts) return <span style={muted} title="PILOT could not count this file just now.">—</span>;
+  if (!counts.read) return <span style={muted} title="The Condition Center has not read this loan from Encompass yet, so there is nothing to count — which is not the same as nothing being outstanding.">not read yet</span>;
+
+  const conditions = counts.face === 'conditions';
+  const open = conditions ? counts.conditionsOpen : counts.documentsOutstanding;
+  const total = conditions ? counts.conditionsTotal : counts.documentsTotal;
+  const word = conditions ? 'condition' : 'document';
+
+  if (!total) return <span style={muted} title="This loan carries no conditions and no eFolder documents.">none</span>;
+  if (!open) return <span style={{ color: '#2C5E3F' }} title={`All ${total} ${word}${total === 1 ? '' : 's'} are done.`}>Clear</span>;
+  return (
+    <span style={{ color: '#8A2D2D', fontWeight: 700 }}
+      title={`${open} of ${total} ${word}${total === 1 ? '' : 's'} still outstanding.`}>
+      {open}
+      <span style={{ ...muted, fontWeight: 400, fontSize: 11 }}> {conditions ? 'cond' : 'docs'}</span>
+    </span>
+  );
+}
+
+/**
+ * The DSCR, and which side of THIS COMPANY'S own lines it fell on.
+ *
+ * A bare 1.28 down a column tells somebody who works these loans every day exactly
+ * what they need and tells everybody else nothing — and the minimum and comfortable
+ * thresholds have been settings since the registry was written. The verdict comes
+ * from the SERVER, computed by the one rule the file screen reads, so the pipeline
+ * and the file can never call the same loan different things.
+ *
+ * NO VERDICT ON A RATIO NOBODY MEASURED: a loan with no DSCR gets a dash, never a
+ * red mark. The word is kept to one short token because this is a table cell — the
+ * full sentence, naming the threshold it fell under, is the hover.
+ */
+function DscrCell({ row }) {
+  const v = row.dscrVerdict;
+  const shown = ratio(row.dscr_ratio);
+  if (!v) return <span>{shown}</span>;
+  const tone = v.level === 'below' ? '#8A2D2D' : v.level === 'thin' ? '#8A6A22' : '#2C5E3F';
+  // A healthy ratio needs NO word (owner-directed 2026-08-23: *"after the ratio, it
+  // says 'OK.' I don't need that word over there"*): green is the answer, and an
+  // "ok" on four hundred healthy rows is what trains eyes to skip the column. The
+  // two WARNING words stay — they are the rows a desk has to catch.
+  const word = v.level === 'below' ? 'below' : v.level === 'thin' ? 'thin' : null;
+  // WHOSE NUMBER. "this company set" is a claim about authorship, and it is false
+  // whenever the company has not configured that threshold — we fall back to the
+  // shipped one, which is right, but saying they chose it is not. The verdict now
+  // says which, so a red mark is never attributed to a rule nobody wrote.
+  const whose = (isCompany) => (isCompany ? ' this company set' : ' PILOT ships by default');
+  const comfortWhose = (isCompany) => (isCompany ? 'this company calls comfortable' : 'PILOT treats as comfortable by default');
+  const why = v.level === 'below'
+    ? `Under the ${v.minimum} minimum${whose(v.minimumIsCompany)} — on these figures the property does not cover its own debt service.`
+    : v.level === 'thin'
+      ? `Over the ${v.minimum} minimum${whose(v.minimumIsCompany)} but under the ${v.comfort} ${comfortWhose(v.comfortIsCompany)}.`
+      : `At or over the ${v.comfort} ${comfortWhose(v.comfortIsCompany)}.`;
+  return (
+    <span style={{ color: tone, fontWeight: 700 }} title={why}>
+      {shown}
+      {word && <span style={{ color: '#4B585C', fontWeight: 400, fontSize: 11 }}> {word}</span>}
+    </span>
+  );
+}
+
+/**
+ * WHAT A CELL SAYS, AS TEXT — the one definition the per-column search filters by.
+ *
+ * It deliberately mirrors what the CELL RENDERS, not what the row stores: somebody
+ * typing "1,050" into the amount box is copying what their eye sees, and a filter
+ * that only matched the stored "1050000.00" would tell them the file is not there.
+ * Both spellings match — the formatted text and the raw digits — so either habit
+ * finds the row. A dash cell yields '', which no non-empty search matches: filtering
+ * a column keeps only rows that HAVE that value, which is what a person typing into
+ * that column means.
+ */
+function cellSearchText(col, row, stageLabel) {
+  const raw = row[col.field];
+  switch (col.kind) {
+    case 'money': return raw == null ? '' : `${money(raw)} ${String(raw)}`;
+    case 'pct': return raw == null ? '' : `${pct(raw)} ${String(raw)}`;
+    case 'ratio': return raw == null ? '' : `${ratio(raw)} ${String(raw)}`;
+    case 'dscr': return row.dscr_ratio == null ? '' : `${ratio(row.dscr_ratio)} ${String(row.dscr_ratio)}`;
+    case 'milestone_days': return row.milestone_days == null ? '' : `${row.milestone_days} days`;
+    case 'lock': return [row.lock_status, row.lock_expiration_date].filter(Boolean).join(' ');
+    case 'day': return raw == null ? '' : String(day(raw));
+    case 'outstanding': return '';
+    case 'contact': {
+      const c = (row.contacts || []).find((x) => x.role === col.field);
+      return (c && c.name) || '';
+    }
+    default: return col.key === 'stage' ? String(stageLabel(raw) || '') : (raw == null ? '' : String(raw));
+  }
+}
 
 /**
  * One cell, drawn from what the COLUMN says it is.
@@ -119,7 +200,24 @@ const FALLBACK_COLUMNS = [
  * read this yet" and "it is nothing" are different answers, and on money, a rate or a
  * ratio the second one is a lie a desk would act on.
  */
-function Cell({ col, row, stageLabel }) {
+/** Plain words for a contact role — the persona chip and the "Mine" label share
+ *  them so the two can never call one role two things. */
+const ROLE_WORDS = {
+  loan_officer: 'loan officer',
+  processor: 'processor',
+  file_setup: 'file setup',
+  underwriter: 'underwriter',
+  closer: 'closer',
+  funder: 'funder',
+  post_closer: 'post-closer',
+};
+const roleWord = (r) => ROLE_WORDS[r] || String(r || '').replace(/_/g, ' ');
+function mineRoleWords(roles) {
+  if (!Array.isArray(roles) || !roles.length) return '';
+  return roles.map(roleWord).join(' / ');
+}
+
+function Cell({ col, row, stageLabel, mineRoles }) {
   const muted = { color: '#4B585C' };
 
   // WHICH FIELD A COLUMN READS IS THE COLUMN'S OWN BUSINESS (`field`, from the
@@ -127,13 +225,93 @@ function Cell({ col, row, stageLabel }) {
   // a server come to disagree about what "LTV" means.
   const raw = row[col.field];
 
+  // TWO ENCOMPASS RECORDS, ONE LOAN NUMBER — said on the row (owner-reported
+  // 2026-08-23, YSCAP258134474: a stale second Encompass record read "Started /
+  // $202,500" while the real one sat sold — and nothing said there were two). The
+  // count comes from the server, against live records only; the fix is deleting
+  // the stale record in Encompass, which the hover says.
+  if (col.key === 'loan_number') {
+    const dups = Number(row.duplicate_records) || 0;
+    return (
+      <span style={{ whiteSpace: 'nowrap' }}>
+        {raw == null || raw === '' ? <span style={muted}>—</span> : String(raw)}
+        {dups > 0 && (
+          <span title={`Encompass holds ${dups + 1} live records with this loan number \u2014 this row is one of them, and the figures differ between the copies. The extra record should be deleted in Encompass; once it is trashed there, it drops off this screen on the next sync.`}
+            style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em',
+              color: '#8A2D2D', border: '1px solid #E4C7C7', background: '#FBEFEF',
+              borderRadius: 999, padding: '1px 7px', verticalAlign: 'middle' }}>
+            {dups + 1} RECORDS
+          </span>
+        )}
+        {/* WHY THIS ROW IS HALF EMPTY (owner-reported 2026-08-24, three Sherman
+            Ave files: "All these files somehow are not updating in pilot. I don't
+            know why I'm not getting the information"). A loan reaches PILOT in two
+            steps and only the second fills the file in — and until now nothing on
+            the screen said which step a row was at, so a brand-new file and a
+            broken one looked identical. The wording is the SERVER'S (read-state.js),
+            never retyped here. Quiet on a read row, or every row would carry a chip. */}
+        {row.read_state && row.read_state !== 'read' && (
+          <span title={row.read_why || ''}
+            style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em',
+              verticalAlign: 'middle', whiteSpace: 'nowrap', borderRadius: 999, padding: '1px 7px',
+              color: row.read_state === 'failed' ? '#8A2D2D' : '#8A6A22',
+              border: row.read_state === 'failed' ? '1px solid #E4C7C7' : '1px solid #E6D6AE',
+              background: row.read_state === 'failed' ? '#FBEFEF' : '#FBF6E9' }}>
+            {row.read_state === 'failed' ? 'READ REFUSED' : 'NOT READ YET'}
+          </span>
+        )}
+        {/* WHY this file is in front of you, when the reason is a hat OTHER than
+            your own function (owner-directed 2026-08-23: "for each and every
+            person, why they are looped into the file" — a closer-only file must
+            never read as an officer's own). Quiet on the ordinary case: a file
+            you hold in your own role carries no chip, or every row would. */}
+        {(() => {
+          const mineList = Array.isArray(mineRoles) ? mineRoles : null;
+          const others = (row.my_roles || []).filter((r) => !mineList || !mineList.includes(r));
+          if (!others.length) return null;
+          return (
+            <span title={'You are on this file as: ' + others.map(roleWord).join(', ') + '. It is not one of your own-function files \u2014 that is why it does not sit under \u201CMy files\u201D.'}
+              style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, letterSpacing: '.04em',
+                color: '#2F7F86', border: '1px solid #BFD9DC', background: '#F0F7F8',
+                borderRadius: 999, padding: '1px 7px', verticalAlign: 'middle', whiteSpace: 'nowrap' }}>
+              YOU: {others.map(roleWord).join(' + ').toUpperCase()}
+            </span>
+          );
+        })()}
+      </span>
+    );
+  }
+
   switch (col.kind) {
     case 'money': return <span>{money(raw)}</span>;
     case 'pct': return <span>{pct(raw)}</span>;
     case 'ratio': return <span>{ratio(raw)}</span>;
+    case 'dscr': return <DscrCell row={row} />;
     case 'milestone_days': return <MilestoneAge row={row} />;
     case 'lock': return <LockCell row={row} />;
     case 'day': return <span>{day(raw)}</span>;
+    case 'outstanding': return <OutstandingCell counts={raw} />;
+    // THE BORROWER, AND WHOSE NAME IT IS. The server prefers the linked PILOT
+    // profile and falls back to the name Encompass gave us, so this column stopped
+    // being a dash on every unlinked loan — but an unconfirmed name must not pass
+    // for a confirmed one, so it says which it is drawing. Quiet on purpose: it is
+    // the ordinary state of a freshly mirrored book, not a fault, and a loud badge
+    // on four hundred rows is a badge nobody reads.
+    case 'borrower': {
+      if (raw == null || raw === '') return <span style={muted}>—</span>;
+      // The name stands ALONE (owner-directed 2026-08-23: the "from Encompass" tag
+      // *"doesn't need to be over there"*). Whether it is linked to a PILOT profile
+      // still matters to whoever is doing the linking, so that fact survives as the
+      // HOVER — visible to the person who asks, invisible to everyone scanning.
+      const unlinked = row.borrower_is_linked === false;
+      return (
+        <span title={unlinked
+          ? 'This is the name on the Encompass loan. Nobody has matched it to a PILOT borrower profile yet.'
+          : undefined}>
+          {String(raw)}
+        </span>
+      );
+    }
     case 'contact': {
       // THE ROLE IS THE COLUMN'S `field`, so a third contact column (an underwriter,
       // a closer) needs one catalog entry on the server and nothing here.
@@ -142,7 +320,7 @@ function Cell({ col, row, stageLabel }) {
       return (
         <span>
           {c.name}
-          {c.overridden && <span style={{ marginLeft: 6, fontSize: 11, color: '#AE8746' }}>reassigned</span>}
+          {c.overridden && <span style={{ marginLeft: 6, fontSize: 11, color: '#8A6A22' }}>reassigned</span>}
         </span>
       );
     }
@@ -171,11 +349,14 @@ function Cell({ col, row, stageLabel }) {
 export default function LtPipeline() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
+  // The on-demand Encompass pull, offered on an empty pipeline. Its own two pieces
+  // of state so a pull in flight can never be confused with the list loading.
+  const [pulling, setPulling] = useState(false);
+  const [pullNote, setPullNote] = useState('');
   const [search, setSearch] = useState('');
   const [stage, setStage] = useState('');
   // The second control row: '' (everyone's) | 'mine' | 'unassigned'.
-  const [whose, setWhose] = useState('');
-  // Which book: 'live' (the default a desk works out of) | 'closed' | 'all'. The row
+  // Which book: 'live' (the default a desk works out of) | 'closed' | 'withdrawn' | 'all'. The row
   // is only DRAWN when the tenant has named folders that mean the deal is over — see
   // `data.bookControl`.
   const [book, setBook] = useState('live');
@@ -190,6 +371,21 @@ export default function LtPipeline() {
   // by is a lie the reader has no way to catch.
   const [sortReq, setSortReq] = useState('');
   const [dirReq, setDirReq] = useState('');
+  // THE DEFAULT IS YOUR OWN FILES (owner-directed 2026-08-23: "It should always
+  // default to active files. Into your own files. And this should be like the main
+  // thing."). For a scoped officer the flag is the harmless twin of their book; for
+  // an admin it is the actual default, one click from Everyone's.
+  const [whose, setWhose] = useState('mine');
+  // Looking at ONE officer's book — the RTL-style pick. Setting it replaces the
+  // mine/everyone choice; clearing it falls back to Everyone's.
+  const [officerId, setOfficerId] = useState('');
+  // The same pick for an officer whose PILOT link nobody has confirmed yet — keyed
+  // on their Encompass login, so a name the rows plainly show is still pickable.
+  const [officerLogin, setOfficerLogin] = useState('');
+  // One search box PER COLUMN, keyed by the column key. These filter CLIENT-side
+  // over the whole fetched book — which the fetch below makes honest by asking for
+  // everything the server-side filters allow (the book is a few hundred rows).
+  const [colFilters, setColFilters] = useState({});
   const nav = useNavigate();
 
   const load = useCallback(() => {
@@ -199,13 +395,25 @@ export default function LtPipeline() {
       // "Mine" is asked for as a FLAG. The server resolves whose from the session,
       // so a viewer who sees the whole book cannot ask for somebody else's personal
       // queue by editing a URL.
-      mine: whose === 'mine' ? 'true' : '',
-      unassigned: whose === 'unassigned' ? 'true' : '',
+      mine: !officerId && !officerLogin && (whose === 'mine' || whose === 'mine-any') ? 'true' : '',
+      // 'mine' is persona-matched on the server (an admin's book is the files they
+      // ORIGINATE — the owner: a file where they were only the closer must not turn
+      // up under "files I'm the loan officer on"); 'mine-any' is the deliberate
+      // wide reading, every file they hold ANY role on.
+      mineRole: !officerId && !officerLogin && whose === 'mine-any' ? 'any' : '',
+      unassigned: !officerId && !officerLogin && whose === 'unassigned' ? 'true' : '',
+      officer: officerId,
+      officerLogin,
+      // The whole (filtered) book in one answer, so the per-column search below is
+      // filtering over everything rather than over one server page — the old
+      // 50-row default page with no pager is exactly the owner's "133 active and
+      // I'm not seeing even close to that number".
+      limit: 1000,
       book,
     })
       .then(setData)
       .catch((e) => setErr(e.message || 'Could not load the long-term pipeline.'));
-  }, [search, stage, whose, book, sortReq, dirReq]);
+  }, [search, stage, whose, officerId, officerLogin, book, sortReq, dirReq]);
 
   useEffect(() => {
     const t = setTimeout(load, search ? 250 : 0);
@@ -232,7 +440,11 @@ export default function LtPipeline() {
     setStage(f.stage || '');
     // A saved "mine" is a flag, so a SHARED view of it means whoever opens it — which
     // is what makes "Mine, at underwriting" one view the whole desk can use.
-    setWhose(f.mine ? 'mine' : f.unassigned ? 'unassigned' : '');
+    const officer = f.officerStaffId || f.officer || '';
+    const officerLoginSaved = f.officerLoginId || '';
+    setWhose(f.mine ? 'mine' : f.unassigned ? 'unassigned' : ((officer || officerLoginSaved) ? '' : 'mine'));
+    setOfficerId(officer);
+    setOfficerLogin(officerLoginSaved);
     // A view with no opinion about the book opens on the default, not on whatever the
     // last view left behind.
     setBook(f.book || 'live');
@@ -248,8 +460,13 @@ export default function LtPipeline() {
     const name = (viewName || '').trim();
     if (!name) return;
     const filters = { search: search.trim(), stage };
-    if (whose === 'mine') filters.mine = true;
-    if (whose === 'unassigned') filters.unassigned = true;
+    if (!officerId && !officerLogin && whose === 'mine') filters.mine = true;
+    if (!officerId && !officerLogin && whose === 'unassigned') filters.unassigned = true;
+    // The KEY the server's saved-view validator accepts (views.js FILTER_KEYS) —
+    // the old `officer` key was silently dropped there, so an officer pick never
+    // actually survived into a saved view.
+    if (officerId) filters.officerStaffId = officerId;
+    if (officerLogin) filters.officerLoginId = officerLogin;
     // Only stored when it is NOT the default — a view saved today must not pin the
     // desk to the live book if that default ever moves. The server drops it either way.
     if (book !== 'live') filters.book = book;
@@ -279,6 +496,21 @@ export default function LtPipeline() {
     const s = (data && data.stages ? data.stages : []).find((x) => x.key === key);
     return (s && s.label) || key || '';
   };
+
+  // The rows after the per-column searches. Every active box must match its own
+  // column — a contact select matches exactly, a text box matches anywhere in what
+  // the cell shows (case blind, and commas/dollar signs in a typed amount are
+  // ignored the same way the eye ignores them).
+  const columnsForFilter = (data && data.columns) || [];
+  const norm = (v) => String(v || '').toLowerCase().replace(/[$,\s]/g, '');
+  const shownLoans = (data ? data.loans : []).filter((row) => columnsForFilter.every((c) => {
+    const q = (colFilters[c.key] || '').trim();
+    if (!q) return true;
+    const text = cellSearchText(c, row, stageLabel);
+    if (c.kind === 'contact') return text === q;
+    return norm(text).includes(norm(q));
+  }));
+  const colFiltersActive = Object.values(colFilters).some((v) => String(v || '').trim());
 
   return (
     <LtLayout title="Long-term pipeline">
@@ -336,73 +568,111 @@ export default function LtPipeline() {
         </div>
       )}
 
-      {/* TWO INDEPENDENT CONTROL ROWS, plus free-text search (§4.1) — which is the
-          arrangement the owner's reference portal uses and the reason it stays simple
-          while being exhaustive. They narrow TOGETHER: a stage and a scope are
-          different questions about the same book, so neither clears the other.
-
-          Each chip carries its own count, and each count is computed with that chip's
-          OWN filter lifted, so it always says what CLICKING it would show. A row of
-          chips reading zero because one of them is selected is a row nobody can
-          navigate out of. */}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
-        {/* NOT `data.total` — that is counted WITH the stage filter, so with a stage
-            selected this chip would read the selected stage's number and nobody could
-            see how big the book is. `allStages` is counted stage-lifted, like every
-            other chip in this row. */}
-        <Chip group="stage" on={!stage} onClick={() => setStage('')} label="Every stage"
-          count={data && data.facets ? data.facets.allStages : null} />
-        {(data && data.stages ? data.stages : []).map((s) => (
-          <Chip key={s.key} group="stage" on={stage === s.key} onClick={() => setStage(s.key)}
-            label={s.label} count={s.count}
-            // A stage no settings map names still gets a chip — §4.1.1: a milestone
-            // with no mapping is shown, not hidden, and a file you cannot filter to
-            // is a file people stop seeing.
-            note={s.undeclared ? 'Encompass is using this stage and the settings do not name it yet' : null} />
-        ))}
-      </div>
-
-      {/* The scope row means nothing to somebody who only ever sees their own files —
-          every chip would select the same book — so it is not drawn for them. */}
-      {data && data.scope === 'all' && data.facets && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-          <Chip group="scope" on={!whose} onClick={() => setWhose('')} label="Everyone’s files"
-            count={data.facets.all} />
-          {data.facets.mine != null && (
-            <Chip group="scope" on={whose === 'mine'} onClick={() => setWhose('mine')} label="Mine"
-              count={data.facets.mine} />
-          )}
-          <Chip group="scope" on={whose === 'unassigned'} onClick={() => setWhose('unassigned')}
-            label="Nobody yet" count={data.facets.unassigned}
-            note="Files with no one on them — a closing or a wire is picked up off the queue, so they have to be findable" />
-        </div>
-      )}
-
-      {/* THE LIVE BOOK AND THE CLOSED ONE — §4.1's "inactive loans stay in it,
-          distinguished by status", so one table and a chip rather than an archive
-          screen. Drawn ONLY when the tenant has named folders that mean the deal is
-          over: with none named every chip selects identical rows, which is not a
-          control — the same reason the scope row above is hidden from somebody who
-          only ever sees their own files. */}
+      {/* THE BOOK IS THE FIRST CONTROL (owner-directed 2026-08-23: "The main first
+          link should be active, closed, withdrawn, and all" — the stage list "should
+          not be the main first link"). Segmented like the RTL pipeline's own primary
+          lens, each tab carrying its count, counted with the book filter lifted so a
+          tab always says what clicking it would show. Drawn only when the tenant has
+          named the folders that mean a deal is over — with none named every tab
+          would select identical rows, which is not a control. Encompass's TRASH is
+          in none of these: deleted files live on the archive screen alone. */}
       {data && data.bookControl && data.bookCounts && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-          <Chip group="book" on={book === 'live'} onClick={() => setBook('live')} label="Live"
-            count={data.bookCounts.live}
-            note="Everything still in play — a folder nobody has marked as finished always counts as live" />
-          <Chip group="book" on={book === 'closed'} onClick={() => setBook('closed')} label="Finished"
-            count={data.bookCounts.closed}
-            note="Declined, withdrawn or otherwise done — kept in the same table, one click away" />
-          <Chip group="book" on={book === 'all'} onClick={() => setBook('all')} label="Both"
-            count={data.bookCounts.all} />
+        <div className="tabs" style={{ marginBottom: 10 }}>
+          {[['live', 'Active', 'Everything still in play — a folder nobody has classified always counts as active'],
+            ['closed', 'Closed', 'Deals that completed, funded files included'],
+            ['withdrawn', 'Withdrawn', 'Deals that died — withdrawn or cancelled, kept apart from the closed book on purpose'],
+            ['all', 'All', 'Every book at once']].map(([k, label, note]) => (
+              <button key={k} type="button" className={`tab ${book === k ? 'on' : ''}`}
+                title={note} onClick={() => setBook(k)}>
+                {label}<span className="ct">{data.bookCounts[k]}</span>
+              </button>
+          ))}
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-        <input className="input" placeholder="Search a loan number or borrower" value={search}
-          onChange={(e) => setSearch(e.target.value)} style={{ maxWidth: 300 }} />
-        {data && <span style={{ alignSelf: 'center', fontSize: 13, color: '#4B585C' }}>
-          {data.total} file{data.total === 1 ? '' : 's'}
+      {/* ONE FILTER ROW, the RTL shape (owner-directed 2026-08-23: "separate
+          filters to select the stage of the file … If I want to see only my file,
+          everyone's file that doesn't have anyone assigned yet, or pick all
+          officers"). The stage moved off the top into a select here; whose-files
+          and the officer pick are ONE select, because they are one question — and
+          it lists every officer the book itself shows, linked to a PILOT login or
+          not, so a name on the rows is never missing from the list that filters
+          them. Each option carries its count, counted with its own filter lifted. */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
+        <input className="input" type="search" placeholder="Search a loan number or borrower" value={search}
+          onChange={(e) => setSearch(e.target.value)} style={{ flex: '1 1 260px', minWidth: 220, maxWidth: 420 }} />
+        <select className="input" style={{ maxWidth: 230 }} value={stage}
+          aria-label="Stage" title="Show one stage of the pipeline"
+          onChange={(e) => setStage(e.target.value)}>
+          <option value="">
+            {`Every stage${data && data.facets && data.facets.allStages != null ? ` (${data.facets.allStages})` : ''}`}
+          </option>
+          {(data && data.stages ? data.stages : []).map((st) => (
+            <option key={st.key} value={st.key}>
+              {st.label}{st.count != null ? ` (${st.count})` : ''}{st.undeclared ? ' — not in the settings yet' : ''}
+            </option>
+          ))}
+        </select>
+        {data && data.scope === 'all' && (
+          <select className="input" style={{ maxWidth: 280 }}
+            value={officerId ? `s:${officerId}` : officerLogin ? `e:${officerLogin}` : whose}
+            aria-label="Whose files" title="Whose files to show"
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v.startsWith('s:')) { setOfficerId(v.slice(2)); setOfficerLogin(''); setWhose(''); }
+              else if (v.startsWith('e:')) { setOfficerLogin(v.slice(2)); setOfficerId(''); setWhose(''); }
+              else { setOfficerId(''); setOfficerLogin(''); setWhose(v); }
+            }}>
+            {/* "My files" says WHAT IT MEANS \u2014 the persona the server matched
+                ("as loan officer"), so the narrowing is never silent; the any-role
+                reading is its own choice one line below, so a file held in another
+                hat is always one click away, with the row badge saying which hat. */}
+            <option value="mine">
+              {`My files${mineRoleWords(data.mineRoles) ? ` \u2014 as ${mineRoleWords(data.mineRoles)}` : ''}${whose === 'mine' && data.facets && data.facets.mine != null ? ` (${data.facets.mine})` : ''}`}
+            </option>
+            <option value="mine-any">
+              {`Everything I\u2019m on \u2014 any role${whose === 'mine-any' && data.facets && data.facets.mine != null ? ` (${data.facets.mine})` : ''}`}
+            </option>
+            <option value="">{`Everyone\u2019s${data.facets ? ` (${data.facets.all})` : ''}`}</option>
+            <option value="unassigned">{`Nobody\u2019s yet${data.facets ? ` (${data.facets.unassigned})` : ''}`}</option>
+            {(data.officers || []).length > 0 && (
+              <optgroup label={'One officer\u2019s files'}>
+                {data.officers.map((o) => (
+                  <option key={o.staff_id || `login:${o.login_id}`}
+                    value={o.staff_id ? `s:${o.staff_id}` : `e:${o.login_id}`}>
+                    {o.full_name}{o.linked === false ? ' — not connected to a PILOT login yet' : ''}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
+        )}
+        {data && <span style={{ fontSize: 13, color: '#4B585C' }}>
+          {colFiltersActive
+            ? `${shownLoans.length} of ${data.total} file${data.total === 1 ? '' : 's'}`
+            : `${data.total} file${data.total === 1 ? '' : 's'}`}
+          {colFiltersActive && (
+            <button type="button" className="btn ghost" style={{ marginLeft: 8, padding: '2px 8px', fontSize: 12 }}
+              onClick={() => setColFilters({})}>Clear searches</button>
+          )}
         </span>}
+        {/* THE ARCHIVE'S ONE QUIET DOOR (owner-directed 2026-08-23: deleted-in-
+            Encompass files are "totaled in the archive folder, and you can click
+            over there"). Drawn only when it holds anything and only for a viewer
+            the server counted it for. */}
+        {data && data.archiveCount > 0 && (
+          <Link to="/internal/lt/archive" style={{ fontSize: 13, color: '#256168' }}>
+            Archive: {data.archiveCount} deleted file{data.archiveCount === 1 ? '' : 's'}
+          </Link>
+        )}
+        {/* An honest cap: the fetch asks for the whole book, and if the book ever
+            outgrows it, the difference is SAID rather than silently cut — the exact
+            failure the old 50-row page had. */}
+        {data && data.total > data.loans.length && (
+          <span style={{ fontSize: 13, color: '#8A6A22' }}>
+            Showing the first {data.loans.length} of {data.total} — narrow it down to see the rest.
+          </span>
+        )}
       </div>
 
       {err && <div className="card" style={{ color: '#141B22' }}>{err}</div>}
@@ -410,7 +680,44 @@ export default function LtPipeline() {
       {data && !data.loans.length && (
         <div className="card" style={{ color: '#141B22' }}>
           {data.emptyReason
-            || 'No long-term files yet. They appear here once the sync has brought them in from Encompass.'}
+            || (data.scope === 'all' && whose === 'mine' && !officerId && !officerLogin
+              ? (data.viewerLinked === false
+                ? (<span>
+                    Your PILOT login is not connected to your Encompass login yet — that is why
+                    {' '}“My files” is empty even though your name is on files. Open the{' '}
+                    <Link to="/internal/lt/people" style={{ color: '#256168' }}>Team screen</Link> and
+                    confirm your own row; your files fill in the moment it is confirmed.
+                  </span>)
+                : 'No files are assigned to you. You are looking at YOUR OWN files \u2014 the default \u2014 so this is not the whole book: pick \u201CEveryone\u2019s\u201D above to see it.')
+              : 'No long-term files yet. They appear here once the sync has brought them in from Encompass.')}
+          {/* THE ACTION BELONGS WHERE THE PROBLEM IS SEEN. An empty pipeline is
+              exactly the moment somebody wants to press "bring them in", and sending
+              them off to find another screen is how a working system reads as broken.
+              Offered only when there is genuinely nothing here, and only to somebody
+              allowed to run it — the button hides itself rather than 403-ing, and the
+              server re-checks the permission on the press either way. */}
+          {!data.emptyReason && (
+            <div style={{ marginTop: 12 }}>
+              <button type="button" className="btn primary" disabled={pulling}
+                onClick={async () => {
+                  setPulling(true); setPullNote('');
+                  try {
+                    const out = await ltApi.pullFromEncompass();
+                    setPullNote(out.note || 'Pulling from Encompass now.');
+                    setTimeout(() => load(), 8000);
+                  } catch (e) {
+                    // A staffer who may not run it is TOLD so, rather than left
+                    // pressing a button that appears to do nothing.
+                    setPullNote(e.message || 'Could not start the pull.');
+                  } finally { setPulling(false); }
+                }}>
+                {pulling ? 'Starting…' : 'Pull everything from Encompass'}
+              </button>
+              {pullNote && (
+                <div style={{ marginTop: 8, fontSize: 13, color: '#4B585C' }}>{pullNote}</div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -464,27 +771,54 @@ export default function LtPipeline() {
                   </th>
                 );
               })}
+            </tr>
+            {/* ONE SEARCH PER COLUMN (owner-directed 2026-08-23: "on every column
+                [a] separate search bar"). They filter INSTANTLY over the whole
+                fetched book — the fetch above asks for everything the server-side
+                filters allow, so narrowing here is honest. A contact column offers
+                the people actually on the rows instead of a text box, which is the
+                "officer should be like a select" half of the same instruction. */}
+            <tr>
+              {columns.map((c) => (
+                <th key={c.key} style={{ padding: '2px 8px 8px' }}>
+                  {c.kind === 'outstanding' ? null : c.kind === 'contact' ? (
+                    <select className="input" style={{ width: '100%', fontSize: 12, padding: '3px 6px' }}
+                      value={colFilters[c.key] || ''}
+                      onChange={(e) => setColFilters((f) => ({ ...f, [c.key]: e.target.value }))}>
+                      <option value="">All</option>
+                      {[...new Set(data.loans
+                        .map((r) => ((r.contacts || []).find((x) => x.role === c.field) || {}).name)
+                        .filter(Boolean))].sort().map((n) => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  ) : (
+                    <input className="input" style={{ width: '100%', fontSize: 12, padding: '3px 6px' }}
+                      placeholder="Search" aria-label={`Search ${c.label}`}
+                      value={colFilters[c.key] || ''}
+                      onChange={(e) => setColFilters((f) => ({ ...f, [c.key]: e.target.value }))} />
+                  )}
+                </th>
+              ))}
             </tr></thead>
             <tbody>
-              {data.loans.map((l) => (
+              {shownLoans.map((l) => (
                 <tr key={l.id} style={{ cursor: 'pointer' }}
                   onClick={() => nav(`/internal/lt/loan/${l.id}`)}>
                   {columns.map((c, i) => (
                     <td key={c.key}
                       style={{ ...td, textAlign: c.align === 'right' ? 'right' : 'left',
                         fontWeight: c.emphasis ? 600 : 400 }}>
-                      {/* THE PRODUCT STAMP, on every row (CLAUDE.md §7) — on the FIRST
-                          column, whichever column that is. Hanging it off the loan
-                          number would let a configuration that drops that column drop
-                          the stamp with it, and the stamp is not configurable. It is
-                          rendered from what the ROW carries, so it stays correct on a
-                          combined pipeline instead of labelling everything the same. */}
-                      {i === 0 ? (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                          <ProductStamp product={l.product} label={l.productLabel} />
-                          <Cell col={c} row={l} stageLabel={stageLabel} />
-                        </span>
-                      ) : <Cell col={c} row={l} stageLabel={stageLabel} />}
+                      {/* NO per-row product stamp here, and that is not a drift from
+                          CLAUDE.md §7 — read the rule: the stamp-on-every-row demand is
+                          for a COMBINED pipeline listing both products, where a row's
+                          product is a fact the eye needs. This screen lists ONE product
+                          by construction (its own route, its own tables), says so in
+                          its title, and the rule's author directed the per-row copy
+                          removed (owner, 2026-08-23: *"This entire pipeline is only
+                          long term, so you don't need to stamp every file
+                          separately"*). The FILE header keeps its stamp — §7 asks for
+                          that one by name, and LtLoan.jsx renders it. A future combined
+                          pipeline brings the per-row stamp back with the merge. */}
+                      <Cell col={c} row={l} stageLabel={stageLabel} mineRoles={data.mineRoles} />
                     </td>
                   ))}
                 </tr>

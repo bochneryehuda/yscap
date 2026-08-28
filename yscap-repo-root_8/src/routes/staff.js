@@ -5,6 +5,10 @@
  * track records, and assign Lead-Capture (unassigned) applications.
  */
 const express = require('express');
+// The ONE way a person finds a file by loan number / address / borrower name.
+// PURE (SQL text + a bound value). Its address expression reads whichever parts a
+// row actually holds — most files carry no `oneLine` key.
+const fileSearch = require('../lib/file-search');
 const router = require('../lib/safe-router')();
 const db = require('../db');
 const { scrubText, scrubTextExcept } = require('../lib/borrower-safe');
@@ -150,13 +154,15 @@ async function recordTapeSuperOverride(req, appId, tape, encGate, reason) {
   } catch (_) { /* register write is best-effort — the audit row stands */ }
 }
 
-// Advisory-only sources must never score or notify — one shared filter (audit 2026-07-27).
-const aiSuggestions = require('../lib/underwriting/ai-suggestions');
 // The borrower DIRECTORY / CRM has a WIDER audience than file-level see_all_files
 // (owner-directed): admins, underwriters, loan_coordinators (seesAll) AND
 // processors may open ANY borrower's full profile; loan_officers stay limited to
-// borrowers they've done a loan for. File-level access (/applications/:id) is
-// unchanged — a processor still opens individual files only where assigned.
+// borrowers they've done a loan for. NOTE processors now ALSO hold see_all_files
+// by role default (owner-directed 2026-08-26: the back-office persona sees the
+// entire pipeline like admins), so the explicit processor carve-out below is
+// belt-and-suspenders — it keeps the borrower directory whole for a processor
+// whose see_all_files was individually revoked, which is the pre-existing
+// owner-directed state (2026-07-26).
 const seesAllBorrowers = (req) => seesAll(req) || (req.actor && req.actor.role === 'processor');
 // A file that is NOT actionable work: funded/closed (done), declined/withdrawn
 // (dead), or ON HOLD (paused — owner-directed 2026-07-14). None of these should
@@ -484,6 +490,152 @@ router.get('/tapes/:tapeKey/loans', async (req, res) => {
     const r = await db.query(sql, params);
     res.json({ tape: tapes.registry.publicTape(tape), count: r.rows.length, loans: r.rows });
   } catch (e) { console.error('[tape loans]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+/* SEARCH EVERY LOAN, NOT JUST THE ONES ALREADY ASSIGNED TO THIS PROVIDER.
+   Owner-directed 2026-08-23: *"the bulk tape needs to be enhanced so that we can
+   export any kind of tape that we currently have for different investors. We can
+   import and select different loans to be included in that tape … We can search
+   loans by loan numbers and by address … I can include any kind of loans that I
+   want."*
+
+   WHY THIS IS A NEW DOOR AND NOT A FILTER ON THE OLD ONE. `/tapes/:tapeKey/loans`
+   answers a different question — "which loans are ALREADY assigned to this
+   provider" — and that list is still the right default to open on. What was
+   missing is the ability to go and FIND a loan that is not on it. Widening the old
+   endpoint would have destroyed the default view to add a search; this adds the
+   search beside it.
+
+   NO RULE IS RELAXED HERE. The export gate is untouched: an admin/super-admin has
+   always been able to export any provider's tape for any loan (buyer-rule.js
+   `exportGate` — `if (isAdmin) return { ok: true }`), and a non-admin has always
+   needed the provider and program to line up. The defect was never the gate — it
+   was that the PICKER could not show a loan the gate would happily have exported.
+   So every row comes back stamped with whether THIS staffer could export it and,
+   when not, the plain reason, computed from the same pure gate the builder
+   enforces. Nothing is hidden and nothing is silently permitted.
+
+   `q` matches a loan number (ours or the investor's), any part of the property
+   address, or the borrower's name. Several loan numbers may be pasted at once,
+   separated by commas / spaces / new lines — which is how a tape request actually
+   arrives from an investor. */
+router.get('/tapes/:tapeKey/search', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
+  try {
+    const tapes = require('../lib/tapes');
+    const tape = tapes.registry.getTape(req.params.tapeKey);
+    if (!tape) return res.status(404).json({ error: 'unknown tape type' });
+
+    const raw = String((req.query && req.query.q) || '').trim();
+    if (raw.length < 2) return res.json({ tape: tapes.registry.publicTape(tape), count: 0, loans: [], hint: 'Type at least two characters — a loan number, an address, or a borrower name.' });
+
+    /* MANY LOAN NUMBERS AT ONCE. A pasted list is the common case, so the query is
+       split on commas / semicolons / new lines / runs of spaces and EVERY token is
+       matched. A single phrase with spaces ("123 Main St") is still matched WHOLE
+       as well, so an address search is not shredded into three useless tokens. */
+    const tokens = Array.from(new Set(
+      raw.split(/[\s,;\n]+/).map((t) => t.trim()).filter((t) => t.length >= 2)
+    )).slice(0, 200);                      // a bounded paste, never an unbounded OR
+    // Wildcards are added HERE rather than in SQL so the parameter is a plain
+    // text[] and each ILIKE ANY(...) is an array comparison, not a per-row subquery.
+    const needles = Array.from(new Set([raw, ...tokens])).map((t) => `%${t}%`);
+
+    const params = [needles];
+    let scopeSql = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scopeSql = ' AND ' + VISIBLE_OFFICERS_SQL('a', '$' + params.length); }
+
+    /* ONE `ILIKE ANY` per searchable field rather than a concatenated haystack: a
+       concatenation would let "1044" match a loan whose ZIP is 1044x, and a tape
+       exported for the wrong loan is the expensive mistake here. The address is
+       matched on its assembled one-line form so "123 Main, Brooklyn" works the way
+       a person types it. */
+    const sql = `
+      SELECT a.id, a.ys_loan_number, a.investor_loan_number, a.lender, a.status, a.loan_amount,
+             COALESCE(a.property_address->>'oneLine',
+                      NULLIF(concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
+                                       a.property_address->>'state', a.property_address->>'zip'), '')) AS address,
+             b.first_name, b.last_name,
+             pr.program AS program
+        FROM applications a
+        JOIN borrowers b ON b.id = a.borrower_id
+        LEFT JOIN product_registrations pr ON pr.application_id = a.id AND pr.is_current
+       WHERE a.deleted_at IS NULL${scopeSql}
+         AND (
+              a.ys_loan_number       ILIKE ANY ($1::text[])
+           OR a.investor_loan_number ILIKE ANY ($1::text[])
+           OR COALESCE(a.property_address->>'oneLine',
+                       concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
+                                 a.property_address->>'state', a.property_address->>'zip'))
+                                    ILIKE ANY ($1::text[])
+           OR concat_ws(' ', b.first_name, b.last_name)
+                                    ILIKE ANY ($1::text[])
+         )
+       ORDER BY a.updated_at DESC
+       LIMIT 200`;
+    const r = await db.query(sql, params);
+
+    // Stamp each row with whether THIS staffer could export it on THIS tape, using
+    // the same pure gate the builder enforces — so the picker can never offer
+    // something the export would then refuse, and never hide something it would allow.
+    const isAdmin = tapeAdmin(req);
+    const loans = r.rows.map((row) => {
+      const gate = tapes.exportGate({ noteBuyerRaw: row.lender }, tape,
+        { isAdmin, registeredProgram: row.program });
+      return {
+        ...row,
+        eligible: gate.ok,
+        ineligibleReason: gate.ok ? null : (gate.error && gate.error.message) || 'Not exportable on this tape.',
+        ineligibleCode: gate.ok ? null : (gate.error && gate.error.code) || null,
+        // Is this loan already assigned to this tape's provider? Shown as a chip so
+        // a staffer can SEE they are putting a Blue Lake loan on a Fidelis tape
+        // rather than discovering it in the workbook.
+        buyerMatches: tapes.buyerMatches({ noteBuyerRaw: row.lender }, tape),
+      };
+    });
+    res.json({ tape: tapes.registry.publicTape(tape), count: loans.length, loans, isAdmin, truncated: loans.length >= 200 });
+  } catch (e) { console.error('[tape search]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
+// Look up a specific set of loans by id — so the export screen can re-hydrate a
+// selection (its "basket") that was built across several different searches, and
+// re-check each one's eligibility, without re-running any of those searches.
+router.post('/tapes/:tapeKey/selected', async (req, res) => {
+  if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
+  try {
+    const tapes = require('../lib/tapes');
+    const tape = tapes.registry.getTape(req.params.tapeKey);
+    if (!tape) return res.status(404).json({ error: 'unknown tape type' });
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const ids = Array.from(new Set(
+      (Array.isArray(req.body && req.body.applicationIds) ? req.body.applicationIds : [])
+        .filter((x) => UUID.test(String(x))))).slice(0, 1000);
+    if (!ids.length) return res.json({ loans: [] });
+    const params = [ids];
+    let scopeSql = '';
+    if (!seesAll(req)) { params.push(req.actor.id); scopeSql = ' AND ' + VISIBLE_OFFICERS_SQL('a', '$' + params.length); }
+    const r = await db.query(`
+      SELECT a.id, a.ys_loan_number, a.investor_loan_number, a.lender, a.status, a.loan_amount,
+             COALESCE(a.property_address->>'oneLine',
+                      NULLIF(concat_ws(', ', a.property_address->>'line1', a.property_address->>'city',
+                                       a.property_address->>'state', a.property_address->>'zip'), '')) AS address,
+             b.first_name, b.last_name, pr.program AS program
+        FROM applications a
+        JOIN borrowers b ON b.id = a.borrower_id
+        LEFT JOIN product_registrations pr ON pr.application_id = a.id AND pr.is_current
+       WHERE a.id = ANY($1::uuid[]) AND a.deleted_at IS NULL${scopeSql}`, params);
+    const isAdmin = tapeAdmin(req);
+    const loans = r.rows.map((row) => {
+      const gate = tapes.exportGate({ noteBuyerRaw: row.lender }, tape, { isAdmin, registeredProgram: row.program });
+      return {
+        ...row,
+        eligible: gate.ok,
+        ineligibleReason: gate.ok ? null : (gate.error && gate.error.message) || 'Not exportable on this tape.',
+        ineligibleCode: gate.ok ? null : (gate.error && gate.error.code) || null,
+        buyerMatches: tapes.buyerMatches({ noteBuyerRaw: row.lender }, tape),
+      };
+    });
+    res.json({ loans, isAdmin });
+  } catch (e) { console.error('[tape selected]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // Export a BULK tape (many loans on one workbook) for :tapeKey. Body:
@@ -878,7 +1030,11 @@ router.get('/applications', async (req, res) => {
     let offset = parseInt(q.offset, 10);
     if (!Number.isFinite(offset) || offset < 0) offset = 0;
 
-    const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,
+    // `sold_at` rides along so the pipeline can show the Sold STAGE (db/611). The stored status
+    // stays `funded` — 139 places read it and moving it would switch servicing off — so the row
+    // carries both and the list decides the word. One definition of that decision:
+    // app-v2/src/lib/soldStage.js, the browser twin of lib/sold-status.displayStatus.
+    const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,a.sold_at,
                         a.clickup_pipeline_task_id,a.property_address,a.lender,
                         a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,a.actual_closing,
                         b.first_name,b.last_name,b.email,
@@ -896,21 +1052,17 @@ router.get('/applications', async (req, res) => {
                            LEFT JOIN checklist_templates t ON t.id = ci.template_id
                           WHERE ci.application_id=a.id
                             AND COALESCE(t.code,'') <> 'underwriting_review_cleared'
-                            AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items,
-                        (SELECT count(*)::int FROM ai_suggestions s
-                           WHERE s.application_id=a.id AND s.severity='fatal'
-                             AND s.status IN ('open','marked_important','escalated','asked_admin')
-                             AND ${aiSuggestions.notScoredSql('s')}) AS open_fatal_ai,
-                        (SELECT EXTRACT(EPOCH FROM (now() - MIN(s.created_at)))/86400 FROM ai_suggestions s
-                           WHERE s.application_id=a.id AND s.severity='fatal'
-                             AND s.status IN ('open','marked_important','escalated','asked_admin')
-                             AND ${aiSuggestions.notScoredSql('s')}) AS open_fatal_ai_oldest_days,
-                        LEAST(100, COALESCE((SELECT
-                            SUM(CASE severity WHEN 'fatal' THEN 25 WHEN 'warning' THEN 8 WHEN 'info' THEN 2 ELSE 4 END)::int
-                          FROM ai_suggestions s
-                          WHERE s.application_id=a.id
-                            AND s.status IN ('open','marked_important','escalated','asked_admin')
-                            AND ${aiSuggestions.notScoredSql('s')}),0)) AS ai_risk_score
+                            AND (ci.signed_off_at IS NOT NULL OR ci.status='satisfied')) AS done_items
+                        /* THE PIPELINE NO LONGER SCORES FILES (owner-directed 2026-08-21: "take
+                           them off the pipeline"). Three correlated subqueries over ai_suggestions
+                           used to run PER ROW here — an open-fatal count, the age of the oldest,
+                           and a 0-100 risk sum — to feed two red stamps on the pipeline list. The
+                           owner had the stamps removed (they read as a STOP on a screen the whole
+                           team scans, while AI findings are advisory and never block), so the
+                           subqueries went with them rather than being left computing values
+                           nothing renders on the most-loaded screen in the app. Every one of those
+                           findings is still on the FILE, where the person who can resolve one is
+                           looking. Guarded by scripts/test-advisory-not-scored-pure.js. */
                  FROM applications a JOIN borrowers b ON b.id=a.borrower_id
                  WHERE ${where.join(' AND ')} ORDER BY ${orderBy}
                  LIMIT ${add(limit)} OFFSET ${add(offset)}`;
@@ -930,7 +1082,15 @@ router.get('/search', async (req, res) => {
   try {
     const raw = String(req.query.q || '').trim();
     if (raw.length < 2) return res.json({ loans: [], borrowers: [], llcs: [], trackRecords: [], officers: [], tasks: [], chats: [] });
-    const like = '%' + raw.slice(0, 80) + '%';
+    /* The SHARED parameter, which already carried this door's own two rules (a
+       two-character minimum, an 80-character cap) and adds the one it was
+       missing: `%` and `_` are ESCAPED to literals, so typing "100%" searches
+       for a percent sign instead of matching every file in the company. For
+       ordinary text it produces the byte-identical string this line always did.
+       The early return above still answers the short case with empty lists
+       rather than an unfiltered one. */
+    const like = fileSearch.likeParam(raw);
+    if (!like) return res.json({ loans: [], borrowers: [], llcs: [], trackRecords: [], officers: [], tasks: [], chats: [] });
     const meId = req.actor && req.actor.id;
 
     // ---- loans (applications) ----
@@ -939,6 +1099,14 @@ router.get('/search', async (req, res) => {
     const loanParams = [like];
     let loanScope = '';
     if (!seesAll(req)) { loanParams.push(meId); loanScope = 'AND ' + VISIBLE_OFFICERS_SQL('a', '$2'); }
+    /* THE ADDRESS HAYSTACK IS COMPOSED, NOT the 'oneLine' key ALONE (2026-08-26).
+       MEASURED on the live table: of 319 files carrying an address only 137 hold a
+       'oneLine' key — the public marketing form and the staff new-file form both
+       store {line1, city, state, zip}, and older rows use 'street' — so more than
+       half of all files could not be found by their own address, silently, and it
+       read as "no such file". The shared expression resolves 316 of the 319.
+       (The note lives OUT here: backticks inside the template literal below would
+       end it, which is exactly how the first cut of this comment broke the file.) */
     const loans = await db.query(
       `SELECT a.id, a.ys_loan_number, a.status, a.program, a.loan_amount, a.property_address,
               b.first_name, b.last_name
@@ -946,7 +1114,7 @@ router.get('/search', async (req, res) => {
         WHERE a.deleted_at IS NULL ${loanScope}
           AND (NULLIF(b.full_name,'') ILIKE $1
                OR a.ys_loan_number ILIKE $1
-               OR COALESCE(a.property_address->>'oneLine','') ILIKE $1)
+               OR ${fileSearch.ADDRESS_TEXT_SQL('a')} ILIKE $1)
         ORDER BY a.created_at DESC LIMIT 6`, loanParams);
 
     // ---- borrowers ----
@@ -2648,8 +2816,8 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
       let buf;
       try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
       catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-      const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-      if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+      const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
+      if (buf.length > maxBytes) return res.status(413).json({ error: require('../lib/upload-stream').tooLargeMessage(b && b.filename, buf.length, maxBytes) });
       const filename = safeFilename(b.filename);
       const { ref, provider } = await storage.save(buf, { filename });
       const r = await db.query(
@@ -2915,6 +3083,10 @@ router.get('/applications/:id/pricing', async (req, res) => {
         origStdPct: cd.origStdPct, origGoldPct: cd.origGoldPct, origSilverPct: cd.origSilverPct,
         lenderFee: cd.lenderFee, creditFee: cd.creditFee,
         appraisalFee: cd.appraisalFee, titleFee: cd.titleFee ?? null,
+        // The construction feasibility / project review pair (owner-directed 2026-08-21), so the
+        // studio quotes the same fee the register books rather than falling back to its own copy
+        // of the owner's numbers.
+        feasibilityFees: cd.feasibilityFees || null,
       };
     } catch (_) { pricingDefaults = null; }
     // Term-sheet hold (owner-directed 2026-07-31): open fatal appraisal findings
@@ -3452,6 +3624,45 @@ router.post('/applications/:id/pricing/register', async (req, res) => {
       // blank clears it → the company per-tier default (or historic 0) governs.
       if (Object.prototype.hasOwnProperty.call(overrides, 'markupGoldT1Pct'))
         await client.query(`UPDATE applications SET file_markup_gold_t1_pct=$2 WHERE id=$1`, [appId, stickyMk(overrides.markupGoldT1Pct)]);
+      /* THE MANUAL CONSTRUCTION FEASIBILITY FEE sticks the same way (owner-directed 2026-08-21,
+         db/609: "add this fee type into the manual section in the products and pricing so we can,
+         any time, add it to any other project manually as well"). A blank clears it → the company
+         default for this deal's kind governs; a typed 0 is a deliberate WAIVER and is stored as 0,
+         so `stickyFee` deliberately keeps a zero that `stickyMk` would also keep — the two differ
+         only in intent, and this comment is why the zero matters here.
+
+         THIS IS THE ONLY WRITER OF THIS COLUMN, and that is load-bearing: db/609 does not widen
+         the economics-reopen trigger for it precisely because it can only be written as part of a
+         registration, so there is never a stale registration for the trigger to catch. Adding
+         another door means widening that trigger — `test-feasibility-fee-pure` section F is what
+         will notice. */
+      if (Object.prototype.hasOwnProperty.call(overrides, 'feasibilityFee'))
+        await client.query(`UPDATE applications SET file_feasibility_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.feasibilityFee)]);
+      /* OUR FEE'S TWO PARTS AND THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE stick the same way
+         (owner-directed 2026-08-26, db/632: "it should just be pre-filled in the manual section.
+         Everything can be changeable"). A blank clears the column → the company number, this
+         deal's own New York rung, or the New York settlement pre-fill governs again; a typed 0 is
+         a deliberate WAIVER (or, for the optional fee, a DECLINE) and is stored as 0.
+
+         THESE ARE THE ONLY WRITERS OF THESE THREE COLUMNS, and that is load-bearing for the same
+         reason as the feasibility fee above: db/632 does not widen the economics-reopen trigger
+         for them precisely because they can only be written as part of a registration, so there is
+         never a stale registration for the trigger to catch. Adding another door means widening
+         that trigger — `test-lender-fees-pure` section J is what will notice. */
+      if (Object.prototype.hasOwnProperty.call(overrides, 'underwritingFee'))
+        await client.query(`UPDATE applications SET file_underwriting_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.underwritingFee)]);
+      if (Object.prototype.hasOwnProperty.call(overrides, 'legalFee'))
+        await client.query(`UPDATE applications SET file_legal_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.legalFee)]);
+      if (Object.prototype.hasOwnProperty.call(overrides, 'settlementFee'))
+        await client.query(`UPDATE applications SET file_settlement_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.settlementFee)]);
+      /* THE NEW YORK CEMA — the ANSWER and the AMOUNT, sticking the same way. The answer is a
+         boolean the registrant gave to a question ("is this a New York CEMA?"), so it is written
+         only when the register carried it: a door that does not ask must never quietly answer NO
+         on a file somebody already said yes on. */
+      if (Object.prototype.hasOwnProperty.call(overrides, 'cemaFee'))
+        await client.query(`UPDATE applications SET file_cema_fee=$2 WHERE id=$1`, [appId, stickyMk(overrides.cemaFee)]);
+      if (Object.prototype.hasOwnProperty.call(overrides, 'nyCema'))
+        await client.query(`UPDATE applications SET ny_cema=$2 WHERE id=$1`, [appId, overrides.nyCema === true]);
       /* THE TYPED CASH-OUT FOLLOWS THE REGISTER ONTO THE FILE (audit-found
          2026-07-31). The studio prints the officer's typed figure on the term
          sheet PDF; without this it never reached the loan file, so the file and
@@ -4570,7 +4781,7 @@ router.post('/applications/:id/checklist/:itemId/tool', async (req, res) => {
   // supersede the previous exports when at least one valid replacement exists:
   // a submission whose attachments all fail must not strip the condition of
   // its current documents.
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
+  const maxBytes = require('../lib/upload-stream').jsonUploadBytes();
   const valid = [];
   for (const a of attachments) {
     let buf;
@@ -5149,14 +5360,20 @@ router.get('/applications/:id/export/tpr', async (req, res) => {
       await audit(req, 'issuance_override', 'application', req.params.id, { action: 'export_tpr', tier: issuance.tier, reason: issuance.override.reason });
       await loanExceptions.recordIssuanceOverride({ appId: req.params.id, staffId: req.actor.id, note: `export_tpr: ${issuance.override.reason || 'no reason given'}`, snapshot: { action: 'export_tpr', tier: issuance.tier || null, at: new Date().toISOString() } });
     }
-    const { zip, filename, includedCount, heldBack } = await require('../lib/tpr-export').buildTprExport(req.params.id);
+    const { zip, filename, includedCount, heldBack, trackHeldBack, trackRecordTotal } =
+      await require('../lib/tpr-export').buildTprExport(req.params.id);
     // The held-back count is on the AUDIT ROW as well as the preview: a ZIP is a
     // stream of bytes with nowhere to put a note, so this is the only durable
     // record of "the package went out one document short, and here is why".
+    // The TRACK-RECORD lines it held back are recorded the same way, for the same
+    // reason (2026-08-27): a package one PROJECT short was invisible everywhere.
     await audit(req, 'export_tpr', 'application', req.params.id, {
       bytes: zip.length, includedCount,
       heldBackForReview: (heldBack || []).length,
       heldBackFiles: (heldBack || []).slice(0, 25).map((d) => d.filename),
+      trackRecordTotal: trackRecordTotal || 0,
+      trackRecordDelivered: Math.max(0, (trackRecordTotal || 0) - (trackHeldBack || []).length),
+      trackHeldBack: (trackHeldBack || []).slice(0, 25).map((h) => ({ property: h.property, reason: h.reason })),
     });
     // Owner-directed (2026-07-13): every export is also kept on the file and
     // mirrored into SharePoint ("YS portal syncing/TPR Exports", versioned on
@@ -5198,10 +5415,26 @@ router.get('/applications/:id/export/tpr/preview', async (req, res) => {
         id: d.id, filename: d.filename, requirement: 'REO / track record',
       })),
     ];
+    /* AND THE PROJECTS, for the same reason (owner-reported 2026-08-26). A package
+       one PROJECT short was invisible everywhere until somebody counted the rows
+       against the screen. The scope is asked through the ONE `export-scope`
+       predicate the package itself uses, so the warning and the package can never
+       disagree about which lines are delivered. */
+    const SCOPE = require('../lib/track-record/export-scope');
+    const trRows = (await db.query(
+      `SELECT id, property_address, (${SCOPE.scopePredicate('verified', 't')}) AS in_scope
+         FROM track_records t WHERE t.id = ANY($1::uuid[])`, [trIds])).rows;
+    const trPart = SCOPE.partitionInScope(trRows, 'verified',
+      (r) => tpr.addrText(r && r.property_address));
     res.json({
       includedCount: included, trackDocs, missing,
       pending, pendingCount: pending.length,
       pendingNote: require('../lib/document-acceptance').heldBackNote(pending.length),
+      trackRecordTotal: trPart.total,
+      trackDelivered: trPart.carried.length,
+      trackHeldBack: trPart.heldBack.map((h) => ({ property: h.property, reason: h.reason })),
+      trackHeldBackNote: trPart.heldBack.length
+        ? SCOPE.heldBackHeadline(trPart.heldBack.length, trPart.total) : null,
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -5555,10 +5788,14 @@ router.get('/applications/:id/export/tape/:tapeKey', async (req, res) => {
 router.get('/applications/:id/tape-send', async (req, res) => {
   if (!canExportTapes(req)) return res.status(403).json({ error: 'You don’t have permission to export data tapes.' });
   try {
-    const pre = await require('../lib/tapes/investor-send').previewTapeSend(req.params.id, db);
+    const investorSendTape = require('../lib/tapes/investor-send');
+    const pre = await investorSendTape.previewTapeSend(req.params.id, db);
     if (!pre) return res.status(404).json({ error: 'not found' });
     const { app: _app, ...safe } = pre;   // the raw row stays server-side
-    res.json(safe);
+    // The EXACT email the send would produce (owner-directed 2026-08-26: a full,
+    // editable preview) — the same pure builder sendTapeToInvestor renders with.
+    const built = investorSendTape.buildTapeEmail(pre, typeof req.query.note === 'string' ? req.query.note : '');
+    res.json({ ...safe, email: { subject: built.subject, text: built.text } });
   } catch (e) { console.error('[tape-send preview]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -5576,7 +5813,7 @@ router.post('/applications/:id/tape-send/:tapeKey', async (req, res) => {
     if (!out.ok) return;
     const sent = await investorSendTape.sendTapeToInvestor(req.params.id, db, {
       tape: { buf: out.buf, filename: out.filename, contentType: out.contentType },
-      to: rec.emails, cc: b.cc, note: b.note,
+      to: rec.emails, cc: b.cc, note: b.note, override: b.override,
       actorId: req.actor.id, actorName: req.actor.full_name || null,
     });
     await audit(req, 'tape_sent_to_investor', 'application', req.params.id, {
@@ -5615,9 +5852,15 @@ router.post('/applications/:id/tape-send/:tapeKey/schedule', async (req, res) =>
     const bad = sched.whenProblem(at);
     if (bad) return res.status(400).json({ error: bad.error, code: bad.code });
 
+    // A hand-edited subject/body rides the stored payload so the dispatcher's re-post
+    // lands it through the send route's own override chokepoint at the due moment
+    // (manual-override.js's contract). cleanOverride strips NULs + caps sizes, so
+    // nothing unstorable reaches the jsonb column; null = nothing was really edited.
+    const override = require('../lib/email/manual-override').cleanOverride(b.override);
     const out = await sched.schedule({
       appId, kind: 'tape_to_investor', targetKey: String(req.params.tapeKey || ''),
-      at, payload: { to: rec.emails, cc: extra.emails, note: String(b.note || '').slice(0, 2000) },
+      at, payload: { to: rec.emails, cc: extra.emails, note: String(b.note || '').slice(0, 2000),
+        ...(override ? { override } : {}) },
       actorId: req.actor.id,
     });
     if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
@@ -6988,6 +7231,51 @@ router.get('/applications/:id/orders', async (req, res) => {
 // Place (send) an order. Gated on loan number + vendor contact. Re-sending an
 // already-placed order requires ?force / {force:true} so a stray double-click
 // never re-blasts the vendor + whole CC chain.
+/* THE EDITABLE PREVIEW (owner-directed 2026-08-26: "instead of it automatically sending
+   an email, it should populate a full preview … fully editable"). The preview IS the
+   send's own pure builder — orders.buildOrderEmail — run over the same data, so what the
+   screen shows and what would go out can never be two different emails. Read-only:
+   builds nothing on the file, sends nothing. ?followup=1 previews the follow-up shape
+   (with the typed note in place); the send routes then accept {override:{subject,text}}
+   landed through the ONE lib/email/manual-override chokepoint. */
+router.get('/applications/:id/orders/:kind/email-preview', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const followup = req.query.followup === '1' || req.query.followup === 'true';
+    const note = typeof req.query.note === 'string' ? req.query.note.slice(0, 4000) : '';
+    const built = orders.buildOrderEmail(kind, data, followup ? { followup: true, fullOrder: true, note } : {});
+    // THE SAME recipient derivation the send routes run (post-merge audit W6): the
+    // panel's ccBorrower choice (?ccBorrower=) + the order's stored per-order footing,
+    // and — on a follow-up — the vendor-thread participants too. This used to pass
+    // {explicit:null, storedMeta:null} and skip threadParticipants, so the To/Cc the
+    // preview showed could disagree with the recipients the send actually uses.
+    const row = (await db.query(
+      `SELECT meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
+    const explicit = req.query.ccBorrower === '1' || req.query.ccBorrower === 'true' ? true
+      : (req.query.ccBorrower === '0' || req.query.ccBorrower === 'false' ? false : null);
+    // A follow-up keeps the footing the order was placed with (no explicit override —
+    // exactly the follow-up send's own rule).
+    const ccBorrower = await ccBorrowerFor(appId, kind,
+      followup ? { storedMeta: row && row.meta } : { explicit, storedMeta: row && row.meta });
+    const base = orders.recipientsFor(kind, data, { ccBorrower });
+    let { to, cc } = base;
+    if (followup) {
+      const parties = await threadParticipants.replyRecipients({
+        applicationId: appId, msgTypes: [`${kind}_message`],
+        to: base.to, cc: base.cc,
+        never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+      });
+      to = parties.to; cc = parties.cc;
+    }
+    res.json(require('../lib/email/manual-override').previewShape(built, { to, cc }));
+  } catch (e) { res.status(500).json({ error: 'Could not build the preview.' }); }
+});
+
 router.post('/applications/:id/orders/:kind/place', async (req, res) => {
   const appId = req.params.id;
   const kind = req.params.kind;
@@ -7029,7 +7317,12 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
       storedMeta: existing && existing.meta,
     });
 
-    const built = orders.buildOrderEmail(kind, data, {});
+    // A hand-edited subject/body from the preview modal lands through the ONE
+    // manual-override chokepoint (owner-directed 2026-08-26); no override → the
+    // built email is byte-identical to before.
+    const built = require('../lib/email/manual-override').applyOverride(
+      orders.buildOrderEmail(kind, data, {}), req.body && req.body.override,
+      { title: `${kind === 'title' ? 'Title' : 'Insurance'} order`, replyable: true });
     const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower });
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     const vendor = data.vendors[kind];
@@ -7123,6 +7416,11 @@ router.post('/applications/:id/orders/:kind/schedule', async (req, res) => {
     // at send time rather than being frozen to whatever it happened to be tonight.
     const payload = { force: !!force };
     if (b.ccBorrower != null) payload.ccBorrower = b.ccBorrower === true || b.ccBorrower === 'true';
+    // A subject/body edited in the preview rides the stored intent — the dispatcher's
+    // re-post lands it through the place route's own applyOverride door (the same
+    // contract as the tape / closing-prep / investor-delivery schedulers).
+    const override = require('../lib/email/manual-override').cleanOverride(b.override);
+    if (override) payload.override = override;
 
     const out = await require('../lib/scheduled-sends').schedule({
       appId, kind: kind === 'title' ? 'title_order' : 'insurance_order',
@@ -7191,7 +7489,11 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     const note = String((req.body && req.body.message) || '').trim().slice(0, 4000);
     // The "Follow up" button restates the FULL order (all details + coverage + mortgagee clause);
     // the Email Center vendor-reply (elsewhere) stays light so a one-line reply isn't a full re-dump.
-    const built = orders.buildOrderEmail(kind, data, { followup: true, fullOrder: true, note });
+    // A hand-edited subject/body from the preview modal lands through the ONE
+    // manual-override chokepoint (owner-directed 2026-08-26).
+    const built = require('../lib/email/manual-override').applyOverride(
+      orders.buildOrderEmail(kind, data, { followup: true, fullOrder: true, note }),
+      req.body && req.body.override, { title: 'Order follow-up', replyable: true });
     // Follow-ups keep the borrower-CC footing the ORDER was placed with
     // (file_orders.meta.ccBorrower; owner-directed 2026-07-31 — title default
     // off). An order placed BEFORE this existed has no stored choice — fall to
@@ -7648,6 +7950,37 @@ function cleanEmailList(v, max = 10) {
 
 // Everything the closing-prep card needs: the deal, the documents we WOULD attach
 // (and what is missing), the recipients, the chain's address and its history.
+/* THE EDITABLE PREVIEW for the attorney closing-prep request + its follow-up
+   (owner-directed 2026-08-26). The preview IS the send's own pure builder — the same
+   buildClosingPrepEmail / buildFollowupEmail the place/followup routes run — so the
+   screen and the wire can never show two different emails. `address` is null here on a
+   file with no chain yet (a preview must never MINT a closing address; the builders
+   tolerate null and the real send mints it), so the printed reply-address line may
+   appear only on the sent copy. Read-only, sends nothing. */
+router.get('/applications/:id/closing-prep/email-preview', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const data = await closingPrep.getClosingPrepData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const followup = req.query.followup === '1' || req.query.followup === 'true';
+    const note = typeof req.query.note === 'string' ? req.query.note.slice(0, 4000) : '';
+    const thread = await closingThread.threadFor(appId).catch(() => null);
+    const address = thread ? closingThread.addressFor(thread) : null;
+    let built;
+    if (followup) built = closingPrep.buildFollowupEmail(data, { note, address, senderName: '' });
+    else {
+      const pkg = await closingPrep.gatherPackage(appId);
+      built = closingPrep.buildClosingPrepEmail(data, pkg, { address, attach: null, note, senderName: '' });
+    }
+    const row = (await db.query(
+      `SELECT meta FROM file_orders WHERE application_id=$1 AND order_type='attorney'`, [appId])).rows[0] || null;
+    const extraEmails = (row && row.meta && Array.isArray(row.meta.extraEmails)) ? row.meta.extraEmails : [];
+    const { to, cc } = closingPrep.recipientsFor(data, { extraEmails });
+    res.json(require('../lib/email/manual-override').previewShape(built, { to, cc }));
+  } catch (e) { res.status(500).json({ error: 'Could not build the preview.' }); }
+});
+
 router.get('/applications/:id/closing-prep', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
@@ -7928,7 +8261,11 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
         bytes: pack.totalBytes || 0, budget: pack.oneMessageBytes || 0, part_count: partCount,
         compressed_n: (pack.attached || []).filter((a) => a.compression).length,
       },
-      build: ({ address }) => closingPrep.buildClosingPrepEmail(data, pkg, { address, attach, note, senderName }),
+      // A hand-edited subject/body from the preview modal lands through the ONE
+      // manual-override chokepoint (owner-directed 2026-08-26); no override → byte-identical.
+      build: ({ address }) => require('../lib/email/manual-override').applyOverride(
+        closingPrep.buildClosingPrepEmail(data, pkg, { address, attach, note, senderName }),
+        req.body && req.body.override, { title: closingPrep.CLOSING_PREP_TITLE }),
     });
     if (!sent.ok) {
       // Nothing went out, so the clock goes back to what it was.
@@ -8089,14 +8426,18 @@ router.post('/applications/:id/closing-prep/schedule', async (req, res) => {
       return res.status(409).json({ error: 'The closing-prep request has already gone out. Use Follow-up, or force a re-send.', code: 'already_ordered' });
     }
 
-    // The extra addresses and the note are the person's own words and travel
-    // verbatim; the DOCUMENTS deliberately do not — they are gathered at send
-    // time, which is the whole point of scheduling the intent.
+    // The extra addresses, the note and a hand-edited subject/body are the person's
+    // own words and travel verbatim; the DOCUMENTS deliberately do not — they are
+    // gathered at send time, which is the whole point of scheduling the intent.
     const payload = { force: !!force };
     const extra = cleanEmailList(b.extraEmails);
     if (extra.length) payload.extraEmails = extra;
     const note = String(b.note || '').trim().slice(0, 4000);
     if (note) payload.note = note;
+    // The dispatcher re-posts this payload through the place route, which lands the
+    // edit through manual-override.applyOverride — the stored-override contract.
+    const override = require('../lib/email/manual-override').cleanOverride(b.override);
+    if (override) payload.override = override;
 
     const out = await sched.schedule({ appId, kind: 'closing_prep', at, payload, actorId: req.actor.id });
     if (!out.ok) return res.status(out.httpStatus).json({ error: out.error, code: out.code });
@@ -8150,7 +8491,9 @@ router.post('/applications/:id/closing-prep/followup', async (req, res) => {
       applicationId: appId, eventKind: 'followup',
       dedupeKey: null,                       // a human follow-up may be sent again
       to, cc, fromName: senderName, staffId: req.actor.id, msgType: 'closing_followup',
-      build: ({ address }) => closingPrep.buildFollowupEmail(data, { note, address, senderName }),
+      build: ({ address }) => require('../lib/email/manual-override').applyOverride(
+        closingPrep.buildFollowupEmail(data, { note, address, senderName }),
+        req.body && req.body.override, { title: 'Closing prep follow-up' }),
     });
     if (!sent.ok) return res.status(500).json({ error: 'Could not send the follow-up.', code: sent.reason });
     await db.query(
@@ -9913,10 +10256,14 @@ router.post('/applications/:id/assign', async (req, res) => {
   const { loanOfficerId, processorId } = req.body || {};
   if (!loanOfficerId && !processorId) return res.status(400).json({ error: 'loanOfficerId or processorId required' });
   try {
-    // Reassigning a file is a manager function (audit S3-02). A non-admin may
-    // ONLY claim a currently-EMPTY slot for THEMSELVES — never take over a file
-    // already assigned to another officer/processor. Admins may (re)assign
-    // freely. The audit records both the previous and new owner.
+    // Reassigning the LOAN OFFICER is a manager function (audit S3-02): a
+    // non-admin may ONLY claim a currently-EMPTY officer slot for THEMSELVES.
+    // The PROCESSOR is different (owner-directed 2026-08-26: "everybody should
+    // be able to, when something is assigned to a processor, change the
+    // processor" — it used to be admin-only): ANY staff who can open the file
+    // (the /applications/:id path middleware already scopes that) may set,
+    // change or remove the processor. The audit records both the previous and
+    // new holder either way.
     const cur = await db.query(`SELECT loan_officer_id, processor_id, status, deleted_at FROM applications WHERE id=$1`, [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'application not found' });
     const admin = isAdmin(req);
@@ -9986,12 +10333,9 @@ router.post('/applications/:id/assign', async (req, res) => {
       await audit(req, 'assign_application', 'application', req.params.id, { from: cur.rows[0].loan_officer_id || null, to: loanOfficerId });
     }
     if (processorId) {
-      const selfClaimEmpty = !cur.rows[0].processor_id && String(processorId) === String(req.actor.id);
-      if (!admin && !selfClaimEmpty) {
-        return res.status(403).json({ error: cur.rows[0].processor_id
-          ? 'Only an admin can reassign the processor on a file.'
-          : 'Only an admin can assign this file to another processor — you may claim an unassigned file for yourself.' });
-      }
+      // No admin gate here (owner-directed 2026-08-26): anyone on the file may
+      // change the processor. The person picked must still genuinely BE an
+      // active processor — that validation is what keeps this safe to open up.
       const p = await db.query(`SELECT full_name FROM staff_users WHERE id=$1 AND is_active=true AND role='processor'`, [processorId]);
       if (!p.rows[0]) return res.status(404).json({ error: 'processor not found' });
       const u = await db.query(`UPDATE applications SET processor_id=$2, updated_at=now() WHERE id=$1`,
@@ -10117,13 +10461,21 @@ router.delete('/applications/:id/assignees/:staffId', async (req, res) => {
       [req.params.id, role, req.params.staffId]);
     if (!row.rows[0]) return res.status(404).json({ error: 'not an active assignee on this file' });
     if (row.rows[0].is_primary) {
-      // LO / processor primaries move through Assign (unchanged). The NEW roles
-      // (db/392) can be cleared here: the closer primary clears the pointer
-      // (the trigger retires the row); a draw-coordinator primary retires
-      // directly (no pointer exists). The file then falls back to the role's
-      // whole-desk inbox — the pre-assignment default.
+      // The LOAN OFFICER primary moves through Assign (unchanged — a file must
+      // not silently lose its officer). Every other primary can be cleared
+      // here: the closer AND the processor primaries clear their pointer (the
+      // db/103 / db/392 trigger retires the assignee row); a draw-coordinator
+      // primary retires directly (no pointer exists). The processor case is
+      // owner-directed 2026-08-26 ("everybody should be able to … remove
+      // processors from files"). NOTE the ClickUp push deliberately never
+      // clears a ClickUp field (the wipe-proof rule), so a card still naming
+      // this processor in BOTH its processor fields is re-adopted by the next
+      // inbound sync — a true removal on a synced file is finished by clearing
+      // the Processor field on the ClickUp card too.
       if (role === 'closer') {
         await db.query(`UPDATE applications SET closer_id=NULL WHERE id=$1 AND closer_id=$2`, [req.params.id, req.params.staffId]);
+      } else if (role === 'processor') {
+        await db.query(`UPDATE applications SET processor_id=NULL WHERE id=$1 AND processor_id=$2`, [req.params.id, req.params.staffId]);
       } else if (role === 'draw_coordinator') {
         await db.query(
           `UPDATE application_assignees SET is_primary=false, removed_at=now()
@@ -11003,6 +11355,13 @@ router.patch('/borrowers/:id', async (req, res) => {
           }
           try {
             await db.query(`UPDATE borrowers SET ${sets.join(', ')}, shares_email=true WHERE id=$1`, vals);
+            /* RECORD THE DECISION, not just its side effect. `shares_email` is
+               also set by machines to get past the address's unique index, so on
+               its own it cannot be read as "a person decided these are two
+               people" — which is why the automatic de-duplication deliberately
+               ignores it and reads `borrower_profile_links` instead. */
+            await require('../lib/borrower-dedupe')
+              .recordSharedEmailDecision(req.params.id, b.email, req.actor.id);
           } catch (e2) {
             if (e2.code === '23505') return res.status(409).json({ error: 'this profile holds the portal login for that email — give it a different address first' });
             throw e2;
@@ -11559,7 +11918,14 @@ router.get('/borrowers/:id/track-record/export', async (req, res) => {
       borrowerName: b.full_name || '',
     });
     if (!out || !out.data) return res.status(500).json({ error: 'Could not build that export.' });
-    await audit(req, 'track_record_export', 'borrower', b.id, { scope: out.scope, format: out.format, rows: out.rows });
+    // The DOCUMENT states what it held back, on its face. The audit row records the same
+    // thing, because a downloaded file goes on to live outside PILOT and this row is the
+    // only durable answer to "what did that export actually contain, and what did it not?"
+    await audit(req, 'track_record_export', 'borrower', b.id, {
+      scope: out.scope, format: out.format, rows: out.rows,
+      recordTotal: out.recordTotal || 0,
+      heldBack: (out.heldBack || []).slice(0, 25).map((h) => ({ property: h.property, reason: h.reason })),
+    });
     res.setHeader('Content-Type', out.contentType);
     setContentDisposition(res, out.filename);
     res.send(Buffer.isBuffer(out.data) ? out.data : Buffer.from(out.data));
@@ -11591,19 +11957,22 @@ router.get('/track-records/:id/documents', async (req, res) => {
 // was silently dropped on every upload (owner-directed 2026-08-20). It accepts a
 // slug or any known label and answers the canonical label.
 const trDocType = (v) => require('../lib/track-record/doc-request').resolveDocTypeLabel(v);
-router.post('/track-records/:id/documents', async (req, res) => {
+/* A TRACK-RECORD DOCUMENT ON BOTH TRANSPORTS (owner-directed 2026-08-21, "across the entire
+   system"). A HUD statement or a settlement sheet is a scan like any other. */
+async function uploadStaffTrackRecordDoc(req, res) {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   const tr = await db.query(`SELECT borrower_id FROM track_records WHERE id=$1`, [req.params.id]);
   if (!tr.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, tr.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  // One seam for both doors — strict decode + the JSON ceiling on the JSON one, already in
+  // storage on the streaming one.
+  let up;
+  try { up = await require('../lib/upload-stream').takeUpload(req, b); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
-  const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  const uploadBytes = up.bytes;
+  const { ref, provider } = up;
   // Same contract as the borrower path: an upload straight to the line item
   // also lands on the oldest open document-request condition for that line.
   const openReq = await db.query(
@@ -11613,13 +11982,17 @@ router.post('/track-records/:id/documents', async (req, res) => {
       ORDER BY created_at LIMIT 1`, [req.params.id]);
   const reqItemId = openReq.rows[0] ? openReq.rows[0].id : null;
   const dupStaffTr = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
-    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+    filename: b.filename, sizeBytes: uploadBytes, uploadedByKind: 'staff', uploadedById: req.actor.id,
     trackRecordId: req.params.id, checklistItemId: reqItemId, docKind: 'track_record_doc' });
-  if (dupStaffTr) return res.status(201).json({ ok: true, documentId: dupStaffTr, deduped: true });
+  if (dupStaffTr) {
+    // The bytes are already stored on both doors; drop the object nothing will point at.
+    try { await storage.remove(up.ref); } catch (_) { /* orphan cleanup is best-effort */ }
+    return res.status(201).json({ ok: true, documentId: dupStaffTr, deduped: true });
+  }
   const r = await db.query(
     `INSERT INTO documents (borrower_id,track_record_id,checklist_item_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,doc_kind,slot_label)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,'track_record_doc',$10) RETURNING id`,
-    [tr.rows[0].borrower_id, req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, trDocType(b.docType)]);
+    [tr.rows[0].borrower_id, req.params.id, reqItemId, b.filename, b.contentType || 'application/octet-stream', uploadBytes, provider, ref, req.actor.id, trDocType(b.docType)]);
   await db.query(`UPDATE track_records SET docs_status='received', updated_at=now() WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [req.params.id]);
   if (reqItemId) {
     await db.query(
@@ -11631,7 +12004,10 @@ router.post('/track-records/:id/documents', async (req, res) => {
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
   require('../lib/events').publishTrackRecordUpdate(tr.rows[0].borrower_id, { kind: 'staff', id: req.actor.id }).catch(() => {});
   res.status(201).json({ ok: true, documentId: r.rows[0].id });
-});
+}
+router.post('/track-records/:id/documents', uploadStaffTrackRecordDoc);
+router.post('/track-records/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadStaffTrackRecordDoc);
 
 /* SET (or clear) a track-record document's TYPE after it has landed
    (owner-directed 2026-08-20: "whatever you drop, it should go in, and then you
@@ -12028,6 +12404,12 @@ async function promoteContact(req, res, kind, value) {
         });
       }
       await db.query(`UPDATE borrowers SET ${col}=$2, shares_email=true, updated_at=now() WHERE id=$1`, [req.params.id, value]);
+      // Same reason as the profile editor above: the decision is the record,
+      // never the flag a machine also sets.
+      if (kind === 'email') {
+        await require('../lib/borrower-dedupe')
+          .recordSharedEmailDecision(req.params.id, value, req.actor.id);
+      }
     } else throw e;
   }
   // Keep the OLD primary in the contact list — it is still a way to reach them.
@@ -12072,7 +12454,12 @@ router.get('/llcs/:id', async (req, res) => {
 // Staff upload of an entity document into a specific LLC checklist slot, WITHOUT a
 // file context (the CRM entity library has no appId). Mirrors the LLC path of the
 // staff app-doc upload; visibility='borrower' so the entity's docs stay shared.
-router.post('/llcs/:id/documents', async (req, res) => {
+/* THE ENTITY DOCUMENT DOOR, ON BOTH TRANSPORTS (owner-directed 2026-08-21: the upload fix is
+   *"across the entire system"*). An operating agreement or a set of articles is a multi-page
+   SCAN — routinely the largest thing anybody files on a loan — so this door had no business
+   being the one still capped at the JSON ceiling. Same handler, two doors: `/documents` keeps
+   the historic JSON body, `/documents/binary` streams the file itself. */
+async function uploadLlcDocument(req, res) {
   try {
     const b = req.body || {};
     if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
@@ -12086,11 +12473,13 @@ router.post('/llcs/:id/documents', async (req, res) => {
       const ci = await db.query(`SELECT id FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, req.params.id]);
       if (!ci.rows[0]) return res.status(404).json({ error: 'checklist item not found on this entity' });
     }
-    let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-    try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+    /* One seam for both doors: on the JSON one this decodes strictly (a data: prefix or
+       non-base64 junk 400s rather than garbling the bytes) and applies the JSON ceiling; on the
+       streaming one the file is already in storage and this simply hands it over. */
+    let up;
+    try { up = await require('../lib/upload-stream').takeUpload(req, b); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+    const uploadBytes = up.bytes;
     let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
     // Every slot keeps EVERY document (owner-directed): on a plain ADD (not an
     // explicit replace), uniquify a colliding slot label so the two never display
@@ -12100,15 +12489,22 @@ router.post('/llcs/:id/documents', async (req, res) => {
       slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
     }
     const dupLlc = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
-      filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+      filename: b.filename, sizeBytes: uploadBytes, uploadedByKind: 'staff', uploadedById: req.actor.id,
       llcId: req.params.id, checklistItemId: b.checklistItemId || null, slotLabel: slot });
-    if (dupLlc) return res.status(201).json({ ok: true, documentId: dupLlc, deduped: true });
-    const { ref, provider } = await storage.save(buf, { filename: b.filename });
+    if (dupLlc) {
+      /* The bytes are already in storage on BOTH doors now (the streaming one cannot know about
+         a duplicate until they have landed), so a de-duplicated upload would leave an object
+         nothing points at. Best-effort: an orphan blob is waste, never a correctness problem,
+         and must not turn a successful de-dupe into an error. */
+      try { await storage.remove(up.ref); } catch (_) { /* orphan cleanup is best-effort */ }
+      return res.status(201).json({ ok: true, documentId: dupLlc, deduped: true });
+    }
+    const { ref, provider } = up;
     const r = await db.query(
       `INSERT INTO documents (checklist_item_id,llc_id,borrower_id,filename,content_type,size_bytes,storage_provider,storage_ref,uploaded_by_kind,uploaded_by_id,slot_label,visibility)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',$9,$10,'borrower') RETURNING id`,
       [b.checklistItemId || null, req.params.id, own.rows[0].borrower_id, b.filename,
-       b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id, slot]);
+       b.contentType || 'application/octet-stream', uploadBytes, provider, ref, req.actor.id, slot]);
     if (b.checklistItemId) {
       // EVERY document slot keeps EVERY document (owner-directed): a plain ADD
       // never deletes what's already there. Only an EXPLICIT replace (the user
@@ -12130,7 +12526,10 @@ router.post('/llcs/:id/documents', async (req, res) => {
     await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, llcId: req.params.id });
     res.status(201).json({ ok: true, documentId: r.rows[0].id });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
-});
+}
+router.post('/llcs/:id/documents', uploadLlcDocument);
+router.post('/llcs/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadLlcDocument);
 
 router.patch('/llcs/:id', async (req, res) => {
   const own = await db.query(`SELECT borrower_id, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
@@ -14014,13 +14413,46 @@ router.post('/applications/:id/loan-number', async (req, res) => {
 // value into our column (owner-directed: not admin-only). None of these ever
 // writes to Encompass — /refresh does a READ-ONLY pull; /replace writes exactly
 // one of OUR columns.
+// PLAIN-LANGUAGE WORDING FOR EACH READ STATE — ONE definition, so the file panel and any future
+// surface can never describe the same verdict two ways. Deliberately says what it means for the
+// LOAN, not what the column contains: "blank" is the only one that is evidence about the sale.
+const PA_READ_NOTE = Object.freeze({
+  value:        'Encompass has a purchase advice date on this loan — it is sold.',
+  blank:        'PILOT asked Encompass about this loan and the purchase advice field came back empty.',
+  not_returned: 'PILOT asked, and Encompass answered without that field — usually a permission on it. This file cannot be judged either way, and it is NOT being chased.',
+  no_field_id:  'This deployment is not reading a purchase advice field at all, so nothing can be known from Encompass.',
+  no_loan_link: 'PILOT holds no Encompass loan for this file, so there was nothing to ask about.',
+  _never:       'PILOT has not asked Encompass about this loan yet, so nothing is known either way — it is NOT being chased.',
+});
+
 router.get('/applications/:id/encompass/status', async (req, res) => {
   try {
     // heal:true — this is a single-file panel view, so it may fetch the authoritative
     // field-reader values on the spot (unlike the multi-file tape/issuance gates).
     const c = await require('../encompass/reconcile').computeFindings(req.params.id, null, { heal: true });
     if (!c.found) return res.status(404).json({ error: 'application not found' });
-    res.json({ hasLoan: c.hasLoan, guid: c.guid, loanNumber: c.loanNumber, pulledAt: c.pulledAt, lastError: c.lastError, priced: c.priced, summary: c.summary });
+    // WHAT THE LAST READ OF THE PURCHASE ADVICE FIELD DID, on this file (db/608). It answers the
+    // question the panel could not before: "no purchase advice date" was equally "Encompass says
+    // none", "this file has never been asked", "we hold no Encompass loan for it" and "the read ran
+    // and that field was not in the answer" — four different pieces of work behind one blank.
+    // Best-effort: a diagnosis must never be the reason the panel fails to load.
+    let purchaseAdvice = null;
+    try {
+      const pa = (await db.query(
+        `SELECT purchase_advice_date, purchase_advice_read_at, purchase_advice_read_state,
+                purchase_advice_field_id
+           FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+      if (pa) {
+        purchaseAdvice = {
+          date: pa.purchase_advice_date || null,
+          readAt: pa.purchase_advice_read_at || null,
+          readState: pa.purchase_advice_read_state || null,
+          fieldId: pa.purchase_advice_field_id || null,
+          note: PA_READ_NOTE[pa.purchase_advice_read_state] || PA_READ_NOTE._never,
+        };
+      }
+    } catch (_) { /* the columns may not exist yet on an un-migrated database */ }
+    res.json({ hasLoan: c.hasLoan, guid: c.guid, loanNumber: c.loanNumber, pulledAt: c.pulledAt, lastError: c.lastError, priced: c.priced, summary: c.summary, purchaseAdvice });
   } catch (e) { console.warn('[staff] encompass status:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -14612,6 +15044,40 @@ router.post('/applications/:id/complete-fields', (req, res) => completeFields(re
 // condition engine, re-enforces the 5% SOW contingency and re-derives liquidity.
 // STAFF-ONLY (this router is staff-gated + the /applications/:id scope middleware) —
 // a note-buyer name is never exposed to a borrower.
+/* ── CRITICAL DATES + THE PAYOFF DEMAND ──────────────────────────────────────
+   Owner-directed 2026-08-21: *"We need to add in the file, inside a critical date section, which
+   should have: the application date, which is the day the file started · the CTC date · the funded
+   date · the purchase advice date"*, and the payoff demand *"should be added to the critical dates
+   section also with the date."*
+
+   All three are file-scoped by the `/applications/:id` middleware every route in this file sits
+   behind. Reading the dates needs no extra permission — they are the same facts already on the
+   file header. RECORDING a payoff demand does: it locks the draw centre and deactivates the
+   property in Sitewire, so it is gated on `manage_draws`, the capability that owns the draw
+   centre, and audited. */
+router.get('/applications/:id/critical-dates', async (req, res) => {
+  try {
+    res.json(await require('../lib/critical-dates').criticalDates(db, req.params.id));
+  } catch (e) { require('../lib/http-fail').fail(res, e); }
+});
+
+router.post('/applications/:id/payoff-demand', async (req, res) => {
+  try {
+    if (!can(req.actor, 'manage_draws')) return res.status(403).json({ error: 'You do not have permission to manage draws.' });
+    const b = req.body || {};
+    const P = require('../lib/payoff-demand');
+    /* CLEARING IS A SEPARATE, DELIBERATE ACT — `{clear:true}`, never inferred from an empty note.
+       Lifting the lock lets money move again, so it must be as explicit as setting it. */
+    const out = b.clear === true
+      ? await P.clearPayoffDemand(db, req.params.id, { staffId: req.actor.id })
+      : await P.recordPayoffDemand(db, req.params.id, { staffId: req.actor.id, note: b.note || null });
+    if (out && out.error) return res.status(400).json({ error: out.error });
+    await audit(req, b.clear === true ? 'payoff_demand_cleared' : 'payoff_demand_recorded',
+      'application', req.params.id, { note: b.note || null, sitewire: (out && out.sitewire) || null });
+    res.json(out);
+  } catch (e) { require('../lib/http-fail').fail(res, e); }
+});
+
 router.get('/applications/:id/note-buyer', async (req, res) => {
   try {
     // `?candidate=` previews a name that isn't in the ClickUp dropdown (staff may type
@@ -14734,9 +15200,9 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
                 updated_at=now()
            FROM checklist_templates t
           WHERE t.id=ci.template_id AND ci.application_id=$1
-            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND t.code = ANY($4::text[])
             AND ci.status <> 'satisfied'`,
-        [appId, req.actor.id, AUTO_NOTE]);
+        [appId, req.actor.id, AUTO_NOTE, payoffLib.FREE_AND_CLEAR_WAIVES]);
       await audit(req, 'payoff_free_and_clear_set', 'application', appId, {
         priorPayoff: a.payoff_amount, priorLender: a.payoff_lender, priorLoanNumber: a.payoff_loan_number,
         unchanged,
@@ -14765,10 +15231,10 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
                 updated_at=now()
            FROM checklist_templates t
           WHERE t.id=ci.template_id AND ci.application_id=$1
-            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND t.code = ANY($3::text[])
             AND ci.waived_at IS NOT NULL
             AND ci.notes LIKE '%' || $2 || '%'`,
-        [appId, AUTO_NOTE]);
+        [appId, AUTO_NOTE, payoffLib.FREE_AND_CLEAR_WAIVES]);
       // A row a human RE-WORKED while the flag was on (reopened + signed off) keeps its state,
       // but the now-stale auto note ("turning the flag off reopens this") is stripped so the
       // condition never carries an instruction that no longer describes it.
@@ -14777,9 +15243,9 @@ router.post('/applications/:id/payoff/free-and-clear', async (req, res) => {
             SET notes = NULLIF(TRIM(BOTH E'\n' FROM REPLACE(ci.notes, $2, '')), ''), updated_at=now()
            FROM checklist_templates t
           WHERE t.id=ci.template_id AND ci.application_id=$1
-            AND t.code IN ('cond_payoff_external','cond_payoff_internal')
+            AND t.code = ANY($3::text[])
             AND ci.notes LIKE '%' || $2 || '%'`,
-        [appId, AUTO_NOTE]);
+        [appId, AUTO_NOTE, payoffLib.FREE_AND_CLEAR_WAIVES]);
       try { await conditionEngine.evaluateApplication(appId, { actor: req.actor, reason: 'free_and_clear_cleared' }); } catch (_) {}
       await audit(req, 'payoff_free_and_clear_cleared', 'application', appId, {
         priorPayoff: a.payoff_amount, wasFreeAndClear: !!a.property_free_and_clear, unchanged,
@@ -16213,7 +16679,8 @@ router.patch('/applications/:id/closing/checklist-items/:iid', async (req, res) 
 });
 
 // The CLOSING QUEUE — every file in the closing workflow, scoped to the actor
-// (closers/admins see all via see_all_files; officers/processors see their files).
+// (closers/admins/processors see all via see_all_files — the processor role holds it
+// by default since the 2026-08-26 back-office persona; officers see their files).
 router.get('/closing', async (req, res) => {
   try {
     const params = [];
@@ -16431,10 +16898,14 @@ router.post('/applications/:id/purchasing/status', purchasingGate, async (req, r
   const status = req.body && req.body.status;
   if (!purchasing.PURCHASING_STATUSES.includes(status))
     return res.status(400).json({ error: 'unknown purchasing status' });
-  // THE TWO PURCHASE ADVICE DATES MUST AGREE BEFORE THE PURCHASE IS FINISHED (owner-directed
-  // 2026-08-13: "the purchase advice date you enter manually in PILOT needs to match the purchase
-  // advice date in Encompass … and Encompass needs to have a purchase advice date filled in in
-  // order for you to be able to mark purchase completed").
+  // ENCOMPASS MUST RECORD THE SALE, AND THE ADVICE MUST BE ON FILE, BEFORE THE PURCHASE IS
+  // FINISHED (owner-directed 2026-08-13, revised 2026-08-23).
+  //
+  // 2026-08-13 asked for two dates that agree — PILOT's hand-typed one and Encompass's. 2026-08-23
+  // removed the typing: the date is entered in Encompass and read from there, so the two can no
+  // longer disagree and that half of the rule can no longer fail. What the owner put in its place
+  // is the advice DOCUMENT. `postPurchase.adviceGate` owns both checks; this route only reads the
+  // two facts and reports the refusal.
   //
   // ONLY ON THE WAY TO COMPLETE. Moving a file BACK to outstanding is always allowed — that is how
   // somebody corrects a mistake, and a gate on it would trap the file.
@@ -16443,10 +16914,11 @@ router.post('/applications/:id/purchasing/status', purchasingGate, async (req, r
   // this is purely about finishing the purchase record here.
   if (status === 'complete') {
     const dates = (await db.query(
-      `SELECT a.purchase_advice_date AS encompass_date, pa.advice_date AS pilot_date
+      `SELECT a.purchase_advice_date AS encompass_date, pa.document_id AS advice_document_id
          FROM applications a LEFT JOIN purchasing_advice pa ON pa.application_id = a.id
         WHERE a.id=$1`, [req.params.id])).rows[0] || {};
-    const gate = postPurchase.adviceGate({ encompassDate: dates.encompass_date, pilotDate: dates.pilot_date });
+    const gate = postPurchase.adviceGate({
+      encompassDate: dates.encompass_date, adviceDocumentId: dates.advice_document_id });
     if (!gate.ok) {
       // A SUPER-ADMIN MAY STILL FINISH IT, with a typed reason that is journaled. Encompass is
       // read-only to PILOT, so without a way through, a file whose date is wrong THERE could never
@@ -16457,7 +16929,7 @@ router.post('/applications/:id/purchasing/status', purchasingGate, async (req, r
       if (!(req.actor && req.actor.role === 'super_admin')) return res.status(403).json({ error: `${gate.message}\n\nOnly a super admin can complete the purchase anyway.`, code: gate.code });
       if (reason.length < 8) return res.status(400).json({ error: 'Say why the purchase is being completed with the dates as they are (at least 8 characters).', code: gate.code });
       await audit(req, 'purchasing_complete_override', 'application', req.params.id,
-        { code: gate.code, pilot_date: gate.pilot_date || null, encompass_date: gate.encompass_date || null, reason: reason.slice(0, 500) });
+        { code: gate.code, encompass_date: gate.encompass_date || null, reason: reason.slice(0, 500) });
     }
   }
   try {
@@ -16578,10 +17050,12 @@ router.delete('/applications/:id/purchasing/conditions/:cid', purchasingGate, as
 router.post('/applications/:id/purchasing/advice', purchasingGate, async (req, res) => {
   const b = req.body || {};
   const patch = {};
+  /* THE DATE IS TYPED IN ENCOMPASS, NOT HERE (owner-directed 2026-08-23). Answered at the
+     door as well as in the library so the caller gets the plain sentence rather than a 500
+     from a thrown library error — and the library keeps the rule, so this cannot be the only
+     thing enforcing it. The refusal is a 422 with a code, so the screen can recognise it. */
   if ('date' in b) {
-    const d = b.date ? require('../lib/fields').normalizeTypedDate(b.date, 'closing') : null;
-    if (b.date && !d) return res.status(400).json({ error: 'That purchase advice date is not a real date.' });
-    patch.date = d;
+    return res.status(422).json({ error: purchasing.ADVICE_DATE_IS_ENCOMPASS_MSG, code: 'advice_date_is_encompass' });
   }
   if ('documentId' in b) {
     if (b.documentId) {
@@ -16620,7 +17094,12 @@ router.post('/applications/:id/purchasing/advice', purchasingGate, async (req, r
       await audit(req, 'purchasing_advice_restricted', 'document', patch.documentId,
         { now: 'staff_only', priorVisibility: advice && advice.document_prior_visibility, applicationId: req.params.id });
     res.json({ ok: true, advice });
-  } catch (e) { console.warn('[purchasing] advice error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
+  } catch (e) {
+    // The library's own refusal (a caller that reached setPurchaseAdvice another way) carries
+    // a status and must reach the user as its sentence, not as "server error".
+    if (e && e.status === 422) return res.status(422).json({ error: e.message, code: e.code || undefined });
+    console.warn('[purchasing] advice error:', db.describeError(e)); res.status(500).json({ error: 'server error' });
+  }
 });
 
 // #84 — super-admin STRUCTURAL UNLOCK. A clear-to-close / funded file's loan
@@ -17433,22 +17912,24 @@ router.get('/leads/:id/documents', async (req, res) => {
     res.json(r.rows);
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
-router.post('/leads/:id/documents', async (req, res) => {
+/* A LEAD'S DOCUMENT, ON BOTH TRANSPORTS (owner-directed 2026-08-21, "across the entire
+   system"). A prospect's contract arrives here before there is a loan file to put it on. */
+async function uploadLeadDocument(req, res) {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
   try {
     if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
-    let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-    try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+    // One seam for both doors — strict decode + the JSON ceiling on the JSON one, already in
+    // storage on the streaming one.
+    let up;
+    try { up = await require('../lib/upload-stream').takeUpload(req, b); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-    const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-    if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
-    const { ref, provider } = await storage.save(buf, { filename: b.filename });
+    const { ref, provider } = up;
     const r = await db.query(
       `INSERT INTO documents (lead_id, filename, content_type, size_bytes, storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id)
        VALUES ($1,$2,$3,$4,$5,$6,'staff',$7) RETURNING id`,
-      [req.params.id, b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref, req.actor.id]);
+      [req.params.id, b.filename, b.contentType || 'application/octet-stream', up.bytes, provider, ref, req.actor.id]);
     await db.query(
       `INSERT INTO lead_activities (lead_id, staff_id, activity_type, subject, body, meta)
        VALUES ($1,$2,'file','Attached a file',$3,$4)`,
@@ -17457,7 +17938,10 @@ router.post('/leads/:id/documents', async (req, res) => {
     await audit(req, 'staff_upload_lead_doc', 'lead', req.params.id, { filename: b.filename });
     res.status(201).json({ ok: true, documentId: r.rows[0].id });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
-});
+}
+router.post('/leads/:id/documents', uploadLeadDocument);
+router.post('/leads/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadLeadDocument);
 router.get('/leads/:id/documents/:docId', async (req, res) => {
   try {
     if (!(await leadInScope(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
@@ -17758,7 +18242,25 @@ router.get('/applications/:id/documents', async (req, res) => {
 // With a checklistItemId the upload lands INSIDE that condition on the
 // borrower's behalf — same slots, same supersede rules as a borrower upload —
 // so a staffer can fill the shared conditions list when the borrower can't.
-router.post('/applications/:id/documents', async (req, res) => {
+/* Two read-back ceilings, both about MEMORY rather than about what a person may upload.
+   A MISMO appraisal XML carries the whole report PDF inside itself, so 40 MB is a real
+   one; past that its market data is not worth the memory on a 512 MB instance. The AI
+   classifier's own reader refuses anything large anyway, so 25 MB is generous. */
+const UPLOAD_XML_READBACK_BYTES = 40 * 1024 * 1024;
+const UPLOAD_AI_READBACK_BYTES = 25 * 1024 * 1024;
+
+/* ONE HANDLER, TWO DOORS (owner-directed 2026-08-21: *"we need to increase the limit of
+   megabytes that we can upload to unlimit it … The sky is the limit."*).
+
+   `/documents`         — the historic JSON door: {filename, contentType, dataBase64}.
+   `/documents/binary`  — the STREAMING door: the body IS the file, the metadata rides in
+                          headers, and nothing is ever held in memory, so the size a person
+                          can upload stops being a question about this process's RAM.
+
+   Registering the same function on both is deliberate: a second route would be a second
+   place the condition lookup, the staff-only visibility rule and the notification could
+   drift, and the one that drifts is the one that leaks a document to a borrower. */
+const uploadAppDocument = async (req, res) => {
   const b = req.body || {};
   if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
   b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
@@ -17820,11 +18322,24 @@ router.post('/applications/:id/documents', async (req, res) => {
   // request can only ever RESTRICT, so no caller can widen a document's reach.
   const staffOnly = itemAudience === 'staff' || b.staffOnly === true;
   const docVisibility = staffOnly ? 'staff_only' : 'borrower';
-  let buf;   // strict decode — a data: prefix / non-base64 junk 400s instead of garbling bytes
-  try { ({ buf } = decodeUploadBase64(b.dataBase64)); }
+  /* THE BYTES, WHICHEVER DOOR THEY CAME THROUGH (owner-directed 2026-08-21).
+     A JSON body is decoded strictly and stored here; a STREAMED upload is already in
+     storage and `takeUpload` simply reports where — so this handler, its authorization,
+     its condition lookups and its visibility rules are the SAME code on both doors.
+     Any refusal carries its real reason and its real status. */
+  let up;
+  try { up = await require('../lib/upload-stream').takeUpload(req, b); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  const maxBytes = cfg.maxUploadMb * 1024 * 1024;
-  if (buf.length > maxBytes) return res.status(413).json({ error: `file too large (max ${cfg.maxUploadMb} MB)` });
+  const uploadBytes = up.bytes;
+  /* THREE THINGS DOWNSTREAM WANT THE ACTUAL BYTES — the appraisal XML auto-import, the
+     research warehouse's XML catch, and the AI classifier. On the JSON door they are
+     already in memory; on the STREAMING door reading them back costs memory equal to the
+     file, which is the very thing that door exists to avoid. So each asks for them
+     explicitly, under its own ceiling, and each is written to do nothing when it cannot
+     have them — every one of the three is an EXTRA, and none may turn a stored document
+     into a failed upload. */
+  const bytesFor = (limit) => require('../lib/upload-stream').readUploadBytes(up, limit);
+  const looksXmlUpload = /\.xml$/i.test(b.filename || '') || /xml/i.test(b.contentType || '');
   // A manual upload onto the Heter Iska condition gets an explicit doc_kind so it is
   // provenance-distinguishable from the DocuSign-fed executed copy (heter_iska_signed +
   // source_type system) AND is kept in-system only — heter_iska_manual is on the
@@ -17856,11 +18371,18 @@ router.post('/applications/:id/documents', async (req, res) => {
     slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
   }
   const dupApp = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
-    filename: b.filename, sizeBytes: buf.length, uploadedByKind: 'staff', uploadedById: req.actor.id,
+    filename: b.filename, sizeBytes: uploadBytes, uploadedByKind: 'staff', uploadedById: req.actor.id,
     applicationId: llcId ? null : req.params.id, checklistItemId: b.checklistItemId || null,
     llcId: llcId || null, trackRecordId: itemTrackRecordId, slotLabel: slot, docKind, termSheetFinal });
-  if (dupApp) return res.status(201).json({ ok: true, documentId: dupApp, deduped: true, visibility: docVisibility });
-  const { ref, provider } = await storage.save(buf, { filename: b.filename });
+  if (dupApp) {
+    /* The bytes are ALREADY in storage on both doors now (the streaming one cannot know
+       about a duplicate until they have landed), so a de-duplicated upload would leave an
+       object nothing points at. Remove it — best-effort, because an orphan blob is waste,
+       never a correctness problem, and must not turn a successful de-dupe into an error. */
+    try { await storage.remove(up.ref); } catch (_) { /* orphan cleanup is best-effort */ }
+    return res.status(201).json({ ok: true, documentId: dupApp, deduped: true, visibility: docVisibility });
+  }
+  const { ref, provider } = up;
   const r = await db.query(
     // A `term_sheet` here is PILOT'S OWN generated PDF, captured from the Term
     // Sheet Studio at registration (that is the ONLY thing that sets this kind
@@ -17879,7 +18401,7 @@ router.post('/applications/:id/documents', async (req, res) => {
              CASE WHEN $12='term_sheet' THEN now() ELSE NULL END) RETURNING id`,
     [llcId ? null : req.params.id, b.checklistItemId || null,
      (b.checklistItemId || llcId) ? borrowerId : null, llcId, itemTrackRecordId,
-     b.filename, b.contentType || 'application/octet-stream', buf.length, provider, ref,
+     b.filename, b.contentType || 'application/octet-stream', uploadBytes, provider, ref,
      req.actor.id, docKind, slot, docVisibility, termSheetFinal]);
   if (itemTrackRecordId) {
     await db.query(
@@ -17959,8 +18481,9 @@ router.post('/applications/:id/documents', async (req, res) => {
       const tc = (await db.query(
         `SELECT t.code FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id WHERE ci.id=$1`,
         [b.checklistItemId])).rows[0];
-      if (tc && tc.code === 'rtl_cond_appraisaldocs') {
-        const xml = buf.toString('utf8');
+      const xmlBuf = (tc && tc.code === 'rtl_cond_appraisaldocs') ? await bytesFor(UPLOAD_XML_READBACK_BYTES) : null;
+      if (tc && tc.code === 'rtl_cond_appraisaldocs' && xmlBuf) {
+        const xml = xmlBuf.toString('utf8');
         const pdfDoc = (await db.query(
           `SELECT id FROM documents WHERE checklist_item_id=$1 AND is_current
              AND lower(coalesce(slot_label,'')) LIKE '%pdf%' ORDER BY created_at DESC LIMIT 1`,
@@ -18013,7 +18536,8 @@ router.post('/applications/:id/documents', async (req, res) => {
   // here, which is what closes that gap.
   if (!(apprImport && apprImport.ok)) {
     require('../lib/research/xml-catch').fireCatch({
-      bytes: buf, filename: b.filename, contentType: b.contentType,
+      bytes: looksXmlUpload ? await bytesFor(UPLOAD_XML_READBACK_BYTES) : (up.buf || null),
+      filename: b.filename, contentType: b.contentType,
       documentId: r.rows[0].id,
       uploadedByStaffId: req.actor && req.actor.kind === 'staff' ? req.actor.id : null,
       why: 'a loan file (staff upload)',
@@ -18029,10 +18553,16 @@ router.post('/applications/:id/documents', async (req, res) => {
   // fast; every step is best-effort and never blocks the response.
   const uploadedDocId = r.rows[0].id;
   const appIdForAi = llcId ? null : req.params.id;
-  if (appIdForAi && buf && buf.length) setImmediate(() => {
+  if (appIdForAi && uploadBytes) setImmediate(() => {
     (async () => {
       const azc = require('../lib/ai/azure-custom');
       if (!azc.classifierConfigured()) return;   // dormant until classifier trained
+      /* The bytes are fetched AFTER the dormancy check and INSIDE the deferred work, so a
+         deployment with no classifier reads nothing back at all and the request path is
+         never slowed by it. A document too large to hold is simply not classified — the
+         reader has its own size limit anyway. */
+      const buf = await require('../lib/upload-stream').readUploadBytes(up, UPLOAD_AI_READBACK_BYTES);
+      if (!buf || !buf.length) return;
       const client = await db.pool.connect();
       try {
         // For classification we only need the bytes; classify+suggest are separate DB
@@ -18076,7 +18606,10 @@ router.post('/applications/:id/documents', async (req, res) => {
   // shadow flag is on (zero db work when off), idempotent, never throws — it can't affect this upload.
   try { await require('../pipeline/enqueue-on-upload').enqueueUploadedDocument(db, { documentId: uploadedDocId, loanId: appIdForAi, checklistItemId: b.checklistItemId || null, docKind }); } catch (_) { /* advisory only */ }
   res.status(201).json({ ok: true, documentId: r.rows[0].id, visibility: docVisibility, ...(apprImport ? { appraisal: apprImport } : {}) });
-});
+};
+router.post('/applications/:id/documents', uploadAppDocument);
+router.post('/applications/:id/documents/binary',
+  require('../lib/upload-stream').binaryIntake, uploadAppDocument);
 
 // Approve or reject an uploaded document. Rejection requires a reason, keeps the
 // rejected file in history (never in the clean file), and flips its checklist
@@ -19216,18 +19749,55 @@ router.get('/audit-log', async (req, res) => {
     if (entityType) where.push(`al.entity_type = ${P(entityType)}`);
     if (from) where.push(`al.created_at >= ${P(from)}::date`);
     if (to) where.push(`al.created_at < (${P(to)}::date + 1)`); // inclusive of the whole "to" day
-    if (q) {
+    /* A TYPED WILDCARD IS A LITERAL HERE TOO. This route built its own
+       `'%' + q + '%'`, so `%` and `_` reached Postgres as LIKE WILDCARDS —
+       MEASURED: typing a single `%` into the System log matched 1679 of 1679
+       rows, the entire log. It also had no minimum, so one character searched
+       nearly everything. Both are now the shared `likeParam`, which escapes the
+       wildcards and refuses anything under two characters — the SAME rule the
+       approvals queues apply, so the log and the queues can never disagree about
+       what a typed string means. A refused search does not filter, exactly as a
+       blank one does not.
+
+       `auditCodesMatchingText` still gets the RAW text: it matches action LABELS
+       in JavaScript, where a `%` is just a character. */
+    const qLike = q ? fileSearch.likeParam(q) : null;
+    if (qLike) {
       // Free-text across who did it (actor OR the file's loan officer), what
       // they did (action code AND human label), and which borrower / property.
-      const like = P('%' + q + '%');
+      /* THE ADDRESS IS A COMPOSED HAYSTACK, NOT THE RAW JSONB CAST (2026-08-26).
+         `property_address::text` renders the STORAGE, not the address, and it is
+         wrong in BOTH directions. MEASURED on the live table (547 files):
+           · a real address typed the way a person writes it — "9 Oak St,
+             Lakewood" — matches **0** rows, because the raw JSON reads
+             {"line1":"9 Oak St","city":"Lakewood"} and the `","city":"` between
+             them can never match the comma-space somebody types. The composed
+             haystack finds both files.
+           · a JSON KEY NAME floods the log: "state" matches **280 of 547**
+             files and "oneLine" matches 137, so searching the log for a person
+             or a note containing one of those words returns half the pipeline.
+         The shared expression reads whichever address parts a row actually
+         holds and none of the key names, so both directions are answered at
+         once. Same module the approvals queues and the omnibox use.
+
+         AND THE BORROWER'S NAME IS THE GENERATED `full_name`. Matching
+         first_name and last_name separately means a person typing the name the
+         way it is written to them — "Mordechai Scharf" — matches NEITHER
+         column: measured 0 rows against 1 for the full name. The parts are kept
+         beside it so a surname on its own still works. */
+      const like = P(qLike);
       const codes = P(auditCodesMatchingText(q)); // action codes whose label matches
       where.push(`(
         s.full_name ILIKE ${like} OR ab.first_name ILIKE ${like} OR ab.last_name ILIKE ${like}
+        OR NULLIF(ab.full_name,'') ILIKE ${like}
         OR al.action ILIKE ${like} OR al.action = ANY(${codes}::text[])
         OR appb.first_name ILIKE ${like} OR appb.last_name ILIKE ${like}
+        OR NULLIF(appb.full_name,'') ILIKE ${like}
         OR eb.first_name ILIKE ${like} OR eb.last_name ILIKE ${like}
+        OR NULLIF(eb.full_name,'') ILIKE ${like}
         OR lo.full_name ILIKE ${like}
-        OR app.property_address::text ILIKE ${like}
+        OR ${fileSearch.ADDRESS_TEXT_SQL('app')} ILIKE ${like}
+        OR COALESCE(app.ys_loan_number,'') ILIKE ${like}
       )`);
     }
     const whereSql = where.length ? 'WHERE ' + where.join(' AND ') : '';

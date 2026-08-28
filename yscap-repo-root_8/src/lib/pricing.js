@@ -23,7 +23,47 @@ try {
   loadErr = e && e.message ? e.message : String(e);
 }
 
+/* THE GOVERNMENT CHARGES ON A CLOSING — mortgage / recordation tax, the buyer's
+   share of any transfer tax, the mansion tax, recording fees. Pure (no DB, no
+   network), and deliberately OUTSIDE the engines' try/catch: those three are
+   loaded defensively because they are the frozen browser tools that also ship to
+   the client, and a failure there must degrade to `enginesReady() === false`
+   rather than throw at import. This is an ordinary in-repo module — if it cannot
+   load, that is a broken deploy and should say so loudly at boot, not be swallowed
+   into a `loadErr` string that reads as "the pricing engines are missing". */
+const closingCosts = require('./closing-costs');
+
 function enginesReady() { return !!(YSP && GSP && SVP && YSTitle); }
+
+/* THE MANUAL SECTION FOR EVERY GOVERNMENT CHARGE (owner-directed 2026-08-23:
+   *"All those line items should also be able to be added to the manual section to
+   be overwritten and should automatically fill based on the unit count, the loan
+   type, the county, the state."*).
+
+   Each charge the engine can compute gets its own `ovrTax_<key>` knob, so a
+   settlement agent's actual figure — which always beats a table — can be typed on
+   the file without touching code, AND a charge our table does not produce for a
+   jurisdiction can be ADDED by hand. That second case is the one that matters
+   most: a rate table can be wrong, and a wrong table is fixable; a table that is
+   merely INCOMPLETE leaves the person quoting with no way at all to say what they
+   know. Both are now typeable.
+
+   A typed 0 is a real decision ("this closing does not owe it") and is honoured.
+   A blank leaves the automatic figure alone — the studio's explicit-blank contract,
+   the same as every other knob. */
+const TAX_OVERRIDE_PREFIX = 'ovrTax_';
+function taxOverridesFrom(input) {
+  const out = {};
+  if (!input || typeof input !== 'object') return out;
+  for (const key of closingCosts.CHARGE_KEYS) {
+    const k = TAX_OVERRIDE_PREFIX + key;
+    if (!Object.prototype.hasOwnProperty.call(input, k)) continue;
+    const v = input[k];
+    if (v == null || v === '') continue;
+    out[key] = v;
+  }
+  return out;
+}
 
 const PROGRAM_LABEL = { standard: 'Standard Program', gold: 'Gold Standard Program', silver: 'Silver Program', manual: 'Manual Program' };
 // Hardcoded fee fallback (used only if the company-settings cache is stone
@@ -161,6 +201,15 @@ function buildInputs(app, experience, overrides) {
     // ZIP feeds the Silver engine's geography exclusions + NYC-market detection
     // (Standard/Gold ignore it). Falls back to a ZIP inside the address text.
     zip: clean(addrIsString ? '' : (addr.zip || addr.postal_code || addr.postalCode || '')),
+    /* THE COUNTY — a real pricing input since 2026-08-23, not metadata.
+       The mortgage recording tax is set BY COUNTY in New York (Cortland 1.25%,
+       Chenango 1.00%) and the recordation tax by county in Maryland, so a
+       state-level estimate cannot be right in either place. `property_address` is
+       JSONB and already carries whatever the address canonicalizer stored, so this
+       needs no column; when it is absent the closing-cost engine falls back to the
+       state's HIGHEST rate and says so out loud, rather than quietly guessing low.
+       A staffer can type it on the file (the studio's manual section). */
+    county: clean(addrIsString ? '' : (addr.county || addr.countyName || '')),
     propertyType: normPropertyType(app.property_type),
     units: num(app.units) || 0,
     /* A REFINANCE IS SIZED ON THE AS-IS VALUE, AND ON NOTHING ELSE
@@ -252,6 +301,24 @@ function buildInputs(app, experience, overrides) {
     ...(app.file_markup_std_pct  != null ? { markupStdPct:  num(app.file_markup_std_pct) }  : {}),
     ...(app.file_markup_gold_pct != null ? { markupGoldPct: num(app.file_markup_gold_pct) } : {}),
     ...(app.file_markup_silver_pct != null ? { markupSilverPct: num(app.file_markup_silver_pct) } : {}),
+    /* Sticky per-file CONSTRUCTION FEASIBILITY fee (owner-directed 2026-08-21, db/609) — the
+       studio's manual box, persisted exactly like the markups above so a re-quote never drops the
+       amount an admin typed. NULL/absent → the company default for this deal's kind governs, so
+       every existing file is unchanged. A stored 0 is a deliberate WAIVER and is carried through
+       as 0, which `feasibilityFeeFor` reads as "no fee on this file" — dropping it here instead
+       would silently put the fee back on the next quote. */
+    ...(app.file_feasibility_fee != null ? { feasibilityFee: num(app.file_feasibility_fee) } : {}),
+    /* Sticky per-file UNDERWRITING / LEGAL / optional NEW YORK SETTLEMENT amounts
+       (owner-directed 2026-08-26, db/632) — the studio's manual boxes, persisted exactly
+       like the feasibility fee above so a re-quote never drops what an admin typed.
+       NULL/absent → the company number, this deal's own New York rung, or the settlement
+       pre-fill governs, so every existing file is unchanged. A stored 0 is a deliberate
+       WAIVER (or DECLINE) and is carried through as 0. */
+    ...(app.file_underwriting_fee != null ? { underwritingFee: num(app.file_underwriting_fee) } : {}),
+    ...(app.file_legal_fee != null ? { legalFee: num(app.file_legal_fee) } : {}),
+    ...(app.file_settlement_fee != null ? { settlementFee: num(app.file_settlement_fee) } : {}),
+    ...(app.file_cema_fee != null ? { cemaFee: num(app.file_cema_fee) } : {}),
+    ...(app.ny_cema === true ? { nyCema: true } : {}),
     // Sticky per-file GOLD top-tier markup (item 15) — the studio's manual
     // top-tier section, persisted like the sticky whole-program markups above so
     // a re-quote never drops it. NULL/absent → the company per-tier default (or
@@ -268,6 +335,46 @@ function buildInputs(app, experience, overrides) {
   };
 
   // Staff overrides win. Only copy known keys; coerce numeric fields.
+  /* THE PER-CHARGE TAX OVERRIDES. Copied ahead of the numeric allowlist below
+     because they are a GENERATED set (one per charge the engine knows how to
+     compute), not a hand-kept list — adding a charge to the engine must not also
+     require remembering to add its knob here, which is exactly the kind of
+     hand-maintained second list that silently drops a typed value. */
+  if (overrides && typeof overrides === 'object') {
+    for (const key of closingCosts.CHARGE_KEYS) {
+      const k = TAX_OVERRIDE_PREFIX + key;
+      if (Object.prototype.hasOwnProperty.call(overrides, k)) base[k] = overrides[k];
+    }
+    // The buyer's share of a transfer tax is set by the PURCHASE CONTRACT, not by
+    // local custom — so it is typeable per file (0..1, or a percent 0..100).
+    if (Object.prototype.hasOwnProperty.call(overrides, 'buyerTransferShare')) {
+      const raw = Number(overrides.buyerTransferShare);
+      if (Number.isFinite(raw)) base.buyerTransferShare = raw > 1 ? Math.min(1, raw / 100) : Math.max(0, raw);
+    }
+  }
+  // The county is a STRING input that moves a real number (the mortgage recording
+  // tax), so it rides with the other overridable deal inputs rather than being
+  // read only from the stored address.
+  if (overrides && typeof overrides.county === 'string' && overrides.county.trim()) base.county = overrides.county.trim();
+  /* THE TAX CITY AND THE TAX UNIT COUNT — deliberately their OWN keys, never
+     `city` and `units`.
+
+     Both would otherwise reach a frozen engine: the engines scan the CITY text for
+     the ineligible-city and adverse-market checks, and `units` is a real recorded
+     fact about the building that other readers compare against. A figure someone
+     typed into a tax box must not be able to make a property eligible, or to
+     restate how many dwellings it holds. So they are tax-only by NAME, read by
+     nothing except the government-charge engine below.
+
+     They exist because the term sheet's property question is "1 unit" or "2-4
+     units" and it has no city field at all — while New York City taxes a 3-family
+     at 2.175% and a 4-family at 2.80% of the same loan, and Philadelphia,
+     Pittsburgh and Yonkers each levy their own. */
+  if (overrides && typeof overrides.taxCity === 'string' && overrides.taxCity.trim()) base.taxCity = overrides.taxCity.trim();
+  if (overrides && overrides.taxUnits != null && overrides.taxUnits !== '') {
+    const tu = Math.round(Number(overrides.taxUnits));
+    if (Number.isFinite(tu) && tu >= 1) base.taxUnits = tu;
+  }
   const NUMK = ['units', 'purchasePrice', 'sellerPrice', 'asIsValue', 'arv', 'rehabBudget',
     'fico', 'expFlips', 'expHolds', 'expGround', 'term', 'irMonths', 'irAmount', 'targetLTC', 'targetARLTV', 'targetLoan',
     // THE PAYOFF THE STUDIO WAS PRICED ON (owner-directed 2026-08-07). A refinance
@@ -287,7 +394,15 @@ function buildInputs(app, experience, overrides) {
     // that doesn't use it. See markupTiersFor().
     'markupGoldT1Pct',
     'origStdPct', 'origGoldPct', 'origSilverPct', 'origManualPct',
-    'lenderFee', 'creditFee', 'appraisalFee', 'titleFee',
+    'lenderFee', 'creditFee', 'appraisalFee', 'titleFee', 'feasibilityFee',
+    /* OUR FEE'S TWO PARTS AND THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE (owner-directed
+       2026-08-26). Each is a per-file amount typed in the studio's manual section; a BLANK box is
+       dropped by the loop below, which is the studio's explicit-blank contract and means "use the
+       company number / this deal's own rung". A typed 0 survives and WAIVES that part. */
+    'underwritingFee', 'legalFee', 'settlementFee',
+    // The New York CEMA fee — $1,000 pre-filled, adjustable per file; only charged when the
+    // `nyCema` answer below is an explicit yes.
+    'cemaFee',
     'ovrAcqLTVPct', 'ovrARLTVPct', 'ovrLTCPct', 'ovrRatePct', 'ovrIrMonths', 'ovrEffPrice',
     // Out-of-pocket rehab exception (owner-authorized 2026-07-31): a dollar amount
     // of the rehab budget brought OUT OF POCKET so the initial advance can rise
@@ -296,6 +411,8 @@ function buildInputs(app, experience, overrides) {
     'oopRehab'];
   const STRK = ['loanType', 'strategy', 'state', 'city', 'address', 'propertyType'];
   const BOOLK = ['cashOut', 'isAssignment', 'heavyRehab', 'sqftAddition', 'forcePrice', 'manualPricing',
+    // "Is this a New York CEMA?" — the registration question. OFF unless explicitly true.
+    'nyCema',
     // "Raise the initial to max" toggle — use the full max out-of-pocket rehab
     // (exact, independent of any stale client-computed dollar). Pairs with oopRehab.
     'oopRehabMax'];
@@ -332,6 +449,18 @@ function buildInputs(app, experience, overrides) {
     if (overrides.markupGoldPct === '') delete out.markupGoldPct;
     if (overrides.markupSilverPct === '') delete out.markupSilverPct;
     if (overrides.markupGoldT1Pct === '') delete out.markupGoldT1Pct;
+    /* OUR FEE'S TWO PARTS, THE OPTIONAL SETTLEMENT FEE AND THE CEMA AMOUNT need the SAME explicit
+       delete, and it is not the NUMK loop that provides it. That loop SKIPS a blank, which stops a
+       blank overwriting anything — but the base object has already been given the STICKY per-file
+       value by `fileInputs`, so skipping leaves the stale amount standing and a box the officer
+       deliberately emptied would silently re-apply what they cleared: the studio would print $1,500
+       of legal fee against an empty box, and the registered quote would disagree with the column
+       the register then clears. Exactly the 2026-07-16 sticky-markup defect, one fee family on.
+       (`nyCema` needs nothing — it is a BOOLEAN and the BOOLK loop assigns `false` over the base.) */
+    if (overrides.underwritingFee === '') delete out.underwritingFee;
+    if (overrides.legalFee === '') delete out.legalFee;
+    if (overrides.settlementFee === '') delete out.settlementFee;
+    if (overrides.cemaFee === '') delete out.cemaFee;
     if (overrides.irMonths === '') out.irMonths = 0;
   }
   out.strategy = engineStrategy(out.strategy);   // override labels get the same normalization
@@ -648,8 +777,71 @@ function normalize(program, input, ev, ladder, opts) {
   const titleOverridden = hasInput(input, 'titleFee');
   const titleTotal = titleOverridden ? num(input.titleFee)
     : (cd.titleFee != null ? num(cd.titleFee) : titleAutoTotal);
-  // Flat fees: per-file override → COMPANY default → hardcoded literal.
-  const lenderFee = numberOverride(input, 'lenderFee', cd.lenderFee != null ? cd.lenderFee : FEES.lender);
+  /* OUR OWN FEE, IN ITS TWO REAL PARTS — $1,200 underwriting & processing and a LEGAL fee that
+     is a New York ladder (owner-directed 2026-08-26, db/632). `src/lib/lender-fees.js` is the ONE
+     definition of both parts, of which rung a deal lands on, of what each is called, and of how a
+     manual amount overrides it — the studio and the admin screen read the same module, so the fee
+     on the paper and the fee in the math cannot drift.
+
+     `lenderFee` STAYS THE TOTAL and is now DERIVED from the parts, which is what makes the owner's
+     *"the total stays the same for general loans"* true BY CONSTRUCTION rather than by a test that
+     has to remember to check: 1,200 + 995 = 2,195, the exact number this line produced before.
+     Every existing reader of `lenderFee` — the closing-cost sum, the tapes, the printed sheets —
+     keeps working untouched, which is why the total was derived rather than replaced.
+
+     A per-file TOTAL typed into the legacy `lenderFee` box still wins and then nothing is split
+     (`split:false`), so a quote registered before today prints the single combined line it always
+     printed. NO FROZEN NUMBER MOVES: the loan amount, the note rate, every cap and the whole sizing
+     waterfall are computed above this line and never read it. */
+  const lenderFees = require('./lender-fees').lenderFeesFor(
+    {
+      state, city: input.taxCity || input.city, county: input.county,
+      /* A ground-up is judged by the SAME classifier the feasibility fee uses — which is itself
+         the frozen engine's own `normStrategy`, held to it by `test-feasibility-fee-pure`'s label
+         battery. Restating the test here would be a second copy of the one question that decides
+         which matrix a loan is priced on, so the two construction fees on a term sheet could
+         disagree about what kind of deal it is. */
+      groundUp: require('./feasibility-fee').isGroundUpDeal(input),
+      heavyRehab: input.heavyRehab === true,
+      construction: num(input.rehabBudget),
+      /* WHAT THE REHAB IS MEASURED AGAINST for the non-New-York heavy-rehab rung — the purchase
+         price, or on a REFINANCE the as-is value, which is the owner's own answer (2026-08-26)
+         and is also the figure the frozen engine sizes a refinance on. `sizesOnAsIsValue` is
+         deal-basis's ONE definition of that question, so this can never disagree with the
+         engine about which number the deal turns on. (`buildInputs` already carries the as-is
+         through `purchasePrice` on a refinance, so the two agree today — this states it
+         explicitly so a change there cannot silently switch the fee off.) */
+      /* A bridge never reaches the heavy-rehab rung — same classifier the feasibility fee uses. */
+      bridge: require('./feasibility-fee').isBridgeDeal(input),
+      priceBasis: sizesOnAsIsValue(input.loanType)
+        ? num(input.asIsValue) || num(input.purchasePrice)
+        : num(input.purchasePrice),
+    },
+    cd,
+    {
+      total: hasInput(input, 'lenderFee') ? input.lenderFee : null,
+      underwriting: hasInput(input, 'underwritingFee') ? input.underwritingFee : null,
+      legal: hasInput(input, 'legalFee') ? input.legalFee : null,
+    });
+  const lenderFee = round2(lenderFees.total);
+  /* THE OPTIONAL NEW YORK SETTLEMENT AGENT FEE — *"on top of the regular 2,000"*, pre-filled at
+     $750, changeable per file, LABELLED optional on every surface that prints it and still counted
+     in the cash to close so the figure can never leave a borrower short. It REPLACES the mandatory
+     $2,000 NY "Settlement agent fee" that used to ride in `extraFees` (db/632 removes that row —
+     leaving both would bill a New York borrower twice). A typed 0 declines it. */
+  const settlement = require('./lender-fees').settlementFeeFor(
+    { state }, cd, { settlement: hasInput(input, 'settlementFee') ? input.settlementFee : null });
+  const settlementFee = settlement ? num(settlement.amount) : 0;
+  /* THE NEW YORK CEMA FEE (owner-directed 2026-08-26) — $1,000, pre-filled, adjustable, and OFF
+     unless somebody answers the registration question with a yes. `input.nyCema !== true` returns
+     nothing, so every existing quote is byte-identical. Offered only on a New York REFINANCE,
+     judged by `deal-basis.sizesOnAsIsValue` — the ONE definition the engine itself sizes on, so
+     this can never disagree with what kind of deal the loan was priced as. See `cemaFeeFor` for
+     what this deliberately does NOT do to the mortgage recording tax. */
+  const cema = require('./lender-fees').cemaFeeFor(
+    { state, refinance: sizesOnAsIsValue(input.loanType) }, cd,
+    { cema: input.nyCema === true, cemaFee: hasInput(input, 'cemaFee') ? input.cemaFee : null });
+  const cemaFee = cema ? num(cema.amount) : 0;
   const creditFee = numberOverride(input, 'creditFee', cd.creditFee != null ? cd.creditFee : FEES.credit);
   const appraisalFee = numberOverride(input, 'appraisalFee', cd.appraisalFee != null ? cd.appraisalFee : FEES.appraisal);
   const origination = totalLoan > 0 ? round2(totalLoan * origPct) : 0;
@@ -669,7 +861,77 @@ function normalize(program, input, ev, ladder, opts) {
   // close AND the liquidity to show (owner-directed 2026-07-17).
   const extraFeeList = pricingSettings.extraFeesForState(cd.extraFees, state);
   const extraFeesTotal = extraFeeList.reduce((a, f) => a + (num(f.amount) || 0), 0);
-  const closingDueAtClose = round2(origination + brokerFee + lenderFee + creditFee + titleTotal + extraFeesTotal);
+  /* THE CONSTRUCTION FEASIBILITY / PROJECT REVIEW FEE (owner-directed 2026-08-21, db/609 —
+     $1,250 on a ground-up, $750 on a heavy rehab, and addable by hand to any project).
+     `src/lib/feasibility-fee.js` is the ONE definition of what it is, which deals attract it, what
+     it is called and how a manual amount overrides it — the studio and the admin screen read the
+     same module, so the fee on the paper and the fee in the math cannot drift.
+
+     It is a real third-party cost with an invoice behind it, so it is quoted as a named CLOSING
+     COST alongside the lender fee, the credit fee and title — which is what makes it cascade into
+     cash-to-close and the liquidity the borrower must show. NO FROZEN NUMBER MOVES: the loan
+     amount, the note rate, every cap and the whole sizing waterfall are computed above this line
+     and never read it. A deal that attracts no fee adds 0 and is byte-identical to before. */
+  const feasibility = require('./feasibility-fee').feasibilityFeeFor(input, cd, {
+    manual: hasInput(input, 'feasibilityFee') ? input.feasibilityFee : null,
+  });
+  const feasibilityFee = feasibility ? num(feasibility.amount) : 0;
+  /* GOVERNMENT CHARGES — the mortgage / recordation tax, the buyer's share of any
+     transfer tax, the mansion tax and the recording fees (owner-directed
+     2026-08-23: *"how we can make sure that we're not falling short on cash to
+     close"*).
+
+     THIS IS THE HOLE THAT WAS BEING QUOTED AROUND. `web/tools/title-cost.js` says
+     so in its own header — it EXCLUDES transfer and mortgage taxes on purpose,
+     because it is a title estimator. Nothing else added them, so every quote in a
+     tax state was short by the largest single number on the closing statement: on a
+     $600,000 NYC loan the mortgage recording tax alone is ~$11,550, against a whole
+     title estimate of about $2,600.
+
+     Driven by exactly what the owner listed — the unit count, the loan type, the
+     county and the state — plus the two amounts the taxes are levied on. Each line
+     is separately overridable on the file (`ovrTax_*`), because a settlement agent's
+     actual figure beats any table and must be typeable without editing code.
+
+     NO FROZEN NUMBER MOVES. The loan amount, the note rate, every cap and the whole
+     sizing waterfall are computed ABOVE this line and never read it. A state with no
+     such taxes adds $0 and is byte-identical to before. */
+  const govCharges = closingCosts.applyOverrides(
+    closingCosts.governmentCharges({
+      state,
+      county: input.county,
+      // The tax-only city when one was typed, otherwise the property's own recorded
+      // city. See the note on `taxCity`/`taxUnits` in buildInputs for why these are
+      // separate keys and not overrides of `city` / `units`.
+      city: input.taxCity || input.city,
+      // The unit ladder is the ENGINE's own (typed -> the file's count -> the top of
+      // a "2-4" range). The Term Sheet Studio faces the identical ambiguity and calls
+      // the identical function, so the printed sheet and the registered quote cannot
+      // answer "how many units" differently — which on a New York City loan is a
+      // $3,750 gap between the two documents.
+      units: closingCosts.resolveUnits({
+        typed: input.taxUnits, knownUnits: input.units, propType: input.propertyType,
+      }).units,
+      loanAmount: totalLoan,
+      // The taxable SALE price, by the engine's own rule — zero on a refinance, and
+      // on an assignment the REAL total the buyer pays rather than the capped
+      // effective price the loan is sized against (the deed records what changed
+      // hands). Same call the studio makes.
+      purchasePrice: closingCosts.taxableSalePrice({
+        isRefinance: require('./deal-basis').sizesOnAsIsValue(input.loanType),
+        totalPrice: num(input.purchasePrice),
+      }),
+      // `sizesOnAsIsValue` is deal-basis.js's ONE definition of "is this a
+      // refinance" — the same test buildInputs uses to pick the sizing basis. A
+      // second, local `loanType === 'Refinance'` here is exactly how the two come
+      // to disagree about the same file.
+      transactionType: require('./deal-basis').sizesOnAsIsValue(input.loanType) ? 'refinance' : 'purchase',
+      buyerTransferShare: hasInput(input, 'buyerTransferShare') ? num(input.buyerTransferShare) : undefined,
+    }),
+    taxOverridesFrom(input));
+  const govChargesTotal = num(govCharges.borrowerTotal);
+
+  const closingDueAtClose = round2(origination + brokerFee + lenderFee + creditFee + titleTotal + extraFeesTotal + feasibilityFee + settlementFee + cemaFee + govChargesTotal);
   /* REFINANCE CASH TO CLOSE (owner-directed 2026-08-04). On a purchase this is the
      down payment (equity) plus the closing costs. On a REFINANCE there is no down
      payment (the frozen engine returns downPayment=0 for a refi), and instead the
@@ -854,9 +1116,68 @@ function normalize(program, input, ev, ladder, opts) {
       // fee), so the retail closingCosts object is byte-identical.
       ...(brokerFee > 0 ? { brokerFee, brokerFeePct: round2(brokerFeePct * 100) } : {}),
       lenderFee,
+      /* THE TWO PARTS, NAMED — because folding an amount into a total is HALF a fee (the rule the
+         feasibility fee's own line above was written to enforce). `lenderFee` remains the total
+         every existing reader takes; this is what lets a surface ITEMISE it, and it carries the
+         rung so a screen can explain the New York number rather than only printing it. Present on
+         every quote, so no surface has to guess whether the split happened. */
+      lenderFeeParts: {
+        underwriting: round2(lenderFees.underwriting),
+        legal: round2(lenderFees.legal),
+        total: round2(lenderFees.total),
+        split: lenderFees.split,
+        legalBasis: lenderFees.legalBasis,
+        legalBasisText: require('./lender-fees').legalBasisText(lenderFees.legalBasis),
+        underwritingLabel: require('./lender-fees').LENDER_FEE_LABEL.underwriting,
+        legalLabel: require('./lender-fees').LENDER_FEE_LABEL.legal,
+        combinedLabel: require('./lender-fees').LENDER_FEE_LABEL.combined,
+        manualUnderwriting: lenderFees.manualUnderwriting,
+        manualLegal: lenderFees.manualLegal,
+      },
+      /* The optional New York settlement agent fee, as its own named line. Added ONLY when there
+         is one, so every deal that carries none reports a byte-identical closingCosts object. */
+      ...(settlement ? {
+        settlementFee: round2(settlementFee),
+        settlement: {
+          amount: round2(settlementFee), label: settlement.label, note: settlement.note,
+          optional: true, manual: settlement.manual,
+        },
+      } : {}),
+      /* The New York CEMA fee, as its own named line. Added ONLY when the file is a CEMA, so every
+         other deal reports a byte-identical closingCosts object. */
+      ...(cema ? {
+        cemaFee: round2(cemaFee),
+        cema: { amount: round2(cemaFee), label: cema.label, note: cema.note, manual: cema.manual },
+      } : {}),
       creditFee,
       titleAndSettlement: titleTotal,
       extraFees: extraFeeList.map((f) => ({ name: f.name, amount: round2(num(f.amount)) })),
+      // The construction feasibility / project review fee, as its own named line — a borrower is
+      // never charged a fee that the sheet cannot name and explain. Added ONLY when there is one,
+      // so every deal that attracts none reports a byte-identical closingCosts object.
+      ...(feasibility ? {
+        feasibilityFee: round2(feasibilityFee),
+        feasibility: { amount: round2(feasibilityFee), kind: feasibility.kind, label: feasibility.label, note: feasibility.note, manual: feasibility.manual },
+      } : {}),
+      /* THE GOVERNMENT CHARGES, ITEMIZED — the owner asked for line items by name
+         ("New York City mortgage tax needs to be a line item calculated
+         separately"), and a blended number could not be checked against a
+         settlement statement, overridden, or explained to a borrower. */
+      governmentCharges: govChargesTotal,
+      governmentChargeLines: govCharges.borrowerLines,
+      /* What the COMPANY pays on this closing — $0 on every deal today, and kept
+         for two reasons rather than deleted. It is a LIVE channel: the engine still
+         sums anything a rate table marks `payer: 'lender'`, so a future state or
+         programme that genuinely puts a charge on the mortgagee reports it here
+         with no new wiring. And quotes stored before 2026-08-23 carry a real
+         figure in this field — New York's 0.25% special additional tax, which was
+         split out until the owner ruled that this book never pays a portion
+         ("it's private money … Everything pays the borrower"). Removing the field
+         would rewrite what those files say they were quoted. */
+      governmentChargesLender: num(govCharges.lenderTotal),
+      governmentChargesConfidence: govCharges.confidence,
+      governmentChargeWarnings: govCharges.warnings,
+      governmentChargeNotes: govCharges.notes,
       dueAtClosing: closingDueAtClose,
       appraisalPoc: appraisalFee,
       totalIncludingPoc: round2(closingDueAtClose + appraisalFee),
@@ -1053,7 +1374,10 @@ function econVersionFor(app) {
     // the sticky per-file markups.
     app.rehab_type, app.sqft_pre, app.sqft_post,
     (app.property_address && app.property_address.state) || '',
-    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct,
+    app.fico, app.file_markup_std_pct, app.file_markup_gold_pct, app.file_markup_silver_pct, app.file_feasibility_fee,
+    // Our fee's two parts + the optional New York settlement fee — fingerprinted siblings of
+    // the feasibility fee, so a change to one re-quotes rather than serving a stale answer.
+    app.file_underwriting_fee, app.file_legal_fee, app.file_settlement_fee, app.file_cema_fee, app.ny_cema,
     app.file_markup_gold_t1_pct,   // sticky per-file Gold top-tier markup (item 15) — a fingerprinted sibling
 
     // The Silver engine keys geography off the ZIP too (exclusions + NYC market).
@@ -1069,5 +1393,13 @@ module.exports = {
   // Exposed for the rate build-up test only — the guards (omit-don't-guess when
   // the probe re-sized the deal, restore the caller's markup state) are the whole
   // point, so they are asserted directly rather than inferred from a quote.
+  /* THE PORTAL-LABEL NORMALIZER, exported so nothing outside has to keep a second copy of it.
+     It exists because "Fix & Flip w/ Construction" contains the word "construction", which the
+     frozen engine classifies as GROUND-UP — so every reader that asks "is this a ground-up?" off
+     `applications.program` must run it through here first, or it will answer YES about an ordinary
+     fix & flip. `buildInputs` has always applied it; `trinity/budget-review` now does too, after
+     exactly that bug was caught in test (a heavy-rehab-only file read as a ground-up because the
+     stored label carried the word). */
+  engineStrategy,
   _internals: { measureRateBuildUp, sizingFingerprint, ratePct },
 };

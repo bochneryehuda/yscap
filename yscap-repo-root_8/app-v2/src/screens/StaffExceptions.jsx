@@ -25,6 +25,10 @@ export default function StaffExceptions() {
   const focusAppId = new URLSearchParams(location.search).get('app') || '';
 
   const [rows, setRows] = useState([]);
+  /* THE SERVER MEASURES whether there is another page — the screen must never
+     infer it from a full one, and must never print a page size as if it were a
+     count. `hasMore` is what stops "100" reading as "there are 100". */
+  const [more, setMore] = useState(false);
   const [reasonCodes, setReasonCodes] = useState({});
   const [reasonCodesByType, setReasonCodesByType] = useState({});
   const [typeLabels, setTypeLabels] = useState({});
@@ -33,6 +37,13 @@ export default function StaffExceptions() {
   const [actorId, setActorId] = useState('');
   const [statusFilter, setStatusFilter] = useState('open');
   const [typeFilter, setTypeFilter] = useState('');
+  /* SEARCH BY WHAT YOU KNOW ABOUT THE FILE (owner-directed 2026-08-26: "search by
+     loan number, by address"). `search` is what is typed; `q` is what the server
+     has been asked for — kept apart so a keystroke does not fire a request per
+     letter, and so the "showing results for" line names what is actually on
+     screen rather than what is half-typed. */
+  const [search, setSearch] = useState('');
+  const [q, setQ] = useState('');
   const [pendingCount, setPendingCount] = useState(0);
   const [canDecide, setCanDecide] = useState(false);
   // Super-admins may decide their OWN request (owner-directed 2026-07-31).
@@ -104,9 +115,10 @@ export default function StaffExceptions() {
     return approved ? `Approved. The ${label} is recorded.` : `Denied. The ${label} was not granted.`;
   }
 
-  const load = () => api.loanExceptions(statusFilter, typeFilter || undefined)
+  const load = () => api.loanExceptions(statusFilter, typeFilter || undefined, q || undefined)
     .then((d) => {
       setRows(d.exceptions || []);
+      setMore(!!d.hasMore);
       setPendingCount(d.pendingCount || 0);
       setCanDecide(!!d.canDecide);
       setCanDecideOwn(!!d.canDecideOwn);
@@ -119,7 +131,15 @@ export default function StaffExceptions() {
     })
     .catch((e) => flash(false, (e && e.message) || 'could not load exceptions'));
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [statusFilter, typeFilter]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [statusFilter, typeFilter, q]);
+  /* 300ms after the last keystroke, not on every one — the query joins four
+     tables and a per-letter request would queue them up behind each other. The
+     timer is cleared on unmount so a search left mid-type never lands on a
+     screen that is gone. */
+  useEffect(() => {
+    const t = setTimeout(() => setQ(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
   // The register report loads once (aggregate counts — cheap and stable).
   useEffect(() => { api.loanExceptionMetrics().then((d) => setMetrics(d.metrics || null)).catch(() => {}); }, []);
 
@@ -179,7 +199,8 @@ export default function StaffExceptions() {
   }
 
   async function exportRegister() {
-    try { await api.exportExceptionRegister(statusFilter === 'open' ? 'all' : statusFilter, typeFilter || undefined); }
+    // The export carries the SAME search, so the spreadsheet matches the screen.
+    try { await api.exportExceptionRegister(statusFilter === 'open' ? 'all' : statusFilter, typeFilter || undefined, q || undefined); }
     catch (e) { flash(false, (e && e.message) || 'could not export the register'); }
   }
 
@@ -234,6 +255,25 @@ export default function StaffExceptions() {
 
       {msg && <div className={`notice ${msg.ok ? 'ok' : 'err'}`} style={{ marginTop: 8 }}>{msg.text}</div>}
 
+      {/* Find the file: its loan number, its address, or the borrower. One box —
+          a person looking for "598 Pawling" should not have to know which of the
+          three it is. */}
+      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap', margin: '12px 0 4px' }}>
+        <input className="input" type="search" style={{ maxWidth: 320 }}
+          placeholder="Search loan number, address or borrower…"
+          value={search} onChange={(e) => setSearch(e.target.value)} />
+        {search && (
+          <button className="btn small ghost" onClick={() => setSearch('')}>Clear</button>
+        )}
+        {q && q.length < 2 && (
+          <span className="muted small" style={{ color: '#4B585C' }}>Type at least two characters.</span>
+        )}
+        {q && q.length >= 2 && (
+          <span className="muted small" style={{ color: '#4B585C' }}>
+            Showing matches for “{q}”{rows ? (more ? ` — the first ${rows.length}; narrow the search to see the rest` : ` — ${rows.length}`) : ''}
+          </span>
+        )}
+      </div>
       <div className="row" style={{ gap: 6, flexWrap: 'wrap', margin: '12px 0 4px' }}>
         {filters.map((f) => (
           <button key={f} className={`btn small ${statusFilter === f ? 'primary' : 'ghost'}`} onClick={() => setStatusFilter(f)}>

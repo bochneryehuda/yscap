@@ -34,8 +34,8 @@ const FILTERS = [
 ];
 
 /* WHO HEARS THAT A LOAN SOLD (owner-directed 2026-08-13). The moment Encompass shows a purchase
-   advice date, PILOT emails these people: come in, upload the advice, enter the same date, mark the
-   purchase complete. Seeded with the two the owner named; an admin can change who is on it here.
+   advice date, PILOT emails these people: come in, upload the advice and mark the purchase
+   complete. (The date itself is no longer typed anywhere in PILOT — see AdviceDate below.) Seeded with the two the owner named; an admin can change who is on it here.
    Everyone on the desk can SEE the list — knowing who was told is half of not chasing twice. */
 function NotifyList() {
   const [state, setState] = useState(null);
@@ -68,7 +68,7 @@ function NotifyList() {
           <div style={{ fontWeight: 700 }}>Told when a loan sells</div>
           <div className="sub" style={{ marginTop: 2 }}>
             As soon as Encompass shows a purchase advice date, these people are emailed to come in,
-            upload the advice, enter the same date and mark the purchase complete.
+            upload the advice document and mark the purchase complete.
             {' '}
             {people.length
               ? <>Right now: <b>{people.map((p) => p.full_name).join(', ')}</b>.</>
@@ -100,6 +100,71 @@ function NotifyList() {
             {!people.length && <li className="muted">Nobody yet.</li>}
           </ul>
           {err ? <div className="notice err" style={{ marginTop: 8 }}>{err}</div> : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* THE PURCHASE ADVICE DATE — SHOWN, NEVER TYPED (owner-directed 2026-08-23).
+
+   *"It should need to be filled into Encompass, and from there our line and our field should
+   automatically fill. You should not allow somebody to type in that field. You should say, 'Hey,
+   go to Encompass and type it over there,' and then everything should fire."*
+
+   So this is a READ-OUT, not an input, and it has to answer three different questions with the
+   same small block, because a person standing here is in exactly one of three situations:
+
+     · the date is in Encompass  → show it, say where it came from, done;
+     · the date is NOT in Encompass but somebody typed one here before this rule → show that date,
+       say it is the old hand-typed one, and say plainly that it still has to go into Encompass.
+       This is the ONLY state that asks the reader to do something about the date;
+     · no date anywhere → say whether PILOT has actually ASKED Encompass yet, because "Encompass
+       says there is none" and "PILOT has not looked" are different situations for different
+       people, and printing one blank for both is what sent a closer hunting for a date that was
+       already on the loan (db/608).
+
+   Deliberately quiet: one line of value, one line of provenance, and a callout ONLY in the state
+   that needs one. A banner on every file would be noise on the ninety-nine that are fine. */
+function AdviceDate({ ws }) {
+  const date = ws.adviceDate || null;
+  const source = ws.adviceDateSource || null;
+  const needsEncompass = !!ws.needsEncompassDate;
+
+  /* WHY THERE IS NO DATE, in the reader's terms — the same distinction db/608 exists to make.
+     Only reached when there is no date at all, so it never contradicts a value printed above it. */
+  const why = {
+    blank: 'PILOT asked Encompass and the purchase advice field came back empty — this loan has not been sold yet.',
+    not_returned: 'PILOT asked, and Encompass answered without that field. An admin needs to check which field PILOT is reading.',
+    no_loan_link: 'PILOT holds no Encompass loan for this file yet, so there is nothing to read.',
+    no_field_id: 'This deployment is not reading a purchase advice field at all — ask an admin.',
+  }[ws.encompassReadState] || 'PILOT has not asked Encompass about this loan yet — it checks on its own, every few minutes.';
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div className="small muted">Purchase advice date</div>
+      <div className="row" style={{ gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <b style={{ fontSize: 16 }}>{date ? day(date) : '—'}</b>
+        {source === 'encompass' && <span className="pill ok">From Encompass</span>}
+        {source === 'legacy' && <span className="pill warn">Entered here before 2026-08-23</span>}
+      </div>
+      <div className="muted small" style={{ marginTop: 3 }}>
+        {date
+          ? (source === 'encompass'
+            ? 'Read from the loan in Encompass. It fills in here by itself, and marks the loan Sold, moves the ClickUp card and stamps the critical dates.'
+            : 'This one was typed here by hand, before the date moved to Encompass. It still counts — the loan reads as Sold — but Encompass does not have it yet.')
+          : why}
+      </div>
+      {needsEncompass && (
+        <div className="notice warn small" style={{ marginTop: 6 }}>
+          <b>Put this date into Encompass.</b> Open the loan in Encompass and enter the purchase
+          advice date there. PILOT picks it up on its own and this line switches to “From Encompass”
+          — nothing else to do here.
+        </div>
+      )}
+      {!needsEncompass && !date && (
+        <div className="muted small" style={{ marginTop: 4 }}>
+          The date is entered on the loan in <b>Encompass</b> — there is no box for it here.
         </div>
       )}
     </div>
@@ -256,19 +321,12 @@ function PurchasingDetail({ appId, status, onChanged }) {
   const [task, setTask] = useState('');
   const [cond, setCond] = useState('');
   const [condDetail, setCondDetail] = useState('');
-  const [advice, setAdvice] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
   const load = useCallback(() => {
     api.purchasingGet(appId)
-      .then((d) => {
-        setWs(d);
-        // Re-seed the date input from the server, so a save is reflected and a
-        // concurrent edit by someone else is not silently overwritten by a stale
-        // local value.
-        setAdvice(((d && d.advice && d.advice.advice_date) || '').slice(0, 10));
-      })
+      .then((d) => setWs(d))
       .catch((e) => setErr((e && e.message) || 'Could not load this file.'));
   }, [appId]);
   useEffect(() => { load(); }, [load]);
@@ -398,18 +456,11 @@ function PurchasingDetail({ appId, status, onChanged }) {
           ))}
       </div>
 
-      {/* Purchase advice — the date, and the advice document (re-issued post
-          closing and again post purchase, so it is an ordinary update). */}
+      {/* Purchase advice — the date (read from Encompass) and the advice document. */}
       <div className="pu-col" style={{ marginTop: 14 }}>
         <div className="pu-h">Purchase advice</div>
+        <AdviceDate ws={ws} />
         <div className="row" style={{ gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-            <span className="small muted">Purchase advice date</span>
-            <input className="input" type="date" value={advice} disabled={busy}
-              onChange={(e) => setAdvice(e.target.value)} />
-          </label>
-          <button className="btn primary small" disabled={busy || advice === (adv.advice_date || '').slice(0, 10)}
-            onClick={() => run(() => api.purchasingAdvice(appId, { date: advice || null }))}>Save date</button>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1, minWidth: 200 }}>
             <span className="small muted">Purchase advice document</span>
             <select className="input" value={adv.document_id || ''} disabled={busy}

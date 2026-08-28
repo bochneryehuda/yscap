@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { PROGRAMS as ENUM_PROGRAMS } from '../lib/enums.js';
 import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
 import DropZone from '../components/DropZone.jsx';
@@ -25,7 +26,14 @@ import { askConfirm } from '../lib/dialog.js';
 // (pricing keys Purchase vs Refinance off loan_type). Program label is the
 // canonical hyphenated 'Ground-Up Construction' so the ClickUp crosswalk + every
 // exact-match consumer recognize it. (#95)
-const PROGRAMS = ['Fix & Flip w/ Construction', 'Bridge', 'Ground-Up Construction', 'DSCR Rental', 'Not sure yet'];
+// DERIVED FROM THE SHARED ENUM (owner-reported 2026-08-26). Two things were wrong
+// with the hand-copied list: 'Fix & Hold' — a real program the engine prices and
+// ClickUp now has an option for — was missing entirely, so a staffer opening a
+// fix & hold file could not say so; and 'DSCR Rental' was a spelling NOTHING else
+// in the system accepts (the canonical value is 'DSCR / Rental', which is what
+// change-requests.ALLOWED and the ClickUp crosswalk key on), so picking it stored
+// a value the rest of the system only half recognised.
+const PROGRAMS = ENUM_PROGRAMS;
 const LOAN_TYPES = ['Purchase', 'Refinance — Rate & Term', 'Refinance — Cash-Out'];
 const PROP_TYPES = ['SFR (1 unit)', 'Multi 2–4', 'Multi 5+', 'Condo', 'Townhouse', 'Mixed use'];
 
@@ -318,8 +326,11 @@ function MismoImport() {
 
 export default function StaffNewFile() {
   const nav = useNavigate();
-  const { role, actor } = useAuth();
-  const seesAll = ['admin', 'super_admin', 'underwriter'].includes(role);
+  const { role, actor, can } = useAuth();
+  // The SAME signal the backend uses (see_all_files), never a hardcoded role
+  // list — the list here had already drifted (it predated the closer /
+  // coordinator / processor grants). StaffQueue documents this as canonical.
+  const seesAll = can('see_all_files');
   // The staffer opening the file is put on it by default (owner-directed
   // 2026-07-20) — no need to pick, never Lead Capture — when they hold an
   // officer-eligible role (the roles the officer dropdown offers). A
@@ -819,7 +830,7 @@ export default function StaffNewFile() {
           <div className="grid cols-2">
             <div className="field"><label>Program</label>
               <select className="input" value={f.program} onChange={e => set('program', e.target.value)}>
-                <option value="">Select…</option>{PROGRAMS.map(p => <option key={p}>{p}</option>)}
+                <option value="">Select…</option>{PROGRAMS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select></div>
             <div className="field"><label>Loan type</label>
               <select className="input" value={f.loanType} onChange={e => set('loanType', e.target.value)}>

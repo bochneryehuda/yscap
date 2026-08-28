@@ -1,7 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import LineDetail from './LineDetail.jsx';
 import { api } from '../../lib/api.js';
-import { fileToBase64 } from '../../lib/files.js';
 import useFileDrop from '../../lib/useFileDrop.js';
 import RecordsStamp from './RecordsStamp.jsx';
 import { trStatusShort, trIsPendingReview } from '../../lib/trackRecordStatus.js';
@@ -153,7 +152,7 @@ export default function RecordLedger({
           <b>{waiting} {waiting === 1 ? 'deal is' : 'deals are'} waiting for review.</b>{' '}
           <span>Nothing counts toward {lens === 'borrower' ? 'experience' : 'this file’s experience'} until
           it is verified — open each one, check the records, then verify it.</span>{' '}
-          <a href="#/internal/approvals?tab=track-record">Every borrower&rsquo;s waiting deals →</a>
+          <a href="#/internal/track-record">Every borrower&rsquo;s waiting deals →</a>
         </div>
       )}
       <p className="tr-led-intro">The record — open any project to see every detail, run the Elementix check, review its documents, and verify it.</p>
@@ -210,9 +209,9 @@ function LedgerRow({ r, isOpen, toggle, maySignOff, canDelete, role, lens, onCha
     let ok = 0;
     for (const f of list) {
       try {
-        const dataBase64 = await fileToBase64(f);
-        await api.post(`/api/staff/track-records/${t.id}/documents`, {
-          filename: f.name, contentType: f.type || 'application/octet-stream', dataBase64,
+        // Streamed — see LineDetail: the same door, the same reason.
+        await api.uploadStream(`/api/staff/track-records/${t.id}/documents`, {
+          filename: f.name, contentType: f.type || 'application/octet-stream', file: f,
         });
         ok += 1;
       } catch (e) { failed.push(`${f.name}${e && e.message ? ` (${e.message})` : ''}`); }

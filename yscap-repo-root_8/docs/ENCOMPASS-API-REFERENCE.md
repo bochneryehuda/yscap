@@ -174,13 +174,53 @@ Custom fields ride in the top-level `customFields[]` array as
 ## Field catalog endpoints (all GET; PILOT pulls nightly into
 `encompass_field_catalog`)
 
-- `GET /encompass/v3/settings/loan/customFields` — tenant's custom fields
-  (e.g. `CUST01FV` = "DSCR" on BE11397907; ~855 slots total, most unused).
-- `GET /encompass/v3/settings/loan/standardFields` — the canonical fields.
-- `GET /encompass/v3/settings/loan/enums` — picklist values for enum fields.
-- `GET /encompass/v3/settings/loan/milestones` — the tenant's milestone list.
-- `GET /encompass/v3/settings/loan/folders` — loan folder names.
-- `GET /encompass/v3/settings/loan/loanTemplates` — loan template paths.
+> **MEASURED AGAINST THE LIVE TENANT, 2026-08-25.** Five of the six addresses this
+> section used to list DO NOT EXIST. They were written here by analogy with the one
+> that does — `settings/loan/customFields` — and the analogy was wrong. Encompass
+> answers **403** for a path that is not there, so for months this read as "the API
+> user is not allowed to see the catalog" when the truth was "we are knocking on the
+> wrong door." Every row below now carries the status the tenant actually returned to
+> `GET /api/lt/_diag/book/catalog-probe`. **Do not change one of these back on the
+> strength of a doc, an SDK sample, or an analogy — probe it.**
+
+| what | address | measured |
+| --- | --- | --- |
+| custom fields | `GET /encompass/v3/settings/loan/customFields` | **200** — 857 rows. Unchanged; this is the one that was always right (e.g. `CUST01FV` = "DSCR"; ~855 slots, most unused). |
+| standard fields | `GET /encompass/v3/schemas/loan/standardFields?start=&limit=` | **200** — `limit=10000` returns 10,000 rows in ONE call, so the ~23,700-field catalog is three requests. Keyed by `id`. |
+| ~~standard fields~~ | ~~`/encompass/v3/settings/loan/standardFields`~~ | **403** — does not exist. |
+| milestones | `GET /encompass/v3/settings/milestones` | **200**. Keyed by `name`. Note it drops `/loan`. |
+| ~~milestones~~ | ~~`/encompass/v3/settings/loan/milestones`~~ | **403** — does not exist. |
+| picklist values | `GET /encompass/v1/loanPipeline/fieldDefinitions` | **200**, but answers an OBJECT rather than a list. There is no enum endpoint anywhere in ICE's own 800-request Developer Connect collection; this is where this tenant publishes option lists. |
+| ~~enums~~ | ~~`/encompass/v3/settings/loan/enums`~~ | **403** — does not exist. |
+| loan folders | `GET /encompass/v1/loanFolders` | **200** — all 22 folders. Keyed by `name`. Note it is **v1**, and drops `/settings/loan`. |
+| ~~folders~~ | ~~`/encompass/v3/settings/loan/folders`~~ | **403** — does not exist. |
+| loan templates | `GET /encompass/v3/settings/templates/loanTemplateSet/folders?path=public` (and `personal`) | **200**, and so do `?path=public\Companywide` and the v1 spelling `/encompass/v1/settings/templates/loanTemplateSet/folders/public`. **It is a TREE, so one call cannot answer it.** WALKED LIVE 2026-08-25: two roots, three calls, 13 rows = 2 folders + **11 loan template sets** (DSCR 30/40 YEAR FRM, DSCR I/O, Fix &amp; Flip, Conventional, Closed End Second, Investor Alt Doc…). The v3 form returns an OBJECT `{name, path, contents}` with the rows under `contents`, each `{entityType, entityName, entityPath, hasSubFolders}`; `entityType` is `TemplateFolder` or `LoanTemplateSet`. **Open EVERY folder, including one whose `hasSubFolders` is false** — that flag means no child FOLDERS, and such a folder can still hold templates; the walk's own first run gated on it and reported a complete tree having skipped a branch. **None of `entityPath`/`entityName` is in the catalog's key chain (`r.path || r.name || r.id`), so unnormalised rows store nothing** — the client normalises, as it does for the picklists. |
+| ~~loan templates~~ | ~~`/encompass/v3/settings/loan/loanTemplates`~~ | **403** — does not exist. |
+| milestone LOG | — genuinely unavailable — | **403 on BOTH spellings**: `/v3/loans/{id}/milestoneLogs` (what Long-Term asked) and `/v3/loans/{id}/logs/milestoneLogs` (what RTL asked). The two products had each guessed a different address and neither is the problem — this API user cannot read the "who moved this file and when" history at all. That is a PERMISSIONS question for ICE, not a path to keep hunting for. The milestone LADDER (`/v3/loans/{id}/milestones`, **200**, 18 steps) is unaffected and is where the file's standing comes from. |
+
+Every one of these — plus the token, the pipeline search, the loan, the milestone
+ladder, both spellings of the milestone log, the field reader and the company roster —
+is re-asked on demand by `GET /api/lt/_diag/book/request-audit`, and
+`scripts/test-encompass-request-coverage-pure.js` fails the build if a request exists
+in a client and the audit does not ask about it.
+
+**First full run, 2026-08-25: 25 requests, 18 answered, 7 refused — and all seven of
+the refusals were the old addresses above.** Everything else PILOT does is healthy:
+the token, the pipeline search, the loan itself (184 fields), the milestone ladder
+(18 steps), the field reader, the company roster, one milestone by id, and RTL's
+`entities=`-filtered loan read. The last two of those had never been exercised even
+once before the coverage gate found them.
+
+**A 200 IS NOT THE SAME AS A ROW STORED, and two of these prove it.** The picklists
+answer with their rows under `pipelineLoanReportFieldDefs`, and the templates under
+`contents`. `refreshFieldCatalog` understands an array or `{items:[…]}` and nothing
+else, so pointing a reader at either address without lifting the nested list is a
+perfect 200 that stores zero rows and reports success. The picklist payload also keys
+its rows `fieldID` with a capital D, where the catalog's key chain asks for `fieldId`
+— a different string, so every row would key to `undefined` and be skipped silently.
+Both are handled in `src/encompass/client.js`, and
+`scripts/test-encompass-catalog-keys-pure.js` runs the real key functions against
+these real payloads so neither can regress.
 
 Also `GET /encompass/v1/schema/loan` (whole loan schema) if we ever need the
 JSON schema itself instead of the catalog. PILOT doesn't need this today.

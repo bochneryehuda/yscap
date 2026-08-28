@@ -25,6 +25,10 @@
  */
 
 const client = require('./client');
+// The master on/off switch. Asked DIRECTLY rather than through the client module,
+// because tests replace that module wholesale in require.cache and a stub carries only
+// the handful of methods the test needs — this one is pure and is never stubbed.
+const killSwitch = require('../lib/integrations/encompass-enabled');
 const db = require('../db');
 const cfg = require('../config');
 const identity = require('../clickup/identity');
@@ -184,20 +188,44 @@ _scrubForStorage._pathsScrubbed = PII_SCRUB_PATHS;
 // Returns a summary object with per-kind counts. Does not throw on a single-kind
 // failure — records the error and continues to the next kind so a broken
 // customFields endpoint doesn't block the enum refresh.
+//
+// ── THE SIX CATALOGS, AND HOW EACH ANSWER IS KEYED ──────────────────────────
+//
+// LIFTED OUT OF THE FUNCTION SO IT CAN BE TESTED WITH REAL PAYLOADS (2026-08-25).
+// Every one of these key functions is a chain of guesses at what the vendor calls
+// its own id, and a chain that resolves to `undefined` does not fail — it hits the
+// `if (!key) continue` below and the row is dropped. Six catalogs could therefore
+// report "refreshed, no errors" and store nothing at all, which is precisely the
+// class of silent success this whole change is about.
+//
+// The key names below were MEASURED against the live tenant, not assumed:
+//
+//   customField    id, description, format, maxLength, type, isCalculatedField…
+//   standardField  id, description, format, readOnly, fieldLock, nullable…      -> resolves on `id`
+//   milestone      id, name, tpoStatus, consumerStatus, milestoneColor…         -> resolves on `name`
+//   folder         name, activityRules, folderType, isExternalOrganization…     -> resolves on `name`
+//   enum           normalised by `client.listFieldEnums` before it gets here —
+//                  the raw payload keys rows by `fieldID` with a capital D, which
+//                  matches NOTHING in this chain. See that function's header.
+//
+// `test-encompass-catalog-keys-pure.js` runs these very functions against fixtures
+// taken from those measured answers, so a chain that stops resolving fails the build
+// instead of quietly emptying a catalog.
+const CATALOG_KINDS = [
+  { kind: 'customField', fn: () => client.listCustomFields(), keyFn: (r) => r.fieldName || r.id || r.name, labelFn: (r) => r.description || r.label || r.fieldName, typeFn: (r) => (r.format || r.type || '').toString().toLowerCase() },
+  { kind: 'standardField', fn: () => client.listStandardFields(), keyFn: (r) => r.canonicalName || r.fieldName || r.id, labelFn: (r) => r.description || r.label, typeFn: (r) => (r.format || r.type || '').toString().toLowerCase() },
+  { kind: 'enum', fn: () => client.listFieldEnums(), keyFn: (r) => r.fieldId || r.canonicalName || r.id, labelFn: (r) => r.description || r.name, typeFn: () => 'enum' },
+  { kind: 'milestone', fn: () => client.listMilestoneCatalog(), keyFn: (r) => r.name || r.id, labelFn: (r) => r.description || r.name, typeFn: () => 'milestone' },
+  { kind: 'folder', fn: () => client.listLoanFolders(), keyFn: (r) => r.folderName || r.name || r.id, labelFn: (r) => r.folderName || r.name, typeFn: () => 'folder' },
+  { kind: 'loanTemplate', fn: () => client.listLoanTemplates(), keyFn: (r) => r.path || r.name || r.id, labelFn: (r) => r.description || r.name, typeFn: () => 'loanTemplate' },
+];
+
 async function refreshFieldCatalog() {
+  if (!killSwitch.encompassEnabled()) throw new Error(killSwitch.OFF_REASON);
   if (!client.configured()) throw new Error('Encompass not configured');
   const summary = { customField: 0, standardField: 0, enum: 0, milestone: 0, folder: 0, loanTemplate: 0, errors: {} };
 
-  const kinds = [
-    { kind: 'customField', fn: client.listCustomFields, keyFn: (r) => r.fieldName || r.id || r.name, labelFn: (r) => r.description || r.label || r.fieldName, typeFn: (r) => (r.format || r.type || '').toString().toLowerCase() },
-    { kind: 'standardField', fn: client.listStandardFields, keyFn: (r) => r.canonicalName || r.fieldName || r.id, labelFn: (r) => r.description || r.label, typeFn: (r) => (r.format || r.type || '').toString().toLowerCase() },
-    { kind: 'enum', fn: client.listFieldEnums, keyFn: (r) => r.fieldId || r.canonicalName || r.id, labelFn: (r) => r.description || r.name, typeFn: () => 'enum' },
-    { kind: 'milestone', fn: client.listMilestoneCatalog, keyFn: (r) => r.name || r.id, labelFn: (r) => r.description || r.name, typeFn: () => 'milestone' },
-    { kind: 'folder', fn: client.listLoanFolders, keyFn: (r) => r.folderName || r.name || r.id, labelFn: (r) => r.folderName || r.name, typeFn: () => 'folder' },
-    { kind: 'loanTemplate', fn: client.listLoanTemplates, keyFn: (r) => r.path || r.name || r.id, labelFn: (r) => r.description || r.name, typeFn: () => 'loanTemplate' },
-  ];
-
-  for (const spec of kinds) {
+  for (const spec of CATALOG_KINDS) {
     try {
       const rows = await spec.fn();
       const arr = Array.isArray(rows) ? rows : (rows && Array.isArray(rows.items) ? rows.items : []);
@@ -264,6 +292,7 @@ async function _searchGuid(loanNumber) {
 //     stamped into applications.encompass_last_error so the staff panel shows it)
 async function pullLoanForApplication(appId) {
   if (!appId) throw new Error('pullLoanForApplication: appId is required.');
+  if (!killSwitch.encompassEnabled()) return _stampError(appId, killSwitch.OFF_REASON);
   if (!client.configured()) return _stampError(appId, 'Encompass not configured (env)');
 
   const row = (await db.query(
@@ -427,6 +456,7 @@ async function _stampError(appId, reason) {
 // Not for routine use — a single super-dump can be several MB. The `sampleN`
 // cap keeps it in the pasteable/downloadable range (default 20 → ~2-5 MB).
 async function superDump({ sampleN = 20 } = {}) {
+  if (!killSwitch.encompassEnabled()) throw new Error(killSwitch.OFF_REASON);
   if (!client.configured()) throw new Error('Encompass not configured');
   const n = Math.max(1, Math.min(100, Number(sampleN) || 20));
 
@@ -492,6 +522,7 @@ async function superDump({ sampleN = 20 } = {}) {
 // Records progress + a per-run summary in encompass_bulk_pull_runs so admin
 // can watch a live "342 / 1147" gauge.
 async function bulkPullAllLoans({ perRequestDelayMs = 350, startedByStaffId = null, pageSize = 200 } = {}) {
+  if (!killSwitch.encompassEnabled()) throw new Error(killSwitch.OFF_REASON);
   if (!client.configured()) throw new Error('Encompass not configured');
   const runId = (await db.query(
     `INSERT INTO encompass_bulk_pull_runs (started_by, status) VALUES ($1, 'running') RETURNING id`,
@@ -640,6 +671,9 @@ async function bulkPullAllLoans({ perRequestDelayMs = 350, startedByStaffId = nu
 
 module.exports = {
   refreshFieldCatalog,
+  // The catalog spec list, exported so its key functions can be run against real
+  // measured payloads rather than eyeballed.
+  CATALOG_KINDS,
   pullLoanForApplication,
   superDump,
   bulkPullAllLoans,

@@ -83,7 +83,11 @@ ok(planRecipientEmailChange({ ...base, email: 'old@x.com', name: 'Corrected Name
   eq(p.signerUpdate.recipientId, '1', 'signer keyed by DocuSign recipient id');
   eq(p.signerUpdate.email, 'new@x.com', 'signer email is the new one');
   eq(p.signerUpdate.clientUserId, 'env1:borrower', 'embedded clientUserId preserved in the correction');
-  eq(p.signerUpdate.embeddedRecipientStartURL, 'SIGN_AT_DOCUSIGN', 'hybrid resend preserved');
+  /* CAPTIVE ONLY (2026-08-21). This used to pin the HYBRID shape — a captive recipient that
+     DocuSign ALSO emails — which is what sent every borrower a second, broken link beside
+     PILOT's working one. A correction re-sends PILOT's own email to the new address; DocuSign
+     must stay silent, so the property is absent here exactly as it is on the send path. */
+  eq(p.signerUpdate.embeddedRecipientStartURL, undefined, 'DocuSign is not asked to email the corrected address');
   ok(p.isBorrowerRecipient, 'a borrower recipient is flagged for the file-email warning');
 }
 // A non-embedded recipient (no clientUserId) -> no embedded fields.
@@ -173,6 +177,12 @@ const noTestMode = { testMode: false, testEmailAllowlist: [] };
   eq(db.updates[0].params[1], 'new@x.com', 'recipient email persisted');
   eq(notify.calls.length, 1, 'PILOT re-nudge sent');
   eq(notify.calls[0].opts.onlyRecipientIdDs, '1', 're-nudge scoped to the corrected recipient only');
+  /* AND IT MUST BE A FORCED RE-SEND. This recipient has almost certainly been invited already —
+     at the OLD address, which is exactly what is being corrected — and since 2026-08-25 the
+     send-once guard is `invited_at` on the row. Without `force` the correction would update the
+     address on DocuSign and then quietly decline to tell the borrower, which since 2026-08-21
+     (DocuSign no longer emails a captive recipient) means nobody is invited at all. */
+  eq(notify.calls[0].opts.force, true, 'the corrected address is genuinely re-invited, not skipped as already-invited');
   eq(out.differsFromFile, true, 'differsFromFile true when the file still shows the old address');
   eq(out.fileEmail, 'old@x.com', 'the file email is reported for the warning');
   eq(out.email, 'new@x.com', 'result carries the new email');

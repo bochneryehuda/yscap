@@ -181,6 +181,36 @@ const SCENARIO = {
     const P2 = (pay2 && pay2.p) || {};
     assert(P2.gateNeed && P2.gateNeed.flips === 3, `item22: re-registering brings it down to three (got ${P2.gateNeed && P2.gateNeed.flips})`);
     assert(P2.claimBelowNeed === false, 'item22: …and the stuck-state flag clears');
+    assert(P.reRegisterBlockedBy == null,
+      `item22: on a file that CAN be re-registered the message carries no false blocker (got ${P.reRegisterBlockedBy})`);
+
+    /* AND THE CASE THE ADVICE COULD NOT SURVIVE (owner-reported 2026-08-21, file
+       YSCAP258134810). "Re-register Products & Pricing" is only actionable while the file
+       can BE re-registered. Past a sent term sheet, or at clear-to-close / funded, the
+       register route refuses — so a reader following the advice is bounced, which is the
+       dead-end class this repo names by name. The stuck state must carry the freeze so the
+       screen can say what clears it instead.
+
+       The freeze is asserted through `structuralLockReason` itself rather than a hand-typed
+       string, because the wording belongs to that module and a copy here would drift from
+       the sentence the user is actually shown. */
+    const appG = await mkApp();
+    await db.query(
+      `INSERT INTO checklist_items (application_id, scope, label, tool_key, status)
+       VALUES ($1,'application','Track record','track_record','outstanding')`, [appG]);
+    await call(server, 'POST', reg(appG), tok,
+      { program: 'standard', overrides: { ...SCENARIO, expFlips: 5, expHolds: 0, expGround: 0 } });
+    await db.query(`UPDATE applications SET requested_exp_flips=3, status='clear_to_close' WHERE id=$1`, [appG]);
+    const expectedFreeze = await require('../src/lib/file-lock').structuralLockReason(appG, db);
+    assert(!!expectedFreeze, 'item22: the fixture really is frozen (control — otherwise the next check proves nothing)');
+    await EXP.syncExperienceChecklistForApplication(appG, db);
+    const payG = (await db.query(
+      `SELECT tool_payload p FROM checklist_items WHERE application_id=$1 AND tool_key='track_record' LIMIT 1`, [appG]
+    )).rows[0];
+    const PG = (payG && payG.p) || {};
+    assert(PG.claimBelowNeed === true, 'item22 frozen: the file is still in the stuck state');
+    assert(PG.reRegisterBlockedBy === expectedFreeze,
+      `item22 frozen: …and it carries the freeze, in that module's OWN words (got ${PG.reRegisterBlockedBy})`);
 
     await db.query(`DELETE FROM applications WHERE borrower_id=$1`, [borrowerId]).catch(() => {});
     await db.query(`DELETE FROM borrowers WHERE id=$1`, [borrowerId]).catch(() => {});

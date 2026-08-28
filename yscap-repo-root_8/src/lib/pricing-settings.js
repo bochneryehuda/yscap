@@ -15,12 +15,39 @@ const db = require('../db');
 const SYSTEM_DEFAULTS = Object.freeze({
   markupStdPct: 0.5, markupGoldPct: 0.5, markupSilverPct: 0.5,
   origStdPct: 1.25, origGoldPct: 1.25, origSilverPct: 1.25,
+  // OUR OWN FEE. `lenderFee` is the TOTAL and is now DERIVED from `lenderFees`
+  // below (1,200 + 995 = 2,195, byte-for-byte the number it always was) — it is
+  // kept as the literal every pre-split reader and the approval detector compare
+  // against, and is never removed while something might still read it.
   lenderFee: 2195, creditFee: 150, appraisalFee: 800,
+  // The two real parts plus the New York legal ladder and the optional New York
+  // settlement agent fee (owner-directed 2026-08-26, db/632).
+  // `src/lib/lender-fees.js` is the ONE definition of what each is, which deals
+  // land on which rung and how a manual amount overrides it — this file only
+  // stores and cleans them.
+  lenderFees: {
+    underwriting: 1200, legal: 995,
+    legalGroundUp: 2000, legalNy: 2000, legalNyHigh: 2500,
+    settlementNy: 750, cemaNy: 1000,
+  },
+  // The flat underwriting & processing number, restated here ONLY so the approval
+  // detector has a scalar company default to compare a typed box against (typing
+  // 1,200 back is not a change). Derived from `lenderFees.underwriting` in
+  // `shape()`, so the two can never drift on a configured row.
+  underwritingFee: 1200,
   titleFee: null,   // null = auto-estimate per state
-  // Admin-managed extra closing fees: [{ name, amount, state }]. state '' = all
-  // files; a 2-letter code = that state only. Default carries the NY settlement
-  // fee so a cold cache still applies it (matches the seeded DB row).
-  extraFees: [{ name: 'Settlement agent fee', amount: 2000, state: 'NY' }],
+  /* Admin-managed extra closing fees: [{ name, amount, state }]. state '' = all
+     files; a 2-letter code = that state only.
+
+     EMPTY BY DEFAULT SINCE 2026-08-26. It used to carry a MANDATORY $2,000 New
+     York "Settlement agent fee", and the owner asked for that to be removed and
+     folded into the higher New York LEGAL fee (*"remove the extra settlement fee
+     that we have now listed for New York files and replace it with higher legal
+     fees"*). Leaving it here as a cold-cache fallback would re-apply it on any
+     unwarmed process and bill a New York borrower twice — the settled-in-db/632
+     row is gone from the database and it has to be gone from here too. The
+     OPTIONAL replacement lives in `lenderFees.settlementNy`. */
+  extraFees: [],
   // Per-experience-tier markup control (owner-directed item 15). null = OFF —
   // every program/tier keeps its historic markup (Gold Tier 1 = 0, etc.). When
   // set, shaped { standard:{1?,2?,3?}, gold, silver } of PERCENTS. pricing.js
@@ -33,6 +60,10 @@ const SYSTEM_DEFAULTS = Object.freeze({
   // stored. The rules live in src/lib/program-availability.js (one definition);
   // this file only stores/cleans the value.
   programAvailability: null,
+  // The construction feasibility / project review fee (owner-directed 2026-08-21, db/609).
+  // The owner's own numbers; `src/lib/feasibility-fee.js` is the ONE definition of what the fee
+  // is, which deals attract it and what it is called — this file only stores and cleans it.
+  feasibilityFees: { groundUp: 1250, heavyRehab: 750 },
 });
 
 // Normalize an extra-fees value (from a jsonb column or an API body) into a clean
@@ -61,16 +92,45 @@ function shape(row) {
     origStdPct:    n(row.orig_std_pct, SYSTEM_DEFAULTS.origStdPct),
     origGoldPct:   n(row.orig_gold_pct, SYSTEM_DEFAULTS.origGoldPct),
     origSilverPct: n(row.orig_silver_pct, SYSTEM_DEFAULTS.origSilverPct),
+    // The TOTAL is DERIVED from the parts (see SYSTEM_DEFAULTS) so a company that
+    // configures its parts can never show a total that disagrees with them. The
+    // stored `lender_fee` column stays the fallback for a row with no parts yet.
     lenderFee:     n(row.lender_fee, SYSTEM_DEFAULTS.lenderFee),
     creditFee:     n(row.credit_fee, SYSTEM_DEFAULTS.creditFee),
     appraisalFee:  n(row.appraisal_fee, SYSTEM_DEFAULTS.appraisalFee),
     // title_fee NULL means auto-estimate — preserve null (don't coerce to 0).
     titleFee:      row.title_fee == null || row.title_fee === '' ? null : Number(row.title_fee),
+    // Cleaned through feasibility-fee's own normalizer, so an unreadable stored value falls back
+    // to the owner's number rather than silently making a real fee vanish from a term sheet.
+    feasibilityFees: require('./feasibility-fee').cleanFeasibilityFees(row.feasibility_fees),
     extraFees:     cleanExtraFees(row.extra_fees),
+    // Cleaned through lender-fees' own normalizer, so an unreadable stored value falls back to the
+    // owner's numbers rather than silently changing what a real borrower is charged.
+    lenderFees:    require('./lender-fees').cleanLenderFees(row.lender_fees),
     markupTiers:   cleanMarkupTiers(row.markup_tiers),
     // Cleaned by the ONE rule module — never a second copy of the shape here.
     programAvailability: require('./program-availability').cleanProgramAvailability(row.program_availability),
   };
+}
+
+/* THE TOTAL IS THE SUM OF THE PARTS — restated onto the shaped row so a caller that reads
+   `cd.lenderFee` (the approval detector, a legacy surface) sees the same number `pricing.js`
+   derives, and `cd.underwritingFee` gives that detector the scalar it needs to recognise a typed
+   box as a restatement of the company default rather than an exception. A general file's total is
+   1,200 + 995 = 2,195, which is byte-for-byte what the column held. */
+function withDerivedTotals(shaped, row) {
+  const p = shaped.lenderFees || SYSTEM_DEFAULTS.lenderFees;
+  const out = { ...shaped, underwritingFee: Number(p.underwriting) };
+  /* THE TOTAL IS DERIVED ONLY FROM PARTS THE ROW ACTUALLY CARRIED. `cleanLenderFees` falls back
+     to the system numbers for a row that has none, which is right for PRICING (a blank column must
+     never make a real fee vanish) and wrong for HISTORY: `asOf()` answers "what was the company
+     default on the day this file registered?", and a settings row written before db/632 has no
+     parts — answering with today's parts would report a total that company never had, and the
+     approval detector would then read an honest restatement of their old total as a discount.
+     db/632 seeds every row from its own `lender_fee`, so in practice the two agree; this makes
+     that a property rather than a coincidence. */
+  if (row && row.lender_fees != null) out.lenderFee = Number(p.underwriting) + Number(p.legal);
+  return out;
 }
 
 // Normalize a per-tier markup map (jsonb column or an API body) into
@@ -112,9 +172,10 @@ async function load() {
   try {
     const r = await db.query(
       `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct,
-              lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability
+              lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability,
+              feasibility_fees, lender_fees
          FROM company_pricing_settings WHERE is_current LIMIT 1`);
-    _cache = { at: Date.now(), val: shape(r.rows[0]) };
+    _cache = { at: Date.now(), val: withDerivedTotals(shape(r.rows[0]), r.rows[0]) };
   } catch (e) {
     // Never let a settings hiccup break pricing — keep the last good value.
     if (!_cache.val) _cache = { at: Date.now(), val: SYSTEM_DEFAULTS };
@@ -145,16 +206,33 @@ function bust() { _cache = { at: 0, val: _cache.val || SYSTEM_DEFAULTS }; }
  * Center existed. NEVER throws: an unreadable history returns null, and every
  * caller must read that as "cannot classify", never as "it was the default".
  */
-async function asOf(when) {
+/* The repo's usual optional trailing `client`: a caller already inside a
+   transaction must be able to ask this the same question against ITS OWN
+   snapshot, or the two reads answer about different databases. Defaults to
+   the pool, so every existing caller is byte-identical. */
+async function asOf(when, client = db) {
   if (!when) return null;
   try {
-    const r = await db.query(
+    const r = await client.query(
+      /* THE COMPARISON IS WIDENED BY ONE MILLISECOND, AND THAT IS NOT A FUDGE.
+         Postgres stores `timestamptz` to the MICROSECOND; a JavaScript Date holds only
+         MILLISECONDS, so a timestamp that has been through node-pg (which is how every caller gets
+         one — a registration's `created_at`, a settings row's own) is the stored value TRUNCATED
+         DOWN. Compared with a bare `<=`, a settings row written in the same millisecond as the
+         moment being asked about is EXCLUDED, and the answer becomes the PREVIOUS default — so a
+         knob that honestly restated the default in force would be classified as a deviation and
+         file an exception nobody asked for. MEASURED: `asOf(row.created_at)` on a row stored at
+         `…33.362795` returned the NEXT row's numbers, because the Date carried `…33.362`.
+         Widening by 1ms cannot reach any other row: two settings rows written inside one
+         millisecond of each other would need two saves in the same instant, and even then the
+         later one is the one in force at that instant, which is what this returns. */
       `SELECT markup_std_pct, markup_gold_pct, markup_silver_pct, orig_std_pct, orig_gold_pct, orig_silver_pct,
-              lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability
+              lender_fee, credit_fee, appraisal_fee, title_fee, extra_fees, markup_tiers, program_availability,
+              feasibility_fees, lender_fees
          FROM company_pricing_settings
-        WHERE created_at <= $1
+        WHERE created_at < $1::timestamptz + interval '1 millisecond'
         ORDER BY created_at DESC LIMIT 1`, [when]);
-    return r.rows[0] ? shape(r.rows[0]) : SYSTEM_DEFAULTS;
+    return r.rows[0] ? withDerivedTotals(shape(r.rows[0]), r.rows[0]) : SYSTEM_DEFAULTS;
   } catch (_) { return null; }
 }
 

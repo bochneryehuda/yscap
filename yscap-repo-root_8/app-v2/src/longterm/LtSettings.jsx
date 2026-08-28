@@ -63,11 +63,52 @@ const plainList = (v) => Array.isArray(v) && v.every((x) => x === null || typeof
  */
 const optionLabel = (decl, o) => (decl.optionLabels && decl.optionLabels[o]) || String(o);
 
+/**
+ * The "Yours" editor for a TYPED value — a number (the three compensation figures) or a
+ * string. Enum and boolean save on the click itself; a typed figure must NOT save per
+ * keystroke — a person typing "2.25" passes through "2", and on a comp key every
+ * below-floor intermediate would be refused mid-typing — so the draft sits locally and
+ * Save sends it once, whole. A refusal (the compensation floor, the bounds) lands in the
+ * screen's note in the server's own words. An EMPTY box saves nothing: `Number('')` is 0,
+ * and a blank accidentally saved as a zero comp is the silent-zero trap the whole
+ * comp-plan chain exists to refuse.
+ */
+function MineValueEditor({ s, busy, onSave }) {
+  const isNumber = editorFor(s) === 'number';
+  const shown = (v) => (v === null || v === undefined ? '' : String(v));
+  const [draft, setDraft] = useState(shown(s.value));
+  useEffect(() => { setDraft(shown(s.value)); }, [s.value]); // a fresh server read wins
+  const dirty = draft !== shown(s.value);
+  const submit = () => {
+    if (busy || !dirty || draft.trim() === '') return;
+    onSave(s.key, isNumber ? Number(draft) : draft);
+  };
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <input
+        className="input" style={{ maxWidth: 130 }} disabled={busy}
+        type={isNumber ? 'number' : 'text'} step="any" value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }}
+      />
+      <button type="button" className="btn primary" disabled={busy || !dirty || draft.trim() === ''}
+        onClick={submit}>Save</button>
+    </div>
+  );
+}
+
 function SettingRow({ setting, canManage, pending, onChange, onReset }) {
   const kind = editorFor(setting);
   const value = pending !== undefined ? pending : setting.value;
   const dirty = pending !== undefined && !sameValue(pending, setting.value);
-  const editable = canManage && kind && (kind !== 'list' || plainList(value));
+  // A SETTING NOTHING READS IS NEVER EDITABLE. Forty of these were declared ahead
+  // of the code that would read them, so the screen offered knobs that changed
+  // NOTHING and said so nowhere — which is worse than not offering them, because
+  // somebody renames a status, saves, sees no error and believes the system knows.
+  // The reason comes from the server with the setting, so it can never drift from
+  // what is actually wired.
+  const notWired = typeof setting.notWired === 'string' && setting.notWired ? setting.notWired : null;
+  const editable = !notWired && canManage && kind && (kind !== 'list' || plainList(value));
 
   const label = (
     <div style={{ minWidth: 0 }}>
@@ -76,11 +117,31 @@ function SettingRow({ setting, canManage, pending, onChange, onReset }) {
         <code style={{ fontSize: 11 }}>{setting.key}</code>
         {setting.description ? <> — {setting.description}</> : null}
       </div>
+      {notWired && (
+        <div style={{
+          marginTop: 6, padding: '6px 9px', borderRadius: 8,
+          background: '#FBF6E9', border: '1px solid rgba(174,135,70,.35)',
+          color: '#6B5320', fontSize: 12, lineHeight: 1.45,
+        }}>
+          <strong style={{ fontWeight: 700 }}>Not in use yet.</strong>{' '}
+          {notWired.replace(/^Not in use yet[.,]?\s*/i, '')}
+        </div>
+      )}
     </div>
   );
 
   let control = null;
-  if (!editable) {
+  if (notWired) {
+    // Shown, never editable: the value is real and worth reading — it is what a
+    // buyer would be changing once it IS wired — but a box you can type into is a
+    // promise that typing does something.
+    control = (
+      <pre style={{
+        margin: 0, padding: '8px 10px', borderRadius: 8, background: '#F4F1EA',
+        color: MUTED, fontSize: 12, maxHeight: 180, overflow: 'auto', whiteSpace: 'pre-wrap',
+      }} aria-readonly="true" data-not-wired="true">{JSON.stringify(setting.value, null, 2)}</pre>
+    );
+  } else if (!editable) {
     control = (
       <pre style={{
         margin: 0, padding: '8px 10px', borderRadius: 8, background: '#F4F1EA',
@@ -170,9 +231,11 @@ function SettingRow({ setting, canManage, pending, onChange, onReset }) {
       <div style={{ minWidth: 0, display: 'grid', gap: 6 }}>
         {control}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 12 }}>
-          {setting.isOverridden
+          {notWired && <span style={{ color: '#8A6A22', fontWeight: 600 }}>Nothing reads this yet</span>}
+          {!notWired && setting.isOverridden
             ? <span style={{ color: '#8A6A22', fontWeight: 600 }}>Changed from ours</span>
-            : <span style={{ color: MUTED }}>Our pre-filled value</span>}
+            : null}
+          {!notWired && !setting.isOverridden && <span style={{ color: MUTED }}>Our pre-filled value</span>}
           {dirty && <span style={{ color: '#2F7F86', fontWeight: 600 }}>Unsaved</span>}
           {canManage && setting.isOverridden && (
             <button type="button" className="btn ghost" style={{ padding: '2px 10px', fontSize: 12 }}
@@ -301,6 +364,14 @@ export default function LtSettings() {
                       onChange={(e) => saveMine(s.key, e.target.checked)} />
                     {s.value === true ? 'On' : 'Off'}
                   </label>
+                ) : editorFor(s) === 'number' || editorFor(s) === 'string' ? (
+                  /* The three compensation figures are NUMBERS, and this branch is why an
+                     officer can actually set their own (owner-reported 2026-08-23: "the one
+                     where I can set my own is all preset. I can't fix anything over there" —
+                     the fallback below rendered every non-enum, non-boolean value read-only,
+                     and the only personal setting before the comp keys was an enum, so the
+                     gap had never been visible). */
+                  <MineValueEditor s={s} busy={busy} onSave={saveMine} />
                 ) : (
                   <code style={{ color: INK, fontSize: 12 }}>{JSON.stringify(s.value)}</code>
                 )}

@@ -172,6 +172,15 @@ async function tapeQuestions(appId, tapeKey, db) {
 
 // Round to whole dollars for the confirmation pre-fill (the tape's currency cells
 // show whole dollars); a human can still type any value.
+//
+// THIS IS THE ONE PLACE THE TAPE REALLY ROUNDS MONEY, AND IT IS DELIBERATE
+// (owner-directed 2026-08-25). Everywhere else the cell VALUE keeps its cents and only
+// the investor's own template DISPLAYS it whole-dollar. Here the rounded figure is what
+// a staffer reads and confirms on a seasoned loan, so what exports can sit up to 50c
+// from the computed balance. Put to the owner with that trade stated; they chose to
+// leave it. Keep every call inside seasonedConfirmation — the moment this rounds a
+// value written to a cell it stops being a pre-fill and starts losing money on the
+// file. Guarded by scripts/test-tape-money-format-pure.js section C.
 function roundDollars(v) { const n = Number(v); return isFinite(n) ? Math.round(n) : null; }
 
 function seasonedConfirmation(loan) {

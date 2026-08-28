@@ -1,0 +1,38 @@
+{
+ "companyName": "Deephaven Mortgage",
+ "programName": "DSCR  1.00-1.24   -  30 Yr Fixed",
+ "groupAdjustmentProperties": [
+  {
+   "name": "Eligibility - DSCR (>=1.00) Matrix - WHL/CORR (9.22.25)",
+   "disqualifyAdjustments": [
+    "DSCR >=1.00, Loan Amount <= $1.5 MM, Purch RT, FICO < 680:  Maximum LTV/CLTV 70%"
+   ]
+  }
+ ],
+ "rateGrid": {
+  "qmTypes": [
+   "NONQM"
+  ],
+  "mortgageTypes": [
+   "Conventional"
+  ],
+  "mortgageLimits": [
+   "Conforming",
+   "Jumbo",
+   "HighBalance"
+  ],
+  "loanPurposes": [
+   "Refinance",
+   "CashoutRefinance",
+   "Purchase"
+  ],
+  "affordableHousingTypes": [
+   "None"
+  ]
+ },
+ "borrowerPaidDetails": [
+  {
+   "description": "Origination : 3.400 (Points) x $375,000.00 (Loan Amount)"
+  }
+ ]
+}

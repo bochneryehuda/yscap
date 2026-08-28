@@ -60,13 +60,13 @@ const valOf = (card, label) => { const r = rowsOf(card).find((x) => x.label === 
               property_address, loan_type, rehab_type, is_assignment, underlying_contract_price, assignment_fee,
               purchase_price, as_is_value, arv, rehab_budget)
        VALUES ($1,$2,$3,$4,'underwriting','YSCAP-FOV-1','Blue Lake',
-              '{"oneLine":"9 Overview Ave, Newark, NJ 07104"}','Purchase','Light Rehab',true,280000,20000,
-              300000,310000,450000,80000) RETURNING id`, [borId, coId, llcId, staffId])).rows[0].id;
+              '{"oneLine":"9 Overview Ave, Newark, NJ 07104"}','Purchase','Light Rehab',true,325000,35000,
+              360000,360000,490000,35000) RETURNING id`, [borId, coId, llcId, staffId])).rows[0].id;
     await db.query(
       `INSERT INTO product_registrations (application_id, program, product_label, inputs, quote, is_current)
        VALUES ($1,'gold','Gold Standard Program','{}'::jsonb,$2,true)`,
-      [appId, JSON.stringify({ noteRate: 0.105, origPct: 0.02, origination: 7200,
-        sizing: { totalLoan: 360000, initialAdvance: 248000, rehabHoldback: 80000, financedReserve: 32000, acqLtvPct: 0.8, arvPct: 0.8 } })]);
+      [appId, JSON.stringify({ noteRate: 0.0925, origPct: 0.015, origination: 5512.5,
+        sizing: { totalLoan: 367500, initialAdvance: 324000, rehabHoldback: 35000, financedReserve: 8500, acqLtvPct: 0.9, arvPct: 0.75 } })]);
     // A bare, unregistered file for the omit-don't-guess check.
     bareId = (await db.query(
       `INSERT INTO applications (borrower_id, loan_officer_id, status, property_address, loan_type)
@@ -78,13 +78,33 @@ const valOf = (card, label) => { const r = rowsOf(card).find((x) => x.label === 
       && valOf(card, 'Co-borrower') === 'Cora Overview' && valOf(card, 'Vesting entity') === 'Overview Holdings LLC');
     ok('A2 address + transaction type', valOf(card, 'Address') === '9 Overview Ave, Newark, NJ 07104'
       && /Purchase/.test(valOf(card, 'Transaction type') || ''));
-    ok('A3 the assignment splits into underlying + fee', valOf(card, 'Purchase price') === '$300,000'
-      && valOf(card, 'Underlying contract price') === '$280,000' && valOf(card, 'Assignment fee') === '$20,000');
-    ok('A4 the loan structure', valOf(card, 'Total loan') === '$360,000' && valOf(card, 'Initial loan (advance)') === '$248,000'
-      && valOf(card, 'Construction holdback') === '$80,000' && valOf(card, 'Interest reserve (financed)') === '$32,000');
-    ok('A5 origination points + rate', valOf(card, 'Origination points') === '2.00% · $7,200' && valOf(card, 'Interest rate') === '10.50%');
-    ok('A6 leverage', valOf(card, 'Initial LTV') === '80%' && valOf(card, 'ARV LTV') === '80%');
+    ok('A3 the assignment splits into underlying + fee', valOf(card, 'Purchase price') === '$360,000'
+      && valOf(card, 'Underlying contract price') === '$325,000' && valOf(card, 'Assignment fee') === '$35,000');
+    ok('A4 the loan structure', valOf(card, 'Total loan') === '$367,500' && valOf(card, 'Initial loan (advance)') === '$324,000'
+      && valOf(card, 'Construction holdback') === '$35,000' && valOf(card, 'Interest reserve (financed)') === '$8,500');
+    ok('A5 origination points show their CENTS + rate', valOf(card, 'Origination points') === '1.50% · $5,512.50' && valOf(card, 'Interest rate') === '9.25%');
+    ok('A6 leverage', valOf(card, 'Initial LTV') === '90%' && valOf(card, 'ARV LTV') === '75%');
     ok('A7 the header names the file', card.header.loanNumber === 'YSCAP-FOV-1' && /Overview Ave/.test(card.header.address || ''));
+    // Owner-directed 2026-08-26: the loan's basics ride in the HEADER too —
+    // amount + purchase/refinance/cash-out — without leaving the sections below.
+    ok('A7b the header carries the loan amount + purpose (and the sections keep theirs)',
+      card.header.loanAmount === '$367,500' && card.header.purpose === 'Purchase'
+      && valOf(card, 'Total loan') === '$367,500' && /Purchase/.test(valOf(card, 'Transaction type') || ''));
+    // Owner-directed 2026-08-26: the Program row leads with the program's NAME,
+    // never the raw registration key.
+    ok('A7c the Program row is the program\'s NAME, not the key',
+      valOf(card, 'Program') === 'Gold Standard Program' && !rowsOf(card).some((r) => r.value === 'gold'));
+    // The case that used to leak the raw key: a registration with NO product
+    // label (product_label predates or was never set). A Silver file must read
+    // "Silver Program", never literally "silver".
+    await db.query(
+      `INSERT INTO product_registrations (application_id, program, inputs, quote, is_current)
+       VALUES ($1,'silver','{}'::jsonb,$2,true)`,
+      [bareId, JSON.stringify({ sizing: { totalLoan: 250000 } })]);
+    const silverCard = await FO.buildFileOverview(bareId, { audience: 'internal' });
+    ok('A7d a label-less Silver registration reads "Silver Program", never the raw key',
+      valOf(silverCard, 'Program') === 'Silver Program' && !rowsOf(silverCard).some((r) => r.value === 'silver'));
+    await db.query(`DELETE FROM product_registrations WHERE application_id=$1`, [bareId]);
 
     const bare = await FO.buildFileOverview(bareId, { audience: 'internal' });
     ok('A8 an unregistered file OMITS the loan figures rather than guessing $0',
@@ -104,12 +124,40 @@ const valOf = (card, label) => { const r = rowsOf(card).find((x) => x.label === 
       && valOf(refi, 'As-is value') === '$400,000' && !rowsOf(refi).some((r) => r.value === '$0'));
     await db.query(`DELETE FROM applications WHERE id=$1`, [refiId]);
 
+    /* A10 — THE LIQUIDITY BLOCK SHOWS ITS CENTS TOO. The fee, the cash to close
+       and the liquidity are the figures the 2026-07-16 rule already says show
+       exact cents everywhere else (the Term Sheet Studio panel, liquidity.js);
+       the overview was the one surface that rounded them, so it disagreed with
+       the studio, the term sheet PDF and the Excel export about the same money.
+       The breakdown is read off the assets condition's own tool_payload, which
+       is where closing.readLiquidityBreakdown looks. */
+    await db.query(
+      `INSERT INTO checklist_items (application_id, template_id, scope, label, audience, item_kind, tool_key, tool_payload)
+       SELECT $1, t.id, 'application', t.label, t.audience, t.item_kind, t.tool_key, $2::jsonb
+         FROM checklist_templates t WHERE t.code='rtl_p3_assets' LIMIT 1`,
+      [appId, JSON.stringify({ liquidity: {
+        cashToClose: 61234.56, reserveRequirement: 12345.67, closingBuffer: 3675.25,
+        required: 77255.48, closingBufferWaived: false } })]);
+    const liqCard = await FO.buildFileOverview(appId, { audience: 'internal' });
+    ok('A10 the liquidity block shows exact cents, never a rounded dollar',
+      valOf(liqCard, 'Cash to close (estimate)') === '$61,234.56'
+      && valOf(liqCard, 'Reserves to show') === '$12,345.67'
+      && valOf(liqCard, 'Closing-cost buffer (1%)') === '$3,675.25'
+      && valOf(liqCard, 'Total liquidity required') === '$77,255.48');
+
     // ---- B. borrower-safe + the note buyer never rides -------------------------------------
     const bCard = await FO.buildFileOverview(appId, { audience: 'borrower' });
-    ok('B1 the borrower audience carries the same deal facts', valOf(bCard, 'Total loan') === '$360,000'
-      && valOf(bCard, 'Purchase price') === '$300,000');
-    ok('B2 the NOTE BUYER appears in NO audience\'s payload',
-      !/blue\s*lake/i.test(JSON.stringify(card)) && !/blue\s*lake/i.test(JSON.stringify(bCard)));
+    ok('B1 the borrower audience carries the same deal facts', valOf(bCard, 'Total loan') === '$367,500'
+      && valOf(bCard, 'Purchase price') === '$360,000');
+    /* B2 — re-pointed 2026-08-26 (owner-directed: "add another line for the
+       name of the investor that this note is being sold to" on the STAFF
+       overview). The INTERNAL card now names the investor — an RTL staff
+       surface may show a real note-buyer name — while the borrower (and, via
+       the same audience flag, the TPO broker) still never sees it. */
+    ok('B2 the INTERNAL card names the investor the note is sold to',
+      valOf(card, 'Investor') === 'Blue Lake');
+    ok('B2b …and the note buyer appears NOWHERE in the borrower audience\'s payload',
+      !/blue\s*lake/i.test(JSON.stringify(bCard)));
     ok('B3 an unknown file answers null, never throws', (await FO.buildFileOverview(crypto.randomUUID(), {})) === null
       && (await FO.buildFileOverview('garbage', {})) === null);
 

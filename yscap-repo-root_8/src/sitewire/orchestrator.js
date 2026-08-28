@@ -918,6 +918,76 @@ async function pushBudgetInner(appId, budgetId, ex, budgetCents) {
   return { ok: true, created: diff.creates.length, updated: diff.updates.length, deleted: diff.deletes.length };
 }
 
+/**
+ * THE ONE GUARDED WRITE THAT STOPS (or restarts) BORROWER DRAWS IN SITEWIRE.
+ *
+ * Extracted from `setPropertyLifecycle` when the PAYOFF DEMAND workflow needed exactly the same
+ * thing for a different reason (owner-directed 2026-08-21: *"you also need to block him from
+ * requesting draws in sitewire. There's a button in the sitewire actions block draws, and that
+ * button, whenever we click on Pay Off Demand was requested, should automatically be clicked."*).
+ * Deactivating the property IS that button — it is what stops a borrower submitting anything —
+ * and a second copy of this write would be a second place the circuit breaker, the journal, the
+ * read-after-write verification and the park-on-failure could drift.
+ *
+ * `setPropertyLifecycle` is byte-identical in behaviour: everything it used to do inline is here,
+ * including the deliberate divergence from `pushFile` (park on ANY non-retryable error, because a
+ * single idempotent field flip is something a human can re-drive) and the FAIL-CLOSED verify (only
+ * a positive match counts as synced, so a paid-off property can never silently stay active).
+ *
+ * @returns {{sitewire:'skipped'|'dryrun'|'synced'|'unverified'}|{parked:string}}
+ */
+async function pushPropertyInactive(appId, link, inactive, { canSync, source = 'lifecycle' } = {}) {
+  if (!canSync) return { sitewire: 'skipped' };
+  await circuitCheck(1);
+  let property;
+  try {
+    property = await client.updateProperty(link.sitewire_property_id, { inactive });
+  } catch (e) {
+    if (e.retryable) throw e;   // transient → let the caller/queue retry, PILOT state not yet changed
+    await park({ appId, reason: `sitewire_${source}_failed: could not set property ${link.sitewire_property_id} inactive=${inactive} in Sitewire (${e.status || 'error'})` });
+    return { parked: `${source}_` + (e.status || 'error') };
+  }
+  if (property && property.__dryrun) return { sitewire: 'dryrun' };
+  let verified = false;
+  try {
+    const fresh = await client.getProperty(link.sitewire_property_id);
+    if (fresh && typeof fresh.inactive === 'boolean') {
+      if (fresh.inactive !== inactive) {
+        await park({ appId, reason: `sitewire_${source}_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist inactive=${inactive}` });
+        return { parked: 'verify_failed' };
+      }
+      verified = true;
+    }
+  } catch (e) { console.warn(`[sitewire] ${source} verify GET failed (will re-drive):`, e && e.message); }
+  await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: 'inactive', oldValue: !inactive, newValue: inactive, source });
+  return { sitewire: verified ? 'synced' : 'unverified' };
+}
+
+/**
+ * BLOCK (or unblock) borrower draws in Sitewire for a reason that is NOT a lifecycle change.
+ *
+ * A payoff demand is not "the project finished" and not "paid off" — those are real, different
+ * states a coordinator sets, and mislabelling the project would make the draw desk lie about
+ * where the build got to. So the lifecycle column is deliberately untouched: only the Sitewire
+ * property is deactivated, through the same guarded write.
+ *
+ * Answers `{skipped:'not_managed'}` on a file PILOT never pushed — there is no property to block,
+ * which is not a failure: the PILOT-side block still stands on its own.
+ */
+async function setDrawsBlocked(appId, blocked, { source = 'payoff_demand' } = {}) {
+  const link = await getLink(appId);
+  if (!link || !link.sitewire_property_id || link.matched_by !== 'created') return { skipped: 'not_managed' };
+  /* NEVER RE-ACTIVATE A PROJECT THAT IS DELIBERATELY CLOSED. A finished or paid-off project is
+     inactive because a coordinator said so; lifting a payoff-demand block must not undo that. */
+  if (!blocked && link.lifecycle_state && link.lifecycle_state !== 'active') {
+    return { skipped: 'lifecycle_holds_it_inactive' };
+  }
+  const canSync = switches.on('SITEWIRE_ENABLED') && (switches.on('SITEWIRE_OUTBOUND_ENABLED') || cfg.sitewireDryrun);
+  const pushed = await pushPropertyInactive(appId, link, !!blocked, { canSync, source });
+  if (pushed.parked) return { parked: pushed.parked };
+  return { ok: true, blocked: !!blocked, sitewire: pushed.sitewire };
+}
+
 const LIFECYCLE_STATES = new Set(['active', 'finished', 'paid_off']);
 
 /**
@@ -945,47 +1015,9 @@ async function setPropertyLifecycle(appId, state, staffId = null) {
   if (link.lifecycle_state === state && (link.lifecycle_synced !== false || !canSync)) return { ok: true, state, unchanged: true };
 
   const inactive = state !== 'active';   // finished/paid_off deactivate; active re-activates
-  let sitewire = 'skipped';
-  // The Sitewire deactivate needs BOTH the master switch and the write gate (or dry-run). With writes off we
-  // still record the PILOT-side state — the desk reflects it — and mark synced=false so the worker backfill
-  // (backfillUnsyncedLifecycleOnce) / a manual re-click pushes it once writing is on.
-  if (canSync) {
-    await circuitCheck(1);
-    let property;
-    try {
-      property = await client.updateProperty(link.sitewire_property_id, { inactive });
-    } catch (e) {
-      if (e.retryable) throw e;   // transient → let the caller/queue retry, PILOT state not yet changed
-      // NOTE (intentional divergence from pushFile, which parks only on 422/400): park on ANY non-retryable
-      // error here (e.g. a deterministic 404) rather than dead-lettering — a lifecycle write is a single
-      // idempotent field flip a human can re-drive, so parking for review is the safer failure mode.
-      await park({ appId, reason: `sitewire_lifecycle_failed: could not set property ${link.sitewire_property_id} inactive=${inactive} in Sitewire (${e.status || 'error'})` });
-      return { parked: 'lifecycle_' + (e.status || 'error') };
-    }
-    if (property && property.__dryrun) { sitewire = 'dryrun'; }
-    else {
-      // read-after-write: re-GET and confirm `inactive` persisted. FAIL CLOSED,
-      // mirroring the budget push (pushBudgetInner treats an absent verify field
-      // as unverified): only a POSITIVE match (`inactive` came back a boolean and
-      // equals what we set) counts as synced. A mismatch parks; a throwing GET or
-      // an absent/non-boolean `inactive` is NOT proof it stuck — leave the row
-      // lifecycle_synced=false so backfillUnsyncedLifecycleOnce re-drives the
-      // (idempotent) deactivate, so a paid-off property can't silently stay active.
-      let verified = false;
-      try {
-        const fresh = await client.getProperty(link.sitewire_property_id);
-        if (fresh && typeof fresh.inactive === 'boolean') {
-          if (fresh.inactive !== inactive) {
-            await park({ appId, reason: `sitewire_lifecycle_verify_failed: Sitewire property ${link.sitewire_property_id} did not persist inactive=${inactive}` });
-            return { parked: 'verify_failed' };
-          }
-          verified = true;
-        }
-      } catch (e) { console.warn('[sitewire] lifecycle verify GET failed (will re-drive):', e && e.message); }
-      await journal({ appId, propertyId: link.sitewire_property_id, entity: 'property', entityId: link.sitewire_property_id, field: 'inactive', oldValue: !inactive, newValue: inactive, source: 'lifecycle' });
-      sitewire = verified ? 'synced' : 'unverified';
-    }
-  }
+  const pushed = await pushPropertyInactive(appId, link, inactive, { canSync, source: 'lifecycle' });
+  if (pushed.parked) return { parked: pushed.parked };
+  const sitewire = pushed.sitewire;
   // record the PILOT-side lifecycle state (always — PILOT is the source of record for the desk + ledger).
   // synced=true ONLY when the deactivate really reached Sitewire; a 'skipped' (writes off) or 'dryrun'
   // (validated, nothing sent) leaves it false so the backfill re-drives it.
@@ -1559,4 +1591,4 @@ async function listSitewireDocumentsForVerify(appId) {
   } catch (e) { return { managed: true, available: false, documents: [], error: (e && e.message) || 'error' }; }
 }
 
-module.exports = { pushFile, pushBudget, setPropertyLifecycle, updatePropertyControls, getPropertyLive, pushJobItemDescription, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, setBorrowerInviteEmail, inviteEmailFor, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, listSitewireDocumentsForVerify, safeSitewireDocUrl, sitewireDocDisplayName, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, registrationOopCents, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES, INSPECTION_METHODS };
+module.exports = { pushFile, pushBudget, setPropertyLifecycle, setDrawsBlocked, updatePropertyControls, getPropertyLive, pushJobItemDescription, resetDrawSetup, collisionProperty, getBorrowerInviteStatus, resendBorrowerInvite, setBorrowerInviteEmail, inviteEmailFor, listQuickNotifyStatuses, setDrawQuickNotify, getSitewireDocuments, listSitewireDocumentsForVerify, safeSitewireDocUrl, sitewireDocDisplayName, park, journal, circuitCheck, resolveCapitalPartnerId, resolveRule, resolveInspection, resolveCoordinatorId, getLink, registrationOopCents, loadFile, isManaged, recordSetupStatus, SITEWIRE_BIRTH_REASONS, LIFECYCLE_STATES, INSPECTION_METHODS };

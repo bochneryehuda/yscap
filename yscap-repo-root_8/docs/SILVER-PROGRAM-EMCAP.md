@@ -378,7 +378,7 @@ they open it.
 | C13 | FICO | the file's pricing score |
 | C14 | Comparable projects (3 yrs) | **VERIFIED** experience, via `SVP.projectCount` |
 | C15 | GC-only experience | always **"No"** — never derived |
-| C17–C20 | Loan / acquisition cost / rehab / ARV | the tape's own `economics()` |
+| C17–C20 | Loan / acquisition cost / holdback / ARV | the tape's own `economics()` — **C19 is the ENTIRE holdback: the construction budget PLUS the financed interest reserve** (owner-directed 2026-08-26; their sheet has no reserve slot, and C19 sits on both sides of their math — (C17−C19)/C18 and C18+C19 — so a reserve-carrying loan read over-leveraged and came back INELIGIBLE) |
 | C21 | Note Rate | the file's final note rate (as a fraction) |
 | C23, C25 | Projected DSCR, projected profit | always **empty** |
 | C24 | Cash-Out | refinance only, from the registered quote's `refi.cashOut` |

@@ -18,12 +18,16 @@ const contacts = require('../people/contacts');
 const workspace = require('../workspace');
 const locks = require('../locks');
 const milestones = require('../milestones');
+const ladder = require('../sync/milestone-ladder');
+const purchased = require('../milestone-purchased');
 const product = require('../product');
 const pipelineColumns = require('../pipeline-columns');
 const roster = require('../people/roster');
 const ltFile = require('../file');
 const stages = require('../stages');
 const settingsStore = require('../settings/store');
+const conditionRead = require('../conditions/read');
+const dscrVerdict = require('../dscr-verdict');
 const db = require('../db');
 
 // GET /api/lt/pipeline — the viewer's long-term book.
@@ -34,13 +38,18 @@ router.get('/', async (req, res) => {
     // change it and nothing happened. The SCREEN renders what this resolves; the
     // QUERY is unchanged by it, deliberately (see pipeline-columns.js).
     const { settings } = await settingsStore.load().catch(() => ({ settings: {} }));
-    const cols = pipelineColumns.resolveColumns(settings['pipeline.columns']);
+    const cols = pipelineColumns.resolveColumns(settings['pipeline.columns'], {
+      conditionsEnabled: settings['conditions.enabled'] === true,
+    });
 
     const out = await pipeline.loadPipeline(req.actor, {
       stage: req.query.stage,
       folder: req.query.folder,
       search: req.query.search,
       officerStaffId: req.query.officer,
+      // An officer nobody has linked to a PILOT login yet is picked by their
+      // Encompass LOGIN instead — the screen sends whichever kind the option was.
+      officerLoginId: req.query.officerLogin,
       unassigned: String(req.query.unassigned || '') === 'true',
       // "Mine" is asked for as a flag and resolved from the SESSION, never from an
       // id in the query string — a viewer who sees the whole book could otherwise
@@ -48,7 +57,15 @@ router.get('/', async (req, res) => {
       // `officer` filter is the deliberate, named way to look at another officer's
       // files, and it exists for exactly that.
       mine: String(req.query.mine || '') === 'true',
-      // Which book — live (the default), closed, or both. The tenant's own list of
+      // Narrows "Mine" to ONE of the viewer's hats, deliberately — "files where I
+      // am the closer". Still resolved against the SESSION's identity; it names a
+      // ROLE, never a person, so it can widen nothing.
+      mineRole: req.query.mineRole,
+      // The screen asks for the whole (filtered) book in one answer so its
+      // per-column search can be honest; the cap in pipeline.js still bounds it.
+      limit: req.query.limit,
+      offset: req.query.offset,
+      // Which book — active (the default), closed, withdrawn, or all. The tenant's own list of
       // finished folders decides what those mean; with none configured all three are
       // the same book and the screen draws no control for it.
       book: req.query.book,
@@ -57,12 +74,75 @@ router.get('/', async (req, res) => {
       limit: req.query.limit,
       offset: req.query.offset,
     });
+
+    // The outstanding count, and ONLY when the column is actually being drawn —
+    // two more queries on every pipeline load for a column nobody is looking at is
+    // a cost with no reader. It is attached per row rather than joined into the
+    // pipeline query on purpose: the counts follow the Condition Center's OWN
+    // rules for what "outstanding" means, and a SQL predicate here would be a
+    // second copy of them (see conditions/read.js).
+    if (cols.columns.some((c) => c.key === 'conditions')) {
+      try {
+        const counts = await conditionRead.outstandingForLoans((out.loans || []).map((r) => r.id), { settings });
+        for (const row of out.loans || []) row.outstanding = counts.get(row.id) || null;
+      } catch (e) {
+        // A column that cannot be counted leaves its cells saying so; it never
+        // costs the pipeline the loans themselves.
+        console.error('[lt] pipeline condition counts failed:', (e && e.message) || e);
+      }
+    }
+
+    // WHICH SIDE OF THIS COMPANY'S OWN DSCR LINES EACH LOAN FELL ON, on the same
+    // terms as the count above: attached ONLY when the column is drawn, because a
+    // field nothing renders is the exact shape this side keeps finding and fixing.
+    //
+    // Computed HERE rather than in the browser: `dscr-verdict.js` is the one rule,
+    // the file screen already reads it, and a copy in the screen is how two
+    // surfaces come to call the same loan different things. It is pure arithmetic
+    // on settings this route has already loaded — no query, no failure mode — so a
+    // loan with no ratio simply gets no verdict, which is the honest answer and
+    // NOT the same as "below".
+    if (cols.columns.some((c) => c.key === 'dscr')) {
+      for (const row of out.loans || []) {
+        // The SAME conversion the file screen's `num` makes, empty string included:
+        // `dscr_ratio` is a numeric column, so the driver hands back a STRING, and
+        // `Number('')` is a perfectly finite 0 — which would put a red "below" on a
+        // loan whose ratio is blank. The two surfaces must read one column one way
+        // or they will disagree about a loan in front of the same person.
+        const raw = row.dscr_ratio;
+        const r = (raw === null || raw === undefined || raw === '') ? null : Number(raw);
+        row.dscrVerdict = dscrVerdict.dscrVerdict(Number.isFinite(r) ? r : null, settings);
+      }
+    }
+
     res.json({ ...out, ...cols });
   } catch (e) {
     console.error('[lt] pipeline failed:', (e && e.message) || e);
     res.status(500).json({ error: 'Could not load the long-term pipeline.' });
   }
 });
+
+/**
+ * The file's team, in reading order: OUR roles first, then Encompass's in the order
+ * the settings name them, then anything neither list carries.
+ *
+ * The last bucket is the one that matters. A role that is on the file and on neither
+ * list still has to appear — a buyer who renames a role in Encompass must not watch a
+ * contact vanish off the file screen while the sync happily keeps mirroring it.
+ */
+function orderTeam(team, settings) {
+  const ours = contacts.pilotRoles(settings);
+  const theirs = Array.isArray(settings['contacts.roles']) && settings['contacts.roles'].length
+    ? settings['contacts.roles'].map(String)
+    : contacts.DEFAULT_ROLES;
+  const order = [...ours, ...theirs];
+  const rank = (r) => {
+    const i = order.indexOf(String(r));
+    return i < 0 ? order.length : i;
+  };
+  return (team || []).slice().sort((a, b) => rank(a.role) - rank(b.role)
+    || String(a.role || '').localeCompare(String(b.role || '')));
+}
 
 // GET /api/lt/pipeline/:loanId — one file's header and its team.
 //
@@ -98,7 +178,22 @@ router.get('/:loanId', async (req, res) => {
       return res.status(404).json({ error: 'No such long-term loan.' });
     }
 
-    const staffIds = [...new Set(team.flatMap((t) => [t.staff_id, t.override_staff_id]).filter(Boolean).map(String))];
+    // TWO ENCOMPASS RECORDS, ONE LOAN NUMBER — the file screen must say so
+    // (owner-reported 2026-08-23, YSCAP258134474: they opened the stale copy,
+    // every figure read wrong, and nothing anywhere said a second record
+    // existed). Live records only: a twin already in Encompass's trash is not a
+    // duplicate any more. Best-effort — an unreadable check draws no banner.
+    let duplicates = [];
+    if (rows[0].loan_number) {
+      try {
+        duplicates = await require('../trash').liveDuplicates(rows[0].loan_number, rows[0].id);
+      } catch (_) { /* no banner beats a wrong one */ }
+    }
+
+
+    // `override_by` rides along in the SAME lookup: naming who reassigned a file is
+    // one more id in a query that was already being made, not a second round trip.
+    const staffIds = [...new Set(team.flatMap((t) => [t.staff_id, t.override_staff_id, t.override_by]).filter(Boolean).map(String))];
     const names = new Map();
     if (staffIds.length) {
       const { rows: people } = await db.query(
@@ -117,21 +212,97 @@ router.get('/:loanId', async (req, res) => {
     // `expected_days` rides along so the workspace can say whether the loan has been
     // sitting where it is for longer than the TENANT's own expectation — the plan's
     // "a stalled file reads as stalled without a word of text".
-    const { rows: catalog } = await db.query(
+    const { rows: encompassCatalog } = await db.query(
       `SELECT milestone_name AS name, sequence AS sort_order, expected_days
          FROM lt_encompass_milestones
         WHERE COALESCE(is_archived, false) = false
         ORDER BY sequence`,
     ).catch(() => ({ rows: [] }));
 
+    // OUR OWN STEP, spliced in. Encompass has nineteen milestones and none of them
+    // is "the investor bought this loan" (owner-directed 2026-08-23), so the
+    // PURCHASED step is declared in settings and added to the ladder here rather
+    // than stored in the tenant's catalog — where the catalog sync, which archives
+    // anything Encompass stops listing, would retire it on its very first pass.
+    //
+    // A catalog we could not read stays EMPTY rather than becoming a one-step
+    // ladder: a stepper showing "Purchased" alone would read as a loan that has
+    // skipped its whole workflow, which is worse than the honest blank the file
+    // already draws when the catalog is unreadable.
+    const saleCfg = purchased.configFrom(settings);
+    const catalog = encompassCatalog.length
+      ? purchased.insertInto(encompassCatalog, saleCfg)
+      : encompassCatalog;
+    const sale = purchased.describePurchase(rows[0], saleCfg);
+
     // When PILOT watched this loan reach each milestone. Best-effort and EMPTY when
     // unreadable, which draws the stepper with no dates rather than with wrong ones.
     const reachedAt = await milestones.reachedAtByMilestone(rows[0].id).catch(() => ({}));
+    // THIS LOAN'S OWN LADDER (db/623) — the done flags, Encompass's own per-step
+    // date, and the associate assigned to each step. It is what the seven-stop
+    // header bar and the Milestones board are keyed on (#33: completion
+    // semantics, never MS.STATUS prose). Best-effort: unread draws honestly
+    // empty, never invented.
+    // A FAILED read is NOT an empty ladder (round 5, observation 4). Both used
+    // to arrive here as `rows: []`, so a database hiccup was indistinguishable
+    // from "this loan has no ladder mirrored" and quietly fell back to the
+    // pre-D4 clock reading. `ladderReadOk` keeps the two apart so the fallback
+    // is taken for the reason it was written for, and so a read failure can
+    // never be reported to a person as "nothing is being waited on".
+    let ladderReadOk = true;
+    const { rows: ladderRows } = await db.query(
+      'SELECT * FROM lt_loan_milestones WHERE loan_id = $1::uuid ORDER BY position',
+      [rows[0].id],
+    ).catch(() => { ladderReadOk = false; return { rows: [] }; });
     // The movement history itself — what PILOT watched, in order. Best-effort.
     const milestoneHistory = await milestones.loadHistory(rows[0].id, 25).catch(() => []);
-    const currentMs = catalog.find(
-      (m) => String(m.name || '').trim().toLowerCase() === String(rows[0].milestone_name || '').trim().toLowerCase(),
+    const currentIdx = catalog.findIndex(
+      // Punctuation-blind (audit round 2, obs 4): "Cond Approval" must land on
+      // the catalog's "Cond. Approval" row.
+      (m) => stages.milestoneKey(m.name) === stages.milestoneKey(rows[0].milestone_name),
     );
+    const currentMs = currentIdx >= 0 ? catalog[currentIdx] : undefined;
+    // ═══════════════════════════════════════════════════════════════════════
+    // WHICH STEP'S EXPECTATION THE CLOCK IS MEASURED AGAINST (audit round 3 D4,
+    // CORRECTED in round 4 C1).
+    //
+    // Under the last-completed rule `milestone_since` means "when the last step
+    // COMPLETED" — i.e. when the loan STARTED WAITING on the next one. So the
+    // bar to judge that wait against is the AWAITED step's `expected_days`.
+    //
+    // THE AWAITED STEP COMES FROM THIS LOAN'S OWN LADDER, NEVER FROM THE
+    // COMPANY CATALOG. They are different lists and the difference is recorded
+    // live (docs/longterm/ENCOMPASS-LIVE-API-PROBE.md): a real funded loan's
+    // ladder runs "Docs Out → Funding" with WIRE ORDER ABSENT, while the
+    // catalog runs "Docs Out → Wire Order → Funding"; the two also order
+    // Waiting for Docs / Processing differently. Taking "the next catalog row"
+    // therefore names a step this loan does not have — and because Wire Order's
+    // expected_days is 0, and `describeClock` reads a 0 as "nobody set an
+    // expectation", it SILENTLY TURNED THE STALL ALARM OFF on a genuinely
+    // stalled Docs Out file. That is the confident-wrong direction twice over.
+    //
+    // With the ladder read: the awaited step is `ladder.awaitingOf` — the first
+    // not-done row AFTER the one the loan STANDS at — mapped back to the
+    // catalog for that step's expectation. Every step done means nothing is
+    // awaited, so there is NO bar; never the finished step's, which would
+    // restart the alarm on a completed file. With no ladder mirrored at all we
+    // keep the pre-D4 reading rather than losing the clock entirely.
+    //
+    // "AFTER the standing one" is the round-5 correction (defect 2). This line
+    // read the first not-done row ANYWHERE, which on a non-contiguous ladder —
+    // an optional step left unticked, or one reopened for rework while later
+    // ones stay done — names a step already passed. Measured on a real ladder
+    // it named "Loan Setup" (expected_days 0, so the alarm went SILENT) where
+    // the correct answer was "Funding" (expected_days 1, stalled). That is the
+    // very outcome the paragraph above describes, reached by a second route,
+    // and it is why the rule now lives in ONE place beside `sittingOf` instead
+    // of being written out at each consumer.
+    // ═══════════════════════════════════════════════════════════════════════
+    const awaitingName = ladder.awaitingOf(ladderRows);
+    const awaitingMs = awaitingName
+      ? catalog.find((m) => !m.pilot && stages.milestoneKey(m.name) === stages.milestoneKey(awaitingName))
+      : undefined;
+    const clockMs = ladderRows.length ? (awaitingMs || null) : currentMs;
 
     // The lock's own detail — the posture, the countdown, and what PILOT watched
     // change. Best-effort: a loan still opens when its lock cannot be read.
@@ -140,7 +311,9 @@ router.get('/:loanId', async (req, res) => {
     // The sections themselves — the 1003 as this loan actually reads. Best-effort
     // like the lock: a file whose sections cannot be assembled still opens, with its
     // header, its stepper and its rail intact.
-    const file = await ltFile.loadFile(rows[0].id, rows[0]).catch(() => null);
+    // The settings ride along so the file can say which side of THIS COMPANY'S
+    // own DSCR thresholds a loan fell on, rather than showing a bare ratio.
+    const file = await ltFile.loadFile(rows[0].id, rows[0], { settings }).catch(() => null);
 
     const labels = settings['contacts.roleLabels'] || {};
 
@@ -161,17 +334,49 @@ router.get('/:loanId', async (req, res) => {
       // screen renders what the row says rather than what screen it is.
       ...product.stamp(),
       loan: product.tagRow(rows[0]),
+      // The other live Encompass records carrying THIS loan number (empty on a
+      // healthy file). The screen leads with it: whichever copy somebody opened,
+      // they are told a second record exists and where it sits in Encompass.
+      duplicates,
       lock,
       file,
       sections: workspace.sectionMenu(rows[0], {
         conditionsEnabled: settings['conditions.enabled'] === true,
+        // The SAME income block the rail renders, so the menu can never grey a
+        // section whose figures are sitting on the screen beside it.
+        income: file && file.income,
+        // STAFF-ONLY, like everything on this route: whether Encompass names an
+        // investor decides whether the section is drawn at all.
+        investor: file && file.investor,
       }),
-      stepper: workspace.milestoneStepper(rows[0], catalog, { reachedAt }),
+      stepper: workspace.milestoneStepper(rows[0], catalog, {
+        reachedAt,
+        // The purchase is reached from Encompass's own answer, never from where the
+        // loan stands — and `undefined` (Encompass has not said) is carried through
+        // as its own state rather than flattened into a no.
+        pilotReached: { [purchased.PILOT_MILESTONE_ID]: sale.purchased === null ? undefined : sale.purchased },
+        pilotReachedAt: { [purchased.PILOT_MILESTONE_ID]: sale.at },
+        pilotNotes: { [purchased.PILOT_MILESTONE_ID]: sale.note },
+      }),
+      // The same fact in one place, so a screen can state it without re-reading the
+      // stepper — and so the two can never disagree, because both come from here.
+      sale,
+      // THE SEVEN STOPS — the header bar's at-a-glance ladder (owner's exact
+      // list), keyed on this loan's own done flags with Encompass's own dates.
+      stops: workspace.sevenStops(ladderRows, { reachedAt, sale }),
+      // THE MILESTONE BOARD — every step, with its date, its kind (worked vs
+      // planned), the day PILOT watched it, and the associate on the step.
+      milestoneBoard: workspace.milestoneBoard(catalog, ladderRows, { reachedAt, sale }),
       // How long it has been at this milestone — and, when the first sighting is all
       // we have, a plain sentence saying we do not know rather than a number we made up.
       milestoneHistory,
+      // The sentence NAMES the awaited step, because the bar is that step's
+      // expectation and not the standing one's (round 5, defect 5) — and says
+      // so differently when the ladder is simply finished.
       milestoneClock: milestones.describeClock(rows[0], {
-        expectedDays: currentMs ? currentMs.expected_days : null,
+        expectedDays: clockMs ? clockMs.expected_days : null,
+        awaiting: awaitingName,
+        nothingAwaited: ladderReadOk && ladderRows.length > 0 && !awaitingName,
       }),
       // The rail's property figures come from the SAME sections the Property tab
       // renders, so the two can never state different values for one loan.
@@ -180,10 +385,17 @@ router.get('/:loanId', async (req, res) => {
         property: file && file.property,
         income: file && file.income,
       }),
-      contacts: team.map((t) => contacts.describeContact(t, {
+      // WHO IS ON THIS FILE, in the order the work happens — the person who SET IT UP
+      // first, because she is the one who starts it (owner-directed 2026-08-23), then
+      // the Encompass team in the order the settings list them. Sorting here rather
+      // than in SQL keeps `lt_loan_contacts` a plain map and lets one settings list
+      // decide the order everywhere it is read.
+      contacts: orderTeam(team, settings).map((t) => contacts.describeContact(t, {
         staffName: t.staff_id ? names.get(String(t.staff_id)) : null,
         overrideName: t.override_staff_id ? names.get(String(t.override_staff_id)) : null,
+        overrideByName: t.override_by ? names.get(String(t.override_by)) : null,
         labels,
+        pilotRoleList: contacts.pilotRoles(settings),
       })),
       canReassign,
       assignableStaff,
@@ -226,7 +438,7 @@ router.post('/:loanId/contacts/:role/override', async (req, res) => {
 
     // Answer with the contact as the screen will now draw it, so the row updates
     // from what the server actually stored rather than from what was typed.
-    const ids = [row.staff_id, row.override_staff_id].filter(Boolean).map(String);
+    const ids = [row.staff_id, row.override_staff_id, row.override_by].filter(Boolean).map(String);
     const names = new Map();
     if (ids.length) {
       const { rows: people } = await db.query(
@@ -238,7 +450,9 @@ router.post('/:loanId/contacts/:role/override', async (req, res) => {
       contact: contacts.describeContact(row, {
         staffName: row.staff_id ? names.get(String(row.staff_id)) : null,
         overrideName: row.override_staff_id ? names.get(String(row.override_staff_id)) : null,
+        overrideByName: row.override_by ? names.get(String(row.override_by)) : null,
         labels: settings['contacts.roleLabels'] || {},
+        pilotRoleList: contacts.pilotRoles(settings),
       }),
     });
   } catch (e) {

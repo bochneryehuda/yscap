@@ -221,6 +221,72 @@ check(/require\(['"]\.\/encompass\/investors['"]\)/.test(src),
 check(A.summary().spellingsBlocked >= 80,
   `${A.summary().spellingsBlocked} spellings are actively blocked`);
 
+// ── THE INVESTOR IDENTITY CHAIN NEVER LEAVES THE STAFF SIDE ─────────────────
+//
+// `lt_loan_investors` holds who bought the loan, their own loan number, their
+// email and the funding channel — all of it internal (rule 10), the channel
+// included, because HOW a loan is funded implies WHO bought it. The borrower's own
+// screen is built FOR the client rather than filtered from a staff payload, which
+// is the first of the two defences that rule names — so the guard is that it never
+// reads the table at all.
+const fs2 = require('fs');
+const clientRoutes = ['src/longterm/routes/my-loans.js', 'src/longterm/routes/me.js'];
+for (const rel of clientRoutes) {
+  const text = fs2.readFileSync(path.join(ROOT, rel), 'utf8');
+  check(!/lt_loan_investors/.test(text),
+    `${rel} never reads the investor table — a client payload is BUILT for the client, never a staff one with fields removed`);
+}
+const fileSrc = fs2.readFileSync(path.join(ROOT, 'src/longterm/file.js'), 'utf8');
+check(/STAFF ONLY/i.test(fileSrc.slice(fileSrc.indexOf('investor: {') - 900, fileSrc.indexOf('investor: {'))),
+  'and the one place that DOES read it says on its face that it is staff-only, so nobody lifts the block onto a client surface without meeting the rule first');
+
+// ── The client door, RUN rather than read ───────────────────────────────────
+//
+// Every check above this line reads source or exercises the audience rules. This
+// one takes the actual function the borrower's own screen is built by, hands it a
+// loan row carrying every internal field there is, and looks at what comes out.
+//
+// It matters because the guard directly above — "my-loans.js never reads
+// lt_loan_investors" — stays TRUE if somebody rewrites the payload as
+// `{ ...row, status }`. The table would still not be read; every investor-ish
+// column on `lt_loans`, present or future, would ship to the client anyway. A
+// whitelist is only a defence while it is still a whitelist, and the only way to
+// know is to run it.
+const myLoans = require(path.join(ROOT, 'src/longterm/routes/my-loans'));
+const shape = myLoans._internals && myLoans._internals.shape;
+check(typeof shape === 'function',
+  'the borrower payload builder is reachable, so this can be run rather than read — a source grep cannot tell a whitelist from a spread');
+
+if (typeof shape === 'function') {
+  // A row as wide as a leak could ever make it: the real loan columns, plus every
+  // internal name and shape the investor mirror uses, plus a program name with an
+  // investor's name typed inside it.
+  const wideRow = {
+    id: 'loan-1', loan_number: 'LT-1001', stage_key: 'clear_to_close',
+    milestone_name: 'Docs Out', loan_amount: 415000, term_months: 360,
+    program_name: 'Deephaven Investor DSCR 30 YEAR FRM',
+    encompass_synced_at: '2026-08-18T00:00:00.000Z', consumer_status: 'Funded',
+    // None of these may come out the other side.
+    shorthand_name: 'Deephaven', accurate_name: 'Deephaven Mortgage LLC',
+    canonical_key: 'deephaven', investor_loan_number: 'DH-99887',
+    investor_email: 'purchasing@deephaven.example', funding_channel: 'Correspondent',
+    note_buyer: 'Deephaven', capital_provider: 'Deephaven', lender: 'Deephaven',
+    buy_rate_pct: 6.5, override_staff_id: 'staff-1',
+  };
+  const out = shape(wideRow, { stages: [] });
+
+  const ALLOWED = ['id', 'file', 'status', 'milestone', 'loanAmount', 'termMonths',
+    'programName', 'product', 'updatedAt'];
+  const extra = Object.keys(out).filter((k) => !ALLOWED.includes(k));
+  check(extra.length === 0,
+    `THE ONE THAT MATTERS: the client payload carries ONLY the keys it names${extra.length ? ` — these got through: ${extra.join(', ')}` : ` (${ALLOWED.join(', ')})`}`);
+
+  check(!/Deephaven|DH-99887|deephaven|Correspondent/.test(JSON.stringify(out)),
+    '…so not one investor field, loan number, email or funding channel reaches a borrower — including the one typed INSIDE the program name, which the scrub catches');
+  check(out.programName && out.programName.length > 0 && out.status === 'Funded',
+    '…while the file itself still reads as a file: the borrower keeps their program wording and their own status, scrubbed rather than blanked');
+}
+
 // ── done ─────────────────────────────────────────────────────────────────────
 if (failures) {
   console.error(`\nFAILED — ${failures} check(s). The investor name could reach a client.`);

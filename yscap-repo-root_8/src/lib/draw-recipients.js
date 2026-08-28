@@ -149,6 +149,52 @@ async function fileLoanOfficerEmails(appId) {
 }
 
 /**
+ * THE STAFF-SIDE LOOP-IN — the people who must hear about a draw event on THIS file, as staff
+ * IDS, for the internal fan-out (owner-reported 2026-08-21: *"when a borrower is approving the
+ * inspection results online … the draw coordinator is not getting a notification"*).
+ *
+ * THE ROOT CAUSE THIS EXISTS FOR. `notify.notifyAppStaff` — the ONE whole-team fan-out — selects
+ * `application_assignees`. But PILOT has no draw-coordinator POINTER, so a coordinator is never an
+ * assignee: they are identified by what they DID on the file (pressing "Start the draw process", or
+ * holding a live draw hand-off) — which is precisely what `drawCoordinatorsForFile` above reads.
+ * So the borrower pressed Accept, the fan-out ran, and the one person whose job it is to release
+ * the money was structurally not in the list. The loan officer WAS (the db/103 trigger keeps the
+ * primary officer as an assignee), which is why only half the team ever heard.
+ *
+ * THIS IS THE STAFF TWIN OF `drawLoopInBcc`, deliberately: the owner has now asked for the same
+ * two people twice — on the borrower's email (2026-07-28) and on our own notification
+ * (2026-08-21) — so both are answered from the SAME resolver rather than from two lists that can
+ * drift about who a file's coordinator is.
+ *
+ * The desk-wide FALLBACK is kept (`coordinatorsOrDesk`): a draw event on a file nobody has claimed
+ * still has to reach somebody who can act on it, which is the same call `drawTeamBcc` already
+ * makes. Never throws; an empty list simply adds nobody.
+ */
+async function drawStaffIdsForFile(appId) {
+  if (!appId) return [];
+  try {
+    const coords = await coordinatorsOrDesk(appId);
+    const ids = new Set(coords.map((c) => String(c.id)).filter(Boolean));
+    // The loan officer, from BOTH sources, for the same belt-and-suspenders reason
+    // `fileLoanOfficerEmails` reads both: the db/103 trigger keeps the pointer and the assignee row
+    // in lock-step, but a file that somehow carries only the pointer must still reach its officer.
+    // is_external=false: on a TPO file the loan officer IS the external broker, and an internal
+    // draw notification must never reach one (TPO PORTAL firm-isolation invariant, CLAUDE.md).
+    const r = await db().query(
+      `SELECT su.id
+         FROM application_assignees aa JOIN staff_users su ON su.id = aa.staff_id
+        WHERE aa.application_id = $1 AND aa.removed_at IS NULL AND aa.role = 'loan_officer'
+          AND su.is_active = true AND su.is_external = false
+        UNION
+       SELECT su.id
+         FROM applications a JOIN staff_users su ON su.id = a.loan_officer_id
+        WHERE a.id = $1 AND su.is_active = true AND su.is_external = false`, [appId]);
+    for (const x of r.rows) if (x.id) ids.add(String(x.id));
+    return [...ids];
+  } catch (_) { return []; }   // never throw into a notification path
+}
+
+/**
  * THE LOOP-IN for every borrower draw email (owner-directed 2026-07-28: "on every email that
  * is going out to the borrower about the draw process the draw coordinator and the loan
  * officer should always be looped into that email"). The file's draw coordinator(s) + the
@@ -273,6 +319,7 @@ async function drawEnvelopeViewers(appId) {
 }
 
 module.exports = {
+  drawStaffIdsForFile,
   drawRecipients, drawTeamBcc, DRAW_DESK_INBOX,
   drawCoordinatorsForFile, drawDeskCoordinators, coordinatorsOrDesk, drawEnvelopeViewersAssigned,
   fileLoanOfficerEmails, drawLoopInBcc, drawEnvelopeViewers,

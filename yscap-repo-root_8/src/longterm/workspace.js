@@ -32,6 +32,8 @@
  */
 
 const stages = require('./stages');
+const readState = require('./read-state');
+const { num } = require('./num');
 
 /**
  * The URLA-sectioned file, in the order a person reads it. `applies` decides
@@ -40,14 +42,31 @@ const stages = require('./stages');
  */
 const SECTIONS = [
   { key: 'summary', label: 'Loan summary' },
+  {
+    // EVERY milestone, with Encompass's own date and associate on each step
+    // (owner-directed 2026-08-23: a Milestones section right after the
+    // overview — "outside of the file overview, it needs to be only the most
+    // important milestones", which is what the seven-stop header bar carries;
+    // the FULL ladder lives here). Always available: an unread ladder is a
+    // fact the section states, not a reason to grey it.
+    key: 'milestones',
+    label: 'Milestones',
+  },
   { key: 'borrowers', label: 'Borrowers' },
   { key: 'property', label: 'Property' },
   { key: 'terms', label: 'Loan terms' },
   {
     key: 'income',
+    // The rent lives on the PROPERTY and the DSCR on the loan, so this section is
+    // the one whose availability cannot be read off the loan row alone. It is
+    // decided from the SAME `income` block the rail renders (passed in by the
+    // caller), so the menu and the figures can never disagree about whether this
+    // loan has any. An earlier cut tested `l.gross_rent` — a column that does not
+    // exist on lt_loans — which reads as undefined, greys the section on a DSCR
+    // file whose rent we DO hold, and states a reason that is not true.
     label: 'Income & DSCR',
-    applies: (l) => l.product_kind !== 'dscr' || l.dscr_ratio != null || l.gross_rent != null,
-    why: 'The rent and DSCR have not been read from Encompass yet.',
+    applies: (l, o) => l.product_kind !== 'dscr' || l.dscr_ratio != null || hasIncomeFigures(o.income),
+    why: 'No rent, housing expense or DSCR has been read from Encompass for this loan yet.',
   },
   {
     key: 'employment',
@@ -62,10 +81,21 @@ const SECTIONS = [
   {
     key: 'conditions',
     label: 'Conditions',
-    // Set aside by the owner on 2026-08-14. Greyed rather than hidden, for the same
-    // reason as employment: somebody told about it must not think it vanished.
+    // Greyed rather than hidden, for the same reason as employment: somebody told
+    // about it must not think it vanished. The reason names the SWITCH rather than
+    // a date — the centre is built, so the answer is "turn it on", not "wait".
     applies: (l, opts) => opts.conditionsEnabled === true,
-    why: 'The Condition Center is coming soon.',
+    why: 'The Condition Center is switched off for this company. It is built — turning it on is a settings change, not a new release.',
+  },
+  {
+    key: 'investor',
+    label: 'Who bought this loan',
+    // Every Encompass condition in this tenant sits on a loan that is already
+    // sold, so "who is this with?" is asked on almost every file. Greyed until
+    // Encompass names somebody, because a heading over nothing reads as a loan
+    // nobody has sold rather than as one we cannot see the buyer of.
+    applies: (l, o) => !!(o.investor && o.investor.recorded),
+    why: 'Encompass names no investor on this loan yet — either it has not been sold, or the investor has not been recorded on the file.',
   },
   {
     key: 'lock',
@@ -73,7 +103,39 @@ const SECTIONS = [
     applies: (l) => !!l.lock_status,
     why: 'This loan has no lock recorded in Encompass yet.',
   },
+  {
+    // ALWAYS available, even unlinked — an unlinked file is exactly where the
+    // section's Create / Link controls live (owner-directed 2026-08-23: every
+    // automatic sync feature gets its manual option on the file). The section's
+    // data comes from /api/lt/clickup/loans/:id; this row only puts it on the
+    // menu. Staff-only by construction — the workspace IS the staff screen.
+    key: 'clickup',
+    label: 'ClickUp syncing',
+  },
+  {
+    // ALWAYS available, for the same reason its ClickUp twin is — and more so.
+    // This section exists to explain why a file looks empty (owner-directed
+    // 2026-08-25: "see what it read and what it didn't read"), so greying it out
+    // on a file that has not been read is exactly backwards: that file is the one
+    // somebody most needs it for. Its data comes from
+    // /api/lt/encompass-file/loans/:id; this row only puts it on the menu.
+    key: 'encompass',
+    label: 'Encompass syncing',
+  },
 ];
+
+/**
+ * Does this loan hold ANY of the three figures the income section shows?
+ *
+ * Deliberately generous — a section is worth opening for one of them. `actual`
+ * rent is knowingly never filled (application/unsourced.js) and is read anyway, so
+ * this needs no edit on the day it gains a source.
+ */
+function hasIncomeFigures(income) {
+  const i = income || {};
+  return i.dscr != null || i.grossMonthlyRent != null
+    || i.actualMonthlyRent != null || i.housingExpenseTotal != null;
+}
 
 /** The left menu: every section, each either live or greyed WITH a reason. */
 function sectionMenu(loan, opts = {}) {
@@ -99,11 +161,31 @@ function sectionMenu(loan, opts = {}) {
  * milestone the catalog does not carry (a tenant added one today) leaves `currentIndex`
  * at -1, and NOTHING is marked reached — inventing progress from an unknown position
  * is worse than showing none.
+ *
+ * WITH ONE EXCEPTION, AND IT IS DELIBERATE. A step marked `pilot` is OURS rather than
+ * Encompass's, and it is reached from a FACT the caller passes in, never from where
+ * the loan stands. Today that is the PURCHASED step: a loan at Final Docs has
+ * certainly passed Purchasing Conditions and has NOT certainly been bought, so
+ * positional reachedness would state the one thing that step exists to state, wrongly,
+ * on exactly the files that matter. See `milestone-purchased.js`.
  */
 function milestoneStepper(loan, catalog = [], opts = {}) {
-  const current = stages.normalizeMilestone((loan || {}).milestone_name);
+  // Punctuation-blind (audit round 2, obs 4): a loan standing at "Cond Approval"
+  // must land on the catalog's "Cond. Approval" row.
+  const current = stages.milestoneKey((loan || {}).milestone_name);
   const ordered = (catalog || []).slice().sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-  const currentIndex = ordered.findIndex((m) => stages.normalizeMilestone(m.name) === current);
+  // A PILOT step is never the loan's CURRENT milestone — Encompass names that, and
+  // Encompass has never heard of our step. Excluding it from the match also stops a
+  // tenant that happens to name a milestone "Purchased" from resolving to ours.
+  const currentIndex = ordered.findIndex((m) => !m.pilot && stages.milestoneKey(m.name) === current);
+  const witnessedByKey = {};
+  // FIRST WINS on a key collision: `reachedAtByMilestone` inserts newest-first,
+  // so a plain assignment would let an older spelling of the same milestone
+  // overwrite the NEWEST witnessed day with an older one.
+  for (const [k, v] of Object.entries(opts.reachedAt || {})) {
+    const kk = stages.milestoneKey(k);
+    if (!(kk in witnessedByKey)) witnessedByKey[kk] = v;
+  }
 
   return {
     currentIndex,
@@ -121,12 +203,32 @@ function milestoneStepper(loan, catalog = [], opts = {}) {
     // Encompass's own completion dates are unreadable on this tenant (the milestone
     // log answers 403), so a step we did not witness has NO date — never a guess, and
     // never the day we first noticed the loan sitting there.
-    steps: ordered.map((m, i) => ({
-      name: m.name,
-      reached: currentIndex >= 0 && i <= currentIndex,
-      current: i === currentIndex,
-      reachedAt: (opts.reachedAt || {})[String(m.name || '').trim().toLowerCase()] || null,
-    })),
+    // A PILOT STEP IS REACHED FROM A FACT, NEVER FROM A POSITION — and that
+    // distinction is the whole reason it exists. Positional reachedness says "the
+    // loan is standing past this, so it happened", which is sound for a workflow
+    // step and FALSE for the purchase: a loan at Final Docs has certainly passed
+    // Purchasing Conditions and has NOT certainly been bought. So `opts.pilotReached`
+    // decides, and its THREE answers survive to the screen: true, false, and
+    // `undefined` for "Encompass has not said" — which draws as not-yet with a
+    // sentence, never as a no.
+    steps: ordered.map((m, i) => {
+      const pilot = !!m.pilot;
+      const fact = pilot ? (opts.pilotReached || {})[m.milestoneId] : undefined;
+      return {
+        name: m.name,
+        pilot,
+        reached: pilot ? fact === true : (currentIndex >= 0 && i <= currentIndex),
+        // Only when we asked and were told nothing. A `false` is an answer.
+        unknown: pilot ? (fact !== true && fact !== false) : false,
+        // Ours is a fact about the loan, not a place it stands, so it is never
+        // "current" however far along the file is.
+        current: !pilot && i === currentIndex,
+        note: pilot ? ((opts.pilotNotes || {})[m.milestoneId] || null) : null,
+        reachedAt: pilot
+          ? ((opts.pilotReachedAt || {})[m.milestoneId] || null)
+          : (witnessedByKey[stages.milestoneKey(m.name)] || null),
+      };
+    }),
   };
 }
 
@@ -142,7 +244,6 @@ function milestoneStepper(loan, catalog = [], opts = {}) {
  */
 function summaryRail(loan, opts = {}) {
   const l = loan || {};
-  const num = (v) => (v == null || v === '' ? null : Number(v));
   const stage = stages.stageForMilestone(l.milestone_name, opts.stageConfig || {});
 
   // THE PROPERTY FIGURES COME FROM THE PROPERTY, NOT FROM THE LOAN ROW.
@@ -174,6 +275,10 @@ function summaryRail(loan, opts = {}) {
     prepaymentPenaltyMonths: l.prepayment_penalty_months == null ? null : Number(l.prepayment_penalty_months),
     program: l.program_name || null,
     milestone: l.milestone_name || null,
+    // THE STATUS THE FILE WEARS (owner-directed 2026-08-24): the last COMPLETED
+    // milestone in its completed wording — "Funded", never "Funding". The raw
+    // Encompass name stays in `milestone` for anything that joins on it.
+    milestoneLabel: stages.completedFormLabel(l.milestone_name),
     stage: { key: stage.key, label: stage.label, mapped: stage.mapped },
     lockStatus: l.lock_status || null,
     lockExpiration: l.lock_expiration_date || null,
@@ -181,12 +286,172 @@ function summaryRail(loan, opts = {}) {
     // invites somebody to trust a month-old number.
     syncedAt: l.encompass_synced_at || null,
     syncError: l.encompass_sync_error || null,
+    // WHICH OF THE TWO STEPS THIS LOAN IS AT. A discovered-but-unread loan is a
+    // real row with only the pipeline search's fields on it, and the rail used to
+    // render that as "Read from Encompass —" — a dash where a date belongs, which
+    // reads as a formatting glitch rather than as the answer. ONE definition, so
+    // the pipeline, this rail and the sync screen cannot disagree.
+    readState: readState.readStateOf(l).state,
+    readWhy: readState.readStateOf(l).why,
   };
 }
 
+/**
+ * THE SEVEN STOPS (owner-directed 2026-08-23, the approved "meridian" design):
+ * the file header's progress bar carries ONLY the most important milestones —
+ * the owner's exact list, verbatim: *"Started, Assigned to processor,
+ * Submitted to underwrting, Conditionally approved, Clear to close, Closed,
+ * purchased. That's it."* Rejected by name: any "not funding" wording, and
+ * Investor Delivery on the bar. The full ladder lives in the Milestones
+ * section; this is the at-a-glance answer.
+ *
+ * KEYED ON THE LADDER'S DONE FLAGS (#33: a completed milestone means the work
+ * up to that stop has happened) — never MS.STATUS prose, never position. Each
+ * stop names the milestone spellings whose COMPLETION means the stop is
+ * reached; the date shown is Encompass's own `start_date` for that step (the
+ * worked date), falling back to the day PILOT watched it flip. PURCHASED is
+ * the pilot FACT — describePurchase's answer — with its three states kept:
+ * bought, not bought, and "Encompass has not said".
+ */
+const SEVEN_STOPS = [
+  { key: 'started', label: 'Started', milestones: ['started'] },
+  { key: 'processor', label: 'Assigned to processor', milestones: ['lo prep'] },
+  { key: 'underwriting', label: 'Submitted to underwriting', milestones: ['submittal', 'submitted'] },
+  { key: 'cond_approved', label: 'Conditionally approved', milestones: ['cond approval', 'conditional approval'] },
+  { key: 'ctc', label: 'Clear to close', milestones: ['clear to close', 'ctc'] },
+  { key: 'closed', label: 'Closed', milestones: ['funding', 'funded', 'closed'] },
+  { key: 'purchased', label: 'Purchased', pilot: true },
+];
+
+function sevenStops(ladder, { reachedAt = {}, sale = null } = {}) {
+  // done: punctuation-blind milestone key -> the best date we hold for it.
+  // `milestoneKey` (not normalizeMilestone) on BOTH sides of every join here:
+  // a ladder spelled "Cond Approval" against a stop/catalog "Cond. Approval"
+  // used to miss (audit round 2, obs 4) and silently drop the date.
+  const witnessedByKey = {};
+  for (const [k, v] of Object.entries(reachedAt || {})) {
+    // First wins — reachedAtByMilestone is newest-first (see milestoneStepper).
+    const kk = stages.milestoneKey(k);
+    if (!(kk in witnessedByKey)) witnessedByKey[kk] = v;
+  }
+  const done = new Map();
+  for (const r of (Array.isArray(ladder) ? ladder : [])) {
+    if (!r || !r.done || !r.milestone_name) continue;
+    const k = stages.milestoneKey(r.milestone_name);
+    const witnessed = witnessedByKey[k] || null;
+    const at = r.start_date || witnessed || null;
+    if (!done.has(k) || (at && !done.get(k).at)) done.set(k, { at });
+  }
+  const ladderRead = Array.isArray(ladder) && ladder.length > 0;
+
+  const stops = SEVEN_STOPS.map((s) => {
+    if (s.pilot) {
+      const purchased = sale ? sale.purchased : null;
+      return {
+        key: s.key, label: s.label, pilot: true,
+        reached: purchased === true,
+        // Three states survive to the screen: true, false, and "not said".
+        unknown: purchased == null,
+        at: purchased === true ? (sale && sale.at) || null : null,
+        note: sale ? sale.note : null,
+      };
+    }
+    let hit = null;
+    for (const name of s.milestones) { const k = stages.milestoneKey(name); if (done.has(k)) { hit = done.get(k); break; } }
+    return { key: s.key, label: s.label, pilot: false, reached: !!hit, at: hit ? hit.at : null };
+  });
+
+  // WHERE THE FILE IS vs WHAT IS UP NEXT (owner-directed 2026-08-24: the file's
+  // status is the last COMPLETED stop, worn in its attained wording — the stop
+  // labels are already the attained forms). `atIndex` is the stop the file
+  // STANDS at (the last reached non-pilot stop); `currentIndex` keeps its
+  // meaning as the first unreached stop past it — the one being WAITED ON.
+  // With no ladder read, neither is claimed — inventing progress from an
+  // unread ladder is the stepper's own rule, kept here.
+  let currentIndex = -1;
+  let atIndex = -1;
+  if (ladderRead) {
+    stops.forEach((s, i) => { if (!s.pilot && s.reached) atIndex = i; });
+    currentIndex = stops.findIndex((s, i) => i > atIndex && !s.pilot && !s.reached);
+  }
+  return { ladderRead, currentIndex, atIndex, stops };
+}
+
+/**
+ * THE MILESTONE BOARD — the Milestones section's rows: EVERY step of the
+ * spliced catalog (ours included), each carrying what the LADDER read for this
+ * loan holds — done, Encompass's own date for the step (`start_date`: the
+ * worked date on a done step, the PLANNED date on one not yet worked — the
+ * board says which), the day PILOT watched it flip, and the ASSOCIATE Encompass
+ * assigns to that step (#34's persona ground truth, straight off the row).
+ *
+ * A catalog step the ladder does not carry answers `inLadder:false` with done
+ * NULL — "the ladder has not said", which is a different fact from "not done".
+ */
+function milestoneBoard(catalog = [], ladder = [], { reachedAt = {}, sale = null } = {}) {
+  // Punctuation-blind joins on BOTH sides (audit round 2, obs 4) — a ladder
+  // "Cond Approval" must land on the catalog's "Cond. Approval" row.
+  const byName = new Map();
+  for (const r of (Array.isArray(ladder) ? ladder : [])) {
+    if (r && r.milestone_name) byName.set(stages.milestoneKey(r.milestone_name), r);
+  }
+  const witnessedByKey = {};
+  for (const [k, v] of Object.entries(reachedAt || {})) {
+    // First wins — reachedAtByMilestone is newest-first (see milestoneStepper).
+    const kk = stages.milestoneKey(k);
+    if (!(kk in witnessedByKey)) witnessedByKey[kk] = v;
+  }
+  const rows = (catalog || [])
+    .slice()
+    .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+    .map((m) => {
+      if (m.pilot) {
+        return {
+          name: m.name, label: m.name, pilot: true,
+          done: sale ? sale.purchased === true : null,
+          unknown: !sale || sale.purchased == null,
+          date: sale && sale.purchased === true ? (sale.at || null) : null,
+          dateKind: sale && sale.purchased === true ? 'worked' : null,
+          witnessedAt: null,
+          associate: null,
+          roleRequired: null,
+          expectedDays: m.expected_days == null ? null : Number(m.expected_days),
+          note: sale ? sale.note : null,
+        };
+      }
+      const r = byName.get(stages.milestoneKey(m.name)) || null;
+      const isDone = r ? !!r.done : null;
+      return {
+        name: m.name, pilot: false,
+        // A DONE step wears its COMPLETED wording (owner-directed 2026-08-24:
+        // "every milestone has two wordings" — LO Prep done reads "Assigned to
+        // Processor"); an open step keeps its active name. `name` stays the
+        // raw Encompass spelling for anything that joins on it.
+        label: isDone === true ? stages.completedFormLabel(m.name) : m.name,
+        inLadder: !!r,
+        done: isDone,
+        date: r ? (r.start_date || null) : null,
+        dateKind: r ? (r.done ? 'worked' : 'planned') : null,
+        witnessedAt: witnessedByKey[stages.milestoneKey(m.name)] || null,
+        associate: r && (r.associate_name || r.associate_role || r.associate_email) ? {
+          name: r.associate_name || null,
+          role: r.associate_role || null,
+          email: r.associate_email || null,
+        } : null,
+        roleRequired: r ? (r.role_required || null) : null,
+        expectedDays: m.expected_days == null ? null : Number(m.expected_days),
+      };
+    });
+  return { ladderRead: byName.size > 0, rows };
+}
+
 module.exports = {
+  hasIncomeFigures,
   SECTIONS,
+  SEVEN_STOPS,
   sectionMenu,
   milestoneStepper,
+  sevenStops,
+  milestoneBoard,
   summaryRail,
 };

@@ -11,10 +11,12 @@
  * single-definition discipline as borrower-safe-view.js (the appraisal) and
  * borrower-safe-draws.js (the draws), because three hand-rolled payloads is how
  * an internal figure leaks to an outside broker. `internal` gets everything the
- * owner listed; `borrower` (the borrower portal AND the TPO broker) gets the
- * same deal facts through the borrower-safe scrub, and NEVER the note buyer —
- * which is also why the note buyer is simply not in this payload at all: the
- * owner's list does not name it, and leaving it out entirely beats gating it.
+ * owner listed PLUS the investor line (owner-directed 2026-08-26: "add another
+ * line for the name of the investor that this note is being sold to" — an RTL
+ * STAFF surface may name the note buyer); `borrower` (the borrower portal AND
+ * the TPO broker) gets the same deal facts through the borrower-safe scrub and
+ * NEVER the investor — the row is emitted only when the audience is internal,
+ * so the one audience flag is the boundary.
  *
  * Every row whose value is unknown is OMITTED — the panel never prints a
  * guessed $0 (the repo's standing missing-vs-zero discipline).
@@ -30,6 +32,28 @@ const money = (n) => {
   if (n == null || n === '') return null;
   const x = Number(n);
   return Number.isFinite(x) ? `$${Math.round(x).toLocaleString('en-US')}` : null;
+};
+/* THE FEE / CASH / LIQUIDITY MONEY SHOWS ITS CENTS — money() above is for the
+   figures that are whole dollars BY RULE (the loan and its three pieces, floored
+   by the frozen 2026-07-09 rounding rule) and for the deal's headline values.
+   A FEE is not one of those: origination is round2(totalLoan * origPct), so
+   1.50% of $367,500 is $5,512.50 and rounding it printed $5,513 — half a dollar
+   the borrower is not being charged, on the panel an officer quotes from
+   (owner-reported 2026-08-24, file YSCAP258134663).
+
+   This is not a new convention, it is the one this repo already settled: the
+   Term Sheet Studio panel carries "Fees / cash-to-close / liquidity show EXACT
+   cents (owner-directed 2026-07-16)" and renders every one of these through its
+   own money2, and liquidity.js does the same for the assets condition. The
+   overview was the one surface that did not, so it disagreed with the studio,
+   the term sheet PDF and the Excel export about the same fee. Same 2-decimal
+   shape as those, deliberately, so the four now agree byte for byte. */
+const money2 = (n) => {
+  if (n == null || n === '') return null;
+  const x = Number(n);
+  return Number.isFinite(x)
+    ? `$${x.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : null;
 };
 const pctOf = (frac) => {
   // Ratios here are engine FRACTIONS (pricing.normalize) — no percent-form
@@ -66,6 +90,7 @@ async function buildFileOverview(appId, { audience = 'internal' } = {}, client =
       `SELECT a.id, a.status, a.ys_loan_number, a.property_address, a.loan_type, a.rehab_type,
               a.purchase_price, a.underlying_contract_price, a.assignment_fee, a.is_assignment,
               a.as_is_value, a.arv, a.rehab_budget, a.payoff_amount, a.property_free_and_clear,
+              a.lender,
               NULLIF(b1.full_name,'') AS borrower_name,
               NULLIF(b2.full_name,'') AS co_borrower_name,
               l.llc_name,
@@ -128,11 +153,30 @@ async function buildFileOverview(appId, { audience = 'internal' } = {}, client =
   const origPct = quote && quote.origPct != null ? Number(quote.origPct) : null;
   const origDollars = quote && quote.origination != null ? Number(quote.origination) : null;
   const origination = (origPct || origDollars)
-    ? [origPct ? `${RF.fmtRatePct(origPct)}%` : null, origDollars ? money(origDollars) : null].filter(Boolean).join(' · ')
+    ? [origPct ? `${RF.fmtRatePct(origPct)}%` : null, origDollars ? money2(origDollars) : null].filter(Boolean).join(' · ')
     : null;
 
+  /* THE PROGRAM ROW LEADS WITH THE PROGRAM'S NAME (owner-directed 2026-08-26:
+     "add next to the program details … the name of the program, Silver
+     Standard"). The stored quote carries the canonical label
+     (quote.programLabel — pricing.PROGRAM_LABEL's long form, e.g. "Silver
+     Program"); a registration whose quote predates that key falls back to the
+     same table by key, and only then to the raw key, so a Silver file never
+     reads literally "silver" again. The product label (often null) stays as a
+     secondary part. */
+  const programName = (quote && quote.programLabel)
+    || (a.program && (require('./pricing').PROGRAM_LABEL || {})[a.program])
+    || a.program || null;
+  const programRow = [safe(programName), a.product_label && a.product_label !== programName ? safe(a.product_label) : null]
+    .filter(Boolean).join(' · ') || null;
+
   section('The loan', [
-    { label: 'Program', value: safe(a.product_label || a.program) },
+    { label: 'Program', value: programRow },
+    /* The INVESTOR the note is being sold to (applications.lender — the note
+       buyer). INTERNAL ONLY: an RTL staff surface may name a note buyer; the
+       borrower and TPO doors both pass audience:'borrower' and never get the
+       row (the standing never-expose-a-note-buyer rule). */
+    ...(!external ? [{ label: 'Investor', value: safe(a.lender) }] : []),
     { label: 'Total loan', value: money(s.totalLoan), strong: true },
     { label: 'Initial loan (advance)', value: money(s.initialAdvance) },
     { label: 'Construction holdback', value: money(s.rehabHoldback) },
@@ -154,13 +198,13 @@ async function buildFileOverview(appId, { audience = 'internal' } = {}, client =
     if (ledger) {
       const oop = Number(s.oopRehab) > 0 ? Number(s.oopRehab) : null;
       section('Liquidity', [
-        { label: 'Cash to close (estimate)', value: ledger.estimateCashToClose != null ? money(ledger.estimateCashToClose) : null },
-        { label: 'Reserves to show', value: ledger.reserveRequirement != null ? money(ledger.reserveRequirement) : null },
-        { label: 'Closing-cost buffer (1%)', value: Number(ledger.closingBuffer) > 0 && !ledger.closingBufferWaived ? money(ledger.closingBuffer) : null },
-        { label: 'Out-of-pocket rehab', value: oop != null ? money(oop) : null },
-        { label: 'Total liquidity required', value: ledger.requiredLiquidity != null ? money(ledger.requiredLiquidity) : null, strong: true },
-        { label: 'Verified funds', value: ledger.haveCountable ? money(ledger.verifiedTotal) : null, strong: true },
-        { label: 'Max cash to close (verified)', value: ledger.maxCashToClose != null ? money(ledger.maxCashToClose) : null },
+        { label: 'Cash to close (estimate)', value: ledger.estimateCashToClose != null ? money2(ledger.estimateCashToClose) : null },
+        { label: 'Reserves to show', value: ledger.reserveRequirement != null ? money2(ledger.reserveRequirement) : null },
+        { label: 'Closing-cost buffer (1%)', value: Number(ledger.closingBuffer) > 0 && !ledger.closingBufferWaived ? money2(ledger.closingBuffer) : null },
+        { label: 'Out-of-pocket rehab', value: oop != null ? money2(oop) : null },
+        { label: 'Total liquidity required', value: ledger.requiredLiquidity != null ? money2(ledger.requiredLiquidity) : null, strong: true },
+        { label: 'Verified funds', value: ledger.haveCountable ? money2(ledger.verifiedTotal) : null, strong: true },
+        { label: 'Max cash to close (verified)', value: ledger.maxCashToClose != null ? money2(ledger.maxCashToClose) : null },
       ]);
     }
   } catch (_) { /* no liquidity section */ }
@@ -170,6 +214,19 @@ async function buildFileOverview(appId, { audience = 'internal' } = {}, client =
       loanNumber: a.ys_loan_number || null,
       address: safe(addrOf(a.property_address)),
       status: a.status || null,
+      /* The loan's basics ride in the HEADER too (owner-directed 2026-08-26:
+         "at the top part … please also add … the loan amount and whether it's
+         a purchase, refinance, or cash-out. Even if it's listed in the bottom,
+         don't remove it from the sections below"). Both are borrower-safe deal
+         facts, so no audience gate; both are omitted when unknown (an
+         unregistered file has no loan amount to claim). money() — whole
+         dollars, the frozen loan-figure rounding rule. */
+      loanAmount: money(s.totalLoan),
+      /* A blank loan_type states nothing: refiKind's deliberate purchase FALLBACK
+         (right for the payoff section's "does a payoff apply") must not become a
+         confident "Purchase" chip here — the header's own contract is "omitted
+         when unknown". Only a file that actually carries a purpose gets one. */
+      purpose: safe(a.loan_type) ? (kindLabel || safe(a.loan_type)) : null,
     },
     sections,
   };

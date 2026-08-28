@@ -23,15 +23,7 @@
 // `replace(/[^0-9.\-]/g,'')` turned "12abc3" into 123 and priced it. Now a value that is not a plain
 // number (after stripping only currency formatting) returns null → the caller records a warning → the
 // route 422s it, instead of silently substituting a corrupted figure. Mirrors search-model.strictNum.
-function num(v) {
-  if (v == null || v === '') return null;
-  if (typeof v === 'number') return isFinite(v) ? v : null;
-  const s = String(v).trim();
-  if (/^-?\d*\.?\d+$/.test(s)) return parseFloat(s);
-  const cleaned = s.replace(/[$,%\s]/g, '');
-  if (/^-?\d*\.?\d+$/.test(cleaned)) return parseFloat(cleaned);
-  return null;
-}
+const { num } = require('./parse-num');
 function setDyn(m, fieldId, value) {
   if (value === undefined) return;
   const dp = m.dynamicPropertiesMap || (m.dynamicPropertiesMap = {});

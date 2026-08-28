@@ -36,6 +36,7 @@ import { fileToBase64 } from '../lib/files.js';
 import { fullNameOf } from '../lib/personName.js';
 import { splitLoudHint, LoudBanner } from '../components/LoudHint.jsx';
 import FileOverviewSlideOver from '../components/FileOverviewSlideOver.jsx';
+import UploadRows from '../components/UploadRows.jsx';
 
 const kb = (n) => n == null ? '' : (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 const money = (n) => n == null ? '—' : '$' + Number(n).toLocaleString('en-US', { maximumFractionDigits: 0 });
@@ -208,7 +209,7 @@ function CardCondition({ it, appId, onSaved }) {
    subtitle stays visible (a borrower needs the guidance a power user does not),
    and a LOUD requirement banner (`loud`) is rendered OUTSIDE the collapse so it
    is never hidden (owner-directed — never strip the loud bank-statement banner). */
-function ConditionRow({ done, issue, title, subtitle, status, action, children, open: openProp, onDropFiles, loud }) {
+function ConditionRow({ done, issue, title, subtitle, status, action, children, open: openProp, onDropFiles, loud, note = null }) {
   const [over, setOver] = useState(false);
   // A row that carries a body (documents, a form, downloads) collapses; the
   // header stays. Rows passed no children (photo ID, e-sign, read-only flags)
@@ -267,6 +268,15 @@ function ConditionRow({ done, issue, title, subtitle, status, action, children, 
       {/* The LOUD requirement banner stays visible whether or not the row is
           expanded — never hidden behind the collapse (owner-directed). */}
       {loud && <LoudBanner text={loud} style={{ marginTop: 8 }} />}
+      {/* WHAT WENT WRONG WITH THE UPLOAD, ON THE CONDITION YOU UPLOADED TO
+          (owner-reported 2026-08-21: *"it's not popping up in the place where you want to
+          upload. It's popping up on top of the file. It's popping up in the wrong place"*).
+          Outside the collapse for the same reason the banner above is: from beside the row
+          you were working, a message at the top of a long screen is off screen, and the
+          upload reads as having silently done nothing. */}
+      {note && (
+        <div className="notice err" role="status" aria-live="polite" style={{ marginTop: 8 }}>{note}</div>
+      )}
       {bodyOpen && <div className="bcond-body">{children}</div>}
       {over && onDropFiles && <div className="drop-hint">Drop file to upload</div>}
     </div>
@@ -727,6 +737,9 @@ export default function Application() {
   const fileRef = useRef(null);
   const studioRef = useRef(null);               // the Products & Pricing sheet
   const [target, setTarget] = useState(null);   // {itemId, slotBase|slot, replaceDocumentId, photoId}
+  // An upload refusal, shown ON the condition it was for rather than at the top of the page.
+  const [uploadNote, setUploadNote] = useState(null);   // {itemId, text}
+  const noteFor = (itemId) => (uploadNote && itemId && uploadNote.itemId === itemId ? uploadNote.text : null);
   const [docFilter, setDocFilter] = useState('open');   // default: only what still needs the borrower
   // Conditions the borrower just worked on THIS visit: they stay visible in the
   // default "Open" view instead of vanishing the second an upload submits them.
@@ -823,7 +836,7 @@ export default function Application() {
     const all = Array.from(fileList || []);
     if (!all.length || !tgt) return;
     const files = (tgt.photoId || tgt.replaceDocumentId) ? all.slice(0, 1) : all;
-    setErr('');
+    setErr(''); setUploadNote(null);
     try {
       if (tgt.photoId) {
         // The government-ID condition saves to the PROFILE too, so the next
@@ -840,7 +853,12 @@ export default function Application() {
           await api.uploadDoc({
             applicationId: id, checklistItemId: tgt.itemId || undefined,
             slot, replaceDocumentId: tgt.replaceDocumentId || undefined,
-            filename: files[i].name, contentType: files[i].type, size: files[i].size, dataBase64: await readB64(files[i]),
+            /* THE FILE ITSELF, STREAMED (owner-directed 2026-08-21). Reading it into base64
+               first cost this tab a copy and the SERVER about five times the file to parse,
+               which is why a 23 MB executed contract could not be uploaded at all — and this
+               is the door that report came through. `api` picks the streaming route whenever
+               a caller hands it a File; passing `dataBase64` silently kept the old one. */
+            filename: files[i].name, contentType: files[i].type, size: files[i].size, file: files[i],
           });
         }
         touch(tgt.itemId);   // the condition stays visible in the Open view
@@ -848,7 +866,16 @@ export default function Application() {
       setMsg(files.length > 1 ? `${files.length} files uploaded ✓` : 'Uploaded ✓');
       setTarget(null); await load();
       setTimeout(() => setMsg(''), 2500);
-    } catch (e2) { setMsg(''); setErr(e2.message || 'Upload failed'); }
+    } catch (e2) {
+      /* SAY EXACTLY WHAT WENT WRONG, AND SAY IT WHERE IT HAPPENED. The server's own sentence
+         is used verbatim — it names the file, its size and the real limit — because "Upload
+         failed" tells nobody anything they can act on. It lands on the condition itself; only
+         an upload with no condition to land on falls back to the page banner. */
+      setMsg('');
+      const text = (e2 && e2.data && (e2.data.error || e2.data.message)) || e2.message || 'The upload did not go through.';
+      if (tgt && tgt.itemId) setUploadNote({ itemId: tgt.itemId, text });
+      else setErr(text);
+    }
     finally { if (fileRef.current) fileRef.current.value = ''; }
   }
   const onFile = (e) => uploadFiles(e.target.files, target);
@@ -1312,6 +1339,7 @@ export default function Application() {
                   status={(profile && profile.photo_id_document_id) ? 'On file ✓' : statusText(idItem)}
                   action={<button className="btn ghost small" onClick={() => pick({ photoId: true })}>{profile && profile.photo_id_document_id ? 'Replace ID' : 'Upload ID'}</button>}
                   onDropFiles={(f) => uploadFiles(f, { photoId: true })}
+                  note={noteFor(idItem.id)}
                 />
               )}
 
@@ -1336,7 +1364,12 @@ export default function Application() {
                     title={q ? 'Assets & liquidity — your registered requirement' : assetsItem.label}
                     subtitle={q
                       ? `Your ${app.registered_program === 'gold' ? 'Gold Standard' : app.registered_program === 'silver' ? 'Silver' : app.registered_program === 'manual' ? 'Manual Program' : 'Standard'} registration: verify ${money2(liq)} in liquidity`
-                        + (q.reserveRequirement ? ` (incl. ${money(q.reserveRequirement)} reserve${q.reserveBasis ? ` — ${q.reserveBasis}` : ''})` : '')
+                        /* The reserve is part of the liquidity total stated one clause
+                           earlier and of the cash to close stated one clause later, both
+                           of which already showed cents — so rounding this one figure left
+                           a single sentence whose three numbers did not reconcile with each
+                           other (owner-directed 2026-08-24). */
+                        + (q.reserveRequirement ? ` (incl. ${money2(q.reserveRequirement)} reserve${q.reserveBasis ? ` — ${q.reserveBasis}` : ''})` : '')
                         + (q.cashToClose ? ` · estimated cash to close ${money2(q.cashToClose)}` : '')
                         + '. Upload the bank statements that show it.'
                       : [lh.loud ? lh.rest : assetsItem.hint, assetsItem.notes].filter(Boolean).join(' · ') || 'Bank statements showing your required liquidity.'}
@@ -1345,6 +1378,7 @@ export default function Application() {
                     loud={lh.loud}
                     action={<button className="btn ghost small" title="You can select several PDFs at once" onClick={() => pick({ itemId: assetsItem.id, slotBase: docs.length })}>{docs.length ? '+ Add another' : 'Upload statements'}</button>}
                     onDropFiles={(f) => uploadFiles(f, { itemId: assetsItem.id, slotBase: docs.length })}
+                    note={noteFor(assetsItem.id)}
                   >
                     {regCond && regCond.detail && (
                       <div className="muted small" style={{ whiteSpace: 'pre-line', marginBottom: 8, padding: '8px 10px', border: '1px solid rgba(127,169,176,.3)', borderRadius: 8 }}>
@@ -1376,6 +1410,8 @@ export default function Application() {
                         <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>{dlBusy === d.id ? '…' : '⤓'}</button>
                       </div>
                     ))}
+                    {/* the file, on its bar, where the document will land */}
+                    <UploadRows target={`condition:${assetsItem.id}`} />
                   </ConditionRow>
                 );
               })()}
@@ -1399,6 +1435,7 @@ export default function Application() {
                     open={docs.length > 0 || needsFix || alsoNeeded.length > 0 || !!it.external_note}
                     action={<button className="btn ghost small" title="You can select several PDFs at once" onClick={() => pick({ itemId: it.id, slotBase: docs.length })}>{docs.length ? '+ Add another' : 'Upload'}</button>}
                     onDropFiles={(f) => uploadFiles(f, { itemId: it.id, slotBase: docs.length })}
+                    note={noteFor(it.id)}
                   >
                     {/* Only carry a body (and therefore a chevron) once there IS
                         something to reveal — a fix note, uploaded documents, or a
@@ -1432,6 +1469,7 @@ export default function Application() {
                         <button className="btn ghost small" disabled={dlBusy === d.id} onClick={() => downloadDoc(d)}>{dlBusy === d.id ? '…' : '⤓'}</button>
                       </div>
                     ))}
+                    <UploadRows target={`condition:${it.id}`} />
                     </>)}
                   </ConditionRow>
                 );

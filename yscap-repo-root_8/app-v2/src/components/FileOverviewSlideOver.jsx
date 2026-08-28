@@ -115,10 +115,22 @@ export default function FileOverviewSlideOver({ fetcher, title = 'File overview'
           <div>
             <div className="fov-eyebrow">{title}</div>
             {card && card.header && (
-              <div className="fov-title">
-                {card.header.address || 'This file'}
-                {card.header.loanNumber && <span className="fov-loanno">{card.header.loanNumber}</span>}
-              </div>
+              <>
+                <div className="fov-title">
+                  {card.header.address || 'This file'}
+                  {card.header.loanNumber && <span className="fov-loanno">{card.header.loanNumber}</span>}
+                </div>
+                {/* The loan's basics ride in the header (owner-directed
+                    2026-08-26): the loan amount + purchase/refinance/cash-out,
+                    WITHOUT removing them from the sections below. Server-fed,
+                    omitted while unknown. */}
+                {(card.header.loanAmount || card.header.purpose) && (
+                  <div className="fov-basics">
+                    {card.header.loanAmount && <span className="fov-basic">{card.header.loanAmount}</span>}
+                    {card.header.purpose && <span className="fov-basic">{card.header.purpose}</span>}
+                  </div>
+                )}
+              </>
             )}
           </div>
           <button type="button" className="fov-close" onClick={() => setOpen(false)} aria-label="Close">✕</button>

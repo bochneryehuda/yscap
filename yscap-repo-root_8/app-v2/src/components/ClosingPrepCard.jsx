@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { ChainAddress, ChainDocuments, ChainHistory } from './ClosingEmailChain.jsx';
 import DocPreview from './DocPreview.jsx';
+import EmailPreview from './EmailPreview.jsx';
 import { ScheduleButton, ScheduledSends, useScheduledSends } from './ScheduleSend.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -335,11 +336,14 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
      which a boolean could not see. Same idiom as OrdersPanel's own cards. */
   const orderStatus = ((data && data.order) || {}).status;
   const sched = useScheduledSends(appId, [orderStatus]);
-  const scheduleIt = async ({ day, time }) => {
+  const scheduleIt = async ({ day, time, override }) => {
     const r = await api.staffScheduleClosingPrep(appId, {
       day, time, force: isPlacedStatus(orderStatus),
       extraEmails: extra.split(/[,;\s]+/).filter(Boolean),
       note,
+      // A subject/body edited in the preview rides the stored intent, so the
+      // dispatcher's re-post lands it through the place route's own override door.
+      ...(override ? { override } : {}),
     });
     await sched.reload();
     setMsg({ tone: (r.warnings && r.warnings.length) ? 'warn' : 'ok',
@@ -349,13 +353,30 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
     onChanged && onChanged();
   };
 
-  const place = async (force) => {
+  /* THE EDITABLE PREVIEW (owner-directed 2026-08-26): Send / Re-send / Follow-up first
+     open the send's OWN built email — subject + body, fully editable — and the send
+     carries only what was changed. The preview runs the same pure builders the place
+     route runs (buildClosingPrepEmail / buildFollowupEmail), so it can never show a
+     different email than the one that goes out. */
+  const [preview, setPreview] = useState(null);   // {mode, force, subject, text, to, cc}
+  const openSendPreview = async (mode, force) => {
+    setBusy('preview'); setMsg(null);
+    try {
+      const q = mode === 'followup' ? { followup: '1', ...(followMsg.trim() ? { note: followMsg.trim() } : {}) } : (note.trim() ? { note: note.trim() } : null);
+      const pv = await api.staffClosingPrepEmailPreview(appId, q);
+      setPreview({ mode, force: !!force, subject: pv.subject || '', text: pv.text || '', to: pv.to || [], cc: pv.cc || [] });
+    } catch (e) {
+      setMsg({ tone: 'err', text: (e && e.message) || 'Could not build the email preview.' });
+    } finally { setBusy(''); }
+  };
+  const place = async (force, override) => {
     setBusy('place'); setMsg(null);
     try {
       const r = await api.staffPlaceClosingPrep(appId, {
         force: !!force,
         extraEmails: extra.split(/[,;\s]+/).filter(Boolean),
         note,
+        ...(override ? { override } : {}),
       });
       const skipped = r.skipped || [];
       const failed = r.partsFailed || [];
@@ -381,12 +402,13 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
     } finally { setBusy(''); }
   };
 
-  const followup = async () => {
+  const followup = async (override) => {
     setBusy('follow'); setMsg(null);
     try {
       const r = await api.staffClosingPrepFollowup(appId, {
         message: followMsg,
         extraEmails: extra.split(/[,;\s]+/).filter(Boolean),
+        ...(override ? { override } : {}),
       });
       setMsg({ tone: 'ok', text: `Follow-up sent on the closing chain to ${(r.sent_to || []).join(', ')}.` });
       setFollowMsg(''); setFollowOpen(false); reload();
@@ -581,7 +603,7 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
       <ScheduledSends rows={sched.rows} onCancel={sched.cancel} kinds={['closing_prep']} />
       <div className="row" style={{ gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
         {!placed && (
-          <button className="btn primary small" disabled={!!busy || !ready} onClick={() => place(orderOnChain)}
+          <button className="btn primary small" disabled={!!busy || !ready} onClick={() => openSendPreview('place', orderOnChain)}
             title={ready
               ? (orderOnChain ? 'Send the closing-prep request again, with the documents as they stand now'
                 : 'Send the closing-prep request to the attorney')
@@ -595,7 +617,7 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
         {placed && (
           <>
             <button className="btn primary small" disabled={!!busy} onClick={() => setFollowOpen((o) => !o)}>Follow up</button>
-            <button className="btn ghost small" disabled={!!busy || !ready} onClick={() => place(true)}
+            <button className="btn ghost small" disabled={!!busy || !ready} onClick={() => openSendPreview('place', true)}
               title={ready ? 'Send the whole request again, with the documents as they stand now' : 'Finish the steps listed above first'}>
               {busy === 'place' ? 'Sending…' : 'Re-send request'}
             </button>
@@ -626,6 +648,29 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
         )}
       </div>
 
+      {preview && (
+        <EmailPreview
+          title={preview.mode === 'followup' ? 'Follow-up on the closing prep' : 'Closing-prep request email'}
+          subject={preview.subject} text={preview.text} to={preview.to} cc={preview.cc}
+          subjectLocked={preview.mode === 'followup' || preview.force}
+          lockNote="This goes out on the file's closing email chain, so its subject is kept."
+          busy={busy === 'place' || busy === 'follow'}
+          sendLabel={preview.mode === 'followup' ? 'Send follow-up' : (preview.force ? 'Re-send request' : 'Send request')}
+          warning="The document package is attached at send time — the attachment list in the sent copy names exactly what rode along."
+          onClose={() => setPreview(null)}
+          onSend={async (override) => {
+            if (preview.mode === 'followup') await followup(override); else await place(preview.force, override);
+            setPreview(null);
+          }}
+          /* Scheduling from INSIDE the preview keeps the edit — the outside ScheduleButton
+             has no edit to carry. A follow-up cannot be scheduled (no such kind). */
+          scheduleWhat="the closing-prep request"
+          onSchedule={preview.mode === 'followup' ? null : async (override, { day, time }) => {
+            await scheduleIt({ day, time, override });
+            setPreview(null);
+          }} />
+      )}
+
       {followOpen && (
         <div className="panel" style={{ background: 'var(--surface-soft, #f4f1ea)', marginTop: 10 }}>
           <label className="muted small" style={{ color: MUTED }}>Follow-up message (optional — a default is sent if blank)</label>
@@ -635,8 +680,8 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
             This goes out on the same email chain, to everyone already on it.
           </div>
           <div className="row" style={{ gap: 8, marginTop: 8 }}>
-            <button className="btn primary small" disabled={busy === 'follow'} onClick={followup}>
-              {busy === 'follow' ? 'Sending…' : 'Send follow-up'}
+            <button className="btn primary small" disabled={busy === 'follow'} onClick={() => openSendPreview('followup')}>
+              {busy === 'follow' ? 'Sending…' : 'Preview & send follow-up'}
             </button>
             <button className="btn ghost small" onClick={() => { setFollowOpen(false); setFollowMsg(''); }}>Cancel</button>
           </div>
@@ -672,7 +717,7 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
       {msg && (
         <div className={`notice ${msg.tone === 'ok' ? 'ok' : msg.tone === 'warn' ? '' : 'err'}`} style={{ marginTop: 10 }} role="status">
           {msg.text}
-          {msg.canForce && <> <button className="btn link small" onClick={() => place(true)}>Force re-send</button></>}
+          {msg.canForce && <> <button className="btn link small" onClick={() => openSendPreview('place', true)}>Force re-send</button></>}
         </div>
       )}
 

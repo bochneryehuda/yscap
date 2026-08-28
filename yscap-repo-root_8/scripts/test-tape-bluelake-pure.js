@@ -157,11 +157,18 @@ ok(cellOf(loan, 'AI').value === null, 'AI Cost Incurred to Date blank for now (o
 const out = fillXlsxTemplate(TEMPLATE, { sheetPart: SHEET, firstRow: 3, rows: [bluelake.buildRow(loan)], lastCol: 'BS', inheritStyles: true });
 const oParts = unzip(TEMPLATE); const nParts = unzip(out);
 const changed = oParts.filter((op) => !nParts.find((x) => x.name === op.name).data.equals(op.data)).map((p) => p.name).sort();
-assert.deepStrictEqual(changed, ['xl/workbook.xml', SHEET], `ONLY Bid Tape + workbook changed, got: ${changed.join(', ')}`);
+// styles.xml joins the changed set since the display-precision fix (2026-08-24):
+// the rate/points/ratio cells declare display formats, which APPEND cloned
+// styles — every pre-existing style survives untouched (test-tape-rate-precision
+// pins the append-only property; here we pin that nothing ELSE changed).
+assert.deepStrictEqual(changed, ['xl/styles.xml', 'xl/workbook.xml', SHEET], `ONLY Bid Tape + workbook + appended styles changed, got: ${changed.join(', ')}`);
 passed++;
 const sx = nParts.find((p) => p.name === SHEET).data.toString('utf8');
 ok(/<c r="T3" s="18"><v>275000<\/v><\/c>/.test(sx), 'T3 number injected WITH the sample row style (inherited)');
-ok(/<c r="AE3" s="5"><f>IFERROR\(X3\/U3,""\)<\/f><v>0<\/v><\/c>/.test(sx), 'AE3 formula + cached 0, {r}=3, inherited style');
+// AE3 carries a RESOLVED style now — a clone of the sample row's s=5 with the
+// two-decimal ratio format (the sample's own 0% displayed whole percents).
+const ae3 = /<c r="AE3" s="(\d+)"><f>IFERROR\(X3\/U3,""\)<\/f><v>0<\/v><\/c>/.exec(sx);
+ok(ae3 && Number(ae3[1]) >= 64, 'AE3 formula + cached 0, {r}=3, resolved (appended) display style');
 ok(/<c r="AJ3"[^>]*><f>AF3\+AH3<\/f><v>425000<\/v><\/c>/.test(sx), 'AJ3 total-project-costs formula + cached 425000');
 // The actual underwriting ratios are emitted as cached values on the filled row so
 // they display without a recalculation (the reported fix).

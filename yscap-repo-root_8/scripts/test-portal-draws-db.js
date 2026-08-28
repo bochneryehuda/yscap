@@ -10,6 +10,10 @@
  * Run: DATABASE_URL=... node scripts/test-portal-draws-db.js
  */
 if (!process.env.DATABASE_URL) { console.log('SKIP test-portal-draws-db (no DATABASE_URL)'); process.exit(0); }
+// This suite tests the composer MACHINERY, which the 2026-08-26 park keeps intact
+// ("We're not deleting it, we're parking it") — so it runs UN-parked. The park
+// itself is proven by scripts/test-portal-draws-parked-db.js.
+process.env.PORTAL_DRAW_COMPOSER_PARKED = '0';
 
 const crypto = require('crypto');
 const cfg = require('../src/config');

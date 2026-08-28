@@ -63,7 +63,10 @@ const upload = (name) => ({ filename: name, contentType: 'application/pdf', data
     // A PROCESSOR holds manage_draws but NOT see_all_files, and is NOT assigned to this file —
     // so the refusal below comes from canSeeFile (the file-SCOPE gate), not the permission gate
     // (a loan_officer would 403 on manage_draws first, for the wrong reason).
-    const loId = (await db.query(`INSERT INTO staff_users (email,full_name,role,is_active,password_hash,token_version) VALUES ($1,'Proc','processor',true,'x',0) RETURNING id`, [`dwm-proc-${sfx}@test.local`])).rows[0].id;
+    // Since 2026-08-26 (back-office persona) the processor ROLE defaults to see_all_files, so
+    // this fixture revokes it PER PERSON via the permissions jsonb — the supported revocation
+    // path — which keeps the scope rule observable: manage_draws yes, see-all no.
+    const loId = (await db.query(`INSERT INTO staff_users (email,full_name,role,is_active,password_hash,token_version,permissions) VALUES ($1,'Proc','processor',true,'x',0,'{"see_all_files":false}'::jsonb) RETURNING id`, [`dwm-proc-${sfx}@test.local`])).rows[0].id;
     const loTok = C.signJwt({ sub: loId, kind: 'staff', role: 'processor', tv: 0 });
     const borId = (await db.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('Wire','Payee',$1) RETURNING id`, [`dwm-bo-${sfx}@test.local`])).rows[0].id;
     const appId = (await db.query(
