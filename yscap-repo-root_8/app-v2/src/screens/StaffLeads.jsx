@@ -7,6 +7,7 @@ import { useFlash } from '../components/FlashToast.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import { askConfirm } from '../lib/dialog.js';
 import ElementixFinder from '../components/ElementixFinder.jsx';
+import LeadFollowUps from '../components/LeadFollowUps.jsx';
 import {
   STAGES, STAGE_LABEL, STAGE_PILL, BOARD_STAGES, OPEN_STAGES, SOURCES, PROGRAMS,
   TOOL_LABEL, leadName, initials, money, dueSoon, todayStr,
@@ -259,6 +260,13 @@ export default function StaffLeads({ officerId = null, officerName = null }) {
           <div className="seg" role="tablist">
             <button className={`tab ${view === 'board' ? 'on' : ''}`} onClick={() => setView('board')}>Board</button>
             <button className={`tab ${view === 'list' ? 'on' : ''}`} onClick={() => setView('list')}>List</button>
+            {/* THE FOLLOW-UP REVIEW (owner-directed 2026-08-28) — the third way to
+                read the same desk: not "where is everything in the funnel", but
+                "what did I say I would do, and what have I let slip". */}
+            <button className={`tab ${view === 'followups' ? 'on' : ''}`} onClick={() => setView('followups')}
+              title="Review the leads by their follow-up date — overdue, today, coming up, and the open leads with no next step at all">
+              Follow-ups
+            </button>
           </div>
           {!viewingOther && <button className="btn btn-line btn-sm" onClick={() => setInviteOpen(true)}
             title="Invite anyone by email to the borrower portal — they're auto-assigned to you and opened as a lead">Invite to portal ✉</button>}
@@ -282,7 +290,18 @@ export default function StaffLeads({ officerId = null, officerName = null }) {
         <div className="kpi-grid">
           <div className="kpi"><div className="v">{newCount}</div><div className="k">New</div><div className="d">Awaiting first touch</div></div>
           <div className="kpi"><div className="v">{workingCount}</div><div className="k">Working</div><div className="d">Contacted → in progress</div></div>
-          <div className="kpi"><div className="v">{dueCount}</div><div className="k">Follow-up due</div><div className="d">On/past their date</div></div>
+          {/* The follow-up figure is now a DOOR, not a read-out: clicking it opens
+              the review that acts on it. (The tile counts the page this desk holds;
+              the review itself counts the whole book on the server — which is why
+              the two can differ on a big desk, and why the review is the one to
+              trust.) */}
+          <div className="kpi" role="button" tabIndex={0}
+            style={{ cursor: 'pointer', outline: view === 'followups' ? '2px solid #141B22' : undefined }}
+            aria-pressed={view === 'followups'}
+            title="Open the follow-up review — overdue, due today, coming up, and the open leads with no next step"
+            onClick={() => setView('followups')}
+            onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), setView('followups'))}>
+            <div className="v">{dueCount}</div><div className="k">Follow-up due</div><div className="d">Review them →</div></div>
           <div className="kpi"><div className="v">{money(pipelineValue) || '$0'}</div><div className="k">Open pipeline</div><div className="d">Est. loan value</div></div>
           {/* HOW MANY OF THESE CAME OUT OF ELEMENTIX — the whole point of the
               skip trace is that those contacts become workable leads, so the
@@ -310,7 +329,10 @@ export default function StaffLeads({ officerId = null, officerName = null }) {
           </div>
         )}
 
-        {/* Filters */}
+        {/* Filters — board/list only. The follow-up review is filtered by its own
+            piles ON THE SERVER, so leaving these on screen there would offer
+            controls that quietly do nothing to the list underneath them. */}
+        {view !== 'followups' && (
         <div className="row lead-filters" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <input className="input" style={{ flex: '1 1 260px', minWidth: 200, maxWidth: 380 }} type="search"
             placeholder="Search name, company, email, phone…" value={q} onChange={e => setQ(e.target.value)} />
@@ -364,10 +386,13 @@ export default function StaffLeads({ officerId = null, officerName = null }) {
             }}>Archive all “{origin.label}”</button>
           )}
         </div>
+        )}
 
-        {view === 'board'
-          ? <LeadBoard leads={shown} onOpen={(l) => nav(`/internal/leads/${l.id}`)} onStage={quickStage} actor={actor} />
-          : <LeadList leads={shown} onOpen={(l) => nav(`/internal/leads/${l.id}`)} actor={actor} />}
+        {view === 'followups'
+          ? <LeadFollowUps officerId={officerId} onChanged={load} />
+          : view === 'board'
+            ? <LeadBoard leads={shown} onOpen={(l) => nav(`/internal/leads/${l.id}`)} onStage={quickStage} actor={actor} />
+            : <LeadList leads={shown} onOpen={(l) => nav(`/internal/leads/${l.id}`)} actor={actor} />}
       </div>
 
       {addOpen && <AddLeadModal officers={officers} seesAll={seesAll} defaultOfficerId={officerId || ''}

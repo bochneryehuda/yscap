@@ -1443,14 +1443,18 @@ router.post('/applications/:id/orders/:kind/place', async (req, res, next) => {
     // broker manages the borrower relationship. The broker is still CC'd (they are the
     // file's loan officer), and vendor returns route back to us via the reply-to.
     const ccBorrower = false;
+    // The borrower's HELPER is off for the same reason and by the same rule — on a
+    // wholesale deal the broker owns the borrower relationship, so neither the
+    // borrower nor anyone they authorized is put on a broker-placed vendor thread.
+    const ccHelper = false;
     const built = orders.buildOrderEmail(kind, data, {});
-    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower });
+    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower, ccHelper });
     const me = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     const vendor = data.vendors[kind];
     const r = await orders.placeOrder({
       appId, kind, data, to, cc, replyTo, built, vendor,
       actorId: req.actor.id, actorName: me.full_name || me.email,
-      ccBorrower, force, existing,
+      ccBorrower, ccHelper, force, existing,
     });
     if (!r.ok) return res.status(r.httpStatus).json({ error: r.error, code: r.code });
     await tpoAudit(req, 'tpo_order_placed', 'application', appId, { kind, unconfirmed: !!r.ambiguous });

@@ -6774,18 +6774,20 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       }
       const built = orders.buildOrderEmail(kind, data, { followup: true, note: bodyText });
       const replyCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
-      const base = orders.recipientsFor(kind, data, { ccBorrower: replyCc });
+      const replyHelperCc = await ccHelperFor(appId, kind, { storedMeta: row.meta });
+      const base = orders.recipientsFor(kind, data, { ccBorrower: replyCc, ccHelper: replyHelperCc });
       /* KEEP EVERYONE THE VENDOR LOOPED IN (owner-directed 2026-08-07, extremely
          important). `recipientsFor` rebuilds To/Cc from the file's vendor contact plus
          the officer and processor — the vendor's own assistant, whom they CC'd on their
          reply, is not in that data at all, so every reply removed them.
          The BORROWER is deliberately NOT added this way: whether the borrower is on an
          order is governed by the owner-directed ccBorrower setting (off by default),
-         and a vendor's one-off Cc must not turn that into policy. */
+         and a vendor's one-off Cc must not turn that into policy. The borrower's
+         HELPER is on exactly the same footing, for exactly the same reason. */
       const parties = await threadParticipants.replyRecipients({
         applicationId: appId, msgTypes: [`${kind}_message`],
         to: base.to, cc: base.cc,
-        never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+        never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data)].filter(Boolean),
       });
       const { to, cc } = parties;
       const { replyTo } = base;
@@ -6997,6 +6999,35 @@ async function ccBorrowerFor(appId, kind, { explicit = null, storedMeta = null }
   return orders.ccBorrowerDefault(kind, loCcSetting);
 }
 
+/**
+ * WHETHER THE BORROWER'S HELPER IS ON THIS ORDER'S THREAD — the SAME shape, and
+ * for the same reason, as `ccBorrowerFor` above (owner-directed 2026-08-28: "when
+ * you order title and insurance and you have the option to CC the borrower, you
+ * should also be able to have an option to CC the helper as well if there is a
+ * borrower helper on file").
+ *
+ * A SECOND function rather than a second argument, deliberately: the two footings
+ * are independent choices (copy the helper, not the borrower — or the reverse), so
+ * each resolves its own explicit → stored → officer-default chain, and neither can
+ * quietly decide the other. Every door that writes to a vendor calls BOTH, so the
+ * helper can never join or leave the conversation halfway through it.
+ *
+ * Never throws: an unreadable officer setting falls through to the company default (off).
+ */
+async function ccHelperFor(appId, kind, { explicit = null, storedMeta = null } = {}) {
+  if (explicit != null) return !!explicit;
+  if (storedMeta && typeof storedMeta === 'object' && storedMeta.ccHelper != null) return !!storedMeta.ccHelper;
+  let loCcSetting = false;
+  try {
+    const key = orders.ccHelperSettingKey(kind); // TITLE vs INSURANCE — each has its own officer default
+    const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
+    if (key && lo.rows[0] && lo.rows[0].loan_officer_id) {
+      loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, key);
+    }
+  } catch (_) { /* the company default stands (off) */ }
+  return orders.ccHelperDefault(kind, loCcSetting);
+}
+
 // The whole Orders section for a file: both orders' state, whether each can be
 // placed (blockers), the vendor on file, and the returned documents waiting to be
 // classified. One call powers the panel.
@@ -7039,9 +7070,12 @@ router.get('/applications/:id/orders', async (req, res) => {
         loSettings = await require('../lib/lo-settings').getSettings(lo.rows[0].loan_officer_id);
       }
     } catch (_) { /* defaults stand (off) */ }
-    const storedCc = (k) => {
+    const storedMetaOf = (k) => {
       const row = orderOf(k);
-      const m = row && row.meta && typeof row.meta === 'object' ? row.meta : null;
+      return row && row.meta && typeof row.meta === 'object' ? row.meta : null;
+    };
+    const storedCc = (k) => {
+      const m = storedMetaOf(k);
       return m && m.ccBorrower != null ? !!m.ccBorrower : null;
     };
     const ccEffective = (k) => {
@@ -7049,6 +7083,15 @@ router.get('/applications/:id/orders', async (req, res) => {
       if (stored != null) return stored;
       const key = orders.ccBorrowerSettingKey(k);
       return orders.ccBorrowerDefault(k, key ? loSettings[key] === true : false);
+    };
+    /* THE HELPER'S OWN FOOTING (owner-directed 2026-08-28), resolved by the SAME
+       three steps and read from the SAME loSettings bag — so the checkbox the panel
+       paints is the choice the send would actually make. */
+    const ccHelperEffective = (k) => {
+      const m = storedMetaOf(k);
+      if (m && m.ccHelper != null) return !!m.ccHelper;
+      const key = orders.ccHelperSettingKey(k);
+      return orders.ccHelperDefault(k, key ? loSettings[key] === true : false);
     };
     // Returned documents per order (unassigned = no slot_label yet).
     const docs = (await db.query(
@@ -7199,8 +7242,9 @@ router.get('/applications/:id/orders', async (req, res) => {
 
     // Who an order will reach, so the panel can show it before sending.
     const recipientsPreview = (k) => {
-      const { to, cc, ccBorrower } = orders.recipientsFor(k, data, { ccBorrower: ccEffective(k) });
-      return { to, cc, ccBorrower };
+      const { to, cc, ccBorrower, ccHelper } = orders.recipientsFor(k, data,
+        { ccBorrower: ccEffective(k), ccHelper: ccHelperEffective(k) });
+      return { to, cc, ccBorrower, ccHelper };
     };
     res.json({
       file: {
@@ -7208,10 +7252,16 @@ router.get('/applications/:id/orders', async (req, res) => {
         propertyLine: data.propertyLine, borrowerName: data.borrowerName,
         borrowerEmail: data.borrowerEmail, coBorrowerEmail: data.coBorrowerEmail,
         officer: data.officer, processor: data.processor,
+        /* THE HELPERS ON THIS FILE — name + address, so the panel can offer the
+           CC-the-helper choice BY NAME and, on a file with none, not offer it at
+           all rather than show a checkbox that could never do anything. */
+        helpers: (data.helpers || []).map((h) => ({ name: h.name, email: h.email, forCoBorrower: !!h.forCoBorrower })),
       },
       orders: {
-        title: { ...shape('title'), recipients: recipientsPreview('title'), ccBorrower: ccEffective('title') },
-        insurance: { ...shape('insurance'), recipients: recipientsPreview('insurance'), ccBorrower: ccEffective('insurance') },
+        title: { ...shape('title'), recipients: recipientsPreview('title'),
+          ccBorrower: ccEffective('title'), ccHelper: ccHelperEffective('title') },
+        insurance: { ...shape('insurance'), recipients: recipientsPreview('insurance'),
+          ccBorrower: ccEffective('insurance'), ccHelper: ccHelperEffective('insurance') },
         // Tracking ONLY — everything else about the attorney order comes from its
         // own closing-prep payload, which owns the recipients, the package and the
         // chain. `null` until closing prep has actually been sent.
@@ -7258,17 +7308,21 @@ router.get('/applications/:id/orders/:kind/email-preview', async (req, res) => {
       `SELECT meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
     const explicit = req.query.ccBorrower === '1' || req.query.ccBorrower === 'true' ? true
       : (req.query.ccBorrower === '0' || req.query.ccBorrower === 'false' ? false : null);
+    const explicitHelper = req.query.ccHelper === '1' || req.query.ccHelper === 'true' ? true
+      : (req.query.ccHelper === '0' || req.query.ccHelper === 'false' ? false : null);
     // A follow-up keeps the footing the order was placed with (no explicit override —
-    // exactly the follow-up send's own rule).
+    // exactly the follow-up send's own rule). Both footings, resolved the same way.
     const ccBorrower = await ccBorrowerFor(appId, kind,
       followup ? { storedMeta: row && row.meta } : { explicit, storedMeta: row && row.meta });
-    const base = orders.recipientsFor(kind, data, { ccBorrower });
+    const ccHelper = await ccHelperFor(appId, kind,
+      followup ? { storedMeta: row && row.meta } : { explicit: explicitHelper, storedMeta: row && row.meta });
+    const base = orders.recipientsFor(kind, data, { ccBorrower, ccHelper });
     let { to, cc } = base;
     if (followup) {
       const parties = await threadParticipants.replyRecipients({
         applicationId: appId, msgTypes: [`${kind}_message`],
         to: base.to, cc: base.cc,
-        never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+        never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data)].filter(Boolean),
       });
       to = parties.to; cc = parties.cc;
     }
@@ -7316,6 +7370,13 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
       explicit: req.body && req.body.ccBorrower != null ? req.body.ccBorrower : null,
       storedMeta: existing && existing.meta,
     });
+    // The BORROWER'S HELPER, on its own explicit → stored → officer-default chain
+    // (owner-directed 2026-08-28). Persisted alongside the borrower's choice so a
+    // follow-up on this order keeps both footings.
+    const ccHelper = await ccHelperFor(appId, kind, {
+      explicit: req.body && req.body.ccHelper != null ? req.body.ccHelper : null,
+      storedMeta: existing && existing.meta,
+    });
 
     // A hand-edited subject/body from the preview modal lands through the ONE
     // manual-override chokepoint (owner-directed 2026-08-26); no override → the
@@ -7323,7 +7384,7 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     const built = require('../lib/email/manual-override').applyOverride(
       orders.buildOrderEmail(kind, data, {}), req.body && req.body.override,
       { title: `${kind === 'title' ? 'Title' : 'Insurance'} order`, replyable: true });
-    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower });
+    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower, ccHelper });
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     const vendor = data.vendors[kind];
 
@@ -7352,7 +7413,7 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     const r = await orders.placeOrder({
       appId, kind, data, to, cc, replyTo, built, vendor,
       actorId: req.actor.id, actorName: meRow.full_name || meRow.email,
-      ccBorrower, force, existing,
+      ccBorrower, ccHelper, force, existing,
     });
     if (!r.ok) {
       return res.status(r.httpStatus).json({ error: r.error, code: r.code,
@@ -7360,11 +7421,11 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     }
     // Audit and the response are best-effort — a failure here must never report a placed
     // order as failed.
-    try { await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force, ccBorrower, unconfirmed: !!r.ambiguous }); } catch (_) { /* recorded either way */ }
+    try { await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force, ccBorrower, ccHelper, unconfirmed: !!r.ambiguous }); } catch (_) { /* recorded either way */ }
     if (r.ambiguous) {
-      return res.json({ ok: true, unconfirmed: true, warning: r.warning, sent_to: to, cc, ccBorrower });
+      return res.json({ ok: true, unconfirmed: true, warning: r.warning, sent_to: to, cc, ccBorrower, ccHelper });
     }
-    res.json({ ok: true, sent_to: to, cc, ccBorrower });
+    res.json({ ok: true, sent_to: to, cc, ccBorrower, ccHelper });
   } catch (e) { res.status(500).json({ error: 'Could not send the order.' }); }
 });
 
@@ -7416,6 +7477,10 @@ router.post('/applications/:id/orders/:kind/schedule', async (req, res) => {
     // at send time rather than being frozen to whatever it happened to be tonight.
     const payload = { force: !!force };
     if (b.ccBorrower != null) payload.ccBorrower = b.ccBorrower === true || b.ccBorrower === 'true';
+    // Same rule for the helper's footing: carried only when a person actually chose,
+    // so an untouched checkbox still resolves through the officer's own default at
+    // send time rather than being frozen to tonight's value.
+    if (b.ccHelper != null) payload.ccHelper = b.ccHelper === true || b.ccHelper === 'true';
     // A subject/body edited in the preview rides the stored intent — the dispatcher's
     // re-post lands it through the place route's own applyOverride door (the same
     // contract as the tape / closing-prep / investor-delivery schedulers).
@@ -7500,13 +7565,15 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     // the same LO-setting default the place door uses, so the thread's footing
     // matches what a fresh order would do (pre-merge audit #6).
     const fuCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
-    const fuBase = orders.recipientsFor(kind, data, { ccBorrower: fuCc });
+    const fuHelperCc = await ccHelperFor(appId, kind, { storedMeta: row.meta });
+    const fuBase = orders.recipientsFor(kind, data, { ccBorrower: fuCc, ccHelper: fuHelperCc });
     // Same rule as the reply door above: a follow-up must not drop the party the vendor
-    // looped in. The borrower stays governed by the ccBorrower setting alone.
+    // looped in. The borrower — and the borrower's HELPER — stay governed by their own
+    // settings alone, so a vendor's one-off Cc of either can never turn into policy.
     const fuParties = await threadParticipants.replyRecipients({
       applicationId: appId, msgTypes: [`${kind}_message`],
       to: fuBase.to, cc: fuBase.cc,
-      never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+      never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data)].filter(Boolean),
     });
     const { to, cc } = fuParties;
     const { replyTo } = fuBase;
@@ -17588,6 +17655,117 @@ router.get('/term-sheet-offers', async (req, res) => {
         WHERE o.officer_id = $1
         ORDER BY o.created_at DESC LIMIT 100`, [req.actor.id]);
     res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   REVIEW THE LEADS BY FOLLOW-UP DATE (owner-directed 2026-08-28: "on the lead
+   side need a system to review leads per follow up date").
+
+   The CRM has carried `next_follow_up` since db/100 and showed it in two places —
+   a column in the list, a "● due" dot on a board card. Neither is a way to WORK
+   the day. This is: the whole book, split into the piles an officer actually
+   works — what SLIPPED, what is due today, what lands tomorrow, what is coming
+   this week, what is further out, and the pile nobody builds and everybody needs:
+   the open leads with NO next step at all.
+
+   THREE THINGS ABOUT HOW IT IS BUILT, each of them the reason it is a route and
+   not a browser-side filter over the board:
+
+   1. THE COUNTS ARE THE WHOLE DESK'S, NOT THE PAGE'S. `GET /leads` is capped at
+      500 rows; an officer with a real book would be told "3 overdue" while 40 sat
+      past row 500. Both the counts and the rows here are taken over the officer's
+      ENTIRE visible scope, in one grouped read and one page read.
+   2. THE SCOPE IS THE FLOOR, and the filters sit inside it — `visibleLeadSql`, the
+      same one definition GET /leads and PATCH /leads/:id ask, so this can only ever
+      show somebody leads they could already see. `officerId` narrows further (the
+      admin CRM desk reading one officer's book) and can only ever narrow: for a
+      plain officer it ANDs with their own scope and returns nothing.
+   3. "TODAY" IS THE TEAM'S DAY, not the server's. Render runs in UTC, so asking
+      Postgres for `current_date` would move every officer's list at 8pm New York
+      time and call tomorrow's work overdue. `order-sla.nyDay()` is the ONE
+      definition of the team's calendar day here, and it is passed to Postgres as a
+      bound parameter — so the buckets the browser paints, the counts and the rows
+      are all measured against the same single day.
+
+   The piles themselves are `src/lib/lead-followup.js` — one definition, shared by
+   the CASE that counts them and the WHERE that selects one, which is what stops
+   "overdue" meaning one thing in a tab and another in the list under it. */
+router.get('/leads/follow-ups', async (req, res) => {
+  try {
+    const followup = require('../lib/lead-followup');
+    const today = require('../lib/order-sla').nyDay();
+
+    const params = [today];
+    const conds = [];
+    if (!seesAll(req)) { params.push(req.actor.id); conds.push(visibleLeadSql('l', `$${params.length}`)); }
+    const officerId = typeof req.query.officerId === 'string' ? req.query.officerId.trim() : '';
+    if (officerId) {
+      // Validated before Postgres sees it: `leads.officer_id` is uuid, so a malformed
+      // value raises 22P02 and the whole desk answers 500 — an empty screen that reads
+      // as "you have no follow-ups", which on THIS screen means "nothing is late".
+      if (!UUID_RE.test(officerId)) return res.status(400).json({ error: 'invalid officerId' });
+      params.push(officerId);
+      conds.push(`l.officer_id=$${params.length}`);
+    }
+    // A CLOSED lead owes no follow-up, whatever date is still sitting on the row —
+    // the same open-stage set the board's own scope filter uses.
+    params.push(followup.OPEN_STAGES);
+    conds.push(`l.status = ANY($${params.length}::text[])`);
+    const where = `WHERE ${conds.join(' AND ')}`;
+
+    // The counts behind the tabs — one grouped read over the WHOLE scope. Every
+    // bucket is present at zero as well as at forty: "nothing overdue" is an answer
+    // an officer is entitled to see, not a tab that quietly is not there.
+    const counts = Object.fromEntries(followup.BUCKET_KEYS.map((k) => [k, 0]));
+    const cr = await db.query(
+      `SELECT ${followup.bucketCaseSql('l', '$1')} AS bucket, count(*)::int AS count
+         FROM leads l ${where} GROUP BY 1`, params);
+    for (const row of cr.rows) if (counts[row.bucket] != null) counts[row.bucket] = row.count;
+
+    // The rows for ONE pile (default: what is actually on the officer now — overdue
+    // and today together, oldest date first, so the most-slipped lead is at the top).
+    const bucket = followup.normalizeBucket(req.query.bucket);
+    const rowParams = params.slice();
+    let bucketWhere;
+    if (bucket) {
+      bucketWhere = followup.bucketSql('l', bucket, '$1');
+    } else {
+      bucketWhere = `(${followup.DUE_NOW_BUCKETS.map((k) => followup.bucketSql('l', k, '$1')).join(' OR ')})`;
+    }
+    const r = await db.query(
+      `SELECT l.id, l.name, l.first_name, l.last_name, l.company, l.email, l.phone, l.phone_alt,
+              l.status, l.officer_id, l.next_follow_up, l.last_activity_at, l.created_at,
+              l.loan_amount, l.program, l.property_address, l.source, l.tool, l.lead_source,
+              s.full_name AS officer_name,
+              ${followup.bucketCaseSql('l', '$1')} AS bucket,
+              (SELECT count(*)::int FROM lead_tasks lt WHERE lt.lead_id=l.id AND lt.done=false) AS open_tasks,
+              -- WHEN SOMEBODY LAST ACTUALLY TOUCHED IT. last_activity_at moves on
+              -- system writes too, so the review also carries the last time a HUMAN
+              -- logged a call/email/note — which is the number that tells an officer
+              -- whether a lead has really been worked or has merely been edited.
+              (SELECT max(la.occurred_at) FROM lead_activities la
+                WHERE la.lead_id=l.id AND la.activity_type IN ('call','email','sms','meeting','note')) AS last_touch_at
+         FROM leads l LEFT JOIN staff_users s ON s.id=l.officer_id
+        ${where} AND ${bucketWhere}
+        -- Oldest date first: the lead that slipped furthest is the one to call.
+        -- A dateless lead has nothing to sort by, so it falls back to how long it
+        -- has been sitting there, which is the same question in another form.
+        ORDER BY l.next_follow_up ASC NULLS LAST,
+                 COALESCE(l.last_activity_at, l.created_at) ASC
+        LIMIT 300`, rowParams);
+
+    res.json({
+      today,
+      bucket: bucket || null,
+      buckets: followup.BUCKETS,
+      counts,
+      // The one number a badge anywhere else may show: what is actually on the
+      // officer now. Never "everything with a date" — a lead due next Thursday is
+      // not an unanswered task.
+      dueNow: followup.DUE_NOW_BUCKETS.reduce((n, k) => n + (counts[k] || 0), 0),
+      rows: r.rows,
+    });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

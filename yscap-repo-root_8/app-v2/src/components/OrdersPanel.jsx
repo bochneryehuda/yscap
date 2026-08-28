@@ -492,6 +492,16 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
   // server returns the effective default; null = not yet loaded.
   const [ccBorrower, setCcBorrower] = useState(order.ccBorrower != null ? !!order.ccBorrower : null);
   useEffect(() => { if (order.ccBorrower != null) setCcBorrower((prev) => (prev == null ? !!order.ccBorrower : prev)); }, [order.ccBorrower]);
+  /* THE BORROWER'S HELPER (owner-directed 2026-08-28) — its OWN choice, never a
+     rider on the borrower's, so an officer can copy the helper without copying the
+     borrower. The server sends the effective default; null = not yet loaded. */
+  const [ccHelper, setCcHelper] = useState(order.ccHelper != null ? !!order.ccHelper : null);
+  useEffect(() => { if (order.ccHelper != null) setCcHelper((prev) => (prev == null ? !!order.ccHelper : prev)); }, [order.ccHelper]);
+  // WHO the helper is — the file's own list. No helper on file ⇒ no checkbox at all,
+  // rather than one that could never do anything.
+  const helpers = (file && Array.isArray(file.helpers) ? file.helpers : []);
+  const helperEmails = helpers.map((h) => String(h.email || '').toLowerCase()).filter(Boolean);
+  const helperNames = helpers.map((h) => h.name || h.email).filter(Boolean).join(', ');
 
   const blockers = order.blockers || [];
   const needsLoan = blockers.includes('loan_number');
@@ -511,7 +521,10 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
   const borrowerEmails = [file && file.borrowerEmail, file && file.coBorrowerEmail]
     .filter(Boolean).map((e) => String(e).toLowerCase());
   const recips = (() => {
-    const cc = (recipsRaw.cc || []).filter((e) => !borrowerEmails.includes(String(e).toLowerCase()));
+    const cc = (recipsRaw.cc || [])
+      .filter((e) => !borrowerEmails.includes(String(e).toLowerCase()))
+      .filter((e) => !helperEmails.includes(String(e).toLowerCase()));
+    if (ccHelper) for (const e of helperEmails) if (!cc.includes(e)) cc.unshift(e);
     if (ccBorrower) for (const e of borrowerEmails) if (!cc.includes(e)) cc.unshift(e);
     return { to: recipsRaw.to || [], cc };
   })();
@@ -532,6 +545,7 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
     const body = { day, time };
     if (placed) body.force = true;
     if (ccBorrower != null) body.ccBorrower = !!ccBorrower;
+    if (helpers.length && ccHelper != null) body.ccHelper = !!ccHelper;
     // An edit approved in the preview rides the stored intent (post-merge audit):
     // scheduling must never quietly drop wording the person already approved.
     if (override) body.override = override;
@@ -559,7 +573,10 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
       // the order was placed with, so it sends no explicit choice.
       const q = mode === 'followup'
         ? { followup: '1', ...(followMsg.trim() ? { note: followMsg.trim() } : {}) }
-        : (ccBorrower != null ? { ccBorrower: ccBorrower ? '1' : '0' } : null);
+        : {
+          ...(ccBorrower != null ? { ccBorrower: ccBorrower ? '1' : '0' } : {}),
+          ...(helpers.length && ccHelper != null ? { ccHelper: ccHelper ? '1' : '0' } : {}),
+        };
       const pv = await api.staffOrderEmailPreview(appId, kind, q);
       setPreview({ mode, force: !!force, subject: pv.subject || '', text: pv.text || '', to: pv.to || [], cc: pv.cc || [] });
     } catch (e) {
@@ -572,6 +589,7 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
       const body = force ? { force: true } : {};
       if (override) body.override = override;
       if (ccBorrower != null) body.ccBorrower = !!ccBorrower;
+      if (helpers.length && ccHelper != null) body.ccHelper = !!ccHelper;
       const r = await api.staffPlaceOrder(appId, kind, body);
       // AN UNCONFIRMED SEND IS NOT A GREEN TICK. The server distinguishes a send
       // the provider ACCEPTED from one it stopped responding to mid-flight
@@ -682,6 +700,20 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
         </label>
       )}
 
+      {/* AND THE BORROWER'S HELPER (owner-directed 2026-08-28: "you should also be
+          able to have an option to CC the helper as well if there is a borrower
+          helper on file"). Only shown when this file actually HAS a helper — a
+          checkbox that can never do anything is worse than no checkbox — and it is a
+          separate choice from the borrower's, so the helper can be on the thread
+          while the borrower is not. */}
+      {!placed && helpers.length > 0 && (
+        <label className="row small" style={{ gap: 6, marginBottom: 6, alignItems: 'center', color: '#4B585C' }}>
+          <input type="checkbox" checked={!!ccHelper} disabled={!!busy}
+            onChange={(e) => setCcHelper(e.target.checked)} />
+          <span>CC the borrower’s helper{helpers.length > 1 ? 's' : ''} on this {kind} order email — <b style={{ color: '#141B22' }}>{helperNames}</b> (off by default; separate from CC’ing the borrower)</span>
+        </label>
+      )}
+
       {order.condition && <div className="muted small" style={{ marginBottom: 6 }}>Documents file into the <b style={{ color: 'var(--ivory,#141B22)' }}>{order.condition.label}</b> condition{order.condition.status ? ` (${order.condition.status})` : ''}.</div>}
 
       {order.orderedAt && <div className="muted small" style={{ marginBottom: 6 }}>Ordered {when(order.orderedAt)}{order.lastFollowupAt ? ` · last follow-up ${when(order.lastFollowupAt)}` : ''}</div>}
@@ -727,7 +759,7 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
         )}
         {!placed && !blocked && (
           <span className="muted small" style={{ alignSelf: 'center' }}>
-            Emails the {CONTACT_ASK[kind]}, cc’ing the loan officer and processor{ccBorrower ? ' — and the borrower' : ''}.
+            Emails the {CONTACT_ASK[kind]}, cc’ing the loan officer and processor{ccBorrower ? ' — and the borrower' : ''}{ccHelper && helpers.length ? `${ccBorrower ? ' and' : ' — and'} the borrower’s helper` : ''}.
           </span>
         )}
         {placed && (

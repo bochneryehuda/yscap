@@ -1570,6 +1570,10 @@ export const api = {
   // the person asking could already see: a loan officer who sends somebody
   // else's id gets an empty list, never their desk.
   staffLeads:       (params) => req('GET', '/api/staff/leads' + qs(params)),
+  // The follow-up review desk (owner-directed 2026-08-28): the officer's whole book
+  // split into piles by next follow-up date, counted on the SERVER over the whole
+  // scope — never over the 500-row page `staffLeads` returns.
+  staffLeadFollowUps: (params) => req('GET', '/api/staff/leads/follow-ups' + qs(params)),
   staffLeadsBulkArchive: (filters) => req('POST', '/api/staff/leads/bulk-archive', filters),
   staffCreateLead:  (b) => req('POST', '/api/staff/leads', b),
   staffLead:        (id) => req('GET', `/api/staff/leads/${id}`),
