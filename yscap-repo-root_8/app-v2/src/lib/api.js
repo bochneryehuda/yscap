@@ -775,6 +775,12 @@ export const api = {
   staffVestingLlcOwners: (id) => req('GET', `/api/staff/applications/${id}/vesting-llc-owners`),
   staffSetVestingLlcOwners: (id, owners) => req('POST', `/api/staff/applications/${id}/vesting-llc-owners`, { owners }),
   staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
+  // The login-free outstanding-conditions outreach (owner-directed 2026-08-28):
+  // preview + recipients (helpers included), the send (one personal link per
+  // recipient), and the kill switch on a link that shouldn't be out there.
+  conditionsOutreachPreview: (id, note) => req('GET', `/api/staff/applications/${id}/conditions/outreach${note ? `?note=${encodeURIComponent(note)}` : ''}`),
+  conditionsOutreachSend:    (id, body) => req('POST', `/api/staff/applications/${id}/conditions/outreach`, body),
+  conditionsOutreachRevoke:  (id, linkId) => req('POST', `/api/staff/applications/${id}/conditions/outreach/${linkId}/revoke`),
 
   // Encompass sync (READ-ONLY per-file reconcile). status = summary; findings =
   // the full field-by-field comparison (live data); refresh = re-pull read-only;

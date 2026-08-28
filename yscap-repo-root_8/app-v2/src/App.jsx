@@ -15,6 +15,7 @@ import Accept from './screens/Accept.jsx';
 import AssistantAccept from './screens/AssistantAccept.jsx';
 import Helpers from './screens/Helpers.jsx';
 import GuestChat from './screens/GuestChat.jsx';
+import GuestConditions from './screens/GuestConditions.jsx';
 import DrawAccept from './screens/DrawAccept.jsx';
 import AcceptTerms from './screens/AcceptTerms.jsx';
 import EsignDone from './screens/EsignDone.jsx';
@@ -211,6 +212,9 @@ export default function App() {
               redirect keeps an old bookmark or a saved link working. */}
           <Route path="/assistant/login" element={<Navigate to="/login" replace />} />
           {/* #75 — magic-link guest chat for external email participants (no login). */}
+          {/* The login-free condition center (owner-directed 2026-08-28) MUST be
+              matched BEFORE /guest/:key, or its path reads as a chat key. */}
+          <Route path="/guest/conditions" element={<GuestConditions />} />
           <Route path="/guest/:key" element={<GuestChat />} />
           <Route path="/draw-accept/:token" element={<DrawAccept />} />
           {/* An officer's emailed term sheet: see the terms, create a password,

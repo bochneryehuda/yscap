@@ -220,9 +220,18 @@ function _fmtItem(label, detail) {
 const NOT_BORROWER_OUTSTANDING = ['rtl_p1_product'];
 const NOT_BORROWER_OUTSTANDING_TOOLS = ['product_pricing'];
 
-async function outstandingItems(appId, client = db) {
+/**
+ * The STRUCTURED outstanding rows — the same borrower-facing definition as
+ * `outstandingItems` below (which is now a thin map over this), with each row's
+ * id and kind kept, so a surface that needs to LINK to an item (the guest
+ * condition-center email, owner-directed 2026-08-28) reads the same list every
+ * other surface reads instead of growing its own copy of the rule.
+ * Returns [{ id, kind:'checklist'|'condition', label, detail }].
+ */
+async function outstandingItemRows(appId, client = db) {
   const items = await client.query(
-    `SELECT COALESCE(NULLIF(ci.borrower_label,''), 'An item your loan team needs') AS label,
+    `SELECT ci.id, 'checklist' AS kind, ci.tool_key,
+            COALESCE(NULLIF(ci.borrower_label,''), 'An item your loan team needs') AS label,
             CASE WHEN ci.status='issue' AND ci.issue_reason IS NOT NULL THEN 'sent back — ' || ci.issue_reason
                  ELSE ci.borrower_hint END AS detail
        FROM checklist_items ci
@@ -255,11 +264,19 @@ async function outstandingItems(appId, client = db) {
     // An unordered LIMIT 30 meant a borrower with more than 30 open conditions saw an arbitrary 30
     // that could differ between the email and the screen, and between one email and the next: items
     // appearing to vanish and reappear with nothing actually changing on their file.
-    `SELECT borrower_title AS label, borrower_detail AS detail FROM conditions
+    `SELECT id, 'condition' AS kind, borrower_title AS label, borrower_detail AS detail FROM conditions
       WHERE application_id=$1 AND audience IN ('borrower','both') AND borrower_title IS NOT NULL
         AND status IN ('open','borrower_responded')
       ORDER BY created_at, id LIMIT 30`, [appId]);
-  return [...items.rows, ...conds.rows].map((r) => _fmtItem(r.label, r.detail)).filter(Boolean);
+  return [...items.rows, ...conds.rows]
+    .filter((r) => String(r.label || '').trim())
+    .map((r) => ({ id: r.id, kind: r.kind, toolKey: r.tool_key || null, label: String(r.label).trim(),
+      detail: r.detail == null ? null : String(r.detail).replace(/\s+/g, ' ').trim() || null }));
+}
+
+async function outstandingItems(appId, client = db) {
+  const rows = await outstandingItemRows(appId, client);
+  return rows.map((r) => _fmtItem(r.label, r.detail)).filter(Boolean);
 }
 
 async function listForApplication(appId, client = db) {
@@ -526,7 +543,7 @@ function startDispatcher() {
 }
 
 module.exports = {
-  resolveRecipients, contactsForApplication, outstandingItems,
+  resolveRecipients, contactsForApplication, outstandingItems, outstandingItemRows,
   listForApplication, create, update, remove,
   dispatchDue, startDispatcher,
   nextDue, PRIORITIES, RECURS,

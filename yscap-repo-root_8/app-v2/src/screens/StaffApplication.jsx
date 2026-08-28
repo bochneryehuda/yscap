@@ -85,6 +85,7 @@ import DocPreview from '../components/DocPreview.jsx';
 import ReminderModal from '../components/ReminderModal.jsx';
 import FileTasksPanel from '../components/FileTasksPanel.jsx';
 import DraftingPanel from '../components/DraftingPanel.jsx';
+import SendOutstanding from '../components/SendOutstanding.jsx';
 import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import LoudHint from '../components/LoudHint.jsx';
@@ -6385,6 +6386,10 @@ export default function StaffApplication() {
       })()}
 
       {condTab === 'borrower' && <>
+        {/* The login-free outreach (owner-directed 2026-08-28): email the borrower
+            their outstanding items with a personal link — every condition gets its
+            own Upload / Fill-in button, no login needed. */}
+        <SendOutstanding appId={id} onSent={load} />
         <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
           team={team} canImportCredit={can('pull_credit')} fullscreen={full}
           closingActive={!!app.closer_id || ['clear_to_close', 'funded'].includes(app.status)}

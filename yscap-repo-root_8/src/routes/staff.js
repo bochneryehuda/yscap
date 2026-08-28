@@ -4828,6 +4828,173 @@ router.get('/applications/:id/overview-card', async (req, res) => {
   res.json(card);
 });
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   SEND THE OUTSTANDING CONDITIONS TO THE BORROWER — the login-free door
+   (owner-directed 2026-08-28: "on our staff site condition center, we should
+   have a button to click to send outstanding conditions to the borrower …
+   it should populate the preview and to whom it's sending. You should be able
+   to loop in over there the helpers and other people and review before
+   sending. And obviously, you should have this reply to email, so go directly
+   back into the file that opens up the email chain").
+
+   Every recipient gets their OWN emailed link (src/lib/condition-link.js): a
+   personal, expiring capability that opens the simple guest condition center
+   for THIS file — upload buttons on every condition, fill-in for information
+   items, no account, no password. The email's Reply-To is the file's own
+   address, so a plain reply lands in the file's email chain.
+
+   THE LIST IS THE ONE BORROWER-OUTSTANDING DEFINITION — reminders'
+   outstandingItemRows, the same read behind the outstanding-items email and
+   the portal's own list — so what this email asks for and what every other
+   surface asks for can never be two different lists.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+// The preview: what would be sent, to whom it could go, and the links already out.
+router.get('/applications/:id/conditions/outreach', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const conditionLink = require('../lib/condition-link');
+    const items = await require('../lib/reminders').outstandingItemRows(appId);
+    const a = (await db.query(
+      `SELECT a.id, a.ys_loan_number, a.property_address, a.borrower_id, a.co_borrower_id,
+              b.first_name AS b_first, b.last_name AS b_last, b.email AS b_email,
+              cb.first_name AS c_first, cb.last_name AS c_last, cb.email AS c_email,
+              lo.full_name AS lo_name, lo.title AS lo_title, lo.email AS lo_email,
+              lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls
+         FROM applications a
+         JOIN borrowers b ON b.id=a.borrower_id
+         LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
+         LEFT JOIN staff_users lo ON lo.id=a.loan_officer_id AND lo.is_active
+        WHERE a.id=$1 AND a.deleted_at IS NULL`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    // Who this can go to: the borrower(s) and every ACTIVE helper — plus any
+    // extra address the sender types on the screen (sent as the PRIMARY
+    // borrower's view, which the screen says out loud).
+    const recipients = [];
+    if (a.b_email) recipients.push({ email: String(a.b_email).toLowerCase(), name: [a.b_first, a.b_last].filter(Boolean).join(' ') || a.b_email, kind: 'borrower', borrowerId: a.borrower_id });
+    if (a.c_email) recipients.push({ email: String(a.c_email).toLowerCase(), name: [a.c_first, a.c_last].filter(Boolean).join(' ') || a.c_email, kind: 'co_borrower', borrowerId: a.co_borrower_id });
+    const helpers = (await db.query(
+      `SELECT lower(email) AS email, name, borrower_id FROM borrower_assistants
+        WHERE borrower_id = ANY($1::uuid[]) AND disabled_at IS NULL ORDER BY created_at`,
+      [[a.borrower_id, a.co_borrower_id].filter(Boolean)])).rows;
+    for (const h of helpers) {
+      if (recipients.some((r) => r.email === h.email)) continue;
+      recipients.push({ email: h.email, name: h.name || h.email, kind: 'helper', borrowerId: h.borrower_id });
+    }
+    // What has already gone out, so the desk shows whether a link was opened.
+    const prior = (await db.query(
+      `SELECT id, sent_to_email, created_at, expires_at, revoked_at, last_used_at, use_count
+         FROM condition_links WHERE application_id=$1 ORDER BY created_at DESC LIMIT 12`, [appId])).rows;
+    // The preview body — built exactly as the send builds it, with a placeholder
+    // where each recipient's own secure button will go.
+    const data = {
+      loanNumber: a.ys_loan_number ? String(a.ys_loan_number).toUpperCase() : '',
+      propertyLine: require('../lib/orders').propertyLine ? require('../lib/orders').propertyLine(a.property_address) : ((a.property_address || {}).oneLine || ''),
+      firstName: a.b_first || null,
+      officer: a.lo_name ? { name: a.lo_name, title: a.lo_title || 'Loan Officer', email: a.lo_email, phone: a.lo_cell || a.lo_phone || null, nmls: a.lo_nmls || null } : null,
+    };
+    const note = typeof req.query.note === 'string' ? req.query.note.slice(0, 2000) : '';
+    const built = conditionLink.buildOutstandingEmail({ items, token: 'preview', data, note });
+    res.json({
+      items, recipients, prior,
+      replyTo: require('../lib/file-address').fileReplyTo(appId),
+      preview: require('../lib/email/manual-override').previewShape(built, { to: recipients.map((r) => r.email), cc: [] }),
+    });
+  } catch (e) { res.status(500).json({ error: 'Could not build the outstanding-conditions preview.' }); }
+});
+
+// The send: one email per chosen recipient, each with its OWN link.
+router.post('/applications/:id/conditions/outreach', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const conditionLink = require('../lib/condition-link');
+    const b = req.body || {};
+    const wanted = Array.isArray(b.emails) ? b.emails.map((e) => String(e || '').trim().toLowerCase()).filter(Boolean) : [];
+    if (!wanted.length) return res.status(400).json({ error: 'Pick at least one recipient.' });
+    if (wanted.length > 8) return res.status(400).json({ error: 'Pick up to 8 recipients.' });
+    for (const e of wanted) {
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return res.status(400).json({ error: `"${e}" is not a valid email address.` });
+    }
+    const items = await require('../lib/reminders').outstandingItemRows(appId);
+    if (!items.length) return res.status(409).json({ error: 'Nothing is outstanding for the borrower on this file — there is nothing to send.' });
+    const a = (await db.query(
+      `SELECT a.id, a.ys_loan_number, a.property_address, a.borrower_id, a.co_borrower_id, a.status,
+              b.first_name AS b_first, b.email AS b_email,
+              cb.first_name AS c_first, cb.email AS c_email,
+              lo.full_name AS lo_name, lo.title AS lo_title, lo.email AS lo_email,
+              lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls
+         FROM applications a
+         JOIN borrowers b ON b.id=a.borrower_id
+         LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
+         LEFT JOIN staff_users lo ON lo.id=a.loan_officer_id AND lo.is_active
+        WHERE a.id=$1 AND a.deleted_at IS NULL`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    // A parked file sends nothing — the same rule the borrower notify chokepoint
+    // applies (a held file must stop emailing its borrower).
+    if (String(a.status) === 'on_hold') return res.status(409).json({ error: 'This file is on hold — outstanding-conditions emails do not go out from a parked file.' });
+    // WHOSE VIEW each address opens: the co-borrower and the co-borrower's own
+    // helper get the CO-BORROWER's identity (per-borrower privacy, #82); every
+    // other address — the primary, their helpers, and any extra address the
+    // sender typed — gets the primary borrower's view.
+    const coEmails = new Set();
+    if (a.c_email) coEmails.add(String(a.c_email).toLowerCase());
+    if (a.co_borrower_id) {
+      const ch = await db.query(
+        `SELECT lower(email) AS email FROM borrower_assistants WHERE borrower_id=$1 AND disabled_at IS NULL`,
+        [a.co_borrower_id]);
+      for (const r of ch.rows) coEmails.add(r.email);
+    }
+    const note = typeof b.note === 'string' ? b.note.slice(0, 2000) : '';
+    const data = {
+      loanNumber: a.ys_loan_number ? String(a.ys_loan_number).toUpperCase() : '',
+      propertyLine: (a.property_address || {}).oneLine || require('../lib/orders').propertyLine(a.property_address),
+      officer: a.lo_name ? { name: a.lo_name, title: a.lo_title || 'Loan Officer', email: a.lo_email, phone: a.lo_cell || a.lo_phone || null, nmls: a.lo_nmls || null } : null,
+    };
+    const replyTo = require('../lib/file-address').fileReplyTo(appId);
+    const email = require('../lib/email');
+    const sent = [], failed = [];
+    for (const to of wanted) {
+      try {
+        const borrowerId = coEmails.has(to) ? a.co_borrower_id : a.borrower_id;
+        const { token } = await conditionLink.mintLink({ applicationId: appId, borrowerId, email: to, createdBy: req.actor.id });
+        const firstName = to === String(a.b_email || '').toLowerCase() ? a.b_first
+          : to === String(a.c_email || '').toLowerCase() ? a.c_first : null;
+        const built = conditionLink.buildOutstandingEmail({ items, token, data: { ...data, firstName }, note });
+        const r = await email.sendMail({
+          to, subject: built.subject, html: built.html, text: built.text,
+          replyTo,
+          from: a.lo_name && email.fromWithName ? email.fromWithName(a.lo_name) : undefined,
+          _ctx: { applicationId: appId, type: 'conditions_outreach', audience: 'borrower' },
+        });
+        if (r && r.ok) sent.push(to);
+        else failed.push({ email: to, reason: r && r.skipped ? 'Email sending is turned off in this environment.' : 'The email provider did not accept it.' });
+      } catch (e) {
+        failed.push({ email: to, reason: 'The email could not be sent.' });
+      }
+    }
+    await audit(req, 'conditions_outreach_sent', 'application', appId, { sent: sent.length, failed: failed.length, items: items.length });
+    if (!sent.length) return res.status(502).json({ error: failed[0] ? failed[0].reason : 'Nothing could be sent.', failed });
+    res.json({ ok: true, sent, failed, items: items.length });
+  } catch (e) { res.status(500).json({ error: 'Could not send the outstanding-conditions email.' }); }
+});
+
+// Revoke a link (the email was forwarded, the deal went sideways — kill it now).
+router.post('/applications/:id/conditions/outreach/:linkId/revoke', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const r = await db.query(
+      `UPDATE condition_links SET revoked_at=now(), revoked_by=$3
+        WHERE id=$2 AND application_id=$1 AND revoked_at IS NULL RETURNING id, sent_to_email`,
+      [appId, req.params.linkId, req.actor.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'link not found (or already revoked)' });
+    await audit(req, 'conditions_outreach_revoked', 'application', appId, { linkId: req.params.linkId, email: r.rows[0].sent_to_email });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'Could not revoke that link.' }); }
+});
+
 router.get('/applications/:id/checklist', async (req, res) => {
   // Recompute the experience/track-record condition from the file's current
   // requested experience + verified counts BEFORE reading the checklist — same as
