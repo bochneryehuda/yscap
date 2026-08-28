@@ -931,6 +931,17 @@ function buildPipelineFilter(req, q) {
 
     if (q.program) where.push(`a.program = ${add(String(q.program))}`);
     if (q.loanType) where.push(`a.loan_type = ${add(String(q.loanType))}`);
+    /* THE INVESTOR FILTER (owner-directed 2026-08-28: "searching by investors …
+       I can search this investor for everything that still needs to be sold").
+       Matched on the NORMALIZED note-buyer key with the same prefix discipline
+       the note-buyer helpers use, so picking "RCN" finds "RCN Capital, LLC"
+       however the label was typed. Bound as a LIKE value, never interpolated. */
+    if (q.investor !== undefined && String(q.investor).trim() !== '') {
+      const key = require('../lib/conditions/field-registry').normNoteBuyer(String(q.investor).slice(0, 80));
+      if (key) {
+        where.push(`regexp_replace(lower(COALESCE(a.lender,'')), '[^a-z0-9]', '', 'g') LIKE ${add(key + '%')}`);
+      }
+    }
     // Free-text search across borrower name, YS loan number, and property address.
     // One bound ILIKE value, matched against several columns — never interpolated.
     if (q.q !== undefined && String(q.q).trim() !== '') {
@@ -965,6 +976,11 @@ function buildPipelineFilter(req, q) {
       ['fundedTo', 'a.actual_closing', '<='],
       ['createdFrom', 'a.created_at', '>='],
       ['createdTo', 'a.created_at', '<='],
+      // "Something that's closing between this and this date" (owner-directed
+      // 2026-08-28) — the EXPECTED closing, resolved exactly as closing-prep
+      // resolves it (confirmed expected date, else the term-sheet estimate).
+      ['closingFrom', 'COALESCE(a.expected_closing, a.est_closing_date)', '>='],
+      ['closingTo', 'COALESCE(a.expected_closing, a.est_closing_date)', '<='],
     ]) {
       const v = q[key];
       if (v === undefined || v === '') continue;
@@ -982,6 +998,17 @@ function buildPipelineFilter(req, q) {
       where.push(DASH_FILTER_SQL[q.flag]);
     } else if (q.flag === 'nodate') {
       where.push(`a.status = 'funded' AND a.actual_closing IS NULL`);
+    } else if (q.flag === 'funded_unsold') {
+      /* FUNDED BUT NOT YET SOLD (owner-directed 2026-08-28) — the loans still to
+         be delivered to an investor. Table-funded files are EXCLUDED by name:
+         funding on the Table Funding warehouse line means the loan was sold at
+         the closing table, so it never "needs to be sold". The warehouse is the
+         one source of that fact (lib/closing.js TABLE_FUNDING), bound, never a
+         second string. sold_at (db/611) is the sold stamp. */
+      const tf = add(require('../lib/closing').TABLE_FUNDING);
+      where.push(`a.status = 'funded' AND a.sold_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM closing_workflow cw
+                         WHERE cw.application_id = a.id AND cw.warehouse = ${tf})`);
     }
 
     // "My files only" — the same lens the UI's ?mine=1 checkbox applies as a
@@ -1006,6 +1033,10 @@ function buildPipelineFilter(req, q) {
       amount_asc: 'a.loan_amount ASC NULLS LAST',
       closing_desc: 'a.actual_closing DESC NULLS LAST',
       closing_asc: 'a.actual_closing ASC NULLS LAST',
+      expected_desc: 'COALESCE(a.expected_closing, a.est_closing_date) DESC NULLS LAST',
+      expected_asc: 'COALESCE(a.expected_closing, a.est_closing_date) ASC NULLS LAST',
+      investor_asc: "COALESCE(NULLIF(a.lender,''),'zzz') ASC",
+      investor_desc: "COALESCE(NULLIF(a.lender,''),'') DESC",
       name_asc: 'b.last_name ASC, b.first_name ASC',
       name_desc: 'b.last_name DESC, b.first_name DESC',
     };
@@ -1035,6 +1066,7 @@ router.get('/applications', async (req, res) => {
     // carries both and the list decides the word. One definition of that decision:
     // app-v2/src/lib/soldStage.js, the browser twin of lib/sold-status.displayStatus.
     const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,a.sold_at,
+                        a.expected_closing,a.est_closing_date,
                         a.clickup_pipeline_task_id,a.property_address,a.lender,
                         a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,a.actual_closing,
                         b.first_name,b.last_name,b.email,
