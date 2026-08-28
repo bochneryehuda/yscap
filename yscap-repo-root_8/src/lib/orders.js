@@ -33,8 +33,8 @@ const { isRcnNoteBuyer } = require('./conditions/field-registry');
 const ORDER_TYPES = ['title', 'insurance'];
 // The service-contact type that fulfils each order (a title order needs the
 // title company; an insurance order needs the insurance agent).
-const VENDOR_TYPE = { title: 'title_company', insurance: 'insurance_agent' };
-const ORDER_LABEL = { title: 'Title', insurance: 'Insurance' };
+const VENDOR_TYPE = { title: 'title_company', insurance: 'insurance_agent', settlement: 'settlement_agent' };
+const ORDER_LABEL = { title: 'Title', insurance: 'Insurance', settlement: 'Settlement agent' };
 
 /** YS Capital's mortgagee clause — printed on every order (the loan number is
     appended by the caller since it varies per file). Address is fixed corporate. */
@@ -276,6 +276,9 @@ async function getOrderData(appId) {
     loanNumber: a.ys_loan_number ? String(a.ys_loan_number).toUpperCase() : '',
     hasLoanNumber: !!a.ys_loan_number,
     propertyLine: propertyLine(a.property_address),
+    // The property's STATE, for the state-aware rules (the NY title cut, the
+    // NY-only settlement-agent order).
+    propertyState: ((a.property_address || {}).state || '').toUpperCase() || null,
     transactionType: transactionType(a.loan_type),
     borrowerName: borrowerName || a.borrower_email || 'Borrower',
     borrowerEmail: a.borrower_email || null,
@@ -312,7 +315,11 @@ async function getOrderData(appId) {
           phone: a.lo_cell || a.lo_phone || null, nmls: a.lo_nmls || null }
       : null,
     processor: a.proc_name ? { name: a.proc_name, email: a.proc_email || null } : null,
-    vendors: { title: vendorOf('title_company'), insurance: vendorOf('insurance_agent') },
+    vendors: { title: vendorOf('title_company'), insurance: vendorOf('insurance_agent'),
+      // The NY settlement agent (owner-directed 2026-08-28) — present on the data
+      // whatever the closing handling is, so the prepped-but-dormant card can show
+      // who would be ordered; the ROUTE decides whether an order may go out.
+      settlement: vendorOf('settlement_agent') },
     // The subject address must be the USPS-imported one BEFORE any order goes out —
     // an order transmits the property address to a vendor, and a wrong/unverified
     // address there is expensive to unwind. `uspsGate` is on only when USPS is
@@ -420,8 +427,13 @@ function buildOrderEmail(kind, data, { followup = false, note = '', fullOrder = 
     // never sent as the first contact (the owner: "that should be only when you
     // click follow up"). Title asks for the standard deliverables; insurance
     // nudges for the quote / binder / invoice.
+    /* THE TITLE DELIVERABLES ARE STATE-AWARE (owner-directed 2026-08-28): in New
+       York, title does not do the settlement, so a NY title order never asks
+       title for the CPL, the wiring instructions, or the preliminary settlement
+       statement — those belong to the settlement agent (closing-handling.js,
+       the ONE definition of the cut). Everywhere else the full list stands. */
     const wantLines = kind === 'title'
-      ? ['Title Commitment', 'CPL', 'Tax Certificate', 'Wiring Instructions', 'Preliminary Settlement Statement']
+      ? require('./closing-handling').titleWants(data.propertyState)
       : ['Insurance quote / binder', 'Invoice'];
     const built = tpl.render({
       title: `${label} Order — Follow-up`,

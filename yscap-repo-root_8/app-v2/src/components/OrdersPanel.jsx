@@ -1120,6 +1120,96 @@ export default function OrdersPanel({ appId, canAccept = false, only = null }) {
         <AppraisalOrderCard appId={appId} order={data.orders.appraisal} onChanged={reload} /></div>
       <div><h3 style={{ margin: '0 0 8px', color: '#141B22' }}>Attorney closing prep</h3>
         <ClosingPrepCard appId={appId} onChanged={reload} /></div>
+      {/* THE SETTLEMENT-AGENT ORDER (owner-directed 2026-08-28) — the New-York
+          workflow. Present on NY files only; grayed with the full reason until
+          the file's closing handling makes it live. */}
+      {data.orders.settlement && (
+        <div><h3 style={{ margin: '0 0 8px', color: '#141B22' }}>Settlement agent (New York)</h3>
+          <SettlementOrderCard appId={appId} card={data.orders.settlement} onChanged={reload} /></div>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   SETTLEMENT AGENT — NEW YORK (owner-directed 2026-08-28).
+
+   In New York, title does not do the settlement, so the title order never asks
+   title for the CPL, the wiring instructions or the preliminary settlement
+   statement — a separate SETTLEMENT AGENT produces those. This card is that
+   order. It exists on every NY file so the desk can SEE the workflow, but it is
+   live only when the file's closing handling is "we close it in house": until
+   then it renders grayed, with the exact reason printed on it (the owner: "if
+   an option is disabled, it should always say why"), and its asks list shows as
+   a DRAFT CONDITION — visible, gray, not a real condition yet.
+   ════════════════════════════════════════════════════════════════════════════ */
+function SettlementOrderCard({ appId, card, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const disabled = !card.enabled;
+  const placed = card.status !== 'not_ordered' && card.status !== 'cancelled';
+
+  const place = async (force) => {
+    if (!(await askConfirm(`Engage ${card.vendor ? (card.vendor.name || 'the settlement agent') : 'the settlement agent'} for this New York closing? The order asks for their E&O certificate, the preliminary settlement statement and their wiring instructions.`))) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await api.staffPlaceSettlementOrder(appId, force ? { force: true } : {});
+      setMsg(r.unconfirmed
+        ? { tone: 'warn', text: r.warning || 'The order may or may not have gone out — check the Email Center before re-sending.' }
+        : { tone: 'ok', text: `Settlement agent engaged — sent to ${(r.sent_to || []).join(', ')}.` });
+      onChanged && onChanged();
+    } catch (e) {
+      setMsg({ tone: 'err', text: (e.data && e.data.error) || e.message || 'Could not send the settlement-agent order.' });
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="panel" style={{ opacity: disabled ? 0.75 : 1 }}>
+      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <b style={{ color: '#141B22' }}>Settlement agent order</b>
+        {placed
+          ? <span className="pill ok">Engaged{card.vendorName ? ` — ${card.vendorName}` : ''}</span>
+          : disabled
+            ? <span className="pill mut">{card.dormant ? 'Prepped — not in use yet' : 'Not available'}</span>
+            : <span className="pill warn">Ready to order</span>}
+      </div>
+      {disabled && card.reason && (
+        <div className="small" style={{ color: '#4B585C', marginTop: 6, padding: '6px 8px', border: '1px dashed #C9C2B2', borderRadius: 8 }}>
+          {card.reason}
+        </div>
+      )}
+      {/* The DRAFT CONDITION container: what the agent will owe the file. Gray by
+          design while dormant — "that condition should not even be a condition
+          yet. It should be grayed out." */}
+      <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 8,
+        border: `1px ${disabled ? 'dashed' : 'solid'} #C9C2B2`,
+        color: disabled ? '#8B8574' : '#141B22', background: disabled ? 'transparent' : '#FBF9F4' }}>
+        <div style={{ fontWeight: 600, fontSize: 13 }}>
+          {disabled ? 'Draft condition — not a condition yet' : 'What the settlement agent owes this file'}
+        </div>
+        <ul style={{ margin: '4px 0 0 18px', padding: 0, fontSize: 13 }}>
+          {(card.asks || []).map((a) => <li key={a}>{a}</li>)}
+        </ul>
+      </div>
+      <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        {card.vendor
+          ? <span className="muted small">Settlement agent on file: <b style={{ color: '#141B22' }}>{card.vendor.name || card.vendor.emails[0]}</b>{card.vendor.emails.length ? ` (${card.vendor.emails.join(', ')})` : ''}</span>
+          : <span className="muted small">No settlement agent contact on this file yet — add one under File contacts (type “settlement_agent”).</span>}
+      </div>
+      <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        {!placed && (
+          <button className="btn primary small" disabled={disabled || busy || !card.vendor}
+            title={disabled ? (card.reason || 'Not available on this file') : !card.vendor ? 'Add the settlement agent contact first' : 'Engage the settlement agent'}
+            onClick={() => place(false)}>
+            {busy ? 'Sending…' : 'Engage the settlement agent'}
+          </button>
+        )}
+        {placed && (
+          <button className="btn ghost small" disabled={disabled || busy} onClick={() => place(true)}>Re-send the engagement</button>
+        )}
+        {msg && <span className={`small ${msg.tone === 'err' ? '' : 'muted'}`} role={msg.tone === 'err' ? 'alert' : 'status'}
+          style={msg.tone === 'err' ? { color: 'var(--danger)' } : msg.tone === 'warn' ? { color: '#8a6d3b' } : undefined}>{msg.text}</span>}
+      </div>
     </div>
   );
 }

@@ -7407,6 +7407,17 @@ router.get('/applications/:id/orders', async (req, res) => {
       notes: attorneyRow.notes || null,
     } : null;
 
+    /* WHO HANDLES THE CLOSING — resolved once for the whole panel, so the
+       attorney card, the settlement card and the title slots all read ONE
+       answer (owner-directed 2026-08-28). Never breaks the panel: an unreadable
+       setting reads as the attorney default. */
+    let chResolution = null, chCapabilities = null;
+    try {
+      const ch = require('../lib/closing-handling');
+      chResolution = await ch.resolve(req.params.id);
+      chCapabilities = chResolution ? ch.capabilities(chResolution) : null;
+    } catch (_) { /* attorney default */ }
+
     // Who an order will reach, so the panel can show it before sending.
     const recipientsPreview = (k) => {
       const { to, cc, ccBorrower, ccHelper } = orders.recipientsFor(k, data,
@@ -7433,6 +7444,34 @@ router.get('/applications/:id/orders', async (req, res) => {
         // own closing-prep payload, which owns the recipients, the package and the
         // chain. `null` until closing prep has actually been sent.
         attorney: attorneyTracking ? { orderType: 'attorney', tracking: attorneyTracking } : null,
+        /* THE SETTLEMENT-AGENT ORDER (owner-directed 2026-08-28) — the New-York
+           workflow that takes over title's settlement items when we close in
+           house. ALWAYS present on a NY file so the desk can SEE the prepped
+           workflow; `enabled`/`reason` (from the one closing-handling
+           capabilities rule) say whether it may send and, when not, exactly why.
+           The draft-condition container (the grayed list of what the agent will
+           owe) rides as `asks`. */
+        settlement: (() => {
+          const ch = require('../lib/closing-handling');
+          if (!ch.isNyState(data.propertyState)) return null;   // a NY-only workflow
+          const cap = chCapabilities;
+          const row = orderOf('settlement');
+          return {
+            orderType: 'settlement',
+            status: row ? row.status : 'not_ordered',
+            enabled: cap ? cap.settlementAgent.enabled : false,
+            dormant: cap ? !!cap.settlementAgent.dormant : true,
+            reason: cap ? cap.settlementAgent.reason : null,
+            vendor: data.vendors.settlement ? {
+              id: data.vendors.settlement.id,
+              name: data.vendors.settlement.company_name || data.vendors.settlement.contact_name || null,
+              emails: require('../lib/vendor-directory').allEmails(data.vendors.settlement),
+            } : null,
+            asks: ch.SETTLEMENT_ASKS,
+            orderedAt: row ? row.ordered_at : null,
+            vendorName: row ? row.vendor_name : null,
+          };
+        })(),
         // THE APPRAISAL, on the same footing as the attorney order and for the same
         // reason: the desk carries its clock, owner, notes and history, while the
         // appraisal section owns the vendor conversation. Everything under `vendor`
@@ -7441,6 +7480,9 @@ router.get('/applications/:id/orders', async (req, res) => {
         // may talk to those three APIs. `null` until an appraisal has been ordered.
         appraisal: appraisalOrder,
       },
+      /* The whole panel's closing-handling answer: which workflows are live on
+         this file and, for each disabled one, the reason to print. */
+      closingHandling: chResolution ? { resolution: chResolution, capabilities: chCapabilities } : null,
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -7495,6 +7537,79 @@ router.get('/applications/:id/orders/:kind/email-preview', async (req, res) => {
     }
     res.json(require('../lib/email/manual-override').previewShape(built, { to, cc }));
   } catch (e) { res.status(500).json({ error: 'Could not build the preview.' }); }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PLACE THE SETTLEMENT-AGENT ORDER (owner-directed 2026-08-28) — New York,
+   in-house closings only. "We hired you for the settlement agent for this New
+   York file … you need to send your errors and omissions insurance, your
+   preliminary settlement statement, your wiring instructions."
+
+   Its own route rather than a fourth arm of the title/insurance one, because
+   its GATE is different in kind: the closing-handling capabilities rule (the
+   one definition) decides whether this order EXISTS on the file at all, and a
+   refusal always carries that rule's own reason sentence. The send itself rides
+   the SAME exactly-once core every other order uses (orders.placeOrder), so the
+   claim/rollback/ambiguous-send discipline is inherited, not re-implemented.
+   ═══════════════════════════════════════════════════════════════════════════ */
+router.post('/applications/:id/orders/settlement/place', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const ch = require('../lib/closing-handling');
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const dead = await deadFileOrderReason(appId);
+    if (dead) return res.status(422).json({ error: dead, code: 'file_closed' });
+
+    // THE GATE: live only when this file closes in house AND the property is in
+    // New York — refused with the capability rule's own reason otherwise.
+    const resolution = await ch.resolve(appId);
+    const cap = ch.capabilities(resolution);
+    if (!cap.settlementAgent.enabled) {
+      return res.status(422).json({ error: cap.settlementAgent.reason || 'The settlement-agent order is not available on this file.', code: 'closing_handling' });
+    }
+
+    if (!data.hasLoanNumber) return res.status(400).json({ error: 'Add the file’s loan number first — it prints in the mortgagee clause.', code: 'loan_number' });
+    const vendor = data.vendors.settlement;
+    const to = require('../lib/vendor-directory').allEmails(vendor);
+    if (!to.length) return res.status(400).json({ error: 'Add the settlement agent contact first (File contacts → Settlement agent).', code: 'contact' });
+    // The order transmits the property address to an outside vendor — the same
+    // USPS gate every other order carries.
+    if (data.uspsGate && !data.uspsImported && !data.uspsCleared) {
+      return res.status(422).json({ error: 'Import the USPS-verified property address before engaging the settlement agent — an order sent with an unverified address can go out with the wrong ZIP or unit.', code: 'usps' });
+    }
+
+    const existing = (await db.query(
+      `SELECT status, send_count, meta, ordered_at, ordered_by FROM file_orders WHERE application_id=$1 AND order_type='settlement'`,
+      [appId])).rows[0];
+    const force = req.body && (req.body.force === true || req.body.force === 'true');
+    if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
+      return res.status(409).json({ error: 'The settlement agent was already engaged on this file. Force a re-send if you really mean to send it again.', code: 'already_ordered' });
+    }
+
+    const note = typeof (req.body || {}).note === 'string' ? req.body.note.slice(0, 4000) : '';
+    const built = require('../lib/email/manual-override').applyOverride(
+      ch.buildSettlementOrderEmail(data, vendor, { note }), req.body && req.body.override,
+      { title: 'Settlement agent order', replyable: true });
+    // Cc the loan team; the borrower/helper footings do not apply to this
+    // internal-workflow engagement (there is no per-order checkbox here yet).
+    const cc = [];
+    if (data.officer && data.officer.email) cc.push(String(data.officer.email).toLowerCase());
+    if (data.processor && data.processor.email && !cc.includes(String(data.processor.email).toLowerCase())) cc.push(String(data.processor.email).toLowerCase());
+    const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    const r = await orders.placeOrder({
+      appId, kind: 'settlement', data, to, cc,
+      replyTo: require('../lib/file-address').fileReplyTo(appId),
+      built, vendor,
+      actorId: req.actor.id, actorName: meRow.full_name || meRow.email,
+      ccBorrower: false, ccHelper: false, force, existing,
+    });
+    if (!r.ok) return res.status(r.httpStatus).json({ error: r.error, code: r.code });
+    try { await audit(req, 'order_placed', 'application', appId, { kind: 'settlement', to: to.length, cc: cc.length, force: !!force, unconfirmed: !!r.ambiguous }); } catch (_) { /* recorded either way */ }
+    if (r.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: r.warning, sent_to: to, cc });
+    res.json({ ok: true, sent_to: to, cc });
+  } catch (e) { res.status(500).json({ error: 'Could not send the settlement-agent order.' }); }
 });
 
 router.post('/applications/:id/orders/:kind/place', async (req, res) => {
@@ -8354,9 +8469,100 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
 // (there must be a term sheet for the attorney to draft from — the owner's rule) and
 // somewhere to send it. A re-send needs {force:true}, so a double-click can never
 // blast the attorney and the whole Cc chain twice.
+/* ═══════════════════════════════════════════════════════════════════════════
+   WHO HANDLES THIS FILE'S CLOSING — the per-file half of the three-way switch
+   (owner-directed 2026-08-28; the company/note-buyer defaults live on the API
+   Health page, src/routes/admin-integrations.js; src/lib/closing-handling.js is
+   the ONE resolver).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+// Read the file's resolution + what it enables/disables (with the reasons).
+router.get('/applications/:id/closing-handling', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const ch = require('../lib/closing-handling');
+    const resolution = await ch.resolve(req.params.id);
+    if (!resolution) return res.status(404).json({ error: 'not found' });
+    res.json({
+      resolution,
+      capabilities: ch.capabilities(resolution),
+      handlings: ch.HANDLINGS.map((h) => ({ key: h, label: ch.HANDLING_LABEL[h] })),
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Set (or clear, handling=null) the per-file override. Flipping a file to
+// INTERNAL also sets up the itemized title slots — a slot per item we ask title
+// for in this state (the NY cut applies) — on the title condition, idempotently.
+router.post('/applications/:id/closing-handling', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const ch = require('../lib/closing-handling');
+    const b = req.body || {};
+    const handling = b.handling == null || b.handling === '' ? null : String(b.handling);
+    if (handling != null && !ch.HANDLINGS.includes(handling)) return res.status(400).json({ error: 'Pick internal, attorney, or lender-direct — or clear it to inherit the default.' });
+    const before = await ch.resolve(appId);
+    if (!before) return res.status(404).json({ error: 'not found' });
+    await db.query(`UPDATE applications SET closing_handling=$2, updated_at=now() WHERE id=$1`, [appId, handling]);
+    const after = await ch.resolve(appId);
+    let slotsSeeded = 0;
+    if (after.handling === 'internal') {
+      slotsSeeded = await seedInternalTitleSlots(appId, after.propertyState, req.actor);
+    }
+    await audit(req, 'closing_handling_set', 'application', appId,
+      { from: before.handling, fromSource: before.source, to: after.handling, toSource: after.source, slotsSeeded });
+    res.json({ ok: true, resolution: after, capabilities: ch.capabilities(after), slotsSeeded });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/* An INTERNAL closing sets up the title condition with A SLOT PER ITEM we ask
+   title for (owner-directed 2026-08-28: "It enables a full title condition and
+   it sets up slots for each and every item that we\'re asking from title") —
+   instead of the single catch-all slot an attorney-handled file keeps. Through
+   the ONE extra-slots door (dedupe included), so re-flipping never doubles a
+   slot. Returns how many were newly added; never throws. */
+async function seedInternalTitleSlots(appId, propertyState, actor) {
+  try {
+    const ch = require('../lib/closing-handling');
+    const extraSlots = require('../lib/conditions/extra-slots');
+    const item = (await db.query(
+      `SELECT ci.id FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND t.code='rtl_cond_title' ORDER BY ci.created_at LIMIT 1`, [appId])).rows[0];
+    if (!item) return 0;
+    let added = 0;
+    for (const label of ch.internalTitleSlots(propertyState)) {
+      const out = await extraSlots.addSlot(appId, item.id, {
+        label, audience: 'internal', actorId: actor && actor.id, actorName: (actor && actor.full_name) || null,
+      }).catch(() => null);
+      if (out && out.added) added++;
+    }
+    return added;
+  } catch (_) { return 0; }
+}
+
+/* THE CLOSING-HANDLING GATE on the attorney closing prep: the prep may only run
+   on a file whose closing the ATTORNEY handles. Answers the refusal REASON (or
+   null when allowed) — "if an option is disabled, it should always say why". */
+async function attorneyPrepBlockReason(appId) {
+  try {
+    const ch = require('../lib/closing-handling');
+    const resolution = await ch.resolve(appId);
+    if (!resolution) return null;
+    const cap = ch.capabilities(resolution);
+    return cap.attorneyPrep.enabled ? null : cap.attorneyPrep.reason;
+  } catch (_) { return null; /* an unreadable setting never blocks the prep — attorney is the default */ }
+}
+
 router.post('/applications/:id/closing-prep/place', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  {
+    // Who handles this closing? The attorney prep only runs on an attorney-handled
+    // file (owner-directed 2026-08-28), and the refusal says exactly why.
+    const blocked = await attorneyPrepBlockReason(appId);
+    if (blocked) return res.status(422).json({ error: blocked, code: 'closing_handling' });
+  }
   // Declared at ROUTE scope, not inside the try, so the outer catch can unwind a
   // claim taken before something threw — packAttachments and recipientsFor both
   // can, and an unreleased claim erases the order's whole age.
@@ -8644,6 +8850,10 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
 router.post('/applications/:id/closing-prep/schedule', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  {
+    const blocked = await attorneyPrepBlockReason(req.params.id);
+    if (blocked) return res.status(422).json({ error: blocked, code: 'closing_handling' });
+  }
   try {
     const sched = require('../lib/scheduled-sends');
     const b = req.body || {};
@@ -8699,6 +8909,10 @@ router.post('/applications/:id/closing-prep/schedule', async (req, res) => {
 router.post('/applications/:id/closing-prep/followup', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  {
+    const blocked = await attorneyPrepBlockReason(req.params.id);
+    if (blocked) return res.status(422).json({ error: blocked, code: 'closing_handling' });
+  }
   try {
     // ONE definition of "an attorney is engaged on this file", shared with the
     // automatic updates — so an order whose row failed to write after a SUCCESSFUL

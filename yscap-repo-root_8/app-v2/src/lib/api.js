@@ -781,6 +781,13 @@ export const api = {
   conditionsOutreachPreview: (id, note) => req('GET', `/api/staff/applications/${id}/conditions/outreach${note ? `?note=${encodeURIComponent(note)}` : ''}`),
   conditionsOutreachSend:    (id, body) => req('POST', `/api/staff/applications/${id}/conditions/outreach`, body),
   conditionsOutreachRevoke:  (id, linkId) => req('POST', `/api/staff/applications/${id}/conditions/outreach/${linkId}/revoke`),
+  // WHO HANDLES THE CLOSING (owner-directed 2026-08-28): the per-file resolution
+  // + override, and the company/note-buyer defaults on the API Health page.
+  closingHandling:        (id) => req('GET', `/api/staff/applications/${id}/closing-handling`),
+  setClosingHandling:     (id, handling) => req('POST', `/api/staff/applications/${id}/closing-handling`, { handling }),
+  adminClosingHandling:   () => req('GET', '/api/admin/integrations/closing-handling'),
+  saveAdminClosingHandling: (body) => req('PUT', '/api/admin/integrations/closing-handling', body),
+  staffPlaceSettlementOrder: (id, body) => req('POST', `/api/staff/applications/${id}/orders/settlement/place`, body || {}),
 
   // Encompass sync (READ-ONLY per-file reconcile). status = summary; findings =
   // the full field-by-field comparison (live data); refresh = re-pull read-only;
