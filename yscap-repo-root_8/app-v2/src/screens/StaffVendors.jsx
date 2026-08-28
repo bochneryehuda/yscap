@@ -469,7 +469,7 @@ export default function StaffVendors() {
                 const preview = await api.vendorsAutoMerge(true);
                 if (!preview.merged.length && !preview.conflicts.length) { flash('No same-email duplicates found.'); return; }
                 const goAhead = preview.merged.length
-                  ? window.confirm(`Merge ${preview.merged.length} clean same-email duplicate${preview.merged.length === 1 ? '' : 's'} automatically?`
+                  ? await askConfirm(`Merge ${preview.merged.length} clean same-email duplicate${preview.merged.length === 1 ? '' : 's'} automatically?`
                     + (preview.conflicts.length ? ` (${preview.conflicts.length} conflicting pair${preview.conflicts.length === 1 ? '' : 's'} will be left for manual merge.)` : ''))
                   : (flash(`${preview.conflicts.length} same-email pair(s) conflict — merge them manually below.`), false);
                 if (!goAhead) return;

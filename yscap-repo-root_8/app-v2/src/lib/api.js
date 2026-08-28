@@ -797,6 +797,16 @@ export const api = {
   orderCompanyContactAdd:    (id, kind, body) => req('POST', `/api/staff/applications/${id}/orders/${kind}/company-contacts/add`, body),
   adoptFileContact:          (id, contactId) => req('POST', `/api/staff/applications/${id}/contacts/${contactId}/adopt`, {}),
   vendorsAutoMerge:          (dryRun) => req('POST', '/api/staff/vendors/auto-merge', { dryRun: !!dryRun }),
+  // THE REPORTING DATABASE (owner-directed 2026-08-28): the Encompass-style
+  // report builder for the admin back office — field dictionary, run, saved
+  // reports, and the Excel export (a POST download so the auth header rides).
+  reportFields:   () => req('GET', '/api/admin/reports/fields'),
+  reportRun:      (def) => req('POST', '/api/admin/reports/run', def),
+  reportSavedList: () => req('GET', '/api/admin/reports/saved'),
+  reportSave:     (body) => req('POST', '/api/admin/reports/saved', body),
+  reportUpdate:   (id, body) => req('PUT', `/api/admin/reports/saved/${id}`, body),
+  reportDelete:   (id) => req('DELETE', `/api/admin/reports/saved/${id}`),
+  reportExportXlsx: async (def) => { const { blob, filename } = await downloadPost('/api/admin/reports/export.xlsx', def); saveBlob(blob, filename); },
 
   // Encompass sync (READ-ONLY per-file reconcile). status = summary; findings =
   // the full field-by-field comparison (live data); refresh = re-pull read-only;

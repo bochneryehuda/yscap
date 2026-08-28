@@ -623,6 +623,7 @@ export default function StaffLayout({ children }) {
         {/* Manual / Escalations + Exceptions moved into the Approvals hub in the
             Main group (owner-directed 2026-07-31) — their counts still poll here
             and feed the Approvals badge. */}
+        {(role === 'admin' || role === 'super_admin') && <NavLink className="sb-link" to="/internal/reports" title="Reports — the reporting database: pick the files, pick the fields, save the report, export to Excel"><NavIcon name="pricing" />Reports</NavLink>}
         {(role === 'admin' || role === 'super_admin') && <NavLink className="sb-link" to="/internal/ai" title="AI Command Center — one place to see everything PILOT flagged, review findings, answer PILOT's questions, and teach it (training, labeling, muted alerts)">
           <NavIcon name="conditions" />AI Command Center
           {fescCount > 0 && <span className="sb-badge">{fescCount > 99 ? '99+' : fescCount}</span>}</NavLink>}
