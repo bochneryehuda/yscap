@@ -6365,6 +6365,12 @@ export default function StaffApplication() {
         const uwOpen = conds.filter(c => c.status === 'open' || c.status === 'borrower_responded').length;
         const TABS = [
           { k: 'borrower', label: 'All conditions', badge: nCondOpen || '' },
+          /* FILE CONTACTS get their OWN tab, right after Conditions (owner-directed
+             2026-08-28: "After the Conditions tab, open a separate tab for File
+             Contacts and place it over here") — they used to render at the bottom
+             of the conditions list, where finding the title company meant
+             scrolling past every condition on the file. */
+          { k: 'contacts', label: 'File contacts', badge: '' },
           { k: 'underwriting', label: 'Underwriting', badge: uwOpen || '' },
           { k: 'llc', label: 'LLC / entity', badge: app.llc_id ? (app.llc_verified ? '✓' : '!') : '' },
         ];
@@ -6397,12 +6403,15 @@ export default function StaffApplication() {
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
           onOpenStudio={openStudioAnywhere} onRequestWaiver={requestWaiver} uploadNote={uploadNote} />
         <StaffChangeRequests appId={id} onChanged={load} />
-        <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
         <div className="stack" style={{ marginTop: 14 }}>
           <AddConditionPanel appId={id} items={items} onChanged={load}
             onError={(t) => setErr(t)} onFlash={flash} />
         </div>
       </>}
+
+      {condTab === 'contacts' && (
+        <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
+      )}
 
       {condTab === 'underwriting' && (
         <LoanConditionsPanel conds={conds} condFilter={condFilter} setCondFilter={setCondFilter}

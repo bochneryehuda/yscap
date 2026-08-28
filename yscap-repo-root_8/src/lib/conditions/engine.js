@@ -78,10 +78,18 @@ async function loadRuleContext(appId) {
     `SELECT a.*,
             b.fico AS b_fico, b.citizenship AS b_citizenship, b.tier AS b_tier,
             b.current_address AS b_address, b.id AS b_id,
+            -- THE FILE'S FICO IS THE DEAL FICO (owner-directed 2026-08-28): one
+            -- borrower → their middle score; two → the HIGHER middle. The one
+            -- definition (credit.dealFicoSql) — this context used to read the
+            -- primary's score alone, so on a two-borrower file the rules engine,
+            -- the underwriting run's investor review and the AI grounding all
+            -- disagreed with the number pricing actually used.
+            ${require('../credit').dealFicoSql('b', 'cbf')} AS deal_fico,
             l.is_verified AS llc_is_verified, l.formation_state AS llc_formation_state,
             pr.program AS pr_program, pr.quote AS pr_quote
        FROM applications a
        JOIN borrowers b ON b.id = a.borrower_id
+       LEFT JOIN borrowers cbf ON cbf.id = a.co_borrower_id
        LEFT JOIN llcs l ON l.id = a.llc_id
        LEFT JOIN product_registrations pr ON pr.application_id = a.id AND pr.is_current = true
       WHERE a.id = $1`, [appId]);
@@ -225,7 +233,7 @@ async function loadRuleContext(appId) {
     sqft_post: num(a.sqft_post),
     liquidity_required: quote ? num(quote.liquidityRequired || quote.liquidity) : null,
 
-    fico: num(a.b_fico),
+    fico: num(a.deal_fico),
     citizenship: registry.normCitizenship(a.b_citizenship),
     borrower_state: registry.normState(bAddr.state),
     tier: num(a.b_tier) || 0,

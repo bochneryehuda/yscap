@@ -2894,9 +2894,9 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
 // experience buckets the engines expect (flips / holds / ground-up).
 async function loadFileForPricing(appId) {
   const a = await db.query(
-    // Pricing FICO = the HIGHEST score across the file's borrowers (#99): with a
-    // co-borrower, the stronger credit prices the deal. NULL when neither has one.
-    `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico
+    // Pricing FICO = the ONE deal-fico rule (#99, re-pinned owner-directed
+    // 2026-08-28): one borrower → their middle score; two → the higher middle.
+    `SELECT a.*, ${require('../lib/credit').dealFicoSql('b', 'cb')} AS fico
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id
        LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
       WHERE a.id=$1`, [appId]);
@@ -10310,6 +10310,27 @@ router.patch('/checklist/:itemId', async (req, res) => {
   } else if (b.signedOff === false || b.waived === false) {
     sets.push('signed_off_by=NULL', 'signed_off_at=NULL', 'waived_by=NULL', 'waived_at=NULL');
     if (b.waived === false) sets.push("status='outstanding'");
+    else {
+      /* UNDOING A SIGN-OFF MUST PUT THE CONDITION BACK ON THE LIST (owner-reported
+         2026-08-28: "if you undo the sign-off … and then you sort by conditions
+         that are still outstanding, [it] is not coming back up"). Sign-off forces
+         status='satisfied' (above); this branch used to clear only the STAMPS, so
+         the row kept 'satisfied' — off the "awaiting"/"not signed off" filters,
+         still under "Signed off", invisible everywhere an open item is looked
+         for. The status is RESTORED FROM REALITY, never just flipped: a condition
+         whose current document (or submitted tool answer) is still on the file
+         goes back to 'received' (it is with the team, awaiting the re-decision),
+         and one with nothing behind it goes back to 'outstanding'. Guarded on
+         status='satisfied' so undoing a stamp on a row someone already moved to
+         'issue' cannot clobber that state. */
+      sets.push(`status = CASE WHEN status='satisfied' THEN
+        (CASE WHEN tool_payload IS NOT NULL
+                OR EXISTS (SELECT 1 FROM documents d
+                            WHERE d.checklist_item_id = checklist_items.id
+                              AND d.is_current AND d.review_status IN ('pending','accepted'))
+              THEN 'received' ELSE 'outstanding' END)
+        ELSE status END`);
+    }
   }
   // The override stamps travel WITH the completion they authorize. Undoing the
   // sign-off / waive clears them in the same breath: an item back on the list was
@@ -17934,6 +17955,103 @@ router.get('/leads/follow-ups', async (req, res) => {
       rows: r.rows,
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   EXPORT THE LEAD DESK TO EXCEL (owner-directed 2026-08-28: "make leads
+   exportable to excel … It should come up with all the fields, if it's an
+   Elementix file: phone numbers, follow-up data, stuff like that").
+
+   A REAL .xlsx (the shared dependency-free builder — the same one the pipeline
+   export uses), never a CSV. THE SCOPE IS THE FLOOR: visibleLeadSql, exactly as
+   GET /leads applies it, with the same narrowing filters the desk offers
+   (officerId, origin, stage, open/all, a search term) — so what an officer
+   exports is what they can see, filtered the way their screen is filtered, and
+   never one row more.
+
+   EVERY PHONE NUMBER RIDES: the lead's own numbers plus every number the
+   Elementix unlock holds, with the officer's working / not-working / right-person
+   verdicts — through lib/elementix/lead-phones.leadPhonesForMany, the batched
+   CRM-plane delegate, because this route may not read the Elementix contact
+   tables itself. Registered BEFORE /leads/:id so 'export' is never read as an id. */
+router.get('/leads/export', async (req, res) => {
+  try {
+    const params = [];
+    const conds = [];
+    if (!seesAll(req)) { params.push(req.actor.id); conds.push(visibleLeadSql('l', `$${params.length}`)); }
+    const officerId = typeof req.query.officerId === 'string' ? req.query.officerId.trim() : '';
+    if (officerId) {
+      if (!UUID_RE.test(officerId)) return res.status(400).json({ error: 'invalid officerId' });
+      params.push(officerId); conds.push(`l.officer_id=$${params.length}`);
+    }
+    const eq = (sql, v) => { if (typeof v !== 'string' || v === '') return; params.push(v.slice(0, 60)); conds.push(`${sql}=$${params.length}`); };
+    eq('l.source', req.query.source);
+    eq('l.tool', req.query.tool);
+    eq('COALESCE(l.lead_source, l.source)', req.query.leadSource);
+    if (req.query.stage && LEAD_STATUSES.includes(String(req.query.stage))) {
+      params.push(String(req.query.stage)); conds.push(`l.status=$${params.length}`);
+    } else if (String(req.query.scope || 'open') !== 'all') {
+      // The desk's default view is the OPEN book — the export defaults the same
+      // way, and ?scope=all brings the closed leads along.
+      conds.push(`l.status IN ('new','contacted','qualified','quoted','working','nurturing')`);
+    }
+    if (typeof req.query.q === 'string' && req.query.q.trim()) {
+      params.push('%' + req.query.q.trim().slice(0, 80) + '%');
+      conds.push(`(l.name ILIKE $${params.length} OR l.company ILIKE $${params.length} OR l.email ILIKE $${params.length} OR l.phone ILIKE $${params.length} OR l.referral_partner ILIKE $${params.length})`);
+    }
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+
+    const r = await db.query(
+      `SELECT l.*, s.full_name AS officer_name,
+              (SELECT count(*)::int FROM lead_tasks lt WHERE lt.lead_id=l.id AND lt.done=false) AS open_tasks,
+              (SELECT max(la.occurred_at) FROM lead_activities la
+                WHERE la.lead_id=l.id AND la.activity_type IN ('call','email','sms','meeting','note')) AS last_touch_at
+         FROM leads l LEFT JOIN staff_users s ON s.id=l.officer_id
+        ${where}
+        ORDER BY l.created_at DESC
+        LIMIT 10000`, params);
+
+    const phonesOf = await require('../lib/elementix/lead-phones').leadPhonesForMany(r.rows.map((x) => x.id));
+    const addr = (a) => { if (!a || typeof a !== 'object') return ''; return a.oneLine || [a.street || a.line1, a.city, a.state, a.zip].filter(Boolean).join(', ') || ''; };
+    const day = (v) => (v ? String(v).slice(0, 10) : '');
+    const ts = (v) => { try { return v ? new Date(v).toISOString().replace('T', ' ').slice(0, 16) : ''; } catch (_) { return ''; } };
+    const num = (v) => (v == null || v === '' || !isFinite(Number(v)) ? '' : Number(v));
+    const phoneCell = (leadId) => (phonesOf.get(leadId) || [])
+      .map((p) => {
+        const bits = [];
+        if (p.sources.includes('elementix') && !p.sources.includes('lead') && !p.sources.includes('lead_alt')) bits.push('Elementix');
+        if (p.label) bits.push(p.label);
+        if (p.mark && p.mark.status) bits.push(p.mark.status === 'working' ? 'working' : 'not working');
+        if (p.mark && p.mark.rightPerson) bits.push('right person');
+        return p.display + (bits.length ? ` (${bits.join(', ')})` : '');
+      }).join('; ');
+
+    const HEADERS = [
+      'First name', 'Last name', 'Full name', 'Company', 'Email', 'Phone', 'Alt phone',
+      'All phone numbers (incl. Elementix, with verdicts)',
+      'Stage', 'Owner', 'Next follow-up', 'Last human contact', 'Last activity',
+      'Source', 'Form / tool', 'Channel', 'Referral partner',
+      'Program', 'Property type', 'Est. loan amount', 'Est. close date',
+      'Property address', 'Contact address', 'Tags', 'Open tasks',
+      'Elementix profile', 'Lost reason', 'Created', 'Lead id',
+    ];
+    const rows = r.rows.map((x) => [
+      x.first_name || '', x.last_name || '', x.name || '', x.company || '', x.email || '',
+      x.phone || '', x.phone_alt || '', phoneCell(x.id),
+      x.status || '', x.officer_name || '', day(x.next_follow_up), ts(x.last_touch_at), ts(x.last_activity_at),
+      x.source || '', x.tool || '', x.lead_source || '', x.referral_partner || '',
+      x.program || '', x.property_type || '', num(x.loan_amount), day(x.estimated_close),
+      addr(x.property_address), addr(x.contact_address),
+      Array.isArray(x.tags) ? x.tags.join(', ') : '', num(x.open_tasks),
+      x.elementix_person_id ? 'yes' : '', x.lost_reason || '', ts(x.created_at), x.id,
+    ]);
+    const { buildXlsx } = require('../lib/xlsx');
+    const buf = buildXlsx([HEADERS, ...rows], 'Leads');
+    await audit(req, 'export_leads', 'lead', null, { rows: r.rows.length });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    setContentDisposition(res, `pilot-leads-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    res.send(buf);
+  } catch (e) { console.error('[export leads]', e && e.message); res.status(500).json({ error: 'server error' }); }
 });
 
 // #153 — bulk-archive junk leads (admin). The bot-spam wave imported hundreds

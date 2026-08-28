@@ -147,6 +147,7 @@ export default function StaffLeads({ officerId = null, officerName = null }) {
   const [addOpen, setAddOpen] = useState(false);
   const [elxOpen, setElxOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   /* THE ORIGIN FILTER IS THE SERVER'S, NOT THE BROWSER'S. This list comes back
      capped at 500 rows, so filtering the page we happen to hold would answer
@@ -274,6 +275,28 @@ export default function StaffLeads({ officerId = null, officerName = null }) {
             title="Search Elementix by name and pull somebody in as a lead — with every phone number and email on record. Free if a colleague has already looked them up.">
             {elxOpen ? 'Close Elementix' : 'Add from Elementix'}
           </button>}
+          {/* EXPORT TO EXCEL (owner-directed 2026-08-28): the whole desk as the
+              screen currently filters it — every field, every phone number the
+              Elementix unlock holds (with the working / right-person verdicts),
+              the follow-up dates. Scoped on the server to what this person may
+              see; capped at 10,000 rows. */}
+          <button className="btn btn-line btn-sm" disabled={exporting}
+            title="Download this desk as an Excel file — all fields, every phone number (Elementix included), follow-up dates"
+            onClick={async () => {
+              setExporting(true);
+              try {
+                await api.staffLeadsExport({
+                  ...originParams(originF),
+                  ...(officerId ? { officerId } : {}),
+                  ...(stageF ? { stage: stageF } : {}),
+                  ...(scope === 'all' ? { scope: 'all' } : {}),
+                  ...(q.trim() ? { q: q.trim() } : {}),
+                });
+              } catch (e2) { setErr((e2 && e2.message) || 'Could not export the leads.'); }
+              finally { setExporting(false); }
+            }}>
+            {exporting ? 'Exporting…' : '⬇ Excel'}
+          </button>
           <button className="btn btn-gold btn-sm" onClick={() => setAddOpen(true)}>+ Add lead</button>
         </div>
       </div>

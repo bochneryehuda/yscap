@@ -511,7 +511,16 @@ async function registerFromOffer(appId, offer) {
       .pricingOverridesEngaged(overridesRaw, require('./pricing-settings').current()) || [];
   } catch (_) { overrideChanges = []; }
 
-  const ar = await db.query(`SELECT * FROM applications WHERE id=$1`, [appId]);
+  // The DEAL FICO rides onto the row (the one definition — credit.dealFicoSql):
+  // this loader used `SELECT *` with no borrower join at all, so buildInputs
+  // priced an offer-registration with NO credit score on a file whose borrowers
+  // had one, while the staff Register button (loadFileForPricing) priced with it.
+  const ar = await db.query(
+    `SELECT a.*, ${require('./credit').dealFicoSql('b', 'cb')} AS fico
+       FROM applications a
+       JOIN borrowers b ON b.id = a.borrower_id
+       LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+      WHERE a.id=$1`, [appId]);
   const app = ar.rows[0];
   if (!app) return { registered: false, reason: 'no_application' };
 

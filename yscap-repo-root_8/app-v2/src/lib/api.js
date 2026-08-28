@@ -1580,6 +1580,9 @@ export const api = {
   // split into piles by next follow-up date, counted on the SERVER over the whole
   // scope — never over the 500-row page `staffLeads` returns.
   staffLeadFollowUps: (params) => req('GET', '/api/staff/leads/follow-ups' + qs(params)),
+  // The Excel export of the lead desk (owner-directed 2026-08-28) — the caller's
+  // current filters ride along, so what downloads is what the screen shows.
+  staffLeadsExport:   async (params) => { const { blob, filename } = await download(`/api/staff/leads/export${qs(params)}`); saveBlob(blob, filename); },
   staffLeadsBulkArchive: (filters) => req('POST', '/api/staff/leads/bulk-archive', filters),
   staffCreateLead:  (b) => req('POST', '/api/staff/leads', b),
   staffLead:        (id) => req('GET', `/api/staff/leads/${id}`),

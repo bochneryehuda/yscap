@@ -186,7 +186,7 @@ async function appInFirm(actorId, appId) {
 // never over-lends (owner-directed #85, mirrored on every pricing loader).
 async function loadTpoFileForPricing(actorId, appId) {
   const a = await db.query(
-    `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico
+    `SELECT a.*, ${require('../lib/credit').dealFicoSql('b', 'cb')} AS fico
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id
        LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
       WHERE a.id=$2 AND a.deleted_at IS NULL AND ${perms.tpoFirmScopeSql('a', '$1')}`,
@@ -489,7 +489,7 @@ router.get('/applications/:id', async (req, res, next) => {
               a.est_closing_date, a.expected_closing, a.co_borrower_pg_waived, a.liquidity_buffer_waived,
               a.payoff_amount, a.payoff_lender, a.payoff_loan_number, a.estimated_cash_out,
               a.co_borrower_id, a.borrower_portal_enabled, a.created_at,
-              NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico,
+              ${require('../lib/credit').dealFicoSql('b', 'cb')} AS fico,
               b.id AS borrower_id, NULLIF(b.full_name,'') AS borrower_name, b.email AS borrower_email,
               b.first_name, b.middle_name, b.last_name, b.name_suffix, b.full_name,
               l.llc_name AS entity_name,
