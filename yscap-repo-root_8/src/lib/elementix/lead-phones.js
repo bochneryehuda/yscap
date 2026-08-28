@@ -124,6 +124,61 @@ async function leadPhonesFor(leadId, opts = {}) {
   return { found: true, linked, personId: lead.elementix_person_id || null, phones };
 }
 
+/**
+ * The phone books of MANY leads in three batched reads — the Excel export's
+ * delegate (owner-directed 2026-08-28: the lead export must carry "all the
+ * fields, if it's an Elementix file: phone numbers"). Same union, same one
+ * phone identity and same no-delete rules as `leadPhonesFor`; batched because
+ * an export of a whole desk calling the per-lead reader would be three queries
+ * PER ROW. Lives HERE because staff.js may not read the Elementix contact
+ * tables itself (the CRM-plane rule this file's header explains).
+ * Returns Map<leadId, phones[]> (same row shape as leadPhonesFor().phones).
+ */
+async function leadPhonesForMany(leadIds, opts = {}) {
+  const dbc = opts.client || db;
+  const out = new Map();
+  const ids = [...new Set((leadIds || []).filter(Boolean))];
+  if (!ids.length) return out;
+  const leads = (await dbc.query(
+    `SELECT id, phone, phone_alt, elementix_person_id FROM leads WHERE id = ANY($1::uuid[])`, [ids])).rows;
+  const marks = (await dbc.query(
+    `SELECT lead_id, phone_key, status, right_person FROM lead_phone_marks WHERE lead_id = ANY($1::uuid[])`, [ids])).rows;
+  const markOf = new Map(marks.map((m) => [`${m.lead_id}:${m.phone_key}`, m]));
+  const personIds = [...new Set(leads.map((l) => l.elementix_person_id).filter(Boolean))];
+  const held = personIds.length
+    ? (await dbc.query(`SELECT person_id, phones FROM elementix_contacts WHERE person_id = ANY($1::text[])`,
+      [personIds])).rows
+    : [];
+  const heldOf = new Map(held.map((h) => [h.person_id, Array.isArray(h.phones) ? h.phones : []]));
+
+  for (const lead of leads) {
+    const phones = [];
+    const byKey = new Map();
+    const add = (value, source, meta) => {
+      const key = phoneKey(value);
+      if (key.length < 10 || key.length > 15) return;
+      const existing = byKey.get(key);
+      if (existing) { if (!existing.sources.includes(source)) existing.sources.push(source); return; }
+      const m = markOf.get(`${lead.id}:${key}`) || null;
+      const row = {
+        key, display: displayPhone(key, value), sources: [source],
+        label: meta ? str(meta.label) || null : null,
+        mark: m ? { status: m.status, rightPerson: m.right_person } : null,
+      };
+      byKey.set(key, row); phones.push(row);
+    };
+    add(lead.phone, 'lead');
+    add(lead.phone_alt, 'lead_alt');
+    for (const p of heldOf.get(lead.elementix_person_id) || []) {
+      if (p == null) continue;
+      if (typeof p === 'string') add(p, 'elementix', null);
+      else add(p.value != null ? p.value : p.key, 'elementix', p);
+    }
+    out.set(lead.id, phones);
+  }
+  return out;
+}
+
 /** Is this one of the lead's numbers? → {ok, key, display} (membership check). */
 async function validateLeadPhone(leadId, phone, opts = {}) {
   const key = phoneKey(phone);
@@ -184,4 +239,4 @@ async function markLeadPhone({ leadId, phone, status, rightPerson, staffId, reco
   return { ok: true, key: v.key, display: v.display, mark: { status: nextStatus, rightPerson: nextRight } };
 }
 
-module.exports = { leadPhonesFor, validateLeadPhone, markLeadPhone, displayPhone };
+module.exports = { leadPhonesFor, leadPhonesForMany, validateLeadPhone, markLeadPhone, displayPhone };

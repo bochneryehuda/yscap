@@ -120,6 +120,58 @@ router.post('/sitewire/explore', async (req, res) => {
   } catch (e) { return fail(res, 502, e, 'could not reach the Sitewire test environment'); }
 });
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   WHO HANDLES THE CLOSING — the settings half of the three-way switch
+   (owner-directed 2026-08-28; src/lib/closing-handling.js is the resolver, db/638
+   the store). The company default + one default per note buyer, edited from the
+   API Health page. Per-FILE overrides live on the file's closing section, not
+   here. Every change is audited with the before/after.
+   ═══════════════════════════════════════════════════════════════════════════ */
+router.get('/closing-handling', async (req, res) => {
+  try {
+    const ch = require('../lib/closing-handling');
+    const settings = await ch.readSettings();
+    // The buyer names the pickers offer — every note buyer the system knows.
+    let buyers = [];
+    try { buyers = await require('../lib/note-buyers').listNoteBuyers(); } catch (_) { buyers = []; }
+    res.json({
+      handlings: ch.HANDLINGS.map((h) => ({ key: h, label: ch.HANDLING_LABEL[h] })),
+      company: settings.company,              // null = no explicit choice → attorney
+      effectiveCompany: settings.company || ch.DEFAULT_HANDLING,
+      buyers: settings.buyers,                // [{key, handling}] — normalized keys
+      knownBuyers: buyers,                    // the pickable names
+    });
+  } catch (e) { return fail(res, 500, e, 'could not read the closing-handling settings'); }
+});
+
+router.put('/closing-handling', async (req, res) => {
+  try {
+    const ch = require('../lib/closing-handling');
+    const b = req.body || {};
+    const before = await ch.readSettings();
+    if ('company' in b) {
+      if (b.company != null && !ch.HANDLINGS.includes(b.company)) return res.status(400).json({ error: 'unknown handling' });
+      await ch.setCompanyDefault(b.company ?? null, req.actor.id);
+    }
+    if (Array.isArray(b.buyers)) {
+      if (b.buyers.length > 50) return res.status(400).json({ error: 'too many buyer rows in one save' });
+      for (const row of b.buyers) {
+        if (!row || !String(row.buyer || row.key || '').trim()) return res.status(400).json({ error: 'a note buyer name is required on every row' });
+        if (row.handling != null && !ch.HANDLINGS.includes(row.handling)) return res.status(400).json({ error: 'unknown handling' });
+        await ch.setBuyerDefault(row.buyer || row.key, row.handling ?? null, req.actor.id);
+      }
+    }
+    const after = await ch.readSettings();
+    try {
+      await db.query(
+        `INSERT INTO audit_log (actor_kind, actor_id, action, entity_type, detail)
+         VALUES ('staff',$1,'closing_handling_settings','system',$2)`,
+        [req.actor.id, JSON.stringify({ before, after })]);
+    } catch (_) { /* best-effort */ }
+    res.json({ ok: true, company: after.company, buyers: after.buyers });
+  } catch (e) { return fail(res, e.status || 500, e, 'could not save the closing-handling settings'); }
+});
+
 // The runtime on/off switches + their effective state (override ?? env default).
 router.get('/switches', async (req, res) => {
   try { await flags.refresh(); res.json({ switches: switches.list() }); }

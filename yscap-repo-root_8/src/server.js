@@ -610,6 +610,8 @@ app.use('/api/underwriting', require('./routes/underwriting'));
   // Loan policy exceptions — the super-admin review box (owner-directed 2026-07-22).
   // Today: co-borrower guaranty waivers. list/count = manage_pricing; decide = super_admin.
   app.use('/api/admin/exceptions', requireAuth, requireStaff, require('./routes/admin-exceptions'));
+  // The reporting database (owner-directed 2026-08-28) — the Encompass-style report builder for the admin back office.
+  app.use('/api/admin/reports', requireAuth, requireStaff, require('./routes/admin-reports'));
   // Sovereign 4/4 admin surface — training proposals queue (owner-directed 2026-07-21).
   app.use('/api/admin/training', requireAuth, requireStaff, require('./routes/admin-training'));
   // Azure Custom labeling console — super-admins tag past documents to train

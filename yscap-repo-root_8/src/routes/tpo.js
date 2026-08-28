@@ -186,7 +186,7 @@ async function appInFirm(actorId, appId) {
 // never over-lends (owner-directed #85, mirrored on every pricing loader).
 async function loadTpoFileForPricing(actorId, appId) {
   const a = await db.query(
-    `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico
+    `SELECT a.*, ${require('../lib/credit').dealFicoSql('b', 'cb')} AS fico
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id
        LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
       WHERE a.id=$2 AND a.deleted_at IS NULL AND ${perms.tpoFirmScopeSql('a', '$1')}`,
@@ -489,7 +489,7 @@ router.get('/applications/:id', async (req, res, next) => {
               a.est_closing_date, a.expected_closing, a.co_borrower_pg_waived, a.liquidity_buffer_waived,
               a.payoff_amount, a.payoff_lender, a.payoff_loan_number, a.estimated_cash_out,
               a.co_borrower_id, a.borrower_portal_enabled, a.created_at,
-              NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico,
+              ${require('../lib/credit').dealFicoSql('b', 'cb')} AS fico,
               b.id AS borrower_id, NULLIF(b.full_name,'') AS borrower_name, b.email AS borrower_email,
               b.first_name, b.middle_name, b.last_name, b.name_suffix, b.full_name,
               l.llc_name AS entity_name,
@@ -1443,14 +1443,18 @@ router.post('/applications/:id/orders/:kind/place', async (req, res, next) => {
     // broker manages the borrower relationship. The broker is still CC'd (they are the
     // file's loan officer), and vendor returns route back to us via the reply-to.
     const ccBorrower = false;
+    // The borrower's HELPER is off for the same reason and by the same rule — on a
+    // wholesale deal the broker owns the borrower relationship, so neither the
+    // borrower nor anyone they authorized is put on a broker-placed vendor thread.
+    const ccHelper = false;
     const built = orders.buildOrderEmail(kind, data, {});
-    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower });
+    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower, ccHelper });
     const me = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     const vendor = data.vendors[kind];
     const r = await orders.placeOrder({
       appId, kind, data, to, cc, replyTo, built, vendor,
       actorId: req.actor.id, actorName: me.full_name || me.email,
-      ccBorrower, force, existing,
+      ccBorrower, ccHelper, force, existing,
     });
     if (!r.ok) return res.status(r.httpStatus).json({ error: r.error, code: r.code });
     await tpoAudit(req, 'tpo_order_placed', 'application', appId, { kind, unconfirmed: !!r.ambiguous });

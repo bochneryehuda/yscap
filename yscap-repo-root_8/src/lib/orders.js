@@ -33,8 +33,8 @@ const { isRcnNoteBuyer } = require('./conditions/field-registry');
 const ORDER_TYPES = ['title', 'insurance'];
 // The service-contact type that fulfils each order (a title order needs the
 // title company; an insurance order needs the insurance agent).
-const VENDOR_TYPE = { title: 'title_company', insurance: 'insurance_agent' };
-const ORDER_LABEL = { title: 'Title', insurance: 'Insurance' };
+const VENDOR_TYPE = { title: 'title_company', insurance: 'insurance_agent', settlement: 'settlement_agent' };
+const ORDER_LABEL = { title: 'Title', insurance: 'Insurance', settlement: 'Settlement agent' };
 
 /** YS Capital's mortgagee clause — printed on every order (the loan number is
     appended by the caller since it varies per file). Address is fixed corporate. */
@@ -171,6 +171,9 @@ async function getOrderData(appId) {
             a.usps_match, a.usps_imported_at,
             a.purchase_price, a.rehab_budget, a.expected_closing, a.est_closing_date,
             a.loan_officer_id, a.processor_id,
+            -- The two PERSON ids, so the helper read below can ask for both
+            -- borrowers' helpers without a second trip to the applications row.
+            a.borrower_id AS borrower_id_ref, a.co_borrower_id AS co_borrower_id_ref,
             b.first_name, b.last_name, b.email AS borrower_email, b.date_of_birth,
             b.cell_phone AS borrower_cell, b.current_address AS borrower_address,
             cb.first_name AS co_first, cb.last_name AS co_last, cb.email AS co_email,
@@ -234,6 +237,41 @@ async function getOrderData(appId) {
       ORDER BY sc.last_used_at DESC NULLS LAST, sc.updated_at DESC NULLS LAST`,
     [appId, Object.values(VENDOR_TYPE)]);
   const vendorOf = (type) => vc.rows.find((x) => x.contact_type === type) || null;
+  /* EVERY OTHER contact of the same type linked to this file (owner-directed
+     2026-08-28: "if all of them are listed on the file contact … all of them
+     should be looped automatically"). The FIRST (most recently used) stays the
+     order's vendor — the To; the rest ride the Cc through recipientsFor. */
+  const vendorsExtraOf = (type) => vc.rows.filter((x) => x.contact_type === type).slice(1);
+
+  /* THE BORROWER'S HELPER(S) — the standing second login a borrower authorizes
+     (`borrower_assistants`, db/472). Read for BOTH the borrower and the co-borrower,
+     because either of them may have set one up, and a co-borrower's helper is as
+     much "a helper on this file" as the borrower's is.
+
+     ACTIVE ONLY (`disabled_at IS NULL`) — a revoked helper is a person the borrower
+     deliberately cut off, and putting them on a vendor order would be handing a
+     revoked party the whole deal. An INVITED-but-not-yet-accepted helper is kept:
+     the email address is real and the borrower chose it; they simply have not set a
+     password yet, which has nothing to do with whether they should be copied.
+
+     An unreadable read yields NO helpers rather than breaking the order — the CC is
+     an addition to a thread, never the thing the order depends on. */
+  let helpers = [];
+  try {
+    const hr = await db.query(
+      `SELECT ba.id, ba.name, lower(ba.email) AS email, ba.borrower_id,
+              (ba.borrower_id = $2) AS is_primary_borrowers
+         FROM borrower_assistants ba
+        WHERE ba.borrower_id = ANY($1::uuid[]) AND ba.disabled_at IS NULL
+        ORDER BY (ba.borrower_id = $2) DESC, ba.created_at`,
+      [[a.borrower_id_ref, a.co_borrower_id_ref].filter(Boolean), a.borrower_id_ref]);
+    helpers = hr.rows.map((h) => ({
+      id: h.id,
+      name: h.name || null,
+      email: h.email,
+      forCoBorrower: !h.is_primary_borrowers,
+    }));
+  } catch (_) { /* no helper block rather than a broken order */ }
 
   const borrowerName = require('./person-name').displayName(a)
     + (a.co_first || a.co_last ? ` & ${[a.co_first, a.co_last].filter(Boolean).join(' ')}` : '');
@@ -243,10 +281,16 @@ async function getOrderData(appId) {
     loanNumber: a.ys_loan_number ? String(a.ys_loan_number).toUpperCase() : '',
     hasLoanNumber: !!a.ys_loan_number,
     propertyLine: propertyLine(a.property_address),
+    // The property's STATE, for the state-aware rules (the NY title cut, the
+    // NY-only settlement-agent order).
+    propertyState: ((a.property_address || {}).state || '').toUpperCase() || null,
     transactionType: transactionType(a.loan_type),
     borrowerName: borrowerName || a.borrower_email || 'Borrower',
     borrowerEmail: a.borrower_email || null,
     coBorrowerEmail: a.co_email || null,
+    // The borrower's authorized HELPER(S) — see the read above. Always an array
+    // (empty when the file has none), so every caller can ask without a null test.
+    helpers,
     // The borrower's OWN contact details, for the insurance order's detail block.
     // The mailing address is deliberately the borrower's HOME address — a builder's
     // risk policy on a vacant house cannot be mailed to the vacant house — rendered
@@ -276,7 +320,13 @@ async function getOrderData(appId) {
           phone: a.lo_cell || a.lo_phone || null, nmls: a.lo_nmls || null }
       : null,
     processor: a.proc_name ? { name: a.proc_name, email: a.proc_email || null } : null,
-    vendors: { title: vendorOf('title_company'), insurance: vendorOf('insurance_agent') },
+    // The ADDITIONAL same-type contacts on the file — auto-looped on the Cc.
+    vendorsExtra: { title: vendorsExtraOf('title_company'), insurance: vendorsExtraOf('insurance_agent') },
+    vendors: { title: vendorOf('title_company'), insurance: vendorOf('insurance_agent'),
+      // The NY settlement agent (owner-directed 2026-08-28) — present on the data
+      // whatever the closing handling is, so the prepped-but-dormant card can show
+      // who would be ordered; the ROUTE decides whether an order may go out.
+      settlement: vendorOf('settlement_agent') },
     // The subject address must be the USPS-imported one BEFORE any order goes out —
     // an order transmits the property address to a vendor, and a wrong/unverified
     // address there is expensive to unwind. `uspsGate` is on only when USPS is
@@ -384,8 +434,13 @@ function buildOrderEmail(kind, data, { followup = false, note = '', fullOrder = 
     // never sent as the first contact (the owner: "that should be only when you
     // click follow up"). Title asks for the standard deliverables; insurance
     // nudges for the quote / binder / invoice.
+    /* THE TITLE DELIVERABLES ARE STATE-AWARE (owner-directed 2026-08-28): in New
+       York, title does not do the settlement, so a NY title order never asks
+       title for the CPL, the wiring instructions, or the preliminary settlement
+       statement — those belong to the settlement agent (closing-handling.js,
+       the ONE definition of the cut). Everywhere else the full list stands. */
     const wantLines = kind === 'title'
-      ? ['Title Commitment', 'CPL', 'Tax Certificate', 'Wiring Instructions', 'Preliminary Settlement Statement']
+      ? require('./closing-handling').titleWants(data.propertyState)
       : ['Insurance quote / binder', 'Invoice'];
     const built = tpl.render({
       title: `${label} Order — Follow-up`,
@@ -491,6 +546,53 @@ function ccBorrowerDefault(kind, loSetting) {
   return loSetting === true;
 }
 
+/**
+ * Whether the BORROWER'S HELPER is CC'd on this order (owner-directed 2026-08-28:
+ * "when you order title and insurance and you have the option to CC the borrower,
+ * you should also be able to have an option to CC the helper as well if there is a
+ * borrower helper on file").
+ *
+ * A HELPER is the standing second login a borrower authorizes — `borrower_assistants`
+ * (db/472), the person who "can do everything but not see the personal information
+ * and not sign documents". On a lot of these files the helper IS the person who
+ * actually talks to the title company, so leaving them off the order thread is what
+ * makes a vendor's question land with nobody who can answer it.
+ *
+ * IT IS ITS OWN CHOICE, NOT A RIDER ON THE BORROWER'S. The two questions are
+ * genuinely different — an officer may well want the helper chasing the title
+ * company while the borrower stays off the chain — so the helper gets its own
+ * per-order checkbox and its own per-officer default, resolved by exactly the same
+ * three-step precedence the borrower's uses:
+ *   1. an explicit per-order choice (the checkbox, or the choice persisted on
+ *      file_orders.meta.ccHelper from the first send — a follow-up stays on the
+ *      footing of the order it follows);
+ *   2. the file's loan officer's OWN default for THIS order kind;
+ *   3. the COMPANY default, which is OFF for every order kind.
+ *
+ * A file with NO helper on it can never CC one: `recipientsFor` has no address to
+ * add, so the choice is inert rather than wrong.
+ */
+const CC_HELPER_SETTING_KEY = { title: 'ccHelperOnTitleOrder', insurance: 'ccHelperOnInsuranceOrder' };
+function ccHelperSettingKey(kind) { return CC_HELPER_SETTING_KEY[kind] || null; }
+
+function ccHelperDefault(kind, loSetting) {
+  // Company default is OFF for every order kind, exactly as the borrower's is.
+  return loSetting === true;
+}
+
+/** Every helper address on this file, lower-cased and de-duplicated. The ONE
+    reading — the recipients, the panel's preview and the reply/follow-up
+    "never" list all ask this, so a helper can never be on one and off another. */
+function helperEmails(data) {
+  const out = [];
+  const seen = new Set();
+  for (const h of ((data && data.helpers) || [])) {
+    const e = String((h && h.email) || '').trim().toLowerCase();
+    if (e && !seen.has(e)) { seen.add(e); out.push(e); }
+  }
+  return out;
+}
+
 /** Recipients for an order: TO the vendor; CC the loan officer + processor, and
     the borrower(s) ONLY when opts.ccBorrower says so (see ccBorrowerDefault —
     title defaults OFF, owner-directed 2026-07-31). Reply-To is the unique
@@ -519,9 +621,25 @@ function recipientsFor(kind, data, opts) {
     add(data.borrowerEmail);
     add(data.coBorrowerEmail);
   }
+  /* THE BORROWER'S HELPER, on their own footing (owner-directed 2026-08-28).
+     Deliberately NOT tied to the borrower's choice: an officer may want the helper
+     on the thread and the borrower off it, or the reverse. A file with no helper
+     adds nothing, so the choice is inert rather than wrong. */
+  const ccHelper = o.ccHelper != null ? !!o.ccHelper : ccHelperDefault(kind, o.loHelperCcSetting);
+  if (ccHelper) for (const e of helperEmails(data)) add(e);
+  /* EVERY OTHER same-type contact linked to the FILE is looped automatically
+     (owner-directed 2026-08-28): a second title contact somebody added to the
+     file is on the file BECAUSE they belong on its title emails. On the Cc —
+     the order is addressed TO the primary vendor's card. */
+  for (const extra of ((data.vendorsExtra || {})[kind] || [])) {
+    for (const e of require('./vendor-directory').allEmails(extra)) add(e);
+  }
+  /* One-off loop-ins picked on the panel (the company-contacts block). Already
+     validated by the route; deduped here like every other address. */
+  for (const e of (o.extraCc || [])) add(e);
   if (data.officer) add(data.officer.email);
   if (data.processor) add(data.processor.email);
-  return { to, cc, replyTo: orderReplyTo(data.appId, kind), ccBorrower };
+  return { to, cc, replyTo: orderReplyTo(data.appId, kind), ccBorrower, ccHelper };
 }
 
 /**
@@ -659,7 +777,7 @@ async function sendOrderMail({ appId, kind, data, to, cc, replyTo, built, fromNa
  * this owns only the atomic claim, the send, the rollback-on-failure and the tracking.
  *
  * @param opts {{ appId, kind, data, to, cc, replyTo, built, vendor, actorId,
- *                actorName, ccBorrower, force, existing }}
+ *                actorName, ccBorrower, ccHelper, force, existing }}
  * @returns Promise resolving to one of (NEVER throws):
  *   { ok:true }                                   — sent + recorded
  *   { ok:true, ambiguous:true, warning }          — provider stopped responding mid-send
@@ -667,7 +785,7 @@ async function sendOrderMail({ appId, kind, data, to, cc, replyTo, built, fromNa
  */
 async function placeOrder(opts) {
   const { appId, kind, data, to, cc, replyTo, built, vendor,
-          actorId, actorName, ccBorrower, force, existing } = opts;
+          actorId, actorName, ccBorrower, ccHelper, force, existing } = opts;
   const orderTracking = require('./order-tracking');
   let claimed = null;
   let sendRes = null;
@@ -678,12 +796,18 @@ async function placeOrder(opts) {
     // the staff Orders desk, which this was extracted from.)
     const claim = await db.query(
       `INSERT INTO file_orders (application_id, order_type, status, vendor_contact_id, vendor_email, vendor_name, subject, ordered_at, ordered_by, send_count, meta)
-       VALUES ($1,$2,'ordered',$3,$4,$5,$6,now(),$7,1, jsonb_build_object('ccBorrower', $8::boolean))
+       VALUES ($1,$2,'ordered',$3,$4,$5,$6,now(),$7,1,
+               jsonb_build_object('ccBorrower', $8::boolean, 'ccHelper', $10::boolean))
        ON CONFLICT (application_id, order_type)
        DO UPDATE SET status='ordered', vendor_contact_id=EXCLUDED.vendor_contact_id, vendor_email=EXCLUDED.vendor_email,
                      vendor_name=EXCLUDED.vendor_name, subject=EXCLUDED.subject, ordered_at=now(),
                      ordered_by=EXCLUDED.ordered_by, send_count=file_orders.send_count+1,
-                     meta=COALESCE(file_orders.meta,'{}'::jsonb) || jsonb_build_object('ccBorrower', $8::boolean), updated_at=now()
+                     -- BOTH footings are stamped in the same breath, so a follow-up
+                     -- (which reads this meta) can never keep the borrower's choice
+                     -- while losing the helper's.
+                     meta=COALESCE(file_orders.meta,'{}'::jsonb)
+                          || jsonb_build_object('ccBorrower', $8::boolean, 'ccHelper', $10::boolean),
+                     updated_at=now()
          -- THE REAL GUARD, atomic: a second concurrent click blocks on this row,
          -- re-reads 'ordered', matches nothing, and answers 409 instead of sending the
          -- vendor a second copy. A FORCED re-send is allowed past, but only once every
@@ -695,7 +819,8 @@ async function placeOrder(opts) {
       // so it is the primary — read through the same folding so it can never name an
       // address the send did not actually use.
       [appId, kind, vendor ? vendor.id : null, require('./vendor-directory').allEmails(vendor)[0] || null,
-       (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, actorId, ccBorrower, !!force]);
+       (vendor && (vendor.company_name || vendor.contact_name)) || null, built.subject, actorId, ccBorrower, !!force,
+       ccHelper == null ? false : !!ccHelper]);
     if (!claim.rows[0]) {
       return { ok: false, httpStatus: 409, code: force ? 'too_soon' : 'already_ordered',
         error: force
@@ -769,6 +894,7 @@ async function placeOrder(opts) {
 module.exports = {
   ORDER_TYPES, VENDOR_TYPE, ORDER_LABEL,
   getOrderData, blockers, buildOrderEmail, recipientsFor, ccBorrowerDefault, ccBorrowerSettingKey,
+  ccHelperDefault, ccHelperSettingKey, helperEmails,
   transactionType, propertyLine, money, dayText,
   INSURANCE_COVERAGE_LINES, insuranceDetailMeta,
   mortgageeClauseFor, isRcnNoteBuyer, MORTGAGEE_CLAUSE, MORTGAGEE_CLAUSE_RCN,

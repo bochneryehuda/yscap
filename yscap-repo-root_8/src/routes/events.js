@@ -23,6 +23,13 @@ router.get('/', async (req, res) => {
   // row — NOT borrower_auth — so this endpoint (which re-implements the auth
   // middleware) must re-implement that too, or a DISABLED helper keeps the live
   // stream (the one surface that bypasses authenticate()).
+  // A GUEST CONDITION-LINK token (src/lib/condition-link.js) is a borrower-kind
+  // token whose whole purpose is the jailed guest condition center — the live
+  // stream is not on its path allowlist, so it is refused here outright (this
+  // endpoint bypasses authenticate(), which is where the jail lives).
+  if (require('../lib/condition-link').readGuest(claims)) {
+    return res.status(403).json({ error: 'not available on a guest link' });
+  }
   const asst = require('../lib/borrower-assistant').readAssistant(claims);
   if (asst) {
     const a = await db.query(

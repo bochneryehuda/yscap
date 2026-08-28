@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**893 objects**, and a database rebuilt from the Prisma
+**900 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 633 numbered migrations in `db/` (highest `db/636`) remain the only thing that builds this database.
+rebuild a database from them.** The 637 numbered migrations in `db/` (highest `db/640`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 387 |
-| Columns | 6228 |
+| Tables | 390 |
+| Columns | 6256 |
 | Triggers | 37 |
 | Functions | 140 |
-| CHECK constraints | 318 |
+| CHECK constraints | 323 |
 | Generated columns | 12 |
-| Partial indexes | 386 |
-| Primary keys | 387 |
-| Foreign keys | 796 |
+| Partial indexes | 388 |
+| Primary keys | 390 |
+| Foreign keys | 803 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1336 |
+| Indexes (all kinds) | 1344 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -231,7 +231,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (386)
+## Partial indexes (388)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -248,6 +248,8 @@ the live database.
 - **borrower_assistants_borrower_idx** on `borrower_assistants`
 - **borrower_assistants_email_uk** on `borrower_assistants`
 - **borrowers_email_owner_uk** on `borrowers`
+- **closing_handling_buyer_uk** on `closing_handling_settings`
+- **closing_handling_company_uk** on `closing_handling_settings`
 - **closing_thread_msgs_dedupe_uk** on `closing_thread_messages`
 - **draw_media_display_pending_idx** on `draw_media`
 - **esign_recipients_uninvited_idx** on `esign_recipients`
@@ -620,7 +622,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (318)
+## CHECK constraints (323)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -629,6 +631,7 @@ the live database.
 - **api_rate_limits_tokens_check** on `api_rate_limits`
 - **application_assignees_role_check** on `application_assignees`
 - **applications_a_piece_amount_chk** on `applications`
+- **applications_closing_handling_chk** on `applications`
 - **applications_pa_read_state_chk** on `applications`
 - **applications_requested_ir_months_check** on `applications`
 - **applications_sold_source_chk** on `applications`
@@ -726,6 +729,9 @@ the live database.
 - **clickup_webhook_inbox_status_check** on `clickup_webhook_inbox`
 - **closing_cost_items_amount_check** on `closing_cost_items`
 - **closing_cost_items_kind_check** on `closing_cost_items`
+- **closing_handling_scope_key_chk** on `closing_handling_settings`
+- **closing_handling_settings_handling_check** on `closing_handling_settings`
+- **closing_handling_settings_scope_check** on `closing_handling_settings`
 - **closing_thread_messages_event_kind_check** on `closing_thread_messages`
 - **closing_workflow_stage_check** on `closing_workflow`
 - **condition_clearance_proofs_result_check** on `condition_clearance_proofs`
@@ -799,6 +805,7 @@ the live database.
 - **fact_events_event_type_check** on `fact_events`
 - **fact_observations_source_type_check** on `fact_observations`
 - **file_order_events_kind_check** on `file_order_events`
+- **file_order_events_order_type_check** on `file_order_events`
 - **file_orders_order_type_check** on `file_orders`
 - **file_orders_status_check** on `file_orders`
 - **finding_committee_reviews_action_check** on `finding_committee_reviews`
@@ -941,7 +948,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (796)
+## Foreign keys (803)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1148,6 +1155,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **closing_checklists** → `closing_checklist_templates` — `FOREIGN KEY (template_id) REFERENCES closing_checklist_templates(id) ON DELETE SET NULL`
 - **closing_cost_items** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
 - **closing_cost_items** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **closing_handling_settings** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **closing_notes** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
 - **closing_notes** → `staff_users` — `FOREIGN KEY (author_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **closing_thread_messages** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
@@ -1172,6 +1180,10 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **condition_clearance_proofs** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
 - **condition_clearance_proofs** → `document_extractions` — `FOREIGN KEY (extraction_id) REFERENCES document_extractions(id) ON DELETE SET NULL`
 - **condition_clearance_proofs** → `condition_intents` — `FOREIGN KEY (intent_id) REFERENCES condition_intents(id) ON DELETE SET NULL`
+- **condition_links** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
+- **condition_links** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE CASCADE`
+- **condition_links** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **condition_links** → `staff_users` — `FOREIGN KEY (revoked_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **condition_requirement_evidence** → `evidence_spans` — `FOREIGN KEY (evidence_span_id) REFERENCES evidence_spans(id) ON DELETE CASCADE`
 - **condition_requirement_evidence** → `condition_clearance_proofs` — `FOREIGN KEY (clearance_proof_id) REFERENCES condition_clearance_proofs(id) ON DELETE CASCADE`
 - **conditions** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
@@ -1596,6 +1608,8 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **reminders** → `staff_users` — `FOREIGN KEY (assignee_staff_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **reminders** → `staff_users` — `FOREIGN KEY (completed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **reminders** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **report_definitions** → `staff_users` — `FOREIGN KEY (created_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **report_definitions** → `staff_users` — `FOREIGN KEY (updated_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **research_imports** → `appraisals` — `FOREIGN KEY (appraisal_id) REFERENCES appraisals(id) ON DELETE SET NULL`
 - **research_imports** → `appraisers` — `FOREIGN KEY (appraiser_id) REFERENCES appraisers(id) ON DELETE SET NULL`
 - **research_imports** → `properties` — `FOREIGN KEY (subject_property_id) REFERENCES properties(id) ON DELETE SET NULL`
@@ -1814,7 +1828,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 387 primary keys and 1336 indexes is
+Every one of the 390 primary keys and 1344 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

@@ -931,6 +931,17 @@ function buildPipelineFilter(req, q) {
 
     if (q.program) where.push(`a.program = ${add(String(q.program))}`);
     if (q.loanType) where.push(`a.loan_type = ${add(String(q.loanType))}`);
+    /* THE INVESTOR FILTER (owner-directed 2026-08-28: "searching by investors …
+       I can search this investor for everything that still needs to be sold").
+       Matched on the NORMALIZED note-buyer key with the same prefix discipline
+       the note-buyer helpers use, so picking "RCN" finds "RCN Capital, LLC"
+       however the label was typed. Bound as a LIKE value, never interpolated. */
+    if (q.investor !== undefined && String(q.investor).trim() !== '') {
+      const key = require('../lib/conditions/field-registry').normNoteBuyer(String(q.investor).slice(0, 80));
+      if (key) {
+        where.push(`regexp_replace(lower(COALESCE(a.lender,'')), '[^a-z0-9]', '', 'g') LIKE ${add(key + '%')}`);
+      }
+    }
     // Free-text search across borrower name, YS loan number, and property address.
     // One bound ILIKE value, matched against several columns — never interpolated.
     if (q.q !== undefined && String(q.q).trim() !== '') {
@@ -965,6 +976,11 @@ function buildPipelineFilter(req, q) {
       ['fundedTo', 'a.actual_closing', '<='],
       ['createdFrom', 'a.created_at', '>='],
       ['createdTo', 'a.created_at', '<='],
+      // "Something that's closing between this and this date" (owner-directed
+      // 2026-08-28) — the EXPECTED closing, resolved exactly as closing-prep
+      // resolves it (confirmed expected date, else the term-sheet estimate).
+      ['closingFrom', 'COALESCE(a.expected_closing, a.est_closing_date)', '>='],
+      ['closingTo', 'COALESCE(a.expected_closing, a.est_closing_date)', '<='],
     ]) {
       const v = q[key];
       if (v === undefined || v === '') continue;
@@ -982,6 +998,17 @@ function buildPipelineFilter(req, q) {
       where.push(DASH_FILTER_SQL[q.flag]);
     } else if (q.flag === 'nodate') {
       where.push(`a.status = 'funded' AND a.actual_closing IS NULL`);
+    } else if (q.flag === 'funded_unsold') {
+      /* FUNDED BUT NOT YET SOLD (owner-directed 2026-08-28) — the loans still to
+         be delivered to an investor. Table-funded files are EXCLUDED by name:
+         funding on the Table Funding warehouse line means the loan was sold at
+         the closing table, so it never "needs to be sold". The warehouse is the
+         one source of that fact (lib/closing.js TABLE_FUNDING), bound, never a
+         second string. sold_at (db/611) is the sold stamp. */
+      const tf = add(require('../lib/closing').TABLE_FUNDING);
+      where.push(`a.status = 'funded' AND a.sold_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM closing_workflow cw
+                         WHERE cw.application_id = a.id AND cw.warehouse = ${tf})`);
     }
 
     // "My files only" — the same lens the UI's ?mine=1 checkbox applies as a
@@ -1006,6 +1033,10 @@ function buildPipelineFilter(req, q) {
       amount_asc: 'a.loan_amount ASC NULLS LAST',
       closing_desc: 'a.actual_closing DESC NULLS LAST',
       closing_asc: 'a.actual_closing ASC NULLS LAST',
+      expected_desc: 'COALESCE(a.expected_closing, a.est_closing_date) DESC NULLS LAST',
+      expected_asc: 'COALESCE(a.expected_closing, a.est_closing_date) ASC NULLS LAST',
+      investor_asc: "COALESCE(NULLIF(a.lender,''),'zzz') ASC",
+      investor_desc: "COALESCE(NULLIF(a.lender,''),'') DESC",
       name_asc: 'b.last_name ASC, b.first_name ASC',
       name_desc: 'b.last_name DESC, b.first_name DESC',
     };
@@ -1035,6 +1066,7 @@ router.get('/applications', async (req, res) => {
     // carries both and the list decides the word. One definition of that decision:
     // app-v2/src/lib/soldStage.js, the browser twin of lib/sold-status.displayStatus.
     const sql = `SELECT a.id,a.ys_loan_number,a.program,a.loan_type,a.status,a.internal_status,a.sync_state,a.sold_at,
+                        a.expected_closing,a.est_closing_date,
                         a.clickup_pipeline_task_id,a.property_address,a.lender,
                         a.loan_amount,a.loan_officer_id,a.loan_officer_name,a.processor_id,a.created_at,a.actual_closing,
                         b.first_name,b.last_name,b.email,
@@ -2894,9 +2926,9 @@ router.post('/applications/:id/vesting/personal-name', async (req, res) => {
 // experience buckets the engines expect (flips / holds / ground-up).
 async function loadFileForPricing(appId) {
   const a = await db.query(
-    // Pricing FICO = the HIGHEST score across the file's borrowers (#99): with a
-    // co-borrower, the stronger credit prices the deal. NULL when neither has one.
-    `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico
+    // Pricing FICO = the ONE deal-fico rule (#99, re-pinned owner-directed
+    // 2026-08-28): one borrower → their middle score; two → the higher middle.
+    `SELECT a.*, ${require('../lib/credit').dealFicoSql('b', 'cb')} AS fico
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id
        LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
       WHERE a.id=$1`, [appId]);
@@ -4826,6 +4858,173 @@ router.get('/applications/:id/overview-card', async (req, res) => {
   const card = await require('../lib/file-overview').buildFileOverview(req.params.id, { audience: 'internal' });
   if (!card) return res.status(404).json({ error: 'not found' });
   res.json(card);
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SEND THE OUTSTANDING CONDITIONS TO THE BORROWER — the login-free door
+   (owner-directed 2026-08-28: "on our staff site condition center, we should
+   have a button to click to send outstanding conditions to the borrower …
+   it should populate the preview and to whom it's sending. You should be able
+   to loop in over there the helpers and other people and review before
+   sending. And obviously, you should have this reply to email, so go directly
+   back into the file that opens up the email chain").
+
+   Every recipient gets their OWN emailed link (src/lib/condition-link.js): a
+   personal, expiring capability that opens the simple guest condition center
+   for THIS file — upload buttons on every condition, fill-in for information
+   items, no account, no password. The email's Reply-To is the file's own
+   address, so a plain reply lands in the file's email chain.
+
+   THE LIST IS THE ONE BORROWER-OUTSTANDING DEFINITION — reminders'
+   outstandingItemRows, the same read behind the outstanding-items email and
+   the portal's own list — so what this email asks for and what every other
+   surface asks for can never be two different lists.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+// The preview: what would be sent, to whom it could go, and the links already out.
+router.get('/applications/:id/conditions/outreach', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const conditionLink = require('../lib/condition-link');
+    const items = await require('../lib/reminders').outstandingItemRows(appId);
+    const a = (await db.query(
+      `SELECT a.id, a.ys_loan_number, a.property_address, a.borrower_id, a.co_borrower_id,
+              b.first_name AS b_first, b.last_name AS b_last, b.email AS b_email,
+              cb.first_name AS c_first, cb.last_name AS c_last, cb.email AS c_email,
+              lo.full_name AS lo_name, lo.title AS lo_title, lo.email AS lo_email,
+              lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls
+         FROM applications a
+         JOIN borrowers b ON b.id=a.borrower_id
+         LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
+         LEFT JOIN staff_users lo ON lo.id=a.loan_officer_id AND lo.is_active
+        WHERE a.id=$1 AND a.deleted_at IS NULL`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    // Who this can go to: the borrower(s) and every ACTIVE helper — plus any
+    // extra address the sender types on the screen (sent as the PRIMARY
+    // borrower's view, which the screen says out loud).
+    const recipients = [];
+    if (a.b_email) recipients.push({ email: String(a.b_email).toLowerCase(), name: [a.b_first, a.b_last].filter(Boolean).join(' ') || a.b_email, kind: 'borrower', borrowerId: a.borrower_id });
+    if (a.c_email) recipients.push({ email: String(a.c_email).toLowerCase(), name: [a.c_first, a.c_last].filter(Boolean).join(' ') || a.c_email, kind: 'co_borrower', borrowerId: a.co_borrower_id });
+    const helpers = (await db.query(
+      `SELECT lower(email) AS email, name, borrower_id FROM borrower_assistants
+        WHERE borrower_id = ANY($1::uuid[]) AND disabled_at IS NULL ORDER BY created_at`,
+      [[a.borrower_id, a.co_borrower_id].filter(Boolean)])).rows;
+    for (const h of helpers) {
+      if (recipients.some((r) => r.email === h.email)) continue;
+      recipients.push({ email: h.email, name: h.name || h.email, kind: 'helper', borrowerId: h.borrower_id });
+    }
+    // What has already gone out, so the desk shows whether a link was opened.
+    const prior = (await db.query(
+      `SELECT id, sent_to_email, created_at, expires_at, revoked_at, last_used_at, use_count
+         FROM condition_links WHERE application_id=$1 ORDER BY created_at DESC LIMIT 12`, [appId])).rows;
+    // The preview body — built exactly as the send builds it, with a placeholder
+    // where each recipient's own secure button will go.
+    const data = {
+      loanNumber: a.ys_loan_number ? String(a.ys_loan_number).toUpperCase() : '',
+      propertyLine: require('../lib/orders').propertyLine ? require('../lib/orders').propertyLine(a.property_address) : ((a.property_address || {}).oneLine || ''),
+      firstName: a.b_first || null,
+      officer: a.lo_name ? { name: a.lo_name, title: a.lo_title || 'Loan Officer', email: a.lo_email, phone: a.lo_cell || a.lo_phone || null, nmls: a.lo_nmls || null } : null,
+    };
+    const note = typeof req.query.note === 'string' ? req.query.note.slice(0, 2000) : '';
+    const built = conditionLink.buildOutstandingEmail({ items, token: 'preview', data, note });
+    res.json({
+      items, recipients, prior,
+      replyTo: require('../lib/file-address').fileReplyTo(appId),
+      preview: require('../lib/email/manual-override').previewShape(built, { to: recipients.map((r) => r.email), cc: [] }),
+    });
+  } catch (e) { res.status(500).json({ error: 'Could not build the outstanding-conditions preview.' }); }
+});
+
+// The send: one email per chosen recipient, each with its OWN link.
+router.post('/applications/:id/conditions/outreach', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const conditionLink = require('../lib/condition-link');
+    const b = req.body || {};
+    const wanted = Array.isArray(b.emails) ? b.emails.map((e) => String(e || '').trim().toLowerCase()).filter(Boolean) : [];
+    if (!wanted.length) return res.status(400).json({ error: 'Pick at least one recipient.' });
+    if (wanted.length > 8) return res.status(400).json({ error: 'Pick up to 8 recipients.' });
+    for (const e of wanted) {
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return res.status(400).json({ error: `"${e}" is not a valid email address.` });
+    }
+    const items = await require('../lib/reminders').outstandingItemRows(appId);
+    if (!items.length) return res.status(409).json({ error: 'Nothing is outstanding for the borrower on this file — there is nothing to send.' });
+    const a = (await db.query(
+      `SELECT a.id, a.ys_loan_number, a.property_address, a.borrower_id, a.co_borrower_id, a.status,
+              b.first_name AS b_first, b.email AS b_email,
+              cb.first_name AS c_first, cb.email AS c_email,
+              lo.full_name AS lo_name, lo.title AS lo_title, lo.email AS lo_email,
+              lo.phone AS lo_phone, lo.cell AS lo_cell, lo.nmls AS lo_nmls
+         FROM applications a
+         JOIN borrowers b ON b.id=a.borrower_id
+         LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
+         LEFT JOIN staff_users lo ON lo.id=a.loan_officer_id AND lo.is_active
+        WHERE a.id=$1 AND a.deleted_at IS NULL`, [appId])).rows[0];
+    if (!a) return res.status(404).json({ error: 'not found' });
+    // A parked file sends nothing — the same rule the borrower notify chokepoint
+    // applies (a held file must stop emailing its borrower).
+    if (String(a.status) === 'on_hold') return res.status(409).json({ error: 'This file is on hold — outstanding-conditions emails do not go out from a parked file.' });
+    // WHOSE VIEW each address opens: the co-borrower and the co-borrower's own
+    // helper get the CO-BORROWER's identity (per-borrower privacy, #82); every
+    // other address — the primary, their helpers, and any extra address the
+    // sender typed — gets the primary borrower's view.
+    const coEmails = new Set();
+    if (a.c_email) coEmails.add(String(a.c_email).toLowerCase());
+    if (a.co_borrower_id) {
+      const ch = await db.query(
+        `SELECT lower(email) AS email FROM borrower_assistants WHERE borrower_id=$1 AND disabled_at IS NULL`,
+        [a.co_borrower_id]);
+      for (const r of ch.rows) coEmails.add(r.email);
+    }
+    const note = typeof b.note === 'string' ? b.note.slice(0, 2000) : '';
+    const data = {
+      loanNumber: a.ys_loan_number ? String(a.ys_loan_number).toUpperCase() : '',
+      propertyLine: (a.property_address || {}).oneLine || require('../lib/orders').propertyLine(a.property_address),
+      officer: a.lo_name ? { name: a.lo_name, title: a.lo_title || 'Loan Officer', email: a.lo_email, phone: a.lo_cell || a.lo_phone || null, nmls: a.lo_nmls || null } : null,
+    };
+    const replyTo = require('../lib/file-address').fileReplyTo(appId);
+    const email = require('../lib/email');
+    const sent = [], failed = [];
+    for (const to of wanted) {
+      try {
+        const borrowerId = coEmails.has(to) ? a.co_borrower_id : a.borrower_id;
+        const { token } = await conditionLink.mintLink({ applicationId: appId, borrowerId, email: to, createdBy: req.actor.id });
+        const firstName = to === String(a.b_email || '').toLowerCase() ? a.b_first
+          : to === String(a.c_email || '').toLowerCase() ? a.c_first : null;
+        const built = conditionLink.buildOutstandingEmail({ items, token, data: { ...data, firstName }, note });
+        const r = await email.sendMail({
+          to, subject: built.subject, html: built.html, text: built.text,
+          replyTo,
+          from: a.lo_name && email.fromWithName ? email.fromWithName(a.lo_name) : undefined,
+          _ctx: { applicationId: appId, type: 'conditions_outreach', audience: 'borrower' },
+        });
+        if (r && r.ok) sent.push(to);
+        else failed.push({ email: to, reason: r && r.skipped ? 'Email sending is turned off in this environment.' : 'The email provider did not accept it.' });
+      } catch (e) {
+        failed.push({ email: to, reason: 'The email could not be sent.' });
+      }
+    }
+    await audit(req, 'conditions_outreach_sent', 'application', appId, { sent: sent.length, failed: failed.length, items: items.length });
+    if (!sent.length) return res.status(502).json({ error: failed[0] ? failed[0].reason : 'Nothing could be sent.', failed });
+    res.json({ ok: true, sent, failed, items: items.length });
+  } catch (e) { res.status(500).json({ error: 'Could not send the outstanding-conditions email.' }); }
+});
+
+// Revoke a link (the email was forwarded, the deal went sideways — kill it now).
+router.post('/applications/:id/conditions/outreach/:linkId/revoke', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const r = await db.query(
+      `UPDATE condition_links SET revoked_at=now(), revoked_by=$3
+        WHERE id=$2 AND application_id=$1 AND revoked_at IS NULL RETURNING id, sent_to_email`,
+      [appId, req.params.linkId, req.actor.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'link not found (or already revoked)' });
+    await audit(req, 'conditions_outreach_revoked', 'application', appId, { linkId: req.params.linkId, email: r.rows[0].sent_to_email });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'Could not revoke that link.' }); }
 });
 
 router.get('/applications/:id/checklist', async (req, res) => {
@@ -6774,18 +6973,20 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       }
       const built = orders.buildOrderEmail(kind, data, { followup: true, note: bodyText });
       const replyCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
-      const base = orders.recipientsFor(kind, data, { ccBorrower: replyCc });
+      const replyHelperCc = await ccHelperFor(appId, kind, { storedMeta: row.meta });
+      const base = orders.recipientsFor(kind, data, { ccBorrower: replyCc, ccHelper: replyHelperCc });
       /* KEEP EVERYONE THE VENDOR LOOPED IN (owner-directed 2026-08-07, extremely
          important). `recipientsFor` rebuilds To/Cc from the file's vendor contact plus
          the officer and processor — the vendor's own assistant, whom they CC'd on their
          reply, is not in that data at all, so every reply removed them.
          The BORROWER is deliberately NOT added this way: whether the borrower is on an
          order is governed by the owner-directed ccBorrower setting (off by default),
-         and a vendor's one-off Cc must not turn that into policy. */
+         and a vendor's one-off Cc must not turn that into policy. The borrower's
+         HELPER is on exactly the same footing, for exactly the same reason. */
       const parties = await threadParticipants.replyRecipients({
         applicationId: appId, msgTypes: [`${kind}_message`],
         to: base.to, cc: base.cc,
-        never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+        never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data)].filter(Boolean),
       });
       const { to, cc } = parties;
       const { replyTo } = base;
@@ -6997,6 +7198,35 @@ async function ccBorrowerFor(appId, kind, { explicit = null, storedMeta = null }
   return orders.ccBorrowerDefault(kind, loCcSetting);
 }
 
+/**
+ * WHETHER THE BORROWER'S HELPER IS ON THIS ORDER'S THREAD — the SAME shape, and
+ * for the same reason, as `ccBorrowerFor` above (owner-directed 2026-08-28: "when
+ * you order title and insurance and you have the option to CC the borrower, you
+ * should also be able to have an option to CC the helper as well if there is a
+ * borrower helper on file").
+ *
+ * A SECOND function rather than a second argument, deliberately: the two footings
+ * are independent choices (copy the helper, not the borrower — or the reverse), so
+ * each resolves its own explicit → stored → officer-default chain, and neither can
+ * quietly decide the other. Every door that writes to a vendor calls BOTH, so the
+ * helper can never join or leave the conversation halfway through it.
+ *
+ * Never throws: an unreadable officer setting falls through to the company default (off).
+ */
+async function ccHelperFor(appId, kind, { explicit = null, storedMeta = null } = {}) {
+  if (explicit != null) return !!explicit;
+  if (storedMeta && typeof storedMeta === 'object' && storedMeta.ccHelper != null) return !!storedMeta.ccHelper;
+  let loCcSetting = false;
+  try {
+    const key = orders.ccHelperSettingKey(kind); // TITLE vs INSURANCE — each has its own officer default
+    const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
+    if (key && lo.rows[0] && lo.rows[0].loan_officer_id) {
+      loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, key);
+    }
+  } catch (_) { /* the company default stands (off) */ }
+  return orders.ccHelperDefault(kind, loCcSetting);
+}
+
 // The whole Orders section for a file: both orders' state, whether each can be
 // placed (blockers), the vendor on file, and the returned documents waiting to be
 // classified. One call powers the panel.
@@ -7039,9 +7269,12 @@ router.get('/applications/:id/orders', async (req, res) => {
         loSettings = await require('../lib/lo-settings').getSettings(lo.rows[0].loan_officer_id);
       }
     } catch (_) { /* defaults stand (off) */ }
-    const storedCc = (k) => {
+    const storedMetaOf = (k) => {
       const row = orderOf(k);
-      const m = row && row.meta && typeof row.meta === 'object' ? row.meta : null;
+      return row && row.meta && typeof row.meta === 'object' ? row.meta : null;
+    };
+    const storedCc = (k) => {
+      const m = storedMetaOf(k);
       return m && m.ccBorrower != null ? !!m.ccBorrower : null;
     };
     const ccEffective = (k) => {
@@ -7049,6 +7282,15 @@ router.get('/applications/:id/orders', async (req, res) => {
       if (stored != null) return stored;
       const key = orders.ccBorrowerSettingKey(k);
       return orders.ccBorrowerDefault(k, key ? loSettings[key] === true : false);
+    };
+    /* THE HELPER'S OWN FOOTING (owner-directed 2026-08-28), resolved by the SAME
+       three steps and read from the SAME loSettings bag — so the checkbox the panel
+       paints is the choice the send would actually make. */
+    const ccHelperEffective = (k) => {
+      const m = storedMetaOf(k);
+      if (m && m.ccHelper != null) return !!m.ccHelper;
+      const key = orders.ccHelperSettingKey(k);
+      return orders.ccHelperDefault(k, key ? loSettings[key] === true : false);
     };
     // Returned documents per order (unassigned = no slot_label yet).
     const docs = (await db.query(
@@ -7197,10 +7439,22 @@ router.get('/applications/:id/orders', async (req, res) => {
       notes: attorneyRow.notes || null,
     } : null;
 
+    /* WHO HANDLES THE CLOSING — resolved once for the whole panel, so the
+       attorney card, the settlement card and the title slots all read ONE
+       answer (owner-directed 2026-08-28). Never breaks the panel: an unreadable
+       setting reads as the attorney default. */
+    let chResolution = null, chCapabilities = null;
+    try {
+      const ch = require('../lib/closing-handling');
+      chResolution = await ch.resolve(req.params.id);
+      chCapabilities = chResolution ? ch.capabilities(chResolution) : null;
+    } catch (_) { /* attorney default */ }
+
     // Who an order will reach, so the panel can show it before sending.
     const recipientsPreview = (k) => {
-      const { to, cc, ccBorrower } = orders.recipientsFor(k, data, { ccBorrower: ccEffective(k) });
-      return { to, cc, ccBorrower };
+      const { to, cc, ccBorrower, ccHelper } = orders.recipientsFor(k, data,
+        { ccBorrower: ccEffective(k), ccHelper: ccHelperEffective(k) });
+      return { to, cc, ccBorrower, ccHelper };
     };
     res.json({
       file: {
@@ -7208,14 +7462,85 @@ router.get('/applications/:id/orders', async (req, res) => {
         propertyLine: data.propertyLine, borrowerName: data.borrowerName,
         borrowerEmail: data.borrowerEmail, coBorrowerEmail: data.coBorrowerEmail,
         officer: data.officer, processor: data.processor,
+        /* THE HELPERS ON THIS FILE — name + address, so the panel can offer the
+           CC-the-helper choice BY NAME and, on a file with none, not offer it at
+           all rather than show a checkbox that could never do anything. */
+        helpers: (data.helpers || []).map((h) => ({ name: h.name, email: h.email, forCoBorrower: !!h.forCoBorrower })),
       },
       orders: {
-        title: { ...shape('title'), recipients: recipientsPreview('title'), ccBorrower: ccEffective('title') },
-        insurance: { ...shape('insurance'), recipients: recipientsPreview('insurance'), ccBorrower: ccEffective('insurance') },
+        title: { ...shape('title'), recipients: recipientsPreview('title'),
+          ccBorrower: ccEffective('title'), ccHelper: ccHelperEffective('title') },
+        insurance: { ...shape('insurance'), recipients: recipientsPreview('insurance'),
+          ccBorrower: ccEffective('insurance'), ccHelper: ccHelperEffective('insurance') },
         // Tracking ONLY — everything else about the attorney order comes from its
         // own closing-prep payload, which owns the recipients, the package and the
         // chain. `null` until closing prep has actually been sent.
         attorney: attorneyTracking ? { orderType: 'attorney', tracking: attorneyTracking } : null,
+        /* FLOOD INSURANCE (owner-directed 2026-08-28): on every file — grayed
+           until the flood zone is established (by the appraisal, a completed
+           determination, or the manual flip this card offers), then orderable to
+           the flood_insurance contact, defaulting — with explicit confirmation —
+           to the file's own insurance agent. */
+        floodInsurance: await (async () => {
+          try {
+            const fio = require('../lib/flood-insurance-order');
+            const zone = await fio.floodZoneEstablished(req.params.id);
+            const manual = (await db.query(`SELECT flood_zone_override FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+            const vendor = await fio.floodVendor(req.params.id);
+            const row = orderOf('flood_insurance');
+            const cond = (await db.query(
+              `SELECT ci.id, ci.status FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+                WHERE ci.application_id=$1 AND t.code='rtl_cond_flood_insurance' ORDER BY ci.created_at LIMIT 1`,
+              [req.params.id])).rows[0] || null;
+            return {
+              orderType: 'flood_insurance',
+              status: row ? row.status : 'not_ordered',
+              inFloodZone: zone.inZone,
+              zoneSource: zone.source,                       // 'manual' | 'appraisal' | 'determination' | null
+              manualFlip: !!(manual && manual.flood_zone_override === true),
+              enabled: zone.inZone,
+              reason: zone.inZone ? null
+                : 'Nothing on this file says the property is in a flood zone yet. Flip the switch if it is — that adds the flood-insurance condition and opens this order.',
+              vendor: vendor ? { id: vendor.id, name: vendor.company_name || vendor.contact_name || null,
+                emails: require('../lib/vendor-directory').allEmails(vendor) } : null,
+              insuranceAgent: data.vendors.insurance ? {
+                name: data.vendors.insurance.company_name || data.vendors.insurance.contact_name || null,
+                email: require('../lib/vendor-directory').allEmails(data.vendors.insurance)[0] || null,
+              } : null,
+              condition: cond,
+              orderedAt: row ? row.ordered_at : null,
+              vendorName: row ? row.vendor_name : null,
+            };
+          } catch (_) { return null; }
+        })(),
+        /* THE SETTLEMENT-AGENT ORDER (owner-directed 2026-08-28) — the New-York
+           workflow that takes over title's settlement items when we close in
+           house. ALWAYS present on a NY file so the desk can SEE the prepped
+           workflow; `enabled`/`reason` (from the one closing-handling
+           capabilities rule) say whether it may send and, when not, exactly why.
+           The draft-condition container (the grayed list of what the agent will
+           owe) rides as `asks`. */
+        settlement: (() => {
+          const ch = require('../lib/closing-handling');
+          if (!ch.isNyState(data.propertyState)) return null;   // a NY-only workflow
+          const cap = chCapabilities;
+          const row = orderOf('settlement');
+          return {
+            orderType: 'settlement',
+            status: row ? row.status : 'not_ordered',
+            enabled: cap ? cap.settlementAgent.enabled : false,
+            dormant: cap ? !!cap.settlementAgent.dormant : true,
+            reason: cap ? cap.settlementAgent.reason : null,
+            vendor: data.vendors.settlement ? {
+              id: data.vendors.settlement.id,
+              name: data.vendors.settlement.company_name || data.vendors.settlement.contact_name || null,
+              emails: require('../lib/vendor-directory').allEmails(data.vendors.settlement),
+            } : null,
+            asks: ch.SETTLEMENT_ASKS,
+            orderedAt: row ? row.ordered_at : null,
+            vendorName: row ? row.vendor_name : null,
+          };
+        })(),
         // THE APPRAISAL, on the same footing as the attorney order and for the same
         // reason: the desk carries its clock, owner, notes and history, while the
         // appraisal section owns the vendor conversation. Everything under `vendor`
@@ -7224,6 +7549,9 @@ router.get('/applications/:id/orders', async (req, res) => {
         // may talk to those three APIs. `null` until an appraisal has been ordered.
         appraisal: appraisalOrder,
       },
+      /* The whole panel's closing-handling answer: which workflows are live on
+         this file and, for each disabled one, the reason to print. */
+      closingHandling: chResolution ? { resolution: chResolution, capabilities: chCapabilities } : null,
     });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -7258,22 +7586,287 @@ router.get('/applications/:id/orders/:kind/email-preview', async (req, res) => {
       `SELECT meta FROM file_orders WHERE application_id=$1 AND order_type=$2`, [appId, kind])).rows[0];
     const explicit = req.query.ccBorrower === '1' || req.query.ccBorrower === 'true' ? true
       : (req.query.ccBorrower === '0' || req.query.ccBorrower === 'false' ? false : null);
+    const explicitHelper = req.query.ccHelper === '1' || req.query.ccHelper === 'true' ? true
+      : (req.query.ccHelper === '0' || req.query.ccHelper === 'false' ? false : null);
     // A follow-up keeps the footing the order was placed with (no explicit override —
-    // exactly the follow-up send's own rule).
+    // exactly the follow-up send's own rule). Both footings, resolved the same way.
     const ccBorrower = await ccBorrowerFor(appId, kind,
       followup ? { storedMeta: row && row.meta } : { explicit, storedMeta: row && row.meta });
-    const base = orders.recipientsFor(kind, data, { ccBorrower });
+    const ccHelper = await ccHelperFor(appId, kind,
+      followup ? { storedMeta: row && row.meta } : { explicit: explicitHelper, storedMeta: row && row.meta });
+    const base = orders.recipientsFor(kind, data, { ccBorrower, ccHelper });
     let { to, cc } = base;
     if (followup) {
       const parties = await threadParticipants.replyRecipients({
         applicationId: appId, msgTypes: [`${kind}_message`],
         to: base.to, cc: base.cc,
-        never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+        never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data)].filter(Boolean),
       });
       to = parties.to; cc = parties.cc;
     }
     res.json(require('../lib/email/manual-override').previewShape(built, { to, cc }));
   } catch (e) { res.status(500).json({ error: 'Could not build the preview.' }); }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PLACE THE SETTLEMENT-AGENT ORDER (owner-directed 2026-08-28) — New York,
+   in-house closings only. "We hired you for the settlement agent for this New
+   York file … you need to send your errors and omissions insurance, your
+   preliminary settlement statement, your wiring instructions."
+
+   Its own route rather than a fourth arm of the title/insurance one, because
+   its GATE is different in kind: the closing-handling capabilities rule (the
+   one definition) decides whether this order EXISTS on the file at all, and a
+   refusal always carries that rule's own reason sentence. The send itself rides
+   the SAME exactly-once core every other order uses (orders.placeOrder), so the
+   claim/rollback/ambiguous-send discipline is inherited, not re-implemented.
+   ═══════════════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   FLOOD INSURANCE (owner-directed 2026-08-28) — the flood-zone flip and the
+   flood insurance order. src/lib/flood-insurance-order.js owns the gate rule
+   and the email; the send rides the SAME exactly-once placeOrder core.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+// Flip "this property is in a flood zone" (true) or clear the manual flip back
+// to the derived answer (null). Flipping TRUE attaches the flood-insurance
+// condition through the existing engine rule in the same breath.
+router.post('/applications/:id/flood-zone', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const fio = require('../lib/flood-insurance-order');
+    const b = req.body || {};
+    const flip = b.inFloodZone === true ? true : null;   // no manual FALSE — evidence is never silenced by hand
+    await db.query(`UPDATE applications SET flood_zone_override=$2, updated_at=now() WHERE id=$1`, [appId, flip]);
+    // The engine attaches (or, on a clean clear with no other evidence, retracts
+    // its untouched auto item for) the flood-insurance condition.
+    try { await require('../lib/conditions/engine').evaluateApplication(appId); } catch (_) { /* next view re-runs it */ }
+    const zone = await fio.floodZoneEstablished(appId);
+    await audit(req, 'flood_zone_flip', 'application', appId, { flip, established: zone.inZone, source: zone.source });
+    res.json({ ok: true, inFloodZone: zone.inZone, source: zone.source, manual: flip === true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Place the flood insurance order. Gated on the established flood zone; the
+// contact defaults to the file's insurance agent ONLY through an explicit
+// {useInsuranceAgent:true} (the desk asks first — never silently).
+router.post('/applications/:id/orders/flood-insurance/place', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const fio = require('../lib/flood-insurance-order');
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const dead = await deadFileOrderReason(appId);
+    if (dead) return res.status(422).json({ error: dead, code: 'file_closed' });
+
+    const zone = await fio.floodZoneEstablished(appId);
+    if (!zone.inZone) {
+      return res.status(422).json({ error: 'Nothing on this file says the property is in a flood zone — no appraisal FEMA flag, no completed flood determination, and the manual "property is in a flood zone" switch is off. Flip that switch (or import the determination) first.', code: 'no_flood_zone' });
+    }
+    if (!data.hasLoanNumber) return res.status(400).json({ error: 'Add the file’s loan number first — it prints in the mortgagee clause.', code: 'loan_number' });
+    if (data.uspsGate && !data.uspsImported && !data.uspsCleared) {
+      return res.status(422).json({ error: 'Import the USPS-verified property address before ordering flood insurance — an order sent with an unverified address can go out with the wrong ZIP or unit.', code: 'usps' });
+    }
+
+    let vendor = await fio.floodVendor(appId);
+    if (!vendor && (req.body || {}).useInsuranceAgent === true) {
+      vendor = await fio.adoptInsuranceAgent(appId);
+    }
+    if (!vendor) {
+      // The desk's prompt: offer the file's own insurance agent as the default,
+      // or ask for a different contact — but the CHOICE is the human's.
+      const agent = data.vendors.insurance;
+      return res.status(400).json({
+        error: agent
+          ? `Who handles the flood policy? The file’s insurance agent is ${agent.company_name || agent.contact_name || agent.email} — confirm using the same agent, or add a separate flood insurance contact under File contacts.`
+          : 'Add the flood insurance contact first (File contacts → Flood insurance).',
+        code: 'contact',
+        insuranceAgent: agent ? { name: agent.company_name || agent.contact_name || null, email: require('../lib/vendor-directory').allEmails(agent)[0] || null } : null,
+      });
+    }
+    const to = require('../lib/vendor-directory').allEmails(vendor);
+    if (!to.length) return res.status(400).json({ error: 'The flood insurance contact has no email address — add one under File contacts.', code: 'contact' });
+
+    const existing = (await db.query(
+      `SELECT status, send_count, meta, ordered_at, ordered_by FROM file_orders WHERE application_id=$1 AND order_type='flood_insurance'`,
+      [appId])).rows[0];
+    const force = req.body && (req.body.force === true || req.body.force === 'true');
+    if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
+      return res.status(409).json({ error: 'Flood insurance was already ordered on this file. Force a re-send if you really mean to send it again.', code: 'already_ordered' });
+    }
+
+    const note = typeof (req.body || {}).note === 'string' ? req.body.note.slice(0, 4000) : '';
+    const built = require('../lib/email/manual-override').applyOverride(
+      fio.buildFloodOrderEmail(data, vendor, { note }), req.body && req.body.override,
+      { title: 'Flood insurance order', replyable: true });
+    const cc = [];
+    if (data.officer && data.officer.email) cc.push(String(data.officer.email).toLowerCase());
+    if (data.processor && data.processor.email && !cc.includes(String(data.processor.email).toLowerCase())) cc.push(String(data.processor.email).toLowerCase());
+    const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    const r = await orders.placeOrder({
+      appId, kind: 'flood_insurance', data, to, cc,
+      replyTo: require('../lib/file-address').fileReplyTo(appId),
+      built, vendor,
+      actorId: req.actor.id, actorName: meRow.full_name || meRow.email,
+      ccBorrower: false, ccHelper: false, force, existing,
+    });
+    if (!r.ok) return res.status(r.httpStatus).json({ error: r.error, code: r.code });
+    try { await audit(req, 'order_placed', 'application', appId, { kind: 'flood_insurance', to: to.length, cc: cc.length, force: !!force, unconfirmed: !!r.ambiguous }); } catch (_) { /* recorded either way */ }
+    if (r.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: r.warning, sent_to: to, cc });
+    res.json({ ok: true, sent_to: to, cc });
+  } catch (e) { res.status(500).json({ error: 'Could not send the flood insurance order.' }); }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE COMPANY BEHIND A VENDOR (owner-directed 2026-08-28) — the vendor's email
+   DOMAIN names the company; the people the pool holds at that company, plus the
+   same-domain addresses the vendor's own email chains have shown, are offered
+   as one-click file contacts and order loop-ins. src/lib/vendor-company.js owns
+   the rules (free-mail guard included).
+   ═══════════════════════════════════════════════════════════════════════════ */
+router.get('/applications/:id/orders/:kind/company-contacts', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const vco = require('../lib/vendor-company');
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const vendor = data.vendors[kind];
+    if (!vendor) return res.json({ domain: null, company: [], harvested: [], onFile: [] });
+    const domain = vco.contactDomain(vendor);
+    const vendorEmails = require('../lib/vendor-directory').allEmails(vendor).map((e) => e.toLowerCase());
+    const onFile = ((data.vendorsExtra || {})[kind] || []).map((x) => ({
+      id: x.id, name: x.company_name || x.contact_name || null,
+      emails: require('../lib/vendor-directory').allEmails(x),
+    }));
+    if (!domain) return res.json({ domain: null, company: [], harvested: [], onFile });
+    const onFileEmails = new Set([...vendorEmails, ...onFile.flatMap((x) => x.emails.map((e) => e.toLowerCase()))]);
+    const company = (await vco.companyContacts(domain))
+      .filter((row) => row.id !== vendor.id && !((data.vendorsExtra || {})[kind] || []).some((x) => x.id === row.id))
+      .map((row) => ({ id: row.id, name: row.contact_name || row.company_name || null,
+        type: row.contact_type, emails: require('../lib/vendor-directory').allEmails(row) }));
+    const harvested = await vco.harvestThreadContacts(appId, {
+      domain, msgTypes: [`${kind}_message`],
+      exclude: [...onFileEmails, ...company.flatMap((c) => c.emails.map((e) => e.toLowerCase()))],
+    });
+    res.json({ domain, company, harvested, onFile });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Save a harvested address as a REAL contact at the vendor's company and link it
+// to this file — the one-click "add them" from the email chain.
+router.post('/applications/:id/orders/:kind/company-contacts/add', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const b = req.body || {};
+    const email2 = String(b.email || '').trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email2)) return res.status(400).json({ error: 'a valid email is required' });
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const vendor = data.vendors[kind];
+    if (!vendor) return res.status(400).json({ error: `Add the ${kind} contact first.` });
+    const vco = require('../lib/vendor-company');
+    const domain = vco.contactDomain(vendor);
+    // The one-click door only saves people AT the vendor's own company — an
+    // arbitrary address goes through the ordinary File contacts form instead.
+    if (!domain || vco.emailDomain(email2) !== domain) {
+      return res.status(400).json({ error: 'That address is not at this vendor’s company — add it under File contacts instead.' });
+    }
+    const created = (await db.query(
+      `INSERT INTO service_contacts (borrower_id, contact_type, company_name, contact_name, email)
+       VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [vendor.borrower_id || null, vendor.contact_type, vendor.company_name || null,
+        (b.name && String(b.name).trim().slice(0, 120)) || null, email2])).rows[0];
+    await db.query(
+      `INSERT INTO application_service_contacts (application_id, service_contact_id, contact_type)
+       VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [appId, created.id, vendor.contact_type]);
+    await audit(req, 'company_contact_added', 'application', appId, { kind, email: email2, from: 'email_chain' });
+    res.status(201).json({ ok: true, contactId: created.id });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Link an EXISTING vendor-pool contact to this file ("add people from this
+// company") — from then on the auto-loop carries them on every order of that type.
+router.post('/applications/:id/contacts/:contactId/adopt', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!UUID_RE.test(String(req.params.contactId))) return res.status(404).json({ error: 'not found' });
+  try {
+    const row = (await db.query(
+      `SELECT id, contact_type, merged_into_id FROM service_contacts WHERE id=$1`, [req.params.contactId])).rows[0];
+    if (!row || row.merged_into_id) return res.status(404).json({ error: 'contact not found' });
+    await db.query(
+      `INSERT INTO application_service_contacts (application_id, service_contact_id, contact_type)
+       VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [appId, row.id, row.contact_type]);
+    await audit(req, 'company_contact_adopted', 'application', appId, { contactId: row.id, type: row.contact_type });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+router.post('/applications/:id/orders/settlement/place', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const ch = require('../lib/closing-handling');
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const dead = await deadFileOrderReason(appId);
+    if (dead) return res.status(422).json({ error: dead, code: 'file_closed' });
+
+    // THE GATE: live only when this file closes in house AND the property is in
+    // New York — refused with the capability rule's own reason otherwise.
+    const resolution = await ch.resolve(appId);
+    const cap = ch.capabilities(resolution);
+    if (!cap.settlementAgent.enabled) {
+      return res.status(422).json({ error: cap.settlementAgent.reason || 'The settlement-agent order is not available on this file.', code: 'closing_handling' });
+    }
+
+    if (!data.hasLoanNumber) return res.status(400).json({ error: 'Add the file’s loan number first — it prints in the mortgagee clause.', code: 'loan_number' });
+    const vendor = data.vendors.settlement;
+    const to = require('../lib/vendor-directory').allEmails(vendor);
+    if (!to.length) return res.status(400).json({ error: 'Add the settlement agent contact first (File contacts → Settlement agent).', code: 'contact' });
+    // The order transmits the property address to an outside vendor — the same
+    // USPS gate every other order carries.
+    if (data.uspsGate && !data.uspsImported && !data.uspsCleared) {
+      return res.status(422).json({ error: 'Import the USPS-verified property address before engaging the settlement agent — an order sent with an unverified address can go out with the wrong ZIP or unit.', code: 'usps' });
+    }
+
+    const existing = (await db.query(
+      `SELECT status, send_count, meta, ordered_at, ordered_by FROM file_orders WHERE application_id=$1 AND order_type='settlement'`,
+      [appId])).rows[0];
+    const force = req.body && (req.body.force === true || req.body.force === 'true');
+    if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
+      return res.status(409).json({ error: 'The settlement agent was already engaged on this file. Force a re-send if you really mean to send it again.', code: 'already_ordered' });
+    }
+
+    const note = typeof (req.body || {}).note === 'string' ? req.body.note.slice(0, 4000) : '';
+    const built = require('../lib/email/manual-override').applyOverride(
+      ch.buildSettlementOrderEmail(data, vendor, { note }), req.body && req.body.override,
+      { title: 'Settlement agent order', replyable: true });
+    // Cc the loan team; the borrower/helper footings do not apply to this
+    // internal-workflow engagement (there is no per-order checkbox here yet).
+    const cc = [];
+    if (data.officer && data.officer.email) cc.push(String(data.officer.email).toLowerCase());
+    if (data.processor && data.processor.email && !cc.includes(String(data.processor.email).toLowerCase())) cc.push(String(data.processor.email).toLowerCase());
+    const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    const r = await orders.placeOrder({
+      appId, kind: 'settlement', data, to, cc,
+      replyTo: require('../lib/file-address').fileReplyTo(appId),
+      built, vendor,
+      actorId: req.actor.id, actorName: meRow.full_name || meRow.email,
+      ccBorrower: false, ccHelper: false, force, existing,
+    });
+    if (!r.ok) return res.status(r.httpStatus).json({ error: r.error, code: r.code });
+    try { await audit(req, 'order_placed', 'application', appId, { kind: 'settlement', to: to.length, cc: cc.length, force: !!force, unconfirmed: !!r.ambiguous }); } catch (_) { /* recorded either way */ }
+    if (r.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: r.warning, sent_to: to, cc });
+    res.json({ ok: true, sent_to: to, cc });
+  } catch (e) { res.status(500).json({ error: 'Could not send the settlement-agent order.' }); }
 });
 
 router.post('/applications/:id/orders/:kind/place', async (req, res) => {
@@ -7316,6 +7909,23 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
       explicit: req.body && req.body.ccBorrower != null ? req.body.ccBorrower : null,
       storedMeta: existing && existing.meta,
     });
+    // The BORROWER'S HELPER, on its own explicit → stored → officer-default chain
+    // (owner-directed 2026-08-28). Persisted alongside the borrower's choice so a
+    // follow-up on this order keeps both footings.
+    const ccHelper = await ccHelperFor(appId, kind, {
+      explicit: req.body && req.body.ccHelper != null ? req.body.ccHelper : null,
+      storedMeta: existing && existing.meta,
+    });
+    /* One-off loop-ins from the panel's company-contacts block (owner-directed
+       2026-08-28: "you can select add file contacts from this company … so we
+       can loop them into the email"). Validated + capped; recipientsFor dedupes. */
+    let extraCc = [];
+    if (Array.isArray(req.body && req.body.extraCc)) {
+      extraCc = req.body.extraCc.map((e) => String(e || '').trim().toLowerCase()).filter(Boolean).slice(0, 10);
+      for (const e of extraCc) {
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return res.status(400).json({ error: `"${e}" is not a valid email address.` });
+      }
+    }
 
     // A hand-edited subject/body from the preview modal lands through the ONE
     // manual-override chokepoint (owner-directed 2026-08-26); no override → the
@@ -7323,7 +7933,7 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     const built = require('../lib/email/manual-override').applyOverride(
       orders.buildOrderEmail(kind, data, {}), req.body && req.body.override,
       { title: `${kind === 'title' ? 'Title' : 'Insurance'} order`, replyable: true });
-    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower });
+    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower, ccHelper, extraCc });
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     const vendor = data.vendors[kind];
 
@@ -7352,7 +7962,7 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     const r = await orders.placeOrder({
       appId, kind, data, to, cc, replyTo, built, vendor,
       actorId: req.actor.id, actorName: meRow.full_name || meRow.email,
-      ccBorrower, force, existing,
+      ccBorrower, ccHelper, force, existing,
     });
     if (!r.ok) {
       return res.status(r.httpStatus).json({ error: r.error, code: r.code,
@@ -7360,11 +7970,11 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     }
     // Audit and the response are best-effort — a failure here must never report a placed
     // order as failed.
-    try { await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force, ccBorrower, unconfirmed: !!r.ambiguous }); } catch (_) { /* recorded either way */ }
+    try { await audit(req, 'order_placed', 'application', appId, { kind, to: to.length, cc: cc.length, force: !!force, ccBorrower, ccHelper, unconfirmed: !!r.ambiguous }); } catch (_) { /* recorded either way */ }
     if (r.ambiguous) {
-      return res.json({ ok: true, unconfirmed: true, warning: r.warning, sent_to: to, cc, ccBorrower });
+      return res.json({ ok: true, unconfirmed: true, warning: r.warning, sent_to: to, cc, ccBorrower, ccHelper });
     }
-    res.json({ ok: true, sent_to: to, cc, ccBorrower });
+    res.json({ ok: true, sent_to: to, cc, ccBorrower, ccHelper });
   } catch (e) { res.status(500).json({ error: 'Could not send the order.' }); }
 });
 
@@ -7416,6 +8026,10 @@ router.post('/applications/:id/orders/:kind/schedule', async (req, res) => {
     // at send time rather than being frozen to whatever it happened to be tonight.
     const payload = { force: !!force };
     if (b.ccBorrower != null) payload.ccBorrower = b.ccBorrower === true || b.ccBorrower === 'true';
+    // Same rule for the helper's footing: carried only when a person actually chose,
+    // so an untouched checkbox still resolves through the officer's own default at
+    // send time rather than being frozen to tonight's value.
+    if (b.ccHelper != null) payload.ccHelper = b.ccHelper === true || b.ccHelper === 'true';
     // A subject/body edited in the preview rides the stored intent — the dispatcher's
     // re-post lands it through the place route's own applyOverride door (the same
     // contract as the tape / closing-prep / investor-delivery schedulers).
@@ -7500,13 +8114,15 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     // the same LO-setting default the place door uses, so the thread's footing
     // matches what a fresh order would do (pre-merge audit #6).
     const fuCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
-    const fuBase = orders.recipientsFor(kind, data, { ccBorrower: fuCc });
+    const fuHelperCc = await ccHelperFor(appId, kind, { storedMeta: row.meta });
+    const fuBase = orders.recipientsFor(kind, data, { ccBorrower: fuCc, ccHelper: fuHelperCc });
     // Same rule as the reply door above: a follow-up must not drop the party the vendor
-    // looped in. The borrower stays governed by the ccBorrower setting alone.
+    // looped in. The borrower — and the borrower's HELPER — stay governed by their own
+    // settings alone, so a vendor's one-off Cc of either can never turn into policy.
     const fuParties = await threadParticipants.replyRecipients({
       applicationId: appId, msgTypes: [`${kind}_message`],
       to: fuBase.to, cc: fuBase.cc,
-      never: [data.borrowerEmail, data.coBorrowerEmail].filter(Boolean),
+      never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data)].filter(Boolean),
     });
     const { to, cc } = fuParties;
     const { replyTo } = fuBase;
@@ -8120,9 +8736,100 @@ router.get('/applications/:id/closing-prep', async (req, res) => {
 // (there must be a term sheet for the attorney to draft from — the owner's rule) and
 // somewhere to send it. A re-send needs {force:true}, so a double-click can never
 // blast the attorney and the whole Cc chain twice.
+/* ═══════════════════════════════════════════════════════════════════════════
+   WHO HANDLES THIS FILE'S CLOSING — the per-file half of the three-way switch
+   (owner-directed 2026-08-28; the company/note-buyer defaults live on the API
+   Health page, src/routes/admin-integrations.js; src/lib/closing-handling.js is
+   the ONE resolver).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+// Read the file's resolution + what it enables/disables (with the reasons).
+router.get('/applications/:id/closing-handling', async (req, res) => {
+  if (!(await canTouchApp(req, req.params.id))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const ch = require('../lib/closing-handling');
+    const resolution = await ch.resolve(req.params.id);
+    if (!resolution) return res.status(404).json({ error: 'not found' });
+    res.json({
+      resolution,
+      capabilities: ch.capabilities(resolution),
+      handlings: ch.HANDLINGS.map((h) => ({ key: h, label: ch.HANDLING_LABEL[h] })),
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Set (or clear, handling=null) the per-file override. Flipping a file to
+// INTERNAL also sets up the itemized title slots — a slot per item we ask title
+// for in this state (the NY cut applies) — on the title condition, idempotently.
+router.post('/applications/:id/closing-handling', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const ch = require('../lib/closing-handling');
+    const b = req.body || {};
+    const handling = b.handling == null || b.handling === '' ? null : String(b.handling);
+    if (handling != null && !ch.HANDLINGS.includes(handling)) return res.status(400).json({ error: 'Pick internal, attorney, or lender-direct — or clear it to inherit the default.' });
+    const before = await ch.resolve(appId);
+    if (!before) return res.status(404).json({ error: 'not found' });
+    await db.query(`UPDATE applications SET closing_handling=$2, updated_at=now() WHERE id=$1`, [appId, handling]);
+    const after = await ch.resolve(appId);
+    let slotsSeeded = 0;
+    if (after.handling === 'internal') {
+      slotsSeeded = await seedInternalTitleSlots(appId, after.propertyState, req.actor);
+    }
+    await audit(req, 'closing_handling_set', 'application', appId,
+      { from: before.handling, fromSource: before.source, to: after.handling, toSource: after.source, slotsSeeded });
+    res.json({ ok: true, resolution: after, capabilities: ch.capabilities(after), slotsSeeded });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/* An INTERNAL closing sets up the title condition with A SLOT PER ITEM we ask
+   title for (owner-directed 2026-08-28: "It enables a full title condition and
+   it sets up slots for each and every item that we\'re asking from title") —
+   instead of the single catch-all slot an attorney-handled file keeps. Through
+   the ONE extra-slots door (dedupe included), so re-flipping never doubles a
+   slot. Returns how many were newly added; never throws. */
+async function seedInternalTitleSlots(appId, propertyState, actor) {
+  try {
+    const ch = require('../lib/closing-handling');
+    const extraSlots = require('../lib/conditions/extra-slots');
+    const item = (await db.query(
+      `SELECT ci.id FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+        WHERE ci.application_id=$1 AND t.code='rtl_cond_title' ORDER BY ci.created_at LIMIT 1`, [appId])).rows[0];
+    if (!item) return 0;
+    let added = 0;
+    for (const label of ch.internalTitleSlots(propertyState)) {
+      const out = await extraSlots.addSlot(appId, item.id, {
+        label, audience: 'internal', actorId: actor && actor.id, actorName: (actor && actor.full_name) || null,
+      }).catch(() => null);
+      if (out && out.added) added++;
+    }
+    return added;
+  } catch (_) { return 0; }
+}
+
+/* THE CLOSING-HANDLING GATE on the attorney closing prep: the prep may only run
+   on a file whose closing the ATTORNEY handles. Answers the refusal REASON (or
+   null when allowed) — "if an option is disabled, it should always say why". */
+async function attorneyPrepBlockReason(appId) {
+  try {
+    const ch = require('../lib/closing-handling');
+    const resolution = await ch.resolve(appId);
+    if (!resolution) return null;
+    const cap = ch.capabilities(resolution);
+    return cap.attorneyPrep.enabled ? null : cap.attorneyPrep.reason;
+  } catch (_) { return null; /* an unreadable setting never blocks the prep — attorney is the default */ }
+}
+
 router.post('/applications/:id/closing-prep/place', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  {
+    // Who handles this closing? The attorney prep only runs on an attorney-handled
+    // file (owner-directed 2026-08-28), and the refusal says exactly why.
+    const blocked = await attorneyPrepBlockReason(appId);
+    if (blocked) return res.status(422).json({ error: blocked, code: 'closing_handling' });
+  }
   // Declared at ROUTE scope, not inside the try, so the outer catch can unwind a
   // claim taken before something threw — packAttachments and recipientsFor both
   // can, and an unreleased claim erases the order's whole age.
@@ -8410,6 +9117,10 @@ router.post('/applications/:id/closing-prep/place', async (req, res) => {
 router.post('/applications/:id/closing-prep/schedule', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  {
+    const blocked = await attorneyPrepBlockReason(req.params.id);
+    if (blocked) return res.status(422).json({ error: blocked, code: 'closing_handling' });
+  }
   try {
     const sched = require('../lib/scheduled-sends');
     const b = req.body || {};
@@ -8465,6 +9176,10 @@ router.post('/applications/:id/closing-prep/schedule', async (req, res) => {
 router.post('/applications/:id/closing-prep/followup', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  {
+    const blocked = await attorneyPrepBlockReason(req.params.id);
+    if (blocked) return res.status(422).json({ error: blocked, code: 'closing_handling' });
+  }
   try {
     // ONE definition of "an attorney is engaged on this file", shared with the
     // automatic updates — so an order whose row failed to write after a SUCCESSFUL
@@ -10076,6 +10791,27 @@ router.patch('/checklist/:itemId', async (req, res) => {
   } else if (b.signedOff === false || b.waived === false) {
     sets.push('signed_off_by=NULL', 'signed_off_at=NULL', 'waived_by=NULL', 'waived_at=NULL');
     if (b.waived === false) sets.push("status='outstanding'");
+    else {
+      /* UNDOING A SIGN-OFF MUST PUT THE CONDITION BACK ON THE LIST (owner-reported
+         2026-08-28: "if you undo the sign-off … and then you sort by conditions
+         that are still outstanding, [it] is not coming back up"). Sign-off forces
+         status='satisfied' (above); this branch used to clear only the STAMPS, so
+         the row kept 'satisfied' — off the "awaiting"/"not signed off" filters,
+         still under "Signed off", invisible everywhere an open item is looked
+         for. The status is RESTORED FROM REALITY, never just flipped: a condition
+         whose current document (or submitted tool answer) is still on the file
+         goes back to 'received' (it is with the team, awaiting the re-decision),
+         and one with nothing behind it goes back to 'outstanding'. Guarded on
+         status='satisfied' so undoing a stamp on a row someone already moved to
+         'issue' cannot clobber that state. */
+      sets.push(`status = CASE WHEN status='satisfied' THEN
+        (CASE WHEN tool_payload IS NOT NULL
+                OR EXISTS (SELECT 1 FROM documents d
+                            WHERE d.checklist_item_id = checklist_items.id
+                              AND d.is_current AND d.review_status IN ('pending','accepted'))
+              THEN 'received' ELSE 'outstanding' END)
+        ELSE status END`);
+    }
   }
   // The override stamps travel WITH the completion they authorize. Undoing the
   // sign-off / waive clears them in the same breath: an item back on the list was
@@ -17591,6 +18327,214 @@ router.get('/term-sheet-offers', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   REVIEW THE LEADS BY FOLLOW-UP DATE (owner-directed 2026-08-28: "on the lead
+   side need a system to review leads per follow up date").
+
+   The CRM has carried `next_follow_up` since db/100 and showed it in two places —
+   a column in the list, a "● due" dot on a board card. Neither is a way to WORK
+   the day. This is: the whole book, split into the piles an officer actually
+   works — what SLIPPED, what is due today, what lands tomorrow, what is coming
+   this week, what is further out, and the pile nobody builds and everybody needs:
+   the open leads with NO next step at all.
+
+   THREE THINGS ABOUT HOW IT IS BUILT, each of them the reason it is a route and
+   not a browser-side filter over the board:
+
+   1. THE COUNTS ARE THE WHOLE DESK'S, NOT THE PAGE'S. `GET /leads` is capped at
+      500 rows; an officer with a real book would be told "3 overdue" while 40 sat
+      past row 500. Both the counts and the rows here are taken over the officer's
+      ENTIRE visible scope, in one grouped read and one page read.
+   2. THE SCOPE IS THE FLOOR, and the filters sit inside it — `visibleLeadSql`, the
+      same one definition GET /leads and PATCH /leads/:id ask, so this can only ever
+      show somebody leads they could already see. `officerId` narrows further (the
+      admin CRM desk reading one officer's book) and can only ever narrow: for a
+      plain officer it ANDs with their own scope and returns nothing.
+   3. "TODAY" IS THE TEAM'S DAY, not the server's. Render runs in UTC, so asking
+      Postgres for `current_date` would move every officer's list at 8pm New York
+      time and call tomorrow's work overdue. `order-sla.nyDay()` is the ONE
+      definition of the team's calendar day here, and it is passed to Postgres as a
+      bound parameter — so the buckets the browser paints, the counts and the rows
+      are all measured against the same single day.
+
+   The piles themselves are `src/lib/lead-followup.js` — one definition, shared by
+   the CASE that counts them and the WHERE that selects one, which is what stops
+   "overdue" meaning one thing in a tab and another in the list under it. */
+router.get('/leads/follow-ups', async (req, res) => {
+  try {
+    const followup = require('../lib/lead-followup');
+    const today = require('../lib/order-sla').nyDay();
+
+    const params = [today];
+    const conds = [];
+    if (!seesAll(req)) { params.push(req.actor.id); conds.push(visibleLeadSql('l', `$${params.length}`)); }
+    const officerId = typeof req.query.officerId === 'string' ? req.query.officerId.trim() : '';
+    if (officerId) {
+      // Validated before Postgres sees it: `leads.officer_id` is uuid, so a malformed
+      // value raises 22P02 and the whole desk answers 500 — an empty screen that reads
+      // as "you have no follow-ups", which on THIS screen means "nothing is late".
+      if (!UUID_RE.test(officerId)) return res.status(400).json({ error: 'invalid officerId' });
+      params.push(officerId);
+      conds.push(`l.officer_id=$${params.length}`);
+    }
+    // A CLOSED lead owes no follow-up, whatever date is still sitting on the row —
+    // the same open-stage set the board's own scope filter uses.
+    params.push(followup.OPEN_STAGES);
+    conds.push(`l.status = ANY($${params.length}::text[])`);
+    const where = `WHERE ${conds.join(' AND ')}`;
+
+    // The counts behind the tabs — one grouped read over the WHOLE scope. Every
+    // bucket is present at zero as well as at forty: "nothing overdue" is an answer
+    // an officer is entitled to see, not a tab that quietly is not there.
+    const counts = Object.fromEntries(followup.BUCKET_KEYS.map((k) => [k, 0]));
+    const cr = await db.query(
+      `SELECT ${followup.bucketCaseSql('l', '$1')} AS bucket, count(*)::int AS count
+         FROM leads l ${where} GROUP BY 1`, params);
+    for (const row of cr.rows) if (counts[row.bucket] != null) counts[row.bucket] = row.count;
+
+    // The rows for ONE pile (default: what is actually on the officer now — overdue
+    // and today together, oldest date first, so the most-slipped lead is at the top).
+    const bucket = followup.normalizeBucket(req.query.bucket);
+    const rowParams = params.slice();
+    let bucketWhere;
+    if (bucket) {
+      bucketWhere = followup.bucketSql('l', bucket, '$1');
+    } else {
+      bucketWhere = `(${followup.DUE_NOW_BUCKETS.map((k) => followup.bucketSql('l', k, '$1')).join(' OR ')})`;
+    }
+    const r = await db.query(
+      `SELECT l.id, l.name, l.first_name, l.last_name, l.company, l.email, l.phone, l.phone_alt,
+              l.status, l.officer_id, l.next_follow_up, l.last_activity_at, l.created_at,
+              l.loan_amount, l.program, l.property_address, l.source, l.tool, l.lead_source,
+              s.full_name AS officer_name,
+              ${followup.bucketCaseSql('l', '$1')} AS bucket,
+              (SELECT count(*)::int FROM lead_tasks lt WHERE lt.lead_id=l.id AND lt.done=false) AS open_tasks,
+              -- WHEN SOMEBODY LAST ACTUALLY TOUCHED IT. last_activity_at moves on
+              -- system writes too, so the review also carries the last time a HUMAN
+              -- logged a call/email/note — which is the number that tells an officer
+              -- whether a lead has really been worked or has merely been edited.
+              (SELECT max(la.occurred_at) FROM lead_activities la
+                WHERE la.lead_id=l.id AND la.activity_type IN ('call','email','sms','meeting','note')) AS last_touch_at
+         FROM leads l LEFT JOIN staff_users s ON s.id=l.officer_id
+        ${where} AND ${bucketWhere}
+        -- Oldest date first: the lead that slipped furthest is the one to call.
+        -- A dateless lead has nothing to sort by, so it falls back to how long it
+        -- has been sitting there, which is the same question in another form.
+        ORDER BY l.next_follow_up ASC NULLS LAST,
+                 COALESCE(l.last_activity_at, l.created_at) ASC
+        LIMIT 300`, rowParams);
+
+    res.json({
+      today,
+      bucket: bucket || null,
+      buckets: followup.BUCKETS,
+      counts,
+      // The one number a badge anywhere else may show: what is actually on the
+      // officer now. Never "everything with a date" — a lead due next Thursday is
+      // not an unanswered task.
+      dueNow: followup.DUE_NOW_BUCKETS.reduce((n, k) => n + (counts[k] || 0), 0),
+      rows: r.rows,
+    });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   EXPORT THE LEAD DESK TO EXCEL (owner-directed 2026-08-28: "make leads
+   exportable to excel … It should come up with all the fields, if it's an
+   Elementix file: phone numbers, follow-up data, stuff like that").
+
+   A REAL .xlsx (the shared dependency-free builder — the same one the pipeline
+   export uses), never a CSV. THE SCOPE IS THE FLOOR: visibleLeadSql, exactly as
+   GET /leads applies it, with the same narrowing filters the desk offers
+   (officerId, origin, stage, open/all, a search term) — so what an officer
+   exports is what they can see, filtered the way their screen is filtered, and
+   never one row more.
+
+   EVERY PHONE NUMBER RIDES: the lead's own numbers plus every number the
+   Elementix unlock holds, with the officer's working / not-working / right-person
+   verdicts — through lib/elementix/lead-phones.leadPhonesForMany, the batched
+   CRM-plane delegate, because this route may not read the Elementix contact
+   tables itself. Registered BEFORE /leads/:id so 'export' is never read as an id. */
+router.get('/leads/export', async (req, res) => {
+  try {
+    const params = [];
+    const conds = [];
+    if (!seesAll(req)) { params.push(req.actor.id); conds.push(visibleLeadSql('l', `$${params.length}`)); }
+    const officerId = typeof req.query.officerId === 'string' ? req.query.officerId.trim() : '';
+    if (officerId) {
+      if (!UUID_RE.test(officerId)) return res.status(400).json({ error: 'invalid officerId' });
+      params.push(officerId); conds.push(`l.officer_id=$${params.length}`);
+    }
+    const eq = (sql, v) => { if (typeof v !== 'string' || v === '') return; params.push(v.slice(0, 60)); conds.push(`${sql}=$${params.length}`); };
+    eq('l.source', req.query.source);
+    eq('l.tool', req.query.tool);
+    eq('COALESCE(l.lead_source, l.source)', req.query.leadSource);
+    if (req.query.stage && LEAD_STATUSES.includes(String(req.query.stage))) {
+      params.push(String(req.query.stage)); conds.push(`l.status=$${params.length}`);
+    } else if (String(req.query.scope || 'open') !== 'all') {
+      // The desk's default view is the OPEN book — the export defaults the same
+      // way, and ?scope=all brings the closed leads along.
+      conds.push(`l.status IN ('new','contacted','qualified','quoted','working','nurturing')`);
+    }
+    if (typeof req.query.q === 'string' && req.query.q.trim()) {
+      params.push('%' + req.query.q.trim().slice(0, 80) + '%');
+      conds.push(`(l.name ILIKE $${params.length} OR l.company ILIKE $${params.length} OR l.email ILIKE $${params.length} OR l.phone ILIKE $${params.length} OR l.referral_partner ILIKE $${params.length})`);
+    }
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+
+    const r = await db.query(
+      `SELECT l.*, s.full_name AS officer_name,
+              (SELECT count(*)::int FROM lead_tasks lt WHERE lt.lead_id=l.id AND lt.done=false) AS open_tasks,
+              (SELECT max(la.occurred_at) FROM lead_activities la
+                WHERE la.lead_id=l.id AND la.activity_type IN ('call','email','sms','meeting','note')) AS last_touch_at
+         FROM leads l LEFT JOIN staff_users s ON s.id=l.officer_id
+        ${where}
+        ORDER BY l.created_at DESC
+        LIMIT 10000`, params);
+
+    const phonesOf = await require('../lib/elementix/lead-phones').leadPhonesForMany(r.rows.map((x) => x.id));
+    const addr = (a) => { if (!a || typeof a !== 'object') return ''; return a.oneLine || [a.street || a.line1, a.city, a.state, a.zip].filter(Boolean).join(', ') || ''; };
+    const day = (v) => (v ? String(v).slice(0, 10) : '');
+    const ts = (v) => { try { return v ? new Date(v).toISOString().replace('T', ' ').slice(0, 16) : ''; } catch (_) { return ''; } };
+    const num = (v) => (v == null || v === '' || !isFinite(Number(v)) ? '' : Number(v));
+    const phoneCell = (leadId) => (phonesOf.get(leadId) || [])
+      .map((p) => {
+        const bits = [];
+        if (p.sources.includes('elementix') && !p.sources.includes('lead') && !p.sources.includes('lead_alt')) bits.push('Elementix');
+        if (p.label) bits.push(p.label);
+        if (p.mark && p.mark.status) bits.push(p.mark.status === 'working' ? 'working' : 'not working');
+        if (p.mark && p.mark.rightPerson) bits.push('right person');
+        return p.display + (bits.length ? ` (${bits.join(', ')})` : '');
+      }).join('; ');
+
+    const HEADERS = [
+      'First name', 'Last name', 'Full name', 'Company', 'Email', 'Phone', 'Alt phone',
+      'All phone numbers (incl. Elementix, with verdicts)',
+      'Stage', 'Owner', 'Next follow-up', 'Last human contact', 'Last activity',
+      'Source', 'Form / tool', 'Channel', 'Referral partner',
+      'Program', 'Property type', 'Est. loan amount', 'Est. close date',
+      'Property address', 'Contact address', 'Tags', 'Open tasks',
+      'Elementix profile', 'Lost reason', 'Created', 'Lead id',
+    ];
+    const rows = r.rows.map((x) => [
+      x.first_name || '', x.last_name || '', x.name || '', x.company || '', x.email || '',
+      x.phone || '', x.phone_alt || '', phoneCell(x.id),
+      x.status || '', x.officer_name || '', day(x.next_follow_up), ts(x.last_touch_at), ts(x.last_activity_at),
+      x.source || '', x.tool || '', x.lead_source || '', x.referral_partner || '',
+      x.program || '', x.property_type || '', num(x.loan_amount), day(x.estimated_close),
+      addr(x.property_address), addr(x.contact_address),
+      Array.isArray(x.tags) ? x.tags.join(', ') : '', num(x.open_tasks),
+      x.elementix_person_id ? 'yes' : '', x.lost_reason || '', ts(x.created_at), x.id,
+    ]);
+    const { buildXlsx } = require('../lib/xlsx');
+    const buf = buildXlsx([HEADERS, ...rows], 'Leads');
+    await audit(req, 'export_leads', 'lead', null, { rows: r.rows.length });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    setContentDisposition(res, `pilot-leads-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    res.send(buf);
+  } catch (e) { console.error('[export leads]', e && e.message); res.status(500).json({ error: 'server error' }); }
+});
+
 // #153 — bulk-archive junk leads (admin). The bot-spam wave imported hundreds
 // of fake "subscribe" leads and the CRM only had a one-by-one PATCH; this
 // archives every non-converted lead matching a tool/source/status filter in
@@ -19410,6 +20354,23 @@ router.delete('/vendors/:id', async (req, res) => {
 //                                    contactType, primaryEmail, primaryPhone },
 //     emails: [...], phones: [...] }
 // Every pick is optional — omitted → keep the survivor's current value.
+/* AUTO-MERGE the same-email duplicates (owner-directed 2026-08-28: "vendors
+   that have the same email address should get merged … automatically. The only
+   thing when it should ask should be if something is conflicting"). Clean pairs
+   merge (gaps fill, arrays union, links re-point — the manual door's own
+   semantics, conservative); conflicted pairs are RETURNED for the human merge
+   screen, never guessed. ?dryRun=1 previews without writing. Audited. */
+router.post('/vendors/auto-merge', async (req, res) => {
+  if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
+  try {
+    const dryRun = req.body && (req.body.dryRun === true || req.body.dryRun === '1');
+    const out = await require('../lib/vendor-company').autoMergeSameEmail({ dryRun });
+    await audit(req, 'vendors_auto_merge', 'vendor', null,
+      { dryRun, merged: out.merged.length, conflicts: out.conflicts.length });
+    res.json({ ok: true, dryRun, ...out });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 router.post('/vendors/merge', async (req, res) => {
   if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
   const b = req.body || {};
