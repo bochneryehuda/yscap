@@ -22,7 +22,7 @@ function num(v) { if (v == null || v === '') return null; const n = Number(v); r
 
 async function assembleTapeLoan(appId, db) {
   const a = await db.query(
-    `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS pricing_fico,
+    `SELECT a.*, ${require('../credit').dealFicoSql('b', 'cb')} AS pricing_fico,
             b.first_name AS b_first, b.last_name AS b_last, b.email AS b_email,
             b.citizenship AS b_citizenship, b.fico AS b_fico,
             cb.first_name AS cb_first, cb.last_name AS cb_last, cb.fico AS cb_fico,

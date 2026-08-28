@@ -46,6 +46,15 @@ const SCOPES = Object.freeze(['open', 'not_signed_off']);
 const LAYOUTS = Object.freeze(['bullets', 'numbered']);
 const TONES = Object.freeze(['professional', 'friendly', 'firm', 'plain']);
 const LENGTHS = Object.freeze(['short', 'standard', 'thorough']);
+/* THE VOICE (owner-directed 2026-08-28: "we need to add an option that should be
+   more humanized, like a human is sending it. Something like this that I'm giving
+   you, but with a little more detailed information of the condition").
+     'polished' — the default, exactly what this desk has always produced.
+     'human'    — reads like the loan officer typed it themselves between two
+                  calls: a one-line opener, a bare numbered ask list, a short
+                  concrete line per item, "Thanks." at the end. No corporate
+                  intro, no "I hope this email finds you well". */
+const VOICES = Object.freeze(['polished', 'human']);
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -110,6 +119,7 @@ function requestProblem(b = {}) {
     if (ins.length > 2000) return 'Keep the instruction under 2,000 characters.';
   }
   if (b.tone != null && !TONES.includes(String(b.tone))) return 'Pick a tone: professional, friendly, firm, or plain.';
+  if (b.voice != null && !VOICES.includes(String(b.voice))) return 'Pick a voice: polished, or human (like you typed it yourself).';
   if (b.length != null && !LENGTHS.includes(String(b.length))) return 'Pick a length: short, standard, or thorough.';
   if (b.signAs != null && String(b.signAs).length > 120) return 'Keep the sign-off name under 120 characters.';
   if (b.feedback != null) {
@@ -133,8 +143,52 @@ const LENGTH_LINE = {
   short: 'Keep it SHORT — a few sentences plus the list.',
   thorough: 'Be thorough — a sentence or two of explanation for each item, so the reader understands why it is needed.',
 };
+/* THE HUMAN VOICE, as a style block. The example is the OWNER'S OWN sample email
+   (2026-08-28), lightly cleaned — it is the exact register asked for: terse,
+   direct, a numbered ask list with a real question or figure on each line, a bare
+   link where one belongs, "Thanks." and out. The model is told in the same breath
+   that the example's ITEMS are placeholders — the items always come from THE
+   FACTS — and that each line should carry a little MORE concrete detail than the
+   example shows, which is the second half of what the owner asked for. */
+const HUMAN_VOICE_BLOCK = [
+  'VOICE: write it like the loan officer typed it themselves between two phone calls — quick, direct, personal.',
+  'No corporate polish: no "I hope this email finds you well", no "please do not hesitate", no closing paragraph.',
+  'Open with one short line saying what this is (e.g. "Please send / outstanding:"), then a NUMBERED list.',
+  'Each numbered item is one or two short lines. Where the facts give specifics (an amount, how many months of',
+  'statements, what exactly is missing or was sent back), put them right on that line — a little more concrete',
+  'detail per item than the example below shows. Where we need information rather than a document, ask the',
+  'question directly on the line (e.g. "Do you own or rent? And for how many years have you been living there?").',
+  'Write links bare on their own line. End with "Thanks." and the sender name if one is given. Keep the subject',
+  'short and plain.',
+  'STYLE EXAMPLE — copy the SHAPE AND REGISTER ONLY. Its items are placeholders: the real items come from THE',
+  'FACTS, never from this example:',
+  '---',
+  'Please send/outstanding',
+  '',
+  '1) purchase contract',
+  '',
+  '2) Government issued ID card',
+  '',
+  '3) Your primary address — do you own or rent? And for how many years have you been living there?',
+  '',
+  "4) Construction budget, and what's the ARV that you expect?",
+  'Please visit our investor suite to make the rehab budget (scope of work) at https://www.yscapgroup.com/suite',
+  '',
+  '5) LLC name & docs',
+  '',
+  '6) Title & insurance contact email',
+  '',
+  '7) Credit card for appraisal',
+  '',
+  'Thanks.',
+  '---',
+].join('\n');
+
+function isHumanVoice(b) { return String((b && b.voice) || '') === 'human'; }
+
 function styleRiders(b) {
   const out = [];
+  if (isHumanVoice(b)) out.push(HUMAN_VOICE_BLOCK);
   if (b.tone && TONE_LINE[b.tone]) out.push(TONE_LINE[b.tone]);
   if (b.length && LENGTH_LINE[b.length]) out.push(LENGTH_LINE[b.length]);
   if (b.signAs && String(b.signAs).trim()) out.push('Sign off with the sender name given in the facts.');
@@ -159,14 +213,19 @@ function hintFacts(items) {
 }
 
 async function groundingFor(appId, b, client) {
-  const detailed = b.detail === true || b.detail === 'detailed';
+  /* The HUMAN voice pulls the detail layer in by itself (the owner's ask was the
+     humanized voice "with a little more detailed information of the condition") —
+     unless the sender explicitly turned detail OFF for this draft. */
+  const detailed = b.detail === false ? false : (b.detail === true || b.detail === 'detailed' || isHumanVoice(b));
   if (b.preset === 'outstanding_conditions') {
     const items = await conditionsForScope(appId, b.scope,
       { includePendingReview: b.includePendingReview === true, itemIds: b.itemIds }, client);
     const fo = await require('../file-overview').buildFileOverview(appId, { audience: 'borrower' }, client).catch(() => null);
     const who = fo && fo.sections ? (fo.sections.flatMap((s) => s.rows).find((r) => r.label === 'Borrower') || {}).value : null;
     const addr = fo && fo.header ? fo.header.address : null;
-    const layout = LAYOUTS.includes(String(b.layout)) ? b.layout : 'bullets';
+    // The human voice is a NUMBERED list by construction (the owner's sample);
+    // otherwise the sender's own layout choice stands.
+    const layout = isHumanVoice(b) ? 'numbered' : (LAYOUTS.includes(String(b.layout)) ? b.layout : 'bullets');
     const detail = detailed ? await require('./drafting-detail').detailFor(appId, items, client) : { facts: [], guidance: [] };
     const task = [
       `Draft an email to the borrower listing what is still needed on their loan file, as a ${layout === 'numbered' ? 'NUMBERED list' : 'BULLET list'}. `
@@ -259,12 +318,12 @@ async function draft(appId, b = {}, opts = {}) {
     const facts = revising
       ? `${g.facts}\n\nTHE CURRENT DRAFT (revise this):\nSubject: ${scrubText(String(b.previousSubject || '').trim())}\n\n${scrubText(String(b.previousBody).trim())}`
       : g.facts;
-    const detailed = b.detail === true || b.detail === 'detailed';
+    const detailed = b.detail === false ? false : (b.detail === true || b.detail === 'detailed' || isHumanVoice(b));
     const res = await azureOpenai.complete({
       system: SYSTEM,
       userContent: `${task}\n\nTHE FACTS (use nothing else):\n${facts}`,
       maxTokens: detailed || b.length === 'thorough' || revising ? 2200 : 1500,
-      traceMeta: { name: 'drafting', opName: `draft_${b.preset}${detailed ? '_detailed' : ''}${revising ? '_revise' : ''}`, appId, staffId: opts.staffId, tags: ['drafting'] },
+      traceMeta: { name: 'drafting', opName: `draft_${b.preset}${detailed ? '_detailed' : ''}${isHumanVoice(b) ? '_human' : ''}${revising ? '_revise' : ''}`, appId, staffId: opts.staffId, tags: ['drafting'] },
     });
     if (!res.ok || !String(res.text || '').trim()) {
       return { ok: false, reason: res.reason || 'Pilot AI could not draft just now — try again.' };
@@ -277,6 +336,7 @@ async function draft(appId, b = {}, opts = {}) {
 }
 
 module.exports = {
-  PRESETS, SCOPES, LAYOUTS, TONES, LENGTHS, SYSTEM,
+  PRESETS, SCOPES, LAYOUTS, TONES, LENGTHS, VOICES, SYSTEM,
   requestProblem, conditionsForScope, groundingFor, splitDraft, draft,
+  _internals: { isHumanVoice, styleRiders, HUMAN_VOICE_BLOCK },
 };

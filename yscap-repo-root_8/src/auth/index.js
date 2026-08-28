@@ -27,6 +27,7 @@ const borrowerView = require('../lib/borrower-view');
 const tpoView = require('../lib/tpo-view');
 const staffView = require('../lib/staff-view');
 const borrowerAssistant = require('../lib/borrower-assistant');
+const conditionLink = require('../lib/condition-link');
 const { randomInt } = require('crypto');
 
 const MAX_FAILED = 6;
@@ -131,6 +132,63 @@ async function authenticate(req, res, next) {
   // disabling it, which bumps the assistant's token_version). PII is stripped and
   // the signing ceremony is blocked downstream (the global guard + the borrower-
   // router response scrub), keyed on `req.assistant`.
+  /* GUEST CONDITION LINK (src/lib/condition-link.js, db/637 — owner-directed
+     2026-08-28): the login-free condition center. The emailed link's token was
+     exchanged for a REAL borrower-kind token carrying a guest envelope, the same
+     dual-identity model as the assistant below — so every borrower endpoint the
+     guest may reach works unchanged. Three fences, all here:
+       1. the LINK ROW is re-validated on EVERY request (live, unrevoked,
+          unexpired, still this borrower's) — revoking a link kills its sessions;
+       2. the PATH JAIL: only the handful of endpoints the simple condition
+          center needs, only on the linked application — default-deny;
+       3. PII is stripped from every response through the SAME chokepoint a
+          helper's session uses (an emailed link can be forwarded). */
+  const guestLink = conditionLink.readGuest(claims);
+  if (guestLink) {
+    let lrow, bexists;
+    try {
+      lrow = await conditionLink.linkById(guestLink.linkId);
+      bexists = await db.query(`SELECT 1 FROM borrowers WHERE id=$1`, [claims.sub]);
+    } catch (e) {
+      console.error('[auth] guest-link check failed (db):', db.describeError(e));
+      return res.status(503).json({ error: 'The service is briefly unavailable — please try again in a moment.' });
+    }
+    if (!lrow || !bexists.rows[0]
+        || lrow.borrower_id !== claims.sub
+        || String(lrow.application_id) !== String(guestLink.applicationId)) {
+      return sessionDenied(req, res, 'guest_link_revoked',
+        'This link is no longer active. Ask your loan team to send a fresh one.');
+    }
+    // The jail — before any route runs. `baseUrl + path` is the full mount path.
+    const fullPath = `${req.baseUrl || ''}${req.path}`;
+    if (!conditionLink.allowedRequest(
+      { method: req.method, fullPath, body: req.body, headers: req.headers }, {
+        linkId: lrow.id, applicationId: lrow.application_id,
+      })) {
+      return res.status(403).json({ error: 'This link only opens your outstanding items on this loan. For anything else, ask your loan team.' });
+    }
+    // Past this line the session is PROVEN good (same chokepoint reasoning as
+    // the assistant path): nothing downstream may answer 401.
+    const _stG = res.status.bind(res);
+    res.status = (code) => _stG(code === 401 ? 502 : code);
+    // The same PII strip a helper session gets — one definition, never a copy.
+    const _jsonG = res.json.bind(res);
+    res.json = (body) => _jsonG(borrowerAssistant.scrubPii(body));
+    req.actor = { id: claims.sub, kind: 'borrower', role: 'borrower', guestConditions: true };
+    req.guestConditions = { linkId: lrow.id, applicationId: lrow.application_id, email: lrow.sent_to_email };
+    // Best-effort usage stamp — the staff screen shows whether a link was opened.
+    db.query(`UPDATE condition_links SET last_used_at=now(), use_count=use_count+1 WHERE id=$1`, [lrow.id]).catch(() => {});
+    // Sliding session — re-mint WITH the envelope, so a guest token can never
+    // decay into a plain borrower token (which would drop the jail + the strip).
+    const nowSecG = Math.floor(Date.now() / 1000);
+    if (claims.exp && claims.iat
+        && (nowSecG - claims.iat) > Math.min(cfg.sessionRefreshAfterSec, (claims.exp - claims.iat) / 2)) {
+      res.set('X-Refresh-Token', conditionLink.mintGuestToken({
+        borrowerId: claims.sub, linkId: lrow.id, applicationId: lrow.application_id,
+      }));
+    }
+    return next();
+  }
   const assistant = borrowerAssistant.readAssistant(claims);
   if (assistant) {
     let a, bexists;
@@ -1428,6 +1486,29 @@ router.post('/accept', async (req, res, next) => {
 // PII is stripped and signing is blocked.
 
 // Accept an invite: set the password from the one-time link, then sign in.
+/* THE GUEST CONDITION LINK EXCHANGE (owner-directed 2026-08-28) — the emailed
+   link's token becomes a guest session. Public by design: the token IS the
+   credential (24 random bytes, stored hashed, expiring — the term-sheet-offer /
+   invite model). Rate-limited at the mount like every public token door. The
+   answer deliberately carries only what the guest page needs to boot; everything
+   else it learns through the jailed borrower endpoints. */
+router.post('/condition-link', async (req, res) => {
+  try {
+    const link = await conditionLink.linkByToken((req.body || {}).token);
+    if (!link) {
+      return res.status(404).json({ error: 'This link is no longer active — it may have expired. Reply to the email and your loan team will send a fresh one.' });
+    }
+    const token = conditionLink.mintGuestToken({
+      borrowerId: link.borrower_id, linkId: link.id, applicationId: link.application_id,
+    });
+    db.query(`UPDATE condition_links SET last_used_at=now(), use_count=use_count+1 WHERE id=$1`, [link.id]).catch(() => {});
+    res.json({ ok: true, accessToken: token, applicationId: link.application_id });
+  } catch (e) {
+    console.error('[auth] condition-link exchange failed:', db.describeError(e));
+    res.status(500).json({ error: 'Something went wrong opening this link — try again in a moment.' });
+  }
+});
+
 router.post('/assistant/accept', async (req, res, next) => {
   const token = String((req.body && req.body.token) || '');
   const password = (req.body && req.body.password) || '';

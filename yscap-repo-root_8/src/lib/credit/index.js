@@ -1192,7 +1192,37 @@ async function autoReuseCreditForFile(appId, { status = null } = {}) {
   return out;
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+   THE FILE'S PRICING FICO — ONE RULE (owner-directed 2026-08-28: "if it's one
+   borrower, then it's the middle score. If it's more than one, then it's the
+   highest middle score").
+
+   `borrowers.fico` IS each borrower's middle score (the credit import writes the
+   report's middle score there — see store.js §4 — and a hand-entered fico is the
+   same fact typed). So the file-level number is:
+     · one borrower  → that borrower's fico;
+     · two borrowers → the HIGHER of the two ficos;
+     · none known    → NULL, never 0 and never a guess.
+
+   TWO RENDERINGS, ONE RULE, and this is the only place either may live:
+   `dealFicoSql` for a query that joins both borrower rows, `dealFico` for code
+   holding the two values. Seven call sites used to carry their own inline copy
+   of the SQL — and the condition engine's context carried NONE (it read the
+   primary's score alone), which is exactly the drift "one definition" exists to
+   prevent: pricing said 760 while the rules engine and the AI grounding said
+   700. scripts/test-deal-fico-db.js counts the call sites and fails on a new
+   inline copy.
+   ──────────────────────────────────────────────────────────────────────────── */
+function dealFicoSql(bAlias, cbAlias) {
+  return `NULLIF(GREATEST(COALESCE(${bAlias}.fico,0), COALESCE(${cbAlias}.fico,0)), 0)`;
+}
+function dealFico(...scores) {
+  const vals = scores.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+  return vals.length ? Math.max(...vals) : null;
+}
+
 module.exports = {
+  dealFicoSql, dealFico,
   preview, importCredit, fileCredit, borrowerScore, PULL_TYPES, REQUEST_TYPES,
   latestBorrowerReport, borrowerCreditReports, reuseFromProfile, ageDaysOf,
   autoReuseCreditForFile,

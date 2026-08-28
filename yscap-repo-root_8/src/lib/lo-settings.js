@@ -14,7 +14,17 @@
  *     order email (owner-directed 2026-08-05: the COMPANY default is now OFF for
  *     every order kind, so this is how an officer sets a default different from
  *     the company's — turning CC back ON for their own files).
- *   Both default OFF; each order can still flip it per file at place time.
+ *   ccHelperOnTitleOrder       (bool, default false) — whether the officer's
+ *     files CC the borrower's HELPER (the standing second login a borrower
+ *     authorizes — `borrower_assistants`) on the TITLE order email by default.
+ *   ccHelperOnInsuranceOrder   (bool, default false) — same, for the INSURANCE
+ *     order email (owner-directed 2026-08-28: "you should also be able to have an
+ *     option to CC the helper as well if there is a borrower helper on file").
+ *     The helper's footing is its OWN question, never a rider on the borrower's —
+ *     an officer may want the helper chasing the title company while the borrower
+ *     stays off the chain.
+ *   All four default OFF; each order can still flip them per file at place time,
+ *   and a file with no helper on it has nothing to CC either way.
  *
  * Adding a setting = one entry in SETTINGS_KEYS + the UI row in
  * StaffSettings.jsx. Never bypass validate() on a write.
@@ -34,6 +44,18 @@ const SETTINGS_KEYS = Object.freeze({
     default: false,
     label: 'CC my borrowers on insurance order emails by default',
     help: 'Off (the default): the borrower is not looped into the insurance order email. You can still turn it on for any single order when you place it.',
+  },
+  ccHelperOnTitleOrder: {
+    type: 'bool',
+    default: false,
+    label: 'CC my borrowers’ helpers on title order emails by default',
+    help: 'Off (the default): the borrower’s helper is not looped into the title order email. This is a separate choice from CC’ing the borrower — you can copy the helper without copying the borrower, or the other way round. It only ever does anything on a file where the borrower has set a helper up.',
+  },
+  ccHelperOnInsuranceOrder: {
+    type: 'bool',
+    default: false,
+    label: 'CC my borrowers’ helpers on insurance order emails by default',
+    help: 'Off (the default): the borrower’s helper is not looped into the insurance order email. This is a separate choice from CC’ing the borrower, and it only ever does anything on a file where the borrower has set a helper up.',
   },
 });
 

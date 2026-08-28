@@ -976,7 +976,7 @@ async function loadFileForPricing(appId, borrowerId) {
   const a = await db.query(
     // Pricing FICO = the HIGHEST score across the file's borrowers (#99): with a
     // co-borrower, the stronger credit prices the deal. NULL when neither has one.
-    `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico
+    `SELECT a.*, ${require('../lib/credit').dealFicoSql('b', 'cb')} AS fico
        FROM applications a JOIN borrowers b ON b.id=a.borrower_id
        LEFT JOIN borrowers cb ON cb.id=a.co_borrower_id
       WHERE a.id=$1 AND (${OWN_FILE_SQL("a", "$2")}) AND a.deleted_at IS NULL`,

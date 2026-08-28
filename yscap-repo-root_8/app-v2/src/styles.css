@@ -2311,7 +2311,10 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
 
 /* ---- Pipeline (pilot-staff-pipeline): CSS-grid "table" (rows are links) ---- */
 .app .q-head,.app .q-row{display:grid;
-  grid-template-columns:minmax(180px,2.4fr) minmax(110px,1fr) minmax(90px,.85fr) minmax(120px,1fr) minmax(110px,1fr) 160px;
+  /* 7 columns since 2026-08-28: the INVESTOR got its own slot between Program
+     and Amount (owner-directed — it was a small inline mention nobody could
+     scan or sort by). */
+  grid-template-columns:minmax(170px,2.2fr) minmax(100px,.9fr) minmax(110px,1fr) minmax(90px,.85fr) minmax(115px,.95fr) minmax(105px,.95fr) 150px;
   gap:14px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--surface-soft)}
 .app .q-head{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);
   font-weight:700;border-bottom:1px solid var(--border)}
