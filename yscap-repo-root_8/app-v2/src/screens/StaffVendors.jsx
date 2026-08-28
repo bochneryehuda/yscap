@@ -406,6 +406,7 @@ export default function StaffVendors() {
   // Vendor actions fire from rows anywhere down a long directory — confirm in
   // the fixed toast so the list never jumps under the cursor (FlashToast.jsx).
   const { flash, toast } = useFlash();
+  const [autoMerging, setAutoMerging] = useState(false);
 
   const gate = useSubmitGate();
   async function add(f) {
@@ -456,6 +457,31 @@ export default function StaffVendors() {
           <div className="sub">Every title company and insurance agent entered across the platform — curate them here.</div>
         </div>
         <div className="page-head-actions">
+          {/* THE SAME-EMAIL SWEEP (owner-directed 2026-08-28): vendors sharing an
+              email merge automatically — gaps fill, extra numbers just add;
+              only a genuine CONFLICT (two different names on one inbox) is left
+              for the manual merge below. Runs a dry preview first, then asks. */}
+          <button className="btn btn-line btn-sm" disabled={autoMerging}
+            title="Find vendors sharing an email address and merge the clean duplicates automatically — conflicting pairs are listed for a manual merge"
+            onClick={async () => {
+              setAutoMerging(true);
+              try {
+                const preview = await api.vendorsAutoMerge(true);
+                if (!preview.merged.length && !preview.conflicts.length) { flash('No same-email duplicates found.'); return; }
+                const goAhead = preview.merged.length
+                  ? window.confirm(`Merge ${preview.merged.length} clean same-email duplicate${preview.merged.length === 1 ? '' : 's'} automatically?`
+                    + (preview.conflicts.length ? ` (${preview.conflicts.length} conflicting pair${preview.conflicts.length === 1 ? '' : 's'} will be left for manual merge.)` : ''))
+                  : (flash(`${preview.conflicts.length} same-email pair(s) conflict — merge them manually below.`), false);
+                if (!goAhead) return;
+                const r = await api.vendorsAutoMerge(false);
+                await load();
+                flash(`Merged ${r.merged.length} duplicate${r.merged.length === 1 ? '' : 's'}.`
+                  + (r.conflicts.length ? ` ${r.conflicts.length} conflicting pair(s) need a manual merge.` : ''));
+              } catch (e) { setErr((e && e.message) || 'The auto-merge failed.'); }
+              finally { setAutoMerging(false); }
+            }}>
+            {autoMerging ? 'Merging…' : '⇆ Auto-merge duplicates'}
+          </button>
           <button className="btn btn-ink btn-sm" onClick={() => { setAdding(a => !a); setEditing(null); }}>{adding ? 'Close' : '+ Add vendor'}</button>
         </div>
       </div>

@@ -497,6 +497,20 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
      borrower. The server sends the effective default; null = not yet loaded. */
   const [ccHelper, setCcHelper] = useState(order.ccHelper != null ? !!order.ccHelper : null);
   useEffect(() => { if (order.ccHelper != null) setCcHelper((prev) => (prev == null ? !!order.ccHelper : prev)); }, [order.ccHelper]);
+  /* THE COMPANY BEHIND THE VENDOR (owner-directed 2026-08-28): the pool's other
+     people at the vendor's email domain, the same-domain addresses this order's
+     own email chain has shown, and one-off loop-ins for THIS send. Loaded when
+     the block is opened; ticked addresses ride the place body as extraCc. */
+  const [companyOpen, setCompanyOpen] = useState(false);
+  const [company, setCompany] = useState(null);
+  const [loopIn, setLoopIn] = useState([]);   // emails ticked for this send
+  const loadCompany = async () => {
+    try { setCompany(await api.orderCompanyContacts(appId, kind)); }
+    catch (_) { setCompany({ domain: null, company: [], harvested: [], onFile: [] }); }
+  };
+  const toggleCompany = () => { setCompanyOpen((v) => !v); if (!company) loadCompany(); };
+  const toggleLoopIn = (e) => setLoopIn((p) => (p.includes(e) ? p.filter((x) => x !== e) : [...p, e]));
+
   // WHO the helper is — the file's own list. No helper on file ⇒ no checkbox at all,
   // rather than one that could never do anything.
   const helpers = (file && Array.isArray(file.helpers) ? file.helpers : []);
@@ -590,6 +604,7 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
       if (override) body.override = override;
       if (ccBorrower != null) body.ccBorrower = !!ccBorrower;
       if (helpers.length && ccHelper != null) body.ccHelper = !!ccHelper;
+      if (loopIn.length) body.extraCc = loopIn;
       const r = await api.staffPlaceOrder(appId, kind, body);
       // AN UNCONFIRMED SEND IS NOT A GREEN TICK. The server distinguishes a send
       // the provider ACCEPTED from one it stopped responding to mid-flight
@@ -688,6 +703,68 @@ export function OrderCard({ appId, kind, order, file, canAccept, onChanged }) {
           )}
         </div>
       )}
+
+      {/* THE COMPANY'S PEOPLE (owner-directed 2026-08-28): everyone else at this
+          vendor's company — from the vendor pool and from this order's own email
+          chain — offered to add to the file (auto-looped from then on) or to loop
+          into just this send. */}
+      <div className="muted small" style={{ marginBottom: 6 }}>
+        <button className="btn link small" style={{ padding: 0 }} onClick={toggleCompany} aria-expanded={companyOpen}>
+          {companyOpen ? 'Hide' : 'Show'} people at this company
+        </button>
+        {companyOpen && (
+          <div style={{ marginTop: 4, border: '1px solid #E4DFD3', borderRadius: 8, padding: '6px 10px' }}>
+            {!company ? 'Looking up the company…' : !company.domain ? (
+              <span>This vendor’s email is a personal mailbox, so there is no company domain to look up.</span>
+            ) : (
+              <>
+                <div style={{ color: '#141B22', fontWeight: 600 }}>@{company.domain}</div>
+                {company.onFile.length > 0 && (
+                  <div style={{ marginTop: 4 }}>
+                    On this file already (looped into every {kind} email automatically):{' '}
+                    {company.onFile.map((c) => c.name || c.emails[0]).join(', ')}
+                  </div>
+                )}
+                {company.company.length > 0 && (
+                  <div style={{ marginTop: 4 }}>
+                    <b style={{ color: '#141B22' }}>In the vendor pool at this company:</b>
+                    {company.company.map((c) => (
+                      <div key={c.id} className="row" style={{ gap: 6, alignItems: 'center', padding: '2px 0' }}>
+                        <span style={{ flex: 1 }}>{c.name || c.emails[0]} — {c.emails.join(', ')}</span>
+                        <button className="btn ghost small" onClick={async () => {
+                          try { await api.adoptFileContact(appId, c.id); await loadCompany(); onChanged && onChanged(); }
+                          catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not add them.' }); }
+                        }}>Add to this file</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {company.harvested.length > 0 && (
+                  <div style={{ marginTop: 4 }}>
+                    <b style={{ color: '#141B22' }}>Seen on this order’s email chain (same company):</b>
+                    {company.harvested.map((h) => (
+                      <div key={h.email} className="row" style={{ gap: 6, alignItems: 'center', padding: '2px 0' }}>
+                        <label className="row" style={{ gap: 6, alignItems: 'center', flex: 1, cursor: 'pointer' }}>
+                          <input type="checkbox" checked={loopIn.includes(h.email)} onChange={() => toggleLoopIn(h.email)} />
+                          <span>{h.name ? `${h.name} — ` : ''}{h.email} <span className="muted">(tick to CC on this send)</span></span>
+                        </label>
+                        <button className="btn ghost small" title="Save them as a contact at this company and add them to the file"
+                          onClick={async () => {
+                            try { await api.orderCompanyContactAdd(appId, kind, { email: h.email, name: h.name || undefined }); await loadCompany(); onChanged && onChanged(); }
+                            catch (e) { setMsg({ tone: 'err', text: (e && e.message) || 'Could not save that contact.' }); }
+                          }}>Save as contact</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {company.company.length === 0 && company.harvested.length === 0 && company.onFile.length === 0 && (
+                  <div>Nobody else at this company yet — replies on this order’s chain will show up here.</div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Loop the borrower in? (owner-directed 2026-08-05: OFF by default for every
           order kind; the officer flips it per order; their My-settings default can

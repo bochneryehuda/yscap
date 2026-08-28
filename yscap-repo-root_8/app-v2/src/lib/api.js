@@ -790,6 +790,13 @@ export const api = {
   staffPlaceSettlementOrder: (id, body) => req('POST', `/api/staff/applications/${id}/orders/settlement/place`, body || {}),
   staffFloodZoneFlip:        (id, inFloodZone) => req('POST', `/api/staff/applications/${id}/flood-zone`, { inFloodZone }),
   staffPlaceFloodInsurance:  (id, body) => req('POST', `/api/staff/applications/${id}/orders/flood-insurance/place`, body || {}),
+  // The company behind a vendor (owner-directed 2026-08-28): the pool's people
+  // at the vendor's domain, the addresses its email chains have shown, adopt +
+  // one-click add, and the same-email auto-merge sweep.
+  orderCompanyContacts:      (id, kind) => req('GET', `/api/staff/applications/${id}/orders/${kind}/company-contacts`),
+  orderCompanyContactAdd:    (id, kind, body) => req('POST', `/api/staff/applications/${id}/orders/${kind}/company-contacts/add`, body),
+  adoptFileContact:          (id, contactId) => req('POST', `/api/staff/applications/${id}/contacts/${contactId}/adopt`, {}),
+  vendorsAutoMerge:          (dryRun) => req('POST', '/api/staff/vendors/auto-merge', { dryRun: !!dryRun }),
 
   // Encompass sync (READ-ONLY per-file reconcile). status = summary; findings =
   // the full field-by-field comparison (live data); refresh = re-pull read-only;

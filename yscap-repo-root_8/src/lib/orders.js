@@ -237,6 +237,11 @@ async function getOrderData(appId) {
       ORDER BY sc.last_used_at DESC NULLS LAST, sc.updated_at DESC NULLS LAST`,
     [appId, Object.values(VENDOR_TYPE)]);
   const vendorOf = (type) => vc.rows.find((x) => x.contact_type === type) || null;
+  /* EVERY OTHER contact of the same type linked to this file (owner-directed
+     2026-08-28: "if all of them are listed on the file contact … all of them
+     should be looped automatically"). The FIRST (most recently used) stays the
+     order's vendor — the To; the rest ride the Cc through recipientsFor. */
+  const vendorsExtraOf = (type) => vc.rows.filter((x) => x.contact_type === type).slice(1);
 
   /* THE BORROWER'S HELPER(S) — the standing second login a borrower authorizes
      (`borrower_assistants`, db/472). Read for BOTH the borrower and the co-borrower,
@@ -315,6 +320,8 @@ async function getOrderData(appId) {
           phone: a.lo_cell || a.lo_phone || null, nmls: a.lo_nmls || null }
       : null,
     processor: a.proc_name ? { name: a.proc_name, email: a.proc_email || null } : null,
+    // The ADDITIONAL same-type contacts on the file — auto-looped on the Cc.
+    vendorsExtra: { title: vendorsExtraOf('title_company'), insurance: vendorsExtraOf('insurance_agent') },
     vendors: { title: vendorOf('title_company'), insurance: vendorOf('insurance_agent'),
       // The NY settlement agent (owner-directed 2026-08-28) — present on the data
       // whatever the closing handling is, so the prepped-but-dormant card can show
@@ -620,6 +627,16 @@ function recipientsFor(kind, data, opts) {
      adds nothing, so the choice is inert rather than wrong. */
   const ccHelper = o.ccHelper != null ? !!o.ccHelper : ccHelperDefault(kind, o.loHelperCcSetting);
   if (ccHelper) for (const e of helperEmails(data)) add(e);
+  /* EVERY OTHER same-type contact linked to the FILE is looped automatically
+     (owner-directed 2026-08-28): a second title contact somebody added to the
+     file is on the file BECAUSE they belong on its title emails. On the Cc —
+     the order is addressed TO the primary vendor's card. */
+  for (const extra of ((data.vendorsExtra || {})[kind] || [])) {
+    for (const e of require('./vendor-directory').allEmails(extra)) add(e);
+  }
+  /* One-off loop-ins picked on the panel (the company-contacts block). Already
+     validated by the route; deduped here like every other address. */
+  for (const e of (o.extraCc || [])) add(e);
   if (data.officer) add(data.officer.email);
   if (data.processor) add(data.processor.email);
   return { to, cc, replyTo: orderReplyTo(data.appId, kind), ccBorrower, ccHelper };

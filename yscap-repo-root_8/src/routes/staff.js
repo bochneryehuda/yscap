@@ -7718,6 +7718,97 @@ router.post('/applications/:id/orders/flood-insurance/place', async (req, res) =
   } catch (e) { res.status(500).json({ error: 'Could not send the flood insurance order.' }); }
 });
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE COMPANY BEHIND A VENDOR (owner-directed 2026-08-28) — the vendor's email
+   DOMAIN names the company; the people the pool holds at that company, plus the
+   same-domain addresses the vendor's own email chains have shown, are offered
+   as one-click file contacts and order loop-ins. src/lib/vendor-company.js owns
+   the rules (free-mail guard included).
+   ═══════════════════════════════════════════════════════════════════════════ */
+router.get('/applications/:id/orders/:kind/company-contacts', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const vco = require('../lib/vendor-company');
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const vendor = data.vendors[kind];
+    if (!vendor) return res.json({ domain: null, company: [], harvested: [], onFile: [] });
+    const domain = vco.contactDomain(vendor);
+    const vendorEmails = require('../lib/vendor-directory').allEmails(vendor).map((e) => e.toLowerCase());
+    const onFile = ((data.vendorsExtra || {})[kind] || []).map((x) => ({
+      id: x.id, name: x.company_name || x.contact_name || null,
+      emails: require('../lib/vendor-directory').allEmails(x),
+    }));
+    if (!domain) return res.json({ domain: null, company: [], harvested: [], onFile });
+    const onFileEmails = new Set([...vendorEmails, ...onFile.flatMap((x) => x.emails.map((e) => e.toLowerCase()))]);
+    const company = (await vco.companyContacts(domain))
+      .filter((row) => row.id !== vendor.id && !((data.vendorsExtra || {})[kind] || []).some((x) => x.id === row.id))
+      .map((row) => ({ id: row.id, name: row.contact_name || row.company_name || null,
+        type: row.contact_type, emails: require('../lib/vendor-directory').allEmails(row) }));
+    const harvested = await vco.harvestThreadContacts(appId, {
+      domain, msgTypes: [`${kind}_message`],
+      exclude: [...onFileEmails, ...company.flatMap((c) => c.emails.map((e) => e.toLowerCase()))],
+    });
+    res.json({ domain, company, harvested, onFile });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Save a harvested address as a REAL contact at the vendor's company and link it
+// to this file — the one-click "add them" from the email chain.
+router.post('/applications/:id/orders/:kind/company-contacts/add', async (req, res) => {
+  const appId = req.params.id;
+  const kind = req.params.kind;
+  if (!isOrderKind(kind)) return res.status(400).json({ error: 'unknown order type' });
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const b = req.body || {};
+    const email2 = String(b.email || '').trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email2)) return res.status(400).json({ error: 'a valid email is required' });
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const vendor = data.vendors[kind];
+    if (!vendor) return res.status(400).json({ error: `Add the ${kind} contact first.` });
+    const vco = require('../lib/vendor-company');
+    const domain = vco.contactDomain(vendor);
+    // The one-click door only saves people AT the vendor's own company — an
+    // arbitrary address goes through the ordinary File contacts form instead.
+    if (!domain || vco.emailDomain(email2) !== domain) {
+      return res.status(400).json({ error: 'That address is not at this vendor’s company — add it under File contacts instead.' });
+    }
+    const created = (await db.query(
+      `INSERT INTO service_contacts (borrower_id, contact_type, company_name, contact_name, email)
+       VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [vendor.borrower_id || null, vendor.contact_type, vendor.company_name || null,
+        (b.name && String(b.name).trim().slice(0, 120)) || null, email2])).rows[0];
+    await db.query(
+      `INSERT INTO application_service_contacts (application_id, service_contact_id, contact_type)
+       VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [appId, created.id, vendor.contact_type]);
+    await audit(req, 'company_contact_added', 'application', appId, { kind, email: email2, from: 'email_chain' });
+    res.status(201).json({ ok: true, contactId: created.id });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Link an EXISTING vendor-pool contact to this file ("add people from this
+// company") — from then on the auto-loop carries them on every order of that type.
+router.post('/applications/:id/contacts/:contactId/adopt', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!UUID_RE.test(String(req.params.contactId))) return res.status(404).json({ error: 'not found' });
+  try {
+    const row = (await db.query(
+      `SELECT id, contact_type, merged_into_id FROM service_contacts WHERE id=$1`, [req.params.contactId])).rows[0];
+    if (!row || row.merged_into_id) return res.status(404).json({ error: 'contact not found' });
+    await db.query(
+      `INSERT INTO application_service_contacts (application_id, service_contact_id, contact_type)
+       VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [appId, row.id, row.contact_type]);
+    await audit(req, 'company_contact_adopted', 'application', appId, { contactId: row.id, type: row.contact_type });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 router.post('/applications/:id/orders/settlement/place', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
@@ -7825,6 +7916,16 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
       explicit: req.body && req.body.ccHelper != null ? req.body.ccHelper : null,
       storedMeta: existing && existing.meta,
     });
+    /* One-off loop-ins from the panel's company-contacts block (owner-directed
+       2026-08-28: "you can select add file contacts from this company … so we
+       can loop them into the email"). Validated + capped; recipientsFor dedupes. */
+    let extraCc = [];
+    if (Array.isArray(req.body && req.body.extraCc)) {
+      extraCc = req.body.extraCc.map((e) => String(e || '').trim().toLowerCase()).filter(Boolean).slice(0, 10);
+      for (const e of extraCc) {
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return res.status(400).json({ error: `"${e}" is not a valid email address.` });
+      }
+    }
 
     // A hand-edited subject/body from the preview modal lands through the ONE
     // manual-override chokepoint (owner-directed 2026-08-26); no override → the
@@ -7832,7 +7933,7 @@ router.post('/applications/:id/orders/:kind/place', async (req, res) => {
     const built = require('../lib/email/manual-override').applyOverride(
       orders.buildOrderEmail(kind, data, {}), req.body && req.body.override,
       { title: `${kind === 'title' ? 'Title' : 'Insurance'} order`, replyable: true });
-    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower, ccHelper });
+    const { to, cc, replyTo } = orders.recipientsFor(kind, data, { ccBorrower, ccHelper, extraCc });
     const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
     const vendor = data.vendors[kind];
 
@@ -20253,6 +20354,23 @@ router.delete('/vendors/:id', async (req, res) => {
 //                                    contactType, primaryEmail, primaryPhone },
 //     emails: [...], phones: [...] }
 // Every pick is optional — omitted → keep the survivor's current value.
+/* AUTO-MERGE the same-email duplicates (owner-directed 2026-08-28: "vendors
+   that have the same email address should get merged … automatically. The only
+   thing when it should ask should be if something is conflicting"). Clean pairs
+   merge (gaps fill, arrays union, links re-point — the manual door's own
+   semantics, conservative); conflicted pairs are RETURNED for the human merge
+   screen, never guessed. ?dryRun=1 previews without writing. Audited. */
+router.post('/vendors/auto-merge', async (req, res) => {
+  if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
+  try {
+    const dryRun = req.body && (req.body.dryRun === true || req.body.dryRun === '1');
+    const out = await require('../lib/vendor-company').autoMergeSameEmail({ dryRun });
+    await audit(req, 'vendors_auto_merge', 'vendor', null,
+      { dryRun, merged: out.merged.length, conflicts: out.conflicts.length });
+    res.json({ ok: true, dryRun, ...out });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
 router.post('/vendors/merge', async (req, res) => {
   if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
   const b = req.body || {};
