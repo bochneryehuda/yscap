@@ -788,6 +788,8 @@ export const api = {
   adminClosingHandling:   () => req('GET', '/api/admin/integrations/closing-handling'),
   saveAdminClosingHandling: (body) => req('PUT', '/api/admin/integrations/closing-handling', body),
   staffPlaceSettlementOrder: (id, body) => req('POST', `/api/staff/applications/${id}/orders/settlement/place`, body || {}),
+  staffFloodZoneFlip:        (id, inFloodZone) => req('POST', `/api/staff/applications/${id}/flood-zone`, { inFloodZone }),
+  staffPlaceFloodInsurance:  (id, body) => req('POST', `/api/staff/applications/${id}/orders/flood-insurance/place`, body || {}),
 
   // Encompass sync (READ-ONLY per-file reconcile). status = summary; findings =
   // the full field-by-field comparison (live data); refresh = re-pull read-only;

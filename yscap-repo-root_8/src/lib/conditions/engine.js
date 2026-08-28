@@ -121,6 +121,11 @@ async function loadRuleContext(appId) {
   // known, regardless of program. Best-effort — absent appraisal ⇒ not flagged.
   let inFloodZone = false;
   const isA = (z) => /^(A|V)/.test(String(z || '').trim().toUpperCase());
+  /* THE MANUAL FLIP (db/639, owner-directed 2026-08-28): a human asserted the
+     flood zone on the Orders desk ("this property is in a flood zone") before
+     any appraisal or determination proved it. TRUE adds the fact; there is no
+     FALSE — a human may never silence FEMA evidence through this flag. */
+  if (a.flood_zone_override === true) inFloodZone = true;
   try {
     const fz = await db.query(
       `SELECT fema_flood_sfha, fema_flood_zone, flood_zone

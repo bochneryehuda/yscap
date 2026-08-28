@@ -69,7 +69,7 @@ import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import GuarantyWaiverCard from '../components/GuarantyWaiverCard.jsx';
 import RateTermCashCard from '../components/RateTermCashCard.jsx';
-import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
+import OrdersPanel, { OrderModal, FloodInsuranceEntry } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import AppraisalOrderSection from '../components/AppraisalOrderSection.jsx';
 import TrinityBudgetReview from '../components/TrinityBudgetReview.jsx';
@@ -2015,6 +2015,14 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       {it.template_code === 'rtl_cond_feasibility' && (
         <div style={{ paddingLeft: 20 }}>
           <TrinityBudgetReview appId={appId} compact onChanged={onChanged} />
+        </div>
+      )}
+      {/* The flood-insurance ORDER, right on its condition (owner-directed
+          2026-08-28: "Two places: one in the flood condition and in the order
+          center") — the same self-loading card the Orders room mounts. */}
+      {it.template_code === 'rtl_cond_flood_insurance' && (
+        <div style={{ paddingLeft: 20 }}>
+          <FloodInsuranceEntry appId={appId} />
         </div>
       )}
 

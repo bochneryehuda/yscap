@@ -7444,6 +7444,43 @@ router.get('/applications/:id/orders', async (req, res) => {
         // own closing-prep payload, which owns the recipients, the package and the
         // chain. `null` until closing prep has actually been sent.
         attorney: attorneyTracking ? { orderType: 'attorney', tracking: attorneyTracking } : null,
+        /* FLOOD INSURANCE (owner-directed 2026-08-28): on every file — grayed
+           until the flood zone is established (by the appraisal, a completed
+           determination, or the manual flip this card offers), then orderable to
+           the flood_insurance contact, defaulting — with explicit confirmation —
+           to the file's own insurance agent. */
+        floodInsurance: await (async () => {
+          try {
+            const fio = require('../lib/flood-insurance-order');
+            const zone = await fio.floodZoneEstablished(req.params.id);
+            const manual = (await db.query(`SELECT flood_zone_override FROM applications WHERE id=$1`, [req.params.id])).rows[0];
+            const vendor = await fio.floodVendor(req.params.id);
+            const row = orderOf('flood_insurance');
+            const cond = (await db.query(
+              `SELECT ci.id, ci.status FROM checklist_items ci JOIN checklist_templates t ON t.id=ci.template_id
+                WHERE ci.application_id=$1 AND t.code='rtl_cond_flood_insurance' ORDER BY ci.created_at LIMIT 1`,
+              [req.params.id])).rows[0] || null;
+            return {
+              orderType: 'flood_insurance',
+              status: row ? row.status : 'not_ordered',
+              inFloodZone: zone.inZone,
+              zoneSource: zone.source,                       // 'manual' | 'appraisal' | 'determination' | null
+              manualFlip: !!(manual && manual.flood_zone_override === true),
+              enabled: zone.inZone,
+              reason: zone.inZone ? null
+                : 'Nothing on this file says the property is in a flood zone yet. Flip the switch if it is — that adds the flood-insurance condition and opens this order.',
+              vendor: vendor ? { id: vendor.id, name: vendor.company_name || vendor.contact_name || null,
+                emails: require('../lib/vendor-directory').allEmails(vendor) } : null,
+              insuranceAgent: data.vendors.insurance ? {
+                name: data.vendors.insurance.company_name || data.vendors.insurance.contact_name || null,
+                email: require('../lib/vendor-directory').allEmails(data.vendors.insurance)[0] || null,
+              } : null,
+              condition: cond,
+              orderedAt: row ? row.ordered_at : null,
+              vendorName: row ? row.vendor_name : null,
+            };
+          } catch (_) { return null; }
+        })(),
         /* THE SETTLEMENT-AGENT ORDER (owner-directed 2026-08-28) — the New-York
            workflow that takes over title's settlement items when we close in
            house. ALWAYS present on a NY file so the desk can SEE the prepped
@@ -7552,6 +7589,103 @@ router.get('/applications/:id/orders/:kind/email-preview', async (req, res) => {
    the SAME exactly-once core every other order uses (orders.placeOrder), so the
    claim/rollback/ambiguous-send discipline is inherited, not re-implemented.
    ═══════════════════════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════════════════════
+   FLOOD INSURANCE (owner-directed 2026-08-28) — the flood-zone flip and the
+   flood insurance order. src/lib/flood-insurance-order.js owns the gate rule
+   and the email; the send rides the SAME exactly-once placeOrder core.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+// Flip "this property is in a flood zone" (true) or clear the manual flip back
+// to the derived answer (null). Flipping TRUE attaches the flood-insurance
+// condition through the existing engine rule in the same breath.
+router.post('/applications/:id/flood-zone', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const fio = require('../lib/flood-insurance-order');
+    const b = req.body || {};
+    const flip = b.inFloodZone === true ? true : null;   // no manual FALSE — evidence is never silenced by hand
+    await db.query(`UPDATE applications SET flood_zone_override=$2, updated_at=now() WHERE id=$1`, [appId, flip]);
+    // The engine attaches (or, on a clean clear with no other evidence, retracts
+    // its untouched auto item for) the flood-insurance condition.
+    try { await require('../lib/conditions/engine').evaluateApplication(appId); } catch (_) { /* next view re-runs it */ }
+    const zone = await fio.floodZoneEstablished(appId);
+    await audit(req, 'flood_zone_flip', 'application', appId, { flip, established: zone.inZone, source: zone.source });
+    res.json({ ok: true, inFloodZone: zone.inZone, source: zone.source, manual: flip === true });
+  } catch (e) { res.status(500).json({ error: 'server error' }); }
+});
+
+// Place the flood insurance order. Gated on the established flood zone; the
+// contact defaults to the file's insurance agent ONLY through an explicit
+// {useInsuranceAgent:true} (the desk asks first — never silently).
+router.post('/applications/:id/orders/flood-insurance/place', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  try {
+    const fio = require('../lib/flood-insurance-order');
+    const data = await orders.getOrderData(appId);
+    if (!data) return res.status(404).json({ error: 'not found' });
+    const dead = await deadFileOrderReason(appId);
+    if (dead) return res.status(422).json({ error: dead, code: 'file_closed' });
+
+    const zone = await fio.floodZoneEstablished(appId);
+    if (!zone.inZone) {
+      return res.status(422).json({ error: 'Nothing on this file says the property is in a flood zone — no appraisal FEMA flag, no completed flood determination, and the manual "property is in a flood zone" switch is off. Flip that switch (or import the determination) first.', code: 'no_flood_zone' });
+    }
+    if (!data.hasLoanNumber) return res.status(400).json({ error: 'Add the file’s loan number first — it prints in the mortgagee clause.', code: 'loan_number' });
+    if (data.uspsGate && !data.uspsImported && !data.uspsCleared) {
+      return res.status(422).json({ error: 'Import the USPS-verified property address before ordering flood insurance — an order sent with an unverified address can go out with the wrong ZIP or unit.', code: 'usps' });
+    }
+
+    let vendor = await fio.floodVendor(appId);
+    if (!vendor && (req.body || {}).useInsuranceAgent === true) {
+      vendor = await fio.adoptInsuranceAgent(appId);
+    }
+    if (!vendor) {
+      // The desk's prompt: offer the file's own insurance agent as the default,
+      // or ask for a different contact — but the CHOICE is the human's.
+      const agent = data.vendors.insurance;
+      return res.status(400).json({
+        error: agent
+          ? `Who handles the flood policy? The file’s insurance agent is ${agent.company_name || agent.contact_name || agent.email} — confirm using the same agent, or add a separate flood insurance contact under File contacts.`
+          : 'Add the flood insurance contact first (File contacts → Flood insurance).',
+        code: 'contact',
+        insuranceAgent: agent ? { name: agent.company_name || agent.contact_name || null, email: require('../lib/vendor-directory').allEmails(agent)[0] || null } : null,
+      });
+    }
+    const to = require('../lib/vendor-directory').allEmails(vendor);
+    if (!to.length) return res.status(400).json({ error: 'The flood insurance contact has no email address — add one under File contacts.', code: 'contact' });
+
+    const existing = (await db.query(
+      `SELECT status, send_count, meta, ordered_at, ordered_by FROM file_orders WHERE application_id=$1 AND order_type='flood_insurance'`,
+      [appId])).rows[0];
+    const force = req.body && (req.body.force === true || req.body.force === 'true');
+    if (existing && existing.status !== 'not_ordered' && existing.status !== 'cancelled' && !force) {
+      return res.status(409).json({ error: 'Flood insurance was already ordered on this file. Force a re-send if you really mean to send it again.', code: 'already_ordered' });
+    }
+
+    const note = typeof (req.body || {}).note === 'string' ? req.body.note.slice(0, 4000) : '';
+    const built = require('../lib/email/manual-override').applyOverride(
+      fio.buildFloodOrderEmail(data, vendor, { note }), req.body && req.body.override,
+      { title: 'Flood insurance order', replyable: true });
+    const cc = [];
+    if (data.officer && data.officer.email) cc.push(String(data.officer.email).toLowerCase());
+    if (data.processor && data.processor.email && !cc.includes(String(data.processor.email).toLowerCase())) cc.push(String(data.processor.email).toLowerCase());
+    const meRow = (await db.query(`SELECT full_name, email FROM staff_users WHERE id=$1`, [req.actor.id])).rows[0] || {};
+    const r = await orders.placeOrder({
+      appId, kind: 'flood_insurance', data, to, cc,
+      replyTo: require('../lib/file-address').fileReplyTo(appId),
+      built, vendor,
+      actorId: req.actor.id, actorName: meRow.full_name || meRow.email,
+      ccBorrower: false, ccHelper: false, force, existing,
+    });
+    if (!r.ok) return res.status(r.httpStatus).json({ error: r.error, code: r.code });
+    try { await audit(req, 'order_placed', 'application', appId, { kind: 'flood_insurance', to: to.length, cc: cc.length, force: !!force, unconfirmed: !!r.ambiguous }); } catch (_) { /* recorded either way */ }
+    if (r.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: r.warning, sent_to: to, cc });
+    res.json({ ok: true, sent_to: to, cc });
+  } catch (e) { res.status(500).json({ error: 'Could not send the flood insurance order.' }); }
+});
+
 router.post('/applications/:id/orders/settlement/place', async (req, res) => {
   const appId = req.params.id;
   if (!(await canTouchApp(req, appId))) return res.status(403).json({ error: 'forbidden' });
