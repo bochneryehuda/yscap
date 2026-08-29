@@ -69,7 +69,7 @@ import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import GuarantyWaiverCard from '../components/GuarantyWaiverCard.jsx';
 import RateTermCashCard from '../components/RateTermCashCard.jsx';
-import OrdersPanel, { OrderModal } from '../components/OrdersPanel.jsx';
+import OrdersPanel, { OrderModal, FloodInsuranceEntry } from '../components/OrdersPanel.jsx';
 import AppraisalPanel from '../components/AppraisalPanel.jsx';
 import AppraisalOrderSection from '../components/AppraisalOrderSection.jsx';
 import TrinityBudgetReview from '../components/TrinityBudgetReview.jsx';
@@ -85,6 +85,7 @@ import DocPreview from '../components/DocPreview.jsx';
 import ReminderModal from '../components/ReminderModal.jsx';
 import FileTasksPanel from '../components/FileTasksPanel.jsx';
 import DraftingPanel from '../components/DraftingPanel.jsx';
+import SendOutstanding from '../components/SendOutstanding.jsx';
 import LlcManager, { US_STATES } from '../components/LlcManager.jsx';
 import { fullNameOf } from '../lib/personName.js';
 import LoudHint from '../components/LoudHint.jsx';
@@ -2014,6 +2015,14 @@ function Item({ it, team, onPatch, role, docs, onUploadTo, onDropTo, onReviewDoc
       {it.template_code === 'rtl_cond_feasibility' && (
         <div style={{ paddingLeft: 20 }}>
           <TrinityBudgetReview appId={appId} compact onChanged={onChanged} />
+        </div>
+      )}
+      {/* The flood-insurance ORDER, right on its condition (owner-directed
+          2026-08-28: "Two places: one in the flood condition and in the order
+          center") — the same self-loading card the Orders room mounts. */}
+      {it.template_code === 'rtl_cond_flood_insurance' && (
+        <div style={{ paddingLeft: 20 }}>
+          <FloodInsuranceEntry appId={appId} />
         </div>
       )}
 
@@ -6364,6 +6373,12 @@ export default function StaffApplication() {
         const uwOpen = conds.filter(c => c.status === 'open' || c.status === 'borrower_responded').length;
         const TABS = [
           { k: 'borrower', label: 'All conditions', badge: nCondOpen || '' },
+          /* FILE CONTACTS get their OWN tab, right after Conditions (owner-directed
+             2026-08-28: "After the Conditions tab, open a separate tab for File
+             Contacts and place it over here") — they used to render at the bottom
+             of the conditions list, where finding the title company meant
+             scrolling past every condition on the file. */
+          { k: 'contacts', label: 'File contacts', badge: '' },
           { k: 'underwriting', label: 'Underwriting', badge: uwOpen || '' },
           { k: 'llc', label: 'LLC / entity', badge: app.llc_id ? (app.llc_verified ? '✓' : '!') : '' },
         ];
@@ -6385,6 +6400,10 @@ export default function StaffApplication() {
       })()}
 
       {condTab === 'borrower' && <>
+        {/* The login-free outreach (owner-directed 2026-08-28): email the borrower
+            their outstanding items with a personal link — every condition gets its
+            own Upload / Fill-in button, no login needed. */}
+        <SendOutstanding appId={id} onSent={load} />
         <BorrowerConditions appId={id} app={app} items={items} docs={docs} role={role}
           team={team} canImportCredit={can('pull_credit')} fullscreen={full}
           closingActive={!!app.closer_id || ['clear_to_close', 'funded'].includes(app.status)}
@@ -6392,12 +6411,15 @@ export default function StaffApplication() {
           onUploadTo={pickUpload} onDropTo={uploadStaffFiles} onChanged={load} onPreview={openPreview}
           onOpenStudio={openStudioAnywhere} onRequestWaiver={requestWaiver} uploadNote={uploadNote} />
         <StaffChangeRequests appId={id} onChanged={load} />
-        <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
         <div className="stack" style={{ marginTop: 14 }}>
           <AddConditionPanel appId={id} items={items} onChanged={load}
             onError={(t) => setErr(t)} onFlash={flash} />
         </div>
       </>}
+
+      {condTab === 'contacts' && (
+        <FileContacts appId={id} isStaff heading="File contacts (realtor, attorney, title, insurance, contractor…)" />
+      )}
 
       {condTab === 'underwriting' && (
         <LoanConditionsPanel conds={conds} condFilter={condFilter} setCondFilter={setCondFilter}

@@ -4,6 +4,7 @@ import { ChainAddress, ChainDocuments, ChainHistory } from './ClosingEmailChain.
 import DocPreview from './DocPreview.jsx';
 import EmailPreview from './EmailPreview.jsx';
 import { ScheduleButton, ScheduledSends, useScheduledSends } from './ScheduleSend.jsx';
+import ClosingHandlingControl from './ClosingHandlingControl.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
    ATTORNEY CLOSING PREP — the third order on the Orders desk.
@@ -464,6 +465,11 @@ export default function ClosingPrepCard({ appId, onChanged = null }) {
 
   return (
     <div className="panel" style={{ marginTop: 0 }}>
+      {/* WHO HANDLES THIS CLOSING (owner-directed 2026-08-28): the three-way
+          per-file switch, shown before anything can be sent — with the full
+          reason whenever it turns this card off. The routes enforce the same
+          rule server-side. */}
+      <ClosingHandlingControl appId={appId} onChanged={reload} />
       <div className="row" style={{ alignItems: 'center', gap: 10, marginBottom: 4 }}>
         <h3 style={{ margin: 0, color: INK }}>Attorney closing prep</h3>
         <span className="pill" style={STATUS_TONE[order.status] || {}}>{STATUS_LABEL[order.status] || order.status}</span>

@@ -37,6 +37,12 @@ export default function DraftingPanel({ appId }) {
   const [layout, setLayout] = useState(saved.layout || 'bullets');
   const [detail, setDetail] = useState(saved.detail === true);
   const [tone, setTone] = useState(saved.tone || 'friendly');
+  /* THE VOICE (owner-directed 2026-08-28): 'polished' is exactly what this desk has
+     always produced; 'human' reads like you typed it yourself between two calls —
+     a one-line opener, a bare numbered ask list with the file's own specifics on
+     each line, "Thanks." at the end. The human voice also weaves in each
+     condition's real figures by itself (that was the second half of the ask). */
+  const [voice, setVoice] = useState(saved.voice || 'polished');
   const [length, setLength] = useState(saved.length || 'standard');
   const [signAs, setSignAs] = useState(saved.signAs || '');
   const [instruction, setInstruction] = useState(saved.instruction || '');
@@ -55,10 +61,10 @@ export default function DraftingPanel({ appId }) {
   useEffect(() => {
     try {
       localStorage.setItem(LS_KEY(appId), JSON.stringify({
-        preset, scope, includePendingReview, layout, detail, tone, length, signAs, instruction, picked, subject, body,
+        preset, scope, includePendingReview, layout, detail, tone, voice, length, signAs, instruction, picked, subject, body,
       }));
     } catch (_) { /* private mode etc. — persistence is best-effort */ }
-  }, [appId, preset, scope, includePendingReview, layout, detail, tone, length, signAs, instruction, picked, subject, body]);
+  }, [appId, preset, scope, includePendingReview, layout, detail, tone, voice, length, signAs, instruction, picked, subject, body]);
 
   // The item picker: the file's own borrower-facing open items, fetched once
   // when the picker is first opened.
@@ -81,7 +87,12 @@ export default function DraftingPanel({ appId }) {
     try {
       const out = await api.staffDraftEmail(appId, {
         preset, scope, layout, includePendingReview,
-        detail, tone, length,
+        // Under the HUMAN voice an unchecked detail box means "let the voice decide"
+        // (it pulls the figures in by itself — the owner's ask); an explicitly
+        // ticked box still rides as true. Under the polished voice the box is the
+        // whole choice, exactly as before.
+        detail: voice === 'human' ? (detail || undefined) : detail,
+        tone, voice, length,
         signAs: signAs.trim() || undefined,
         itemIds: preset === 'outstanding_conditions' && picked.length ? picked : undefined,
         instruction: preset === 'custom' ? instruction : undefined,
@@ -122,6 +133,10 @@ export default function DraftingPanel({ appId }) {
           ['deal_overview', 'Deal overview email'],
           ['custom', 'Free form…'],
         ], 'What to draft')}
+        {sel(voice, setVoice, [
+          ['polished', 'Polished'],
+          ['human', 'Human — like you typed it'],
+        ], 'Voice')}
         {sel(tone, setTone, [
           ['friendly', 'Warm & friendly'], ['professional', 'Professional'],
           ['firm', 'Firm follow-up'], ['plain', 'Very plain & simple'],
@@ -135,6 +150,13 @@ export default function DraftingPanel({ appId }) {
             onChange={(e) => setSignAs(e.target.value)} maxLength={120} />
         </label>
       </div>
+
+      {voice === 'human' && (
+        <p className="muted small" style={{ margin: '6px 0 0' }}>
+          Human voice: a quick, personal email — one short opener, a numbered ask list with the file’s real
+          figures on each line, “Thanks.” at the end. It pulls the detailed figures in by itself.
+        </p>
+      )}
 
       {/* ---- the DETAILED FIGURES option (off by default — the owner's call) ---- */}
       <label className="row" style={{ gap: 8, alignItems: 'flex-start', marginTop: 10, cursor: 'pointer',

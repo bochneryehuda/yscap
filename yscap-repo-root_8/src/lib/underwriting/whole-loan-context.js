@@ -301,7 +301,7 @@ async function buildWholeLoanContext(applicationId, db, opts) {
   const o = opts || {};
   const a = await db.query(
     `SELECT a.*,
-            NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico,
+            ${require('../credit').dealFicoSql('b', 'cb')} AS fico,
             -- borrowers has first_name/last_name, NOT full_name (that column lives on
             -- staff_users). The old b.full_name threw "column does not exist" on EVERY
             -- buildWholeLoanContext call — silently caught upstream, so the whole-loan

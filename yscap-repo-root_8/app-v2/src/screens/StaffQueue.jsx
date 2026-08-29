@@ -46,10 +46,10 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 const monthShort = (ym) => MONTHS[Number(ym.split('-')[1]) - 1] || ym;
 
 // The server-side filter params (everything except UI-only keys like `mine`/`tab`).
-const SERVER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'loanType', 'q', 'sort', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'flag', 'limit', 'offset'];
+const SERVER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'loanType', 'q', 'sort', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'closingFrom', 'closingTo', 'investor', 'flag', 'limit', 'offset'];
 // The subset that counts as an "active filter" for Clear-filters / KPI-active UI.
 // `sort` is a view preference, not a filter, so it's intentionally excluded.
-const FILTER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'loanType', 'q', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'flag'];
+const FILTER_KEYS = ['group', 'status', 'officerId', 'processorId', 'program', 'loanType', 'q', 'minAmount', 'maxAmount', 'fundedFrom', 'fundedTo', 'createdFrom', 'createdTo', 'closingFrom', 'closingTo', 'investor', 'flag'];
 const paramsEqual = (a, b) => {
   const ak = Object.keys(a), bk = Object.keys(b);
   return ak.length === bk.length && ak.every((k) => String(a[k]) === String(b[k]));
@@ -301,12 +301,17 @@ function Row({ a, onArchive }) {
         <div className="mut">
           {a.ys_loan_number || 'Loan # pending'} · {a.loan_type || '—'}
           {a.internal_status ? ` · ClickUp: ${a.internal_status}` : ''}
-          {/* Note buyer / where the file is sold — INTERNAL staff pipeline only
-              (this whole screen is staff-gated; the borrower API strips `lender`). */}
-          {a.lender ? <> · <span style={{ color: 'var(--gold-ink)' }}>Note buyer: {a.lender}</span></> : ''}
         </div>
       </div>
       <div className="q-prog">{a.program || '—'}</div>
+      {/* THE INVESTOR, ITS OWN SLOT (owner-directed 2026-08-28: "the investor is
+          a very small slot in the pipeline view. Investor needs to be like a
+          separate slot. They should be able to see clearly who they're invested
+          on the file"). Staff-only screen; the borrower API strips `lender`. */}
+      <div className="q-inv" style={{ color: 'var(--gold-ink)', fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+        title={a.lender ? `Investor / note buyer: ${a.lender}` : 'No investor recorded'}>
+        {a.lender || <span className="mut" style={{ fontWeight: 400 }}>—</span>}
+      </div>
       <div className="q-amt num">{money(a.loan_amount)}</div>
       <div className="q-off">
         {off ? <span className="off"><span className="mono">{initials(off)}</span>{off}</span> : <span className="mut">Unassigned</span>}
@@ -484,14 +489,22 @@ export default function StaffQueue() {
   const maxAmount = searchParams.get('maxAmount') || '';
   const mineOnly = searchParams.get('mine') === '1';
   // Date range works on either created OR funded dates; funded params win the basis.
-  const dateBasis = (searchParams.get('fundedFrom') || searchParams.get('fundedTo')) ? 'funded' : 'created';
-  const fromKey = dateBasis === 'funded' ? 'fundedFrom' : 'createdFrom';
-  const toKey = dateBasis === 'funded' ? 'fundedTo' : 'createdTo';
+  const investorF = searchParams.get('investor') || '';
+  const dateBasis = (searchParams.get('closingFrom') || searchParams.get('closingTo')) ? 'closing'
+    : (searchParams.get('fundedFrom') || searchParams.get('fundedTo')) ? 'funded' : 'created';
+  const fromKey = dateBasis === 'closing' ? 'closingFrom' : dateBasis === 'funded' ? 'fundedFrom' : 'createdFrom';
+    const toKey = dateBasis === 'closing' ? 'closingTo' : dateBasis === 'funded' ? 'fundedTo' : 'createdTo';
   const dateFrom = searchParams.get(fromKey) || '';
   const dateTo = searchParams.get(toKey) || '';
-  const setDateBasis = (basis) => setParam(basis === 'funded'
-    ? { fundedFrom: searchParams.get('createdFrom') || '', fundedTo: searchParams.get('createdTo') || '', createdFrom: '', createdTo: '' }
-    : { createdFrom: searchParams.get('fundedFrom') || '', createdTo: searchParams.get('fundedTo') || '', fundedFrom: '', fundedTo: '' });
+  /* Switching the basis CARRIES the typed range across and clears the other two
+     key pairs, so a range can never silently apply on two bases at once. */
+  const setDateBasis = (basis) => {
+    const cur = { from: dateFrom, to: dateTo };
+    const clear = { fundedFrom: '', fundedTo: '', createdFrom: '', createdTo: '', closingFrom: '', closingTo: '' };
+    if (basis === 'funded') setParam({ ...clear, fundedFrom: cur.from, fundedTo: cur.to });
+    else if (basis === 'closing') setParam({ ...clear, closingFrom: cur.from, closingTo: cur.to });
+    else setParam({ ...clear, createdFrom: cur.from, createdTo: cur.to });
+  };
 
   // The pipeline search is debounced (300ms) so it doesn't refetch + flash the
   // list on every keystroke, and it REPLACES history so the Back button isn't
@@ -513,6 +526,12 @@ export default function StaffQueue() {
     return [...m.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name));
   }, [allFiles]);
   const programOpts = useMemo(() => [...new Set((allFiles || []).map(a => a.program).filter(Boolean))].sort(), [allFiles]);
+  // Every investor the visible book carries — the picker's choices.
+  const investorOpts = useMemo(() => {
+    const set = new Set();
+    for (const a of allFiles || []) if (a.lender && String(a.lender).trim()) set.add(String(a.lender).trim());
+    return [...set].sort((x, y) => x.localeCompare(y));
+  }, [allFiles]);
   const groupCount = (g) => (allFiles || []).filter(a => inGroup(g, a.status)).length;
 
   // The shown list is the server-filtered pipeline, with an optional client-side
@@ -603,6 +622,16 @@ export default function StaffQueue() {
               {programOpts.map(p => <option key={p} value={p}>{p}</option>)}
             </select>
           )}
+          {/* THE INVESTOR FILTER (owner-directed 2026-08-28) — server-side, and
+              combinable with everything else on this bar ("a few searches
+              together"): this investor + a name, this investor + funded-not-sold. */}
+          {investorOpts.length > 0 && (
+            <select className="input" style={{ maxWidth: 200 }} value={investorF} onChange={e => setParam({ investor: e.target.value })}
+              title="Filter by investor / note buyer — combinable with every other filter">
+              <option value="">All investors</option>
+              {investorOpts.map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+          )}
           {/* Less-frequent filters are kept compact so the main search field
               gets the room. */}
           <div className="row" style={{ gap: 3 }} title="Loan amount range">
@@ -613,9 +642,12 @@ export default function StaffQueue() {
               value={maxAmount} onChange={e => setParam({ maxAmount: e.target.value })} />
           </div>
           <div className="row" style={{ gap: 3 }} title="Date range">
-            <select className="input flt-sm" style={{ width: 100 }} value={dateBasis} onChange={e => setDateBasis(e.target.value)}>
+            <select className="input flt-sm" style={{ width: 110 }} value={dateBasis} onChange={e => setDateBasis(e.target.value)}>
               <option value="created">Created</option>
               <option value="funded">Funded</option>
+              {/* "Something that's closing between this and this date"
+                  (owner-directed 2026-08-28) — the EXPECTED closing date. */}
+              <option value="closing">Closing (est.)</option>
             </select>
             <input className="input flt-sm" style={{ width: 132 }} type="date" value={dateFrom} onChange={e => setParam({ [fromKey]: e.target.value })} title="From date" />
             <span className="muted small">–</span>
@@ -627,8 +659,11 @@ export default function StaffQueue() {
             <option value="created_asc">Oldest first</option>
             <option value="amount_desc">Loan amount ↓</option>
             <option value="amount_asc">Loan amount ↑</option>
-            <option value="closing_desc">Closing date ↓</option>
-            <option value="closing_asc">Closing date ↑</option>
+            <option value="closing_desc">Funded date ↓</option>
+            <option value="closing_asc">Funded date ↑</option>
+            <option value="expected_desc">Est. closing ↓</option>
+            <option value="expected_asc">Est. closing ↑</option>
+            <option value="investor_asc">Investor A–Z</option>
             <option value="name_asc">Borrower A–Z</option>
             <option value="name_desc">Borrower Z–A</option>
           </select>
@@ -639,6 +674,16 @@ export default function StaffQueue() {
               My files only
             </label>
           )}
+          {/* FUNDED, NOT YET SOLD (owner-directed 2026-08-28): the loans still to
+              be delivered to an investor — table-funded files excluded by the
+              server (they were sold at the closing table). Combinable with the
+              investor picker: "everything still to be sold to this investor". */}
+          <label className="row small" style={{ gap: 6, alignItems: 'center', cursor: 'pointer' }}
+            title="Funded loans not yet sold to an investor — table-funded files excluded (they don’t need to be sold)">
+            <input type="checkbox" checked={searchParams.get('flag') === 'funded_unsold'}
+              onChange={e => setParam(e.target.checked ? { flag: 'funded_unsold', group: 'closed', status: '' } : { flag: '' })} />
+            Funded, not sold
+          </label>
           {(anyFilter || mineOnly) && (
             <>
               <span className="muted small">{displayList ? displayList.length : 0} file(s)</span>
@@ -686,6 +731,7 @@ export default function StaffQueue() {
                 <div className="q-head">
                   <div>Deal / Borrower · Address</div>
                   <div>Program</div>
+                  <div>Investor</div>
                   <div className="num">Amount</div>
                   <div>Officer</div>
                   <div>Status</div>

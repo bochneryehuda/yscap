@@ -233,6 +233,49 @@ const azure = require('../src/lib/ai/azure-openai');
     await D.draft(appId, { preset: 'outstanding_conditions', scope: 'open', detail: true });
     ok('F9 a MATCHED Scope of Work produces no budget block at all',
       !!sent && !/What needs to happen/.test(sent.userContent) && !/line-item total/.test(sent.userContent));
+
+    // ---- G. THE HUMAN VOICE (owner-directed 2026-08-28: "an option that should
+    // be more humanized, like a human is sending it … but with a little more
+    // detailed information of the condition"). ----------------------------------
+    // G1: the voice rides as a style block — the owner's own sample shape, the
+    // no-corporate-polish rule, and the ask for MORE concrete per-item detail.
+    sent = null;
+    const hum = await D.draft(appId, { preset: 'outstanding_conditions', scope: 'open', voice: 'human' });
+    ok('G1 the human voice rides the owner\'s sample register in the task',
+      hum.ok === true && !!sent
+      && /typed it themselves between two phone calls/.test(sent.userContent)
+      && /Please send\/outstanding/.test(sent.userContent)
+      && /no "I hope this email finds you well"/.test(sent.userContent)
+      && /Thanks\./.test(sent.userContent));
+    ok('G1b the sample is marked as SHAPE ONLY — its items are placeholders, the real items come from the facts',
+      !!sent && /Its items are placeholders/.test(sent.userContent) && /never from this example/.test(sent.userContent));
+    // G2: the human voice is a NUMBERED list by construction (the sample is),
+    // whatever layout the sender had picked.
+    ok('G2 the human voice forces the numbered list', !!sent && /NUMBERED list/.test(sent.userContent));
+    // G3: the human voice pulls the DETAIL layer in by itself — the second half
+    // of the owner's sentence. The liquidity figures must ride with no detail
+    // toggle sent at all.
+    ok('G3 the human voice weaves the condition figures in by itself (detail auto-on)',
+      !!sent && /\$100,000/.test(sent.userContent) && /\$61,000/.test(sent.userContent));
+    // G3b: an EXPLICIT detail:false still wins — the sender said no.
+    sent = null;
+    await D.draft(appId, { preset: 'outstanding_conditions', scope: 'open', voice: 'human', detail: false });
+    ok('G3b an explicit detail:false beats the voice\'s auto-detail',
+      !!sent && !/\$61,000/.test(sent.userContent) && /Please send\/outstanding/.test(sent.userContent));
+    // G4: the polished voice is byte-for-byte the desk's old prompt — no sample,
+    // no forced layout.
+    sent = null;
+    await D.draft(appId, { preset: 'outstanding_conditions', scope: 'open', layout: 'bullets' });
+    ok('G4 the default (polished) voice carries none of the human-voice block',
+      !!sent && !/Please send\/outstanding/.test(sent.userContent) && /BULLET list/.test(sent.userContent));
+    // G5: a junk voice refuses in plain words.
+    ok('G5 a junk voice refuses', /voice/i.test(D.requestProblem({ preset: 'deal_overview', voice: 'robot' })));
+    // G6: the human voice works on the custom preset too (a one-off ask typed by
+    // the sender still comes out in the human register).
+    sent = null;
+    await D.draft(appId, { preset: 'custom', instruction: 'Ask for the insurance contact.', voice: 'human' });
+    ok('G6 the human voice rides the custom preset too',
+      !!sent && /typed it themselves between two phone calls/.test(sent.userContent));
   } finally {
     azure.available = realAvailable; azure.complete = realComplete;
     try {

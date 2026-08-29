@@ -775,6 +775,38 @@ export const api = {
   staffVestingLlcOwners: (id) => req('GET', `/api/staff/applications/${id}/vesting-llc-owners`),
   staffSetVestingLlcOwners: (id, owners) => req('POST', `/api/staff/applications/${id}/vesting-llc-owners`, { owners }),
   staffChecklist:   (id) => req('GET', `/api/staff/applications/${id}/checklist`),
+  // The login-free outstanding-conditions outreach (owner-directed 2026-08-28):
+  // preview + recipients (helpers included), the send (one personal link per
+  // recipient), and the kill switch on a link that shouldn't be out there.
+  conditionsOutreachPreview: (id, note) => req('GET', `/api/staff/applications/${id}/conditions/outreach${note ? `?note=${encodeURIComponent(note)}` : ''}`),
+  conditionsOutreachSend:    (id, body) => req('POST', `/api/staff/applications/${id}/conditions/outreach`, body),
+  conditionsOutreachRevoke:  (id, linkId) => req('POST', `/api/staff/applications/${id}/conditions/outreach/${linkId}/revoke`),
+  // WHO HANDLES THE CLOSING (owner-directed 2026-08-28): the per-file resolution
+  // + override, and the company/note-buyer defaults on the API Health page.
+  closingHandling:        (id) => req('GET', `/api/staff/applications/${id}/closing-handling`),
+  setClosingHandling:     (id, handling) => req('POST', `/api/staff/applications/${id}/closing-handling`, { handling }),
+  adminClosingHandling:   () => req('GET', '/api/admin/integrations/closing-handling'),
+  saveAdminClosingHandling: (body) => req('PUT', '/api/admin/integrations/closing-handling', body),
+  staffPlaceSettlementOrder: (id, body) => req('POST', `/api/staff/applications/${id}/orders/settlement/place`, body || {}),
+  staffFloodZoneFlip:        (id, inFloodZone) => req('POST', `/api/staff/applications/${id}/flood-zone`, { inFloodZone }),
+  staffPlaceFloodInsurance:  (id, body) => req('POST', `/api/staff/applications/${id}/orders/flood-insurance/place`, body || {}),
+  // The company behind a vendor (owner-directed 2026-08-28): the pool's people
+  // at the vendor's domain, the addresses its email chains have shown, adopt +
+  // one-click add, and the same-email auto-merge sweep.
+  orderCompanyContacts:      (id, kind) => req('GET', `/api/staff/applications/${id}/orders/${kind}/company-contacts`),
+  orderCompanyContactAdd:    (id, kind, body) => req('POST', `/api/staff/applications/${id}/orders/${kind}/company-contacts/add`, body),
+  adoptFileContact:          (id, contactId) => req('POST', `/api/staff/applications/${id}/contacts/${contactId}/adopt`, {}),
+  vendorsAutoMerge:          (dryRun) => req('POST', '/api/staff/vendors/auto-merge', { dryRun: !!dryRun }),
+  // THE REPORTING DATABASE (owner-directed 2026-08-28): the Encompass-style
+  // report builder for the admin back office — field dictionary, run, saved
+  // reports, and the Excel export (a POST download so the auth header rides).
+  reportFields:   () => req('GET', '/api/admin/reports/fields'),
+  reportRun:      (def) => req('POST', '/api/admin/reports/run', def),
+  reportSavedList: () => req('GET', '/api/admin/reports/saved'),
+  reportSave:     (body) => req('POST', '/api/admin/reports/saved', body),
+  reportUpdate:   (id, body) => req('PUT', `/api/admin/reports/saved/${id}`, body),
+  reportDelete:   (id) => req('DELETE', `/api/admin/reports/saved/${id}`),
+  reportExportXlsx: async (def) => { const { blob, filename } = await downloadPost('/api/admin/reports/export.xlsx', def); saveBlob(blob, filename); },
 
   // Encompass sync (READ-ONLY per-file reconcile). status = summary; findings =
   // the full field-by-field comparison (live data); refresh = re-pull read-only;
@@ -1570,6 +1602,13 @@ export const api = {
   // the person asking could already see: a loan officer who sends somebody
   // else's id gets an empty list, never their desk.
   staffLeads:       (params) => req('GET', '/api/staff/leads' + qs(params)),
+  // The follow-up review desk (owner-directed 2026-08-28): the officer's whole book
+  // split into piles by next follow-up date, counted on the SERVER over the whole
+  // scope — never over the 500-row page `staffLeads` returns.
+  staffLeadFollowUps: (params) => req('GET', '/api/staff/leads/follow-ups' + qs(params)),
+  // The Excel export of the lead desk (owner-directed 2026-08-28) — the caller's
+  // current filters ride along, so what downloads is what the screen shows.
+  staffLeadsExport:   async (params) => { const { blob, filename } = await download(`/api/staff/leads/export${qs(params)}`); saveBlob(blob, filename); },
   staffLeadsBulkArchive: (filters) => req('POST', '/api/staff/leads/bulk-archive', filters),
   staffCreateLead:  (b) => req('POST', '/api/staff/leads', b),
   staffLead:        (id) => req('GET', `/api/staff/leads/${id}`),

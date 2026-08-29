@@ -1250,6 +1250,7 @@ export default function StaffApiHealth() {
             <div className="ah-sec-h"><h3>Platform checks</h3></div>
             <p className="ah-sec-sub">Limits, guards and helpers that sit around the integrations above.</p>
             <RateLimitPanel rows={data && data.rateLimits} />
+            <ClosingHandlingPanel />
             <LicensingControlPanel />
             {role === 'super_admin' && <SitewireExplorer />}
           </section>
@@ -1260,6 +1261,86 @@ export default function StaffApiHealth() {
         <ConfirmModal pending={pending} text={confirmText} setText={setConfirmText} busy={switchBusy === pending.sw.name}
           onCancel={() => { setPending(null); setConfirmText(''); }} onConfirm={confirmToggle} />
       )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WHO HANDLES THE CLOSING — the company + per-note-buyer defaults
+   (owner-directed 2026-08-28). Three options: we close it in house / the
+   attorney handles it / the lender closes directly. The company default is the
+   floor; a note buyer's row overrides it for every file with that buyer; each
+   file can still be flipped on its own closing section. Templeview + RCN come
+   pre-filled as lender-direct (the owner's own prefill); everything else is
+   attorney until somebody says otherwise.
+   ═══════════════════════════════════════════════════════════════════════════ */
+function ClosingHandlingPanel() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [newBuyer, setNewBuyer] = useState('');
+  const [newHandling, setNewHandling] = useState('lender_direct');
+
+  const load = () => api.adminClosingHandling().then(setData).catch((e) => setErr((e && e.message) || 'Could not load.'));
+  useEffect(() => { load(); }, []);
+
+  if (err) return <div className="ah-panel"><div className="notice err">{err}</div></div>;
+  if (!data) return null;
+
+  const save = async (body) => {
+    setBusy(true); setErr('');
+    try { await api.saveAdminClosingHandling(body); await load(); }
+    catch (e) { setErr((e && e.message) || 'Could not save.'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="ah-panel" style={{ marginTop: 12 }}>
+      <div className="ah-eyebrow">Who handles the closing</div>
+      <p className="ah-sec-sub" style={{ marginTop: 2 }}>
+        The company default, and a default per note buyer. Any single file can still be flipped on its own
+        Closing section. <b>Internal</b> turns the attorney closing prep off, turns the New-York settlement-agent
+        order on, and sets the title condition up with a slot per requested item. <b>Lender direct</b> means the
+        note buyer runs the closing — the attorney prep is off and the reason names the buyer.
+      </p>
+      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <b style={{ fontSize: 13 }}>Company default</b>
+        <select className="input flt-sm" style={{ width: 'auto' }} disabled={busy}
+          value={data.company || ''}
+          onChange={(e) => save({ company: e.target.value || null })}>
+          <option value="">Attorney (the standing default)</option>
+          {data.handlings.map((h) => <option key={h.key} value={h.key}>{h.label}</option>)}
+        </select>
+      </div>
+      <div style={{ marginTop: 10 }}>
+        <b style={{ fontSize: 13 }}>Per note buyer</b>
+        {(data.buyers || []).length === 0 && <div className="muted small">No buyer-specific defaults yet.</div>}
+        {(data.buyers || []).map((b) => (
+          <div key={b.key} className="row small" style={{ gap: 8, alignItems: 'center', padding: '3px 0' }}>
+            <span className="mono" style={{ minWidth: 140 }}>{b.key}</span>
+            <select className="input flt-sm" style={{ width: 'auto' }} disabled={busy} value={b.handling}
+              onChange={(e) => save({ buyers: [{ key: b.key, handling: e.target.value || null }] })}>
+              {data.handlings.map((h) => <option key={h.key} value={h.key}>{h.label}</option>)}
+            </select>
+            <button className="btn ghost small" disabled={busy}
+              onClick={() => save({ buyers: [{ key: b.key, handling: null }] })}>Remove (falls back to company default)</button>
+          </div>
+        ))}
+        <div className="row small" style={{ gap: 8, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+          <input className="input flt-sm" style={{ width: 220 }} list="ch-known-buyers" value={newBuyer}
+            placeholder="Note buyer (any spelling)…" onChange={(e) => setNewBuyer(e.target.value)} />
+          <datalist id="ch-known-buyers">
+            {(data.knownBuyers || []).map((b) => <option key={String(b.label || b)} value={String(b.label || b)} />)}
+          </datalist>
+          <select className="input flt-sm" style={{ width: 'auto' }} value={newHandling} onChange={(e) => setNewHandling(e.target.value)}>
+            {data.handlings.map((h) => <option key={h.key} value={h.key}>{h.label}</option>)}
+          </select>
+          <button className="btn btn-line btn-sm" disabled={busy || !newBuyer.trim()}
+            onClick={async () => { await save({ buyers: [{ buyer: newBuyer.trim(), handling: newHandling }] }); setNewBuyer(''); }}>
+            Add buyer default
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

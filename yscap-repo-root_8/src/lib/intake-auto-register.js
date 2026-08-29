@@ -89,7 +89,7 @@ async function autoRegisterFromIntake(appId, rawProgram, client) {
        neither has one — so all three doors price on one definition. Never load a row
        for pricing without it. */
     const ar = await c.query(
-      `SELECT a.*, NULLIF(GREATEST(COALESCE(b.fico,0), COALESCE(cb.fico,0)), 0) AS fico
+      `SELECT a.*, ${require('./credit').dealFicoSql('b', 'cb')} AS fico
          FROM applications a
          JOIN borrowers b ON b.id = a.borrower_id
          LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id

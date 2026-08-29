@@ -15,6 +15,7 @@ import Accept from './screens/Accept.jsx';
 import AssistantAccept from './screens/AssistantAccept.jsx';
 import Helpers from './screens/Helpers.jsx';
 import GuestChat from './screens/GuestChat.jsx';
+import GuestConditions from './screens/GuestConditions.jsx';
 import DrawAccept from './screens/DrawAccept.jsx';
 import AcceptTerms from './screens/AcceptTerms.jsx';
 import EsignDone from './screens/EsignDone.jsx';
@@ -94,6 +95,7 @@ import StaffMarketAreas from './screens/StaffMarketAreas.jsx';
 import StaffChat from './screens/StaffChat.jsx';
 import StaffClickup from './screens/StaffClickup.jsx';
 import StaffApiHealth from './screens/StaffApiHealth.jsx';
+import StaffReports from './screens/StaffReports.jsx';
 import StaffPipelineShadow from './screens/StaffPipelineShadow.jsx';
 import StaffDraws from './screens/StaffDraws.jsx';
 import StaffClosing from './screens/StaffClosing.jsx';
@@ -211,6 +213,9 @@ export default function App() {
               redirect keeps an old bookmark or a saved link working. */}
           <Route path="/assistant/login" element={<Navigate to="/login" replace />} />
           {/* #75 — magic-link guest chat for external email participants (no login). */}
+          {/* The login-free condition center (owner-directed 2026-08-28) MUST be
+              matched BEFORE /guest/:key, or its path reads as a chat key. */}
+          <Route path="/guest/conditions" element={<GuestConditions />} />
           <Route path="/guest/:key" element={<GuestChat />} />
           <Route path="/draw-accept/:token" element={<DrawAccept />} />
           {/* An officer's emailed term sheet: see the terms, create a password,
@@ -350,6 +355,7 @@ export default function App() {
           <Route path="/internal/research/valuation/:id/report" element={<StaffPrivate><StaffCompReportScreen /></StaffPrivate>} />
           <Route path="/internal/chat" element={<StaffPrivate><StaffChat /></StaffPrivate>} />
           <Route path="/internal/api-health" element={<StaffPrivate><StaffApiHealth /></StaffPrivate>} />
+          <Route path="/internal/reports" element={<StaffPrivate><StaffReports /></StaffPrivate>} />
           <Route path="/internal/pipeline-shadow" element={<StaffPrivate><StaffPipelineShadow /></StaffPrivate>} />
           <Route path="/internal/clickup" element={<StaffPrivate><StaffClickup /></StaffPrivate>} />
           <Route path="/internal/draws" element={<StaffPrivate><StaffDraws /></StaffPrivate>} />

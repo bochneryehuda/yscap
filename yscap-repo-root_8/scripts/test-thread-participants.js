@@ -97,9 +97,20 @@ console.log('\n4. Every reply/follow-up door uses it — a door that re-derives 
 console.log('\n5. The carve-outs the desks require');
 {
   const src = fs.readFileSync(path.join(__dirname, '../src/routes/staff.js'), 'utf8');
-  // The borrower is governed by the owner-directed ccBorrower setting alone.
-  ok(/never: \[data\.borrowerEmail, data\.coBorrowerEmail\]\.filter\(Boolean\)/.test(src),
-    'an order never ADDS the borrower this way — the ccBorrower setting stays the only door');
+  /* The borrower is governed by the owner-directed ccBorrower setting alone — and
+     since 2026-08-28 the borrower's HELPER is governed by ccHelper on exactly the
+     same footing. Both must be in the `never` list on EVERY order door that replies
+     on a vendor thread, or a vendor's one-off Cc of either turns into policy.
+
+     Counted rather than matched once: there are three such doors (the Email Center
+     reply, the follow-up send, the follow-up preview), and a guard that passes on
+     one of them would let the other two drift. */
+  const orderNever = src.match(
+    /never: \[data\.borrowerEmail, data\.coBorrowerEmail, \.\.\.orders\.helperEmails\(data\)\]\.filter\(Boolean\)/g) || [];
+  ok(orderNever.length === 3,
+    `an order never ADDS the borrower or their helper this way — the ccBorrower/ccHelper settings stay the only doors (found ${orderNever.length} of 3)`);
+  ok(!/never: \[data\.borrowerEmail, data\.coBorrowerEmail\]\.filter\(Boolean\)/.test(src),
+    '…and no order door still carves out the borrower while letting the helper be re-added');
   ok(/never: await closingPrep\.neverLoopIn\(appId\)/.test(src),
     'the closing chain carves out the borrower AND any insurance contact');
   const cp = fs.readFileSync(path.join(__dirname, '../src/lib/closing-prep.js'), 'utf8');
