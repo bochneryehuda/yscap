@@ -1,6 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ltApi } from './api.js';
 import { stamp } from './format.js';
+// The brand gold and its READABLE twin, from the one place they are defined.
+// #AE8746 is 2.98:1 on this paper — under AA for body text (4.5:1) and under
+// even the large-text bar (3:1) — so it is a rule, a dot, a border or a fill,
+// never a word. GOLD_TEXT (#8A6A22, 4.55:1) still reads unmistakably as gold.
+import { GOLD, GOLD_TEXT } from './ppeStyles.js';
 
 /**
  * THE VERIFICATION OF RENT, on one loan.
@@ -38,7 +43,6 @@ import { stamp } from './format.js';
 const INK = '#141B22';
 const MUTED = '#4B585C';
 const LINE = '#E6E1D6';
-const GOLD = '#AE8746';
 const GREEN = '#2F6B4F';
 const AMBER = '#8A6A17';
 const RED = '#8A2D2D';
@@ -198,7 +202,7 @@ export default function LtVor({ loanId }) {
 
       {/* ── our half ─────────────────────────────────────────────────────── */}
       <div style={card}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: GOLD, letterSpacing: 0.4, marginBottom: 8 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: GOLD_TEXT, letterSpacing: 0.4, marginBottom: 8 }}>
           WHAT WE FILL IN
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(18rem, 100%), 1fr))', gap: '0 16px' }}>
@@ -243,7 +247,7 @@ export default function LtVor({ loanId }) {
 
       {/* ── the landlord's half, shown and not editable ───────────────────── */}
       <div style={card}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: GOLD, letterSpacing: 0.4, marginBottom: 4 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: GOLD_TEXT, letterSpacing: 0.4, marginBottom: 4 }}>
           WHAT THE LANDLORD IS ASKED
         </div>
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>
@@ -258,7 +262,7 @@ export default function LtVor({ loanId }) {
 
       {/* ── sending ──────────────────────────────────────────────────────── */}
       <div style={card}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: GOLD, letterSpacing: 0.4, marginBottom: 8 }}>SEND IT</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: GOLD_TEXT, letterSpacing: 0.4, marginBottom: 8 }}>SEND IT</div>
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>
           {state.landlord && state.landlord.email
             ? <>To {state.landlord.name || 'the landlord'} at {state.landlord.email}.</>
@@ -306,7 +310,7 @@ export default function LtVor({ loanId }) {
       {/* ── what is out, and what came back ───────────────────────────────── */}
       {(state.envelopes || []).length ? (
         <div style={card}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: GOLD, letterSpacing: 0.4, marginBottom: 8 }}>ON DOCUSIGN</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: GOLD_TEXT, letterSpacing: 0.4, marginBottom: 8 }}>ON DOCUSIGN</div>
           {state.envelopes.map((e) => {
             const s = ENV_STATUS[e.status] || { label: e.status, colour: MUTED };
             return (
@@ -325,7 +329,7 @@ export default function LtVor({ loanId }) {
 
       {(state.returns || []).length ? (
         <div style={card}>
-          <div style={{ fontSize: 13, fontWeight: 700, color: GOLD, letterSpacing: 0.4, marginBottom: 8 }}>WHAT CAME BACK</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: GOLD_TEXT, letterSpacing: 0.4, marginBottom: 8 }}>WHAT CAME BACK</div>
           {state.returns.map((r) => (
             <div key={r.id} style={{ borderTop: `1px solid ${LINE}`, paddingTop: 8, marginTop: 8, fontSize: 13, color: INK }}>
               <span style={{ fontWeight: 600 }}>
@@ -347,7 +351,7 @@ export default function LtVor({ loanId }) {
 
       {/* ── a form that came back another way ─────────────────────────────── */}
       <div style={card}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: GOLD, letterSpacing: 0.4, marginBottom: 4 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: GOLD_TEXT, letterSpacing: 0.4, marginBottom: 4 }}>
           IT CAME BACK ANOTHER WAY
         </div>
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>
