@@ -147,8 +147,56 @@ function deriveAmounts(sc) {
   return { value: money(value), loan: money(loan), ltv, ltvString: ltv == null ? null : (ltv * 100).toFixed(2) };
 }
 
-/** LoanNEX takes DSCR as a 2dp string on four fields at once. */
-function dscrString(v) { const n = num(v); return n == null ? null : n.toFixed(2); }
+/**
+ * Cut a number DOWN to 2 decimals — never up.
+ *
+ * ⛔ THE BINARY REPRESENTATION HAS TO BE CLEARED FIRST, or this rounds the wrong
+ * way on ordinary values. `1.15 * 100` is `114.99999999999999` in floating point,
+ * so a bare `Math.floor` returns 1.14 — a value the user typed exactly, moved by
+ * a whole cent, in the very direction this function exists to prevent going
+ * unnoticed. So a product within a billionth of a whole number IS that whole
+ * number (nothing about a real DSCR or LTV lives at that scale), and only a
+ * genuine fraction is cut.
+ */
+function floor2(n) {
+  const x = n * 100;
+  const whole = Math.round(x);
+  return (Math.abs(x - whole) < 1e-9 ? whole : Math.floor(x)) / 100;
+}
+
+/**
+ * LoanNEX takes DSCR as a 2dp string on four fields at once.
+ *
+ * ⛔ IT IS CUT DOWN, NEVER ROUNDED — owner-reported 2026-08-30, found auditing
+ * American Heritage: *"`toFixed` rounds to nearest. So a DSCR of 0.999 is sent
+ * to LoanNEX as 1.00. We need to round down, not round up."*
+ *
+ * A DSCR sits in a BAND, and a higher band prices better. Rounding to nearest
+ * lifts 0.999 over the 1.00 line and 1.249 over the 1.25 line, so we ask the
+ * vendor to price a loan that covers its payments when it does not quite — and
+ * the quote comes back missing a penalty (1.25 points on the reported file) that
+ * the investor will apply at lock. The borrower is shown a price nobody will
+ * honour, which is the expensive direction to be wrong in.
+ *
+ * Cutting down can only ever land the loan in the band it has actually earned or
+ * a worse one, so the error it can still make is the safe one.
+ */
+function dscrString(v) {
+  const n = num(v);
+  if (n == null) return null;
+  const cut = floor2(n);
+  // ⛔ A DSCR THAT EXISTS IS NEVER SENT AS "NO DSCR". Cutting down is right at
+  // every band edge and wrong at exactly one place: a positive DSCR below 0.01
+  // floors to "0.00", and 0.00 does not mean "a very weak ratio" to either
+  // program — it means the loan HAS no ratio, which is a different product.
+  // (Lender Price's own `dscrBand` reads `<= 0` as NoDSCR and anything above it
+  // as the lowest ratio band.) So a real ratio under a cent is sent as 0.01: the
+  // smallest figure that still says one exists. It is the one value this
+  // function moves UP, and it cannot change a price — the next band edge is
+  // 0.75, so 0.01 and 0.0066 are the same band either way. Saying a ratio is
+  // absent when it is merely dreadful is the misstatement worth avoiding.
+  return (cut === 0 && n > 0 ? 0.01 : cut).toFixed(2);
+}
 
 /**
  * Build the `nexApp` object — the scenario half of the pricing body.
@@ -266,6 +314,6 @@ function buildQuickPriceBody(sc, registry, opts = {}) {
 }
 
 module.exports = {
-  buildNexApp, buildQuickPriceBody, deriveAmounts, dscrString, NexValidationError,
+  buildNexApp, buildQuickPriceBody, deriveAmounts, dscrString, floor2, NexValidationError,
   _internals: { PURPOSE_ALIASES, PROPERTY_ALIASES, CONDO_TYPE_ALIASES, CITIZENSHIP_ALIASES, ESCROW_ALIASES, aliasKey, mapAlias, num, shared },
 };
