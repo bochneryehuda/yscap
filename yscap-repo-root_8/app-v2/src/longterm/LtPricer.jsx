@@ -737,44 +737,38 @@ export function ChargeList({ charges, sheet }) {
   if (!charges) return null;
   const cashTone = { color: '#8A2F2F' };
   const backTone = { color: '#2F6B45' };
+  // The rows this board actually draws (see the note on the map below). The "none"
+  // fallback keys off THIS list, not charges.lines — with every line waived the raw
+  // list is non-empty while nothing is drawn, and the card would silently show no rows
+  // and no explanation of why.
+  const shownLines = charges.lines.filter((l) => l.waived !== true);
   return (
     <Track title="What this quote charges"
       note="The fees on this file at this price. Figures move with the price and the switch above.">
-      {charges.lines.map((l) => (
+      {/* ⛔ A WAIVED LINE IS SUMMARISED HERE, NEVER PRINTED AS A ROW OF $0.00.
+          `quoteCharges` LISTS a waived fee at dollars:0 because the TERM SHEET must
+          show it — the owner asked to be able to see the difference against the
+          option beside it (compOverlay.feeLine). This board is a different surface
+          and already answers that question better: the "Lender fees waived — $X
+          taken out of the figures above in cash" note below, and the closing
+          sheet's "Total lender fees … 0 when waived". Rendering the raw line here
+          would print "Application fee $0.00", which reads as "this program has no
+          application fee" — the opposite of the truth — and would make that note
+          say figures were taken out of rows that already show nothing.
+          The data is unfiltered; only this one screen summarises. */}
+      {shownLines.map((l) => (
         <div key={l.key} style={{
           display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
           padding: '5px 0', borderBottom: '1px solid rgba(20,27,34,.07)',
         }}>
           <span style={{ fontSize: 12.5, color: SLATE, flex: 1 }}>{l.label}</span>
-          {/* ⛔ A WAIVED FEE READS "Waived", NEVER A BARE $0.00. The line carries
-              dollars:0 so every total stays byte-identical (see compOverlay.feeLine),
-              but $0.00 on its own says "this program has no application fee" — the
-              opposite of the truth, and it hides the saving that is the whole reason
-              the option exists. The amount it WOULD have been rides alongside.
-              The sheet says the same thing in the borrower's voice (wording.chargeRow);
-              this is the staff board, so it is said plainly here. */}
-          {l.waived === true ? (
-            <>
-              {nn(l.fullDollars) && l.fullDollars > 0 && (
-                <span style={{ fontSize: 11.5, color: MUTED, textDecoration: 'line-through', ...NUM }}>
-                  {money2(l.fullDollars)}
-                </span>
-              )}
-              <span style={{ fontSize: 12.5, fontWeight: 600, minWidth: 84, textAlign: 'right', ...backTone }}>
-                Waived
-              </span>
-            </>
-          ) : (
-            <>
-              {nn(l.points) && <span style={{ fontSize: 11.5, color: MUTED, ...NUM }}>{pts(l.points)}</span>}
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: INK, minWidth: 84, textAlign: 'right', ...NUM }}>
-                {money2(l.dollars)}
-              </span>
-            </>
-          )}
+          {nn(l.points) && <span style={{ fontSize: 11.5, color: MUTED, ...NUM }}>{pts(l.points)}</span>}
+          <span style={{ fontSize: 12.5, fontWeight: 600, color: INK, minWidth: 84, textAlign: 'right', ...NUM }}>
+            {money2(l.dollars)}
+          </span>
         </div>
       ))}
-      {charges.lines.length === 0 && <Row k="Charges" v="none" indent />}
+      {shownLines.length === 0 && charges.waivedDollars <= 0 && <Row k="Charges" v="none" indent />}
       {charges.credit && (
         <div style={{
           display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',

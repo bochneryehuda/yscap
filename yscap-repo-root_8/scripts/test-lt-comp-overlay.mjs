@@ -238,25 +238,31 @@ console.log('\nK. the closing sheet — totals summed FROM the charge list (owne
     'K17 no value → no down payment; cash to close falls back to the closing cost');
 }
 
-console.log('\nL. the board SHOWS the waive — a back end is not a feature');
+console.log('\nL. the board never prints a waived fee as a row of $0.00');
 {
-  // ⛔ NO UNIT TEST OF THE OVERLAY CAN SEE THE SCREEN. `quoteCharges` correctly
-  // returns a waived line at dollars:0, and the staff board rendered that as a bare
-  // "$0.00" — which reads as "this program has no application fee", the opposite of
-  // the truth, and hides the saving the option exists for. Caught in CI, not by any
-  // assertion above, so the rendering is pinned at the SOURCE here.
+  // ⛔ NO UNIT TEST OF THE OVERLAY CAN SEE THE SCREEN. `quoteCharges` LISTS a waived
+  // line at dollars:0 because the TERM SHEET must show it (the owner asked to see the
+  // difference against the option beside it). The staff pricing board renders the same
+  // array, and drawing that line raw prints "Application fee $0.00" — which reads as
+  // "this program has no application fee", the opposite of the truth. That board
+  // already answers the question better, with its "Lender fees waived — $X taken out
+  // of the figures above in cash" note, so it FILTERS the waived rows rather than
+  // drawing them. test-lt-pricer-screen-render R79 proves it in a real render; this
+  // pins the filter at the source, where the reason lives.
   const src = readFileSync(new URL('../app-v2/src/longterm/LtPricer.jsx', import.meta.url), 'utf8')
     // Strip comments first: the note explaining this rule necessarily names the very
     // strings asserted below, so a guard that read comments would pass on prose alone.
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   const list = src.slice(src.indexOf('export function ChargeList'));
   const body = list.slice(0, list.indexOf('\nexport '));
-  ok(/l\.waived === true/.test(body),
-    'L1 ChargeList asks whether the line was waived');
-  ok(/Waived/.test(body),
-    'L2 …and says "Waived" rather than printing the zero');
-  ok(/l\.fullDollars/.test(body),
-    'L3 …beside what the fee would have been, so the saving is on the screen');
+  ok(/charges\.lines\.filter\(\(l\) => l\.waived !== true\)/.test(body),
+    'L1 ChargeList draws only the lines that were actually charged');
+  ok(/shownLines\.map/.test(body),
+    'L2 …and maps THAT list, so no waived row can reach the screen');
+  ok(/shownLines\.length === 0/.test(body),
+    'L3 …and the "none" fallback keys off the drawn list, not the raw one');
+  ok(/waivedDollars > 0/.test(body) && /Lender fees waived/.test(body),
+    'L4 …with the waive summarised instead, so the saving is still on the screen');
 }
 
 if (bad) { console.error(`\n${bad} FAILED`); process.exit(1); }
