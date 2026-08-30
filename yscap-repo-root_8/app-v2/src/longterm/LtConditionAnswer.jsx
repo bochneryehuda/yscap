@@ -180,6 +180,143 @@ function EntityBlock({ ws, loanId, onChanged }) {
   );
 }
 
+/**
+ * THE APPRAISAL CARD — held on the borrower's PROFILE, both directions.
+ *
+ * The owner's directive, item 7: the card is *"BIDIRECTIONAL with the shared
+ * profile"*. So this says what is already on file before asking for anything,
+ * and a card entered here is kept on the person rather than on this loan — which
+ * is what makes the condition's own promise ("a card given on one loan is
+ * already here on the next") true.
+ *
+ * THE NUMBER IS NEVER SHOWN AND NEVER COMES BACK. The server returns brand, last
+ * four and expiry only; nothing on this path decrypts a card number, so there is
+ * nothing here that could render one. The input is `inputMode="numeric"` and
+ * `autoComplete="cc-number"` so a phone offers the right keyboard and a password
+ * manager the right field — but it is never re-populated from the server.
+ *
+ * AN EXPIRED CARD IS ITS OWN STATE, not an absent one: those need different
+ * sentences, because one asks for a card and the other says the one on file has
+ * run out.
+ */
+function CardBlock({ ws, loanId, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ number: '', cvc: '', exp: '', zip: '' });
+  const card = ws.card || { available: false };
+
+  const save = useCallback(async () => {
+    setBusy(true); setErr(null);
+    try {
+      // `exp` goes as typed ("MM/YY"); the SERVER splits it through the shared
+      // module's own parser, so this screen never decides what an expiry looks
+      // like.
+      await ltApi.appraisalCardSave(loanId, f);
+      setF({ number: '', cvc: '', exp: '', zip: '' });
+      setOpen(false);
+      if (onChanged) await onChanged();
+    } catch (e) {
+      setErr((e && (e.error || e.message)) || 'That card could not be saved.');
+    } finally { setBusy(false); }
+  }, [loanId, f, onChanged]);
+
+  const set = (k) => (e) => setF((d) => ({ ...d, [k]: e.target.value }));
+
+  return (
+    <div>
+      <div style={eyebrow}>On the borrower’s profile</div>
+
+      {ws.unreadable && (
+        <p style={{ margin: 0, fontSize: 13, color: RED, lineHeight: 1.55 }}>{ws.why}</p>
+      )}
+
+      {!ws.unreadable && card.available && (
+        <p style={{ margin: 0, fontSize: 13, color: card.expired ? RED : INK, lineHeight: 1.55 }}>
+          {card.expired
+            ? `The ${card.brand || 'card'} ending ${card.last4} on this borrower’s profile expired (${card.exp}). A new one is needed.`
+            : `A ${card.brand || 'card'} ending ${card.last4} is already on this borrower’s profile${card.exp ? `, good to ${card.exp}` : ''}.`}
+        </p>
+      )}
+      {!ws.unreadable && !card.available && (
+        <p style={{ margin: 0, fontSize: 13, color: MUTED, lineHeight: 1.55 }}>
+          No card on this borrower’s profile yet. One entered here is kept on the profile, so the
+          next loan for the same borrower already has it.
+        </p>
+      )}
+
+      {!open && (
+        <button type="button" style={{ ...btn(!card.available), marginTop: 10 }}
+          onClick={() => setOpen(true)}>
+          {card.available ? 'Replace the card on file' : 'Add a card'}
+        </button>
+      )}
+
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <label htmlFor="lt-cc-num" style={{ display: 'block', fontSize: 12, color: MUTED }}>Card number</label>
+          <input id="lt-cc-num" style={input} value={f.number} onChange={set('number')}
+            inputMode="numeric" autoComplete="cc-number" />
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+            <div style={{ flex: '1 1 7rem' }}>
+              <label htmlFor="lt-cc-exp" style={{ display: 'block', fontSize: 12, color: MUTED }}>Expiry (MM/YY)</label>
+              <input id="lt-cc-exp" style={input} value={f.exp} onChange={set('exp')}
+                inputMode="numeric" autoComplete="cc-exp" placeholder="04/29" />
+            </div>
+            <div style={{ flex: '1 1 5rem' }}>
+              <label htmlFor="lt-cc-cvc" style={{ display: 'block', fontSize: 12, color: MUTED }}>Security code</label>
+              <input id="lt-cc-cvc" style={input} value={f.cvc} onChange={set('cvc')}
+                inputMode="numeric" autoComplete="cc-csc" />
+            </div>
+            <div style={{ flex: '1 1 6rem' }}>
+              <label htmlFor="lt-cc-zip" style={{ display: 'block', fontSize: 12, color: MUTED }}>Billing ZIP</label>
+              <input id="lt-cc-zip" style={input} value={f.zip} onChange={set('zip')}
+                inputMode="numeric" autoComplete="postal-code" />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+            <button type="button" disabled={busy} style={{ ...btn(true), opacity: busy ? 0.5 : 1 }}
+              onClick={save}>{busy ? 'Saving…' : 'Save to the profile'}</button>
+            <button type="button" disabled={busy} style={btn(false)}
+              onClick={() => { setOpen(false); setErr(null); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {err && <p style={{ margin: '8px 0 0', fontSize: 13, color: RED, lineHeight: 1.55 }}>{err}</p>}
+    </div>
+  );
+}
+
+/**
+ * THE GOVERNMENT PHOTO ID — read only, and that is deliberate rather than
+ * unfinished. An ID already on the borrower's profile answers this condition,
+ * which is exactly what its own hint promises. Making an upload HERE become the
+ * profile's ID is an open question with the owner: on the short-term side that
+ * act also reopens every government-ID condition across the borrower's files,
+ * and Long-Term writing those would be one product reaching into the other's
+ * workflow. `src/longterm/conditions-center/profile-links.js` records why.
+ * Uploading against this condition works as it does for any other document.
+ */
+function PhotoIdBlock({ ws }) {
+  const id = ws.photoId || { available: false };
+  return (
+    <div>
+      <div style={eyebrow}>On the borrower’s profile</div>
+      {ws.unreadable && (
+        <p style={{ margin: 0, fontSize: 13, color: RED, lineHeight: 1.55 }}>{ws.why}</p>
+      )}
+      {!ws.unreadable && (
+        <p style={{ margin: 0, fontSize: 13, color: id.available ? GREEN : MUTED, lineHeight: 1.55 }}>
+          {id.available
+            ? `A photo ID is already on this borrower’s profile${id.filename ? ` (${id.filename})` : ''} — it was given on an earlier loan and does not need sending again.`
+            : 'No photo ID on this borrower’s profile yet.'}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** One field, drawn from the server's own description of it. */
 function Field({ field, value, onChange }) {
   const id = `f-${field.key}`;
@@ -288,6 +425,15 @@ export default function LtConditionAnswer({ loanId, conditionId, onSaved }) {
       {/* ── The vesting entity: what the borrower already holds ─────────────── */}
       {ws.shape === 'entity' && (
         <EntityBlock ws={ws} loanId={loanId} onChanged={load} />
+      )}
+
+      {/* THE CARD AND THE ID LIVE ON THE PERSON, so both say what the borrower
+          already has before asking for anything. */}
+      {ws.shape === 'card' && (
+        <CardBlock ws={ws} loanId={loanId} onChanged={load} />
+      )}
+      {ws.shape === 'photo_id' && (
+        <PhotoIdBlock ws={ws} />
       )}
 
       {/* ── One choice ─────────────────────────────────────────────────────── */}

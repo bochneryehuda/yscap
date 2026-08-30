@@ -38,6 +38,7 @@
 const db = require('../db');
 const answers = require('../../lib/conditions/answers');
 const entityPrefill = require('./entity-prefill');
+const profileLinks = require('./profile-links');
 const vocab = require('./vocabulary');
 const { ownerOf, ownerWhere } = require('../../lib/condition-owner');
 
@@ -190,6 +191,24 @@ async function forCondition(loanId, conditionId, opts = {}) {
       profile: prefill,
       alreadyDone: settled.ok,
       note: settled.why,
+    };
+  }
+
+  /* ── THE CARD AND THE PHOTO ID: the answer lives on the PERSON ────────────
+     Both conditions declare `readsFromBorrowerProfile` and their hints promise
+     that a card or an ID given before is already here. `profile-links.js` is the
+     one reader; this is only the seam that puts its answer on the screen, so
+     there is no second reading of what the borrower already has. Never throws —
+     an unreadable profile is reported as such rather than as "nothing given". */
+  if (code === 'lt_appraisal_card' || code === 'lt_photo_id') {
+    const links = await profileLinks.forLoan(loanId, { db: client });
+    return {
+      code,
+      shape: code === 'lt_appraisal_card' ? 'card' : 'photo_id',
+      card: links.card,
+      photoId: links.photoId,
+      unreadable: !!links.unreadable,
+      why: links.why || null,
     };
   }
 

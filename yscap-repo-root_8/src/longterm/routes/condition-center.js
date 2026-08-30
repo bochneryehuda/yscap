@@ -51,6 +51,7 @@ const library = require('../conditions-center/library');
 const vocab = require('../conditions-center/vocabulary');
 const entityPrefill = require('../conditions-center/entity-prefill');
 const entityProfile = require('../conditions-center/entity-profile');
+const profileLinks = require('../conditions-center/profile-links');
 const { loadScopedLoan, UUID_RE } = require('./scoped-loan');
 
 /* THE ONE CONDITION-DOCUMENT SERVICE, SHARED WITH THE SHORT-TERM SIDE
@@ -405,6 +406,51 @@ router.post('/loans/:loanId/conditions/:conditionId/documents', uploadConditionD
 // the JSON door produces, so nothing below the transport changes.
 router.post('/loans/:loanId/conditions/:conditionId/documents/binary',
   require('../../lib/upload-stream').binaryIntake, uploadConditionDoc);
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * THE TWO CONDITIONS WHOSE ANSWER LIVES ON THE PERSON
+ *
+ * The appraisal card and the government photo ID both belong to the BORROWER,
+ * not to a loan, so both read from and (for the card) write to the shared
+ * profile — the owner's share-the-code directive, item 7. Neither condition had
+ * any implementation behind the promise its own hint makes.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+// GET …/profile-links — what the borrower already has on file for these two.
+// Masked: the card number is never decrypted anywhere on this path.
+router.get('/loans/:loanId/profile-links', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-profile-links');
+  if (!scoped) return;
+  try {
+    res.json(await profileLinks.forLoan(scoped.loan.id, { db }));
+  } catch (e) {
+    console.error('[lt] profile links failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not read the borrower’s profile just now.' });
+  }
+});
+
+/**
+ * POST …/appraisal-card — keep a card on the borrower's PROFILE.
+ *
+ * NOTHING ABOUT THE BODY IS EVER LOGGED. It carries a primary account number, so
+ * the catch below logs a fixed sentence and never the error's own text either —
+ * a driver error can quote the parameters it was given.
+ */
+router.post('/loans/:loanId/appraisal-card', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-appraisal-card');
+  if (!scoped) return;
+  let out;
+  try {
+    out = await profileLinks.saveCard(scoped.loan.id, req.body || {}, { db });
+  } catch (_) {
+    console.error('[lt] appraisal card save failed');
+    return res.status(500).json({ error: 'The card could not be saved just now.' });
+  }
+  if (!out.ok) return res.status(out.status || 400).json({ error: out.error });
+  // Only the non-secret summary goes back — brand and last four, which is what a
+  // screen shows and all it ever needs.
+  return res.status(201).json({ ok: true, last4: out.last4, brand: out.brand });
+});
 
 /* ────────────────────────────────────────────────────────────────────────────
  * THE VESTING COMPANY ON THE BORROWER'S PROFILE

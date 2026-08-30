@@ -131,6 +131,52 @@ sql-ref   llcs
 sql-write llcs
 
 # ---------------------------------------------------------------------------
+# THE TWO CONDITIONS WHOSE ANSWER LIVES ON THE PERSON — the same 2026-08-30
+# share-the-code directive, item 7 (docs/longterm/SHARE-THE-CODE-DIRECTIVE.md):
+#
+#   "Profile-linked conditions — photo ID from the shared profile; the
+#    credit-card-for-appraisal card BIDIRECTIONAL with the shared profile; the
+#    REO/mortgage answers saved to the shared profile."
+#
+# WHY IT IS AN IMPORT AND NOT A COPY, and here the reason is unusually sharp: the
+# reusable card ALREADY lives on the person (`borrowers.saved_card_*`, db/043 +
+# db/049), which is the shared identity zone. `application_payment_cards` is only
+# RTL's per-file WORKING COPY, with a NOT NULL foreign key to `applications`.
+# A long-term twin of THAT table would be a second store of a PRIMARY ACCOUNT
+# NUMBER with its own encryption handling to keep in step — so a borrower who
+# gave a card on one product would be asked for it again on the other, which is
+# the exact opposite of the directive.
+#
+# SCOPE, AND IT IS NARROW. Long-Term uses `getSavedCard` (which never decrypts
+# the number — brand, last four, expiry and billing ZIP only), `saveCardForReuse`,
+# and the pure helpers `validateCardInput` / `parseExp` / `isCardExpired`. Both
+# of the first two take a BORROWER id and nothing else; neither touches an RTL
+# table. The per-file half of that module — `saveApplicationCard`,
+# `applySavedCardToApplication`, `autoApplySavedCardIfOptedIn`, `cardStatus` —
+# is OFF LIMITS: every one of them takes an `appId` and writes
+# `application_payment_cards`, which is RTL's own row.
+#
+# THE PHOTO ID IS READ-ONLY FOR NOW, DELIBERATELY. An ID already on the profile
+# answers the long-term condition, which is what that condition's own hint
+# promises. Making a long-term UPLOAD become the profile's ID is not done,
+# because on the short-term side that act additionally REOPENS every
+# government-ID condition across the borrower's files — a rule about RTL
+# conditions on RTL files, which Long-Term writing would be one product reaching
+# into the other's workflow. Doing the stamp without the reopen would make the
+# two products behave differently about one act, which is the drift this
+# directive exists to stop. It is an open question for the owner, recorded in
+# src/longterm/conditions-center/profile-links.js rather than guessed.
+# ---------------------------------------------------------------------------
+
+# The card that lives on the person: read it masked, save one back. The PAN is
+# never decrypted on this path.
+import   src/lib/appraisal-card.js
+
+# The person's own record — already the shared identity zone. The card columns
+# are db/043 + db/049; `photo_id_document_id` is the one photo ID, read only.
+sql-ref   borrowers
+
+# ---------------------------------------------------------------------------
 # CLICKUP FOR LONG-TERM — authorized in writing by the owner, 2026-08-23:
 #   "Bring over the basic details of the ClickUp connector and actual
 #    credentials from the ClickUp connector from the RTL side over to the

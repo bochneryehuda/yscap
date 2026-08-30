@@ -267,6 +267,11 @@ export const ltApi = {
      time, which is why this takes the slot's own item id rather than a
      condition's. Streamed door for the same reason every other upload here uses
      one — an operating agreement is routinely past the JSON ceiling. */
+  /* THE CARD ON THE PERSON. The body carries a card number, so the response
+     deliberately carries back only the brand and the last four — the server
+     never decrypts a number and nothing here could render one. */
+  appraisalCardSave: (loanId, body) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/appraisal-card`), body),
   vestingEntityToProfile: (loanId) => ltPost(
     lt(`/condition-center/loans/${encodeURIComponent(loanId)}/vesting-entity`), {}),
   vestingEntityDocUpload: (loanId, slotItemId, body) => ltUpload(
