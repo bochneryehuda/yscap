@@ -63,7 +63,11 @@ const INVESTORS = [
 
   { key: 'a_and_d', label: 'A&D Mortgage LLC', seen: 38,
     aliases: ['A&D Mortgage, LLC', 'A&D Mortgage LLC (AD)', 'A&D Mortgage', 'A&D Mortgages',
-      'a&d mortgage', 'A&D', 'A & D', 'AD'],
+      'a&d mortgage', 'A&D', 'A & D', 'AD',
+      // LoanNEX drops the ampersand entirely (recorded 2026-08-30). Without these
+      // the company resolves to no key on that vendor and its pricing would be
+      // reported as an unknown investor rather than merged with its own.
+      'AD Mortgage LLC - Correspondent', 'AD Mortgage LLC', 'AD Mortgage'],
     note: "'AD' is a two-letter code — resolvable only because it is in this list." },
 
   { key: 'acra', label: 'Acra Lending', seen: 30,

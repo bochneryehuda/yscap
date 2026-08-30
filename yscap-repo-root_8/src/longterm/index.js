@@ -117,6 +117,17 @@ router.use('/settings', require('./routes/settings'));
 //   /api/lt/dscr/investor-groups
 router.use('/dscr/investor-groups', require('./routes/pricer-groups'));
 
+// The MERGED pricing board — Lender Price + LoanNEX in one answer, with a
+// per-investor election of which program to take each investor from
+// (owner-directed 2026-08-30). Registered BEFORE the /dscr mount so it wins the
+// match, exactly like /dscr/investor-groups above.
+//
+// NOT LIVE: every path 404s unless LT_MERGED_PRICING=on. The owner asked to see
+// whether the idea works before it is switched on, so the flag is the switch and
+// the Lender Price board below is untouched either way.
+//   /api/lt/dscr/merged/{health,price,loannex/price,loannex/login-check,loannex/disqualify/:id}
+router.use('/dscr/merged', require('./routes/merged-pricer').makeRouter());
+
 // DSCR pricer (Lender Price backend) — staff-gated at the mount:
 //   /api/lt/dscr/{health,login-check,price,investors,selftest}
 router.use('/dscr', require('./routes/dscr-pricer').makeRouter());
