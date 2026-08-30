@@ -595,6 +595,88 @@ for the owner to say rather than changed here.
 
 ---
 
+## 7d. The margin-holdback audit — 2026-08-30, and the holdback is now a setting
+
+### It does what the owner said, measured on the real board
+
+The whole captured board — **90 programs, 5,286 priced rungs, 9 investors** — put through the live
+module: **5,286 of 5,286** moved by exactly 0.25, worst deviation **0.000000000000**, every rung
+keeping `vendorPrice` and `marginHoldback` so a number we changed reconciles to the number we were
+given. Lender Price comes back as the SAME OBJECT (so this module provably cannot touch it), a second
+call is a no-op rather than a second 0.25, and the input board is never mutated. One production call
+site, before the merge, the comparison, the quote shape and the compensation overlay.
+
+### It is a setting now — up, down, or off
+
+> *"there should always be in the settings the possibility to move up the margin hold back, remove the
+> margin hold back, or move it down."* — owner, 2026-08-30
+
+0.25 stays the **pre-fill**, so a deployment that never touches it behaves exactly as it did. One
+number for the whole LoanNEX feed rather than a per-investor row — the owner's own earlier rule was
+*"On LoanNEX, everybody"*. Lender Price is deliberately not offered: its feed already carries our
+holdback, so a second one there would take it twice.
+
+**This is the one setting in the engine that may not fail toward doing nothing.** Every other reader
+here falls back to "do nothing" when a value is unreadable; doing nothing *here* quietly stops holding
+the 0.25 back and hands every borrower better execution nobody decided to give them. So a typo, a
+negative, a slipped decimal (`25` where `0.25` was meant) and a settings store that will not answer
+all keep the standing 0.25 and **say they were refused**. Only a deliberate `0` removes it — and a
+removal is stamped and worded as a decision, because *"the owner turned it off"* must never be
+indistinguishable from *"the settings failed to load"*.
+
+### Four defects, all fixed
+
+**1. The merge dropped the holdback's entire record.** The vendor board carries how much was held
+back, where the number came from and any refusal; `merge` builds a NEW board and carried none of the
+four, so all of it was computed and then thrown away before anyone could see it. Survivable while
+0.25 was a constant nobody could move — and not since the per-rung trail was stripped from the
+ordinary board (§7c), which left **nothing anywhere** saying a holdback had been taken. It now travels
+in the per-source provenance block, so it rides with the reveal and the ordinary board still reads as
+one system.
+
+**2–4. `Number.isFinite(Number(v))` is not a test for "is this a number".** `Number(null)`,
+`Number('')`, `Number(false)` and `Number([])` are all `0`, so the guard called each of them finite
+and the module did arithmetic on it. Measured: a rung with a real price and `points: null` came out
+with points `0.25` instead of `−1.25`, so price and points summed to **101.5 rather than 100** — a
+board contradicting itself, which is exactly what the shift-don't-recompute rule exists to prevent; a
+rung the vendor never priced was given a **fabricated** price of `−0.25`; and one null rung anywhere
+in the array **threw and took the whole board down**. None is reachable through the LoanNEX parser
+today, which is precisely why it needed pinning — the guard is exported, a vendor payload is not ours
+to promise, and all three failures are silent.
+
+**No price moves.** Proven, not asserted: the whole 5,286-rung board through the old and new module
+gives byte-identical prices, points, vendorPrices and summary figures — at 0.25, at 0.5, at 0, and
+with nothing saved (5,376 figures compared each time).
+
+### The guard that was reading better than it measured
+
+`MARGIN-3` reported *"0 disagreements"* about price and points drifting apart — against a tolerance of
+`0.0011` that swallowed the entire real gap. **114 of the 5,286 rungs arrive from the parser already
+disagreeing by exactly 0.001**, and the holdback preserves that gap and creates none (114 before, the
+same 114 after, 0 created). It now asserts what is actually true — the holdback creates no gap — and
+`MARGIN-3b` reports the measured parser gap instead of hiding it.
+
+### Still open, and the owner's to decide
+
+- **The parser's own 0.001.** `loannex/parse.js` rounds `price` and `100 − price` **independently**
+  off the unrounded vendor number, so on 114 rungs the two disagree by a thousandth — and the board
+  and the option list then show **different points for the same quote** (the option row recomputes
+  `100 − price` and is self-consistent; the board rung is not). Points are display-only here (dollars
+  are derived from price), so no money moves either way. Deriving points from the rounded price would
+  fix it and would move a displayed pricing figure on 114 rungs, so it is reported rather than
+  changed.
+- **LTV has the same class of bug, pointing the other way.** `deriveAmounts` formats LTV with
+  round-to-nearest, and a *higher* LTV prices worse — so rounding **down** is what hands the borrower
+  a band they did not earn. Measured: `400001 / 500000` is 80.0002% and is sent as `80.00`. The owner
+  named only the DSCR direction, so the fix is stated rather than applied.
+- **`POST /loannex/price` returns the vendor's raw answer**, before our holdback, under a comment
+  saying it is *"for comparing the two boards side by side"* — which invites exactly the comparison
+  the holdback exists to make meaningless. No screen calls it and it is super-admin only.
+- **Per-investor holdbacks** are not offered. The owner's rule is *"everybody"*, so one number is
+  faithful to it; a per-investor override would be a new business rule.
+
+---
+
 ## 8. Open questions for the owner
 
 1. ~~The 0.25 holdback — Button Finance only, or wider?~~ **Answered 2026-08-30: every LoanNEX

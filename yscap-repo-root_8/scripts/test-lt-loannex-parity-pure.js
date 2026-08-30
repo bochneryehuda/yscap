@@ -35,6 +35,16 @@
  *  12.  hold back on Lender Price too, whose feed already carries ours    → MARGIN-6
  *  13.  leave the program's best-price figure quoting the raw number      → MARGIN-8
  *  14.  skip the holdback in combined-pricer.js entirely                    → MARGIN-9
+ *
+ * And, from the holdback audit of 2026-08-30 — all seven above were RE-RUN and
+ * each still reddens the assertion named beside it, so this list is measured
+ * rather than remembered. These are the ones it gained:
+ *  24.  revert `nn` to `Number.isFinite(Number(v))`, which reads null / '' /
+ *       false / [] as the number 0                                       → MARGIN-10/11
+ *  25.  drop the null-rung guard in the summary pass                     → MARGIN-12
+ *  26.  tighten `nn` so far that real numeric rungs stop being priced    → MARGIN-1/2/4/10/12
+ *  27.  make the holdback CREATE a price/points gap rather than shift    → MARGIN-2/3
+ *  28.  let that gap grow past one rounding step                         → MARGIN-3b
  *  15.  pre-fill a missing white label with the investor's REAL name      → SET-2/2b/3
  *  16.  stop pre-filling Button Finance off                               → HIDE-2, SET-6
  *  17.  coerce a non-boolean on/off instead of refusing it                → SET-7
@@ -459,6 +469,7 @@ console.log('Two programs, one loan — parity');
   const heldRungs = held.programs.flatMap((p) => p.rungs || []);
 
   let priced = 0, exact = 0, worstPrice = 0, worstPoints = 0, disagree = 0;
+  let worstIdentity = 0, createdByHoldback = 0;
   for (let i = 0; i < heldRungs.length; i++) {
     const a = rawRungs[i], b = heldRungs[i];
     if (!Number.isFinite(Number(a.price))) continue;
@@ -469,14 +480,33 @@ console.log('Two programs, one loan — parity');
     // The price and the points must still describe ONE number: 100 − price is
     // the identity between them, and a board where they disagree by a
     // thousandth is a board somebody spends an afternoon on.
-    if (Math.abs(Number(b.points) - (100 - Number(b.price))) > 0.0011) disagree++;
+    //
+    // ⛔ THE TOLERANCE IS REAL AND IT IS NOT THE HOLDBACK'S. 114 of these rungs
+    // arrive from the parser ALREADY disagreeing by exactly 0.001, because
+    // `parse.js` rounds `price` and `100 − price` INDEPENDENTLY off the
+    // unrounded vendor number, and Math.round breaks a half the same way for
+    // both — which lands a thousandth apart on a negative. The holdback shifts
+    // both by the same amount, so it PRESERVES that gap and creates none:
+    // measured, 114 rungs disagree before and the same 114 after, 0 created.
+    // Reporting "0 disagreements" against a tolerance that swallows the whole
+    // gap reads as a clean board; the measured worst is pinned below instead.
+    const gap = Math.abs(Number(b.points) - (100 - Number(b.price)));
+    if (gap > 0.0011) disagree++;
+    worstIdentity = Math.max(worstIdentity, gap);
+    if (Math.abs(gap - Math.abs(Number(a.points) - (100 - Number(a.price)))) > 1e-9) createdByHoldback++;
   }
   ok(priced > 5000 && exact === priced && worstPrice < 1e-9,
     `MARGIN-1 every LoanNEX price is held back by EXACTLY 0.25 — ${exact}/${priced} rungs, worst deviation ${worstPrice.toFixed(9)}`);
   ok(worstPoints < 1e-9,
     `MARGIN-2 …and the points move up by exactly the same 0.25, so the two still describe one number (worst ${worstPoints.toFixed(9)})`);
-  ok(disagree === 0,
-    `MARGIN-3 …with price and points never drifting apart — points are SHIFTED, never recomputed off a rounded price (${disagree} disagreements)`);
+  ok(disagree === 0 && createdByHoldback === 0,
+    `MARGIN-3 …and the holdback CREATES no gap between price and points — it shifts both by the same amount, so whatever identity a rung arrived with it keeps (${createdByHoldback} created)`);
+  // The honest number, stated rather than hidden behind the tolerance above.
+  // This is a fact about the PARSER, pinned here because this is where the whole
+  // board is measured; it is reported to the owner and is theirs to decide, so
+  // the guard bounds it at one rounding step rather than demanding zero.
+  ok(worstIdentity <= 0.001 + 1e-9,
+    `MARGIN-3b …while the gap the parser itself arrives with is bounded at one rounding step (worst ${worstIdentity.toFixed(6)} across ${priced} rungs) — it rounds price and 100−price independently off the unrounded vendor number`);
   ok(heldRungs.every((r) => !Number.isFinite(Number(r.price)) || (Number.isFinite(Number(r.vendorPrice)) && r.marginHoldback === 0.25)),
     'MARGIN-4 the vendor\'s own number is kept on every rung — a number we changed must always reconcile to the number we were given');
   const twice = vendorMargin.applyToBoard(held, 'loannex');
