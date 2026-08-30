@@ -281,8 +281,15 @@ function filenameFromDisposition(value) {
   if (star) {
     try { return decodeURIComponent(star[1].replace(/^"|"$/g, '')); } catch { /* fall through */ }
   }
-  const plain = /filename="?([^";]+)"?/i.exec(s);
-  return plain ? plain[1] : '';
+  /* NAMED `ascii`, NOT `plain`, DELIBERATELY. `plain` is one of `format.js`'s
+     exported formatters, and a long-term file declaring that name is exactly
+     what the shared-formatter guard watches for — a screen hand-rolling its own
+     copy of a shared formatter is how `pct` and `rate` come to be confused. This
+     is a regex match, not a formatter, so the collision was a false alarm; but a
+     `plain` in a long-term file that is NOT the shared `plain` is confusing to
+     read on its own merits, which is why the name moved rather than the guard. */
+  const ascii = /filename="?([^";]+)"?/i.exec(s);
+  return ascii ? ascii[1] : '';
 }
 
 export const ltGet = (p) => ltFetch('GET', p);
