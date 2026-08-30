@@ -2,7 +2,7 @@
   "note": "The General Pricing Engine screen as it stood when LtCombinedPricer.jsx was forked from it (owner-directed 2026-08-30). See scripts/test-lt-combined-pricer-fork.mjs.",
   "file": "app-v2/src/longterm/LtPricer.jsx",
   "forkedAt": "2026-08-30",
-  "sha256": "ccf9f9d7d1a9fdb0658ce10af721780c91ffa3c740b60be2d2cef0e86d3d8ee0",
-  "bytes": 158291,
-  "lines": 2592
+  "sha256": "d3e375ed58cce561781f8bccc2982345471640a0c72cc322145d86dd35c7f5cc",
+  "bytes": 159036,
+  "lines": 2598
 }

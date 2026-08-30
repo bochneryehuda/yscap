@@ -178,5 +178,51 @@ console.log('\nE. the settings screen keeps no roster of its own');
     'E3 …and an investor with no client-safe name is shown EMPTY and said out loud, never filled with a guess');
 }
 
+console.log('\nF. a general-engine change that WAS ported stays ported');
+{
+  // THE FINGERPRINT CATCHES ONE DIRECTION ONLY — "the general engine moved and the
+  // copy did not". It cannot catch the other: the copy quietly LOSING something it
+  // was given, because re-stamping the fingerprint is a deliberate act and nothing
+  // afterwards re-checks the copy. So the ported work is asserted here, and the
+  // EXPECTATION IS DERIVED FROM THE GENERAL ENGINE rather than typed in — a
+  // hand-written count is a second copy of the answer, and it goes stale the next
+  // time somebody adds a row to either screen.
+  //
+  // What is being held is the 2026-08-30 phone-readability work: on a narrow screen
+  // the heading row is hidden and each cell carries its own column name, so a board
+  // read on a phone still says which figure is which. It carries no business rule,
+  // which is exactly why it belonged in the copy: the owner is auditing this engine
+  // on real scenarios, and an unreadable board is a defect whatever it is priced on.
+  const fb = codeOf(fork);
+  const gb = codeOf(general);
+  const CLASSES = ['ltq-row', 'ltq-head', 'ltq-name', 'ltq-act', 'ltq-cell', 'ltq-price', 'ltq-gap', 'ltq-ratehead'];
+  const count = (src, k) => (src.match(new RegExp(`ltq-${k.slice(4)}(?=[\"\\s])`, 'g')) || []).length;
+  let same = 0;
+  for (const c of CLASSES) {
+    const g = count(gb, c);
+    const f = count(fb, c);
+    if (g > 0 && g === f) same++;
+    else ok(false, `F1 the copy carries the same number of \`${c}\` hooks as the general engine (general ${g}, copy ${f})`);
+  }
+  ok(same === CLASSES.length,
+    `F1 the copy carries every phone-readability hook the general engine does, in the same numbers (${same}/${CLASSES.length})`);
+  // …and the SHARED one-line program label, so the two boards can never disagree
+  // about how a programme is written.
+  // COUNTED, not merely present: the helper stays imported and used elsewhere while
+  // one call site is re-inlined, so a presence test passes on a screen that has gone
+  // back to formatting a programme line by hand. (Proven — that mutation MISSED the
+  // first cut of this assertion.)
+  const calls = (src) => (src.match(/programLine\(/g) || []).length;
+  ok(calls(gb) > 0 && calls(fb) === calls(gb),
+    `F2 both screens draw EVERY programme line from the ONE shared helper (general ${calls(gb)}, copy ${calls(fb)})`);
+  // …and neither re-inlines the old hand-built form beside it.
+  ok(!/\$\{[^}]*\.product\}/.test(fb) && !/\.product \? `/.test(fb),
+    'F2a …and the copy carries no hand-built programme line at all');
+  // The lens label, named once on both — the heading and the phone cell must come
+  // from the same value or they could disagree about which position is on screen.
+  ok(/const priceKey = comp/.test(fb),
+    'F3 …and the copy names the price lens once, so its heading and its phone cells cannot disagree');
+}
+
 console.log(bad ? `\nFAILURES: ${bad}` : '\nOFFLINE: all passed');
 process.exit(bad ? 1 : 0);
