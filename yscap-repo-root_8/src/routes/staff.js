@@ -19817,6 +19817,32 @@ router.getApprovedDocuments = getApprovedDocuments;
 // be assigned to the document's application, or (for borrower/llc-scoped docs)
 // to some application belonging to that borrower.
 async function canSeeDocument(req, doc) {
+  /* ── A LONG-TERM DOCUMENT IS NOT REACHED THROUGH THIS DOOR ─────────────────
+     THIS RUNS BEFORE THE see-all SHORT-CIRCUIT, and that order is the whole fix.
+     A Long-Term condition document carries `lt_loan_id` and has application_id,
+     borrower_id and llc_id all NULL — so every branch below falls through to
+     `return false`, and a non-see-all actor was refused by ACCIDENT rather than by
+     a rule. A see-all actor was not refused at all.
+
+     Measured on a real server before this guard existed: an RTL processor who is
+     not a contact on the loan got 404 from every /api/lt door — loadScopedLoan
+     doing its job — and 200 from /api/staff/documents/:id/download, /review and
+     DELETE on the SAME document id. The delete was permanent and the Long-Term
+     condition fell back to outstanding. Underwriter, loan_coordinator, admin,
+     processor and closer all reached it; only loan_officer did not.
+
+     The hole is older than the Long-Term rows, but nothing produced such a row
+     until the Long-Term upload door shipped, so this is the commit that makes it
+     live — which is why it is closed in the same one.
+
+     REFUSED OUTRIGHT, not delegated. Long-Term files have their own authorization
+     model (src/longterm/access.js: the LT role map, SCOPE_OWN vs SCOPE_ALL, the
+     per-loan contact list) and their own doors, which apply it through
+     loadScopedLoan. Re-deriving any of that here would be a second copy of a scope
+     — the exact drift this codebase has paid for before. A staffer who may work
+     the loan reaches its documents through /api/lt/condition-center; this door
+     answers for RTL files and says so. */
+  if (doc && doc.lt_loan_id) return false;
   if (seesAll(req)) return true;
   if (doc.application_id) {
     // An application document is authorized SOLELY by assignment to its own

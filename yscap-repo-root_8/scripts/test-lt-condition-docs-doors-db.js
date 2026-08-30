@@ -408,6 +408,50 @@ const itemRow = async (id) => (await db.query(
     if (server) await new Promise((r) => server.close(r));
   }
 
+  /* ═════ THE SHORT-TERM DOORS MUST NOT REACH A LONG-TERM DOCUMENT ══════════
+     The four doors above are scoped. The SHORT-TERM document doors are not: they
+     load a document by bare id and then ask canSeeDocument AFTER the SELECT. That
+     hole is older than this shipment, but nothing ever produced a `documents` row
+     with lt_loan_id set until the Long-Term upload door existed — so this is the
+     commit that made it live, and closing it belongs here.
+
+     Measured before the guard: an RTL processor who is not a contact on the loan
+     got 404 from every /api/lt door and 200 from /api/staff/documents/:id
+     download, review AND delete on the same id. The delete was permanent and the
+     Long-Term condition fell back to outstanding. Every see-all role reached it.
+
+     canSeeDocument is the ONE chokepoint all five short-term document routes ask,
+     so the refusal lives there — before the see-all short-circuit, which is the
+     half that let admins through. */
+  {
+    const canSee = require('../src/routes/staff').canSeeDocument;
+    assert(typeof canSee === 'function', 'S0 the short-term document gate is reachable to test');
+    // Any Long-Term document the run above actually created — the loan handles are
+    // block-scoped, and asking the table is both simpler and a stronger claim: it
+    // fails loudly if the doors above stopped producing rows at all.
+    const ltDoc = (await db.query(
+      'SELECT id, application_id, lt_loan_id, borrower_id, llc_id FROM documents WHERE lt_loan_id IS NOT NULL LIMIT 1')).rows[0];
+    assert(!!ltDoc && !!ltDoc.lt_loan_id,
+      'S1 there really is a Long-Term document to try (the assertions below are not vacuous)');
+    assert(ltDoc.application_id === null && ltDoc.borrower_id === null && ltDoc.llc_id === null,
+      'S2 …and it carries no RTL owner, so nothing but an explicit rule can refuse it');
+
+    for (const role of ['super_admin', 'admin', 'underwriter', 'loan_coordinator', 'processor', 'closer', 'loan_officer']) {
+      const req = { actor: { id: '00000000-0000-4000-8000-000000000001', kind: 'staff', role } };
+      assert((await canSee(req, ltDoc)) === false,
+        `S3 the short-term document door refuses a Long-Term document to ${role}`);
+    }
+
+    // CONTROL — the guard must not have broken the door it belongs to.
+    const rtlDoc = (await db.query(
+      'SELECT id, application_id, lt_loan_id, borrower_id, llc_id FROM documents WHERE application_id IS NOT NULL LIMIT 1')).rows[0];
+    if (rtlDoc) {
+      const seesAll = { actor: { id: '00000000-0000-4000-8000-000000000002', kind: 'staff', role: 'super_admin' } };
+      assert((await canSee(seesAll, rtlDoc)) === true,
+        'S4 CONTROL an ordinary short-term document is still reachable — the guard refuses Long-Term rows, not everything');
+    }
+  }
+
   console.log(failures ? `\ntest-lt-condition-docs-doors-db: ${failures} FAILED` : '\ntest-lt-condition-docs-doors-db: all checks passed');
   process.exit(failures ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
