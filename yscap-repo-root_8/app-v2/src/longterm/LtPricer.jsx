@@ -10,7 +10,7 @@ import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, p
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
 import { COMP_MODES, DEFAULT_COMP_MODE, compShiftPoints, shiftedPrice, shiftBuild, quoteCharges, closingSheet } from './compOverlay.js';
-import { QuoteTermSheetActions, ComparisonStrip, useTermSheetCart } from './TermSheetPanel.jsx';
+import { QuoteTermSheetActions, ComparisonStrip, ComparisonWorkflowPanel, useTermSheetCart } from './TermSheetPanel.jsx';
 // The INVESTOR FILTER (owner-directed 2026-08-27) — a display overlay on top of the
 // answer. The search itself is NEVER narrowed: Lender Price is always asked for
 // everything, and these rules only decide which rows the board draws. Plain `.js`
@@ -146,6 +146,13 @@ const CALC_START = {
   hoa: '',
   rate: '',
 };
+
+/* The three things a TERM SHEET needs that a price does not: who it is for and
+   where the property is. Owner-directed 2026-08-30 — *"You can put in property
+   addresses … and a name of the person and/or a name of the entity."* Either
+   name satisfies the server's gate; both is the ordinary DSCR shape, where the
+   entity is the borrower and the person guarantees it. */
+const PREPARED_START = { borrowerName: '', entityName: '', propertyAddress: '' };
 
 export { toScenario };
 
@@ -1068,6 +1075,7 @@ export function PriceBuild({ o, comp, ts, quote }) {
       {ts && ts.enabled && quote && (
         <QuoteTermSheetActions
           sel={ts.selectionFor(quote, o)}
+          issue={ts.issueFor ? ts.issueFor(quote, o) : null}
           enabled={ts.enabled}
           mode={comp && comp.mode}
           cartCount={ts.count}
@@ -1710,6 +1718,19 @@ export default function LtPricer() {
   // number, the ratio, which the person then chooses to use or not.
   const [calcOpen, setCalcOpen] = useState(false);
   const [calc, setCalc] = useState(CALC_START);
+  /* WHO THE SHEET IS FOR AND WHAT IT IS ON — held at the BOARD, not on a row.
+     These are facts about the DEAL, not about which option somebody is looking
+     at, so typing them once serves every option on the screen. Kept beside the
+     calculator's figures for the same reason: one property, one set of facts. */
+  const [prepared, setPrepared] = useState(PREPARED_START);
+  /* WHICH COMPARISON THE OFFICER SAYS THEY ARE BUILDING, and what the collected
+     options would ACTUALLY produce. Two different things on purpose: the second
+     is the server's answer and always wins on the document, the first is the
+     intent it is checked against. Held here rather than stored — an intent is
+     not a fact about a sheet, and a stored one could go stale against a cart
+     that moved under it, which is the very thing the check is for. */
+  const [compWorkflow, setCompWorkflow] = useState(null);
+  const [cartDocKind, setCartDocKind] = useState(null);
 
   /* THE CARRYING COSTS THE BOARD'S PITI COLUMN IS BUILT FROM (owner-directed 2026-08-30).
      Read straight off those same boxes, so the column and the ratio are describing one property.
@@ -2036,6 +2057,60 @@ export default function LtPricer() {
         taxMonthly: perMonth(toNumber(calc && calc.tax), calc && calc.taxBasis),
         insuranceMonthly: perMonth(toNumber(calc && calc.insurance), calc && calc.insBasis),
         hoaMonthly: calc && calc.hoa === '' ? 0 : perMonth(toNumber(calc && calc.hoa), 'monthly'),
+      },
+    }),
+
+    /* ── ISSUING ONE OPTION, FROM ITS OWN ROW ──────────────────────────────
+       Owner-directed 2026-08-30: *"where that button is, you should be able to
+       issue a term sheet. Which means you can only select one option."*
+
+       ⛔ EVERYTHING A ROW NEEDS COMES DOWN FROM HERE, because everything a term
+       sheet needs beyond the price is a fact about the DEAL, and the deal lives
+       on the board: the housing figures (the SAME calculator state the DSCR
+       panel and the PITI column read — one property, one set of facts), the
+       names, the address, and the arithmetic that checks the ratio. A row that
+       kept its own copy of any of it could put a payment on a document the
+       board beside it disagrees with. */
+    prepared,
+    setPrepared,
+    calc,
+    setCalc,
+    issueFor: (q, o) => ({
+      selectionNow: () => ts.selectionFor(q, o),
+      prepared,
+      setPrepared,
+      calc,
+      setCalc,
+      /* DOES THE RATIO THESE FIGURES PRODUCE MATCH WHAT THIS WAS PRICED AT?
+
+         ⛔ AT THIS OPTION'S OWN NOTE RATE, not the calculator's typed target.
+         The calculator asks "what rate shall I work this out at?"; a row IS a
+         rate, and the ratio a lender qualifies on is the one at the rate of the
+         loan being priced. Using the target here would judge every row against
+         a number belonging to none of them.
+
+         ⛔ AND IT NEVER GUESSES. Anything missing — a figure, the rate, the
+         term, the ratio the search ran on — yields `unknown`, and the panel
+         draws nothing. A confident "they match" on an incomplete scenario is
+         the one answer that would be worse than silence. */
+      ratioCheck: () => {
+        const priced = toNumber(f.dscr);
+        const out = dscrFrom({
+          loanAmount,
+          ratePct: q && q.noteRate,
+          termYears: toNumber(f.termYears),
+          interestOnly: !!f.io,
+          rentMonthly: perMonth(toNumber(calc.rent), 'monthly'),
+          taxMonthly: perMonth(toNumber(calc.tax), calc.taxBasis),
+          insuranceMonthly: perMonth(toNumber(calc.insurance), calc.insBasis),
+          hoaMonthly: calc.hoa === '' ? 0 : perMonth(toNumber(calc.hoa), 'monthly'),
+        });
+        if (out.dscr == null || priced == null || !(priced > 0)) return { state: 'unknown' };
+        const computed = out.dscr.toFixed(2);
+        // Compared as the two DECIMALS a person reads, not as floats: the sheet
+        // prints 1.24, so 1.2449 and 1.24 are the same claim on the paper.
+        const agree = computed === priced.toFixed(2);
+        return { state: agree ? 'agree' : 'differs', computed, priced: priced.toFixed(2) };
       },
     }),
   };
@@ -2406,7 +2481,7 @@ export default function LtPricer() {
                 THIS property, so leaving them behind on a fresh scenario would quietly work out a
                 ratio from the last deal's numbers. */}
             <button type="button" className="btn ghost" disabled={busy}
-              onClick={() => { setF(START); setCalc(CALC_START); setCalcOpen(false); changeInvSel(null); }}>
+              onClick={() => { setF(START); setCalc(CALC_START); setPrepared(PREPARED_START); setCalcOpen(false); changeInvSel(null); }}>
               Reset to the starting scenario
             </button>
             {/* WHAT IS ACTUALLY GOING ON THE WIRE, in one line. The amount triangle means the
@@ -2429,7 +2504,36 @@ export default function LtPricer() {
             <div style={{ marginTop: 8, fontSize: 13, color: DANGER }}>{gateMsg}</div>
           )}
         </form>
+
         )}
+        {/* ── THE COMPARISON AREA ──────────────────────────────────────────────
+            Owner-directed 2026-08-30, and placed where the owner chose when
+            asked: *"a separate area on the pricing board"* rather than a page of
+            its own. It names the two documents an officer can build from several
+            options, and holds what has been collected.
+
+            ⛔ IT SITS ABOVE THE RESULTS, NOT INSIDE THEM, and that is a fix as
+            well as a placement. The cart is the SERVER'S and deliberately spans
+            searches — the whole point of collecting across scenarios — but the
+            strip used to render inside `{res && stack && …}`, so opening the
+            board with nothing priced hid a collection that was still very much
+            there. Above the results it is reachable whenever it exists.
+
+            ⛔ THE STRIP'S OWN MOUNT CONDITION IS UNCHANGED. It appears once
+            something has been collected OR a sheet has just been issued — that
+            second half is what stops the issued sheet's own card being destroyed
+            by the cart it empties. */}
+        <ComparisonWorkflowPanel
+          enabled={ts.enabled}
+          chosen={compWorkflow}
+          onChoose={setCompWorkflow}
+          count={ts.count}
+          docKind={cartDocKind}>
+          {ts.enabled && (ts.count > 0 || ts.issued) && (
+            <ComparisonStrip open cart={ts.cart} members={ts.members} onChange={ts.reload}
+              onIssued={ts.setIssued} onPlan={setCartDocKind} />
+          )}
+        </ComparisonWorkflowPanel>
 
         {err && (
           <div style={{ ...card, borderColor: `${DANGER}55` }}>
@@ -2625,16 +2729,6 @@ export default function LtPricer() {
                     onToggle={() => toggleRate(row.key)}
                     openQuote={openQuote} onOpenQuote={setOpenQuote} openLenders={openLenders} onToggleLender={toggleLender} />
                 ))}
-                {/* THE COMPARISON SPANS SEARCHES, so the strip lives on the board
-                    rather than inside a quote: options collected here survive
-                    running a completely different scenario, because the cart is
-                    the SERVER's, not this page's. It renders only once something
-                    has been collected — an empty strip under every search would
-                    be a permanent piece of furniture nobody asked for. */}
-                {ts.enabled && (ts.count > 0 || ts.issued) && (
-                  <ComparisonStrip open cart={ts.cart} members={ts.members} onChange={ts.reload}
-                    onIssued={ts.setIssued} />
-                )}
               </div>
             ) : (
               <IneligibleView dq={dq} onAsk={askDisqualified} loanAmount={loanAmount} comp={comp} invSel={invSel} />
