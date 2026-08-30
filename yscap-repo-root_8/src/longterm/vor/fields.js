@@ -388,6 +388,12 @@ function tabsForLandlord() {
    landlord field that drifted above it would hang an empty DocuSign box over
    something we already answered. Neither is visible in a diff, so neither is left to
    a reviewer to notice. */
+/* The prefill's default type size, and the ONE definition of it. pdf.js draws at
+   `f.size || DEFAULT_SIZE` and the band guard below computes a block's footprint from
+   the same number — two spellings of it is how the guard comes to bless a layout the
+   renderer does not actually produce. */
+const DEFAULT_SIZE = 9;
+
 (function assertBandsMatchWhoAnswers() {
   for (const f of FIELDS) {
     const ys = f.tab === 'radio' ? (f.options || []).map((o) => o.y) : [f.y];
@@ -397,6 +403,24 @@ function tabsForLandlord() {
       }
       if (f.who === 'us' && y <= LANDLORD_BAND_TOP) {
         throw new Error(`vor/fields: ${f.key} is ours but sits at y=${y}, inside the landlord's half (<= ${LANDLORD_BAND_TOP})`);
+      }
+      /* THE WHOLE FOOTPRINT, NOT JUST THE FIRST LINE. Items 1, 2, 7 and 8 are
+         name-and-address BLOCKS: pdf.js draws line i at `f.y - (i * lineHeight)` for
+         up to `f.lines` lines. Checking f.y alone left the guard blind to the edit
+         most likely to break it — giving a block more room. Changing item 8 from
+         `lines: 4` to `lines: 8` loaded clean, passed the whole suite (because the
+         fixture's address was only two lines and never reached line five), and then
+         printed a real eight-line applicant block at y=333 and y=323: our prefill
+         inside Part II. The rule is about where the TEXT lands, so the arithmetic
+         has to be about where the text lands. */
+      if (f.who === 'us') {
+        const lineHeight = f.lineHeight || (f.size || DEFAULT_SIZE) + 2;
+        const lowest = y - ((Math.max(1, f.lines || 1) - 1) * lineHeight);
+        if (lowest <= LANDLORD_BAND_TOP) {
+          throw new Error(`vor/fields: ${f.key} is ours and starts at y=${y}, but with ${f.lines || 1} line(s) `
+            + `at ${lineHeight}pt its last line lands at y=${lowest}, inside the landlord's half `
+            + `(<= ${LANDLORD_BAND_TOP}). Give it fewer lines, a tighter lineHeight, or a higher start.`);
+        }
       }
       if (f.who === 'landlord' && y > LANDLORD_BAND_TOP) {
         throw new Error(`vor/fields: ${f.key} is the landlord's but sits at y=${y}, above the bar (> ${LANDLORD_BAND_TOP})`);
@@ -451,6 +475,7 @@ function cleanOurData(raw) {
 }
 
 module.exports = {
+  DEFAULT_SIZE,
   PAGE, FORM_MARK, LANDLORD_BAND_TOP, PARTS, FIELDS, BY_KEY,
   ourFields, landlordFields, docusignY, anchorString, optionAnchorString,
   tabsForLandlord, allAnchors, anchorPlacements,

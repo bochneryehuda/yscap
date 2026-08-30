@@ -283,11 +283,26 @@ function textAnchor(anchor, { tabLabel, required = true, width = 200, height = 1
  * places on the line.
  */
 function radioGroupAnchor({ group, required = true, radios = [] }) {
+  /* THE REQUIREMENT IS DECLARED IN BOTH PLACES, ON PURPOSE.
+     An earlier version set only `required` on the GROUP, reasoning that DocuSign
+     takes the requirement there and ignores it per-radio. The eSignature model is
+     the other way round: a `radioGroup` carries `requireAll` (with documentId,
+     groupName, radios, recipientId, shared, requireInitialOnSharedChange) and has NO
+     `required`; the `radio` is what carries `required`. DocuSign ignores properties
+     it does not recognise rather than rejecting them, so that spelling did not fail
+     loudly — it silently dropped the requirement, and a landlord could press Finish
+     with "Is account satisfactory?" and "Is rent in arrears?" both blank. A form that
+     comes back signed and answering nothing is worse than one that never came back,
+     because it reads as done.
+     Emitting all three names is safe in either model: whichever one DocuSign reads,
+     the question is required, and the ones it does not read are ignored. Cheap
+     insurance against a fact about someone else's API that we cannot test offline —
+     worth confirming against a sandbox envelope, but never worth guessing. */
+  const req = required ? 'true' : 'false';
   return {
     groupName: String(group),
-    // DocuSign takes `requireAll`/`required` on the GROUP; the per-radio `required`
-    // is ignored, which is why it is set once here.
-    required: required ? 'true' : 'false',
+    requireAll: req,
+    required: req,
     radios: radios.filter((r) => r && r.anchor).map((r) => ({
       anchorString: r.anchor,
       anchorUnits: 'pixels',
@@ -296,6 +311,7 @@ function radioGroupAnchor({ group, required = true, radios = [] }) {
       anchorIgnoreIfNotPresent: 'true',
       anchorCaseSensitive: 'false',
       value: String(r.value),
+      required: req,
       selected: 'false',                 // nothing pre-selected: the signer answers
     })),
   };

@@ -331,7 +331,38 @@ console.log('\nLong-Term — the verification of rent, overlaid on the owner’s
     assert.strictEqual(otherOut.pages, 1, 'still one page');
   });
 
-  console.log(`\ntest-lt-vor-overlay-pure: ${checks} checks passed\n`);
+  /* ── THE FORM IS CHECKED BY IDENTITY, NOT ONLY BY SHAPE ──────────────────────
+   The structural boot check asks "one page, 612x792". That is not the question.
+   The field-id REFERENCE SHEET — one filename away in the same directory, with
+   Encompass ids printed IN THE BLANKS — is also one page at 612x792 and used to pass
+   it. Rendered through this module it puts "RentedFrom | RentedTo | AmountOfRent |
+   Period | PaymentsPastDue30 | AdditionalInformation" into Part II and mails it to a
+   landlord: literally "pre-filled on the field ID call", the one thing the owner said
+   to leave empty. An empty page, a PILOT-branded lookalike and a page rotated 90
+   degrees passed too. So the blank is now pinned by digest. */
+const REF_SHEET = path.join(path.dirname(BLANK_PATH), 'vor-field-ids-reference.pdf');
+
+ok('the field-id reference sheet still passes the STRUCTURAL check — which is why shape alone is not enough', () => {
+  // If this ever starts throwing, the structural check got stricter and the comment
+  // above needs revisiting — but the digest below is what actually guards the form.
+  _internals.assertOwnersBytes(fs.readFileSync(REF_SHEET), 'the field-id reference sheet');
+});
+
+ok('the DIGEST refuses the field-id reference sheet — the form that would print Encompass ids into Part II', () => {
+  assert.throws(() => _internals.assertOwnersDigest(fs.readFileSync(REF_SHEET), 'the field-id reference sheet'),
+    /not the owner's blank VOR/);
+});
+
+ok('and refuses any other file of the right shape — an empty page, a lookalike', () => {
+  assert.throws(() => _internals.assertOwnersDigest(Buffer.from('%PDF-1.4\nnot the owner form\n'), 'a lookalike'),
+    /not the owner's blank VOR/);
+});
+
+ok("…while accepting the owner's own blank — the pin is an identity check, not a wall", () => {
+  _internals.assertOwnersDigest(fs.readFileSync(BLANK_PATH), "the owner's blank");
+});
+
+console.log(`\ntest-lt-vor-overlay-pure: ${checks} checks passed\n`);
 })().catch((e) => {
   console.error('\nFAILED:', e && e.message);
   console.error(e && e.stack);

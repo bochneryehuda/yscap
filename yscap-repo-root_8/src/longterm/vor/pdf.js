@@ -53,6 +53,7 @@
  * disk. No database, no config, no other module.
  */
 const fs = require('fs');
+const crypto = require('crypto');
 const path = require('path');
 const zlib = require('zlib');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
@@ -210,7 +211,32 @@ function assertOwnersBytes(bytes, where) {
 /* READ ONCE, CHECKED ONCE, AT LOAD. Re-reading the file on every preview would put
    a disk read on a screen refresh and — worse — would let somebody swap the blank
    under a running process without anything noticing. */
+/* THE DIGEST OF THE OWNER'S OWN FILE, pinned.
+   sha256 of src/longterm/assets/blank-vor.pdf as the owner supplied it. Structure
+   checks alone are not enough and the proof is sitting in the same directory:
+   `vor-field-ids-reference.pdf` — the sheet with Encompass field ids printed IN THE
+   BLANKS — is also one page at 612x792 and passes every structural test. Rendered
+   through this module it puts "RentedFrom | RentedTo | AmountOfRent | Period |
+   PaymentsPastDue30 | AdditionalInformation" into Part II and mails it to a
+   landlord: literally "pre-filled on the field ID call", the one thing the owner
+   said to leave empty. An empty page, a PILOT-branded lookalike and a page rotated
+   90 degrees passed too.
+   A digest answers "is this THAT form", which is the question actually being asked.
+   Replacing the blank is then a deliberate two-line edit — file and digest together
+   — rather than a drop-in nobody notices. */
+const BLANK_SHA256 = '7ad11bbea4af56e7aae8e965f12424b3fbafcc72b71b6a2f4a70d77522c3fd85';
+
+function assertOwnersDigest(bytes, where) {
+  const got = crypto.createHash('sha256').update(bytes).digest('hex');
+  if (got !== BLANK_SHA256) {
+    throw new Error(`vor/pdf: ${where} is not the owner's blank VOR (sha256 ${got}, expected ${BLANK_SHA256}). `
+      + 'Structure alone cannot tell this form from the field-id reference sheet beside it, which would print '
+      + "Encompass ids into Part II. If the blank was replaced on purpose, update BLANK_SHA256 in the same commit.");
+  }
+}
+
 const BLANK_BYTES = fs.readFileSync(BLANK_PATH);
+assertOwnersDigest(BLANK_BYTES, BLANK_PATH);
 assertOwnersBytes(BLANK_BYTES, BLANK_PATH);
 
 /**
@@ -250,7 +276,7 @@ async function buildVorPdf(data = {}) {
        thing every reader of this form already knows how to interpret. */
     if (!value) continue;
 
-    const size = f.size || 9;
+    const size = f.size || F.DEFAULT_SIZE;
     const width = f.width || 200;
     const maxLines = f.lines || 1;
     const lineHeight = f.lineHeight || size + 2;
@@ -282,6 +308,6 @@ module.exports = {
   BLANK_PATH,
   _internals: {
     pdfSafe, wrap, wrapBlock, fmtValue, inflatedStreams,
-    assertOwnersBytes, assertOwnersPage, loadBlank, PAGE: F.PAGE,
+    assertOwnersBytes, assertOwnersPage, assertOwnersDigest, BLANK_SHA256, loadBlank, PAGE: F.PAGE,
   },
 };
