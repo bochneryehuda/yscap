@@ -106,6 +106,17 @@ const SECTIONS = [
     label: 'Conditions',
   },
   {
+    // THE ORDERS DESK — every vendor this file has to ask for something, with the
+    // whole conversation on the card.
+    //
+    // ALWAYS AVAILABLE, for the condition centre's reason: a file with no vendor on
+    // it yet is exactly the one somebody opens this to fix, and greying it would
+    // hide the only way forward. What each order needs before it can go is said on
+    // the order itself, in words, rather than by the section refusing to open.
+    key: 'orders',
+    label: 'Orders',
+  },
+  {
     key: 'conditions',
     label: 'Investor conditions (Encompass)',
     // Greyed rather than hidden, for the same reason as employment: somebody told

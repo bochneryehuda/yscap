@@ -256,6 +256,32 @@ export const ltApi = {
   // date and OUR observation side by side, and the events behind them.
   fileTimeline: (loanId) => ltGet(lt(`/reports/loans/${encodeURIComponent(loanId)}/timeline`)),
 
+  // THE ORDERS DESK (owner-directed 2026-08-30). The LETTER is the short-term
+  // desk's own — one definition, shared — so `orderPreview` returns exactly what
+  // the send would put on the wire rather than a second rendering of it. Every
+  // blocker carries the SERVER's own sentence; the screen prints it verbatim,
+  // because a refusal reworded in the browser is a second answer to one question.
+  orders: (loanId) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}`)),
+  orderThread: (loanId, kind) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/${encodeURIComponent(kind)}/thread`)),
+  orderPreview: (loanId, kind, opts = {}) => {
+    const q = new URLSearchParams();
+    if (opts.followup) q.set('followup', '1');
+    if (opts.note) q.set('note', opts.note);
+    const s = q.toString();
+    return ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/${encodeURIComponent(kind)}/preview${s ? `?${s}` : ''}`));
+  },
+  orderPlace: (loanId, kind, body = {}) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/${encodeURIComponent(kind)}/place`), body),
+  orderFollowUp: (loanId, kind, body = {}) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/${encodeURIComponent(kind)}/follow-up`), body),
+  orderCancel: (loanId, kind, reason) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/${encodeURIComponent(kind)}/cancel`), { reason }),
+
+  // The vendor cards on a loan, and the SHARED directory behind them.
+  orderVendors: (loanId) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors`)),
+  orderVendorSearch: (loanId, kind, q) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/search?kind=${encodeURIComponent(kind)}&q=${encodeURIComponent(q)}`)),
+  orderVendorLink: (loanId, body) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors`), body),
+  orderVendorUnlink: (loanId, linkId) => ltDel(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/${encodeURIComponent(linkId)}`)),
+
+  orderLetters: () => ltGet(lt('/orders/letters')),
+
   dscrDisqualifications: (searchKey, params) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') q.set(k, String(v));

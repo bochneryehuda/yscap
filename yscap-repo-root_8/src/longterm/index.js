@@ -118,6 +118,14 @@ router.use('/conditions', require('./routes/conditions'));
 // /api/lt/condition-center
 router.use('/condition-center', require('./routes/condition-center'));
 
+/* THE ORDERS DESK — the vendor orders a long-term file needs: title, insurance,
+   flood insurance, a New York settlement agent, a payoff, a condo questionnaire, a
+   verification of rent, and (built and switched off) the appraisal. The LETTER and
+   the recipient rule are SHARED with the short-term desk (src/lib/order-email.js,
+   authorized in docs/LONG-TERM-AUTHORIZED-COPIES.md); the tables, the vendor links
+   and the bookkeeping are this product's own. */
+router.use('/orders', require('./routes/orders'));
+
 // The signed-in person's own long-term preferences — today, which product side
 // they open on (the owner's switch), remembered per user. /api/lt/me
 router.use('/me', require('./routes/me'));

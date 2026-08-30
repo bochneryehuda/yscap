@@ -39,9 +39,38 @@ const encompass = {
   baseUrl:      (process.env.LT_ENCOMPASS_API_BASE || process.env.ENCOMPASS_API_BASE || 'https://api.elliemae.com').replace(/\/+$/, ''),
 };
 
+/* ── THE ONE INBOUND DOMAIN, AND THE ADDRESS WE FALL BACK TO ─────────────────
+   Read from the SAME environment variables the short-term side reads, and
+   deliberately so: there is ONE verified inbound domain and ONE monitored sending
+   address for this company, so two products reading two variables would be two
+   halves of one deliverability posture — one of which somebody would forget to set,
+   silently, on the side that sends fewer emails.
+
+   Read HERE rather than imported, because `src/config.js` is the short-term
+   product's config module and Long-Term starts at zero (rule 4). Normalised
+   identically (a leading @ stripped, lower-cased) so the two can never disagree
+   about whether an inbound address is on our own domain — that comparison is what
+   makes every reply-address family dormant off it.
+   ────────────────────────────────────────────────────────────────────────────── */
+const chatReplyDomain = (process.env.CHAT_REPLY_DOMAIN || '').trim().replace(/^@+/, '').toLowerCase() || null;
+
+/* The Reply-To used when an order has no address family of its own — the same
+   monitored inbox the short-term side falls back to, never a no-reply. */
+const replyToDefault = (process.env.REPLY_TO || 'sales@yscapgroup.com').trim() || null;
+
+/* The ONE inbound webhook signing secret. There is one endpoint on one domain
+   serving both products, so there is one secret — read here rather than imported,
+   for the same reason the domain is. Unset = the whole inbound feature is DORMANT
+   and the endpoint refuses everything, which is the only safe reading of "we cannot
+   authenticate anyone". */
+const resendWebhookSecret = (process.env.RESEND_WEBHOOK_SECRET || '').trim() || null;
+
 module.exports = {
   env,
   databaseUrl: process.env.DATABASE_URL || '',
   sslConfig,
   encompass,
+  chatReplyDomain,
+  replyToDefault,
+  resendWebhookSecret,
 };

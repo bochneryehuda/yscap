@@ -301,7 +301,15 @@ const PRIOR_TO_SUBMISSION = [
     kind: 'esign',
     autoApply: 'rules',
     rule: when('borrower_rents', 'is_true'),
-    config: { form: 'vor', send: ['docusign', 'email', 'both'], manualReturnVoidsEnvelope: true },
+    // `orderType` names the order the ORDERS DESK places for this condition, and
+    // `kind` stays 'esign' because the thing that goes out is an envelope: the two
+    // are different facts about one step. Without the orderType the desk and the
+    // condition would each know about the other in one direction only, which is how
+    // a button ends up on a screen with nothing behind it.
+    config: {
+      form: 'vor', orderType: 'vor', contactType: 'landlord',
+      send: ['docusign', 'email', 'both'], manualReturnVoidsEnvelope: true,
+    },
   },
   {
     code: 'lt_photo_id',

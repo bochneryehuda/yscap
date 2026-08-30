@@ -487,6 +487,9 @@ model LtLoan {
   // underwriter raised after buying the loan, `fileConditions` is what WE need
   // to get the file submitted, cleared, docked, funded and sold.
   fileConditions LtFileCondition[]
+  vendors        LtLoanVendor[]
+  orders         LtFileOrder[]
+  orderEvents    LtOrderEvent[]
 
   @@index([borrowerId])
   @@index([loanOfficerId])
@@ -2491,6 +2494,7 @@ model LtFileCondition {
 
   loan  LtLoan              @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   files LtConditionFile[]
+  orders LtFileOrder[]
 
   @@index([loanId, bucketKey, sortOrder], map: "lt_file_conditions_loan_idx")
   @@index([templateId], map: "lt_file_conditions_template_idx")
@@ -2534,8 +2538,153 @@ model LtConditionFile {
   isCurrent Boolean  @default(true) @map("is_current")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  /// Which ORDER this document came back on, when a vendor returned it by email
+  /// (db/644). Recorded so a condition can say "this came back from the title
+  /// company on the order we placed on the 4th" rather than "somebody uploaded
+  /// this". Plain ids, no relation: the order is a record of what we asked for and
+  /// must survive the document being superseded, and the reverse.
+  orderId      String? @map("order_id") @db.Uuid
+  orderEventId String? @map("order_event_id") @db.Uuid
+
   condition LtFileCondition @relation(fields: [conditionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
 
   @@index([loanId, createdAt(sort: Desc)], map: "lt_condition_files_loan_idx")
   @@map("lt_condition_files")
+}
+
+/// A vendor a LOAN uses — the title company, the insurance agent, the New York
+/// settlement agent — pointing at the SHARED `service_contacts` directory rather
+/// than a long-term copy of it (the owner: "You need to make sure you're not
+/// copying the information. You're just using the information from the short-term
+/// side"). One company, one card, edited in one place.
+model LtLoanVendor {
+  id     String @id @default(uuid()) @db.Uuid
+  loanId String @map("loan_id") @db.Uuid
+
+  /// What this contact is FOR on this loan.
+  kind String
+
+  /// A `service_contacts` id, carried with NO foreign key on purpose (db/644's
+  /// header says why: CASCADE would let a short-term deletion unlink a live
+  /// long-term order, RESTRICT would let a long-term loan block a short-term
+  /// admin, and SET NULL leaves an order pointing at nobody with nothing saying
+  /// so). A LEFT JOIN reads a removed card as "no longer in the directory" and the
+  /// desk's own blocker refuses the order and says why.
+  serviceContactId String @map("service_contact_id") @db.Uuid
+
+  /// The card the order is addressed TO. Everyone else on the same kind rides the
+  /// Cc, exactly as the short-term desk loops a second title contact in.
+  isPrimary Boolean @default(true) @map("is_primary")
+
+  addedBy   String?  @map("added_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  loan LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([loanId, kind, serviceContactId], map: "lt_loan_vendors_one_per_kind_uk")
+  @@index([serviceContactId], map: "lt_loan_vendors_contact_idx")
+  @@map("lt_loan_vendors")
+}
+
+/// One vendor order on one loan. The row IS the slot: it exists from the first
+/// time anybody looks at that kind on that loan and moves through its statuses in
+/// place, so a follow-up, a reply and a returned document all have one thing to
+/// attach to — and two people pressing Order at the same moment cannot produce two
+/// title orders (db/401's lesson: the unique index is the guarantee, not the read).
+model LtFileOrder {
+  id     String @id @default(uuid()) @db.Uuid
+  loanId String @map("loan_id") @db.Uuid
+  kind   String
+
+  /// not_ordered | ordered | documents_in | completed | cancelled. 'ordered' is
+  /// only ever written by a send the provider ACCEPTED.
+  status String @default("not_ordered")
+
+  /// Which vendor card it actually went to, recorded at send time and kept even if
+  /// the loan's vendor choice changes: the question a year later is "who did we
+  /// ask?", not "who is on the file now".
+  vendorContactId String? @map("vendor_contact_id") @db.Uuid
+
+  /// The thread. The SUBJECT is the load-bearing half (a provider may rewrite our
+  /// Message-ID; the subject is what mail clients fall back to).
+  subject        String?
+  rootMessageId  String? @map("root_message_id")
+  lastMessageId  String? @map("last_message_id")
+  replyTo        String? @map("reply_to")
+
+  /// The per-order Cc choices, so a follow-up stays on the footing of the order it
+  /// follows rather than re-resolving a setting that has since changed.
+  ccBorrower Boolean? @map("cc_borrower")
+  ccHelper   Boolean? @map("cc_helper")
+
+  orderedBy      String?   @map("ordered_by") @db.Uuid
+  orderedAt      DateTime? @map("ordered_at") @db.Timestamptz(6)
+  lastFollowupAt DateTime? @map("last_followup_at") @db.Timestamptz(6)
+  cancelledAt    DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  cancelledBy    String?   @map("cancelled_by") @db.Uuid
+  cancelReason   String?   @map("cancel_reason")
+
+  /// Where a returned document is filed: the condition this order answers.
+  conditionId String? @map("condition_id") @db.Uuid
+
+  notes     String?
+  meta      Json     @default("{}") @db.JsonB
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  loan      LtLoan           @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  condition LtFileCondition? @relation(fields: [conditionId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  events    LtOrderEvent[]
+
+  @@unique([loanId, kind], map: "lt_file_orders_one_per_kind_uk")
+  @@map("lt_file_orders")
+}
+
+/// Every message on an order's thread, out and back. The bytes of an attachment go
+/// to storage and its row to `lt_condition_files`; this is the receipt.
+model LtOrderEvent {
+  id      String @id @default(uuid()) @db.Uuid
+  orderId String @map("order_id") @db.Uuid
+  /// Denormalised so a screen can scope by loan without joining, and so the
+  /// inbound handler can refuse a message whose order belongs to another loan.
+  loanId  String @map("loan_id") @db.Uuid
+
+  direction String
+  msgType   String @default("message") @map("msg_type")
+
+  subject   String?
+  fromEmail String?  @map("from_email")
+  toEmails  String[] @default([]) @map("to_emails")
+  ccEmails  String[] @default([]) @map("cc_emails")
+  bodyText  String?  @map("body_text")
+  bodyHtml  String?  @map("body_html")
+
+  messageId String? @map("message_id")
+  inReplyTo String? @map("in_reply_to")
+
+  /// The provider's own id for an inbound delivery. UNIQUE where present, because
+  /// a webhook redelivery must not file the same documents twice.
+  inboundId String? @map("inbound_id")
+
+  /// Did this message really come from who it says? Never a gate — a legitimate
+  /// reply relayed through a list fails SPF routinely — but SHOWN, above the fold,
+  /// before anybody opens an attachment.
+  senderAuth Json? @map("sender_auth") @db.JsonB
+
+  attachments Json @default("[]") @db.JsonB
+  /// Never silently dropped: what could not be filed, and why.
+  skipped     Json @default("[]") @db.JsonB
+
+  status     String?
+  staffId    String?  @map("staff_id") @db.Uuid
+  occurredAt DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  order LtFileOrder @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  loan  LtLoan      @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([inboundId], map: "lt_order_events_inbound_uk")
+  @@index([orderId, occurredAt(sort: Desc)], map: "lt_order_events_order_idx")
+  @@index([loanId, occurredAt(sort: Desc)], map: "lt_order_events_loan_idx")
+  @@map("lt_order_events")
 }

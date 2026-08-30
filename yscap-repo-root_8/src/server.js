@@ -59,6 +59,20 @@ app.use('/api/inbound/chat', require('./routes/inbound-chat'));
 // verified (Svix signature over the RAW body) and fanned out to every assignee.
 // Mounted BEFORE the JSON parser for the same raw-body reason as the chat/ClickUp
 // webhooks. Separate URL from /api/inbound/chat (which is unchanged).
+// LONG-TERM claims its OWN order addresses on the SAME endpoint, immediately in
+// front of the short-term reader (the permitted seam: server.js mounting a Long-Term
+// router, src/longterm/routes/). A mail provider routes inbound mail per DOMAIN to
+// ONE webhook and both products mint reply addresses on the same verified domain, so
+// there is exactly one delivery endpoint and it has to serve both. This handler
+// claims a delivery ONLY when it names an `ltorder+` address and otherwise calls
+// next(), leaving the short-term route to see the request exactly as it always has —
+// body-parser sets req._body once, so that route's own express.raw is a no-op and
+// req.body is still the very Buffer whose signature was checked.
+//
+// The two address families are provably exclusive (src/lib/file-address.js is the
+// registry of the namespace; scripts/test-shared-order-letter-pure.js asserts neither
+// can parse the other's), so this can never swallow a short-term reply.
+app.use('/api/inbound/file-email', require('./longterm/routes/order-inbox'));
 app.use('/api/inbound/file-email', require('./routes/inbound-file-email'));
 // DocuSign Connect webhook — RAW body for the base64 HMAC verification, mounted
 // BEFORE the JSON parser for the same reason as the ClickUp/inbound webhooks.

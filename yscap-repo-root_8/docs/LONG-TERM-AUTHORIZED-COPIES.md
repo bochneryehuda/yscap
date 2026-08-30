@@ -297,6 +297,58 @@ import src/lib/inbound-mail.js
 # signature verifier is the one duplication that must never exist.
 import src/lib/resend-webhook.js
 
+# THE MAIL SENDER. One Resend/Graph account, one From identity, one SPF/DKIM/DMARC
+# story — a second sender would be a second deliverability posture and a second
+# place the provider's ceiling is (not) respected.
+#
+# STATED PLAINLY RATHER THAN SMUGGLED: `email/rate-limit.js` lazily reaches for
+# `src/db` to spend from the outbound budget every process shares (db/619). That is
+# the ONE place a long-term send touches the short-term pool, and it is deliberate:
+# there is ONE Resend account, so there is ONE ceiling, and two independent budgets
+# would let the two products together burst past it and get the whole company
+# throttled — which is the failure that budget exists to prevent. It carries no loan
+# data in either direction. Long-Term sends with `_skipCapture: true`, so the
+# short-term Email Center is never written; the long-term thread is its own
+# `lt_order_events` row.
+import src/lib/email/index.js
+
+# WHERE THE BYTES GO. One storage layer — one persistent disk / one bucket, one
+# path-traversal defence, one atomic write, one integrity hash. A second one is a
+# second place a document can be silently lost.
+import src/lib/storage.js
+
+# What a file actually IS, from its own first bytes, and the one tolerant base64
+# decode. A second sniffer is a second answer to "is this a PDF or an HTML error
+# page saved as one", and the lenient decoder is what silently garbles a document.
+import src/lib/upload-bytes.js
+
+# An email-signature logo is not a returned document. One definition, or the
+# long-term desk re-lives the months of rejecting company logos by hand that the
+# short-term desk already lived through.
+import src/lib/order-return-filter.js
+
+# WHERE A PERSON'S OWN REPLY ENDS AND THE QUOTED HISTORY BEGINS. The order letter
+# PRINTS the shared reply marker at the top of its content; this is the reader that
+# cuts on it. They are two halves of one mechanism, so a second copy of the cut
+# would file a vendor's whole thread on the loan on every round.
+import src/lib/email/reply-cut.js
+
+# HOW A VENDOR'S ADDRESSES AND PHONES ARE READ — the PURE half only
+# (`allEmails` / `allPhones` / `dedupBy`). db/224 added an `emails text[]` beside
+# the legacy scalar `email` and backfilled only the rows that existed then, so on
+# many live cards the array is NULL and the scalar is the only value while on
+# others the scalar is merely the first entry. Reading either alone drops
+# addresses, which on this desk means a title company's closing@ inbox never
+# receiving the order and nobody knowing. One definition, or the long-term desk
+# rediscovers that column pair the hard way.
+#
+# `suggest()` IS OFF LIMITS and is the reason this entry says "the pure half": it
+# lazily reaches for `src/db` to search the directory, which would run a long-term
+# read on the short-term pool. Long-Term queries `service_contacts` on its OWN pool
+# (authorized `sql-read` below) and folds the result with these pure helpers.
+# Guarded by scripts/test-lt-orders-pure.js.
+import src/lib/vendor-directory.js
+
 # ---------------------------------------------------------------------------
 # THE VENDOR DIRECTORY — the second sentence above, in table form.
 #
@@ -327,6 +379,10 @@ sql-write service_contacts
 | 2026-08-30 | `import src/lib/order-email.js` — the order letter, one definition for both products | RTL → LT | *"Everything should share the code, so we don't need to rewrite the code. We are just sharing the code. If the code is updated, he's also updating it."* | #1376 |
 | 2026-08-30 | `import src/lib/inbound-mail.js` — reading an inbound message (retrieval, attachments, sender authentication, auto-responder detection), extracted from `src/lib/file-inbox.js`, which re-exports it | RTL → LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* The vendor reply that carries a long-term order's documents has to be read the same way the short-term one is | #1376 |
 | 2026-08-30 | `import src/lib/resend-webhook.js` — the inbound webhook signature check | RTL → LT | The same message arrives on the same domain through the same webhook; one signing secret, one verification. A second copy of a signature verifier is the duplication that must never exist | #1376 |
+| 2026-08-30 | `import src/lib/email/index.js` — the mail sender | RTL → LT | *"make sure all the orders are coming from the user that is actually ordering, from his email, from his name"* — sending the order IS the order. One account, one From identity, one deliverability posture. **Recorded explicitly: the shared outbound rate budget reaches the RTL pool (db/619), because there is one Resend ceiling and two budgets would burst it. No loan data crosses, and Long-Term sends with `_skipCapture` so the short-term Email Center is never written** | #1376 |
+| 2026-08-30 | `import src/lib/storage.js` + `import src/lib/upload-bytes.js` + `import src/lib/order-return-filter.js` — where a returned document's bytes go, what the bytes actually are, and the email-signature filter | RTL → LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* A second storage layer is a second place a document is lost; a second sniffer is a second answer to "is this a PDF"; a second signature filter means re-living the months of rejecting company logos by hand | #1376 |
+| 2026-08-30 | `import src/lib/vendor-directory.js` — the PURE half only: how a vendor card's addresses and phones are read | RTL → LT | The same directory is shared, so the same reading of it must be. db/224's `email` scalar + `emails` array pair drops addresses when either is read alone. **`suggest()` is off limits** — it reaches the short-term pool; Long-Term queries `service_contacts` on its own pool and folds with these helpers | #1376 |
+| 2026-08-30 | `import src/lib/email/reply-cut.js` — where a person's own reply ends and the quoted history begins | RTL → LT | The order letter prints the SHARED reply marker; this is the reader that cuts on it. Two halves of one mechanism — a second copy files the vendor's whole thread on the loan every round |  #1376 |
 | 2026-08-30 | `import src/lib/email/{template,quote}.js` — the one branded email | RTL → LT | *"it should have the same feel … the same Gmail-style box"* | #1376 |
 | 2026-08-30 | `import src/lib/file-address.js` — the unique per-order reply address | RTL → LT | *"Everything should share the code … If the code is updated, he's also updating it."* | #1376 |
 | 2026-08-30 | `sql-ref` / `sql-read` / `sql-write service_contacts` — the shared vendor directory | RTL ↔ LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* | #1376 |
