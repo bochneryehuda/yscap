@@ -288,6 +288,15 @@ export const ltApi = {
   orderVendors: (loanId) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors`)),
   orderVendorSearch: (loanId, kind, q) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/search?kind=${encodeURIComponent(kind)}&q=${encodeURIComponent(q)}`)),
   orderVendorLink: (loanId, body) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors`), body),
+  /* A contact NOBODY has entered yet: the card is written into the shared
+     directory and linked in one breath. Link (above) needs a card that already
+     exists; this is the other half, and without it the only way a vendor reaches
+     a long-term loan is for somebody to have typed it on a short-term file first
+     — which is how a second contact store gets started. */
+  orderVendorCreate: (loanId, body) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/new`), body),
+  /* Correcting a card corrects it EVERYWHERE — it is the one shared row. That is
+     the owner's "one company, one card, corrected in one place", not a leak. */
+  orderVendorEdit: (loanId, linkId, body) => ltPatch(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/${encodeURIComponent(linkId)}`), body),
   orderVendorUnlink: (loanId, linkId) => ltDel(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/${encodeURIComponent(linkId)}`)),
 
   orderLetters: () => ltGet(lt('/orders/letters')),

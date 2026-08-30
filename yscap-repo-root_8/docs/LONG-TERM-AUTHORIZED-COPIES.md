@@ -470,11 +470,31 @@ import src/lib/integrations/docusign.js
 # receiving the order and nobody knowing. One definition, or the long-term desk
 # rediscovers that column pair the hard way.
 #
-# `suggest()` IS OFF LIMITS and is the reason this entry says "the pure half": it
-# lazily reaches for `src/db` to search the directory, which would run a long-term
-# read on the short-term pool. Long-Term queries `service_contacts` on its OWN pool
-# (authorized `sql-read` below) and folds the result with these pure helpers.
-# Guarded by scripts/test-lt-orders-pure.js.
+# `suggest()` was declared OFF LIMITS here for ONE reason, and it is worth stating
+# what that reason actually was: it lazily reached for `src/db` and its "used on N
+# files" count named `application_service_contacts`, so calling it from Long-Term
+# would have run a long-term read on the short-term pool AND counted a link table a
+# long-term loan can never appear in. UNDER THE 2026-08-30 SHARE-THE-CODE GRANT
+# (*"it should be the exact same vendor setup and use the same information"*) both
+# of those are now PARAMETERS: the pool has always been injectable (`dbc`), and the
+# counted link table is `usedCountFrom` — defaulted to the short-term one, so every
+# short-term caller is byte-identical, and validated as a bare identifier because a
+# table name cannot be a bind parameter. So the suggester CAN be shared; when
+# Long-Term calls it, it MUST hand over its OWN pool and its OWN link table
+# (`lt_loan_vendors`), or it is back to both of the faults above.
+#
+# NOT YET CALLED FROM LONG-TERM, deliberately: the desk's own search is replaced
+# when the shared FileContacts screen lands. `scripts/test-lt-orders-pure.js` still
+# holds every module in `src/longterm/orders/**` and the orders routes to the PURE
+# half — that guard is what stops the shared suggester being reached for with the
+# short-term pool by habit, and it stays until the caller passes both parameters.
+# The seam itself is proven on a real database by
+# scripts/test-lt-vendor-write-db.js, which also proves the short-term type-ahead
+# did not move a byte.
+#
+# NO NEW LEDGER LINE IS NEEDED for the long-term WRITE half (create-and-link + edit
+# a vendor card from the orders desk): this `import` already authorizes the pure
+# helpers it uses, and `sql-write service_contacts` is authorized below.
 import src/lib/vendor-directory.js
 
 # ---------------------------------------------------------------------------
