@@ -44,6 +44,63 @@ const map = require('./sharepoint-map');
 const shelves = require('./sharepoint-shelf');   // which shelf a document sits on
 const { sniffKind, expectedKind } = require('./upload-bytes');
 
+// ------------------------------------------------ the FOURTH owner: lt_loan
+// The Condition Center was multi-owner from day one, and db/650 makes the
+// Long-Term loan its fourth owner (scope 'lt_loan', column lt_loan_id on
+// checklist_items AND documents). The owner's order, 2026-08-30: *"Same thing is
+// with SharePoint: you need to share the code"* / *"the SharePoint looks for the
+// same exact folder, same exact logic that we build up on the short-term side"*.
+// So this ONE mirror files a long-term document too — same drain, same folder
+// chain, same shelves, same no-delete law.
+//
+// The only thing this file may NOT know is WHERE a long-term loan keeps its
+// officer / borrower / property: that reads lt_* tables, and RTL code naming a
+// Long-Term table is a separation violation with no ledger override (and rightly
+// so — the live product must not depend on the side build's schema). So the
+// Long-Term side hands us SQL fragments + one pure predicate and we splice them
+// into OUR selectors; every decision below stays here.
+//
+// REQUIRED THROUGH A try/catch ON PURPOSE: RTL is the live product and must keep
+// mirroring even if the side build is absent. Without the module there is simply
+// no lt scope — exactly how this mirror behaved before this shipment — and an
+// lt_loan document (which cannot exist in that world) would PARK, never churn.
+let ltScope;
+try {
+  ltScope = require('../longterm/sharepoint-scope');
+} catch (_) {
+  ltScope = {
+    SCOPE_KEY_PREFIX: 'lt',
+    scopeKey: (id) => `lt:${id}`,
+    OFFICER_SQL: 'NULL::text', BORROWER_FIRST_SQL: 'NULL::text', BORROWER_LAST_SQL: 'NULL::text',
+    BORROWER_NAME_SQL: 'NULL::text', ADDRESS_ONE_LINE_SQL: 'NULL::text', LOAN_NUMBER_SQL: 'NULL::text',
+    enrichJoinsSql: () => '',
+    unresolvedSql: () => 'false',
+    identitiesResolved: () => false,
+  };
+}
+
+// WHICH long-term loan a document belongs to, resolved the way every other owner
+// on this table is: the document's own denormalized column first, then the
+// condition it hangs on. Two spellings of one meaning, because the selectors that
+// need it do not all have `checklist_items` in scope:
+//   · JOINED     — for the enrichment query, which already joins `ci`.
+//   · STANDALONE — for a predicate that has only `documents` (the settle pass,
+//     and sp-mirror-queue's claimableWhere, which must stay in LOCK-STEP with
+//     pendingBatch). It reads d.lt_loan_id ALONE — the owner column is
+//     denormalized onto the document row exactly like application_id/borrower_id
+//     — so the cheap predicate never drags a per-row subquery through the
+//     backlog scans. A row that carries only the CONDITION's lt_loan_id is still
+//     caught, one layer down, by the mirrorRow chokepoint (which sees the joined
+//     form) — so nothing can fail-loop either way.
+const LT_OWNER_JOINED_SQL = `COALESCE(d.lt_loan_id, ci.lt_loan_id)`;
+const LT_OWNER_STANDALONE_SQL = `d.lt_loan_id`;
+// A long-term document whose loan cannot name a borrower or a place. It is
+// EXCLUDED from every drain/backlog selector below (the same treatment the
+// lead-CRM attachment gets) and stamped skipped by the settle pass, so it is
+// visible in the scoreboard and can never become a retry-loop, a stuck card, or
+// a standing backlog-SLO breach.
+const LT_UNRESOLVED_SQL = ltScope.unresolvedSql(LT_OWNER_STANDALONE_SQL);
+
 const MAX_ATTEMPTS = 8;            // per-document retry cap (interval sweeps retry)
 const DEFAULT_BATCH = 25;
 const PACING_MS = 300;             // between uploads — keeps Graph bursts polite
@@ -120,14 +177,18 @@ const _sqlLit = (s) => `'${String(s).replace(/'/g, "''")}'`;
 const NEVER_MIRROR_REASON_CASE = `CASE d.doc_kind ${Object.entries(NEVER_MIRROR_REASON)
   .map(([k, v]) => `WHEN ${_sqlLit(k)} THEN ${_sqlLit(v)}`).join(' ')} ELSE ${_sqlLit(DEFAULT_NEVER_MIRROR_REASON)} END`;
 // Drain-selector SQL fragment — a doc is IN-SCOPE for mirroring when it is not a
-// never-mirror kind AND not a lead-CRM attachment (a `lead_id` with no pipeline
+// never-mirror kind, not a lead-CRM attachment (a `lead_id` with no pipeline
 // scope — no application/borrower/llc/track-record/checklist item — has nowhere
 // to file, so it would churn doomed "no borrower or loan file" attempts and sit
-// as permanent stuck noise, A-Z audit F1). Built FROM NEVER_MIRROR_KINDS so the
-// SQL and the settle set can never drift apart again.
+// as permanent stuck noise, A-Z audit F1), and not a long-term document whose
+// loan cannot name a borrower or a place (same reasoning, same shape — see
+// LT_UNRESOLVED_SQL). Built FROM NEVER_MIRROR_KINDS so the SQL and the settle set
+// can never drift apart again.
 const NEVER_MIRROR_SQL = `(COALESCE(d.doc_kind,'') NOT IN (${[...NEVER_MIRROR_KINDS].map(_sqlLit).join(',')})
   AND NOT (d.lead_id IS NOT NULL AND d.application_id IS NULL AND d.borrower_id IS NULL
-           AND d.checklist_item_id IS NULL AND d.llc_id IS NULL AND d.track_record_id IS NULL))`;
+           AND d.checklist_item_id IS NULL AND d.llc_id IS NULL AND d.track_record_id IS NULL
+           AND d.lt_loan_id IS NULL)
+  AND NOT ${LT_UNRESOLVED_SQL})`;
 
 // ------------------------------------------- why a document is NOT in SharePoint
 // Owner-reported 2026-08-09: the scoreboard read "2,655 total / 1,755 in
@@ -145,6 +206,15 @@ const SKIP_SUPERSEDED_PREFIX = 'superseded before mirror — ';
 const SKIP_REASON_SUPERSEDED   = `${SKIP_SUPERSEDED_PREFIX}a newer copy of this autosaved snapshot mirrors instead`;
 const SKIP_REASON_SUPERSEDED_HEAL = `${SKIP_SUPERSEDED_PREFIX}a newer copy of this snapshot mirrors instead (stuck-heal)`;
 const SKIP_REASON_LEAD = 'not mirrored — a lead/CRM attachment, not a pipeline document';
+// A long-term document whose loan does not yet name a borrower or a place. The
+// machine-readable token leads the sentence so a log, a bucket and a grep all
+// find the same thing. PARKED, not failed: the row is settled (it leaves the
+// pending/oldest-pending/stuck/backlog-SLO population entirely) and says why, so
+// it is visible without ever being retried. It stays parked until a human
+// re-queues it — deliberately: clearing the settle stamp on an old row would
+// re-arm the backlog SLO with a weeks-old created_at and email every admin about
+// a policy decision (the trap documented on the appraisal-photo backfill below).
+const SKIP_REASON_LT_UNRESOLVED = 'lt_unresolved_scope — a long-term loan document whose loan names no borrower or property yet, so there is no folder to file it under';
 const SKIP_DUPLICATE_PREFIX = 'duplicate bytes — identical to already-mirrored document ';
 const duplicateBytesReason = (id) => `${SKIP_DUPLICATE_PREFIX}${id}`;
 // Written by lib/esign/webhook.js (an app-less DocuSign self-test document has no
@@ -179,6 +249,8 @@ const SKIP_BUCKETS = [
     label: 'Exact duplicates — the identical file is already in SharePoint' },
   { key: 'lead', match: `d.sharepoint_skipped_reason = ${_sqlLit(SKIP_REASON_LEAD)}`,
     label: 'Lead / CRM attachments — not a loan-file document' },
+  { key: 'lt_unresolved', match: `d.sharepoint_skipped_reason = ${_sqlLit(SKIP_REASON_LT_UNRESOLVED)}`,
+    label: 'Long-term files with no borrower or property on the loan yet — nothing to file them under' },
   { key: 'esign_selftest', match: _sqlPrefix('d.sharepoint_skipped_reason', SKIP_ESIGN_SELFTEST_PREFIX),
     label: 'DocuSign test documents — no loan file to file them under' },
 ];
@@ -501,6 +573,14 @@ function categoryPathFor(row) {
   }
   if (isClosingDoc(row)) return ['Closing'];
   if (row.source_type === 'chat_attachment') return ['Chat Attachments'];
+  // A LONG-TERM document needs no case of its own, and deliberately does not get
+  // one: it reaches here and takes the SAME clean category the RTL rows take.
+  // The enrichment fills item_label/template_code off checklist_items whichever
+  // product the condition belongs to (there is one Condition Center — db/650), so
+  // an lt_loan document on a condition is categorized BY THAT CONDITION through
+  // this one categorizer, and one with no condition — and no keyword in its name —
+  // lands in the categorizer's own default, "Other Documents". That is the owner's
+  // "same exact logic", spelled as an absence of code rather than a copy of it.
   return [tprCategoryOf(row)];
 }
 // Back-compat name used by tests/health.
@@ -522,6 +602,15 @@ function scopeKeyFor(row) {
   if ((row.track_record_id || row.doc_kind === 'track_record_doc' || row.doc_kind === 'track_record_html') && row.borrower_id) {
     return `borrower:${row.borrower_id}`;
   }
+  // A LONG-TERM LOAN FILE is a loan file (db/650's fourth owner). It gets the same
+  // officer/borrower/address chain an application gets — the owner's rule, in
+  // their words: *"the SharePoint looks for the same exact folder, same exact
+  // logic that we build up on the short-term side"*. It is asked BEFORE the bare
+  // borrower fallback so a long-term document that also carries the shared
+  // borrower profile files under its LOAN, not loose in the borrower's folder;
+  // and AFTER the two borrower-level datasets above, because a photo ID and the
+  // track record belong to the person in BOTH products, not to one loan.
+  if (row.lt_loan_id) return ltScope.scopeKey(row.lt_loan_id);
   if (row.app_id) return `app:${row.app_id}`;
   if (row.borrower_id) return `borrower:${row.borrower_id}`;
   return null;
@@ -533,6 +622,11 @@ function scopeKeyFor(row) {
 // happens to be attached to a checklist item.
 const KIND_STREAM = new Set(['photo_id', 'term_sheet', 'term_sheet_signed']);
 
+// The version stream a document belongs to. It is written in terms of the SCOPE
+// KEY and the checklist item, so it learned the long-term scope the moment
+// scopeKeyFor did: an lt_loan document streams under `kind:lt:<loanId>:<category>`
+// or, on a condition, `item:<conditionId>:<category>` — the same two shapes, the
+// same folder-local counter. Nothing here is product-aware, and that is the point.
 function stateKeyFor(row, scopeKey) {
   if (row.doc_kind === 'photo_id') return `kind:${scopeKey}:photo-id`;   // one stream across files
   if (KIND_STREAM.has(row.doc_kind)) return `kind:${scopeKey}:${slug(categoryFor(row))}`;
@@ -570,6 +664,15 @@ const ENRICH_SELECT = `
            COALESCE(d.track_record_id, ci.track_record_id)                     AS track_record_id,
            COALESCE(d.application_id, ci.application_id)                        AS app_id,
            COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
+           -- The FOURTH owner (db/650), resolved doc → condition like the others.
+           ${LT_OWNER_JOINED_SQL}                                              AS lt_loan_id,
+           -- The long-term loan's OWN identities, kept in their own columns and
+           -- never merged into the RTL ones: identitiesResolved() reads exactly
+           -- these, so the JS twin and the SQL park predicate are answering the
+           -- same question about the same facts.
+           ${ltScope.BORROWER_NAME_SQL}                                        AS lt_borrower_name,
+           ${ltScope.ADDRESS_ONE_LINE_SQL}                                     AS lt_address_one_line,
+           ${ltScope.LOAN_NUMBER_SQL}                                          AS lt_loan_number,
            ci.label                                                            AS item_label,
            ct.code                                                             AS template_code,
            l.id                                                                AS llc_resolved_id,
@@ -580,14 +683,26 @@ const ENRICH_SELECT = `
                     -- heal) names the REO folder by the address, not "Project <id>".
                     CASE WHEN jsonb_typeof(tr.property_address) = 'string'
                          THEN tr.property_address #>> '{}' END) AS tr_address,
-           a.ys_loan_number,
+           -- Each of the four folder facts below now ENDS with the long-term
+           -- fallbacks. On an RTL row every lt_ join misses, so each expression
+           -- is COALESCE(<what it always was>, NULL, …) — the same value, by
+           -- construction. On a long-term row they are the whole answer.
+           COALESCE(a.ys_loan_number, ${ltScope.LOAN_NUMBER_SQL})             AS ys_loan_number,
            COALESCE(a.property_address->>'oneLine',
                     NULLIF(TRIM(CONCAT_WS(', ',
                       COALESCE(a.property_address->>'street', a.property_address->>'line1'),
-                      a.property_address->>'city', a.property_address->>'state')), '')) AS address_one_line,
-           COALESCE(su.full_name, a.loan_officer_name, recent.officer_name)    AS officer_name,
-           b.first_name  AS borrower_first,
-           b.last_name   AS borrower_last
+                      a.property_address->>'city', a.property_address->>'state')), ''),
+                    ${ltScope.ADDRESS_ONE_LINE_SQL})                          AS address_one_line,
+           -- The long-term officer is asked BEFORE "recent" (the borrower's most
+           -- recent RTL file's officer): a long-term loan that knows its own
+           -- officer must file under THAT person, not under whoever last wrote a
+           -- bridge loan for the same borrower. "recent" still catches a
+           -- long-term loan with no officer at all, exactly as it does for a
+           -- profile document — one rule, both products.
+           COALESCE(su.full_name, a.loan_officer_name,
+                    ${ltScope.OFFICER_SQL}, recent.officer_name)              AS officer_name,
+           COALESCE(b.first_name, ${ltScope.BORROWER_FIRST_SQL}) AS borrower_first,
+           COALESCE(b.last_name,  ${ltScope.BORROWER_LAST_SQL})  AS borrower_last
       FROM documents d
       LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
       LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
@@ -603,7 +718,7 @@ const ENRICH_SELECT = `
          WHERE COALESCE(d.application_id, ci.application_id) IS NULL
            AND a2.borrower_id = COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id)
          ORDER BY a2.created_at DESC LIMIT 1
-      ) recent ON true`;
+      ) recent ON true${ltScope.enrichJoinsSql(LT_OWNER_JOINED_SQL)}`;
 
 async function pendingBatch(limit) {
   const { rows } = await db.query(
@@ -675,7 +790,8 @@ async function neverAttemptedStrays(limit) {
             round(EXTRACT(EPOCH FROM (now() - d.created_at)) / 3600.0, 1) AS age_hours,
             (${REGEN_KIND_SQL}) AS is_regen,
             COALESCE(d.application_id, ci.application_id)                        AS app_id,
-            COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id
+            COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
+            ${LT_OWNER_JOINED_SQL}                                              AS lt_loan_id
        FROM documents d
        LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
        LEFT JOIN llcs l             ON l.id = COALESCE(d.llc_id, ci.llc_id)
@@ -704,7 +820,7 @@ function explainExclusion(row) {
   // provider the storage layer can read (local + s3). Kept in the row for logging.
   if (row.is_regen && row.is_current === false) reasons.push('superseded auto-saved snapshot (should have settled)');
   if (row.is_regen && row.is_current == null) reasons.push('regen snapshot with NULL is_current');
-  if (!row.app_id && !row.borrower_id) reasons.push('no application/borrower scope resolves (nothing to file it under)');
+  if (!row.app_id && !row.borrower_id && !row.lt_loan_id) reasons.push('no application/borrower/long-term-loan scope resolves (nothing to file it under)');
   return reasons.length
     ? `excluded from the normal batch by: ${reasons.join('; ')}`
     : 'no obvious exclusion predicate — check drain/lease health (the pass may not be running)';
@@ -771,9 +887,30 @@ async function settleNeverMirror() {
         AND d.storage_ref IS NOT NULL
         AND d.lead_id IS NOT NULL AND d.application_id IS NULL AND d.borrower_id IS NULL
         AND d.checklist_item_id IS NULL AND d.llc_id IS NULL AND d.track_record_id IS NULL
+        -- In LOCK-STEP with the same clause inside NEVER_MIRROR_SQL: a lead
+        -- attachment that also belongs to a long-term loan is a loan document.
+        AND d.lt_loan_id IS NULL
       RETURNING d.id`);
   if (lead.rowCount) console.log(`[sp-sync] settled ${lead.rowCount} lead/CRM attachment(s) (not pipeline docs)`);
-  return (r.rowCount || 0) + (lead.rowCount || 0);
+  // LONG-TERM documents whose loan names no borrower and no place: settle them
+  // skipped, for exactly the reasons the two passes above exist. This is the pass
+  // that makes the very FIRST lt_loan document safe — it leaves the pending /
+  // oldest-pending / stuck / backlog-SLO population before the drain ever hands
+  // it to mirrorRow, so it can never churn attempts or page a human at 3am, and
+  // it says in plain language why it is not in SharePoint. Derived from the SAME
+  // LT_UNRESOLVED_SQL the drain selector excludes on, so the settle set and the
+  // exclusion set cannot drift — the failure this file has already paid for twice.
+  const ltUnresolved = await db.query(
+    `UPDATE documents d SET
+        sharepoint_backed_up_at = now(),
+        sharepoint_skipped_reason = ${_sqlLit(SKIP_REASON_LT_UNRESOLVED)},
+        sharepoint_backup_error = NULL
+      WHERE d.sharepoint_backed_up_at IS NULL
+        AND d.storage_ref IS NOT NULL
+        AND ${LT_UNRESOLVED_SQL}
+      RETURNING d.id`);
+  if (ltUnresolved.rowCount) console.log(`[sp-sync] parked ${ltUnresolved.rowCount} long-term doc(s) — the loan names no borrower or property yet`);
+  return (r.rowCount || 0) + (lead.rowCount || 0) + (ltUnresolved.rowCount || 0);
 }
 
 /**
@@ -1135,6 +1272,24 @@ async function mirrorRow(row, retried = false) {
         WHERE id = $1 AND sharepoint_backed_up_at IS NULL`, [row.id, neverMirrorReason(row.doc_kind)]);
     return { skipped: true, reason: 'never_mirror_kind' };
   }
+  // THE LONG-TERM PARK (owner-directed 2026-08-30, the share-the-code shipment).
+  // A long-term document whose loan cannot name a borrower or a place has no
+  // folder to file under. Throwing here is what the first lt_loan document ever
+  // written WOULD have done: 8 doomed attempts, a stuck card, a terminal DEAD
+  // (and DEAD never reverts), and a permanent backlog-SLO breach emailing every
+  // admin. So it is PARKED instead — settled with a named reason, exactly like a
+  // never-mirror kind above and the lead-CRM attachment in the settle pass. The
+  // settle pass normally gets there first; this is the chokepoint that also
+  // catches a FORCE-attempt (which bypasses every selector) and a document that
+  // carries only its CONDITION's lt_loan_id.
+  if (row.lt_loan_id && !ltScope.identitiesResolved(row)) {
+    await db.query(
+      `UPDATE documents SET sharepoint_backed_up_at = now(),
+          sharepoint_skipped_reason = $2,
+          sharepoint_backup_error = NULL
+        WHERE id = $1 AND sharepoint_backed_up_at IS NULL`, [row.id, SKIP_REASON_LT_UNRESOLVED]);
+    return { skipped: true, reason: 'lt_unresolved_scope' };
+  }
   const scopeKey = scopeKeyFor(row);
   if (!scopeKey) throw new Error('document has no application or borrower to file under');
   try {
@@ -1214,9 +1369,15 @@ async function mirrorRowInner(row, scopeKey) {
         AND borrower_id     IS NOT DISTINCT FROM $5
         AND llc_id          IS NOT DISTINCT FROM $6
         AND track_record_id IS NOT DISTINCT FROM $7
+        -- The fourth owner belongs in the scope test like the other three: two
+        -- long-term loans that happen to receive the same bytes under the same
+        -- filename are two documents in two folders, and must never be collapsed
+        -- into one shared mirror copy. NULL on every RTL row, so this line changes
+        -- nothing on the RTL side (NULL IS NOT DISTINCT FROM NULL).
+        AND lt_loan_id      IS NOT DISTINCT FROM $8
       ORDER BY created_at DESC LIMIT 1`,
     [contentSha, row.filename, row.id, row.app_id || null, row.borrower_id || null,
-     row.llc_id || null, row.track_record_id || null])).rows[0];
+     row.llc_id || null, row.track_record_id || null, row.lt_loan_id || null])).rows[0];
   if (dup) {
     await db.query(
       `UPDATE documents SET
@@ -1300,7 +1461,10 @@ async function mirrorRowInner(row, scopeKey) {
     // context has app_id set but a borrower scope — passing !!row.app_id here
     // would build (and permanently cache!) the ADDRESS-level chain under the
     // borrower-profile scope key, mis-filing every future profile document.
-    hasApplication: scopeKey.startsWith('app:'),
+    // A LOAN FILE gets the address level, and a long-term loan IS a loan file —
+    // same tree, same depth, same rules. A borrower-profile document still does
+    // not, in either product.
+    hasApplication: scopeKey.startsWith('app:') || ltScope.isScopeKey(scopeKey),
   });
   const driveId = target.driveId;
 
@@ -2616,6 +2780,7 @@ async function stuckDocuments(limit = 25) {
             d.sharepoint_slo_alerted_at AS slo_alerted_at,
             COALESCE(d.application_id, ci.application_id)                        AS app_id,
             COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
+            ${LT_OWNER_JOINED_SQL}                                              AS lt_loan_id,
             TRIM(CONCAT_WS(' ', b.first_name, b.last_name))                     AS borrower_name,
             ${REGEN_KIND_SQL} AS is_regen
        FROM documents d
@@ -2638,7 +2803,9 @@ async function stuckDocuments(limit = 25) {
       LIMIT $2`,
     [hrs, limit]);
   return rows.map((r) => {
-    const noScope = !r.app_id && !r.borrower_id;
+    // A long-term loan IS something to file under, so a stuck lt_loan document is
+    // never diagnosed "no borrower or loan file" — its real error is shown instead.
+    const noScope = !r.app_id && !r.borrower_id && !r.lt_loan_id;
     let why;
     if (r.is_regen && r.is_current === false) why = 'a superseded auto-saved copy that should have auto-settled (self-healing now)';
     else if (noScope) why = 'no borrower or loan file to file it under — a human must link or remove it';
@@ -3051,6 +3218,9 @@ module.exports = {
   // Exported for the recategorize repair (scripts/sharepoint-recategorize-existing.js)
   // + the pure category test (scripts/test-sharepoint-category.js).
   categoryPathFor, scopeKeyFor, stateKeyFor,
+  // The long-term park: its reason string and the settle pass that writes it,
+  // exported for scripts/test-lt-sharepoint-scope-db.js.
+  SKIP_REASON_LT_UNRESOLVED, settleNeverMirror,
   // The scoreboard's own predicates + the exact reason strings the writers use.
   // Exported so scripts/test-sharepoint-scoreboard-db.js asserts against the SAME
   // SQL the report runs — a test that re-typed these would prove nothing about
@@ -3069,6 +3239,7 @@ module.exports = {
       supersededHeal: SKIP_REASON_SUPERSEDED_HEAL,
       duplicate: duplicateBytesReason,
       lead: SKIP_REASON_LEAD,
+      ltUnresolved: SKIP_REASON_LT_UNRESOLVED,
       esignSelfTest: 'e-sign self-test — no loan file to mirror under',   // lib/esign/webhook.js
       humanPlaced: SKIP_HUMAN_PLACED_PREFIX,
     },

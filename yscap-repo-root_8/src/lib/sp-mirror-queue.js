@@ -62,7 +62,11 @@ function fsmMode() {
 // provider's bytes, storage_ref, attempts<MAX, not-superseded-regen) AND an FSM-claimable
 // status, OR an IN_PROGRESS row whose lease expired (crash reclaim). Reusing the
 // shared NEVER_MIRROR_SQL / REGEN_KIND_SQL fragments means the historically
-// divergence-prone bits are identical to the legacy drain by construction.
+// divergence-prone bits are identical to the legacy drain by construction — which
+// is how the fourth owner scope (an lt_loan document, db/650) arrived here for
+// free: NEVER_MIRROR_SQL is where a long-term document whose loan names no
+// borrower or property is excluded, so this claim set and pendingBatch agreed
+// about it on the day it was written, with nothing to keep in step by hand.
 function claimableWhere() {
   return `
        COALESCE(d.sharepoint_next_attempt_at, d.created_at) <= now()

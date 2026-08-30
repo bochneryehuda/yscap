@@ -534,6 +534,23 @@ sql-read  checklist_items
 sql-write checklist_items
 sql-read  documents
 sql-write documents
+
+# ---------------------------------------------------------------------------
+# THE ONE SHAREPOINT MIRROR — the same 2026-08-30 share-the-code grant:
+#   "Same thing is with SharePoint: you need to share the code."
+#   "The SharePoint looks for the same exact folder, same exact logic that we
+#    build up on the short-term side."
+#
+# There is ONE mirror (src/lib/sharepoint-backup.js) and it now files an
+# lt_loan-scoped document into the SAME Pipeline Drive tree. The one thing it
+# cannot know by itself is WHERE a long-term loan keeps its officer / borrower /
+# property, because that reads lt_* tables — and RTL code naming a Long-Term
+# table is refused outright, with no ledger override, exactly as it should be.
+# So src/longterm/sharepoint-scope.js states those facts (SQL fragments + one
+# pure predicate, no mirror logic) and the shared mirror requires it, through a
+# try/catch so the live product keeps mirroring if the side build is absent.
+# This is the crossing that authorizes that one require().
+rtl-import src/lib/sharepoint-backup.js
 ```
 
 ## Log of authorizations
@@ -541,6 +558,7 @@ sql-write documents
 | Date | Kind + item | Direction | The owner's words | PR |
 |---|---|---|---|---|
 | 2026-08-03 | `import src/auth/index.js` — one login for both products | RTL → LT | *"same login same borrower record, keep it separate everything else"* | #975 |
+| 2026-08-30 | `rtl-import src/lib/sharepoint-backup.js` — the ONE SharePoint mirror asks the Long-Term side where an lt_loan keeps its officer / borrower / property (`src/longterm/sharepoint-scope.js`: SQL fragments + one pure predicate, no mirror logic). Required through a try/catch, so RTL keeps mirroring if the side build is absent | LT → RTL | *"Same thing is with SharePoint: you need to share the code."* … *"the SharePoint looks for the same exact folder, same exact logic that we build up on the short-term side"* | this PR |
 | 2026-08-30 | `import src/lib/order-email.js` — the order letter, one definition for both products | RTL → LT | *"Everything should share the code, so we don't need to rewrite the code. We are just sharing the code. If the code is updated, he's also updating it."* | #1376 |
 | 2026-08-30 | `import src/lib/inbound-mail.js` — reading an inbound message (retrieval, attachments, sender authentication, auto-responder detection), extracted from `src/lib/file-inbox.js`, which re-exports it | RTL → LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* The vendor reply that carries a long-term order's documents has to be read the same way the short-term one is | #1376 |
 | 2026-08-30 | `import src/lib/resend-webhook.js` — the inbound webhook signature check | RTL → LT | The same message arrives on the same domain through the same webhook; one signing secret, one verification. A second copy of a signature verifier is the duplication that must never exist | #1376 |
