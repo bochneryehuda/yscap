@@ -1482,6 +1482,8 @@ if (require.main === module) {
     // periodically. Gates fall back to their env default until this loads, so it's safe if it lags.
     try { require('./lib/flags').start(); } catch (e) { console.warn('flags cache not started:', e.message); }
     try { require('./lib/notification-digests').start(); } catch (e) { console.warn('notification digests not started:', e.message); }
+    // Scheduled reports (db/641) — emails a saved report's Excel on its cadence.
+    try { require('./lib/report-scheduler').start(); } catch (e) { console.warn('report scheduler not started:', e.message); }
     // Pipeline V2 durable document-processing worker (owner-directed 2026-07-26). Drains the
     // document_pipeline_jobs queue through the packet-control processor (records the stage manifest
     // + routing decision). It is a NO-OP unless UW_WORKER_ENABLED — so this boot call is inert by

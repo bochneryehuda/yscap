@@ -198,6 +198,148 @@ const uniq = `rpt-${process.pid}-${Date.now()}`;
     ok(!(gone.body.reports || []).some((x) => x.id === rid), '…and is gone from the list');
   }
 
+  // ═══════════════ LAYER 2 (owner-directed 2026-08-29) ═══════════════════════
+
+  // ── 8. OR-groups: AND within a group, OR between groups ────────────────────
+  {
+    const r = await call('POST', '/api/admin/reports/run', {
+      groups: [
+        [{ field: 'investor', op: 'contains', value: uniq }, { field: 'loan_amount', op: 'gte', value: 200000 }],
+        [{ field: 'ys_loan_number', op: 'eq', value: `${uniq}-C` }],
+      ],
+      columns: ['ys_loan_number', 'loan_amount'], limit: 1000,
+    });
+    const got = ids(r);
+    ok(r.status === 200 && got.has(funded) && got.has(other) && !got.has(small),
+      'OR-groups: the big funded file OR the underwriting file — the small funded file matches neither group');
+    const flat = await call('POST', '/api/admin/reports/run', {
+      filters: [{ field: 'investor', op: 'contains', value: uniq }], columns: ['ys_loan_number'], limit: 1000,
+    });
+    ok(flat.status === 200 && ids(flat).has(funded) && ids(flat).has(small),
+      'the layer-1 flat filters shape still runs as one group (saved reports keep working)');
+  }
+
+  // ── 9. totals — same filters, aggregated ───────────────────────────────────
+  {
+    const t = await call('POST', '/api/admin/reports/run', {
+      groups: [[{ field: 'investor', op: 'contains', value: uniq }]],
+      summarize: { groupBy: ['file_status'], metrics: [{ fn: 'count' }, { fn: 'sum', field: 'loan_amount' }] },
+    });
+    ok(t.status === 200 && t.body.mode === 'summary', 'a totals run answers in the summary shape');
+    const row = (t.body.rows || []).find((x) => x.g0 === 'funded');
+    ok(!!row && Number(row.m0) === 2 && Number(row.m1) === 340000,
+      `totals agree with the rows: 2 funded files, $340,000 together (got ${row && row.m0}/${row && row.m1})`);
+    ok(t.body.metrics.map((m) => m.label).join('|') === 'Files|Total loan amount',
+      'the metric labels read in words');
+    const x = await call('POST', '/api/admin/reports/export.xlsx', {
+      name: 'Totals', groups: [[{ field: 'investor', op: 'contains', value: uniq }]],
+      summarize: { groupBy: ['file_status'], metrics: [{ fn: 'count' }] },
+    });
+    const xbuf = Buffer.from(await x.res.arrayBuffer());
+    ok(x.status === 200 && xbuf.slice(0, 2).toString() === 'PK', 'a totals run exports as a real workbook too');
+    for (const [bad, re] of [
+      [{ summarize: { groupBy: ['file_status'], metrics: [{ fn: 'sum', field: 'borrower_name' }] } }, /not a number/],
+      [{ summarize: { groupBy: ['file_status'], metrics: [{ fn: 'median', field: 'loan_amount' }] } }, /unknown total/],
+      [{ summarize: { groupBy: ['file_status', 'program', 'investor'] } }, /at most two/],
+    ]) {
+      const r = await call('POST', '/api/admin/reports/run', bad);
+      ok(r.status === 400 && re.test(r.body.error || ''), `totals refusal in words: ${r.body && r.body.error}`);
+    }
+  }
+
+  // ── 10. the value dropdown ─────────────────────────────────────────────────
+  {
+    const r = await call('GET', '/api/admin/reports/field-values?field=investor');
+    ok(r.status === 200 && (r.body.values || []).some((x) => x.v === LENDER && x.n === 2),
+      'a faceted field lists its LIVE values with counts — 2 ACTIVE files (the soft-deleted third never counted)');
+    const en = await call('GET', '/api/admin/reports/field-values?field=file_status');
+    ok(en.status === 200 && (en.body.values || []).some((x) => x.v === 'funded'), 'an enum field lists its options');
+    const bad = await call('GET', '/api/admin/reports/field-values?field=property_address');
+    ok(bad.status === 400 && /no value list/.test(bad.body.error || ''), 'a free-form field refuses — type the value');
+    const forb = await call('GET', '/api/admin/reports/field-values?field=investor', null, tok(officer, 'loan_officer'));
+    ok(forb.status === 403, 'the dropdown door is admin-gated like everything else here');
+  }
+
+  // ── 11. schedules: the route validates, the sweep claims + sends ───────────
+  {
+    const scheduler = require('../src/lib/report-scheduler');
+    const def = { groups: [[{ field: 'investor', op: 'contains', value: uniq }]], columns: ['ys_loan_number', 'loan_amount'] };
+    const sv = await call('POST', '/api/admin/reports/saved', { name: `${uniq} sched`, definition: def });
+    const rid = sv.body.report.id;
+
+    const badRec = await call('PUT', `/api/admin/reports/saved/${rid}/schedule`, {
+      schedule: { cadence: 'daily', hour: 0, recipients: [`${uniq}-nobody@example.test`] },
+    });
+    ok(badRec.status === 400 && /not on the active internal team/.test(badRec.body.error || ''),
+      'a recipient outside the active internal team is refused AT SAVE, named');
+    const badCad = await call('PUT', `/api/admin/reports/saved/${rid}/schedule`, {
+      schedule: { cadence: 'fortnightly', hour: 0, recipients: [`${uniq}-admin@example.test`] },
+    });
+    ok(badCad.status === 400 && /cadence/.test(badCad.body.error || ''), 'a junk cadence is refused in words');
+    const okSet = await call('PUT', `/api/admin/reports/saved/${rid}/schedule`, {
+      schedule: { cadence: 'daily', hour: 0, recipients: [`${uniq}-admin@example.test`] },
+    });
+    ok(okSet.status === 200 && okSet.body.report.schedule.cadence === 'daily', 'a valid schedule stores');
+
+    // isDue truth table (pure)
+    ok(scheduler.isDue({ enabled: true, cadence: 'daily', hour: 3 }, { hour: 3, dow: 2, dom: 15 }) === true, 'isDue: daily at its hour');
+    ok(scheduler.isDue({ enabled: true, cadence: 'daily', hour: 9 }, { hour: 3, dow: 2, dom: 15 }) === false, 'isDue: not before its hour');
+    ok(scheduler.isDue({ enabled: true, cadence: 'weekly', hour: 0, dow: 5 }, { hour: 8, dow: 2, dom: 15 }) === false, 'isDue: weekly waits for its weekday');
+    ok(scheduler.isDue({ enabled: true, cadence: 'monthly', hour: 0, dom: 15 }, { hour: 8, dow: 2, dom: 15 }) === true, 'isDue: monthly on its day');
+    ok(scheduler.isDue({ enabled: false, cadence: 'daily', hour: 0 }, { hour: 8, dow: 2, dom: 15 }) === false, 'isDue: disabled never fires');
+
+    // Sneak a deactivated + an unknown recipient into the STORED schedule (the
+    // route refuses them; the sweep must ALSO drop them at send time).
+    await db.query(
+      `INSERT INTO staff_users (email, full_name, role, is_active) VALUES ($1,'Gone Person','processor',false)`,
+      [`${uniq}-gone@example.test`]);
+    await db.query(
+      `UPDATE report_definitions SET schedule = jsonb_set(schedule, '{recipients}', $2::jsonb) WHERE id=$1`,
+      [rid, JSON.stringify([`${uniq}-admin@example.test`, `${uniq}-gone@example.test`, `${uniq}-stranger@example.test`])]);
+
+    const email = require('../src/lib/email');
+    const real = email.sendMail; const outbox = [];
+    email.sendMail = async (opts) => { outbox.push(opts); return { ok: true, id: `m${outbox.length}` }; };
+    try {
+      const s1 = await scheduler.sweepOnce(db, new Date());
+      ok(s1.sent === 1 && outbox.length === 1, 'the sweep sends the due report exactly once');
+      const wire = outbox[0];
+      ok(Array.isArray(wire.to) && wire.to.length === 1 && wire.to[0] === `${uniq}-admin@example.test`,
+        'send-time re-validation: only the ACTIVE INTERNAL recipient is on the wire — the deactivated and unknown ones dropped');
+      const att = (wire.attachments || [])[0] || {};
+      ok(/\.xlsx$/.test(att.filename || '') && Buffer.from(att.content || '', 'base64').slice(0, 2).toString() === 'PK',
+        'the Excel workbook rides as a real attachment');
+      const s2 = await scheduler.sweepOnce(db, new Date());
+      ok(s2.sent === 0 && outbox.length === 1, 'the SAME period never sends twice (the last_sent_at claim)');
+
+      // A failed send releases the claim so the next sweep retries.
+      await db.query(`UPDATE report_definitions SET last_sent_at = NULL WHERE id=$1`, [rid]);
+      email.sendMail = async () => { throw new Error('provider down'); };
+      const s3 = await scheduler.sweepOnce(db, new Date());
+      ok(s3.failed === 1, 'a provider failure is counted as failed');
+      const after = (await db.query(`SELECT last_sent_at FROM report_definitions WHERE id=$1`, [rid])).rows[0];
+      ok(after.last_sent_at === null, '…and the claim is RELEASED, so the next sweep retries instead of skipping the day');
+      email.sendMail = async (opts) => { outbox.push(opts); return { ok: true }; };
+      const s4 = await scheduler.sweepOnce(db, new Date());
+      ok(s4.sent === 1 && outbox.length === 2, 'the retry sweep sends it');
+    } finally { email.sendMail = real; }
+
+    const un = await call('PUT', `/api/admin/reports/saved/${rid}/schedule`, { schedule: null });
+    ok(un.status === 200 && un.body.report.schedule === null, 'a schedule clears with schedule: null');
+    await call('DELETE', `/api/admin/reports/saved/${rid}`);
+  }
+
+  // ── 12. the new fields answer over the real join ───────────────────────────
+  {
+    const r = await call('POST', '/api/admin/reports/run', {
+      groups: [[{ field: 'ys_loan_number', op: 'eq', value: `${uniq}-A` }]],
+      columns: ['open_conditions', 'co_borrower_fico', 'tpo_firm', 'closing_stage', 'registration_stale'],
+    });
+    const row = (r.body.rows || [])[0] || {};
+    ok(r.status === 200 && Number.isInteger(Number(row.open_conditions)), 'open_conditions counts (a real number, never an error)');
+    ok(Number(row.co_borrower_fico) === 680, 'the co-borrower FICO reads off the join');
+  }
+
   await new Promise((r) => server.close(r));
   await db.pool.end().catch(() => {});
   if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
