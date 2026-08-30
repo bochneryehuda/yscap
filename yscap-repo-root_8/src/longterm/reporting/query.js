@@ -107,7 +107,16 @@ function compile(def, opts = {}) {
   const where = [fields.BASE_SCOPE];
   if (def && def.filter) {
     const compiled = compileGroup(def.filter, byKey, bind, 0);
-    if (compiled) where.push(compiled);
+    /* EVERY TERM IN THIS LIST IS PARENTHESISED, and on this one it is a SECURITY
+       property rather than tidiness. The terms are joined with AND, and AND binds
+       tighter than OR — so a filter whose TOP level is an OR ("stage is X or
+       stage is Y") used to compile to a bare `x OR y` and the whole WHERE became
+         (BASE_SCOPE AND x) OR (y AND <the viewer's own book>)
+       — the first branch carrying no viewer scope at all, which hands a scoped
+       officer the entire long-term book, and the second carrying no BASE_SCOPE,
+       which lets deleted and trashed loans back in. A nested group was already
+       wrapped; the top level was the one that was not. */
+    if (compiled) where.push(`(${compiled})`);
   }
   // A caller-supplied scope (the viewer's own book) is a CLAUSE, never a string
   // the caller wrote: it arrives as `{sql, params}` from the route.

@@ -2384,7 +2384,8 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    calm white "them" bubbles + refined teal "me" bubbles, tight professional
    radius with a 4px tail, monogram avatars, quiet inline timestamps + read
    states, disciplined spacing, and a clean composer. Presentation only — every
-   selector below is an equal-specificity override of the .cv-*/.msg-* rules
+   selector below is an equal-specificity override of the `.cv-` and `.msg-`
+   rules
    earlier in this file, so it wins by source order and touches NO logic. The
    same component drives the STAFF chat, the BORROWER in-file conversation, and
    the standalone lists, so one system serves all three.
@@ -5228,6 +5229,17 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    `position:sticky` child to the card instead of to the page. */
 .lt-card.lt-card-flush{padding:0;overflow:hidden}
 @media(max-width:720px){ .lt-card{padding:14px 14px;border-radius:10px} }
+
+/* ── THE PRODUCT SWITCH — a real thumb target on a phone ─────────────────────
+   `ProductSwitch` is inline-styled, so it never saw the app's own
+   `@media(max-width:720px){ .btn{min-height:44px} }` rule and sat at 26px —
+   the control that moves a person between the two products was one of the
+   smallest tap targets on every long-term screen. The desktop pill is
+   deliberately unchanged; only the phone grows, and it grows by PADDING so the
+   words stay where they are rather than being stretched. */
+@media(max-width:720px){
+  .lt-prodswitch > button{min-height:40px;padding-left:16px;padding-right:16px}
+}
 
 /* ── THE PIPELINE'S FILE ROWS — "one file, next file, next file" ─────────────
    The rows carry the hairline, the last one does not (a rule under the final

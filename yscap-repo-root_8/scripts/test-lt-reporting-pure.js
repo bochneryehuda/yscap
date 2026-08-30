@@ -387,5 +387,63 @@ for (const f of [
     `${f} requires nothing outside src/longterm${crossing.length ? ` (found ${crossing.join(', ')})` : ''}`);
 }
 
+
+/* ── THE FILTER IS ONE TERM, AND A TOP-LEVEL "OR" MAY NEVER ESCAPE IT ────────
+   The WHERE is a list of terms joined with AND — the base scope, the report's
+   own filter, and the viewer's own book. AND binds tighter than OR, so a filter
+   whose top level is an OR compiled to a bare `x OR y` and the WHOLE clause
+   became `(base AND x) OR (y AND viewer-scope)`: the first branch carrying NO
+   viewer scope, which hands a scoped officer the entire long-term book. Every
+   assertion here is about the SHAPE of the assembled SQL, because that is where
+   the defect lived — no database can see it, and a row count would not either
+   on a fixture where the scope happens to match. */
+console.log('the filter can never break out of its own brackets');
+
+const scoped = { sql: 'l.loan_officer_id = $SCOPE1', params: ['officer-1'] };
+const orFilter = {
+  combinator: 'or',
+  rules: [
+    { field: 'loan_number', operator: 'contains', value: 'LT-2026' },
+    { field: 'loan_number', operator: 'contains', value: 'LT-2025' },
+  ],
+};
+const orSql = query.compile(
+  { columns: ['loan_number'], filter: orFilter },
+  { audience: 'internal', scope: scoped },
+).text;
+
+/* THE OUTER WHERE, NOT THE FIRST ONE. The FROM is built from six LATERAL
+   sub-selects and each carries its own WHERE, so `indexOf('WHERE')` lands
+   inside a subquery and the slice measures the joins instead of the clause
+   under test — which is how the first cut of this guard reported a failure
+   against a fix that was working perfectly. */
+const whereBody = orSql.slice(orSql.lastIndexOf('WHERE') + 5, orSql.indexOf('ORDER BY'));
+check(/\bOR\b/.test(whereBody), 'the OR really is in the clause (or this proves nothing)');
+/* The decisive assertion is a BRACKET WALK, not a regex: the clause nests
+   brackets several deep and any regex that tries to strip them either misses a
+   nested pair or eats a real one. Walking the depth answers the actual question
+   — is there an OR that nothing encloses? — with no cleverness to get wrong. */
+const depthOk = (() => {
+  let depth = 0;
+  for (let i = 0; i < whereBody.length; i++) {
+    const ch = whereBody[i];
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    else if (whereBody.startsWith('OR', i) && /\s/.test(whereBody[i - 1] || '') && depth === 0) return false;
+  }
+  return true;
+})();
+check(depthOk, 'a top-level OR is bracketed, so the viewer’s own book is ANDed to ALL of it');
+check(whereBody.includes('loan_officer_id'), 'and the viewer’s own book is in the clause at all');
+
+// An AND filter is unchanged in meaning, and a report with no filter still binds.
+const andSql = query.compile(
+  { columns: ['loan_number'], filter: { combinator: 'and', rules: [{ field: 'loan_number', operator: 'contains', value: 'LT' }] } },
+  { audience: 'internal', scope: scoped },
+).text;
+check(andSql.includes('loan_officer_id'), 'an AND filter still carries the viewer’s own book');
+const noFilter = query.compile({ columns: ['loan_number'] }, { audience: 'internal', scope: scoped }).text;
+check(noFilter.includes('loan_officer_id'), 'and so does a report with no filter at all');
+
 console.log(failures ? `\n${failures} FAILED` : '\nAll good.');
 process.exit(failures ? 1 : 0);

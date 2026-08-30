@@ -28,8 +28,9 @@ A yes for LT→RTL is not a yes for RTL→LT. If the owner's answer was "not for
 | `sql-ref <table>` | An `lt_*` table may carry a foreign key to this RTL table. | `sql-ref borrowers` |
 | `sql-read <table>` | Long-Term code may **read** this table in SQL (`FROM` / `JOIN`). Reading is not writing. | `sql-read borrowers` |
 | `sql-write <table>` | Long-Term code may **change** this table (`INSERT` / `UPDATE` / `DELETE`). Implies read. | `sql-write borrowers` |
+| `column <table>.<column>` | This ONE owner-authorized Long-Term column may exist on this RTL table (the 2026-08-30 share-the-code grant — a fourth owner scope needs its owner column). Any other lt-named column on an RTL table still fails the gate. | `column documents.lt_loan_id` |
 
-Lines starting with `#` are comments. Everything else must match one of the five kinds exactly.
+Lines starting with `#` are comments. Everything else must match one of the six kinds exactly.
 
 **Only the FIRST `authorized` block in this file counts.** An example block written later in the prose can never
 quietly become a real permission.
@@ -496,6 +497,43 @@ import src/lib/vendor-directory.js
 sql-ref   service_contacts
 sql-read  service_contacts
 sql-write service_contacts
+
+# ---------------------------------------------------------------------------
+# THE ONE CONDITION CENTER — authorized in writing by the owner, 2026-08-30
+# (the SHARE-THE-CODE directive; full quotes + boundary in
+# docs/longterm/SHARE-THE-CODE-DIRECTIVE.md):
+#
+#   "I gave you written authorization to bring that exact Condition Center
+#    over here. Take that exact Condition Center and make your conditions in
+#    that Condition Center follow those rules."
+#   "If I'm updating something in the logic of the Condition Center ... it
+#    should update them both places. You need to share the code."
+#
+# The Condition Center was multi-owner from day one (scope application /
+# borrower_profile / llc, chk_one_owner = exactly one owner column). The
+# Long-Term loan joins as the FOURTH owner: scope 'lt_loan', owner column
+# lt_loan_id on the two tables below (db/650). Every RTL selector is already
+# scope-filtered, so an lt_loan row is invisible to every RTL pass by
+# construction. DELIBERATELY NO FK to lt_loans — the gate forbids welding an
+# RTL table to the side build, and it is right; the column is a bare uuid the
+# Long-Term code interprets.
+# ---------------------------------------------------------------------------
+
+column checklist_items.lt_loan_id
+column documents.lt_loan_id
+
+# Long-Term code reads and writes its OWN rows in the shared Condition Center
+# tables (scope 'lt_loan' / lt_loan_id) — the same grant, the same directive.
+# Every LT statement against these tables is scoped to lt_loan_id in the
+# statement itself; an RTL-scoped row is unreachable from LT code by
+# construction, and the reverse.
+
+sql-read  checklist_templates
+sql-write checklist_templates
+sql-read  checklist_items
+sql-write checklist_items
+sql-read  documents
+sql-write documents
 ```
 
 ## Log of authorizations
@@ -546,6 +584,8 @@ integrations will be different, it will be a brand new build. Don't assume anyth
 thing to build that also on the other thing — it's totally separate."*
 | 2026-08-30 | The **PILOT term-sheet DESIGN and the YS Capital lockup**, copied BY VALUE into `src/longterm/termsheet/brand.js` + `src/longterm/termsheet/assets/pilot-lockup-light.png` | RTL → LT | *"Everything should be in our pilot branding the same way our RTL term sheet is. Follow the same kind of design that our RTL term sheet have … Look at the design we have on the RTL. Try to bring in that nice pilot design … Make sure to include our logos and our designs."* **What crossed is the DESIGN**: the palette (`INK` / `TEAL` / `GOLD` / `LINE` / ivory), the header-band geometry (a 76pt full-bleed ink band, a 2.2pt gold rule, the lockup 30pt tall at the left margin), the teal section band with its gold tab, the ivory accent row, the three-line footer, and the SHAPE of a disclosures page — each value read off `web/v2/tools/termsheet.js`'s own `header()` / `band()` / `rowIn` / `footer()` / `disclosuresPage()`. **NOT ONE LINE OF RTL LOGIC CROSSED, and it may not**: that file is a FROZEN RTL pricing engine, so requiring it would put a frozen engine on Long-Term's render path and break rule 4 outright. The lockup is the same PNG the RTL sheet embeds (`web/v2/tools/rb-logo.js`), extracted to its own asset so Long-Term reads no RTL file at runtime. The disclosure TEXT is deliberately NOT copied — the RTL page describes a business-purpose bridge loan (minimum earned interest, a deferred origination fee at exit, construction draws) and a 30-year DSCR rental loan has none of those, so copying it would put terms on the document that are not terms of the loan | this PR |
 
+| 2026-08-30 | **THE SHARE-THE-CODE DIRECTIVE** — the owner ordered the parallel Long-Term build deleted and the RTL implementations SHARED: the Condition Center (conditions UI + document upload / drag-and-drop / preview / accept / reject / download / delete), the Orders center (the Gmail box, drafts, AI, reply routing, CC settings, DocuSign design), FileContacts + the vendor setup, the entity/LLC logic linked to the shared profile, SharePoint syncing, and the Cloudflare/off-site backup. The full quoted authorization + the boundary of what stays split is `docs/longterm/SHARE-THE-CODE-DIRECTIVE.md`; each concrete `import` line is added to the authorized block in the same PR that lands it, under this grant | RTL → LT | *"I gave you written authorization to bring that exact Condition Center over here. Take that exact Condition Center and make your conditions in that Condition Center follow those rules."* … *"The same thing with Order Center: you need to share the code. Same thing is with SharePoint: you need to share the code."* … *"Every single thing that you're building, you first need to look if you can share the code somewhere else without rebuilding everything."* | this PR |
+
 ## Log of things we ASKED for and were told NO / not yet
 
 Keeping the refusals is as important as keeping the approvals — it stops the same question being re-asked and
@@ -553,11 +593,11 @@ stops a "no" quietly turning into a "yes" months later.
 
 | Date | What was asked | Answer |
 |---|---|---|
-| 2026-08-02 | Conditions, document underwriting, and orders for Long-Term | **Not for now** — "we're not going to build conditions we're not going to bring in document underwriting we're not going to bring in orders for now". ⟶ **CONDITIONS were REVERSED by the owner on 2026-08-14** — *"you should set up your DSCR condition center — it should pull the conditions directly from Encompass"* and *"We should build a condition center … with all the documents in there linked"*. See CLAUDE.md rule 6 and the charter §4. **This is a SCOPE change, not a separation change**: the LT condition center is a brand-new build, so re-using ANY of RTL's `checklist_templates` / `checklist_items` / `conditions` / `src/lib/conditions/**` / document + eFolder code still needs its own row in the approvals log above. **Document underwriting and orders remain NO.** |
+| 2026-08-02 | Conditions, document underwriting, and orders for Long-Term | **Not for now** — "we're not going to build conditions we're not going to bring in document underwriting we're not going to bring in orders for now". ⟶ **CONDITIONS were REVERSED by the owner on 2026-08-14** — *"you should set up your DSCR condition center — it should pull the conditions directly from Encompass"* and *"We should build a condition center … with all the documents in there linked"*. See CLAUDE.md rule 6 and the charter §4. **This is a SCOPE change, not a separation change**: the LT condition center is a brand-new build, so re-using ANY of RTL's `checklist_templates` / `checklist_items` / `conditions` / `src/lib/conditions/**` / document + eFolder code still needs its own row in the approvals log above. **Document underwriting remains NO. ORDERS were REVERSED by the owner on 2026-08-30** — the whole Orders directive (title / insurance / flood / settlement agent / VOR / condo questionnaire, with the owner's own drafts) and then, same day, the share-the-code order: *"The same thing with Order Center: you need to share the code."* |
 | 2026-08-02 | New columns / new field mappings anywhere for Long-Term | **No** — "don't add any columns don't add any mapping unless we specifically ask you to" |
 | 2026-08-02 | Sharing the database connection pool (`src/db.js`) with Long-Term | **Not asked yet** — until it is, Long-Term opens its own pool in `src/longterm/db.js`, which needs no authorization (open question 11 in the charter) |
 | 2026-08-03 | **Long-Term WRITING the borrower record** (`sql-write borrowers`) | **No — confirmed by the owner: "keep borrower read only".** An officer CAN change a borrower profile from a long-term file, but through the ONE shared editor and the existing borrower endpoint — not through Long-Term write code. The person record keeps a single owner, which matters because a dozen RTL modules already heal, enrich and de-duplicate it (Encompass enrich, ClickUp sync, credit store, name-heal, merge). |
-| 2026-08-03 | Long-Term re-using RTL's **workflow, statuses, document sets, conditions or integrations** | **No — explicitly.** *"the workflow will be different, the sets will be different, integrations will be different, it will be a brand new build."* **EXCEPTION (2026-08-14): the Encompass integration was later authorized to be brought into Long-Term** (see the log row above). That exception is Encompass-only; every other integration (ClickUp, SharePoint, DocuSign, Sitewire, Trustpoint) still stays separate unless the owner authorizes it by name. |
+| 2026-08-03 | Long-Term re-using RTL's **workflow, statuses, document sets, conditions or integrations** | **No — explicitly.** *"the workflow will be different, the sets will be different, integrations will be different, it will be a brand new build."* **EXCEPTION (2026-08-14): the Encompass integration was later authorized to be brought into Long-Term** (see the log row above). That exception was Encompass-only at the time. **Since then the owner authorized, by name: ClickUp (2026-08-23, the writer's inheritance below), DocuSign + the mail sender (2026-08-30, #1376 rows above), and — 2026-08-30, the share-the-code directive — SharePoint syncing and the Cloudflare/off-site backup: *"Same thing is with SharePoint: you need to share the code."* Sitewire and Trustpoint remain separate (draw management is not an LT feature).** |
 
 # ---------------------------------------------------------------------------
 # THE CLICKUP WRITER'S INHERITANCE — authorized in writing by the owner,
