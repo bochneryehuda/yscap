@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**942 objects**, and a database rebuilt from the Prisma
+**944 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 647 numbered migrations in `db/` (highest `db/650`) remain the only thing that builds this database.
+rebuild a database from them.** The 648 numbered migrations in `db/` (highest `db/651`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -20,16 +20,16 @@ the live database.
 | | |
 |---|---|
 | Tables | 405 |
-| Columns | 6480 |
+| Columns | 6483 |
 | Triggers | 37 |
 | Functions | 140 |
 | CHECK constraints | 346 |
 | Generated columns | 12 |
-| Partial indexes | 407 |
+| Partial indexes | 409 |
 | Primary keys | 405 |
 | Foreign keys | 825 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1401 |
+| Indexes (all kinds) | 1403 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -231,7 +231,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (407)
+## Partial indexes (409)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -460,6 +460,7 @@ the live database.
 - **idx_sync_review_source** on `sync_review_queue`
 - **idx_tbrv_open** on `trinity_budget_reviews`
 - **idx_templates_auto_apply** on `checklist_templates`
+- **idx_templates_lt_loan_scope** on `checklist_templates`
 - **idx_tio_open** on `trinity_inspection_orders`
 - **idx_tol_trinity_line** on `trinity_order_lines`
 - **idx_tpl_unlinked** on `trustpoint_project_links`
@@ -577,6 +578,7 @@ the live database.
 - **uq_asset_ledger_override** on `asset_ledger_entries`
 - **uq_assignee_active** on `application_assignees`
 - **uq_assignee_one_primary** on `application_assignees`
+- **uq_checklist_items_lt_one_per_template** on `checklist_items`
 - **uq_class_attach_name** on `class_attachments`
 - **uq_class_cb_reg** on `class_callback_registrations`
 - **uq_class_form_map_default** on `class_form_map`
@@ -1892,7 +1894,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 405 primary keys and 1401 indexes is
+Every one of the 405 primary keys and 1403 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
