@@ -100,6 +100,60 @@ const quote = (label, ratePct, rawPrice, mode) => ({
     'EACH MEMBER KEEPS ITS OWN COMP MODE — the owner\'s three offers put borrower-paid and lender-paid side by side on ONE sheet');
 
   // =========================================================================
+  section('the clock the document PRINTS is the clock the column stores');
+  // =========================================================================
+  // ⛔ ONE INSTANT, TWO PLACES. The sheet prints its own expiry, so a store that
+  // recomputed one a few milliseconds later against a different rule would give
+  // the document and the row two different answers — and the row is what the
+  // replay screen calls "expired". A term sheet runs on a 24-hour clock
+  // (owner-directed 2026-08-30, *"it should also say that it's expiring in 24
+  // hours"*); a comparison keeps the longer company window.
+  {
+    const at = new Date(Date.now() + 24 * 3600000);
+    // A COMPLETE scenario — the gate refuses a term sheet without the rent, the
+    // taxes, the insurance and the ratio, which is the point of the gate.
+    const FULL = { ...SCENARIO, rentMonthly: 3900, taxMonthly: 620, insuranceMonthly: 145 };
+    const one = snapshot.buildSnapshot({
+      selections: [{ ...quote('The offer', 7.375, 102), scenario: FULL }],
+      plan: PLAN,
+      prepared: {
+        borrowerName: 'Jonathan Reyes', propertyAddress: '218 Forest Avenue, Lakewood, NJ 08701',
+        expiresAt: at.toISOString(),
+      },
+    });
+    check(one.ok && one.snapshot.docKind === 'term_sheet', 'a one-option sheet is a TERM SHEET');
+    check(snapshot.exportGate(one.snapshot).ok, '…and a complete one may be issued');
+    const ts = await store.issueSheet({
+      snapshot: one.snapshot,
+      snapshotHash: snapshot.hashSnapshot(one.snapshot),
+      compPlan: PLAN, staffId: staff, borrowerId: borrower,
+      expiresAt: at.toISOString(),
+    });
+    const hours = (new Date(ts.expiresAt).getTime() - Date.now()) / 3600000;
+    check(hours > 23.5 && hours < 24.5, `the stored expiry is the 24-hour one the caller worked out (${hours.toFixed(2)}h)`);
+    // And the gate REFUSES the same sheet with the qualifying figures taken away.
+    const barePrep = { borrowerName: 'Jonathan Reyes', propertyAddress: '218 Forest Avenue' };
+    const bare = snapshot.buildSnapshot({
+      selections: [quote('The offer', 7.375, 102)], plan: PLAN, prepared: barePrep,
+    });
+    const g = snapshot.exportGate(bare.snapshot);
+    check(!g.ok && g.missing.includes('rentMonthly') && g.missing.includes('insuranceMonthly'),
+      '…while the same sheet WITHOUT the rent, the taxes and the insurance is refused, by name');
+    const back = await store.findByCode(ts.code);
+    check(new Date(back.expires_at).getTime() === at.getTime(),
+      '…to the millisecond, so the column and the printed page can never disagree');
+
+    // A caller with no opinion still gets the old day-count behaviour.
+    const fallback = await store.issueSheet({
+      snapshot: one.snapshot,
+      snapshotHash: snapshot.hashSnapshot(one.snapshot),
+      compPlan: PLAN, staffId: staff, borrowerId: borrower, expiryDays: 2,
+    });
+    const fh = (new Date(fallback.expiresAt).getTime() - Date.now()) / 3600000;
+    check(fh > 47 && fh < 49, `and a caller that states no instant falls back to the day count (${fh.toFixed(1)}h)`);
+  }
+
+  // =========================================================================
   section('pulling it up by the ID somebody read down a telephone');
   // =========================================================================
   for (const typed of [issued.code, issued.code.slice(3), issued.code.toLowerCase(), ` ${issued.code} `, issued.code.replace('-', '')]) {
@@ -206,8 +260,17 @@ const quote = (label, ratePct, rawPrice, mode) => ({
   section('a term sheet outlives the people and the arrangements around it');
   // =========================================================================
   const list = await store.listForStaff(staff);
-  check(list.length === 2 && list[0].option_count === 3,
-    `both sheets are listed with what is on them (${list.length} sheets, ${list[0] && list[0].option_count} options on the newest)`);
+  // Asserted as a PROPERTY, not as a count: this officer's sheets are listed,
+  // newest first, each with what is actually on it. A hard-coded total breaks the
+  // day a section above issues one more sheet, and gets "fixed" by bumping the
+  // number — which is how a real regression is waved through.
+  check(list.length >= 2, `this officer's sheets are listed (${list.length})`);
+  check(list.every((s) => code.isCode(s.code)), 'each with the ID somebody was given');
+  check(list[0].option_count === 3,
+    `and the newest carries what is on it (${list[0] && list[0].option_count} options)`);
+  const counts = new Map(list.map((s) => [s.code, Number(s.option_count)]));
+  check(counts.get(issued.code) === 3 && counts.get(fromCart.code) === 3,
+    'both of the comparisons issued above are in it, each with its own three options');
 
   // The cart is scratch — and it is STILL SET NULL, not CASCADE. The first cut
   // of db/642 made it CASCADE on exactly the argument that reads best ("a cart

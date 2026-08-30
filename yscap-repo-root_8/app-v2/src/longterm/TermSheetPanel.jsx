@@ -38,6 +38,53 @@ const btn = (kind) => ({
   minHeight: 30,
 });
 
+/**
+ * A text box on this panel. Every colour is an explicit DARK on white — the
+ * `--ink*` tokens are LIGHT paper colours in this palette and would render the
+ * typed text white on white. 16px on purpose: iOS Safari zooms the whole page on
+ * focus of any control under 16px, which throws a panel off screen on a phone.
+ */
+const field = () => ({
+  width: '100%', boxSizing: 'border-box', marginTop: 3,
+  border: '1px solid rgba(20,27,34,.18)', borderRadius: 8, padding: '7px 9px',
+  fontSize: 16, color: INK, background: '#fff',
+});
+const fieldLabel = () => ({ fontSize: 11.5, color: MUTED, fontWeight: 600 });
+
+/**
+ * THE THREE DOCUMENTS, in the officer's words. Owner-directed 2026-08-30:
+ * *"A term sheet should only have one option. It should be a comparison sheet,
+ * which should be the same scenario, different options. There should be a
+ * scenario sheet, which is different scenarios and different options broken
+ * down."* The kind is DERIVED on the server from the options collected; this
+ * only names what the server decided, so the strip can never promise a document
+ * the issue then refuses to write.
+ */
+const KIND_TITLE = {
+  term_sheet: 'Term sheet',
+  comparison: 'Comparison sheet',
+  scenario_comparison: 'Scenario comparison',
+};
+const KIND_BLURB = {
+  term_sheet: 'One program, stated in full — it expires, and it can be signed.',
+  comparison: 'The same loan priced several ways · everything is compared against the one you mark',
+  scenario_comparison: 'Different scenarios side by side · everything is compared against the one you mark',
+};
+const KIND_ACTION = {
+  term_sheet: 'term sheet',
+  comparison: 'comparison sheet',
+  scenario_comparison: 'scenario comparison',
+};
+/** The gate's keys, in the words the officer sees on their own screen. */
+const GATE_WORDS = {
+  rentMonthly: 'the monthly rent',
+  taxMonthly: 'the monthly property taxes',
+  insuranceMonthly: 'the monthly insurance',
+  dscr: 'the calculated DSCR',
+  borrowerName: "the borrower's name",
+  propertyAddress: 'the full property address',
+};
+
 /** A note the officer can act on. Never a bare code. */
 function Note({ tone, children }) {
   if (!children) return null;
@@ -107,6 +154,16 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
   const [busy, setBusy] = useState(null);
   const [note, setNote] = useState(null);
   const [issued, setIssued] = useState(null);
+  // ⛔ THE OFFICER ISSUING IT PUTS THE PERSON AND THE PROPERTY ON IT. The owner
+  // asked for exactly this: *"We need to give the availability for the one
+  // issuing it to put in the full property address and the person's name as
+  // well."* A TERM SHEET is refused without them — it is a formal offer with a
+  // signature block, and a signature line over a blank "Prepared for" is a
+  // defective document. A comparison needs neither.
+  const [prepared, setPrepared] = useState({ borrowerName: '', propertyAddress: '' });
+  // A program the white-label sheet has not named yet, named here by the officer.
+  const [names, setNames] = useState({});
+  const [plan, setPlan] = useState(null);   // { docKind, gate } from the server
 
   const anchor = cart && Number.isFinite(cart.anchor_position) ? cart.anchor_position : 0;
 
@@ -124,22 +181,55 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
     finally { setBusy(null); }
   }, [onChange]);
 
+  // ONE definition of what is sent, so what the preview judged and what the
+  // issue writes can never be two different documents.
+  const selectionsOf = useCallback(() => members.map((m) => ({
+    label: m.label,
+    consumerLabel: (m.program || {}).consumerLabel,
+    manualProgramName: names[m.id] || null,
+    product: (m.program || {}).product,
+    mode: m.mode,
+    waiveLenderFees: m.waive_lender_fees,
+    ratePct: (m.program || {}).ratePct,
+    rawPrice: (m.program || {}).rawPrice,
+    vendorMonthlyPI: (m.program || {}).monthlyPI,
+    scenario: m.scenario,
+    pricedAt: m.priced_at,
+  })), [members, names]);
+
+  // ⛔ WHICH DOCUMENT THIS IS, AND WHAT IS STILL MISSING, COME FROM THE SERVER.
+  // The kind is derived from the options and the gate is the same function the
+  // issue enforces, so the strip can never promise a term sheet the issue then
+  // refuses. Asked when the collected options change — not on every keystroke in
+  // the two text boxes, whose own emptiness is visible without a round trip.
+  useEffect(() => {
+    let dead = false;
+    if (!open || !members.length) { setPlan(null); return undefined; }
+    (async () => {
+      try {
+        const r = await ltApi.termSheetPreview({ selections: selectionsOf(), anchorIndex: anchor });
+        if (!dead) setPlan({ docKind: r.docKind, gate: r.gate, expiryHours: r.expiryHours });
+      } catch (e) {
+        // A preview that cannot be built is not a refusal to issue — the issue
+        // will say so itself, in the server's own words.
+        if (!dead) setPlan({ error: (e && (e.message || e.error)) || null });
+      }
+    })();
+    return () => { dead = true; };
+  }, [open, members, names, anchor, selectionsOf]);
+
   async function issue() {
     setBusy('issue'); setNote(null);
     try {
-      const selections = members.map((m) => ({
-        label: m.label,
-        consumerLabel: (m.program || {}).consumerLabel,
-        product: (m.program || {}).product,
-        mode: m.mode,
-        waiveLenderFees: m.waive_lender_fees,
-        ratePct: (m.program || {}).ratePct,
-        rawPrice: (m.program || {}).rawPrice,
-        vendorMonthlyPI: (m.program || {}).monthlyPI,
-        scenario: m.scenario,
-        pricedAt: m.priced_at,
-      }));
-      const r = await ltApi.termSheetIssue({ selections, anchorIndex: anchor, cartId: cart && cart.id });
+      const r = await ltApi.termSheetIssue({
+        selections: selectionsOf(),
+        anchorIndex: anchor,
+        cartId: cart && cart.id,
+        prepared: {
+          borrowerName: prepared.borrowerName || null,
+          propertyAddress: prepared.propertyAddress || null,
+        },
+      });
       setIssued(r);
       if (onIssued) onIssued(r);
       if (onChange) onChange();
@@ -170,12 +260,26 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
   }
 
   const n = members.length;
+  const kind = (plan && plan.docKind) || (n > 1 ? 'comparison' : 'term_sheet');
+  const isTermSheet = kind === 'term_sheet';
+  // The scenario-side blockers come from the server's own gate; the two name
+  // fields are judged here only so typing into them clears the line without a
+  // round trip. The ISSUE is refused by the server either way — this is what the
+  // officer reads, not what decides.
+  const serverMissing = (plan && plan.gate && !plan.gate.ok ? plan.gate.missing : []) || [];
+  const stillMissing = isTermSheet
+    ? serverMissing
+      .filter((k) => (k === 'borrowerName' ? !prepared.borrowerName.trim()
+        : k === 'propertyAddress' ? !prepared.propertyAddress.trim() : true))
+      .map((k) => GATE_WORDS[k] || k)
+    : [];
+
   return (
     <div style={{ background: PAPER, border: '1px solid rgba(20,27,34,.12)', borderRadius: 10, padding: 12, marginTop: 10 }}>
       <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: INK }}>Comparison</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: INK }}>{KIND_TITLE[kind] || 'Comparison'}</div>
         <div style={{ fontSize: 11.5, color: MUTED }}>
-          {n === 0 ? 'Nothing collected yet.' : `${n} ${n === 1 ? 'option' : 'options'} · everything is compared against the one you mark`}
+          {n === 0 ? 'Nothing collected yet.' : KIND_BLURB[kind] || `${n} options`}
         </div>
       </div>
 
@@ -209,15 +313,69 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
                 <span style={{ flex: 1 }} />
                 <button type="button" style={{ ...btn(), padding: '4px 8px', minHeight: 26 }}
                   disabled={busy === m.id} onClick={() => remove(m.id)}>Remove</button>
+                {!p.consumerLabel && (
+                  // ⛔ THE PROGRAM HAS NO CLIENT-FACING NAME, SO THE OFFICER GIVES
+                  // IT ONE — and is warned off the one name they must not use.
+                  // The warning is advice; the REFUSAL is the control, and it
+                  // lives on the server, where a name that names an investor is
+                  // checked against the registry rather than against a memory.
+                  <div style={{ flexBasis: '100%', marginTop: 6 }}>
+                    <div style={{ fontSize: 11.5, color: CAUTION, lineHeight: 1.5 }}>
+                      This program has no client-facing name yet, so it cannot go on a sheet as it stands.
+                      Give it one a borrower can read — <strong>never the investor&rsquo;s own name</strong>.
+                    </div>
+                    <input
+                      value={names[m.id] || ''}
+                      onChange={(e) => setNames((s) => ({ ...s, [m.id]: e.target.value }))}
+                      placeholder="e.g. 30-Year Rental Select"
+                      style={field()}
+                    />
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
       )}
 
+      {n > 0 && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(20,27,34,.10)' }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: GOLD_TEXT, letterSpacing: '.06em' }}>
+            WHO IT IS FOR
+          </div>
+          <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(min(16rem, 100%), 1fr))', marginTop: 6 }}>
+            <label style={{ display: 'block' }}>
+              <span style={fieldLabel()}>Borrower or entity name</span>
+              <input value={prepared.borrowerName} style={field()}
+                onChange={(e) => setPrepared((s) => ({ ...s, borrowerName: e.target.value }))}
+                placeholder="Riverbend Holdings LLC" />
+            </label>
+            <label style={{ display: 'block' }}>
+              <span style={fieldLabel()}>Full property address</span>
+              <input value={prepared.propertyAddress} style={field()}
+                onChange={(e) => setPrepared((s) => ({ ...s, propertyAddress: e.target.value }))}
+                placeholder="218 Forest Avenue, Lakewood, NJ 08701" />
+            </label>
+          </div>
+          {isTermSheet && (
+            <div style={{ fontSize: 11.5, color: MUTED, marginTop: 6, lineHeight: 1.5 }}>
+              A term sheet states one program in full, expires in {plan && plan.expiryHours ? `${plan.expiryHours} hours` : '24 hours'}, and
+              carries a signature block — so it needs both of these and the full scenario.
+            </div>
+          )}
+          {stillMissing.length > 0 && (
+            <div style={{ fontSize: 12, color: CAUTION, marginTop: 8, lineHeight: 1.55 }}>
+              <strong>Still needed for a term sheet:</strong> {stillMissing.join(', ')}.
+              {' '}Add the rest to the scenario, or collect a second option and export a comparison instead —
+              a comparison simply leaves out the taxes, the insurance and the total monthly payment.
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, alignItems: 'center' }}>
         <button type="button" style={btn('primary')} disabled={!n || busy === 'issue' || outerBusy} onClick={issue}>
-          {busy === 'issue' ? 'Issuing…' : (n > 1 ? 'Issue the comparison term sheet' : 'Issue the term sheet')}
+          {busy === 'issue' ? 'Issuing…' : `Issue the ${KIND_ACTION[kind] || 'term sheet'}`}
         </button>
         {n > 0 && (
           <button type="button" style={btn()} disabled={!!busy}

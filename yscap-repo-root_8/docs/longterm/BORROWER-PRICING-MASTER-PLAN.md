@@ -776,6 +776,66 @@ written down before the first line, and the sender address is a setting.
 
 ---
 
+## 10b. ANSWERED BY THE OWNER, 2026-08-30 (second pass) — the two questions, settled
+
+### The unnamed investor
+
+> *"We give each investor a made-up name for clients — Platinum, Diamond, Pearl. If a new investor
+> comes back with a price and nobody has given them a made-up name yet, our staff screen still shows
+> that price (you shouldn't lose a good rate over paperwork). But a term sheet goes to the borrower,
+> and there we can't leave the program name blank and we can't print the real investor. So the term
+> sheet refuses that one option and tells the officer: this investor needs a name first. Everything
+> else on the sheet still goes."*
+>
+> *"the loan officer can put in manually a program name. You warn him not to put in an investor name
+> as a program name."*
+
+**Settled: the rule INVERTS between the board and the document, and the officer now has a way through.**
+The staff board keeps an unnamed investor's price (hiding a row nobody chose to hide is a silent drop);
+the document refuses it, by name, so the officer learns the investor needs christening — and may type a
+programme name for this sheet instead of being stuck.
+
+**The warning is advice; the REFUSAL is the control.** A sentence under a text box does not enforce
+rule 10, and the one thing that must never happen is an investor's name reaching a borrower's document.
+`snapshot.resolveProgramName()` puts the typed name through `audience.mentionsInvestor` — the ONE
+definition, built on the registry, never a second `!== 'Deephaven'` check that `Deepahven Select` walks
+straight past — and all 115 recorded spellings are swept in CI. A programme that HAS a white-label name
+is never renamed by hand: two sheets would otherwise call one programme two things.
+
+### Can one sheet carry more than one compensation setup
+
+> *"I was asking whether one term sheet could carry more than one compensation setup. Your 'three
+> offers' answer settled it — yes, and that's the normal case. So each offer now carries its own setup:
+> one borrower-paid, one lender-paid with fees waived, one lender-paid with a credit, all on the same
+> page."*
+
+**Settled, and already built that way**: the comp mode and the fee waive live on each MEMBER, not on the
+sheet (`lt_term_sheet_scenario.mode` / `.waive_lender_fees`, each with its own CHECK). The three-offer
+comparison is the normal case, not an edge case — which is exactly why the lender fees are now LISTED
+on the waived option at zero with what they would have been, so the difference between the columns is
+on the page rather than in the reader's head.
+
+### The three export documents
+
+> *"A term sheet should only have one option. It should be a comparison sheet, which should be the same
+> scenario, different options. There should be a scenario sheet, which is different scenarios and
+> different options broken down."*
+
+**Settled**, and the kind is DERIVED from the options rather than chosen — see
+`docs/longterm/TERM-SHEETS-AND-COMPARISON.md` §13b, which works through the whole of this message.
+
+### Still open, and flagged rather than guessed
+
+- **Whether the borrower's name and the property address should be REQUIRED for a term sheet.** They
+  are, today: a term sheet is the formal one-programme offer and carries a signature block, and a
+  signature line over a blank "Prepared for" is a defective document. The owner asked for the ABILITY
+  to enter them; requiring them is our reading. A comparison requires neither. Easy to relax.
+- **Whether the DSCR a term sheet prints should be the vendor's qualifying ratio or `rent ÷ PITI`.** It
+  is the second, because a comparison prints three different total payments and printing one ratio
+  under all three made two of the three wrong. If an investor qualifies on a different basis (an
+  interest-only payment, PITIA including something we do not carry), the printed ratio and the
+  qualifying ratio could differ — worth the owner's answer.
+
 ## 11. Open questions — the owner's to answer
 
 | # | Question | Why it blocks | Recommendation |

@@ -67,7 +67,7 @@ async function officerPlan(req) {
 }
 
 /** Who the sheet says it is from. Read from the roster, never from the client. */
-function preparedFrom(req, company, body) {
+function preparedFrom(req, company, body, expiresAt) {
   const a = req.actor || {};
   const b = body && typeof body.prepared === 'object' ? body.prepared : {};
   return {
@@ -78,36 +78,99 @@ function preparedFrom(req, company, body) {
     // OURS are not. A term sheet naming somebody else as the officer, or naming
     // a company we are not, is a document we cannot stand behind.
     officerName: a.full_name || a.fullName || a.name || null,
+    officerTitle: a.title || a.role_label || null,
     officerEmail: a.email || null,
     officerPhone: a.phone || a.cell_phone || null,
     officerNmls: a.nmls || null,
     companyName: setting(company, 'termSheet.companyName', 'YS Capital Group'),
     companyNmls: setting(company, 'termSheet.companyNmls', '2609746'),
-    preparedAt: new Date().toISOString().slice(0, 10),
-    expiresAt: null,   // filled after the sheet is issued and its clock starts
+    preparedAt: stamp(new Date()),
+    expiresAt: expiresAt ? stamp(new Date(expiresAt)) : null,
   };
 }
 
-/** Build a snapshot from a request, or answer the refusal. Never throws. */
+/** A date a borrower reads, not an ISO string. One definition, so the band, the
+ *  expiry panel and the footer all date the document identically. */
+function stamp(d) {
+  try {
+    return d.toLocaleString('en-US', {
+      month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+      timeZone: 'America/New_York',
+    });
+  } catch {
+    return d.toISOString().slice(0, 16).replace('T', ' ');
+  }
+}
+
+/**
+ * HOW LONG THIS DOCUMENT IS GOOD FOR, by what kind of document it is.
+ *
+ * ⛔ A TERM SHEET RUNS ON A 24-HOUR CLOCK. Owner-directed 2026-08-30: *"it should
+ * also say that it's expiring in 24 hours."* A comparison is a working document
+ * rather than an offer, so it keeps the longer company window — the same
+ * `termSheet.expiryDays` it has always used. Both are settings, so neither
+ * number is written into the page as a literal that could go on saying 24 after
+ * somebody changed it.
+ */
+function hoursBetween(from, to) {
+  const a = new Date(from).getTime();
+  const b = new Date(to).getTime();
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return null;
+  return Math.round((b - a) / 3600000);
+}
+
+function expiryHoursFor(docKind, company) {
+  if (docKind === snapshot.DOC_KINDS.TERM_SHEET) {
+    const h = Number(setting(company, 'termSheet.expiryHours', 24));
+    return Number.isFinite(h) && h > 0 ? h : 24;
+  }
+  const d = Number(setting(company, 'termSheet.expiryDays', 2));
+  return (Number.isFinite(d) && d > 0 ? d : 2) * 24;
+}
+
+/**
+ * Build a snapshot from a request, or answer the refusal. Never throws.
+ *
+ * ⛔ IT IS BUILT TWICE, AND THAT IS THE POINT. How long the document is good for
+ * depends on WHICH of the three documents it is, and which one it is depends on
+ * the members — so the first pass learns the kind, and the second stamps the
+ * expiry the kind earns. Two passes rather than reaching into a built snapshot
+ * afterwards: `buildSnapshot` sanitizes every string a document prints, and a
+ * value written in behind it would be the one field on the page that never went
+ * through that. The build is pure arithmetic, so the second pass can differ from
+ * the first only in the one string it was given.
+ */
 async function snapshotFor(req, res) {
   const body = req.body || {};
   const { plan, company } = await officerPlan(req);
   const maxMembers = Number(setting(company, 'termSheet.cartMax', 8)) || 8;
-  const built = snapshot.buildSnapshot({
+  const build = (expiresAt) => snapshot.buildSnapshot({
     selections: Array.isArray(body.selections) ? body.selections : [],
     plan,
     anchorIndex: Number.isFinite(Number(body.anchorIndex)) ? Number(body.anchorIndex) : 0,
-    prepared: preparedFrom(req, company, body),
+    prepared: preparedFrom(req, company, body, expiresAt),
     maxMembers,
   });
-  if (!built.ok) {
+
+  const first = build(null);
+  if (!first.ok) {
     res.status(422).json({
-      ok: false, error: built.error, message: built.message,
-      memberIndex: built.memberIndex === undefined ? null : built.memberIndex,
+      ok: false, error: first.error, message: first.message,
+      memberIndex: first.memberIndex === undefined ? null : first.memberIndex,
     });
     return null;
   }
-  return { snapshot: built.snapshot, plan, company };
+  const expiryHours = expiryHoursFor(first.snapshot.docKind, company);
+  const expiresAt = new Date(Date.now() + expiryHours * 3600000);
+  const built = build(expiresAt.toISOString());
+  if (!built.ok) {
+    // Unreachable in practice — the same inputs plus one string — but a silent
+    // fall-through to a snapshot with no expiry would print a term sheet that
+    // never expires, so it is answered rather than assumed.
+    res.status(422).json({ ok: false, error: built.error, message: built.message });
+    return null;
+  }
+  return { snapshot: built.snapshot, plan, company, expiryHours, expiresAt };
 }
 
 // ── PREVIEW ─────────────────────────────────────────────────────────────────
@@ -121,9 +184,16 @@ router.post('/preview', async (req, res) => {
     if (!built) return undefined;
     const lay = layout.buildLayout(built.snapshot, {
       pricedApartMinutes: Number(setting(built.company, 'termSheet.pricedApartMinutes', 60)) || 60,
+      expiryHours: built.expiryHours,
     });
+    // ⛔ THE PREVIEW REPORTS THE GATE, IT DOES NOT ENFORCE IT. An officer looking
+    // at what a sheet WILL say is exactly who needs to be told what is still
+    // missing; refusing to draw it would hide the very page that shows them.
     return res.json({
       ok: true, snapshot: built.snapshot, blocks: lay.blocks,
+      docKind: built.snapshot.docKind,
+      gate: snapshot.exportGate(built.snapshot),
+      expiryHours: built.expiryHours,
       hash: snapshot.hashSnapshot(built.snapshot),
     });
   } catch (e) {
@@ -143,6 +213,18 @@ router.post('/', async (req, res) => {
     const built = await snapshotFor(req, res);
     if (!built) return undefined;
 
+    // ⛔ A TERM SHEET IS ONLY ISSUED COMPLETE. Owner-directed 2026-08-30: *"Term
+    // sheet should only be able to be exported if they enter the full scenario
+    // and calculate the ratio … If you didn't do that, then you can just export
+    // comparisons."* The refusal names every missing field at once, and each one
+    // is a box on the screen the officer is already looking at.
+    const gate = snapshot.exportGate(built.snapshot);
+    if (!gate.ok) {
+      return res.status(422).json({
+        ok: false, error: gate.error, message: gate.message, missing: gate.missing, docKind: gate.kind,
+      });
+    }
+
     const issued = await store.issueSheet({
       snapshot: built.snapshot,
       snapshotHash: snapshot.hashSnapshot(built.snapshot),
@@ -152,10 +234,11 @@ router.post('/', async (req, res) => {
       borrowerName: (built.snapshot.prepared || {}).borrowerName,
       createdBy: 'officer',
       supersedes: body.supersedes || null,
-      expiryDays: Number(setting(built.company, 'termSheet.expiryDays', 2)) || 2,
+      // The instant the DOCUMENT prints, so the column and the page agree.
+      expiresAt: built.expiresAt.toISOString(),
       cartId: body.cartId || null,
     });
-    return res.json({ ok: true, ...issued });
+    return res.json({ ok: true, docKind: built.snapshot.docKind, ...issued });
   } catch (e) {
     console.error('[lt] term sheet issue failed:', (e && e.message) || e);
     return res.status(500).json({ ok: false, error: 'Could not issue that term sheet.' });
@@ -342,6 +425,11 @@ router.get('/:code/pdf', async (req, res) => {
     const lay = layout.buildLayout(row.snapshot, {
       code: row.code,
       pricedApartMinutes: Number(setting(company, 'termSheet.pricedApartMinutes', 60)) || 60,
+      // ⛔ THE WINDOW IS READ OFF THE DOCUMENT, NOT OFF TODAY'S SETTINGS. This
+      // sheet was issued on the clock that was in force then; re-reading the
+      // setting would make a replay of a 24-hour sheet announce 48 because
+      // somebody widened the window last week.
+      expiryHours: hoursBetween(row.created_at, row.expires_at),
     });
     const bytes = await pdf.renderTermSheet(lay, { title: `Term Sheet ${row.code}` });
     res.setHeader('Content-Type', 'application/pdf');

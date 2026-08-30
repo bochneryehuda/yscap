@@ -823,10 +823,17 @@ const SETTINGS = [
       + 'board. On: an officer can issue a term sheet from a priced quote.',
     evidence: 'Owner-directed 2026-08-30 - the officer side may go live now; the borrower '
       + 'side waits on the prepayment-penalty work.' },
-  { key: 'termSheet.expiryDays', group: 'Term sheets', label: 'A term sheet is good for',
+  { key: 'termSheet.expiryHours', group: 'Term sheets', label: 'A TERM SHEET is good for (hours)',
+    type: 'number', default: 24,
+    description: 'Hours from issue until a single-program TERM SHEET says it has expired, '
+      + 'and the number the sheet prints on its own face. Nothing is deleted when it does - '
+      + 'an expired sheet still replays, and says it is expired.',
+    evidence: 'Owner-directed 2026-08-30 - "it should also say that it is expiring in 24 hours."' },
+  { key: 'termSheet.expiryDays', group: 'Term sheets', label: 'A COMPARISON is good for (days)',
     type: 'number', default: 2,
-    description: 'Days from issue until the sheet says it has expired. Nothing is deleted '
-      + 'when it does - an expired sheet still replays, and says it is expired.' },
+    description: 'Days from issue until a comparison or scenario comparison says it has '
+      + 'expired. A comparison is a working document rather than an offer, so it runs on a '
+      + 'longer clock than a term sheet.' },
   { key: 'termSheet.cartMax', group: 'Term sheets', label: 'Options in one comparison',
     type: 'number', default: 8,
     description: 'The most options one comparison may hold. Past this it stops being a '

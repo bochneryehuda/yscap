@@ -91,6 +91,73 @@ function costOrCredit(charges) {
   return { kind: 'none', dollars: 0, points: 0, text: 'No points either way' };
 }
 
+/**
+ * THE WHOLE CLOSING POSITION — every lender charge on the sheet, net of any
+ * credit. This is what `charges.netDollars` already is; what this adds is the
+ * VERB and the wording, so the figure can be a headline.
+ *
+ * ⛔ THIS EXISTS BECAUSE A LABEL LIED, AND THE OWNER CAUGHT IT ON A RENDERED
+ * SHEET. Owner-reported 2026-08-30, quoting their own document verbatim:
+ *
+ *     At closing                       No points either way
+ *     Origination fee (2.000 points)   $7,500
+ *
+ * *"It says 'no point either way', and then it says 'origination fees'. It needs
+ * to understand the logic."* Both lines were arithmetically correct and the
+ * document was still wrong: `costOrCredit` answers ONE question — what the RATE
+ * costs or pays, the buydown or the credit — and it was printed under a label
+ * ("At closing") that promises the answer to a DIFFERENT and much bigger one.
+ * At par the rate costs nothing, so the sheet announced "no points either way"
+ * directly above $7,500 of points.
+ *
+ * ⛔ THE CLASS, and it is worth more than the fix: a figure is only ever as true
+ * as its label. When a value answers a narrower question than its label implies,
+ * the value is right and the DOCUMENT is wrong — and no test that checks
+ * arithmetic can see it. Narrow the label ("Cost to get this rate") and give the
+ * broad label its own real figure; never leave one standing in for the other.
+ */
+function closingPosition(charges) {
+  if (!charges || typeof charges !== 'object' || !nn(charges.netDollars)) {
+    return { kind: 'none', dollars: null, text: '—' };
+  }
+  const net = charges.netDollars;
+  if (net > 0.005) return { kind: 'pay', dollars: net, text: `You pay ${money(net)}` };
+  if (net < -0.005) return { kind: 'receive', dollars: -net, text: `You receive ${money(-net)}` };
+  return { kind: 'none', dollars: 0, text: 'Nothing either way' };
+}
+
+/**
+ * THE MONTHLY HOUSING COST, and whether it is a real PITI.
+ *
+ * ⛔ NEVER A PARTIAL PITI. Owner-directed 2026-08-30: *"only if the taxes and
+ * insurance were entered in the scenario … only if the principal, interest,
+ * tax, and insurance were entered, the monthly tax, and monthly insurance."*
+ * With a tax figure and no insurance figure the sum is NOT the borrower's
+ * monthly cost — it is a number that looks like one and is short by an insurance
+ * premium, which is exactly the shape of an under-quote somebody acts on. So the
+ * total is `complete: false` and the caller prints the parts and no total.
+ *
+ * HOA is DIFFERENT and is deliberately not required: most properties have none,
+ * and "no association dues" is a fact, not a missing figure. It is added when it
+ * is there and contributes nothing when it is not.
+ */
+function housingCost({ monthlyPI, taxMonthly, insuranceMonthly, hoaMonthly } = {}) {
+  const pi = nn(monthlyPI) ? monthlyPI : null;
+  const tax = nn(taxMonthly) ? taxMonthly : null;
+  const ins = nn(insuranceMonthly) ? insuranceMonthly : null;
+  const hoa = nn(hoaMonthly) ? hoaMonthly : 0;
+  const complete = pi != null && tax != null && ins != null;
+  return {
+    complete,
+    monthlyPI: pi, taxMonthly: tax, insuranceMonthly: ins,
+    hoaMonthly: nn(hoaMonthly) ? hoaMonthly : null,
+    total: complete ? Math.round((pi + tax + ins + hoa) * 100) / 100 : null,
+    label: hoa > 0
+      ? 'Total monthly payment (principal, interest, taxes, insurance & dues)'
+      : 'Total monthly payment (principal, interest, taxes & insurance)',
+  };
+}
+
 /** "67 months (5 years 7 months)" — both, because one answers a different question. */
 function monthsWords(m) {
   if (!nn(m) || m <= 0) return null;
@@ -234,17 +301,48 @@ const CHARGE_LABELS = {
   commitmentFee: 'Commitment fee',
 };
 
-/** One charge line, ready to print: `["Cost to get this rate (1.250 points)", "$4,688"]`. */
+/** The lender's OWN fees — the two the waive switch turns off. Named here so a
+ *  sheet can group and total them without a screen re-deciding what counts as
+ *  one; add a fee to the plan and it belongs on this list in the same commit. */
+const LENDER_FEE_KEYS = ['applicationFee', 'commitmentFee'];
+
+/**
+ * One charge line, ready to print: `["Cost to get this rate", "$4,688", {note}]`.
+ *
+ * ⛔ A POINTS FIGURE IS BROKEN DOWN, NOT ASSERTED. Owner-directed 2026-08-30:
+ * *"for the ones that are actually paying the origination fee, you also need to
+ * break down the origination fee they're paying."* The points and the dollars
+ * used to be crushed into the label — "Origination fee (2.000 points) $7,500" —
+ * which states two numbers and shows no arithmetic, so a reader who wants to
+ * check it has to know the loan amount, find it elsewhere on the sheet and
+ * multiply. The basis now rides underneath in words: *2.000 points of the
+ * $375,000 loan amount.* Same figures; the reader can verify them.
+ *
+ * ⛔ A WAIVED FEE PRINTS ITS OWN SAVING. It is on the sheet at $0 with what it
+ * would have been said out loud, because the option beside it is charging that
+ * exact amount and the difference IS the offer.
+ */
 function chargeRow(line) {
   if (!line || typeof line !== 'object') return null;
-  const base = CHARGE_LABELS[line.key] || line.label || line.key || '';
-  const withPoints = nn(line.points) && line.points > 0 ? `${base} (${points(line.points)} points)` : base;
-  return [withPoints, moneyExact(line.dollars)];
+  const label = CHARGE_LABELS[line.key] || line.label || line.key || '';
+  if (line.waived === true) {
+    return [label, 'Waived', {
+      credit: true,
+      note: nn(line.fullDollars) && line.fullDollars > 0
+        ? `${moneyExact(line.fullDollars)} — covered by the lender, not paid by you`
+        : null,
+    }];
+  }
+  const note = nn(line.points) && line.points > 0 && nn(line.basis) && line.basis > 0
+    ? `${points(line.points)} points of the ${money(line.basis)} loan amount`
+    : (nn(line.points) && line.points > 0 ? `${points(line.points)} points` : null);
+  return [label, moneyExact(line.dollars), { note }];
 }
 
 module.exports = {
   money, moneyExact, points, rate, pct,
-  costOrCredit, monthsWords, breakEvenSentence, incrementalSentence,
+  costOrCredit, closingPosition, housingCost,
+  monthsWords, breakEvenSentence, incrementalSentence,
   prepaySentence, chargeRow,
-  DISCLOSURE, THIRD_PARTY, CHARGE_LABELS, PREPAY_SENTENCES,
+  DISCLOSURE, THIRD_PARTY, CHARGE_LABELS, LENDER_FEE_KEYS, PREPAY_SENTENCES,
 };

@@ -536,6 +536,168 @@ that geometry alone could not tell which was working.
 
 ---
 
+## 13b. WHAT PHASE 2 SHIPPED — the owner read a rendered sheet and it was the wrong document
+
+Phase 1 built the machinery: issue, replay by ID, the cart. A sample went to the owner and the reply
+began *"First of all, the one you attached is not a term sheet. The one you attached is a comparison
+sheet."* Everything below is that message, worked through. **Every one of these was found by LOOKING
+AT A RENDERED PAGE, and not one of them could have been found by reading the code** — which is the
+lesson of the phase.
+
+### 1. There are THREE documents, and the kind is DERIVED
+
+> *"A term sheet should only have one option. It should be a comparison sheet, which should be the same
+> scenario, different options. There should be a scenario sheet, which is different scenarios and
+> different options broken down."*
+
+`snapshot.documentKind()` answers it from the MEMBERS, never from the caller: one option is a
+**term sheet**; several options that are the same loan are a **comparison sheet**; several options that
+are different loans are a **scenario comparison** — and that second question is asked of
+`comparison.detectWorkflow`, which the break-even arithmetic already asks, so the document can never
+disagree with its own table about what it is comparing.
+
+They are not three skins on one page. A term sheet **expires**, states one programme in full and
+carries an **acceptance block**; a comparison carries none, because a signature under three columns
+records agreement to nothing in particular.
+
+### 2. The label was the bug — "no points either way" over a $7,500 origination fee
+
+The owner quoted their own sheet:
+
+```
+At closing                       No points either way
+Origination fee (2.000 points)   $7,500
+```
+
+Both lines were arithmetically correct and the document was wrong. `costOrCredit` answers ONE question
+— what the RATE costs or pays — and it was printed under a label promising the answer to a much bigger
+one. At par the rate costs nothing, so the sheet announced "no points either way" directly above
+$7,500 of points.
+
+**The class is worth more than the fix: a figure is only ever as true as its label, and no test that
+checks arithmetic can see it.** The rate's own cost is now labelled *"Cost to get this rate"*, and
+`wording.closingPosition()` gives the broad label its own real figure — the net of every charge and
+every credit.
+
+### 3. The fees are listed out, and the points show their arithmetic
+
+> *"you need to list out the lender fees, because the next one, you're waiving the lender fees. You
+> need to be able to see the difference … And for the ones that are actually paying the origination
+> fee, you also need to break down the origination fee they're paying."*
+
+A waived lender fee used to be ABSENT. Two fewer rows than the column beside it is not a difference a
+reader can see — it is one they have to notice the absence of. `overlay.feeLine()` now lists it at
+zero with what it would have been, and **the arithmetic is unmoved by construction**: `dollars` is the
+same 0 that an absent line already contributed, so every total downstream is byte-identical.
+
+The origination fee carries its multiplication underneath — *2.000 points of the $375,000 loan
+amount* — rather than crushing two numbers into a label and showing none of the working.
+
+### 4. PITI, and only when it is a real one
+
+> *"only if the taxes and insurance were entered in the scenario … only if the principal, interest,
+> tax, and insurance were entered, the monthly tax, and monthly insurance."*
+
+`wording.housingCost()` is the ONE place completeness is decided. A tax figure with no insurance figure
+sums to a number that LOOKS like a monthly cost and is short by an insurance premium — the exact shape
+of an under-quote somebody acts on — so the total is withheld and the parts stand alone. Association
+dues are deliberately not required: most properties have none, and "no dues" is a fact rather than a
+missing figure.
+
+### 5. The export gate, and why the comparison's half needs no rule
+
+> *"Term sheet should only be able to be exported if they enter the full scenario and calculate the
+> ratio … If you didn't do that, then you can just export comparisons, and then it should not have the
+> principal, interest, tax, and insurance."*
+
+`snapshot.exportGate()` refuses a TERM SHEET without the rent, the taxes, the insurance, the DSCR, the
+borrower's name and the property address — naming **all** of them at once, because a gate that reveals
+its blockers one at a time is four round trips and each of these is a box on the screen the officer is
+already looking at. The second half of the owner's sentence needed no second rule: the PITI block
+renders only when the figures are complete, so a comparison exported without them carries none *by
+construction*.
+
+**Stated rather than buried:** requiring the borrower's name and the property address is a judgement.
+A term sheet is the formal one-programme offer and carries a signature line, and a signature line over
+a blank "Prepared for" is a defective document. A comparison is a working document and needs neither.
+
+### 6. The page may not contradict itself — the DSCR
+
+Not asked for, and found on a render. The scenario carries ONE ratio; a comparison puts three options
+side by side whose total monthly payments genuinely differ — measured at $3,176.44, $3,304.23 and
+$3,369.01 — and the sheet printed **1.24 under all three**. Every one of those is a division a reader
+can do in their head off that very page, and two of the three were wrong. With a complete PITI the
+ratio is now `rent ÷ the total printed above`, which is exactly what the note under it says.
+
+### 7. The PILOT design, and what actually crossed
+
+> *"Everything should be in our pilot branding the same way our RTL term sheet is … Make sure to
+> include our logos and our designs."*
+
+`termsheet/brand.js` carries the palette, the 76pt full-bleed ink band, the gold rule, the teal section
+band with its gold tab, the ivory accent row, the three-line footer and the shape of a disclosures
+page — every value read off the RTL sheet's own `header()` / `band()` / `rowIn()` / `footer()` /
+`disclosuresPage()`. The lockup is the same PNG the RTL sheet embeds, extracted to
+`termsheet/assets/pilot-lockup-light.png`.
+
+**What crossed is the DESIGN. Not one line of RTL logic did, and none may:**
+`web/v2/tools/termsheet.js` is a FROZEN RTL pricing engine, so requiring it would put a frozen engine
+on Long-Term's render path and break rule 4 of the two-product law outright. Recorded in
+`docs/LONG-TERM-AUTHORIZED-COPIES.md`.
+
+**The disclosure TEXT is deliberately NOT copied.** The RTL page describes a business-purpose bridge
+loan — minimum earned interest, a deferred origination fee at exit, construction draws — and a 30-year
+DSCR rental loan has none of those and needs several a bridge sheet never did (escrows, flood, the rate
+lock, the prepayment schedule). Copying it would put terms on the document that are not terms of the
+loan, which is worse than having no page at all.
+
+### 8. The band and the footer are PAGE FURNITURE
+
+They are drawn over the whole page list AFTER the flow, not flowed as blocks — which is what makes
+"every page is branded" structural rather than incidental. A page the flow adds mid-table cannot come
+out bare, and neither can one added by a block type nobody has written yet.
+
+### 9. An unnamed programme may be named — and never after the investor
+
+> *"the loan officer can put in manually a program name. You warn him not to put in an investor name as
+> a program name."*
+
+**The warning is advice; the REFUSAL is the control.** A sentence under a text box does not enforce
+rule 10. `snapshot.resolveProgramName()` puts the typed name through `audience.mentionsInvestor` — the
+ONE definition, built on the registry — and every one of the 115 recorded spellings is refused,
+swept in CI. A programme that HAS a white-label name is never renamed by hand, or two sheets would call
+one programme two things.
+
+### 10. 24 hours, said in hours
+
+> *"it should also say that it's expiring in 24 hours."*
+
+A 24-hour window rendered as "1 day" is arithmetically identical and reads as a looser promise. On a
+document whose whole purpose is urgency the unit IS the message. The window is a setting
+(`termSheet.expiryHours`, default 24; comparisons keep the longer `termSheet.expiryDays`), read off the
+snapshot rather than written into the page as a literal that would go on saying 24 after somebody
+changed it — and a REPLAY reads the window off the document, not off today's settings.
+
+### What Phase 2 is proven by
+
+`scripts/test-lt-termsheet-pure.js` (the three kinds, the gate, PITI, the fee breakdown, the DSCR
+arithmetic, the naming guard, the expiry wording, the disclosure gating) and
+`scripts/test-lt-termsheet-render.mjs` (the same claims **on the paper**, read back with unpdf: the
+band and footer on every page at zero margin tolerance, the lockup embedded, the lockup DEGRADING to a
+type wordmark when the asset is corrupt, and the rule-10 sweep).
+
+**The rule-10 sweep became DIFFERENTIAL in this phase, and that is a real improvement rather than a
+loosening.** A short alias is a substring of ordinary English — "Roc" lives inside "p*roc*essing",
+which the new disclosures page says — so the old squashed-substring search reported a leak on a page
+where the name had been scrubbed perfectly. The same document is now rendered twice, once with the
+name and once with a neutral placeholder; the boilerplate contributes identically to both, so any
+INCREASE in occurrences is the injected name surviving and nothing else can be. The control name is
+asserted to reach the page, so the sweep is proven able to see a leak at all.
+
+**Fifteen mutations of the production code were each proven to fail these suites**, with a green
+control either side — and two of the first cut "failed" by CRASHING rather than by failing, which
+proves nothing about the guard; both were rewritten to be faithful.
+
 ## 14. Open questions
 
 | # | Question | Recommendation |

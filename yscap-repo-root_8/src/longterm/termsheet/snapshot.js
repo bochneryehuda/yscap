@@ -35,6 +35,7 @@
  */
 
 const crypto = require('crypto');
+const audience = require('../audience');
 const overlay = require('./overlay');
 const wording = require('./wording');
 const comparison = require('./comparison');
@@ -94,6 +95,88 @@ function projectScenario(raw) {
 }
 
 /**
+ * THE THREE DOCUMENTS. Owner-directed 2026-08-30, choosing the shape himself:
+ *
+ *   *"A term sheet should only have one option. It should be a comparison
+ *   sheet, which should be the same scenario, different options. There should
+ *   be a scenario sheet, which is different scenarios and different options
+ *   broken down."*
+ *
+ * ⛔ THE KIND IS DERIVED FROM THE OPTIONS, NEVER TAKEN FROM THE CALLER. A sheet
+ * that called itself a term sheet while carrying three options would print a
+ * signature block under a comparison, and one that called itself a comparison
+ * with a single option would draw a comparison table with one column. The
+ * members decide: one option is a TERM SHEET; several options that are the same
+ * loan priced differently are a COMPARISON; several options that are different
+ * loans are a SCENARIO COMPARISON. `comparison.detectWorkflow` already answers
+ * that second question ('A' = same loan, 'B' = different loans) for the break-even
+ * arithmetic, so asking it again here means the document can never disagree with
+ * its own table about what it is comparing.
+ */
+const DOC_KINDS = { TERM_SHEET: 'term_sheet', COMPARISON: 'comparison', SCENARIO: 'scenario_comparison' };
+
+function documentKind(members, compare) {
+  const n = Array.isArray(members) ? members.length : 0;
+  if (n <= 1) return DOC_KINDS.TERM_SHEET;
+  return compare && compare.workflow === 'B' ? DOC_KINDS.SCENARIO : DOC_KINDS.COMPARISON;
+}
+
+/** How the officer says it, so a refusal can be quoted straight onto a screen. */
+const KIND_WORDS = {
+  [DOC_KINDS.TERM_SHEET]: 'term sheet',
+  [DOC_KINDS.COMPARISON]: 'comparison sheet',
+  [DOC_KINDS.SCENARIO]: 'scenario comparison',
+};
+
+/** The manual program name a screen may offer, and its warning — ONE definition,
+ *  so the box, the refusal and the officer's audit trail all say it identically. */
+const MANUAL_NAME_WARNING = 'Give the program a name a borrower can read — never the investor\'s own name.';
+
+/**
+ * THE PROGRAM'S CLIENT-FACING NAME, or a refusal.
+ *
+ * ⛔ THE OFFICER MAY NAME AN UNNAMED PROGRAM, AND MAY NOT NAME IT AFTER THE
+ * INVESTOR. Owner-directed 2026-08-30, both halves in one sentence: *"the loan
+ * officer should tell the loan officer this doesn't have a name and the loan
+ * officer can put in manually a program name. You warn him not to put in an
+ * investor name as a program name."*
+ *
+ * ⛔ THE WARNING IS NOT THE CONTROL — the REFUSAL IS. A sentence under a text
+ * box is advice; the box still accepts whatever is typed, and the one thing that
+ * must never happen here is an investor's name reaching a borrower's document
+ * (rule 10, which is a HARD rule for exactly this reason). So the typed name is
+ * put through `audience.mentionsInvestor` — the ONE definition, built on the
+ * 117-spelling registry, never a second `!== 'Deephaven'` check that
+ * `Deepahven Select` walks straight past — and a name that names an investor is
+ * refused outright. The officer is told which rule they hit and why.
+ *
+ * The registry-supplied white-label name always wins: a program that HAS a name
+ * is never renamed by hand, or two sheets would call one program two things.
+ */
+function resolveProgramName(sel) {
+  const registry = str(sel.consumerLabel, 60);
+  if (registry) return { ok: true, name: registry, namedBy: 'registry' };
+
+  const typed = str(sel.manualProgramName, 60);
+  if (!typed) {
+    return refuse('program_not_named',
+      'This program has no client-facing name yet, so it cannot go on a term sheet. Either have the investor '
+      + 'named on the white-label sheet and price it again, or type a program name for this sheet. '
+      + MANUAL_NAME_WARNING);
+  }
+  if (typed.length < 3) {
+    return refuse('program_name_too_short',
+      `"${typed}" is too short to be a program name. Give it a name a borrower can read.`);
+  }
+  if (audience.mentionsInvestor(typed)) {
+    return refuse('program_name_names_investor',
+      `"${typed}" names the investor, so it cannot go on a borrower's document. ${MANUAL_NAME_WARNING} `
+      + 'Something like "30-Year Rental Select" describes the program without naming who funds it.');
+  }
+  return { ok: true, name: typed, namedBy: 'manual' };
+}
+
+/**
  * ONE selected quote → the member that is stored and printed.
  *
  * Returns `{ok:true, member}` or a refusal naming what is wrong. Every refusal
@@ -108,12 +191,9 @@ function buildMember(sel, plan, opts = {}) {
       'A term sheet can only be issued from borrower-paid or lender-paid pricing. Raw pricing is the vendor\'s own '
       + 'numbers before our compensation, so it is never sent to a borrower.');
   }
-  const consumerLabel = str(s.consumerLabel, 60);
-  if (!consumerLabel) {
-    return refuse('program_not_named',
-      'This program has no client-facing name yet, so it cannot go on a term sheet. Ask for the investor to be '
-      + 'named on the white-label sheet, then price it again.');
-  }
+  const named = resolveProgramName(s);
+  if (!named.ok) return named;
+  const consumerLabel = named.name;
   const ratePct = num(s.ratePct);
   if (ratePct == null || ratePct <= 0) return refuse('missing_rate', 'That quote has no rate on it.');
   const rawPrice = num(s.rawPrice);
@@ -161,6 +241,10 @@ function buildMember(sel, plan, opts = {}) {
       // The CONSUMER identity, and nothing else. `lender`, `investor`,
       // `lenderId` and `rateSheetName` are not keys on this object.
       consumerLabel,
+      // WHO named it. A sheet whose program name an officer typed says so on its
+      // face, because a reader deserves to know the difference between a program
+      // we publish under that name and one this officer called that today.
+      programNamedBy: named.namedBy,
       product: str(s.product, 80),
       mode,
       waiveLenderFees: waive,
@@ -180,6 +264,73 @@ function buildMember(sel, plan, opts = {}) {
       dscr: scenario.dscr,
       prepayLabel: wording.prepaySentence(scenario.prepayMonths, scenario.prepayStructure),
     },
+  };
+}
+
+/**
+ * MAY THIS BE EXPORTED? — the completeness gate, as a pure verdict.
+ *
+ * ⛔ A TERM SHEET IS THE COMPLETE DOCUMENT; A COMPARISON IS NOT. Owner-directed
+ * 2026-08-30: *"Term sheet should only be able to be exported if they enter the
+ * full scenario and calculate the ratio. They put in the monthly rent, taxes,
+ * and insurance, so the term sheet can be fully completed with the principal,
+ * interest, tax, and insurance, and fully calculated. If you didn't do that,
+ * then you can just export comparisons, and then it should not have the
+ * principal, interest, tax, and insurance."*
+ *
+ * So the gate is on the TERM SHEET alone, and the comparison's half needs no
+ * gate at all: the PITI block renders only when `wording.housingCost` says the
+ * figures are complete, so a comparison exported without taxes and insurance
+ * carries no PITI *by construction* rather than by a second rule that could
+ * drift from this one.
+ *
+ * ⛔ IT NAMES EVERY MISSING THING AT ONCE, and each one is a box the officer can
+ * fill from the screen they are already on. A gate that reveals its blockers one
+ * at a time is four round trips; a gate whose remedy is somewhere else is a dead
+ * end. `missing[]` carries machine-readable keys so the screen can point at the
+ * fields, and `message` is a sentence it can print verbatim.
+ *
+ * The borrower's name and the property address are required for a TERM SHEET
+ * only. That is a judgement, and it is stated rather than buried: a term sheet
+ * is the formal one-program offer, it carries an acceptance block, and a
+ * signature line over a blank "Prepared for" is a defective document. A
+ * comparison is a working document and needs neither.
+ */
+const GATE_LABELS = {
+  rentMonthly: 'the monthly rent',
+  taxMonthly: 'the monthly property taxes',
+  insuranceMonthly: 'the monthly insurance',
+  dscr: 'the calculated DSCR',
+  borrowerName: "the borrower's name",
+  propertyAddress: 'the full property address',
+};
+
+function exportGate(snapshot) {
+  const s = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  const kind = s.docKind || documentKind(s.members, s.comparison);
+  if (kind !== DOC_KINDS.TERM_SHEET) return { ok: true, kind, missing: [], message: null };
+
+  const m = (Array.isArray(s.members) && s.members[0]) || {};
+  const sc = m.scenario || {};
+  const p = s.prepared || {};
+  const missing = [];
+  if (num(sc.rentMonthly) == null || num(sc.rentMonthly) <= 0) missing.push('rentMonthly');
+  if (num(sc.taxMonthly) == null) missing.push('taxMonthly');
+  if (num(sc.insuranceMonthly) == null) missing.push('insuranceMonthly');
+  if (num(sc.dscr) == null || num(sc.dscr) <= 0) missing.push('dscr');
+  if (!str(p.borrowerName, 120)) missing.push('borrowerName');
+  if (!str(p.propertyAddress, 200)) missing.push('propertyAddress');
+  if (!missing.length) return { ok: true, kind, missing: [], message: null };
+
+  const words = missing.map((k) => GATE_LABELS[k] || k);
+  const list = words.length === 1 ? words[0]
+    : `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
+  return {
+    ok: false, kind, missing,
+    error: 'term_sheet_incomplete',
+    message: `A term sheet states the whole loan, so it needs ${list}. Fill those in and it will export. `
+      + 'Until then you can still export a comparison — it simply leaves out the monthly taxes, insurance '
+      + 'and the total payment.',
   };
 }
 
@@ -205,12 +356,20 @@ function buildSnapshot({ selections, plan, anchorIndex = 0, prepared = {}, maxMe
     members.push(r.member);
   }
   const compare = members.length > 1 ? comparison.buildComparison(members, anchorIndex) : null;
+  const docKind = documentKind(members, compare);
 
   return {
     ok: true,
     snapshot: {
       version: 1,
+      // `kind` is the RENDERING shape the layout has always branched on — one
+      // option or several. `docKind` is WHICH OF THE THREE DOCUMENTS this is,
+      // which is a finer question (a comparison and a scenario comparison are
+      // both "several"). Both are stored: the first is what the page does, the
+      // second is what the document is called, and neither is derivable from the
+      // other without re-running the comparison engine.
       kind: members.length > 1 ? 'comparison' : 'single',
+      docKind,
       members,
       comparison: compare,
       prepared: {
@@ -257,4 +416,9 @@ function hashSnapshot(snapshot) {
   return crypto.createHash('sha256').update(JSON.stringify(canonicalize(snapshot))).digest('hex');
 }
 
-module.exports = { buildMember, buildSnapshot, canonicalize, hashSnapshot, projectScenario, _internals: { refuse, str, num } };
+module.exports = {
+  buildMember, buildSnapshot, canonicalize, hashSnapshot, projectScenario,
+  documentKind, exportGate, resolveProgramName,
+  DOC_KINDS, KIND_WORDS, MANUAL_NAME_WARNING, GATE_LABELS,
+  _internals: { refuse, str, num },
+};

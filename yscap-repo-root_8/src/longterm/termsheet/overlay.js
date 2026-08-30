@@ -100,16 +100,41 @@ function shiftedPrice(rawPrice, shift) {
 }
 
 /**
+ * ONE lender-fee line — LISTED WHETHER OR NOT IT IS WAIVED.
+ *
+ * ⛔ A WAIVED FEE IS NAMED AND SHOWN AT ZERO, NEVER OMITTED. Owner-directed
+ * 2026-08-30: *"On the one where it has lender fees, you need to list out the
+ * lender fees, because the next one, you're waiving the lender fees. You need to
+ * be able to see the difference."* A comparison whose waived column simply has
+ * two fewer rows than the column beside it does not SHOW a difference — it hides
+ * one, and the reader has to notice an ABSENCE to find the saving that is the
+ * entire point of the option.
+ *
+ * ⛔ THE ARITHMETIC IS UNMOVED, BY CONSTRUCTION. `dollars` is 0 on a waived
+ * line — exactly the 0 that `lineDollars()` already returned when the line was
+ * absent — so every total downstream is byte-identical to before this changed.
+ * `fullDollars` carries what it WOULD have been, which is what lets the sheet
+ * print the saving rather than leave the reader to work it out.
+ */
+function feeLine(key, label, amount, waived) {
+  const full = r2(amount);
+  return waived
+    ? { key, label, points: null, dollars: 0, waived: true, fullDollars: full }
+    : { key, label, points: null, dollars: full, waived: false, fullDollars: full };
+}
+
+/**
  * THE FEE LIST for one quote. Null in raw mode (raw is the vendor's answer
  * verbatim, not our charging story) and null when the inputs cannot carry the
  * arithmetic — a missing raw price or loan amount yields NO fee list rather than
  * one with invented figures.
  *
- * THE WAIVE (lender-paid only): the two lender-fee lines do not populate and
- * their cash comes out of the CREDIT — or, when the credit cannot cover them,
- * lands on the BUYDOWN — in DOLLARS, not points, so the buydown line a waive has
- * touched carries cash-derived points and can never disagree with its own
- * dollars.
+ * THE WAIVE (lender-paid only): the two lender-fee lines are still LISTED, at
+ * zero, with what they would have been (see `feeLine` — the owner asked to be
+ * able to SEE the difference against the option beside it), and their cash comes
+ * out of the CREDIT — or, when the credit cannot cover them, lands on the
+ * BUYDOWN — in DOLLARS, not points, so the buydown line a waive has touched
+ * carries cash-derived points and can never disagree with its own dollars.
  */
 function quoteCharges(mode, plan, rawPrice, loanAmount, waiveLenderFees = false) {
   if (mode === 'raw') return null;
@@ -136,6 +161,10 @@ function quoteCharges(mode, plan, rawPrice, loanAmount, waiveLenderFees = false)
     lines.push({
       key: 'origination', label: 'Origination',
       points: r3(p.borrowerPaid), dollars: ptsToDollars(p.borrowerPaid),
+      // The BASIS the points were taken of, so a sheet can break the fee down
+      // ("2.000 points of the $375,000 loan amount") instead of asserting a
+      // dollar figure the reader has to take on trust.
+      basis: loan,
     });
   }
 
@@ -157,13 +186,12 @@ function quoteCharges(mode, plan, rawPrice, loanAmount, waiveLenderFees = false)
     lines.push({
       key: 'buydown', label: 'Buydown (discount points)',
       points: r3((buydownDollars / loan) * 100), dollars: buydownDollars,
+      basis: loan,
     });
   }
 
-  if (!waived) {
-    lines.push({ key: 'applicationFee', label: 'Application fee', points: null, dollars: r2(p.applicationFee) });
-    lines.push({ key: 'commitmentFee', label: 'Commitment fee', points: null, dollars: r2(p.commitmentFee) });
-  }
+  lines.push(feeLine('applicationFee', 'Application fee', p.applicationFee, waived));
+  lines.push(feeLine('commitmentFee', 'Commitment fee', p.commitmentFee, waived));
 
   const borrowerPaysDollars = r2(lines.reduce((s, l) => s + (nn(l.dollars) ? l.dollars : 0), 0));
   const borrowerCreditDollars = r2(creditDollars);

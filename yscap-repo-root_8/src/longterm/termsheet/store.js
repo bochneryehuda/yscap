@@ -89,7 +89,7 @@ async function insertWithFreshCode(client, row) {
  */
 async function issueSheet({
   snapshot, snapshotHash, compPlan, staffId, borrowerId, borrowerName,
-  createdBy = 'officer', supersedes = null, expiryDays = 2, cartId = null,
+  createdBy = 'officer', supersedes = null, expiryDays = 2, expiresAt: expiresAtIn = null, cartId = null,
 }) {
   if (!snapshot || !Array.isArray(snapshot.members) || !snapshot.members.length) {
     throw new Error('A term sheet needs at least one option.');
@@ -100,8 +100,17 @@ async function issueSheet({
     .map((m) => (m.pricedAt ? Date.parse(m.pricedAt) : NaN))
     .filter((n) => Number.isFinite(n));
   const pricedAt = priced.length ? new Date(Math.min(...priced)).toISOString() : new Date().toISOString();
+  // ⛔ THE COLUMN AND THE DOCUMENT MUST SAY ONE THING. The sheet PRINTS its own
+  // expiry, so when the caller has already worked one out — a term sheet runs on
+  // a 24-hour clock, a comparison on the longer company window — it is passed in
+  // and stored verbatim rather than recomputed here a few milliseconds later
+  // against a different rule. The day count remains the fallback for a caller
+  // that has no opinion.
   const days = Number.isFinite(Number(expiryDays)) && Number(expiryDays) > 0 ? Number(expiryDays) : 2;
-  const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+  const passed = expiresAtIn ? new Date(expiresAtIn) : null;
+  const expiresAt = passed && !Number.isNaN(passed.getTime())
+    ? passed.toISOString()
+    : new Date(Date.now() + days * 86400000).toISOString();
 
   const client = await lazy.db.getClient();
   try {

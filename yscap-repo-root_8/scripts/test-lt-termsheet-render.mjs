@@ -33,6 +33,8 @@ const layout = require('../src/longterm/termsheet/layout.js');
 const pdf = require('../src/longterm/termsheet/pdf.js');
 const investors = require('../src/longterm/encompass/investors.js');
 const audience = require('../src/longterm/audience.js');
+const brand = require('../src/longterm/termsheet/brand.js');
+const fs = require('fs');
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -55,7 +57,7 @@ const quote = (label, ratePct, rawPrice, extra) => Object.assign({
 async function render(selections, prepared, opts) {
   const built = snapshot.buildSnapshot({ selections, plan: PLAN, anchorIndex: 0, prepared: prepared || {} });
   if (!built.ok) throw new Error(`snapshot refused: ${built.error}`);
-  const lay = layout.buildLayout(built.snapshot, opts || { code: 'TS-4KH92B' });
+  const lay = layout.buildLayout(built.snapshot, { code: 'TS-4KH92B', expiryHours: 24, ...(opts || {}) });
   return pdf.renderTermSheet(lay);
 }
 
@@ -78,22 +80,42 @@ async function readBack(bytes) {
 }
 
 /** Every way a box can be in the wrong place. */
+/**
+ * ⛔ THE PAPER HAS THREE ZONES, AND A STRING MUST SIT WHOLLY INSIDE ONE OF THEM.
+ *
+ * The brand band and the footer are PAGE FURNITURE — drawn over every page after
+ * the flow, deliberately outside the content box — so a single "inside the
+ * margins" box would flag the document's own branding as a defect. What actually
+ * must never happen is a string landing in NO zone: between the content floor and
+ * the footer (content that grew through its own footer — the RTL failure this
+ * whole renderer is built against), between the content ceiling and the band, or
+ * off the paper entirely.
+ *
+ * The zones come from `pdf.ZONES`, not from numbers retyped here: a test carrying
+ * its own copy of the layout passes the day the layout moves.
+ */
 function violations(pages) {
   const LEFT = pdf.M.left;
   const RIGHT = pdf.PAGE.w - pdf.M.right;
-  const TOP = pdf.TOP_Y;
+  const Z = pdf.ZONES;
+  const zoneOf = (it) => {
+    const bottom = it.y;
+    const top = it.y + it.h;
+    for (const [name, z] of Object.entries(Z)) {
+      if (bottom >= z.bottom - 0.5 && top <= z.top + 2) return name;
+    }
+    return null;
+  };
   const bad = [];
   pages.forEach((items, pi) => {
     for (const it of items) {
       const label = JSON.stringify(it.s.slice(0, 34));
+      // The side margins hold in EVERY zone. Only filled rectangles bleed to the
+      // paper edge, and a rectangle is not a string.
       if (it.x < LEFT - 0.01) bad.push(`p${pi + 1} past the LEFT margin at x=${it.x.toFixed(2)} — ${label}`);
       if (it.x + it.w > RIGHT + 0.01) bad.push(`p${pi + 1} past the RIGHT margin, ends ${(it.x + it.w).toFixed(2)} of ${RIGHT} — ${label}`);
-      if (it.y + it.h > TOP + 2) bad.push(`p${pi + 1} above the TOP margin at y=${it.y.toFixed(2)} — ${label}`);
-      // The band between the footer and the bottom limit is the DEAD ZONE:
-      // flowing content must never reach it, which is what makes it impossible
-      // for a page that grew to draw through its own footer.
-      if (it.y < pdf.BOTTOM_Y && it.y > 58) bad.push(`p${pi + 1} in the footer dead band at y=${it.y.toFixed(2)} — ${label}`);
-      if (it.y < 20) bad.push(`p${pi + 1} below the footer at y=${it.y.toFixed(2)} — ${label}`);
+      const zone = zoneOf(it);
+      if (!zone) bad.push(`p${pi + 1} in NO zone — y=${it.y.toFixed(2)}..${(it.y + it.h).toFixed(2)} — ${label}`);
     }
     // Two strings on one line whose boxes overlap are two things printed on top
     // of each other. A 0.6pt tolerance ignores boxes that merely touch.
@@ -204,15 +226,185 @@ console.log('\nthe page says what the document says');
     [quote('No points', 7.375, 102), quote('Buy the rate down', 6.875, 99.75), quote('Take the credit', 7.875, 103.75)],
     { borrowerName: 'Jonathan Reyes', officerName: 'Sara Klein', companyName: 'YS Capital Group', companyNmls: '2609746' },
   ));
-  check(back.pageCount === 4, `a three-option comparison is one comparison page plus one detail page each (${back.pageCount})`);
-  for (const want of ['No points either way', 'You pay $8,438 (2.250 pts)', 'You receive $6,563 (1.750 pts)',
-    '67 months (5 years 7 months)', '51 months (4 years 3 months)', 'TS-4KH92B', 'Page 1 of 4', 'Page 4 of 4']) {
-    check(back.text.includes(want.replace(/ /g, '')) || back.text.includes(want),
-      `the paper carries "${want}"`);
+  // ⛔ ASSERTED AS THE PROPERTY, NOT AS A PAGE COUNT. "One detail page each" is
+  // the owner's "it's just adding pages to it"; a hard-coded 4 would fail the day
+  // a disclosure paragraph gets one line longer, and would then be "fixed" by
+  // bumping the number — which is how a real regression gets waved through.
+  // Squashed AND case-folded: a section band is set in tracked capitals, which
+  // pdf-lib emits one character per draw call, so the extracted run carries no
+  // spaces and no lower case.
+  const squash = (s) => s.replace(/\s+/g, '').toLowerCase();
+  const pagesWith = (needle) => back.pages
+    .map((items, i) => (squash(items.map((it) => it.s).join('')).includes(squash(needle)) ? i : -1))
+    .filter((i) => i >= 0);
+  const LABELS = ['No points', 'Buy the rate down', 'Take the credit'];
+  const where = LABELS.map(pagesWith);
+  // Every label appears on the COMPARISON page, in its table column — so the
+  // detail page is the OTHER one it appears on. Asserting "the first page that
+  // mentions it" would have been satisfied by the table alone and proved nothing
+  // about the detail pages existing at all.
+  check(where.every((p) => p.includes(0)), 'every option is named in the comparison table on page one');
+  const details = where.map((p) => p.filter((i) => i > 0));
+  check(details.every((p) => p.length >= 1), 'and every option has a page of its own beyond that table');
+  const firsts = details.map((p) => p[0]);
+  check(new Set(firsts).size === 3,
+    `each option's detail page is its OWN — the owner's "it's just adding pages to it", literally (pages ${firsts.join(', ')} of ${back.pageCount})`);
+  check(back.pageCount >= 4, `and the document runs to at least one page per option plus the comparison (${back.pageCount})`);
+  const carries = (want) => back.text.includes(want.replace(/ /g, '')) || back.text.includes(want);
+  for (const want of ['You pay $8,438 (2.250 pts)', 'You receive $6,563 (1.750 pts)',
+    '67 months (5 years 7 months)', '51 months (4 years 3 months)', 'TS-4KH92B',
+    `Page 1 of ${back.pageCount}`, `Page ${back.pageCount} of ${back.pageCount}`]) {
+    check(carries(want), `the paper carries "${want}"`);
   }
+  // ⛔ THE OWNER'S OWN BUG, ASSERTED ON THE PAPER. The sheet used to print
+  //     At closing                       No points either way
+  //     Origination fee (2.000 points)   $7,500
+  // — two true lines and a document that contradicted itself, because the value
+  // answered what the RATE costs while its label promised the whole closing
+  // position. Only a rendered page can prove the pair is gone; a block-list test
+  // cannot see what ended up printed next to what.
+  check(carries('Cost to get this rate'),
+    'the rate\'s own cost is labelled for what it is about — the rate');
+  check(carries('Lender charges, net'),
+    '…and the whole closing position is a separate figure with its own honest label');
+  check(!/Atclosing.{0,40}Nopointseitherway/.test(back.text.replace(/\s+/g, '')),
+    '…and the pair the owner read — a par phrase under a closing label — cannot occur');
   check(!/\b10[0-4]\.\d{2,3}\b/.test(back.text.replace(/,/g, '')),
     'and NO PRICE — 101.750 is a wholesale number with no meaning to a borrower, and teaching them one is the babysitting the owner ruled out');
   check(/not a commitment to lend/i.test(back.text), 'every page states that it is an estimate, not a commitment');
+}
+
+
+console.log('\nthe PILOT design is on every page — the band, the lockup, the footer');
+{
+  // ⛔ ONLY A RENDER CAN PROVE THIS. The band and the footer are page FURNITURE:
+  // they are drawn over the whole page list after the flow, precisely so a page
+  // the renderer adds mid-table cannot come out bare. A block-list test cannot
+  // see a page the flow invented, which is the exact page at risk.
+  const bytes = await render(
+    [7.0, 7.125, 7.25, 7.375, 7.5].map((r, i) => quote(`Option ${i + 1}`, r, 102 - (i - 2) * 0.5)),
+    {
+      borrowerName: 'Jonathan Reyes', propertyAddress: '218 Forest Avenue, Lakewood, NJ 08701',
+      officerName: 'Sara Klein', officerEmail: 'sara@yscapgroup.com', officerPhone: '(732) 555-0148',
+      companyName: 'YS Capital Group', companyNmls: '2609746', preparedAt: 'August 30, 2026 9:14 AM',
+    },
+  );
+  const back = await readBack(bytes);
+  const Z = pdf.ZONES;
+  const squash = (s) => s.replace(/\s+/g, '').toLowerCase();
+
+  let bandless = [];
+  let footerless = [];
+  back.pages.forEach((items, i) => {
+    const inBand = items.filter((it) => it.y >= Z.band.bottom);
+    const inFoot = items.filter((it) => it.y + it.h <= Z.footer.top);
+    if (!squash(inBand.map((it) => it.s).join('')).includes('comparisonsheet')) bandless.push(i + 1);
+    if (!squash(inFoot.map((it) => it.s).join('')).includes('notacommitmenttolend')) footerless.push(i + 1);
+  });
+  check(back.pageCount >= 6, `a five-option comparison runs to ${back.pageCount} pages — enough for the check to mean something`);
+  check(bandless.length === 0, `the brand band names the document on EVERY page (missing on ${bandless.join(', ') || 'none'})`);
+  check(footerless.length === 0, `and the footer disclaims on EVERY page (missing on ${footerless.join(', ') || 'none'})`);
+
+  // Every page numbers itself, and the count is the real one.
+  let misnumbered = [];
+  back.pages.forEach((items, i) => {
+    if (!squash(items.map((it) => it.s).join('')).includes(squash(`Page ${i + 1} of ${back.pageCount}`))) misnumbered.push(i + 1);
+  });
+  check(misnumbered.length === 0, `every page numbers itself correctly (wrong on ${misnumbered.join(', ') || 'none'})`);
+
+  // ⛔ THE LOCKUP IS ON THE PAPER, not merely referenced. The owner asked for it
+  // by name — "Make sure to include our logos and our designs" — and an image
+  // that failed to embed leaves a branded band with a hole in it, which reads as
+  // a broken document rather than as a missing decoration.
+  const raw = Buffer.from(bytes).toString('latin1');
+  const images = (raw.match(/\/Subtype\s*\/Image/g) || []).length;
+  check(images >= 1, `the lockup is embedded in the document (${images} image object(s))`);
+  check(brand.logoBytes() && brand.logoBytes().length > 1000,
+    'and the asset it comes from is a real PNG on disk, not a placeholder');
+
+  // ⛔ AND IT DEGRADES RATHER THAN FAILING. A term sheet that will not render is
+  // a term sheet that did not go out, and the officer was already told it was
+  // issued — so an unreadable asset must cost the logo and nothing else.
+  const realPath = brand.LOGO_PATH;
+  const saved = fs.readFileSync(realPath);
+  try {
+    fs.writeFileSync(realPath, Buffer.from('not a png at all'));
+    delete require.cache[require.resolve('../src/longterm/termsheet/brand.js')];
+    delete require.cache[require.resolve('../src/longterm/termsheet/pdf.js')];
+    const brand2 = require('../src/longterm/termsheet/brand.js');
+    const pdf2 = require('../src/longterm/termsheet/pdf.js');
+    check(brand2.logoBytes() === null, 'a corrupt lockup file is refused before it reaches the embedder');
+    const lay = layout.buildLayout(snapshot.buildSnapshot({
+      selections: [quote('The offer', 7.375, 102)], plan: PLAN, prepared: { borrowerName: 'Jonathan Reyes' },
+    }).snapshot, { code: 'TS-4KH92B', expiryHours: 24 });
+    const degraded = await pdf2.renderTermSheet(lay);
+    const back2 = await readBack(degraded);
+    check(back2.pageCount >= 1, 'the sheet still renders without it');
+    check(squash(back2.text).includes('yscapital'),
+      '…and the wordmark is SET IN TYPE instead, so the band is never a hole');
+  } finally {
+    fs.writeFileSync(realPath, saved);
+    delete require.cache[require.resolve('../src/longterm/termsheet/brand.js')];
+    delete require.cache[require.resolve('../src/longterm/termsheet/pdf.js')];
+  }
+}
+
+console.log('\nthe owner\'s four items, on the paper');
+{
+  const squash = (s) => s.replace(/\s+/g, '').toLowerCase();
+  const FULL = {
+    borrowerName: 'Riverbend Holdings LLC', propertyAddress: '218 Forest Avenue, Lakewood, NJ 08701',
+    officerName: 'Sara Klein', companyName: 'YS Capital Group', companyNmls: '2609746',
+    preparedAt: 'August 30, 2026 9:14 AM', expiresAt: 'August 31, 2026 9:14 AM',
+  };
+  const ts = await readBack(await render([quote('The offer', 7.375, 102)], FULL, { expiryHours: 24 }));
+  const flat = squash(ts.text);
+
+  // (1) THE FULL PROPERTY ADDRESS AND THE PERSON'S NAME — the owner asked to be
+  // able to put both on the sheet, and a term sheet is refused without them.
+  check(flat.includes(squash('Riverbend Holdings LLC')), 'the borrower\'s name is on the paper');
+  check(flat.includes(squash('218 Forest Avenue, Lakewood, NJ 08701')), 'and the full property address');
+
+  // (2) PITI — "we also need to add something for principal, interest, taxes,
+  // and insurance, only if the taxes and insurance were entered".
+  check(flat.includes(squash('Total monthly payment (principal, interest, taxes & insurance)')),
+    'the total monthly payment names all four things it is the total of');
+  const bare = { ...SCENARIO, taxMonthly: null, insuranceMonthly: null };
+  const noPiti = await readBack(await render(
+    [quote('A', 7.375, 102, { scenario: bare }), quote('B', 6.875, 99.75, { scenario: bare })], FULL,
+  ));
+  check(!squash(noPiti.text).includes(squash('Total monthly payment')),
+    '…and a sheet with no taxes and no insurance carries NO total — not a partial one wearing the right label');
+
+  // (3) THE ORIGINATION FEE, BROKEN DOWN.
+  check(flat.includes(squash('2.000 points of the $375,000 loan amount')),
+    'the origination fee shows the multiplication that produced it');
+
+  // (4) THE LENDER FEES, LISTED — so the waived column can be compared against
+  // the charged one.
+  const waived = await readBack(await render([
+    quote('Pays the fees', 7.375, 102),
+    quote('Fees waived', 7.875, 103.75, { mode: 'lenderPaid', waiveLenderFees: true }),
+  ], FULL));
+  const wflat = squash(waived.text);
+  check(wflat.includes(squash('Application fee')) && wflat.includes(squash('Commitment fee')),
+    'both lender fees are named on the paper');
+  check(wflat.includes(squash('covered by the lender, not paid by you')),
+    '…and the waived one says so, with what it would have been');
+  check(wflat.includes(squash('Lender fees you are not paying')), '…and the saving is totalled');
+
+  // (5) THE EXPIRY, in the owner's own unit.
+  check(flat.includes(squash('This term sheet expires in 24 hours')),
+    'the term sheet says it expires in 24 HOURS — the unit is the message');
+
+  // (6) SIGNABLE, AND ONLY THE TERM SHEET.
+  check(flat.includes(squash('Borrower / guarantor')), 'a term sheet has somewhere to sign');
+  check(!wflat.includes(squash('Borrower / guarantor')),
+    'and a comparison has none — a signature under two columns records agreement to nothing in particular');
+
+  // (7) THE DISCLOSURES, on both.
+  check(flat.includes(squash('Business purpose only')) && wflat.includes(squash('Business purpose only')),
+    'both carry the disclosures page');
 }
 
 console.log('\nrule 10 — the investor name never reaches the paper');
@@ -223,12 +415,20 @@ console.log('\nrule 10 — the investor name never reaches the paper');
   }
   check(spellings.length > 100, `${spellings.length} recorded spellings to sweep — a hand-typed name is spelled many ways, and a "!== 'Deephaven'" check passes "Deepahven approval.pdf" straight through`);
 
-  let leaked = 0;
-  let first = null;
-  for (const name of spellings) {
-    // Pushed through EVERY free-text field a human can type into, because that
-    // is the class the whitelist cannot see.
-    // eslint-disable-next-line no-await-in-loop
+  // ⛔ A DIFFERENTIAL SWEEP, NOT A SUBSTRING SEARCH — and the difference matters
+  // more the more prose the document carries. A short alias is a substring of
+  // ordinary English: "Roc" lives inside "p-roc-essing", which the disclosures
+  // page says in "the lender underwriting and processing fees". A naive search
+  // for the squashed needle therefore reports a leak on a page where the name was
+  // scrubbed perfectly and the word "processing" simply exists — a FALSE POSITIVE
+  // that would be "fixed" by shortening the guard, which is exactly how a real
+  // leak gets waved through.
+  //
+  // So the same document is rendered TWICE: once with the investor's name in
+  // every free-text field, once with a neutral placeholder of the same shape.
+  // The boilerplate contributes identically to both, so any INCREASE in how often
+  // the needle occurs is the injected name surviving — and nothing else can be.
+  const sweepText = async (name) => {
     const back = await readBack(await render(
       [quote(`Sold to ${name} today`, 7.375, 102, { product: `${name} 30-Year Fixed` })],
       {
@@ -239,15 +439,31 @@ console.log('\nrule 10 — the investor name never reaches the paper');
       },
     ));
     // The extracted run has no spaces between items, so the name is sought in
-    // the SQUASHED text too — a name broken across two draw calls would
-    // otherwise slip a naive search.
-    const flat = back.text.replace(/\s+/g, '').toLowerCase();
+    // the SQUASHED text — a name broken across two draw calls would otherwise
+    // slip a naive search.
+    return back.text.replace(/\s+/g, '').toLowerCase();
+  };
+  const occurrences = (hay, needle) => (needle ? hay.split(needle).length - 1 : 0);
+  const CONTROL = 'Wexlaton';   // a word no investor is called and no prose contains
+  const controlText = await sweepText(CONTROL);
+
+  let leaked = 0;
+  let first = null;
+  for (const name of spellings) {
     const needle = name.replace(/\s+/g, '').toLowerCase();
-    if (needle.length >= 3 && flat.includes(needle)) {
+    if (needle.length < 3) continue;
+    // eslint-disable-next-line no-await-in-loop
+    const flat = await sweepText(name);
+    if (occurrences(flat, needle) > occurrences(controlText, needle)) {
       leaked += 1;
       if (!first) first = name;
     }
   }
+  // ⛔ AND THE SWEEP IS PROVEN TO BITE. A differential that could never report a
+  // leak would pass forever; the control name is not an investor, so it MUST
+  // survive onto the page and be counted.
+  check(occurrences(controlText, CONTROL.toLowerCase()) > 0,
+    `the sweep can see an injected name at all — the control "${CONTROL}" reaches the page ${occurrences(controlText, CONTROL.toLowerCase())} times`);
   check(leaked === 0, `all ${spellings.length} spellings swept through four free-text fields of a real term sheet — none survived onto the page${first ? ` (first leak: ${first})` : ''}`);
 
   // And the sweep is only worth anything if it CAN see a leak.
