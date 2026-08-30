@@ -207,7 +207,7 @@ async function uploadConditionDocument(req, opts) {
   /* THE OWNER COLUMNS. An ENTITY-slot upload belongs to the borrower's company,
      not to a file — both file-owner columns stay NULL and `llc_id` carries it, the
      shape a borrower upload has always produced. Otherwise `ownerCols` sets exactly
-     one, so `chk_one_owner` is satisfied by construction and the SAME statement
+     one, so the one-owner rule holds by construction and the SAME statement
      files an RTL document and a Long-Term one. */
   const cols = llcId ? { application_id: null, lt_loan_id: null } : ownerCols(owner);
 

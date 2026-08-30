@@ -18,7 +18,8 @@
  *     verdict stamps and the delete's condition re-open all behave exactly as the
  *     inline handlers did.
  *  B. A Long-Term upload lands with `lt_loan_id` set and `application_id` NULL —
- *     one owner column, satisfied by construction (db/650's chk_one_owner).
+ *     one owner column, by construction at the door (NO constraint on `documents`
+ *     enforces it — chk_one_owner is on checklist_items only).
  *  C. THE CROSS-OWNER IDOR: with an owner named, a document id belonging to the
  *     OTHER product does not reach a row that some later check is trusted to
  *     refuse — it reaches nothing, on review, on remove and on serve.
@@ -261,13 +262,78 @@ const itemRow = async (id) => (await db.query(
   assert(refuses({ action: 'accept', requestMore: true }, { canAccept: true }, /what additional document/),
     'A27 accept-and-request-more needs a note');
 
-  // Delete: the row and the bytes go, and the condition re-opens when nothing
-  // accepted is left. A signed-off condition is deliberately left alone.
+  /* Delete: the row and the bytes go, and the condition RE-OPENS when nothing
+     accepted is left.
+
+     A29 USED TO ASSERT NOTHING, and it is worth saying why, because the shape
+     recurs. A23 above leaves the item at 'outstanding'; the re-open UPDATE only
+     fires for status IN ('received','issue','requested'). So the delete could not
+     change anything and A29 merely re-read the state A23 had already set — deleting
+     the ENTIRE re-open block from removeDocument left the suite green. A test that
+     asserts a state the previous step already produced is testing the previous step.
+
+     So: put the item somewhere the re-open has to MOVE it from, and assert the
+     TRANSITION rather than the destination. */
+  await db.query("UPDATE checklist_items SET status='received' WHERE id=$1", [appItem]);
+  // Make the guard real: something accepted IS still on the condition.
+  await db.query(
+    `UPDATE documents SET review_status='accepted' WHERE id=(
+       SELECT id FROM documents WHERE checklist_item_id=$1 AND is_current=true AND id<>$2 LIMIT 1)`,
+    [appItem, add2.documentId]);
+  const acceptedBefore = await db.query(
+    `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current=true AND review_status='accepted' LIMIT 1`,
+    [appItem]);
+  assert(acceptedBefore.rows[0] && (await itemRow(appItem)).status === 'received',
+    'A28a the condition starts at received WITH an accepted document still on it');
+
   const delDoc = await condRemove.loadDocument(db, add2.documentId);
   const delRes = await condRemove.removeDocument(db, { doc: delDoc, hooks: spyHooks() });
   assert(delRes.deleted === true && !(await docRow(add2.documentId)), 'A28 the delete really removes the row');
+  // THE GUARD HALF: something accepted remains, so the condition must NOT re-open.
+  assert((await itemRow(appItem)).status === 'received',
+    'A29 a delete does NOT re-open the condition while an accepted document remains');
+
+  /* THE RE-OPEN HALF. Now take the acceptance away and delete a document that IS the
+     last of its kind, and the condition has to MOVE. Asserting the transition rather
+     than the destination is the whole point: the previous version of A29 read back a
+     status an earlier step had already set, so deleting the entire re-open block from
+     removeDocument left it green. */
+  await db.query("UPDATE documents SET review_status='pending' WHERE checklist_item_id=$1", [appItem]);
+  const lastUp = await condUpload.uploadConditionDocument({}, {
+    owner: APP, body: body({ checklistItemId: appItem, slot: 'Reopen probe' }),
+    actorId: staffId, borrowerId, hooks: spyHooks(), q: db,
+  });
+  await db.query("UPDATE checklist_items SET status='received' WHERE id=$1", [appItem]);
+  const lastDoc = await condRemove.loadDocument(db, lastUp.documentId);
+  const lastRes = await condRemove.removeDocument(db, { doc: lastDoc, hooks: spyHooks() });
+  assert(lastRes.deleted === true, 'A29a the last document really deletes');
   assert((await itemRow(appItem)).status === 'outstanding',
-    'A29 …and re-opens the condition when nothing accepted remains');
+    'A29b …and with nothing accepted left the delete MOVED the condition received -> outstanding');
+
+  /* ── THE ENTITY SLOT: NEITHER FILE OWNS IT ──────────────────────────────────
+     An entity document belongs to the borrower's COMPANY, so both file-owner columns
+     stay NULL and `llc_id` carries it — which is what lets one certificate of good
+     standing follow the entity to every file it vests. This branch had no fixture at
+     all: replacing `llcId ? {application_id:null, lt_loan_id:null} : ownerCols(owner)`
+     with a plain `ownerCols(owner)` — which files the entity document against the
+     APPLICATION and stops it following the entity anywhere — left the whole suite
+     green, and four other suites besides. */
+  const llcId = (await db.query(
+    `INSERT INTO llcs (borrower_id, llc_name) VALUES ($1,$2) RETURNING id`,
+    [borrowerId, `Test Holdings ${uniq} LLC`])).rows[0].id;
+  const llcItem = (await db.query(
+    `INSERT INTO checklist_items (scope, llc_id, label, borrower_label, audience, status)
+     VALUES ('llc',$1,'Certificate of good standing','Certificate of good standing','both','outstanding')
+     RETURNING id`, [llcId])).rows[0].id;
+  const upEntity = await condUpload.uploadConditionDocument({}, {
+    owner: APP, body: body({ checklistItemId: llcItem }),
+    actorId: staffId, borrowerId, llcId, hooks: spyHooks(), q: db,
+  });
+  const rowEntity = await docRow(upEntity.documentId);
+  assert(rowEntity.application_id === null && rowEntity.lt_loan_id === null,
+    'A30 an ENTITY-slot upload leaves BOTH file-owner columns NULL — the owner passed in is ignored');
+  assert(rowEntity.llc_id === llcId,
+    'A31 …and llc_id carries it, so the document follows the entity to every file it vests');
 
   /* ══════════════════ B. THE LONG-TERM SIDE LANDS ON ITS OWN OWNER ══════════ */
 
@@ -280,7 +346,8 @@ const itemRow = async (id) => (await db.query(
   assert(rowLt.lt_loan_id === ltId && rowLt.application_id === null,
     'B1 a Long-Term upload lands with lt_loan_id set and application_id NULL');
   assert([rowLt.application_id, rowLt.lt_loan_id].filter((v) => v !== null).length === 1,
-    'B2 exactly ONE file-owner column carries a value (db/650 chk_one_owner, by construction)');
+    'B2 exactly ONE file-owner column carries a value (by construction at the door — '
+    + 'no constraint on `documents` enforces this)');
   assert(rowLt.checklist_item_id === ltItem && rowLt.slot_label === 'Statement' && rowLt.visibility === 'borrower',
     'B3 the same condition lookup, slot and visibility rules apply on the Long-Term side');
   assert((await itemRow(ltItem)).status === 'received',

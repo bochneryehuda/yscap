@@ -26,9 +26,20 @@
  * IT FAILS CLOSED, LOUDLY. An unknown scope THROWS; it never falls back to a
  * product. A silent default is how a Long-Term document would land on an RTL
  * file with nothing anywhere going red — the single worst outcome the two-product
- * law exists to prevent (CLAUDE.md → "TWO PRODUCTS, TWO SYSTEMS"). Same for a
- * missing id: an owner with no id would write BOTH owner columns NULL, which
- * `chk_one_owner` refuses at 3am in production rather than here at the door.
+ * law exists to prevent (CLAUDE.md → "TWO PRODUCTS, TWO SYSTEMS").
+ *
+ * A MISSING ID THROWS HERE, AT EVERY ENTRY POINT, AND NOT BECAUSE THE DATABASE
+ * WOULD CATCH IT — IT WOULD NOT. An earlier draft of this file said an owner with
+ * no id writes both owner columns NULL and `chk_one_owner` refuses it in
+ * production. That is true of `checklist_items`, which carries the constraint,
+ * and FALSE of `documents`, which does not: db/650 adds `documents.lt_loan_id` as
+ * a bare nullable uuid with no owner-count constraint, because those columns were
+ * always nullable and denormalized. So `ownerCols({scope:'application'})` with no
+ * id would have bound both columns NULL and landed an ORPHAN document row with
+ * nothing anywhere going red — the exact outcome the comment promised was
+ * impossible. `ownerOf` alone validated the id; `ownerCols` and `ownerWhere` took
+ * any object. They no longer do: the id guard sits in `requireOwner`, which every
+ * one of them calls. The door is the backstop, because there is no other.
  */
 
 /** The owner column each scope keys on. This map IS the definition of a scope. */
@@ -83,6 +94,23 @@ function ownerColumn(owner) {
   return OWNER_COLUMN[scope];
 }
 
+/* Scope AND id, checked together, for the two functions that go on to build real
+   SQL. `ownerOf` already refuses a missing id, but nothing forced a caller to come
+   through `ownerOf` — an object literal `{scope:'application'}` reached `ownerCols`
+   just as well, and pg binds `undefined` as NULL. See the header: no constraint on
+   `documents` catches that. Same wording and code as `ownerOf`, so a caller cannot
+   tell which door refused it. */
+function requireOwner(owner) {
+  const col = ownerColumn(owner);
+  const id = owner && owner.id;
+  if (id === undefined || id === null || id === '') {
+    const e = new Error(`a ${owner.scope} owner needs an id`);
+    e.code = 'OWNER_ID_REQUIRED';
+    throw e;
+  }
+  return col;
+}
+
 /**
  * The owner half of a WHERE clause, plus the value to bind.
  *
@@ -95,7 +123,7 @@ function ownerColumn(owner) {
  * and a throw here is far cheaper than an unexplained 500 far from its cause.
  */
 function ownerWhere(owner, alias = null, startIdx = 1) {
-  const col = ownerColumn(owner);
+  const col = requireOwner(owner);
   if (!Number.isInteger(startIdx) || startIdx < 1) {
     throw new Error(`ownerWhere: startIdx must be a positive integer, got ${JSON.stringify(startIdx)}`);
   }
@@ -110,12 +138,18 @@ function ownerWhere(owner, alias = null, startIdx = 1) {
 }
 
 /**
- * The owner columns for an INSERT — one set, every other one NULL, so
- * `chk_one_owner` is satisfied by construction rather than by the caller
- * remembering which columns exist this month.
+ * The owner columns for an INSERT — one set, every other one NULL, so the
+ * one-owner rule holds by construction rather than by the caller remembering
+ * which columns exist this month.
+ *
+ * WHICH rule, and enforced WHERE, differs by table and it matters: on
+ * `checklist_items` the database backs it (`chk_one_owner`); on `documents` NOTHING
+ * does — db/650 adds `lt_loan_id` there as a bare nullable uuid. So for a document
+ * this function IS the enforcement, which is why `requireOwner` refuses a missing
+ * id here rather than leaving it to a constraint that only exists on the other table.
  */
 function ownerCols(owner) {
-  const col = ownerColumn(owner);
+  const col = requireOwner(owner);
   const out = {};
   for (const c of Object.values(OWNER_COLUMN)) out[c] = (c === col ? owner.id : null);
   return out;

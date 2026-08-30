@@ -13,7 +13,7 @@
  *
  *   • an UNKNOWN scope THROWS and never falls back to a product;
  *   • the descriptor sets EXACTLY ONE owner column and NULLs the rest, so
- *     `chk_one_owner` (db/650) is satisfied by construction rather than by the
+ *     the one-owner rule holds by construction rather than by the
  *     caller remembering which columns exist this month.
  *
  * PURE — no database, no config, no network.
@@ -118,7 +118,10 @@ ok('ownerWhere refuses a non-identifier alias and a non-positive-integer index')
 // ── F. ownerCols: EXACTLY ONE column set, every other NULL ───────────────────
 assert.deepStrictEqual(ownerCols(APP), { application_id: 'a1', lt_loan_id: null });
 assert.deepStrictEqual(ownerCols(LT), { application_id: null, lt_loan_id: 'l1' });
-// The invariant db/650's chk_one_owner enforces, asserted here so the INSERT can
+// The one-owner invariant. NOTE: on `documents` NO database constraint enforces it
+// — db/650 adds lt_loan_id as a bare nullable uuid (chk_one_owner lives only on
+// checklist_items). So this door IS the enforcement, which is why it is asserted
+// here rather than trusted to the schema. Asserted so the INSERT can
 // never be the thing that discovers it: exactly one non-null, and the columns are
 // exactly the ones the map declares.
 for (const owner of [APP, LT]) {
@@ -145,5 +148,42 @@ assert.notStrictEqual(ownerWhere(sameIdApp).sql, ownerWhere(sameIdLt).sql);
 assert.strictEqual(ownerCols(sameIdApp).lt_loan_id, null);
 assert.strictEqual(ownerCols(sameIdLt).application_id, null);
 ok('the same id under the two scopes produces disjoint statements and columns');
+
+/* ── H. A BARE OBJECT LITERAL CANNOT SLIP PAST ownerCols / ownerWhere ────────
+   `ownerOf` has always refused a missing id, but nothing FORCED a caller through it:
+   `ownerCols({scope:'application'})` used to return {application_id: undefined,
+   lt_loan_id: null}, pg binds undefined as NULL, and the INSERT lands an ORPHAN
+   `documents` row — with nothing going red, because (contrary to what four comments
+   in this shipment claimed) `documents` carries NO chk_one_owner. The guard now sits
+   in every entry point, and this is what holds it there. */
+for (const bad of [
+  { scope: 'application' },
+  { scope: 'application', id: undefined },
+  { scope: 'application', id: null },
+  { scope: 'application', id: '' },
+  { scope: 'lt_loan' },
+  { scope: 'lt_loan', id: null },
+]) {
+  for (const [name, fn] of [['ownerCols', ownerCols], ['ownerWhere', ownerWhere]]) {
+    let threw = null;
+    try { fn(bad); } catch (e) { threw = e; }
+    assert.ok(threw, `${name}(${JSON.stringify(bad)}) must THROW, not build a statement with no owner`);
+    assert.strictEqual(threw.code, 'OWNER_ID_REQUIRED',
+      `${name} refuses it as OWNER_ID_REQUIRED (got ${threw.code || threw.message})`);
+  }
+}
+ok('ownerCols and ownerWhere refuse an owner with no id — the door is the backstop, because on `documents` there is no other');
+
+// An UNKNOWN SCOPE must still lose to the scope check first, whatever the id says —
+// otherwise a typo'd scope with a valid id would report the wrong problem.
+for (const bad of [{ scope: 'borrower', id: 'x' }, { scope: 'constructor', id: 'x' }, { scope: undefined, id: 'x' }]) {
+  for (const [name, fn] of [['ownerCols', ownerCols], ['ownerWhere', ownerWhere]]) {
+    let threw = null;
+    try { fn(bad); } catch (e) { threw = e; }
+    assert.ok(threw && threw.code !== 'OWNER_ID_REQUIRED',
+      `${name}(${JSON.stringify(bad)}) fails on the SCOPE, not the id`);
+  }
+}
+ok('an unknown scope is still refused as an unknown scope, id or no id');
 
 console.log(`\ntest-condition-owner-pure: ${checks} checks passed`);
