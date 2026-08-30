@@ -126,9 +126,17 @@ const uniq = `chs-${process.pid}-${Date.now()}`;
 
   // ── C. THE NEW-YORK TITLE CUT ──────────────────────────────────────────────
   {
-    ok(JSON.stringify(ch.titleWants('NY')) === JSON.stringify(['Title Commitment', 'Tax Certificate']),
-      'NY title asks: commitment + tax cert only — no CPL, no wiring, no settlement statement');
-    ok(ch.titleWants('NJ').length === 5, 'outside NY the full five-item list stands');
+    /* Owner-directed 2026-08-30: the owner's own drafts list SEVEN title deliverables
+       and this asked for five, so the settlement agent's E&O and the survey ask joined
+       the shared list (both products — one title letter, one question). The E&O joined
+       the NEW-YORK CUT at the same time: it is the settlement agent's own certificate,
+       and in New York title is not the settlement agent. The CPL stays cut and is NOT
+       reassigned — New York uses an Agent Authorization letter in lieu of a CPL
+       (underwriting/investor-guidelines/corrfirst-fnf-spec.js:108), so on a NY file
+       there is no CPL for anyone to produce. */
+    ok(JSON.stringify(ch.titleWants('NY')) === JSON.stringify(['Title Commitment', 'Tax Certificate', 'Survey or Plat Map, or confirmation that no survey is required along with the applicable Survey Affidavit or Endorsement']),
+      'NY title asks: commitment + tax cert + the survey ask — no CPL, no wiring, no settlement statement, no E&O');
+    ok(ch.titleWants('NJ').length === 7, 'outside NY the owner\'s full seven-item list stands');
     // Through the REAL email builder.
     const vend = { email: `${uniq}-title@x.test`, company_name: 'T Co' };
     const mkData = (state) => ({
@@ -204,13 +212,13 @@ const uniq = `chs-${process.pid}-${Date.now()}`;
       `INSERT INTO checklist_items (template_id, scope, application_id, label, audience, item_kind, is_required, status)
        VALUES ($1,'application',$2,'Title work','staff','document',true,'outstanding')`, [tplId.id, nyApp2]);
     const set = await call('POST', `/api/staff/applications/${nyApp2}/closing-handling`, { handling: 'internal' });
-    ok(set.status === 200 && set.body.slotsSeeded === 2,
+    ok(set.status === 200 && set.body.slotsSeeded === 3,
       `flipping a NY file to internal seeds the itemized title slots — with the NY cut applied (got ${set.body.slotsSeeded})`);
     const again = await call('POST', `/api/staff/applications/${nyApp2}/closing-handling`, { handling: 'internal' });
     ok(again.status === 200 && again.body.slotsSeeded === 0, 're-flipping seeds nothing twice (the slot door dedupes)');
     const slots = (await db.query(
       `SELECT extra_slots FROM checklist_items WHERE application_id=$1`, [nyApp2])).rows[0].extra_slots;
-    ok(Array.isArray(slots) && slots.map((x) => x.label).join(',') === 'Title Commitment,Tax Certificate',
+    ok(Array.isArray(slots) && slots.map((x) => x.label).join(',') === ['Title Commitment', 'Tax Certificate', 'Survey or Plat Map, or confirmation that no survey is required along with the applicable Survey Affidavit or Endorsement'].join(','),
       'the seeded slots are exactly the NY title asks');
 
     const njApp2 = await mkApp({ state: 'NJ' });
@@ -218,7 +226,7 @@ const uniq = `chs-${process.pid}-${Date.now()}`;
       `INSERT INTO checklist_items (template_id, scope, application_id, label, audience, item_kind, is_required, status)
        VALUES ($1,'application',$2,'Title work','staff','document',true,'outstanding')`, [tplId.id, njApp2]);
     const setNj = await call('POST', `/api/staff/applications/${njApp2}/closing-handling`, { handling: 'internal' });
-    ok(setNj.body.slotsSeeded === 5, `a New-Jersey internal file seeds all five title slots (got ${setNj.body.slotsSeeded})`);
+    ok(setNj.body.slotsSeeded === 7, `a New-Jersey internal file seeds all seven title slots (got ${setNj.body.slotsSeeded})`);
   }
 
   // ── F. THE ADMIN SETTINGS ENDPOINTS ────────────────────────────────────────
