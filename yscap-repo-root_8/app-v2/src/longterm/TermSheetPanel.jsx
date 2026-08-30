@@ -256,7 +256,10 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
           <button type="button" style={btn('primary')} onClick={() => ltApi.termSheetPdf(issued.code)}>
             Download the PDF
           </button>
-          <button type="button" style={btn()} onClick={() => setIssued(null)}>Start another</button>
+          {/* Tells the BOARD as well, or an empty strip would stay mounted for ever on a
+              parent that keeps it up while there is a result to show. */}
+          <button type="button" style={btn()}
+            onClick={() => { setIssued(null); if (onIssued) onIssued(null); }}>Start another</button>
         </div>
       </div>
     );
@@ -532,6 +535,17 @@ export function TermSheetLookup() {
  */
 export function useTermSheetCart() {
   const [state, setState] = useState({ enabled: false, cart: null, members: [] });
+  /* THE SHEET THAT WAS JUST ISSUED, HELD ABOVE THE CART (owner-reported 2026-08-30: *"when you
+     add a few things and then you export, it doesn't work. It doesn't download anything, and it
+     disappears. Everything."*).
+
+     ISSUING EMPTIES THE CART — the server clears it, correctly, because the sheet has been made.
+     But the board mounted the strip only while the cart HAD something in it, and the strip is
+     where the issued card lives. So the ID and the Download button were destroyed in the same
+     tick they were created: the sheet was written, the officer saw nothing, and the collected
+     options vanished with it. The result therefore cannot live inside the thing the result
+     empties. Held here, the board can keep the strip up until the person is done with it. */
+  const [issued, setIssued] = useState(null);
   const reload = useCallback(async () => {
     try {
       const r = await ltApi.termSheetCart();
@@ -551,5 +565,5 @@ export function useTermSheetCart() {
     }
   }, []);
   useEffect(() => { reload(); }, [reload]);
-  return { ...state, reload, count: state.members.length };
+  return { ...state, reload, count: state.members.length, issued, setIssued };
 }
