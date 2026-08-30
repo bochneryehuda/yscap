@@ -29,7 +29,7 @@
 const assert = require('assert');
 
 if (!process.env.DATABASE_URL) {
-  console.log('SKIP test-shared-condition-scope-db (no DATABASE_URL)');
+  console.log('SKIP test-lt-shared-condition-scope-db (no DATABASE_URL)');
   process.exit(0);
 }
 
@@ -138,6 +138,6 @@ const TPL  = '65a70000-0000-4000-8000-0000000650ad';
   await db.query(`DELETE FROM applications WHERE id = $1::uuid`, [APP]);
   await db.query(`DELETE FROM borrowers WHERE id = $1::uuid`, [BORR]);
 
-  console.log(`\ntest-shared-condition-scope-db: ${checks} checks passed`);
+  console.log(`\ntest-lt-shared-condition-scope-db: ${checks} checks passed`);
   process.exit(0);
 })().catch((e) => { console.error('FAILED:', e); process.exit(1); });
