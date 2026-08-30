@@ -33,6 +33,7 @@
 const db = require('../db');
 const orderEmail = require('../../lib/order-email');
 const kinds = require('./kinds');
+const switches = require('./switches');
 
 /** A one-line property address from the long-term property row. */
 function propertyLine(p) {
@@ -93,6 +94,7 @@ async function getOrderData(loanId, client = db) {
     `SELECT l.id, l.loan_number, l.borrower_name, l.borrower_email, l.borrower_id,
             l.loan_amount, l.loan_purpose, l.program_name, l.product_kind,
             l.vesting_entity_name, l.milestone_name, l.stage_key, l.loan_officer_id,
+            l.product_kind,
             p.street, p.city, p.state, p.zip, p.unit_count, p.gse_property_type,
             p.in_flood_zone, p.purchase_price, p.appraised_value, p.estimated_value,
             p.gross_monthly_rent
@@ -119,6 +121,13 @@ async function getOrderData(loanId, client = db) {
   out.transactionType = transactionType(loan.loan_purpose);
   out.loanPurpose = loan.loan_purpose || null;
   out.programName = loan.program_name || null;
+  out.productKind = loan.product_kind || null;
+  /* DOES THIS LOAN EXIT AS A RENTAL? On a DSCR loan it does by definition — the loan
+     is qualified on the property's own rent — which is what decides whether the
+     appraisal order also asks for a rent schedule. A product kind we cannot read
+     answers NULL rather than true: asking an appraiser for a schedule nobody needs
+     costs a fee and a week, and adding one later is the cheap half. */
+  out.rentalExit = loan.product_kind ? String(loan.product_kind).toLowerCase() === 'dscr' : null;
   out.entityName = loan.vesting_entity_name || null;
   out.borrowerName = loan.borrower_name || null;
   out.borrowerEmail = loan.borrower_email || null;
@@ -241,6 +250,14 @@ async function getOrderData(loanId, client = db) {
     out.vendorsExtra[k] = ((out.vendorCardsExtra || {})[vk] || []);
   }
 
+  /* WHICH ORDERS ARE SWITCHED ON, read LIVE from the condition library rather than
+     from the code constant — the owner's rule: "everything should be able to be
+     configured differently in settings; the system is only prefilled with the rules
+     of the system". `switches.resolve` falls back to the shipped default on an
+     unreadable read, so an outage can never switch an order on that shipped off.
+     Read here, once, so the desk and the send re-check the SAME answer. */
+  out.enabled = await switches.resolve(client);
+
   return out;
 }
 
@@ -268,7 +285,10 @@ function blockers(kind, data) {
   if (!def) return ['unknown_kind'];
   if (!data) return ['file'];
   if (Array.isArray(data.unreadable) && data.unreadable.length) out.push('unreadable');
-  if (def.enabled === false) out.push('disabled');
+  /* THE SWITCH IS THE SETTING, and the code constant is only what we ship with.
+     `stateFor` falls back to that default when the map is absent, so a caller that
+     never read it behaves exactly as before. */
+  if (!switches.stateFor(data.enabled, def.key).enabled) out.push('disabled');
   if (!data.hasLoanNumber) out.push('loan_number');
   if (!String(data.propertyLine || '').trim()) out.push('property');
   const card = (data.vendors || {})[def.key];

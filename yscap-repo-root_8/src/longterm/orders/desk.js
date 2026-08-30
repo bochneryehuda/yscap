@@ -41,6 +41,7 @@ const orderEmail = require('../../lib/order-email');
 const { ltOrderReplyTo } = require('../../lib/file-address');
 const sendAs = require('../../lib/send-as');
 const kinds = require('./kinds');
+const switches = require('./switches');
 const data = require('./data');
 const letter = require('./letter');
 
@@ -94,8 +95,14 @@ async function desk(loanId, client = db) {
     return {
       kind: k,
       label: def.label,
-      enabled: def.enabled !== false,
-      disabledReason: def.enabled === false ? (def.disabledReason || null) : null,
+      /* THE SWITCH IS THE SETTING. `d.enabled` is read live from the condition
+         library by getOrderData; `stateFor` falls back to what the code ships when
+         it could not be read, so an outage never turns an order on. `switchedBy`
+         says WHICH answered, because "we ship this off" and "somebody switched it
+         off here" send a person to two different places. */
+      enabled: switches.stateFor(d.enabled, k).enabled,
+      disabledReason: switches.stateFor(d.enabled, k).reason,
+      switchedBy: switches.stateFor(d.enabled, k).source,
       condition: def.condition,
       docCondition: def.docCondition || null,
       letterKind: letter.letterKeyFor(k, d),

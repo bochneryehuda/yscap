@@ -52,6 +52,7 @@ const orderEmail = require('../../lib/order-email');
 const tpl = require('../../lib/email/template');
 const quote = require('../../lib/email/quote');
 const kinds = require('./kinds');
+const appraisalForms = require('./appraisal-forms');
 
 /** The reply-cut invitation, printed at the top of our content so a vendor's own
     client quotes us underneath it. The token is the SHARED one — the inbound reader
@@ -303,8 +304,30 @@ function buildLetter(kind, data, opts = {}) {
   // What we are asking for: this buyer's own list, else the kind's own, else the
   // letter's. An order with nothing to ask for still states the deal — it never
   // prints an empty "Please send:" heading.
-  const wants = (t && Array.isArray(t.wants) && t.wants.length ? t.wants
+  let wants = (t && Array.isArray(t.wants) && t.wants.length ? t.wants
     : (Array.isArray(def.wants) && def.wants.length ? def.wants : null));
+
+  /* AN APPRAISAL ORDER NAMES THE FORM, because "please appraise this" is not an
+     order an appraiser can open: the form decides the scope, the fee and the
+     turnaround, and getting it wrong costs a re-order, a second fee and a week.
+     WHICH form follows the property through `appraisalForms`, whose numbers are the
+     PREFILL — the condition's own settings override them, which is the owner's rule
+     for this whole build. A property PILOT cannot read falls to the default form
+     rather than to a guess, and says so, so a person can correct it before it goes. */
+  if (def.key === 'appraisal') {
+    const picked = appraisalForms.formFor(
+      { unitCount: d.unitCount, propertyType: d.propertyType },
+      opts.appraisalConfig || ((d.enabled && d.enabled.appraisal && d.enabled.appraisal.config) || {}),
+      { rentalExit: d.rentalExit === true },
+    );
+    const kindLabel = (appraisalForms.PROPERTY_KINDS.find((x) => x.key === picked.kind) || {}).label || picked.kind;
+    const extra = [`Form ${picked.form} — ${kindLabel.toLowerCase()}`];
+    if (picked.rentSchedule) extra.push(`Rent schedule: form ${picked.rentSchedule}`);
+    if (picked.kind === 'default') {
+      extra.push('We could not read the property type from the file, so this is our standard form — tell us if another one fits.');
+    }
+    wants = (wants || []).concat(extra);
+  }
 
   const greeting = `Hi ${orderEmail.vendorGreetName(vendor)},`;
   const intro = String(opts.note || '').trim()
