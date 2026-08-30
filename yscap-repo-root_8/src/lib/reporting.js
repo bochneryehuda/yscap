@@ -65,6 +65,7 @@ const FROM_SQL = `
   LEFT JOIN staff_users pr ON pr.id = a.processor_id
   LEFT JOIN staff_users uw ON uw.id = a.underwriter_id
   LEFT JOIN closing_workflow cw ON cw.application_id = a.id
+  LEFT JOIN tpo_firms tf  ON tf.id = a.tpo_firm_id
   LEFT JOIN LATERAL (
     SELECT r2.* FROM product_registrations r2
      WHERE r2.application_id = a.id AND r2.is_current = true
@@ -91,12 +92,19 @@ const F = (key, label, group, type, sql, extra) => ({ key, label, group, type, s
 const REPORT_FIELDS = [
   // ── File ───────────────────────────────────────────────────────────────
   F('ys_loan_number', 'Loan number', 'File', 'text', 'a.ys_loan_number'),
-  F('file_status', 'File status', 'File', 'enum', 'a.status', { options: FILE_STATUSES }),
-  F('internal_status', 'Internal status (ClickUp)', 'File', 'text', 'a.internal_status'),
-  F('source', 'File source', 'File', 'text', 'a.source'),
+  F('file_status', 'File status', 'File', 'enum', 'a.status', { options: FILE_STATUSES, facet: true }),
+  F('internal_status', 'Internal status (ClickUp)', 'File', 'text', 'a.internal_status', { facet: true }),
+  F('source', 'File source', 'File', 'text', 'a.source', { facet: true }),
+  F('channel', 'Channel', 'File', 'text', 'a.channel', { facet: true }),
+  F('tpo_firm', 'Broker firm (TPO)', 'File', 'text', 'tf.name', { facet: true }),
+  F('clickup_created_at', 'ClickUp card created', 'File', 'timestamp', 'a.clickup_created_at'),
   F('is_tpo', 'Broker (TPO) file', 'File', 'boolean', 'a.is_tpo'),
   F('created_at', 'File created', 'File', 'timestamp', 'a.created_at'),
   F('submitted_at', 'Application submitted', 'File', 'timestamp', 'a.submitted_at'),
+  F('open_conditions', 'Open required conditions', 'File', 'number',
+    `(SELECT count(*)::int FROM checklist_items ci
+       WHERE ci.application_id = a.id AND ci.is_required = true
+         AND ci.status <> 'satisfied' AND ci.signed_off_at IS NULL AND ci.waived_at IS NULL)`),
 
   // ── Borrower ───────────────────────────────────────────────────────────
   F('borrower_name', 'Borrower', 'Borrower', 'text', "NULLIF(b.full_name,'')"),
@@ -107,23 +115,27 @@ const REPORT_FIELDS = [
   // of the two middle scores (credit.dealFicoSql — never re-inlined).
   F('deal_fico', 'Deal FICO (higher middle)', 'Borrower', 'number', credit.dealFicoSql('b', 'cb')),
   F('co_borrower_name', 'Co-borrower', 'Borrower', 'text', "NULLIF(cb.full_name,'')"),
-  F('entity_name', 'Vesting entity', 'Borrower', 'text', 'l.llc_name'),
+  F('co_borrower_fico', 'Co-borrower FICO', 'Borrower', 'number', 'cb.fico'),
+  F('entity_name', 'Vesting entity', 'Borrower', 'text', 'l.llc_name', { facet: true }),
 
   // ── Property ───────────────────────────────────────────────────────────
   F('property_address', 'Property address', 'Property', 'text', fileSearch.ADDRESS_TEXT_SQL('a')),
-  F('property_city', 'Property city', 'Property', 'text', "a.property_address->>'city'"),
-  F('property_state', 'Property state', 'Property', 'text', "a.property_address->>'state'"),
+  F('property_city', 'Property city', 'Property', 'text', "a.property_address->>'city'", { facet: true }),
+  F('property_state', 'Property state', 'Property', 'text', "a.property_address->>'state'", { facet: true }),
   F('property_zip', 'Property ZIP', 'Property', 'text', "a.property_address->>'zip'"),
-  F('property_type', 'Property type', 'Property', 'text', 'a.property_type'),
+  F('property_type', 'Property type', 'Property', 'text', 'a.property_type', { facet: true }),
   F('units', 'Units', 'Property', 'number', 'a.units'),
-  F('occupancy', 'Occupancy', 'Property', 'text', 'a.occupancy'),
+  F('occupancy', 'Occupancy', 'Property', 'text', 'a.occupancy', { facet: true }),
+  F('sqft_pre', 'Sq ft (before)', 'Property', 'number', 'a.sqft_pre'),
+  F('sqft_post', 'Sq ft (after)', 'Property', 'number', 'a.sqft_post'),
   F('year_built', 'Year built', 'Property', 'number', 'a.year_built'),
 
   // ── Deal & pricing ─────────────────────────────────────────────────────
-  F('program', 'Program (file)', 'Deal & pricing', 'text', 'a.program'),
-  F('registered_program', 'Program (registered)', 'Deal & pricing', 'text', 'reg.program'),
-  F('loan_type', 'Loan purpose', 'Deal & pricing', 'text', 'a.loan_type'),
-  F('rehab_type', 'Rehab type', 'Deal & pricing', 'text', 'a.rehab_type'),
+  F('program', 'Program (file)', 'Deal & pricing', 'text', 'a.program', { facet: true }),
+  F('registered_program', 'Program (registered)', 'Deal & pricing', 'text', 'reg.program', { facet: true }),
+  F('product_label', 'Product (registered)', 'Deal & pricing', 'text', 'reg.product_label', { facet: true }),
+  F('loan_type', 'Loan purpose', 'Deal & pricing', 'text', 'a.loan_type', { facet: true }),
+  F('rehab_type', 'Rehab type', 'Deal & pricing', 'text', 'a.rehab_type', { facet: true }),
   F('loan_amount', 'Loan amount', 'Deal & pricing', 'money', 'a.loan_amount'),
   F('registered_loan', 'Registered loan', 'Deal & pricing', 'money', 'reg.total_loan'),
   F('note_rate', 'Note rate (registered)', 'Deal & pricing', 'pct', 'reg.note_rate'),
@@ -134,12 +146,28 @@ const REPORT_FIELDS = [
   F('rehab_budget', 'Rehab budget', 'Deal & pricing', 'money', 'a.rehab_budget'),
   F('ltv', 'LTV', 'Deal & pricing', 'pct', 'a.ltv'),
   F('dscr_ratio', 'DSCR', 'Deal & pricing', 'number', 'a.dscr_ratio'),
-  F('term', 'Term', 'Deal & pricing', 'text', 'a.term'),
+  F('term', 'Term', 'Deal & pricing', 'text', 'a.term', { facet: true }),
+  F('accrual_type', 'Accrual type', 'Deal & pricing', 'text', 'a.accrual_type', { facet: true }),
+  F('requested_ir_months', 'Interest reserve (months)', 'Deal & pricing', 'number', 'a.requested_ir_months'),
+  F('deferred_orig_pct', 'Deferred origination %', 'Deal & pricing', 'pct', 'a.deferred_orig_pct'),
   F('is_assignment', 'Assignment of contract', 'Deal & pricing', 'boolean', 'a.is_assignment'),
   F('assignment_fee', 'Assignment fee', 'Deal & pricing', 'money', 'a.assignment_fee'),
   F('payoff_amount', 'Payoff amount', 'Deal & pricing', 'money', 'a.payoff_amount'),
   F('estimated_cash_out', 'Estimated cash-out', 'Deal & pricing', 'money', 'a.estimated_cash_out'),
-  F('registration_status', 'Registration status', 'Deal & pricing', 'text', 'reg.status'),
+  F('verified_cash_out', 'Verified cash-out', 'Deal & pricing', 'money', 'a.verified_cash_out'),
+  F('existing_debt', 'Existing debt', 'Deal & pricing', 'money', 'a.existing_debt'),
+  F('first_lien', 'First lien', 'Deal & pricing', 'money', 'a.first_lien'),
+  F('second_lien', 'Second lien', 'Deal & pricing', 'money', 'a.second_lien'),
+  F('financed_rehab_budget', 'Financed rehab budget', 'Deal & pricing', 'money', 'a.financed_rehab_budget'),
+  F('original_purchase_price', 'Original purchase price', 'Deal & pricing', 'money', 'a.original_purchase_price'),
+  F('rental_income', 'Rental income', 'Deal & pricing', 'money', 'a.rental_income'),
+  F('property_taxes', 'Property taxes', 'Deal & pricing', 'money', 'a.property_taxes'),
+  F('property_insurance', 'Property insurance', 'Deal & pricing', 'money', 'a.property_insurance'),
+  F('payoff_lender', 'Payoff lender (refi)', 'Deal & pricing', 'text', 'a.payoff_lender', { facet: true }),
+  F('registration_status', 'Registration status', 'Deal & pricing', 'text', 'reg.status', { facet: true }),
+  F('registration_stale', 'Registration needs re-pricing', 'Deal & pricing', 'boolean', 'reg.stale'),
+  F('registration_needs_approval', 'Registration awaiting approval', 'Deal & pricing', 'boolean', 'reg.needs_approval'),
+  F('asset_months', 'Reserve months (manual)', 'Deal & pricing', 'number', 'reg.asset_months'),
   F('is_manual_product', 'Manual product', 'Deal & pricing', 'boolean', 'reg.is_manual'),
   F('registered_at', 'Registered on', 'Deal & pricing', 'timestamp', 'reg.created_at'),
 
@@ -156,23 +184,31 @@ const REPORT_FIELDS = [
   F('first_payment_date', 'First payment date', 'Dates', 'date', 'a.first_payment_date'),
   F('maturity_date', 'Maturity date', 'Dates', 'date', 'a.maturity_date'),
   F('status_changed_at', 'Status last changed', 'Dates', 'timestamp', 'a.status_changed_at'),
+  F('payoff_date', 'Payoff date', 'Dates', 'date', 'a.payoff_date'),
+  F('acquisition_date', 'Property acquired (refi seasoning)', 'Dates', 'date', 'a.acquisition_date'),
 
   // ── Team ───────────────────────────────────────────────────────────────
-  F('loan_officer', 'Loan officer', 'Team', 'text', 'lo.full_name'),
-  F('processor', 'Processor', 'Team', 'text', 'pr.full_name'),
-  F('underwriter', 'Underwriter', 'Team', 'text', 'uw.full_name'),
+  F('loan_officer', 'Loan officer', 'Team', 'text', 'lo.full_name', { facet: true }),
+  F('processor', 'Processor', 'Team', 'text', 'pr.full_name', { facet: true }),
+  F('underwriter', 'Underwriter', 'Team', 'text', 'uw.full_name', { facet: true }),
 
   // ── Investor & closing ─────────────────────────────────────────────────
   // STAFF-ONLY by nature (the note buyer) — this whole surface is admin-gated
   // and none of it ever reaches a borrower.
-  F('investor', 'Investor (note buyer)', 'Investor & closing', 'text', 'a.lender'),
+  F('investor', 'Investor (note buyer)', 'Investor & closing', 'text', 'a.lender', { facet: true }),
   F('investor_loan_number', 'Investor loan number', 'Investor & closing', 'text', 'a.investor_loan_number'),
   F('closing_handling', 'Closing handling (file override)', 'Investor & closing', 'enum', 'a.closing_handling',
     { options: ['internal', 'attorney', 'lender_direct'] }),
-  F('warehouse', 'Warehouse / funding line', 'Investor & closing', 'text', 'cw.warehouse'),
+  F('warehouse', 'Warehouse / funding line', 'Investor & closing', 'text', 'cw.warehouse', { facet: true }),
+  F('closing_stage', 'Closing stage', 'Investor & closing', 'text', 'cw.stage', { facet: true }),
+  F('investor_ctc', 'Investor CTC received', 'Investor & closing', 'boolean', 'cw.investor_ctc'),
+  F('wire_sent_at', 'Wire sent', 'Investor & closing', 'timestamp', 'cw.wire_sent_at'),
+  F('fully_closed_at', 'Fully closed', 'Investor & closing', 'timestamp', 'cw.fully_closed_at'),
+  F('actual_cash_to_close', 'Actual cash to close', 'Investor & closing', 'money', 'cw.actual_cash_to_close'),
+  F('liquidity_ok', 'Liquidity verified', 'Investor & closing', 'boolean', 'cw.liquidity_ok'),
   F('table_funded', 'Table funded', 'Investor & closing', 'boolean', 'cw.table_funded'),
-  F('title_company', 'Title company', 'Investor & closing', 'text', 'a.title_company'),
-  F('insurance_company', 'Insurance company', 'Investor & closing', 'text', 'a.insurance_company'),
+  F('title_company', 'Title company', 'Investor & closing', 'text', 'a.title_company', { facet: true }),
+  F('insurance_company', 'Insurance company', 'Investor & closing', 'text', 'a.insurance_company', { facet: true }),
   F('flood_zone_override', 'Flood zone (manual flag)', 'Investor & closing', 'boolean', 'a.flood_zone_override'),
 ];
 
@@ -277,9 +313,62 @@ function compileFilter(row, params) {
   }
 }
 
-/** Validate + normalize a whole definition. Throws ReportError on anything off. */
+/* The totals (summarize) grammar: which aggregations exist, and which types
+   they may run over. `count` needs no field; everything else needs a numeric
+   one — averaging a city is not a thing anyone means. */
+const METRIC_FNS = { count: 'count', sum: 'sum', avg: 'avg', min: 'min', max: 'max' };
+const NUMERIC_TYPES = new Set(['money', 'number', 'pct']);
+
+function normalizeSummarize(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const groupBy = (Array.isArray(raw.groupBy) ? raw.groupBy : [raw.groupBy])
+    .map((k) => String(k || '')).filter((k) => BY_KEY.has(k));
+  if (!groupBy.length) return null;
+  if (groupBy.length > 2) throw new ReportError('totals can group by at most two fields');
+  const metrics = [];
+  for (const m of (Array.isArray(raw.metrics) ? raw.metrics.slice(0, 6) : [])) {
+    const fn = METRIC_FNS[String(m && m.fn || '').toLowerCase()];
+    if (!fn) throw new ReportError(`unknown total "${String(m && m.fn || '')}"`);
+    if (fn === 'count') { metrics.push({ fn: 'count' }); continue; }
+    const f = BY_KEY.get(String(m.field || ''));
+    if (!f) throw new ReportError(`unknown report field "${String(m && m.field || '')}" in a total`);
+    if (!NUMERIC_TYPES.has(f.type)) {
+      throw new ReportError(`"${f.label}" is not a number — a ${fn} total needs a money or number field`);
+    }
+    metrics.push({ fn, field: f.key });
+  }
+  if (!metrics.length) metrics.push({ fn: 'count' });
+  return { groupBy: [...new Set(groupBy)], metrics };
+}
+
+function metricLabel(m) {
+  if (m.fn === 'count') return 'Files';
+  const f = BY_KEY.get(m.field);
+  const fnWord = { sum: 'Total', avg: 'Average', min: 'Lowest', max: 'Highest' }[m.fn] || m.fn;
+  return `${fnWord} ${f ? f.label.toLowerCase() : m.field}`;
+}
+
+/** Validate + normalize a whole definition. Throws ReportError on anything off.
+ *
+ * FILTER SHAPE — two accepted spellings, one meaning:
+ *   filters: [row, …]              — the layer-1 shape: ONE group, all ANDed.
+ *   groups:  [[row, …], [row, …]]  — layer 2 (owner-directed 2026-08-29
+ *            "or-logic"): rows AND within a group, groups OR'd together —
+ *            the HubSpot/Metabase filter-group shape, which reads naturally
+ *            ("all of these… OR all of those…") where free-form parentheses
+ *            do not. Every saved layer-1 report normalizes losslessly.
+ */
 function normalizeDefinition(def) {
   const d = def && typeof def === 'object' ? def : {};
+  let groups = [];
+  if (Array.isArray(d.groups)) {
+    groups = d.groups.slice(0, 10)
+      .map((g) => (Array.isArray(g) ? g : (g && Array.isArray(g.filters) ? g.filters : [])))
+      .map((g) => g.slice(0, 20))
+      .filter((g) => g.length);
+  } else if (Array.isArray(d.filters) && d.filters.length) {
+    groups = [d.filters.slice(0, 40)];
+  }
   const filters = Array.isArray(d.filters) ? d.filters.slice(0, 40) : [];
   let columns = Array.isArray(d.columns) ? d.columns.map((k) => String(k || '')).filter((k) => BY_KEY.has(k)) : [];
   columns = [...new Set(columns)].slice(0, 60);
@@ -289,15 +378,25 @@ function normalizeDefinition(def) {
     sort = { field: String(d.sort.field), dir: String(d.sort.dir).toLowerCase() === 'desc' ? 'desc' : 'asc' };
   }
   const limit = Math.min(MAX_ROWS, Math.max(1, Number(d.limit) || DEFAULT_ROWS));
-  return { filters, columns, sort, limit };
+  const summarize = normalizeSummarize(d.summarize);
+  return { filters, groups, columns, sort, limit, summarize };
 }
 
 /** Compile a definition into ONE ready-to-run statement. */
+function compileWhere(d, params) {
+  const where = [BASE_SCOPE];
+  const groupSql = d.groups
+    .map((g) => g.map((row) => compileFilter(row, params)).join('\n        AND '))
+    .filter(Boolean);
+  if (groupSql.length === 1) where.push(groupSql[0]);
+  else if (groupSql.length > 1) where.push('(' + groupSql.map((g) => `(${g})`).join('\n       OR ') + ')');
+  return where;
+}
+
 function compileReport(def) {
   const d = normalizeDefinition(def);
   const params = [];
-  const where = [BASE_SCOPE];
-  for (const row of d.filters) where.push(compileFilter(row, params));
+  const where = compileWhere(d, params);
   const cols = d.columns.map((k) => `(${BY_KEY.get(k).sql}) AS "${k}"`).join(', ');
   const order = d.sort
     ? `(${BY_KEY.get(d.sort.field).sql}) ${d.sort.dir === 'desc' ? 'DESC' : 'ASC'} NULLS LAST, a.created_at DESC`
@@ -310,9 +409,72 @@ function compileReport(def) {
   return { sql, params, def: d };
 }
 
-/** Run a report. Returns {columns:[{key,label,type}], rows:[{...}], total, capped}. */
+/** THE TOTALS RUN — group the matching files and aggregate. Same join, same
+    compiled WHERE, so the totals can never disagree with the row run about
+    which files are in the report. */
+async function runSummary(def, client = db) {
+  const d = normalizeDefinition(def);
+  if (!d.summarize) throw new ReportError('totals need at least one group-by field');
+  const params = [];
+  const where = compileWhere(d, params);
+  const gb = d.summarize.groupBy.map((k, i) => `(${BY_KEY.get(k).sql}) AS "g${i}"`);
+  const gbRefs = d.summarize.groupBy.map((_, i) => String(i + 1));
+  const ms = d.summarize.metrics.map((m, i) => {
+    // avg is ROUNDED in SQL — a 16-decimal average on a money column reads as
+    // noise on the screen and in the export alike.
+    const expr = m.fn === 'count' ? 'count(*)::int'
+      : m.fn === 'avg' ? `round(avg((${BY_KEY.get(m.field).sql})::numeric), 2)`
+        : `${m.fn}((${BY_KEY.get(m.field).sql})::numeric)`;
+    return `${expr} AS "m${i}"`;
+  });
+  const sql = `SELECT ${[...gb, ...ms].join(', ')}, count(*) OVER () AS "_total"
+    ${FROM_SQL}
+    WHERE ${where.join('\n      AND ')}
+    GROUP BY ${gbRefs.join(', ')}
+    ORDER BY "m0" DESC NULLS LAST, 1 ASC
+    LIMIT 1001`;
+  const r = await client.query(sql, params);
+  const total = r.rows.length ? Number(r.rows[0]._total) : 0;
+  const capped = r.rows.length > 1000;
+  return {
+    mode: 'summary',
+    groupBy: d.summarize.groupBy.map((k, i) => {
+      const f = BY_KEY.get(k);
+      return { key: `g${i}`, field: f.key, label: f.label, type: f.type };
+    }),
+    metrics: d.summarize.metrics.map((m, i) => ({
+      key: `m${i}`, fn: m.fn, field: m.field || null,
+      label: metricLabel(m), type: m.fn === 'count' ? 'number' : BY_KEY.get(m.field).type,
+    })),
+    rows: r.rows.slice(0, 1000).map((row) => { const o = { ...row }; delete o._total; return o; }),
+    total, capped,
+  };
+}
+
+/** THE VALUE DROPDOWN (owner-directed 2026-08-29: "it should come up with a
+    dropdown of those fields everywhere") — the DISTINCT values a faceted field
+    actually holds across active files, busiest first, so a filter is picked
+    off the live data instead of typed from memory. Faceted fields only: a
+    free-form field (an address, an email) has no useful value list. */
+async function distinctValues(fieldKey, client = db) {
+  const f = BY_KEY.get(String(fieldKey || ''));
+  if (!f) throw new ReportError(`unknown report field "${String(fieldKey || '')}"`);
+  if (!f.facet && !f.options) throw new ReportError(`"${f.label}" has no value list — type the value`);
+  if (f.options) return { values: f.options.map((v) => ({ v, n: null })), truncated: false };
+  const r = await client.query(
+    `SELECT NULLIF((${f.sql})::text,'') AS v, count(*)::int AS n
+      ${FROM_SQL}
+      WHERE ${BASE_SCOPE} AND NULLIF((${f.sql})::text,'') IS NOT NULL
+      GROUP BY 1 ORDER BY n DESC, 1 ASC LIMIT 201`);
+  return { values: r.rows.slice(0, 200), truncated: r.rows.length > 200 };
+}
+
+/** Run a report. Returns {columns:[{key,label,type}], rows:[{...}], total, capped}.
+    A definition carrying `summarize` runs the TOTALS shape instead. */
 async function runReport(def, client = db) {
-  const { sql, params, def: d } = compileReport(def);
+  const dd = normalizeDefinition(def);
+  if (dd.summarize) return runSummary(dd, client);
+  const { sql, params, def: d } = compileReport(dd);
   const r = await client.query(sql, params);
   const total = r.rows.length ? Number(r.rows[0]._total) : 0;
   const capped = r.rows.length > d.limit;
@@ -346,6 +508,14 @@ function cellValue(field, v) {
 /** The Excel export — one sheet, a label header row, then the data. */
 function buildReportXlsx(result, { name = 'Report' } = {}) {
   const { buildXlsx } = require('./xlsx');
+  if (result.mode === 'summary') {
+    const cols = [...result.groupBy, ...result.metrics];
+    const rows = [cols.map((c) => c.label)];
+    for (const row of result.rows) {
+      rows.push(cols.map((c) => cellValue(BY_KEY.get(c.field) || { type: c.type }, row[c.key])));
+    }
+    return buildXlsx(rows, String(name).slice(0, 31) || 'Report');
+  }
   const fields = result.columns.map((c) => BY_KEY.get(c.key));
   const rows = [result.columns.map((c) => c.label)];
   for (const row of result.rows) rows.push(fields.map((f) => cellValue(f, row[f.key])));
@@ -357,11 +527,13 @@ function catalog() {
   return REPORT_FIELDS.map((f) => ({
     key: f.key, label: f.label, group: f.group, type: f.type,
     ops: OPS_BY_TYPE[f.type], options: f.options || null,
+    facet: !!(f.facet || f.options), numeric: NUMERIC_TYPES.has(f.type),
   }));
 }
 
 module.exports = {
   ReportError, REPORT_FIELDS, OPS_BY_TYPE, DEFAULT_ROWS, MAX_ROWS,
-  catalog, normalizeDefinition, compileReport, runReport, buildReportXlsx,
-  _internals: { compileFilter, coerceValue, cellValue, FROM_SQL, BASE_SCOPE },
+  catalog, normalizeDefinition, compileReport, runReport, runSummary,
+  distinctValues, buildReportXlsx,
+  _internals: { compileFilter, compileWhere, coerceValue, cellValue, metricLabel, FROM_SQL, BASE_SCOPE },
 };

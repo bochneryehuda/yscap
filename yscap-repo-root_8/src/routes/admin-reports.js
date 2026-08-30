@@ -46,6 +46,15 @@ router.get('/fields', (req, res) => {
   res.json({ fields: reporting.catalog(), maxRows: reporting.MAX_ROWS, defaultRows: reporting.DEFAULT_ROWS });
 });
 
+// THE VALUE DROPDOWN (owner-directed 2026-08-29): the distinct values a
+// faceted field actually holds, busiest first, so filters are picked off the
+// live data instead of typed from memory.
+router.get('/field-values', async (req, res) => {
+  try {
+    res.json(await reporting.distinctValues(req.query.field));
+  } catch (e) { fail(res, e); }
+});
+
 router.post('/run', async (req, res) => {
   try {
     const out = await reporting.runReport(req.body || {});
@@ -60,9 +69,9 @@ router.post('/export.xlsx', async (req, res) => {
     const name = String(body.name || 'Report').trim() || 'Report';
     const buf = reporting.buildReportXlsx(out, { name });
     await audit(req, 'report_exported', {
-      name, rows: out.rows.length, total: out.total, capped: out.capped,
-      columns: out.columns.map((c) => c.key),
-      filters: (reporting.normalizeDefinition(body).filters || []).length,
+      name, rows: out.rows.length, total: out.total, capped: out.capped, mode: out.mode || 'list',
+      columns: (out.columns || [...(out.groupBy || []), ...(out.metrics || [])]).map((c) => c.key),
+      groups: (reporting.normalizeDefinition(body).groups || []).length,
     });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition',
@@ -74,7 +83,8 @@ router.post('/export.xlsx', async (req, res) => {
 router.get('/saved', async (req, res) => {
   try {
     const r = await db.query(
-      `SELECT rd.id, rd.name, rd.description, rd.definition, rd.created_at, rd.updated_at,
+      `SELECT rd.id, rd.name, rd.description, rd.definition, rd.schedule, rd.last_sent_at,
+              rd.created_at, rd.updated_at,
               cu.full_name AS created_by_name, uu.full_name AS updated_by_name
          FROM report_definitions rd
          LEFT JOIN staff_users cu ON cu.id = rd.created_by
@@ -115,6 +125,33 @@ router.put('/saved/:id', async (req, res) => {
         JSON.stringify(def), req.actor.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'report not found' });
     await audit(req, 'report_saved', { id: req.params.id, name, updated: true });
+    res.json({ report: r.rows[0] });
+  } catch (e) { fail(res, e); }
+});
+
+// SCHEDULE a saved report (db/641): body {schedule: {...}} sets it, {schedule: null}
+// clears it. The shape is validated by report-scheduler.validateSchedule — the ONE
+// definition — and recipients are checked against the ACTIVE INTERNAL roster here
+// too, so a typo'd or external address is refused at save, not discovered at 8am.
+router.put('/saved/:id/schedule', async (req, res) => {
+  try {
+    const scheduler = require('../lib/report-scheduler');
+    const schedule = scheduler.validateSchedule(req.body ? req.body.schedule : null);
+    if (schedule) {
+      const okEmails = await scheduler._internals.validRecipients(schedule.recipients);
+      const bad = schedule.recipients.filter((e) => !okEmails.includes(e));
+      if (bad.length) {
+        return res.status(400).json({
+          error: `not on the active internal team: ${bad.join(', ')} — scheduled reports only go to active internal staff`,
+        });
+      }
+    }
+    const r = await db.query(
+      `UPDATE report_definitions SET schedule=$2, updated_by=$3, updated_at=now()
+        WHERE id=$1 RETURNING id, name, schedule, last_sent_at`,
+      [req.params.id, schedule ? JSON.stringify(schedule) : null, req.actor.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'report not found' });
+    await audit(req, 'report_scheduled', { id: req.params.id, schedule });
     res.json({ report: r.rows[0] });
   } catch (e) { fail(res, e); }
 });
