@@ -301,7 +301,7 @@ const GATE_LABELS = {
   taxMonthly: 'the monthly property taxes',
   insuranceMonthly: 'the monthly insurance',
   dscr: 'the calculated DSCR',
-  borrowerName: "the borrower's name",
+  partyName: "the borrower's name or the vesting entity",
   propertyAddress: 'the full property address',
 };
 
@@ -318,7 +318,17 @@ function exportGate(snapshot) {
   if (num(sc.taxMonthly) == null) missing.push('taxMonthly');
   if (num(sc.insuranceMonthly) == null) missing.push('insuranceMonthly');
   if (num(sc.dscr) == null || num(sc.dscr) <= 0) missing.push('dscr');
-  if (!str(p.borrowerName, 120)) missing.push('borrowerName');
+  // ⛔ ONE NAME IS ENOUGH, AND EITHER ONE WILL DO. Owner-directed 2026-08-30:
+  // *"a name of the person and/or a name of the entity."* A DSCR loan is
+  // routinely vested in an LLC with the individual behind it as guarantor, and
+  // it is just as routinely quoted to a person before an entity exists — so
+  // demanding BOTH would refuse two perfectly ordinary deals, and demanding the
+  // individual alone (which is what this used to do) refuses the first of them.
+  // What a term sheet cannot be is addressed to NOBODY: it carries an
+  // acceptance block, and a signature line over a blank "prepared for" is a
+  // defective document. So the requirement is at least one, reported under the
+  // single key `partyName` — the screen points at both boxes and either fills it.
+  if (!str(p.borrowerName, 120) && !str(p.entityName, 120)) missing.push('partyName');
   if (!str(p.propertyAddress, 200)) missing.push('propertyAddress');
   if (!missing.length) return { ok: true, kind, missing: [], message: null };
 
@@ -374,6 +384,17 @@ function buildSnapshot({ selections, plan, anchorIndex = 0, prepared = {}, maxMe
       comparison: compare,
       prepared: {
         borrowerName: str(prepared.borrowerName, 120),
+        // THE VESTING ENTITY, when the loan is going into one. Owner-directed
+        // 2026-08-30: *"a name of the person and/or a name of the entity."*
+        //
+        // ⛔ IT IS ITS OWN FIELD, NEVER FOLDED INTO THE BORROWER'S NAME. They
+        // are two different parties who sign two different lines: on a DSCR
+        // loan the entity is the BORROWER and the individual behind it is the
+        // GUARANTOR, so a single "prepared for" string carrying both would put
+        // one name on a signature line meant for the other. This projection is
+        // a WHITELIST — a key nobody lists here is silently dropped — so adding
+        // one is a decision about what may appear on a client's document.
+        entityName: str(prepared.entityName, 120),
         propertyAddress: str(prepared.propertyAddress, 200),
         officerName: str(prepared.officerName, 120),
         // The officer's JOB TITLE — business contact information, exactly like

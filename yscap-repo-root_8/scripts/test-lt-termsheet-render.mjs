@@ -14,7 +14,7 @@
  *   ⛔ NO INVESTOR NAME REACHES THE PAGE (CLAUDE.md rule 10, the hard one). The
  *     snapshot's whitelist is defence (a); the renderer's scrub is defence (b),
  *     for a name a HUMAN typed into a label, an address or a programme name. So
- *     EVERY recorded spelling is pushed through the four free-text fields of a
+ *     EVERY recorded spelling is pushed through the five free-text fields of a
  *     real term sheet and the extracted text is swept for it. A rule proven on
  *     the chokepoint is proven about a function; this is proven about the paper.
  *
@@ -433,6 +433,12 @@ console.log('\nrule 10 — the investor name never reaches the paper');
       [quote(`Sold to ${name} today`, 7.375, 102, { product: `${name} 30-Year Fixed` })],
       {
         borrowerName: `${name} Holdings LLC`,
+        // ⛔ THE VESTING ENTITY IS SWEPT TOO, and it is the field most likely to
+        // carry an investor's name by accident: an officer typing who the loan
+        // is going into is one keystroke from typing who is buying it. It rides
+        // `preparedFor` onto the "prepared for" line AND onto its own signature
+        // line, so a leak here would reach the page twice.
+        entityName: `${name} Capital Partners LLC`,
         propertyAddress: `1 ${name} Road, Lakewood, NJ`,
         officerName: 'Sara Klein',
         companyName: `YS Capital (${name})`,
@@ -464,7 +470,7 @@ console.log('\nrule 10 — the investor name never reaches the paper');
   // survive onto the page and be counted.
   check(occurrences(controlText, CONTROL.toLowerCase()) > 0,
     `the sweep can see an injected name at all — the control "${CONTROL}" reaches the page ${occurrences(controlText, CONTROL.toLowerCase())} times`);
-  check(leaked === 0, `all ${spellings.length} spellings swept through four free-text fields of a real term sheet — none survived onto the page${first ? ` (first leak: ${first})` : ''}`);
+  check(leaked === 0, `all ${spellings.length} spellings swept through five free-text fields of a real term sheet — none survived onto the page${first ? ` (first leak: ${first})` : ''}`);
 
   // And the sweep is only worth anything if it CAN see a leak.
   const control = await readBack(await render(
@@ -472,8 +478,76 @@ console.log('\nrule 10 — the investor name never reaches the paper');
   ));
   check(control.text.replace(/\s+/g, '').toLowerCase().includes('controlsentinel'),
     '…and a sentinel word that is NOT an investor does reach the page, so the sweep is looking at real text and not at nothing');
+  // ⛔ AND THE SAME PROOF FOR THE ENTITY, ON ITS OWN. Sweeping a field the page
+  // never draws proves NOTHING — it would report "no leak" for ever while the
+  // field went unscrubbed somewhere else. So the vesting entity is shown to
+  // reach the paper under its own sentinel, separately from the borrower's name.
+  //
+  // ⛔ AND IT IS ASSERTED ON PAGE ONE SPECIFICALLY, not on "somewhere in the document". The entity
+  // reaches the paper TWICE — the "prepared for" block on page 1 and its signature line on the
+  // last — so a check for the word anywhere passes while the recipient block silently drops it.
+  // MEASURED: unmutated it is on pages 1 and 3; with the PDF reverted to printing `borrowerName`
+  // alone, page 1 loses it and the loose check still passed. Page one is the claim.
+  const entityControl = await readBack(await render(
+    [quote('The offer', 7.375, 102)], { entityName: 'ENTITYSENTINEL Capital LLC' },
+  ));
+  const entityOnPage1 = (entityControl.pages[0] || []).map((i) => i.s).join('')
+    .replace(/\s+/g, '').toLowerCase().includes('entitysentinel');
+  check(entityOnPage1,
+    '…and the VESTING ENTITY is printed in the "prepared for" block on page one, so sweeping it sweeps a field the reader actually sees');
   check(audience.mentionsInvestor('Sold to Deephaven today'),
     'the ONE definition still recognises an investor — this suite never re-implements the check, it uses it');
+}
+
+console.log('\nthe compensation never reaches the paper — the OTHER hard invisibility rule');
+{
+  // ⛔ WHY THIS EXISTS. Owner-directed 2026-08-23: *"adding a charge on the fee breakdown
+  // for two points origination only and keeping the YSP invisible. The lender-paid
+  // compensation should always also be kept invisible on both of the sides."* That is as
+  // hard a rule as rule 10 above, on the same document — and until 2026-08-30 it was
+  // enforced by nothing. The behaviour was correct; a comment said so; no test held it.
+  //
+  // ⛔ THE ONE THING THAT IS *NOT* SECRET, and confusing the two is how this guard would be
+  // written wrong: in BORROWER-PAID the comp IS the origination fee, so it MUST be printed.
+  // What must never appear is the YSP, and the lender-paid comp in either position.
+  //
+  // The figures are deliberately odd (2.875 / 1.375 / 3.625) so a hit is unmistakable — a
+  // plan of 2 / 0 / 2 would collide with ordinary prices, rates and term counts all over
+  // the page and could not tell a leak from a coincidence.
+  const SECRET_PLAN = { borrowerPaid: 2.875, ysp: 1.375, lenderPaid: 3.625, applicationFee: 1595, commitmentFee: 500 };
+  const words = ['compensation', 'lender-paid', 'borrower-paid', 'yield spread', 'ysp', 'comp plan'];
+
+  for (const [mode, price, waive] of [['borrowerPaid', 101.5, false], ['lenderPaid', 104, true]]) {
+    const built = snapshot.buildSnapshot({
+      selections: [quote('Lender A', 7.25, price, { mode, waiveLenderFees: waive })],
+      plan: SECRET_PLAN, anchorIndex: 0, prepared: {},
+    });
+    if (!built.ok) { check(false, `a ${mode} sheet could be built (${built.error})`); continue; }
+    const lay = layout.buildLayout(built.snapshot, { code: 'TS-COMP', expiryHours: 24 });
+    const bytes = await pdf.renderTermSheet(lay);
+    const { text } = await readBack(bytes);
+    const low = text.toLowerCase();
+
+    // The sweep is worth nothing if the page is empty or the fixture never priced.
+    check(text.length > 2000 && text.includes('7.25'),
+      `the ${mode} sheet really rendered (${text.length} characters, and it carries its own rate)`);
+    check(!low.includes('1.375'),
+      `the YSP never reaches a ${mode} page — the owner's "keeping the YSP invisible"`);
+    check(!low.includes('3.625'),
+      `and neither does the lender-paid compensation — "invisible on both of the sides"`);
+    for (const w of words) {
+      check(!low.includes(w), `and the page never says "${w}" on a ${mode} sheet`);
+    }
+    // THE OTHER DIRECTION, so this can never pass by rendering nothing: in borrower-paid
+    // the comp IS the origination and MUST be on the page.
+    if (mode === 'borrowerPaid') {
+      check(low.includes('2.875') && /origination/i.test(text),
+        'while the borrower-paid comp IS printed, as the origination fee it actually is — the sweep is reading a real fee list, not an empty page');
+    } else {
+      check(!low.includes('2.875'),
+        'and on a lender-paid sheet there is no origination at all, so that figure is absent too');
+    }
+  }
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASSED' : `${failures} FAILED`}`);

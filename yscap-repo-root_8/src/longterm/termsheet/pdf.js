@@ -371,7 +371,12 @@ function compileRecipient(b, ctx) {
   const rightX = M.left + Math.round(CONTENT_W * 0.58);
   const rightW = RIGHT_X - rightX;
 
-  const name = ctx.text(b.borrowerName || '');
+  // ⛔ `preparedFor` — the ONE reading of the two name fields (layout.js), so the
+  //    "prepared for" line and the signature lines can never name different
+  //    parties. `borrowerName` is the fallback for a snapshot built before the
+  //    vesting entity existed; the layout rebuilds on replay, so that is belt to
+  //    a brace rather than a live path.
+  const name = ctx.text(b.preparedFor || b.borrowerName || '');
   const addr = ctx.text(b.propertyAddress || '');
   const nameLines = name ? wrap(ctx, name, F.bold, SZ.name, leftW) : [];
   const addrLines = addr ? wrap(ctx, addr, F.reg, SZ.value, leftW) : [];

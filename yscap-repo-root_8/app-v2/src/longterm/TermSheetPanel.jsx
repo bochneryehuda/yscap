@@ -20,9 +20,10 @@
    white. These come from `ppeStyles`, which is the one place they are defined.
    ────────────────────────────────────────────────────────────────────────── */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ltApi from './api.js';
-import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, PAPER, CAUTION } from './ppeStyles.js';
+import AddressField from './AddressField.jsx';
+import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, PAPER, CAUTION, segTrack, segBtn } from './ppeStyles.js';
 
 const NUM = { fontVariantNumeric: 'tabular-nums' };
 
@@ -81,7 +82,11 @@ const GATE_WORDS = {
   taxMonthly: 'the monthly property taxes',
   insuranceMonthly: 'the monthly insurance',
   dscr: 'the calculated DSCR',
-  borrowerName: "the borrower's name",
+  // ONE key for the two name boxes, because either one satisfies the gate — the
+  // server reports it that way for exactly this reason (owner-directed
+  // 2026-08-30: *"a name of the person and/or a name of the entity"*), and two
+  // separate shortfalls for one requirement would read as two jobs.
+  partyName: "the borrower's name or the vesting entity",
   propertyAddress: 'the full property address',
 };
 
@@ -99,13 +104,53 @@ function Note({ tone, children }) {
  * scenario, the consumer label, the mode and the waive. It is passed WHOLE to
  * the server; this component neither builds nor checks it.
  */
-export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount }) {
+export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount, issue }) {
   const [busy, setBusy] = useState(null);
   const [note, setNote] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [gate, setGate] = useState(null);      // the SERVER's verdict — never re-derived here
+  /**
+   * WHAT IS THIS SHEET STILL MISSING? — asked of the SERVER, never worked out here.
+   *
+   * ⛔ ONE DEFINITION OF COMPLETE. `snapshot.exportGate` decides it, the issue
+   * route enforces it, and this asks the same function through `/preview` — so
+   * the panel can never show a green button the server would refuse, nor ask for
+   * a field the server does not want. A local copy of the rule is exactly how a
+   * screen and its server drift apart.
+   *
+   * ⛔ ABOVE THE EARLY RETURN, AND THAT PLACEMENT IS LOAD-BEARING. `enabled`
+   * flips at runtime — the board learns whether term sheets are switched on from
+   * the SAME cart read that tells it what is collected, so this component really
+   * does render `false` first and `true` a moment later. A hook below the return
+   * would be called on the second render and not the first, and React answers
+   * that with "Rendered more hooks than during the previous render" and takes the
+   * whole page down. Caught by `scripts/test-react-hook-order.js`, which is the
+   * guard that exists for exactly this and which found it here.
+   */
+  const ask = useCallback(async () => {
+    if (!issue) return null;
+    try {
+      const r = await ltApi.termSheetPreview({ selections: [issue.selectionNow()], prepared: issue.prepared });
+      setGate(r && r.gate ? r.gate : null);
+      return r && r.gate ? r.gate : null;
+    } catch (e) {
+      // A preview that cannot be had is not a refusal to issue — the issue door
+      // re-checks the gate itself. Say so and let them press.
+      setGate(null);
+      setNote({ tone: 'bad', text: (e && (e.message || e.error)) || 'Could not check what is still needed.' });
+      return null;
+    }
+  }, [issue]);
+
+  const [issued, setIssued] = useState(null);
 
   if (!enabled) return null;
 
   const issuable = mode === 'borrowerPaid' || mode === 'lenderPaid';
+  // The board hands down the deal's own facts. Without them the panel cannot ask
+  // for anything, so the control falls back to the collect-and-compare flow it
+  // has always had rather than offering a button that could not finish.
+  const canIssue = issuable && !!issue;
 
   async function add() {
     setBusy('add'); setNote(null);
@@ -120,6 +165,52 @@ export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount }
     } finally { setBusy(null); }
   }
 
+
+  /** Press one: complete deals issue immediately, incomplete ones open the boxes. */
+  async function startIssue() {
+    setBusy('gate'); setNote(null);
+    const g = await ask();
+    setBusy(null);
+    // ⛔ THE OWNER'S RULE, IN ONE LINE: *"if you enter the full scenario, you can
+    // right away issue the term sheet. And if not, you need to enter the numbers
+    // over there."* A ready deal must not be made to open a form it would only
+    // press through unchanged.
+    if (g && g.ok) { await doIssue(); return; }
+    setOpen(true);
+  }
+
+  async function doIssue() {
+    setBusy('issue'); setNote(null);
+    try {
+      const r = await ltApi.termSheetIssue({ selections: [issue.selectionNow()], prepared: issue.prepared });
+      setIssued(r);
+      setOpen(false);
+      if (onAdded) onAdded();
+    } catch (e) {
+      // The server names every missing field at once; carry its sentence through
+      // and re-open the boxes so each one can be filled where it is refused.
+      setNote({ tone: 'bad', text: (e && (e.message || e.error)) || 'Could not issue that term sheet.' });
+      setOpen(true);
+      await ask();
+    } finally { setBusy(null); }
+  }
+
+  if (issued && issued.code) {
+    return (
+      <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(20,27,34,.10)' }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: INK }}>{`Term sheet issued — ${issued.code}`}</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 7 }}>
+          <button type="button" style={btn('primary')} onClick={() => ltApi.termSheetPdf(issued.code)}>
+            Download the PDF
+          </button>
+          <button type="button" style={btn()} onClick={() => { setIssued(null); setGate(null); }}>
+            Issue another
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid rgba(20,27,34,.10)' }}>
       {!issuable ? (
@@ -128,16 +219,366 @@ export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount }
           on a term sheet. Switch to borrower-paid or lender-paid to build one.
         </div>
       ) : (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <button type="button" style={btn()} disabled={busy === 'add'} onClick={add}>
-            {busy === 'add' ? 'Adding…' : 'Add to comparison'}
-          </button>
-          <span style={{ fontSize: 11.5, color: MUTED }}>
-            {cartCount ? `${cartCount} collected` : 'Collect options across searches, then issue one sheet.'}
-          </span>
-        </div>
+        <>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            {/* ⛔ ISSUING THIS ONE OPTION IS THE PRIMARY ACTION. Owner-directed
+                2026-08-30: *"where that button is, you should be able to issue a
+                term sheet. Which means you can only select one option."* A term
+                sheet IS one option, so it is issued from the option — collecting
+                several is the other workflow and stays the quieter button. */}
+            {canIssue ? (
+              <button type="button" style={btn('primary')} disabled={busy != null} onClick={startIssue}>
+                {busy === 'gate' ? 'Checking…' : busy === 'issue' ? 'Issuing…' : 'Issue term sheet'}
+              </button>
+            ) : null}
+            <button type="button" style={btn()} disabled={busy === 'add'} onClick={add}>
+              {busy === 'add' ? 'Adding…' : 'Add to comparison'}
+            </button>
+            <span style={{ fontSize: 11.5, color: MUTED }}>
+              {cartCount ? `${cartCount} collected` : 'Collect options across searches to compare them.'}
+            </span>
+          </div>
+          {open && canIssue ? (
+            <IssueFields issue={issue} gate={gate} onChanged={ask}
+              busy={busy} onIssue={doIssue} onCancel={() => setOpen(false)} />
+          ) : null}
+        </>
       )}
       <Note tone={note && note.tone}>{note && note.text}</Note>
+    </div>
+  );
+}
+
+/** Is this gate key outstanding? A null gate (nothing asked yet, or the ask
+ *  failed) marks nothing — guessing at a shortfall would put a red box under a
+ *  field somebody has already filled. */
+const outstanding = (gate, key) => !!(gate && Array.isArray(gate.missing) && gate.missing.includes(key));
+
+/**
+ * THE BOXES A TERM SHEET STILL NEEDS, ON THE ROW IT IS ABOUT.
+ *
+ * Owner-directed 2026-08-30: *"you need to enter the numbers over there. You need
+ * to enter the monthly rent and the monthly or the yearly property tax and
+ * optional HOA. The same way you enter by the Calculate … and it verifies that
+ * the ratio that you're searching is the correct ratio."*
+ *
+ * ⛔ THE HOUSING FIGURES ARE THE BOARD'S, NOT THIS PANEL'S. They write straight
+ * into the same calculator state the DSCR panel and the PITI column read, so a
+ * rent typed here lights up the column, moves the ratio and reaches the sheet —
+ * one set of facts about one property. A private copy here would let the sheet
+ * state a payment the board beside it disagrees with.
+ *
+ * ⛔ AND THE FIELDS DO NOT COME AND GO AS THEY ARE FILLED. Every box is drawn,
+ * with the outstanding ones marked: a form that reflows under the cursor as each
+ * answer lands is a form people lose their place in.
+ */
+export function IssueFields({ issue, gate, onChanged, busy, onIssue, onCancel }) {
+  const c = issue.calc;
+  const set = (k) => (v) => issue.setCalc((p) => ({ ...p, [k]: v }));
+  const setBasis = (k, val) => issue.setCalc((p) => ({ ...p, [k]: val }));
+  const setP = (k) => (v) => issue.setPrepared((p) => ({ ...p, [k]: v }));
+
+  /* Re-ask the server once the officer stops changing things, so the marks and
+     the sentence follow what is actually in the boxes.
+
+     ⛔ KEYED ON THE VALUES, NEVER ON THE CALLBACK. The board rebuilds `issue`
+     (and therefore this `onChanged`) on every render, so a dependency on its
+     identity would fire the ask on every render — and the ask sets state, which
+     renders again. That is an endless round trip to the server, not a debounce.
+     The live function is held in a ref instead, which is the same discipline the
+     board's own auto-ask loop uses. */
+  const askRef = useRef(onChanged);
+  askRef.current = onChanged;
+  useEffect(() => {
+    const t = setTimeout(() => { askRef.current(); }, 400);
+    return () => clearTimeout(t);
+  }, [c.rent, c.tax, c.taxBasis, c.insurance, c.insBasis, c.hoa,
+    issue.prepared.borrowerName, issue.prepared.entityName, issue.prepared.propertyAddress]);
+
+  const check = issue.ratioCheck();
+  const mark = (key) => (outstanding(gate, key)
+    ? { color: CAUTION, fontWeight: 700 } : null);
+
+  return (
+    <div style={{
+      marginTop: 10, border: `1px solid ${GOLD}55`, borderRadius: 10, background: PAPER,
+    }}>
+      <div style={{
+        padding: '7px 11px', borderBottom: `1px solid ${GOLD}33`, fontSize: 11,
+        letterSpacing: '.07em', textTransform: 'uppercase', fontWeight: 700, color: GOLD_TEXT,
+      }}>
+        What this term sheet still needs
+      </div>
+      <div style={{ padding: 11, display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+        <label style={{ flex: '1 1 140px', minWidth: 130 }}>
+          <span style={{ ...fieldLabel(), ...(mark('rentMonthly') || {}) }}>Monthly rent</span>
+          <input style={field()} inputMode="decimal" value={c.rent}
+            onChange={(e) => set('rent')(e.target.value)} aria-label="Monthly rent" />
+        </label>
+
+        <label style={{ flex: '1 1 170px', minWidth: 160 }}>
+          <span style={{ ...fieldLabel(), ...(mark('taxMonthly') || {}) }}>Property tax</span>
+          <Basis value={c.taxBasis} onChange={(v) => setBasis('taxBasis', v)} />
+          <input style={field()} inputMode="decimal" value={c.tax}
+            onChange={(e) => set('tax')(e.target.value)} aria-label="Property tax" />
+        </label>
+
+        <label style={{ flex: '1 1 170px', minWidth: 160 }}>
+          <span style={{ ...fieldLabel(), ...(mark('insuranceMonthly') || {}) }}>Hazard insurance</span>
+          <Basis value={c.insBasis} onChange={(v) => setBasis('insBasis', v)} />
+          <input style={field()} inputMode="decimal" value={c.insurance}
+            onChange={(e) => set('insurance')(e.target.value)} aria-label="Hazard insurance" />
+        </label>
+
+        {/* THE ONE FIELD WITH A DEFAULT, and it is the owner's: blank means none. */}
+        <label style={{ flex: '1 1 130px', minWidth: 120 }}>
+          <span style={fieldLabel()}>Monthly HOA</span>
+          <input style={field()} inputMode="decimal" value={c.hoa}
+            onChange={(e) => set('hoa')(e.target.value)} aria-label="Monthly HOA" />
+          <span style={{ fontSize: 11, color: MUTED }}>Blank means none</span>
+        </label>
+
+        <label style={{ flex: '1 1 100%' }}>
+          <span style={{ ...fieldLabel(), ...(mark('propertyAddress') || {}) }}>Property address</span>
+          <AddressField id="ts-addr" value={issue.prepared.propertyAddress}
+            onChange={setP('propertyAddress')} style={{ marginTop: 3 }} />
+        </label>
+
+        {/* ⛔ EITHER NAME WILL DO, and the panel says so rather than marking both
+            red. Owner-directed: *"a name of the person and/or a name of the
+            entity."* The server reports the shortfall under ONE key for exactly
+            this reason — two red boxes for one requirement reads as two jobs. */}
+        <label style={{ flex: '1 1 220px', minWidth: 200 }}>
+          <span style={{ ...fieldLabel(), ...(mark('partyName') || {}) }}>Borrower&rsquo;s name</span>
+          <input style={field()} value={issue.prepared.borrowerName}
+            onChange={(e) => setP('borrowerName')(e.target.value)} aria-label="Borrower's name" />
+        </label>
+        <label style={{ flex: '1 1 220px', minWidth: 200 }}>
+          <span style={{ ...fieldLabel(), ...(mark('partyName') || {}) }}>Vesting entity</span>
+          <input style={field()} value={issue.prepared.entityName}
+            onChange={(e) => setP('entityName')(e.target.value)} aria-label="Vesting entity" />
+          <span style={{ fontSize: 11, color: MUTED }}>Either name is enough</span>
+        </label>
+      </div>
+
+      <RatioCheck check={check} />
+
+      <div style={{
+        display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center',
+        padding: '9px 11px', borderTop: `1px solid ${GOLD}33`,
+      }}>
+        <button type="button" style={btn('primary')} disabled={busy != null} onClick={onIssue}>
+          {busy === 'issue' ? 'Issuing…' : 'Issue the term sheet'}
+        </button>
+        <button type="button" style={btn()} disabled={busy != null} onClick={onCancel}>Not now</button>
+        {/* ⛔ THE BUTTON IS NEVER DISABLED ON THE GATE. The server refuses and
+            names every missing field at once; a greyed button explains nothing
+            and a person cannot ask it why. */}
+        <span style={{ fontSize: 11.5, color: gate && gate.ok ? MUTED : CAUTION, flex: '1 1 180px' }}>
+          {gate && gate.ok ? 'Everything a term sheet needs is here.'
+            : (gate && gate.message) || 'Fill these in and it will issue.'}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The monthly/yearly switch that rides tax and insurance.
+ *
+ * ⛔ IT IS THE PRODUCT'S OWN SEGMENTED CONTROL (`segTrack`/`segBtn`), not a
+ * lookalike. This first shipped as a hand-rolled copy with a GOLD selected
+ * state, and MEASURING it in a real browser is what caught the problem: white
+ * on gold is 3.31:1, under the 4.5:1 that normal-sized text needs, while the
+ * shared control's near-black selected state is about 16:1. It was also simply
+ * a different-looking switch from the one on the DSCR calculator two panels
+ * away, doing the identical job — and the owner's whole ask here was that this
+ * work "the same way you enter by the Calculate".
+ */
+export function Basis({ value, onChange }) {
+  const tab = (v, label) => (
+    <button type="button" onClick={() => onChange(v)} aria-pressed={value === v}
+      style={segBtn(value === v)}>{label}</button>
+  );
+  return (
+    <span style={{ ...segTrack, marginLeft: 6, verticalAlign: 'middle' }}>
+      {tab('monthly', 'Mo')}{tab('yearly', 'Yr')}
+    </span>
+  );
+}
+
+/**
+ * DOES THE RATIO THESE FIGURES PRODUCE MATCH THE ONE THIS WAS PRICED AT?
+ *
+ * Owner-directed 2026-08-30: *"it verifies that the ratio that you're searching
+ * is the correct ratio."* The price on this row was obtained at the DSCR in the
+ * search form; the sheet prints the rent, taxes and insurance typed here. If
+ * those produce a different ratio, the document would state one figure and carry
+ * a price fetched at another.
+ *
+ * ⛔ IT REPORTS, IT DOES NOT REFUSE. Whether a sheet may go out on a ratio the
+ * price was not obtained at is a business decision, and refusing would leave an
+ * officer who knows better with no way through. So it is said plainly, in front
+ * of the button, and the officer decides.
+ *
+ * ⛔ AND IT SAYS NOTHING IT CANNOT PROVE. A half-filled scenario, a missing rate
+ * or a missing term yields no verdict at all — never a confident "they match".
+ */
+export function RatioCheck({ check }) {
+  if (!check || check.state === 'unknown') return null;
+  const agree = check.state === 'agree';
+  return (
+    <div style={{
+      padding: '8px 11px', borderTop: `1px solid ${GOLD}33`,
+      fontSize: 12.5, lineHeight: 1.5, color: agree ? SLATE : CAUTION,
+    }}>
+      {agree
+        ? `These figures work out to a DSCR of ${check.computed} — the ratio this was priced at.`
+        : `These figures work out to a DSCR of ${check.computed}, but this option was priced at `
+          + `${check.priced}. The sheet would state ${check.computed} against a price fetched at `
+          + `${check.priced} — run the search again at ${check.computed} if the price should match.`}
+    </div>
+  );
+}
+
+/**
+ * THE TWO COMPARISON DOCUMENTS, CHOSEN BY NAME — the board's own area for them.
+ *
+ * Owner-directed 2026-08-30: *"on top, somewhere, we should create a new workflow. It should be
+ * two options … 1. Study price in comparison: you have to do the correct research for the wording,
+ * or present a scenario comparison. 2. Present a price in comparison: you can only do one scenario,
+ * so select a few of that scenario."* Asked where it should live, the owner chose a separate area
+ * on the pricing board rather than a page of its own.
+ *
+ * ⛔ THE TWO OPTIONS ARE THE TWO DOCUMENTS THAT ALREADY EXIST. The server has produced three kinds
+ * since term sheets shipped — a TERM SHEET (one option), a COMPARISON (one scenario, several
+ * options) and a SCENARIO COMPARISON (different scenarios) — and `comparison.detectWorkflow`
+ * already tells them apart for the break-even arithmetic. So this invents no document and no
+ * endpoint; what was missing was that the officer could not SAY which one they were building, and
+ * had to infer it from whatever they happened to collect.
+ *
+ * ⛔ THE CHOICE IS AN INTENT, NEVER THE ANSWER. The document's kind is DERIVED on the server from
+ * what is actually in it — a comparison of two different scenarios IS a scenario comparison
+ * whatever anybody meant — because the one thing a document must never do is describe itself
+ * wrongly. What the choice earns is a plain warning when the two disagree, which is the thing a
+ * person cannot see for themselves: options collected across two searches look identical in a list.
+ *
+ * ⛔ AND IT IS HELD IN THE BROWSER, deliberately. An intent is not a fact about the sheet, so it
+ * needs no column and no migration — and a stored intent could go stale against a cart that moved
+ * under it, which is the one failure this panel exists to catch.
+ */
+export const COMPARISON_WORKFLOWS = [
+  {
+    key: 'prices',
+    // The owner's "present a price in comparison … you can only do one scenario, so select a few
+    // of that scenario". Named for what the reader gets, not for what the officer does.
+    title: 'Compare prices on one deal',
+    blurb: 'One scenario, several programmes side by side. Price the deal, then collect the options '
+      + 'worth showing.',
+    docKind: 'comparison',
+  },
+  {
+    key: 'scenarios',
+    // The owner's "study price in comparison … or present a scenario comparison" — the wording
+    // they asked to have researched. This is the industry's "what-if": the same property at
+    // different loan amounts, terms or leverage, so the reader can see what each choice costs.
+    title: 'Compare different deals',
+    blurb: 'Different scenarios side by side — change the loan amount, the term or the leverage and '
+      + 'show what each one costs.',
+    docKind: 'scenario_comparison',
+  },
+];
+
+const WORKFLOW_OF_KIND = { comparison: 'prices', scenario_comparison: 'scenarios' };
+
+/**
+ * Does what has been collected match what the officer said they were building?
+ *
+ * PURE, and it answers `null` — never a guess — whenever it cannot know: nothing chosen, nothing
+ * collected, or a kind the server has not reported yet. A warning nobody can act on is worse than
+ * none, and a warning that fires on an empty cart fires on every first visit.
+ *
+ * HONEST NOTE, MEASURED rather than assumed: the `!docKind` half of the first guard is REDUNDANT
+ * today — an unreported kind is not in `WORKFLOW_OF_KIND` either, so it already falls out at
+ * `!is`. It was mutated away and the suite stayed green. It is kept because reading "no kind, no
+ * verdict" off the first line is what makes the rest of the function safe to read, and because a
+ * kind added to that map later would make it load-bearing at once. The BEHAVIOUR is pinned either
+ * way (F2), which is the thing that matters; do not read the guard as a check that bites.
+ */
+export function workflowMismatch(chosen, docKind) {
+  if (!chosen || !docKind) return null;
+  // One option is a TERM SHEET whatever was intended — that is the other workflow entirely, and
+  // the row's own button is where it belongs. Saying so beats a silent nothing.
+  if (docKind === 'term_sheet') {
+    return 'Only one option is collected, so this would come out as a term sheet. Collect another, '
+      + 'or issue the one from its own row.';
+  }
+  const is = WORKFLOW_OF_KIND[docKind];
+  if (!is || is === chosen) return null;
+  if (chosen === 'prices') {
+    return 'These options were priced on different scenarios, so this would come out as a comparison '
+      + 'of DEALS rather than of prices. Remove the odd one out, or switch to comparing deals.';
+  }
+  return 'These options were all priced on the same scenario, so this would come out as a comparison '
+    + 'of PRICES rather than of deals. Price a different scenario and add one, or switch to comparing prices.';
+}
+
+/**
+ * The board's comparison area: pick what you are building, see what you have, issue it.
+ *
+ * ⛔ IT RENDERS WHETHER OR NOT ANYTHING IS COLLECTED. It is the entry point the owner asked for
+ * ("on top, somewhere"), and an entry point that appears only once you have already started is not
+ * an entry point. The STRIP below it is the opposite and stays that way — a list of collected
+ * options is furniture when there are none.
+ */
+export function ComparisonWorkflowPanel({ enabled, chosen, onChoose, count, docKind, children }) {
+  if (!enabled) return null;
+  const warn = workflowMismatch(chosen, docKind);
+  return (
+    <div style={{
+      border: `1px solid ${GOLD}55`, borderRadius: 12, background: '#fff', marginBottom: 12,
+    }}>
+      <div style={{
+        padding: '9px 13px', borderBottom: `1px solid ${GOLD}33`, background: PAPER,
+        borderRadius: '12px 12px 0 0', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+      }}>
+        <span style={{
+          fontSize: 11, letterSpacing: '.07em', textTransform: 'uppercase', fontWeight: 700, color: GOLD_TEXT,
+        }}>
+          Build a comparison
+        </span>
+        <span style={{ fontSize: 11.5, color: MUTED }}>
+          {count ? `${count} option${count === 1 ? '' : 's'} collected` : 'Nothing collected yet'}
+        </span>
+      </div>
+      <div style={{ padding: 11, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        {COMPARISON_WORKFLOWS.map((w) => {
+          const on = chosen === w.key;
+          return (
+            <button
+              key={w.key}
+              type="button"
+              aria-pressed={on}
+              onClick={() => onChoose(on ? null : w.key)}
+              style={{
+                flex: '1 1 260px', minWidth: 240, textAlign: 'left', cursor: 'pointer',
+                border: on ? `1px solid ${GOLD}` : '1px solid rgba(20,27,34,.14)',
+                background: on ? PAPER : '#fff', borderRadius: 10, padding: '9px 11px',
+              }}
+            >
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{w.title}</div>
+              <div style={{ fontSize: 12, color: SLATE, lineHeight: 1.5, marginTop: 3 }}>{w.blurb}</div>
+            </button>
+          );
+        })}
+      </div>
+      {warn ? (
+        <div style={{
+          padding: '8px 13px', borderTop: `1px solid ${GOLD}33`,
+          fontSize: 12.5, lineHeight: 1.5, color: CAUTION,
+        }}>{warn}</div>
+      ) : null}
+      {children}
     </div>
   );
 }
@@ -150,7 +591,7 @@ export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount }
  * running a completely different scenario, does not empty it. That is the whole
  * point of the cart the owner described.
  */
-export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy: outerBusy }) {
+export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPlan, busy: outerBusy }) {
   const [busy, setBusy] = useState(null);
   const [note, setNote] = useState(null);
   const [issued, setIssued] = useState(null);
@@ -160,7 +601,7 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
   // well."* A TERM SHEET is refused without them — it is a formal offer with a
   // signature block, and a signature line over a blank "Prepared for" is a
   // defective document. A comparison needs neither.
-  const [prepared, setPrepared] = useState({ borrowerName: '', propertyAddress: '' });
+  const [prepared, setPrepared] = useState({ borrowerName: '', entityName: '', propertyAddress: '' });
   // A program the white-label sheet has not named yet, named here by the officer.
   const [names, setNames] = useState({});
   const [plan, setPlan] = useState(null);   // { docKind, gate } from the server
@@ -204,7 +645,7 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
   // the two text boxes, whose own emptiness is visible without a round trip.
   useEffect(() => {
     let dead = false;
-    if (!open || !members.length) { setPlan(null); return undefined; }
+    if (!open || !members.length) { setPlan(null); if (onPlan) onPlan(null); return undefined; }
     // DEBOUNCED, because `names` is in the dependencies and it changes on every
     // keystroke in the manual program-name box — an undebounced effect would
     // post a preview per character typed.
@@ -212,6 +653,11 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
       try {
         const r = await ltApi.termSheetPreview({ selections: selectionsOf(), anchorIndex: anchor });
         if (!dead) setPlan({ docKind: r.docKind, gate: r.gate, expiryHours: r.expiryHours });
+        // ⛔ THE KIND IS REPORTED UP, NEVER RE-DERIVED ABOVE. The workflow panel needs to
+        // know what this cart would actually produce, and there is exactly one place that
+        // knows: the server. A second reading on the board could tell the officer their
+        // collection matches an intent it does not.
+        if (!dead && onPlan) onPlan(r.docKind || null);
       } catch (e) {
         // A preview that cannot be built is not a refusal to issue — the issue
         // will say so itself, in the server's own words.
@@ -230,6 +676,7 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
         cartId: cart && cart.id,
         prepared: {
           borrowerName: prepared.borrowerName || null,
+          entityName: prepared.entityName || null,
           propertyAddress: prepared.propertyAddress || null,
         },
       });
@@ -256,7 +703,10 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
           <button type="button" style={btn('primary')} onClick={() => ltApi.termSheetPdf(issued.code)}>
             Download the PDF
           </button>
-          <button type="button" style={btn()} onClick={() => setIssued(null)}>Start another</button>
+          {/* Tells the BOARD as well, or an empty strip would stay mounted for ever on a
+              parent that keeps it up while there is a result to show. */}
+          <button type="button" style={btn()}
+            onClick={() => { setIssued(null); if (onIssued) onIssued(null); }}>Start another</button>
         </div>
       </div>
     );
@@ -272,7 +722,11 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
   const serverMissing = (plan && plan.gate && !plan.gate.ok ? plan.gate.missing : []) || [];
   const stillMissing = isTermSheet
     ? serverMissing
-      .filter((k) => (k === 'borrowerName' ? !prepared.borrowerName.trim()
+      // EITHER name clears the party line, which is the gate's own rule — judged
+      // here only so typing clears the sentence without a round trip. The server
+      // refuses either way; this is what the officer reads, not what decides.
+      .filter((k) => (k === 'partyName'
+        ? !(prepared.borrowerName.trim() || prepared.entityName.trim())
         : k === 'propertyAddress' ? !prepared.propertyAddress.trim() : true))
       .map((k) => GATE_WORDS[k] || k)
     : [];
@@ -352,17 +806,29 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
             WHO IT IS FOR
           </div>
           <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(min(16rem, 100%), 1fr))', marginTop: 6 }}>
+            {/* ⛔ TWO BOXES, NOT ONE. This was a single "Borrower or entity name",
+                which is precisely the muddle the owner's *"and/or"* resolves: the
+                two are different parties who sign different lines — on a DSCR loan
+                the entity is the BORROWER and the person GUARANTEES it — so one
+                box put whichever was typed on whichever line the sheet drew. */}
             <label style={{ display: 'block' }}>
-              <span style={fieldLabel()}>Borrower or entity name</span>
+              <span style={fieldLabel()}>Borrower&rsquo;s name</span>
               <input value={prepared.borrowerName} style={field()}
                 onChange={(e) => setPrepared((s) => ({ ...s, borrowerName: e.target.value }))}
+                placeholder="Jonathan Reyes" />
+            </label>
+            <label style={{ display: 'block' }}>
+              <span style={fieldLabel()}>Vesting entity</span>
+              <input value={prepared.entityName} style={field()}
+                onChange={(e) => setPrepared((s) => ({ ...s, entityName: e.target.value }))}
                 placeholder="Riverbend Holdings LLC" />
+              <span style={{ fontSize: 11, color: MUTED }}>Either name is enough</span>
             </label>
             <label style={{ display: 'block' }}>
               <span style={fieldLabel()}>Full property address</span>
-              <input value={prepared.propertyAddress} style={field()}
-                onChange={(e) => setPrepared((s) => ({ ...s, propertyAddress: e.target.value }))}
-                placeholder="218 Forest Avenue, Lakewood, NJ 08701" />
+              <AddressField id="cs-addr" value={prepared.propertyAddress}
+                onChange={(v) => setPrepared((s) => ({ ...s, propertyAddress: v }))}
+                placeholder="218 Forest Avenue, Lakewood, NJ 08701" style={{ marginTop: 3 }} />
             </label>
           </div>
           {isTermSheet && (
@@ -532,6 +998,17 @@ export function TermSheetLookup() {
  */
 export function useTermSheetCart() {
   const [state, setState] = useState({ enabled: false, cart: null, members: [] });
+  /* THE SHEET THAT WAS JUST ISSUED, HELD ABOVE THE CART (owner-reported 2026-08-30: *"when you
+     add a few things and then you export, it doesn't work. It doesn't download anything, and it
+     disappears. Everything."*).
+
+     ISSUING EMPTIES THE CART — the server clears it, correctly, because the sheet has been made.
+     But the board mounted the strip only while the cart HAD something in it, and the strip is
+     where the issued card lives. So the ID and the Download button were destroyed in the same
+     tick they were created: the sheet was written, the officer saw nothing, and the collected
+     options vanished with it. The result therefore cannot live inside the thing the result
+     empties. Held here, the board can keep the strip up until the person is done with it. */
+  const [issued, setIssued] = useState(null);
   const reload = useCallback(async () => {
     try {
       const r = await ltApi.termSheetCart();
@@ -551,5 +1028,5 @@ export function useTermSheetCart() {
     }
   }, []);
   useEffect(() => { reload(); }, [reload]);
-  return { ...state, reload, count: state.members.length };
+  return { ...state, reload, count: state.members.length, issued, setIssued };
 }
