@@ -63,18 +63,13 @@ const HANDLING_LABEL = Object.freeze({
 const DEFAULT_HANDLING = 'attorney';
 
 /* ── THE NEW-YORK TITLE CUT ─────────────────────────────────────────────────
-   The full title wants-list lives in lib/orders.js (the follow-up's deliverables).
-   These are the items title never handles in New York; `titleWants` applies the
-   cut so the order email and the itemized title slots agree. */
-const NY_TITLE_CUT = Object.freeze(['CPL', 'Wiring Instructions', 'Preliminary Settlement Statement']);
-const TITLE_WANTS_FULL = Object.freeze(['Title Commitment', 'CPL', 'Tax Certificate', 'Wiring Instructions', 'Preliminary Settlement Statement']);
-
-function isNyState(state) { return String(state || '').trim().toUpperCase() === 'NY'; }
-
-/** The deliverables a TITLE order may ask for in this state. */
-function titleWants(state) {
-  return isNyState(state) ? TITLE_WANTS_FULL.filter((w) => !NY_TITLE_CUT.includes(w)) : [...TITLE_WANTS_FULL];
-}
+   ONE DEFINITION, in `lib/order-email.js` — beside the letter that prints it, and
+   shared with the long-term desk, which the owner asked for the identical cut on
+   ("NY = fewer slots, no CPL, no preliminary settlement statement"). Re-exported
+   here so every existing reader of `closing-handling` is unchanged; a second copy
+   is how the order email and the itemized title slots would come to disagree about
+   a state. */
+const { NY_TITLE_CUT, TITLE_WANTS_FULL, isNyState, titleWants } = require('./order-email');
 
 /* What the SETTLEMENT AGENT is ordered to produce on a NY file (the owner:
    "you need to send your errors and omissions insurance, your preliminary

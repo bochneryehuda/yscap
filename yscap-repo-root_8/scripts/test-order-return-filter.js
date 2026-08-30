@@ -183,6 +183,11 @@ const read = (f) => fs.readFileSync(path.join(__dirname, '..', 'src', 'lib', f),
 const orderSrc = read('order-inbox.js');
 const closingSrc = read('closing-inbox.js');
 const inboxSrc = read('file-inbox.js');
+/* The provider-facing half of the inbox moved to lib/inbound-mail.js (2026-08-30,
+   so the long-term orders desk shares the SAME reading rather than copying it), so
+   the metadata guard below reads THAT file — and, because a guard on a module
+   nobody calls proves nothing, also asserts file-inbox still retrieves through it. */
+const inboundMailSrc = read('inbound-mail.js');
 assert.ok(/classifyReturnAttachment/.test(orderSrc), 'order-inbox runs the filter');
 assert.ok(/classifyReturnAttachment/.test(closingSrc), 'closing-inbox runs the filter');
 // The filter must run BEFORE the document INSERT in both sinks. Both indexes
@@ -197,7 +202,10 @@ callBeforeInsert(orderSrc, 'order-inbox');
 callBeforeInsert(closingSrc, 'closing-inbox');
 // The retrieval path passes the inline/Content-ID metadata through so the
 // embedded-image tell actually reaches the classifier.
-assert.ok(/contentDisposition:/.test(inboxSrc) && /contentId:/.test(inboxSrc), 'file-inbox forwards disposition + content-id metadata');
+assert.ok(/contentDisposition:/.test(inboundMailSrc) && /contentId:/.test(inboundMailSrc),
+  'the retrieval forwards disposition + content-id metadata');
+assert.ok(/require\('\.\/inbound-mail'\)/.test(inboxSrc) && /retrieveAttachmentsSafe\(/.test(inboxSrc),
+  'file-inbox retrieves attachments through that shared reading');
 ok('order-inbox + closing-inbox are wired through the filter, before any insert');
 
 /* ---- PREVIOUS FILES: the retirement pass exists, is booted, and shares the

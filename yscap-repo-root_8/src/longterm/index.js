@@ -72,6 +72,14 @@ router.use('/book', require('./routes/book'));
 // /api/lt/views
 router.use('/views', require('./routes/views'));
 
+// The REPORTING CENTRE (owner-directed 2026-08-30: "a full reporting center where I
+// can see for every file how long it took between which and which step and who the
+// processor was in that file, and then reporting per processor"). A report names
+// catalog KEYS, never SQL, and the viewer's own access is appended to every run —
+// so a shared report can only ever narrow, exactly like a saved view.
+// /api/lt/reports
+router.use('/reports', require('./routes/reports'));
+
 // The archive — Encompass's deleted loans (its `(Trash)` folder), out of every
 // pipeline view and totaled here, with the super-admin's permanent delete
 // (owner-directed 2026-08-23).
@@ -99,6 +107,25 @@ router.use('/encompass-file', require('./routes/encompass-file'));
 // scope as the workspace. READ-ONLY: no route here writes to Encompass or to us.
 // /api/lt/conditions
 router.use('/conditions', require('./routes/conditions'));
+
+// THE GENERAL CONDITION CENTER — OUR OWN conditions, not Encompass's.
+//
+// The router above is db/612's READ-ONLY mirror of Encompass's Enhanced
+// Conditions and eFolder: what the investor's underwriter raised AFTER buying
+// the loan. This one is what WE need to get a file submitted, cleared to close,
+// docked, funded and sold (owner-directed 2026-08-30). Two centres, two routers,
+// two sets of tables — db/643's header records why they must never become one.
+// /api/lt/condition-center
+router.use('/condition-center', require('./routes/condition-center'));
+
+/* THE ORDERS DESK — the vendor orders a long-term file needs: title, insurance,
+   flood insurance, a New York settlement agent, a payoff, a condo questionnaire, a
+   verification of rent, and (built and switched off) the appraisal. The LETTER and
+   the recipient rule are SHARED with the short-term desk (src/lib/order-email.js,
+   authorized in docs/LONG-TERM-AUTHORIZED-COPIES.md); the tables, the vendor links
+   and the bookkeeping are this product's own. */
+router.use('/orders', require('./routes/orders'));
+router.use('/vor', require('./routes/vor'));
 
 // The signed-in person's own long-term preferences — today, which product side
 // they open on (the owner's switch), remembered per user. /api/lt/me

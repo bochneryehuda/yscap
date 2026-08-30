@@ -26,6 +26,7 @@
 
 const path = require('path');
 const fs = require('fs');
+const { stripComments, stripToProse } = require('./lib/strip-comments.js');
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -33,13 +34,20 @@ const check = (cond, msg) => {
   else { failures += 1; console.error(`  FAIL ${msg}`); }
 };
 const read = (p) => fs.readFileSync(path.join(__dirname, '..', p), 'utf8');
-const code = (p) => read(p)
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .replace(/(^|[^:])\/\/.*$/gm, '$1');
+/** THE SHARED stripper, not the two-line regex this file used to carry. That idiom
+ *  removes BLOCK comments FIRST, so it cannot tell that a `/*` it found is sitting
+ *  inside a LINE comment — and line 3 of `app-v2/src/longterm/api.js` is prose
+ *  containing `/api/lt/*`. The day a real block comment was added 282 lines below
+ *  it, that stray slash-star opened a "comment" running to the new closing marker
+ *  and ate 19,048 of the file's 20,012 characters, so `clickupStatusReviews` — in
+ *  the file, in plain sight — read as ABSENT and this suite failed on it. The
+ *  direction that is worse: a "must NOT appear" assertion PASSES over a file the
+ *  stripper swallowed. See `scripts/lib/strip-comments.js`. */
+const code = (p) => stripComments(read(p));
 /** JSX wraps prose at whatever column it lands on, so a sentence a person reads as
  *  one line is "card by\n        hand" in the source. Every assertion about WORDING
  *  runs on this, or it tests the line width rather than the sentence. */
-const prose = (p) => code(p).replace(/\s+/g, ' ');
+const prose = (p) => stripToProse(read(p));
 
 // ── 1. The screen exists, is reachable, and asks the real route ──────────────
 console.log('the disagreement list is on a screen somebody can open');

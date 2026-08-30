@@ -313,8 +313,8 @@ export default function LtSettings() {
     } finally { setBusy(false); }
   };
 
-  if (!data) return <LtLayout title="Long-term settings"><div className="card" style={{ color: INK }}>Loading…</div></LtLayout>;
-  if (data.error) return <LtLayout title="Long-term settings"><div className="card" style={{ color: '#8A2D2D' }}>{data.error}</div></LtLayout>;
+  if (!data) return <LtLayout title="Long-term settings"><div className="lt-card" style={{ color: INK }}>Loading…</div></LtLayout>;
+  if (data.error) return <LtLayout title="Long-term settings"><div className="lt-card" style={{ color: '#8A2D2D' }}>{data.error}</div></LtLayout>;
 
   const canManage = data.canManage === true;
 
@@ -322,7 +322,7 @@ export default function LtSettings() {
     <LtLayout title="Long-term settings">
       {/* The screen SAYS what it is for. A buyer opening a list of 56 fields with no
           explanation cannot tell ours from theirs. */}
-      <div className="card" style={{ color: INK, marginBottom: 14 }}>
+      <div className="lt-card" style={{ color: INK, marginBottom: 14 }}>
         <p style={{ margin: '0 0 6px', lineHeight: 1.55 }}>
           Everything the long-term side assumes about your company lives here, pre-filled with our
           values. Change one and it takes effect everywhere; press <strong>Put back to ours</strong> and
@@ -337,7 +337,7 @@ export default function LtSettings() {
       </div>
 
       {mine && Array.isArray(mine.settings) && mine.settings.length > 0 && (
-        <div className="card" style={{ color: INK, marginBottom: 14 }}>
+        <div className="lt-card" style={{ color: INK, marginBottom: 14 }}>
           <h2 style={{ margin: '0 0 4px', fontSize: 16, color: INK }}>Yours</h2>
           <p style={{ margin: '0 0 8px', color: MUTED, fontSize: 13 }}>
             Just for you. Nobody else is affected, and nobody else can change these for you.
@@ -382,7 +382,7 @@ export default function LtSettings() {
       )}
 
       {note && (
-        <div className="card" style={{
+        <div className="lt-card" style={{
           marginBottom: 14, color: note.ok ? '#1F5F3F' : '#8A2D2D',
           borderColor: note.ok ? 'rgba(47,127,134,.35)' : 'rgba(138,45,45,.35)',
         }}>{note.text}</div>
@@ -410,7 +410,7 @@ export default function LtSettings() {
         const changed = g.settings.filter((s) => s.isOverridden).length;
         const isOpen = open[g.group] !== false;
         return (
-          <div key={g.group} className="card" style={{ color: INK, marginBottom: 12 }}>
+          <div key={g.group} className="lt-card" style={{ color: INK, marginBottom: 12 }}>
             <button type="button"
               onClick={() => setOpen((o) => ({ ...o, [g.group]: !isOpen }))}
               style={{
