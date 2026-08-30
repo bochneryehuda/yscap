@@ -178,7 +178,10 @@ console.log('\nG. the breakpoint is MEASURED, not chosen');
 const HEAD = SCREEN_BARE.slice(SCREEN_BARE.indexOf('className="ltq-head"'));
 const bases = (HEAD.slice(0, 1200).match(/flex: '(?:0 0|2 1) (\d+)px'/g) || [])
   .map((m) => Number(m.match(/(\d+)px/)[1]));
-eq(bases.length, 6, 'G1 the header still has six columns to measure');
+/* Counted, not pinned at six: the PITI column is CONDITIONAL, so the header carries six or seven
+   depending on whether the carrying costs were entered. What must hold is that the breakpoint
+   covers the WIDEST the table can get — every column the header can draw. */
+ok(bases.length >= 6, `G1 every header column is measurable (${bases.length} found)`);
 const GAPS = 5 * 10;          // five 10px gaps between six columns
 const CARD_PAD = 28;          // the card's own 14px each side
 const need = bases.reduce((a, b) => a + b, 0) + GAPS + CARD_PAD;
