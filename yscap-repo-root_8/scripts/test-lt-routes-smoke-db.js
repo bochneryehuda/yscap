@@ -289,6 +289,12 @@ async function main() {
       // reads. It is called WITH a name because it answers 400 without one, and
       // an assertion satisfied by a 400 would prove only that the door refuses.
       '/api/lt/dscr/combined/investor-links/suggest?name=A%20%26%20D%20Mortgage%20-%20Delegated',
+      // THE MARGIN HOLDBACK in force — a pure read of the settings store plus the
+      // owner's standing number, reaching no vendor. Opening it here is what
+      // proves a stored value is READABLE: `resolveHoldback` never throws by
+      // design and an unreadable one keeps the standing 0.25, which on a screen
+      // is indistinguishable from "nobody has changed it".
+      '/api/lt/dscr/combined/margin-holdback',
     ];
 
     // ── WHAT THE LIST OMITS, SAID OUT LOUD ──────────────────────────────────
@@ -398,7 +404,7 @@ async function main() {
       // it"* — so an ordinary officer must get NOTHING, and 404 rather than 403
       // so its existence is not advertised.
       for (const door of ['/api/lt/dscr/combined/health', '/api/lt/dscr/combined/investors',
-        '/api/lt/dscr/combined/investor-links']) {
+        '/api/lt/dscr/combined/investor-links', '/api/lt/dscr/combined/margin-holdback']) {
         const shut = await fetch(base + door, { headers: { authorization: `Bearer ${loToken}` } });
         check(shut.status === 404,
           `${door} is 404 for a loan officer (got ${shut.status}) — the combined engine is the super admin's alone while it is under audit`);

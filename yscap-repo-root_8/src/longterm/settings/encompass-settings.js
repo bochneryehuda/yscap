@@ -870,6 +870,27 @@ const SETTINGS = [
       + 'decision beats a lookup; the label always comes from the canonical investor.',
     evidence: 'Owner-directed 2026-08-30: "We should be able to link them together side by side '
       + 'and then select this one. Want to see from this program."' },
+  // THE MARGIN HOLDBACK WE ADD OURSELVES, and it is a SETTING now rather than a
+  // constant (owner-directed 2026-08-30: *"there should always be in the
+  // settings the possibility to move up the margin hold back, remove the margin
+  // hold back, or move it down."*). 0.25 stays the pre-fill — the owner's own
+  // number — so a deployment that has never touched this behaves exactly as it
+  // did before.
+  //
+  // ⛔ NULL MEANS "USE THE 0.25", NOT "HOLD BACK NOTHING". This is the one
+  // setting in the engine that may not fail toward doing nothing: doing nothing
+  // here hands the borrower 0.25 of better execution nobody decided to give
+  // them. An unreadable or refused value keeps the standing number and says so
+  // on the board; only a deliberate 0 removes it.
+  { key: 'pricing.combinedMarginHoldback', group: 'Pricing', label: 'Combined engine — LoanNEX margin holdback (points)',
+    type: 'number', default: null,
+    description: 'Points held back on every LoanNEX quote before anything compares the two '
+      + 'programs. Blank uses the standing 0.25. Set 0 to remove it entirely — which leaves the '
+      + 'two feeds on DIFFERENT footings, since Lender Price still carries its own.',
+    evidence: 'Owner-directed 2026-08-30: "Every investor from LoanNEX needs to get the 0.25 '
+      + 'margin hold back added... On LoanNEX, everybody, you need to add this manually." Then, '
+      + 'the same day: "there should always be in the settings the possibility to move up the '
+      + 'margin hold back, remove the margin hold back, or move it down."' },
   // -- Term sheets ----------------------------------------------------------
   // The officer-side term sheet (owner-directed 2026-08-30: *"we want to be able
   // also on the staff side to enable the term sheet option from today"*). The

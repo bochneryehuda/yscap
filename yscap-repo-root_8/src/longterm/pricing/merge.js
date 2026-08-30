@@ -295,6 +295,22 @@ function sourceStatus(board, error) {
     lenderCount: board.lenderCount || 0,
     rungCount: board.rungCount || 0,
     executionTimeMs: board.executionTimeMs == null ? null : board.executionTimeMs,
+    // ⛔ THE HOLDBACK'S OWN RECORD TRAVELS WITH THE SOURCE IT WAS TAKEN FROM.
+    // `vendor-margin` stamps the vendor board with how much was held back, where
+    // that number came from and any refusal — and the merge builds a NEW board,
+    // so without carrying it here the whole record is dropped before anybody
+    // sees it. That was survivable while 0.25 was a constant nobody could move;
+    // it is not now that it is settable, because a price that moved must be able
+    // to say WHO moved it and whether a saved value was refused.
+    //
+    // It belongs HERE, in the per-source provenance block, rather than at the
+    // top of the board: it names a vendor, so it must ride with the reveal like
+    // every other piece of provenance (`applyRouting` deletes `sources` on the
+    // ordinary board, which is exactly right — see the one-system rule).
+    marginHoldback: board.marginHoldback == null ? null : board.marginHoldback,
+    marginHoldbackOrigin: board.marginHoldbackOrigin || null,
+    marginHoldbackNote: board.marginHoldbackNote || null,
+    marginHoldbackProblem: board.marginHoldbackProblem || null,
   };
 }
 

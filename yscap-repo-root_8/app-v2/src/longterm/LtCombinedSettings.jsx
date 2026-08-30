@@ -97,6 +97,14 @@ export default function LtCombinedSettings() {
   // than one nobody opens.
   const [edits, setEdits] = useState({});
   const [q, setQ] = useState('');
+  // The margin holdback is ONE number for the whole LoanNEX feed, not a per-row
+  // setting, so it has its own small piece of state rather than riding the
+  // investor edits map.
+  const [hb, setHb] = useState(null);
+  const [hbDraft, setHbDraft] = useState('');
+  const [hbBusy, setHbBusy] = useState(false);
+  const [hbMsg, setHbMsg] = useState(null);
+  const [hbErr, setHbErr] = useState(null);
 
   const load = useCallback(() => {
     setErr(null);
@@ -105,6 +113,29 @@ export default function LtCombinedSettings() {
       .catch((e) => setErr((e && e.message) || 'The settings could not be read.'));
   }, []);
   useEffect(load, [load]);
+
+  const loadHb = useCallback(() => {
+    ltApi.combinedMarginHoldback()
+      .then((r) => { setHb(r); setHbDraft(r.points == null ? '' : String(r.points)); })
+      .catch((e) => setHbErr((e && e.message) || 'The margin holdback could not be read.'));
+  }, []);
+  useEffect(loadHb, [loadHb]);
+
+  async function saveHb(points) {
+    setHbBusy(true); setHbErr(null); setHbMsg(null);
+    try {
+      const r = await ltApi.combinedSaveMarginHoldback(points);
+      setHb(r);
+      setHbDraft(r.points == null ? '' : String(r.points));
+      setHbMsg(r.origin === 'default'
+        ? `Back to the standing ${r.points} — nothing of our own is saved for it any more.`
+        : (r.points === 0
+          ? 'Saved. No margin holdback is being taken on LoanNEX quotes.'
+          : `Saved. ${r.points} in points is held back on every LoanNEX quote.`));
+    } catch (e) {
+      setHbErr((e && e.message) || 'The margin holdback could not be saved.');
+    } finally { setHbBusy(false); }
+  }
 
   const rows = (data && data.investors) || [];
   const shown = useMemo(() => {
@@ -165,6 +196,69 @@ export default function LtCombinedSettings() {
       {err && (
         <div style={{ ...card, borderColor: `${DANGER}55` }}>
           <div style={{ color: DANGER, fontSize: 13, fontWeight: 700 }}>{err}</div>
+        </div>
+      )}
+
+      {/* THE MARGIN HOLDBACK — one number for the whole LoanNEX feed.
+          Owner-directed: it must always be possible to move it up, remove it, or
+          move it down. It is its own card rather than a row in the list below
+          because it is not a per-investor setting: it applies to every LoanNEX
+          quote, which is the owner's own rule ("On LoanNEX, everybody"). */}
+      {hb && (
+        <div style={{ ...card, borderColor: `${GOLD}55` }}>
+          <div style={eyebrow}>The margin holdback we add ourselves</div>
+          <div style={{ ...sub, color: SLATE, lineHeight: 1.7, marginBottom: 12 }}>
+            {hb.note}
+          </div>
+
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div style={{ flex: '0 1 190px' }}>
+              <label style={label} htmlFor="cps-hb">Points held back</label>
+              <input
+                id="cps-hb" style={input} inputMode="decimal" value={hbDraft} disabled={hbBusy}
+                placeholder={String(hb.prefill)}
+                onChange={(e) => { setHbDraft(e.target.value); setHbMsg(null); setHbErr(null); }}
+              />
+              <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>
+                {hb.origin === 'setting'
+                  ? (hb.points === 0 ? 'you removed it' : 'you set this')
+                  : `the standing ${hb.prefill}`}
+              </div>
+            </div>
+            <div style={{ flex: '0 0 auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button" className="btn primary" disabled={hbBusy || hbDraft.trim() === ''}
+                onClick={() => saveHb(Number(hbDraft))}
+              >
+                {hbBusy ? 'Saving…' : 'Save this amount'}
+              </button>
+              {/* REMOVE and BACK-TO-THE-PRE-FILL are two different things and are
+                  two different buttons. Removing it stores a deliberate zero;
+                  the pre-fill button stores nothing at all, so the row follows
+                  the standing number again if it ever changes. */}
+              <button type="button" className="btn ghost" disabled={hbBusy || hb.points === 0} onClick={() => saveHb(0)}>
+                Remove it
+              </button>
+              <button type="button" className="btn ghost" disabled={hbBusy || hb.origin !== 'setting'} onClick={() => saveHb(null)}>
+                Use the standing {hb.prefill}
+              </button>
+            </div>
+          </div>
+
+          {hb.points === 0 && (
+            <div style={{ fontSize: 12, color: CAUTION, marginTop: 10, lineHeight: 1.6, fontWeight: 600 }}>
+              No holdback is being taken. Lender Price&rsquo;s feed still carries its own, so while this
+              stands the two programs are NOT being compared on the same footing — a LoanNEX quote will
+              read better than a Lender Price one for that reason alone.
+            </div>
+          )}
+          {hb.problem && (
+            <div style={{ fontSize: 12, color: DANGER, marginTop: 10, lineHeight: 1.6, fontWeight: 600 }}>
+              {hb.problem.message}
+            </div>
+          )}
+          {hbErr && <div style={{ fontSize: 13, color: DANGER, marginTop: 10, fontWeight: 700 }}>{hbErr}</div>}
+          {hbMsg && <div style={{ fontSize: 13, color: GOLD_TEXT, marginTop: 10, fontWeight: 700 }}>{hbMsg}</div>}
         </div>
       )}
       {saved && (

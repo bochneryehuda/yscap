@@ -119,6 +119,23 @@ async function settingsRaw() {
   }
 }
 
+/**
+ * THE SAVED MARGIN HOLDBACK, or nothing if nobody has set one.
+ *
+ * NEVER THROWS, and — unlike every other reader here — a failure must not fall
+ * toward doing nothing. `resolveHoldback` treats an absent value as "use the
+ * owner's standing 0.25", so returning `undefined` on an unreadable store keeps
+ * the holdback ON. A settings outage that quietly stopped holding it back would
+ * hand every borrower 0.25 of better execution nobody decided to give them.
+ */
+async function holdbackRaw() {
+  try {
+    return await settingsStore.get('pricing.combinedMarginHoldback', 'company');
+  } catch (_) {
+    return undefined;
+  }
+}
+
 /** Every investor name a board actually returned, in the order it returned them. */
 function namesOf(board) {
   const out = [];
@@ -237,6 +254,12 @@ async function priceBoth(scenario, opts = {}) {
   }
   const sc = chk.scenario;
 
+  // Read BEFORE the vendors are called: the holdback has to be in hand at the
+  // moment LoanNEX's answer lands, and an explicit value in the request still
+  // wins so a caller can price a what-if without saving it (the same rule the
+  // investor routes follow).
+  const heldSetting = opts.marginHoldback !== undefined ? opts.marginHoldback : await holdbackRaw();
+
   const [lpRes, nxRes] = await Promise.allSettled([
     (async () => {
       const r = await lp.price(sc, opts.lenderprice || {});
@@ -263,7 +286,7 @@ async function priceBoth(scenario, opts = {}) {
     // Price's feed already carries it and LoanNEX's does not, so this is what
     // puts the two on the same footing; applying it any later would have the
     // comparison electing on one set of numbers and the board showing another.
-    loannex: nxRes.status === 'fulfilled' ? vendorMargin.applyToBoard(nxRes.value.board, 'loannex') : null,
+    loannex: nxRes.status === 'fulfilled' ? vendorMargin.applyToBoard(nxRes.value.board, 'loannex', { saved: heldSetting }) : null,
   };
   const errors = {
     lenderprice: lpRes.status === 'rejected' ? reasonOf(lpRes.reason) : null,
@@ -478,6 +501,70 @@ function makeRouter(opts = {}) {
    * own would eventually disagree about which investor comes from where, and the
    * board is the one somebody prices a loan on.
    */
+  /**
+   * THE MARGIN HOLDBACK — read it, and change it.
+   *
+   * Owner-directed 2026-08-30: *"there should always be in the settings the
+   * possibility to move up the margin hold back, remove the margin hold back, or
+   * move it down."*
+   *
+   * The answer always says WHERE the number came from and what the pre-fill is,
+   * so a screen can offer the way back to 0.25 rather than leaving somebody to
+   * remember it — the same rule the investor rows follow.
+   */
+  router.get('/margin-holdback', async (req, res) => {
+    const saved = await holdbackRaw();
+    const r = vendorMargin.resolveHoldback('loannex', saved);
+    res.json({
+      ok: true,
+      points: r.points,
+      origin: r.origin,
+      problem: r.problem,
+      prefill: vendorMargin.holdbackFor('loannex'),
+      max: vendorMargin.MAX_HOLDBACK_POINTS,
+      // Stated rather than left to be inferred: the OTHER program is not
+      // configurable here, and the reason is a fact about its feed.
+      note: 'Held back on every LoanNEX quote before the two programs are compared. Lender Price is not '
+        + 'listed because its feed already carries our holdback — taking it again there would double it.',
+    });
+  });
+
+  /**
+   * WRITE. `points: null` returns it to the standing 0.25; `points: 0` removes
+   * it deliberately.
+   *
+   * ⛔ A REFUSED VALUE IS REFUSED, NOT STORED. `resolveHoldback` is deliberately
+   * forgiving at READ time (a bad stored value keeps the 0.25 rather than taking
+   * the engine down), and that forgiveness must not become a way to save
+   * nonsense: if the door accepted it, the board would go on quoting 0.25 while
+   * the screen showed whatever was typed, and the two would disagree forever.
+   * So the door runs the SAME resolver and refuses anything it reports a problem
+   * with, naming the problem.
+   */
+  router.put('/margin-holdback', async (req, res) => {
+    const b = req.body || {};
+    const raw = b.points === undefined ? b : b.points;
+    if (raw === null || raw === '') {
+      try {
+        await settingsStore.save({ 'pricing.combinedMarginHoldback': null }, { scope: 'company', staffId: (req.actor && req.actor.id) || null });
+      } catch (e) {
+        return res.status(500).json({ ok: false, error: 'save_failed', message: reasonOf(e) });
+      }
+      const r = vendorMargin.resolveHoldback('loannex', undefined);
+      return res.json({ ok: true, points: r.points, origin: r.origin, problem: null, prefill: vendorMargin.holdbackFor('loannex'), max: vendorMargin.MAX_HOLDBACK_POINTS });
+    }
+    const check = vendorMargin.resolveHoldback('loannex', raw);
+    if (check.problem) {
+      return res.status(422).json({ ok: false, error: check.problem.error, message: check.problem.message });
+    }
+    try {
+      await settingsStore.save({ 'pricing.combinedMarginHoldback': check.points }, { scope: 'company', staffId: (req.actor && req.actor.id) || null });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: 'save_failed', message: reasonOf(e) });
+    }
+    res.json({ ok: true, points: check.points, origin: check.origin, problem: null, prefill: vendorMargin.holdbackFor('loannex'), max: vendorMargin.MAX_HOLDBACK_POINTS });
+  });
+
   router.get('/investors', async (req, res) => {
     const src = await settingsRaw();
     const d = routing.describeSettings(src.raw, { origin: src.origin });

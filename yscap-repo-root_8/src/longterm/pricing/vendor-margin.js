@@ -60,10 +60,71 @@ const MARGIN_HOLDBACK_POINTS = {
 const r3 = (n) => Math.round(Number(n) * 1000) / 1000;
 const nn = (v) => Number.isFinite(Number(v));
 
+/**
+ * The most a holdback may be set to, in points.
+ *
+ * Not a policy about what is sensible — it is a DECIMAL-SLIP GUARD. A holdback
+ * is quoted in points, so somebody meaning 0.25 and typing 25 would take a
+ * quarter of the loan off every price on the board. Ten points is far above
+ * anything anybody would ever hold back and far below a slipped decimal, so it
+ * catches the typo without ever refusing a real number.
+ */
+const MAX_HOLDBACK_POINTS = 10;
+
 /** The holdback for a source; an unknown source holds back NOTHING. */
 function holdbackFor(source) {
   const h = MARGIN_HOLDBACK_POINTS[String(source || '').toLowerCase()];
   return nn(h) ? Number(h) : 0;
+}
+
+/**
+ * WHAT THIS SOURCE HOLDS BACK, AND WHERE THAT ANSWER CAME FROM.
+ *
+ * Owner-directed 2026-08-30: *"there should always be in the settings the
+ * possibility to move up the margin hold back, remove the margin hold back, or
+ * move it down."* So the 0.25 is a PRE-FILL rather than a constant, and this is
+ * the one place a saved value is turned into the number the board is priced on.
+ *
+ * ⛔ AN UNREADABLE SETTING FALLS BACK TO THE OWNER'S NUMBER, NEVER TO ZERO, and
+ * that asymmetry is the whole safety property. Every other setting in this
+ * engine can fail toward "do nothing"; this one cannot, because doing nothing
+ * here means handing the borrower 0.25 of better execution that nobody decided
+ * to give them. A typo, a half-written value, a settings store that will not
+ * answer — all of them keep the standing 0.25 and SAY they were refused.
+ *
+ * ⛔ REMOVING IT IS A DECISION, NOT AN ABSENCE. A deliberate 0 is honoured and
+ * still reported as `origin:'setting'`, so a board with no holdback on it can
+ * always be told apart from a board where the setting failed to load. That is
+ * why 0 is returned with a stamp rather than short-circuiting.
+ *
+ * Returns `{ points, origin, problem }` — origin is `setting` when a person
+ * chose it, `default` when nobody has, and `none` for a source that never holds
+ * back at all (Lender Price, whose feed already carries ours).
+ */
+function resolveHoldback(source, saved) {
+  const key = String(source || '').toLowerCase();
+  const base = holdbackFor(key);
+  // A source that holds back nothing by design is not configurable into holding
+  // something back: Lender Price's feed ALREADY carries our holdback, so a
+  // second one here would take it twice. That is a fact about the feed, not a
+  // preference, so it is not offered as a setting.
+  if (!(key in MARGIN_HOLDBACK_POINTS) || base === 0) {
+    return { points: base, origin: 'none', problem: null };
+  }
+  if (saved === undefined || saved === null || saved === '') {
+    return { points: base, origin: 'default', problem: null };
+  }
+  const n = Number(saved);
+  if (!Number.isFinite(n)) {
+    return { points: base, origin: 'default', problem: { error: 'not_a_number', value: String(saved), message: `The saved margin holdback (${String(saved)}) is not a number, so the standing ${base} is still being held back.` } };
+  }
+  if (n < 0) {
+    return { points: base, origin: 'default', problem: { error: 'negative', value: n, message: `A margin holdback cannot be negative — that would ADD to the price. The standing ${base} is still being held back.` } };
+  }
+  if (n > MAX_HOLDBACK_POINTS) {
+    return { points: base, origin: 'default', problem: { error: 'too_large', value: n, message: `${n} points looks like a slipped decimal (the most that may be set is ${MAX_HOLDBACK_POINTS}). The standing ${base} is still being held back.` } };
+  }
+  return { points: r3(n), origin: 'setting', problem: null };
 }
 
 /**
@@ -78,13 +139,34 @@ function holdbackFor(source) {
  * A board with nothing to hold back comes back UNCHANGED (same object), so the
  * Lender Price path is provably untouched by this module.
  */
-function applyToBoard(board, source) {
-  const pts = holdbackFor(source);
+function applyToBoard(board, source, opts) {
+  const resolved = resolveHoldback(source, opts && opts.saved);
+  const pts = resolved.points;
   if (!board || !Array.isArray(board.programs)) return board;
   // ALREADY DONE IS DONE. Without this, a caller that applied it and then passed
   // the board through a second helper would hold back 0.50.
   if (board.marginHoldback != null) return board;
-  if (!pts) return board;
+
+  // ⛔ A HOLDBACK OF ZERO IS STILL AN ANSWER, and it is stamped. Returning the
+  // board untouched here — which is what this did while 0.25 was a constant —
+  // makes "the owner removed the holdback" indistinguishable from "nobody has
+  // ever configured one" and from "the settings failed to load". Now that the
+  // number is settable, telling those apart is the difference between a board
+  // priced the way somebody decided and a board priced by an outage. The
+  // `origin:'none'` case (Lender Price, which never holds back) still returns
+  // untouched, because there is no decision there to record.
+  if (!pts && resolved.origin === 'none') return board;
+  if (!pts) {
+    return {
+      ...board,
+      marginHoldback: 0,
+      marginHoldbackOrigin: resolved.origin,
+      marginHoldbackProblem: resolved.problem,
+      marginHoldbackNote: resolved.origin === 'setting'
+        ? `No margin holdback is being taken on ${source} quotes — it was deliberately set to zero. Lender Price's feed still carries its own, so the two feeds are NOT on the same footing while this stands.`
+        : `No margin holdback is configured for ${source}.`,
+    };
+  }
 
   const programs = board.programs.map((p) => ({
     ...p,
@@ -111,8 +193,19 @@ function applyToBoard(board, source) {
     ...board,
     programs,
     marginHoldback: pts,
-    marginHoldbackNote: `${pts} in points is held back on every ${source} quote (owner-directed): Lender Price's feed already carries it and this one does not, so the two are brought onto the same footing before anything compares them.`,
+    // WHERE THE NUMBER CAME FROM, on the board itself. A price that moved must
+    // be able to say who moved it: the owner's standing 0.25, somebody's saved
+    // change, or the standing number still in force because a saved one was
+    // refused — and in that last case the refusal travels with it rather than
+    // being logged somewhere nobody reads.
+    marginHoldbackOrigin: resolved.origin,
+    marginHoldbackProblem: resolved.problem,
+    marginHoldbackNote: `${pts} in points is held back on every ${source} quote${resolved.origin === 'setting' ? ' (set in the combined engine settings)' : ' (owner-directed)'}: Lender Price's feed already carries it and this one does not, so the two are brought onto the same footing before anything compares them.`,
   };
 }
 
-module.exports = { MARGIN_HOLDBACK_POINTS, holdbackFor, applyToBoard, _internals: { r3 } };
+module.exports = {
+  MARGIN_HOLDBACK_POINTS, MAX_HOLDBACK_POINTS,
+  holdbackFor, resolveHoldback, applyToBoard,
+  _internals: { r3 },
+};

@@ -202,6 +202,10 @@ export const ltApi = {
   // not express "take this setting back off and return the investor to its
   // pre-fill", which is the thing somebody auditing this will do most often.
   combinedSaveInvestors: (investors) => ltPut(lt('/dscr/combined/investors'), { investors }),
+  // The margin holdback: read what is in force, and move it up, down, or off.
+  // `points: null` returns it to the standing 0.25; `points: 0` removes it.
+  combinedMarginHoldback: () => ltGet(lt('/dscr/combined/margin-holdback')),
+  combinedSaveMarginHoldback: (points) => ltPut(lt('/dscr/combined/margin-holdback'), { points }),
   // "THIS INVESTOR AND THIS INVESTOR ARE THE SAME" — the human-recorded links, plus
   // the pick-list of canonical investors so nobody has to type a key. A free read
   // of our own server; it prices nothing, so a screen may fetch it from an effect.
