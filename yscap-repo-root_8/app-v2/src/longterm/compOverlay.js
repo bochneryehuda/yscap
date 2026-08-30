@@ -254,10 +254,17 @@ export function quoteCharges(mode, plan, rawPrice, loanAmount, waiveLenderFees =
   // `test-lt-comp-overlay.mjs` fails if it ever exceeds one rounding step, which is what
   // would catch a changed rounding or a wrong basis.
   //
-  // OPEN, AND THE OWNER'S CALL rather than ours: the term sheet prints this line as
-  // "You pay $8,845.00 (2.359 pts)", so a reader who multiplies finds the gap. Dropping the
-  // points on a waive-touched line would remove it entirely; that changes a borrower-facing
-  // document, so it is raised rather than done.
+  // ⛔ DECIDED 2026-08-30 — THE POINTS STAY, AND THIS IS NOT AN OVERSIGHT. The term sheet
+  // prints this line as "You pay $8,845.00 (2.359 pts)", so a reader who multiplies finds the
+  // $1.25. It was put to the owner with the trade stated — drop the points and the gap goes
+  // away, but the line loses a figure they want on the page — and the owner chose to KEEP
+  // them: *"Just leave it like this. It's okay if the rounding is a little messed up for this
+  // one line."*
+  //
+  // So a later sweep that flags this line again has found a DECISION, not a defect. Changing
+  // it needs the owner's own words. What is still guarded is the SIZE of the gap: section M
+  // of test-lt-comp-overlay.mjs fails if it ever exceeds one rounding step, and section N
+  // fails if the points are dropped — so a "tidy-up" cannot quietly reverse the decision.
   if (buydownDollars > 0) {
     lines.push({
       key: 'buydown', label: 'Buydown (discount points)',

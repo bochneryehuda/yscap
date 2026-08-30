@@ -305,5 +305,25 @@ console.log('\nM. the points beside a waive-touched buydown are a ROUNDED restat
     'M2 …while the DOLLARS reconcile to the total exactly, which is why they are the authoritative half');
 }
 
+console.log('\nN. the points on a waive-touched buydown STAY — a decision, not an oversight');
+{
+  // ⛔ THIS PINS A DECISION, NOT A CORRECTNESS PROPERTY, which is why it reads oddly next to
+  // the rest of this file. Section M measured that a waive-touched buydown's points and its
+  // own dollars differ by a rounding step ($1.25 on a $375,000 loan). It was put to the owner
+  // with the trade stated — dropping the points removes the gap but takes a figure off the
+  // page — and the owner chose to KEEP them: *"Just leave it like this. It's okay if the
+  // rounding is a little messed up for this one line."*
+  //
+  // Without this, the next person to notice the gap "fixes" it by dropping the points, every
+  // other test still passes, and a decision the owner made is quietly reversed on a document
+  // that goes to a borrower. Reopening it needs the owner's own words.
+  const PLAN_N = { lenderPaid: 2, borrowerPaid: 2, ysp: 0, applicationFee: 1595, commitmentFee: 500 };
+  const c = quoteCharges('lenderPaid', PLAN_N, 100.2, 375000, true);
+  const b = c && c.lines.find((l) => l.key === 'buydown');
+  ok(b && b.dollars === 8845, `N0 the owner's own line is reachable — $8,845 of buydown after the waive (${b && b.dollars})`);
+  ok(b && typeof b.points === 'number' && b.points === 2.359,
+    `N1 …and it still carries its points (${b && b.points}) — owner-directed 2026-08-30 to leave them, gap and all`);
+}
+
 if (bad) { console.error(`\n${bad} FAILED`); process.exit(1); }
 console.log('\nall passed');
