@@ -644,6 +644,90 @@ import src/lib/conditions/answers.js
 # try/catch so the live product keeps mirroring if the side build is absent.
 # This is the crossing that authorizes that one require().
 rtl-import src/lib/sharepoint-backup.js
+
+# ---------------------------------------------------------------------------
+# THE CONDITION-DOCUMENT MACHINERY — the 2026-08-30 share-the-code grant, and
+# the owner's own list of verbs:
+#
+#   "If I'm updating something in the logic of the Condition Center (the way you
+#    preview stuff, the way you preview the PDFs, the way you drag and drop,
+#    accept, reject, preview, download, and delete), it should update them both
+#    places. You need to share the code."
+#   "You can't really upload stuff. You can't do anything. Nothing actually
+#    works."
+#
+# The Long-Term Condition Center had eighteen routes and NOT ONE of them
+# accepted a document, so a condition asking for a bank statement had nowhere to
+# put one. These four modules are the ONE implementation of what happens to a
+# document on a condition — the intake contract and the filename sanitiser, the
+# visibility rule, the slot label, the de-duplication, the INSERT through
+# `ownerCols`, the supersede rules, the evidence re-open; then the verdict's
+# stamps and the condition moves it causes; then the permanent delete and the
+# re-open when nothing accepted is left; then the authorized row lookup the one
+# serving path streams from.
+#
+# WHY IMPORTED AND NOT COPIED. Every one of those rules is a rule about
+# DOCUMENTS rather than about a product, and each is a rule a second copy would
+# get subtly wrong in a way nobody would see for months — an accept that marks a
+# condition SATISFIED instead of RECEIVED (#135) flies a multi-document
+# condition away on its first accepted file; a delete that forgets the re-open
+# leaves a condition reading "received" with nothing on it. What each product
+# does ABOUT a document is NOT shared: the ClickUp push, the borrower portal
+# notification and the Sitewire memory are HOOKS, defaulted to the short-term
+# set for `scope='application'` and to NOTHING for any other owner, and the
+# Long-Term door passes an empty set explicitly on top of that.
+#
+# The owner scoping is welded into the STATEMENT (`ownerWhere`), so a document
+# belonging to the other product is not merely refused by the Long-Term door —
+# it is unreachable from it.
+import src/lib/condition-docs/upload.js
+import src/lib/condition-docs/review.js
+import src/lib/condition-docs/remove.js
+import src/lib/condition-docs/serve.js
+
+# ---------------------------------------------------------------------------
+# THE CONDITION CENTER'S SCREEN — the same grant, the same sentence, the other
+# half of it: "the same look of the Condition Center."
+#
+# Long-Term had a LOOKALIKE of the Condition Center — its own condition row, its
+# own action buttons, its own document list, no preview and no upload at all —
+# which is precisely what the owner rejected. These are the REAL components the
+# short-term file screen draws, mounted by the Long-Term screen.
+#
+# THEY ARE SHAREABLE AS THEY STAND, and that is why they are the ones listed:
+# each takes its I/O as function props (`onPatch`, `onReviewDoc`,
+# `onDownloadDoc`, `onPreview`, `load`) and NONE of them imports an API client,
+# so the Long-Term screen hands over functions backed by `ltApi` hitting the
+# /api/lt doors and the components cannot tell which product they are drawing.
+# Their own transitive imports are RTL→RTL and need no line here; the gate reads
+# the location of the IMPORTING file.
+#
+# WHAT IS NOT SHARED IS THE PAGE. The owner, in the same conversation: "this is
+# not a redesign … I like the design that we have on the long-term side. Don't
+# change the design. Stick with the design and with the fonts." So the gates,
+# the three-number summary, the white boxes and the fonts stay Long-Term's own,
+# and the shared parts are dropped INTO that page. Nothing in these files was
+# changed to make Long-Term fit: the row-shape translation lives on the
+# Long-Term side, because renaming a field inside one of these would silently
+# change what the live short-term product reads off its own rows.
+import app-v2/src/components/ConditionLine.jsx
+import app-v2/src/components/ConditionActions.jsx
+import app-v2/src/components/DocPreview.jsx
+import app-v2/src/components/DropZone.jsx
+import app-v2/src/components/UploadRows.jsx
+import app-v2/src/components/LoudHint.jsx
+
+# THE ONE RECORD OF WHAT IS UPLOADING RIGHT NOW. `UploadRows` above renders only
+# what this store holds, and until now only the short-term transport published
+# into it — so a Long-Term upload would have rendered NOTHING while it ran and
+# read as "it is not uploading", which is the exact defect the owner already
+# reported once on the short-term side (2026-08-23). The store and its
+# `uploadTarget()` are product-neutral: a row files itself under
+# `condition:<id>` from the upload's own metadata. Long-Term's own transport
+# (app-v2/src/longterm/http.js) publishes the same start/update/finish calls, so
+# the bar is the same bar rather than a second progress mechanism to keep in
+# step with it.
+import app-v2/src/lib/upload-progress.js
 ```
 
 ## Log of authorizations
@@ -651,6 +735,9 @@ rtl-import src/lib/sharepoint-backup.js
 | Date | Kind + item | Direction | The owner's words | PR |
 |---|---|---|---|---|
 | 2026-08-03 | `import src/auth/index.js` — one login for both products | RTL → LT | *"same login same borrower record, keep it separate everything else"* | #975 |
+| 2026-08-30 | `import src/lib/condition-docs/{upload,review,remove,serve}.js` — the ONE condition-document service: what happens to a document when it lands on a condition, what a verdict does to that condition, what a delete re-opens, and which row a download is allowed to have | RTL → LT | *"You can't really upload stuff. You can't do anything. Nothing actually works."* … *"if I'm updating something in the logic of the Condition Center (the way you preview stuff, the way you preview the PDFs, the way you drag and drop, accept, reject, preview, download, and delete), it should update them both places. You need to share the code."* The Long-Term Condition Center had eighteen routes and not one accepted a document. The four /api/lt doors are THIN CALLERS of these, exactly as `src/routes/staff.js` is — the same functions with a different owner, the owner welded into the STATEMENT so a document from the other product is unreachable. **No short-term hooks are passed**: the ClickUp push, the borrower portal notification and the Sitewire memory are that product's own and the Long-Term door hands over an empty set | this PR |
+| 2026-08-30 | `import app-v2/src/components/{ConditionLine,ConditionActions,DocPreview,DropZone,UploadRows,LoudHint}.jsx` — the REAL Condition Center components, mounted by the Long-Term screen | RTL → LT | *"the same look of the Condition Center … the way you preview stuff, the way you preview the PDFs, the way you drag and drop, accept, reject, preview, download, and delete"*, and, in the same conversation, *"this is not a redesign … I like the design that we have on the long-term side. Don't change the design. Stick with the design and with the fonts."* So the COMPONENTS are shared and the PAGE is not: the gates, the three-number summary, the white boxes and the fonts stay Long-Term's own. Each of these takes its I/O as function props and imports no API client, which is what makes them mountable as they stand; **not one was changed to make Long-Term fit** — the row-shape translation lives on the Long-Term side, because renaming a field inside a shared component would silently change what the live short-term product reads | this PR |
+| 2026-08-30 | `import app-v2/src/lib/upload-progress.js` — the one record of what is uploading right now | RTL → LT | The same grant. `UploadRows` renders only what this store holds, and only the short-term transport published into it — so a Long-Term upload would have rendered NOTHING while it ran and read as *"it is not uploading"*, the exact defect the owner reported on the short-term side on 2026-08-23. The store and its `uploadTarget()` are product-neutral; Long-Term's own transport publishes the same start/update/finish calls, so it is one bar rather than two mechanisms to keep in step | this PR |
 | 2026-08-30 | `rtl-import src/lib/sharepoint-backup.js` — the ONE SharePoint mirror asks the Long-Term side where an lt_loan keeps its officer / borrower / property (`src/longterm/sharepoint-scope.js`: SQL fragments + one pure predicate, no mirror logic). Required through a try/catch, so RTL keeps mirroring if the side build is absent | LT → RTL | *"Same thing is with SharePoint: you need to share the code."* … *"the SharePoint looks for the same exact folder, same exact logic that we build up on the short-term side"* | this PR |
 | 2026-08-30 | `import src/lib/order-email.js` — the order letter, one definition for both products | RTL → LT | *"Everything should share the code, so we don't need to rewrite the code. We are just sharing the code. If the code is updated, he's also updating it."* | #1376 |
 | 2026-08-30 | `import src/lib/inbound-mail.js` — reading an inbound message (retrieval, attachments, sender authentication, auto-responder detection), extracted from `src/lib/file-inbox.js`, which re-exports it | RTL → LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* The vendor reply that carries a long-term order's documents has to be read the same way the short-term one is | #1376 |

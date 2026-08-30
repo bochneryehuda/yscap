@@ -438,8 +438,33 @@ check(/ltApi\.fileConditions\(/.test(section) && !/ltApi\.conditionCenter\(/.tes
   'the section calls fileConditions, NOT conditionCenter — that name belongs to the Encompass mirror and an object literal lets the later key silently win');
 check(/rowErr/.test(section) && /problem/.test(section),
   'a refusal is rendered on the ROW that caused it, not in a banner at the top of a long screen');
-check(!/from '\.\.\/lib\//.test(section) && !/from '\.\.\/components\//.test(section),
-  'and the section imports nothing from the short-term side — the separation gate refused the shared dialog host, so the confirm and the reason are inline');
+/* RE-POINTED 2026-08-30, and it is a change of FACT rather than a loosening.
+   This asserted that the section imported NOTHING from the short-term side,
+   which was true and correct while the crossing was unauthorized. The owner then
+   authorized exactly this one — *"the same look of the Condition Center … the way
+   you preview stuff, the way you preview the PDFs, the way you drag and drop,
+   accept, reject, preview, download, and delete … it should update them both
+   places. You need to share the code."* — and the whole point of the shipment is
+   that the section now mounts those components rather than a lookalike. So the
+   guard asserts the SHARE, and then keeps the two properties the original was
+   really protecting. */
+for (const shared of ['ConditionLine', 'ConditionActions', 'DocPreview', 'DropZone', 'UploadRows', 'LoudHint']) {
+  check(new RegExp(`from '\\.\\./components/${shared}\\.jsx'`).test(section),
+    `the section mounts the REAL shared ${shared} — the owner's "share the code", not a Long-Term lookalike`);
+}
+/* THE DIALOG HOST IS STILL NOT IMPORTED, and that is the property the original
+   guard existed for: a SECOND overlay host inside one app is worse than either,
+   so a refusal, a waiver's reason and a rejection's reason are all typed ON THE
+   ROW. (`ConditionActions` reaches the short-term host for its own send-back
+   prompt — which is why this screen passes `canSendBack={false}`, so that path is
+   never taken here.) */
+check(!/from '\.\.\/lib\/dialog/.test(section),
+  'and the section still never imports the shared dialog host — a refusal and a reason are typed on the row');
+/* AND IT STILL HAS ITS OWN CLIENT. `lib/api.js` is the short-term request layer;
+   Long-Term speaks to /api/lt through `ltApi`, which is what keeps the two
+   products' request layers apart. */
+check(!/from '\.\.\/lib\/api/.test(section) && /from '\.\/api\.js'/.test(section),
+  'and it still calls the Long-Term client, never the short-term one');
 
 check(/ruleInWords/.test(libScreen) && /ruleInWords/.test(routes),
   'the library screen shows each rule IN WORDS, from the server — a rule an administrator cannot read is one they cannot safely change');

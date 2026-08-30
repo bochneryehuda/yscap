@@ -8,7 +8,7 @@
 // The one rule: a path here always starts `/api/lt/`. Anything else belongs to the
 // other product.
 
-import { ltGet, ltPost, ltPut, ltPatch, ltDel, ltDownload, ltBlobUrl } from './http.js';
+import { ltGet, ltPost, ltPut, ltPatch, ltDel, ltDownload, ltBlobUrl, ltUpload, ltBlob } from './http.js';
 
 const lt = (p) => `/api/lt${p}`;
 
@@ -230,6 +230,29 @@ export const ltApi = {
   conditionNote: (loanId, id, note) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/note`), { note }),
   conditionAdd: (loanId, code, fieldKey) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions`), { code, fieldKey }),
   conditionRemove: (loanId, id) => ltDel(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}`)),
+
+  /* THE DOCUMENTS ON A CONDITION — the owner's own list of verbs, in one place:
+     *"the way you preview stuff, the way you preview the PDFs, the way you drag
+     and drop, accept, reject, preview, download, and delete."* Each of these is a
+     thin call to the /api/lt door, which is itself a thin caller of the ONE
+     shared condition-document service. The `checklistItemId` rides in the
+     metadata so the shared upload-progress store files the bar against the right
+     condition without this client passing it twice. */
+  conditionDocUpload: (loanId, conditionId, body) => ltUpload(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(conditionId)}/documents`),
+    { ...body, checklistItemId: conditionId }),
+  conditionDocReview: (documentId, body) => ltPost(
+    lt(`/condition-center/documents/${encodeURIComponent(documentId)}/review`), body),
+  conditionDocRemove: (documentId) => ltDel(
+    lt(`/condition-center/documents/${encodeURIComponent(documentId)}`)),
+  // Two ways to reach the same door. A download saves the file; a PREVIEW asks
+  // the shared serving path to render it inline (`?inline=1`) and hands the bytes
+  // to the shared previewer — an `<iframe src>` cannot carry the session token,
+  // which is why a preview fetches rather than pointing a frame at the route.
+  conditionDocDownload: (documentId, filename) => ltDownload(
+    lt(`/condition-center/documents/${encodeURIComponent(documentId)}/file`), filename || 'document'),
+  conditionDocBlob: (documentId) => ltBlob(
+    lt(`/condition-center/documents/${encodeURIComponent(documentId)}/file?inline=1`)),
 
   // The LIBRARY — the settings side. The rule builder draws its whole field
   // picker from this response, so a screen can never offer a field the evaluator

@@ -45,6 +45,46 @@ const CLIENT_VISIBLE = new Set(['external', 'both']);
 /** Statuses that mean the condition is no longer work. */
 const DONE = new Set(['satisfied', 'waived', 'not_applicable']);
 
+/**
+ * THE DOCUMENTS ON THIS FILE'S CONDITIONS, one query for the whole loan.
+ *
+ * INTERNAL ONLY — the caller adds these to the staff shape and never to the
+ * client one. The `shape()` header records what is deliberately absent from a
+ * borrower's payload and this belongs on that list for a sharper reason than
+ * most: a rejection reason and a slot label are staff free text.
+ *
+ * THE COLUMN NAMES ARE THE SHARED TABLE'S OWN, deliberately unrenamed. The
+ * screen hands these rows straight to the shared Condition Center components,
+ * which read `review_status` / `is_current` / `reviewed_by_name` /
+ * `rejection_reason` off a document row — renaming a field here to suit
+ * Long-Term would either force the LT screen to map back, or tempt somebody to
+ * rename it inside a SHARED component, which silently changes the short-term
+ * product. One owner-scoped statement, in the statement (`ownerWhere`), so a
+ * document from another loan or another product matches no row.
+ */
+async function documentsByCondition(loanId, client = db) {
+  const where = ownerWhere(ownerOf('lt_loan', loanId), 'd');
+  const { rows } = await client.query(
+    `SELECT d.id, d.checklist_item_id, d.filename, d.content_type, d.size_bytes,
+            d.slot_label, d.doc_kind, d.is_current, d.created_at,
+            COALESCE(d.review_status, 'pending') AS review_status,
+            d.rejection_reason, d.reviewed_at,
+            rev.full_name AS reviewed_by_name
+       FROM documents d
+       LEFT JOIN staff_users rev ON rev.id = d.reviewed_by
+      WHERE ${where.sql} AND d.checklist_item_id IS NOT NULL
+      ORDER BY d.created_at`,
+    where.params,
+  );
+  const byItem = new Map();
+  for (const r of rows) {
+    const key = String(r.checklist_item_id);
+    if (!byItem.has(key)) byItem.set(key, []);
+    byItem.get(key).push(r);
+  }
+  return byItem;
+}
+
 /** The buckets, in order, including any a buyer added. */
 async function buckets(client = db) {
   const { rows } = await client.query(
@@ -69,6 +109,7 @@ async function forLoan(loanId, opts = {}) {
   let list = [];
   let bucketRows = [];
   let degraded = null;
+  let docsByItem = new Map();
   try {
     bucketRows = await buckets(client);
     const where = ownerWhere(ownerOf('lt_loan', loanId), 'c');
@@ -109,12 +150,17 @@ async function forLoan(loanId, opts = {}) {
       is_enabled: !(r.config && r.config.enabled === false),
       disabled_reason: (r.config && r.config.disabledReason) || null,
     }));
+    // The documents are read only for the TEAM's screen. A failure here is the
+    // same class of degraded read as the conditions themselves — the file is
+    // reported with its counts and without the list, never as a file with no
+    // documents on it.
+    if (internal) docsByItem = await documentsByCondition(loanId, client);
   } catch (e) {
     degraded = String((e && e.message) || e).slice(0, 300);
   }
 
   const visible = list.filter((r) => internal || CLIENT_VISIBLE.has(String(r.audience || 'internal')));
-  const shaped = visible.map((r) => shape(r, internal));
+  const shaped = visible.map((r) => shape(r, internal, docsByItem.get(String(r.id)) || []));
 
   const byBucket = new Map();
   for (const b of bucketRows) byBucket.set(b.key, { ...b, conditions: [], summary: emptySummary() });
@@ -167,7 +213,7 @@ function count(s, c) {
  * borrower wording exists. So the fallback is unreachable in practice and is
  * there so a hand-inserted row can never render blank.
  */
-function shape(r, internal) {
+function shape(r, internal, docs = []) {
   const base = {
     id: r.id,
     code: r.code || null,
@@ -193,6 +239,10 @@ function shape(r, internal) {
 
   return {
     ...base,
+    // The documents themselves, for the team only — see `documentsByCondition`.
+    // The two counts above stay exactly as they were, so every existing reader
+    // of `documents.total` / `.accepted` is untouched.
+    documents: { ...base.documents, list: docs },
     label: r.label,
     hint: r.hint || null,
     borrowerLabel: r.borrower_label || null,
@@ -238,4 +288,7 @@ function slotsFor(r, internal) {
     .map((s) => (internal ? s : { key: s.key, label: s.label, required: !!s.required }));
 }
 
-module.exports = { buckets, forLoan, DONE, CLIENT_VISIBLE, _internals: { shape, slotsFor, count, emptySummary } };
+module.exports = {
+  buckets, forLoan, documentsByCondition, DONE, CLIENT_VISIBLE,
+  _internals: { shape, slotsFor, count, emptySummary },
+};

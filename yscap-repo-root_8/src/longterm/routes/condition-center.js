@@ -51,6 +51,19 @@ const library = require('../conditions-center/library');
 const vocab = require('../conditions-center/vocabulary');
 const { loadScopedLoan, UUID_RE } = require('./scoped-loan');
 
+/* THE ONE CONDITION-DOCUMENT SERVICE, SHARED WITH THE SHORT-TERM SIDE
+   (docs/LONG-TERM-AUTHORIZED-COPIES.md, the 2026-08-30 share-the-code grant):
+   *"if I'm updating something in the logic of the Condition Center (the way you
+   preview stuff, the way you preview the PDFs, the way you drag and drop, accept,
+   reject, preview, download, and delete), it should update them both places. You
+   need to share the code."*  These four doors are THIN CALLERS of it, exactly as
+   `src/routes/staff.js` is — the same functions, a different owner. */
+const condUpload = require('../../lib/condition-docs/upload');
+const condReview = require('../../lib/condition-docs/review');
+const condRemove = require('../../lib/condition-docs/remove');
+const condServe = require('../../lib/condition-docs/serve');
+const { ownerOf } = require('../../lib/condition-owner');
+
 const staffId = (req) => (req.actor && req.actor.id ? String(req.actor.id) : null);
 
 async function isAdmin(req) {
@@ -231,6 +244,208 @@ router.delete('/loans/:loanId/conditions/:conditionId', async (req, res) => {
   } catch (e) {
     console.error('[lt] remove condition failed:', (e && e.message) || e);
     res.status(500).json({ error: 'Could not remove that condition just now.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE DOCUMENTS ON A CONDITION — upload, accept/reject, delete, download.
+//
+// THE OWNER'S COMPLAINT THESE ANSWER, verbatim: *"You can't really upload stuff.
+// You can't do anything."* This router had eighteen routes and not one of them
+// accepted a document, so a Long-Term condition asking for a bank statement had
+// nowhere to put one.
+//
+// EVERY ONE OF THEM IS A THIN CALLER. The rules about DOCUMENTS — which slot the
+// bytes land in, what a duplicate is, which prior version they supersede, what a
+// verdict does to the condition, what a delete re-opens — live once, in
+// `src/lib/condition-docs/**`, and are the same rules the short-term door runs.
+// What is OURS is the two things a product owns: WHO may reach the row, and what
+// this product does about a document afterwards (nothing — see the hooks note).
+//
+// ── WHICH DOOR AUTHORIZES WHAT ──────────────────────────────────────────────
+//
+// THE UPLOAD carries the loan in its own path, so `scopedCondition` is the whole
+// authorization: `loadScopedLoan` decides whether this person may open the file
+// (rule 1), and the shared door's own condition lookup runs
+// `WHERE id = $1 AND lt_loan_id = $2`, so a condition id from another file
+// matches NO ROW rather than reaching a row some later check is trusted to
+// refuse (rule 2).
+//
+// THE OTHER THREE take a documentId with NO loan in the path, and they do NOT
+// invent a second authorization model. `scopedDocument` resolves the document's
+// OWNING long-term loan first — in a statement that already refuses an RTL
+// document — and then puts that loan through the SAME `loadScopedLoan`. The
+// owner is then handed to the shared service, which welds `lt_loan_id = $n` into
+// the read and into the DELETE itself: a document belonging to another product,
+// or to a long-term loan other than the one just authorized, is not merely
+// refused, it is unreachable.
+//
+// NO RTL HOOKS ARE PASSED, DELIBERATELY (`hooks: {}` — an empty set, not the
+// default). The ClickUp condition push, the borrower's portal notification and
+// the Sitewire memory are facts about the short-term product; a long-term loan
+// has no ClickUp condition field and no `/app/:id` portal page. `defaultHooks`
+// already hands over nothing for a non-application owner, so this is belt and
+// braces: a hook set that defaulted ON would send a short-term portal link to a
+// long-term borrower the first time somebody forgot an argument.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ONE DOCUMENT, IF IT IS A LONG-TERM ONE AND THIS PERSON MAY OPEN ITS FILE.
+ *
+ * The first statement is the product boundary and it is a property of the query:
+ * `lt_loan_id IS NOT NULL` means an RTL document — an application's, an entity's,
+ * a borrower-profile one — matches nothing at all here, whatever its id. The
+ * second is the file gate every other per-file route in this router goes through.
+ *
+ * Answers the response itself and returns null, the same contract as
+ * `loadScopedLoan`, so a handler's whole obligation stays `if (!scoped) return;`.
+ */
+async function scopedDocument(req, res) {
+  const documentId = String(req.params.documentId || '');
+  if (!UUID_RE.test(documentId)) {
+    res.status(404).json({ error: 'That document is not on this file.' });
+    return null;
+  }
+  let rows;
+  try {
+    ({ rows } = await db.query(
+      `SELECT lt_loan_id FROM documents WHERE id = $1::uuid AND lt_loan_id IS NOT NULL`,
+      [documentId],
+    ));
+  } catch (e) {
+    // A database failure is not a statement about the document. Same posture as
+    // `loadScopedLoan`: an outage is a 503, never the 404 disguise.
+    console.error('[lt] condition document lookup failed:', (e && e.message) || e);
+    res.status(503).json({ error: 'Could not read that document just now. Try again in a moment.' });
+    return null;
+  }
+  if (!rows.length) {
+    // Deliberately the SAME sentence a document on another long-term loan would
+    // get: whether a document exists at all on some other product's file is not
+    // something this door is entitled to reveal.
+    res.status(404).json({ error: 'That document is not on this file.' });
+    return null;
+  }
+  const scoped = await loadScopedLoan(req, res, 'lt-cond-doc', { loanId: String(rows[0].lt_loan_id) });
+  if (!scoped) return null;
+  return { scoped, documentId, owner: ownerOf('lt_loan', scoped.loan.id) };
+}
+
+// POST …/loans/:loanId/conditions/:conditionId/documents — put a document on it.
+router.post('/loans/:loanId/conditions/:conditionId/documents', async (req, res) => {
+  const scoped = await scopedCondition(req, res);
+  if (!scoped) return;
+  const body = Object.assign({}, req.body || {});
+  // The intake contract and the ONE filename sanitiser are the shared door's, so
+  // both products answer the same refusal to the same bad request.
+  try { condUpload.assertUploadIntake(body); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+  // THE CONDITION COMES FROM THE PATH, never from the body: a caller naming a
+  // different condition in its payload must not be able to file a document
+  // against a condition the path never authorized.
+  body.checklistItemId = String(req.params.conditionId);
+
+  try {
+    const landed = await condUpload.uploadConditionDocument(req, {
+      owner: ownerOf('lt_loan', scoped.loan.id),
+      body,
+      actorId: staffId(req),
+      /* NO BORROWER ON THE DOCUMENT ROW, AND THAT IS A DISCLOSURE RULE RATHER
+         THAN AN OMISSION. `documents.borrower_id` is what the short-term
+         borrower portal's own document list selects on
+         (`WHERE borrower_id = $1 AND (… OR application_id = …)`), so stamping it
+         here would put a long-term document — and its download — on the RTL
+         borrower's screen, which is exactly the crossing the two-product law
+         forbids. The long-term borrower's own view is its own door on
+         /api/lt/my. Nothing downstream needs it: the shared SharePoint mirror
+         resolves a long-term loan's borrower from `lt_loans` itself
+         (src/longterm/sharepoint-scope.js), and asks `lt_loan_id` BEFORE the
+         bare borrower fallback. */
+      borrowerId: null,
+      hooks: {},
+      q: db,
+    });
+    return res.status(201).json({
+      ok: true,
+      documentId: landed.documentId,
+      deduped: !!landed.deduped,
+      visibility: landed.visibility,
+    });
+  } catch (e) {
+    // Only a refusal the shared door RAISED carries a status; anything else is a
+    // real failure and is reported as one rather than dressed up as a bad request.
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.error('[lt] condition document upload failed:', (e && e.message) || e);
+    return res.status(500).json({ error: 'Could not save that document just now.' });
+  }
+});
+
+// POST …/documents/:documentId/review — accept or reject one.
+router.post('/documents/:documentId/review', async (req, res) => {
+  const found = await scopedDocument(req, res);
+  if (!found) return;
+  let verdict;
+  try {
+    /* WHO MAY ACCEPT is the caller's, because the two products have different
+       role systems — and on this side rule 4 of this router's header settles it:
+       *working a condition on a file is any staff member's*. Satisfying a
+       condition outright already needs nothing beyond opening the file
+       (`…/satisfy`), so gating ACCEPT — a weaker act, on one document — harder
+       than that would be incoherent. The ORDER and the WORDING of the refusals
+       are the shared door's, so the two products can never answer a different
+       sentence to the same bad request. */
+    verdict = condReview.validateVerdict(req.body || {}, { canAccept: true });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    throw e;
+  }
+  try {
+    const doc = await condReview.loadDocument(db, found.documentId, found.owner);
+    if (!doc) return res.status(404).json({ error: 'That document is not on this file.' });
+    const out = await condReview.applyVerdict(db, {
+      doc, verdict, actorId: staffId(req), hooks: {},
+    });
+    return res.json({ ok: true, ...out });
+  } catch (e) {
+    console.error('[lt] condition document review failed:', (e && e.message) || e);
+    return res.status(500).json({ error: 'Could not record that decision just now.' });
+  }
+});
+
+// DELETE …/documents/:documentId — remove one permanently.
+router.delete('/documents/:documentId', async (req, res) => {
+  const found = await scopedDocument(req, res);
+  if (!found) return;
+  try {
+    const doc = await condRemove.loadDocument(db, found.documentId, found.owner);
+    if (!doc) return res.status(404).json({ error: 'That document is not on this file.' });
+    const out = await condRemove.removeDocument(db, { doc, owner: found.owner, hooks: {} });
+    // The shared door answers `{deleted:false}` when the owner-scoped DELETE
+    // matched nothing — it says so rather than reporting a success that never
+    // happened, and so does this.
+    if (!out.deleted) return res.status(404).json({ error: 'That document is not on this file.' });
+    return res.json({ ok: true, ...out });
+  } catch (e) {
+    console.error('[lt] condition document delete failed:', (e && e.message) || e);
+    return res.status(500).json({ error: 'Could not remove that document just now.' });
+  }
+});
+
+// GET …/documents/:documentId/file — download it, or preview it with ?inline=1.
+router.get('/documents/:documentId/file', async (req, res) => {
+  const found = await scopedDocument(req, res);
+  if (!found) return;
+  try {
+    const doc = await condServe.documentForServe(db, found.documentId, found.owner);
+    if (!doc) return res.status(404).json({ error: 'That document is not on this file.' });
+    // The BYTES have had one definition since day one (lib/serve-document.js):
+    // it scrubs the attacker-controlled content type, refuses to render anything
+    // outside a narrow inline allowlist and sets one Content-Disposition.
+    // Nothing here duplicates a line of it.
+    return condServe.serveConditionDocument(res, doc, { inline: req.query.inline === '1' });
+  } catch (e) {
+    console.error('[lt] condition document serve failed:', (e && e.message) || e);
+    return res.status(500).json({ error: 'Could not open that document just now.' });
   }
 });
 
