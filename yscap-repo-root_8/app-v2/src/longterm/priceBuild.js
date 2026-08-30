@@ -170,6 +170,47 @@ export function ambiguousProgramLabels(quotes) {
 }
 export function programLabelKey(q) { return `${(q && q.program) || ''}\u0000${(q && q.product) || ''}`; }
 
+/* THE PROGRAMME, SAID ONCE (owner-reported 2026-08-30, from an iPhone: *"the CSS on a mobile is
+   terribly set up for the results"* — four of the five rows on that screen spent two to four
+   lines printing the SAME programme name twice).
+
+   Lender Price returns a `program` and a `product`, and for a great many rate sheets they are the
+   same string, or the product is a fragment already inside the programme name:
+
+     program "30yr Fixed - DSCR Plus"    product "30yr Fixed - DSCR Plus"   → printed twice
+     program "NonQM DSCR FIXED 30"       product "30"                       → "… 30 · 30"
+
+   So the product is printed only when it SAYS SOMETHING THE PROGRAMME HAS NOT. "Says something new"
+   is judged on WHOLE TOKENS, never on raw substrings: "30" must not be swallowed by a programme
+   ending "300", which is the one way a rule like this loses a real difference. Nothing is dropped
+   that a reader could not already read on the line — every character removed is a character that
+   was about to appear twice. */
+function tokens(s) {
+  return String(s == null ? '' : s).toLowerCase().split(/[^a-z0-9]+/i).filter(Boolean);
+}
+export function productSaysMore(program, product) {
+  const p = tokens(product);
+  if (p.length === 0) return false;           // nothing to add
+  const g = tokens(program);
+  if (g.length === 0) return true;            // no programme name — the product is all we have
+  // Is the product's run of tokens already sitting inside the programme's, in order?
+  for (let i = 0; i + p.length <= g.length; i += 1) {
+    let hit = true;
+    for (let j = 0; j < p.length; j += 1) if (g[i + j] !== p[j]) { hit = false; break; }
+    if (hit) return false;
+  }
+  return true;
+}
+
+/** The one programme line every board prints, so two screens cannot drift into two spellings. */
+export function programLine(q) {
+  const program = (q && q.program) || '';
+  const product = (q && q.product) || '';
+  const base = program || (product ? '' : '\u2014');
+  if (!productSaysMore(program, product)) return base || product || '\u2014';
+  return base ? `${base} \u00b7 ${product}` : product;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════
    WHAT A PRICE COSTS, IN DOLLARS — the owner's three columns (2026-08-23).
 

@@ -818,11 +818,22 @@ const SETTINGS = [
   // BORROWER side of the pricing engine is a later phase and nothing here
   // switches it on.
   { key: 'termSheet.officerEnabled', group: 'Term sheets', label: 'Officer term sheets',
-    type: 'boolean', default: false,
+    type: 'boolean', default: true,
     description: 'Off: the Term sheet and Compare controls do not appear on the pricing '
       + 'board. On: an officer can issue a term sheet from a priced quote.',
+    // SWITCHED ON 2026-08-30, owner-directed ("turn it on"), the same day the officer side
+    // merged. It shipped OFF for one deploy so the merge changed nothing anybody could see.
+    // Flipping the DECLARED DEFAULT is what turns it on everywhere, and it is safe precisely
+    // because `store.save` DELETES a value equal to the declared default rather than storing
+    // it: `false` has been the default since this key was written, so no tenant can be
+    // holding a deliberate `false` for it to overrule. An admin turning it off from here on
+    // stores a real deviation, which then wins.
+    // STAFF ONLY, structurally: every route that reads this key sits under /api/lt, which is
+    // mounted requireAuth + requireStaff. The BORROWER side of the pricing engine is a
+    // separate switch and nothing here touches it.
     evidence: 'Owner-directed 2026-08-30 - the officer side may go live now; the borrower '
-      + 'side waits on the prepayment-penalty work.' },
+      + 'side waits on the prepayment-penalty work. Switched on the same day, on the '
+      + 'owner\'s own instruction.' },
   { key: 'termSheet.expiryHours', group: 'Term sheets', label: 'A TERM SHEET is good for (hours)',
     type: 'number', default: 24,
     description: 'Hours from issue until a single-program TERM SHEET says it has expired, '
