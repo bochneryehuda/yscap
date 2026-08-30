@@ -807,6 +807,8 @@ export const api = {
   reportUpdate:   (id, body) => req('PUT', `/api/admin/reports/saved/${id}`, body),
   reportDelete:   (id) => req('DELETE', `/api/admin/reports/saved/${id}`),
   reportExportXlsx: async (def) => { const { blob, filename } = await downloadPost('/api/admin/reports/export.xlsx', def); saveBlob(blob, filename); },
+  reportFieldValues: (field) => req('GET', `/api/admin/reports/field-values?field=${encodeURIComponent(field)}`),
+  reportSetSchedule: (id, schedule) => req('PUT', `/api/admin/reports/saved/${id}/schedule`, { schedule }),
 
   // Encompass sync (READ-ONLY per-file reconcile). status = summary; findings =
   // the full field-by-field comparison (live data); refresh = re-pull read-only;
