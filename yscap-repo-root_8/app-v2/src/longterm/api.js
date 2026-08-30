@@ -256,6 +256,22 @@ export const ltApi = {
   conditionDocUpload: (loanId, conditionId, body) => ltUpload(
     lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(conditionId)}/documents/binary`),
     { ...body, checklistItemId: conditionId }),
+  /* THE VESTING COMPANY ON THE BORROWER'S PROFILE — the write half of the
+     entity block the condition already reads.
+
+     `vestingEntityToProfile` puts the company on the profile (create-or-REUSE)
+     and gives it its document slots. `vestingEntityDocUpload` then files a
+     document onto one of the COMPANY's own slots — not onto this loan — so the
+     next loan for the same company finds it already there. Nothing is copied
+     anywhere: the shared upload door files it against the company the first
+     time, which is why this takes the slot's own item id rather than a
+     condition's. Streamed door for the same reason every other upload here uses
+     one — an operating agreement is routinely past the JSON ceiling. */
+  vestingEntityToProfile: (loanId) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/vesting-entity`), {}),
+  vestingEntityDocUpload: (loanId, slotItemId, body) => ltUpload(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/vesting-entity/slots/${encodeURIComponent(slotItemId)}/documents/binary`),
+    { ...body, checklistItemId: slotItemId }),
   conditionDocReview: (documentId, body) => ltPost(
     lt(`/condition-center/documents/${encodeURIComponent(documentId)}/review`), body),
   conditionDocRemove: (documentId) => ltDel(

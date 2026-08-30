@@ -866,6 +866,33 @@ async function findOrCreateLlc(borrowerId, fields, client = db) {
   }
 }
 
+/**
+ * THE ENTITY'S DOCUMENT SLOTS — a DELEGATE, deliberately not a second copy.
+ *
+ * The one implementation stays in `routes/borrower.js`, where it has always
+ * lived beside `insertFromTemplate` (the shared per-owner idempotent template
+ * copy). This module already reaches for it exactly this way in
+ * `replaceMembers` above, so the lazy require is the idiom here rather than a
+ * new one, and it is what avoids a module cycle.
+ *
+ * WHY IT IS RE-EXPOSED HERE AT ALL. `docs/LONG-TERM-AUTHORIZED-COPIES.md`
+ * authorizes Long-Term to read AND WRITE the borrower's entity through THIS
+ * module and no other — *"Long-Term reads and writes the entity through THIS
+ * module and never with raw SQL of its own, so every rule above applies to both
+ * products by construction."* Creating an entity without its slots would leave a
+ * company on a person's profile that nothing can ever be filed against, so the
+ * create chokepoint and the slots have to be reachable together. Routing this
+ * through `llc.js` keeps the authorized crossing at ONE module instead of adding
+ * a second one for an RTL route file.
+ *
+ * NOT a re-implementation: a slot rule added to `generateLlcChecklist` — the
+ * entity-type wording rewrite it already ends with, say — reaches both products
+ * the moment it lands, with nothing here to keep in step.
+ */
+async function generateLlcChecklist(llcId, client = db) {
+  return require('../routes/borrower').generateLlcChecklist(llcId, client);
+}
+
 module.exports = {
   LLC_SLOT_CODES,
   MAX_ENTITY_DEPTH,
@@ -880,6 +907,7 @@ module.exports = {
   normalizeEin,
   findLlcByName,
   findOrCreateLlc,
+  generateLlcChecklist,
   applyEntitySlotWording,
   confirmEntityType,
   ownersMissingTitles,

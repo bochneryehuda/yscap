@@ -49,6 +49,8 @@ const rules = require('../conditions-center/rules');
 const registry = require('../conditions-center/field-registry');
 const library = require('../conditions-center/library');
 const vocab = require('../conditions-center/vocabulary');
+const entityPrefill = require('../conditions-center/entity-prefill');
+const entityProfile = require('../conditions-center/entity-profile');
 const { loadScopedLoan, UUID_RE } = require('./scoped-loan');
 
 /* THE ONE CONDITION-DOCUMENT SERVICE, SHARED WITH THE SHORT-TERM SIDE
@@ -403,6 +405,122 @@ router.post('/loans/:loanId/conditions/:conditionId/documents', uploadConditionD
 // the JSON door produces, so nothing below the transport changes.
 router.post('/loans/:loanId/conditions/:conditionId/documents/binary',
   require('../../lib/upload-stream').binaryIntake, uploadConditionDoc);
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * THE VESTING COMPANY ON THE BORROWER'S PROFILE
+ *
+ * Two doors, and between them they are the write half of `entity-prefill.js`:
+ * put the company on the profile, then file its documents onto the company's OWN
+ * slots rather than onto this loan. The second door is the point — it takes the
+ * SHARED upload module's `llcId` path, which leaves both file-owner columns null
+ * and files the document against the company, so the next loan for the same
+ * company finds it already there with nothing copied.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+// POST …/vesting-entity — put this loan's vesting company on the borrower's
+// profile (create-or-REUSE) and give it its document slots. Deliberately a
+// button and never automatic: a company on a person's permanent record is a
+// decision, which is the same posture the short-term side takes.
+router.post('/loans/:loanId/vesting-entity', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-vesting-entity');
+  if (!scoped) return;
+  let out;
+  try {
+    out = await entityProfile.putOnProfile(scoped.loan.id, { db, actorId: staffId(req) });
+  } catch (e) {
+    console.error('[lt] vesting entity to profile failed:', (e && e.message) || e);
+    return res.status(500).json({ error: 'Could not save the company to the profile just now.' });
+  }
+  if (!out.ok) return res.status(out.status || 400).json({ error: out.error });
+  // The entity's own conditions and the mirror, after the write — best-effort,
+  // so neither can reverse a company a person just put on a profile.
+  await entityProfile.afterPutOnProfile(out.llcId);
+  return res.status(201).json(out);
+});
+
+/**
+ * FILE A DOCUMENT ONTO ONE OF THE COMPANY'S SLOTS.
+ *
+ * THE COMPANY AND THE SLOT ARE BOTH RE-DERIVED HERE, never taken from the body:
+ * the loan says which borrower, the borrower's profile says which company, and
+ * the shared door then scopes the slot to that company (`WHERE id=$1 AND
+ * llc_id=$2`). So a caller naming another borrower's company, or another
+ * company's slot, files nothing — the same discipline the condition door applies
+ * by taking the condition from the path.
+ */
+const uploadEntitySlotDoc = async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-vesting-entity-doc');
+  if (!scoped) return;
+  if (!UUID_RE.test(String(req.params.slotItemId || ''))) {
+    return res.status(404).json({ error: 'That document slot is not on this company.' });
+  }
+
+  // WHICH COMPANY — resolved from the loan, exactly as the read side does, so
+  // the two can never disagree about which company this loan's condition is
+  // about. This never CREATES one: uploading is not the moment to put a company
+  // on somebody's permanent record, and the button above is.
+  let prefill = null;
+  try {
+    // The loan row the ACCESS CHECK already ran on (`loadScopedLoan` selects
+    // `l.*`), not a second read of the same table — two reads are two chances to
+    // answer about different rows.
+    prefill = await entityPrefill.forEntity(
+      scoped.loan.borrower_id, scoped.loan.vesting_entity_name, db,
+    );
+  } catch (_) {
+    prefill = null;
+  }
+  if (!prefill || prefill.unreadable) {
+    return res.status(503).json({ error: 'PILOT could not read the borrower’s profile just now. Try again in a moment.' });
+  }
+  if (!prefill.found || !prefill.llcId) {
+    return res.status(409).json({
+      error: 'This company is not on the borrower’s profile yet. Save it to the profile first, then its documents have somewhere to go.',
+    });
+  }
+
+  const body = Object.assign({}, req.body || {});
+  try { condUpload.assertUploadIntake(body); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+  // THE SLOT COMES FROM THE PATH, never the body — same rule as the condition id
+  // on the condition door.
+  body.checklistItemId = String(req.params.slotItemId);
+
+  try {
+    const landed = await condUpload.uploadConditionDocument(req, {
+      owner: ownerOf('lt_loan', scoped.loan.id),
+      body,
+      actorId: staffId(req),
+      /* THE COMPANY, NOT THE LOAN. The shared door reads this and files the
+         document against `llc_id` with BOTH file-owner columns null — the shape
+         a short-term borrower upload has always produced. That is what makes
+         this ONE document on the profile rather than a copy of one. */
+      llcId: prefill.llcId,
+      /* The entity documents ARE the borrower's, and the short-term entity
+         screens select on `documents.borrower_id`, so unlike a long-term
+         CONDITION document (which must never appear on the RTL borrower's
+         screen) this one is stamped: it is a profile document by construction,
+         and it is exactly what the next loan is meant to find. */
+      borrowerId: scoped.loan.borrower_id || null,
+      hooks: {},
+      q: db,
+    });
+    return res.status(201).json({
+      ok: true,
+      documentId: landed.documentId,
+      deduped: !!landed.deduped,
+      llcId: prefill.llcId,
+    });
+  } catch (e) {
+    if (e && e.status) return res.status(e.status).json({ error: e.message });
+    console.error('[lt] entity slot upload failed:', (e && e.message) || e);
+    return res.status(500).json({ error: 'That document could not be filed just now.' });
+  }
+};
+
+router.post('/loans/:loanId/vesting-entity/slots/:slotItemId/documents', uploadEntitySlotDoc);
+router.post('/loans/:loanId/vesting-entity/slots/:slotItemId/documents/binary',
+  require('../../lib/upload-stream').binaryIntake, uploadEntitySlotDoc);
 
 // POST …/documents/:documentId/review — accept or reject one.
 router.post('/documents/:documentId/review', async (req, res) => {
