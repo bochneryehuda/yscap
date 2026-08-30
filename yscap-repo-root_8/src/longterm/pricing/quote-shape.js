@@ -1,0 +1,281 @@
+'use strict';
+/**
+ * LONG-TERM — ONE quote shape for both pricing programs.
+ *
+ * ── THE OWNER'S ASK ────────────────────────────────────────────────────────
+ * 2026-08-30: *"if you have a way to parse the LLPA's and the Points and
+ * everything else and the disqualifying and all the details to lay it out on our
+ * screen the same way that it's laid out from lender price. Everything should be
+ * equal, laid out the same way… we shouldn't be a difference from where the data
+ * is coming from."*
+ *
+ * So the screen must not be able to tell which vendor a row came from. Lender
+ * Price's own `optionOf` is the shape the screen already reads; this module is
+ * where LoanNEX is mapped INTO it, field for field, and where Lender Price's is
+ * passed through. `source` is carried for provenance, never for layout.
+ *
+ * ── WHAT EACH VENDOR HANDS US, MEASURED ────────────────────────────────────
+ *   Lender Price  one search → every option WITH its itemized LLPAs inline.
+ *   LoanNEX       one search → every investor, every program, every rate, every
+ *                 lock — but NO itemized LLPAs. Those come from a second call,
+ *                 `/evidences`, one per quote.
+ *
+ * THE OWNER'S WORRY WAS THAT THE LADDER ALSO NEEDS A CALL PER PROGRAM. It does
+ * not, and this was measured rather than reasoned: inside ONE recorded
+ * transaction, the `/rate-stacks` answer for a program is the SAME ladder already
+ * present in `quick-prices` — 102 of 102 (rate, lock) pairs identical to the
+ * thousandth, delta 0.000 on every one. So the whole board, every rate and every
+ * lock, is free from the single call we already make. What genuinely costs a
+ * call is the LLPA ITEMIZATION, and only for a row somebody wants explained.
+ *
+ * ── SO A PRICE IS A THREE-LAYER THING, AND EACH LAYER SAYS WHERE IT CAME FROM ─
+ *   1. board      — rate, price, points, lock, payment, DSCR. One call. Always.
+ *   2. evidence   — basePrice + the named LLPA lines. One call per quote, on
+ *                   demand, exactly as LoanNEX's own screen does it.
+ *   3. never      — anything neither vendor states.
+ * A row with no evidence yet carries `adjustments: null` — NULL, not `[]`. An
+ * empty array reads as "this loan has no adjustments", which is a claim; null
+ * reads as "nobody has asked yet", which is the truth.
+ *
+ * ── THE LLPA ARITHMETIC RECONCILES, EXACTLY ────────────────────────────────
+ * Measured on a captured evidence: basePrice 100.948, adjustments −1.75 / 0.0 /
+ * 0.375 / −0.5 / 0.25 / −0.5 summing to −0.75, final price 100.198 — and
+ * 100.948 − 0.75 = 100.198 to the thousandth, matching the price the board
+ * already showed for that rate and lock. `priceFloor` / `priceCeiling` bound the
+ * result and DO bite: on one captured ladder the ceiling clipped every rate from
+ * 7.25 up to a flat 103.75.
+ *
+ * ⚠️ NOT PROVEN, SO NOT ASSUMED: that an LLPA stack is the same at every rate on
+ * one program. It is how rate sheets normally work, and every adjustment NAME in
+ * the captures is a loan attribute rather than a rate. But no recording carries
+ * two evidences for one program at two rates, so this module NEVER copies one
+ * rate's itemization onto another rate. `evidenceCoversRate` states the rule in
+ * one place so the day a capture proves it, one function changes.
+ *
+ * PURE: no network, no database, no RTL import.
+ */
+
+const round3 = (n) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n) * 1000) / 1000);
+const numOrNull = (n) => (n == null || n === '' || !Number.isFinite(Number(n)) ? null : Number(n));
+
+/**
+ * The empty option — every field the screen may read, so a template never has to
+ * ask which vendor it is looking at.
+ *
+ * `null` throughout means NOT STATED. Nothing here defaults to zero: a zero
+ * adjustment and an unknown adjustment are different facts and only one of them
+ * is safe to show a borrower.
+ */
+function emptyOption() {
+  return {
+    source: null,
+    lender: null, lenderId: null, investor: null, lenderShort: null, whiteLabel: null,
+    program: null, programId: null, product: null, rateGridId: null, rateGridName: null,
+    priceBuild: {
+      parRate: null, baseRate: null, rateAdjustment: null, noteRate: null,
+      basePoints: null, adjustmentPoints: null, adjustedPoints: null, borrowerPaidPoints: null,
+      price: null, basePrice: null, priceFloor: null, priceCeiling: null,
+      priceDerivedFromPoints: false, pointsDerivedFromPrice: false, apr: null, apor: null,
+    },
+    adjustments: null,       // null = not fetched. [] = fetched and there were none.
+    rateAdjustments: null,
+    holdback: null,
+    comp: null,
+    fees: null,
+    terms: {
+      loanAmount: null, term: null, termInMonths: false, dayLock: null, cushionedLockDays: null,
+      mortgageType: null, loanPurpose: null, interestOnly: null, interestOnlyTerm: null,
+      amortizationType: null, dscr: null, fico: null, ltv: null, cltv: null, dti: null, hti: null,
+    },
+    monthlyPayment: null,
+    flags: { disqualified: false, interpolated: false, expired: null, highBalance: false, isException: false, softStop: false },
+    rateSheet: { expired: null, validAsOf: null, rateValidDate: null, name: null, id: null },
+    // How to ask this vendor to explain THIS row.
+    explain: null,
+    evidence: { fetched: false, appliesToThisRate: false, reason: 'not_requested' },
+  };
+}
+
+function deepMerge(base, patch) {
+  const out = { ...base };
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (v && typeof v === 'object' && !Array.isArray(v) && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) out[k] = deepMerge(base[k], v);
+    else out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * LoanNEX board rows → the common option shape.
+ *
+ * One option per (investor, program, product, rate, LOCK). The lock is part of
+ * the identity, not a footnote: LoanNEX quotes the same rate at 15/30/45/60 days
+ * and the prices differ, so folding them together would let a 60-day quote be
+ * read as a 30-day one.
+ */
+function optionsFromLoanNex(board, opts = {}) {
+  const out = [];
+  for (const p of (board && board.programs) || []) {
+    for (const r of p.rungs || []) {
+      const price = round3(r.price);
+      out.push(deepMerge(emptyOption(), {
+        source: 'loannex',
+        lender: p.lender, lenderId: p.lenderId, investor: p.investor, whiteLabel: p.whiteLabel || null,
+        program: p.program, programId: p.programId, product: p.product,
+        priceBuild: {
+          noteRate: round3(r.rate),
+          price,
+          // LoanNEX quotes PRICE; Lender Price quotes POINTS. `100 − price` is
+          // the identity between them, and the flag says it was derived so a
+          // reader never mistakes it for a number the vendor sent.
+          adjustedPoints: price == null ? null : round3(100 - price),
+          pointsDerivedFromPrice: price != null,
+        },
+        terms: {
+          loanAmount: numOrNull(opts.loanAmount),
+          dayLock: r.lockDays, cushionedLockDays: r.cushionedLockDays,
+          interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
+          interestOnlyTerm: p.interestOnlyTerm == null ? null : p.interestOnlyTerm,
+          amortizationType: p.amortizationType || null,
+          term: p.termInMonths == null ? null : p.termInMonths, termInMonths: p.termInMonths != null,
+          dscr: numOrNull(r.dscr), fico: numOrNull(opts.fico),
+          ltv: numOrNull(opts.ltv), loanPurpose: opts.loanPurpose || null,
+        },
+        monthlyPayment: r.payment == null ? null : { total: numOrNull(r.payment) },
+        flags: {
+          isException: !!r.isException,
+          softStop: !!r.hasSoftStopViolation,
+          // LOANNEX STATES NO STALENESS. Lender Price's own audit found 37–61%
+          // of its board priced from EXPIRED sheets, which is why that flag
+          // exists at all. LoanNEX says nothing on the subject, so this stays
+          // null — "we do not know" — and never false, which would be a
+          // reassurance nobody gave us.
+          expired: null,
+        },
+        // What to hand the vendor to explain this exact quote.
+        explain: r.priceHashKey ? { vendor: 'loannex', priceHashKey: r.priceHashKey, rate: round3(r.rate), price, lockDays: r.lockDays, productId: p.productId, lenderId: p.lenderId } : null,
+      }));
+    }
+  }
+  return out;
+}
+
+/** Lender Price options → the common shape (its own `optionOf`, widened). */
+function optionsFromLenderPrice(options) {
+  return ((options) || []).map((o) => deepMerge(emptyOption(), {
+    source: 'lenderprice',
+    lender: o.lender, lenderId: o.lenderId, investor: o.investor, lenderShort: o.lenderShort, whiteLabel: o.whiteLabel || null,
+    program: o.program, product: o.product, rateGridId: o.rateGridId, rateGridName: o.rateGridName,
+    priceBuild: { ...(o.priceBuild || {}) },
+    // Lender Price ships the itemization WITH the search, so these are fetched
+    // by definition — an empty list here really does mean "no adjustments".
+    adjustments: o.adjustments || [],
+    rateAdjustments: o.rateAdjustments || [],
+    holdback: o.holdback || null, comp: o.comp || null, fees: o.fees || null,
+    terms: { ...(o.terms || {}) },
+    monthlyPayment: o.monthlyPayment || null,
+    flags: { ...(o.flags || {}), expired: o.rateSheet ? !!o.rateSheet.expired : null },
+    rateSheet: { ...(o.rateSheet || {}) },
+    evidence: { fetched: true, appliesToThisRate: true, reason: 'inline_with_search' },
+  }));
+}
+
+/**
+ * Whether a fetched evidence may be attached to an option.
+ *
+ * THE WHOLE RULE, in one place. An evidence describes one program at ONE rate
+ * and ONE lock, and this module refuses to spread it any further, because
+ * whether an LLPA stack is constant across a program's rates has not been
+ * proven from any recording. When a capture ever proves it, this function is the
+ * only thing that changes.
+ */
+function evidenceCoversRate(ev, option) {
+  if (!ev || !option) return false;
+  const pb = option.priceBuild || {};
+  const sameRate = round3(ev.rate) != null && round3(ev.rate) === round3(pb.noteRate);
+  const sameLock = ev.lockPeriod == null || Number(ev.lockPeriod) === Number(option.terms && option.terms.dayLock);
+  return !!(sameRate && sameLock);
+}
+
+/**
+ * Fold a LoanNEX `/evidences` answer onto its option, giving it the same LLPA
+ * detail a Lender Price row has had all along.
+ *
+ * REFUSES rather than approximates: an evidence for a different rate or lock
+ * leaves the option exactly as it was, saying why.
+ */
+function attachEvidence(option, ev) {
+  if (!option) return option;
+  if (!ev) return deepMerge(option, { evidence: { fetched: false, appliesToThisRate: false, reason: 'not_requested' } });
+  if (!evidenceCoversRate(ev, option)) {
+    return deepMerge(option, { evidence: { fetched: true, appliesToThisRate: false, reason: 'evidence_is_for_a_different_rate_or_lock' } });
+  }
+  const lines = (ev.adjustments || []).map((a) => ({
+    group: a.type || 'LLPA', reason: a.name || a.description || null,
+    type: a.type || null, valueType: 'points', value: numOrNull(a.priceAdjustment),
+  }));
+  const addOns = (ev.addOns || []).map((a) => ({
+    group: 'Add-on', reason: a.name || null, type: 'AddOn', valueType: 'points', value: numOrNull(a.priceAdjustment),
+  }));
+  const all = lines.concat(addOns);
+  const total = all.reduce((s, l) => s + (l.value || 0), 0);
+  return deepMerge(option, {
+    priceBuild: {
+      basePrice: numOrNull(ev.basePrice),
+      baseRate: numOrNull(ev.baseRate),
+      priceFloor: numOrNull(ev.priceFloor),
+      priceCeiling: numOrNull(ev.priceCeiling),
+      basePoints: ev.basePrice == null ? null : round3(100 - Number(ev.basePrice)),
+      // The sign convention matches Lender Price's: a POINT adjustment that
+      // raises the price lowers the points.
+      adjustmentPoints: all.length ? round3(-total) : null,
+    },
+    adjustments: all,
+    rateSheet: { validAsOf: ev.rateSheetLastUpdated || null },
+    evidence: {
+      fetched: true, appliesToThisRate: true, reason: 'evidences_call',
+      // Stated so a reader can check the arithmetic rather than trust it.
+      reconciles: ev.basePrice != null && ev.price != null
+        ? Math.abs((Number(ev.basePrice) + total) - Number(ev.price)) < 0.0005 : null,
+      adjustmentTotal: round3(total),
+    },
+  });
+}
+
+/**
+ * INTEREST-ONLY is a PRODUCT here, not a question.
+ *
+ * Owner-directed 2026-08-30: *"The interest only button has a different way to
+ * do it. It's just different programs, the way it looks on it."* Measured and
+ * exactly right: across all 19 recorded pricing bodies LoanNEX takes no
+ * interest-only input at all, while its answer carries
+ * `mortgageProducts[].isInterestOnly`. Lender Price takes it as a search input.
+ *
+ * So one scenario reaches two vendors two different ways, and the boards must
+ * still agree. Lender Price narrows at the source; LoanNEX is narrowed here.
+ *
+ * A ROW WHOSE PRODUCT DOES NOT SAY is never dropped and never kept blindly — it
+ * is returned in `unknown` so the count on the screen can say "and 12 we cannot
+ * classify" instead of quietly answering a question with the wrong number.
+ */
+function splitInterestOnly(options) {
+  const io = [], amortizing = [], unknown = [];
+  for (const o of options || []) {
+    const v = o && o.terms ? o.terms.interestOnly : null;
+    if (v === true) io.push(o); else if (v === false) amortizing.push(o); else unknown.push(o);
+  }
+  return { io, amortizing, unknown };
+}
+
+/** Apply the scenario's interest-only answer to a set of options. */
+function filterInterestOnly(options, want) {
+  if (want === undefined || want === null) return { options: options || [], filtered: false, unknown: [] };
+  const s = splitInterestOnly(options);
+  return { options: want ? s.io : s.amortizing, filtered: true, unknown: s.unknown };
+}
+
+module.exports = {
+  emptyOption, optionsFromLoanNex, optionsFromLenderPrice,
+  attachEvidence, evidenceCoversRate, splitInterestOnly, filterInterestOnly,
+  _internals: { round3, numOrNull, deepMerge },
+};

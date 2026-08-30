@@ -167,8 +167,14 @@ function shift(b, d) {
     'SCRUB-1 a JWT, a refresh token and a hand-off ticket are all redacted before anything can log them');
   ok(I.tokenKeyFromIframeHtml('<iframe src="https://webapp.loannex.com/nex-app?portal=nqmfcorr&amp;tokenKey=aba5e526-6185-430c-9bae-5beb2018a7c6">') === 'aba5e526-6185-430c-9bae-5beb2018a7c6',
     'TICKET-1 the one-time ticket is read from the portal HTML, both recorded iframe shapes');
-  ok(client.configured().loginVerified === false,
-    'LOGIN-1 the unrecorded portal sign-in is reported as NOT implemented — never implied to work');
+  // THIS ASSERTION MOVED, IT WAS NOT DROPPED. It used to pin that the portal
+  // sign-in was NOT implemented, which was the truth while no recording contained
+  // it. A recording now does, and it is implemented (`portal-login.js`) — so the
+  // thing worth pinning is the distinction that replaced it: IMPLEMENTED is not
+  // PROVEN, and /health must keep saying so until a real sign-in has happened.
+  const cfg = client.configured();
+  ok(cfg.loginImplemented === true && cfg.loginExercised === false,
+    'LOGIN-1 the portal sign-in is reported as implemented but NOT YET EXERCISED — a green tick never implies we have actually signed in');
 }
 
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);

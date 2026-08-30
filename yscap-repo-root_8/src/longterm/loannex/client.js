@@ -17,13 +17,22 @@
  *      (1 h) plus a refresh token (4 h). NO Authorization header on this call:
  *      the ticket IS the credential, which is why it must never be logged.
  *
- * ⚠️ STAGE 1 IS THE ONE THING THE RECORDINGS DO NOT CONTAIN. All three captures
- * begin AFTER the browser was already signed in, so the login form's URL, field
- * names and any second factor are unknown. This client therefore refuses to
- * guess: with no verified login it FAILS CLOSED and says exactly what is
- * missing. `NEX_TOKEN_KEY` lets stages 2–3 and everything downstream be proven
- * end-to-end today from a ticket pasted out of a live browser session — the
- * honest way to run the pipeline while stage 1 is still unrecorded.
+ * All three stages are decoded from real traffic. Stage 1 lives in its own
+ * module (`portal-login.js`) because it is a form/cookie/HTML animal rather than
+ * the read-only JSON this file speaks; it was decoded from the 2026-08-30
+ * sign-in capture, which records the sequence six times across three portals.
+ * `NEX_TOKEN_KEY` still short-circuits it with a ticket pasted from a live
+ * browser session — the fastest way to run a one-off, and how everything
+ * downstream was proven end-to-end before stage 1 existed.
+ *
+ * ── ONE PORTAL, ONE INVESTOR — OR ALL OF THEM ──────────────────────────────
+ * The `web` portal is the AGGREGATOR: one call, nine investors. An
+ * investor-specific portal (acracorrespondent, nqmfcorr) returns EXACTLY ONE
+ * investor — measured: the nqmfcorr board carries `investors: [NQM Funding]`
+ * and nothing else — and carries `?portal={name}` on the iframe hand-off. So an
+ * investor portal is a SECOND, direct source for an investor the aggregator
+ * already covers. Whether the two quote that investor the same is NOT known:
+ * the recordings price different scenarios on each, so nothing here assumes it.
  *
  * ── READ-ONLY, ENFORCED IN CODE ────────────────────────────────────────────
  * LoanNEX's API can lock and register loans — a priced answer literally carries
@@ -41,6 +50,7 @@ const registryOf = require('./field-registry');
 const counties = require('./counties');
 const scenario = require('./scenario');
 const parseMod = require('./parse');
+const portalLoginMod = require('./portal-login');
 
 // ── Configuration ───────────────────────────────────────────────────────────
 const API_BASE = () => process.env.NEX_API_BASE || 'https://nexapi.loannex.com';
@@ -60,9 +70,12 @@ function configured() {
     ok: hasTicket || hasLogin,
     tokenKey: hasTicket,
     login: hasLogin,
-    // Stage 1 is unrecorded, so a username/password alone is NOT yet a working
-    // configuration. Said plainly here so `/health` cannot imply otherwise.
-    loginVerified: false,
+    // Stage 1 IS implemented now (see portal-login.js), decoded field-for-field
+    // from the 2026-08-30 sign-in capture. It has not yet been exercised against
+    // the live portal, and the difference matters to whoever reads /health: a
+    // working configuration is one that has actually signed in once.
+    loginImplemented: true,
+    loginExercised: false,
     portal: PORTAL_HOST().portal,
     apiBase: API_BASE(),
   };
@@ -191,17 +204,17 @@ function tokenKeyFromIframeHtml(html) {
 }
 
 /**
- * Stage 1. NOT YET IMPLEMENTED, ON PURPOSE — the recordings begin after login,
- * so the form's URL and field names are unknown and any implementation would be
- * a guess that fails in a way that looks like bad credentials. Refuses with the
- * exact recording needed to finish it.
+ * Stage 1 — sign in to the portal and come back with the one-time ticket.
+ * Delegates to `portal-login.js`, which owns the cookie jar, the antiforgery
+ * pair and the HTML scrape; this stays the JSON-only pricing client.
  */
-async function portalLogin() {
-  const err = new Error(
-    'loannex_login_unrecorded: the portal login step (stage 1) was not present in any capture, so it is not implemented rather than guessed. ' +
-    'Supply NEX_TOKEN_KEY (the tokenKey from a live browser session) to run everything downstream, or provide a recording that INCLUDES the sign-in form submit.');
-  err.code = 'loannex_login_unrecorded';
-  throw err;
+async function portalLogin(portal, opts = {}) {
+  const { portal: p, host } = PORTAL_HOST(portal);
+  return portalLoginMod.login(host, p, {
+    username: opts.username || process.env.NEX_USERNAME,
+    password: opts.password || process.env.NEX_PASSWORD,
+    timeoutMs: TIMEOUT_MS(),
+  });
 }
 
 /** A live bearer session for a portal, minted or reused. */
@@ -211,8 +224,11 @@ async function getSession(portal, opts = {}) {
   const hit = sessions.get(p);
   if (!opts.force && hit && hit.expiresAt - TOKEN_SKEW_MS > now) return hit;
 
-  const ticket = opts.tokenKey || process.env.NEX_TOKEN_KEY;
-  if (!ticket) await portalLogin(); // throws with the precise diagnostic
+  // A pasted ticket short-circuits the sign-in (that is how the pipeline was
+  // proven end-to-end before stage 1 existed, and it stays the fastest way to
+  // run a one-off). Otherwise sign in properly.
+  let ticket = opts.tokenKey || process.env.NEX_TOKEN_KEY;
+  if (!ticket) ticket = (await portalLogin(p, opts)).tokenKey;
 
   const body = await request('GET', `/tokens/${encodeURIComponent(ticket)}`, {});
   const d = (body && body.data) || {};
@@ -355,6 +371,6 @@ module.exports = {
   fieldRegistry, resolveCounty, invalidateSession, newTransactionId,
   _internals: {
     request, assertReadOnly, pathMatches, READ_ONLY_PATHS, scrub, claimsOf,
-    tokenKeyFromIframeHtml, portalLogin, PORTAL_HOST, sessions, TOKEN_SKEW_MS,
+    tokenKeyFromIframeHtml, portalLogin, PORTAL_HOST, sessions, TOKEN_SKEW_MS, portalLoginMod,
   },
 };

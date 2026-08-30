@@ -135,3 +135,28 @@ LT_MERGED_PRICING=on NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
    has no consumer-safe name. It is reported as unmapped until the owner names it.
 4. **The refresh-token endpoint** was not captured; the client re-mints from the ticket
    instead, so a session lasts as long as the JWT (1 h).
+
+---
+
+## Update, 2026-08-30 (second pass)
+
+A fifth recording — the investor portals, with pricing — settled several things. The full write-up is
+`docs/longterm/LOANNEX-PARITY-AND-ROUTING.md`; the headlines:
+
+- **Stage 1 (sign-in) is implemented**, in `portal-login.js`. Decoded field for field from the
+  capture, which records the sequence six times across three portals. It is implemented but has **not
+  yet been run against the live site** — `/health` says so rather than implying otherwise.
+- ⚠️ **The recording contains the portal password in plain text.** It is compromised and must be
+  rotated at LoanNEX before use. Nothing here stores it; credentials come from the environment only.
+- **An investor portal returns exactly ONE investor** (`nqmfcorr` → NQM Funding alone) and carries
+  `?portal={name}` on the iframe hand-off. Whether it prices that investor the same as the aggregator
+  is NOT known and is not assumed.
+- **The `/rate-stacks` call is not needed for the board.** Measured inside one transaction: it returns
+  the ladder already present in `quick-prices` — 102 of 102 (rate, lock) pairs identical to the
+  thousandth. Fixture: `capture/rate-stack-vs-board.json`.
+- **The itemised LLPAs are the one thing that costs a call per quote.** `basePrice + Σ adjustments =
+  price` reconciles exactly on the captured evidence, and `priceFloor`/`priceCeiling` do bite.
+- **Interest-only is not an input here.** Across all 19 recorded pricing bodies LoanNEX takes no such
+  field; it is a product the answer returns.
+- **The scenario defaults and the button names are now shared** with Lender Price
+  (`../pricing/scenario-defaults.js`) — before that the two programs were priced on different loans.

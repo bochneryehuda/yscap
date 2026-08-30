@@ -25,10 +25,36 @@
  * READ-ONLY. This builds a PRICING request. Nothing here locks, registers,
  * books or writes anything at LoanNEX.
  *
+ * ── THE BUTTONS AND THE DEFAULTS ARE SHARED, THE ENUMS ARE NOT ────────────
+ * Which yes/no the officer toggled, and what an omitted number falls back to,
+ * come from `../pricing/scenario-defaults.js` — the SAME module Lender Price
+ * reads. That is not tidiness: before it, a scenario carrying `selfEmployed`
+ * reached Lender Price and was silently dropped here (this file read
+ * `isSelfEmployed`), an omitted prepay took five years there and NOTHING here,
+ * and there was no first-time-home-buyer or rural field here at all — so the two
+ * programs priced different loans and the difference read as a pricing edge.
+ * The vendor ENUMS stay local, because two vendors' tokens that agree today are
+ * not one fact.
+ *
+ * ── A KEY THE OFFICER DID NOT TOUCH IS NOT SENT ────────────────────────────
+ * `isFirstTimeHomebuyer` and `isRuralProperty` are ABSENT from the recorded
+ * aggregator body and appear only once the vendor's own app has touched that
+ * control. We do the same — omit when unstated — which is both what the vendor
+ * does and the only choice that asserts nothing nobody said. NOT PROVEN: whether
+ * absent, `null` and `false` price identically. The recording changed other
+ * fields in the same step every time, so they are treated as distinct.
+ *
+ * ── INTEREST-ONLY IS NOT AN INPUT HERE ─────────────────────────────────────
+ * Measured across all 19 recorded pricing bodies: LoanNEX takes NO interest-only
+ * field. IO is a PRODUCT the answer returns (`mortgageProducts[].isInterestOnly`),
+ * so it is a filter on results, not a question in the request — exactly as the
+ * owner described it. `parse.js` carries the flag; the board layer filters on it.
+ *
  * PURE: no network, no database, no RTL import.
  */
 
 const registryOf = require('./field-registry');
+const shared = require('../pricing/scenario-defaults');
 
 class NexValidationError extends Error {
   constructor(code, field, message) { super(message); this.code = code; this.field = field; this.name = 'NexValidationError'; }
@@ -60,10 +86,17 @@ const PROPERTY_ALIASES = {
   twotofourunits: 'TwoToFourUnits', unit24: 'TwoToFourUnits', units24: 'TwoToFourUnits',
   '24units': 'TwoToFourUnits', '24unit': 'TwoToFourUnits', '2to4units': 'TwoToFourUnits',
   '2to4unit': 'TwoToFourUnits', twotofourunit: 'TwoToFourUnits',
-  multifamily: 'TwoToFourUnits', duplex: 'TwoToFourUnits', triplex: 'TwoToFourUnits', fourplex: 'TwoToFourUnits',
+  duplex: 'TwoToFourUnits', triplex: 'TwoToFourUnits', fourplex: 'TwoToFourUnits',
+  // `multifamily` USED to map to TwoToFourUnits here while Lender Price's own
+  // table documents MultiFamily as FIVE units — one word, two different
+  // buildings, and the two programs would have priced different loans and called
+  // the difference an execution advantage. It follows Lender Price's stated
+  // meaning now; `duplex`/`2-4 units` remain the way to say the smaller one.
+  multifamily: 'FivePlusUnits',
   manufacturedhousing: 'ManufacturedHousing', manufactured: 'ManufacturedHousing',
   modular: 'Modular', mixeduse: 'MixedUse', commercial: 'Commercial',
-  fiveplusunits: 'FivePlusUnits', fiveplus: 'FivePlusUnits',
+  fiveplusunits: 'FivePlusUnits', fiveplus: 'FivePlusUnits', fiveplusunit: 'FivePlusUnits',
+  '5units': 'FivePlusUnits', '5unit': 'FivePlusUnits', '5plusunits': 'FivePlusUnits', '5plusunit': 'FivePlusUnits',
 };
 // The condo flavour rides a SEPARATE field, so "non-warrantable condo" keeps both facts.
 const CONDO_TYPE_BY_ALIAS = { condowarr: 'Warrantable', condononwarr: 'NonWarrantable', condotel: 'Condotel' };
@@ -131,10 +164,15 @@ function buildNexApp(sc, registry, opts = {}) {
   const reg = registry || registryOf.capturedRegistry();
   const A = (fieldName, key, label) => (key == null ? null : registryOf.assertOption(reg, fieldName, key, label));
 
+  // The shared DSCR profile — the SAME numbers Lender Price applies — and the
+  // buttons read under any of their accepted spellings.
+  const prof = shared.profileFor(s);
+  const flags = shared.readFlags(s);
+
   const amounts = deriveAmounts(s);
   const purpose = A('Purpose', mapAlias(PURPOSE_ALIASES, s.purpose, 'purpose', 'unknown_loan_purpose'), 'purpose');
-  const propAlias = aliasKey(s.propertyType);
-  const propertyType = A('PropertyType', mapAlias(PROPERTY_ALIASES, s.propertyType, 'propertyType', 'unknown_property_type'), 'property_type');
+  const propAlias = aliasKey(prof.propertyType);
+  const propertyType = A('PropertyType', mapAlias(PROPERTY_ALIASES, prof.propertyType, 'propertyType', 'unknown_property_type'), 'property_type');
 
   // Condo flavour: explicit `nonWarrantable`/`condoType` wins; otherwise inferred
   // from the property alias itself ("CondoNonWarr"), and null for non-condos.
@@ -145,17 +183,22 @@ function buildNexApp(sc, registry, opts = {}) {
     else if (CONDO_TYPE_BY_ALIAS[propAlias]) condoType = CONDO_TYPE_BY_ALIAS[propAlias];
   }
 
-  // Prepay is a STRING on the wire and the registry lists exactly which terms exist.
-  const prepay = s.prepayMonths == null ? null : A('PrepaymentPenalty', String(num(s.prepayMonths)), 'prepay_months');
+  // Prepay is a STRING on the wire and the registry lists exactly which terms
+  // exist. An omitted term takes the shared five-year default rather than going
+  // out empty — an empty prepay is a DIFFERENT loan from the one Lender Price
+  // was asked about, which is the whole reason the default is shared.
+  const prepay = A('PrepaymentPenalty', String(num(prof.prepayMonths)), 'prepay_months');
   const citizenship = A('Citizenship', s.borrowerType == null && s.citizenship == null ? 'UsCitizen'
     : mapAlias(CITIZENSHIP_ALIASES, s.citizenship != null ? s.citizenship : s.borrowerType, 'citizenship', 'unknown_citizenship'), 'citizenship');
-  const escrow = A('Escrows', s.escrow != null ? mapAlias(ESCROW_ALIASES, s.escrow, 'escrow', 'unknown_escrow')
-    : (s.escrowWaive === true ? 'Waived' : 'Yes'), 'escrow');
+  // WAIVE ESCROW. An explicit `escrow` value (Yes / Waived / TaxesOnly /
+  // InsuranceOnly) is richer than the button and wins; otherwise the shared
+  // `escrowWaive` flag decides, under any spelling.
+  const escrow = A('Escrows', s.escrow != null && s.escrow !== '' ? mapAlias(ESCROW_ALIASES, s.escrow, 'escrow', 'unknown_escrow')
+    : (flags.escrowWaive === true ? 'Waived' : 'Yes'), 'escrow');
   const state = s.state == null ? null : A('State', String(s.state).trim().toUpperCase(), 'state');
 
-  const dscr = dscrString(s.dscr);
-  const reserves = num(s.reservesMonths);
-  const mr = reserves == null ? 24 : reserves;
+  const dscr = dscrString(prof.dscr);
+  const mr = num(prof.reservesMonths);
 
   // Units: only meaningful for the multi-unit types; a stale unit count on a
   // single-family scenario contradicts itself and disqualifies real programs.
@@ -178,7 +221,7 @@ function buildNexApp(sc, registry, opts = {}) {
     financingType: A('FinancingType', s.financingType || 'FirstLien', 'financing_type'),
     hasIndividualTaxpayerIdNumber: s.hasItin == null ? null : !!s.hasItin,
     citizenship,
-    isSelfEmployed: s.isSelfEmployed == null ? false : !!s.isSelfEmployed,
+    isSelfEmployed: flags.selfEmployed === undefined ? false : flags.selfEmployed,
     secondLein: num(s.subordinateLoanAmount), // (sic) — the vendor's own spelling
     helocDrawnAmount: num(s.helocDrawnAmount),
     helocLineAmount: num(s.helocLineAmount),
@@ -190,11 +233,14 @@ function buildNexApp(sc, registry, opts = {}) {
     buydownType: A('BuydownType', s.buydownType || 'None', 'buydown_type'),
     fico: num(s.fico),
     incomeDocumentation: A('IncomeDocumentation', s.incomeDocType || 'DebtServiceCoverageRatio', 'income_doc_type'),
+    // Position 18 in the vendor's own body, between incomeDocumentation and
+    // purpose. Present only when the officer actually answered it.
+    ...(flags.fthb === undefined ? {} : { isFirstTimeHomebuyer: flags.fthb }),
     purpose,
     occupancy: A('Occupancy', s.occupancy || 'Investment', 'occupancy'),
     prePaymentPenaltyTermInMonths: prepay,
-    isFirstTimeInvestor: s.isFirstTimeInvestor == null ? false : !!s.isFirstTimeInvestor,
-    isShortTermRental: s.isShortTermRental == null ? false : !!s.isShortTermRental,
+    isFirstTimeInvestor: flags.firstTimeInvestor === undefined ? false : flags.firstTimeInvestor,
+    isShortTermRental: flags.shortTermRental === undefined ? false : flags.shortTermRental,
     propertyType,
     numberOfUnits: units,
     condoType,
@@ -206,6 +252,8 @@ function buildNexApp(sc, registry, opts = {}) {
     cashInHand: num(s.cashInHand),
     secondaryFinancingType: A('SecondaryFinancingType', s.secondaryFinancingType || 'None', 'secondary_financing_type'),
     state,
+    // Position 35 in the vendor's own body, between state and countyKey.
+    ...(flags.rural === undefined ? {} : { isRuralProperty: flags.rural }),
     countyKey: opts.countyKey == null ? null : Number(opts.countyKey),
     qualifiedMr: mr,
     qualifiedDscr: dscr,
@@ -219,5 +267,5 @@ function buildQuickPriceBody(sc, registry, opts = {}) {
 
 module.exports = {
   buildNexApp, buildQuickPriceBody, deriveAmounts, dscrString, NexValidationError,
-  _internals: { PURPOSE_ALIASES, PROPERTY_ALIASES, CONDO_TYPE_ALIASES, CITIZENSHIP_ALIASES, ESCROW_ALIASES, aliasKey, mapAlias, num },
+  _internals: { PURPOSE_ALIASES, PROPERTY_ALIASES, CONDO_TYPE_ALIASES, CITIZENSHIP_ALIASES, ESCROW_ALIASES, aliasKey, mapAlias, num, shared },
 };

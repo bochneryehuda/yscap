@@ -116,10 +116,20 @@ refuses(() => scenario.buildNexApp({ purpose: 'Purchase', loan: 3.75e5, fico: 76
   // while every later assertion goes unrun.
   const build = (sc) => { try { return scenario.buildNexApp(sc, reg); } catch (e) { return { _threw: e.code || e.message }; } };
   const sfr = build({ ...BASE, propertyType: 'SFR' });
-  const spellings = ['2-4 units', '2-4 Unit', 'TwoToFourUnits', 'two to four units', 'Duplex', 'multi-family'];
+  // `multi-family` USED to be on this list and was REMOVED on purpose (2026-08-30).
+  // Lender Price's own property table records MultiFamily as a FIVE-unit
+  // property, so reading it as 2-4 here made one word mean two different
+  // buildings across the two pricing programs — which prices two different loans
+  // and then reports the difference as an execution advantage. It now follows
+  // Lender Price's stated meaning on both sides, and ALIAS-2b pins that.
+  const spellings = ['2-4 units', '2-4 Unit', 'TwoToFourUnits', 'two to four units', 'Duplex', 'fourplex'];
   const spelled = spellings.filter((t) => build({ ...BASE, propertyType: t, units: 3 }).propertyType === 'TwoToFourUnits');
   ok(spelled.length === spellings.length,
     `ALIAS-2 every natural spelling of 2-4 units reaches the vendor's key (${spelled.length}/${spellings.length})`);
+  const bigSpellings = ['multi-family', 'MultiFamily', '5+ units', 'five plus units'];
+  const big = bigSpellings.filter((t) => build({ ...BASE, propertyType: t, units: 6 }).propertyType === 'FivePlusUnits');
+  ok(big.length === bigSpellings.length,
+    `ALIAS-2b …and "multi-family" means FIVE-PLUS here, the same as it does on Lender Price (${big.length}/${bigSpellings.length})`);
   ok(build({ ...BASE, propertyType: '2-4 units', units: 3 }).numberOfUnits === 3,
     'ALIAS-3 …and the unit count rides along on a multi-unit property');
   ok(sfr.propertyType === 'SingleFamily' && sfr.numberOfUnits === null,

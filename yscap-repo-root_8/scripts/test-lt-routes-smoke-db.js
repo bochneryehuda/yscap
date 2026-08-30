@@ -223,6 +223,11 @@ async function main() {
       // Both of these are pure config reads that reach no vendor.
       '/api/lt/dscr/merged/health',
       '/api/lt/dscr/merged/loannex/login-check',
+      // Which investors are routed where, and which are never displayed. Another
+      // pure config read — it answers from the environment and the suppression
+      // list and reaches nobody — so a wrong shape surfaces here rather than as
+      // an empty board somebody cannot explain.
+      '/api/lt/dscr/merged/routing',
     ];
 
     // ── WHAT THE LIST OMITS, SAID OUT LOUD ──────────────────────────────────
