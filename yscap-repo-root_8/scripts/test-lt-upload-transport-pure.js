@@ -135,16 +135,42 @@ console.log('\n3. ONE handler behind BOTH doors');
   const bin = /router\.post\('\/loans\/:loanId\/conditions\/:conditionId\/documents\/binary',[\s\S]{0,120}?binaryIntake, uploadConditionDoc\)/.test(src);
   ok(json, 'the JSON door is registered against it');
   ok(bin, 'the streamed door is registered against the SAME handler, behind `binaryIntake`');
-  /* A SECOND HANDLER IS THE FAILURE THIS GUARDS. Not a style point: the handler
-     resolves the loan, scopes the condition into the STATEMENT, and decides the
-     document's visibility from the condition's audience. A second copy is a
-     second answer to all three — so the property asserted is that exactly ONE
-     place in this router calls the shared upload service. Counting
-     `scopedCondition` callers would be wrong: nine routes legitimately scope a
-     condition, and only one of them files a document. */
+  /* A COPIED HANDLER IS THE FAILURE THIS GUARDS. Not a style point: an upload
+     handler resolves the loan, scopes its target into the STATEMENT, and decides
+     the document's visibility. A second copy of one of those is a second answer
+     to all three.
+
+     THIS USED TO COUNT TO ONE, AND THAT WAS THE RULE STATED TOO NARROWLY — it
+     went red the moment a genuinely DIFFERENT upload arrived (a document filed
+     onto the borrower's company rather than onto this loan's condition), which
+     duplicates none of those three answers because its target is not a
+     condition at all. A guard that fails on correct work gets "fixed" by
+     loosening it, so it asserts the actual property instead: every upload in
+     this router is a NAMED handler shared by both its doors, and the number of
+     calls to the shared upload service equals the number of those handlers — so
+     no handler files twice, and no door carries an inline copy of one.
+
+     Counting `scopedCondition` callers would still be wrong: nine routes
+     legitimately scope a condition and only one of them files a document. */
+  const handlers = [...src.matchAll(/const (upload[A-Za-z0-9_]*) = async \(req, res\)/g)]
+    .map((m) => m[1]);
+  ok(handlers.length >= 1, `every upload is a NAMED handler (found ${handlers.join(', ') || 'none'})`);
+
   const uploads = (src.match(/condUpload\.uploadConditionDocument\(/g) || []).length;
-  ok(uploads === 1,
-    `exactly one place files a document — no second handler beside it (found ${uploads})`);
+  ok(uploads === handlers.length,
+    `each named upload handler files exactly once, and no door files on its own `
+    + `(${handlers.length} handler(s), ${uploads} call(s) to the shared upload service)`);
+
+  /* EVERY UPLOAD HAS BOTH DOORS, AND BOTH RUN THE SAME HANDLER. This is what the
+     count was really protecting: a streamed door wired to its own handler would
+     drift from the JSON one exactly where it matters least visibly. */
+  for (const h of handlers) {
+    const plain = new RegExp(`router\\.post\\('[^']*/documents',\\s*${h}\\)`).test(src);
+    const streamed = new RegExp(
+      `router\\.post\\('[^']*/documents/binary',[\\s\\S]{0,160}?binaryIntake,\\s*${h}\\)`).test(src);
+    ok(plain && streamed,
+      `${h} is registered on BOTH doors — the JSON one and the streamed one behind binaryIntake`);
+  }
 }
 
 console.log('\n4. no ceiling is re-inlined anywhere in the long-term upload path');
