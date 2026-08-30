@@ -333,6 +333,14 @@ import src/lib/order-return-filter.js
 # would file a vendor's whole thread on the loan on every round.
 import src/lib/email/reply-cut.js
 
+# WHO AN EMAIL COMES FROM, and whether we are allowed to say so. There is ONE
+# company identity, ONE verified sending domain and therefore ONE answer to "may we
+# put this person's address in the From line" — the arithmetic is DKIM alignment, not
+# a preference, and a second copy of it would be a second deliverability posture.
+# PURE: no config, no network; the caller supplies the configuration.
+# docs/SEND-AS-USER-AND-DELIVERABILITY.md is the research behind it.
+import src/lib/send-as.js
+
 # HOW A VENDOR'S ADDRESSES AND PHONES ARE READ — the PURE half only
 # (`allEmails` / `allPhones` / `dedupBy`). db/224 added an `emails text[]` beside
 # the legacy scalar `email` and backfilled only the rows that existed then, so on
@@ -383,6 +391,7 @@ sql-write service_contacts
 | 2026-08-30 | `import src/lib/storage.js` + `import src/lib/upload-bytes.js` + `import src/lib/order-return-filter.js` — where a returned document's bytes go, what the bytes actually are, and the email-signature filter | RTL → LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* A second storage layer is a second place a document is lost; a second sniffer is a second answer to "is this a PDF"; a second signature filter means re-living the months of rejecting company logos by hand | #1376 |
 | 2026-08-30 | `import src/lib/vendor-directory.js` — the PURE half only: how a vendor card's addresses and phones are read | RTL → LT | The same directory is shared, so the same reading of it must be. db/224's `email` scalar + `emails` array pair drops addresses when either is read alone. **`suggest()` is off limits** — it reaches the short-term pool; Long-Term queries `service_contacts` on its own pool and folds with these helpers | #1376 |
 | 2026-08-30 | `import src/lib/email/reply-cut.js` — where a person's own reply ends and the quoted history begins | RTL → LT | The order letter prints the SHARED reply marker; this is the reader that cuts on it. Two halves of one mechanism — a second copy files the vendor's whole thread on the loan every round |  #1376 |
+| 2026-08-30 | `import src/lib/send-as.js` — who an order comes from | RTL → LT | *"make sure all the orders are coming from the user that is actually ordering, from his email, from his name."* One company identity, one verified sending domain, one answer to whether an address may go in a From line — the rule is DKIM alignment, not a preference. The short-term desk is deliberately NOT switched over; that is the owner's call | #1376 |
 | 2026-08-30 | `import src/lib/email/{template,quote}.js` — the one branded email | RTL → LT | *"it should have the same feel … the same Gmail-style box"* | #1376 |
 | 2026-08-30 | `import src/lib/file-address.js` — the unique per-order reply address | RTL → LT | *"Everything should share the code … If the code is updated, he's also updating it."* | #1376 |
 | 2026-08-30 | `sql-ref` / `sql-read` / `sql-write service_contacts` — the shared vendor directory | RTL ↔ LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* | #1376 |

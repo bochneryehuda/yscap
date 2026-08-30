@@ -39,6 +39,7 @@ const cfg = require('../config');
 const email = require('../../lib/email');
 const orderEmail = require('../../lib/order-email');
 const { ltOrderReplyTo } = require('../../lib/file-address');
+const sendAs = require('../../lib/send-as');
 const kinds = require('./kinds');
 const data = require('./data');
 const letter = require('./letter');
@@ -140,7 +141,7 @@ async function thread(loanId, kind, client = db) {
  *
  * @returns {{ok:true, messageId, to, cc} | {ok:false, reason, message, ambiguous?}}
  */
-async function sendLetter({ loanId, kind, built, to, cc, replyTo, fromName, threadState, attachments }) {
+async function sendLetter({ loanId, kind, built, to, cc, replyTo, from, threadState, attachments }) {
   const toList = (to || []).filter(Boolean);
   const ccList = (cc || []).filter(Boolean);
   if (!toList.length) {
@@ -163,23 +164,56 @@ async function sendLetter({ loanId, kind, built, to, cc, replyTo, fromName, thre
     headers.References = (threadState.root && threadState.root !== parent) ? `${threadState.root} ${parent}` : parent;
   }
 
+  /* THE ORDER COMES FROM THE PERSON WHO PLACED IT (owner-directed 2026-08-30). The
+     rule — and the reason a person on another domain is sent FOR rather than AS — is
+     `lib/send-as.js`; this only supplies the person and the configuration. The order's
+     own reply address always wins over theirs, because that address is what files the
+     documents they send back onto the right condition. */
+  const sender = sendAs.senderFor(from || {}, {
+    notifyFrom: cfg.notifyFrom,
+    domains: sendAs.sendingDomains({ notifyFrom: cfg.notifyFrom, configured: cfg.emailSendingDomains }),
+    enabled: cfg.sendAsUser,
+    provider: cfg.emailProvider,
+    replyTo: replyTo || cfg.replyToDefault || null,
+  });
+
+  const payload = {
+    to: toList,
+    cc: ccList,
+    subject,
+    html: built.html,
+    text: built.text,
+    headers,
+    ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
+    replyTo: sender.replyTo,
+    from: sender.from || undefined,
+    // The long-term thread is `lt_order_events`; the short-term Email Center is
+    // never written by a long-term send (rule 4).
+    _skipCapture: true,
+    _ctx: { type: `lt_order_${kind}`, audience: 'staff' },
+  };
+
   let res;
   try {
-    res = await email.sendMail({
-      to: toList,
-      cc: ccList,
-      subject,
-      html: built.html,
-      text: built.text,
-      headers,
-      ...(Array.isArray(attachments) && attachments.length ? { attachments } : {}),
-      replyTo: replyTo || cfg.replyToDefault || null,
-      from: fromName && email.fromWithName ? email.fromWithName(fromName) : undefined,
-      // The long-term thread is `lt_order_events`; the short-term Email Center is
-      // never written by a long-term send (rule 4).
-      _skipCapture: true,
-      _ctx: { type: `lt_order_${kind}`, audience: 'staff' },
-    });
+    try {
+      res = await email.sendMail(payload);
+    } catch (first) {
+      /* UNDER GRAPH a From that is not a real mailbox in the tenant does not degrade —
+         the whole send FAILS. A failed order is worse than one from the company
+         address, so a send-as-user attempt is retried ONCE as the company with their
+         name on it. Only when the rule itself asked for the fallback, and never on an
+         ambiguous failure: the provider may already have taken the first message, and
+         retrying would deliver the order twice. */
+      if (!sender.fallbackOnFailure || orderEmail.isAmbiguousSendFailure(first)) throw first;
+      const asCompany = sendAs.senderFor(from || {}, {
+        notifyFrom: cfg.notifyFrom, domains: [], enabled: cfg.sendAsUser,
+        replyTo: replyTo || cfg.replyToDefault || null,
+      });
+      console.warn(`[lt-orders] sending as ${sender.from} failed (${(first && first.message) || first}) — retrying from the company address.`);
+      res = await email.sendMail({ ...payload, from: asCompany.from || undefined, replyTo: asCompany.replyTo });
+      sender.mode = 'company_fallback';
+      sender.why = 'The provider refused a send from that person’s own address, so this went from the company address under their name.';
+    }
   } catch (e) {
     if (orderEmail.isAmbiguousSendFailure(e)) {
       return {
@@ -192,7 +226,7 @@ async function sendLetter({ loanId, kind, built, to, cc, replyTo, fromName, thre
   }
   const verdict = orderEmail.sendVerdict(res);
   if (!verdict.ok) return { ok: false, reason: verdict.reason, message: verdict.message };
-  return { ok: true, messageId, to: toList, cc: ccList, subject };
+  return { ok: true, messageId, to: toList, cc: ccList, subject, sentAs: { mode: sender.mode, from: sender.from, why: sender.why } };
 }
 
 /** Record one message on an order's thread. Best-effort by design at the CALLER's
@@ -282,7 +316,11 @@ async function place(loanId, kind, opts = {}) {
 
     sent = await sendLetter({
       loanId, kind, built, to: recips.to, cc: recips.cc, replyTo,
-      fromName: opts.fromName || (d.officer && d.officer.name) || null,
+      // The person who pressed the button, falling back to the file's own officer —
+      // the vendor must always have a real person to answer, and an unattributed
+      // order is what makes a title company reply to nobody.
+      from: opts.from || { name: opts.fromName || (d.officer && d.officer.name) || null,
+        email: opts.fromEmail || (d.officer && d.officer.email) || null },
       threadState: null,
     });
     if (!sent.ok && !sent.ambiguous) {
@@ -313,7 +351,7 @@ async function place(loanId, kind, opts = {}) {
   await markConditionAsked(loanId, def.condition).catch(() => {});
 
   if (sent.ambiguous) return { ok: true, ambiguous: true, warning: sent.message, to: sent.to, cc: sent.cc };
-  return { ok: true, to: sent.to, cc: sent.cc, subject: sent.subject };
+  return { ok: true, to: sent.to, cc: sent.cc, subject: sent.subject, sentAs: sent.sentAs };
 }
 
 /**
@@ -342,7 +380,8 @@ async function followUp(loanId, kind, opts = {}) {
   });
   const sent = await sendLetter({
     loanId, kind, built, to: recips.to, cc: recips.cc, replyTo,
-    fromName: opts.fromName || (d.officer && d.officer.name) || null,
+    from: opts.from || { name: opts.fromName || (d.officer && d.officer.name) || null,
+      email: opts.fromEmail || (d.officer && d.officer.email) || null },
     threadState: { root: order.root_message_id, last: order.last_message_id, subject: order.subject },
     attachments: opts.attachments,
   });
@@ -362,7 +401,7 @@ async function followUp(loanId, kind, opts = {}) {
   } catch (_) { /* the message went out; the record is a courtesy and is retried by the thread read */ }
 
   if (sent.ambiguous) return { ok: true, ambiguous: true, warning: sent.message };
-  return { ok: true, to: sent.to, cc: sent.cc };
+  return { ok: true, to: sent.to, cc: sent.cc, sentAs: sent.sentAs };
 }
 
 /**

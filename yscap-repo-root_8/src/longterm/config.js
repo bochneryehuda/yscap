@@ -65,6 +65,33 @@ const replyToDefault = (process.env.REPLY_TO || 'sales@yscapgroup.com').trim() |
    authenticate anyone". */
 const resendWebhookSecret = (process.env.RESEND_WEBHOOK_SECRET || '').trim() || null;
 
+/* WHO AN ORDER COMES FROM. The same two environment variables the short-term side
+   reads, for the same reason the domain is: there is ONE verified sending domain and
+   ONE company identity, so two products reading two variables would be two halves of
+   one deliverability posture. The RULE itself is `src/lib/send-as.js` — shared, and
+   the research is in its header; this only reads the configuration. */
+const emailSendingDomains = (process.env.EMAIL_SENDING_DOMAINS || '').trim() || null;
+const sendAsUser = !/^(0|false|no|off)$/i.test(String(process.env.SEND_AS_USER || '').trim());
+const notifyFrom = (process.env.NOTIFY_FROM || 'PILOT by YS Capital <notifications@yscapgroup.com>').trim();
+/* WHICH PROVIDER WILL CARRY THE SEND, resolved the SAME way the short-term side
+   resolves it (an explicit choice wins; otherwise infer from whichever credential
+   set is present). It is read here rather than imported for the separation reason
+   above — but it MUST agree, because it is what lights the Graph fallback in
+   `send-as.js`: Graph refuses a From that is not a real mailbox in the tenant and
+   fails the WHOLE send rather than degrading, so a provider read as "unknown" on a
+   Graph deployment would leave that safety net dark on exactly the deployment that
+   needs it. A rule fed the wrong context is a dead door. */
+function resolveEmailProvider() {
+  const explicit = (process.env.EMAIL_PROVIDER || '').trim().toLowerCase();
+  if (explicit && explicit !== 'auto') return explicit;
+  if ((process.env.RESEND_API_KEY || '').trim()) return 'resend';
+  if ((process.env.MS_TENANT_ID || '').trim() &&
+      (process.env.MS_CLIENT_ID || '').trim() &&
+      (process.env.MS_CLIENT_SECRET || '').trim()) return 'graph';
+  return 'none';
+}
+const emailProvider = resolveEmailProvider();
+
 module.exports = {
   env,
   databaseUrl: process.env.DATABASE_URL || '',
@@ -73,4 +100,8 @@ module.exports = {
   chatReplyDomain,
   replyToDefault,
   resendWebhookSecret,
+  emailSendingDomains,
+  sendAsUser,
+  notifyFrom,
+  emailProvider,
 };

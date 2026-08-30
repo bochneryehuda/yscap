@@ -45,6 +45,10 @@ async function isAdmin(req) {
 
 const actorId = (req) => (req.actor && req.actor.id) || null;
 const actorName = (req) => (req.actor && (req.actor.fullName || req.actor.full_name || req.actor.name)) || null;
+/* THE PERSON THE ORDER COMES FROM. Their own name and their own address, so the
+   vendor answers a real person — `lib/send-as.js` decides whether we may put that
+   address in the From line or must send for them instead. */
+const actorSender = (req) => ({ name: actorName(req), email: (req.actor && req.actor.email) || null });
 
 /* ── THE DESK ─────────────────────────────────────────────────────────────── */
 
@@ -112,7 +116,7 @@ router.post('/loans/:loanId/:kind/place', async (req, res) => {
   if (!scoped) return;
   const b = req.body || {};
   const out = await desk.place(scoped.loan.id, req.params.kind, {
-    staffId: actorId(req), fromName: actorName(req),
+    staffId: actorId(req), from: actorSender(req),
     note: b.note, ccBorrower: b.ccBorrower, ccHelper: b.ccHelper,
     extraCc: Array.isArray(b.extraCc) ? b.extraCc : [],
     conditionId: UUID_RE.test(String(b.conditionId || '')) ? b.conditionId : null,
@@ -128,7 +132,7 @@ router.post('/loans/:loanId/:kind/follow-up', async (req, res) => {
   if (!scoped) return;
   const b = req.body || {};
   const out = await desk.followUp(scoped.loan.id, req.params.kind, {
-    staffId: actorId(req), fromName: actorName(req), note: b.note,
+    staffId: actorId(req), from: actorSender(req), note: b.note,
     extraCc: Array.isArray(b.extraCc) ? b.extraCc : [],
     msgType: b.note ? 'reply' : 'followup',
   });
