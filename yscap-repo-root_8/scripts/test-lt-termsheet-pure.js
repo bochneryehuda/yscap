@@ -362,6 +362,33 @@ section('the three documents — one option, three options, three scenarios');
 }
 
 // =============================================================================
+section('every fact the issuing door states reaches the document');
+// =============================================================================
+{
+  // ⛔ THE PREPARED PROJECTION IS A WHITELIST, SO A KEY NOBODY LISTED IS DROPPED
+  // IN SILENCE — which is the correct behaviour (rule 10's first defence) and is
+  // also how the officer's job TITLE went missing the day the footer started
+  // printing it: the route set it, the whitelist did not carry it, and nothing
+  // anywhere said so.
+  //
+  // DERIVED FROM THE DOOR, never a hand-kept list: the keys are read out of
+  // `preparedFrom` in the route, so a producer that adds a field and forgets the
+  // whitelist fails here rather than shipping a blank line on a document.
+  const routeSrc = require('fs').readFileSync(path.join(__dirname, '../src/longterm/routes/term-sheet.js'), 'utf8');
+  const fnAt = routeSrc.indexOf('function preparedFrom(');
+  const body = routeSrc.slice(routeSrc.indexOf('return {', fnAt), routeSrc.indexOf('\n}', fnAt));
+  const keys = [...body.matchAll(/^\s{4}(\w+):/gm)].map((m) => m[1]);
+  check(keys.length >= 8, `the issuing door states ${keys.length} facts about who this is from`);
+
+  const prep = {};
+  for (const k of keys) prep[k] = `sentinel-${k}`;
+  const built = snapshot.buildSnapshot({ selections: [quote('The offer', 7.375, 102)], plan: PLAN, prepared: prep });
+  const dropped = keys.filter((k) => built.snapshot.prepared[k] !== `sentinel-${k}`);
+  check(dropped.length === 0,
+    `and every one of them survives onto the document (dropped: ${dropped.join(', ') || 'none'})`);
+}
+
+// =============================================================================
 section('a term sheet is only issued complete — the export gate');
 // =============================================================================
 {

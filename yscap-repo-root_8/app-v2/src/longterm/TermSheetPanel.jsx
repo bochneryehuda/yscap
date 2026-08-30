@@ -205,7 +205,10 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
   useEffect(() => {
     let dead = false;
     if (!open || !members.length) { setPlan(null); return undefined; }
-    (async () => {
+    // DEBOUNCED, because `names` is in the dependencies and it changes on every
+    // keystroke in the manual program-name box — an undebounced effect would
+    // post a preview per character typed.
+    const t = setTimeout(async () => {
       try {
         const r = await ltApi.termSheetPreview({ selections: selectionsOf(), anchorIndex: anchor });
         if (!dead) setPlan({ docKind: r.docKind, gate: r.gate, expiryHours: r.expiryHours });
@@ -214,8 +217,8 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
         // will say so itself, in the server's own words.
         if (!dead) setPlan({ error: (e && (e.message || e.error)) || null });
       }
-    })();
-    return () => { dead = true; };
+    }, 350);
+    return () => { dead = true; clearTimeout(t); };
   }, [open, members, names, anchor, selectionsOf]);
 
   async function issue() {
@@ -372,6 +375,13 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
           )}
         </div>
       )}
+
+      {/* ⛔ THE REFUSAL IS SHOWN BEFORE THE BUTTON IS PRESSED, NOT AFTER. The
+          server refuses an option it cannot name on a borrower's document, and
+          the officer finding that out only when they click has already told
+          somebody the sheet was on its way. The name box above is where they fix
+          it; this is the sentence that says so, in the server's own words. */}
+      {plan && plan.error && <Note tone="warn">{plan.error}</Note>}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, alignItems: 'center' }}>
         <button type="button" style={btn('primary')} disabled={!n || busy === 'issue' || outerBusy} onClick={issue}>

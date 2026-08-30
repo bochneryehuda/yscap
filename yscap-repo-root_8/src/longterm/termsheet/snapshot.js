@@ -376,6 +376,14 @@ function buildSnapshot({ selections, plan, anchorIndex = 0, prepared = {}, maxMe
         borrowerName: str(prepared.borrowerName, 120),
         propertyAddress: str(prepared.propertyAddress, 200),
         officerName: str(prepared.officerName, 120),
+        // The officer's JOB TITLE — business contact information, exactly like
+        // the name, the telephone number and the NMLS beside it, and the same
+        // thing the RTL footer prints. ⛔ ADDED DELIBERATELY: this projection is
+        // a WHITELIST, so a producer that sets a key nobody listed here has its
+        // value silently dropped — which is what happened to this one when the
+        // footer started printing it. Adding a key is a decision about what may
+        // appear on a client's document, never a formality.
+        officerTitle: str(prepared.officerTitle, 80),
         officerEmail: str(prepared.officerEmail, 160),
         officerPhone: str(prepared.officerPhone, 40),
         officerNmls: str(prepared.officerNmls, 40),
