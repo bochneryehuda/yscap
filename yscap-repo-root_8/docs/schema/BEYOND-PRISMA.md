@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**940 objects**, and a database rebuilt from the Prisma
+**942 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 646 numbered migrations in `db/` (highest `db/649`) remain the only thing that builds this database.
+rebuild a database from them.** The 647 numbered migrations in `db/` (highest `db/650`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -20,16 +20,16 @@ the live database.
 | | |
 |---|---|
 | Tables | 405 |
-| Columns | 6478 |
+| Columns | 6480 |
 | Triggers | 37 |
 | Functions | 140 |
 | CHECK constraints | 346 |
 | Generated columns | 12 |
-| Partial indexes | 405 |
+| Partial indexes | 407 |
 | Primary keys | 405 |
 | Foreign keys | 825 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1399 |
+| Indexes (all kinds) | 1401 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -231,7 +231,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (405)
+## Partial indexes (407)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -312,6 +312,7 @@ the live database.
 - **idx_checklist_items_tool** on `checklist_items`
 - **idx_checklist_items_track_record** on `checklist_items`
 - **idx_checklist_loan_exc** on `checklist_items`
+- **idx_checklist_lt_loan** on `checklist_items`
 - **idx_checklist_trdoc_key** on `checklist_items`
 - **idx_class_cb_claimable** on `class_callback_events`
 - **idx_class_notes_unread** on `class_notes`
@@ -345,6 +346,7 @@ the live database.
 - **idx_document_pages_phash** on `document_pages`
 - **idx_document_pages_texthash** on `document_pages`
 - **idx_documents_lead** on `documents`
+- **idx_documents_lt_loan** on `documents`
 - **idx_documents_sha256** on `documents`
 - **idx_documents_sharepoint_shelf** on `documents`
 - **idx_documents_source_document** on `documents`
@@ -1890,7 +1892,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 405 primary keys and 1399 indexes is
+Every one of the 405 primary keys and 1401 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
