@@ -109,6 +109,39 @@ export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount, 
   const [note, setNote] = useState(null);
   const [open, setOpen] = useState(false);
   const [gate, setGate] = useState(null);      // the SERVER's verdict — never re-derived here
+  /**
+   * WHAT IS THIS SHEET STILL MISSING? — asked of the SERVER, never worked out here.
+   *
+   * ⛔ ONE DEFINITION OF COMPLETE. `snapshot.exportGate` decides it, the issue
+   * route enforces it, and this asks the same function through `/preview` — so
+   * the panel can never show a green button the server would refuse, nor ask for
+   * a field the server does not want. A local copy of the rule is exactly how a
+   * screen and its server drift apart.
+   *
+   * ⛔ ABOVE THE EARLY RETURN, AND THAT PLACEMENT IS LOAD-BEARING. `enabled`
+   * flips at runtime — the board learns whether term sheets are switched on from
+   * the SAME cart read that tells it what is collected, so this component really
+   * does render `false` first and `true` a moment later. A hook below the return
+   * would be called on the second render and not the first, and React answers
+   * that with "Rendered more hooks than during the previous render" and takes the
+   * whole page down. Caught by `scripts/test-react-hook-order.js`, which is the
+   * guard that exists for exactly this and which found it here.
+   */
+  const ask = useCallback(async () => {
+    if (!issue) return null;
+    try {
+      const r = await ltApi.termSheetPreview({ selections: [issue.selectionNow()], prepared: issue.prepared });
+      setGate(r && r.gate ? r.gate : null);
+      return r && r.gate ? r.gate : null;
+    } catch (e) {
+      // A preview that cannot be had is not a refusal to issue — the issue door
+      // re-checks the gate itself. Say so and let them press.
+      setGate(null);
+      setNote({ tone: 'bad', text: (e && (e.message || e.error)) || 'Could not check what is still needed.' });
+      return null;
+    }
+  }, [issue]);
+
   const [issued, setIssued] = useState(null);
 
   if (!enabled) return null;
@@ -132,29 +165,6 @@ export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount, 
     } finally { setBusy(null); }
   }
 
-  /**
-   * WHAT IS THIS SHEET STILL MISSING? — asked of the SERVER, never worked out here.
-   *
-   * ⛔ ONE DEFINITION OF COMPLETE. `snapshot.exportGate` decides it, the issue
-   * route enforces it, and this asks the same function through `/preview` — so
-   * the panel can never show a green button the server would refuse, nor ask for
-   * a field the server does not want. A local copy of the rule is exactly how a
-   * screen and its server drift apart.
-   */
-  const ask = useCallback(async () => {
-    if (!issue) return null;
-    try {
-      const r = await ltApi.termSheetPreview({ selections: [issue.selectionNow()], prepared: issue.prepared });
-      setGate(r && r.gate ? r.gate : null);
-      return r && r.gate ? r.gate : null;
-    } catch (e) {
-      // A preview that cannot be had is not a refusal to issue — the issue door
-      // re-checks the gate itself. Say so and let them press.
-      setGate(null);
-      setNote({ tone: 'bad', text: (e && (e.message || e.error)) || 'Could not check what is still needed.' });
-      return null;
-    }
-  }, [issue]);
 
   /** Press one: complete deals issue immediately, incomplete ones open the boxes. */
   async function startIssue() {
