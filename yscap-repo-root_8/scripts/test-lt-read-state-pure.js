@@ -99,8 +99,13 @@ check(/title=\{row\.read_why \|\| ''\}/.test(uiPipeline),
   'and the hover is the SERVER\'s own sentence, never one retyped on the screen');
 check(/rail\.readState === 'failed' \|\| rail\.readState === 'waiting'/.test(uiLoan)
   && /rail\.readWhy \|\|/.test(uiLoan),
-'the rail says which of the two steps the loan is at, instead of "Read from Encompass —"');
-check(/rail\.readState === 'failed' \|\| rail\.readState === 'waiting' \? \([\s\S]{0,600}\) : \([\s\S]{0,200}Read from Encompass/.test(uiLoan),
+'the file overview says which of the two steps the loan is at, instead of "Read from Encompass —"');
+// THE RULE IS UNCHANGED; ITS SHAPE IS NOT. The always-on rail became the shared
+// file-overview slide-over on 2026-08-30, so the two branches are now a ternary that
+// produces a SENTENCE rather than two pieces of JSX. What still has to be true is the
+// same thing it always was: the date line is reachable ONLY on the branch that has a
+// date, and a server too old to name a state falls through to it rather than blanking.
+check(/const reading = \(rail\.readState === 'failed' \|\| rail\.readState === 'waiting'\)\s*\?[\s\S]{0,200}:\s*`Read from Encompass \$\{day\(rail\.syncedAt\)\}`/.test(uiLoan),
   'the date line is drawn ONLY on the branch that has a date — and an older server that names no state still falls through to it, so a half-landed deploy never blanks the line');
 check(!/The last read failed:/.test(uiLoan),
   'and the failure wording is the server\'s one definition, not a second copy typed on the screen');

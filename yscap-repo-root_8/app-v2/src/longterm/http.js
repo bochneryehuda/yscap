@@ -110,6 +110,29 @@ export async function ltDownload(path, filename) {
   }
 }
 
+/**
+ * Fetch a document and hand back a blob: URL for an `<iframe>` or an `<img>`.
+ *
+ * An `<iframe src>` cannot carry the Bearer token — the same lesson the broker draw
+ * photos taught — so a preview that points a frame straight at the route renders a
+ * sign-in page instead of the document. The caller MUST revoke the URL when it is
+ * done with it, or every re-render leaks a copy of the file into the tab.
+ */
+export async function ltBlobUrl(path) {
+  const headers = {};
+  const t = token();
+  if (t) headers.Authorization = `Bearer ${t}`;
+  const res = await fetch(path, { method: 'GET', headers, credentials: 'same-origin' });
+  if (!res.ok) {
+    let data = null;
+    try { data = await res.json(); } catch { /* the status is enough */ }
+    const err = new Error(messageFor(res.status, data));
+    err.status = res.status;
+    throw err;
+  }
+  return URL.createObjectURL(await res.blob());
+}
+
 export const ltGet = (p) => ltFetch('GET', p);
 export const ltPost = (p, b) => ltFetch('POST', p, b);
 export const ltPut = (p, b) => ltFetch('PUT', p, b);

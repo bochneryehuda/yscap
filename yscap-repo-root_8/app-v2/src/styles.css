@@ -5048,7 +5048,9 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    for a keyboard and a screen reader as well. */
 .lt-workspace > .lt-rooms{order:1}
 .lt-workspace > .lt-sections{order:2}
-.lt-workspace > .lt-ledger{order:3}
+/* `.lt-ledger` (the always-on details rail) was RETIRED on 2026-08-30 — the file
+   overview is a button and the shared `.fov-*` slide-over now. Its order rule is
+   gone with it rather than left behind to place a column nothing renders. */
 @media(max-width:900px){ .lt-workspace{grid-template-columns:1fr !important} }
 /* Stacked, the room index is just the first block on the page — sticking it to the
    top would pin a list above the content it is meant to introduce, and on a phone
@@ -5122,7 +5124,6 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 @media(max-width:900px){
   .lt-rooms{order:1}
   .lt-sections{order:2}
-  .lt-ledger{order:3}
 }
 
 /* The 1003 sections' label/value lists. Two columns is right on a desktop and is a
@@ -5184,6 +5185,70 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
   .ltf-row{gap:10px}
   .ltf-rk{font-size:12.5px}
 }
+
+/* ── THE LONG-TERM WHITE BOX — `.lt-card` ────────────────────────────────────
+   Owner-directed 2026-08-30: *"we want the files themselves on the pipeline to
+   have this white. Everything should be in a white box with its lines, the same
+   way the active files in the pipeline look: one file, next file, next file on
+   the short-term side"*, and for a file's sections, *"the section should be in a
+   white box, the same way we have it on the short term side. Every section is in
+   its own white background. It makes it feel a little richer."*
+
+   WHY THIS CLASS EXISTS AT ALL — the defect underneath the complaint. Every
+   long-term screen already wrapped its content in `className="card"`. There has
+   never been a `.card` rule in this stylesheet. So the class did nothing: no
+   background, no border, no radius, no padding. The long-term side has been
+   drawing its files, its sections and its tables straight onto the paper, which
+   is exactly the "doesn't feel like the short-term side" the owner is describing.
+   The RTL side reads as boxes because it uses `.panel`, which is defined.
+
+   IT IS A NEW CLASS, NOT A DEFINITION OF `.card`. Defining `.card` would have
+   been one line, and it would have re-styled forty RTL screens that also carry
+   the undefined class — a change nobody asked for, on the live product, to fix
+   the side that is not live. Long-Term gets its own name; RTL renders byte-for-
+   byte as it did.
+
+   THE VALUES ARE RTL's OWN, so the two feel like one system: `--surface` white,
+   the `--line` hairline, and the same 1px lift `.dd-card` uses. The radius is
+   deliberately NOT `--radius` (4px): the long-term plate is a softer, rounder
+   surface and the owner asked to keep its look, so 12px — the same figure the
+   dashboard cards use. */
+.lt-card{background:var(--surface,#FFFFFF);border:1px solid var(--line,#D9D4C8);
+  border-radius:12px;padding:18px 20px;color:#141B22;
+  box-shadow:0 1px 2px rgba(20,27,34,.04)}
+/* Stacked cards space themselves; inside a grid the GAP does it, so the
+   adjacent-sibling margin must not double up (the same guard `.panel` carries). */
+.lt-card + .lt-card{margin-top:12px}
+.lt-workspace > .lt-card + .lt-card,
+.lt-sections > .lt-card + .lt-card{margin-top:0}
+/* A card that holds a full-bleed table opts in to `.lt-card-flush`: no padding,
+   and it clips its own corners so the first row cannot square off the rounded
+   top. It is OPT-IN because `overflow:hidden` on every card would clip a
+   tooltip, and would turn each card into a scroll container — which pins any
+   `position:sticky` child to the card instead of to the page. */
+.lt-card.lt-card-flush{padding:0;overflow:hidden}
+@media(max-width:720px){ .lt-card{padding:14px 14px;border-radius:10px} }
+
+/* ── THE PIPELINE'S FILE ROWS — "one file, next file, next file" ─────────────
+   The rows carry the hairline, the last one does not (a rule under the final
+   row draws a second border against the card's own edge), and the whole row
+   lifts on hover because the whole row is the link to the file. This is the
+   RTL pipeline's `.q-row` behaviour, in Long-Term's own namespace. */
+.lt-rows{width:100%;border-collapse:collapse}
+.lt-rows > tbody > tr{border-top:1px solid var(--line,#D9D4C8);transition:background .12s}
+.lt-rows > tbody > tr:first-child{border-top:1px solid rgba(20,27,34,.16)}
+.lt-rows > tbody > tr:hover{background:var(--surface-soft,#F4F1EA)}
+
+/* ── THE FILE SCREEN WITHOUT ITS DETAILS RAIL ────────────────────────────────
+   Owner-directed 2026-08-30: *"Right now, the file overview is always displaying
+   on the right side. We want to go and do the same thing that we have on the
+   short term side, where we have a file overview button."* The rail is gone from
+   the page and its figures moved into the shared `.fov-*` slide-over, so this
+   workspace is now the jump menu and the file — two columns, not three. The
+   `order` values below are the same ones the three-column rule set; the details
+   column simply no longer exists to be ordered. */
+.lt-workspace.lt-workspace-2{grid-template-columns:196px minmax(0,1fr)}
+@media(max-width:900px){ .lt-workspace.lt-workspace-2{grid-template-columns:1fr !important} }
 
 /* ---- File-overview slide-over (owner-directed 2026-08-18) — .fov-* namespace.
    One component on all three file screens (staff / borrower / broker): a

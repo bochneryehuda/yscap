@@ -162,13 +162,19 @@ async function renderEntry(entry, propsJs = '{}') {
   const out = await esbuild.build({
     stdin: {
       contents: `import React from 'react'; import { renderToString } from 'react-dom/server';
-        import { FileHeader, SevenStops, MilestoneBoard, Rail } from './src/longterm/LtLoan.jsx';
+        import { FileHeader, SevenStops, MilestoneBoard, overviewCard } from './src/longterm/LtLoan.jsx';
         const LOAN = ${JSON.stringify(LOAN)};
         globalThis.__HTML__ = [
           renderToString(React.createElement(FileHeader, { rail: LOAN.rail, loan: LOAN.loan, file: LOAN.file })),
           renderToString(React.createElement(SevenStops, { stops: LOAN.stops, clock: LOAN.milestoneClock, sale: LOAN.sale })),
           renderToString(React.createElement(MilestoneBoard, { board: LOAN.milestoneBoard, history: LOAN.milestoneHistory })),
-          renderToString(React.createElement(Rail, { rail: LOAN.rail })),
+          // THE FILE OVERVIEW IS DATA NOW, NOT A COMPONENT (2026-08-30): the rail became
+          // the shared .fov-* slide-over, which is handed a plain {header, sections[]}.
+          // Rendering the SHAPE is what proves the same crash class is still covered —
+          // a builder reading a key the payload does not carry fails here exactly as a
+          // component would have, and the empty-payload guard below is the same test.
+          JSON.stringify(overviewCard({ rail: LOAN.rail, file: LOAN.file })),
+          JSON.stringify(overviewCard({})),
           // The data-less guards: none of these may throw either.
           renderToString(React.createElement(FileHeader, {})),
           renderToString(React.createElement(SevenStops, {})),

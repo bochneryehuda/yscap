@@ -67,7 +67,7 @@ export default function LtArchive() {
 
   return (
     <LtLayout title="Archive — deleted in Encompass">
-      <div className="card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
+      <div className="lt-card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
         Two kinds of file live here, and neither is part of the pipeline: files sitting in
         Encompass&rsquo;s own trash folder (test files, training files &mdash; deleted there), and
         stale <em>archived copies</em> of a live file &mdash; a duplicate record Encompass itself
@@ -77,8 +77,8 @@ export default function LtArchive() {
         the next sync. <Link to="/internal/lt" style={{ color: '#2F7F86' }}>Back to the pipeline</Link>
       </div>
 
-      {err && <div className="card" style={{ color: '#8A2D2D', marginBottom: 12 }}>{err}</div>}
-      {note && <div className="card" style={{ color: '#1F5F3F', marginBottom: 12 }}>{note}</div>}
+      {err && <div className="lt-card" style={{ color: '#8A2D2D', marginBottom: 12 }}>{err}</div>}
+      {note && <div className="lt-card" style={{ color: '#1F5F3F', marginBottom: 12 }}>{note}</div>}
 
       {data && (
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 10 }}>
@@ -94,11 +94,11 @@ export default function LtArchive() {
       )}
 
       {data && data.count === 0 && (
-        <div className="card" style={{ color: '#141B22' }}>The archive is empty.</div>
+        <div className="lt-card" style={{ color: '#141B22' }}>The archive is empty.</div>
       )}
 
       {data && data.count > 0 && (
-        <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+        <div className="lt-card lt-card-flush" style={{ padding: 0, overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
             <thead><tr>
               <th style={th}>Loan #</th><th style={th}>Borrower</th><th style={th}>Program</th>

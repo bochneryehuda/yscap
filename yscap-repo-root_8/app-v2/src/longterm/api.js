@@ -8,7 +8,7 @@
 // The one rule: a path here always starts `/api/lt/`. Anything else belongs to the
 // other product.
 
-import { ltGet, ltPost, ltPut, ltPatch, ltDel, ltDownload } from './http.js';
+import { ltGet, ltPost, ltPut, ltPatch, ltDel, ltDownload, ltBlobUrl } from './http.js';
 
 const lt = (p) => `/api/lt${p}`;
 
@@ -202,6 +202,109 @@ export const ltApi = {
   // rate-limited into being wrong.
   clickupStatusReviews: (limit) => ltGet(
     lt(`/clickup/status-reviews${limit ? `?limit=${encodeURIComponent(limit)}` : ''}`)),
+  // THE GENERAL CONDITION CENTER (owner-directed 2026-08-30) — OUR OWN
+  // conditions, not the Encompass mirror above.
+  //
+  // NAMED `fileConditions*`, NOT `conditionCenter*`, AND THAT MATTERS: this
+  // client already has a `conditionCenter()` for the Encompass mirror, and in an
+  // object literal the LATER key silently wins. A second `conditionCenter` here
+  // would have re-pointed the existing mirror screen at this endpoint with no
+  // error anywhere — the screen would simply have started showing the wrong
+  // conditions. Two centres, two names.
+  fileConditions: (loanId) => ltGet(lt(`/condition-center/loans/${encodeURIComponent(loanId)}`)),
+  fileConditionsEvaluate: (loanId) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/evaluate`), {}),
+  // THE THREE CONDITIONS THAT ARE A CHOICE, not an upload — the mortgages on
+  // the credit report, the mortgage on the property being refinanced, and the
+  // vesting entity. Their working data has its own door because the conditions
+  // LIST is loaded by every screen and every borrower, and these reads are only
+  // wanted once somebody opens one of them.
+  conditionWorkspace: (loanId, id) => ltGet(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/workspace`)),
+  conditionAnswer: (loanId, id, answer) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/answer`), { answer }),
+
+  conditionSatisfy: (loanId, id) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/satisfy`), {}),
+  conditionWaive: (loanId, id, reason) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/waive`), { reason }),
+  conditionReopen: (loanId, id) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/reopen`), {}),
+  conditionStatus: (loanId, id, status) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/status`), { status }),
+  conditionNote: (loanId, id, note) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/note`), { note }),
+  conditionAdd: (loanId, code, fieldKey) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions`), { code, fieldKey }),
+  conditionRemove: (loanId, id) => ltDel(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}`)),
+
+  // The LIBRARY — the settings side. The rule builder draws its whole field
+  // picker from this response, so a screen can never offer a field the evaluator
+  // would then refuse.
+  conditionLibrary: () => ltGet(lt('/condition-center/library')),
+  conditionTemplateSave: (code, patch) => ltPatch(lt(`/condition-center/library/${encodeURIComponent(code)}`), patch),
+  conditionRulePreview: (rule, loanId) => ltPost(lt('/condition-center/library/preview'), { rule, loanId }),
+  conditionReseed: () => ltPost(lt('/condition-center/library/reseed'), {}),
+  conditionBuckets: () => ltGet(lt('/condition-center/buckets')),
+  conditionBucketSave: (b) => ltPost(lt('/condition-center/buckets'), b),
+  conditionBucketRetire: (key) => ltDel(lt(`/condition-center/buckets/${encodeURIComponent(key)}`)),
+
+  // THE REPORTING CENTRE (owner-directed 2026-08-30). The field catalog comes from
+  // the SERVER, so the column picker and the compiler can never disagree about what
+  // exists — the browser keeps no second copy of the field list. A report definition
+  // is a set of catalog KEYS and operators; it is never SQL, and the server refuses
+  // a key its catalog does not carry.
+  reportFields: () => ltGet(lt('/reports/fields')),
+  runReport: (report) => ltPost(lt('/reports/run'), { report }),
+  describeReport: (report) => ltPost(lt('/reports/describe'), { report }),
+  savedReports: () => ltGet(lt('/reports/saved')),
+  saveReport: (body) => ltPost(lt('/reports/saved'), body),
+  deleteReport: (id) => ltDel(lt(`/reports/saved/${encodeURIComponent(id)}`)),
+  // Per-person figures over the whole book. Refused to somebody scoped to their own
+  // pipeline — a processor's average measured over a slice of their work, printed
+  // under their name, is worse than no number at all.
+  scorecard: (params = {}) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v != null && v !== '') q.set(k, String(v));
+    const s = q.toString();
+    return ltGet(lt(`/reports/scorecard${s ? `?${s}` : ''}`));
+  },
+  // One file's own story: every span it can measure, the ladder with Encompass's
+  // date and OUR observation side by side, and the events behind them.
+  fileTimeline: (loanId) => ltGet(lt(`/reports/loans/${encodeURIComponent(loanId)}/timeline`)),
+
+  // THE ORDERS DESK (owner-directed 2026-08-30). The LETTER is the short-term
+  // desk's own — one definition, shared — so `orderPreview` returns exactly what
+  // the send would put on the wire rather than a second rendering of it. Every
+  // blocker carries the SERVER's own sentence; the screen prints it verbatim,
+  // because a refusal reworded in the browser is a second answer to one question.
+  orders: (loanId) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}`)),
+  orderThread: (loanId, kind) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/${encodeURIComponent(kind)}/thread`)),
+  orderPreview: (loanId, kind, opts = {}) => {
+    const q = new URLSearchParams();
+    if (opts.followup) q.set('followup', '1');
+    if (opts.note) q.set('note', opts.note);
+    const s = q.toString();
+    return ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/${encodeURIComponent(kind)}/preview${s ? `?${s}` : ''}`));
+  },
+  orderPlace: (loanId, kind, body = {}) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/${encodeURIComponent(kind)}/place`), body),
+  orderFollowUp: (loanId, kind, body = {}) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/${encodeURIComponent(kind)}/follow-up`), body),
+  orderCancel: (loanId, kind, reason) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/${encodeURIComponent(kind)}/cancel`), { reason }),
+
+  // The vendor cards on a loan, and the SHARED directory behind them.
+  orderVendors: (loanId) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors`)),
+  orderVendorSearch: (loanId, kind, q) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/search?kind=${encodeURIComponent(kind)}&q=${encodeURIComponent(q)}`)),
+  orderVendorLink: (loanId, body) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors`), body),
+  orderVendorUnlink: (loanId, linkId) => ltDel(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/${encodeURIComponent(linkId)}`)),
+
+  orderLetters: () => ltGet(lt('/orders/letters')),
+
+  /* THE VERIFICATION OF RENT. The form's DATA is what is edited and saved; the PDF
+     is RENDERED from it on every preview and again at the moment of sending, so the
+     document that goes out is by construction the one that was reviewed. There is
+     deliberately no endpoint that takes PDF bytes from the browser: a hand-edited
+     document cannot be re-anchored, so its required questions would silently stop
+     being asked. */
+  vor: (loanId) => ltGet(lt(`/vor/loans/${encodeURIComponent(loanId)}`)),
+  vorSave: (loanId, data) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/form`), { data }),
+  vorPreviewUrl: (loanId) => ltBlobUrl(lt(`/vor/loans/${encodeURIComponent(loanId)}/preview.pdf`)),
+  vorDownload: (loanId) => ltDownload(lt(`/vor/loans/${encodeURIComponent(loanId)}/preview.pdf`), 'verification-of-rent.pdf'),
+  vorSend: (loanId, body) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/send`), body),
+  vorManualReturn: (loanId, body) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/manual-return`), body),
+
   dscrDisqualifications: (searchKey, params) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') q.set(k, String(v));

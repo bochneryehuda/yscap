@@ -59,9 +59,35 @@ app.use('/api/inbound/chat', require('./routes/inbound-chat'));
 // verified (Svix signature over the RAW body) and fanned out to every assignee.
 // Mounted BEFORE the JSON parser for the same raw-body reason as the chat/ClickUp
 // webhooks. Separate URL from /api/inbound/chat (which is unchanged).
+// LONG-TERM claims its OWN order addresses on the SAME endpoint, immediately in
+// front of the short-term reader (the permitted seam: server.js mounting a Long-Term
+// router, src/longterm/routes/). A mail provider routes inbound mail per DOMAIN to
+// ONE webhook and both products mint reply addresses on the same verified domain, so
+// there is exactly one delivery endpoint and it has to serve both. This handler
+// claims a delivery ONLY when it names an `ltorder+` address and otherwise calls
+// next(), leaving the short-term route to see the request exactly as it always has —
+// body-parser sets req._body once, so that route's own express.raw is a no-op and
+// req.body is still the very Buffer whose signature was checked.
+//
+// The two address families are provably exclusive (src/lib/file-address.js is the
+// registry of the namespace; scripts/test-shared-order-letter-pure.js asserts neither
+// can parse the other's), so this can never swallow a short-term reply.
+app.use('/api/inbound/file-email', require('./longterm/routes/order-inbox'));
 app.use('/api/inbound/file-email', require('./routes/inbound-file-email'));
 // DocuSign Connect webhook — RAW body for the base64 HMAC verification, mounted
 // BEFORE the JSON parser for the same reason as the ClickUp/inbound webhooks.
+//
+// LONG-TERM claims its OWN envelopes on the SAME endpoint, immediately in front of
+// the short-term receiver — the same seam, and for the same reason, as the inbound
+// order addresses above. There is ONE DocuSign account, so Connect posts EVERY
+// envelope's events to ONE URL, and the short-term drainer answers an envelope it
+// does not own with `skipped: 'untracked'`: correct for it, and it would swallow a
+// landlord's signature on a long-term verification of rent in complete silence.
+// The claim verifies the same HMAC, looks the envelope up in `lt_vor_envelopes`,
+// and calls next() for anything that is not its own — so the short-term route sees
+// the request exactly as it always has (body-parser marks req._body once, so its
+// own express.raw is a no-op over the very Buffer whose signature was checked).
+app.use('/api/esign/webhook', require('./longterm/routes/esign-claim'));
 app.use('/api/esign/webhook', require('./routes/esign-webhook'));
 // TrustPoint webhook — its OWN small JSON parser + rate limit (never the global 32MB
 // parser: unauthenticated callers must not force huge parses), token-authenticated.
