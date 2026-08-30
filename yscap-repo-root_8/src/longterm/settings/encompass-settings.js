@@ -545,9 +545,19 @@ const SETTINGS = [
     type: 'number', default: 2.0,
     description: 'On a borrower-paid search this is charged as ORIGINATION on the fee list; the '
       + 'board keeps the raw price (less any YSP). Company default; each loan officer may set '
-      + 'their own, down or up. Super admin only at the company level.',
+      + 'their own AT OR ABOVE it — never below. Super admin only at the company level.',
+    // ⛔ THE HELP TEXT MUST MATCH THE DOOR. This read "down or up" until 2026-08-30, quoting
+    // the owner's first instruction — but the owner's LATER, more specific one is a FLOOR
+    // ("they can only put it higher"), and `comp-plan.personalFloorProblem` enforces it. So an
+    // officer read this field's own description, set 1.5 against a company 2.0, and was
+    // refused by a rule the text said did not exist. Advice a reader cannot act on is a
+    // defect, not cosmetics. Both owner instructions are kept in the evidence below, in the
+    // order they were given, because the second is only intelligible beside the first.
     evidence: 'Owner-directed 2026-08-23: "Borrower-paid compensation should also have a company '
-      + 'default of two points … any loan officer that wants can decrease or increase."' },
+      + 'default of two points … any loan officer that wants can decrease or increase." NARROWED '
+      + 'the same day, and this is what is enforced: "They cannot put it on their profile as a '
+      + 'setting for lower … For now, on both sides, they can only put it higher." Going lower on '
+      + 'one file is the per-file exception the owner described and deferred.' },
   { key: 'comp.ysp', group: 'Compensation', label: 'YSP on borrower-paid searches (points)',
     type: 'number', default: 0,
     description: 'A yield-spread premium a loan officer may take ON TOP of borrower-paid '

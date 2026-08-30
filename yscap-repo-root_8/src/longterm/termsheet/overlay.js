@@ -133,8 +133,15 @@ function feeLine(key, label, amount, waived) {
  * zero, with what they would have been (see `feeLine` — the owner asked to be
  * able to SEE the difference against the option beside it), and their cash comes
  * out of the CREDIT — or, when the credit cannot cover them, lands on the
- * BUYDOWN — in DOLLARS, not points, so the buydown line a waive has touched
- * carries cash-derived points and can never disagree with its own dollars.
+ * BUYDOWN — in DOLLARS, not points, so the buydown line a waive has touched carries
+ * cash-derived points.
+ *
+ * ⛔ THOSE POINTS ARE A ROUNDED RESTATEMENT OF THE CASH, and can differ from it by one
+ * rounding step — this said "can never disagree with its own dollars", which is not true.
+ * Measured: price 100.2 on a $375,000 loan with the fees waived reads 2.359 points and
+ * $8,845, while 2.359% of the loan is $8,846.25. The DOLLARS are the money and are what
+ * every total sums; see the fuller note in the canonical module
+ * (app-v2/src/longterm/compOverlay.js), which this file mirrors.
  */
 function quoteCharges(mode, plan, rawPrice, loanAmount, waiveLenderFees = false) {
   if (mode === 'raw') return null;
