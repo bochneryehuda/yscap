@@ -37,8 +37,11 @@ ONE implementation, used by both products, where an update lands on both:
    drafting, the reply-to routing, follow-ups, CC settings (borrower / helper), the
    send-as-user + deliverability posture, the DocuSign design and workflow.
 3. **File contacts + the vendor directory** — *"should not copy. It should be the
-   same, should be the exact same vendor setup and use the same information"*
-   (`service_contacts` and the FileContacts logic).
+   same, should be the exact same vendor setup and use the same information"*, and
+   again 2026-08-30: *"the FileContacts should come directly from the short-term
+   side"* — the SAME FileContacts component and the SAME `service_contacts`
+   directory; only the per-file link row is LT's own (`lt_loan_vendors`), which is
+   invisible plumbing.
 4. **The entity/LLC logic** — *"Bring over the entire entity logic that we have all
    over… You should basically share the logic. Don't copy it."* Linked to the shared
    borrower profile; verified once, verified forever, both products.
