@@ -182,6 +182,47 @@ rtl-import app-v2/src/screens/Dashboard.jsx
 # Long-Term surface genuinely needs the RTL geocoder, this line already covers
 # it. See the log row below.
 import src/lib/address-canon.js
+
+# ---------------------------------------------------------------------------
+# THE FILE-OVERVIEW SLIDE-OVER — authorized in writing by the owner, 2026-08-30:
+#   "Right now, the file overview is always displaying on the right side. We want
+#    to go and do the same thing that we have on the short term side, where we
+#    have a file overview button. It should be the same feel. We open it up, and
+#    it comes up with all the details of the file overview."
+#   … and, over the whole instruction: "You need to make sure you're not copying
+#    the information. You're just using the information from the short-term side
+#    … Everything should share the code, so we don't need to rewrite the code.
+#    We are just sharing the code. If the code is updated, he's also updating it."
+#
+# WHY THIS FILE AND NOTHING AROUND IT. `FileOverviewSlideOver.jsx` is already
+# product-neutral BY CONSTRUCTION: it takes a `fetcher` and renders whatever
+# `{header, sections[]}` that fetcher resolves. It reads no table, knows no
+# product, and holds no RTL rule — which is exactly why RTL itself mounts the one
+# component on three different surfaces (staff, borrower, broker) with three
+# different fetchers. Long-Term becomes the fourth caller and supplies its own
+# data, so the AUDIENCE BOUNDARY stays where it already is: with whoever hands it
+# the payload, never inside the panel.
+#
+# THE ALTERNATIVE WAS REJECTED ON THE OWNER'S OWN TERMS. A long-term lookalike
+# would be a second copy of a solved problem, and the owner asked for the
+# opposite in the same breath ("share the code … if the code is updated, he's
+# also updating it"). The `.fov-*` stylesheet is already global and shared, so a
+# copy would have shadowed the same CSS with different markup — the drift this
+# ledger exists to prevent.
+#
+# WHAT DOES NOT CROSS: nothing else on the RTL file screen. Long-Term does not get
+# `FileSections.jsx`, `DealSnapshot.jsx`, the `.snap-*` components or any RTL
+# fetcher. It renders its own long-term data through this one panel.
+#
+# TRANSITIVE, AND DELIBERATELY NOT LISTED SEPARATELY: the panel imports
+# `app-v2/src/lib/overlay-layers.js` (the z-order store that keeps the tab
+# clickable over a document preview). That is RTL importing RTL, which is not a
+# crossing and needs no entry — it is named here so a future reader knows it came
+# along and is covered by this authorization.
+# ---------------------------------------------------------------------------
+
+# The long-term file screen opens its overview in the ONE shared slide-over.
+import app-v2/src/components/FileOverviewSlideOver.jsx
 ```
 
 ## Log of authorizations
@@ -196,6 +237,7 @@ import src/lib/address-canon.js
 | 2026-08-14 | `rtl-import app-v2/src/App.jsx` + `rtl-import app-v2/src/components/StaffLayout.jsx` — the FRONT-END mount seam: the router mounts the Long-Term screens, and the staff shell renders the Short-Term / Long-Term switch | LT → RTL | *"You were authorized to touch that switch of the short-term shell."* Asked directly, because rule 5 forbids touching RTL to make LT work and the switch cannot exist without it. Deliberately as narrow as the back-end seam (`src/server.js`): these two files may reference LT code ONLY to mount it and to render the switch — no RTL screen may import an LT component for its own use, and no LT logic may move into a shared file | this PR |
 | 2026-08-17 | `rtl-import app-v2/src/screens/Dashboard.jsx` — the borrower's HOME SCREEN renders the Short-Term / Long-Term switch | LT → RTL | *"put the switch on the borrower's home screen"* — answering a direct question that named the cost: the client's long-term page was already built and routed at `/long-term`, and moving its entry point onto the borrower dashboard makes an RTL screen reference LT code, which the 2026-08-14 seam permits only per file, in writing. Scoped exactly as narrowly as the staff shell: this file imports ONE component (`BorrowerLongTermSwitch`) and renders it — no LT logic, no LT data read, no second LT import. Whether there is anything to switch TO is decided on the Long-Term side, so the RTL screen never carries that rule | this PR |
 | 2026-08-16 | `import src/lib/address-canon.js` — ZIP → city/state/county/county-FIPS lookup for the Long-Term DSCR pricer | RTL → LT | *"Yes, you have my written OK to reuse that."* Asked as one specific question: the vendor's own screen turns a ZIP into the full location before pricing, while our connector required the caller to supply the county FIPS and refused an incomplete location. Scoped to this one module used as a READ-ONLY lookup — NOT the RTL address writers, and Long-Term still rewrites no RTL address record. **CORRECTION (2026-08-16, same day): the authorized module was ultimately NOT used.** It returns a county NAME with no FIPS, refuses a bare ZIP (it is built for a full street address), and needs a `DATABASE_URL` — none of which suits a pure pricing path, and the owner separately corrected the premise: the screen is ZIP-driven, no street address is involved. The shipped answer is `src/longterm/lenderprice/zip-county.js` + a committed Census ZCTA table — LT-only, so not a crossing at all. The permission stands and is recorded here as granted, not as a description of the shipment | #1220 |
+| 2026-08-30 | `import app-v2/src/components/FileOverviewSlideOver.jsx` — the long-term file screen opens its overview in the ONE shared slide-over, behind a button, instead of an always-on right-hand rail | RTL → LT | *"Right now, the file overview is always displaying on the right side. We want to go and do the same thing that we have on the short term side, where we have a file overview button. It should be the same feel."* — and, governing the whole instruction, *"You need to make sure you're not copying the information. You're just using the information from the short-term side … Everything should share the code, so we don't need to rewrite the code … If the code is updated, he's also updating it."* Scoped to this ONE component, which is product-neutral by construction (it takes a `fetcher` and renders whatever `{header, sections[]}` it resolves) and is already mounted on three RTL surfaces with three different fetchers; Long-Term is the fourth caller and supplies its own payload, so the audience boundary stays with the caller. NOT a licence for any other RTL file-screen component | this PR |
 | 2026-08-14 | **The Encompass integration — brought into Long-Term as a self-contained BY-VALUE copy** (logic, authorization, requests, credentials mechanism, field map). Lives entirely in `src/longterm/encompass/**`. | RTL → LT | *"Pull in and copy: the logic of Encompass integration, the credentials of Encompass integration, the requests, the authorization. We need to start long-term loans with a full Encompass understanding … take also all the fields from this mapping and bring it in."* This is a specific, owner-directed exception to the 2026-08-03 "no shared integrations" line below (Encompass only; everything else still stays separate). | this PR |
 
 ### Note on the Encompass copy (2026-08-14)
