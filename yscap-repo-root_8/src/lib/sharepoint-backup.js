@@ -911,6 +911,30 @@ async function settleNeverMirror() {
   // it says in plain language why it is not in SharePoint. Derived from the SAME
   // LT_UNRESOLVED_SQL the drain selector excludes on, so the settle set and the
   // exclusion set cannot drift — the failure this file has already paid for twice.
+  /* THE PARK WAITS OUT THE SYNC FIRST, and this grace is the whole difference
+     between a park and a loss.
+
+     A long-term loan's identities are written ASYNCHRONOUSLY: longterm/application/
+     sync.js upserts lt_properties in a separate statement, after the loan row, and
+     says so in its own comment. So an lt_loan legitimately exists for a window with
+     no property and no borrower name — and a document uploaded in that window used
+     to be parked by the very next sweep, PERMANENTLY. Once the settle stamp is on,
+     the row is out of pendingBatch, out of neverAttemptedStrays and out of
+     stuckDocuments; the sync then lands the name and address, the loan becomes
+     perfectly resolvable, and the document is still never mirrored. Nothing pages
+     anybody, because from the mirror's point of view it was handled.
+
+     The lead/CRM clause above is safe without a grace because "a lead attachment
+     with no pipeline scope" is a STABLE condition. "The loan has not finished
+     syncing" is a TRANSIENT one, so it gets the same age grace the drain already
+     applies for exactly this class of race (snapshotSettleSec, default 10 minutes).
+
+     THE GRACE BELONGS HERE AND NOWHERE ELSE. It must NOT move into
+     LT_UNRESOLVED_SQL: the drain EXCLUDES on that predicate, so an age-limited
+     version would stop excluding a young unresolvable row, hand it to mirrorRow,
+     and produce precisely the fail-loop this whole pass exists to abolish. Young and
+     unresolvable is therefore: excluded from the drain (no churn) and not yet parked
+     (still free to resolve) — which is the state we want. */
   const ltUnresolved = await db.query(
     `UPDATE documents d SET
         sharepoint_backed_up_at = now(),
@@ -918,9 +942,14 @@ async function settleNeverMirror() {
         sharepoint_backup_error = NULL
       WHERE d.sharepoint_backed_up_at IS NULL
         AND d.storage_ref IS NOT NULL
+        AND d.created_at < now() - make_interval(secs => $1::int)
         AND ${LT_UNRESOLVED_SQL}
-      RETURNING d.id`);
-  if (ltUnresolved.rowCount) console.log(`[sp-sync] parked ${ltUnresolved.rowCount} long-term doc(s) — the loan names no borrower or property yet`);
+      RETURNING d.id`, [snapshotSettleSec()]);
+  if (ltUnresolved.rowCount) {
+    console.log(`[sp-sync] parked ${ltUnresolved.rowCount} long-term doc(s) — the loan still names no borrower `
+      + `or property ${snapshotSettleSec()}s after upload. They are visible as skipped; if the loan is resolvable `
+      + 'now, forceAttemptDoc re-drives them.');
+  }
   return (r.rowCount || 0) + (lead.rowCount || 0) + (ltUnresolved.rowCount || 0);
 }
 

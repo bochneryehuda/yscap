@@ -278,6 +278,57 @@ async function cleanup() {
   eq(parked.sharepoint_backup_error, null, 'and it carries no error: this is a policy park, not a failure');
   eq(parked.sharepoint_backup_ref, null, 'nothing was uploaded for it');
 
+  /* ═══ 3b. THE PARK WAITS OUT THE SYNC ══════════════════════════════════════
+     A long-term loan's identities are written ASYNCHRONOUSLY — longterm/application/
+     sync.js upserts lt_properties after the loan row — so an lt_loan legitimately
+     exists for a window with no property and no borrower name. Without an age grace
+     the very next sweep parked a document uploaded in that window PERMANENTLY: the
+     settle stamp takes it out of pendingBatch, out of neverAttemptedStrays and out
+     of stuckDocuments, so when the sync lands a moment later and the loan becomes
+     perfectly resolvable, the document is still never mirrored and nothing pages
+     anybody — from the mirror's point of view it was handled.
+
+     So a YOUNG unresolvable document must survive the park, and must mirror once its
+     loan resolves. (The 48h one above still parks: unresolvable AND old is a real
+     park, which is the other half of the same rule.) */
+  const LOAN_D = (await db.query(
+    `INSERT INTO lt_loans (id, loan_number) VALUES ($1::uuid,$2) RETURNING id`,
+    [require('crypto').randomUUID(), 'LT-D-STILL-SYNCING'])).rows[0].id;
+  const docD = await mkDoc('lt-still-syncing.pdf', { lt_loan_id: LOAN_D }, 0);
+  // Three minutes old: past the drain's own short settle window (a row is never
+  // mirrored before its bytes have landed) and far inside the park's 10-minute
+  // grace — exactly the window a real sync occupies. Set in SECONDS because
+  // make_interval takes an integer for hours.
+  await db.query(
+    `UPDATE documents SET created_at = now() - make_interval(secs => 180) WHERE id = $1`, [docD]);
+
+  await backup.settleNeverMirror();
+  const young = (await db.query(
+    `SELECT sharepoint_backed_up_at, sharepoint_skipped_reason FROM documents WHERE id=$1`, [docD])).rows[0];
+  eq(young.sharepoint_backed_up_at, null,
+    'a document uploaded while its loan is STILL SYNCING is not parked — the park has an age grace');
+  eq(young.sharepoint_skipped_reason, null, 'and carries no skip reason, so nothing has decided its fate yet');
+
+  // Meanwhile it is still kept OUT of the drain, so waiting costs no churn: young and
+  // unresolvable is excluded from pendingBatch (no attempts) and unparked (free to resolve).
+  const pendingYoung = (await backup.pendingBatch(500)).map((r) => String(r.id));
+  assert(!pendingYoung.includes(docD),
+    '…and it is still excluded from the drain while it waits, so it cannot churn attempts either');
+
+  // Now the sync lands. The loan resolves, and the document must become mirrorable.
+  await db.query(
+    `UPDATE lt_loans SET borrower_name='Dovid Later' WHERE id=$1::uuid`, [LOAN_D]);
+  await db.query(
+    `INSERT INTO lt_properties (loan_id, street, city, state, zip) VALUES ($1::uuid,'9 Late Ln','Lakewood','NJ','08701')`,
+    [LOAN_D]);
+  await backup.settleNeverMirror();
+  const afterSync = (await db.query(
+    `SELECT sharepoint_backed_up_at FROM documents WHERE id=$1`, [docD])).rows[0];
+  eq(afterSync.sharepoint_backed_up_at, null, 'after the sync lands it is STILL not parked');
+  const pendingAfter = (await backup.pendingBatch(500)).map((r) => String(r.id));
+  assert(pendingAfter.includes(docD),
+    'and it is now IN the drain — the document the old park lost forever gets mirrored');
+
   const uploadsBeforeC2 = uploads;
   const c2 = await mirror(docC2);
   eq(c2 && c2.reason, 'lt_unresolved_scope',
