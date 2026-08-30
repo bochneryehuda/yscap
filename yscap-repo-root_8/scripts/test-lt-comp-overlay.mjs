@@ -16,6 +16,7 @@
 //
 // Runs with no bundler and no browser: compOverlay.js is plain ESM.
 
+import { readFileSync } from 'node:fs';
 import {
   COMP_MODES, DEFAULT_COMP_MODE, DEFAULT_COMP_PLAN,
   normalizePlan, compShiftPoints, shiftedPrice, shiftBuild, quoteCharges, closingSheet,
@@ -91,8 +92,25 @@ console.log('\nE. lender-paid charges — the owner’s three rows');
 console.log('\nF. the waive — cash off the credit, then onto the buydown');
 {
   const c = quoteCharges('lenderPaid', PLAN, 103, LOAN, true);
-  ok(!lineOf(c, 'applicationFee') && !lineOf(c, 'commitmentFee'),
-    'F1 the two fee lines do not populate — "it should not populate as fees"');
+  // ⛔ THIS ASSERTION WAS RE-POINTED, NOT LOOSENED (2026-08-30). It used to read
+  // `!lineOf(c,'applicationFee')` — the line ABSENT. Its stated subject has always
+  // been the owner's *"it should not populate as fees"*: the borrower must not be
+  // CHARGED them. The owner then asked, on the term sheet, to *"list out the lender
+  // fees, because the next one, you're waiving the lender fees — you need to be able
+  // to see the difference"*, so the line is now LISTED at zero and marked waived.
+  // Both instructions hold at once, and what is asserted here is strictly MORE than
+  // before: the lines exist, they are marked waived, they carry $0, they carry what
+  // they WOULD have been, and they contribute nothing to what the borrower pays.
+  const appFee = lineOf(c, 'applicationFee');
+  const commFee = lineOf(c, 'commitmentFee');
+  ok(!!appFee && !!commFee,
+    'F1 both fee lines are LISTED — a waived column with two fewer rows hides the saving');
+  ok(appFee.waived === true && commFee.waived === true,
+    'F1a …each marked waived, so no surface can read the 0 as "this program has no such fee"');
+  eq(appFee.dollars, 0, 'F1b the application fee does not populate AS A FEE');
+  eq(commFee.dollars, 0, 'F1c …nor does the commitment fee');
+  eq(appFee.fullDollars, 1595, 'F1d …while carrying what it would have been, so the saving is visible');
+  eq(commFee.fullDollars, 500, 'F1e …and the same for the commitment fee');
   eq(c.waivedDollars, 2095, 'F2 $2,095 waived');
   eq(c.credit && c.credit.dollars, 1405, 'F3 the credit absorbs it: $3,500 − $2,095 = $1,405');
   eq(c.netDollars, -1405, 'F4 net unchanged by the waive — the same money, said once');
@@ -218,6 +236,27 @@ console.log('\nK. the closing sheet — totals summed FROM the charge list (owne
   const s2 = closingSheet(c, { purpose: 'Purchase', propertyValue: null, loanAmount: LOAN });
   ok(s2.downPaymentDollars === null && s2.cashToCloseDollars === s2.closingCostDollars,
     'K17 no value → no down payment; cash to close falls back to the closing cost');
+}
+
+console.log('\nL. the board SHOWS the waive — a back end is not a feature');
+{
+  // ⛔ NO UNIT TEST OF THE OVERLAY CAN SEE THE SCREEN. `quoteCharges` correctly
+  // returns a waived line at dollars:0, and the staff board rendered that as a bare
+  // "$0.00" — which reads as "this program has no application fee", the opposite of
+  // the truth, and hides the saving the option exists for. Caught in CI, not by any
+  // assertion above, so the rendering is pinned at the SOURCE here.
+  const src = readFileSync(new URL('../app-v2/src/longterm/LtPricer.jsx', import.meta.url), 'utf8')
+    // Strip comments first: the note explaining this rule necessarily names the very
+    // strings asserted below, so a guard that read comments would pass on prose alone.
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const list = src.slice(src.indexOf('export function ChargeList'));
+  const body = list.slice(0, list.indexOf('\nexport '));
+  ok(/l\.waived === true/.test(body),
+    'L1 ChargeList asks whether the line was waived');
+  ok(/Waived/.test(body),
+    'L2 …and says "Waived" rather than printing the zero');
+  ok(/l\.fullDollars/.test(body),
+    'L3 …beside what the fee would have been, so the saving is on the screen');
 }
 
 if (bad) { console.error(`\n${bad} FAILED`); process.exit(1); }

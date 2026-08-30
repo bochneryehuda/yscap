@@ -746,10 +746,32 @@ export function ChargeList({ charges, sheet }) {
           padding: '5px 0', borderBottom: '1px solid rgba(20,27,34,.07)',
         }}>
           <span style={{ fontSize: 12.5, color: SLATE, flex: 1 }}>{l.label}</span>
-          {nn(l.points) && <span style={{ fontSize: 11.5, color: MUTED, ...NUM }}>{pts(l.points)}</span>}
-          <span style={{ fontSize: 12.5, fontWeight: 600, color: INK, minWidth: 84, textAlign: 'right', ...NUM }}>
-            {money2(l.dollars)}
-          </span>
+          {/* ⛔ A WAIVED FEE READS "Waived", NEVER A BARE $0.00. The line carries
+              dollars:0 so every total stays byte-identical (see compOverlay.feeLine),
+              but $0.00 on its own says "this program has no application fee" — the
+              opposite of the truth, and it hides the saving that is the whole reason
+              the option exists. The amount it WOULD have been rides alongside.
+              The sheet says the same thing in the borrower's voice (wording.chargeRow);
+              this is the staff board, so it is said plainly here. */}
+          {l.waived === true ? (
+            <>
+              {nn(l.fullDollars) && l.fullDollars > 0 && (
+                <span style={{ fontSize: 11.5, color: MUTED, textDecoration: 'line-through', ...NUM }}>
+                  {money2(l.fullDollars)}
+                </span>
+              )}
+              <span style={{ fontSize: 12.5, fontWeight: 600, minWidth: 84, textAlign: 'right', ...backTone }}>
+                Waived
+              </span>
+            </>
+          ) : (
+            <>
+              {nn(l.points) && <span style={{ fontSize: 11.5, color: MUTED, ...NUM }}>{pts(l.points)}</span>}
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: INK, minWidth: 84, textAlign: 'right', ...NUM }}>
+                {money2(l.dollars)}
+              </span>
+            </>
+          )}
         </div>
       ))}
       {charges.lines.length === 0 && <Row k="Charges" v="none" indent />}
