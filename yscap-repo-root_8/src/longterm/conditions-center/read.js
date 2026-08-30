@@ -25,10 +25,20 @@
  * An empty list reads as "nothing is outstanding", which is a claim and usually
  * a wrong one. Every read that could not complete says so.
  *
- * SEPARATION: reads `lt_*` only.
+ * ── WHERE IT READS FROM (db/650 + db/651) ───────────────────────────────────
+ *
+ * The conditions are `checklist_items` in the ONE Condition Center, owned by
+ * `lt_loan_id`; the BUCKETS are still Long-Term's own (`lt_condition_buckets` —
+ * the owner's headings and their order). Every enumerated value comes back
+ * through `vocabulary.js`, the same translation the seed wrote through, which is
+ * what keeps the three numbers below three: `waived` and `not_applicable` are
+ * recovered from (status, waived_at, is_required) rather than collapsed into
+ * "satisfied".
  */
 
 const db = require('../db');
+const vocab = require('./vocabulary');
+const { ownerOf, ownerWhere } = require('../../lib/condition-owner');
 
 const CLIENT_VISIBLE = new Set(['external', 'both']);
 
@@ -61,29 +71,44 @@ async function forLoan(loanId, opts = {}) {
   let degraded = null;
   try {
     bucketRows = await buckets(client);
+    const where = ownerWhere(ownerOf('lt_loan', loanId), 'c');
     const { rows } = await client.query(
-      `SELECT c.id, c.code, c.bucket_key, c.field_key, c.label, c.hint,
-              c.borrower_label, c.borrower_hint, c.audience, c.kind,
-              c.is_required, c.slots, c.config, c.answer, c.status, c.origin,
-              c.sort_order, c.notes,
-              c.satisfied_at, c.waived_at, c.waived_reason,
+      `SELECT c.id, t.code, c.category, c.field_key, c.label, c.hint,
+              c.borrower_label, c.borrower_hint, c.audience, c.item_kind, c.tool_key,
+              c.is_required, c.slots, c.tool_payload AS answer,
+              c.status, c.origin_kind, c.sort_order, c.notes,
+              c.signed_off_at AS satisfied_at, c.waived_at, c.waived_reason,
               sat.full_name AS satisfied_by_name,
               wav.full_name AS waived_by_name,
-              t.is_enabled, t.disabled_reason,
-              (SELECT count(*) FROM lt_condition_files f
-                WHERE f.condition_id = c.id AND f.is_current) AS file_count,
-              (SELECT count(*) FROM lt_condition_files f
-                WHERE f.condition_id = c.id AND f.is_current
-                  AND f.review_status = 'accepted') AS accepted_count
-         FROM lt_file_conditions c
-         LEFT JOIN lt_condition_templates t ON t.id = c.template_id
-         LEFT JOIN staff_users sat ON sat.id = c.satisfied_by
+              t.config,
+              (SELECT count(*) FROM documents d
+                WHERE d.checklist_item_id = c.id AND d.is_current) AS file_count,
+              (SELECT count(*) FROM documents d
+                WHERE d.checklist_item_id = c.id AND d.is_current
+                  AND d.review_status = 'accepted') AS accepted_count
+         FROM checklist_items c
+         LEFT JOIN checklist_templates t ON t.id = c.template_id
+         LEFT JOIN staff_users sat ON sat.id = c.signed_off_by
          LEFT JOIN staff_users wav ON wav.id = c.waived_by
-        WHERE c.loan_id = $1::uuid
+        WHERE ${where.sql}
         ORDER BY c.sort_order, c.label`,
-      [String(loanId)],
+      where.params,
     );
-    list = rows;
+    // Read back into the owner's own wording BEFORE anything else looks at it,
+    // so the audience filter, the buckets and the three numbers all reason about
+    // one vocabulary. `config` is read off the TEMPLATE — one config, edited
+    // once, rather than a per-instance copy free to go stale.
+    list = rows.map((r) => ({
+      ...r,
+      bucket_key: vocab.bucketOf(r.category),
+      audience: vocab.audienceFromShared(r.audience),
+      kind: vocab.kindFromShared(r),
+      origin: vocab.originFromShared(r.origin_kind),
+      status: vocab.statusOf(r),
+      config: r.config || {},
+      is_enabled: !(r.config && r.config.enabled === false),
+      disabled_reason: (r.config && r.config.disabledReason) || null,
+    }));
   } catch (e) {
     degraded = String((e && e.message) || e).slice(0, 300);
   }

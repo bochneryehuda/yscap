@@ -25,7 +25,9 @@
  * running. Nothing here throws: the desk reads it on every load, and the send
  * re-reads the same answer rather than trusting the screen's.
  *
- * SEPARATION: reads `lt_condition_templates` only.
+ * WHERE THE LIBRARY LIVES: `checklist_templates`, scope='lt_loan' (db/651). The
+ * two switches this reads are Long-Term's own and ride inside the template's
+ * `config`, which is the one place the seed writes them.
  */
 const db = require('../db');
 const kinds = require('./kinds');
@@ -62,9 +64,20 @@ async function resolve(client = db) {
   let rows = [];
   try {
     rows = (await client.query(
-      `SELECT code, is_enabled, is_active, disabled_reason, config
-         FROM lt_condition_templates WHERE code = ANY($1)`,
-      [[...byCondition.keys()]])).rows;
+      `SELECT code, is_active, config
+         FROM checklist_templates
+        WHERE scope = 'lt_loan' AND code = ANY($1)`,
+      [[...byCondition.keys()]])).rows
+      // `is_enabled` / `disabled_reason` are Long-Term's own two facts and have
+      // no column in the shared table — they ride in `config`, where the seed
+      // writes them (db/651 says why they are not `is_active`: retiring a
+      // template and switching a shipped one off are different decisions with
+      // different screens). Unpacked here so everything below is unchanged.
+      .map((r) => ({
+        ...r,
+        is_enabled: !(r.config && r.config.enabled === false),
+        disabled_reason: (r.config && r.config.disabledReason) || null,
+      }));
   } catch (_) {
     return out;             // unreadable → the shipped default, for every kind
   }

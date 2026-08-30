@@ -29,6 +29,10 @@ const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 // nobody can ever get (found live on the track-record export, 2026-08-21).
 const { setContentDisposition } = require('../lib/content-disposition');
 const docAccept = require('../lib/document-acceptance');  // what "accepted" means — one definition
+// WHO A CONDITION BELONGS TO — one descriptor for all four owner scopes, so the
+// sign-off gate can tell an unowned row from a row owned by the other product
+// instead of treating "not an application" as "no rules apply" (db/650, db/651).
+const conditionOwner = require('../lib/condition-owner');
 // THE ONE CONDITION-DOCUMENT SERVICE, shared with the Long-Term loan (2026-08-30
 // share-the-code directive). These routes keep their registration, their
 // middleware and their RTL side effects; the document RULES live in the lib.
@@ -9992,6 +9996,51 @@ async function pendingDocumentsBlock(itemId) {
   } catch (_) { return null; }
 }
 
+/**
+ * THE SIGN-OFF RULES THAT ARE TRUE OF EVERY OWNER, NOT ONLY OF AN APPLICATION.
+ *
+ * Reached for an item whose owner is a scope other than the application — today
+ * that is the Long-Term loan (db/650: `scope='lt_loan'`, `lt_loan_id`). It is
+ * DELIBERATELY the generic arm and nothing else: no `rtl_…` code is consulted,
+ * because those codes name RTL conditions and an owner that is not an
+ * application has none of them.
+ *
+ * The wording is the RTL generic arm's, VERBATIM, and that is the point of
+ * sharing the code — two products refusing the same thing should refuse it in
+ * the same sentence, and a fix to that sentence should land on both.
+ *
+ * The owner-neutral arms (pending documents, extra slots, the condition's own
+ * required slots) have ALREADY run before this is called, so by here the only
+ * question left is the one the owner reported as broken: *"you can't really
+ * upload stuff … nothing actually works."*
+ */
+async function sharedOwnerSignOffGate(itemId, item, owner) {
+  // A REQUIRED DOCUMENT CONDITION WITH NOTHING ACCEPTED ON IT CANNOT BE SIGNED
+  // OFF. `item_kind='document' AND tool_key IS NULL` is the same test the RTL
+  // arm uses, and it is why the Long-Term vocabulary maps a form / order / esign
+  // condition onto a tool_key: those are answered another way and must not be
+  // refused for want of a document (src/longterm/conditions-center/vocabulary.js).
+  // An OPTIONAL condition may still be completed empty — that is what optional
+  // means, and refusing it would leave no way to close one.
+  if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false) {
+    // ACCEPTED, not merely "not rejected" (owner-directed 2026-08-03). The
+    // pending check has already run, so documents on the item at this point were
+    // rejected — which is a different problem with a different next step, and
+    // telling somebody to upload a document that is already sitting there is
+    // advice nobody can act on.
+    const has = await db.query(
+      `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
+         AND ${docAccept.ACCEPTED_SQL('')} LIMIT 1`, [itemId]);
+    if (!has.rows.length) {
+      const any = await db.query(
+        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current LIMIT 1`, [itemId]);
+      if (any.rows.length) return docAccept.ALL_REJECTED_MSG;
+      return 'Upload a document to this condition before signing it off — a document-based condition cannot be completed with nothing uploaded.';
+    }
+  }
+  return null;
+}
+
 async function signOffGate(itemId, actor) {
   const pendingBlock = await pendingDocumentsBlock(itemId);
   if (pendingBlock) return pendingBlock;
@@ -10001,12 +10050,50 @@ async function signOffGate(itemId, actor) {
   // per-condition branches. One definition: lib/conditions/extra-slots.js.
   const extraSlotBlock = await require('../lib/conditions/extra-slots').gateProblem(itemId);
   if (extraSlotBlock) return extraSlotBlock;
+  // REQUIRED NAMED SLOTS THE CONDITION DECLARES FOR ITSELF (db/651). The same
+  // rule as the arm above and for the same reason it runs here — it is true of
+  // every condition of every owner — but the slots come from the condition's own
+  // list rather than from somebody asking for one by hand. It is ported out of
+  // the Long-Term build (`conditions-center/write.js` missingSlots), which had a
+  // generic version of the rule RTL states three times by hand below.
+  //
+  // A NO-OP FOR EVERY RTL CONDITION, BY CONSTRUCTION RATHER THAN BY CARE: it
+  // reads `checklist_items.slots`, RTL writes that column nowhere, and an empty
+  // list returns null on the module's first line. The hard-coded binder+invoice
+  // and xml+pdf arms below keep owning their four conditions — deliberately, and
+  // lib/conditions/required-slots.js says exactly why reading the TEMPLATE's
+  // slots here would have changed live RTL behaviour in two places.
+  const requiredSlotBlock = await require('../lib/conditions/required-slots').gateProblem(itemId);
+  if (requiredSlotBlock) return requiredSlotBlock;
   const it = await db.query(
-    `SELECT ci.application_id, ci.borrower_id, ci.field_key, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
+    `SELECT ci.application_id, ci.borrower_id, ci.llc_id, ci.lt_loan_id, ci.scope,
+            ci.field_key, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
        FROM checklist_items ci WHERE ci.id=$1`, [itemId]);
   const item = it.rows[0];
-  if (!item || !item.application_id) return null;
+  if (!item) return null;
+  // THE GATE LEARNS THE FOURTH OWNER SCOPE (db/650 + db/651, the 2026-08-30
+  // share-the-code grant).
+  //
+  // THIS LINE USED TO READ `if (!item || !item.application_id) return null;` AND
+  // THAT WAS A HOLE, not a simplification: it made the ENTIRE gate a no-op for
+  // any item that is not application-scoped. Harmless while the only such items
+  // were borrower-profile and LLC rows, which carry no document rules — and a
+  // real defect the moment a Long-Term loan became the fourth owner, because a
+  // Long-Term DOCUMENT condition would then have signed off WITH NOTHING
+  // UPLOADED, silently, on every file.
+  //
+  // Widened THROUGH THE OWNER DESCRIPTOR (lib/condition-owner.js) rather than by
+  // adding a second `||` test, because "which product owns this row" is exactly
+  // the question that must have one answer: `ownerOfRow` returns null for the
+  // scopes that have no rules here, and those keep the historical no-op to the
+  // byte. The RTL path below is untouched — it is reached only when
+  // `application_id` is set, exactly as before.
+  if (!item.application_id) {
+    const owner = conditionOwner.ownerOfRow(item);
+    if (!owner || owner.scope === 'application') return null;
+    return sharedOwnerSignOffGate(itemId, item, owner);
+  }
   const code = item.template_code || '';
   const isProduct = code === 'rtl_p1_product' || item.tool_key === 'product_pricing';
   const isBudget = code === 'rtl_p1_budget' || item.tool_key === 'rehab_budget';

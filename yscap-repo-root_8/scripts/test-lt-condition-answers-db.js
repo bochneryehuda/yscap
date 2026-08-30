@@ -47,8 +47,17 @@ async function main() {
   // ── A. The templates ──────────────────────────────────────────────────────
   console.log('the library in the database');
 
-  const t = async (code) => (await db.query(
-    `SELECT bucket_key, kind, slots, config FROM lt_condition_templates WHERE code = $1`, [code])).rows[0];
+  // THE LIBRARY MOVED HOUSE (db/651): it seeds into the ONE Condition Center as
+  // `checklist_templates` rows with scope='lt_loan'. Read back through the SAME
+  // translation the seed wrote through, so this section goes on asserting the
+  // owner's four corrections in the owner's own words.
+  const vocab = require('../src/longterm/conditions-center/vocabulary.js');
+  const t = async (code) => {
+    const r = (await db.query(
+      `SELECT category, item_kind, tool_key, slots, config
+         FROM checklist_templates WHERE code = $1 AND scope = 'lt_loan'`, [code])).rows[0];
+    return r && { bucket_key: vocab.bucketOf(r.category), kind: vocab.kindFromShared(r), slots: r.slots, config: r.config || {} };
+  };
 
   const cash = await t('lt_cash_out_letter');
   check(cash && cash.bucket_key === 'prior_to_ctc',
@@ -136,7 +145,27 @@ async function main() {
 
   const write = require('../src/longterm/conditions-center/write.js');
 
-  const subject = await stage('lt_subject_mortgage_statement', {
+  // THE WRITE DOOR MOVED WITH THE LIBRARY (db/651) — a Long-Term condition is a
+  // `checklist_item` owned by `lt_loan_id`. `stage()` above deliberately still
+  // writes `lt_file_conditions`, because sections B and C are about db/647
+  // reaching the rows PRODUCTION already holds there and that migration still
+  // replays on every boot. These sections are about the LIVE door, so they stage
+  // where the door now looks.
+  const stageItem = async (code, extra = {}) => {
+    const tpl = (await db.query(
+      `SELECT id FROM checklist_templates WHERE code = $1 AND scope = 'lt_loan'`, [code])).rows[0];
+    return (await db.query(
+      `INSERT INTO checklist_items
+         (scope, lt_loan_id, template_id, label, audience, item_kind, tool_key,
+          is_required, slots, status, field_key)
+       VALUES ('lt_loan', $1::uuid, $2::uuid, $3, 'both', $4, $5, true, $6::jsonb, 'outstanding', $7)
+       RETURNING id`,
+      [loanId, tpl && tpl.id, `staged ${code}`,
+        extra.itemKind || 'document', extra.toolKey || null,
+        JSON.stringify(extra.slots || []), extra.fieldKey || null])).rows[0].id;
+  };
+
+  const subject = await stageItem('lt_subject_mortgage_statement', {
     slots: [{ key: 'statement', label: 'Mortgage statement', required: false }],
   });
   let out = await write.satisfy(loanId, subject, null, db);
@@ -155,8 +184,12 @@ async function main() {
   out = await write.satisfy(loanId, subject, null, db);
   check(out.ok === true, 'after which the condition signs off with no document at all');
 
-  const fci = await stage('lt_subject_mortgage_statement', {
+  // A SECOND instance of the same template on the same loan — allowed only
+  // because it carries its own `field_key`, which is exactly what db/651's
+  // partial unique index is written to permit (and what it refuses without).
+  const fci = await stageItem('lt_subject_mortgage_statement', {
     slots: [{ key: 'statement', label: 'Mortgage statement', required: false }],
+    fieldKey: 'second-instance',
   });
   await write.recordAnswer(loanId, fci, { way: 'fci_serviced' }, null, db);
   out = await write.satisfy(loanId, fci, null, db);
@@ -166,12 +199,14 @@ async function main() {
   console.log('what the screen is handed');
 
   const workspace = require('../src/longterm/conditions-center/workspace.js');
-  const ws = await workspace.forCondition(loanId, staleReo, { db });
+  const reoItem = await stageItem('lt_reo_liabilities');
+  const ws = await workspace.forCondition(loanId, reoItem, { db });
   check(ws && ws.shape === 'per_line', 'the mortgages condition opens as a list of lines');
   check(ws.ways.map((w) => w.key).join('/') === 'statement/primary/address',
     'offering the three ways');
   check(Array.isArray(ws.lines), 'with the liabilities read from the credit report');
-  const plain = await workspace.forCondition(loanId, untouched, { db });
+  const plainItem = await stageItem('lt_cash_out_letter');
+  const plain = await workspace.forCondition(loanId, plainItem, { db });
   check(plain === null, 'and an ordinary condition has no workspace, which is a normal answer rather than an error');
 
   // ── F. THE SETTINGS DOOR, whose SQL is built from what was sent ──────────
@@ -206,12 +241,33 @@ async function main() {
     });
   });
 
-  const hintBefore = (await db.query(`SELECT hint FROM lt_condition_templates WHERE code = 'lt_cash_out_letter'`)).rows[0].hint;
+  const hintOf = async () => (await db.query(
+    `SELECT hint FROM checklist_templates WHERE code = 'lt_cash_out_letter' AND scope = 'lt_loan'`)).rows[0].hint;
+  const hintBefore = await hintOf();
   const edited = await patch('lt_cash_out_letter', { hint: 'A settings edit, made by the test.' });
   check(edited.status === 200, `the assembled UPDATE really runs (got ${edited.status})`);
-  const hintAfter = (await db.query(`SELECT hint FROM lt_condition_templates WHERE code = 'lt_cash_out_letter'`)).rows[0].hint;
-  check(hintAfter === 'A settings edit, made by the test.', 'and the wording it was handed is what the row now holds');
-  await db.query(`UPDATE lt_condition_templates SET hint = $2 WHERE code = $1`, ['lt_cash_out_letter', hintBefore]);
+  check((await hintOf()) === 'A settings edit, made by the test.', 'and the wording it was handed is what the row now holds');
+
+  // THE TWO SETTINGS WITH NO SHARED COLUMN take the config path instead, and
+  // merging rather than replacing is what stops switching a condition off from
+  // wiping the rest of its settings — which on this template is the whole
+  // answers-module wiring section A above just asserted.
+  const cfgOf = async () => (await db.query(
+    `SELECT config FROM checklist_templates WHERE code = 'lt_reo_liabilities' AND scope = 'lt_loan'`)).rows[0].config || {};
+  const cfgBefore = await cfgOf();
+  const off = await patch('lt_reo_liabilities', { enabled: false, disabledReason: 'held back by the test' });
+  check(off.status === 200, `switching a condition off is a settings edit like any other (got ${off.status})`);
+  const cfgAfter = await cfgOf();
+  check(cfgAfter.enabled === false && cfgAfter.disabledReason === 'held back by the test',
+    'the switch and its reason are recorded');
+  check(cfgAfter.answeredBy === cfgBefore.answeredBy && cfgAfter.classify === cfgBefore.classify,
+    'and the rest of the condition’s settings survive it — merged, never replaced');
+  await db.query(
+    `UPDATE checklist_templates SET config = $2::jsonb WHERE code = $1 AND scope = 'lt_loan'`,
+    ['lt_reo_liabilities', JSON.stringify(cfgBefore)]);
+  await db.query(
+    `UPDATE checklist_templates SET hint = $2 WHERE code = $1 AND scope = 'lt_loan'`,
+    ['lt_cash_out_letter', hintBefore]);
 
   const nothing = await patch('lt_cash_out_letter', {});
   check(nothing.status === 400, 'a body with nothing in it is refused rather than assembling an empty SET');

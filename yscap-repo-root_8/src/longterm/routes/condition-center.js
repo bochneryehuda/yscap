@@ -48,6 +48,7 @@ const workspace = require('../conditions-center/workspace');
 const rules = require('../conditions-center/rules');
 const registry = require('../conditions-center/field-registry');
 const library = require('../conditions-center/library');
+const vocab = require('../conditions-center/vocabulary');
 const { loadScopedLoan, UUID_RE } = require('./scoped-loan');
 
 const staffId = (req) => (req.actor && req.actor.id ? String(req.actor.id) : null);
@@ -247,13 +248,30 @@ router.get('/library', async (req, res) => {
     await library.ensureSeeded(db);
     const [bucketRows, templateRows] = await Promise.all([
       read.buckets(db),
+      // THE LIBRARY LIVES IN THE ONE CONDITION CENTER NOW (db/651), scope
+      // 'lt_loan'. Every enumerated value comes straight back through
+      // `vocabulary.js` — the same translation the seed wrote through — so this
+      // screen goes on speaking the owner's own wording while the COLUMN speaks
+      // the one vocabulary both products share.
       db.query(
-        `SELECT code, bucket_key, label, hint, borrower_label, borrower_hint,
-                audience, kind, auto_apply, rule_logic, is_required, slots,
-                config, is_enabled, disabled_reason, is_active, sort_order, is_seeded
-           FROM lt_condition_templates
+        `SELECT code, category, label, hint, borrower_label, borrower_hint,
+                audience, item_kind, tool_key, auto_apply, rule_logic, is_required,
+                slots, config, is_active, sort_order, origin
+           FROM checklist_templates
+          WHERE scope = 'lt_loan'
           ORDER BY sort_order, code`,
-      ).then((r) => r.rows),
+      ).then((r) => r.rows.map((t) => ({
+        ...t,
+        bucket_key: vocab.bucketOf(t.category),
+        audience: vocab.audienceFromShared(t.audience),
+        kind: vocab.kindFromShared(t),
+        is_enabled: !(t.config && t.config.enabled === false),
+        disabled_reason: (t.config && t.config.disabledReason) || null,
+        // `is_seeded` has no shared column; `origin='system'` is what the seed
+        // writes and is the same fact — this row came from the library rather
+        // than from an administrator.
+        is_seeded: t.origin === 'system',
+      }))),
     ]);
     res.json({
       buckets: bucketRows,
@@ -309,15 +327,34 @@ router.patch('/library/:code', async (req, res) => {
   const params = [String(req.params.code)];
   const put = (col, val, cast) => { params.push(val); sets.push(`${col} = $${params.length}${cast || ''}`); };
 
-  const TEXT = { label: 'label', hint: 'hint', borrowerLabel: 'borrower_label', borrowerHint: 'borrower_hint', disabledReason: 'disabled_reason' };
+  // TWO OF THE OWNER'S SETTINGS HAVE NO SHARED COLUMN and ride inside `config`
+  // instead: `enabled` (built, but switched off — shown greyed WITH ITS REASON)
+  // and its `disabledReason`. They are merged INTO whatever config is already
+  // there rather than replacing it, or turning a condition off would wipe the
+  // rest of its settings. Assembled first so the ordinary `config` branch below
+  // can fold them into one write.
+  const cfgPatch = {};
+  if (Object.prototype.hasOwnProperty.call(body, 'enabled')) cfgPatch.enabled = body.enabled === true;
+  if (Object.prototype.hasOwnProperty.call(body, 'disabledReason')) {
+    const v = String(body.disabledReason == null ? '' : body.disabledReason).trim();
+    cfgPatch.disabledReason = v === '' ? null : v.slice(0, 4000);
+  }
+
+  const TEXT = { label: 'label', hint: 'hint', borrowerLabel: 'borrower_label', borrowerHint: 'borrower_hint' };
   for (const [k, col] of Object.entries(TEXT)) {
     if (Object.prototype.hasOwnProperty.call(body, k)) {
       const v = String(body[k] == null ? '' : body[k]).trim();
       put(col, v === '' ? null : v.slice(0, 4000));
     }
   }
-  if (Object.prototype.hasOwnProperty.call(body, 'bucket')) put('bucket_key', String(body.bucket));
-  for (const [k, col] of [['isRequired', 'is_required'], ['enabled', 'is_enabled'], ['active', 'is_active']]) {
+  if (Object.prototype.hasOwnProperty.call(body, 'bucket')) {
+    const category = vocab.categoryOf(body.bucket);
+    if (!category) {
+      return res.status(400).json({ error: `“${body.bucket}” is not one of the buckets a condition can sit in.` });
+    }
+    put('category', category);
+  }
+  for (const [k, col] of [['isRequired', 'is_required'], ['active', 'is_active']]) {
     if (Object.prototype.hasOwnProperty.call(body, k)) put(col, body[k] === true);
   }
   if (Object.prototype.hasOwnProperty.call(body, 'sortOrder')) {
@@ -325,18 +362,33 @@ router.patch('/library/:code', async (req, res) => {
     if (!Number.isFinite(n)) return res.status(400).json({ error: 'The position has to be a number.' });
     put('sort_order', Math.round(n));
   }
-  for (const [k, col, allowed] of [
-    ['audience', 'audience', ['internal', 'external', 'both']],
-    ['kind', 'kind', ['informational', 'form', 'order', 'esign', 'document']],
-    ['autoApply', 'auto_apply', ['always', 'rules', 'manual']],
+  // The wording an administrator picks is still the OWNER'S — internal /
+  // external / both, and the five kinds — and is translated on the way into the
+  // column. The allow-lists are read off the translation itself so the screen
+  // and the mapping can never offer different words.
+  for (const [k, allowed] of [
+    ['audience', Object.keys(vocab.AUDIENCE_TO_SHARED)],
+    ['kind', Object.keys(vocab.KIND_TO_ITEM_KIND)],
+    ['autoApply', ['always', 'rules', 'manual']],
   ]) {
     if (Object.prototype.hasOwnProperty.call(body, k)) {
       if (!allowed.includes(String(body[k]))) {
         return res.status(400).json({ error: `“${body[k]}” is not one of: ${allowed.join(', ')}.` });
       }
-      put(col, String(body[k]));
     }
   }
+  if (Object.prototype.hasOwnProperty.call(body, 'audience')) {
+    put('audience', vocab.audienceToShared(body.audience));
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'kind')) {
+    // A kind is TWO columns — the shared item_kind and the tool_key that keeps a
+    // form / order / esign out of the sign-off gate's document arm. Setting one
+    // without the other would make a form ask for a document it never wants.
+    const mapped = vocab.kindToShared(body.kind);
+    put('item_kind', mapped.item_kind);
+    put('tool_key', mapped.tool_key);
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'autoApply')) put('auto_apply', String(body.autoApply));
   if (Object.prototype.hasOwnProperty.call(body, 'rule')) {
     const rule = body.rule;
     if (rule !== null) {
@@ -350,21 +402,33 @@ router.patch('/library/:code', async (req, res) => {
     }
     put('rule_logic', rule === null ? null : JSON.stringify(rule), '::jsonb');
   }
-  for (const [k, col] of [['slots', 'slots'], ['config', 'config']]) {
-    if (Object.prototype.hasOwnProperty.call(body, k)) {
-      if (typeof body[k] !== 'object' || body[k] === null) {
-        return res.status(400).json({ error: `${k} has to be a list or an object.` });
-      }
-      put(col, JSON.stringify(body[k]), '::jsonb');
+  if (Object.prototype.hasOwnProperty.call(body, 'slots')) {
+    if (typeof body.slots !== 'object' || body.slots === null) {
+      return res.status(400).json({ error: 'slots has to be a list or an object.' });
     }
+    put('slots', JSON.stringify(body.slots), '::jsonb');
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'config')) {
+    if (typeof body.config !== 'object' || body.config === null) {
+      return res.status(400).json({ error: 'config has to be a list or an object.' });
+    }
+    // A whole-config write still keeps the two switches unless this same request
+    // is changing them, so saving the settings blob cannot silently switch a
+    // held-back condition back on.
+    put('config', JSON.stringify({ ...body.config, ...cfgPatch }), '::jsonb');
+  } else if (Object.keys(cfgPatch).length) {
+    // MERGED IN THE STATEMENT, so a settings save landing at the same moment
+    // cannot be clobbered by a config this request read a moment earlier.
+    put('config', JSON.stringify(cfgPatch), '::jsonb');
+    sets[sets.length - 1] = `config = COALESCE(config, '{}'::jsonb) || $${params.length}::jsonb`;
   }
 
   if (!sets.length) return res.status(400).json({ error: 'Nothing to change.' });
 
   try {
     const { rows } = await db.query(
-      `UPDATE lt_condition_templates SET ${sets.join(', ')}, updated_at = now()
-        WHERE code = $1 RETURNING code`,
+      `UPDATE checklist_templates SET ${sets.join(', ')}, updated_at = now()
+        WHERE code = $1 AND scope = 'lt_loan' RETURNING code`,
       params,
     );
     if (!rows.length) return res.status(404).json({ error: 'There is no such condition in the library.' });

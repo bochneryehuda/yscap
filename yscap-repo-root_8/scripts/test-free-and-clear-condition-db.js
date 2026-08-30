@@ -139,16 +139,26 @@ const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:]
        it". What the owner actually asked for is that free and clear WAIVES the VOM, so that is
        what is asserted: if a VOM condition exists here at all, it must carry the ordinary
        free-and-clear exclusion, which is what puts it in the waive list via section A. With none
-       present the fact is recorded and the guard is dormant. Either way nothing is invented. */
+       present the fact is recorded and the guard is dormant. Either way nothing is invented.
+
+       SCOPED TO SHORT-TERM, because since db/651 this table also holds the LONG-TERM library
+       under `scope='lt_loan'` — including `lt_vom_subject`, the Long-Term product's OWN VOM.
+       That is not a short-term VOM appearing; it is the other product's condition living in the
+       shared table, governed by the Long-Term Condition Center's own rules. Reading it here
+       would report the owner's recorded decision as broken and invite somebody to "fix" it by
+       putting a Long-Term condition into an RTL waive list — the exact copying across products
+       the note above forbids. The exclusion is a NEGATIVE so the guard still FAILS CLOSED: a
+       fifth scope added later stays checked until somebody deliberately decides otherwise. */
     const vom = (await db.query(
       `SELECT code, (rule_logic::text LIKE '%property_free_and_clear%'
                  AND rule_logic::text LIKE '%is_false%') AS fc_gated
          FROM checklist_templates
-        WHERE is_active AND (code ~* 'vom' OR label ~* '(verification of mortgage|\\mVOM\\M)')
+        WHERE is_active AND scope <> 'lt_loan'
+          AND (code ~* 'vom' OR label ~* '(verification of mortgage|\\mVOM\\M)')
         ORDER BY code`)).rows;
 
     if (!vom.length) {
-      ok(true, 'D1 short-term carries no VOM condition — the owner\u2019s decision, recorded (2026-08-25)');
+      ok(true, 'D1 short-term carries no VOM condition — the owner\u2019s decision, recorded (2026-08-25); the Long-Term library\u2019s own VOM is that product\u2019s and is not read here');
     } else {
       /* Somebody added one. The owner's instruction was that free and clear waives it, so the
          only acceptable shape is the free-and-clear exclusion on its own rule. */

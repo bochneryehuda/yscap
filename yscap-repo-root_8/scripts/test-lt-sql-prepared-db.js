@@ -207,6 +207,17 @@ async function main() {
     // the no-rows 404 — which is what makes this entry true rather than hopeful.
     'routes/scoped-loan.js': 'GET /api/lt/encompass-file/loans/:loanId and GET /api/lt/clickup/loans/:loanId in the route smoke test both assemble and execute it',
     'routes/clickup.js': 'GET /api/lt/clickup/loans/:loanId in the route smoke test (loadScopedLoan assembles the trash guard), plus test-lt-clickup-section-db.js over the whole section',
+    // THE CONDITION CENTER, SINCE db/651. These four compose the SHARED owner
+    // descriptor's WHERE (`ownerWhere` — lib/condition-owner.js) into statements
+    // against `checklist_items` / `checklist_templates` / `documents`, so the
+    // statement only exists once a caller assembles it. Each entry names a suite
+    // that genuinely RUNS the assembled form against a real Postgres in this job
+    // — the descriptor emits SQL TEXT plus BOUND values, so a phantom column
+    // there is the same silent class this file exists for.
+    'conditions-center/engine.js': 'test-lt-shared-condition-center-db.js sections C and D drive evaluateLoan live — the owner-scoped SELECT, the INSERT and the guarded DELETE all assemble and run',
+    'conditions-center/read.js': 'test-lt-shared-condition-center-db.js section H drives read.forLoan for BOTH audiences against the real schema',
+    'conditions-center/write.js': 'test-lt-shared-condition-center-db.js sections G and H drive waive, setStatus and loadCondition live; test-lt-condition-answers-db.js sections D and E drive recordAnswer and satisfy',
+    'conditions-center/workspace.js': 'test-lt-condition-answers-db.js section E drives workspace.forCondition against the real schema, both the per-line shape and the no-workspace answer',
   };
   const byFile = new Map();
   for (const b of built) byFile.set(b.rel, (byFile.get(b.rel) || 0) + 1);

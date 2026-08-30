@@ -555,6 +555,60 @@ sql-write checklist_items
 sql-read  documents
 sql-write documents
 
+# WHO OWNS A CONDITION OR A DOCUMENT — one descriptor, both products. The same
+# 2026-08-30 share-the-code grant: "if I'm updating something in the logic of the
+# Condition Center ... it should update them both places. You need to share the
+# code."
+#
+# WHY IT IS AN IMPORT AND NOT A COPY. This module answers three questions —
+# which product owns this row, how do I say so in a WHERE clause, which column do
+# I set on an INSERT — and every one of them was previously written out by hand
+# at each call site as `application_id = $1`. That is exactly the shape that
+# cannot be shared: the second product's copy of a hand-written owner predicate
+# is the copy that drifts, and a drifted owner predicate is a document from one
+# loan answering for another. It is PURE (no database, no config, no requires)
+# and it FAILS CLOSED — an unknown scope or a missing id THROWS rather than
+# quietly defaulting to a product.
+import src/lib/condition-owner.js
+
+# THE GENERIC REQUIRED-SLOTS RULE. Ported OUT of
+# src/longterm/conditions-center/write.js (`missingSlots`) into the shared
+# sign-off gate, which had no generic version and states the same rule three
+# times by hand. Long-Term imports it BACK rather than keeping the original as a
+# second copy — a second copy is precisely what the port removed, and a condition
+# that reads as "still waiting on the invoice" at the sign-off door and as
+# finished on the Long-Term screen is the drift this ledger exists to prevent.
+# PURE apart from one read of the two shared tables already authorized above.
+import src/lib/conditions/required-slots.js
+
+# WHAT A CHECK CONSTRAINT ACTUALLY ADMITS, read out of Postgres's own catalogue
+# (`pg_constraint`), so the Long-Term library can prove at BUILD time that every
+# value its vocabulary mapping emits is one the shared column will take. A value
+# set written down beside a column is a copy, and a copy nothing checks is the
+# copy that drifts — the first anybody hears of it is a check violation on a
+# loan file.
+#
+# NOT PRODUCT CODE, AND IT TOUCHES NO PRODUCT'S TABLES. `pg_constraint` is
+# Postgres's own catalogue, exactly like `information_schema`, which this repo
+# already reads to enumerate foreign keys (lib/borrower-merge.js) and to keep the
+# numeric-column bounds table honest (scripts/test-column-bounds-doors-db.js).
+# It is shared rather than Long-Term's own because "what does this constraint
+# admit?" is a question either product may need to ask, and two answers to it is
+# the duplication this ledger exists to prevent.
+import src/lib/conditions/live-check-values.js
+
+# THE THREE COLUMNS THE SHARED TABLES GAIN SO A LONG-TERM CONDITION CAN LIVE IN
+# THEM (db/651, the same grant). None is lt_-prefixed, so the gate does not
+# require these lines — they are recorded because the rule is per item and a
+# reader should be able to see the whole crossing in one place:
+#   checklist_templates.config       the Long-Term library's own per-condition
+#                                    settings, which no existing column holds
+#   checklist_items.slots            the PER-ITEM required-slot list the generic
+#                                    sign-off arm reads (RTL writes it nowhere,
+#                                    which is what makes that arm a no-op there)
+#   checklist_items.waived_reason    WHY, beside the waived_by/waived_at this
+#                                    table has carried for a long time
+
 # ---------------------------------------------------------------------------
 # THE ONE SHAREPOINT MIRROR — the same 2026-08-30 share-the-code grant:
 #   "Same thing is with SharePoint: you need to share the code."

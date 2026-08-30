@@ -80,6 +80,40 @@ function ownerOf(scope, id) {
 }
 
 /**
+ * WHO OWNS THIS ROW, read off the row itself.
+ *
+ * The inverse of `ownerCols`, and the reason it exists is the sign-off gate:
+ * that gate opened with `if (!item.application_id) return null`, which quietly
+ * made the WHOLE gate a no-op for every non-application item — so a Long-Term
+ * document condition would have signed off with nothing uploaded. Widening it
+ * needed a way to ask a row which product owns it, and a hand-written
+ * `row.lt_loan_id ? … : …` at that call site is the second copy of the owner
+ * rule this module exists to prevent.
+ *
+ * Returns null rather than throwing, for a row with NO owner among the scopes
+ * defined here — `checklist_items` also carries `borrower_id` and `llc_id`,
+ * which are real owners with no rules in the services this module serves, and
+ * they must keep behaving exactly as they always have. A null means "not one of
+ * mine", never "no owner".
+ *
+ * REFUSES AN AMBIGUOUS ROW. Two owner columns set is a row `chk_one_owner`
+ * should have made impossible on `checklist_items` and NOTHING enforces on
+ * `documents` (db/650 adds `lt_loan_id` there as a bare nullable uuid). Guessing
+ * which one wins is how a document from one product answers for the other, so a
+ * row like that gets null and the caller falls back to doing nothing — the same
+ * fail-closed posture as the rest of this file.
+ */
+function ownerOfRow(row) {
+  if (!row || typeof row !== 'object') return null;
+  const found = [];
+  for (const [scope, col] of Object.entries(OWNER_COLUMN)) {
+    const id = row[col];
+    if (id !== undefined && id !== null && id !== '') found.push(ownerOf(scope, id));
+  }
+  return found.length === 1 ? found[0] : null;
+}
+
+/**
  * The column this owner is stored in — `application_id` or `lt_loan_id`.
  *
  * The membership test is `hasOwnProperty`, NEVER a plain `MAP[scope]` lookup: an
@@ -155,4 +189,4 @@ function ownerCols(owner) {
   return out;
 }
 
-module.exports = { ownerOf, ownerColumn, ownerWhere, ownerCols, OWNER_SCOPES, OWNER_COLUMN };
+module.exports = { ownerOf, ownerOfRow, ownerColumn, ownerWhere, ownerCols, OWNER_SCOPES, OWNER_COLUMN };
