@@ -301,9 +301,78 @@ const GATE_LABELS = {
   taxMonthly: 'the monthly property taxes',
   insuranceMonthly: 'the monthly insurance',
   dscr: 'the calculated DSCR',
+  dscrMismatch: 'a price obtained at the ratio these figures actually produce',
   partyName: "the borrower's name or the vesting entity",
   propertyAddress: 'the full property address',
 };
+
+/**
+ * THE RATIO THE PRICE WAS OBTAINED AT MUST BE ONE THIS DEAL ACTUALLY MEETS.
+ *
+ * ⛔ OWNER-REPORTED 2026-08-30, and it is a MONEY rule, not a tidiness one:
+ * *"you allow the system to issue the term sheet even if the DSCR disagrees …
+ * if the scenario was 1.25 but the details that I'm entering to issue the term
+ * sheet are 1.2, it allows the system to issue the term sheet. This means we are
+ * giving him better pricing than we should have given him."*
+ *
+ * The board prices a SEARCH — the officer types a DSCR and Lender Price answers
+ * at that ratio, applying the investor's own DSCR adjustment. The term sheet
+ * then prints the rent, taxes and insurance actually entered. If those work out
+ * LOWER than the ratio the search ran at, the price on the document was bought
+ * in a band this loan does not qualify for, and the borrower gets a rate we
+ * would not have quoted. That is a loss on every such sheet.
+ *
+ * ⛔ IT REFUSES, IT NO LONGER WARNS. This shipped as a prominent warning that
+ * still let the sheet issue, on the reasoning that a hard stop with no way
+ * through would trap an officer who knew better. That reasoning was wrong: the
+ * way through is to RE-PRICE at the true ratio, which is one press, and the cost
+ * of the warning being ignored is money. Corrected at the owner's direction.
+ *
+ * ⛔ ONLY DOWNWARD. A ratio that comes out HIGHER than the search ran at is not
+ * this problem — the borrower qualifies by more than we priced, so nothing was
+ * given away. (They may deserve a better price; that is an opportunity, not a
+ * refusal, and the screen says so rather than blocking.)
+ *
+ * ⛔ AND IT NEVER GUESSES. The comparison needs the ratio the search was priced
+ * at AND every figure the true ratio is worked out from. Missing any of them,
+ * this rule stands down entirely and the ordinary completeness gate — which
+ * already demands the rent, the taxes, the insurance and a ratio — is what
+ * refuses. A refusal invented from half a scenario would be worse than none.
+ *
+ * The tolerance is one hundredth: both sides are printed to two decimals, so
+ * 1.2449 and 1.24 are the same claim on the paper and must not be a refusal.
+ */
+const DSCR_TOLERANCE = 0.005;
+
+function ratioProblem(member) {
+  const m = member && typeof member === 'object' ? member : {};
+  const sc = m.scenario || {};
+  const priced = num(sc.dscr);
+  if (priced == null || priced <= 0) return null;
+
+  const pi = num(m.monthlyPI);
+  const rent = num(sc.rentMonthly);
+  const tax = num(sc.taxMonthly);
+  const ins = num(sc.insuranceMonthly);
+  if (pi == null || rent == null || tax == null || ins == null) return null;
+  const hoa = num(sc.hoaMonthly) || 0;
+  const housing = pi + tax + ins + hoa;
+  if (!(housing > 0) || !(rent > 0)) return null;
+
+  // ⛔ ROUNDED TO TWO BEFORE IT IS COMPARED, and that is not cosmetic. The tenant's
+  // DSCR is DEFINED as Round([1005] / [912], 2) (owner-confirmed, recorded in
+  // encompass/formulas.js), the screen's own calculator returns exactly that, and the
+  // priced figure is a two-decimal band edge. Comparing a raw quotient here against a
+  // rounded one there is how a server refusal and a screen warning end up disagreeing
+  // about the same loan at the boundary — so both sides compare the SAME number, and
+  // dscrCalc.ratioVerdict is the browser's copy of this rule, held to it by
+  // test-lt-comparison-ux-pure.
+  const actual = Math.round((rent / housing) * 100) / 100;
+  const pricedRounded = Math.round(priced * 100) / 100;
+  if (actual >= pricedRounded - DSCR_TOLERANCE) return null;
+
+  return { priced: pricedRounded, actual };
+}
 
 function exportGate(snapshot) {
   const s = snapshot && typeof snapshot === 'object' ? snapshot : {};
@@ -330,7 +399,27 @@ function exportGate(snapshot) {
   // single key `partyName` — the screen points at both boxes and either fills it.
   if (!str(p.borrowerName, 120) && !str(p.entityName, 120)) missing.push('partyName');
   if (!str(p.propertyAddress, 200)) missing.push('propertyAddress');
-  if (!missing.length) return { ok: true, kind, missing: [], message: null };
+  // ⛔ ASKED AFTER THE FIELDS ARE IN, DELIBERATELY. The ratio cannot be worked out
+  // until the rent, taxes and insurance are there, so a half-filled scenario must
+  // be told what is missing rather than accused of a mismatch it cannot yet have.
+  if (!missing.length) {
+    const r = ratioProblem(m);
+    if (r) {
+      return {
+        ok: false,
+        kind,
+        missing: ['dscrMismatch'],
+        error: 'dscr_below_priced',
+        repriceAt: r.actual,
+        pricedAt: r.priced,
+        message: `These figures work out to a DSCR of ${r.actual.toFixed(2)}, but this option was priced `
+          + `at ${r.priced.toFixed(2)}. Issuing it would give the borrower a rate obtained in a band `
+          + `this loan does not qualify for. Re-price the scenario at ${r.actual.toFixed(2)} and issue `
+          + 'from the new price.',
+      };
+    }
+    return { ok: true, kind, missing: [], message: null };
+  }
 
   const words = missing.map((k) => GATE_LABELS[k] || k);
   const list = words.length === 1 ? words[0]

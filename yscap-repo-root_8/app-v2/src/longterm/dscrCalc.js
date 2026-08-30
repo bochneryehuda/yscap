@@ -147,3 +147,43 @@ export function dscrFrom(input) {
   if (pitia <= 0) return { pi, tax, insurance, hoa, pitia, dscr: null, missing: ['a payment above zero'] };
   return { pi, tax, insurance, hoa, pitia, dscr: Math.round((rent / pitia) * 100) / 100, missing: [] };
 }
+
+/* ── DOES THIS FILE STILL QUALIFY FOR THE PRICE IT WAS QUOTED? ────────────────
+   Owner-reported 2026-08-30: *"You allow the system to issue the term sheet even if the
+   DSCR disagrees. If the scenario was 1.25 but the details that I'm entering to issue the
+   term sheet are 1.2, it allows the system to issue the term sheet. This means we are
+   giving him better pricing than we should have given him."*
+
+   A DSCR band is a PRICE BRACKET — the vendor prices 1.25+ better than 1.20+ — so a sheet
+   issued at a 1.25 rate on figures that only reach 1.20 hands the borrower a rate this
+   loan does not qualify for.
+
+   ⛔ THE REFUSAL IS THE SERVER'S (`termsheet/snapshot.ratioProblem`), not this. This is
+   the BROWSER'S COPY, and it exists only so the screen can say so before the button is
+   pressed and offer the re-price. Two copies of one money rule is exactly the shape that
+   drifts, so `test-lt-comparison-ux-pure` runs BOTH over the same battery and fails the
+   moment they disagree about any loan.
+
+   ⛔ ONLY A RATIO **BELOW** THE PRICED ONE IS A PROBLEM. A file that comes out BETTER than
+   it was priced at qualifies for that band with room to spare — refusing it would block a
+   perfectly good sheet and offer a "re-price" that could only make the borrower's rate
+   worse for no reason.
+
+   Both sides compare the ratio ROUNDED TO TWO, because that is what a DSCR is here
+   (Round([1005]/[912], 2), owner-confirmed) and what both the paper and the band edge
+   carry. The tolerance absorbs float representation at the boundary, nothing more — it is
+   a hundredth, so a real band step (0.05) can never hide inside it. */
+export const DSCR_BAND_TOLERANCE = 0.005;
+
+/**
+ * @returns 'unknown' when either side is unusable, 'below' when the figures no longer
+ *          reach the band the price was bought in, 'ok' otherwise.
+ */
+export function ratioVerdict(computed, priced) {
+  const c = Number(computed);
+  const p = Number(priced);
+  if (!nn(c) || !nn(p) || c <= 0 || p <= 0) return 'unknown';
+  const c2 = Math.round(c * 100) / 100;
+  const p2 = Math.round(p * 100) / 100;
+  return c2 >= p2 - DSCR_BAND_TOLERANCE ? 'ok' : 'below';
+}

@@ -10,7 +10,8 @@ import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, p
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
 import { COMP_MODES, DEFAULT_COMP_MODE, compShiftPoints, shiftedPrice, shiftBuild, quoteCharges, closingSheet } from './compOverlay.js';
-import { QuoteTermSheetActions, ComparisonStrip, ComparisonWorkflowPanel, useTermSheetCart } from './TermSheetPanel.jsx';
+import { QuoteTermSheetActions, ComparisonStrip, ComparisonWorkflowPanel, PickBox, useTermSheetCart } from './TermSheetPanel.jsx';
+import { offBoardCount } from './cartMatch.js';
 // The INVESTOR FILTER (owner-directed 2026-08-27) — a display overlay on top of the
 // answer. The search itself is NEVER narrowed: Lender Price is always asked for
 // everything, and these rules only decide which rows the board draws. Plain `.js`
@@ -19,7 +20,7 @@ import {
   selectionActive, filterPrograms, filterDisqualifiedLenders, toggleKey,
   missingFromAnswer, overlaySummary, expandAllKeys,
 } from './investorFilter.js';
-import { perMonth, monthlyPI, dscrFrom, housingPayment } from './dscrCalc.js';
+import { perMonth, monthlyPI, dscrFrom, housingPayment, ratioVerdict } from './dscrCalc.js';
 // The form's own rules — which options exist, when a field appears, and the amount triangle. Also a
 // plain `.js` module, and for the same reason: CI can run it, and a rule CI cannot run is a rule
 // nobody is holding. See scenarioFields.js.
@@ -73,6 +74,23 @@ import {
    talks somebody into believing a fee was waived. */
 const nn = (v) => Number.isFinite(v);
 const NUM = { fontVariantNumeric: 'tabular-nums' };
+
+/* THE BOARD'S ACTION COLUMN, ONE DEFINITION — owner-reported 2026-08-30: *"the column
+   that we added for PITI is off, and it's not aligned with the dollar amounts."*
+
+   ROOT CAUSE, and it is mine: adding the comparison tick-box widened the action cell on
+   the ROWS from 70px to 132px and left the HEADER's trailing spacer at 70px. The name
+   column is `flex: 2 1 200px` — it GROWS into whatever slack is left — so a row whose
+   fixed columns are 62px wider gives the name 62px less, and every figure after it sits
+   62px to the LEFT of the heading that names it. Nothing overflows and nothing wraps, so
+   it reads as one column being subtly wrong rather than as a layout break.
+
+   ⛔ SO THE WIDTH IS WRITTEN ONCE AND READ BY BOTH. Two hand-typed numbers that have to
+   agree are two numbers that will disagree the next time one of them is touched.
+   `ACT_W` is the eligible board's cell (it carries the tick-box); `ACT_W_PLAIN` is the
+   ineligible board's, which has only a Details button and deliberately stays narrow. */
+const ACT_W = '0 0 132px';
+const ACT_W_PLAIN = '0 0 70px';
 
 /* ── the starting scenario ────────────────────────────────────────────────────
    ⛔ EVERY ONE OF THESE IS A STARTING POINT, NOT A FACT, and the screen says so above the
@@ -1161,7 +1179,8 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
             <span style={{ flex: '0 0 108px', textAlign: 'right' }}>Cost / credit</span>
             <span style={{ flex: '0 0 104px', textAlign: 'right' }}>Monthly P&amp;I</span>
             {pitiOn && <span style={{ flex: '0 0 104px', textAlign: 'right' }}>{pitiKey}</span>}
-            <span style={{ flex: '0 0 70px' }} />
+            {/* Matches the rows' action cell EXACTLY (ACT_W) — see the constant. */}
+            <span style={{ flex: ACT_W }} />
           </div>
           {groupByLender(row.quotes).map((g, gi) => {
             const gKey = `${row.key}|${g.key}`;
@@ -1234,7 +1253,15 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                   {pitiOn && (
                     <span className="ltq-cell" data-k={pitiKey} style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 13, fontWeight: 600, color: INK, ...NUM }}>{money2(pitiOf(g.best))}</span>
                   )}
-                  <span className="ltq-act" style={{ flex: '0 0 70px', textAlign: 'right' }}>
+                  <span className="ltq-act" style={{ flex: ACT_W, textAlign: 'right', display: 'inline-flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+                    {/* ⛔ THE TICK IS ON THE ROW, not two clicks inside it. Owner-directed
+                        2026-08-30 — an officer must be able to SEE which programmes are in the
+                        comparison without opening anything. It only appears once a comparison is
+                        being built, so an ordinary price search keeps the board it always had. */}
+                    {ts && ts.picking && ts.enabled && g.best && (
+                      <PickBox quote={g.best} comp={comp} members={ts.members} busy={ts.busyKey === g.best.key}
+                        onAdd={() => ts.pick(g.best, g.best.option)} onRemove={(m) => ts.unpick(m)} />
+                    )}
                     <button type="button" className="btn ghost" style={{ fontSize: 12 }}
                       onClick={() => onOpenQuote(openQuote === (g.best && g.best.key) ? null : (g.best && g.best.key))}>
                       {openQuote === (g.best && g.best.key) ? 'Hide' : 'Details'}
@@ -1274,7 +1301,13 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                         {pitiOn && (
                           <span className="ltq-cell" data-k={pitiKey} style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 12.5, fontWeight: 600, color: INK, ...NUM }}>{money2(pitiOf(q))}</span>
                         )}
-                        <span className="ltq-act" style={{ flex: '0 0 70px', textAlign: 'right' }}>
+                        <span className="ltq-act" style={{ flex: ACT_W, textAlign: 'right', display: 'inline-flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+                          {/* Every programme is tickable, not only the lender's best — the whole
+                              point of opening a lender is to compare its other programmes. */}
+                          {ts && ts.picking && ts.enabled && (
+                            <PickBox quote={q} comp={comp} members={ts.members} busy={ts.busyKey === q.key}
+                              onAdd={() => ts.pick(q, q.option)} onRemove={(m) => ts.unpick(m)} />
+                          )}
                           <button type="button" className="btn ghost" style={{ fontSize: 12 }}
                             onClick={() => onOpenQuote(isOpen ? null : q.key)}>
                             {isOpen ? 'Hide' : 'Details'}
@@ -1509,7 +1542,7 @@ function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
                   <span style={{ flex: '0 0 82px', textAlign: 'right' }}>Price</span>
                   <span style={{ flex: '0 0 82px', textAlign: 'right' }}>Points</span>
                   <span style={{ flex: '0 0 108px', textAlign: 'right' }}>Cost / credit</span>
-                  <span style={{ flex: '0 0 70px' }} />
+                  <span style={{ flex: ACT_W_PLAIN }} />
                 </div>
 
                 {row.lenders.map((g) => {
@@ -1551,7 +1584,7 @@ function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
                                 </span>
                               </span>
                               <MoneyCells m={priceMoney(dP(q.price), loanAmount)} />
-                              <span className="ltq-act" style={{ flex: '0 0 70px', textAlign: 'right' }}>
+                              <span className="ltq-act" style={{ flex: ACT_W_PLAIN, textAlign: 'right' }}>
                                 <button type="button" className="btn ghost" style={{ fontSize: 12 }}
                                   onClick={() => setOpenItem(iOpen ? null : iKey)}>
                                   {iOpen ? 'Hide' : 'Details'}
@@ -1729,7 +1762,18 @@ export default function LtPricer() {
      intent it is checked against. Held here rather than stored — an intent is
      not a fact about a sheet, and a stored one could go stale against a cart
      that moved under it, which is the very thing the check is for. */
+  /* THE RE-PRICE THE RATIO REFUSAL ASKS FOR. A ref, not state: it is a one-shot
+     intention rather than something drawn, and the run has to happen AFTER the
+     new ratio has landed in the form — React batches the write, so firing the
+     search in the same tick would re-price at the OLD ratio and refuse again,
+     which reads as a button that does nothing. */
+  const repriceWanted = useRef(false);
   const [compWorkflow, setCompWorkflow] = useState(null);
+  /* Which row is mid-flight, and the one-line answer to the last tick. The owner
+     asked to see *"what you selected and what you removed"* — a tick that changes
+     silently leaves somebody wondering whether it saved. */
+  const [pickBusy, setPickBusy] = useState(null);
+  const [pickNote, setPickNote] = useState(null);
   const [cartDocKind, setCartDocKind] = useState(null);
 
   /* THE CARRYING COSTS THE BOARD'S PITI COLUMN IS BUILT FROM (owner-directed 2026-08-30).
@@ -2012,6 +2056,16 @@ export default function LtPricer() {
      `vendorMonthlyPI` is sent as a CROSS-CHECK, never as the figure: the server
      re-derives the payment and REFUSES the export when the two disagree by more
      than a dollar, rather than issuing a sheet that contradicts this screen. */
+  /* EVERY PRICED QUOTE ON THIS BOARD, flattened once. Only used to answer "how
+     many collected options are NOT in front of me" — the cart spans searches, so
+     an officer seeing four collected and three ticked must be told the fourth
+     came from an earlier search rather than left to read it as a tick that
+     failed to save. */
+  const allQuotes = React.useMemo(
+    () => (stack ? stack.rates.flatMap((r) => r.quotes || []) : []),
+    [stack],
+  );
+
   const ts0 = useTermSheetCart();
   const ts = {
     ...ts0,
@@ -2075,6 +2129,44 @@ export default function LtPricer() {
     setPrepared,
     calc,
     setCalc,
+
+    /* ── PICKING PROGRAMMES FOR A COMPARISON ────────────────────────────────
+       ⛔ THE TICKS APPEAR ONLY WHILE A COMPARISON IS BEING BUILT. Owner-directed
+       2026-08-30: *"a select mode by the two comparison things."* Choosing one of
+       the two documents at the top turns selecting ON; an ordinary price search
+       keeps exactly the board it has always had, with no extra column of boxes
+       on every row for a job nobody is doing.
+
+       ⛔ AND THE CART IS THE ONLY RECORD. `pick`/`unpick` post to the server and
+       reload; the tick is drawn from what came back. Nothing here remembers a
+       selection, so the board cannot show a tick the cart does not have — which
+       is the failure that would make this worse than the drawer it replaces. */
+    picking: !!compWorkflow,
+    busyKey: pickBusy,
+    pick: async (q, o) => {
+      setPickBusy(q && q.key);
+      try {
+        await ltApi.termSheetCartAdd(ts.selectionFor(q, o));
+        setPickNote({ tone: 'ok', text: `Added ${q.consumerLabel || q.whiteLabel || 'that option'}.` });
+        await ts0.reload();
+      } catch (err) {
+        // The server's own sentence — it names a programme that cannot go on a
+        // sheet, and why, which a generic failure never would.
+        setPickNote({ tone: 'bad', text: (err && (err.message || err.error)) || 'Could not add that option.' });
+      } finally { setPickBusy(null); }
+    },
+    unpick: async (m) => {
+      setPickBusy(m && m.id);
+      try {
+        await ltApi.termSheetCartRemove(m.id);
+        setPickNote({ tone: 'ok', text: `Removed ${(m.program && m.program.consumerLabel) || m.label || 'that option'}.` });
+        await ts0.reload();
+      } catch (err) {
+        setPickNote({ tone: 'bad', text: (err && (err.message || err.error)) || 'Could not remove that option.' });
+      } finally { setPickBusy(null); }
+    },
+    note: pickNote,
+
     issueFor: (q, o) => ({
       selectionNow: () => ts.selectionFor(q, o),
       prepared,
@@ -2093,6 +2185,22 @@ export default function LtPricer() {
          term, the ratio the search ran on — yields `unknown`, and the panel
          draws nothing. A confident "they match" on an incomplete scenario is
          the one answer that would be worse than silence. */
+      /* ⛔ THE WAY THROUGH A RATIO REFUSAL — owner-directed 2026-08-30, after the
+         warning-only version was found to be giving away pricing: *"The system
+         has a reprice button, reprice based on the actual ratio, to give worse
+         pricing before you wish to give them better pricing."*
+
+         It writes the true ratio into the SEARCH and re-runs it, so the next
+         board is priced in the band the loan actually qualifies for. It changes
+         nothing else about the scenario — the officer's own figures stay exactly
+         as typed — and it re-prices rather than editing a price, because a price
+         is the vendor's answer and ours to ask for, never to adjust. */
+      onReprice: (ratio) => {
+        const n = Number(ratio);
+        if (!Number.isFinite(n) || n <= 0) return;
+        setF((p2) => ({ ...p2, dscr: n.toFixed(2) }));
+        repriceWanted.current = true;
+      },
       ratioCheck: () => {
         const priced = toNumber(f.dscr);
         const out = dscrFrom({
@@ -2107,13 +2215,33 @@ export default function LtPricer() {
         });
         if (out.dscr == null || priced == null || !(priced > 0)) return { state: 'unknown' };
         const computed = out.dscr.toFixed(2);
-        // Compared as the two DECIMALS a person reads, not as floats: the sheet
-        // prints 1.24, so 1.2449 and 1.24 are the same claim on the paper.
-        const agree = computed === priced.toFixed(2);
-        return { state: agree ? 'agree' : 'differs', computed, priced: priced.toFixed(2) };
+        // ⛔ THE SERVER'S OWN RULE, through the shared calculator — so the screen can never
+        // refuse a sheet the server would issue, or promise one it would refuse. ONLY a
+        // ratio BELOW the band the price was bought in blocks: a file that comes out
+        // BETTER than it was priced at qualifies with room to spare, and blocking it would
+        // offer a "re-price" that could only make the borrower's rate worse. The earlier
+        // cut compared the two decimals for EQUALITY, which did exactly that.
+        const verdict = ratioVerdict(out.dscr, priced);
+        return {
+          state: verdict === 'below' ? 'differs' : 'agree',
+          computed,
+          priced: priced.toFixed(2),
+          above: verdict === 'ok' && computed !== priced.toFixed(2),
+        };
       },
     }),
   };
+
+  /* Fire the re-price once — and only once the form actually carries the new
+     ratio, which is the tick after `onReprice` wrote it. Guarded by the ref, so
+     an ordinary edit of the DSCR box never triggers a search nobody asked for. */
+  useEffect(() => {
+    if (!repriceWanted.current) return;
+    repriceWanted.current = false;
+    run();
+    // Keyed on the RATIO alone: `run` is rebuilt every render, so depending on it
+    // would re-price on every render instead of on the one change that asked for it.
+  }, [f.dscr]);
 
   async function run(e) {
     if (e) e.preventDefault();
@@ -2528,7 +2656,9 @@ export default function LtPricer() {
           chosen={compWorkflow}
           onChoose={setCompWorkflow}
           count={ts.count}
-          docKind={cartDocKind}>
+          docKind={cartDocKind}
+          note={pickNote}
+          offBoard={offBoardCount(ts.members, allQuotes, comp)}>
           {ts.enabled && (ts.count > 0 || ts.issued) && (
             <ComparisonStrip open cart={ts.cart} members={ts.members} onChange={ts.reload}
               onIssued={ts.setIssued} onPlan={setCartDocKind} />

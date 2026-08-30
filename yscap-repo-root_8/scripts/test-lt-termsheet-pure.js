@@ -33,10 +33,17 @@ const section = (t) => console.log(`\n${t}`);
 // Comp: 2 points of YSP, so a borrower-paid display price is the raw price less
 // 2.000 — which puts 7.375% at exactly par and reproduces the printed table.
 const PLAN = { borrowerPaid: 2, ysp: 2, lenderPaid: 2, applicationFee: 500, commitmentFee: 1595 };
+  // ⛔ THIS SCENARIO IS INTERNALLY CONSISTENT, AND THAT IS NOW LOAD-BEARING. 375,000 at
+  // 7.375% over 30 years is 2,590.03 a month; with 620 of tax and 145 of insurance the
+  // housing payment is 3,355.03, and a 1.24 DSCR needs 4,161 of rent. The fixture used to
+  // say 3,900 — a loan whose own figures only reach 1.16 while claiming a price bought in
+  // the 1.24 band, which is exactly the mis-priced sheet the export gate now refuses
+  // (owner-reported 2026-08-30). A fixture that could not be issued in production must not
+  // be the one every other assertion here is built on.
 const SCENARIO = {
   purpose: 'Purchase', propertyType: 'Single family', value: 500000, loan: 375000,
   ltv: 75, termYears: 30, dscr: 1.24, fico: 740, state: 'NJ', city: 'Lakewood', zip: '08701',
-  rentMonthly: 3900, taxMonthly: 620, insuranceMonthly: 145, hoaMonthly: 0,
+  rentMonthly: 4161, taxMonthly: 620, insuranceMonthly: 145, hoaMonthly: 0,
   prepayMonths: 60, prepayStructure: '5 Year',
 };
 const quote = (label, ratePct, rawPrice, extra) => Object.assign({
