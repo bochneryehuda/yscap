@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**906 objects**, and a database rebuilt from the Prisma
+**940 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 639 numbered migrations in `db/` (highest `db/642`) remain the only thing that builds this database.
+rebuild a database from them.** The 646 numbered migrations in `db/` (highest `db/649`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 393 |
-| Columns | 6292 |
+| Tables | 405 |
+| Columns | 6478 |
 | Triggers | 37 |
 | Functions | 140 |
-| CHECK constraints | 328 |
+| CHECK constraints | 346 |
 | Generated columns | 12 |
-| Partial indexes | 389 |
-| Primary keys | 393 |
-| Foreign keys | 807 |
+| Partial indexes | 405 |
+| Primary keys | 405 |
+| Foreign keys | 825 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1354 |
+| Indexes (all kinds) | 1399 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -231,7 +231,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (389)
+## Partial indexes (405)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -508,7 +508,13 @@ the live database.
 - **ix_property_adjustments_zip** on `property_adjustments`
 - **ix_staff_last_active_at** on `staff_users`
 - **lt_assets_enc_uk** on `lt_assets`
+- **lt_condition_buckets_order_idx** on `lt_condition_buckets`
 - **lt_condition_comments_enc_uk** on `lt_condition_comments`
+- **lt_condition_files_condition_idx** on `lt_condition_files`
+- **lt_condition_files_hash_idx** on `lt_condition_files`
+- **lt_condition_files_order_idx** on `lt_condition_files`
+- **lt_condition_templates_auto_idx** on `lt_condition_templates`
+- **lt_condition_templates_bucket_idx** on `lt_condition_templates`
 - **lt_conditions_open_idx** on `lt_conditions`
 - **lt_cu_review_open_idx** on `lt_clickup_review_queue`
 - **lt_cu_review_open_uk** on `lt_clickup_review_queue`
@@ -518,9 +524,15 @@ the live database.
 - **lt_document_conditions_unresolved_idx** on `lt_document_conditions`
 - **lt_documents_status_idx** on `lt_documents`
 - **lt_employments_enc_uk** on `lt_employments`
+- **lt_file_conditions_one_per_template_uk** on `lt_file_conditions`
+- **lt_file_conditions_open_idx** on `lt_file_conditions`
+- **lt_file_orders_condition_idx** on `lt_file_orders`
+- **lt_ladder_events_to_associate_idx** on `lt_ladder_events`
 - **lt_liabilities_enc_uk** on `lt_liabilities`
 - **lt_loan_contacts_override_idx** on `lt_loan_contacts`
 - **lt_loan_contacts_staff_idx** on `lt_loan_contacts`
+- **lt_loan_milestones_done_at_idx** on `lt_loan_milestones`
+- **lt_loan_vendors_one_primary_uk** on `lt_loan_vendors`
 - **lt_loans_archived_duplicate_idx** on `lt_loans`
 - **lt_loans_clickup_push_due_idx** on `lt_loans`
 - **lt_loans_clickup_task_uk** on `lt_loans`
@@ -530,14 +542,18 @@ the live database.
 - **lt_loans_purchased_status_idx** on `lt_loans`
 - **lt_locks_expiration_idx** on `lt_locks`
 - **lt_milestone_events_loan_entered_idx** on `lt_milestone_events`
+- **lt_order_events_inbound_uk** on `lt_order_events`
 - **lt_other_incomes_enc_uk** on `lt_other_incomes`
 - **lt_parties_encompass_id_idx** on `lt_parties`
 - **lt_pipeline_views_default_uk** on `lt_pipeline_views`
 - **lt_ppe_rule_lookup_idx** on `lt_ppe_rule`
 - **lt_ppe_rule_suggestion_open_idx** on `lt_ppe_rule_suggestion`
 - **lt_reo_properties_enc_uk** on `lt_reo_properties`
+- **lt_report_definitions_shared_idx** on `lt_report_definitions`
 - **lt_residences_enc_uk** on `lt_residences`
 - **lt_staff_links_confirmed_staff_uk** on `lt_staff_links`
+- **lt_vor_envelopes_envelope_uk** on `lt_vor_envelopes`
+- **lt_vor_returns_env_docusign_uk** on `lt_vor_returns`
 - **market_areas_name_uk** on `market_areas`
 - **market_areas_where_idx** on `market_areas`
 - **reminders_due_idx** on `reminders`
@@ -623,7 +639,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (328)
+## CHECK constraints (346)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -850,11 +866,25 @@ the live database.
 - **loan_exceptions_status_check** on `loan_exceptions`
 - **loan_facts_status_check** on `loan_facts`
 - **lt_borrower_links_status_chk** on `lt_borrower_links`
+- **lt_condition_files_review_check** on `lt_condition_files`
+- **lt_condition_templates_audience_check** on `lt_condition_templates`
+- **lt_condition_templates_auto_check** on `lt_condition_templates`
+- **lt_condition_templates_kind_check** on `lt_condition_templates`
 - **lt_cu_review_status_chk** on `lt_clickup_review_queue`
+- **lt_file_conditions_audience_check** on `lt_file_conditions`
+- **lt_file_conditions_kind_check** on `lt_file_conditions`
+- **lt_file_conditions_origin_check** on `lt_file_conditions`
+- **lt_file_conditions_status_check** on `lt_file_conditions`
+- **lt_file_orders_kind_chk** on `lt_file_orders`
+- **lt_file_orders_status_chk** on `lt_file_orders`
+- **lt_ladder_events_type_check** on `lt_ladder_events`
+- **lt_loan_vendors_kind_chk** on `lt_loan_vendors`
 - **lt_loans_clickup_confidence_chk** on `lt_loans`
 - **lt_loans_clickup_source_chk** on `lt_loans`
 - **lt_loans_clickup_stamp_confirmed_chk** on `lt_loans`
 - **lt_milestone_events_type_check** on `lt_milestone_events`
+- **lt_order_events_direction_chk** on `lt_order_events`
+- **lt_order_events_msg_type_chk** on `lt_order_events`
 - **lt_ppe_adjustment_target_chk** on `lt_ppe_adjustment`
 - **lt_ppe_adjustment_unit_chk** on `lt_ppe_adjustment`
 - **lt_ppe_canary_schedule_concurrency_chk** on `lt_ppe_canary_schedule`
@@ -869,11 +899,15 @@ the live database.
 - **lt_ppe_rule_origin_chk** on `lt_ppe_rule`
 - **lt_ppe_rule_source_chk** on `lt_ppe_rule`
 - **lt_ppe_rule_suggestion_status_chk** on `lt_ppe_rule_suggestion`
+- **lt_report_definitions_visibility_check** on `lt_report_definitions`
 - **lt_term_sheet_created_by_chk** on `lt_term_sheet`
 - **lt_term_sheet_kind_chk** on `lt_term_sheet`
 - **lt_term_sheet_mode_chk** on `lt_term_sheet`
 - **lt_term_sheet_scenario_mode_chk** on `lt_term_sheet_scenario`
 - **lt_term_sheet_scenario_parent_chk** on `lt_term_sheet_scenario`
+- **lt_vor_envelopes_method_chk** on `lt_vor_envelopes`
+- **lt_vor_envelopes_status_chk** on `lt_vor_envelopes`
+- **lt_vor_returns_source_chk** on `lt_vor_returns`
 - **manual_program_escalations_status_check** on `manual_program_escalations`
 - **market_areas_box_ck** on `market_areas`
 - **market_areas_kind_ck** on `market_areas`
@@ -954,7 +988,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (807)
+## Foreign keys (825)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1475,6 +1509,10 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lt_borrower_links** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
 - **lt_borrower_pairs** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_condition_comments** → `lt_conditions` — `FOREIGN KEY (condition_id) REFERENCES lt_conditions(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_condition_files** → `lt_file_conditions` — `FOREIGN KEY (condition_id) REFERENCES lt_file_conditions(id) ON DELETE CASCADE`
+- **lt_condition_files** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
+- **lt_condition_files** → `staff_users` — `FOREIGN KEY (reviewed_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **lt_condition_files** → `staff_users` — `FOREIGN KEY (uploaded_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **lt_conditions** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_declarations** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_document_attachments** → `lt_documents` — `FOREIGN KEY (document_id) REFERENCES lt_documents(id) ON UPDATE CASCADE ON DELETE CASCADE`
@@ -1482,6 +1520,12 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lt_document_conditions** → `lt_documents` — `FOREIGN KEY (document_id) REFERENCES lt_documents(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_documents** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_employments** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_file_conditions** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
+- **lt_file_conditions** → `staff_users` — `FOREIGN KEY (satisfied_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **lt_file_conditions** → `staff_users` — `FOREIGN KEY (waived_by) REFERENCES staff_users(id) ON DELETE SET NULL`
+- **lt_file_orders** → `lt_file_conditions` — `FOREIGN KEY (condition_id) REFERENCES lt_file_conditions(id) ON DELETE SET NULL`
+- **lt_file_orders** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
+- **lt_ladder_events** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
 - **lt_liabilities** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_liabilities** → `lt_reo_properties` — `FOREIGN KEY (reo_property_id) REFERENCES lt_reo_properties(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_loan_contacts** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
@@ -1490,11 +1534,14 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lt_loan_contacts** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_loan_investors** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_loan_milestones** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
+- **lt_loan_vendors** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
 - **lt_loans** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
 - **lt_loans** → `staff_users` — `FOREIGN KEY (loan_officer_id) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **lt_loans** → `lt_encompass_milestones` — `FOREIGN KEY (milestone_id) REFERENCES lt_encompass_milestones(milestone_id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_lock_events** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_locks** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_order_events** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
+- **lt_order_events** → `lt_file_orders` — `FOREIGN KEY (order_id) REFERENCES lt_file_orders(id) ON DELETE CASCADE`
 - **lt_other_incomes** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_parties** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
 - **lt_parties** → `lt_borrower_pairs` — `FOREIGN KEY (pair_id) REFERENCES lt_borrower_pairs(id) ON UPDATE CASCADE ON DELETE CASCADE`
@@ -1523,6 +1570,11 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lt_term_sheet_cart** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_term_sheet** → `staff_users` — `FOREIGN KEY (created_by_staff) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_term_sheet** → `lt_term_sheet` — `FOREIGN KEY (supersedes) REFERENCES lt_term_sheet(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_vor_envelopes** → `lt_vor_forms` — `FOREIGN KEY (form_id) REFERENCES lt_vor_forms(id) ON DELETE SET NULL`
+- **lt_vor_envelopes** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
+- **lt_vor_forms** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
+- **lt_vor_returns** → `lt_vor_envelopes` — `FOREIGN KEY (envelope_id) REFERENCES lt_vor_envelopes(id) ON DELETE SET NULL`
+- **lt_vor_returns** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
 - **manual_program_escalations** → `applications` — `FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE`
 - **manual_program_escalations** → `staff_users` — `FOREIGN KEY (countered_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **manual_program_escalations** → `staff_users` — `FOREIGN KEY (decided_by) REFERENCES staff_users(id) ON DELETE SET NULL`
@@ -1838,7 +1890,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 393 primary keys and 1354 indexes is
+Every one of the 405 primary keys and 1399 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

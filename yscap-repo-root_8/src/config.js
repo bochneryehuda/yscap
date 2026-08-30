@@ -171,6 +171,24 @@ module.exports = {
   // NOTIFY_FROM from the environment is repaired by resolveNotifyFrom above
   // (owner-directed 2026-08-26) — the rule is enforced, not just documented.
   notifyFrom:    resolveNotifyFrom(EMAIL_PROVIDER_RESOLVED),
+  /* SENDING AS THE PERSON WHO ORDERED (owner-directed 2026-08-30: "make sure all
+     the orders are coming from the user that is actually ordering, from his email,
+     from his name").
+
+     `emailSendingDomains` is the list of domains a From line may carry. UNSET it
+     derives the domain of `notifyFrom` — the one the provider has already verified —
+     so this works on the configuration that is live today with nothing new to set
+     up. Set it (comma-separated) to name a SECOND verified domain later.
+
+     A person whose address is NOT on one of these is sent for, never as: their name
+     on our domain with "via PILOT" after it. That is not squeamishness — a From on a
+     domain we cannot sign for fails DMARC alignment and lands in spam. The whole
+     rule, and the research behind it, is `src/lib/send-as.js`.
+
+     `sendAsUser` is the switch. ON by default because it is what the owner asked
+     for; `SEND_AS_USER=0` returns every send to the company address. */
+  emailSendingDomains: (process.env.EMAIL_SENDING_DOMAINS || '').trim() || null,
+  sendAsUser: !/^(0|false|no|off)$/i.test(String(process.env.SEND_AS_USER || '').trim()),
   // A guaranteed Reply-To for every notification when no more-specific one is
   // set (a per-file file+<id>@ address, or an officer's own inbox). This makes
   // "just hit reply" always reach a human, so no email is ever a dead end.

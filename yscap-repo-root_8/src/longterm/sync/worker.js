@@ -36,6 +36,7 @@ const contacts = require('../people/contacts');
 const clickupLink = require('../clickup/link');
 const clickupPush = require('../clickup/push');
 const borrowerAutolink = require('../borrower-autolink');
+const vorDesk = require('../vor/desk');
 const runLog = require('./run-log');
 
 /**
@@ -172,7 +173,7 @@ async function tickOnce({ trigger = 'worker' } = {}) {
   if (running) return { ok: false, reason: 'a pass is already running' };
   running = true;
   const started_at = Date.now();
-  const out = { loans: null, conditions: null, milestoneCatalog: null, milestoneLadders: null, pilotRoles: null, clickupLink: null, borrowerLinks: null };
+  const out = { loans: null, conditions: null, milestoneCatalog: null, milestoneLadders: null, pilotRoles: null, clickupLink: null, borrowerLinks: null, vorEnvelopes: null };
   try {
     // EVERY PASS RECORDS WHAT IT DID (db/616). The log line below says the same
     // thing, and a log line is not an answer: the owner asked twice why nothing was
@@ -254,6 +255,18 @@ async function tickOnce({ trigger = 'worker' } = {}) {
       out.borrowerLinks = await runLog.record('borrower_links', trigger, () => borrowerAutolink.autoLinkPass({}));
     } catch (e) {
       out.borrowerLinks = { ok: false, reason: (e && e.message) || String(e) };
+    }
+    /* THE VERIFICATION-OF-RENT ENVELOPES. The DocuSign Connect webhook is a NUDGE,
+       not the correctness machinery: a delivery can be lost, dropped by a deploy
+       mid-request, or refused while an HMAC key is rotated — and the failure is
+       SILENT, so the landlord signs and the condition sits open with a form somebody
+       believes is still out. This asks DocuSign about the envelopes still out, a
+       bounded handful per pass. It skips itself entirely when DocuSign is not
+       configured, so it costs nothing on a deployment that does not use it. */
+    try {
+      out.vorEnvelopes = await runLog.record('vor_envelopes', trigger, () => vorDesk.reconcileOpenEnvelopes({}));
+    } catch (e) {
+      out.vorEnvelopes = { ok: false, reason: (e && e.message) || String(e) };
     }
     // THE FIELD WRITER (db/625, owner-directed 2026-08-23): a brand-new
     // Encompass file gets its card in the officer's folder, and a linked card

@@ -167,6 +167,12 @@ async function main() {
     'ppe/run-store.js': 'test-lt-ppe-run-store-db.js drives it',
     'product-book.js': 'GET /api/lt/book, in the route smoke test',
     'routes/stages.js': 'GET /api/lt/stages, in the route smoke test',
+    // The condition library's settings door assembles `SET ${sets.join(', ')}`
+    // from whichever fields the body carried, so it is not a statement until it
+    // is assembled. Section F of that suite drives the REAL handler over HTTP and
+    // asserts the wording it was handed is what the row then holds — execution
+    // alone would not prove it, since the route answers 200 either way.
+    'routes/condition-center.js': 'test-lt-condition-answers-db.js section F drives PATCH /library/:code through the real handler and re-reads the row',
     // The borrowers list assembles `WHERE ${scope.where}`, which is EMPTY for the
     // sees-all admin the smoke test mostly runs as — so that suite also calls it
     // as a SCOPED loan officer, which is what makes the interpolated branch a real

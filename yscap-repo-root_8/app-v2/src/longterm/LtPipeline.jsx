@@ -481,7 +481,12 @@ export default function LtPipeline() {
 
   const th = { textAlign: 'left', fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase',
     color: '#4B585C', fontWeight: 700, padding: '8px 10px', whiteSpace: 'nowrap' };
-  const td = { padding: '10px', fontSize: 14, color: '#141B22', borderTop: '1px solid #EAE4D7' };
+  // THE ROW'S OWN RULE MOVED TO THE ROW (owner-directed 2026-08-30: the files
+  // should read as "one file, next file, next file", each separated by its line,
+  // inside one white box). A border on every CELL draws the same hairline four
+  // times over and cannot be lifted on hover, so `.lt-rows` puts one rule on the
+  // <tr> and highlights the whole row — which is what the RTL pipeline does.
+  const td = { padding: '11px 10px', fontSize: 14, color: '#141B22' };
 
   // The columns the SERVER resolved from `pipeline.columns`. An older server that does
   // not send them is not a blank table: fall back to the set this screen has always
@@ -675,10 +680,10 @@ export default function LtPipeline() {
         )}
       </div>
 
-      {err && <div className="card" style={{ color: '#141B22' }}>{err}</div>}
+      {err && <div className="lt-card" style={{ color: '#141B22' }}>{err}</div>}
 
       {data && !data.loans.length && (
-        <div className="card" style={{ color: '#141B22' }}>
+        <div className="lt-card" style={{ color: '#141B22' }}>
           {data.emptyReason
             || (data.scope === 'all' && whose === 'mine' && !officerId && !officerLogin
               ? (data.viewerLinked === false
@@ -726,7 +731,7 @@ export default function LtPipeline() {
           appear reads as "the setting did not save", and the next thing that happens
           is somebody saving it again. */}
       {data && (data.unavailable || []).length > 0 && (
-        <div className="card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
+        <div className="lt-card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
           {data.unavailable.map((u) => (
             <div key={u.key} style={{ marginTop: 2 }}>
               <strong style={{ color: '#141B22' }}>{u.label}</strong> is not shown — {u.why}
@@ -738,13 +743,13 @@ export default function LtPipeline() {
           SHARED saved view written by somebody who sees the whole book. Saying so
           beats a pipeline that quietly shows something other than what was asked. */}
       {data && (data.filtersIgnored || []).length > 0 && (
-        <div className="card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
+        <div className="lt-card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
           {data.filtersIgnored.map((f) => <div key={f.key} style={{ marginTop: 2 }}>{f.why}</div>)}
         </div>
       )}
 
       {data && (data.unknown || []).length > 0 && (
-        <div className="card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
+        <div className="lt-card" style={{ color: '#4B585C', fontSize: 13, marginBottom: 12 }}>
           The pipeline columns setting names {data.unknown.length === 1 ? 'a column' : 'columns'} nobody
           recognises: <strong style={{ color: '#141B22' }}>{data.unknown.join(', ')}</strong>. Check the
           spelling in Settings — {data.unknown.length === 1 ? 'it has' : 'they have'} been skipped.
@@ -752,8 +757,8 @@ export default function LtPipeline() {
       )}
 
       {data && data.loans.length > 0 && columns.length > 0 && (
-        <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
+        <div className="lt-card lt-card-flush" style={{ padding: 0, overflowX: 'auto' }}>
+          <table className="lt-rows" style={{ minWidth: 720 }}>
             <thead><tr>
               {columns.map((c) => {
                 const active = c.sort && c.sort === sort;

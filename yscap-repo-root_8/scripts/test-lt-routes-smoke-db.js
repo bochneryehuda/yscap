@@ -192,7 +192,45 @@ async function main() {
       // SELECT on lt_pricer_investor_groups, so a phantom column there would
       // surface here as a 500 rather than on the screen.
       '/api/lt/dscr/investor-groups',
-      // TERM SHEETS (db/642). Four reads, and each opens a different query that a
+      // ── The GENERAL CONDITION CENTER (#5) ────────────────────────────────
+      // Its two library reads are pure — the buckets and the shipped templates —
+      // and the per-loan one runs the whole scoped read. On the no-such-loan id
+      // the scoped loader answers its own 404, so the uuid check and the SELECT
+      // both run and a phantom column in either surfaces here as a 500.
+      '/api/lt/condition-center/buckets',
+      '/api/lt/condition-center/library',
+      `/api/lt/condition-center/loans/${NO_LOAN}`,
+      // The workspace behind the three conditions that are a CHOICE rather than
+      // an upload. It reads the liabilities, the vesting entity on the shared
+      // profile and the documents per line — three queries whose failures are
+      // each caught and reported, which is exactly why the door has to be OPENED
+      // rather than trusted: a wrong column name in any of them answers a
+      // confident empty forever and nothing anywhere says so.
+      `/api/lt/condition-center/loans/${NO_LOAN}/conditions/${NO_LOAN}/workspace`,
+      // ── The ORDERS desk (#8) ─────────────────────────────────────────────
+      // `letters` is the shipped drafts, pure. The rest are per-loan and answer
+      // their own 404 on the no-such-loan id, having run their real statements.
+      '/api/lt/orders/letters',
+      `/api/lt/orders/loans/${NO_LOAN}`,
+      `/api/lt/orders/loans/${NO_LOAN}/vendors`,
+      `/api/lt/orders/loans/${NO_LOAN}/vendors/search?q=title`,
+      `/api/lt/orders/loans/${NO_LOAN}/title/preview`,
+      `/api/lt/orders/loans/${NO_LOAN}/title/thread`,
+      // ── The REPORTING database (#4) ──────────────────────────────────────
+      // `fields` and `saved` are the report definitions; `scorecard` and the
+      // per-loan `timeline` run the real aggregate over the milestone history,
+      // which is the half a pure test cannot reach.
+      '/api/lt/reports/fields',
+      '/api/lt/reports/saved',
+      '/api/lt/reports/scorecard',
+      `/api/lt/reports/loans/${NO_LOAN}/timeline`,
+      // ── The VERIFICATION OF RENT (#10) ───────────────────────────────────
+      // The desk read, and the PDF preview — which RENDERS the document from the
+      // form data on every call, so this opens the builder itself rather than a
+      // stored file. Both answer their own 404 on the no-such-loan id.
+      `/api/lt/vor/loans/${NO_LOAN}`,
+      `/api/lt/vor/loans/${NO_LOAN}/preview.pdf`,
+      // TERM SHEETS (db/649). Four reads, and each opens a different query that a
       // phantom column would answer as a confident empty rather than an error:
       // the officer's own issued sheets, the comparison cart (which ALSO reads the
       // company settings, so the switch's own read is exercised), and the two

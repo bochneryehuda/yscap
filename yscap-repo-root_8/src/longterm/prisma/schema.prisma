@@ -479,8 +479,20 @@ model LtLoan {
   lockEvents    LtLockEvent[]
   milestoneEvents LtMilestoneEvent[]
   ladder        LtLoanMilestone[]
+  ladderEvents  LtLadderEvent[]
   conditions    LtCondition[]
   documents     LtDocument[]
+  // OUR OWN conditions (db/643), deliberately beside Encompass's mirrored ones
+  // above rather than merged with them: `conditions` is what the investor's
+  // underwriter raised after buying the loan, `fileConditions` is what WE need
+  // to get the file submitted, cleared, docked, funded and sold.
+  fileConditions LtFileCondition[]
+  vendors        LtLoanVendor[]
+  orders         LtFileOrder[]
+  orderEvents    LtOrderEvent[]
+  vorForms       LtVorForm[]
+  vorEnvelopes   LtVorEnvelope[]
+  vorReturns     LtVorReturn[]
 
   @@index([borrowerId])
   @@index([loanOfficerId])
@@ -1407,6 +1419,27 @@ model LtLoanMilestone {
   associatePhone String? @map("associate_phone")
   roleRequired   String? @map("role_required")
 
+  /// ── NOT PART OF THE MIRROR (db/642) ──────────────────────────────────────
+  /// Every column above is overwritten by the next ladder sync. These four are
+  /// not, and that is the whole point of them: the mirror answers "where is this
+  /// loan now and who is on this step", and these answer "when did the step
+  /// finish, and who held it THEN" — which a mirror structurally cannot, because
+  /// a reassignment in Encompass next month would silently re-attribute every
+  /// past duration to the new person.
+
+  /// When PILOT first observed this step DONE. Our own clock, so it carries the
+  /// TIME (Encompass's ladder gives a date). Cleared by an observed re-open, so
+  /// a genuine second completion is stamped afresh.
+  observedDoneAt DateTime? @map("observed_done_at") @db.Timestamptz(6)
+  /// TRUE when the step was ALREADY done the first time PILOT read this loan.
+  /// `observedDoneAt` is then "when we started watching", NEVER "when it moved" —
+  /// and a span resting on a baseline at either end is reported as UNKNOWN.
+  observedIsBaseline Boolean @default(false) @map("observed_is_baseline")
+  /// WHO held the step when it completed, snapshotted. `associateName` above is
+  /// the mirror and follows Encompass; this one does not move once written.
+  doneAssociateId   String? @map("done_associate_id")
+  doneAssociateName String? @map("done_associate_name")
+
   encompassSyncedAt DateTime @default(now()) @map("encompass_synced_at") @db.Timestamptz(6)
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
@@ -1415,7 +1448,91 @@ model LtLoanMilestone {
 
   @@id([loanId, milestoneName])
   @@index([loanId, position], map: "lt_loan_milestones_loan_pos_idx")
+  @@index([milestoneName, observedDoneAt], map: "lt_loan_milestones_done_at_idx")
   @@map("lt_loan_milestones")
+}
+
+/// ── THE LADDER'S HISTORY (db/642) ───────────────────────────────────────────
+/// APPEND-ONLY. One row per change PILOT witnessed to a loan's ladder — a step
+/// completing, a completed step re-opening, the assigned associate changing.
+///
+/// WHY WE WATCH RATHER THAN ASK, unchanged from LtMilestoneEvent and still
+/// binding: Encompass keeps its own milestone log and this client cannot read it
+/// (no `encompass_admin` scope — the endpoints answer 403). So every event type
+/// is named `observed_*` and NO consumer may present one as Encompass's own
+/// record of who moved the file. Encompass's stated date rides along verbatim so
+/// a future build that DOES get the log can reconcile the two.
+///
+/// Deliberately NOT unique on (loan, milestone, type): a step legitimately
+/// completes, re-opens and completes again, and each is a real, separate
+/// observation.
+model LtLadderEvent {
+  id            String @id @default(uuid()) @db.Uuid
+  loanId        String @map("loan_id") @db.Uuid
+  milestoneName String @map("milestone_name")
+  /// Where the step sat in the loan's own workflow when we saw this.
+  position      Int?
+
+  /// observed_completed | observed_reopened | observed_assigned | observed_baseline
+  eventType String @map("event_type")
+
+  /// Encompass's own stated date for the step, verbatim as read. On this tenant
+  /// the ladder carries a DATE, which is exactly why `observedAt` exists beside it.
+  encompassDate DateTime? @map("encompass_date") @db.Timestamptz(6)
+
+  /// Who was on the step before and after, so a hand-off reads as a hand-off
+  /// rather than as two unrelated facts.
+  fromAssociateId   String? @map("from_associate_id")
+  fromAssociateName String? @map("from_associate_name")
+  toAssociateId     String? @map("to_associate_id")
+  toAssociateName   String? @map("to_associate_name")
+  toAssociateRole   String? @map("to_associate_role")
+  toAssociateEmail  String? @map("to_associate_email")
+
+  /// When PILOT observed it — our clock, with the time. NEVER Encompass's own
+  /// completion timestamp; a column that mixed the two would be unusable.
+  observedAt DateTime @default(now()) @map("observed_at") @db.Timestamptz(6)
+  /// The loan's Encompass modification stamp at the moment of the observation.
+  encompassSyncedAt DateTime? @map("encompass_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  loan LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([loanId, observedAt(sort: Desc)], map: "lt_ladder_events_loan_seen_idx")
+  @@index([milestoneName, observedAt(sort: Desc)], map: "lt_ladder_events_milestone_seen_idx")
+  @@index([toAssociateId, observedAt(sort: Desc)], map: "lt_ladder_events_to_associate_idx")
+  @@map("lt_ladder_events")
+}
+
+/// ── SAVED REPORTS (db/642) ──────────────────────────────────────────────────
+/// The long-term reporting database's own store. `definition` holds the whole
+/// report — columns, filters, sort, row cap, the span it measures — as jsonb,
+/// validated in code against the field catalog before it is ever run. Nothing in
+/// here is SQL: a saved report names catalog KEYS, and the compiler refuses a key
+/// it does not carry, which is what keeps an admin-authored report from becoming
+/// an admin-authored query.
+///
+/// `ownerStaffId` is TEXT, not a relation. `staff_users` is the shared identity
+/// table and Long-Term is authorized to READ it (2026-08-03) — but a REFERENCE is
+/// a different permission from a read, and this table does not need one: a report
+/// outliving the person who saved it is correct, and the screen resolves the name
+/// at read time.
+model LtReportDefinition {
+  id          String  @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  /// 'private' (only the person who saved it) | 'shared' (every long-term admin).
+  /// There is deliberately no "public": a long-term report can carry the
+  /// investor's name, which CLAUDE.md rule 10 makes internal on every surface.
+  visibility   String  @default("private")
+  ownerStaffId String? @map("owner_staff_id")
+  definition   Json    @default("{}")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@index([ownerStaffId, updatedAt(sort: Desc)], map: "lt_report_definitions_owner_idx")
+  @@map("lt_report_definitions")
 }
 
 /// A mapping is either awaiting a human, accepted, or refused. The one enum this
@@ -2296,6 +2413,364 @@ model LtTermSheetCart {
   staffId        String? @map("staff_id") @db.Uuid
   /// Which option everything else is compared against. One anchor, always.
   anchorPosition Int     @default(0) @map("anchor_position")
+// ============================================================================
+// THE GENERAL CONDITION CENTER (db/643).
+//
+// DELIBERATELY SEPARATE FROM `LtCondition` / `LtDocument` (db/612), which are
+// ENCOMPASS'S conditions and eFolder, mirrored. Those rows are keyed on
+// Encompass's own ids and must be safe to delete and re-read at any time; these
+// carry a human's sign-off, their note and the documents they uploaded, and the
+// next mirror pass would destroy them. One table for both would also make "is
+// this ours or theirs?" a column somebody has to remember to filter on.
+//
+// Everything below is a ROW rather than a constant because the owner asked for
+// it (2026-08-30): *"everything should be setup with not setting it on a hard
+// level everything should be able to be configured differently in settings. The
+// system is only prefilled with the rules of the system."*
+// ============================================================================
+
+/// A gate a condition can block — "prior to submission", "prior to clear to
+/// close", and so on. A ROW, not an enum, so a buyer can add, rename or retire
+/// one without a migration; `position` orders them on every screen.
+model LtConditionBucket {
+  id       String  @id @default(uuid()) @db.Uuid
+  key      String  @unique(map: "lt_condition_buckets_key_uk")
+  label    String
+  /// What this gate means, in the words a person reads. Held here rather than in
+  /// code so a buyer's own description travels with their own bucket.
+  blurb    String?
+  position Int     @default(100)
+  isActive Boolean @default(true) @map("is_active")
+  /// TRUE for a row db/643 seeded — what lets a reseed tell "our default,
+  /// untouched" from "a buyer's own gate", so neither overwrites the other.
+  isSeeded Boolean @default(false) @map("is_seeded")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("lt_condition_buckets")
+}
+
+/// THE LIBRARY — one row per condition this company can ask for. A file gets a
+/// COPY (LtFileCondition), never a pointer: editing a template must not silently
+/// rewrite what a borrower was already told on a file somebody is working.
+model LtConditionTemplate {
+  id        String @id @default(uuid()) @db.Uuid
+  code      String @unique(map: "lt_condition_templates_code_uk")
+  bucketKey String @map("bucket_key")
+
+  /// The team's wording, and the borrower's. A borrower-facing condition with no
+  /// borrower wording is applied STAFF-ONLY by the engine rather than shown to a
+  /// client under an internal label.
+  label         String
+  hint          String?
+  borrowerLabel String? @map("borrower_label")
+  borrowerHint  String? @map("borrower_hint")
+
+  /// 'internal' | 'external' | 'both'. Three values rather than a boolean: a
+  /// condition can be BOTH, and collapsing that is how one ends up either
+  /// invisible to whoever must satisfy it or exposed to a borrower it was never
+  /// written for.
+  audience String @default("internal")
+  /// The owner's own taxonomy: informational | form | order | esign | document.
+  kind String @default("document")
+  /// 'always' | 'rules' | 'manual'.
+  autoApply String @default("manual") @map("auto_apply")
+  /// `{combinator, rules:[…]}`, one level of nesting. NOTHING IN IT IS EVER
+  /// EVALUATED AS CODE: it names field keys the engine's registry carries, and a
+  /// key the registry does not carry makes the rule refuse rather than match.
+  ruleLogic Json? @map("rule_logic")
+
+  isRequired Boolean @default(true) @map("is_required")
+  /// The named places a document goes ("Binder", "Invoice"). jsonb because a slot
+  /// has no life of its own and is never queried across files.
+  slots  Json @default("[]")
+  /// This condition's own settings — which appraisal form for which property
+  /// type, which vendors an order may go to. Every condition's shape is its own.
+  config Json @default("{}")
+
+  /// BUILT but deliberately not switched on. Distinct from `isActive = false`,
+  /// which is a buyer retiring one: this shows on the file, greyed, WITH ITS
+  /// REASON, so nobody thinks a feature vanished.
+  isEnabled      Boolean @default(true) @map("is_enabled")
+  disabledReason String? @map("disabled_reason")
+
+  isActive  Boolean  @default(true) @map("is_active")
+  sortOrder Int      @default(100) @map("sort_order")
+  isSeeded  Boolean  @default(false) @map("is_seeded")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@index([bucketKey, sortOrder], map: "lt_condition_templates_bucket_idx")
+  @@map("lt_condition_templates")
+}
+
+/// One loan's own conditions. The WORDING IS A SNAPSHOT, not a join — editing
+/// the library must not change what a borrower was already asked for on a live
+/// file, and a template retired next year must not blank the condition a file
+/// was cleared on.
+model LtFileCondition {
+  id         String  @id @default(uuid()) @db.Uuid
+  loanId     String  @map("loan_id") @db.Uuid
+  templateId String? @map("template_id") @db.Uuid
+  code       String?
+  bucketKey  String  @map("bucket_key")
+  /// Lets ONE template legitimately appear twice on a file — one per borrower,
+  /// one per property — told apart by a key rather than by two look-alike rows.
+  fieldKey String? @map("field_key")
+
+  label         String
+  hint          String?
+  borrowerLabel String? @map("borrower_label")
+  borrowerHint  String? @map("borrower_hint")
+  audience      String  @default("internal")
+  kind          String  @default("document")
+  isRequired    Boolean @default(true) @map("is_required")
+  slots         Json    @default("[]")
+  config        Json    @default("{}")
+  /// What the file has actually answered — a form's fields, an order's chosen
+  /// vendor, an acknowledgement. Its shape is the condition's own.
+  answer Json @default("{}")
+
+  /// outstanding | in_progress | received | satisfied | waived | not_applicable.
+  /// The last three are three DIFFERENT facts and are never collapsed: provided
+  /// and accepted, decided not needed here, and never applied at all.
+  status String @default("outstanding")
+  /// WHY it is on the file. 'auto' is the engine's, and only the engine may
+  /// retract one; 'manual' is a person's and is never removed automatically.
+  origin    String @default("auto")
+  sortOrder Int    @default(100) @map("sort_order")
+
+  notes String?
+
+  satisfiedAt  DateTime? @map("satisfied_at") @db.Timestamptz(6)
+  satisfiedBy  String?   @map("satisfied_by") @db.Uuid
+  waivedAt     DateTime? @map("waived_at") @db.Timestamptz(6)
+  waivedBy     String?   @map("waived_by") @db.Uuid
+  waivedReason String?   @map("waived_reason")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  loan  LtLoan              @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  files LtConditionFile[]
+  orders LtFileOrder[]
+
+  @@index([loanId, bucketKey, sortOrder], map: "lt_file_conditions_loan_idx")
+  @@index([templateId], map: "lt_file_conditions_template_idx")
+  @@map("lt_file_conditions")
+}
+
+/// PILOT's OWN documents against one of these conditions — deliberately NOT
+/// db/612's `LtDocument`, which is Encompass's eFolder mirrored and would be
+/// destroyed by the next mirror pass.
+///
+/// NOTHING IS EVER DELETED: a superseded document is `isCurrent = false`,
+/// because the record of what was once provided is part of the story of the loan
+/// and a rejected document's reason is what tells the borrower what to send.
+model LtConditionFile {
+  id          String  @id @default(uuid()) @db.Uuid
+  conditionId String  @map("condition_id") @db.Uuid
+  loanId      String  @map("loan_id") @db.Uuid
+  /// Which named place on the condition this fills, when it has slots.
+  slotKey String? @map("slot_key")
+
+  filename    String
+  contentType String? @map("content_type")
+  byteSize    BigInt? @map("byte_size")
+  sha256      String?
+  storageRef  String  @map("storage_ref")
+
+  uploadedBy String? @map("uploaded_by") @db.Uuid
+  /// 'staff' | 'borrower' — who put it there, which decides whether it is born
+  /// awaiting review. Text rather than a CHECK: a third door (a vendor returning
+  /// an order by email) must not need a migration to file its first document.
+  uploadedByKind String @default("staff") @map("uploaded_by_kind")
+
+  /// pending | accepted | rejected | superseded. Nothing un-reviewed is ever
+  /// treated as fulfilment — `<> 'rejected'` is a test for "nobody threw this
+  /// away", not for "somebody checked this".
+  reviewStatus String    @default("pending") @map("review_status")
+  reviewedAt   DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewedBy   String?   @map("reviewed_by") @db.Uuid
+  reviewReason String?   @map("review_reason")
+
+  isCurrent Boolean  @default(true) @map("is_current")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  /// Which ORDER this document came back on, when a vendor returned it by email
+  /// (db/644). Recorded so a condition can say "this came back from the title
+  /// company on the order we placed on the 4th" rather than "somebody uploaded
+  /// this". Plain ids, no relation: the order is a record of what we asked for and
+  /// must survive the document being superseded, and the reverse.
+  orderId      String? @map("order_id") @db.Uuid
+  orderEventId String? @map("order_event_id") @db.Uuid
+
+  condition LtFileCondition @relation(fields: [conditionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([loanId, createdAt(sort: Desc)], map: "lt_condition_files_loan_idx")
+  @@map("lt_condition_files")
+}
+
+/// A vendor a LOAN uses — the title company, the insurance agent, the New York
+/// settlement agent — pointing at the SHARED `service_contacts` directory rather
+/// than a long-term copy of it (the owner: "You need to make sure you're not
+/// copying the information. You're just using the information from the short-term
+/// side"). One company, one card, edited in one place.
+model LtLoanVendor {
+  id     String @id @default(uuid()) @db.Uuid
+  loanId String @map("loan_id") @db.Uuid
+
+  /// What this contact is FOR on this loan.
+  kind String
+
+  /// A `service_contacts` id, carried with NO foreign key on purpose (db/644's
+  /// header says why: CASCADE would let a short-term deletion unlink a live
+  /// long-term order, RESTRICT would let a long-term loan block a short-term
+  /// admin, and SET NULL leaves an order pointing at nobody with nothing saying
+  /// so). A LEFT JOIN reads a removed card as "no longer in the directory" and the
+  /// desk's own blocker refuses the order and says why.
+  serviceContactId String @map("service_contact_id") @db.Uuid
+
+  /// The card the order is addressed TO. Everyone else on the same kind rides the
+  /// Cc, exactly as the short-term desk loops a second title contact in.
+  isPrimary Boolean @default(true) @map("is_primary")
+
+  addedBy   String?  @map("added_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  loan LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([loanId, kind, serviceContactId], map: "lt_loan_vendors_one_per_kind_uk")
+  @@index([serviceContactId], map: "lt_loan_vendors_contact_idx")
+  @@map("lt_loan_vendors")
+}
+
+/// One vendor order on one loan. The row IS the slot: it exists from the first
+/// time anybody looks at that kind on that loan and moves through its statuses in
+/// place, so a follow-up, a reply and a returned document all have one thing to
+/// attach to — and two people pressing Order at the same moment cannot produce two
+/// title orders (db/401's lesson: the unique index is the guarantee, not the read).
+model LtFileOrder {
+  id     String @id @default(uuid()) @db.Uuid
+  loanId String @map("loan_id") @db.Uuid
+  kind   String
+
+  /// not_ordered | ordered | documents_in | completed | cancelled. 'ordered' is
+  /// only ever written by a send the provider ACCEPTED.
+  status String @default("not_ordered")
+
+  /// Which vendor card it actually went to, recorded at send time and kept even if
+  /// the loan's vendor choice changes: the question a year later is "who did we
+  /// ask?", not "who is on the file now".
+  vendorContactId String? @map("vendor_contact_id") @db.Uuid
+
+  /// The thread. The SUBJECT is the load-bearing half (a provider may rewrite our
+  /// Message-ID; the subject is what mail clients fall back to).
+  subject        String?
+  rootMessageId  String? @map("root_message_id")
+  lastMessageId  String? @map("last_message_id")
+  replyTo        String? @map("reply_to")
+
+  /// The per-order Cc choices, so a follow-up stays on the footing of the order it
+  /// follows rather than re-resolving a setting that has since changed.
+  ccBorrower Boolean? @map("cc_borrower")
+  ccHelper   Boolean? @map("cc_helper")
+
+  orderedBy      String?   @map("ordered_by") @db.Uuid
+  orderedAt      DateTime? @map("ordered_at") @db.Timestamptz(6)
+  lastFollowupAt DateTime? @map("last_followup_at") @db.Timestamptz(6)
+  cancelledAt    DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  cancelledBy    String?   @map("cancelled_by") @db.Uuid
+  cancelReason   String?   @map("cancel_reason")
+
+  /// Where a returned document is filed: the condition this order answers.
+  conditionId String? @map("condition_id") @db.Uuid
+
+  notes     String?
+  meta      Json     @default("{}") @db.JsonB
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  loan      LtLoan           @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  condition LtFileCondition? @relation(fields: [conditionId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  events    LtOrderEvent[]
+
+  @@unique([loanId, kind], map: "lt_file_orders_one_per_kind_uk")
+  @@map("lt_file_orders")
+}
+
+/// Every message on an order's thread, out and back. The bytes of an attachment go
+/// to storage and its row to `lt_condition_files`; this is the receipt.
+model LtOrderEvent {
+  id      String @id @default(uuid()) @db.Uuid
+  orderId String @map("order_id") @db.Uuid
+  /// Denormalised so a screen can scope by loan without joining, and so the
+  /// inbound handler can refuse a message whose order belongs to another loan.
+  loanId  String @map("loan_id") @db.Uuid
+
+  direction String
+  msgType   String @default("message") @map("msg_type")
+
+  subject   String?
+  fromEmail String?  @map("from_email")
+  toEmails  String[] @default([]) @map("to_emails")
+  ccEmails  String[] @default([]) @map("cc_emails")
+  bodyText  String?  @map("body_text")
+  bodyHtml  String?  @map("body_html")
+
+  messageId String? @map("message_id")
+  inReplyTo String? @map("in_reply_to")
+
+  /// The provider's own id for an inbound delivery. UNIQUE where present, because
+  /// a webhook redelivery must not file the same documents twice.
+  inboundId String? @map("inbound_id")
+
+  /// Did this message really come from who it says? Never a gate — a legitimate
+  /// reply relayed through a list fails SPF routinely — but SHOWN, above the fold,
+  /// before anybody opens an attachment.
+  senderAuth Json? @map("sender_auth") @db.JsonB
+
+  attachments Json @default("[]") @db.JsonB
+  /// Never silently dropped: what could not be filed, and why.
+  skipped     Json @default("[]") @db.JsonB
+
+  status     String?
+  staffId    String?  @map("staff_id") @db.Uuid
+  occurredAt DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+
+  order LtFileOrder @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  loan  LtLoan      @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@unique([inboundId], map: "lt_order_events_inbound_uk")
+  @@index([orderId, occurredAt(sort: Desc)], map: "lt_order_events_order_idx")
+  @@index([loanId, occurredAt(sort: Desc)], map: "lt_order_events_loan_idx")
+  @@map("lt_order_events")
+}
+
+/// THE VERIFICATION OF RENT — the form itself. ONE per loan.
+///
+/// What is stored is the form's DATA, not the rendered PDF: the preview is
+/// re-rendered from this on every look and again at the moment of sending, so the
+/// document that goes out is by construction the one that was reviewed. A
+/// hand-edited PDF could not be re-anchored, and every reader downstream reads the
+/// data anyway.
+///
+/// Deliberately holds OUR half only — the landlord's answers arrive in
+/// LtVorReturn. A column that could hold both is a column somebody eventually fills
+/// in on the landlord's behalf.
+model LtVorForm {
+  id     String @id @default(uuid()) @db.Uuid
+  loanId String @map("loan_id") @db.Uuid
+
+  /// Keyed by the field keys in src/longterm/vor/fields.js.
+  data Json @default("{}") @db.JsonB
+
+  /// Whether a person has looked at the prefill. A form nobody has opened is still
+  /// sendable — the prefill is the whole point — but the desk says which it is.
+  reviewedBy String?   @map("reviewed_by") @db.Uuid
+  reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -2335,4 +2810,84 @@ model LtTermSheetScenario {
   @@unique([cartId, parentKind, position], map: "lt_term_sheet_scenario_pos_uk")
   @@index([cartId, position], map: "lt_term_sheet_scenario_parent_idx")
   @@map("lt_term_sheet_scenario")
+  loan      LtLoan          @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  envelopes LtVorEnvelope[]
+
+  @@unique([loanId], map: "lt_vor_forms_loan_uk")
+  @@map("lt_vor_forms")
+}
+
+/// One DocuSign envelope. A re-send after a void is a NEW row, because the landlord
+/// genuinely received two and collapsing them would lose which one they signed.
+/// This is also the table the inbound Connect claim looks a long-term envelope up
+/// in, which is what stops the shared webhook dropping the landlord's signature.
+model LtVorEnvelope {
+  id     String  @id @default(uuid()) @db.Uuid
+  loanId String  @map("loan_id") @db.Uuid
+  formId String? @map("form_id") @db.Uuid
+
+  /// DocuSign's own id. NULL for the moment between claiming the row and the
+  /// provider answering — which is what makes a lost response recoverable rather
+  /// than a second envelope to the same landlord.
+  envelopeId String? @map("envelope_id")
+
+  /// created | sent | delivered | completed | declined | voided | failed
+  status String @default("created")
+
+  recipientName  String? @map("recipient_name")
+  recipientEmail String? @map("recipient_email")
+
+  /// 'docusign' or 'both'. An email-only send creates no envelope at all, which is
+  /// why 'email' never appears here.
+  sendMethod String @default("docusign") @map("send_method")
+
+  sentBy      String?   @map("sent_by") @db.Uuid
+  sentAt      DateTime? @map("sent_at") @db.Timestamptz(6)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+
+  /// Why an envelope in flight was stopped, in words. The only record afterwards.
+  voidReason String?   @map("void_reason")
+  voidedAt   DateTime? @map("voided_at") @db.Timestamptz(6)
+
+  lastError String?  @map("last_error")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  loan    LtLoan        @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  form    LtVorForm?    @relation(fields: [formId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  returns LtVorReturn[]
+
+  @@unique([envelopeId], map: "lt_vor_envelopes_envelope_uk")
+  @@index([loanId, createdAt], map: "lt_vor_envelopes_loan_idx")
+  @@map("lt_vor_envelopes")
+}
+
+/// What came back, however it came back — DocuSign's completed copy, or a form
+/// somebody filled in by hand and emailed. Both answer the same question, so both
+/// sit on one timeline; that is what makes "a manual return voids the envelope"
+/// expressible rather than a rule somebody remembers.
+model LtVorReturn {
+  id         String  @id @default(uuid()) @db.Uuid
+  loanId     String  @map("loan_id") @db.Uuid
+  envelopeId String? @map("envelope_id") @db.Uuid
+
+  /// 'docusign' | 'manual'
+  source String
+
+  /// The landlord's answers where we have them. A manual return usually has none
+  /// until somebody types them in, and an empty object is the honest record of that.
+  answers Json @default("{}") @db.JsonB
+
+  storageRef String? @map("storage_ref")
+  filename   String?
+
+  recordedBy String?  @map("recorded_by") @db.Uuid
+  note       String?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  loan     LtLoan         @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  envelope LtVorEnvelope? @relation(fields: [envelopeId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@index([loanId, createdAt], map: "lt_vor_returns_loan_idx")
+  @@map("lt_vor_returns")
 }

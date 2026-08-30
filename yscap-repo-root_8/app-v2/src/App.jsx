@@ -44,6 +44,8 @@ import LtSync from './longterm/LtSync.jsx';
 import LtSettings from './longterm/LtSettings.jsx';
 import LtPpe from './longterm/LtPpe.jsx';
 import LtPricer from './longterm/LtPricer.jsx';
+import LtReports from './longterm/LtReports.jsx';
+import LtConditionLibrary from './longterm/LtConditionLibrary.jsx';
 import LtLoan from './longterm/LtLoan.jsx';
 import StaffLogin from './screens/StaffLogin.jsx';
 import StaffQueue from './screens/StaffQueue.jsx';
@@ -273,6 +275,8 @@ export default function App() {
           <Route path="/internal/lt/statuses" element={<StaffPrivate><LtStatuses /></StaffPrivate>} />
           <Route path="/internal/lt/status-reviews" element={<StaffPrivate><LtStatusReviews /></StaffPrivate>} />
           <Route path="/internal/lt/conditions" element={<StaffPrivate><LtConditions /></StaffPrivate>} />
+          <Route path="/internal/lt/reports" element={<StaffPrivate><LtReports /></StaffPrivate>} />
+          <Route path="/internal/lt/condition-library" element={<StaffPrivate><LtConditionLibrary /></StaffPrivate>} />
           <Route path="/internal/lt/sync" element={<StaffPrivate><LtSync /></StaffPrivate>} />
           <Route path="/internal/lt/settings" element={<StaffPrivate><LtSettings /></StaffPrivate>} />
           <Route path="/internal/lt/ppe" element={<StaffPrivate><LtPpe /></StaffPrivate>} />

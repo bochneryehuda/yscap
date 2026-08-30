@@ -1,6 +1,6 @@
 'use strict';
 /**
- * LONG-TERM TERM SHEETS — the database bridge (db/642).
+ * LONG-TERM TERM SHEETS — the database bridge (db/649).
  *
  * The ONE writer of `lt_term_sheet`, `lt_term_sheet_cart` and
  * `lt_term_sheet_scenario`. Every rule about what a term sheet IS lives in
@@ -14,7 +14,7 @@
  * replaces (`supersedes`), so the record keeps both.
  *
  * ⛔ SEPARATION. Only `lt_*` tables are named here, plus the two authorised
- * identity foreign keys (`staff_users`, `borrowers`) that db/642 declares —
+ * identity foreign keys (`staff_users`, `borrowers`) that db/649 declares —
  * both `ON DELETE SET NULL`, so losing a person never loses a sheet.
  */
 
@@ -181,7 +181,7 @@ function hashOf(snapshot) {
  *
  * The typed form is FORGIVING (`normalizeCode` folds the letters a person
  * confuses and strips the prefix and any spaces); the stored form is not. The
- * lookup is `upper(code)`, matching db/642's unique index exactly, so it can use
+ * lookup is `upper(code)`, matching db/649's unique index exactly, so it can use
  * it — a `lower()` or an `ILIKE` here would silently sequential-scan.
  */
 async function findByCode(raw, dbc = null) {
@@ -249,7 +249,7 @@ async function listForStaff(staffId, { limit = 50, offset = 0 } = {}, dbc = null
 }
 
 // ── the comparison cart ─────────────────────────────────────────────────────
-// One open cart per officer (db/642's unique index on staff_id is the contract),
+// One open cart per officer (db/649's unique index on staff_id is the contract),
 // so "start a comparison" on a second search adds to the SAME cart rather than
 // opening a rival one — the owner's *"you go back into another search"*.
 
@@ -364,7 +364,7 @@ async function setAnchor(staffId, position) {
   return { ok: rowCount > 0 };
 }
 
-/** Empty it. Deleting the cart CASCADEs its members (db/642). */
+/** Empty it. Deleting the cart CASCADEs its members (db/649). */
 async function clearCart(staffId) {
   if (!isUuid(staffId)) return { ok: false };
   const { rowCount } = await lazy.db.query('DELETE FROM lt_term_sheet_cart WHERE staff_id = $1::uuid', [staffId]);

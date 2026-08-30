@@ -152,33 +152,81 @@ check(/\.lt-fact:first-child \.v\{white-space:nowrap/.test(css),
 check(/\.lt-fact\{[^}]*flex:0 1 auto/.test(css),
   'the cells do not stretch — eight facts do not divide evenly into a row, and a grow factor turns the two that wrap onto a second line into absurdly wide boxes');
 
-// ── 5c. Which column each region sits in ────────────────────────────────────
-console.log('the file\'s own details on the left, the picker on the right');
-
-const iRail = ui.indexOf('<Rail rail={rail} />');
-const iSecs = ui.indexOf('className="lt-sections"');
-const iNav = ui.indexOf('className="card lt-rooms"');
-check(iRail > 0 && iSecs > 0 && iNav > 0, 'all three regions are on the page');
-// THE DOM ORDER IS DELIBERATELY NOT THE VISUAL ORDER, and both are pinned.
+// ── 5c. The file overview is a BUTTON, and the workspace is two columns ─────
 //
-// On screen it is the jump menu, the file, then its details (owner-directed
-// 2026-08-25: *"the file details should go on the right side and the file, the long
-// summary, the milestones, the borrowers, the properties should go on the left side.
-// The same setup that we currently have on the RTL site."* — RTL is a menu on the
-// left with the sections beside it). That is done with `order` rather than by moving
-// the JSX, because menu → file → details is ALSO the right reading order for a
-// keyboard and a screen reader, and moving a sticky rail through a grid is a good way
-// to break it. So the source order below is not stale — it is the accessible one.
-check(iRail < iSecs && iSecs < iNav,
-  'the source order is unchanged, which is what a keyboard and a screen reader follow');
-check(/gridTemplateColumns: '196px minmax\(0,1fr\) 300px'/.test(ui),
-  'THE COLUMNS: a narrow track for the menu, the file, then a wide one for the details — the two swapped widths with their contents, since a menu of section names does not need 300px and sixteen rows of figures cannot live in 186');
+// Owner-directed 2026-08-30: *"Right now, the file overview is always displaying on
+// the right side. We want to go and do the same thing that we have on the short term
+// side, where we have a file overview button. It should be the same feel."*
+//
+// So the always-on details rail is GONE and its rows moved into the ONE shared
+// `.fov-*` slide-over — RTL's own component, which the crossing ledger authorizes by
+// name. What this section pins is that the move LOST NOTHING: the panel is handed the
+// rail's own rows, in the rail's own order, and the rail cannot come back by accident.
+console.log('the file overview opens from a button, not from a permanent rail');
+
+check(!/<Rail rail=\{rail\} \/>/.test(ui) && !/function Rail\(/.test(ui),
+  'the always-on details rail is gone from the file screen');
+check(!/\.lt-workspace > \.lt-ledger\{order:3\}/.test(css),
+  '…and the CSS that placed its column went with it, so it cannot be half-restored');
+check(/import FileOverviewSlideOver from '\.\.\/components\/FileOverviewSlideOver\.jsx'/.test(ui),
+  'the panel is the ONE SHARED component, not a long-term lookalike that would drift');
+check(/<FileOverviewSlideOver title="File overview"/.test(ui)
+  && /fetcher=\{\(\) => Promise\.resolve\(overviewCard\(\{ rail, file \}\)\)\}/.test(ui),
+  'it is fed from the rail the screen already holds — no second request, and it can never disagree with the header');
+
+// THE CROSSING IS AUTHORIZED IN WRITING. A shared RTL component inside a long-term
+// screen is exactly what the two-product law forbids without a ledger line, so the
+// line is part of this feature and is asserted here rather than left to the gate
+// alone — a reader of this test should see WHY the import is legal.
+const ledger = read('docs/LONG-TERM-AUTHORIZED-COPIES.md');
+const authorized = (ledger.match(/```authorized\n([\s\S]*?)```/) || [])[1] || '';
+check(/^import app-v2\/src\/components\/FileOverviewSlideOver\.jsx$/m.test(authorized),
+  'the crossing is recorded in the ledger the separation gate reads');
+
+// NOTHING WAS DROPPED IN THE MOVE. The panel's three groups are cut from the ONE rows
+// array with slice(), which is what makes "add a row and it appears" true — a second
+// hand-kept list is how a figure goes missing from one of the two places it lives.
+check(/rows\.slice\(0, 3\)/.test(ui) && /rows\.slice\(3\)/.test(ui),
+  'the groups are SLICED from the single rows array, never re-listed');
+for (const row of ['Borrower', 'Purpose', 'Occupancy', 'Loan amount', 'Property value',
+  'LTV', 'DSCR', 'Gross rent', 'Housing expense', 'Note rate', 'Term',
+  'Interest only', 'Prepayment penalty', 'Program', 'Milestone']) {
+  check(ui.includes(`['${row}',`), `the overview still carries "${row}"`);
+}
+
+console.log('the workspace is the jump menu and the file, side by side');
+const iSecs = ui.indexOf('className="lt-sections"');
+const iNav = ui.indexOf('className="lt-card lt-rooms"');
+check(iSecs > 0 && iNav > 0, 'both remaining regions are on the page');
+check(/className="lt-workspace lt-workspace-2"/.test(ui),
+  'the workspace declares the two-column variant');
+check(/\.lt-workspace\.lt-workspace-2\{grid-template-columns:196px minmax\(0,1fr\)\}/.test(css),
+  'THE COLUMNS: a narrow track for the menu and the rest for the file');
 check(/\.lt-workspace > \.lt-rooms\{order:1\}/.test(css)
-  && /\.lt-workspace > \.lt-sections\{order:2\}/.test(css)
-  && /\.lt-workspace > \.lt-ledger\{order:3\}/.test(css),
-  'THE ONE THAT MATTERS: `order` puts the menu first, the file second and the DETAILS LAST — which is what actually moves the details to the right-hand side');
+  && /\.lt-workspace > \.lt-sections\{order:2\}/.test(css),
+  '`order` still puts the menu first and the file second');
 check(/@media\(max-width:900px\)\{\s*\.lt-rooms\{order:1\}/.test(css),
-  'stacked on a phone the jump menu still comes FIRST — a sixteen-row table of figures between the menu and the content would be a long scroll to reach the work');
+  'stacked on a phone the jump menu still comes FIRST — a long index between the menu and the content would be a scroll to reach the work');
+
+// ── 5d. EVERY LONG-TERM BOX IS ACTUALLY A BOX ───────────────────────────────
+//
+// Owner-directed 2026-08-30: *"we want the files themselves on the pipeline to have
+// this white. Everything should be in a white box with its lines … the section should
+// be in a white box, the same way we have it on the short term side."*
+//
+// THE DEFECT UNDERNEATH THAT SENTENCE: every long-term screen wrapped its content in
+// `className="card"`, and there has never been a `.card` rule in this stylesheet — so
+// the class did nothing at all. The long-term side was drawing its files and sections
+// straight onto the paper. `.lt-card` is the rule that was missing; this is the test
+// that keeps it defined and keeps the dead class from creeping back.
+console.log('the long-term white box exists, and is used');
+check(/\.lt-card\{background:var\(--surface,#FFFFFF\);border:1px solid var\(--line,#D9D4C8\);/.test(css),
+  '`.lt-card` is DEFINED — white, with the same hairline the RTL panel uses');
+check(!/className="card[\s"]/.test(ui),
+  'the file screen no longer uses the undefined `.card` class');
+check(/<section id=\{`lt-sec-\$\{id\}`\} className="lt-card lt-card-flush"/.test(ui)
+  || /className="lt-card lt-card-flush" style=\{\{ color: INK, padding: 0, scrollMarginTop: 14 \}\}/.test(ui),
+  'every section on the file is its own white box');
 
 // THE SUBJECT ADDRESS ON ONE LINE (owner-directed 2026-08-25: "Subject property
 // address: make sure it goes on one line"). It used to be capped at 320px with
@@ -246,10 +294,18 @@ check(/paddingLeft: LABEL_OVERHANG, paddingRight: LABEL_OVERHANG/.test(ui),
 check(/minWidth: Math\.max\(360, n \* 104\) \+ 2 \* LABEL_OVERHANG/.test(ui),
   '…and the spine grows by the same amount, so the padding cannot squeeze the columns it was added to protect');
 
-// ── 6. The ledger keeps its industry name, and the loan number is said once ──
-console.log('the ledger and the loan number');
+// ── 6. The panel's name, and the loan number said once ──────────────────────
+//
+// IT IS "FILE OVERVIEW" NOW, NOT "FILE DETAILS", and that is the owner's own word:
+// 2026-08-30, *"we have a file overview button … it comes up with all the details of
+// the file overview"*. The 2026-08-25 instruction that named the rail "File Details"
+// was about an industry name for a COLUMN that no longer exists — the rail became the
+// shared panel, and the shared panel is called File overview on all four surfaces.
+// Two names for one thing across two products is the drift this whole change removes.
+console.log('the panel\'s name, and the loan number');
 
-check(/File Details/.test(ui), 'the ledger is called File Details (owner-directed: an industry name)');
+check(/title="File overview"/.test(ui) && !/File Details/.test(ui),
+  'the panel carries the SAME name the short-term side gives it, and the old rail name is gone');
 check((ui.match(/Loan number/g) || []).length === 1,
   'the loan number is labelled in exactly ONE place — the owner reported it reading twice at the top');
 

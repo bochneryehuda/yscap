@@ -16,7 +16,7 @@
  * issuing a document that contradicts the screen the officer was reading.
  *
  * ⛔ RAW PRICING CANNOT BE ISSUED, at three layers: `snapshot.buildMember`
- * refuses it by name, db/642's CHECK refuses it on the sheet AND on every
+ * refuses it by name, db/649's CHECK refuses it on the sheet AND on every
  * member, and `overlay.ISSUABLE_MODES` — which both read — does not contain it.
  */
 

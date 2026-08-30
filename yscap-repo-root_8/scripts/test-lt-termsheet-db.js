@@ -225,7 +225,7 @@ const quote = (label, ratePct, rawPrice, mode) => ({
   check((await store.removeFromCart(staff, a1.id)).ok, 'its owner can');
   check(!(await store.removeFromCart(staff, a1.id)).ok, 'and removing the same thing twice does nothing');
 
-  // One cart per officer is db/642's unique index, and it is what makes "start a
+  // One cart per officer is db/649's unique index, and it is what makes "start a
   // comparison" on a SECOND search add to the same one rather than open a rival.
   const c1 = await store.openCart(staff);
   const c2 = await store.openCart(staff);
@@ -273,7 +273,7 @@ const quote = (label, ratePct, rawPrice, mode) => ({
     'both of the comparisons issued above are in it, each with its own three options');
 
   // The cart is scratch — and it is STILL SET NULL, not CASCADE. The first cut
-  // of db/642 made it CASCADE on exactly the argument that reads best ("a cart
+  // of db/649 made it CASCADE on exactly the argument that reads best ("a cart
   // with no owner is unreachable anyway, since every read is scoped to me"), and
   // `test-lt-loan-schema-db` refused it — the same argument db/634's header
   // records being made and refused about the investor groups. The long-term side
