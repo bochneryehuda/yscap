@@ -507,6 +507,71 @@ fabricated 0 (`B5`). The money the overlay charges never depended on it.
 
 ---
 
+## 7c. The investor-settings audit — 2026-08-30
+
+Every rule the owner set for the settings screen was run through the live module before a single
+test was read. All five hold on the pre-fill: **all 42** registry companies are listed (the roster is
+derived from the one registry, so there is no second list to go stale); Button Finance is off and is
+**the only one** off; NQM, Acra and eResi are on LoanNEX and say the instruction is where that came
+from, while the other 39 are on Lender Price; **18** investors have no white-label name and the box
+is left empty rather than filled with a guess.
+
+The routing behaves too: a switched-off investor cannot reach the board through either door, an
+investor whose source did not answer is left out with the reason stated instead of being quietly
+served the other program's price, and a typo'd source (`loanex`) is reported by name and falls back
+to the standing instruction rather than reading as "off".
+
+### Two defects, both fixed
+
+**1. The vendor was still on the board — as a fingerprint rather than a name.** `applyRouting`
+strips `source`, `lenderId` and `investorOrganizationGuid` from every row an ordinary reader sees.
+But the 0.25 holdback stamps `marginHoldback` and `vendorPrice` on every rung it touches, and it
+touches LoanNEX's rungs and no others — Lender Price's feed already carries our holdback, so nothing
+is taken there. So a rung **carrying** those two fields was a LoanNEX rung and one **without** them
+was a Lender Price row: the board still said which vendor produced each row while every field that
+*names* a vendor had gone. That is precisely the tell the owner's *"it should sound like one
+system"* rule exists to remove. They are stripped now and ride with the reveal like every other
+piece of provenance. **No price moves** — `price` and `points` already have the holdback in them and
+come through byte-identical; what goes is the audit trail beside them.
+
+**2. A row could be pinned and never un-pinned.** The screen sends the whole map, so a row that has
+a setting of its own must re-send it or the save would drop it. The cost was that a row which was
+ever touched stayed pinned **forever**: setting it back to exactly the pre-fill still stored a
+restatement, `sourceOrigin` stayed `setting`, and a later change to the owner's standing instruction
+silently never reached it. Measured, on the real module: pin NQM to Lender Price, put it back to
+LoanNEX by hand, then move the standing instruction — the untouched Acra follows, the touched NQM
+does not. The server has always supported the way back (leave the key out) and the route's own note
+calls returning a row to its pre-fill *"the one thing somebody auditing this will want to do most
+often"*; the screen simply could not express it. Each row now reports what it **would** answer with
+no setting of its own, and carries a **"use the pre-fill instead"** control that leaves its key out
+of the saved map.
+
+### The coverage gap that let the first one live
+
+`ONE-2`/`ONE-3` are real guards and they were **unreachable**: their fixture's program rows had no
+rungs at all, so neither could ever see the holdback trail, and both passed for months over a board
+that still named its vendor on every row. The LoanNEX side of that fixture is now built by
+`vendor-margin.js` itself, so it cannot drift from what production stamps. `HIDE-5` was **re-pointed
+rather than loosened** — it failed on the mere string `holdback`, which would have gone red on a
+change that *removes* a price adjustment; it now pins the holdback's size appearing in one module
+only, plus the behaviour itself: routing a board moves no price and no points figure, with the
+reveal on or off.
+
+Nine mutations were applied to the production code and each was proven to turn the named assertion
+red with a green control either side.
+
+### One thing reported rather than changed
+
+`bestOfMany` breaks a rate tie with `(b.price || -Infinity)`. A price of exactly **0** is falsy, so
+it is read as minus infinity: at the same rate a quote priced 0 loses to one priced −1, and a quote
+with **no** price beats one priced 0. `Number.isFinite` would answer 0 in both cases. It can only
+bite when an investor is set to **both**, the two vendors tie on rate, and one side prices at exactly
+0 (a hundred points of cost) or null — which is not a live quote on any rate sheet, so this is a
+latent wart rather than a live mispricing. It decides which quote is called **best**, so it is left
+for the owner to say rather than changed here.
+
+---
+
 ## 8. Open questions for the owner
 
 1. ~~The 0.25 holdback — Button Finance only, or wider?~~ **Answered 2026-08-30: every LoanNEX

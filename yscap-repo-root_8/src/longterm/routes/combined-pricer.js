@@ -85,19 +85,21 @@ const vendorMargin = require('../pricing/vendor-margin');
 const settingsStore = require('../settings/store');
 
 /**
- * Split one investor's flat program list back by the vendor that produced it.
+ * An investor with nothing shapeable — never a guess, always an honest empty.
  *
- * A merged program row carries its own `source`, which the one-system view
- * strips before anybody outside sees it — but the quote shape has to know, since
- * the two vendors' rows are shaped differently. A row with no source at all
- * cannot be shaped and is DROPPED rather than guessed at: shaping a LoanNEX row
- * with the Lender Price mapper would silently produce an option with no price.
+ * This replaces a `groupBySource(programs)` helper that split an investor's flat
+ * list back up by each row's own `source`. It could not work where it was used:
+ * the one-system view STRIPS `source` before anybody outside sees it, so on the
+ * ordinary board every row read as sourceless, was dropped as unshapeable, and
+ * `?shape=options` answered with an empty list. The split now comes from a
+ * revealing pass over the same merged board (see the options branch below),
+ * which is the only place it can honestly come from.
+ *
+ * The rule it enforced still stands and still matters: a row whose vendor we do
+ * not know is DROPPED rather than guessed at, because shaping a LoanNEX row with
+ * the Lender Price mapper silently produces an option with no price.
  */
-function groupBySource(programs) {
-  const out = { lenderprice: [], loannex: [] };
-  for (const p of programs || []) { if (p && out[p.source]) out[p.source].push(p); }
-  return out;
-}
+const EMPTY_SPLIT = { lenderprice: [], loannex: [] };
 
 /**
  * WHICH SAVED COPY OF THE INVESTOR SETTINGS IS IN FORCE.
@@ -278,7 +280,8 @@ async function priceBoth(scenario, opts = {}) {
   // The human's investor links, resolved the same way the routing is, so the
   // board and the settings screen can never disagree about who is who.
   const linked = opts.links !== undefined ? { raw: opts.links } : await linksRaw();
-  const merged = routing.applyRouting(merge(boards, { errors, links: linked.raw }), { routes: saved.raw, revealSource: opts.revealSource === true });
+  const mergedRaw = merge(boards, { errors, links: linked.raw });
+  const merged = routing.applyRouting(mergedRaw, { routes: saved.raw, revealSource: opts.revealSource === true });
 
   // The unified option list, on request. Built from the ROUTED board so a
   // suppressed or routed-away investor cannot reappear through a second door.
@@ -286,14 +289,33 @@ async function priceBoth(scenario, opts = {}) {
   if (opts.shape === 'options') {
     const io = sc.io;
     const rows = [];
+    // The per-vendor split, for SHAPING ONLY. On a revealing call the routed
+    // board already carries it; otherwise it is taken from a second routing pass
+    // over the SAME merged board — `applyRouting` is a pure function of its
+    // input, so this costs no vendor call and can never disagree with the board
+    // above about which investors are on and where each is fetched from. It is
+    // never returned: every row built below still has its `source` deleted
+    // unless the caller asked for one.
+    const shaping = new Map();
+    if (opts.revealSource !== true) {
+      for (const e of routing.applyRouting(mergedRaw, { routes: saved.raw, revealSource: true }).investors) {
+        shaping.set(e.key, e.bySource || EMPTY_SPLIT);
+      }
+    }
     for (const e of merged.investors) {
       // The investor's programs arrive as ONE list. Which vendor built each row
       // is still needed HERE — the two are shaped differently on the wire — so
-      // the reveal-stripped copy is not what this reads; `bySource` is present
-      // when revealing, and otherwise each row is rebuilt from the merged board
-      // under its own source. Either way the OUTPUT carries no vendor unless
-      // the caller asked for one.
-      const byS = e.bySource || groupBySource(e.programs);
+      // the reveal-stripped copy is not what this reads. Either way the OUTPUT
+      // carries no vendor unless the caller asked for one.
+      //
+      // ⛔ AND IT MUST NOT FALL BACK TO GROUPING THE STRIPPED LIST. That is what
+      // it used to do, and `groupBySource` reads each row's own `source` — which
+      // `stripSource` has already removed on the ordinary board — so every row
+      // was dropped as unshapeable and `?shape=options` came back EMPTY unless
+      // the caller also asked to see the source. The split comes from `shaping`
+      // below instead, and `bySource` is still preferred when it is present so
+      // a revealing caller does no extra work.
+      const byS = e.bySource || (shaping.get(e.key) || EMPTY_SPLIT);
       for (const src of ['lenderprice', 'loannex']) {
         const progs = byS[src] || [];
         if (!progs.length) continue;

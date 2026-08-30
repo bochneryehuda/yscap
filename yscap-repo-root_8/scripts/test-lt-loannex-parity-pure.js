@@ -499,9 +499,17 @@ console.log('Two programs, one loan — parity');
     // ORDER MATTERS, and it is the subtle version of the same bug: hold back
     // AFTER the comparison and the merge elects on raw prices while the board
     // shows held-back ones, so the stated reason would not match the numbers.
+    //
+    // ⛔ ANCHORED ON THE MERGE ITSELF, NOT ON ONE SPELLING OF IT. This read
+    // `routing.applyRouting(merge(` — the two calls written as one expression —
+    // and went red the day the merged board was given a name so a second, purely
+    // internal routing pass could re-use it. The ORDER had not moved at all. A
+    // guard that fails on a rename reads as a broken feature and gets loosened to
+    // nothing, so it now anchors on the `merge(boards` call, which is the thing
+    // the holdback has to come before.
     const src = require('fs').readFileSync(require.resolve('../src/longterm/routes/combined-pricer'), 'utf8');
     const atMargin = src.indexOf('vendorMargin.applyToBoard');
-    const atMerge = src.indexOf('routing.applyRouting(merge(');
+    const atMerge = src.indexOf('merge(boards');
     ok(atMargin > 0 && atMerge > atMargin,
       'MARGIN-9 …and it is applied BEFORE the merge and the comparison, so nothing is ever elected on a number the board does not show');
   }
@@ -671,6 +679,38 @@ console.log('Two programs, one loan — parity');
       'ONE-7 …and the reveal is an explicit ASK on the route — never the default, so the ordinary board can never leak it');
     ok(/delete row\.source/.test(src),
       'ONE-8 …including on the unified option rows, which carry the vendor internally because the two are shaped differently on the wire');
+
+    // ⛔ AND THE INTERNAL COPY MUST ACTUALLY EXIST. The option shaper needs each
+    // row's vendor because the two are shaped differently on the wire — and the
+    // ordinary board has had exactly that stripped off. It used to fall back to
+    // grouping the STRIPPED list by `source`, which is nobody's source, so every
+    // row was dropped as unshapeable and `?shape=options` answered EMPTY unless
+    // the caller ALSO asked to see the source. `shape` and `source` are separate
+    // request parameters, so that pairing was never guaranteed.
+    ok(!/groupBySource\(/.test(src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')),
+      'ONE-9 the option shaper never re-groups the reveal-stripped list — that list has no vendor on it by design, so grouping it drops every row');
+    ok(/revealSource: true \}\)\.investors/.test(src),
+      'ONE-9b …it takes the split from a revealing pass over the same merged board instead, which is the only place it can honestly come from');
+
+    // The behaviour itself: the same board, shaped both ways, yields the same
+    // number of shapeable rows. A shaper that could not see the vendor would
+    // answer nothing on the ordinary board while answering fully on the admin's.
+    {
+      const raw = require('../src/longterm/pricing/merge').merge(
+        { lenderprice: null, loannex: { source: 'loannex', programs: [{ source: 'loannex', lender: 'NQM Funding', investor: 'NQM Funding', program: 'P', rungs: [{ rate: 7, price: 101, points: -1, lockDays: 30 }] }] } },
+        { errors: {} });
+      const splitFor = (reveal) => {
+        const routed = routing.applyRouting(raw, { revealSource: reveal });
+        const lookup = new Map();
+        if (!reveal) for (const x of routing.applyRouting(raw, { revealSource: true }).investors) lookup.set(x.key, x.bySource);
+        return routed.investors.reduce((n, x) => {
+          const by = x.bySource || lookup.get(x.key) || { lenderprice: [], loannex: [] };
+          return n + by.lenderprice.length + by.loannex.length;
+        }, 0);
+      };
+      ok(splitFor(true) === 1 && splitFor(false) === 1,
+        'ONE-9c …so the ordinary board can shape exactly what the admin\'s board can — an option list that empties itself unless somebody asks for the source is not one system, it is no system');
+    }
   }
 }
 
