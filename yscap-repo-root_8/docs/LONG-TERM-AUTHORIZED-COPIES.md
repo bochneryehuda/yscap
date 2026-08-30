@@ -223,6 +223,100 @@ import src/lib/address-canon.js
 
 # The long-term file screen opens its overview in the ONE shared slide-over.
 import app-v2/src/components/FileOverviewSlideOver.jsx
+
+# ---------------------------------------------------------------------------
+# ORDERS — authorized in writing by the owner, 2026-08-30, asked as a specific
+# question about the long-term Orders section:
+#
+#   "Everything should share the code, so we don't need to rewrite the code. We
+#    are just sharing the code. If the code is updated, he's also updating it."
+#
+#   "You need to make sure you're not copying the information. You're just using
+#    the information from the short-term side."
+#
+#   "While you're sharing it, watch what you're doing not to break the other
+#    side of the business, the short-term side."
+#
+# THREE SENTENCES, THREE DIFFERENT INSTRUCTIONS, and each one shapes what is
+# below:
+#
+#   1. SHARE THE CODE — one definition, so a fix to the order letter helps both
+#      products rather than one.
+#   2. USE THE INFORMATION, DO NOT COPY IT — the vendor directory is the
+#      company's, not RTL's. A title company corrected once is corrected
+#      everywhere, which is only true if there is one row rather than two.
+#   3. DO NOT BREAK THE SHORT-TERM SIDE — which is why what crosses is a PURE
+#      module extracted out of `src/lib/orders.js` and re-exported BY it, rather
+#      than Long-Term reaching into the order desk itself.
+#
+# WHAT CROSSES, AND WHY IT IS THIS AND NOT `src/lib/orders.js`. That file is 900
+# lines and most of it reads RTL tables — `applications`, `checklist_items`,
+# `file_orders` — and requires the RTL pool at module load. Importing it would
+# not be "sharing code", it would be Long-Term running on RTL's data layer, and
+# rule 4 forbids that outright ("no shared database pool", "LT may not read or
+# write an RTL table in raw SQL either").
+#
+# So the SHAREABLE half was extracted into `src/lib/order-email.js`: the letter
+# itself, the mortgagee clause, the recipient rule, the reply-address minting and
+# the send verdict. It touches NO database and requires no RTL data module.
+# `src/lib/orders.js` re-exports every one of those names, so the short-term desk
+# is byte-identical and there is exactly ONE definition of an order letter — which
+# is precisely what the owner asked for.
+#
+# WHAT DOES NOT CROSS: `src/lib/orders.js` itself, `getOrderData`, `placeOrder`,
+# `file_orders`, `file_order_events`, RTL's inbound mail routing, and RTL's
+# notification system. Long-Term has its own `lt_file_orders` and its own desk,
+# and no `lt_*` table references an RTL one.
+# ---------------------------------------------------------------------------
+
+# The order LETTER and everything pure around it — one definition for both
+# products. Extracted from src/lib/orders.js, which re-exports it.
+import src/lib/order-email.js
+
+# The branded email renderer. The owner asked for "the same Gmail-style box" on
+# the long-term side; a second renderer would be a second brand.
+import src/lib/email/template.js
+import src/lib/email/quote.js
+
+# The unique per-order reply address, so a vendor's reply and the documents they
+# send back route to the order that asked for them. One definition, or the two
+# products would mint addresses the one inbound webhook cannot tell apart.
+import src/lib/file-address.js
+
+# Reading an inbound message — which addresses a delivery names, the Receiving-API
+# retrieval, the attachment download with its two honest drop counters, the
+# sender-authentication verdict and the auto-responder test. Extracted from
+# src/lib/file-inbox.js (which re-exports it) for the same reason the letter was:
+# that file is the SHORT-TERM inbox and requires the short-term pool at module
+# load. A vendor's reply to a long-term order has to be read the SAME way, and a
+# second copy of a security-relevant reading is the copy that drifts.
+import src/lib/inbound-mail.js
+
+# The Resend/Svix webhook signature check. There is ONE inbound webhook secret and
+# ONE verification, on node's own crypto and nothing else; a second copy of a
+# signature verifier is the one duplication that must never exist.
+import src/lib/resend-webhook.js
+
+# ---------------------------------------------------------------------------
+# THE VENDOR DIRECTORY — the second sentence above, in table form.
+#
+# `service_contacts` hangs off `borrowers`, which is ALREADY the shared identity
+# zone (2026-08-03). A title company, an insurance agent or an attorney is the
+# COMPANY'S record of a vendor, not a fact about which product a loan is. The
+# owner's "you're just using the information from the short-term side" is a
+# refusal of a second copy, and a second copy is exactly what a Long-Term vendor
+# table would be: the same companies, typed again, drifting.
+#
+# LONG-TERM READS AND WRITES IT, because adding a title company from a long-term
+# file has to put it where the short-term side will see it — that is the whole
+# point. What Long-Term does NOT touch is `application_service_contacts`, the
+# per-FILE link, which is keyed on an RTL application: Long-Term keeps its own
+# `lt_loan_vendors` link, so no lt_* table references an RTL one.
+# ---------------------------------------------------------------------------
+
+sql-ref   service_contacts
+sql-read  service_contacts
+sql-write service_contacts
 ```
 
 ## Log of authorizations
@@ -230,6 +324,12 @@ import app-v2/src/components/FileOverviewSlideOver.jsx
 | Date | Kind + item | Direction | The owner's words | PR |
 |---|---|---|---|---|
 | 2026-08-03 | `import src/auth/index.js` — one login for both products | RTL → LT | *"same login same borrower record, keep it separate everything else"* | #975 |
+| 2026-08-30 | `import src/lib/order-email.js` — the order letter, one definition for both products | RTL → LT | *"Everything should share the code, so we don't need to rewrite the code. We are just sharing the code. If the code is updated, he's also updating it."* | #1376 |
+| 2026-08-30 | `import src/lib/inbound-mail.js` — reading an inbound message (retrieval, attachments, sender authentication, auto-responder detection), extracted from `src/lib/file-inbox.js`, which re-exports it | RTL → LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* The vendor reply that carries a long-term order's documents has to be read the same way the short-term one is | #1376 |
+| 2026-08-30 | `import src/lib/resend-webhook.js` — the inbound webhook signature check | RTL → LT | The same message arrives on the same domain through the same webhook; one signing secret, one verification. A second copy of a signature verifier is the duplication that must never exist | #1376 |
+| 2026-08-30 | `import src/lib/email/{template,quote}.js` — the one branded email | RTL → LT | *"it should have the same feel … the same Gmail-style box"* | #1376 |
+| 2026-08-30 | `import src/lib/file-address.js` — the unique per-order reply address | RTL → LT | *"Everything should share the code … If the code is updated, he's also updating it."* | #1376 |
+| 2026-08-30 | `sql-ref` / `sql-read` / `sql-write service_contacts` — the shared vendor directory | RTL ↔ LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* | #1376 |
 | 2026-08-03 | `sql-ref borrowers` + `sql-read borrowers` — one person record, read by Long-Term | RTL → LT | *"same borrower record … all the borrowers should be able to see all their files even if its long term or short term"* | #975 |
 | 2026-08-03 | `sql-ref staff_users` + `sql-read staff_users` — a Long-Term file knows its officer | RTL → LT | *"officers should be able to see all of their files even if it's long term or short term"* (an officer can only see their Long-Term files if a Long-Term file records its officer, and officers are the same accounts as the shared login) | #975 |
 | 2026-08-03 | `import app-v2/src/components/BorrowerProfilePanel.jsx` — the ONE shared borrower editor, mounted on a long-term file | RTL → LT | *"officers should be able to change the borrower profile on long term files"* — confirmed in the same breath as *"keep borrower read only"*, so the edit goes through the existing shared editor and the existing borrower endpoint; Long-Term code still never writes `borrowers` | #975 |
