@@ -84,13 +84,13 @@ export default function LtBorrowers() {
         file on that address, including the ones that arrive later.
       </p>
 
-      {note && <div className="card" style={{ color: '#141B22', marginBottom: 12 }}>{note}</div>}
-      {err && <div className="card" style={{ color: '#141B22' }}>{err}</div>}
-      {!data && !err && <div className="card" style={{ color: '#4B585C' }}>Reading the borrower map…</div>}
+      {note && <div className="lt-card" style={{ color: '#141B22', marginBottom: 12 }}>{note}</div>}
+      {err && <div className="lt-card" style={{ color: '#141B22' }}>{err}</div>}
+      {!data && !err && <div className="lt-card" style={{ color: '#4B585C' }}>Reading the borrower map…</div>}
 
       {data && (
         <>
-          <div className="card" style={{ marginBottom: 14, color: '#141B22', fontSize: 13, lineHeight: 1.6 }}>
+          <div className="lt-card" style={{ marginBottom: 14, color: '#141B22', fontSize: 13, lineHeight: 1.6 }}>
             <strong>{counts.addresses ?? '—'}</strong> email addresses across{' '}
             <strong>{counts.loans ?? '—'}</strong> long-term files.{' '}
             <strong>{counts.suggested ?? '—'}</strong> are waiting for your answer,{' '}
@@ -107,12 +107,12 @@ export default function LtBorrowers() {
           {/* WAITING FOR YOU — the only rows with an action on them. */}
           <h2 style={{ fontSize: 16, color: '#141B22', margin: '0 0 8px' }}>Waiting for your answer</h2>
           {!data.suggestions.length && (
-            <div className="card" style={{ color: '#4B585C', marginBottom: 18 }}>
+            <div className="lt-card" style={{ color: '#4B585C', marginBottom: 18 }}>
               Nothing is waiting. Every address we can match has been answered.
             </div>
           )}
           {data.suggestions.length > 0 && (
-            <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 18 }}>
+            <div className="lt-card lt-card-flush" style={{ padding: 0, overflowX: 'auto', marginBottom: 18 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
                 <thead><tr>
                   <th style={th}>On the loan (Encompass)</th><th style={th}>We think this is</th>
@@ -176,10 +176,10 @@ export default function LtBorrowers() {
             Not proposed
           </h2>
           {!data.unmatched.length && (
-            <div className="card" style={{ color: '#4B585C', marginBottom: 18 }}>Nothing here.</div>
+            <div className="lt-card" style={{ color: '#4B585C', marginBottom: 18 }}>Nothing here.</div>
           )}
           {data.unmatched.length > 0 && (
-            <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 18 }}>
+            <div className="lt-card lt-card-flush" style={{ padding: 0, overflowX: 'auto', marginBottom: 18 }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 820 }}>
                 <thead><tr>
                   <th style={th}>On the loan (Encompass)</th><th style={th}>Why not</th>
@@ -233,7 +233,7 @@ export default function LtBorrowers() {
               <h2 style={{ fontSize: 16, color: '#141B22', margin: '0 0 8px' }}>
                 No email on the loan
               </h2>
-              <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+              <div className="lt-card lt-card-flush" style={{ padding: 0, overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 620 }}>
                   <thead><tr>
                     <th style={th}>File</th><th style={th}>Borrower</th><th style={th}>Folder</th>

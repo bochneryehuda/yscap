@@ -40,7 +40,7 @@ function LastPull({ state }) {
   const running = state.running === true;
 
   const box = (tone, title, body) => (
-    <div className="card" style={{ marginBottom: 12, color: '#141B22', borderLeft: `4px solid ${tone}` }}>
+    <div className="lt-card" style={{ marginBottom: 12, color: '#141B22', borderLeft: `4px solid ${tone}` }}>
       <div style={{ fontWeight: 700, marginBottom: body ? 4 : 0 }}>{title}</div>
       {body && <div style={{ color: '#4B585C', fontSize: 13, lineHeight: 1.55 }}>{body}</div>}
     </div>
@@ -278,7 +278,7 @@ export default function LtSync() {
         Long-term files are READ from Encompass. Nothing PILOT does is ever written back.
       </p>
 
-      {note && <div className="card" style={{ color: '#141B22', marginBottom: 12 }}>{note}</div>}
+      {note && <div className="lt-card" style={{ color: '#141B22', marginBottom: 12 }}>{note}</div>}
 
       {/* WHAT THE LAST PULL ACTUALLY DID — the first thing on the screen, because it
           is the only thing here that can explain an empty book. Every figure below is
@@ -288,7 +288,7 @@ export default function LtSync() {
       {state && <LastPull state={state} />}
 
       {state && (
-        <div className="card" style={{ display: 'flex', gap: 26, flexWrap: 'wrap', color: '#141B22' }}>
+        <div className="lt-card" style={{ display: 'flex', gap: 26, flexWrap: 'wrap', color: '#141B22' }}>
           {stat('Loans', state.loans)}
           {/* Encompass's deleted files, counted apart so this screen's total always
               matches the pipeline's (owner-directed 2026-08-23). Absent when zero. */}
@@ -303,7 +303,7 @@ export default function LtSync() {
           same reason as the book's: an empty centre and a centre nobody has
           read look identical on a loan, and only this says which it is. */}
       {state && state.conditions && (
-        <div className="card" style={{ marginTop: 12, color: '#141B22' }}>
+        <div className="lt-card" style={{ marginTop: 12, color: '#141B22' }}>
           <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
             {stat('Conditions mirrored', state.conditions.conditions)}
             {stat('eFolder documents', state.conditions.documents)}
@@ -326,7 +326,7 @@ export default function LtSync() {
           against Encompass?" is worth answering before somebody wonders why a new
           step is missing from every file that sits at it. */}
       {state && state.milestoneCatalog && state.milestoneCatalog.total != null && (
-        <div className="card" style={{ marginTop: 12, color: '#141B22' }}>
+        <div className="lt-card" style={{ marginTop: 12, color: '#141B22' }}>
           <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
             {stat('Milestones in use', state.milestoneCatalog.live_steps)}
             {stat('Confirmed with Encompass', state.milestoneCatalog.live)}
@@ -377,7 +377,7 @@ export default function LtSync() {
 
           THE WAIT IS WHAT TELLS THEM APART, so it is the thing shown. */}
       {state && state.waiting_count > 0 && (
-        <div className="card" style={{ marginTop: 16, color: '#141B22' }}>
+        <div className="lt-card" style={{ marginTop: 16, color: '#141B22' }}>
           <h2 style={{ margin: '0 0 4px', fontSize: 16, color: '#141B22' }}>
             Waiting for their first read ({state.waiting_count})
           </h2>
@@ -415,7 +415,7 @@ export default function LtSync() {
         const unread = state.failing.filter((f) => !f.partial);
         const partial = state.failing.filter((f) => f.partial);
         const block = (title, note, rows) => (
-          <div className="card" style={{ marginTop: 16, color: '#141B22' }}>
+          <div className="lt-card" style={{ marginTop: 16, color: '#141B22' }}>
             <h2 style={{ margin: '0 0 4px', fontSize: 16, color: '#141B22' }}>{title}</h2>
             <p style={{ margin: '0 0 8px', fontSize: 13, color: '#4B585C' }}>{note}</p>
             <ul style={{ margin: 0, paddingLeft: 18, color: '#4B585C', lineHeight: 1.6 }}>

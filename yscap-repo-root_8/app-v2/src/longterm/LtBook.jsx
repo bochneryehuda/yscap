@@ -96,9 +96,9 @@ export default function LtBook() {
         short-term, and so is a term under 36 months — everything else is here.
       </p>
 
-      {err && <div className="card" style={{ color: '#141B22' }}>{err}</div>}
-      {note && <div className="card" style={{ color: '#141B22', marginBottom: 12 }}>{note}</div>}
-      {!data && !err && <div className="card" style={{ color: '#4B585C' }}>Reading the book…</div>}
+      {err && <div className="lt-card" style={{ color: '#141B22' }}>{err}</div>}
+      {note && <div className="lt-card" style={{ color: '#141B22', marginBottom: 12 }}>{note}</div>}
+      {!data && !err && <div className="lt-card" style={{ color: '#4B585C' }}>Reading the book…</div>}
 
       {data && (
         <>
@@ -124,7 +124,7 @@ export default function LtBook() {
             })}
           </div>
 
-          <div className="card" style={{ marginBottom: 14, color: '#141B22', lineHeight: 1.55 }}>
+          <div className="lt-card" style={{ marginBottom: 14, color: '#141B22', lineHeight: 1.55 }}>
             <div style={{ color: '#4B585C', fontSize: 13 }}>{activeTab.note}</div>
             <div style={{ marginTop: 8, fontSize: 13, color: '#4B585C' }}>
               Read {counts.read == null ? '—' : counts.read} of {counts.total == null ? '—' : counts.total} files.
@@ -152,7 +152,7 @@ export default function LtBook() {
               list below rather than opening a second screen. Long-term only —
               these are the folders the answer is about. */}
           {tab === 'longTerm' && data.byFolder && data.byFolder.length > 0 && (
-            <div className="card" style={{ marginBottom: 14, padding: 0, overflowX: 'auto' }}>
+            <div className="lt-card lt-card-flush" style={{ marginBottom: 14, padding: 0, overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
                 <thead><tr>
                   <th style={th}>Folder</th><th style={th}>Files</th><th style={th}>Statuses inside it</th>
@@ -188,7 +188,7 @@ export default function LtBook() {
             </button>
           </div>
 
-          <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+          <div className="lt-card lt-card-flush" style={{ padding: 0, overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
               <thead><tr>
                 <th style={th}>File</th><th style={th}>Borrower</th><th style={th}>Folder</th>

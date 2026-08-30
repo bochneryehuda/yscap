@@ -52,6 +52,20 @@ const SECTIONS = [
     key: 'milestones',
     label: 'Milestones',
   },
+  {
+    // HOW LONG EACH PART TOOK, on this one file (owner-directed 2026-08-30: "for
+    // every file how long it took between which and which step and who the
+    // processor was in that file"). It sits directly under Milestones because it
+    // is the same ladder read a second way — the steps above, the time between
+    // them here.
+    //
+    // ALWAYS AVAILABLE, and that is the point. A file PILOT has not witnessed a
+    // step on is exactly the file somebody needs this section to explain: it says
+    // WHY each span is unknown rather than leaving a blank the reader has to guess
+    // at. Greying it out on such a file would be backwards.
+    key: 'timing',
+    label: 'How long it took',
+  },
   { key: 'borrowers', label: 'Borrowers' },
   { key: 'property', label: 'Property' },
   { key: 'terms', label: 'Loan terms' },
@@ -79,8 +93,45 @@ const SECTIONS = [
   { key: 'declarations', label: 'Declarations' },
   { key: 'contacts', label: 'Who is on this file' },
   {
-    key: 'conditions',
+    // OUR OWN conditions — what this file needs to get submitted, cleared to
+    // close, docked, funded and sold (owner-directed 2026-08-30). It sits ABOVE
+    // the Encompass mirror below because it is the work an officer is doing
+    // TODAY; the mirror is what an investor's underwriter raised after the loan
+    // was already sold.
+    //
+    // ALWAYS AVAILABLE. A file with no conditions worked out yet is exactly the
+    // one somebody opens this to fix — the section carries the button that runs
+    // the rules against it, so greying it would hide the only way forward.
+    key: 'file_conditions',
     label: 'Conditions',
+  },
+  {
+    // THE ORDERS DESK — every vendor this file has to ask for something, with the
+    // whole conversation on the card.
+    //
+    // ALWAYS AVAILABLE, for the condition centre's reason: a file with no vendor on
+    // it yet is exactly the one somebody opens this to fix, and greying it would
+    // hide the only way forward. What each order needs before it can go is said on
+    // the order itself, in words, rather than by the section refusing to open.
+    key: 'orders',
+    label: 'Orders',
+  },
+  {
+    /* THE VERIFICATION OF RENT. Its own section rather than a card inside Orders,
+       for one reason: it is a FORM WE BUILD and a signature request, not a letter to
+       a vendor — it has a form to edit, a document to look at, an envelope out for
+       signature and a return to record, and folding all of that into an order card
+       would bury the one thing a processor comes here to do.
+
+       ALWAYS AVAILABLE, for the same reason as Orders: a file with no landlord on it
+       is exactly the one somebody opens this to fix. What is missing is said on the
+       form, in words. */
+    key: 'vor',
+    label: 'Verification of rent',
+  },
+  {
+    key: 'conditions',
+    label: 'Investor conditions (Encompass)',
     // Greyed rather than hidden, for the same reason as employment: somebody told
     // about it must not think it vanished. The reason names the SWITCH rather than
     // a date — the centre is built, so the answer is "turn it on", not "wait".

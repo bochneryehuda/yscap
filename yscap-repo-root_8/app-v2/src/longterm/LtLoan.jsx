@@ -2,8 +2,18 @@ import { money, pct, ratio, plain, day, purpose } from './format.js';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import LtLayout from './LtLayout.jsx';
+// THE ONE SHARED PANEL, not a long-term copy of it (owner-directed 2026-08-30:
+// "It should be the same feel"). Product-neutral by construction — it takes a
+// fetcher and renders whatever {header, sections[]} it resolves — so using it is
+// what keeps the two file screens from drifting. Authorized crossing, recorded in
+// docs/LONG-TERM-AUTHORIZED-COPIES.md.
+import FileOverviewSlideOver from '../components/FileOverviewSlideOver.jsx';
 import LtFileSection, { hasFileSection } from './LtFileSections.jsx';
 import LtConditionCenter from './LtConditionCenter.jsx';
+import LtFileConditions from './LtFileConditions.jsx';
+import LtOrders from './LtOrders.jsx';
+import LtVor from './LtVor.jsx';
+import LtTiming from './LtTiming.jsx';
 import LtClickupSection from './LtClickupSection.jsx';
 import LtEncompassSection from './LtEncompassSection.jsx';
 import ProductStamp from './ProductStamp.jsx';
@@ -41,10 +51,33 @@ const GOLD_TEXT = '#8A6A22';
 // different KIND of fact from a workflow step and should not look like one.
 const TEAL = '#2F7F86';
 
-function Rail({ rail }) {
-  if (!rail) return null;
-  // Every row the plan names, in its order. A figure that is MISSING reads as a dash,
-  // never as zero — "no DSCR on file" and "a DSCR of 0" are different loans.
+/**
+ * THE FILE OVERVIEW, AS THE SHARED SLIDE-OVER'S OWN PAYLOAD.
+ *
+ * Owner-directed 2026-08-30: *"Right now, the file overview is always displaying on
+ * the right side. We want to go and do the same thing that we have on the short term
+ * side, where we have a file overview button. It should be the same feel. We open it
+ * up, and it comes up with all the details of the file overview."*
+ *
+ * SO THE PANEL IS RTL'S OWN COMPONENT, not a long-term lookalike. `FileOverviewSlideOver`
+ * is product-neutral by construction — it takes a `fetcher` and renders whatever
+ * `{header, sections[]}` that fetcher resolves, and the audience boundary stays with
+ * whoever supplies the data. That is why "it should be the same feel" is answered by
+ * USING it rather than by building a second one that would drift the first time either
+ * side is touched. The crossing is recorded in docs/LONG-TERM-AUTHORIZED-COPIES.md.
+ *
+ * NOTHING IS FETCHED. The file screen already holds `rail`, so this only reshapes what
+ * is in hand: opening the panel costs no request, works offline of the API, and can
+ * never disagree with the header above it. The component's `fetcher` contract is a
+ * promise, and a resolved value satisfies it exactly.
+ *
+ * THE ROWS ARE THE RAIL'S OWN ROWS, IN THE RAIL'S OWN ORDER — nothing was added,
+ * removed or reworded in the move. A figure that is MISSING is still a dash, never a
+ * zero: "no DSCR on file" and "a DSCR of 0" are different loans.
+ */
+function overviewCard({ rail, file }) {
+  if (!rail) return { header: null, sections: [] };
+  const address = (file && file.property && file.property.address) || null;
   const rows = [
     ['Borrower', plain(rail.borrower)],
     ['Purpose', purpose(rail.purpose)],
@@ -65,44 +98,36 @@ function Rail({ rail }) {
     ['Milestone', plain(rail.milestoneLabel || rail.milestone)],
   ];
 
-  return (
-    <aside className="card lt-ledger" style={{ color: INK, alignSelf: 'start', position: 'sticky', top: 12 }}>
-      <div style={{ fontSize: 11, letterSpacing: '.09em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
-        File Details
-      </div>
-      <div style={{ marginTop: 8 }}>
-        {rows.map(([k, v]) => (
-          <div key={k} style={{
-            display: 'flex', justifyContent: 'space-between', gap: 12,
-            padding: '5px 0', borderTop: '1px solid rgba(20,27,34,.07)', fontSize: 13,
-          }}>
-            <span style={{ color: MUTED }}>{k}</span>
-            <span style={{ color: INK, fontWeight: 600, textAlign: 'right' }}>{v}</span>
-          </div>
-        ))}
-      </div>
-      {/* HOW FRESH THIS IS, AND WHETHER IT HAS BEEN READ AT ALL. A rail of figures
-          with no read date invites somebody to trust a month-old number — and a
-          loan PILOT has discovered but not yet opened used to render this line as
-          "Read from Encompass —", a dash where a date belongs, which reads as a
-          formatting glitch rather than as the answer. The sentence comes from the
-          server's own `read-state`, so this rail, the pipeline and the sync screen
-          can never give three answers about one loan. */}
-      {rail.readState === 'failed' || rail.readState === 'waiting' ? (
-        // A state the server NAMED. An older server that sends none falls through
-        // to the date line below and behaves exactly as it always did — a screen
-        // must never go blank because the other half of a deploy has not landed.
-        <div style={{
-          marginTop: 10, fontSize: 12, lineHeight: 1.45,
-          color: rail.readState === 'failed' ? '#8A2D2D' : MUTED,
-        }}>{rail.readWhy || 'Encompass has not been read for this loan yet.'}</div>
-      ) : (
-        <div style={{ marginTop: 10, fontSize: 12, color: MUTED }}>
-          Read from Encompass {day(rail.syncedAt)}
-        </div>
-      )}
-    </aside>
-  );
+  /* HOW FRESH THIS IS, AND WHETHER IT HAS BEEN READ AT ALL. A panel of figures with no
+     read date invites somebody to trust a month-old number — and a loan PILOT has
+     discovered but not yet opened used to render this line as "Read from Encompass —",
+     a dash where a date belongs, which reads as a formatting glitch rather than as the
+     answer. The sentence comes from the server's own `read-state`, so this panel, the
+     pipeline and the sync screen can never give three answers about one loan. */
+  const reading = (rail.readState === 'failed' || rail.readState === 'waiting')
+    ? (rail.readWhy || 'Encompass has not been read for this loan yet.')
+    : `Read from Encompass ${day(rail.syncedAt)}`;
+
+  /* THREE GROUPS, CUT ON THE ROWS THEMSELVES rather than on a second hand-kept list:
+     the first three rows are who and what, the rest are the structure, and the reading
+     is its own note. Slicing the one array is what guarantees that adding a row above
+     can never silently drop it out of the panel. */
+  const asRows = (pairs, strongUpTo = -1) =>
+    pairs.map(([label, value], i) => ({ label, value, strong: i <= strongUpTo }));
+
+  return {
+    header: {
+      address,
+      loanNumber: rail.loanNumber ? `Loan ${rail.loanNumber}` : null,
+      loanAmount: rail.loanAmount == null ? null : money(rail.loanAmount),
+      purpose: rail.purpose ? purpose(rail.purpose) : null,
+    },
+    sections: [
+      { title: 'The deal', rows: asRows(rows.slice(0, 3)) },
+      { title: 'Structure', rows: asRows(rows.slice(3), 2) },
+      { title: 'Reading', rows: [{ label: 'Encompass', value: reading }] },
+    ],
+  };
 }
 
 /**
@@ -166,7 +191,7 @@ function FileHeader({ rail, loan, file }) {
   ];
 
   return (
-    <div className="card" style={{ color: INK, marginBottom: 12 }}>
+    <div className="lt-card" style={{ color: INK, marginBottom: 12 }}>
       {attained ? (
         <h1 className="lt-utter"><span className="lt-now">{attained}</span></h1>
       ) : null}
@@ -227,7 +252,7 @@ function SevenStops({ stops, clock, sale, statusLabel }) {
   const atPct = (i) => ((i + 0.5) / n) * 100;
 
   return (
-    <div className="card" style={{ color: INK, marginBottom: 12, position: 'relative', overflow: 'hidden' }}>
+    <div className="lt-card" style={{ color: INK, marginBottom: 12, position: 'relative', overflow: 'hidden' }}>
       {/* The plate's chevron. Decoration only — never a carrier of meaning. */}
       <svg aria-hidden="true" viewBox="0 0 100 100" preserveAspectRatio="none"
         style={{
@@ -689,6 +714,7 @@ function Contacts({ contacts, canReassign = false, staff = [], onReassign }) {
 const SECTION_BLURB = {
   summary: 'The loan\u2019s headline figures, exactly as Encompass has them.',
   milestones: 'Every step of the ladder, with Encompass\u2019s own date and the associate on each step.',
+  timing: 'How long this file sat between each step, who held it, and \u2014 where PILOT could not measure a step \u2014 why not.',
   borrowers: 'The people on the loan \u2014 names, contact details and how they take title.',
   property: 'The subject property \u2014 address, type, units and value.',
   terms: 'Rate, term, interest-only and the prepayment penalty.',
@@ -698,7 +724,10 @@ const SECTION_BLURB = {
   reo: 'Every other property on the borrower\u2019s schedule.',
   declarations: 'The borrower\u2019s own answers on the application.',
   contacts: 'Who is on this file, and whose pipeline it sits in.',
-  conditions: 'What is still outstanding on this loan, and the documents against it.',
+  vor: 'The rent verification \u2014 filled in from the file, sent to the landlord, and what came back.',
+  file_conditions: 'What this file still needs to get submitted, cleared to close, docked, funded and sold.',
+  orders: 'Every vendor this file has to ask for something, and the whole conversation with each of them.',
+  conditions: 'What the investor\u2019s underwriter raised on this loan, read from Encompass. Read-only.',
   investor: 'Who bought this loan, and when.',
   lock: 'The rate lock, and everything we have watched change on it.',
   clickup: 'What the sync does for this file on its own \u2014 and the buttons to do any of it by hand.',
@@ -727,7 +756,7 @@ const SECTION_BLURB = {
  */
 function LtSection({ id, label, blurb, available, open, onToggle, children }) {
   return (
-    <section id={id} className="card" style={{ color: INK, padding: 0, scrollMarginTop: 14 }}>
+    <section id={id} className="lt-card lt-card-flush" style={{ color: INK, padding: 0, scrollMarginTop: 14 }}>
       <button type="button" onClick={onToggle} aria-expanded={open}
         aria-controls={open ? `${id}-body` : undefined}
         style={{
@@ -770,7 +799,10 @@ function LtSection({ id, label, blurb, available, open, onToggle, children }) {
   );
 }
 
-export { FileHeader, SevenStops, MilestoneBoard, Rail };
+// `Rail` is gone (2026-08-30): the always-on details column became the shared
+// file-overview slide-over, fed by `overviewCard` above. It is exported so the
+// pure test can prove the panel is handed the rail's own rows, unchanged.
+export { FileHeader, SevenStops, MilestoneBoard, overviewCard };
 
 export default function LtLoan() {
   const { loanId } = useParams();
@@ -843,13 +875,13 @@ export default function LtLoan() {
   if (err) {
     return (
       <LtLayout title="Long-term file">
-        <div className="card" style={{ color: '#8A2D2D' }}>{err}</div>
+        <div className="lt-card" style={{ color: '#8A2D2D' }}>{err}</div>
         <button type="button" className="btn ghost" style={{ marginTop: 10 }}
           onClick={() => nav('/internal/lt')}>Back to the pipeline</button>
       </LtLayout>
     );
   }
-  if (!data) return <LtLayout title="Long-term file"><div className="card" style={{ color: INK }}>Loading…</div></LtLayout>;
+  if (!data) return <LtLayout title="Long-term file"><div className="lt-card" style={{ color: INK }}>Loading…</div></LtLayout>;
 
   const { rail, sections = [], contacts = [], lock, file, milestoneClock } = data;
   const { stops, milestoneBoard, sale, loan } = data;
@@ -864,6 +896,11 @@ export default function LtLoan() {
       return <p style={{ margin: 0, color: MUTED, fontSize: 13, lineHeight: 1.55 }}>{s.why}</p>;
     }
     if (s.key === 'milestones') return <MilestoneBoard board={milestoneBoard} history={milestoneHistory} />;
+    // HOW LONG EACH PART TOOK, on this file. It loads ITSELF from the reporting
+    // routes rather than riding on `file`: the ladder history and the completion
+    // snapshots are their own tables (db/642), and folding them into the workspace
+    // payload would make every file screen pay for a read most openings never use.
+    if (s.key === 'timing') return <LtTiming loanId={loanId} />;
     if (s.key === 'clickup') return <LtClickupSection loanId={loanId} />;
     if (s.key === 'encompass') return <LtEncompassSection loanId={loanId} />;
     if (s.key === 'lock') return <LockCard lock={lock} bare />;
@@ -872,6 +909,12 @@ export default function LtLoan() {
     // LtFileSection — which stays about the URLA sections it documents. While the
     // switch is off the server greys this section and the branch above shows its
     // reason, so the screen never renders a centre the API would refuse.
+    // OUR OWN conditions. It loads ITSELF — the rules, the buckets and the
+    // per-file rows are their own tables (db/643) and have nothing to do with
+    // the URLA sections `file` carries.
+    if (s.key === 'file_conditions') return <LtFileConditions loanId={loanId} />;
+    if (s.key === 'orders') return <LtOrders loanId={loanId} />;
+    if (s.key === 'vor') return <LtVor loanId={loanId} />;
     if (s.key === 'conditions') return <LtConditionCenter loanId={loanId} />;
     if (s.key === 'contacts') {
       return (
@@ -900,8 +943,9 @@ export default function LtLoan() {
     }
     return (
       <p style={{ margin: 0, color: MUTED, fontSize: 13, lineHeight: 1.55 }}>
-        This loan’s headline figures are in File Details, on the right. Nothing here is
-        editable: the long-term side reads Encompass and never writes to it.
+        This loan’s headline figures are in the File overview — the tab on the right
+        edge of the screen. Nothing here is editable: the long-term side reads
+        Encompass and never writes to it.
       </p>
     );
   };
@@ -924,7 +968,7 @@ export default function LtLoan() {
           can be found and trashed in Encompass — after which it drops off every
           screen here on its own. */}
       {Array.isArray(data.duplicates) && data.duplicates.length > 0 && (
-        <div className="card" style={{ marginBottom: 12, border: '1px solid #E4C7C7', background: '#FBEFEF', color: '#141B22' }}>
+        <div className="lt-card" style={{ marginBottom: 12, border: '1px solid #E4C7C7', background: '#FBEFEF', color: '#141B22' }}>
           <strong style={{ color: '#8A2D2D' }}>
             Encompass holds {data.duplicates.length + 1} records with this loan number.
           </strong>{' '}
@@ -948,26 +992,32 @@ export default function LtLoan() {
       <SevenStops stops={stops} clock={milestoneClock} sale={sale}
         statusLabel={rail && rail.milestoneLabel} />
 
-      {/* THE JUMP MENU LEFT, THE FILE BESIDE IT, ITS DETAILS ON THE RIGHT
-          (owner-directed 2026-08-25: *"the file details should go on the right side
-          and the file, the long summary, the milestones, the borrowers, the
-          properties should go on the left side. The same setup that we currently
-          have on the RTL site."*).
+      {/* THE FILE OVERVIEW IS NOW A BUTTON, NOT A RAIL (owner-directed 2026-08-30:
+          *"Right now, the file overview is always displaying on the right side. We
+          want to go and do the same thing that we have on the short term side, where
+          we have a file overview button."*). The panel is the shared `.fov-*`
+          slide-over — RTL's own component, fed above from this screen's `rail`.
 
-          The RTL file screen is a menu on the LEFT with the file's own sections
-          beside it (`.file-layout`, 228px + 1fr), so matching it means the menu takes
-          the left-hand column and the DETAILS RAIL moves across — exactly the swap
-          the owner described. The two also swap WIDTHS with their contents: a menu of
-          section names does not need 300px, and sixteen rows of figures cannot live
-          in 186.
+          SO THE WORKSPACE IS TWO COLUMNS: the jump menu on the left and the file
+          beside it, which is still the arrangement the owner asked for on 2026-08-25
+          (*"the file details should go on the right side and the file, the long
+          summary, the milestones, the borrowers, the properties should go on the
+          left side. The same setup that we currently have on the RTL site."*) — the
+          details simply moved off the page and behind the tab, exactly as they are
+          on the RTL file screen it was matching.
 
-          THE DOM IS NOT REORDERED — `order` places them (see `.lt-workspace` in
-          styles.css, where the phone stack already used the same three values). A
-          reading order of menu → file → details is right for a screen reader and a
-          keyboard too, so there is nothing to gain by moving the JSX and a real
-          chance of breaking the sticky rail while doing it. */}
-      <div style={{ display: 'grid', gridTemplateColumns: '196px minmax(0,1fr) 300px', gap: 14, alignItems: 'start' }}
-        className="lt-workspace">
+          THE DOM IS NOT REORDERED — `order` places the two remaining columns (see
+          `.lt-workspace` in styles.css, where the phone stack already used the same
+          values). A reading order of menu → file is right for a screen reader and a
+          keyboard too. */}
+      {/* The tab is fixed to the right edge and portals to <body>, so where it sits
+          in this tree does not place it — what it does decide is that the panel
+          unmounts with the file screen, which is what releases its overlay layer. */}
+      <FileOverviewSlideOver title="File overview"
+        fetcher={() => Promise.resolve(overviewCard({ rail, file }))} />
+
+      <div style={{ display: 'grid', gap: 14, alignItems: 'start' }}
+        className="lt-workspace lt-workspace-2">
         {/* `gridTemplateColumns:'minmax(0,1fr)'` is load-bearing, not decoration. A grid
             with no declared column gets an IMPLICIT `auto` one, which sizes to its
             content — so a section carrying a 620px-wide table stretched this column to
@@ -975,13 +1025,6 @@ export default function LtLoan() {
             the page reported no sideways scroll while half of every row was cut off and
             unreachable. `minmax(0,…)` pins the column to the container, which is what
             lets each table scroll inside its OWN box the way it was meant to. */}
-        {/* THE FILE'S OWN DETAILS. They moved to the RIGHT-hand column on
-            2026-08-25 at the owner's direction (see the grid above); the 2026-08-24
-            instruction that first pulled them out of the right column was about
-            getting them off a tab and onto the page beside the file, which still
-            holds. */}
-        <Rail rail={rail} />
-
         {/* THE FILE ITSELF, top to bottom, each section opening in place. The order
             is the SERVER'S (`workspace.js`), which is why the two syncing sections —
             plumbing rather than the loan — sit at the bottom of the stack. */}
@@ -1002,7 +1045,7 @@ export default function LtLoan() {
             wrapping button row gave the eye no order to follow. Since the sections
             themselves now open in place, this is a JUMP list — it opens the section
             and scrolls to it, and never closes one. */}
-        <nav className="card lt-rooms" style={{ color: INK, alignSelf: 'start', position: 'sticky', top: 12, padding: '12px 12px 10px' }}>
+        <nav className="lt-card lt-rooms" style={{ color: INK, alignSelf: 'start', position: 'sticky', top: 12, padding: '12px 12px 10px' }}>
           <div style={{ fontSize: 10, letterSpacing: '.14em', textTransform: 'uppercase', color: GOLD_TEXT, fontWeight: 700 }}>
             The file
           </div>

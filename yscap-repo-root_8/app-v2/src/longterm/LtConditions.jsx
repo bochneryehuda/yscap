@@ -28,7 +28,7 @@ export default function LtConditions() {
   if (me && me.conditionsEnabled) {
     return (
       <LtLayout title="Condition Center">
-        <div className="card" style={{ color: '#141B22' }}>
+        <div className="lt-card" style={{ color: '#141B22' }}>
           <h2 style={{ margin: '0 0 8px', fontSize: 18, color: '#141B22' }}>It lives on the loan</h2>
           <p style={{ margin: '0 0 12px', color: '#4B585C', lineHeight: 1.55, maxWidth: 560 }}>
             Open a long-term file and pick <strong>Conditions</strong>. You get that loan’s
@@ -48,7 +48,7 @@ export default function LtConditions() {
 
   return (
     <LtLayout title="Condition Center">
-      <div className="card" style={{ textAlign: 'center', padding: '46px 24px', color: '#141B22' }}>
+      <div className="lt-card" style={{ textAlign: 'center', padding: '46px 24px', color: '#141B22' }}>
         <div style={{ fontSize: 34, marginBottom: 10 }}>🚧</div>
         <h2 style={{ margin: '0 0 8px', fontSize: 20, color: '#141B22' }}>Coming soon</h2>
         <p style={{ margin: '0 auto', maxWidth: 460, color: '#4B585C', lineHeight: 1.55 }}>

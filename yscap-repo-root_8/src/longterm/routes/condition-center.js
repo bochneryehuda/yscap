@@ -1,0 +1,492 @@
+'use strict';
+/**
+ * LONG-TERM — THE GENERAL CONDITION CENTER (HTTP).
+ *
+ * Mounted at /api/lt/condition-center; staff authentication is applied at the
+ * seam in src/server.js, so this router imports no RTL code.
+ *
+ * ── THIS IS NOT THE ENCOMPASS MIRROR ────────────────────────────────────────
+ *
+ * /api/lt/conditions is db/612's READ-ONLY mirror of Encompass's Enhanced
+ * Conditions and eFolder — what the investor's underwriter raised after buying
+ * the loan. This is OUR OWN centre: what we need to get a file submitted,
+ * cleared, docked, funded and sold. Two centres, two routers, two tables, on
+ * purpose (db/643's header says why).
+ *
+ * ── FOUR RULES ──────────────────────────────────────────────────────────────
+ *
+ * 1. EVERY PER-FILE ROUTE GOES THROUGH `loadScopedLoan`, the same loader every
+ *    other per-file route uses. A condition screen must never reach a file the
+ *    file screen would refuse.
+ *
+ * 2. EVERY CONDITION ID IS SCOPED TO ITS LOAN IN THE STATEMENT, not checked
+ *    afterwards. `WHERE id = $1 AND loan_id = $2` means an id from another file
+ *    matches no row, which is a property of the query rather than of a check
+ *    somebody has to remember to write.
+ *
+ * 3. THE AUDIENCE IS `internal` HERE. Every route is behind the staff mount.
+ *    The borrower's own view is its own door on /api/lt/my, and it asks
+ *    `read.forLoan` for the CLIENT payload — which is BUILT for the client
+ *    rather than being the internal one with fields deleted.
+ *
+ * 4. CHANGING THE LIBRARY IS AN ADMINISTRATOR'S. A template is on every file in
+ *    the book; the wording on it is what a borrower reads. Working a condition
+ *    on a file is any staff member's.
+ */
+
+const express = require('express');
+
+const router = express.Router();
+
+const db = require('../db');
+const access = require('../access');
+const settingsStore = require('../settings/store');
+const engine = require('../conditions-center/engine');
+const read = require('../conditions-center/read');
+const write = require('../conditions-center/write');
+const workspace = require('../conditions-center/workspace');
+const rules = require('../conditions-center/rules');
+const registry = require('../conditions-center/field-registry');
+const library = require('../conditions-center/library');
+const { loadScopedLoan, UUID_RE } = require('./scoped-loan');
+
+const staffId = (req) => (req.actor && req.actor.id ? String(req.actor.id) : null);
+
+async function isAdmin(req) {
+  try {
+    const { settings } = await settingsStore.load();
+    return access.mayManagePeople(req.actor, settings);
+  } catch (_) {
+    // The gate failing to be READ is not permission to pass it.
+    return false;
+  }
+}
+
+/** Every write door answers the same shape, so the screen has one thing to read. */
+function answer(res, out) {
+  if (out && out.ok) return res.json(out);
+  return res.status((out && out.status) || 400).json({ error: (out && out.error) || 'That did not work.' });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ONE FILE
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /api/lt/condition-center/loans/:loanId — the file's conditions by bucket.
+router.get('/loans/:loanId', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-cond');
+  if (!scoped) return;
+  try {
+    const out = await read.forLoan(scoped.loan.id, { audience: 'internal', db });
+    res.json({ loanId: scoped.loan.id, ...out });
+  } catch (e) {
+    console.error('[lt] condition centre read failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not read this file’s conditions just now.' });
+  }
+});
+
+// POST …/loans/:loanId/evaluate — re-run the rules against this file.
+//
+// The engine never throws, so a failed pass comes back as a REPORT rather than
+// an error: what it added, what it removed, and — the part that matters — what
+// it could not decide and why.
+router.post('/loans/:loanId/evaluate', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-cond');
+  if (!scoped) return;
+  const out = await engine.evaluateLoan(scoped.loan.id, { db });
+  res.json(out);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ONE CONDITION ON ONE FILE
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Every condition route shares this: scope the loan, then check the id's shape. */
+async function scopedCondition(req, res) {
+  const scoped = await loadScopedLoan(req, res, 'lt-cond');
+  if (!scoped) return null;
+  if (!UUID_RE.test(String(req.params.conditionId || ''))) {
+    res.status(404).json({ error: 'That condition is not on this file.' });
+    return null;
+  }
+  return scoped;
+}
+
+/**
+ * THE WORKING DATA for a condition that is a CHOICE rather than an upload — the
+ * mortgages on the credit report, the subject property's mortgage, the vesting
+ * entity. Its own door on purpose: the conditions LIST is loaded by every screen
+ * and every borrower, and these three reads are only wanted once somebody opens
+ * one of them.
+ *
+ * Answers `{ workspace: null }` for an ordinary condition rather than a 404 — the
+ * screen asks the same question of every condition it opens, and "this one has
+ * no workspace" is a normal answer, not an error.
+ */
+router.get('/loans/:loanId/conditions/:conditionId/workspace', async (req, res) => {
+  const scoped = await scopedCondition(req, res);
+  if (!scoped) return;
+  try {
+    res.json({ workspace: await workspace.forCondition(scoped.loan.id, req.params.conditionId, { db }) });
+  } catch (e) {
+    console.error('[lt] condition workspace failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not open that condition just now.' });
+  }
+});
+
+/**
+ * RECORD THE ANSWER. Validated through `answers.js` — the SAME module the
+ * sign-off gate reads — so a shape this accepts is always one the gate honours.
+ * Merges, so two people working the mortgages list a line at a time do not wipe
+ * each other's rows.
+ */
+router.post('/loans/:loanId/conditions/:conditionId/answer', async (req, res) => {
+  const scoped = await scopedCondition(req, res);
+  if (!scoped) return;
+  try {
+    answer(res, await write.recordAnswer(
+      scoped.loan.id, req.params.conditionId, (req.body || {}).answer, staffId(req), db,
+    ));
+  } catch (e) {
+    console.error('[lt] record condition answer failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not save that just now.' });
+  }
+});
+
+router.post('/loans/:loanId/conditions/:conditionId/satisfy', async (req, res) => {
+  const scoped = await scopedCondition(req, res);
+  if (!scoped) return;
+  try {
+    answer(res, await write.satisfy(scoped.loan.id, req.params.conditionId, staffId(req), db));
+  } catch (e) {
+    console.error('[lt] satisfy condition failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not update that condition just now.' });
+  }
+});
+
+router.post('/loans/:loanId/conditions/:conditionId/waive', async (req, res) => {
+  const scoped = await scopedCondition(req, res);
+  if (!scoped) return;
+  try {
+    answer(res, await write.waive(scoped.loan.id, req.params.conditionId, staffId(req), (req.body || {}).reason, db));
+  } catch (e) {
+    console.error('[lt] waive condition failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not update that condition just now.' });
+  }
+});
+
+router.post('/loans/:loanId/conditions/:conditionId/reopen', async (req, res) => {
+  const scoped = await scopedCondition(req, res);
+  if (!scoped) return;
+  try {
+    answer(res, await write.reopen(scoped.loan.id, req.params.conditionId, db));
+  } catch (e) {
+    console.error('[lt] reopen condition failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not update that condition just now.' });
+  }
+});
+
+router.post('/loans/:loanId/conditions/:conditionId/status', async (req, res) => {
+  const scoped = await scopedCondition(req, res);
+  if (!scoped) return;
+  try {
+    answer(res, await write.setStatus(scoped.loan.id, req.params.conditionId, (req.body || {}).status, db));
+  } catch (e) {
+    console.error('[lt] set condition status failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not update that condition just now.' });
+  }
+});
+
+router.post('/loans/:loanId/conditions/:conditionId/note', async (req, res) => {
+  const scoped = await scopedCondition(req, res);
+  if (!scoped) return;
+  try {
+    answer(res, await write.setNote(scoped.loan.id, req.params.conditionId, (req.body || {}).note, db));
+  } catch (e) {
+    console.error('[lt] set condition note failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not save that note just now.' });
+  }
+});
+
+// POST …/loans/:loanId/conditions — add one from the library, by hand.
+router.post('/loans/:loanId/conditions', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-cond');
+  if (!scoped) return;
+  const body = req.body || {};
+  if (!body.code) return res.status(400).json({ error: 'Say which condition to add.' });
+  try {
+    answer(res, await write.addFromTemplate(scoped.loan.id, body.code, { db, fieldKey: body.fieldKey }));
+  } catch (e) {
+    console.error('[lt] add condition failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not add that condition just now.' });
+  }
+});
+
+router.delete('/loans/:loanId/conditions/:conditionId', async (req, res) => {
+  const scoped = await scopedCondition(req, res);
+  if (!scoped) return;
+  try {
+    answer(res, await write.removeManual(scoped.loan.id, req.params.conditionId, db));
+  } catch (e) {
+    console.error('[lt] remove condition failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not remove that condition just now.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE LIBRARY — the settings side.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /api/lt/condition-center/library — every bucket, every template, and the
+// fields a rule may name. The rule builder draws its whole picker from THIS, so
+// a screen can never offer a field the evaluator would refuse.
+router.get('/library', async (req, res) => {
+  try {
+    const fields = registry.fieldMap();
+    // First read of the library seeds it (see library.ensureSeeded).
+    await library.ensureSeeded(db);
+    const [bucketRows, templateRows] = await Promise.all([
+      read.buckets(db),
+      db.query(
+        `SELECT code, bucket_key, label, hint, borrower_label, borrower_hint,
+                audience, kind, auto_apply, rule_logic, is_required, slots,
+                config, is_enabled, disabled_reason, is_active, sort_order, is_seeded
+           FROM lt_condition_templates
+          ORDER BY sort_order, code`,
+      ).then((r) => r.rows),
+    ]);
+    res.json({
+      buckets: bucketRows,
+      templates: templateRows.map((t) => ({
+        code: t.code,
+        bucket: t.bucket_key,
+        label: t.label,
+        hint: t.hint,
+        borrowerLabel: t.borrower_label,
+        borrowerHint: t.borrower_hint,
+        audience: t.audience,
+        kind: t.kind,
+        autoApply: t.auto_apply,
+        rule: t.rule_logic,
+        // The rule in words, so an administrator can READ what they are about to
+        // change. A rule nobody can read is a rule nobody can safely edit.
+        ruleInWords: rules.describeRule(t.rule_logic, fields),
+        isRequired: t.is_required,
+        slots: t.slots || [],
+        config: t.config || {},
+        enabled: t.is_enabled,
+        disabledReason: t.disabled_reason,
+        active: t.is_active,
+        sortOrder: t.sort_order,
+        seeded: t.is_seeded,
+      })),
+      fields: registry.catalog(),
+      operators: rules.OPERATORS_BY_TYPE,
+      operatorLabels: rules.OPERATOR_LABEL,
+      noValueOperators: [...rules.NO_VALUE_OPS],
+      kinds: ['informational', 'form', 'order', 'esign', 'document'],
+      audiences: ['internal', 'external', 'both'],
+      canEdit: await isAdmin(req),
+    });
+  } catch (e) {
+    console.error('[lt] condition library read failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not read the condition library just now.' });
+  }
+});
+
+// PATCH /api/lt/condition-center/library/:code — change one template.
+//
+// THE RULE IS VALIDATED BEFORE IT IS STORED, against the same registry the
+// engine reads. A rule naming a field that does not exist would sit in the
+// database attaching to nothing, which reads exactly like a condition nobody
+// needs — and the person who wrote it would never find out.
+router.patch('/library/:code', async (req, res) => {
+  if (!(await isAdmin(req))) {
+    return res.status(403).json({ error: 'Only an administrator can change the condition library — a template is on every file in the book.' });
+  }
+  const body = req.body || {};
+  const sets = [];
+  const params = [String(req.params.code)];
+  const put = (col, val, cast) => { params.push(val); sets.push(`${col} = $${params.length}${cast || ''}`); };
+
+  const TEXT = { label: 'label', hint: 'hint', borrowerLabel: 'borrower_label', borrowerHint: 'borrower_hint', disabledReason: 'disabled_reason' };
+  for (const [k, col] of Object.entries(TEXT)) {
+    if (Object.prototype.hasOwnProperty.call(body, k)) {
+      const v = String(body[k] == null ? '' : body[k]).trim();
+      put(col, v === '' ? null : v.slice(0, 4000));
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'bucket')) put('bucket_key', String(body.bucket));
+  for (const [k, col] of [['isRequired', 'is_required'], ['enabled', 'is_enabled'], ['active', 'is_active']]) {
+    if (Object.prototype.hasOwnProperty.call(body, k)) put(col, body[k] === true);
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'sortOrder')) {
+    const n = Number(body.sortOrder);
+    if (!Number.isFinite(n)) return res.status(400).json({ error: 'The position has to be a number.' });
+    put('sort_order', Math.round(n));
+  }
+  for (const [k, col, allowed] of [
+    ['audience', 'audience', ['internal', 'external', 'both']],
+    ['kind', 'kind', ['informational', 'form', 'order', 'esign', 'document']],
+    ['autoApply', 'auto_apply', ['always', 'rules', 'manual']],
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(body, k)) {
+      if (!allowed.includes(String(body[k]))) {
+        return res.status(400).json({ error: `“${body[k]}” is not one of: ${allowed.join(', ')}.` });
+      }
+      put(col, String(body[k]));
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'rule')) {
+    const rule = body.rule;
+    if (rule !== null) {
+      const v = rules.validateRule(rule, registry.fieldMap());
+      if (!v.ok) {
+        return res.status(400).json({
+          error: `That rule cannot be saved: ${v.problems.map((p) => p.why || p.reason).join(' ')}`,
+          problems: v.problems,
+        });
+      }
+    }
+    put('rule_logic', rule === null ? null : JSON.stringify(rule), '::jsonb');
+  }
+  for (const [k, col] of [['slots', 'slots'], ['config', 'config']]) {
+    if (Object.prototype.hasOwnProperty.call(body, k)) {
+      if (typeof body[k] !== 'object' || body[k] === null) {
+        return res.status(400).json({ error: `${k} has to be a list or an object.` });
+      }
+      put(col, JSON.stringify(body[k]), '::jsonb');
+    }
+  }
+
+  if (!sets.length) return res.status(400).json({ error: 'Nothing to change.' });
+
+  try {
+    const { rows } = await db.query(
+      `UPDATE lt_condition_templates SET ${sets.join(', ')}, updated_at = now()
+        WHERE code = $1 RETURNING code`,
+      params,
+    );
+    if (!rows.length) return res.status(404).json({ error: 'There is no such condition in the library.' });
+    // WHAT CHANGED IS TOLD, NOT IMPLIED. Editing a template does not touch the
+    // files that already carry a copy of it — the wording on a live file is a
+    // snapshot on purpose — and somebody who does not know that will believe
+    // they have just changed every file in the book.
+    res.json({
+      ok: true,
+      code: rows[0].code,
+      note: 'Saved. Files that already carry this condition keep the wording they were given — a live file is never rewritten under somebody who is working it. New files, and any file you re-run the rules on, use this.',
+    });
+  } catch (e) {
+    console.error('[lt] library patch failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not save that just now.' });
+  }
+});
+
+// POST /api/lt/condition-center/library/preview — what would this rule do?
+//
+// An administrator about to change a rule that is on every file in the book
+// should be able to read it in words and try it against one loan first.
+router.post('/library/preview', async (req, res) => {
+  if (!(await isAdmin(req))) return res.status(403).json({ error: 'Only an administrator can try a rule.' });
+  const body = req.body || {};
+  const fields = registry.fieldMap();
+  const check = rules.validateRule(body.rule, fields);
+  const out = { inWords: rules.describeRule(body.rule, fields), valid: check.ok, problems: check.problems };
+
+  if (body.loanId && UUID_RE.test(String(body.loanId))) {
+    try {
+      const ctx = await engine.loadContext(String(body.loanId), db);
+      out.matches = rules.evaluateRule(body.rule, ctx.values, fields);
+      // NAMED, not vague: `null` is "PILOT could not read the rule against this
+      // file", which is a different answer from "this file does not match".
+      out.matchesWhy = out.matches === null
+        ? 'PILOT could not decide this rule against that file.'
+        : (out.matches ? 'That file matches.' : 'That file does not match.');
+      out.unreadable = ctx.unreadable;
+    } catch (e) {
+      out.matchesWhy = `Could not read that file: ${String((e && e.message) || e).slice(0, 160)}`;
+    }
+  }
+  res.json(out);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE BUCKETS — the gates themselves.
+// ─────────────────────────────────────────────────────────────────────────────
+
+router.get('/buckets', async (req, res) => {
+  try {
+    res.json({ buckets: await read.buckets(db), canEdit: await isAdmin(req) });
+  } catch (e) {
+    console.error('[lt] buckets read failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not read the gates just now.' });
+  }
+});
+
+router.post('/buckets', async (req, res) => {
+  if (!(await isAdmin(req))) return res.status(403).json({ error: 'Only an administrator can change the gates.' });
+  const body = req.body || {};
+  const key = String(body.key || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  const label = String(body.label || '').trim();
+  if (!key || !label) return res.status(400).json({ error: 'A gate needs a name.' });
+  const position = Number.isFinite(Number(body.position)) ? Math.round(Number(body.position)) : 100;
+  try {
+    await db.query(
+      `INSERT INTO lt_condition_buckets (key, label, blurb, position)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (key) DO UPDATE
+         SET label = EXCLUDED.label, blurb = EXCLUDED.blurb,
+             position = EXCLUDED.position, updated_at = now()`,
+      [key, label.slice(0, 120), String(body.blurb || '').trim().slice(0, 500) || null, position],
+    );
+    res.json({ ok: true, key });
+  } catch (e) {
+    console.error('[lt] bucket save failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not save that gate just now.' });
+  }
+});
+
+// A gate is RETIRED, never deleted. Conditions filed under it keep their key and
+// keep showing, which is the honest answer — deleting the row would leave rows
+// pointing at a gate that no longer has a name.
+router.delete('/buckets/:key', async (req, res) => {
+  if (!(await isAdmin(req))) return res.status(403).json({ error: 'Only an administrator can change the gates.' });
+  try {
+    const { rows } = await db.query(
+      `UPDATE lt_condition_buckets SET is_active = false, updated_at = now()
+        WHERE key = $1 RETURNING key`,
+      [String(req.params.key)],
+    );
+    if (!rows.length) return res.status(404).json({ error: 'There is no such gate.' });
+    res.json({ ok: true, note: 'Retired. Conditions already filed under it keep showing — nothing was deleted.' });
+  } catch (e) {
+    console.error('[lt] bucket retire failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not retire that gate just now.' });
+  }
+});
+
+// POST /api/lt/condition-center/library/reseed — put back anything missing.
+//
+// It can only ever ADD: `seed()` is ON CONFLICT DO NOTHING, so a buyer's own
+// edits survive and a template somebody deliberately retired stays retired
+// (it still exists, so the insert finds it). It is here for the case the seed
+// could not run at boot, and it says exactly what it did.
+router.post('/library/reseed', async (req, res) => {
+  if (!(await isAdmin(req))) return res.status(403).json({ error: 'Only an administrator can reseed the library.' });
+  try {
+    const out = await library.seed(db);
+    res.json({
+      ok: out.verified.ok,
+      inserted: out.inserted,
+      alreadyThere: out.skipped,
+      failed: out.failed,
+      problems: out.verified.problems,
+    });
+  } catch (e) {
+    console.error('[lt] library reseed failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not reseed the library just now.' });
+  }
+});
+
+module.exports = router;

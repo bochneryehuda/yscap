@@ -169,10 +169,63 @@ function closingTokenFromRecipient(addr) {
   return CLOSING_TOKEN_RE.test(m[1]) ? m[1] : null;
 }
 
+/* ═══════════════════ THE LONG-TERM ORDER ADDRESS ═══════════════════════════
+   `ltorder+<kind>.<loanId>@<domain>` — a long-term vendor order's reply address.
+
+   WHY IT IS DECLARED HERE, in a module the long-term desk imports rather than in
+   the long-term desk itself: **there is ONE inbound domain and therefore ONE
+   local-part namespace**, and this file is its registry. A long-term order that
+   reused `title+<uuid>@` would be parsed by `orderRefFromRecipient` above, looked
+   up against RTL's `applications` table, found to be nothing, and ACKNOWLEDGED —
+   so a title company's reply, and every document attached to it, would be dropped
+   in silence on the files least able to afford it. Declaring the family beside the
+   others is what makes that collision impossible to reintroduce: the next prefix
+   anybody adds is added here, where the taken ones are visible.
+
+   Nothing else about the long-term desk lives in this module. This is a namespace
+   registration and a string, not a rule about a loan.
+
+   THE KIND RIDES IN THE LOCAL PART because the long-term side orders more than two
+   things (title, insurance, flood insurance, a New York settlement agent, a condo
+   questionnaire, an appraisal, a payoff, a rent verification), and minting a new
+   prefix per kind would grow the namespace without bound. `<kind>.<uuid>` keeps one
+   prefix and stays unambiguous: a kind is lowercase letters and underscores only,
+   so the dot separator can never appear inside it.
+   ════════════════════════════════════════════════════════════════════════════ */
+const LT_ORDER_KIND_RE = /^[a-z][a-z_]{1,23}$/;
+
+/** Build `ltorder+<kind>.<loanId>@<domain>`, or null when the inbound domain is
+    unset, the kind is malformed, or the id is not a UUID — the order email then
+    still sends, just without a reply route, exactly as the RTL families degrade. */
+function ltOrderReplyTo(loanId, kind) {
+  if (!cfg.chatReplyDomain) return null;
+  const k = String(kind || '').trim().toLowerCase();
+  if (!LT_ORDER_KIND_RE.test(k)) return null;
+  const id = String(loanId || '').trim().toLowerCase();
+  if (!UUID_RE.test(id)) return null;
+  return `ltorder+${k}.${id}@${cfg.chatReplyDomain}`;
+}
+
+/** Parse `ltorder+<kind>.<uuid>@<domain>` into `{ loanId, orderKind }`, or null
+    when it is not a well-formed long-term order address on the configured reply
+    domain. Matched case-insensitively; pure, like every other reader here. */
+function ltOrderRefFromRecipient(addr) {
+  // No configured reply domain = the whole inbound feature is DORMANT — never
+  // extract an id from an address on some other domain (the lesson recorded on
+  // applicationIdFromRecipient: "it's dormant anyway" did not hold).
+  if (!cfg.chatReplyDomain) return null;
+  const m = String(addr || '').trim().toLowerCase().match(/^ltorder\+([a-z_]+)\.([^@\s]+)@([^@\s]+)$/);
+  if (!m) return null;
+  if (m[3] !== cfg.chatReplyDomain) return null;
+  if (!LT_ORDER_KIND_RE.test(m[1])) return null;
+  return UUID_RE.test(m[2]) ? { loanId: m[2], orderKind: m[1] } : null;
+}
+
 module.exports = {
   fileReplyTo, applicationIdFromRecipient,
   orderReplyTo, orderRefFromRecipient,
   rvReplyTo, rvRefFromRecipient,
   closingReplyTo, closingTokenFromRecipient,
-  UUID_RE, CLOSING_TOKEN_RE,
+  ltOrderReplyTo, ltOrderRefFromRecipient,
+  UUID_RE, CLOSING_TOKEN_RE, LT_ORDER_KIND_RE,
 };
