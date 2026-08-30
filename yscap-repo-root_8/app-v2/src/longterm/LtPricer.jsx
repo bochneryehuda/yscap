@@ -10,6 +10,7 @@ import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, p
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
 import { COMP_MODES, DEFAULT_COMP_MODE, compShiftPoints, shiftedPrice, shiftBuild, quoteCharges, closingSheet } from './compOverlay.js';
+import { QuoteTermSheetActions, ComparisonStrip, useTermSheetCart } from './TermSheetPanel.jsx';
 // The INVESTOR FILTER (owner-directed 2026-08-27) — a display overlay on top of the
 // answer. The search itself is NEVER narrowed: Lender Price is always asked for
 // everything, and these rules only decide which rows the board draws. Plain `.js`
@@ -736,10 +737,26 @@ export function ChargeList({ charges, sheet }) {
   if (!charges) return null;
   const cashTone = { color: '#8A2F2F' };
   const backTone = { color: '#2F6B45' };
+  // The rows this board actually draws (see the note on the map below). The "none"
+  // fallback keys off THIS list, not charges.lines — with every line waived the raw
+  // list is non-empty while nothing is drawn, and the card would silently show no rows
+  // and no explanation of why.
+  const shownLines = charges.lines.filter((l) => l.waived !== true);
   return (
     <Track title="What this quote charges"
       note="The fees on this file at this price. Figures move with the price and the switch above.">
-      {charges.lines.map((l) => (
+      {/* ⛔ A WAIVED LINE IS SUMMARISED HERE, NEVER PRINTED AS A ROW OF $0.00.
+          `quoteCharges` LISTS a waived fee at dollars:0 because the TERM SHEET must
+          show it — the owner asked to be able to see the difference against the
+          option beside it (compOverlay.feeLine). This board is a different surface
+          and already answers that question better: the "Lender fees waived — $X
+          taken out of the figures above in cash" note below, and the closing
+          sheet's "Total lender fees … 0 when waived". Rendering the raw line here
+          would print "Application fee $0.00", which reads as "this program has no
+          application fee" — the opposite of the truth — and would make that note
+          say figures were taken out of rows that already show nothing.
+          The data is unfiltered; only this one screen summarises. */}
+      {shownLines.map((l) => (
         <div key={l.key} style={{
           display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
           padding: '5px 0', borderBottom: '1px solid rgba(20,27,34,.07)',
@@ -751,7 +768,7 @@ export function ChargeList({ charges, sheet }) {
           </span>
         </div>
       ))}
-      {charges.lines.length === 0 && <Row k="Charges" v="none" indent />}
+      {shownLines.length === 0 && charges.waivedDollars <= 0 && <Row k="Charges" v="none" indent />}
       {charges.credit && (
         <div style={{
           display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
@@ -822,7 +839,7 @@ export function ChargeList({ charges, sheet }) {
    and it is printed BESIDE the vendor's own total, never instead of it. If the two ever
    disagree the screen says so on its face rather than quietly showing one of them.
    ────────────────────────────────────────────────────────────────────────── */
-export function PriceBuild({ o, comp }) {
+export function PriceBuild({ o, comp, ts, quote }) {
   const b0 = (o && o.priceBuild) || {};
   /* THE COMPENSATION OVERLAY ON THE BUILD (owner-directed 2026-08-23). In a comp position the
      BASE moves and the final price moves with it by the same amount — the exact mechanic the
@@ -1038,6 +1055,21 @@ export function PriceBuild({ o, comp }) {
             : <span> · not expired</span>}
         </div>
       )}
+
+      {/* THE TERM SHEET CONTROLS, on the quote they are about.
+          `ts` is absent on the INELIGIBLE board and that is the whole guard: a
+          product this scenario cannot have is not one to quote, so the actions
+          simply do not exist there rather than being disabled with an excuse.
+          The SELECTION is assembled by the board (which holds the scenario) and
+          passed WHOLE — nothing about the money is computed here. */}
+      {ts && ts.enabled && quote && (
+        <QuoteTermSheetActions
+          sel={ts.selectionFor(quote, o)}
+          enabled={ts.enabled}
+          mode={comp && comp.mode}
+          cartCount={ts.count}
+          onAdded={ts.reload} />
+      )}
     </div>
   );
 }
@@ -1045,7 +1077,7 @@ export function PriceBuild({ o, comp }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    ONE RATE, AND EVERY INVESTOR AT IT.
    ────────────────────────────────────────────────────────────────────────── */
-export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLenders, onToggleLender, loanAmount, comp }) {
+export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLenders, onToggleLender, loanAmount, comp, ts }) {
   /* EVERY DISPLAYED PRICE ON THIS ROW TAKES THE SAME SHIFT (owner-directed 2026-08-23).
      A constant shift never reorders anything — best stays best — so the grouping and the
      sort are untouched; only what the figures READ as changes. Raw shifts by zero. */
@@ -1167,7 +1199,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                     </button>
                   </span>
                 </div>
-                {openQuote === (g.best && g.best.key) && <PriceBuild o={g.best && g.best.option} comp={comp} />}
+                {openQuote === (g.best && g.best.key) && <PriceBuild o={g.best && g.best.option} comp={comp} ts={ts} quote={g.best} />}
 
                 {/* THE LENDER'S OTHER PROGRAMMES. Every quote is listed, the front one included and
                     marked — a list that silently omitted it would not add up to the count on the
@@ -1204,7 +1236,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                           </button>
                         </span>
                       </div>
-                      {isOpen && <PriceBuild o={q.option} comp={comp} />}
+                      {isOpen && <PriceBuild o={q.option} comp={comp} ts={ts} quote={q} />}
                     </div>
                   );
                 })}
@@ -1893,6 +1925,67 @@ export default function LtPricer() {
     ? { mode: 'raw', shift: 0, plan: null, waive: false, loanAmount, purpose: dealPurpose, propertyValue: dealValue }
     : { mode: compMode, shift: compShiftVal || 0, plan: compPlan.plan, waive: waiveFees, loanAmount, purpose: dealPurpose, propertyValue: dealValue };
 
+  /* ── TERM SHEETS (owner-directed 2026-08-30) ────────────────────────────────
+     ⛔ THE BOARD ASSEMBLES THE FACTS; THE SERVER WORKS OUT THE MONEY. What goes
+     up is the vendor's RAW price, the scenario as it was PRICED, and the two
+     choices the officer made — the comp position and the fee waive. Every
+     dollar on the resulting document is derived on the server from the
+     compensation plan the server itself resolved, so the officer's copy and the
+     borrower's copy are provably the same document and no browser can quote a
+     number our own records would not.
+
+     `vendorMonthlyPI` is sent as a CROSS-CHECK, never as the figure: the server
+     re-derives the payment and REFUSES the export when the two disagree by more
+     than a dollar, rather than issuing a sheet that contradicts this screen. */
+  const ts0 = useTermSheetCart();
+  const ts = {
+    ...ts0,
+    selectionFor: (q, o) => ({
+      // The consumer label is the SERVER's white-label resolution, carried
+      // through the price response — never derived here, and the sheet is
+      // refused outright when a programme has none (rule 10 inverts on a
+      // document a client reads: an investor we cannot name safely is refused,
+      // not shown blank).
+      consumerLabel: q.consumerLabel || q.whiteLabel || null,
+      product: q.product || q.program || null,
+      label: null,
+      mode: comp.mode,
+      waiveLenderFees: !!comp.waive,
+      ratePct: q.noteRate,
+      rawPrice: q.price,
+      vendorMonthlyPI: q.monthlyPi,
+      pricedAt: (o && o.rateSheet && o.rateSheet.effectiveAt) || (res && res.pricedAt) || null,
+      scenario: {
+        purpose: dealPurpose,
+        propertyType: f.propertyType,
+        units: toNumber(f.units),
+        value: dealValue,
+        loan: loanAmount,
+        ltv: toNumber(f.ltv),
+        termYears: toNumber(f.termYears),
+        io: !!f.io,
+        dscr: toNumber(f.dscr),
+        fico: toNumber(f.fico),
+        zip: f.zip,
+        prepayMonths: toNumber(f.prepayMonths),
+        prepayStructure: f.prepayStructure,
+        // The qualifying figures the officer typed into the DSCR calculator.
+        // They are facts about the deal, and a borrower reading the sheet
+        // expects to see what it was qualified on.
+        //
+        // ⛔ THROUGH `perMonth`, the SAME conversion the calculator itself runs.
+        // Tax and insurance are typed either monthly or yearly and the basis is
+        // a control right beside the box, so reading the raw number would put a
+        // yearly tax bill on the sheet as a monthly one — a housing cost twelve
+        // times too high, on a document about whether the rent covers it.
+        rentMonthly: perMonth(toNumber(calc && calc.rent), 'monthly'),
+        taxMonthly: perMonth(toNumber(calc && calc.tax), calc && calc.taxBasis),
+        insuranceMonthly: perMonth(toNumber(calc && calc.insurance), calc && calc.insBasis),
+        hoaMonthly: calc && calc.hoa === '' ? 0 : perMonth(toNumber(calc && calc.hoa), 'monthly'),
+      },
+    }),
+  };
+
   async function run(e) {
     if (e) e.preventDefault();
     /* ⛔ THE PRE-FLIGHT GATE (owner-directed 2026-08-23). A scenario this form can already see
@@ -2472,11 +2565,20 @@ export default function LtPricer() {
                       : 'Lender Price returned no priced rungs for this scenario. The Ineligible view says which products it looked at and why each was ruled out.'}
                   </div>
                 ) : stack.rates.map((row) => (
-                  <RateRow key={row.key} row={row} loanAmount={loanAmount} comp={comp}
+                  <RateRow key={row.key} row={row} loanAmount={loanAmount} comp={comp} ts={ts}
                     open={openRates.has(row.key)}
                     onToggle={() => toggleRate(row.key)}
                     openQuote={openQuote} onOpenQuote={setOpenQuote} openLenders={openLenders} onToggleLender={toggleLender} />
                 ))}
+                {/* THE COMPARISON SPANS SEARCHES, so the strip lives on the board
+                    rather than inside a quote: options collected here survive
+                    running a completely different scenario, because the cart is
+                    the SERVER's, not this page's. It renders only once something
+                    has been collected — an empty strip under every search would
+                    be a permanent piece of furniture nobody asked for. */}
+                {ts.enabled && ts.count > 0 && (
+                  <ComparisonStrip open cart={ts.cart} members={ts.members} onChange={ts.reload} />
+                )}
               </div>
             ) : (
               <IneligibleView dq={dq} onAsk={askDisqualified} loanAmount={loanAmount} comp={comp} invSel={invSel} />

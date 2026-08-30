@@ -137,6 +137,30 @@ export function shiftBuild(b, shift) {
 }
 
 /**
+ * ONE lender-fee line — LISTED WHETHER OR NOT IT IS WAIVED.
+ *
+ * ⛔ A WAIVED FEE IS NAMED AND SHOWN AT ZERO, NEVER OMITTED. Owner-directed
+ * 2026-08-30: *"On the one where it has lender fees, you need to list out the
+ * lender fees, because the next one, you're waiving the lender fees. You need to
+ * be able to see the difference."* A comparison whose waived column simply has
+ * two fewer rows than the column beside it does not SHOW a difference — it hides
+ * one, and the reader has to notice an ABSENCE to find the saving that is the
+ * entire point of the option.
+ *
+ * ⛔ THE ARITHMETIC IS UNMOVED, BY CONSTRUCTION. `dollars` is 0 on a waived
+ * line — exactly the 0 that `lineDollars()` already returned when the line was
+ * absent — so every total downstream is byte-identical to before this changed.
+ * `fullDollars` carries what it WOULD have been, which is what lets the sheet
+ * print the saving rather than leave the reader to work it out.
+ */
+function feeLine(key, label, amount, waived) {
+  const full = r2(amount);
+  return waived
+    ? { key, label, points: null, dollars: 0, waived: true, fullDollars: full }
+    : { key, label, points: null, dollars: full, waived: false, fullDollars: full };
+}
+
+/**
  * THE FEE LIST for one quote — "every single DSCR file should list the fees that we're
  * charging": origination (if there is one), the buydown (if the price is under par),
  * and the two lender fees, the $1,595 application and the $500 commitment (both live in
@@ -149,14 +173,16 @@ export function shiftBuild(b, shift) {
  * The answer, for a comp mode:
  *   {
  *     mode, displayPrice,
- *     lines: [{ key, label, points, dollars }...],   // exactly what is charged
+ *     lines: [{ key, label, points, dollars, basis?, waived?, fullDollars? }...],
  *     credit: { points, dollars } | null,            // what comes back, after any waive
  *     waivedDollars,                                 // 0 unless the waive applied
  *     borrowerPaysDollars, borrowerCreditDollars, netDollars,
  *   }
  *
  * THE WAIVE (lender-paid only — "borrower-paid compensation should not have the option
- * [to] waive lender fees"): the two lender-fee lines do not populate, and their cash
+ * [to] waive lender fees"): the two lender-fee lines are still LISTED, at zero, with
+ * what they would have been (see `feeLine` — the owner asked to be able to SEE the
+ * difference against the option beside it), and their cash
  * comes out of the CREDIT — or, when the credit cannot cover them, lands on the BUYDOWN
  * — in DOLLARS, not points: "if it's a $100[k] loan, then this deduction is more than
  * two points, but if it's a $1 million loan, then the deduction is less than 0.2 points.
@@ -188,6 +214,10 @@ export function quoteCharges(mode, plan, rawPrice, loanAmount, waiveLenderFees =
     lines.push({
       key: 'origination', label: 'Origination',
       points: r3(p.borrowerPaid), dollars: ptsToDollars(p.borrowerPaid),
+      // The BASIS the points were taken of, so a sheet can break the fee down
+      // ("2.000 points of the $375,000 loan amount") instead of asserting a
+      // dollar figure the reader has to take on trust.
+      basis: loan,
     });
   }
 
@@ -214,15 +244,15 @@ export function quoteCharges(mode, plan, rawPrice, loanAmount, waiveLenderFees =
     lines.push({
       key: 'buydown', label: 'Buydown (discount points)',
       points: r3((buydownDollars / loan) * 100), dollars: buydownDollars,
+      basis: loan,
     });
   }
 
-  // THE TWO LENDER FEES — flat dollars, no points column. Absent entirely when waived:
-  // "it should not populate as fees".
-  if (!waived) {
-    lines.push({ key: 'applicationFee', label: 'Application fee', points: null, dollars: r2(p.applicationFee) });
-    lines.push({ key: 'commitmentFee', label: 'Commitment fee', points: null, dollars: r2(p.commitmentFee) });
-  }
+  // THE TWO LENDER FEES — flat dollars, no points column. LISTED either way; a
+  // waived one carries dollars 0 and its full amount, so a comparison can show
+  // the saving instead of leaving a reader to spot two missing rows.
+  lines.push(feeLine('applicationFee', 'Application fee', p.applicationFee, waived));
+  lines.push(feeLine('commitmentFee', 'Commitment fee', p.commitmentFee, waived));
 
   const borrowerPaysDollars = r2(lines.reduce((s, l) => s + (nn(l.dollars) ? l.dollars : 0), 0));
   const borrowerCreditDollars = r2(creditDollars);

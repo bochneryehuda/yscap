@@ -191,6 +191,13 @@ SYSTEMS", rule 10) is that an investor name never reaches a borrower or a TPO. `
 behind `requireAuth` + `requireStaff`, and the route is declared inside `StaffPrivate` — asserted on
 the route line itself.
 
+**A borrower-facing build is in RESEARCH and is not built.** It does not weaken this line — the
+design is a separate door under `/api/lt/my/pricing/*` on the borrower seam, with a payload BUILT
+for the borrower rather than this one filtered, and with the staff board's "keep an unresolved
+investor" rule deliberately inverted so an investor we have no white-label name for never reaches a
+client at all. See `BORROWER-PRICING-MASTER-PLAN.md` §1 and §3, and the four documents it indexes.
+Nothing borrower-facing ships before `PREPAY-PENALTY-MAPPING.md` is settled.
+
 ## What is parked
 
 Everything that lays out our OWN programmes, our OWN rules and our OWN investor guidelines — the
