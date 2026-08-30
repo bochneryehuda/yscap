@@ -686,6 +686,33 @@ import src/lib/condition-docs/remove.js
 import src/lib/condition-docs/serve.js
 
 # ---------------------------------------------------------------------------
+# THE TRANSPORT THAT CARRIES A BIG DOCUMENT — the same grant again, and the half
+# without which the four doors above are capped at a size real loan documents
+# routinely exceed.
+#
+# Every legacy upload door in this repo takes {filename, contentType, dataBase64}
+# as JSON, which express buffers and parses WHOLE — measured at roughly five
+# times the file — so `takeUpload` caps that transport at `maxJsonUploadMb`
+# (25 MB, and base64 inflates by about a third, so nearer 18 MB of real file).
+# The short-term side answered that on 2026-08-21 by registering each document
+# door TWICE: the JSON door, and a `…/binary` sibling behind `binaryIntake`,
+# which streams the bytes to storage as they arrive and is bounded by
+# `maxUploadMb` (1 GB) instead.
+#
+# Long-Term had only the JSON door, so ONE Condition Center gave two different
+# answers about the same appraisal-with-photographs, the same scanned closing
+# package, the same survey — 25 MB on a long-term file, 1 GB on a short-term one.
+#
+# NOTHING IS COPIED. `takeUpload` reads `req.uploaded` FIRST, so the Long-Term
+# handler is byte-for-byte the same function on either transport and never learns
+# which door it was called through; the two registrations share ONE handler
+# exactly as `src/routes/staff.js` does. Re-implementing the streaming door on
+# the Long-Term side would be a second place a document can be truncated, a
+# second temp-file cleanup to get right, and a second answer to "how big may a
+# document be" — which is the shape the owner rejected.
+import src/lib/upload-stream.js
+
+# ---------------------------------------------------------------------------
 # THE CONDITION CENTER'S SCREEN — the same grant, the same sentence, the other
 # half of it: "the same look of the Condition Center."
 #
@@ -736,6 +763,7 @@ import app-v2/src/lib/upload-progress.js
 |---|---|---|---|---|
 | 2026-08-03 | `import src/auth/index.js` — one login for both products | RTL → LT | *"same login same borrower record, keep it separate everything else"* | #975 |
 | 2026-08-30 | `import src/lib/condition-docs/{upload,review,remove,serve}.js` — the ONE condition-document service: what happens to a document when it lands on a condition, what a verdict does to that condition, what a delete re-opens, and which row a download is allowed to have | RTL → LT | *"You can't really upload stuff. You can't do anything. Nothing actually works."* … *"if I'm updating something in the logic of the Condition Center (the way you preview stuff, the way you preview the PDFs, the way you drag and drop, accept, reject, preview, download, and delete), it should update them both places. You need to share the code."* The Long-Term Condition Center had eighteen routes and not one accepted a document. The four /api/lt doors are THIN CALLERS of these, exactly as `src/routes/staff.js` is — the same functions with a different owner, the owner welded into the STATEMENT so a document from the other product is unreachable. **No short-term hooks are passed**: the ClickUp push, the borrower portal notification and the Sitewire memory are that product's own and the Long-Term door hands over an empty set | this PR |
+| 2026-08-30 | `import src/lib/upload-stream.js` — the STREAMING upload transport: one shared `binaryIntake` + `takeUpload`, so a `…/binary` sibling of the condition-document door writes bytes to storage as they arrive instead of holding a base64 copy of the whole file in memory | RTL → LT | *"We don't want to reinvent the code. We want to use the same exact condition center, and when we update something, it should update on both… You need to share the code."* The Long-Term Condition Center had only the base64-in-JSON door, capped at 25 MB — nearer 18 MB of real file — while the short-term side has taken 1 GB through its streamed sibling since 2026-08-21. Same Condition Center, two different answers about the same appraisal. `takeUpload` reads `req.uploaded` first, so the ONE handler is identical on either transport and never learns which door it came through | this PR |
 | 2026-08-30 | `import app-v2/src/components/{ConditionLine,ConditionActions,DocPreview,DropZone,UploadRows,LoudHint}.jsx` — the REAL Condition Center components, mounted by the Long-Term screen | RTL → LT | *"the same look of the Condition Center … the way you preview stuff, the way you preview the PDFs, the way you drag and drop, accept, reject, preview, download, and delete"*, and, in the same conversation, *"this is not a redesign … I like the design that we have on the long-term side. Don't change the design. Stick with the design and with the fonts."* So the COMPONENTS are shared and the PAGE is not: the gates, the three-number summary, the white boxes and the fonts stay Long-Term's own. Each of these takes its I/O as function props and imports no API client, which is what makes them mountable as they stand; **not one was changed to make Long-Term fit** — the row-shape translation lives on the Long-Term side, because renaming a field inside a shared component would silently change what the live short-term product reads | this PR |
 | 2026-08-30 | `import app-v2/src/lib/upload-progress.js` — the one record of what is uploading right now | RTL → LT | The same grant. `UploadRows` renders only what this store holds, and only the short-term transport published into it — so a Long-Term upload would have rendered NOTHING while it ran and read as *"it is not uploading"*, the exact defect the owner reported on the short-term side on 2026-08-23. The store and its `uploadTarget()` are product-neutral; Long-Term's own transport publishes the same start/update/finish calls, so it is one bar rather than two mechanisms to keep in step | this PR |
 | 2026-08-30 | `rtl-import src/lib/sharepoint-backup.js` — the ONE SharePoint mirror asks the Long-Term side where an lt_loan keeps its officer / borrower / property (`src/longterm/sharepoint-scope.js`: SQL fragments + one pure predicate, no mirror logic). Required through a try/catch, so RTL keeps mirroring if the side build is absent | LT → RTL | *"Same thing is with SharePoint: you need to share the code."* … *"the SharePoint looks for the same exact folder, same exact logic that we build up on the short-term side"* | this PR |

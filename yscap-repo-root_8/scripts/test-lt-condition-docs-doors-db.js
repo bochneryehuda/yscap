@@ -44,6 +44,14 @@
  *     document list selects on, so stamping it would put a long-term file's
  *     documents on an RTL borrower's screen — and no ClickUp/portal hook runs.
  *
+ *  F. A DOCUMENT TOO BIG FOR A JSON BODY STILL LANDS. The Long-Term side had
+ *     only the base64-in-JSON door, capped at 25 MB (nearer 18 MB of real file,
+ *     since base64 inflates by a third), while the short-term side has had a
+ *     streamed sibling taking 1 GB since 2026-08-21 — so one Condition Center
+ *     gave two different answers about the same appraisal. Proven as a ROUND
+ *     TRIP (the bytes are read back and compared), with the JSON door asserted
+ *     unchanged beside it so "the big file works" cannot be a roomy ceiling.
+ *
  * PROBES THE DATABASE FIRST. `ensureSchema` gives up on an unreachable database
  * WITHOUT throwing, so a suite that does not probe prints a confident ok against
  * nothing at all.
@@ -56,6 +64,17 @@ process.env.SSN_ENCRYPTION_KEY = process.env.SSN_ENCRYPTION_KEY || '0'.repeat(64
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'testsecrettestsecrettestsecret12';
 process.env.EMAIL_PROVIDER = 'none';
 process.env.NOTIFY_DIGESTS_ENABLED = '0';
+
+/* THE CEILINGS, SET SMALL ON PURPOSE, AND BEFORE ANYTHING REQUIRES `config`.
+   Section F's whole subject is the RELATIONSHIP between the two doors' limits —
+   a 6 MB document against a 4 MB JSON ceiling is exactly the relationship a
+   300 MB one has against the real 25 MB ceiling, and it proves it in a second
+   instead of pushing hundreds of megabytes through loopback on every `npm test`.
+   The real sizes were measured separately: 10 / 26 / 60 / 120 MB all landed and
+   read back byte-for-byte. Every other upload in this suite is a short string,
+   so lowering these changes nothing above. */
+process.env.MAX_UPLOAD_MB = process.env.MAX_UPLOAD_MB || '64';
+process.env.MAX_JSON_UPLOAD_MB = process.env.MAX_JSON_UPLOAD_MB || '4';
 
 const fs = require('fs');
 const os = require('os');
@@ -404,6 +423,68 @@ const itemRow = async (id) => (await db.query(
       .concat(...(clientRead.buckets || []).map((b) => b.conditions || []));
     assert(clientConds.length > 0 && clientConds.every((c) => !c.documents.list),
       'E4 …and the BORROWER’s payload carries no document list — a rejection reason is staff free text');
+
+    /* ═════════ F. A DOCUMENT TOO BIG FOR A JSON BODY STILL LANDS ═════════
+       THE DEFECT THIS PINS: the Long-Term Condition Center had ONE upload door and
+       it carried the file as base64 inside the request body. `takeUpload` caps that
+       at `maxJsonUploadMb` — 25 MB, and base64 inflates by about a third, so the
+       real ceiling was nearer 18 MB of actual file — while the short-term side has
+       registered a STREAMED sibling since 2026-08-21 and takes 1 GB. Same Condition
+       Center, two different answers to the same appraisal.
+
+       The proof has to be the ROUND TRIP and not the 201. A door can answer 201
+       having stored nothing, or having stored a truncated copy, and a size column
+       is written from the same count that decided the answer — so the bytes are
+       fetched back through the serve door and compared to the buffer that was sent.
+
+       The JSON door is asserted UNCHANGED beside it, at the same size, because
+       "the big file works now" is only half the claim: the other half is that
+       nothing about the legacy transport moved, so a caller still on it gets the
+       same honest refusal it always gave. */
+    const BIG = Buffer.alloc(6 * 1024 * 1024, 0x42);
+    const meta64 = (o) => Buffer.from(JSON.stringify(o), 'utf8').toString('base64');
+
+    const streamed = await fetch(`${base}${LT}/loans/${loanA}/conditions/${condA1}/documents/binary`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${admin.token}`,
+        'content-type': 'application/octet-stream',
+        // Byte-for-byte the shape `ltUpload` now sends: the File as the body, the
+        // metadata as base64 JSON in `x-upload-meta`, which `metaFromHeaders` reads.
+        'x-upload-meta': meta64({ filename: 'appraisal.pdf', contentType: 'application/pdf', slot: 'Appraisal' }),
+      },
+      body: BIG,
+    });
+    const streamedBody = await streamed.json().catch(() => null);
+    assert(streamed.status === 201 && streamedBody && streamedBody.ok === true,
+      `F1 a ${BIG.length / 1048576} MB document lands through the streamed door (${streamed.status})`);
+    const bigId = streamedBody && streamedBody.documentId;
+    const bigRow = bigId ? await docRow(bigId) : null;
+    assert(!!bigRow && Number(bigRow.size_bytes) === BIG.length,
+      `F2 …and the row records every byte of it (${bigRow && bigRow.size_bytes} of ${BIG.length})`);
+    assert(!!bigRow && String(bigRow.lt_loan_id) === loanA && bigRow.application_id === null,
+      'F3 …owned by the long-term loan, exactly as the JSON door’s documents are');
+    const bigBack = bigId ? await raw(`${LT}/documents/${bigId}/file`, admin) : null;
+    assert(!!bigBack && bigBack.status === 200 && bigBack.buf.length === BIG.length && bigBack.buf.equals(BIG),
+      'F4 …and the bytes come back identical — stored whole, not truncated to the old ceiling');
+
+    /* THE CONTROL THAT MAKES F1 MEAN SOMETHING. Without it, F1 passes on a
+       deployment whose JSON ceiling simply happens to be larger than the fixture,
+       and the streamed door could be unregistered without the suite noticing. */
+    const tooBigForJson = await call('POST', `${LT}/loans/${loanA}/conditions/${condA1}/documents`, admin, {
+      filename: 'appraisal-json.pdf', contentType: 'application/pdf', dataBase64: BIG.toString('base64'),
+    });
+    assert(tooBigForJson.status === 413,
+      `F5 CONTROL the SAME document is refused by the JSON door (${tooBigForJson.status}) — so F1 is the streamed door, not a roomy ceiling`);
+    assert(/limit for a single upload/.test(String((tooBigForJson.body && tooBigForJson.body.error) || '')),
+      'F6 …with the shared refusal wording, unchanged — the legacy transport was not touched');
+
+    // And the small JSON upload still works, so F5 is a ceiling and not a broken door.
+    const smallJson = await call('POST', `${LT}/loans/${loanA}/conditions/${condA1}/documents`, admin, {
+      filename: 'small.pdf', contentType: 'application/pdf', dataBase64: b64('still-fine'),
+    });
+    assert(smallJson.status === 201,
+      `F7 CONTROL a small document still goes through the JSON door (${smallJson.status})`);
   } finally {
     if (server) await new Promise((r) => server.close(r));
   }

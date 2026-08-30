@@ -180,22 +180,6 @@ function useLtStickyFilter(key, fallback) {
   return [v, set];
 }
 
-/** The bytes of a chosen file, in the one shape every upload door here takes. */
-function readAsBase64(file) {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onerror = () => reject(new Error(`Could not read “${file.name}”.`));
-    r.onload = () => {
-      const s = String(r.result || '');
-      // A data: URL is `data:<type>;base64,<payload>` — the doors take the
-      // payload alone (lib/upload-bytes strips a prefix defensively, but sending
-      // one would make every size we report a third too large).
-      const comma = s.indexOf(',');
-      resolve(comma >= 0 ? s.slice(comma + 1) : s);
-    };
-    r.readAsDataURL(file);
-  });
-}
 
 export default function LtFileConditions({ loanId }) {
   const [data, setData] = useState(null);
@@ -389,11 +373,16 @@ export default function LtFileConditions({ loanId }) {
     let failed = 0;
     for (const file of Array.from(files)) {
       try {
-        const dataBase64 = await readAsBase64(file);
+        /* THE FILE GOES STRAIGHT ON THE WIRE. Reading it into base64 first put the
+           whole document in a JSON body, which the server caps at 25 MB — and
+           base64 inflates by about a third, so the real ceiling was nearer 18 MB
+           of actual file. The streamed door takes what the short-term side takes.
+           No `await readAsBase64` here is also why a large file no longer freezes
+           the tab while the browser encodes it. */
         await ltApi.conditionDocUpload(loanId, conditionId, {
+          file,
           filename: file.name,
           contentType: file.type || 'application/octet-stream',
-          dataBase64,
           ...(replaceDocumentId ? { replaceDocumentId } : {}),
         });
       } catch (e) {

@@ -238,8 +238,13 @@ export const ltApi = {
      shared condition-document service. The `checklistItemId` rides in the
      metadata so the shared upload-progress store files the bar against the right
      condition without this client passing it twice. */
+  /* THE STREAMED DOOR (`…/documents/binary`), which is the short-term side's own
+     pair: the JSON door caps at 25 MB because a base64 body must be held in memory
+     to decode, and this one writes to storage as the bytes arrive. Same handler
+     behind both — `takeUpload` reads `req.uploaded` first — so nothing but the
+     transport differs. */
   conditionDocUpload: (loanId, conditionId, body) => ltUpload(
-    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(conditionId)}/documents`),
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(conditionId)}/documents/binary`),
     { ...body, checklistItemId: conditionId }),
   conditionDocReview: (documentId, body) => ltPost(
     lt(`/condition-center/documents/${encodeURIComponent(documentId)}/review`), body),

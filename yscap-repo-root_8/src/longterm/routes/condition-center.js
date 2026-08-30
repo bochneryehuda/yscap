@@ -331,8 +331,23 @@ async function scopedDocument(req, res) {
   return { scoped, documentId, owner: ownerOf('lt_loan', scoped.loan.id) };
 }
 
-// POST …/loans/:loanId/conditions/:conditionId/documents — put a document on it.
-router.post('/loans/:loanId/conditions/:conditionId/documents', async (req, res) => {
+/* PUT A DOCUMENT ON A CONDITION — ONE HANDLER, TWO TRANSPORTS.
+ *
+ * The short-term side registers its upload handler TWICE (staff.js: the JSON door
+ * and `…/documents/binary` behind `binaryIntake`), and this side needs the same
+ * pair for a reason that is not cosmetic: the JSON door carries the file as base64
+ * inside the request body, and `takeUpload` caps that at `maxJsonUploadMb` — 25 MB
+ * — while the streamed door writes to storage as the bytes arrive and is bounded
+ * by `maxUploadMb`, which is 1 GB. With only the JSON door a long-term file could
+ * take a 25 MB document and refuse a 26 MB one that the short-term side accepts
+ * without blinking: an appraisal with photographs, a scanned closing package, a
+ * survey. Same Condition Center, two different answers to the same file.
+ *
+ * `takeUpload` reads `req.uploaded` FIRST, so when `binaryIntake` has already
+ * streamed the bytes into storage the handler below is byte-for-byte the same code
+ * on either transport — it never learns which door it was called through. That is
+ * why this is one function and not two. */
+const uploadConditionDoc = async (req, res) => {
   const scoped = await scopedCondition(req, res);
   if (!scoped) return;
   const body = Object.assign({}, req.body || {});
@@ -378,7 +393,16 @@ router.post('/loans/:loanId/conditions/:conditionId/documents', async (req, res)
     console.error('[lt] condition document upload failed:', (e && e.message) || e);
     return res.status(500).json({ error: 'Could not save that document just now.' });
   }
-});
+};
+
+// The JSON door: the body carries the file as base64. Small documents, and the
+// shape every other route on this router already speaks.
+router.post('/loans/:loanId/conditions/:conditionId/documents', uploadConditionDoc);
+// The STREAMED door, for everything the JSON ceiling would refuse. `binaryIntake`
+// stores the bytes as they arrive and hands the handler the same `req.body` shape
+// the JSON door produces, so nothing below the transport changes.
+router.post('/loans/:loanId/conditions/:conditionId/documents/binary',
+  require('../../lib/upload-stream').binaryIntake, uploadConditionDoc);
 
 // POST …/documents/:documentId/review — accept or reject one.
 router.post('/documents/:documentId/review', async (req, res) => {

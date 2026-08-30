@@ -173,21 +173,48 @@ export async function ltBlobUrl(path) {
  * the kind of small lie a progress bar cannot afford.
  */
 export function ltUpload(path, body) {
-  const meta = body || {};
-  const filename = meta.filename || 'file';
-  const payload = JSON.stringify(meta);
-  /* A DOM string is UTF-16 and the wire is UTF-8. Blob is the browser's own
-     answer to "how many bytes is this really"; without it a filename carrying an
-     accent makes every percentage slightly wrong. */
-  let size = payload.length;
-  try { size = new Blob([payload]).size; } catch { /* the length is a fair estimate */ }
+  const { file, ...meta } = body || {};
+  const filename = meta.filename || (file && file.name) || 'file';
+
+  /* THE FILE ITSELF GOES ON THE WIRE, NOT A BASE64 COPY OF IT INSIDE JSON.
+     This used to build `JSON.stringify({…, dataBase64})` and POST it, which put
+     the whole document in the request body as text — and the server caps that
+     door at `maxJsonUploadMb` (25 MB) because a base64 body has to be held in
+     memory to be decoded. The streamed door writes bytes to storage as they
+     arrive and is bounded by `maxUploadMb` instead, which is 1 GB. So a
+     long-term file took a 25 MB document and refused a 26 MB one the short-term
+     side accepts without blinking — an appraisal with photographs, a scanned
+     closing package, a survey. base64 also inflates by about a third, so the
+     real ceiling was nearer 18 MB of actual file.
+
+     The shape is the short-term one exactly (lib/api.js `uploadBinary`): the raw
+     File as the body, `application/octet-stream`, and the metadata in an
+     `x-upload-meta` header as base64 JSON — which is what the server's
+     `metaFromHeaders` reads. XMLHttpRequest is kept, and for the same reason it
+     was chosen there: `fetch()` cannot report how much of the request body has
+     been sent, so nothing could draw a percentage. */
+  const payload = file || new Blob([]);
+  // The FILE's own size now, which is also the number the person is watching.
+  let size = (file && Number.isFinite(file.size)) ? file.size : 0;
+  try { if (!size) size = new Blob([payload]).size; } catch { /* 0 is honest if we cannot tell */ }
 
   const rowId = up.startUpload({ target: up.uploadTarget(meta), filename, size });
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', path, true);
-    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    /* base64 of UTF-8, not `btoa` of a DOM string: `btoa` throws on any character
+       above U+00FF, so a filename with an accent or a Hebrew letter would fail the
+       upload before it started. */
+    try {
+      const json = JSON.stringify({ ...meta, filename,
+        contentType: meta.contentType || (file && file.type) || 'application/octet-stream' });
+      const bytes = new TextEncoder().encode(json);
+      let bin = '';
+      bytes.forEach((b) => { bin += String.fromCharCode(b); });
+      xhr.setRequestHeader('x-upload-meta', btoa(bin));
+    } catch { /* the server falls back to x-upload-filename and its own defaults */ }
     const t = token();
     if (t) xhr.setRequestHeader('Authorization', `Bearer ${t}`);
     xhr.responseType = 'text';
