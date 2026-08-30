@@ -150,8 +150,20 @@ map.
   (`docusign.js:236`) would silently drop a required landlord field; the three-method
   send (`:187-231`); and `recordManualReturn` (`:350-390`) — our row first, provider
   second, so an outage cannot lose the fact that a person filled the form in.
-- `vor/pdf.js` + `vor/fields.js` — **keep entirely.** The owner's exact blank form and
-  its field map, including the load-time duplicate-anchor assertion (`pdf.js:180-186`).
+- `vor/fields.js` — **keep.** The field map and the load-time duplicate-anchor
+  assertion (a duplicate anchor puts two tabs on one line and leaves the other blank —
+  caught at LOAD, not by a test somebody might not run).
+- `vor/pdf.js` — **CORRECTION to the scout's reading, verified 2026-08-30 by opening
+  the file.** The seam scout recorded this as "the owner's exact blank form"; it is
+  not. `pdf.js` DRAWS A LOOKALIKE from scratch on `pdf-lib` (`const { PDFDocument,
+  StandardFonts, rgb } = require('pdf-lib')`, then `PAGE = { w: 612, h: 792 }` and its
+  own margins, inks and rules). **Nothing in the tree references
+  `src/longterm/assets/blank-vor.pdf` at all** — only three docs mention it. This is
+  the owner's complaint word for word: *"You're not using our blank VOR."* The fix is
+  the one `VOR-FORM-MAP.md` already specifies — a TEXT OVERLAY on the owner's flat
+  page (no AcroForm fields), never a redrawn document — keeping pdf.js's genuinely
+  good properties: render-from-data so the preview IS the document, and the invisible
+  white 4pt anchors that make the tabs land.
 - `routes/esign-claim.js` — **retire in the same commit** as the envelope switch, never
   before (every LT signature is dropped by `webhook.js:626`) and never after (two
   handlers race the same event).
