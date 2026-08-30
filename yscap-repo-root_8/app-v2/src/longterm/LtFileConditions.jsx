@@ -25,7 +25,7 @@ import { stamp } from './format.js';
  *    thing somebody reads a year later.
  *
  * 4. A CONDITION WHOSE TEMPLATE IS SWITCHED OFF IS GREYED WITH ITS REASON, not
- *    hidden. The owner asked for appraisal ordering that way, and a feature that
+ *    hidden. A feature that
  *    silently disappears is worse than one that says it is off.
  *
  * 5. EVERY COLOUR IS AN EXPLICIT DARK ON WHITE. `--ink*` is a LIGHT paper colour
@@ -266,7 +266,7 @@ function ConditionRow({ c, open, onToggle, busy, problem, onSatisfy, onWaive, on
           </span>
         </span>
         {/* A condition whose TEMPLATE is switched off is greyed WITH its reason
-            rather than hidden — the owner asked for appraisal ordering that way. */}
+            rather than hidden — a feature that vanishes reads as one that broke. */}
         {c.enabled === false && (
           <span style={{ fontSize: 11, color: AMBER, whiteSpace: 'nowrap' }}>switched off</span>
         )}

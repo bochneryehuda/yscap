@@ -122,12 +122,6 @@ async function getOrderData(loanId, client = db) {
   out.loanPurpose = loan.loan_purpose || null;
   out.programName = loan.program_name || null;
   out.productKind = loan.product_kind || null;
-  /* DOES THIS LOAN EXIT AS A RENTAL? On a DSCR loan it does by definition — the loan
-     is qualified on the property's own rent — which is what decides whether the
-     appraisal order also asks for a rent schedule. A product kind we cannot read
-     answers NULL rather than true: asking an appraiser for a schedule nobody needs
-     costs a fee and a week, and adding one later is the cheap half. */
-  out.rentalExit = loan.product_kind ? String(loan.product_kind).toLowerCase() === 'dscr' : null;
   out.entityName = loan.vesting_entity_name || null;
   out.borrowerName = loan.borrower_name || null;
   out.borrowerEmail = loan.borrower_email || null;

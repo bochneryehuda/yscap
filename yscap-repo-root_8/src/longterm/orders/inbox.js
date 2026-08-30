@@ -119,7 +119,15 @@ async function docConditionFor(loanId, kind, client = db) {
 async function fileAttachment({ loanId, order, condition, att, eventId }, client = db) {
   const filename = String((att && att.filename) || 'attachment');
   try {
-    const buf = upload.decodeUploadBase64(att.content);
+    /* `decodeUploadBase64` answers `{ buf, sha256 }`, NOT a Buffer — and treating
+       it as one silently drops the file: `.length` is undefined, the emptiness test
+       fires, and every document a vendor ever returned reads as "the file came
+       through empty". Node's own base64 decoder is lenient enough that nothing
+       throws, so the failure is completely silent. Caught by the repo's own guard
+       (scripts/test-upload-chokepoint-*), which is why that guard exists. The
+       digest it already computed is reused rather than taken again over the same
+       bytes. */
+    const { buf, sha256: decodedSha } = upload.decodeUploadBase64(att.content);
     if (!buf || !buf.length) return { skipped: { filename, reason: 'empty', why: 'The file came through empty.' } };
 
     // AN EMAIL-SIGNATURE LOGO IS NOT A RETURNED DOCUMENT. The short-term desk spent
@@ -136,7 +144,7 @@ async function fileAttachment({ loanId, order, condition, att, eventId }, client
       return { skipped: { filename, reason: verdict.reason || 'signature_image', why: NOT_A_DOCUMENT[verdict.reason] || 'This looks like part of the email rather than a document somebody attached.' } };
     }
 
-    const sha = upload.sha256hex(buf);
+    const sha = decodedSha || upload.sha256hex(buf);
 
     // ALREADY HERE? A webhook redelivery is deduped by `inbound_id` above, but a
     // vendor genuinely re-sending the same bytes under the same name on a later

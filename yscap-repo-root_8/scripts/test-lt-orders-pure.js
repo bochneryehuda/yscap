@@ -36,22 +36,42 @@ const library = require('../src/longterm/conditions-center/library');
 /* ─────────────────────────────────────────────────────────────────────────────
    A. THE THREE VOCABULARIES
    ───────────────────────────────────────────────────────────────────────────── */
-const migration = read('db/644_lt_orders_desk_vendors_orders_and_the_vendor_thread.sql');
+/**
+ * The values inside a `CHECK (kind IN (...))` on one table — read from the LAST
+ * migration that declares it, not from the file that created the table.
+ *
+ * That is not tidiness, it is what the database actually ends up with: every file
+ * in db/ replays on every boot in filename order, so a later file re-declaring the
+ * same constraint is the one that stands. Reading only the creating file would
+ * assert against a vocabulary the database has not had since the day it was
+ * narrowed — and would then be "fixed" by loosening the check that exists to catch
+ * exactly this drift.
+ */
+const fsMig = require('fs');
+const pathMig = require('path');
+const MIG_DIR = pathMig.join(__dirname, '..', 'db');
+const MIGRATIONS = fsMig.readdirSync(MIG_DIR)
+  .filter((f) => /^\d+_.*\.sql$/.test(f))
+  .sort((a, b) => Number(a.split('_')[0]) - Number(b.split('_')[0]))
+  .map((f) => fsMig.readFileSync(pathMig.join(MIG_DIR, f), 'utf8'));
 
-/** The values inside a `CHECK (kind IN (...))` on one table, read from the SQL. */
 function checkKinds(table) {
   const re = new RegExp(`ALTER TABLE ${table} ADD CONSTRAINT \\w+_kind_chk\\s*\\n\\s*CHECK \\(kind IN \\(([\\s\\S]*?)\\)\\);`);
-  const m = migration.match(re);
-  assert.ok(m, `db/644 declares a kind CHECK on ${table}`);
-  return m[1].split(',').map((s) => s.trim().replace(/^'|'$/g, '')).filter(Boolean).sort();
+  let last = null;
+  for (const sql of MIGRATIONS) {
+    const m = sql.match(re);
+    if (m) last = m[1];
+  }
+  assert.ok(last, `some migration declares a kind CHECK on ${table}`);
+  return last.split(',').map((x) => x.trim().replace(/^'|'$/g, '')).filter(Boolean).sort();
 }
 
 const sqlOrderKinds = checkKinds('lt_file_orders');
 const sqlVendorKinds = checkKinds('lt_loan_vendors');
 
 assert.deepStrictEqual([...kinds.ORDER_KIND_KEYS].sort(), sqlOrderKinds,
-  'every order kind the registry offers is one db/644 will store, and no more');
-ok(`the order kinds agree between the registry and db/644 (${sqlOrderKinds.length})`);
+  'every order kind the registry offers is one the database will store, and no more');
+ok(`the order kinds agree between the registry and the migrations (${sqlOrderKinds.length})`);
 
 // The vendor CHECK must carry every kind an ORDER is addressed to. It may carry MORE
 // (a buyer's attorney and a realtor are on the file without being ordered from), so
@@ -270,21 +290,27 @@ assert.ok(/_skipCapture:\s*true/.test(deskSrc), 'the long-term send skips the sh
 ok('a long-term send never writes the short-term Email Center');
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   E. THE APPRAISAL IS BUILT AND SWITCHED OFF, AND IT SAYS SO
+   E. WHICH ORDERS ARE ON IS A SETTING, AND THE CODE ONLY SUPPLIES THE DEFAULT
 
-   The owner's instruction was "NAN only, grayed out". A switched-off order must be
-   SHOWN with its reason: a feature that silently disappears reads as one that broke.
+   Owner-directed for this whole build: "everything should be setup with not setting
+   it on a hard level … everything should be able to be configured differently in
+   settings. The system is only prefilled with the rules of the system." So the
+   `enabled` key here is what we SHIP with, and the live answer comes from the
+   condition's own template — `orders/switches.js`, proven in its own suite.
+
+   APPRAISAL ORDERING WAS REMOVED (owner-directed 2026-08-30: "Skip the appraisal
+   ordering. We're not going to do the appraisal ordering."). It is asserted ABSENT
+   rather than simply not mentioned: a kind that quietly came back — through a merge,
+   or somebody restoring a deleted block — would otherwise put a NAN order on every
+   long-term file's desk with nobody having asked for it.
    ───────────────────────────────────────────────────────────────────────────── */
-assert.strictEqual(kinds.isEnabled('appraisal'), false, 'appraisal ordering ships switched off');
-assert.ok(kinds.orderKind('appraisal').disabledReason, 'and it says why');
-assert.strictEqual(kinds.orderKind('appraisal').vendorLock, 'nan', 'and it is locked to the one vendor the owner named');
+assert.ok(!kinds.ORDER_KIND_KEYS.includes('appraisal'), 'appraisal ordering was taken out of the build');
+assert.strictEqual(kinds.orderKind('appraisal'), null, 'and asking for it reads as "there is no such order"');
+assert.ok(!libraryByCode.has('lt_order_appraisal'), 'and its condition is out of the library');
 for (const k of kinds.ORDER_KIND_KEYS) {
-  if (k === 'appraisal') continue;
-  assert.strictEqual(kinds.isEnabled(k), true, `${k} is switched on`);
+  assert.strictEqual(kinds.isEnabled(k), true, `${k} ships switched on`);
 }
-const appraisalCond = libraryByCode.get('lt_order_appraisal');
-assert.strictEqual(appraisalCond.isEnabled, false, 'the appraisal CONDITION is switched off in the same breath');
-ok('appraisal ordering is built, switched off, locked to NAN, and says so on both the desk and the condition');
+ok('appraisal ordering is gone from the desk and the library, and every remaining kind ships on');
 
 /* ─────────────────────────────────────────────────────────────────────────────
    F. THE WEBHOOK CLAIMS ONLY ITS OWN, AND HANDS EVERYTHING ELSE ON

@@ -46,8 +46,9 @@
  *
  * `enabled: false` is a condition that is BUILT but not live. It shows on the
  * file, greyed, WITH ITS REASON — so nobody thinks a feature vanished, and
- * turning it on is a settings change rather than a release. Today that is
- * appraisal ordering, which the owner asked for explicitly: *"grayed out"*.
+ * turning it on is a settings change rather than a release. Nothing ships that way
+ * today; the shape is kept because it is how a condition is held back safely, and
+ * because it is also what an administrator's own switch writes.
  *
  * PURE apart from `seed()`, which is the one function that touches a database.
  */
@@ -242,38 +243,6 @@ const PRIOR_TO_SUBMISSION = [
     kind: 'form',
     autoApply: 'always',
     config: { savesToBorrowerProfile: true, readsFromBorrowerProfile: true },
-  },
-  {
-    code: 'lt_order_appraisal',
-    bucket: B.SUBMISSION,
-    label: 'Appraisal ordered',
-    hint: 'Ordered from NAN. Which form is ordered follows the property: one form for a single '
-      + 'family, another for two-to-four units, another for five and above, another for a condo — '
-      + 'each set in this condition’s own settings rather than in code.',
-    audience: 'internal',
-    kind: 'order',
-    autoApply: 'always',
-    // SHIPPED SWITCHED OFF, at the owner's own instruction ("grayed out"). It
-    // shows on the file with this reason rather than being hidden, so nobody
-    // thinks it is missing.
-    enabled: false,
-    disabledReason: 'Appraisal ordering is built and switched off. Turning it on is a settings change, not a new release.',
-    config: {
-      orderType: 'appraisal',
-      vendor: 'nan',
-      // The owner's four cases. A property type that matches none of them falls
-      // to `default` rather than guessing a form.
-      forms: {
-        sfr: '1004',
-        multi_2_4: '1025',
-        multi_5_plus: 'narrative',
-        condo: '1073',
-        default: '1004',
-      },
-      // Every rental-exit long-term loan wants the rent schedule beside the
-      // appraisal; it is a setting so a buyer who does not can turn it off.
-      rentSchedule: { sfr: '1007', multi_2_4: '216' },
-    },
   },
   {
     code: 'lt_landlord_contact',

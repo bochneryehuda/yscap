@@ -2,29 +2,28 @@
 /**
  * LONG-TERM — IS THIS ORDER SWITCHED ON?
  *
- * Owner-directed, on appraisal ordering: *"NAN only, grayed out"* — and, on how it
- * comes back: *"everything should be set up with not setting it on a hard level;
- * everything should be able to be configured differently in settings. The system is
- * only prefilled with the rules of the system."*
+ * Owner-directed, over this whole build: *"everything should be setup with not
+ * setting it on a hard level; everything should be able to be configured differently
+ * in settings. The system is only prefilled with the rules of the system."*
  *
  * ── THE DEFECT THIS CLOSES ──────────────────────────────────────────────────
  *
- * `kinds.js` shipped `enabled: false` on the appraisal order as a CODE CONSTANT,
- * while the condition it answers (`lt_order_appraisal`) shipped switched off in the
- * condition LIBRARY, which an administrator can turn on. So the condition's own
- * disabled reason promised "turning it on is a settings change, not a new release"
- * and it was HALF TRUE: switching the template on left the order still refused by a
- * constant nobody at the desk can reach. One question, two answers, and the one a
- * person could change was not the one that decided.
+ * An order kind's `enabled` lived in `kinds.js` as a CODE CONSTANT, while the
+ * condition it answers carries its own switch in the condition LIBRARY, which an
+ * administrator can turn on and off. So one question — "is this order on?" — had two
+ * answers, and the one a person could reach was not the one that decided: switching
+ * the template off left the order still placeable, and switching it on left an order
+ * still refused by something nobody at the desk can change.
  *
- * So the TEMPLATE is the switch and the code constant is only the SHIPPED DEFAULT —
+ * So the TEMPLATE is the switch, and the code constant is only the SHIPPED DEFAULT —
  * what the system is prefilled with, exactly as the owner put it.
  *
  * ── IT FAILS TO THE SHIPPED DEFAULT, NOT TO "ON" ────────────────────────────
  *
- * An unreadable template answers with the default the code ships, so an outage can
- * never switch an order ON that the owner asked to ship off, and can never switch
- * off one that is running. Nothing here throws: the desk reads it on every load.
+ * An unreadable library answers with the default the code ships, so an outage can
+ * never switch an order ON that shipped off, and can never switch OFF one that is
+ * running. Nothing here throws: the desk reads it on every load, and the send
+ * re-reads the same answer rather than trusting the screen's.
  *
  * SEPARATION: reads `lt_condition_templates` only.
  */
@@ -45,7 +44,7 @@ async function resolve(client = db) {
       reason: def.enabled === false ? (def.disabledReason || null) : null,
       source: 'shipped',
       /* The template's own settings — the letter wording a buyer overrode, the
-         appraisal forms, anything a future kind puts there. Empty until a template
+         anything else a kind puts there. Empty until a template
          is read, so a caller never has to check whether one was. */
       config: {},
     };

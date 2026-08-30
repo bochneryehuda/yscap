@@ -203,7 +203,6 @@ for (const [codeKey, what] of [
   ['lt_order_flood_insurance', 'the flood insurance order'],
   ['lt_order_ny_settlement_agent', 'the New York settlement agent order'],
   ['lt_appraisal_card', 'the card for the appraisal'],
-  ['lt_order_appraisal', 'appraisal ordering'],
   ['lt_landlord_contact', 'the landlord contact'],
   ['lt_vor_sent', 'the verification of rent'],
   ['lt_photo_id', 'the government photo ID'],
@@ -269,15 +268,21 @@ check(hh.config.oneOf === true && hh.slots.length === 3,
 check(hh.slots.every((s) => s.whenField && FIELDS[s.whenField]),
   'and each is gated on a real field, so the right one shows for the right borrower');
 
-console.log('\nC5. what ships switched off says so');
+console.log('\nC5. anything shipped switched off says WHY, and appraisal ordering is gone');
+/* A condition may be built and held back — it then shows greyed WITH ITS REASON, so
+   nobody thinks a feature vanished. Nothing ships that way today; what is asserted is
+   the RULE, so a future one cannot ship silent. */
 const off = L.filter((x) => !x.isEnabled);
-check(off.length === 1 && off[0].code === 'lt_order_appraisal',
-  'appraisal ordering is the one condition shipped switched off — the owner asked for it "grayed out"');
-check(!!off[0].disabledReason,
-  'and it carries its own reason, so it shows greyed rather than vanishing');
-check(off[0].config.vendor === 'nan', 'it orders from NAN, as the owner said');
-check(Object.keys(off[0].config.forms || {}).length >= 4,
-  `and which form is ordered is a SETTING per property kind (${Object.keys(off[0].config.forms).join(', ')}), not a constant`);
+for (const c of off) {
+  check(!!c.disabledReason, `${c.code} is switched off and says why, so it greys rather than vanishing`);
+}
+check(true, `${off.length} condition(s) ship switched off, and each carries its reason`);
+/* APPRAISAL ORDERING WAS REMOVED (owner-directed 2026-08-30: "Skip the appraisal
+   ordering. We're not going to do the appraisal ordering."). Asserted ABSENT rather
+   than simply unmentioned: this template is `auto_apply: 'always'`, so a block
+   restored by a merge would put it back on every long-term file in the book. */
+check(!L.some((x) => x.code === 'lt_order_appraisal'),
+  'appraisal ordering is out of the library, and cannot come back unnoticed');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // D. THE ENGINE — attach, retract, and never on a guess

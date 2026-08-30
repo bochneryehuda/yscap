@@ -188,9 +188,11 @@ function TemplateRow({ t, data, open, canEdit, onOpen, onSave }) {
       isRequired: t.isRequired,
       enabled: t.enabled,
       active: t.active,
-      // The template's own settings ride along untouched unless a card below edits
-      // them — so saving the wording never blanks a buyer's configured forms.
-      config: t.config || {},
+      /* `config` is DELIBERATELY not in the draft. The save posts only the keys it
+         carries, and the server writes only the columns it is sent — so leaving the
+         template's own settings out means saving the wording cannot touch them.
+         Putting them in the draft would rewrite that column on every wording edit,
+         for no reason, with whatever shape the screen happened to be holding. */
     });
     onOpen();
   };
@@ -305,10 +307,6 @@ function TemplateRow({ t, data, open, canEdit, onOpen, onSave }) {
               </div>
             </Field>
 
-            {t.code === 'lt_order_appraisal' && (
-              <AppraisalForms draft={draft} setDraft={setDraft} canEdit={canEdit} />
-            )}
-
             {canEdit && (
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn" onClick={() => onSave(draft)}>Save</button>
@@ -318,65 +316,6 @@ function TemplateRow({ t, data, open, canEdit, onOpen, onSave }) {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-/**
- * WHICH APPRAISAL FORM EACH KIND OF PROPERTY TAKES.
- *
- * The owner asked for appraisal ordering to ship switched off, from NAN only, and
- * to come back on as *a settings change, not a new release*. The switch is the
- * "Switched on" box above; this is the other half — the forms — on the SAME card,
- * because "turn it on" and "and order the right form" are one job and splitting
- * them across two screens is how one gets done without the other.
- *
- * A blank box means "use ours". The prefilled numbers show as placeholders rather
- * than values, for the reason the pricing studio learned the hard way: a default
- * painted into a box is stored as somebody's deliberate choice, and then the
- * company default can never move it again.
- */
-function AppraisalForms({ draft, setDraft, canEdit }) {
-  const KINDS = [
-    ['sfr', 'Single family (one unit)', '1004', '1007'],
-    ['multi_2_4', 'Two to four units', '1025', '216'],
-    ['multi_5_plus', 'Five units or more', 'narrative', null],
-    ['condo', 'Condominium', '1073', null],
-    ['default', 'Anything else', '1004', null],
-  ];
-  const cfg = draft.config || {};
-  const forms = cfg.forms || {};
-  const sched = cfg.rentSchedule || {};
-  const put = (group, key, value) => setDraft({
-    ...draft,
-    config: { ...cfg, [group]: { ...(cfg[group] || {}), [key]: value } },
-  });
-
-  return (
-    <div style={{ border: `1px solid ${LINE}`, borderRadius: 8, padding: 12, background: '#FFFFFF' }}>
-      <div style={{ fontSize: 13, fontWeight: 700, color: INK, marginBottom: 2 }}>Which form each property takes</div>
-      <div style={{ fontSize: 12, color: MUTED, marginBottom: 10, lineHeight: 1.5 }}>
-        Ordered from NAN. Leave a box empty to use ours. The rent schedule is asked for only on a
-        rental-exit loan, and only where one is set here.
-      </div>
-      {KINDS.map(([key, label, formPre, schedPre]) => (
-        <div key={key} style={{
-          display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(11rem, 100%), 1fr))',
-          gap: 8, alignItems: 'end', marginBottom: 8,
-        }}>
-          <div style={{ fontSize: 13, color: INK, alignSelf: 'center' }}>{label}</div>
-          <label style={{ display: 'block' }}>
-            <div style={{ fontSize: 11, color: MUTED, marginBottom: 2 }}>Appraisal form</div>
-            <input className="input" disabled={!canEdit} placeholder={formPre}
-              value={forms[key] || ''} onChange={(e) => put('forms', key, e.target.value)} />
-          </label>
-          <label style={{ display: 'block', visibility: schedPre ? 'visible' : 'hidden' }}>
-            <div style={{ fontSize: 11, color: MUTED, marginBottom: 2 }}>Rent schedule</div>
-            <input className="input" disabled={!canEdit} placeholder={schedPre || ''}
-              value={sched[key] || ''} onChange={(e) => put('rentSchedule', key, e.target.value)} />
-          </label>
-        </div>
-      ))}
     </div>
   );
 }

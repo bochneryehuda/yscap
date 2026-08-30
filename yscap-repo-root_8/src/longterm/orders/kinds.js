@@ -66,7 +66,9 @@ const VENDOR_KINDS = Object.freeze({
  *                  for the named deliverables.
  *  · `enabled`     false means built and switched off — it shows on the desk with
  *                  its reason rather than being hidden, so nobody thinks it is
- *                  missing (the owner's instruction for appraisal ordering).
+ *                  missing. It is only what we SHIP with: the live answer comes from
+ *                  the condition's own template (`orders/switches.js`), so an order
+ *                  is turned on and off in settings rather than in a release.
  */
 const ORDER_KINDS = Object.freeze({
   title: {
@@ -150,21 +152,6 @@ const ORDER_KINDS = Object.freeze({
     letter: 'generic',
     wants: ['The completed verification of rent'],
     slotMap: [[/vor|verification|rent/i, null]],
-  },
-  appraisal: {
-    label: 'Appraisal',
-    vendorKind: 'appraisal',
-    condition: 'lt_order_appraisal',
-    docCondition: null,
-    letter: 'generic',
-    wants: ['The completed appraisal report', 'The MISMO XML data file'],
-    slotMap: [],
-    /* SHIPPED SWITCHED OFF, at the owner's own instruction ("NAN only, grayed
-       out"). It is not hidden: a switched-off kind renders on the desk with this
-       reason, because a feature that vanishes reads as a feature that broke. */
-    enabled: false,
-    disabledReason: 'Appraisal ordering is built and switched off. Turning it on is a settings change, not a new release.',
-    vendorLock: 'nan',
   },
 });
 

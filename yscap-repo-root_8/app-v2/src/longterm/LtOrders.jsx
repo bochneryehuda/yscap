@@ -22,9 +22,10 @@ import { stamp } from './format.js';
  *    you to the vendors screen, "this is switched off" is nobody's to clear — so
  *    collapsing them into "that did not work" throws away the only useful part.
  *
- * 3. A SWITCHED-OFF ORDER IS GREYED WITH ITS REASON, never hidden. The owner asked
- *    for appraisal ordering that way; a feature that silently disappears reads as
- *    one that broke.
+ * 3. A SWITCHED-OFF ORDER IS GREYED WITH ITS REASON, never hidden — a feature that
+ *    silently disappears reads as one that broke. Which orders are on is a SETTING
+ *    (the condition's own template, through `orders/switches.js`); the code only
+ *    supplies the default.
  *
  * 4. NOTHING IS EVER SILENTLY DROPPED. A returned document that could not be filed
  *    appears on the message it came in on, with its reason, and the two reasons are

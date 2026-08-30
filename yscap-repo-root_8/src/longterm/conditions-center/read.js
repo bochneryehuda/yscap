@@ -183,8 +183,8 @@ function shape(r, internal) {
     waivedBy: r.waived_by_name || null,
     waivedReason: r.waived_reason || null,
     // A condition whose TEMPLATE is switched off is shown greyed WITH ITS
-    // REASON rather than hidden — the owner asked for appraisal ordering that
-    // way, and hiding it would read as a feature that vanished.
+    // REASON rather than hidden: hiding it would read as a feature that vanished,
+    // and a person who was told about it would go looking for a bug.
     enabled: r.is_enabled !== false,
     disabledReason: r.is_enabled === false ? (r.disabled_reason || null) : null,
   };

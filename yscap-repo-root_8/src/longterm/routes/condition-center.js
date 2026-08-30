@@ -45,7 +45,6 @@ const engine = require('../conditions-center/engine');
 const read = require('../conditions-center/read');
 const write = require('../conditions-center/write');
 const rules = require('../conditions-center/rules');
-const appraisalForms = require('../orders/appraisal-forms');
 const registry = require('../conditions-center/field-registry');
 const library = require('../conditions-center/library');
 const { loadScopedLoan, UUID_RE } = require('./scoped-loan');
@@ -314,17 +313,7 @@ router.patch('/library/:code', async (req, res) => {
       if (typeof body[k] !== 'object' || body[k] === null) {
         return res.status(400).json({ error: `${k} has to be a list or an object.` });
       }
-      let value = body[k];
-      /* THE APPRAISAL FORMS ARE CLEANED AT THE DOOR. A settings screen that
-         silently accepts a property kind nothing recognises shows it SAVED and then
-         never applies it, which is the worst of both — so an unknown kind is dropped
-         here, a blank clears an override back to our prefill, and `default` is
-         always left resolvable (a property PILOT cannot read must still have a form
-         to order). Everything else in `config` rides through untouched. */
-      if (k === 'config' && String(req.params.code) === 'lt_order_appraisal') {
-        value = appraisalForms.cleanConfig(value, value);
-      }
-      put(col, JSON.stringify(value), '::jsonb');
+      put(col, JSON.stringify(body[k]), '::jsonb');
     }
   }
 
