@@ -87,17 +87,28 @@ const PRIOR_TO_SUBMISSION = [
     borrowerHint: 'For every mortgage on your credit report, we need a current statement. If one of '
       + 'them is the home you live in, say so and we will use what we already have.',
     audience: 'both',
-    kind: 'form',
+    // A DOCUMENT, DELIBERATELY, THOUGH IT IS REALLY A CHOICE. Each mortgage can
+    // be answered three ways and `answers.js` intercepts the sign-off gate
+    // before the document rules ever run, so this value is inert while that
+    // module governs the condition. It is 'document' rather than 'form' because
+    // of what happens if that ever stops being true: the gate falls back to
+    // asking for the statement, which is the SAFE way to be wrong — chasing a
+    // document that was not needed, rather than signing the condition off on
+    // nothing at all.
+    kind: 'document',
     autoApply: 'always',
     slots: [],
     config: {
-      // Read from the mirrored liabilities. The classification is a HUMAN's:
-      // PILOT proposes mortgage-vs-other from the liability type and never
-      // decides it, because a mis-classified line either chases a borrower for a
-      // statement they do not owe or lets a real mortgage through unasked.
+      // Read from the mirrored liabilities (`lt_liabilities`). The
+      // classification is a HUMAN's: PILOT proposes mortgage-vs-other from the
+      // liability type and never decides it, because a mis-classified line
+      // either chases a borrower for a statement they do not owe or lets a real
+      // mortgage through unasked.
       classify: 'propose_only',
-      // The three ways one line can be answered, exactly as the owner described.
-      answers: ['upload_statement', 'linked_to_primary', 'typed_address'],
+      // THE WAYS ARE NOT LISTED HERE. They live in `answers.js`, which is what
+      // the sign-off gate and the door that records an answer both read — a copy
+      // here would be a second list free to drift from the one that decides.
+      answeredBy: 'answers',
       // A typed address goes through the address lookup so it is stored as a
       // real place rather than free text.
       addressLookup: true,
@@ -124,8 +135,23 @@ const PRIOR_TO_SUBMISSION = [
       { key: 'formation', label: 'Articles of formation', required: true },
       { key: 'agreement', label: 'Operating agreement or bylaws', required: true },
       { key: 'ein', label: 'EIN letter', required: true },
+      // OPTIONAL, and that is the point (owner-directed 2026-08-30). A
+      // certificate of good standing expires, so requiring one would make every
+      // entity go stale on a date nobody is watching; it is asked for where an
+      // investor wants it and never holds a file on its own.
+      { key: 'good_standing', label: 'Certificate of good standing (optional)', required: false },
     ],
-    config: { verifiedForever: true, savesToBorrowerProfile: true },
+    config: {
+      verifiedForever: true,
+      savesToBorrowerProfile: true,
+      // THE ENTITY IS THE BORROWER'S, NOT THIS LOAN'S. Whatever is already on
+      // their profile for this company — the documents and the verified state —
+      // is what this condition opens with, so a second loan for the same entity
+      // starts finished instead of asking again. `entity-prefill.js` is the one
+      // definition; this key is what turns it on.
+      readsFromBorrowerProfile: true,
+      prefillFromEntity: true,
+    },
   },
   {
     code: 'lt_subject_mortgage_statement',
@@ -143,12 +169,14 @@ const PRIOR_TO_SUBMISSION = [
     rule: when('is_refinance', 'is_true'),
     slots: [{ key: 'statement', label: 'Mortgage statement', required: false }],
     config: {
-      // ALL THREE OR NONE. A payoff figure with no servicer, or a servicer with
-      // no loan number, is not a substitute for a statement — it is a partial
-      // answer that reads as a complete one.
-      typedFields: ['outstanding_balance', 'servicer', 'loan_number'],
-      typedRequiresAll: true,
-      waiver: { key: 'rtl_fci_serviced', label: 'This refinances one of our own short-term loans, serviced by FCI' },
+      // THE THREE WAYS LIVE IN `answers.js` — the statement, the figures typed
+      // in (all three of balance, servicer and loan number, or none: a partial
+      // answer reads as a complete one to the person who then has nothing to key
+      // in), or the FCI waiver, where we originated the loan and service it so
+      // we already hold everything a statement would say. Listing them again
+      // here would be a second copy free to drift from the one the gate reads.
+      answeredBy: 'answers',
+      servicerLookup: true,
     },
   },
   {
@@ -342,9 +370,22 @@ const PRIOR_TO_SUBMISSION = [
     rule: when('is_purchase', 'is_true'),
     slots: [{ key: 'contract', label: 'Executed contract', required: true }],
   },
+];
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PRIOR TO CLEAR TO CLOSE — what underwriting needs back.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const PRIOR_TO_CTC = [
   {
     code: 'lt_cash_out_letter',
-    bucket: B.SUBMISSION,
+    bucket: B.CTC,
+    // PRIOR TO CLEAR TO CLOSE, not prior to submittal (owner-directed
+    // 2026-08-30). The letter says what the borrower will DO with the money,
+    // which is a question for the investor reading the file before it closes —
+    // holding a file out of underwriting for it would delay every cash-out
+    // refinance for a document that changes nothing about whether it can be
+    // underwritten.
     label: 'Cash-out letter',
     hint: 'What the money is for, in the borrower’s own words and signed by them.',
     borrowerLabel: 'A letter about what the cash is for',
@@ -355,13 +396,6 @@ const PRIOR_TO_SUBMISSION = [
     rule: when('is_cash_out', 'is_true'),
     slots: [{ key: 'letter', label: 'Cash-out letter', required: true }],
   },
-];
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PRIOR TO CLEAR TO CLOSE — what underwriting needs back.
-// ═══════════════════════════════════════════════════════════════════════════
-
-const PRIOR_TO_CTC = [
   {
     code: 'lt_title_docs',
     bucket: B.CTC,

@@ -213,6 +213,16 @@ export const ltApi = {
   // conditions. Two centres, two names.
   fileConditions: (loanId) => ltGet(lt(`/condition-center/loans/${encodeURIComponent(loanId)}`)),
   fileConditionsEvaluate: (loanId) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/evaluate`), {}),
+  // THE THREE CONDITIONS THAT ARE A CHOICE, not an upload — the mortgages on
+  // the credit report, the mortgage on the property being refinanced, and the
+  // vesting entity. Their working data has its own door because the conditions
+  // LIST is loaded by every screen and every borrower, and these reads are only
+  // wanted once somebody opens one of them.
+  conditionWorkspace: (loanId, id) => ltGet(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/workspace`)),
+  conditionAnswer: (loanId, id, answer) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/answer`), { answer }),
+
   conditionSatisfy: (loanId, id) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/satisfy`), {}),
   conditionWaive: (loanId, id, reason) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/waive`), { reason }),
   conditionReopen: (loanId, id) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/reopen`), {}),

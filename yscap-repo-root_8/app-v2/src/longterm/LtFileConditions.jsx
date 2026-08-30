@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ltApi } from './api.js';
 import { stamp } from './format.js';
+import LtConditionAnswer from './LtConditionAnswer.jsx';
 
 /**
  * THE GENERAL CONDITION CENTER, on one loan.
@@ -214,7 +215,7 @@ export default function LtFileConditions({ loanId }) {
           <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
             {b.conditions.map((c) => (
               <ConditionRow key={c.id} c={c} open={open.has(c.id)} onToggle={() => toggle(c.id)}
-                busy={busy} problem={rowErr[c.id] || null}
+                busy={busy} problem={rowErr[c.id] || null} loanId={loanId} onChanged={load}
                 onSatisfy={() => satisfy(c)} onWaive={(reason) => waive(c, reason)}
                 onReopen={() => reopen(c)} onRemove={() => remove(c)} />
             ))}
@@ -237,7 +238,7 @@ export default function LtFileConditions({ loanId }) {
   );
 }
 
-function ConditionRow({ c, open, onToggle, busy, problem, onSatisfy, onWaive, onReopen, onRemove }) {
+function ConditionRow({ c, open, onToggle, busy, problem, loanId, onChanged, onSatisfy, onWaive, onReopen, onRemove }) {
   const s = STATUS[c.status] || STATUS.outstanding;
   const done = ['satisfied', 'waived', 'not_applicable'].includes(c.status);
   const [waiving, setWaiving] = useState(false);
@@ -278,6 +279,15 @@ function ConditionRow({ c, open, onToggle, busy, problem, onSatisfy, onWaive, on
             <p style={{ margin: '10px 0 0', fontSize: 13, color: AMBER, lineHeight: 1.55 }}>{c.disabledReason}</p>
           )}
           {c.hint && <p style={{ margin: '10px 0 0', fontSize: 13, color: INK, lineHeight: 1.55 }}>{c.hint}</p>}
+
+          {/* THE THREE CONDITIONS THAT ARE A CHOICE draw their own ways here —
+              the mortgages on the credit report, the mortgage on the property
+              being refinanced, and the vesting entity reading the borrower's
+              profile. It self-hides on every other condition (the workspace
+              door answers `null`), so nothing is added to an ordinary row. */}
+          {open && (
+            <LtConditionAnswer loanId={loanId} conditionId={c.id} onSaved={onChanged} />
+          )}
 
           {c.slots && c.slots.length > 0 && (
             <div style={{ marginTop: 10 }}>

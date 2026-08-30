@@ -34,6 +34,8 @@
  */
 
 const db = require('../db');
+const answers = require('./answers');
+const entityPrefill = require('./entity-prefill');
 
 /** How many accepted documents a slot-bearing condition still needs. */
 function missingSlots(condition, files) {
@@ -46,6 +48,17 @@ function missingSlots(condition, files) {
       .map((f) => String(f.slot_key)),
   );
   return required.filter((s) => !filled.has(String(s.key))).map((s) => s.label || s.key);
+}
+
+/** Which per-line keys have an ACCEPTED document against them. A per-line
+    condition tags each upload with the liability's own key in `slot_key`, so the
+    ordinary document plumbing carries it with no second table. */
+function documentsByLine(files) {
+  const out = {};
+  for (const f of files || []) {
+    if (f.is_current && f.review_status === 'accepted' && f.slot_key) out[String(f.slot_key)] = true;
+  }
+  return out;
 }
 
 /**
@@ -71,6 +84,48 @@ function signOffProblem(condition, files, opts = {}) {
       ok: false,
       why: `${pending.length} document${pending.length === 1 ? '' : 's'} on this condition ${pending.length === 1 ? 'has' : 'have'} not been looked at yet. Accept or reject ${pending.length === 1 ? 'it' : 'them'} first.`,
     };
+  }
+
+  // ── THE COMPANY IS ALREADY VERIFIED ON THE BORROWER'S PROFILE ────────────
+  // The owner: *"if that LLC is already verified somehow on his profile … that
+  // information should automatically be pre-filled in this condition"* and *"in
+  // future when you use this LLC it's already verified."* An entity is verified
+  // ONCE — a person having read the operating agreement and confirmed the
+  // borrower controls the company — and asking a second loan to re-do that is
+  // asking the borrower to prove the same fact twice.
+  //
+  // Documents present but NOT verified deliberately do NOT clear it: they
+  // pre-fill the condition (so nothing is sent again) and leave it open, because
+  // the review has not happened. `opts.entity` is the caller's read; an
+  // unreadable profile leaves the ordinary document rules standing, which asks
+  // for documents that may not be needed — the safe way to be wrong.
+  if (opts.entity && opts.entity.verified) {
+    return { ok: true, note: 'This company is already verified on the borrower’s profile.' };
+  }
+
+  // ── A CONDITION THAT CAN BE ANSWERED ANOTHER WAY ─────────────────────────
+  // Three of these conditions are a CHOICE, not an upload: the subject
+  // property's mortgage (statement, or the figures typed in, or the FCI waiver)
+  // and every mortgage on the credit report (a statement, or "this is the home
+  // they live in", or the property it is secured by). `answers.js` is the ONE
+  // definition, read here AND by the door that records the answer, so what may
+  // be recorded and what finishes the condition can never disagree.
+  //
+  // It is asked BEFORE the document rules on purpose: a condition answered by
+  // the FCI waiver has no document and must not be refused for want of one.
+  if (answers.plan(condition)) {
+    const recorded = condition.answer && typeof condition.answer === 'object' ? condition.answer : {};
+    const mortgages = Array.isArray(recorded.mortgages) ? recorded.mortgages : [];
+    const verdict = answers.satisfies(condition, recorded, {
+      // The lines that must be answered are the ones a PERSON marked as
+      // mortgages, read off the condition's own answer — never re-derived here,
+      // or the gate and the screen could disagree about how many there are.
+      lines: mortgages.map((m) => (typeof m === 'string' ? { key: m, label: m } : m)),
+      documentsByLine: documentsByLine(current),
+      hasDocument: current.some((f) => f.review_status === 'accepted'),
+    });
+    if (!verdict.ok) return { ok: false, why: verdict.why };
+    return { ok: true };
   }
 
   if (kind === 'document') {
@@ -109,7 +164,84 @@ async function loadCondition(loanId, conditionId, client = db) {
   } catch (_) {
     readFailed = true;
   }
-  return { condition, files, readFailed };
+  // For the vesting-entity condition only, ask the borrower's shared profile what
+  // they already hold for this company. Its own module never throws, so a failure
+  // here is reported as "nothing on file" and the ordinary rules apply.
+  let entity = null;
+  if (String(condition.code || '') === 'lt_vesting_entity') {
+    try {
+      const { rows: loanRows } = await client.query(
+        `SELECT borrower_id, vesting_entity_name FROM lt_loans WHERE id = $1::uuid`,
+        [String(loanId)],
+      );
+      const loan = loanRows[0] || {};
+      entity = await entityPrefill.forEntity(loan.borrower_id, loan.vesting_entity_name, client);
+    } catch (_) {
+      entity = null;
+    }
+  }
+
+  return { condition, files, readFailed, entity };
+}
+
+/**
+ * RECORD THE ANSWER on a condition that is a CHOICE rather than an upload.
+ *
+ * MERGES rather than replaces, for one reason worth keeping: the mortgages
+ * condition is worked a line at a time over days, and a screen that posted the
+ * whole shape would wipe a colleague's line whenever two people had the file
+ * open. A caller that genuinely means "forget this line" sends it as null.
+ *
+ * VALIDATED THROUGH `answers.js` — the SAME module the sign-off gate reads — so
+ * a shape this door accepts is always one the gate will honour.
+ */
+async function recordAnswer(loanId, conditionId, incoming, staffId, client = db) {
+  const found = await loadCondition(loanId, conditionId, client);
+  if (!found) return { ok: false, status: 404, error: 'That condition is not on this file.' };
+
+  const { condition, files } = found;
+  if (!answers.plan(condition)) {
+    return { ok: false, status: 400, error: 'This condition is not answered that way.' };
+  }
+
+  const current = (files || []).filter((f) => f.is_current);
+  const existing = condition.answer && typeof condition.answer === 'object' ? condition.answer : {};
+  const patch = incoming && typeof incoming === 'object' ? incoming : {};
+
+  // Merge one level for `lines`; everything else is replaced as sent.
+  const merged = { ...existing, ...patch };
+  if (patch.lines && typeof patch.lines === 'object') {
+    const lines = { ...(existing.lines || {}) };
+    for (const [k, v] of Object.entries(patch.lines)) {
+      if (v === null) delete lines[k]; else lines[k] = v;
+    }
+    merged.lines = lines;
+  }
+
+  // REFUSE A SHAPE THE GATE WOULD NOT HONOUR. A door that accepts what the gate
+  // ignores leaves somebody pressing a button that changes nothing.
+  const problem = answers.answerProblem(condition, merged, {
+    hasDocument: current.some((f) => f.review_status === 'accepted'),
+    documentsByLine: documentsByLine(current),
+    lineLabels: Object.fromEntries(
+      (Array.isArray(merged.mortgages) ? merged.mortgages : [])
+        .filter((m) => m && typeof m === 'object')
+        .map((m) => [String(m.key), String(m.label || m.key)]),
+    ),
+  });
+  if (problem) return { ok: false, status: 422, error: problem };
+
+  merged.answeredBy = staffId || null;
+
+  const { rows } = await client.query(
+    `UPDATE lt_file_conditions
+        SET answer = $3::jsonb, updated_at = now()
+      WHERE id = $1::uuid AND loan_id = $2::uuid
+      RETURNING id, answer, status`,
+    [String(conditionId), String(loanId), JSON.stringify(merged)],
+  );
+  if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
+  return { ok: true, condition: rows[0] };
 }
 
 /** Mark a condition satisfied, if the gate allows it. */
@@ -117,7 +249,7 @@ async function satisfy(loanId, conditionId, staffId, client = db) {
   const found = await loadCondition(loanId, conditionId, client);
   if (!found) return { ok: false, status: 404, error: 'That condition is not on this file.' };
 
-  const gate = signOffProblem(found.condition, found.files, { readFailed: found.readFailed });
+  const gate = signOffProblem(found.condition, found.files, { readFailed: found.readFailed, entity: found.entity });
   if (!gate.ok) return { ok: false, status: 422, error: gate.why };
 
   const note = gate.checkSkipped
@@ -284,6 +416,7 @@ function appendNote(existing, line) {
 }
 
 module.exports = {
+  recordAnswer,
   missingSlots,
   signOffProblem,
   loadCondition,

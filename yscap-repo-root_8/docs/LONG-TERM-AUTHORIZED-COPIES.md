@@ -76,6 +76,60 @@ sql-ref   borrower_officers
 sql-write borrower_officers
 
 # ---------------------------------------------------------------------------
+# THE VESTING ENTITY — authorized in writing by the owner, twice.
+#
+# 2026-08-30 (the original directive):
+#   "So it should populate that LLC as an LLC slot and it should be linked
+#    directly to his profile. So if that LLC is already verified somehow on his
+#    profile or even if it is not verified, even if it has some documentation on
+#    his profile already like formation documents, operating units, whatever it
+#    has that information should automatically be pre-filled in this condition …
+#    You have the entire entity logic. Bring over the entire entity logic that we
+#    have all over. Bring it over there. You should basically share the logic.
+#    Don't copy it. We need to share that logic from there. It should be directly
+#    linked to the profile. It should be saved to the profile. If that entity
+#    exists already in the profile, then it should pre-fill with that entity docs
+#    already there … when you put in the documents and you verify it should be
+#    verified to his profile in future when you use this LLC it's already
+#    verified."
+#
+# 2026-08-30 (the correction that closed it):
+#   "For this one, we need to bring over the same exact logic. If this upload is
+#    already uploaded in this entity slot on the profile, then it should be
+#    pre-filled with the documents already there and verified already. Also,
+#    you're missing the optional certificate of good standing."
+#
+# WHY IT IS AN IMPORT AND NOT A COPY, in the owner's own words: "share the logic,
+# don't copy it." A second entity implementation would be a second answer to "is
+# this company verified?" — and the one that drifts is the one that lets an
+# unverified company take title. Sharing also picks up rules a copy would have
+# missed and nobody would have noticed were missing: the Certificate of Good
+# Standing is OPTIONAL and EXPIRES AFTER 30 DAYS (`llc.js` GS_SLOT_CODE), the
+# layered-entity walk verifies bottom-up, and `missingForVerification` already
+# knows what a corporation is asked for versus an LLC, a partnership or a trust.
+#
+# THE ENTITY IS THE BORROWER'S, NOT THE PRODUCT'S. `llcs` hangs off `borrowers`,
+# which is already the shared identity zone — the same reasoning that authorized
+# `service_contacts`. One company, one set of formation documents, verified once.
+#
+# SCOPE. Long-Term reads and writes the entity through THIS module and never with
+# raw SQL of its own, so every rule above applies to both products by
+# construction. It does not reach the RTL condition engine, the RTL file screens,
+# or any RTL loan data.
+# ---------------------------------------------------------------------------
+
+# The one entity definition: find-or-create, the document slots, the members,
+# what is still missing before it can be verified, and the good-standing expiry.
+import   src/lib/llc.js
+
+# The entity record itself, and the document slots that hang off it. WRITE is
+# authorized because the owner asked for it by name — "it should be saved to the
+# profile … when you put in the documents and you verify it should be verified to
+# his profile" — and it happens THROUGH the shared module above, never in raw SQL.
+sql-ref   llcs
+sql-write llcs
+
+# ---------------------------------------------------------------------------
 # CLICKUP FOR LONG-TERM — authorized in writing by the owner, 2026-08-23:
 #   "Bring over the basic details of the ClickUp connector and actual
 #    credentials from the ClickUp connector from the RTL side over to the

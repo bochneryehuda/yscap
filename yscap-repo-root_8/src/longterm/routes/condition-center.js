@@ -44,6 +44,7 @@ const settingsStore = require('../settings/store');
 const engine = require('../conditions-center/engine');
 const read = require('../conditions-center/read');
 const write = require('../conditions-center/write');
+const workspace = require('../conditions-center/workspace');
 const rules = require('../conditions-center/rules');
 const registry = require('../conditions-center/field-registry');
 const library = require('../conditions-center/library');
@@ -110,6 +111,47 @@ async function scopedCondition(req, res) {
   }
   return scoped;
 }
+
+/**
+ * THE WORKING DATA for a condition that is a CHOICE rather than an upload — the
+ * mortgages on the credit report, the subject property's mortgage, the vesting
+ * entity. Its own door on purpose: the conditions LIST is loaded by every screen
+ * and every borrower, and these three reads are only wanted once somebody opens
+ * one of them.
+ *
+ * Answers `{ workspace: null }` for an ordinary condition rather than a 404 — the
+ * screen asks the same question of every condition it opens, and "this one has
+ * no workspace" is a normal answer, not an error.
+ */
+router.get('/loans/:loanId/conditions/:conditionId/workspace', async (req, res) => {
+  const scoped = await scopedCondition(req, res);
+  if (!scoped) return;
+  try {
+    res.json({ workspace: await workspace.forCondition(scoped.loan.id, req.params.conditionId, { db }) });
+  } catch (e) {
+    console.error('[lt] condition workspace failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not open that condition just now.' });
+  }
+});
+
+/**
+ * RECORD THE ANSWER. Validated through `answers.js` — the SAME module the
+ * sign-off gate reads — so a shape this accepts is always one the gate honours.
+ * Merges, so two people working the mortgages list a line at a time do not wipe
+ * each other's rows.
+ */
+router.post('/loans/:loanId/conditions/:conditionId/answer', async (req, res) => {
+  const scoped = await scopedCondition(req, res);
+  if (!scoped) return;
+  try {
+    answer(res, await write.recordAnswer(
+      scoped.loan.id, req.params.conditionId, (req.body || {}).answer, staffId(req), db,
+    ));
+  } catch (e) {
+    console.error('[lt] record condition answer failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not save that just now.' });
+  }
+});
 
 router.post('/loans/:loanId/conditions/:conditionId/satisfy', async (req, res) => {
   const scoped = await scopedCondition(req, res);
