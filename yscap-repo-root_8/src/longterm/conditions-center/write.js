@@ -41,7 +41,10 @@
  */
 
 const db = require('../db');
-const answers = require('./answers');
+// SHARED (2026-08-30): the owner's one-out-of-three rule now lives in
+// src/lib/conditions/answers.js so the ONE sign-off gate can read it too — while
+// it lived here, this door and the shared gate disagreed about the same condition.
+const answers = require('../../lib/conditions/answers');
 const entityPrefill = require('./entity-prefill');
 const vocab = require('./vocabulary');
 const { ownerOf, ownerWhere, ownerCols } = require('../../lib/condition-owner');

@@ -10015,6 +10015,53 @@ async function pendingDocumentsBlock(itemId) {
  * upload stuff … nothing actually works."*
  */
 async function sharedOwnerSignOffGate(itemId, item, owner) {
+  /* ── A CONDITION THAT IS ANSWERED ANOTHER WAY IS ASKED FIRST ───────────────
+     Some conditions are a CHOICE, not an upload, and the owner said so plainly
+     about the subject property's mortgage: *"you can just select that it's FCI,
+     whatever, and then you don't need anything, not an attachment and not a
+     form."* The same is true of a credit-report mortgage that is the home the
+     borrower lives in, and of a file with no mortgages on the report at all —
+     *"a condition with no mortgages on it is ANSWERED, not blocked."*
+
+     This arm runs BEFORE the document arm for exactly that reason: those
+     conditions are `item_kind='document'` (deliberately — see the library, which
+     keeps them documents so that if this rule ever stops governing them the gate
+     falls back to asking for the statement, which is the SAFE way to be wrong),
+     so without this they fall straight into the document arm and are refused
+     FOREVER, with no way through but a super-admin override. That is not
+     hypothetical: it is what this gate did between the widening and this fix, and
+     it disagreed with the Long-Term product door, which allowed the very same
+     answer. Two gates, two answers, one condition.
+
+     lib/conditions/answers.js is the ONE definition — the door that RECORDS an
+     answer and both gates that JUDGE one all read it, so what may be recorded and
+     what finishes a condition can never drift apart. */
+  const answers = require('../lib/conditions/answers');
+  const plan = answers.plan({ code: item.template_code || '' });
+  if (plan) {
+    const recorded = item.tool_payload && typeof item.tool_payload === 'object' ? item.tool_payload : {};
+    const docs = (await db.query(
+      `SELECT slot_label, review_status FROM documents
+         WHERE checklist_item_id=$1 AND is_current`, [itemId])).rows;
+    const byLine = {};
+    for (const d of docs) {
+      if (!d.slot_label) continue;
+      // The same shape the Long-Term door builds: a line counts as documented
+      // when its slot carries an ACCEPTED document, never merely a present one.
+      if (d.review_status === 'accepted') byLine[d.slot_label] = true;
+    }
+    const mortgages = Array.isArray(recorded.mortgages) ? recorded.mortgages : [];
+    const verdict = answers.satisfies({ code: item.template_code || '' }, recorded, {
+      // The lines to answer are the ones a PERSON marked as mortgages, read off
+      // the condition's own recorded answer — never re-derived here, or the gate
+      // and the screen could disagree about how many there are.
+      lines: mortgages.map((m) => (typeof m === 'string' ? { key: m, label: m } : m)),
+      documentsByLine: byLine,
+      hasDocument: docs.some((d) => d.review_status === 'accepted'),
+    });
+    return verdict.ok ? null : verdict.why;
+  }
+
   // A REQUIRED DOCUMENT CONDITION WITH NOTHING ACCEPTED ON IT CANNOT BE SIGNED
   // OFF. `item_kind='document' AND tool_key IS NULL` is the same test the RTL
   // arm uses, and it is why the Long-Term vocabulary maps a form / order / esign

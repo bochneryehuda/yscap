@@ -1,6 +1,14 @@
-'use strict';
 /**
- * LONG-TERM — THE WAYS A CONDITION IS ANSWERED WHEN A DOCUMENT IS NOT THE ONLY WAY.
+ * THE CONDITIONS THAT ARE A CHOICE, NOT AN UPLOAD — SHARED.
+ *
+ * MOVED HERE FROM src/longterm/conditions-center/ (2026-08-30) because the ONE
+ * sign-off gate has to read it. While it lived under src/longterm/, the shared
+ * gate could not require it — RTL code may not reach into the side build, and
+ * rightly so — and the result was measurable: the Long-Term door let the owner's
+ * own answer through while the shared gate refused the very same condition for
+ * want of a document. Two gates, two answers, one condition. The rule is the
+ * owner's, it is pure, and both products' gates now read this one copy.
+ * ── THE WAYS A CONDITION IS ANSWERED WHEN A DOCUMENT IS NOT THE ONLY WAY ────
  *
  * Three conditions in this library are not "upload the thing". The owner
  * described each of them as a CHOICE, and the choice is the whole point:

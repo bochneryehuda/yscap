@@ -597,6 +597,25 @@ import src/lib/conditions/required-slots.js
 # the duplication this ledger exists to prevent.
 import src/lib/conditions/live-check-values.js
 
+# THE OWNER'S "ANSWERED ANOTHER WAY" RULE — the one definition, read by BOTH gates.
+#
+# 2026-08-30 share-the-code grant. This module was Long-Term's own
+# (src/longterm/conditions-center/answers.js) and it MOVED to the shared library
+# for a reason that was measured, not anticipated: three conditions are a CHOICE
+# rather than an upload, and the owner said so plainly — *"you can just select
+# that it's FCI, whatever, and then you don't need anything, not an attachment and
+# not a form."* While the rule lived under src/longterm/, the ONE shared sign-off
+# gate could not require it (RTL code may not reach into the side build, and that
+# stays true). The result: the Long-Term product door ALLOWED the owner's own
+# answer while the shared gate REFUSED the very same condition for want of a
+# document — two gates, two answers, one condition, and the refusal was permanent
+# with no way through but a super-admin override.
+#
+# It is PURE (no database, no config, no requires of its own), so moving it costs
+# nothing and buys one definition that the door recording an answer and both gates
+# judging one all read. Long-Term imports it back from the shared library here.
+import src/lib/conditions/answers.js
+
 # THE THREE COLUMNS THE SHARED TABLES GAIN SO A LONG-TERM CONDITION CAN LIVE IN
 # THEM (db/651, the same grant). None is lt_-prefixed, so the gate does not
 # require these lines — they are recorded because the rule is per item and a

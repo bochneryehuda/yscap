@@ -36,7 +36,7 @@
  */
 
 const db = require('../db');
-const answers = require('./answers');
+const answers = require('../../lib/conditions/answers');
 const entityPrefill = require('./entity-prefill');
 const vocab = require('./vocabulary');
 const { ownerOf, ownerWhere } = require('../../lib/condition-owner');

@@ -27,7 +27,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const answers = require('../src/longterm/conditions-center/answers.js');
+const answers = require('../src/lib/conditions/answers.js');
 const workspace = require('../src/longterm/conditions-center/workspace.js');
 const library = require('../src/longterm/conditions-center/library.js');
 const { stripComments } = require('./lib/strip-comments.js');
@@ -156,11 +156,52 @@ check(answers.satisfies(reo, addr({ occupancy: 'holiday_let' }), { lines }).ok =
 // ── E. What may be RECORDED is what the gate will HONOUR ────────────────────
 console.log('the door and the gate cannot disagree');
 
-const gateSrc = stripComments(read('src/longterm/conditions-center/write.js'));
-check(/require\('\.\/answers'\)/.test(gateSrc), 'the sign-off gate reads the one definition');
-check(/answers\.satisfies\(/.test(gateSrc), 'and asks it whether the condition is finished');
-check(/answers\.answerProblem\(/.test(gateSrc), 'and the door that records an answer asks the same module');
-check(/entityPrefill\.forEntity\(/.test(gateSrc), 'and the gate asks the borrower’s profile about the company');
+/* ONE DEFINITION, ASSERTED BY RESOLUTION RATHER THAN BY SPELLING.
+   This used to grep write.js for the literal `require('./answers')`, and it broke
+   the moment the module MOVED to src/lib/conditions/ so the shared sign-off gate
+   could read it too — while the rule lived under src/longterm/, RTL code could not
+   require it, and the two gates disagreed about the same condition in production.
+   A path-spelling assertion fails on the move that FIXES that, and would keep
+   passing if a second copy appeared under a different name. So: resolve whatever
+   each reader requires, from that reader's own directory, and assert they land on
+   the SAME FILE — which is the property the rule actually needs. */
+const REPO = path.join(__dirname, '..');
+const CANONICAL = require.resolve(path.join(REPO, 'src/lib/conditions/answers.js'));
+
+const answersSpecifierIn = (rel) => {
+  const src = stripComments(read(rel));
+  const m = src.match(/require\(\s*['"]([^'"]*answers)['"]\s*\)/);
+  return m ? m[1] : null;
+};
+for (const reader of [
+  'src/longterm/conditions-center/write.js',   // the Long-Term door
+  'src/longterm/conditions-center/workspace.js',
+  'src/routes/staff.js',                        // the SHARED sign-off gate
+]) {
+  const spec = answersSpecifierIn(reader);
+  check(!!spec, `${reader} requires an answers module at all`);
+  const resolved = require.resolve(path.resolve(path.dirname(path.join(REPO, reader)), spec));
+  check(resolved === CANONICAL,
+    `${reader} reads THE one definition (src/lib/conditions/answers.js), not a copy — got ${path.relative(REPO, resolved)}`);
+}
+// The Long-Term door's own reads, still asserted (this file was renamed out from
+// under these three when the module moved, so they get their source back).
+const ltDoorSrc = stripComments(read('src/longterm/conditions-center/write.js'));
+check(/answers\.satisfies\(/.test(ltDoorSrc), 'and asks it whether the condition is finished');
+check(/answers\.answerProblem\(/.test(ltDoorSrc), 'and the door that records an answer asks the same module');
+check(/entityPrefill\.forEntity\(/.test(ltDoorSrc), 'and the gate asks the borrower’s profile about the company');
+
+/* AND THE SHARED GATE ASKS IT TOO — the whole reason the module moved. The arm
+   must run BEFORE the document arm, or a condition the owner said needs nothing
+   ("just select that it's FCI … you don't need anything") is refused forever for
+   want of a document. Asserted on ORDER, not merely on presence. */
+const sharedGateSrc = stripComments(read('src/routes/staff.js'));
+const gateFn = sharedGateSrc.slice(sharedGateSrc.indexOf('async function sharedOwnerSignOffGate'));
+const gateBody = gateFn.slice(0, gateFn.indexOf('\nasync function '));
+check(/answers\.plan\(/.test(gateBody) && /answers\.satisfies\(/.test(gateBody),
+  'the SHARED sign-off gate asks the same module whether the condition is answered another way');
+check(gateBody.indexOf('answers.plan(') < gateBody.indexOf("item_kind === 'document'"),
+  'and it asks BEFORE the document arm — a condition answered the owner\'s way must not be refused for want of a document');
 
 // A SOURCE GREP PROVES THE CALL IS WRITTEN, NEVER THAT IT RUNS — so the real
 // gate is CALLED here, with the conditions it governs. `signOffProblem` is pure,

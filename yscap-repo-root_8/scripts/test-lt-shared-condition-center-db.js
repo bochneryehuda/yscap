@@ -194,10 +194,16 @@ const uniq = `ltcc-${process.pid}-${Date.now()}`;
   assert(pass.added.length > 0, `C2 it attached ${pass.added.length} conditions to the loan`);
 
   const items = (await db.query(
-    `SELECT id, scope, application_id, borrower_id, llc_id, lt_loan_id, template_id,
-            item_kind, tool_key, audience, category, status, is_required, slots, origin_kind
-       FROM checklist_items WHERE lt_loan_id = $1::uuid
-      ORDER BY sort_order, id`, [ltId])).rows;
+    `SELECT ci.id, ci.scope, ci.application_id, ci.borrower_id, ci.llc_id, ci.lt_loan_id, ci.template_id,
+            ci.item_kind, ci.tool_key, ci.audience, ci.category, ci.status, ci.is_required, ci.slots,
+            ci.origin_kind,
+            -- the template CODE, so a fixture can tell the conditions apart by the
+            -- name the owner uses rather than by whichever row sorts first
+            t.code
+       FROM checklist_items ci
+       LEFT JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.lt_loan_id = $1::uuid
+      ORDER BY ci.sort_order, ci.id`, [ltId])).rows;
   assert(items.length === pass.added.length,
     `C3 ${items.length} checklist_items rows are owned by this lt_loan`);
   assert(items.every((r) => r.scope === 'lt_loan'), 'C4 every one carries scope=lt_loan');
@@ -339,8 +345,23 @@ const uniq = `ltcc-${process.pid}-${Date.now()}`;
   // suite took whichever row the database happened to return first and passed or
   // failed depending on that; a fixture must stage the case it claims to test.
   const reqSlots = (r) => (Array.isArray(r.slots) ? r.slots : []).filter((x) => x && x.required !== false);
-  const ltDocs = items.filter((r) => r.item_kind === 'document' && r.is_required !== false);
+  /* AND A THIRD CUT MUST BE MADE, which the first version of this fixture missed:
+     exclude the conditions governed by lib/conditions/answers.js. Those are
+     `item_kind='document'` on purpose (so that if the answers rule ever stopped
+     governing them the gate would fall back to asking for the statement — the safe
+     way to be wrong), but the owner said plainly that they need no document at all:
+     "you can just select that it's FCI, whatever, and then you don't need anything,
+     not an attachment and not a form." The gate therefore ALLOWS them, correctly.
+     This section is about the conditions that genuinely do need a document, and
+     the earlier fixture picked lt_reo_liabilities — sort_order 1, no slots, and
+     governed — so F1..F5 were all demonstrated on the one row that proves the
+     opposite of what they claim. */
+  const governed = new Set(require('../src/lib/conditions/answers').GOVERNED_CODES);
+  const ltDocs = items.filter((r) => r.item_kind === 'document' && r.is_required !== false
+    && !governed.has(r.code));
   const ltDoc = ltDocs.find((r) => reqSlots(r).length === 0);
+  assert(ltDoc && !governed.has(ltDoc.code),
+    `F0 the fixture is a condition that REALLY needs a document (picked ${ltDoc && ltDoc.code})`);
   const ltSlotted = ltDocs.find((r) => reqSlots(r).length > 0);
   assert(!!ltDoc, 'F0 the loan carries a required Long-Term DOCUMENT condition with no named slots');
   // A MISSING FIXTURE MUST FAIL CLEANLY, NOT THROW. A crashing assertion also
@@ -491,6 +512,104 @@ const uniq = `ltcc-${process.pid}-${Date.now()}`;
   assert(clientRows.every((c) => c.notes === undefined && c.waivedReason === undefined
     && c.satisfiedBy === undefined && c.config === undefined),
     'H8 …and none of the internal facts ride along');
+
+  /* ═════════ I. THE OWNER'S OWN RULE SURVIVES THE SHARED GATE ═══════════════
+     Two of these conditions are a CHOICE, not an upload — the owner: "you can just
+     select that it's FCI, whatever, and then you don't need anything, not an
+     attachment and not a form." They are item_kind='document' deliberately, so a
+     gate that only looked at the kind refuses them FOREVER with no way through but
+     a super-admin override. That is what the widened gate did before this arm, and
+     it disagreed with the Long-Term product door, which allowed the same answer. */
+  const ACTOR = { kind: 'staff', role: 'processor', id: staffId };
+  const answersLib = require('../src/lib/conditions/answers');
+  const governedItems = items.filter((r) => answersLib.GOVERNED_CODES.includes(r.code));
+  assert(governedItems.length > 0, `I1 the loan carries the conditions the owner answers another way (${governedItems.length})`);
+
+  /* lt_subject_mortgage_statement is autoApply:'rules', so it is only on a file the
+     rules put it on — and it was NOT on this fixture, which meant I2 and I4 below
+     silently skipped. A skipped assertion about the owner's headline rule is worth
+     nothing, so the condition is attached here on purpose. */
+  let fci = governedItems.find((r) => r.code === 'lt_subject_mortgage_statement');
+  if (!fci) {
+    const tpl = (await db.query(
+      `SELECT id FROM checklist_templates WHERE code='lt_subject_mortgage_statement' AND scope='lt_loan'`)).rows[0];
+    assert(!!tpl, 'I1a the subject-mortgage template really is in the shared library');
+    const id = (await db.query(
+      `INSERT INTO checklist_items (template_id, scope, lt_loan_id, label, audience, item_kind, is_required, status)
+       VALUES ($1,'lt_loan',$2::uuid,'Subject property mortgage','both','document',true,'outstanding')
+       RETURNING id`, [tpl.id, ltId])).rows[0].id;
+    fci = { id, code: 'lt_subject_mortgage_statement' };
+  }
+  assert(!!fci, 'I1b the subject-mortgage condition is on the file, so the assertions below really run');
+  {
+    await db.query("UPDATE checklist_items SET tool_payload=$2 WHERE id=$1",
+      [fci.id, JSON.stringify({ way: 'fci_serviced' })]);
+    assert(await gate(fci.id, ACTOR) === null,
+      'I2 the FCI answer finishes the subject-mortgage condition — no attachment, no form, exactly as the owner said');
+  }
+  const reo = governedItems.find((r) => r.code === 'lt_reo_liabilities');
+  if (reo) {
+    await db.query("UPDATE checklist_items SET tool_payload=$2 WHERE id=$1",
+      [reo.id, JSON.stringify({ mortgages: [] })]);
+    assert(await gate(reo.id, ACTOR) === null,
+      'I3 a file with no mortgages on the credit report is ANSWERED, not blocked');
+  }
+  // …and the arm is NOT a blanket exemption: an unanswered one is still refused.
+  if (fci) {
+    await db.query("UPDATE checklist_items SET tool_payload=NULL WHERE id=$1", [fci.id]);
+    assert(await gate(fci.id, ACTOR) !== null,
+      'I4 …but an UNANSWERED one is still refused — the arm honours the answer, it does not exempt the condition');
+  }
+
+  /* ═════════ J. THE RTL CONDITION STUDIO CANNOT REACH LONG-TERM ═════════════
+     checklist_templates stopped being one product's table. The Studio read and
+     wrote it with no scope filter, so an RTL admin could switch a Long-Term
+     condition off, or DELETE it off every Long-Term loan. */
+  /* READ THE REAL LIST OFF THE MODULE. Re-declaring it here would assert against
+     this suite's own copy and stay green while the production one was widened —
+     which is precisely what the first cut of this assertion did: adding 'lt_loan'
+     to the module's list broke nothing. */
+  const studioScopes = require('../src/routes/admin-conditions').STUDIO_SCOPES;
+  assert(Array.isArray(studioScopes) && studioScopes.length > 0,
+    'J0 the Studio exposes the scope list it actually uses');
+  assert(!studioScopes.includes('lt_loan'),
+    `J1 the Studio's own scope list does not include lt_loan (got ${JSON.stringify(studioScopes)})`);
+  const reachable = (await db.query(
+    `SELECT count(*) c FROM checklist_templates WHERE scope='lt_loan' AND scope = ANY($1)`, [studioScopes])).rows[0].c;
+  assert(Number(reachable) === 0, 'J1a …so no Long-Term template is reachable through it');
+  /* EVERY DOOR THAT REACHES A TEMPLATE BY ID MUST ALSO NAME THE SCOPE — asserted
+     as that PROPERTY, not as a count. The first cut counted occurrences of a
+     placeholder string and had to be edited the moment more statements were
+     scoped, which is a test that tracks the code's shape instead of its rule.
+     Removing the guard from the DELETE alone is the dangerous case
+     (`?removeFromFiles=1` strips the condition off every Long-Term loan), so what
+     matters is that NO statement reaches a template by bare id. */
+  const studioSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'src/routes/admin-conditions.js'), 'utf8');
+  const byId = [...studioSrc.matchAll(/`([^`]*checklist_templates[^`]*)`/g)]
+    .map((m) => m[1].replace(/\s+/g, ' ').trim())
+    // Only statements whose PRIMARY target is checklist_templates. A query that
+    // merely mentions the table inside a count() subquery (the custom-fields door
+    // does) is not a template door and must not be demanded to carry the scope.
+    // The id predicate must be the TEMPLATE's own — unqualified, or on the `t`
+    // alias this file uses for checklist_templates. The custom-fields door filters
+    // `cf.id=$1` and merely MENTIONS checklist_templates inside count() subqueries;
+    // it is not a template door and must not be asked to carry the scope.
+    .filter((q) => /(?<![\w.])(?:t\.)?id\s*=\s*\$1\b/.test(q));
+  assert(byId.length >= 4, `J3 the Studio really does have doors that reach a template by id (${byId.length})`);
+  const unscoped = byId.filter((q) => !/scope\s*=\s*ANY\(/.test(q));
+  assert(unscoped.length === 0,
+    `J3a every one of them names the scope too — unscoped: ${JSON.stringify(unscoped)}`);
+  // And the LIST door is scoped as well, though it takes no id.
+  assert(/FROM checklist_templates t[\s\S]{0,400}?WHERE t\.scope = ANY\(\$1\)/.test(studioSrc),
+    'J3b the list door is scoped');
+
+  // AND IT STILL SHOWS WHAT IT ALWAYS SHOWED — this must not narrow to
+  // 'application' and quietly drop the borrower-profile and per-entity rows.
+  const kept = (await db.query(
+    `SELECT count(*) c FROM checklist_templates WHERE scope = ANY($1)`, [studioScopes])).rows[0].c;
+  const historical = (await db.query(
+    `SELECT count(*) c FROM checklist_templates WHERE scope IN ('application','borrower_profile','llc')`)).rows[0].c;
+  assert(kept === historical, `J4 …and every historically-visible template is still listed (${kept})`);
 
   /* ═══════════════════════════════ done ════════════════════════════════════ */
 
