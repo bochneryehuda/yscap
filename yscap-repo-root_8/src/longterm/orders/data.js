@@ -109,6 +109,13 @@ async function getOrderData(loanId, client = db) {
   out.loanNumber = loan.loan_number || null;
   out.hasLoanNumber = !!String(loan.loan_number || '').trim();
   out.propertyLine = propertyLine(loan);
+  // The PARTS as well as the joined line. The owner's own drafts address the
+  // property one field at a time («Subject_Property_Address_11», «..._City_12»,
+  // «..._State_14», «..._Zip_15»), so a draft pasted in verbatim needs each part
+  // to resolve on its own — a single joined line cannot answer four tokens.
+  out.propertyStreet = loan.street || null;
+  out.propertyCity = loan.city || null;
+  out.propertyZip = loan.zip || null;
   out.propertyState = loan.state || null;
   out.propertyType = loan.gse_property_type || null;
   out.unitCount = loan.unit_count == null ? null : Number(loan.unit_count);
@@ -149,6 +156,22 @@ async function getOrderData(loanId, client = db) {
   if (!out.borrowerEmail && primary) out.borrowerEmail = primary.email || null;
   out.coBorrowerName = co ? partyName(co) : null;
   out.coBorrowerEmail = co ? (co.email || null) : null;
+  // NAME PARTS, for the same reason as the address parts above: the owner's drafts
+  // print «Borrower_First_And_Middle_Name_36» «Borrower_Last_Name_4002» as two
+  // fields. Built from the SAME columns partyName() joins, so a name can never
+  // read one way in the letter body and another in the parts.
+  out.borrowerFirstMiddle = primary
+    ? [primary.first_name, primary.middle_name].map((x) => String(x || '').trim()).filter(Boolean).join(' ') || null
+    : null;
+  // The suffix rides with the last name (a "Jr." belongs to the surname, and the
+  // owner's draft has no token of its own for it — dropping it would rename a person).
+  out.borrowerLastName = primary
+    ? [primary.last_name, primary.name_suffix].map((x) => String(x || '').trim()).filter(Boolean).join(' ') || null
+    : null;
+  out.coBorrowerFirstName = co ? (String(co.first_name || '').trim() || null) : null;
+  out.coBorrowerLastName = co
+    ? [co.last_name, co.name_suffix].map((x) => String(x || '').trim()).filter(Boolean).join(' ') || null
+    : null;
   out.borrowerPhone = primary ? (primary.mobile_phone || primary.home_phone || null) : null;
   out.dob = primary && primary.date_of_birth ? orderEmail.dayText(primary.date_of_birth) : null;
   if (!out.entityName) {
@@ -169,6 +192,12 @@ async function getOrderData(loanId, client = db) {
       const list = rows || [];
       const current = list.find((r) => String(r.residency_type || '').toLowerCase() === 'current') || list[0] || null;
       out.borrowerMailingAddress = residenceLine(current);
+      // The parts, for «Borrower_Present_Address_FR0104» and its city/state/zip
+      // siblings — same row, so the line and the parts can never disagree.
+      out.borrowerMailingStreet = current ? (current.street || null) : null;
+      out.borrowerMailingCity = current ? (current.city || null) : null;
+      out.borrowerMailingState = current ? (current.state || null) : null;
+      out.borrowerMailingZip = current ? (current.zip || null) : null;
     });
 
   // ── Who signs the order ───────────────────────────────────────────────────
