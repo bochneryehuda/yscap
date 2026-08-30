@@ -312,11 +312,20 @@ The §3 scenario — $375,000, three options in the cart:
 
 And the sentences, which are what the borrower actually reads:
 
-> **Buying the rate down** costs $8,438 today and saves $127 a month. You are ahead after 67 months —
+> **Buying the rate down** costs $8,438 more at closing than No points and saves $127 a month. You are ahead after 67 months —
 > 5 years and 7 months. If you expect to sell or refinance before then, it costs you money.
 >
-> **Taking the credit** pays you $6,563 today and costs $129 a month. You stay ahead until month 51 —
-> 4 years and 3 months. Past that, the higher rate has eaten the credit.
+> **Taking the credit** costs $6,563 less at closing than No points and $129 more a month. You stay ahead until month 51 —
+> 4 years and 3 months. Past that, the higher rate has eaten the difference.
+>
+> **EVERY FIGURE IN THESE TWO SENTENCES IS A DIFFERENCE FROM THE ANCHOR, and each one
+> says so and names it.** They used to read *"costs $8,438 today"*, which is true and
+> reads as absolute — harmless on this ladder, where the anchor sits at par so each
+> option's own cost happens to equal its difference. The owner's three offers break
+> that: borrower-paid beside lender-paid on one sheet, where the table said *"You
+> receive $1,655"* one line above and the sentence said *"pays you $11,250 today"*.
+> Both were right, they answer different questions, and nothing on the page said
+> which was which. Found by reading a rendered sample.
 
 ---
 

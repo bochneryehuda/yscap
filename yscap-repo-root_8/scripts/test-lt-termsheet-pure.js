@@ -270,8 +270,18 @@ section('the layout — the block list a renderer walks');
   check(breakEven && breakEven[2] === '67 months (5 years 7 months)',
     `the break-even row reads in years and months, as the docs print it (got ${breakEven && breakEven[2]})`);
   const paras = lay.blocks.filter((b) => b.t === 'para').map((b) => b.text).join(' ');
-  check(/You are ahead after 67 months \(5 years 7 months\)/.test(paras), 'the buydown sentence is the documented one, verbatim');
-  check(/the higher rate has eaten the credit/.test(paras), 'and so is the credit sentence');
+  check(/costs \$8,438 more at closing than No points and saves \$127 a month\. You are ahead after 67 months \(5 years 7 months\)/.test(paras),
+    'the buydown sentence is the documented one, verbatim');
+  check(/costs \$6,563 less at closing than No points and \$129 more a month/.test(paras), 'and so is the credit sentence');
+  // ⛔ EVERY FIGURE IN THOSE SENTENCES IS A DIFFERENCE, so each one NAMES what it
+  // is a difference from. They used to read "costs $8,438 today" — true, and it
+  // reads as absolute. Harmless on this ladder, where the anchor is at par so the
+  // two coincide; on the owner's three offers, where borrower-paid sits beside
+  // lender-paid, the table said "You receive $1,655" one line above while the
+  // sentence said "pays you $11,250 today". Both right, different questions,
+  // nothing on the page saying which. Found by reading a rendered sample.
+  check(paras.split('No points').length - 1 >= 3,
+    'and every comparative sentence names the option it is comparing against, so no figure on the page reads as absolute when it is a difference');
   check(lay.blocks.filter((b) => b.t === 'pagebreak').length === 3, 'one detail page per option — the owner\'s "it\'s just adding pages to it", literally');
 
   const single = layout.buildLayout(snapshot.buildSnapshot({ selections: [quote('The offer', 7.375, 102)], plan: PLAN, prepared: {} }).snapshot, {});

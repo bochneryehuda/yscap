@@ -112,9 +112,21 @@ function monthsWords(m) {
  * is only ahead until the dearer rate eats it. Getting them the wrong way round
  * tells a borrower to hold a loan they should refinance.
  */
-function breakEvenSentence(row, member) {
+function breakEvenSentence(row, member, anchor) {
   if (!row || row.isAnchor) return null;
   const label = (member && member.label) || 'This option';
+  // ⛔ EVERY FIGURE IN THIS SENTENCE IS A DIFFERENCE, SO IT SAYS SO AND NAMES
+  // WHAT IT IS A DIFFERENCE FROM.
+  //
+  // It used to read "costs $8,438 today", which is true and reads as absolute.
+  // On the documented ladder that was harmless — the anchor was at par, so each
+  // option's own cost happened to EQUAL its difference from the anchor. The
+  // owner's three offers break that: borrower-paid beside lender-paid on one
+  // sheet, where the table says "You receive $1,655" one line above and the
+  // sentence said "pays you $11,250 today". Both figures were right and they
+  // answer different questions, and nothing on the page said which was which.
+  // Found by reading a rendered sample, not by reading this function.
+  const against = (anchor && anchor.label) ? ` than ${anchor.label}` : ' than the option above';
   const w = monthsWords(row.breakEvenMonths);
   const dCost = row.deltaCostDollars;
   const dMonthly = row.deltaMonthlyDollars;
@@ -124,20 +136,20 @@ function breakEvenSentence(row, member) {
     // No break-even exists. Say which way it goes rather than going silent — a
     // row with no sentence reads as a row nobody checked.
     if (dCost > 0 && dMonthly >= 0) {
-      return `${label} costs ${money(dCost)} more at closing and ${money(dMonthly)} more a month. It does not pay back.`;
+      return `${label} costs ${money(dCost)} more at closing${against} and ${money(dMonthly)} more a month. It does not pay back.`;
     }
     if (dCost < 0 && dMonthly <= 0) {
-      return `${label} pays you ${money(-dCost)} at closing and costs ${money(-dMonthly)} less a month.`;
+      return `${label} costs ${money(-dCost)} less at closing${against} and ${money(-dMonthly)} less a month.`;
     }
     return null;
   }
   if (dCost > 0) {
-    return `${label} costs ${money(dCost)} today and saves ${money(-dMonthly)} a month. You are ahead after ${w}. `
-      + 'If you expect to sell or refinance before then, it costs you money.';
+    return `${label} costs ${money(dCost)} more at closing${against} and saves ${money(-dMonthly)} a month. `
+      + `You are ahead after ${w}. If you expect to sell or refinance before then, it costs you money.`;
   }
-  return `${label} pays you ${money(-dCost)} today and costs ${money(dMonthly)} a month. `
+  return `${label} costs ${money(-dCost)} less at closing${against} and ${money(dMonthly)} more a month. `
     + `You stay ahead until month ${Math.round(row.breakEvenMonths)} — ${w.replace(/^\d+ months? \(/, '').replace(/\)$/, '')}. `
-    + 'Past that, the higher rate has eaten the credit.';
+    + 'Past that, the higher rate has eaten the difference.';
 }
 
 /**

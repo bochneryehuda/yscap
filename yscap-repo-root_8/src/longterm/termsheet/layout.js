@@ -220,7 +220,7 @@ function buildLayout(snapshot, opts = {}) {
       if (r.isAnchor) continue;
       const m = s.members[r.index];
       const sentence = cmp.workflow === 'A'
-        ? wording.breakEvenSentence(r, m)
+        ? wording.breakEvenSentence(r, m, anchor)
         : wording.incrementalSentence(r, m, anchor);
       if (sentence) blocks.push({ t: 'para', text: sentence });
     }
