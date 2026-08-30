@@ -55,7 +55,7 @@ const ALLOWLIST = new Set([
   'src/lib/co-borrower.js',          // co-borrower doc condition (staff adds a co-borrower)
   'src/lib/credit/co-condition.js',  // co-borrower CREDIT condition (staff splits a credit pull)
   'src/lib/conditions/engine.js',    // deterministic rules engine (admin-defined templates)
-  // ── THE LONG-TERM SIDE OF THE ONE CONDITION CENTER (db/650, db/651) ────────
+  // ── THE LONG-TERM SIDE OF THE ONE CONDITION CENTER (db/652, db/653) ────────
   // These three began writing `checklist_items` / `checklist_templates` when the
   // Long-Term loan became the FOURTH OWNER SCOPE of the shared Condition Center
   // (the owner's 2026-08-30 share-the-code directive). They wrote Long-Term's own

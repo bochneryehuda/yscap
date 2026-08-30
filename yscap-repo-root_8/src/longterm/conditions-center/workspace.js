@@ -130,7 +130,7 @@ async function documentsByLine(conditionId, client) {
   try {
     const { rows } = await client.query(
       // The per-line key travels in `documents.slot_label` — the ordinary
-      // document plumbing carries it, with no second table (db/651 moved these
+      // document plumbing carries it, with no second table (db/653 moved these
       // rows into the ONE Condition Center).
       `SELECT slot_label, id, filename FROM documents
         WHERE checklist_item_id = $1::uuid AND is_current

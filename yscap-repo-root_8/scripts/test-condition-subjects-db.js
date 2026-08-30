@@ -96,7 +96,7 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
       // SCOPED TO THE TEMPLATES THIS TAXONOMY IS ABOUT, and the exclusion is
       // written as a NEGATIVE on purpose. `condition-subjects.js` groups the
       // conditions list on the RTL loan file (StaffApplication.jsx is its only
-      // reader); since db/651 the Long-Term library lives in this same table
+      // reader); since db/653 the Long-Term library lives in this same table
       // under `scope='lt_loan'`, and those conditions render on the Long-Term
       // screens under the owner's OWN headings (`lt_condition_buckets`) — they
       // never reach this list, so mapping them here would be a second, unread

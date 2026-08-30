@@ -25,7 +25,7 @@
  * An empty list reads as "nothing is outstanding", which is a claim and usually
  * a wrong one. Every read that could not complete says so.
  *
- * ── WHERE IT READS FROM (db/650 + db/651) ───────────────────────────────────
+ * ── WHERE IT READS FROM (db/652 + db/653) ───────────────────────────────────
  *
  * The conditions are `checklist_items` in the ONE Condition Center, owned by
  * `lt_loan_id`; the BUCKETS are still Long-Term's own (`lt_condition_buckets` —

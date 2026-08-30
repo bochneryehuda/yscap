@@ -532,7 +532,7 @@ sql-write service_contacts
 # The Condition Center was multi-owner from day one (scope application /
 # borrower_profile / llc, chk_one_owner = exactly one owner column). The
 # Long-Term loan joins as the FOURTH owner: scope 'lt_loan', owner column
-# lt_loan_id on the two tables below (db/650). Every RTL selector is already
+# lt_loan_id on the two tables below (db/652). Every RTL selector is already
 # scope-filtered, so an lt_loan row is invisible to every RTL pass by
 # construction. DELIBERATELY NO FK to lt_loans — the gate forbids welding an
 # RTL table to the side build, and it is right; the column is a bare uuid the
@@ -617,7 +617,7 @@ import src/lib/conditions/live-check-values.js
 import src/lib/conditions/answers.js
 
 # THE THREE COLUMNS THE SHARED TABLES GAIN SO A LONG-TERM CONDITION CAN LIVE IN
-# THEM (db/651, the same grant). None is lt_-prefixed, so the gate does not
+# THEM (db/653, the same grant). None is lt_-prefixed, so the gate does not
 # require these lines — they are recorded because the rule is per item and a
 # reader should be able to see the whole crossing in one place:
 #   checklist_templates.config       the Long-Term library's own per-condition

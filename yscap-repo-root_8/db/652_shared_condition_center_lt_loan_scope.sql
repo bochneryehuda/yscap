@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/650 — THE LONG-TERM LOAN BECOMES A FOURTH OWNER OF THE ONE CONDITION CENTER
+-- db/652 — THE LONG-TERM LOAN BECOMES A FOURTH OWNER OF THE ONE CONDITION CENTER
 --
 -- WHAT THIS CHANGES, AND WHY. The owner ordered the parallel Long-Term condition
 -- build deleted and the REAL Condition Center shared (2026-08-30, recorded with

@@ -25,7 +25,7 @@
  * running. Nothing here throws: the desk reads it on every load, and the send
  * re-reads the same answer rather than trusting the screen's.
  *
- * WHERE THE LIBRARY LIVES: `checklist_templates`, scope='lt_loan' (db/651). The
+ * WHERE THE LIBRARY LIVES: `checklist_templates`, scope='lt_loan' (db/653). The
  * two switches this reads are Long-Term's own and ride inside the template's
  * `config`, which is the one place the seed writes them.
  */
@@ -70,7 +70,7 @@ async function resolve(client = db) {
       [[...byCondition.keys()]])).rows
       // `is_enabled` / `disabled_reason` are Long-Term's own two facts and have
       // no column in the shared table — they ride in `config`, where the seed
-      // writes them (db/651 says why they are not `is_active`: retiring a
+      // writes them (db/653 says why they are not `is_active`: retiring a
       // template and switching a shipped one off are different decisions with
       // different screens). Unpacked here so everything below is unchanged.
       .map((r) => ({

@@ -30,7 +30,7 @@
  * that fails allows the sign-off and SAYS the check could not run, which is a
  * recorded decision rather than a silent one.
  *
- * ── WHERE IT WRITES (db/650 + db/651) ───────────────────────────────────────
+ * ── WHERE IT WRITES (db/652 + db/653) ───────────────────────────────────────
  *
  * `checklist_items` in the ONE Condition Center, owned by `lt_loan_id`, through
  * the shared owner descriptor. Six Long-Term statuses round-trip onto the shared
@@ -314,7 +314,7 @@ async function waive(loanId, conditionId, staffId, reason, client = db) {
   // A WAIVE IS `satisfied` PLUS THE STAMP — this system's own way of recording
   // one, and the reason `vocabulary.js` maps rather than widens the status CHECK
   // (src/routes/staff.js says it in those words at the RTL waive). The REASON
-  // lands in its own column (db/651) rather than in free-text notes, because a
+  // lands in its own column (db/653) rather than in free-text notes, because a
   // waiver nobody can explain a year later is the thing the rule exists to stop.
   // `is_required` is deliberately LEFT ALONE: a waived condition was required
   // and somebody decided against it, which is a different fact from one that

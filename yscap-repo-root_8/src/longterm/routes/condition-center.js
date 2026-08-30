@@ -487,7 +487,7 @@ router.get('/library', async (req, res) => {
     await library.ensureSeeded(db);
     const [bucketRows, templateRows] = await Promise.all([
       read.buckets(db),
-      // THE LIBRARY LIVES IN THE ONE CONDITION CENTER NOW (db/651), scope
+      // THE LIBRARY LIVES IN THE ONE CONDITION CENTER NOW (db/653), scope
       // 'lt_loan'. Every enumerated value comes straight back through
       // `vocabulary.js` — the same translation the seed wrote through — so this
       // screen goes on speaking the owner's own wording while the COLUMN speaks

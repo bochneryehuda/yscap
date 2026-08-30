@@ -58,7 +58,7 @@ const registry = require('./field-registry');
 // The ONE translation between this file's wording and the shared Condition
 // Center's vocabulary. `seed()` writes through it and `read.js` reads back
 // through it, so a bucket cannot be filed under one heading and shown under
-// another (db/651 states the whole decision and why it is a MAP, not a widen).
+// another (db/653 states the whole decision and why it is a MAP, not a widen).
 const vocab = require('./vocabulary');
 
 const B = {
@@ -683,7 +683,7 @@ function verify(accepted) {
  * Every LABEL, HINT, borrower sentence and RULE below is the owner's own and is
  * written verbatim. What is TRANSLATED on the way in is only the handful of
  * enumerated words the shared columns constrain — the audience, the bucket, the
- * kind — through `vocabulary.js`, which is also what the read inverts. db/651
+ * kind — through `vocabulary.js`, which is also what the read inverts. db/653
  * says why that is a MAP rather than a widening of the CHECKs; the short version
  * is that two dialects in one column is not one Condition Center.
  *

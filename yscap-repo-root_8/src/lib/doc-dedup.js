@@ -16,7 +16,7 @@
  * bytes, or a fresh upload after a rejection/supersede) has a different size or
  * is no longer current, so it inserts normally through the existing path.
  *
- * THE OWNER IS PART OF THE IDENTITY, ALL FOUR OF THEM (db/650 added `lt_loan_id`
+ * THE OWNER IS PART OF THE IDENTITY, ALL FOUR OF THEM (db/652 added `lt_loan_id`
  * as the fourth). Two products now file into one `documents` table, and the same
  * person can genuinely upload the same file to a Long-Term loan and to an RTL
  * file within two minutes — collapsing those onto one row would leave one of the

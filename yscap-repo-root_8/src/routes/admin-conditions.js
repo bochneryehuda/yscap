@@ -13,8 +13,8 @@
  * ── THIS STUDIO AUTHORS THE SHORT-TERM LIBRARY, AND ONLY THAT ───────────────
  *
  * `checklist_templates` stopped being one product's table when the Long-Term
- * loan became the fourth owner scope of the one Condition Center (db/650,
- * db/651). Every read and write here used to carry NO scope filter, which was
+ * loan became the fourth owner scope of the one Condition Center (db/652,
+ * db/653). Every read and write here used to carry NO scope filter, which was
  * harmless while the only other scopes were the handful of borrower-profile and
  * LLC rows — and stopped being harmless the moment 28 Long-Term definitions
  * landed in the same table. Measured on a real database: the list went from 93

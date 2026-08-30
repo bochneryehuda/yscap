@@ -40,7 +40,7 @@
  *    afterwards; a failure here must never turn somebody's successful save into
  *    an error. It reports what it did, including what it could not do.
  *
- * ── WHERE THE ROWS LIVE (db/650 + db/651) ───────────────────────────────────
+ * ── WHERE THE ROWS LIVE (db/652 + db/653) ───────────────────────────────────
  *
  * The conditions themselves are `checklist_items` in the ONE Condition Center,
  * owned by `lt_loan_id` with `scope='lt_loan'` — the owner's *"take that exact
@@ -57,7 +57,7 @@ const rules = require('./rules');
 const registry = require('./field-registry');
 const vocab = require('./vocabulary');
 // WHO OWNS A CONDITION ROW — the one descriptor, shared with the short-term side
-// (db/650 made the Long-Term loan the fourth owner scope; db/651 finished the
+// (db/652 made the Long-Term loan the fourth owner scope; db/653 finished the
 // vocabulary). Every statement below says who it is about through this rather
 // than by hand-writing `lt_loan_id = $1`: the hand-written predicate is the one
 // that drifts, and a drifted owner predicate is a condition from one loan
@@ -327,7 +327,7 @@ async function evaluateLoan(loanId, opts = {}) {
               t.label, t.hint, t.borrower_label, t.borrower_hint, vocab.audienceToShared(audience),
               item_kind, tool_key, t.is_required,
               // The per-instance required-slot list — the ONE column the shared
-              // generic sign-off arm reads (db/651). The CONFIG deliberately
+              // generic sign-off arm reads (db/653). The CONFIG deliberately
               // stays on the template and is read through the join: one config,
               // edited once, so a settings change reaches every open file rather
               // than only the next one.

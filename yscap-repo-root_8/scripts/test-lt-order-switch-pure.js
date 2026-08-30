@@ -27,7 +27,7 @@ const data = require('../src/longterm/orders/data');
 
 /* THE ROW SHAPE THESE FIXTURES STAND IN FOR MOVED, and the fixtures moved with it.
    When the Long-Term conditions became rows in the SHARED checklist_templates
-   (db/650, db/651), the two facts that are Long-Term's alone — whether an order is
+   (db/652, db/653), the two facts that are Long-Term's alone — whether an order is
    switched on, and the buyer's own sentence for why not — lost their columns:
    `is_enabled` and `disabled_reason` do not exist on the shared table. They now
    ride inside `config`, which is the one place the seed writes them, and

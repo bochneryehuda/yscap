@@ -119,7 +119,7 @@ ok('ownerWhere refuses a non-identifier alias and a non-positive-integer index')
 assert.deepStrictEqual(ownerCols(APP), { application_id: 'a1', lt_loan_id: null });
 assert.deepStrictEqual(ownerCols(LT), { application_id: null, lt_loan_id: 'l1' });
 // The one-owner invariant. NOTE: on `documents` NO database constraint enforces it
-// — db/650 adds lt_loan_id as a bare nullable uuid (chk_one_owner lives only on
+// — db/652 adds lt_loan_id as a bare nullable uuid (chk_one_owner lives only on
 // checklist_items). So this door IS the enforcement, which is why it is asserted
 // here rather than trusted to the schema. Asserted so the INSERT can
 // never be the thing that discovers it: exactly one non-null, and the columns are

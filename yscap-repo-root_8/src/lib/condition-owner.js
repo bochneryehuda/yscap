@@ -4,7 +4,7 @@
  * WHO A CONDITION OR A DOCUMENT BELONGS TO — one descriptor, both products.
  *
  * The Condition Center was multi-owner from day one and the Long-Term loan is
- * now its FOURTH owner scope (db/650: `checklist_items` / `documents` carry
+ * now its FOURTH owner scope (db/652: `checklist_items` / `documents` carry
  * `lt_loan_id` beside `application_id`, `chk_one_owner` counts four). The
  * owner's directive is that ONE implementation serve both products — *"if I'm
  * updating something in the logic of the Condition Center … it should update
@@ -32,7 +32,7 @@
  * WOULD CATCH IT — IT WOULD NOT. An earlier draft of this file said an owner with
  * no id writes both owner columns NULL and `chk_one_owner` refuses it in
  * production. That is true of `checklist_items`, which carries the constraint,
- * and FALSE of `documents`, which does not: db/650 adds `documents.lt_loan_id` as
+ * and FALSE of `documents`, which does not: db/652 adds `documents.lt_loan_id` as
  * a bare nullable uuid with no owner-count constraint, because those columns were
  * always nullable and denormalized. So `ownerCols({scope:'application'})` with no
  * id would have bound both columns NULL and landed an ORPHAN document row with
@@ -98,7 +98,7 @@ function ownerOf(scope, id) {
  *
  * REFUSES AN AMBIGUOUS ROW. Two owner columns set is a row `chk_one_owner`
  * should have made impossible on `checklist_items` and NOTHING enforces on
- * `documents` (db/650 adds `lt_loan_id` there as a bare nullable uuid). Guessing
+ * `documents` (db/652 adds `lt_loan_id` there as a bare nullable uuid). Guessing
  * which one wins is how a document from one product answers for the other, so a
  * row like that gets null and the caller falls back to doing nothing — the same
  * fail-closed posture as the rest of this file.
@@ -178,7 +178,7 @@ function ownerWhere(owner, alias = null, startIdx = 1) {
  *
  * WHICH rule, and enforced WHERE, differs by table and it matters: on
  * `checklist_items` the database backs it (`chk_one_owner`); on `documents` NOTHING
- * does — db/650 adds `lt_loan_id` there as a bare nullable uuid. So for a document
+ * does — db/652 adds `lt_loan_id` there as a bare nullable uuid. So for a document
  * this function IS the enforcement, which is why `requireOwner` refuses a missing
  * id here rather than leaving it to a constraint that only exists on the other table.
  */

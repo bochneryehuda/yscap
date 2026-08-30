@@ -44,7 +44,7 @@
  */
 const { effectiveStaffSql } = require('./access');
 
-/** The fourth owner scope of the one Condition Center (db/650). */
+/** The fourth owner scope of the one Condition Center (db/652). */
 const SCOPE = 'lt_loan';
 
 /**
@@ -186,7 +186,7 @@ function enrichJoinsSql(ownerExpr) {
  *
  * A loan id pointing at a loan that is not there resolves to NOT EXISTS, i.e.
  * unresolved — deliberate: `documents.lt_loan_id` is a bare uuid with no foreign
- * key (db/650: the gate forbids welding an RTL table to the side build), so a
+ * key (db/652: the gate forbids welding an RTL table to the side build), so a
  * dangling id is a real state and it must PARK, never churn.
  *
  * @param {string} ownerExpr SQL naming the lt_loan this document belongs to.

@@ -31,7 +31,7 @@ const { setContentDisposition } = require('../lib/content-disposition');
 const docAccept = require('../lib/document-acceptance');  // what "accepted" means — one definition
 // WHO A CONDITION BELONGS TO — one descriptor for all four owner scopes, so the
 // sign-off gate can tell an unowned row from a row owned by the other product
-// instead of treating "not an application" as "no rules apply" (db/650, db/651).
+// instead of treating "not an application" as "no rules apply" (db/652, db/653).
 const conditionOwner = require('../lib/condition-owner');
 // THE ONE CONDITION-DOCUMENT SERVICE, shared with the Long-Term loan (2026-08-30
 // share-the-code directive). These routes keep their registration, their
@@ -10000,7 +10000,7 @@ async function pendingDocumentsBlock(itemId) {
  * THE SIGN-OFF RULES THAT ARE TRUE OF EVERY OWNER, NOT ONLY OF AN APPLICATION.
  *
  * Reached for an item whose owner is a scope other than the application — today
- * that is the Long-Term loan (db/650: `scope='lt_loan'`, `lt_loan_id`). It is
+ * that is the Long-Term loan (db/652: `scope='lt_loan'`, `lt_loan_id`). It is
  * DELIBERATELY the generic arm and nothing else: no `rtl_…` code is consulted,
  * because those codes name RTL conditions and an owner that is not an
  * application has none of them.
@@ -10097,7 +10097,7 @@ async function signOffGate(itemId, actor) {
   // per-condition branches. One definition: lib/conditions/extra-slots.js.
   const extraSlotBlock = await require('../lib/conditions/extra-slots').gateProblem(itemId);
   if (extraSlotBlock) return extraSlotBlock;
-  // REQUIRED NAMED SLOTS THE CONDITION DECLARES FOR ITSELF (db/651). The same
+  // REQUIRED NAMED SLOTS THE CONDITION DECLARES FOR ITSELF (db/653). The same
   // rule as the arm above and for the same reason it runs here — it is true of
   // every condition of every owner — but the slots come from the condition's own
   // list rather than from somebody asking for one by hand. It is ported out of
@@ -10119,7 +10119,7 @@ async function signOffGate(itemId, actor) {
        FROM checklist_items ci WHERE ci.id=$1`, [itemId]);
   const item = it.rows[0];
   if (!item) return null;
-  // THE GATE LEARNS THE FOURTH OWNER SCOPE (db/650 + db/651, the 2026-08-30
+  // THE GATE LEARNS THE FOURTH OWNER SCOPE (db/652 + db/653, the 2026-08-30
   // share-the-code grant).
   //
   // THIS LINE USED TO READ `if (!item || !item.application_id) return null;` AND

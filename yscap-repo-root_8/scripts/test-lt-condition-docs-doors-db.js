@@ -116,7 +116,7 @@ const itemRow = async (id) => (await db.query(
   console.log('PASS 0 the database answered a probe before anything else ran');
 
   const { ensureSchema } = require('../src/migrate-boot');
-  await ensureSchema();   // db/650 + db/651 must be live before a single row is written
+  await ensureSchema();   // db/652 + db/653 must be live before a single row is written
 
   const app = require('../src/server');
   let server = null;

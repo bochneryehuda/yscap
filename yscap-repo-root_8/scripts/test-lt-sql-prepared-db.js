@@ -207,7 +207,7 @@ async function main() {
     // the no-rows 404 — which is what makes this entry true rather than hopeful.
     'routes/scoped-loan.js': 'GET /api/lt/encompass-file/loans/:loanId and GET /api/lt/clickup/loans/:loanId in the route smoke test both assemble and execute it',
     'routes/clickup.js': 'GET /api/lt/clickup/loans/:loanId in the route smoke test (loadScopedLoan assembles the trash guard), plus test-lt-clickup-section-db.js over the whole section',
-    // THE CONDITION CENTER, SINCE db/651. These four compose the SHARED owner
+    // THE CONDITION CENTER, SINCE db/653. These four compose the SHARED owner
     // descriptor's WHERE (`ownerWhere` — lib/condition-owner.js) into statements
     // against `checklist_items` / `checklist_templates` / `documents`, so the
     // statement only exists once a caller assembles it. Each entry names a suite

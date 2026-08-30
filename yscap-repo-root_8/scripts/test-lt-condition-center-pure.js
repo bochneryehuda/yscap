@@ -317,7 +317,7 @@ console.log('\nD3. only the engine\'s own untouched work is ever retracted');
 const eng = code('src/longterm/conditions-center/engine.js');
 check(/origin_kind = 'auto'/.test(eng) && /status = \$2/.test(eng) && /COALESCE\(notes,''\) = ''/.test(eng),
   'the DELETE is guarded on origin, on status AND on there being no note — in the STATEMENT, not by a check somebody has to remember');
-// The conditions are `checklist_items` since db/651, so their documents are the
+// The conditions are `checklist_items` since db/653, so their documents are the
 // shared `documents` rows. The guard is the same guard; only the table it names
 // moved, and it must stay INSIDE the DELETE — a read-then-write here is the
 // shape db/401 records as having cost real duplicate conditions on the RTL side.
@@ -333,7 +333,7 @@ check(/out\.locked = true/.test(eng) && /lockClient = null/.test(eng),
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('\nE. what may be marked done');
 
-// A DOCUMENT IS A SHARED `documents` ROW NOW (db/651), so the per-slot key
+// A DOCUMENT IS A SHARED `documents` ROW NOW (db/653), so the per-slot key
 // travels in `slot_label` — the ordinary document plumbing carries it, with no
 // second table. The RULE the fixtures exercise is unchanged.
 const doc = (over) => ({ id: 'f', is_current: true, review_status: 'accepted', slot_label: null, ...over });

@@ -45,7 +45,7 @@ The failure mode worth knowing is symmetric, not Long-Term-specific: if
 ## 2. The hazard that is worse than it looks: SharePoint files LT documents in the wrong cabinet
 
 `pendingBatch` (`src/lib/sharepoint-backup.js:608`) selects **every** `documents` row
-with a `storage_ref`. db/650 is committed, so the first LT document row written is
+with a `storage_ref`. db/652 is committed, so the first LT document row written is
 picked up immediately. Two outcomes, and the quiet one is the dangerous one:
 
 - **Loud:** `mirrorRow` throws at `:1139`, the row fail-loops to the terminal `DEAD`

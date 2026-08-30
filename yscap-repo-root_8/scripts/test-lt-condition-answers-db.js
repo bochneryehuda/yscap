@@ -47,7 +47,7 @@ async function main() {
   // ── A. The templates ──────────────────────────────────────────────────────
   console.log('the library in the database');
 
-  // THE LIBRARY MOVED HOUSE (db/651): it seeds into the ONE Condition Center as
+  // THE LIBRARY MOVED HOUSE (db/653): it seeds into the ONE Condition Center as
   // `checklist_templates` rows with scope='lt_loan'. Read back through the SAME
   // translation the seed wrote through, so this section goes on asserting the
   // owner's four corrections in the owner's own words.
@@ -145,7 +145,7 @@ async function main() {
 
   const write = require('../src/longterm/conditions-center/write.js');
 
-  // THE WRITE DOOR MOVED WITH THE LIBRARY (db/651) — a Long-Term condition is a
+  // THE WRITE DOOR MOVED WITH THE LIBRARY (db/653) — a Long-Term condition is a
   // `checklist_item` owned by `lt_loan_id`. `stage()` above deliberately still
   // writes `lt_file_conditions`, because sections B and C are about db/647
   // reaching the rows PRODUCTION already holds there and that migration still
@@ -185,7 +185,7 @@ async function main() {
   check(out.ok === true, 'after which the condition signs off with no document at all');
 
   // A SECOND instance of the same template on the same loan — allowed only
-  // because it carries its own `field_key`, which is exactly what db/651's
+  // because it carries its own `field_key`, which is exactly what db/653's
   // partial unique index is written to permit (and what it refuses without).
   const fci = await stageItem('lt_subject_mortgage_statement', {
     slots: [{ key: 'statement', label: 'Mortgage statement', required: false }],

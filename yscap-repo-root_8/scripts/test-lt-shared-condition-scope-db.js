@@ -1,17 +1,17 @@
 'use strict';
 /**
- * db/650 — THE FOURTH OWNER SCOPE, proven against a REAL Postgres through the
+ * db/652 — THE FOURTH OWNER SCOPE, proven against a REAL Postgres through the
  * REAL boot replay.
  *
  * Why this suite exists at all: migrate-boot logs a migration that throws and
- * CONTINUES, so a broken db/650 would ship silently — the widened CHECKs would
+ * CONTINUES, so a broken db/652 would ship silently — the widened CHECKs would
  * quietly stay narrow and the first lt_loan row would fail in production with
  * nothing in CI ever having gone red. The house rule (db/600's lesson): a
  * migration is proven by APPLYING it, twice, and then exercising exactly the
  * rows it claims to admit and refuse.
  *
  * What is pinned:
- *  A. db/650 APPLIES on boot and CONVERGES on a second boot (idempotence).
+ *  A. db/652 APPLIES on boot and CONVERGES on a second boot (idempotence).
  *  B. checklist_items admits scope='lt_loan' + lt_loan_id as the ONLY owner…
  *  C. …and chk_one_owner still refuses two owners — including lt_loan_id
  *     alongside application_id, the new cross-product double-claim.
@@ -50,11 +50,11 @@ const TPL  = '65a70000-0000-4000-8000-0000000650ad';
   await db.query('SELECT 1');
 
   // A — the REAL boot replay, twice. ensureSchema applies db/*.sql in order;
-  // a second pass proves every statement in db/650 is idempotent.
+  // a second pass proves every statement in db/652 is idempotent.
   const { ensureSchema } = require('../src/migrate-boot');
   await ensureSchema();
   await ensureSchema();
-  ok('db/650 applied through the real boot replay, twice, without error');
+  ok('db/652 applied through the real boot replay, twice, without error');
 
   // The widened constraints are actually IN the database — read them back,
   // never trust the file. (A skipped migration is the failure mode here.)

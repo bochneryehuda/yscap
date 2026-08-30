@@ -45,7 +45,7 @@ const shelves = require('./sharepoint-shelf');   // which shelf a document sits 
 const { sniffKind, expectedKind } = require('./upload-bytes');
 
 // ------------------------------------------------ the FOURTH owner: lt_loan
-// The Condition Center was multi-owner from day one, and db/650 makes the
+// The Condition Center was multi-owner from day one, and db/652 makes the
 // Long-Term loan its fourth owner (scope 'lt_loan', column lt_loan_id on
 // checklist_items AND documents). The owner's order, 2026-08-30: *"Same thing is
 // with SharePoint: you need to share the code"* / *"the SharePoint looks for the
@@ -587,7 +587,7 @@ function categoryPathFor(row) {
   // A LONG-TERM document needs no case of its own, and deliberately does not get
   // one: it reaches here and takes the SAME clean category the RTL rows take.
   // The enrichment fills item_label/template_code off checklist_items whichever
-  // product the condition belongs to (there is one Condition Center — db/650), so
+  // product the condition belongs to (there is one Condition Center — db/652), so
   // an lt_loan document on a condition is categorized BY THAT CONDITION through
   // this one categorizer, and one with no condition — and no keyword in its name —
   // lands in the categorizer's own default, "Other Documents". That is the owner's
@@ -613,7 +613,7 @@ function scopeKeyFor(row) {
   if ((row.track_record_id || row.doc_kind === 'track_record_doc' || row.doc_kind === 'track_record_html') && row.borrower_id) {
     return `borrower:${row.borrower_id}`;
   }
-  // A LONG-TERM LOAN FILE is a loan file (db/650's fourth owner). It gets the same
+  // A LONG-TERM LOAN FILE is a loan file (db/652's fourth owner). It gets the same
   // officer/borrower/address chain an application gets — the owner's rule, in
   // their words: *"the SharePoint looks for the same exact folder, same exact
   // logic that we build up on the short-term side"*. It is asked BEFORE the bare
@@ -675,7 +675,7 @@ const ENRICH_SELECT = `
            COALESCE(d.track_record_id, ci.track_record_id)                     AS track_record_id,
            COALESCE(d.application_id, ci.application_id)                        AS app_id,
            COALESCE(d.borrower_id, ci.borrower_id, l.borrower_id, a.borrower_id) AS borrower_id,
-           -- The FOURTH owner (db/650), resolved doc → condition like the others.
+           -- The FOURTH owner (db/652), resolved doc → condition like the others.
            ${LT_OWNER_JOINED_SQL}                                              AS lt_loan_id,
            -- The long-term loan's OWN identities, kept in their own columns and
            -- never merged into the RTL ones: identitiesResolved() reads exactly

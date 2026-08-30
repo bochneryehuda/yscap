@@ -1,8 +1,8 @@
 -- ============================================================================
--- db/651 — THE ONE CONDITION CENTER SPEAKS ONE VOCABULARY, AND GAINS THE THREE
+-- db/653 — THE ONE CONDITION CENTER SPEAKS ONE VOCABULARY, AND GAINS THE THREE
 --          COLUMNS A LONG-TERM CONDITION NEEDS TO LIVE IN IT
 --
--- db/650 made `checklist_items` / `documents` accept a FOURTH owner (scope
+-- db/652 made `checklist_items` / `documents` accept a FOURTH owner (scope
 -- 'lt_loan', column lt_loan_id) and NOTHING USED IT: Long-Term conditions still
 -- lived in `lt_file_conditions`, a parallel table, so no shared upload door
 -- could be mounted for them (the shared document service hangs a document on
@@ -13,7 +13,7 @@
 --
 -- Three CHECK constraints reject the Long-Term wording. VERIFIED AGAINST THE
 -- LIVE SCHEMA (pg_constraint on a database booted from db/schema.sql + db/001…
--- db/650), not from the files, because a later migration re-asserting a CHECK is
+-- db/652), not from the files, because a later migration re-asserting a CHECK is
 -- exactly the kind of thing that is true in one file and false in the database:
 --
 --   checklist_templates_audience_check  borrower | staff | both
@@ -91,7 +91,7 @@
 -- Every table below is an RTL table, and the separation gate's own instruction
 -- for that case is explicit: "A Long-Term migration may only touch lt_* tables.
 -- If the owner asked for a change to an RTL table, it belongs in its own
--- migration that is not named _lt_." This is that migration, and db/650 (the
+-- migration that is not named _lt_." This is that migration, and db/652 (the
 -- same grant, the same tables) set the precedent. The authorization is the
 -- 2026-08-30 share-the-code grant, recorded with the owner's words in
 -- docs/longterm/SHARE-THE-CODE-DIRECTIVE.md and in the crossing ledger. This

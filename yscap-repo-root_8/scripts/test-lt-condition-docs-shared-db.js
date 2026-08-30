@@ -92,7 +92,7 @@ const itemRow = async (id) => (await db.query(
 (async () => {
   await db.query('SELECT 1');
   const { ensureSchema } = require('../src/migrate-boot');
-  await ensureSchema();   // db/650 must be live before a single lt_loan row is written
+  await ensureSchema();   // db/652 must be live before a single lt_loan row is written
 
   /* ───────────────────────────────── seed ─────────────────────────────────── */
   const staffId = (await db.query(

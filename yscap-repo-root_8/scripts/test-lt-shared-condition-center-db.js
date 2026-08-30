@@ -3,8 +3,8 @@
  * THE LONG-TERM CONDITIONS ARE CHECKLIST ITEMS NOW — proven against a REAL
  * Postgres, through the REAL boot replay and the REAL sign-off gate.
  *
- * db/650 made `checklist_items` / `documents` accept a fourth owner and NOTHING
- * used it; db/651 + this shipment make the Long-Term condition BE a
+ * db/652 made `checklist_items` / `documents` accept a fourth owner and NOTHING
+ * used it; db/653 + this shipment make the Long-Term condition BE a
  * `checklist_item`, which is what lets the one shared upload/review/serve
  * service be mounted for it at all. This suite is the proof of every claim in
  * that sentence.
@@ -18,7 +18,7 @@
  * WHAT IT PINS — every one of these is a way the sharing could be wrong while
  * every screen still looked fine:
  *
- *  A. db/651 applies through the REAL boot replay, TWICE. `ensureSchema` replays
+ *  A. db/653 applies through the REAL boot replay, TWICE. `ensureSchema` replays
  *     every db/*.sql on every boot, so a statement that is not idempotent is not
  *     a one-off bug — it breaks every deploy from the second one onwards, and it
  *     takes the rest of its own file down with it (one file, one transaction).
@@ -84,12 +84,12 @@ const uniq = `ltcc-${process.pid}-${Date.now()}`;
   const first = await ensureSchema();
   assert(first.ok === true, 'A1 the first boot replay completes');
 
-  // Every statement in db/651 is ADD COLUMN IF NOT EXISTS or CREATE INDEX IF NOT
+  // Every statement in db/653 is ADD COLUMN IF NOT EXISTS or CREATE INDEX IF NOT
   // EXISTS, so a SECOND replay must change nothing and must not throw. A file
   // that throws is logged and SKIPPED — silently — taking every statement after
   // it with it, which is exactly the failure mode this assertion exists for.
   const second = await ensureSchema();
-  assert(second.ok === true, 'A2 a second boot replay completes — db/651 is idempotent');
+  assert(second.ok === true, 'A2 a second boot replay completes — db/653 is idempotent');
 
   const cols = (await db.query(
     `SELECT table_name || '.' || column_name AS c
@@ -98,7 +98,7 @@ const uniq = `ltcc-${process.pid}-${Date.now()}`;
             (('checklist_templates','config'),
              ('checklist_items','slots'),
              ('checklist_items','waived_reason'))`)).rows.map((r) => r.c).sort();
-  assert(cols.length === 3, `A3 db/651's three columns are live (${cols.join(', ') || 'none'})`);
+  assert(cols.length === 3, `A3 db/653's three columns are live (${cols.join(', ') || 'none'})`);
 
   const uq = (await db.query(
     `SELECT indexdef FROM pg_indexes
@@ -459,7 +459,7 @@ const uniq = `ltcc-${process.pid}-${Date.now()}`;
   assert(waived.status === 'satisfied' && waived.waived_at !== null,
     'G2 …stored the way this system already records a waive — satisfied plus the stamp');
   assert(String(waived.waived_reason || '').startsWith('the servicer confirmed'),
-    'G3 …with the REASON in its own column (db/651), not buried in free-text notes');
+    'G3 …with the REASON in its own column (db/653), not buried in free-text notes');
   assert(waived.is_required === true,
     'G4 a waived condition stays REQUIRED — somebody decided against it, which is not the same as it never applying');
 

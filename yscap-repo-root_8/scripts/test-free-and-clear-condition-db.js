@@ -141,7 +141,7 @@ const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:]
        free-and-clear exclusion, which is what puts it in the waive list via section A. With none
        present the fact is recorded and the guard is dormant. Either way nothing is invented.
 
-       SCOPED TO SHORT-TERM, because since db/651 this table also holds the LONG-TERM library
+       SCOPED TO SHORT-TERM, because since db/653 this table also holds the LONG-TERM library
        under `scope='lt_loan'` — including `lt_vom_subject`, the Long-Term product's OWN VOM.
        That is not a short-term VOM appearing; it is the other product's condition living in the
        shared table, governed by the Long-Term Condition Center's own rules. Reading it here

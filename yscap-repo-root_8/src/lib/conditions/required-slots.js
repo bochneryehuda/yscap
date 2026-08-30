@@ -12,7 +12,7 @@
  *
  * ── IT CHANGES NOTHING FOR RTL, AND NOT BY BEING CAREFUL ────────────────────
  *
- * It reads `checklist_items.slots` — the PER-ITEM list (db/651) — and nothing
+ * It reads `checklist_items.slots` — the PER-ITEM list (db/653) — and nothing
  * else. RTL writes that column nowhere, so every RTL item reads `null`, and
  * `null` returns "no slots, no problem" on the first line. The behaviour is
  * identical because the input is empty, which is a fact about the data rather
