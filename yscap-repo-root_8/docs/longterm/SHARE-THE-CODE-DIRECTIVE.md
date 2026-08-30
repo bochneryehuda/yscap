@@ -39,9 +39,17 @@ ONE implementation, used by both products, where an update lands on both:
 3. **File contacts + the vendor directory** — *"should not copy. It should be the
    same, should be the exact same vendor setup and use the same information"*, and
    again 2026-08-30: *"the FileContacts should come directly from the short-term
-   side"* — the SAME FileContacts component and the SAME `service_contacts`
-   directory; only the per-file link row is LT's own (`lt_loan_vendors`), which is
-   invisible plumbing.
+   side"*, and a third time, naming the whole stack: *"FileContacts, Vendor
+   Contact, General Vendor Contact, Vendor FileContacts — they should all be
+   built from our Vendor Contact and connected always. The contact should save
+   in the future the type of contact: attorney contact, realtor contact,
+   everything should share the Vendor FileContacts section that we have already
+   in the RTL side."* So: ONE vendor-card store (`service_contacts` — its
+   `contact_type` + `custom_type` live ON the card, so a contact entered once as
+   an attorney is an attorney everywhere, forever), ONE FileContacts component,
+   ONE general vendor directory, and the per-file section shared; only the
+   per-file link row is LT's own (`lt_loan_vendors`), which is invisible
+   plumbing. No parallel contact store may ever exist on the LT side.
 4. **The entity/LLC logic** — *"Bring over the entire entity logic that we have all
    over… You should basically share the logic. Don't copy it."* Linked to the shared
    borrower profile; verified once, verified forever, both products.
