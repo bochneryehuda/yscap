@@ -25,6 +25,7 @@
 // LT-only. No network, no DB, no RTL imports.
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
+const fs = require('node:fs');
 
 const investors = require('../src/longterm/encompass/investors');
 const whiteLabel = require('../src/longterm/lenderprice/investor-programs');
@@ -224,14 +225,60 @@ H('THE ONE THING THIS AUDIT ASSERTS — a shared field name must mean one thing'
     `TERM-2 …and 30 years on both (${lpT.termYears} / ${nxT.termYears})`);
   ok(lpT.term === 30 && nxT.term === 360 && lpT.termInMonths === false && nxT.termInMonths === true,
     'TERM-3 …while the vendors\' own `term` + `termInMonths` are left exactly as they were, so nothing that reads them today changes');
-  let compIdentical = true;
-  for (const m of comp.COMP_MODES) {
-    const a = comp.quoteCharges(m.value, plan, 99.5, LOAN, false);
-    const b = comp.quoteCharges(m.value, plan, 99.5, LOAN, false);
-    if (JSON.stringify(a) !== JSON.stringify(b)) compIdentical = false;
+  // ── LENDER-PAID / BORROWER-PAID, ON BOTH PROGRAMS ──────────────────────────
+  //
+  // Owner-directed 2026-08-30: *"the settings works on both lender paid borrower
+  // paid and with investor with program"*.
+  //
+  // ⛔ TWO CUTS OF THIS WERE TAUTOLOGIES, and both read perfectly. The first called
+  // `quoteCharges` with the same LITERAL price twice and asserted the answers
+  // matched — which proves the function is deterministic and nothing about the two
+  // programs. The second passed each board's option in and compared, which LOOKS
+  // like a vendor comparison and is not: `quoteCharges(mode, plan, price,
+  // loanAmount, waive)` never receives an option at all, so both sides were
+  // literally the same call. Mutations proved it: breaking one compensation
+  // position, and comparing Lender Price against ITSELF, both left the suite green.
+  //
+  // THE OVERLAY IS VENDOR-INDEPENDENT BY CONSTRUCTION — it is handed a price and a
+  // loan amount and never learns who quoted them. That is a STRUCTURAL fact and no
+  // equality test can prove it, because both sides of any such comparison are one
+  // call. So it is asserted the two ways it actually can be:
+  //
+  //   COMP-1  the common quote shape carries the overlay's inputs IDENTICALLY on
+  //           both boards — driven, through the same accessor, from each board's
+  //           own real option. This is the half that can genuinely break: if one
+  //           board carried its price somewhere else, that side yields nothing and
+  //           the whole compensation panel goes blank on those rows.
+  //   COMP-2  the overlay's own signature takes no investor and no programme, so a
+  //           board narrowed to one of either cannot move a borrower's cash to
+  //           close — read off the source, which is where that guarantee lives.
+  const priceAt = (o) => (o.priceBuild || {}).price;
+  ok(Number.isFinite(priceAt(lpO)) && Number.isFinite(priceAt(nexO)) && priceAt(lpO) !== priceAt(nexO),
+    `COMP-0 the two boards quoted DIFFERENT prices (${priceAt(lpO)} vs ${priceAt(nexO)}) and BOTH are readable through the one accessor — a board whose price the shape cannot find would leave the compensation panel blank on every one of its rows`);
+  let drivable = 0;
+  for (const o of [lpO, nexO]) {
+    let good = 0;
+    for (const m of comp.COMP_MODES) {
+      const c = comp.quoteCharges(m.value, plan, priceAt(o), LOAN, false);
+      // `raw` legitimately has no charge list; every other position must produce
+      // one AND a closing sheet with a real cash-to-close figure.
+      if (m.value === 'raw') { if (!c) good += 1; continue; }
+      const sheet = c && comp.closingSheet(c, { purpose: 'Purchase', propertyValue: 500000, loanAmount: LOAN });
+      if (c && Array.isArray(c.lines) && c.lines.length && sheet && Number.isFinite(Number(sheet.cashToCloseDollars))) good += 1;
+    }
+    if (good === comp.COMP_MODES.length) drivable += 1;
   }
-  ok(compIdentical,
-    'COMP-1 lender-paid and borrower-paid produce byte-identical charges whichever program quoted the price');
+  ok(drivable === 2,
+    `COMP-1 every compensation position drives end to end — charges and a real cash to close — from a REAL option on BOTH boards, through one accessor (${drivable}/2 boards)`);
+  // The structural half. Read off the overlay's own source, because that is where
+  // "it cannot depend on the investor" is true or false.
+  const overlaySrc = fs.readFileSync(new URL('../app-v2/src/longterm/compOverlay.js', import.meta.url), 'utf8');
+  const sig = (overlaySrc.match(/export function quoteCharges\(([^)]*)\)/) || [])[1] || '';
+  ok(sig && !/investor|program|product|vendor|source|lender(?!Paid|Fees)/i.test(sig),
+    `COMP-2 the overlay is handed a price and a loan amount and never learns who quoted them — its signature names no investor, programme or vendor (${sig.trim()})`);
+  const body = overlaySrc.slice(overlaySrc.indexOf('export function quoteCharges'));
+  ok(!/\b(investorKey|whiteLabel|\.investor\b|\.program\b|\.product\b)/.test(body.slice(0, body.indexOf('export function closingSheet'))),
+    'COMP-2a …and its body reads no investor or programme field either, so narrowing a board to one of them cannot move a borrower\'s cash to close');
   ok(keysOf(lpB) === keysOf(nexB),
     'LAYOUT-1 a breakdown from either program has the same top-level shape');
 }
