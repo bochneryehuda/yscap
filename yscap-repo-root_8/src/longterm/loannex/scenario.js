@@ -55,6 +55,11 @@
 
 const registryOf = require('./field-registry');
 const shared = require('../pricing/scenario-defaults');
+// ⛔ WHICH WAY EACH FIGURE IS CUT IS NOT THIS FILE'S DECISION. Both connectors read the one rule
+// (`pricing/tier-rounding.js`), so the two programs can never be asked a different question about
+// one loan — which is exactly what a private copy of "round the LTV up" in each of them would
+// eventually produce.
+const tierRounding = require('../pricing/tier-rounding');
 
 class NexValidationError extends Error {
   constructor(code, field, message) { super(message); this.code = code; this.field = field; this.name = 'NexValidationError'; }
@@ -181,24 +186,10 @@ function ltvString(ltv) {
  * number (nothing about a real DSCR or LTV lives at that scale), and only a
  * genuine fraction is cut.
  */
-function floor2(n) {
-  const x = n * 100;
-  const whole = Math.round(x);
-  return (Math.abs(x - whole) < 1e-9 ? whole : Math.floor(x)) / 100;
-}
+function floor2(n) { return tierRounding.sendAs('dscr', n, 2); }
 
-/**
- * Lift a number UP to 2 decimals — never down. The mirror of `floor2`, and deliberately written
- * beside it so the two directions carry ONE float guard between them: the reason a value within a
- * billionth of a whole number IS that whole number is identical in both, and a copy of that rule
- * that drifted would move a figure the user typed exactly, by a whole cent, in the direction the
- * function exists to prevent going unnoticed.
- */
-function ceil2(n) {
-  const x = n * 100;
-  const whole = Math.round(x);
-  return (Math.abs(x - whole) < 1e-9 ? whole : Math.ceil(x)) / 100;
-}
+/** Lift a number UP to 2 decimals — never down. The LTV half of the same one rule. */
+function ceil2(n) { return tierRounding.sendAs('ltv', n, 2); }
 
 /**
  * LoanNEX takes DSCR as a 2dp string on four fields at once.

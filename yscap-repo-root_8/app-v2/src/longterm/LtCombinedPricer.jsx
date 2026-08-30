@@ -1199,6 +1199,62 @@ export function PriceBuild({ o, comp }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    ONE RATE, AND EVERY INVESTOR AT IT.
    ────────────────────────────────────────────────────────────────────────── */
+/**
+ * "YOU ARE ALMOST AT A BETTER TIER" (owner-directed 2026-08-30: *"You can make a nice flag that
+ * you're almost at the edge… If it's almost at a tier, make a pop-up"*).
+ *
+ * ⛔ IT DECIDES NOTHING. Every figure here — the tier, the loan amount that reaches it, the gap on
+ * the ratio, and the sentence itself — is computed on the SERVER (`pricing/near-tier.js`) off the
+ * scenario the vendors were actually asked about and, where the sheet published one, that
+ * investor's own grid cell. This draws it. A screen that worked out its own tier would eventually
+ * tell somebody to cut a borrower's loan for a tier the sheet does not have.
+ *
+ * ⛔ AND IT IS A FLAG, NOT A MODAL. The owner asked for a pop-up; a dialog that interrupts every
+ * priced board is one people learn to dismiss without reading, and it would sit between an officer
+ * and the prices they just paid for. This is unmissable at the top of the board, states the exact
+ * money, and puts the change one press away — the useful half of a pop-up with none of the part
+ * that gets closed reflexively.
+ *
+ * It renders NOTHING when there is nothing to say, which is most of the time.
+ */
+function NearTierFlag({ near, onUse }) {
+  const [shut, setShut] = useState(false);
+  const ltv = near && near.ltv;
+  const dscr = near && near.dscr;
+  if (shut || (!ltv && !dscr)) return null;
+  const line = (o, action) => (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', marginTop: 6 }}>
+      <span style={{ fontSize: 13.5, color: INK, lineHeight: 1.6, flex: '1 1 320px' }}>{o.message}</span>
+      {action}
+    </div>
+  );
+  return (
+    <div style={{
+      border: `1px solid ${GOLD}`, borderRadius: 10, background: '#FFFBF2',
+      padding: '12px 14px', marginBottom: 10,
+    }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase', color: GOLD_TEXT, fontWeight: 700 }}>
+          Almost at a better tier
+        </div>
+        <button type="button" className="btn ghost" style={{ fontSize: 12 }} onClick={() => setShut(true)}>Dismiss</button>
+      </div>
+      {ltv && line(ltv, ltv.maxLoan != null && onUse ? (
+        <button type="button" className="btn soft" style={{ flex: '0 0 auto' }} onClick={() => onUse(ltv.maxLoan)}>
+          Use {money(ltv.maxLoan)}
+        </button>
+      ) : null)}
+      {dscr && line(dscr, null)}
+      {/* WHERE THE TIER CAME FROM. "Your sheet says so" and "our standing steps say so" are
+          different strengths of claim, and the person about to move a borrower's loan amount
+          should know which one they are acting on. */}
+      <div style={{ fontSize: 11.5, color: MUTED, marginTop: 8, lineHeight: 1.6 }}>
+        {[ltv && ltv.why, dscr && dscr.why].filter(Boolean).join(' ')}
+      </div>
+    </div>
+  );
+}
+
 export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLenders, onToggleLender, loanAmount, comp, housing }) {
   /* EVERY DISPLAYED PRICE ON THIS ROW TAKES THE SAME SHIFT (owner-directed 2026-08-23).
      A constant shift never reorders anything — best stays best — so the grouping and the
@@ -2626,6 +2682,11 @@ export default function LtCombinedPricer() {
                 />
               )}
             />
+            <NearTierFlag near={res.nearTier} onUse={(loan) => {
+              setF((p) => ({ ...p, loan: String(loan) }));
+              setFormOpen(true);
+              try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* no window in a test render */ }
+            }} />
             <CombinedPanel
               hidden={res.hidden} settings={res.settings} revealed={revealSrc} busy={busy}
               onReveal={(v) => { setRevealSrc(v); run(null, { reveal: v }); }}

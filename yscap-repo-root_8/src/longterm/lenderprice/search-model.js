@@ -24,6 +24,9 @@ const { mapIncomeDocType, mapPrepayStructure, PREPAY_STRUCTURE_NULL } = registry
 // own long-standing values, moved — not changed; test-lt-lp-dscr-profile-pure.js
 // is what proves they did not move.
 const SHARED_FLAGS = require('../pricing/scenario-defaults');
+// The SAME rule the LoanNEX connector reads — see `pricing/tier-rounding.js`. The direction lives
+// there, never here, so one loan is described the same way to both programs.
+const tierRounding = require('../pricing/tier-rounding');
 const SHARED_PROFILE = SHARED_FLAGS.DSCR_PROFILE;
 
 // Symbol channel for registry validation warnings (invalid enum values). Symbol-keyed properties
@@ -139,7 +142,15 @@ function mapPurpose(p) {
 function deriveAmounts(sc) {
   sc = sc || {}; // a `= {}` default only catches undefined; this module promises never to throw
   const money = (n) => Math.round(n * 100) / 100;
-  const ratio = (n) => Math.round(n * 1e6) / 1e6;
+  /* ⛔ THE LTV IS LIFTED, NEVER ROUNDED TO NEAREST (owner-directed 2026-08-30: *"the LTV should
+     always be rounded up, so we should never see better"*). A higher LTV prices WORSE, so rounding
+     to nearest is what asks this vendor to price a band the loan has not earned.
+
+     THE PRECISION IS UNCHANGED at 6 decimals of the fraction (4 of the percent) — this moves the
+     DIRECTION only, so a supplied 0.75 and a derived 375000/500000 are byte-identical to what they
+     have always been, and the only figures that move are the ones that genuinely fall between two
+     representable LTVs. Named `ratio` still because that is what both call sites mean by it. */
+  const ratio = (n) => tierRounding.sendAs('ltv', n, 6);
   let value = num(sc.value);
   let loan = num(sc.loan);
   const ltvRaw = num(sc.ltv);

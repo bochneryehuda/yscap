@@ -81,6 +81,7 @@ const investors = require('../encompass/investors');
 const { whiteLabelOf } = require('../lenderprice/investor-programs');
 const quoteShape = require('../pricing/quote-shape');
 const breakdown = require('../pricing/breakdown');
+const nearTier = require('../pricing/near-tier');
 const vendorMargin = require('../pricing/vendor-margin');
 const settingsStore = require('../settings/store');
 
@@ -134,6 +135,32 @@ async function holdbackRaw() {
   } catch (_) {
     return undefined;
   }
+}
+
+/**
+ * Every grid CELL a board already carries, in the shape `near-tier` reads.
+ *
+ * ⛔ IT READS THE MERGED-RAW BOARD, never the routed one: the routed copy strips
+ * provenance for the one-system rule, and a cell is the vendor's own words about
+ * its own sheet. Nothing here is shown — the cells are read for their BAND and
+ * the flag that comes out names a tier, never a vendor.
+ *
+ * Defensive at every hop: this walks two vendors' parsed answers, and a board
+ * that is a shape short must cost the flag, never the board.
+ */
+function cellsOnBoard(board) {
+  const out = [];
+  try {
+    for (const p of (board && board.programs) || []) {
+      for (const r of (p && p.rungs) || []) {
+        for (const a of (r && r.adjustments) || []) {
+          if (!a || typeof a !== 'object') continue;
+          out.push({ label: a.label || a.reason || a.name || null, detail: a.detail || a.description || null });
+        }
+      }
+    }
+  } catch (_) { /* a hint is never worth a board */ }
+  return out;
 }
 
 /** Every investor name a board actually returned, in the order it returned them. */
@@ -387,6 +414,24 @@ async function priceBoth(scenario, opts = {}) {
     settings: merged.settings || null,
     options,
     scenario: { requested: scenario || {}, priced: sc, countyEnrichment: chk.countyEnrichment || null },
+    /**
+     * "YOU ARE ALMOST AT A BETTER TIER" (owner-directed 2026-08-30).
+     *
+     * Computed on the BOARD from the scenario the vendors were actually asked
+     * about, plus whatever grid cells the board itself already carries — a
+     * Lender Price row publishes its itemization with the quote, so its own
+     * bands are often here and the flag can name the investor's real tier
+     * rather than the standing steps. A LoanNEX row explains on demand, so
+     * `POST /explain` recomputes this with that sheet's own cell and the
+     * screen's flag gets sharper the moment somebody opens the price build.
+     *
+     * Never throws and is never a gate: it is a nicety beside a board, and a
+     * board must not be able to fail because a hint could not be worked out.
+     */
+    nearTier: nearTier.nearTier({
+      value: sc.value, loan: sc.loan, ltvPct: sc.ltv != null ? (sc.ltv > 1 ? sc.ltv : sc.ltv * 100) : null,
+      dscr: sc.dscr, lines: cellsOnBoard(mergedRaw),
+    }),
     // How each half was ASKED — a merged number nobody can trace back to a
     // request is not a number anybody should price a loan on.
     provenance: {
@@ -754,9 +799,19 @@ function makeRouter(opts = {}) {
         const option = quoteShape.attachEvidence(
           quoteShape.optionForQuote(quote), r.evidence, { absence: r.absence },
         );
+        const built = breakdown.breakdown(option, { reveal });
         res.json({
           ok: true,
-          breakdown: breakdown.breakdown(option, { reveal }),
+          breakdown: built,
+          // THE SHARPER FLAG. This sheet has now stated its own bands, so the
+          // hint can name the investor's real tier instead of the standing
+          // steps — same module, same wording, better evidence.
+          nearTier: nearTier.nearTier({
+            value: b.value != null ? b.value : (b.scenario || {}).value,
+            loan: b.loan != null ? b.loan : (b.scenario || {}).loan,
+            dscr: b.dscr != null ? b.dscr : (b.scenario || {}).dscr,
+            lines: (built && built.lines) || [],
+          }),
           transactionId: r.transactionId || null,
         });
       })
