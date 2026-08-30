@@ -87,17 +87,17 @@ export default function LtPeople() {
         </button>
       )}
 
-      {note && <div className="card" style={{ color: '#141B22', marginBottom: 12 }}>{note}</div>}
-      {err && <div className="card" style={{ color: '#141B22' }}>{err}</div>}
+      {note && <div className="lt-card" style={{ color: '#141B22', marginBottom: 12 }}>{note}</div>}
+      {err && <div className="lt-card" style={{ color: '#141B22' }}>{err}</div>}
       {data && !data.people.length && (
-        <div className="card" style={{ color: '#141B22' }}>
+        <div className="lt-card" style={{ color: '#141B22' }}>
           No Encompass users yet. {data.canManage ? 'Read the roster to bring them in.'
             : 'An administrator needs to read the Encompass roster first.'}
         </div>
       )}
 
       {data && data.people.length > 0 && (
-        <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+        <div className="lt-card lt-card-flush" style={{ padding: 0, overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
             <thead><tr>
               <th style={th}>Encompass user</th><th style={th}>In PILOT</th>

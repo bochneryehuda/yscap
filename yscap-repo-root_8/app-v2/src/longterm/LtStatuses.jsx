@@ -133,14 +133,14 @@ export default function LtStatuses() {
         Encompass and is shown here so you can see it, not to be edited.
       </p>
 
-      {note && <div className="card" style={{ color: INK, marginBottom: 12 }}>{note}</div>}
-      {err && <div className="card" style={{ color: INK }}>{err}</div>}
-      {!data && !err && <div className="card" style={{ color: MUTED }}>Reading the status map…</div>}
+      {note && <div className="lt-card" style={{ color: INK, marginBottom: 12 }}>{note}</div>}
+      {err && <div className="lt-card" style={{ color: INK }}>{err}</div>}
+      {!data && !err && <div className="lt-card" style={{ color: MUTED }}>Reading the status map…</div>}
 
       {data && (
         <>
           {!canManage && (
-            <div className="card" style={{ color: MUTED, marginBottom: 14 }}>
+            <div className="lt-card" style={{ color: MUTED, marginBottom: 14 }}>
               You can see the map. Only an administrator can change it.
             </div>
           )}
@@ -151,7 +151,7 @@ export default function LtStatuses() {
             These are the words on our own screens — the pipeline groups and sorts by them.
             Renaming one changes nothing about the loans themselves.
           </p>
-          <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 20 }}>
+          <div className="lt-card lt-card-flush" style={{ padding: 0, overflowX: 'auto', marginBottom: 20 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 520 }}>
               <thead><tr>
                 <th style={th}>What we call it</th><th style={th}>Files here now</th>
@@ -190,7 +190,7 @@ export default function LtStatuses() {
           <p style={{ color: MUTED, fontSize: 13, margin: '0 0 8px', maxWidth: 720 }}>
             In the order Encompass runs them. Pick which of our stages each one belongs to.
           </p>
-          <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+          <div className="lt-card lt-card-flush" style={{ padding: 0, overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
               <thead><tr>
                 <th style={th}>#</th><th style={th}>Encompass milestone</th>

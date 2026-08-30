@@ -51,7 +51,7 @@ import {
  * The end state they named is that this gets merged BACK into `LtPricer.jsx`; until then:
  *
  *   · `LtPricer.jsx` is the live General Pricing Engine and is NOT to be edited to serve this one.
- *   · Every divergence from it is marked `FORK n of 6:` below, and there are only six.
+ *   · Every divergence from it is marked `FORK n of 7:` below, and there are only seven.
  *   · `scripts/test-lt-combined-pricer-fork.mjs` records the general screen's fingerprint AT THE
  *     FORK and FAILS THE BUILD when it moves — so "the general engine changed and the copy did
  *     not" is caught by CI rather than found months later on a board somebody was pricing on.
@@ -246,7 +246,7 @@ export function buildRateStack(programs) {
         adjustedPoints: nn(b.adjustedPoints) ? b.adjustedPoints : null,
         monthlyPi: o && o.monthlyPayment && nn(o.monthlyPayment.monthlyPI) ? o.monthlyPayment.monthlyPI : null,
         expired: !!(o && o.rateSheet && o.rateSheet.expired),
-        // FORK 2 of 6 — STALENESS HAS THREE STATES HERE, not two. Lender Price states whether the
+        // FORK 2 of 7 — STALENESS HAS THREE STATES HERE, not two. Lender Price states whether the
         // sheet a quote priced from has expired; LoanNEX states nothing on the subject. The general
         // engine reads `!!expired`, which turns "we do not know" into "not expired" — a reassurance
         // LoanNEX never gave us, on a board where 37-61% of the other vendor's rows have genuinely
@@ -769,10 +769,22 @@ export function ChargeList({ charges, sheet }) {
   if (!charges) return null;
   const cashTone = { color: '#8A2F2F' };
   const backTone = { color: '#2F6B45' };
+  // PORTED FROM THE GENERAL ENGINE (LtPricer.jsx). The rows this board actually
+  // draws. The "none" fallback keys off THIS list, not charges.lines — with every
+  // line waived the raw list is non-empty while nothing is drawn, and the card
+  // would silently show no rows and no explanation of why.
+  const shownLines = charges.lines.filter((l) => l.waived !== true);
   return (
     <Track title="What this quote charges"
       note="The fees on this file at this price. Figures move with the price and the switch above.">
-      {charges.lines.map((l) => (
+      {/* ⛔ A WAIVED LINE IS SUMMARISED HERE, NEVER PRINTED AS A ROW OF $0.00.
+          `quoteCharges` LISTS a waived fee at dollars:0 because the TERM SHEET must
+          show it. This board is a different surface and already answers that
+          question better — the "Lender fees waived" note below and the closing
+          sheet's total. Rendering the raw line here would print "Application fee
+          $0.00", which reads as "this program has no application fee": the opposite
+          of the truth. The data is unfiltered; only this one screen summarises. */}
+      {shownLines.map((l) => (
         <div key={l.key} style={{
           display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
           padding: '5px 0', borderBottom: '1px solid rgba(20,27,34,.07)',
@@ -784,7 +796,7 @@ export function ChargeList({ charges, sheet }) {
           </span>
         </div>
       ))}
-      {charges.lines.length === 0 && <Row k="Charges" v="none" indent />}
+      {shownLines.length === 0 && charges.waivedDollars <= 0 && <Row k="Charges" v="none" indent />}
       {charges.credit && (
         <div style={{
           display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
@@ -880,7 +892,7 @@ export function PriceBuild({ o, comp }) {
     })
     : null;
   const adj = Array.isArray(o && o.adjustments) ? o.adjustments : [];
-  /* FORK 6 of 6 — read straight off the option the server built. Nothing here is
+  /* FORK 6 of 7 — read straight off the option the server built. Nothing here is
      re-derived in the browser: the server's own breakdown layer already decided
      what "provided" means and what wording an absent block gets. */
   const elig = (o && o.eligibility) || null;
@@ -915,7 +927,7 @@ export function PriceBuild({ o, comp }) {
   return (
     <div style={{ background: '#fff', borderRadius: 10, padding: 14, marginTop: 10, border: `1px solid ${GOLD}33` }}>
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
-        {/* FORK 6 of 6 — LAY OUT ALL THE DETAILS THE SAME WAY, WHATEVER PRICED IT.
+        {/* FORK 6 of 7 — LAY OUT ALL THE DETAILS THE SAME WAY, WHATEVER PRICED IT.
             Owner-directed 2026-08-30: "Our pilot should lay out all the details the same
             layout no matter if it comes from with software."
 
@@ -941,7 +953,7 @@ export function PriceBuild({ o, comp }) {
                   display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
                   padding: '5px 0 5px 12px', borderBottom: '1px solid rgba(20,27,34,.07)',
                 }}>
-                  {/* FORK 6 of 6 — the grid CELL, not just the grid. One rate sheet names
+                  {/* FORK 6 of 7 — the grid CELL, not just the grid. One rate sheet names
                       only the grid ("FICO/CLTV"); the other also states the bucket it drew
                       from ("FICO : 760 - 779, CLTV : 70.01% - 75.00%"), which is the actual
                       answer to "why is this price this price" and was being thrown away.
@@ -980,7 +992,27 @@ export function PriceBuild({ o, comp }) {
         </Track>
       </div>
 
-      {/* FORK 6 of 6 — WHAT THE PROGRAM CHECKED, and anything it said out loud.
+      {/* FORK 7 of 7 — THE TERM SHEET CONTROLS ARE DELIBERATELY ABSENT HERE.
+
+          The general engine gained them on 2026-08-30 (QuoteTermSheetActions /
+          ComparisonStrip / useTermSheetCart) and the fork fingerprint caught the
+          change, which is what it is for. They are NOT ported, on purpose:
+
+          A term sheet is a DOCUMENT A BORROWER READS. This engine is under audit,
+          super-admin only, and the owner's own words are *"Test everything should
+          just be testing"* — so issuing a real, borrower-facing quote off a board
+          nobody has signed off is exactly the thing that must not be possible.
+          It is also priced partly through the 0.25 holdback, whose SIZE has never
+          been measured against a live Lender Price quote (see the parity doc's
+          open questions), and a document is the wrong place to find that out.
+
+          This is an ABSENCE, so it is marked and guarded rather than left to be
+          noticed: scripts/test-lt-combined-pricer-fork.mjs fails if the controls
+          appear here, which forces the decision to be made again rather than
+          drifting in with a future port. When the owner promotes this engine, the
+          port is one change and the guard comes off with it. */}
+
+      {/* FORK 6 of 7 — WHAT THE PROGRAM CHECKED, and anything it said out loud.
 
           One rate sheet publishes every criterion it screened, with its OWN wording of the
           requirement and a pass/fail on each; the other publishes none. The block renders in
@@ -1699,7 +1731,7 @@ export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp, invSe
 
 /* ── the screen ───────────────────────────────────────────────────────────── */
 /**
- * FORK 4 of 6 — THE COMBINED ENGINE'S OWN PANEL. The general engine has no concept of a second
+ * FORK 4 of 7 — THE COMBINED ENGINE'S OWN PANEL. The general engine has no concept of a second
  * program, so this exists only here.
  *
  * It answers the two questions a person auditing this board actually has: WHAT IS NOT ON IT (and
@@ -1756,7 +1788,7 @@ export default function LtCombinedPricer() {
   const [err, setErr] = useState(null);
   const [res, setRes] = useState(null);
   const [view, setView] = useState('priced');
-  /* FORK 4 of 6 — the admin's "click to see the source of the info". OFF by default, because the
+  /* FORK 4 of 7 — the admin's "click to see the source of the info". OFF by default, because the
      owner's rule is that the board reads as ONE SYSTEM until somebody asks. Ticking it re-prices:
      the server strips the vendor before the answer leaves, so there is nothing on this side to
      un-mask. */
@@ -1892,7 +1924,7 @@ export default function LtCombinedPricer() {
      empty and the picker says so; the board simply shows everybody. */
   useEffect(() => {
     let live = true;
-    // FORK 3 of 6 — the picker's roster is EVERY investor the combined engine knows, not Lender
+    // FORK 3 of 7 — the picker's roster is EVERY investor the combined engine knows, not Lender
     // Price's alone. An investor this board shows from LoanNEX and Lender Price has never heard of
     // would otherwise be un-selectable in the filter and would read as missing from the answer.
     ltApi.combinedInvestors()
@@ -2097,7 +2129,7 @@ export default function LtCombinedPricer() {
     const t0 = Date.now();
     timer.current = setInterval(() => setElapsed(Math.round((Date.now() - t0) / 100) / 10), 200);
     try {
-      // FORK 1 of 6 — the only door that differs. The COMBINED engine prices both programs and
+      // FORK 1 of 7 — the only door that differs. The COMBINED engine prices both programs and
       // hands back the same `programs[].options[].priceBuild` shape this screen already reads
       // (src/longterm/pricing/quote-shape.js `programsForBoard`), so everything below is unchanged.
       const r = await ltApi.combinedPrice(toScenario(f), { full: true, revealSource: reveal });
@@ -2184,7 +2216,7 @@ export default function LtCombinedPricer() {
 
   return (
     <LtLayout title="Combined Pricing Engine">
-      {/* FORK 5 of 6 — SAY WHAT THIS SCREEN IS, at the top, before anything else. The owner is
+      {/* FORK 5 of 7 — SAY WHAT THIS SCREEN IS, at the top, before anything else. The owner is
           auditing a second engine beside the live one (*"Test everything should just be testing…
           so I can audit everything before I want to go live to the general pricing engine"*), and
           two pricing screens that look identical is exactly how somebody quotes a borrower off the

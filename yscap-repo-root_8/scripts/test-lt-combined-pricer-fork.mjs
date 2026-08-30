@@ -22,7 +22,7 @@
 //      did not" is caught by CI rather than found months later on a live board.
 //   2. The general engine is asserted to know NOTHING about the combined one — no import, no route,
 //      no mention. "Don't touch our current setup" is a property that can be checked, not a promise.
-//   3. Every divergence in the copy is MARKED, and the count is pinned, so a seventh one cannot be
+//   3. Every divergence in the copy is MARKED, and the count is pinned, so an eighth one cannot be
 //      slipped in without saying so.
 //   4. Both new screens are SUPER-ADMIN gated in the nav, and the server's own 404 is proven
 //      separately over real HTTP in scripts/test-lt-routes-smoke-db.js.
@@ -80,12 +80,12 @@ console.log('\nB. the general engine knows nothing about the combined one');
     'B4 …and the combined engine has its own');
 }
 
-console.log('\nC. every divergence in the copy is marked, and there are exactly six');
+console.log('\nC. every divergence in the copy is marked, and there are exactly seven');
 {
-  const marks = fork.match(/FORK \d of 6/g) || [];
+  const marks = fork.match(/FORK \d of 7/g) || [];
   const numbers = new Set(marks.map((m) => m.match(/\d/)[0]));
-  ok(numbers.size === 6 && [...numbers].sort().join() === '1,2,3,4,5,6',
-    `C1 the copy carries exactly six marked divergences, numbered 1-6 (found ${[...numbers].sort().join() || 'none'})`);
+  ok(numbers.size === 7 && [...numbers].sort().join() === '1,2,3,4,5,6,7',
+    `C1 the copy carries exactly seven marked divergences, numbered 1-7 (found ${[...numbers].sort().join() || 'none'})`);
   const f = codeOf(fork);
   ok(/ltApi\.combinedPrice\(/.test(f) && !/ltApi\.dscrPrice\(/.test(f),
     'C2 FORK 1 — the copy prices through the COMBINED door and never the general one');
@@ -121,6 +121,14 @@ console.log('\nC. every divergence in the copy is marked, and there are exactly 
     'C6c FORK 6 — a row prints the grid CELL as well as the grid, which is the actual answer to "why is this price this price"');
   ok(/What the program checked/.test(forkFlat6) && /does not publish the checks behind its answer/.test(forkFlat6),
     'C6d FORK 6 — the eligibility block renders in the SAME place on both sources and SAYS SO when a sheet publishes none, so an absent section is never read as a clean bill of health');
+  // FORK 7 — an ABSENCE, which is the one kind of divergence nobody notices. A
+  // term sheet is a document a borrower reads, and this engine is still under
+  // audit; the day the owner promotes it, this assertion comes off WITH the port
+  // rather than the port arriving quietly one general-engine merge at a time.
+  ok(!/QuoteTermSheetActions|ComparisonStrip|useTermSheetCart|TermSheetPanel/.test(f),
+    'C6e FORK 7 — the term sheet controls are NOT in the copy: an engine under audit must not be able to issue a document a borrower reads');
+  ok(/QuoteTermSheetActions/.test(codeOf(general)),
+    '…and the general engine really does have them, so C6e is guarding a live difference rather than agreeing with an empty set');
   ok(/export default function LtCombinedPricer\(/.test(f) && !/export default function LtPricer\(/.test(f),
     'C7 …and the copy is its own component, so the two can never be mounted as one by accident');
 }

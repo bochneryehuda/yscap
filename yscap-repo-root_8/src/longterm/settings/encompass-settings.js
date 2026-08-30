@@ -836,6 +836,42 @@ const SETTINGS = [
     evidence: 'Owner-directed 2026-08-30: "You should open a settings menu where you have every '
       + 'single investor listed… For every investor, we can always switch it from where we want to '
       + 'take the information."' },
+  // -- Term sheets ----------------------------------------------------------
+  // The officer-side term sheet (owner-directed 2026-08-30: *"we want to be able
+  // also on the staff side to enable the term sheet option from today"*). The
+  // BORROWER side of the pricing engine is a later phase and nothing here
+  // switches it on.
+  { key: 'termSheet.officerEnabled', group: 'Term sheets', label: 'Officer term sheets',
+    type: 'boolean', default: false,
+    description: 'Off: the Term sheet and Compare controls do not appear on the pricing '
+      + 'board. On: an officer can issue a term sheet from a priced quote.',
+    evidence: 'Owner-directed 2026-08-30 - the officer side may go live now; the borrower '
+      + 'side waits on the prepayment-penalty work.' },
+  { key: 'termSheet.expiryHours', group: 'Term sheets', label: 'A TERM SHEET is good for (hours)',
+    type: 'number', default: 24,
+    description: 'Hours from issue until a single-program TERM SHEET says it has expired, '
+      + 'and the number the sheet prints on its own face. Nothing is deleted when it does - '
+      + 'an expired sheet still replays, and says it is expired.',
+    evidence: 'Owner-directed 2026-08-30 - "it should also say that it is expiring in 24 hours."' },
+  { key: 'termSheet.expiryDays', group: 'Term sheets', label: 'A COMPARISON is good for (days)',
+    type: 'number', default: 2,
+    description: 'Days from issue until a comparison or scenario comparison says it has '
+      + 'expired. A comparison is a working document rather than an offer, so it runs on a '
+      + 'longer clock than a term sheet.' },
+  { key: 'termSheet.cartMax', group: 'Term sheets', label: 'Options in one comparison',
+    type: 'number', default: 8,
+    description: 'The most options one comparison may hold. Past this it stops being a '
+      + 'comparison and becomes a catalogue.' },
+  { key: 'termSheet.pricedApartMinutes', group: 'Term sheets', label: 'Say when options were priced apart',
+    type: 'number', default: 60,
+    description: 'When the options on one comparison were priced further apart than this, '
+      + 'the sheet states it - they reflect the market as it stood at each of those moments.' },
+  { key: 'termSheet.companyName', group: 'Term sheets', label: 'Company name on the sheet',
+    type: 'string', default: 'YS Capital Group',
+    description: 'The name at the top of every term sheet.' },
+  { key: 'termSheet.companyNmls', group: 'Term sheets', label: 'Company NMLS on the sheet',
+    type: 'string', default: '2609746',
+    description: 'Printed beside the company name.' },
 ];
 
 const BY_KEY = new Map(SETTINGS.map((s) => [s.key, s]));

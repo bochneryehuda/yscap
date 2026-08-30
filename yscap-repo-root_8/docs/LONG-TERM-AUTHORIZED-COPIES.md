@@ -76,6 +76,60 @@ sql-ref   borrower_officers
 sql-write borrower_officers
 
 # ---------------------------------------------------------------------------
+# THE VESTING ENTITY — authorized in writing by the owner, twice.
+#
+# 2026-08-30 (the original directive):
+#   "So it should populate that LLC as an LLC slot and it should be linked
+#    directly to his profile. So if that LLC is already verified somehow on his
+#    profile or even if it is not verified, even if it has some documentation on
+#    his profile already like formation documents, operating units, whatever it
+#    has that information should automatically be pre-filled in this condition …
+#    You have the entire entity logic. Bring over the entire entity logic that we
+#    have all over. Bring it over there. You should basically share the logic.
+#    Don't copy it. We need to share that logic from there. It should be directly
+#    linked to the profile. It should be saved to the profile. If that entity
+#    exists already in the profile, then it should pre-fill with that entity docs
+#    already there … when you put in the documents and you verify it should be
+#    verified to his profile in future when you use this LLC it's already
+#    verified."
+#
+# 2026-08-30 (the correction that closed it):
+#   "For this one, we need to bring over the same exact logic. If this upload is
+#    already uploaded in this entity slot on the profile, then it should be
+#    pre-filled with the documents already there and verified already. Also,
+#    you're missing the optional certificate of good standing."
+#
+# WHY IT IS AN IMPORT AND NOT A COPY, in the owner's own words: "share the logic,
+# don't copy it." A second entity implementation would be a second answer to "is
+# this company verified?" — and the one that drifts is the one that lets an
+# unverified company take title. Sharing also picks up rules a copy would have
+# missed and nobody would have noticed were missing: the Certificate of Good
+# Standing is OPTIONAL and EXPIRES AFTER 30 DAYS (`llc.js` GS_SLOT_CODE), the
+# layered-entity walk verifies bottom-up, and `missingForVerification` already
+# knows what a corporation is asked for versus an LLC, a partnership or a trust.
+#
+# THE ENTITY IS THE BORROWER'S, NOT THE PRODUCT'S. `llcs` hangs off `borrowers`,
+# which is already the shared identity zone — the same reasoning that authorized
+# `service_contacts`. One company, one set of formation documents, verified once.
+#
+# SCOPE. Long-Term reads and writes the entity through THIS module and never with
+# raw SQL of its own, so every rule above applies to both products by
+# construction. It does not reach the RTL condition engine, the RTL file screens,
+# or any RTL loan data.
+# ---------------------------------------------------------------------------
+
+# The one entity definition: find-or-create, the document slots, the members,
+# what is still missing before it can be verified, and the good-standing expiry.
+import   src/lib/llc.js
+
+# The entity record itself, and the document slots that hang off it. WRITE is
+# authorized because the owner asked for it by name — "it should be saved to the
+# profile … when you put in the documents and you verify it should be verified to
+# his profile" — and it happens THROUGH the shared module above, never in raw SQL.
+sql-ref   llcs
+sql-write llcs
+
+# ---------------------------------------------------------------------------
 # CLICKUP FOR LONG-TERM — authorized in writing by the owner, 2026-08-23:
 #   "Bring over the basic details of the ClickUp connector and actual
 #    credentials from the ClickUp connector from the RTL side over to the
@@ -182,6 +236,266 @@ rtl-import app-v2/src/screens/Dashboard.jsx
 # Long-Term surface genuinely needs the RTL geocoder, this line already covers
 # it. See the log row below.
 import src/lib/address-canon.js
+
+# ---------------------------------------------------------------------------
+# THE COMPANY'S SENDING IDENTITY — authorized in writing by the owner,
+# 2026-08-30, answering a direct question about the first Long-Term feature
+# that sends email (the daily rate-movement reports):
+#
+#   "Yes I'm giving you a written authorization to use the sender credentials
+#    from the short-term side. Send it out from lock desk @ YS Capital
+#    Whatever. Basically that should be the idea but follow the resend
+#    credentials."
+#
+# WHAT CROSSES, AND WHY IT IS THE TRANSPORT AND NOT THE EMAIL. A sending
+# domain's reputation, its DMARC alignment and its suppression list are
+# properties of THE COMPANY, not of a product: two independent senders on one
+# domain is how a domain's deliverability is damaged, and the second sender is
+# the one that gets it wrong. So Long-Term uses `src/lib/email/index.js` as a
+# TRANSPORT — hand it a rendered message, it picks the configured provider
+# (Resend, per the owner's direction) and sends. The same reasoning the owner
+# applied to the ClickUp connector on 2026-08-23: the WORKSPACE was the
+# company's, not RTL's.
+#
+# WHAT DOES NOT CROSS: RTL's notification machinery. No `notify.js`, no
+# `catalog.js`, no `template.js`, no digests, no in-app rows, no
+# `notifications` table. Long-Term builds its own message bodies in
+# `src/longterm/**` and hands the finished thing to the transport, exactly as
+# it has its own Encompass client and its own ClickUp client.
+#
+# THE FROM ADDRESS is the owner's ("lock desk @ YS Capital"), configured in the
+# hosting environment like every other address here — never a value in code.
+#
+# NOT USED YET, DELIBERATELY. The reports are Phase 2 and are not built. The
+# grant is recorded now, in the owner's own words, so the authorization is the
+# ledger entry rather than a chat message that scrolls away — the same shape as
+# the `address-canon.js` line above, which is likewise authorized and unused.
+# ---------------------------------------------------------------------------
+
+# The DIRECTIVE for this crossing is declared ONCE, further down, on the entry
+# that describes it in use (the order sender). Main authorized the same module
+# independently and in more detail on the same day; this block records the
+# SECOND owner conversation — the rate-movement reports — because the two grants
+# were given separately and both belong in the record. One crossing, one line.
+# ---------------------------------------------------------------------------
+
+# THE FILE-OVERVIEW SLIDE-OVER — authorized in writing by the owner, 2026-08-30:
+#   "Right now, the file overview is always displaying on the right side. We want
+#    to go and do the same thing that we have on the short term side, where we
+#    have a file overview button. It should be the same feel. We open it up, and
+#    it comes up with all the details of the file overview."
+#   … and, over the whole instruction: "You need to make sure you're not copying
+#    the information. You're just using the information from the short-term side
+#    … Everything should share the code, so we don't need to rewrite the code.
+#    We are just sharing the code. If the code is updated, he's also updating it."
+#
+# WHY THIS FILE AND NOTHING AROUND IT. `FileOverviewSlideOver.jsx` is already
+# product-neutral BY CONSTRUCTION: it takes a `fetcher` and renders whatever
+# `{header, sections[]}` that fetcher resolves. It reads no table, knows no
+# product, and holds no RTL rule — which is exactly why RTL itself mounts the one
+# component on three different surfaces (staff, borrower, broker) with three
+# different fetchers. Long-Term becomes the fourth caller and supplies its own
+# data, so the AUDIENCE BOUNDARY stays where it already is: with whoever hands it
+# the payload, never inside the panel.
+#
+# THE ALTERNATIVE WAS REJECTED ON THE OWNER'S OWN TERMS. A long-term lookalike
+# would be a second copy of a solved problem, and the owner asked for the
+# opposite in the same breath ("share the code … if the code is updated, he's
+# also updating it"). The `.fov-*` stylesheet is already global and shared, so a
+# copy would have shadowed the same CSS with different markup — the drift this
+# ledger exists to prevent.
+#
+# WHAT DOES NOT CROSS: nothing else on the RTL file screen. Long-Term does not get
+# `FileSections.jsx`, `DealSnapshot.jsx`, the `.snap-*` components or any RTL
+# fetcher. It renders its own long-term data through this one panel.
+#
+# TRANSITIVE, AND DELIBERATELY NOT LISTED SEPARATELY: the panel imports
+# `app-v2/src/lib/overlay-layers.js` (the z-order store that keeps the tab
+# clickable over a document preview). That is RTL importing RTL, which is not a
+# crossing and needs no entry — it is named here so a future reader knows it came
+# along and is covered by this authorization.
+# ---------------------------------------------------------------------------
+
+# The long-term file screen opens its overview in the ONE shared slide-over.
+import app-v2/src/components/FileOverviewSlideOver.jsx
+
+# ---------------------------------------------------------------------------
+# ORDERS — authorized in writing by the owner, 2026-08-30, asked as a specific
+# question about the long-term Orders section:
+#
+#   "Everything should share the code, so we don't need to rewrite the code. We
+#    are just sharing the code. If the code is updated, he's also updating it."
+#
+#   "You need to make sure you're not copying the information. You're just using
+#    the information from the short-term side."
+#
+#   "While you're sharing it, watch what you're doing not to break the other
+#    side of the business, the short-term side."
+#
+# THREE SENTENCES, THREE DIFFERENT INSTRUCTIONS, and each one shapes what is
+# below:
+#
+#   1. SHARE THE CODE — one definition, so a fix to the order letter helps both
+#      products rather than one.
+#   2. USE THE INFORMATION, DO NOT COPY IT — the vendor directory is the
+#      company's, not RTL's. A title company corrected once is corrected
+#      everywhere, which is only true if there is one row rather than two.
+#   3. DO NOT BREAK THE SHORT-TERM SIDE — which is why what crosses is a PURE
+#      module extracted out of `src/lib/orders.js` and re-exported BY it, rather
+#      than Long-Term reaching into the order desk itself.
+#
+# WHAT CROSSES, AND WHY IT IS THIS AND NOT `src/lib/orders.js`. That file is 900
+# lines and most of it reads RTL tables — `applications`, `checklist_items`,
+# `file_orders` — and requires the RTL pool at module load. Importing it would
+# not be "sharing code", it would be Long-Term running on RTL's data layer, and
+# rule 4 forbids that outright ("no shared database pool", "LT may not read or
+# write an RTL table in raw SQL either").
+#
+# So the SHAREABLE half was extracted into `src/lib/order-email.js`: the letter
+# itself, the mortgagee clause, the recipient rule, the reply-address minting and
+# the send verdict. It touches NO database and requires no RTL data module.
+# `src/lib/orders.js` re-exports every one of those names, so the short-term desk
+# is byte-identical and there is exactly ONE definition of an order letter — which
+# is precisely what the owner asked for.
+#
+# WHAT DOES NOT CROSS: `src/lib/orders.js` itself, `getOrderData`, `placeOrder`,
+# `file_orders`, `file_order_events`, RTL's inbound mail routing, and RTL's
+# notification system. Long-Term has its own `lt_file_orders` and its own desk,
+# and no `lt_*` table references an RTL one.
+# ---------------------------------------------------------------------------
+
+# The order LETTER and everything pure around it — one definition for both
+# products. Extracted from src/lib/orders.js, which re-exports it.
+import src/lib/order-email.js
+
+# The branded email renderer. The owner asked for "the same Gmail-style box" on
+# the long-term side; a second renderer would be a second brand.
+import src/lib/email/template.js
+import src/lib/email/quote.js
+
+# The unique per-order reply address, so a vendor's reply and the documents they
+# send back route to the order that asked for them. One definition, or the two
+# products would mint addresses the one inbound webhook cannot tell apart.
+import src/lib/file-address.js
+
+# Reading an inbound message — which addresses a delivery names, the Receiving-API
+# retrieval, the attachment download with its two honest drop counters, the
+# sender-authentication verdict and the auto-responder test. Extracted from
+# src/lib/file-inbox.js (which re-exports it) for the same reason the letter was:
+# that file is the SHORT-TERM inbox and requires the short-term pool at module
+# load. A vendor's reply to a long-term order has to be read the SAME way, and a
+# second copy of a security-relevant reading is the copy that drifts.
+import src/lib/inbound-mail.js
+
+# The Resend/Svix webhook signature check. There is ONE inbound webhook secret and
+# ONE verification, on node's own crypto and nothing else; a second copy of a
+# signature verifier is the one duplication that must never exist.
+import src/lib/resend-webhook.js
+
+# THE MAIL SENDER. One Resend/Graph account, one From identity, one SPF/DKIM/DMARC
+# story — a second sender would be a second deliverability posture and a second
+# place the provider's ceiling is (not) respected.
+#
+# STATED PLAINLY RATHER THAN SMUGGLED: `email/rate-limit.js` lazily reaches for
+# `src/db` to spend from the outbound budget every process shares (db/619). That is
+# the ONE place a long-term send touches the short-term pool, and it is deliberate:
+# there is ONE Resend account, so there is ONE ceiling, and two independent budgets
+# would let the two products together burst past it and get the whole company
+# throttled — which is the failure that budget exists to prevent. It carries no loan
+# data in either direction. Long-Term sends with `_skipCapture: true`, so the
+# short-term Email Center is never written; the long-term thread is its own
+# `lt_order_events` row.
+import src/lib/email/index.js
+
+# WHERE THE BYTES GO. One storage layer — one persistent disk / one bucket, one
+# path-traversal defence, one atomic write, one integrity hash. A second one is a
+# second place a document can be silently lost.
+import src/lib/storage.js
+
+# What a file actually IS, from its own first bytes, and the one tolerant base64
+# decode. A second sniffer is a second answer to "is this a PDF or an HTML error
+# page saved as one", and the lenient decoder is what silently garbles a document.
+import src/lib/upload-bytes.js
+
+# An email-signature logo is not a returned document. One definition, or the
+# long-term desk re-lives the months of rejecting company logos by hand that the
+# short-term desk already lived through.
+import src/lib/order-return-filter.js
+
+# WHERE A PERSON'S OWN REPLY ENDS AND THE QUOTED HISTORY BEGINS. The order letter
+# PRINTS the shared reply marker at the top of its content; this is the reader that
+# cuts on it. They are two halves of one mechanism, so a second copy of the cut
+# would file a vendor's whole thread on the loan on every round.
+import src/lib/email/reply-cut.js
+
+# WHO AN EMAIL COMES FROM, and whether we are allowed to say so. There is ONE
+# company identity, ONE verified sending domain and therefore ONE answer to "may we
+# put this person's address in the From line" — the arithmetic is DKIM alignment, not
+# a preference, and a second copy of it would be a second deliverability posture.
+# PURE: no config, no network; the caller supplies the configuration.
+# docs/SEND-AS-USER-AND-DELIVERABILITY.md is the research behind it.
+import src/lib/send-as.js
+
+# THE DOCUSIGN TRANSPORT — the low-level client only.
+#
+# The owner asked for the long-term verification of rent to go out "by DocuSign, as
+# an email attachment, or both". There is ONE DocuSign account, ONE integration key,
+# ONE one-time JWT impersonation consent granted to it, ONE access-token cache and
+# ONE Connect HMAC secret — so a second client would mint a second JWT against the
+# same user on the same rate-limited token endpoint, and would be a second place the
+# inbound webhook's signature is verified. A second copy of a signature verifier is
+# the one duplication that must never exist.
+#
+# WHAT IS SHARED IS THE TRANSPORT, NOT THE WORKFLOW. This module's own header says
+# it: "It does NOT decide WHEN to send, own the send-once claim, or clear
+# conditions." Long-Term builds all of that itself in src/longterm/vor/** against
+# its own lt_vor_* tables; nothing here reads an RTL table and no RTL module reads a
+# long-term envelope.
+#
+# THE SHARED CONNECT WEBHOOK NEEDED A CLAIM, exactly like the shared inbound-email
+# endpoint: DocuSign posts every envelope's events to one URL, and the RTL drainer
+# answers an envelope it does not own with `skipped: 'untracked'` — correct for it,
+# and it would have swallowed the landlord's signature in silence. Long-Term's claim
+# is mounted IN FRONT of the RTL route at that endpoint and hands on anything that is
+# not one of its own.
+import src/lib/integrations/docusign.js
+
+# HOW A VENDOR'S ADDRESSES AND PHONES ARE READ — the PURE half only
+# (`allEmails` / `allPhones` / `dedupBy`). db/224 added an `emails text[]` beside
+# the legacy scalar `email` and backfilled only the rows that existed then, so on
+# many live cards the array is NULL and the scalar is the only value while on
+# others the scalar is merely the first entry. Reading either alone drops
+# addresses, which on this desk means a title company's closing@ inbox never
+# receiving the order and nobody knowing. One definition, or the long-term desk
+# rediscovers that column pair the hard way.
+#
+# `suggest()` IS OFF LIMITS and is the reason this entry says "the pure half": it
+# lazily reaches for `src/db` to search the directory, which would run a long-term
+# read on the short-term pool. Long-Term queries `service_contacts` on its OWN pool
+# (authorized `sql-read` below) and folds the result with these pure helpers.
+# Guarded by scripts/test-lt-orders-pure.js.
+import src/lib/vendor-directory.js
+
+# ---------------------------------------------------------------------------
+# THE VENDOR DIRECTORY — the second sentence above, in table form.
+#
+# `service_contacts` hangs off `borrowers`, which is ALREADY the shared identity
+# zone (2026-08-03). A title company, an insurance agent or an attorney is the
+# COMPANY'S record of a vendor, not a fact about which product a loan is. The
+# owner's "you're just using the information from the short-term side" is a
+# refusal of a second copy, and a second copy is exactly what a Long-Term vendor
+# table would be: the same companies, typed again, drifting.
+#
+# LONG-TERM READS AND WRITES IT, because adding a title company from a long-term
+# file has to put it where the short-term side will see it — that is the whole
+# point. What Long-Term does NOT touch is `application_service_contacts`, the
+# per-FILE link, which is keyed on an RTL application: Long-Term keeps its own
+# `lt_loan_vendors` link, so no lt_* table references an RTL one.
+# ---------------------------------------------------------------------------
+
+sql-ref   service_contacts
+sql-read  service_contacts
+sql-write service_contacts
 ```
 
 ## Log of authorizations
@@ -189,6 +503,18 @@ import src/lib/address-canon.js
 | Date | Kind + item | Direction | The owner's words | PR |
 |---|---|---|---|---|
 | 2026-08-03 | `import src/auth/index.js` — one login for both products | RTL → LT | *"same login same borrower record, keep it separate everything else"* | #975 |
+| 2026-08-30 | `import src/lib/order-email.js` — the order letter, one definition for both products | RTL → LT | *"Everything should share the code, so we don't need to rewrite the code. We are just sharing the code. If the code is updated, he's also updating it."* | #1376 |
+| 2026-08-30 | `import src/lib/inbound-mail.js` — reading an inbound message (retrieval, attachments, sender authentication, auto-responder detection), extracted from `src/lib/file-inbox.js`, which re-exports it | RTL → LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* The vendor reply that carries a long-term order's documents has to be read the same way the short-term one is | #1376 |
+| 2026-08-30 | `import src/lib/resend-webhook.js` — the inbound webhook signature check | RTL → LT | The same message arrives on the same domain through the same webhook; one signing secret, one verification. A second copy of a signature verifier is the duplication that must never exist | #1376 |
+| 2026-08-30 | `import src/lib/email/index.js` — the mail sender | RTL → LT | *"make sure all the orders are coming from the user that is actually ordering, from his email, from his name"* — sending the order IS the order. One account, one From identity, one deliverability posture. **Recorded explicitly: the shared outbound rate budget reaches the RTL pool (db/619), because there is one Resend ceiling and two budgets would burst it. No loan data crosses, and Long-Term sends with `_skipCapture` so the short-term Email Center is never written** | #1376 |
+| 2026-08-30 | `import src/lib/storage.js` + `import src/lib/upload-bytes.js` + `import src/lib/order-return-filter.js` — where a returned document's bytes go, what the bytes actually are, and the email-signature filter | RTL → LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* A second storage layer is a second place a document is lost; a second sniffer is a second answer to "is this a PDF"; a second signature filter means re-living the months of rejecting company logos by hand | #1376 |
+| 2026-08-30 | `import src/lib/vendor-directory.js` — the PURE half only: how a vendor card's addresses and phones are read | RTL → LT | The same directory is shared, so the same reading of it must be. db/224's `email` scalar + `emails` array pair drops addresses when either is read alone. **`suggest()` is off limits** — it reaches the short-term pool; Long-Term queries `service_contacts` on its own pool and folds with these helpers | #1376 |
+| 2026-08-30 | `import src/lib/email/reply-cut.js` — where a person's own reply ends and the quoted history begins | RTL → LT | The order letter prints the SHARED reply marker; this is the reader that cuts on it. Two halves of one mechanism — a second copy files the vendor's whole thread on the loan every round |  #1376 |
+| 2026-08-30 | `import src/lib/send-as.js` — who an order comes from | RTL → LT | *"make sure all the orders are coming from the user that is actually ordering, from his email, from his name."* One company identity, one verified sending domain, one answer to whether an address may go in a From line — the rule is DKIM alignment, not a preference. The short-term desk is deliberately NOT switched over; that is the owner's call | #1376 |
+| 2026-08-30 | `import src/lib/integrations/docusign.js` — the DocuSign transport (envelope create, void, status, documents, the Connect HMAC) | RTL → LT | *"it can go by DocuSign, as an email attachment, or both"* on the long-term verification of rent. One DocuSign account, one integration key, one JWT consent, one token cache, one Connect HMAC — a second client would mint a second JWT against the same rate-limited endpoint and be a second copy of a signature verifier. **The transport only: the module's own header says it does not decide when to send, own the send-once claim or clear a condition — Long-Term builds all of that in `src/longterm/vor/**` against its own `lt_vor_*` tables. The shared Connect webhook carries a long-term claim in front of the RTL route, because the RTL drainer answers an envelope it does not own with `skipped: 'untracked'` and would have swallowed the landlord's signature** | #1376 |
+| 2026-08-30 | `import src/lib/email/{template,quote}.js` — the one branded email | RTL → LT | *"it should have the same feel … the same Gmail-style box"* | #1376 |
+| 2026-08-30 | `import src/lib/file-address.js` — the unique per-order reply address | RTL → LT | *"Everything should share the code … If the code is updated, he's also updating it."* | #1376 |
+| 2026-08-30 | `sql-ref` / `sql-read` / `sql-write service_contacts` — the shared vendor directory | RTL ↔ LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* | #1376 |
 | 2026-08-03 | `sql-ref borrowers` + `sql-read borrowers` — one person record, read by Long-Term | RTL → LT | *"same borrower record … all the borrowers should be able to see all their files even if its long term or short term"* | #975 |
 | 2026-08-03 | `sql-ref staff_users` + `sql-read staff_users` — a Long-Term file knows its officer | RTL → LT | *"officers should be able to see all of their files even if it's long term or short term"* (an officer can only see their Long-Term files if a Long-Term file records its officer, and officers are the same accounts as the shared login) | #975 |
 | 2026-08-03 | `import app-v2/src/components/BorrowerProfilePanel.jsx` — the ONE shared borrower editor, mounted on a long-term file | RTL → LT | *"officers should be able to change the borrower profile on long term files"* — confirmed in the same breath as *"keep borrower read only"*, so the edit goes through the existing shared editor and the existing borrower endpoint; Long-Term code still never writes `borrowers` | #975 |
@@ -196,6 +522,8 @@ import src/lib/address-canon.js
 | 2026-08-14 | `rtl-import app-v2/src/App.jsx` + `rtl-import app-v2/src/components/StaffLayout.jsx` — the FRONT-END mount seam: the router mounts the Long-Term screens, and the staff shell renders the Short-Term / Long-Term switch | LT → RTL | *"You were authorized to touch that switch of the short-term shell."* Asked directly, because rule 5 forbids touching RTL to make LT work and the switch cannot exist without it. Deliberately as narrow as the back-end seam (`src/server.js`): these two files may reference LT code ONLY to mount it and to render the switch — no RTL screen may import an LT component for its own use, and no LT logic may move into a shared file | this PR |
 | 2026-08-17 | `rtl-import app-v2/src/screens/Dashboard.jsx` — the borrower's HOME SCREEN renders the Short-Term / Long-Term switch | LT → RTL | *"put the switch on the borrower's home screen"* — answering a direct question that named the cost: the client's long-term page was already built and routed at `/long-term`, and moving its entry point onto the borrower dashboard makes an RTL screen reference LT code, which the 2026-08-14 seam permits only per file, in writing. Scoped exactly as narrowly as the staff shell: this file imports ONE component (`BorrowerLongTermSwitch`) and renders it — no LT logic, no LT data read, no second LT import. Whether there is anything to switch TO is decided on the Long-Term side, so the RTL screen never carries that rule | this PR |
 | 2026-08-16 | `import src/lib/address-canon.js` — ZIP → city/state/county/county-FIPS lookup for the Long-Term DSCR pricer | RTL → LT | *"Yes, you have my written OK to reuse that."* Asked as one specific question: the vendor's own screen turns a ZIP into the full location before pricing, while our connector required the caller to supply the county FIPS and refused an incomplete location. Scoped to this one module used as a READ-ONLY lookup — NOT the RTL address writers, and Long-Term still rewrites no RTL address record. **CORRECTION (2026-08-16, same day): the authorized module was ultimately NOT used.** It returns a county NAME with no FIPS, refuses a bare ZIP (it is built for a full street address), and needs a `DATABASE_URL` — none of which suits a pure pricing path, and the owner separately corrected the premise: the screen is ZIP-driven, no street address is involved. The shipped answer is `src/longterm/lenderprice/zip-county.js` + a committed Census ZCTA table — LT-only, so not a crossing at all. The permission stands and is recorded here as granted, not as a description of the shipment | #1220 |
+| 2026-08-30 | `import src/lib/email/index.js` — the company's one email TRANSPORT, so Long-Term's rate-movement reports send from the same identity as everything else | RTL → LT | *"Yes I'm giving you a written authorization to use the sender credentials from the short-term side. Send it out from lock desk @ YS Capital Whatever. Basically that should be the idea but follow the resend credentials."* Asked as one specific question, naming the cost: Long-Term has no mailer, and a second sender on the company's own domain damages the domain's own deliverability — a sending identity is a fact about the COMPANY, the same reasoning that authorized the ClickUp workspace on 2026-08-23. Scoped to the TRANSPORT only: no `notify.js`, no `catalog.js`, no `template.js`, no digests, no in-app rows, no `notifications` table — Long-Term renders its own bodies and hands over a finished message. **AUTHORIZED, NOT YET USED** — the reports are Phase 2 and are not built; recorded now so the authorization lives in the ledger rather than in a chat message | this PR |
+| 2026-08-30 | `import app-v2/src/components/FileOverviewSlideOver.jsx` — the long-term file screen opens its overview in the ONE shared slide-over, behind a button, instead of an always-on right-hand rail | RTL → LT | *"Right now, the file overview is always displaying on the right side. We want to go and do the same thing that we have on the short term side, where we have a file overview button. It should be the same feel."* — and, governing the whole instruction, *"You need to make sure you're not copying the information. You're just using the information from the short-term side … Everything should share the code, so we don't need to rewrite the code … If the code is updated, he's also updating it."* Scoped to this ONE component, which is product-neutral by construction (it takes a `fetcher` and renders whatever `{header, sections[]}` it resolves) and is already mounted on three RTL surfaces with three different fetchers; Long-Term is the fourth caller and supplies its own payload, so the audience boundary stays with the caller. NOT a licence for any other RTL file-screen component | this PR |
 | 2026-08-14 | **The Encompass integration — brought into Long-Term as a self-contained BY-VALUE copy** (logic, authorization, requests, credentials mechanism, field map). Lives entirely in `src/longterm/encompass/**`. | RTL → LT | *"Pull in and copy: the logic of Encompass integration, the credentials of Encompass integration, the requests, the authorization. We need to start long-term loans with a full Encompass understanding … take also all the fields from this mapping and bring it in."* This is a specific, owner-directed exception to the 2026-08-03 "no shared integrations" line below (Encompass only; everything else still stays separate). | this PR |
 
 ### Note on the Encompass copy (2026-08-14)
@@ -216,6 +544,7 @@ write stays RTL-only). None of this knowledge is enforced — it is memory for t
 the back end of the entire thing will be different, the workflow will be different, the sets will be different,
 integrations will be different, it will be a brand new build. Don't assume anything that we're building on one
 thing to build that also on the other thing — it's totally separate."*
+| 2026-08-30 | The **PILOT term-sheet DESIGN and the YS Capital lockup**, copied BY VALUE into `src/longterm/termsheet/brand.js` + `src/longterm/termsheet/assets/pilot-lockup-light.png` | RTL → LT | *"Everything should be in our pilot branding the same way our RTL term sheet is. Follow the same kind of design that our RTL term sheet have … Look at the design we have on the RTL. Try to bring in that nice pilot design … Make sure to include our logos and our designs."* **What crossed is the DESIGN**: the palette (`INK` / `TEAL` / `GOLD` / `LINE` / ivory), the header-band geometry (a 76pt full-bleed ink band, a 2.2pt gold rule, the lockup 30pt tall at the left margin), the teal section band with its gold tab, the ivory accent row, the three-line footer, and the SHAPE of a disclosures page — each value read off `web/v2/tools/termsheet.js`'s own `header()` / `band()` / `rowIn` / `footer()` / `disclosuresPage()`. **NOT ONE LINE OF RTL LOGIC CROSSED, and it may not**: that file is a FROZEN RTL pricing engine, so requiring it would put a frozen engine on Long-Term's render path and break rule 4 outright. The lockup is the same PNG the RTL sheet embeds (`web/v2/tools/rb-logo.js`), extracted to its own asset so Long-Term reads no RTL file at runtime. The disclosure TEXT is deliberately NOT copied — the RTL page describes a business-purpose bridge loan (minimum earned interest, a deferred origination fee at exit, construction draws) and a 30-year DSCR rental loan has none of those, so copying it would put terms on the document that are not terms of the loan | this PR |
 
 ## Log of things we ASKED for and were told NO / not yet
 

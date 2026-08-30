@@ -51,7 +51,7 @@ export default function LtStatusReviews() {
   if (err) {
     return (
       <LtLayout title="Status disagreements">
-        <div className="card" style={{ color: '#8A2D2D' }}>{err}</div>
+        <div className="lt-card" style={{ color: '#8A2D2D' }}>{err}</div>
         <button type="button" className="btn ghost" style={{ marginTop: 10 }} onClick={load}>Try again</button>
       </LtLayout>
     );
@@ -59,7 +59,7 @@ export default function LtStatusReviews() {
   if (!data) {
     return (
       <LtLayout title="Status disagreements">
-        <div className="card" style={{ color: INK }}>Loading…</div>
+        <div className="lt-card" style={{ color: INK }}>Loading…</div>
       </LtLayout>
     );
   }
@@ -68,7 +68,7 @@ export default function LtStatusReviews() {
 
   return (
     <LtLayout title="Status disagreements">
-      <div className="card" style={{ color: INK, marginBottom: 12 }}>
+      <div className="lt-card" style={{ color: INK, marginBottom: 12 }}>
         <p style={{ margin: 0, color: MUTED, fontSize: 13, lineHeight: 1.55 }}>{data.note}</p>
         {/* NO SILENT CAPS. A truncated list that does not say so reads as the
             whole answer. */}
@@ -80,7 +80,7 @@ export default function LtStatusReviews() {
       </div>
 
       {rows.length === 0 ? (
-        <div className="card" style={{ color: INK }}>
+        <div className="lt-card" style={{ color: INK }}>
           <h2 style={{ margin: '0 0 6px', fontSize: 16 }}>Nothing disagrees</h2>
           <p style={{ margin: 0, color: MUTED, fontSize: 13, lineHeight: 1.55 }}>
             Every file PILOT has looked at has the same status in ClickUp that its Encompass
@@ -89,7 +89,7 @@ export default function LtStatusReviews() {
           </p>
         </div>
       ) : (
-        <div className="card" style={{ color: INK, padding: 0, overflowX: 'auto' }}>
+        <div className="lt-card lt-card-flush" style={{ color: INK, padding: 0, overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
             <thead>
               <tr>
