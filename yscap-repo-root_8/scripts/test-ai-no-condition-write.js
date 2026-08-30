@@ -8,6 +8,15 @@
  * that attaches a vetted library template — see src/lib/underwriting/ai-suggestions.js
  * and the convert_to_condition route in src/routes/underwriting.js).
  *
+ * WHICH "AI" THIS MEANS, said plainly because the wording has been read too
+ * broadly once (owner-directed 2026-08-30, in their own words): *"the intent of
+ * this rule … was that the AI within our system, which is the ChatGPT 5.5, their
+ * own PILOT's AI, cannot add conditions automatically."* So the freeze is about
+ * the PRODUCT's AI adding conditions to a live file behind a person's back. It is
+ * not a rule about who writes the source — an engineer adding a deterministic,
+ * human-triggered writer names it in the ALLOWLIST below and that is the sanctioned
+ * path, exactly as the failure message says.
+ *
  * This test fails the build if ANY code path — an AI module, an AI suggestion
  * producer, or any NEW unreviewed file — inserts a `checklist_items`,
  * `checklist_templates`, OR first-class `conditions` (db/022) row. The complete
