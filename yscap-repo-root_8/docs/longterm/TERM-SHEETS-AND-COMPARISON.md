@@ -4,7 +4,11 @@
 still research.** Companion to `BORROWER-PRICING-MASTER-PLAN.md`. The officer half
 is the piece the owner said may go live now: *"we can add live right away on the
 officer side to export term sheets."* It is behind `termSheet.officerEnabled`,
-which ships **OFF**.
+which shipped **OFF** for one deploy — so the merge changed nothing anybody could
+see — and was **switched ON the same day, 2026-08-30, on the owner's instruction
+("turn it on")**. The switch is the declared default in
+`src/longterm/settings/encompass-settings.js`; an admin may still turn it off per
+tenant from the Long-term settings, which stores a real deviation and wins.
 
 **What shipped, and where it differs from what is written below, is §13a — read
 that before this.** Four things came out differently in the build, including a
@@ -55,7 +59,7 @@ that code would be a crossing needing the owner's written authorization
 
 | Who | May export | From which comp position |
 |---|---|---|
-| Loan officer / staff | Yes — **Phase 1, can go live now** (`termSheet.officerEnabled`) | Borrower-paid or lender-paid **only** |
+| Loan officer / staff | Yes — **Phase 1, LIVE since 2026-08-30** (`termSheet.officerEnabled`, now on by default) | Borrower-paid or lender-paid **only** |
 | Borrower | Yes — Phase 4, behind the company switch | Whatever presentation their board renders (master plan §5.1) |
 | Anyone | **Never from raw pricing** | — |
 

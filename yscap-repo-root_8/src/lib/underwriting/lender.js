@@ -9,7 +9,7 @@
  */
 const LENDER_NAME = 'YS CAPITAL GROUP';
 const LENDER_MORTGAGEE_CLAUSE =
-  'YS CAPITAL GROUP ISAOA/ATIMA\n5 NEW MONROSE AVE #BSMT BROOKLYN NY 11211';
+  'YS CAPITAL GROUP ISAOA/ATIMA\n5 NEW MONTROSE AVE #BSMT BROOKLYN NY 11211';
 // On an RCN file the note is serviced by Elite Commercial Servicing, so PILOT
 // itself requests THIS notice address on the vendor order (lib/orders.js). The
 // insurance/title mortgagee-address check therefore recognizes it as ours too —
@@ -19,6 +19,20 @@ const LENDER_MORTGAGEE_CLAUSE_RCN =
   'YS CAPITAL GROUP ISAOA ATIMA\nC/O ELITE COMMERCIAL SERVICING, LLC PO BOX 15126 RICHMOND VA 23227-0526';
 
 const norm = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+// OUR STREET, BOTH WAYS IT GETS PRINTED.
+//
+// The street is MONTROSE — that is the owner's own wording and what every order letter,
+// disclosure and PDF in this repo prints (`lib/order-email.js`, `lib/esign/*`). This constant
+// said "MONROSE" until 2026-08-30, and that misspelling was read back to agents as the clause
+// to re-issue the policy with, so binders carrying it are already out in the wild.
+//
+// Both spellings therefore have to READ AS OURS. A mortgagee clause is where insurance
+// cancellation and loss notices get mailed; a vendor-printed misspelling of our own street is
+// still our address, and calling it a stranger's would raise exactly the "doesn't match" nag the
+// owner told us to stop (see clauseAddressState below). Listed explicitly rather than fuzzed with
+// an optional letter — a one-character tolerance would also swallow a genuinely different street.
+const OUR_STREET = /5 new (?:montrose|monrose) ave/;
 
 // Does the clause carry the Elite Commercial Servicing notice address (the RCN
 // servicer)? The servicer name OR the PO box, together with the Richmond ZIP — any
@@ -48,7 +62,7 @@ function clauseNamesLender(text) {
 function clauseHasAddress(text, opts = {}) {
   const n = norm(text);
   if (!n) return null;
-  if (/5 new monrose ave/.test(n) && /brooklyn/.test(n) && /11211/.test(n)) return true;
+  if (OUR_STREET.test(n) && /brooklyn/.test(n) && /11211/.test(n)) return true;
   // RCN files: the Elite Commercial Servicing address is also ours (see above).
   if (opts.rcn && hasRcnServicerAddress(text)) return true;
   return false;
@@ -57,10 +71,11 @@ function clauseHasAddress(text, opts = {}) {
 // IS THERE A NOTICE ADDRESS AT ALL? (owner-directed 2026-07-26: the address notice "should auto-clear
 // when an address is present".)
 //
-// `clauseHasAddress` above answers a much narrower question — does the clause carry OUR address,
-// spelled our way. A binder that reads "5 New Monrose Avenue, Basement, Brooklyn, New York 11211"
-// answers false to that and used to raise a notice claiming the address "doesn't match", when what
-// actually happened is that the wording differs. That nag is what the owner asked us to stop.
+// `clauseHasAddress` above answers a much narrower question — does the clause carry OUR address.
+// It is deliberately loose about HOW that address is written: a binder reading "5 New Montrose
+// Avenue, Basement, Brooklyn, New York 11211" (or the "Monrose" misspelling — see OUR_STREET) is
+// the same address as ours, and used to raise a notice claiming the address "doesn't match" when
+// what actually happened is that the wording differs. That nag is what the owner asked us to stop.
 //
 // But "an address is printed" is NOT the same as "our address is printed" (audit 2026-07-26). A
 // clause can name us and carry the borrower's address, or the previous lender's — and then loss

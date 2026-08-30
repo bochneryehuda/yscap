@@ -297,7 +297,12 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, busy:
                 background: '#fff', border: `1px solid ${isAnchor ? GOLD : 'rgba(20,27,34,.10)'}`,
                 borderRadius: 8, padding: '7px 10px',
               }}>
+                {/* WHICH OPTION EVERYTHING IS MEASURED AGAINST — the one choice this
+                    sheet is really asking for, so on a phone it is given a real target
+                    to hit (`.ltq-tap`, phone-only). At `padding: 0` it rendered 12px
+                    tall, which is a quarter of what a thumb can reliably land on. */}
                 <button type="button" onClick={() => setAnchor(m.position)} disabled={busy === `a${m.position}`}
+                  className="ltq-tap"
                   title={isAnchor ? 'Everything is compared against this one' : 'Compare everything against this one'}
                   style={{
                     border: 0, background: 'transparent', cursor: 'pointer', padding: 0,
