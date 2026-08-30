@@ -269,6 +269,39 @@ function textAnchor(anchor, { tabLabel, required = true, width = 200, height = 1
 }
 
 /**
+ * An EITHER/OR question, as one anchored radio GROUP.
+ *
+ * Two independent checkboxes let a signer tick both or neither and return a document
+ * that answers nothing; a radio group makes DocuSign enforce exactly one, and a
+ * `required` group blocks Finish until it is answered. Added for the long-term
+ * verification of rent, whose "Is account satisfactory? Yes/No" and "Is rent in
+ * arrears? Yes/No" are printed on the owner's form as exactly that.
+ *
+ * `groupName` is the stable key the selected value comes back under, so it must be
+ * unique per envelope — the same contract `tabLabel` has on a text tab.
+ * Each radio carries its OWN anchor, because Yes and No are printed in different
+ * places on the line.
+ */
+function radioGroupAnchor({ group, required = true, radios = [] }) {
+  return {
+    groupName: String(group),
+    // DocuSign takes `requireAll`/`required` on the GROUP; the per-radio `required`
+    // is ignored, which is why it is set once here.
+    required: required ? 'true' : 'false',
+    radios: radios.filter((r) => r && r.anchor).map((r) => ({
+      anchorString: r.anchor,
+      anchorUnits: 'pixels',
+      anchorXOffset: '0',
+      anchorYOffset: String(r.anchorYOffset == null ? '-4' : r.anchorYOffset),
+      anchorIgnoreIfNotPresent: 'true',
+      anchorCaseSensitive: 'false',
+      value: String(r.value),
+      selected: 'false',                 // nothing pre-selected: the signer answers
+    })),
+  };
+}
+
+/**
  * DocuSign caps `emailSubject` at 100 CHARACTERS. A longer value is not truncated by
  * their API — the whole create is REJECTED with a 400 ("The request contained at least
  * one invalid parameter. Length exceeds the maximum of 100 characters for
@@ -331,6 +364,7 @@ function buildEnvelopeDefinition({ documents, signers, carbonCopies, subject, st
         const signHereTabs = [];
         const dateSignedTabs = [];
         const textTabs = [];
+        const radioGroupTabs = [];
         const byDoc = s.tabsByDoc || {};
         for (const [documentId, tabs] of Object.entries(byDoc)) {
           for (const a of (tabs.sign || [])) signHereTabs.push({ ...signHereAnchor(a), documentId: String(documentId) });
@@ -341,6 +375,14 @@ function buildEnvelopeDefinition({ documents, signers, carbonCopies, subject, st
             if (!t || !t.anchor) continue;
             textTabs.push({ ...textAnchor(t.anchor, t), documentId: String(documentId) });
           }
+          // Either/or questions: each entry is { group, required?, radios:[{anchor, value}] }.
+          // The selected value comes back keyed by group (parseRecipients.textValues).
+          for (const g of (tabs.radio || [])) {
+            if (!g || !g.group || !Array.isArray(g.radios) || !g.radios.length) continue;
+            const built = radioGroupAnchor(g);
+            if (!built.radios.length) continue;
+            radioGroupTabs.push({ ...built, documentId: String(documentId) });
+          }
         }
         const signer = {
           email: s.email,
@@ -350,9 +392,15 @@ function buildEnvelopeDefinition({ documents, signers, carbonCopies, subject, st
           // in any order and an embedded view never hits RECIPIENT_NOT_IN_SEQUENCE.
           // Pass an explicit routingOrder to force sequential signing.
           routingOrder: String(s.routingOrder || 1),
-          // textTabs only included when the signer actually has fillable boxes — an
-          // empty array is harmless but we keep the shape minimal for the other packages.
-          tabs: textTabs.length ? { signHereTabs, dateSignedTabs, textTabs } : { signHereTabs, dateSignedTabs },
+          // textTabs / radioGroupTabs only included when the signer actually has
+          // them — an empty array is harmless but we keep the shape minimal for the
+          // other packages, none of which use either.
+          tabs: {
+            signHereTabs,
+            dateSignedTabs,
+            ...(textTabs.length ? { textTabs } : {}),
+            ...(radioGroupTabs.length ? { radioGroupTabs } : {}),
+          },
         };
         if (s.clientUserId) signer.clientUserId = String(s.clientUserId);   // embedded (in-portal) signer
         // Hybrid email+embedded: SIGN_AT_DOCUSIGN makes DocuSign ALSO send the
@@ -642,7 +690,14 @@ function parseRecipients(envelope) {
   }));
 }
 
-/** Flatten a signer's textTabs into { [tabLabel]: value } (trimmed). Empty when none. */
+/**
+ * Flatten a signer's typed answers into { [key]: value } (trimmed). Empty when none.
+ *
+ * textTabs are keyed by `tabLabel`; a radio GROUP is keyed by its `groupName` and its
+ * value is the ONE radio the signer selected. Both land in the same map because both
+ * are "what the signer told us", and the caller reads them by the same field key —
+ * a radio answer that came back somewhere else would silently never be filed.
+ */
 function parseTextValues(signer) {
   const tabs = (signer && signer.tabs && Array.isArray(signer.tabs.textTabs)) ? signer.tabs.textTabs : [];
   const out = {};
@@ -650,6 +705,16 @@ function parseTextValues(signer) {
     const label = t && (t.tabLabel != null ? String(t.tabLabel) : '');
     if (!label) continue;
     out[label] = (t.value != null ? String(t.value) : '').trim();
+  }
+  const groups = (signer && signer.tabs && Array.isArray(signer.tabs.radioGroupTabs)) ? signer.tabs.radioGroupTabs : [];
+  for (const g of groups) {
+    const name = g && (g.groupName != null ? String(g.groupName) : '');
+    if (!name) continue;
+    const picked = (Array.isArray(g.radios) ? g.radios : [])
+      .find((r) => r && String(r.selected).toLowerCase() === 'true');
+    // An UNANSWERED group is left out entirely rather than recorded as '': the
+    // caller's "an empty tab is not an answer" rule then reads the same for both.
+    if (picked && picked.value != null) out[name] = String(picked.value).trim();
   }
   return out;
 }
@@ -735,6 +800,7 @@ module.exports = {
   signHereAnchor,
   dateSignedAnchor,
   textAnchor,
+  radioGroupAnchor,
   createEnvelope,
   getEnvelope,
   getCombinedDocument,

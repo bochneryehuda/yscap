@@ -80,26 +80,37 @@ async function seed() {
     `a read failed against the real schema — that is a wrong column name, not a busy database: ${pre.unreadable.join(', ')}`);
   ok('every one of the five prefill reads runs against the real schema — no phantom column');
 
-  assert.strictEqual(pre.data.borrower_name, 'Leib Lichtman');
-  assert.strictEqual(pre.data.rental_address, '12 Oak Street, Lakewood, NJ 08701');
-  assert.strictEqual(pre.data.stated_rent, '2400.00');
-  assert.strictEqual(pre.data.stated_months, '28');
-  assert.strictEqual(pre.data.loan_number, 'YSCAP-VOR-TEST');
-  assert.ok(pre.data.stated_since, 'a start month is derived from the months on file');
-  ok('the form is filled in from the file — the applicant, the address, the rent and the term');
+  assert.strictEqual(pre.data.account_name, 'Leib Lichtman', 'item 7, account in the name of');
+  assert.strictEqual(pre.data.property_address, '12 Oak Street, Lakewood, NJ 08701',
+    'item 7 is the address the applicant RENTS, never the subject property');
+  assert.strictEqual(pre.data.applicant_block, 'Leib Lichtman\n12 Oak Street, Lakewood, NJ 08701',
+    'item 8 is one block: name and address, the way the form’s box is ruled');
+  assert.strictEqual(pre.data.loan_number, 'YSCAP-VOR-TEST', 'item 6, the lender’s own number');
+  assert.strictEqual(pre.data.applicant_signature, 'See attached signature', 'item 9, owner-directed');
+  ok('items 1 to 9 are filled in from the file — the applicant, the address they rent, and us');
 
   assert.strictEqual(pre.borrowerRents, true, 'the file says they rent, which is what puts this form on it');
   for (const k of Object.keys(pre.data)) {
     assert.ok(!/^ll_/.test(k), `the prefill produced a landlord answer (${k}) — it may never`);
   }
-  ok('the prefill answers nothing on the landlord’s behalf');
+  /* THE DEFECT THE OWNER REPORTED, ASSERTED AGAINST A REAL FILE. The residence row
+     seeded above carries a monthly rent of 2400.00 and 28 months — the borrower's own
+     account of Part II. It is READ (the desk shows it beside the form) and it must
+     never become form data, however convenient that would be. */
+  // Item 5 is today's date, so it carries whatever number today happens to be — it is
+  // left out of the scan rather than allowed to make this assertion fail once a month.
+  const { request_date: _todaysDate, ...saidByUs } = pre.data;
+  const asJson = JSON.stringify(saidByUs);
+  assert.ok(!/2400/.test(asJson), 'the rent the BORROWER stated reached the form — Part II is the landlord’s');
+  assert.ok(!/\b28\b/.test(asJson), 'the term the BORROWER stated reached the form — Part II is the landlord’s');
+  ok('the prefill answers nothing on the landlord’s behalf, not even from the file');
 
   // ── B. the form upsert MERGES ───────────────────────────────────────────
-  await desk.saveForm(LOAN, { officer_name: 'Chaya Gruber' }, null);
-  await desk.saveForm(LOAN, { officer_phone: '(718) 635-0277' }, null);
+  await desk.saveForm(LOAN, { lender_signature: 'Chaya Gruber' }, null);
+  await desk.saveForm(LOAN, { lender_title: 'Loan Officer' }, null);
   const row = (await db.query(`SELECT data FROM lt_vor_forms WHERE loan_id = $1::uuid`, [LOAN])).rows[0];
-  assert.strictEqual(row.data.officer_name, 'Chaya Gruber', 'the first save survived');
-  assert.strictEqual(row.data.officer_phone, '(718) 635-0277', 'and the second landed beside it');
+  assert.strictEqual(row.data.lender_signature, 'Chaya Gruber', 'the first save survived');
+  assert.strictEqual(row.data.lender_title, 'Loan Officer', 'and the second landed beside it');
   ok('a partial save merges — it never blanks the rest of the form');
 
   const forms = (await db.query(`SELECT count(*)::int AS n FROM lt_vor_forms WHERE loan_id = $1::uuid`, [LOAN])).rows[0].n;
@@ -107,17 +118,17 @@ async function seed() {
   ok('two saves make one form, not two');
 
   // ── C. a landlord answer is refused at the door, in the database too ────
-  await desk.saveForm(LOAN, { ll_rent: '9999', ll_paid_current: 'Yes' }, null);
+  await desk.saveForm(LOAN, { ll_rent_amount: '9999', ll_satisfactory: 'Yes' }, null);
   const after = (await db.query(`SELECT data FROM lt_vor_forms WHERE loan_id = $1::uuid`, [LOAN])).rows[0];
-  assert.ok(!('ll_rent' in after.data), 'the landlord’s rent must never be stored from our side');
-  assert.ok(!('ll_paid_current' in after.data));
+  assert.ok(!('ll_rent_amount' in after.data), 'the landlord’s rent must never be stored from our side');
+  assert.ok(!('ll_satisfactory' in after.data));
   ok('a landlord answer sent from our side never reaches the row');
 
   // ── D. the merged view a person sees ────────────────────────────────────
   const state = await desk.state(LOAN);
   assert.deepStrictEqual(state.unreadable, [], 'the desk read cleanly');
-  assert.strictEqual(state.data.officer_name, 'Chaya Gruber', 'their edit stands');
-  assert.strictEqual(state.data.rental_address, '12 Oak Street, Lakewood, NJ 08701', 'and the file still teaches');
+  assert.strictEqual(state.data.lender_signature, 'Chaya Gruber', 'their edit stands');
+  assert.strictEqual(state.data.property_address, '12 Oak Street, Lakewood, NJ 08701', 'and the file still teaches');
   assert.ok(Array.isArray(state.methods) && state.methods.length === 3, 'all three ways are offered');
   const emailBlockers = state.methods.find((m) => m.method === 'email').blockers;
   assert.ok(emailBlockers.includes('landlord'), 'with no landlord on the file, it says so');
@@ -127,8 +138,8 @@ async function seed() {
   const env = (await db.query(
     `INSERT INTO lt_vor_envelopes (loan_id, envelope_id, status, recipient_email)
      VALUES ($1::uuid, 'ENV-DBTEST', 'sent', 'ap@acme.example') RETURNING id`, [LOAN])).rows[0];
-  const first = await desk.applyEnvelopeStatus('ENV-DBTEST', 'completed', { answers: { ll_rent: '2450' } });
-  const again = await desk.applyEnvelopeStatus('ENV-DBTEST', 'completed', { answers: { ll_rent: '2450' } });
+  const first = await desk.applyEnvelopeStatus('ENV-DBTEST', 'completed', { answers: { ll_rent_amount: '2450' } });
+  const again = await desk.applyEnvelopeStatus('ENV-DBTEST', 'completed', { answers: { ll_rent_amount: '2450' } });
   assert.strictEqual(first.recorded, true);
   assert.strictEqual(again.recorded, true, 'a redelivery is answered, not refused');
   const rets = (await db.query(
