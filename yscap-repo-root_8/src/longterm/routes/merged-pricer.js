@@ -49,6 +49,22 @@ function reasonOf(e) {
 }
 
 /**
+ * OUR OWN SETUP GAP IS NOT AN UPSTREAM FAILURE, and answering 502 for one is a
+ * lie about whose fault it is. Both codes below describe THIS deployment — no
+ * ticket configured or the portal sign-in unimplemented (`login_unrecorded`),
+ * and a ticket that was refused because it is spent or single-use
+ * (`token_exchange_failed`) — and in neither case was LoanNEX reached to have an
+ * opinion. A diagnostic route reports that as a successful reading of a known
+ * state; only a genuine vendor failure is a 502.
+ *
+ * It matters on the first step somebody takes: switching the flag on before
+ * pasting a ticket used to answer "Bad Gateway", which reads as "LoanNEX is
+ * down" when the truth is "you have not given me a ticket yet".
+ */
+const NOT_CONFIGURED = new Set(['loannex_login_unrecorded', 'loannex_token_exchange_failed']);
+function isNotConfigured(e) { return !!(e && NOT_CONFIGURED.has(e.code)); }
+
+/**
  * Price one scenario on BOTH programs, concurrently, and merge.
  *
  * ONE ENRICHED SCENARIO, ASKED TWICE. The ZIP is resolved to state + county
@@ -147,7 +163,13 @@ function makeRouter() {
   router.get('/loannex/login-check', (req, res) => {
     nex.loginCheck(req.query.portal)
       .then((r) => res.json(r))
-      .catch((e) => res.status(502).json({ ok: false, error: e.code || 'loannex_login_error', message: reasonOf(e) }));
+      .catch((e) => {
+        // Reporting "we are not set up yet" IS this route's job, so it is a 200
+        // with ok:false — never a 502, which would blame LoanNEX for our gap.
+        const body = { ok: false, error: e.code || 'loannex_login_error', message: reasonOf(e) };
+        if (isNotConfigured(e)) return res.json({ ...body, configured: false });
+        return res.status(502).json(body);
+      });
   });
 
   /** The merged board. */
@@ -171,7 +193,8 @@ function makeRouter() {
   router.get('/loannex/disqualify/:transactionId', (req, res) => {
     nex.fails(req.params.transactionId, { portal: req.query.portal })
       .then((r) => res.json({ ok: true, ...r }))
-      .catch((e) => res.status(502).json({ ok: false, error: e.code || 'loannex_fails_error', message: reasonOf(e) }));
+      .catch((e) => res.status(isNotConfigured(e) ? 503 : 502)
+        .json({ ok: false, error: e.code || 'loannex_fails_error', message: reasonOf(e) }));
   });
 
   return router;

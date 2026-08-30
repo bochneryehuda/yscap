@@ -23,6 +23,13 @@
 const http = require('http');
 const path = require('path');
 
+// THE MERGED PRICING BOARD IS OFF BY DEFAULT (owner-directed: not live until he
+// says so), so its doors 404 at the gate unless this is set. A 404 is a PASS
+// here, which is exactly the problem: without the flag those doors would be
+// "covered" by a call that never reached a handler. Set for THIS PROCESS ONLY —
+// it changes nothing about any deployment, and no other route reads it.
+process.env.LT_MERGED_PRICING = 'on';
+
 let failures = 0;
 const check = (cond, msg) => {
   if (cond) console.log(`  ok   ${msg}`);
@@ -209,6 +216,13 @@ async function main() {
       // a scope fragment whose placeholder arithmetic is off (Postgres 42P18),
       // surfaces here rather than on the screen.
       '/api/lt/clickup/status-reviews',
+      // ── the MERGED pricing board (Lender Price + LoanNEX) ──────────────────
+      // Reachable only with LT_MERGED_PRICING=on, which this file sets above —
+      // WITHOUT it the mount answers 404 at its gate and the handlers never run,
+      // which is a hollow call: this suite exists to execute handlers, not gates.
+      // Both of these are pure config reads that reach no vendor.
+      '/api/lt/dscr/merged/health',
+      '/api/lt/dscr/merged/loannex/login-check',
     ];
 
     // ── WHAT THE LIST OMITS, SAID OUT LOUD ──────────────────────────────────
@@ -227,6 +241,11 @@ async function main() {
     // actually opening the door finds it.
     const EXEMPT = {
       '/api/lt/dscr/login-check': 'dials LenderPrice to check a vendor login — a smoke test that reaches an outside company is not a smoke test, and a failure there would report OUR side as broken',
+      // Its SIBLING, /dscr/merged/loannex/login-check, IS called above: that one
+      // reports "we are not set up yet" as a 200, so it exercises its handler
+      // without reaching anybody. This one cannot — with no session it can only
+      // answer 503, and with one it would dial LoanNEX for a real transaction.
+      '/api/lt/dscr/merged/loannex/disqualify/:transactionId': 'reads one LoanNEX transaction\'s ineligibility tree — it needs a live vendor session, so it either reaches an outside company or answers 503; neither is a smoke test',
     };
 
     const declared = deriveGetDoors();
