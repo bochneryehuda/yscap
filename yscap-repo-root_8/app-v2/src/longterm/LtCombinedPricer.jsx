@@ -51,7 +51,7 @@ import {
  * The end state they named is that this gets merged BACK into `LtPricer.jsx`; until then:
  *
  *   · `LtPricer.jsx` is the live General Pricing Engine and is NOT to be edited to serve this one.
- *   · Every divergence from it is marked `FORK n of 5:` below, and there are only five.
+ *   · Every divergence from it is marked `FORK n of 6:` below, and there are only six.
  *   · `scripts/test-lt-combined-pricer-fork.mjs` records the general screen's fingerprint AT THE
  *     FORK and FAILS THE BUILD when it moves — so "the general engine changed and the copy did
  *     not" is caught by CI rather than found months later on a board somebody was pricing on.
@@ -246,7 +246,7 @@ export function buildRateStack(programs) {
         adjustedPoints: nn(b.adjustedPoints) ? b.adjustedPoints : null,
         monthlyPi: o && o.monthlyPayment && nn(o.monthlyPayment.monthlyPI) ? o.monthlyPayment.monthlyPI : null,
         expired: !!(o && o.rateSheet && o.rateSheet.expired),
-        // FORK 2 of 5 — STALENESS HAS THREE STATES HERE, not two. Lender Price states whether the
+        // FORK 2 of 6 — STALENESS HAS THREE STATES HERE, not two. Lender Price states whether the
         // sheet a quote priced from has expired; LoanNEX states nothing on the subject. The general
         // engine reads `!!expired`, which turns "we do not know" into "not expired" — a reassurance
         // LoanNEX never gave us, on a board where 37-61% of the other vendor's rows have genuinely
@@ -880,6 +880,11 @@ export function PriceBuild({ o, comp }) {
     })
     : null;
   const adj = Array.isArray(o && o.adjustments) ? o.adjustments : [];
+  /* FORK 6 of 6 — read straight off the option the server built. Nothing here is
+     re-derived in the browser: the server's own breakdown layer already decided
+     what "provided" means and what wording an absent block gets. */
+  const elig = (o && o.eligibility) || null;
+  const notices = Array.isArray(o && o.notices) ? o.notices.filter(Boolean) : [];
 
   let run = nn(b.basePoints) ? b.basePoints : null;
   const stack = adj.map((a) => {
@@ -910,8 +915,18 @@ export function PriceBuild({ o, comp }) {
   return (
     <div style={{ background: '#fff', borderRadius: 10, padding: 14, marginTop: 10, border: `1px solid ${GOLD}33` }}>
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
+        {/* FORK 6 of 6 — LAY OUT ALL THE DETAILS THE SAME WAY, WHATEVER PRICED IT.
+            Owner-directed 2026-08-30: "Our pilot should lay out all the details the same
+            layout no matter if it comes from with software."
+
+            The general engine has ONE rate sheet, so it can honestly say "every line came
+            from Lender Price" and label the total with the vendor's name. On a board that
+            carries both programs those same words are wrong on half the rows AND break the
+            one-system rule the owner set — the screen must never tell a reader which
+            software answered unless an admin asked. So the wording here is about THE RATE
+            SHEET, not about a company. */}
         <Track title="Price build"
-          note="Price is 100 minus points. Every line came from Lender Price; the right-hand column is this page adding them up so the build can be followed.">
+          note="Price is 100 minus points. Every line came from the rate sheet that quoted this loan; the right-hand column is this page adding them up so the build can be followed.">
           <Row k="Base price" v={price(nn(b.basePoints) ? 100 - b.basePoints : null)}
             title="100 minus the base points the rate sheet quotes before any adjustment." />
           <Row k="Base points" v={pts(b.basePoints)} />
@@ -926,7 +941,18 @@ export function PriceBuild({ o, comp }) {
                   display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
                   padding: '5px 0 5px 12px', borderBottom: '1px solid rgba(20,27,34,.07)',
                 }}>
-                  <span style={{ fontSize: 12.5, color: SLATE, flex: 1 }}>{a.reason || '(unnamed adjustment)'}</span>
+                  {/* FORK 6 of 6 — the grid CELL, not just the grid. One rate sheet names
+                      only the grid ("FICO/CLTV"); the other also states the bucket it drew
+                      from ("FICO : 760 - 779, CLTV : 70.01% - 75.00%"), which is the actual
+                      answer to "why is this price this price" and was being thrown away.
+                      A row whose sheet does not publish one simply has no second line —
+                      the layout is the same either way. */}
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 12.5, color: SLATE }}>{a.reason || '(unnamed adjustment)'}</span>
+                    {a.detail && (
+                      <span style={{ display: 'block', fontSize: 11, color: MUTED, marginTop: 1 }}>{a.detail}</span>
+                    )}
+                  </span>
                   <span style={{ fontSize: 12.5, fontWeight: 600, color: nn(a.value) && a.value < 0 ? '#2F6B45' : INK, ...NUM }}>{pts(a.value)}</span>
                   <span style={{ fontSize: 11.5, color: MUTED, minWidth: 56, textAlign: 'right', ...NUM }}>{a.running == null ? '' : a.running.toFixed(3)}</span>
                 </div>
@@ -935,7 +961,7 @@ export function PriceBuild({ o, comp }) {
           ))}
           {adj.length === 0 && <Row k="Adjustments" v="none itemized" indent />}
           <div style={{ height: 8 }} />
-          <Row k="Adjustments total (Lender Price)" v={pts(b.adjustmentPoints)} />
+          <Row k="Adjustments total (rate sheet)" v={pts(b.adjustmentPoints)} />
           {!totalsAgree && (
             <Row k="…the itemized lines add to" v={pts(summedR)} tone="bad"
               title="The lines shown do not add to the vendor's own total. Nothing is adjusted to hide it — both numbers are shown." />
@@ -954,6 +980,63 @@ export function PriceBuild({ o, comp }) {
         </Track>
       </div>
 
+      {/* FORK 6 of 6 — WHAT THE PROGRAM CHECKED, and anything it said out loud.
+
+          One rate sheet publishes every criterion it screened, with its OWN wording of the
+          requirement and a pass/fail on each; the other publishes none. The block renders in
+          the SAME PLACE either way and SAYS SO when there is nothing to list — an eligibility
+          section that silently disappears reads as a clean bill of health nobody gave.
+
+          The requirement text is printed verbatim. It is never re-rendered from a number, so a
+          threshold on this screen is always the threshold the sheet stated.
+
+          NOTICES are the opposite case and are only shown when there are some: a soft stop
+          ("Max Price for this loan is 100.000 if DSCR <.75") is the one thing that can
+          contradict the price above it, and "no notices" is not a fact anyone needs printed. */}
+      <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px solid ${GOLD}44` }}>
+        <div style={{
+          fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase',
+          color: MUTED, fontWeight: 700, marginBottom: 6,
+        }}>What the program checked</div>
+        {elig && elig.provided && (elig.criteria || []).length ? (
+          <>
+            {(elig.criteria || []).map((c, i) => (
+              <div key={i} style={{
+                display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
+                padding: '5px 0', borderBottom: '1px solid rgba(20,27,34,.07)',
+              }}>
+                <span style={{ fontSize: 12.5, color: SLATE, flex: 1, minWidth: 0 }}>{c.name || '(unnamed check)'}</span>
+                <span style={{ fontSize: 12.5, color: INK, ...NUM }}>{c.requirement || '—'}</span>
+                <span style={{
+                  fontSize: 11, fontWeight: 700, minWidth: 52, textAlign: 'right',
+                  color: /fail/i.test(String(c.status || '')) ? '#8A2B2B' : '#2F6B45',
+                }}>{c.status || '—'}</span>
+              </div>
+            ))}
+            {elig.screen && (
+              <div style={{ fontSize: 11, color: MUTED, marginTop: 6 }}>
+                Screened as “{elig.screen}”{elig.status ? ` — ${elig.status}` : ''}
+                {elig.screenedAt ? ` · ${String(elig.screenedAt).slice(0, 10)}` : ''}
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={{ fontSize: 12, color: MUTED }}>
+            This rate sheet does not publish the checks behind its answer, so there is nothing to list here.
+          </div>
+        )}
+        {notices.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            {notices.map((n, i) => (
+              <div key={i} style={{
+                fontSize: 12, color: INK, background: `${GOLD}18`,
+                border: `1px solid ${GOLD}55`, borderRadius: 8, padding: '7px 10px', marginTop: 6,
+              }}>{n}</div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* MARGIN & HOLDBACK — one of the four the owner named. It is stated even when the vendor
           returned none, because "this quote carries no holdback" and "nobody looked" are different
           facts and a blank space is read as the second. */}
@@ -961,7 +1044,7 @@ export function PriceBuild({ o, comp }) {
         <div style={{ ...eyebrow, marginBottom: 6 }}>Margin &amp; holdback</div>
         {holdbackLines.length === 0 ? (
           <div style={{ fontSize: 12.5, color: MUTED }}>
-            Lender Price returned no margin or holdback lines on this quote.
+            This rate sheet returned no margin or holdback lines on this quote.
           </div>
         ) : holdbackLines.map(([party, lines]) => (
           <div key={party} style={{ marginBottom: 6 }}>
@@ -1007,10 +1090,10 @@ export function PriceBuild({ o, comp }) {
             `firstNum`, which answers null for a fee the vendor did not carry, and `String(null)`
             puts the literal text "null" on the screen. */}
         {!compActive && (
-          <Track title="Lender Price's own fee fields"
+          <Track title="The rate sheet's own fee fields"
             note="The vendor's numbers verbatim — our fee sheet shows in the borrower-paid and lender-paid positions.">
             {feeLines.filter((r) => r.key !== 'pointsFinanced').length === 0
-              ? <div style={{ fontSize: 12.5, color: MUTED }}>Lender Price returned no fee lines on this quote.</div>
+              ? <div style={{ fontSize: 12.5, color: MUTED }}>This rate sheet returned no fee lines on this quote.</div>
               : feeLines.filter((r) => r.key !== 'pointsFinanced')
                 .map((r) => <Row key={r.key} k={labelize(r.key)} v={r.text} title={r.key} />)}
           </Track>
@@ -1041,7 +1124,7 @@ export function PriceBuild({ o, comp }) {
             own block is read verbatim, one click away. */}
         {!compActive && <Track title="Comp">
           {compRows.length === 0
-            ? <div style={{ fontSize: 12.5, color: MUTED }}>Lender Price returned no comp lines on this quote.</div>
+            ? <div style={{ fontSize: 12.5, color: MUTED }}>This rate sheet returned no comp lines on this quote.</div>
             : compRows.map((r) => (
               <div key={r.key}>
                 <Row k={labelize(r.key)} v={r.text} title={r.key} />
@@ -1616,7 +1699,7 @@ export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp, invSe
 
 /* ── the screen ───────────────────────────────────────────────────────────── */
 /**
- * FORK 4 of 5 — THE COMBINED ENGINE'S OWN PANEL. The general engine has no concept of a second
+ * FORK 4 of 6 — THE COMBINED ENGINE'S OWN PANEL. The general engine has no concept of a second
  * program, so this exists only here.
  *
  * It answers the two questions a person auditing this board actually has: WHAT IS NOT ON IT (and
@@ -1673,7 +1756,7 @@ export default function LtCombinedPricer() {
   const [err, setErr] = useState(null);
   const [res, setRes] = useState(null);
   const [view, setView] = useState('priced');
-  /* FORK 4 of 5 — the admin's "click to see the source of the info". OFF by default, because the
+  /* FORK 4 of 6 — the admin's "click to see the source of the info". OFF by default, because the
      owner's rule is that the board reads as ONE SYSTEM until somebody asks. Ticking it re-prices:
      the server strips the vendor before the answer leaves, so there is nothing on this side to
      un-mask. */
@@ -1809,7 +1892,7 @@ export default function LtCombinedPricer() {
      empty and the picker says so; the board simply shows everybody. */
   useEffect(() => {
     let live = true;
-    // FORK 3 of 5 — the picker's roster is EVERY investor the combined engine knows, not Lender
+    // FORK 3 of 6 — the picker's roster is EVERY investor the combined engine knows, not Lender
     // Price's alone. An investor this board shows from LoanNEX and Lender Price has never heard of
     // would otherwise be un-selectable in the filter and would read as missing from the answer.
     ltApi.combinedInvestors()
@@ -2014,7 +2097,7 @@ export default function LtCombinedPricer() {
     const t0 = Date.now();
     timer.current = setInterval(() => setElapsed(Math.round((Date.now() - t0) / 100) / 10), 200);
     try {
-      // FORK 1 of 5 — the only door that differs. The COMBINED engine prices both programs and
+      // FORK 1 of 6 — the only door that differs. The COMBINED engine prices both programs and
       // hands back the same `programs[].options[].priceBuild` shape this screen already reads
       // (src/longterm/pricing/quote-shape.js `programsForBoard`), so everything below is unchanged.
       const r = await ltApi.combinedPrice(toScenario(f), { full: true, revealSource: reveal });
@@ -2101,7 +2184,7 @@ export default function LtCombinedPricer() {
 
   return (
     <LtLayout title="Combined Pricing Engine">
-      {/* FORK 5 of 5 — SAY WHAT THIS SCREEN IS, at the top, before anything else. The owner is
+      {/* FORK 5 of 6 — SAY WHAT THIS SCREEN IS, at the top, before anything else. The owner is
           auditing a second engine beside the live one (*"Test everything should just be testing…
           so I can audit everything before I want to go live to the general pricing engine"*), and
           two pricing screens that look identical is exactly how somebody quotes a borrower off the

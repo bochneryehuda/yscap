@@ -194,10 +194,17 @@ function shift(b, d) {
   // sign-in was NOT implemented, which was the truth while no recording contained
   // it. A recording now does, and it is implemented (`portal-login.js`) — so the
   // thing worth pinning is the distinction that replaced it: IMPLEMENTED is not
-  // PROVEN, and /health must keep saying so until a real sign-in has happened.
+  // PROVEN, and /health had to keep saying so until a real sign-in happened.
+  // It has: on 2026-08-30 the three-stage hand-off ran end to end against the
+  // live portal on the owner's own account and priced a real loan, so the flag
+  // now says EXERCISED. The two flags stay SEPARATE deliberately — the day a
+  // second portal is added, its code will be implemented long before anyone has
+  // signed in to it, and this distinction is what will say so.
   const cfg = client.configured();
-  ok(cfg.loginImplemented === true && cfg.loginExercised === false,
-    'LOGIN-1 the portal sign-in is reported as implemented but NOT YET EXERCISED — a green tick never implies we have actually signed in');
+  ok(cfg.loginImplemented === true && cfg.loginExercised === true,
+    'LOGIN-1 the portal sign-in is reported as implemented AND exercised — a claim /health may only make because it really has signed in');
+  ok('loginExercised' in cfg && 'loginImplemented' in cfg,
+    'LOGIN-1b …and the two remain separate facts, so "we wrote it" can never be read as "we proved it"');
 }
 
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);

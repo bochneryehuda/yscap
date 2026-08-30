@@ -185,12 +185,31 @@ function renderReason(a) {
   return `${t} did not meet this program's requirement`;
 }
 
-/** The LLPA breakdown behind one quote (`/evidences`), normalised. */
+/**
+ * The LLPA breakdown behind one quote (`/evidences`), normalised.
+ *
+ * MEASURED LIVE 2026-08-30 against the real API, four investors, one scenario.
+ * Three answered with a full breakdown that reconciles to the thousandth; the
+ * fourth answered `{"status":"Success"}` with no `data` at all. See
+ * `explainAbsence` — "the vendor answered and said nothing" is a different fact
+ * from "we never asked", and the screen must not print the same words for both.
+ *
+ * TWO THINGS THIS USED TO THROW AWAY, both present in every live answer:
+ *
+ *   1. `description` — the BUCKET the adjustment was drawn from
+ *      ("FICO : 760 - 779, CLTV : 70.01% - 75.00%"). The `name` alone
+ *      ("FICO/CLTV") says which grid; only the description says which CELL.
+ *      That is the whole of "why is this price this price".
+ *   2. `eligibilityEvidence` — every criterion the program screened, with the
+ *      requirement in the vendor's own words and a pass/fail on each.
+ */
 function parseEvidence(raw) {
   const data = raw && raw.data ? raw.data : raw;
   const ev = data && data.primary && data.primary.pending && data.primary.pending.evidence;
   if (!ev) return null;
   const pe = ev.pricingEvidence || {};
+  const el = ev.eligibilityEvidence || {};
+  const screen = el.screen || {};
   return {
     source: 'loannex',
     program: ev.programName || null,
@@ -201,17 +220,70 @@ function parseEvidence(raw) {
     baseRate: pe.baseRate == null ? null : Number(pe.baseRate),
     priceFloor: pe.priceFloor == null ? null : Number(pe.priceFloor),
     priceCeiling: pe.priceCeiling == null ? null : Number(pe.priceCeiling),
+    isPriceRounded: pe.isPriceRounded == null ? null : !!pe.isPriceRounded,
     lockPeriod: ev.lockPeriod == null ? null : Number(ev.lockPeriod),
     // THE FRESHNESS SIGNAL the merge layer elects on — when this investor's sheet
     // was last published, straight from the vendor.
     rateSheetLastUpdated: ev.rateSheetLastUpdated || null,
     adjustments: (pe.adjustments || []).map((a) => ({
       type: a.type || null, name: a.name || null,
+      // Kept, never merged into `name`: a reader needs the grid AND the cell.
       description: a.description || null,
       priceAdjustment: a.priceAdjustment == null ? null : Number(a.priceAdjustment),
     })),
     addOns: (pe.addOns || []).map((a) => ({ name: a.name || null, priceAdjustment: a.priceAdjustment == null ? null : Number(a.priceAdjustment) })),
+    /**
+     * WHAT THE PROGRAM CHECKED, and what it wanted. `criteriaDisplayText` is the
+     * vendor's own wording of the requirement ("<= 80.00%", "$75,000 -
+     * $1,000,000") and is passed through verbatim — never re-rendered, so a
+     * threshold on the screen is always the threshold the vendor stated.
+     */
+    eligibility: {
+      screen: screen.name || null,
+      screenedAt: screen.lastScreened || null,
+      status: screen.matchStatus || null,
+      isException: screen.isException == null ? null : !!screen.isException,
+      actual: el.actual || null,
+      qualifying: el.qualifying || null,
+      criteria: (screen.attributes || []).map((a) => ({
+        name: (a && a.name) || null,
+        requirement: (a && a.criteriaDisplayText) || null,
+        status: (a && a.matchStatus) || null,
+      })),
+      // "Max Price for this loan is 100.00" — a cap the officer must see, and
+      // the one thing on this answer that can contradict the quoted price.
+      notices: Array.isArray(screen.softStopMessages) ? screen.softStopMessages.filter(Boolean) : [],
+    },
+    ltv: ev.loanToValue == null ? null : Number(ev.loanToValue),
+    cltv: ev.combinedLoanToValue == null ? null : Number(ev.combinedLoanToValue),
+    dscr: ev.dscr == null ? null : Number(ev.dscr),
+    monthsReserves: ev.monthsReserves == null ? null : Number(ev.monthsReserves),
   };
 }
 
-module.exports = { parse, parseFails, parseEvidence, _internals: { indexById, renderReason, round3 } };
+/**
+ * WHY there is no breakdown — never "we didn't ask" when we did ask.
+ *
+ * Measured live: one investor of four returns `{"status":"Success"}` and no
+ * `data`. Answering that with `not_requested` would be a lie about our own
+ * system, and answering it with an error would be a lie about the vendor's.
+ */
+function explainAbsence(raw) {
+  if (raw == null) return { reason: 'no_answer', message: 'The rate sheet was asked and nothing came back.' };
+  const data = raw && raw.data ? raw.data : null;
+  if (!data || (typeof data === 'object' && !Object.keys(data).length)) {
+    return {
+      reason: 'vendor_returned_no_evidence',
+      message: 'The rate sheet accepted the question and returned no breakdown for this quote.',
+    };
+  }
+  if (!(data.primary && data.primary.pending && data.primary.pending.evidence)) {
+    return {
+      reason: 'unrecognised_answer_shape',
+      message: 'The rate sheet answered in a shape this system does not recognise, so nothing is shown rather than a guess.',
+    };
+  }
+  return { reason: 'unknown', message: 'No breakdown could be read from the answer.' };
+}
+
+module.exports = { parse, parseFails, parseEvidence, explainAbsence, _internals: { indexById, renderReason, round3 } };

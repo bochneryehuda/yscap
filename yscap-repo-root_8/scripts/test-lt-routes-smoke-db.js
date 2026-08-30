@@ -343,6 +343,29 @@ async function main() {
         check(shut.status === 404,
           `${door} is 404 for a loan officer (got ${shut.status}) — the combined engine is the super admin's alone while it is under audit`);
       }
+      // THE EXPLAIN DOOR, exercised for real — and it is the one POST here that
+      // can be, because a row with no vendor explain handle is answered from our
+      // own side with no outside call at all. That branch exists precisely
+      // because the two rate sheets differ: one ships its itemized adjustments
+      // WITH the quote, so asking again buys nothing, and answering that with a
+      // 400 would send somebody hunting for a call that was never needed.
+      {
+        const post = (tok) => fetch(`${base}/api/lt/dscr/combined/explain`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ quote: { rate: 6.25, price: 99.5, lockDays: 30 } }),
+        });
+        const shutExplain = await post(loToken);
+        check(shutExplain.status === 404,
+          `/api/lt/dscr/combined/explain is 404 for a loan officer (got ${shutExplain.status}) — the gate covers the POST doors too, not only the reads`);
+        const openExplain = await post(token);
+        const body = await openExplain.json().catch(() => ({}));
+        check(openExplain.status === 200 && body.ok === true && body.alreadyExplained === true && body.breakdown === null,
+          `…while a super admin asking about a row whose sheet already itemized it gets a plain 200 saying so (got ${openExplain.status} ${JSON.stringify(body).slice(0, 90)})`);
+        check(typeof body.message === 'string' && body.message.length > 30,
+          '…in a sentence a person can read, rather than a bare flag a screen has to invent wording for');
+      }
+
       // …and the GENERAL pricing engine is untouched by that gate. This is the
       // assertion that would catch the combined engine's role check being
       // applied one mount too high and quietly taking the live board away from

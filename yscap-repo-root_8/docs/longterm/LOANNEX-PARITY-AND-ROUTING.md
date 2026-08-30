@@ -154,6 +154,65 @@ one function changes and nothing else does.
 LoanNEX's own screen behaves — the original recording shows six evidence calls from six row
 expansions. Pre-fetching the elected quote per investor is ~9–14 concurrent calls, about a second.
 
+### 3b. Run live, 2026-08-30 — and four things the parse was throwing away
+
+The `/evidences` call had only ever been exercised against recordings. It was run for real, on the
+owner's own account, across four investors on one scenario. **Three answered with a full breakdown
+that reconciles to the thousandth. The fourth answered `{"status":"Success"}` with no body at all.**
+
+Both outcomes are recorded verbatim in `capture/evidence-live.json` and are what the parity suite
+runs on, so the guards are held against the real API rather than against a hand-made fixture.
+
+What the live run exposed, all of it silent:
+
+| | Was | Is now |
+|---|---|---|
+| The adjustment's **bucket** (`FICO : 760 - 779, CLTV : 70.01% - 75.00%`) | parsed, then dropped | kept as `detail`, printed under the line |
+| The **eligibility rows** (every criterion, the threshold in the vendor's words, a pass/fail) | parsed, then dropped | kept, rendered as its own block |
+| A **soft stop** (`Max Price for this loan is 100.000 if DSCR <.75`) | not read at all | kept as a notice, printed beside the price it can contradict |
+| An investor answering **Success with nothing** | reported as `not_requested` | `vendor_returned_no_evidence`, in its own words |
+
+That last row mattered most. `not_requested` is a claim about **our** system — that nobody had asked —
+and it was being made about a question we had asked and had answered. `explainAbsence` now tells the
+four silences apart (`no_answer`, `vendor_returned_no_evidence`, `unrecognised_answer_shape`,
+`unknown`), and each carries its own sentence.
+
+### 3c. One layout, whatever priced it
+
+> *"Our pilot should lay out all the details the same layout no matter if it comes from with
+> software."* — owner, 2026-08-30
+
+`src/longterm/pricing/breakdown.js` is the one place that decides what a breakdown looks like. Both
+vendors' mappers feed it and the screen reads nothing else, so a reader is handed one shape and never
+learns which rate sheet answered.
+
+**The sign convention was the real defect, and it was inside a single option.** Lender Price states an
+adjustment in **points** (positive costs the borrower); LoanNEX states it in **price** (positive is a
+*better* price). `attachEvidence` had been negating the **total** and leaving the **lines** as the
+vendor gave them — so on one row the line read one way and the total under it read the other. Every
+line is now points, with the vendor's own number kept beside it (`valueAsGiven` + `givenIn`) so the
+translation can be checked against the rate sheet rather than trusted.
+
+Three rules the module exists to hold:
+
+1. **One sign convention.** A `+0.25` means the same thing on every row of every source.
+2. **The same rows, the same keys, the same order.** `LINE_KEYS` is the whole of a row; a field a
+   vendor does not state is `null`, never `""` and never `0` — *"no adjustment"* and *"we were not
+   told"* are different facts.
+3. **A missing block says so.** Lender Price publishes no eligibility rows, so that block renders in
+   the same place carrying a sentence. A section that silently disappears reads as a clean bill of
+   health nobody gave.
+
+One derivation is done here and it is the engine's own identity — price is 100 minus points — because
+one vendor states the base as a price and the other as points, and without it the same deal reads as
+missing data on one source and filled on the other. `baseDerived` stamps which way round it was
+worked out.
+
+Proven by `scripts/test-lt-breakdown-parity-pure.js`: 55 assertions over one real Lender Price option
+and three **live** LoanNEX answers, asserting identical top-level keys, identical row keys, identical
+sub-block shapes, one sign convention, and no vendor named anywhere unless an admin asks. Fifteen
+mutations of the production code were each proven to fail it.
+
 ---
 
 ## 4. One quote shape
@@ -407,6 +466,15 @@ fabricated 0 (`B5`). The money the overlay charges never depended on it.
    credentials.
 5. **Where the settings should live** once the board goes live — a table and an admin screen, or is
    the environment setting enough for a pilot?
+6. ~~Is the per-quote explain call real?~~ **Answered by measurement 2026-08-30 (§3b): run live on
+   four investors — three full breakdowns that reconcile exactly, one investor that answers with
+   nothing.** Still open, and it is the owner's to answer: **why does that investor return no
+   breakdown?** It may be a permission on our account, or that investor may simply not publish one.
+7. **The Lender Price half has still never been priced live in the same request.** Everything about
+   the LoanNEX side is now measured against the real API; the Lender Price credentials are not in
+   this environment, so no scenario has yet been priced on both programs at once. That is the same
+   measurement item 1 is waiting on, and until it is done the *size* of the 0.25 is the owner's
+   figure and not a measured one.
 
 **Where it lives, as directed 2026-08-30:** this ships as **the Combined Pricing Engine** — a
 SECOND engine beside the General Pricing Engine, never on top of it — at
@@ -416,6 +484,11 @@ screen (`/internal/lt/combined-settings`). Both are **super admin only**: the se
 are byte-for-byte what they were. `LT_COMBINED_PRICING=off` is the kill switch.
 
 ---
+
+`src/longterm/pricing/breakdown.js` — the ONE itemized breakdown layout, whatever priced it (§3c).
+`src/longterm/loannex/capture/evidence-live.json` — the real API's own answers, 2026-08-30, the first
+time the explain endpoint was ever called for real; includes the investor that answered with nothing.
+`scripts/test-lt-breakdown-parity-pure.js` — the layout parity suite (55 assertions, 15 mutations).
 
 ## 9. Where things are
 

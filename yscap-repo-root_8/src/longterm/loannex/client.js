@@ -70,12 +70,16 @@ function configured() {
     ok: hasTicket || hasLogin,
     tokenKey: hasTicket,
     login: hasLogin,
-    // Stage 1 IS implemented now (see portal-login.js), decoded field-for-field
-    // from the 2026-08-30 sign-in capture. It has not yet been exercised against
-    // the live portal, and the difference matters to whoever reads /health: a
-    // working configuration is one that has actually signed in once.
+    // Stage 1 is implemented (see portal-login.js), decoded field-for-field from
+    // the 2026-08-30 sign-in capture — and, since 2026-08-30, EXERCISED against
+    // the live portal: the three-stage hand-off ran end to end on the real
+    // account (organization "YEB Consulting LLC - Corr", portal `web`) and
+    // priced a real loan. The difference matters to whoever reads /health: a
+    // working configuration is one that has actually signed in once, and this
+    // one has. Do NOT flip this back without a reason — it is a statement of
+    // fact about what has been proven, not an aspiration.
     loginImplemented: true,
-    loginExercised: false,
+    loginExercised: true,
     portal: PORTAL_HOST().portal,
     apiBase: API_BASE(),
   };
@@ -345,7 +349,11 @@ async function evidence(sc, quote, opts = {}) {
     },
   };
   const raw = await request('POST', `/loans/evidences/${s.userGuid}/${encodeURIComponent(transactionId)}`, { token: s.token, body });
-  return { evidence: parseMod.parseEvidence(raw), raw: opts.raw ? raw : undefined };
+  const ev = parseMod.parseEvidence(raw);
+  // MEASURED LIVE: one investor of four answers `Success` with no body at all.
+  // The caller is told WHICH silence this was, so the screen never says "not
+  // requested" about a question we did ask.
+  return { evidence: ev, absence: ev ? null : parseMod.explainAbsence(raw), transactionId, raw: opts.raw ? raw : undefined };
 }
 
 /** The full rate ladder behind one quote. */

@@ -74,6 +74,7 @@ const nex = require('../loannex/client');
 const { merge } = require('../pricing/merge');
 const routing = require('../pricing/investor-routing');
 const quoteShape = require('../pricing/quote-shape');
+const breakdown = require('../pricing/breakdown');
 const vendorMargin = require('../pricing/vendor-margin');
 const settingsStore = require('../settings/store');
 
@@ -465,12 +466,63 @@ function makeRouter(opts = {}) {
   });
 
   /**
-   * EXPLAIN ONE LOANNEX QUOTE — the itemized LLPAs behind it.
+   * WHY IS THIS PRICE THIS PRICE — one door, one layout, either program.
    *
-   * One call per quote, which is how LoanNEX's own screen works. The board
-   * itself needs no such call: the complete rate/lock ladder for every program
-   * already arrives with the single pricing request (measured — the vendor's
-   * own /rate-stacks answer is that same ladder, identical to the thousandth).
+   * THE ONE REAL ASYMMETRY BETWEEN THE TWO PROGRAMS, and it is answered here
+   * rather than by the screen: Lender Price ships the itemization WITH the
+   * search, so a Lender Price row is already explained and asking again would be
+   * a call that buys nothing. LoanNEX ships the ladder and explains a row only
+   * when asked — one call per quote, which is how its own screen works too.
+   *
+   * So a row carrying a LoanNEX explain handle is fetched, and one that does not
+   * is told plainly that its breakdown already arrived with the board. Both
+   * answers come back through the SAME `breakdown` builder, so the reader is
+   * handed one shape and never learns which program answered.
+   */
+  router.post('/explain', (req, res) => {
+    const b = req.body || {};
+    const quote = b.quote || b;
+    const reveal = b.revealSource === true;
+    if (!quote || typeof quote !== 'object') {
+      return res.status(400).json({ ok: false, error: 'missing_quote', message: 'Send the quote to explain — the `explain` block from the option row.' });
+    }
+    // A row with no explain handle is not an error and must not read as one: its
+    // rate sheet published the itemization up front, so the breakdown the screen
+    // already holds IS the answer. Refusing here would send somebody hunting for
+    // a call that was never needed.
+    if (!quote.priceHashKey) {
+      return res.json({
+        ok: true,
+        breakdown: null,
+        alreadyExplained: true,
+        message: 'This rate sheet publishes its itemized adjustments with the quote, so there is nothing further to fetch — the breakdown on this row is complete.',
+      });
+    }
+    nex.evidence(scenarioOf(req), quote, { portal: b.portal, transactionId: b.transactionId })
+      .then((r) => {
+        // THE SAME LAYOUT, WHATEVER PRICED IT. The vendor's answer is folded onto
+        // an option in the common shape and handed to the ONE breakdown builder,
+        // so this door and a Lender Price row produce the same rows, in the same
+        // order, with the same keys.
+        const option = quoteShape.attachEvidence(
+          quoteShape.optionForQuote(quote), r.evidence, { absence: r.absence },
+        );
+        res.json({
+          ok: true,
+          breakdown: breakdown.breakdown(option, { reveal }),
+          transactionId: r.transactionId || null,
+        });
+      })
+      .catch((e) => res.status(isNotConfigured(e) ? 503 : 502)
+        .json({ ok: false, error: e.code || 'loannex_evidence_error', message: reasonOf(e) }));
+  });
+
+  /**
+   * The OLD door, kept because something may already be pointed at it.
+   *
+   * It answers exactly what it always did — the vendor's parsed evidence — and
+   * the new `/explain` above is the one the screen reads. Never remove a door
+   * until nothing depends on it.
    */
   router.post('/loannex/explain', (req, res) => {
     const b = req.body || {};
@@ -487,4 +539,4 @@ function makeRouter(opts = {}) {
   return router;
 }
 
-module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, reasonOf, routing, quoteShape } };
+module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, reasonOf, routing, quoteShape, breakdown } };

@@ -22,7 +22,7 @@
 //      did not" is caught by CI rather than found months later on a live board.
 //   2. The general engine is asserted to know NOTHING about the combined one — no import, no route,
 //      no mention. "Don't touch our current setup" is a property that can be checked, not a promise.
-//   3. Every divergence in the copy is MARKED, and the count is pinned, so a sixth one cannot be
+//   3. Every divergence in the copy is MARKED, and the count is pinned, so a seventh one cannot be
 //      slipped in without saying so.
 //   4. Both new screens are SUPER-ADMIN gated in the nav, and the server's own 404 is proven
 //      separately over real HTTP in scripts/test-lt-routes-smoke-db.js.
@@ -80,12 +80,12 @@ console.log('\nB. the general engine knows nothing about the combined one');
     'B4 …and the combined engine has its own');
 }
 
-console.log('\nC. every divergence in the copy is marked, and there are exactly five');
+console.log('\nC. every divergence in the copy is marked, and there are exactly six');
 {
-  const marks = fork.match(/FORK \d of 5/g) || [];
+  const marks = fork.match(/FORK \d of 6/g) || [];
   const numbers = new Set(marks.map((m) => m.match(/\d/)[0]));
-  ok(numbers.size === 5 && [...numbers].sort().join() === '1,2,3,4,5',
-    `C1 the copy carries exactly five marked divergences, numbered 1-5 (found ${[...numbers].sort().join() || 'none'})`);
+  ok(numbers.size === 6 && [...numbers].sort().join() === '1,2,3,4,5,6',
+    `C1 the copy carries exactly six marked divergences, numbered 1-6 (found ${[...numbers].sort().join() || 'none'})`);
   const f = codeOf(fork);
   ok(/ltApi\.combinedPrice\(/.test(f) && !/ltApi\.dscrPrice\(/.test(f),
     'C2 FORK 1 — the copy prices through the COMBINED door and never the general one');
@@ -102,6 +102,25 @@ console.log('\nC. every divergence in the copy is marked, and there are exactly 
   const forkFlat = fork.replace(/\s+/g, ' ');
   ok(/Under audit/.test(forkFlat) && /General Pricing Engine is unchanged/.test(forkFlat),
     'C6 FORK 5 — the screen SAYS what it is, at the top: two pricing screens that look identical is how somebody quotes a borrower off the one still under audit');
+  // FORK 6 — the owner's "lay out all the details the same layout no matter which
+  // software". THREE assertions, because one screen can carry the block and still
+  // name a vendor on it, and naming a vendor on a combined board is the failure.
+  const forkFlat6 = fork.replace(/\s+/g, ' ');
+  // Scoped to the FUNCTION BODY, not to "everything after the first mention of the
+  // name" — the rest of this screen legitimately names a vendor (the investor
+  // picker, the admin's source reveal), so a looser scope fails for the wrong
+  // reason and gets loosened again until it guards nothing.
+  const bodyOf = (src, name) => {
+    const m = src.match(new RegExp(`export function ${name}\\(([\\s\\S]*?)\\n(?:export |/\\* ─)`));
+    return m ? m[1] : '';
+  };
+  const buildBody = bodyOf(codeOf(fork), 'PriceBuild');
+  ok(buildBody.length > 500 && !/Lender ?Price|LoanNEX/i.test(buildBody),
+    `C6b FORK 6 — the price-build panel names NO software (${buildBody.length} chars read): on a board carrying both programs those words are wrong on half the rows and break the one-system rule`);
+  ok(/a\.detail/.test(f),
+    'C6c FORK 6 — a row prints the grid CELL as well as the grid, which is the actual answer to "why is this price this price"');
+  ok(/What the program checked/.test(forkFlat6) && /does not publish the checks behind its answer/.test(forkFlat6),
+    'C6d FORK 6 — the eligibility block renders in the SAME place on both sources and SAYS SO when a sheet publishes none, so an absent section is never read as a clean bill of health');
   ok(/export default function LtCombinedPricer\(/.test(f) && !/export default function LtPricer\(/.test(f),
     'C7 …and the copy is its own component, so the two can never be mounted as one by accident');
 }

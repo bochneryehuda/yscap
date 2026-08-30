@@ -79,6 +79,12 @@ function emptyOption() {
     },
     adjustments: null,       // null = not fetched. [] = fetched and there were none.
     rateAdjustments: null,
+    // What the program CHECKED, and anything it said out loud about this quote.
+    // null = this vendor did not tell us (which is a different fact from "it
+    // checked nothing"), so the screen can say so rather than print an
+    // encouraging blank.
+    eligibility: null,
+    notices: null,
     holdback: null,
     comp: null,
     fees: null,
@@ -204,21 +210,59 @@ function evidenceCoversRate(ev, option) {
  * REFUSES rather than approximates: an evidence for a different rate or lock
  * leaves the option exactly as it was, saying why.
  */
-function attachEvidence(option, ev) {
+function attachEvidence(option, ev, opts = {}) {
   if (!option) return option;
-  if (!ev) return deepMerge(option, { evidence: { fetched: false, appliesToThisRate: false, reason: 'not_requested' } });
+  if (!ev) {
+    // MEASURED LIVE 2026-08-30: one investor of four answers `Success` with no
+    // body. `absence` carries WHICH silence this was, so the screen never says
+    // "not requested" about a question we did ask.
+    const ab = opts.absence || null;
+    return deepMerge(option, {
+      evidence: {
+        fetched: !!ab, appliesToThisRate: false,
+        reason: (ab && ab.reason) || 'not_requested',
+        message: (ab && ab.message) || null,
+      },
+    });
+  }
   if (!evidenceCoversRate(ev, option)) {
     return deepMerge(option, { evidence: { fetched: true, appliesToThisRate: false, reason: 'evidence_is_for_a_different_rate_or_lock' } });
   }
-  const lines = (ev.adjustments || []).map((a) => ({
-    group: a.type || 'LLPA', reason: a.name || a.description || null,
-    type: a.type || null, valueType: 'points', value: numOrNull(a.priceAdjustment),
-  }));
-  const addOns = (ev.addOns || []).map((a) => ({
-    group: 'Add-on', reason: a.name || null, type: 'AddOn', valueType: 'points', value: numOrNull(a.priceAdjustment),
-  }));
+
+  /**
+   * ONE SIGN CONVENTION, OR THE SAME "+0.25" MEANS OPPOSITE THINGS ON ONE SCREEN.
+   *
+   * Lender Price states an adjustment in POINTS (positive costs the borrower);
+   * LoanNEX states it in PRICE (positive is a BETTER price, so it COSTS LESS).
+   * The old mapping negated the TOTAL and left the LINES as the vendor gave
+   * them, so a row read one way and the total underneath it read the other.
+   *
+   * `value` is now always points, the general engine's convention. The vendor's
+   * own number is kept beside it as `valueAsGiven` + `givenIn`, so an auditor
+   * can check this against the rate sheet without trusting the translation.
+   */
+  const toLine = (a, group, type) => ({
+    group,
+    reason: a.name || a.description || null,
+    // The BUCKET the adjustment came out of — "FICO : 760 - 779, CLTV : 70.01% -
+    // 75.00%". The name says which grid; only this says which CELL, and that is
+    // the whole of "why is this price this price".
+    detail: a.description || null,
+    type: type || a.type || null,
+    valueType: 'points',
+    value: a.priceAdjustment == null ? null : round3(-Number(a.priceAdjustment)),
+    valueAsGiven: numOrNull(a.priceAdjustment),
+    givenIn: 'price',
+  });
+
+  const lines = (ev.adjustments || []).map((a) => toLine(a, a.type || 'LLPA', a.type || null));
+  const addOns = (ev.addOns || []).map((a) => toLine(a, 'Add-on', 'AddOn'));
   const all = lines.concat(addOns);
-  const total = all.reduce((s, l) => s + (l.value || 0), 0);
+  // Summed on the vendor's own numbers, then converted once — never by adding
+  // up our own rounded translations, which would drift by a tenth of a point.
+  const totalGiven = all.reduce((s, l) => s + (l.valueAsGiven || 0), 0);
+
+  const el = ev.eligibility || null;
   return deepMerge(option, {
     priceBuild: {
       basePrice: numOrNull(ev.basePrice),
@@ -226,18 +270,25 @@ function attachEvidence(option, ev) {
       priceFloor: numOrNull(ev.priceFloor),
       priceCeiling: numOrNull(ev.priceCeiling),
       basePoints: ev.basePrice == null ? null : round3(100 - Number(ev.basePrice)),
-      // The sign convention matches Lender Price's: a POINT adjustment that
-      // raises the price lowers the points.
-      adjustmentPoints: all.length ? round3(-total) : null,
+      adjustmentPoints: all.length ? round3(-totalGiven) : null,
     },
     adjustments: all,
     rateSheet: { validAsOf: ev.rateSheetLastUpdated || null },
+    eligibility: el ? {
+      provided: true,
+      screen: el.screen || null,
+      screenedAt: el.screenedAt || null,
+      status: el.status || null,
+      isException: el.isException,
+      criteria: el.criteria || [],
+    } : null,
+    notices: el && Array.isArray(el.notices) && el.notices.length ? el.notices.slice() : null,
     evidence: {
       fetched: true, appliesToThisRate: true, reason: 'evidences_call',
       // Stated so a reader can check the arithmetic rather than trust it.
       reconciles: ev.basePrice != null && ev.price != null
-        ? Math.abs((Number(ev.basePrice) + total) - Number(ev.price)) < 0.0005 : null,
-      adjustmentTotal: round3(total),
+        ? Math.abs((Number(ev.basePrice) + totalGiven) - Number(ev.price)) < 0.0005 : null,
+      adjustmentTotal: round3(totalGiven),
     },
   });
 }
@@ -386,8 +437,32 @@ function programsForBoard(merged, opts = {}) {
   return rows;
 }
 
+/**
+ * The minimum option an EXPLAIN can be laid onto.
+ *
+ * A caller asking "why is this price this price?" holds one board rung (the
+ * `explain` block on the row), not a whole option — but `attachEvidence` and the
+ * breakdown both read the COMMON shape, so the rung is widened into one here
+ * rather than at each call site. Only the fields the rate/lock guard and the
+ * layout actually read are filled; everything else stays `null`, which is what
+ * `emptyOption` already means by it.
+ */
+function optionForQuote(quote = {}) {
+  const q = quote || {};
+  return deepMerge(emptyOption(), {
+    source: q.vendor || null,
+    priceBuild: {
+      noteRate: numOrNull(q.rate),
+      price: numOrNull(q.price),
+      adjustedPoints: q.price == null ? null : round3(100 - Number(q.price)),
+    },
+    terms: { dayLock: q.lockDays == null ? null : Number(q.lockDays) },
+    explain: q.priceHashKey ? { ...q } : null,
+  });
+}
+
 module.exports = {
-  emptyOption, optionsFromLoanNex, optionsFromLenderPrice,
+  emptyOption, optionForQuote, optionsFromLoanNex, optionsFromLenderPrice,
   programsFromLoanNex, programsForBoard,
   attachEvidence, evidenceCoversRate, splitInterestOnly, filterInterestOnly,
   _internals: { round3, numOrNull, deepMerge },
