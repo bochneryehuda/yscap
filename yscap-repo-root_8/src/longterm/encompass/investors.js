@@ -106,6 +106,14 @@ const INVESTORS = [
   { key: 'eresi', label: 'eResi Mortgage', seen: 8,
     aliases: ['eResi', 'eresi', 'Eresi'] },
 
+  // Seen on the LoanNEX board, never in an Encompass export — so `seen: 0` is the
+  // truth rather than an omission. Registered because an investor with no key
+  // cannot be given a settings row, cannot be routed, and cannot have their name
+  // scrubbed out of client-facing text; all three are things we need for them.
+  { key: 'button_finance', label: 'Button Finance', seen: 0,
+    aliases: ['Button Finance, Inc.', 'Button Finance Inc', 'Button Finance', 'ButtonFinance'],
+    note: 'From the LoanNEX aggregator board (2026-08-30). Owner-directed: not displayed for now.' },
+
   { key: 'constructive_capital', label: 'Constructive Capital', seen: 9,
     aliases: ['Constructive Capital BPL (Constructive Capital BPL)',
       'Constructive Capital BPL (Constructive Capital BPL', 'BPL', 'Bpl'],

@@ -1,23 +1,27 @@
 'use strict';
 /**
- * LOANNEX / MERGED-PRICING DIAGNOSTICS — secret-gated, read-only.
+ * LOANNEX / COMBINED-PRICING-ENGINE DIAGNOSTICS — secret-gated, read-only.
  *
- * The same handlers as `merged-pricer`, reachable without a staff browser
+ * The same handlers as `combined-pricer`, reachable without a staff browser
  * session so the two-vendor pipeline can be verified end-to-end on the server it
  * actually runs from. Mounted in src/server.js at /api/lt/_diag/loannex.
  *
- * TWO GATES, BOTH MUST BE OPEN. The owner's not-live flag (LT_MERGED_PRICING)
- * is enforced inside makeRouter, and this seam adds the shared secret on top:
+ * THE SECRET REPLACES THE ROLE, AND NOTHING ELSE.
  *   - OFF by default: with NEX_DIAG_TOKEN unset every path 404s.
  *   - Constant-time compare of the x-nex-diag-token header. No token → 401.
- * A diagnostics seam that could bypass the owner's flag would defeat the flag,
- * so the order is deliberate: secret first, then the same gate everyone else hits.
+ *
+ * `superAdminOnly: false` is passed EXPLICITLY, and it is the only place in the
+ * codebase that does. This seam has no signed-in person at all — there is no
+ * `req.actor` to hold a role — so the super-admin gate could only ever refuse
+ * it. The shared secret is what stands in its place, and it is strictly
+ * narrower: a token nobody has set means the whole seam is 404. The KILL SWITCH
+ * (`LT_COMBINED_PRICING`) is NOT opted out of and still applies here.
  *
  * LT-only; imports no RTL code.
  */
 const express = require('express');
 const crypto = require('crypto');
-const { makeRouter } = require('./merged-pricer');
+const { makeRouter } = require('./combined-pricer');
 
 const router = express.Router();
 
@@ -31,6 +35,6 @@ router.use((req, res, next) => {
   next();
 });
 
-router.use(makeRouter());
+router.use(makeRouter({ superAdminOnly: false }));
 
 module.exports = router;

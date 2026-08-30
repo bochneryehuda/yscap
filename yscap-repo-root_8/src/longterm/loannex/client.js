@@ -1,6 +1,6 @@
 'use strict';
 /**
- * LONG-TERM — LoanNEX (LoanX) backend client. A pricing VIEWER.
+ * LONG-TERM — LoanNEX backend client. A pricing VIEWER.
  *
  * WHAT LOANNEX IS. A second multi-investor pricing aggregator alongside Lender
  * Price. Its web app is an Angular SPA talking to a plain JSON REST API at

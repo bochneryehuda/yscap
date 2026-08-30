@@ -1,4 +1,4 @@
-# LoanNEX (LoanX) — the second pricing program
+# LoanNEX — the second pricing program
 
 Decoded in full from three browser recordings made on 2026-08-30. This file is the
 protocol; `capture/` is the verbatim traffic every claim here rests on, and the two
@@ -98,13 +98,13 @@ as the last endpoint somebody knew about. A priced answer literally carries
 | `NEX_TIMEOUT_MS` | | `30000` | |
 | `NEX_USERNAME` / `NEX_PASSWORD` | | — | Accepted, **not yet usable** — stage 1 is unimplemented. |
 
-## The merged board
+## The Combined Pricing Engine
 
 `src/longterm/pricing/merge.js` puts both programs on one board and elects a source
-per investor. Mounted at **`/api/lt/dscr/merged/*`**, and **off unless
-`LT_MERGED_PRICING=on`** — the owner asked to see whether the idea works before it is
-switched on, so every path 404s until then and the Lender Price board is untouched
-either way.
+per investor. Mounted at **`/api/lt/dscr/combined/*`** and **SUPER ADMIN ONLY** — every
+path answers 404 to anybody else while the owner audits it (2026-08-30). It is a SECOND
+engine beside the General Pricing Engine at `/api/lt/dscr/*`, which is untouched.
+`LT_COMBINED_PRICING=off` is the kill switch.
 
 The rule, in one line: **at the same product, the same lock and the same note rate,
 the higher price is the better execution.** Three refusals keep it honest —
@@ -123,7 +123,7 @@ node scripts/test-lt-loannex-merge-pure.js      # parse, election, read-only wal
 Both are offline and run in CI. To run the real thing once a ticket is in hand:
 
 ```bash
-LT_MERGED_PRICING=on NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
+NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
   curl -s https://<host>/api/lt/_diag/loannex/loannex/login-check -H "x-nex-diag-token: $NEX_DIAG_TOKEN"
 ```
 

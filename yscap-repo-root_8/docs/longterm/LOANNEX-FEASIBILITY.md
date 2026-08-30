@@ -1,4 +1,4 @@
-# LoanNEX (LoanX) as a second pricing program — is it workable?
+# LoanNEX as a second pricing program — is it workable?
 
 **Short answer: yes, and it is easier than Lender Price was.** Everything below was
 decoded from the three recordings supplied on 2026-08-30 and is proven by two offline
@@ -109,11 +109,18 @@ it matched nothing. That alias is added.)*
    it, and if they do quote better, the merge already handles it (each portal is just
    another source).
 
-## 5. It is not live
+## 5. It is live for ONE person, and it is a SECOND engine
 
-`LT_MERGED_PRICING` is **off**, so every merged path returns "not found" and the Lender
-Price board behaves exactly as it does today. Turning it on is one setting, and it only
-*adds* a second board — it changes nothing about the first.
+Owner-directed 2026-08-30: *"Merge this live into domain only for super admin to be able to
+see it and super admin to be able to test it… so I can audit everything before I want to go
+live to the general pricing engine."* And: *"Don't touch our current setup that we currently
+have: our General Pricing Engine."*
+
+So it ships as **the Combined Pricing Engine** — its own screen, its own settings screen, its
+own API mount — and every path answers **404 to anybody who is not a super admin**. 404 rather
+than 403, so an engine under private audit does not advertise itself to the team. The General
+Pricing Engine at `/api/lt/dscr/*` is byte-for-byte what it was; this only *adds* a second
+engine beside it. `LT_COMBINED_PRICING=off` is the kill switch.
 
 It is also **read-only by construction**. LoanNEX's API can lock and register loans;
 this client refuses every one of those paths before a request is even built, and the
@@ -127,7 +134,7 @@ test proves it.
 | `src/longterm/loannex/capture/` | The recorded traffic every claim rests on |
 | `src/longterm/pricing/merge.js` | Two boards in, one board out, with the per-investor election |
 | `src/longterm/pricing/product-class.js` | What may be compared to what |
-| `src/longterm/routes/merged-pricer.js` | `/api/lt/dscr/merged/*`, behind the off switch |
+| `src/longterm/routes/combined-pricer.js` | `/api/lt/dscr/combined/*`, super-admin only |
 | `scripts/test-lt-loannex-*-pure.js` | 57 checks, offline, in CI |
 
 **How it is proven.** The pricing request we build is compared **byte for byte** against

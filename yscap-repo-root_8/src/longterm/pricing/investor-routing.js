@@ -1,284 +1,203 @@
 'use strict';
 /**
- * LONG-TERM — WHICH investors appear on the merged board, and WHOSE price we
- * show for each.
+ * LONG-TERM — apply the INVESTOR SETTINGS to a merged board, and make it read as
+ * ONE SYSTEM.
  *
- * ── THE OWNER'S TWO INSTRUCTIONS ───────────────────────────────────────────
- * 2026-08-30, on Button Finance: *"Don't display this investor. Ignore this
- * investor. Don't display their options."*
+ * ── THE OWNER'S RULE ───────────────────────────────────────────────────────
+ * 2026-08-30: *"At our system, it shouldn't be a difference from where it's
+ * taking the information. It should be something where the admin can go in and
+ * click to see the source of the info, and it's telling him the source. At our
+ * system, it should sound like one system. It shouldn't sound like it's coming
+ * from different places."*
  *
- * 2026-08-30, on the shape of the whole thing: *"We just can add investors from
- * LoanX, then we can decide each and every investor from where we want to pull
- * the pricing and turn off that investor on Lender Price and turn it on for
- * LoanX."* (Lightly reworded: the product-separation gate reads the literal
- * phrase "from <word>" in a comment as a SQL FROM clause. The meaning is the
- * owner's; the preposition is not.)
+ * So the board this returns does NOT say where a row came from. Each investor
+ * has ONE list of programs, and the vendor is stripped off every row. An admin
+ * asks for it explicitly (`revealSource: true`) and then — and only then — the
+ * answer carries `source` and the per-vendor breakdown.
  *
- * That second sentence changes the model, and it is worth being precise about
- * how. The merge layer MEASURES which program executes better for an investor;
- * this layer is where a HUMAN's decision about that investor is applied. Measure
- * and decide stay separate on purpose: an automatic election is a recommendation
- * a person can disagree with, and the routing is the record of what they chose.
+ * THAT IS A DISPLAY RULE, NOT A RECORD-KEEPING ONE. Nothing is thrown away: the
+ * provenance is one flag away, and the merge underneath still holds both
+ * vendors' answers. What changes is what an ordinary reader is shown, and the
+ * point of it is that a quote should be a quote.
  *
- * ── NOTHING SWITCHES ON ITS OWN ────────────────────────────────────────────
- * The default for every investor is `both` — the board reads exactly as it does
- * today until somebody sets a route. A silent change of which vendor a price
- * came from is the worst thing this file could do, so an unset investor is never
- * quietly routed by the election, however lopsided the measurement.
+ * ── WHERE THE DECISIONS LIVE ───────────────────────────────────────────────
+ * Not here. Which investors are on, what they are called and which vendor each
+ * is fetched from all come from `investor-settings.js`, which derives its roster
+ * from the one investor registry. This module APPLIES that roster to a board —
+ * it holds no list of its own, so there is nothing here to drift.
  *
- * ── SUPPRESSION IS BY NAME, BEFORE IDENTITY ────────────────────────────────
- * Button Finance resolves to NO canonical investor key (it is not in the
- * registry), so it reaches the board through the `unmapped` list rather than the
- * investor list. A suppression keyed on the canonical key would therefore have
- * missed it entirely. It is matched on the NORMALIZED NAME instead, and applied
- * to BOTH lists, so "don't display this investor" is true whichever road they
- * arrive by — today and if they are ever added to the registry.
- *
- * ⚠️ NO PRICE IS ADJUSTED HERE, AND THAT IS DELIBERATE. The owner's sentence
- * about Button Finance continues: *"The reason why it's 0.25 off is because they
- * have raw pricing, and our system needs to manually add a lender holdback of
- * 0.25 to every scenario to even it out."* Read one way that explains why they
- * are hidden; read another it is a separate instruction to apply a 0.25 holdback
- * more widely. A holdback moves what a borrower is quoted, so under the standing
- * rule it is not something to infer from a sentence that can be read two ways —
- * it is asked and waited for. Nothing here adds, subtracts or shades any price.
+ * ⛔ NO PRICE IS ADJUSTED IN THIS FILE. The margin holdback the owner authorized
+ * lives in `vendor-margin.js` and is applied to the board before anything here
+ * sees it.
  *
  * PURE: no network, no database, no RTL import.
  */
 
 const investors = require('../encompass/investors');
 
-/** Loose name key — punctuation, case and corporate suffixes fall away. */
-function nameKey(v) {
-  return String(v == null ? '' : v)
-    .toLowerCase()
-    .replace(/\b(inc|llc|l\.l\.c|corp|corporation|co|ltd|lp|llp)\b/g, ' ')
-    .replace(/[^a-z0-9]/g, '');
-}
+const settingsOf = require('./investor-settings');
 
-/**
- * Investors that never appear on the board, and why.
- *
- * A short, owner-directed list — NOT a general filter. Each entry records the
- * instruction that put it there, because "why can I not see this lender?" must
- * be answerable without archaeology.
- */
-const SUPPRESSED = [
-  {
-    match: ['buttonfinance'],
-    label: 'Button Finance',
-    reason: 'Owner-directed 2026-08-30: do not display this investor or their options.',
-  },
-];
+/** A route is now simply the investor's SOURCE. Kept as its own word because a
+ *  board talks about routing and a settings screen talks about a source. */
+const ROUTES = settingsOf.SOURCES;
+const DEFAULT_ROUTE = settingsOf.DEFAULT_SOURCE;
 
-function suppressionFor(name) {
-  const k = nameKey(name);
-  if (!k) return null;
-  return SUPPRESSED.find((s) => s.match.includes(k)) || null;
-}
-
-/** True when a board row belongs to a suppressed investor, whatever it is called. */
-function isSuppressed(row) {
-  const r = row || {};
-  for (const n of [r.investor, r.lender, r.name, r.label]) { if (suppressionFor(n)) return true; }
-  return false;
-}
-
-// ── The per-investor route ──────────────────────────────────────────────────
-const ROUTES = ['both', 'lenderprice', 'loannex', 'off'];
-const DEFAULT_ROUTE = 'both';
-
-/**
- * THE THREE INVESTORS THE OWNER NAMED — owner-directed 2026-08-30:
- *
- *   *"There are three investors that are actually using LoanX for their locking,
- *   and it's much more accurate: NQM, ACRA and eResi. I'm just trying to take off
- *   these three investors so that our system should not display the results that
- *   they're seeing on Lender Price. It shouldn't populate these three investors
- *   out of Lender Price, and these three investors should be populated out of
- *   LoanX instead."* (Prepositions lightly reworded — the separation gate reads
- *   a literal "from <word>" in a comment as a SQL FROM clause. Nothing else in
- *   the instruction is changed.)
- *
- * The reason is the point: these three LOCK on LoanX, so LoanX is where their
- * real execution lives and Lender Price's copy of it is second-hand. This is not
- * a preference the comparison discovered — it is a fact about how those three
- * investors do business, which is exactly the kind of thing a measurement cannot
- * tell you and a person has to.
- *
- * NOTHING ELSE MOVES. Every other investor stays on `both`, and the Lender Price
- * pricer at `/api/lt/dscr/*` is untouched — the owner's *"not touch our own
- * pricing engine that we currently have"*.
- *
- * The environment still overrides any of these: a route set in
- * `LT_PRICING_ROUTES` wins, so a bad day at LoanX is one setting away from
- * putting an investor back on `both` without a deploy.
- */
-const OWNER_ROUTES = {
-  nqm: 'loannex',
-  acra: 'loannex',
-  eresi: 'loannex',
-};
-
-/**
- * Read the configured routes.
- *
- * TODAY: a JSON object in `LT_PRICING_ROUTES`, e.g.
- *   {"acra":"loannex","a_and_d":"lenderprice","pennymac":"off"}
- * keyed by the CANONICAL investor key (`encompass/investors.js`).
- *
- * WHY NOT A TABLE YET: the merged board is switched off and has never priced a
- * live loan, so committing a schema to it would be building the filing cabinet
- * before the first letter. The shape above is deliberately the shape a
- * `lt_pricing_investor_routes` row would have — one investor, one route, one
- * decided-by — so moving it into a table later is a reader change and not a
- * redesign. A malformed value is IGNORED WITH A NAMED COMPLAINT rather than
- * silently treated as a route, because a typo'd route that reads as `off` would
- * hide an investor nobody meant to hide.
- */
-function readRoutes(raw) {
-  const src = raw !== undefined ? raw : process.env.LT_PRICING_ROUTES;
-  const out = { routes: {}, problems: [] };
-  if (src == null || src === '') return out;
-  let obj = src;
-  if (typeof src === 'string') {
-    try { obj = JSON.parse(src); }
-    catch (e) { out.problems.push({ error: 'unparsable', message: 'LT_PRICING_ROUTES is not valid JSON, so no route was applied.' }); return out; }
-  }
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
-    out.problems.push({ error: 'not_an_object', message: 'LT_PRICING_ROUTES must be an object of investorKey -> route.' });
-    return out;
-  }
-  for (const [key, value] of Object.entries(obj)) {
-    const v = String(value == null ? '' : value).trim().toLowerCase();
-    if (!ROUTES.includes(v)) { out.problems.push({ investor: key, error: 'unknown_route', value: String(value), message: `Route must be one of ${ROUTES.join(', ')}.` }); continue; }
-    if (!investors.byKey || !investors.byKey(key)) out.problems.push({ investor: key, error: 'unknown_investor', message: 'No investor by that key — the route is kept, but nothing will match it.' });
-    out.routes[key] = v;
-  }
-  return out;
-}
-
-/**
- * The route in force for one investor: an explicit setting first, then the
- * owner's three, then `both`.
- */
-function routeFor(key, routes) {
-  const r = routes && routes[key];
-  if (ROUTES.includes(r)) return r;
-  const owner = OWNER_ROUTES[key];
-  return ROUTES.includes(owner) ? owner : DEFAULT_ROUTE;
-}
-
-/** Which sources a route lets through, given which answered. */
-function sourcesUnder(route, presentIn) {
-  const has = (s) => (presentIn || []).includes(s);
-  if (route === 'off') return [];
-  if (route === 'lenderprice') return has('lenderprice') ? ['lenderprice'] : [];
-  if (route === 'loannex') return has('loannex') ? ['loannex'] : [];
+/** Which sources a setting lets through, given which actually answered. */
+function sourcesUnder(source, presentIn) {
+  const has = (x) => (presentIn || []).includes(x);
+  if (source === 'lenderprice') return has('lenderprice') ? ['lenderprice'] : [];
+  if (source === 'loannex') return has('loannex') ? ['loannex'] : [];
   return [...(presentIn || [])];
 }
 
 /**
- * Apply suppression and routing to a merged board.
+ * Apply the investor settings to a merged board.
  *
- * WHAT IT NEVER DOES: change a number, re-order by preference, or drop a source
- * an investor is NOT routed away from. It hides, it narrows, and it SAYS SO —
- * every removal is reported in `hidden[]` with its reason, so a board that shows
- * six investors where the vendor priced nine can always explain the other three.
+ * WHAT IT NEVER DOES: change a number, or re-order by preference. It hides, it
+ * narrows, and it SAYS SO — every removal comes back in `hidden[]` with its
+ * reason, so a board showing six investors where the vendors priced nine can
+ * always account for the other three.
  *
- * A ROUTE THAT ASKS FOR A SOURCE THAT DID NOT ANSWER LEAVES THE INVESTOR EMPTY,
- * and that is the honest outcome rather than a silent fallback to the other
- * program: an officer who routed an investor to LoanX must not be shown Lender
- * Price's number under the belief it is LoanX's. It is reported as
- * `routed_source_absent` so the reason is on the screen.
+ * AN INVESTOR WHOSE SOURCE DID NOT ANSWER IS LEFT EMPTY, and that is the honest
+ * outcome rather than a quiet fallback to the other vendor: somebody who set an
+ * investor to LoanNEX must not be shown Lender Price's number believing it is
+ * LoanNEX's. Two wordings, because "the vendor is down" and "the vendor is up
+ * and did not quote them" are different problems for different people.
+ *
+ * ONE SYSTEM. Unless `revealSource` is set, an investor comes back with ONE flat
+ * list of programs and no mention of a vendor anywhere on it — not on the row,
+ * not on the investor, not in the summary. With it set, the same answer
+ * additionally carries `source` and the per-vendor split. Nothing is discarded
+ * either way; the flag decides what is SHOWN.
  */
 function applyRouting(merged, opts = {}) {
   const board = merged || {};
-  const cfg = readRoutes(opts.routes);
-  const routes = cfg.routes;
+  const cfg = settingsOf.readSettings(opts.routes !== undefined ? opts.routes : opts.settings);
+  const settings = cfg.settings;
+  const reveal = opts.revealSource === true;
   const hidden = [];
   const list = [];
 
   for (const e of board.investors || []) {
-    const sup = suppressionFor(e.investor) || suppressionFor(e.label) || suppressionFor(e.key);
-    if (sup) { hidden.push({ investor: e.investor || sup.label, key: e.key || null, why: 'suppressed', reason: sup.reason }); continue; }
-    const route = routeFor(e.key, routes);
-    const shown = sourcesUnder(route, e.presentIn);
-    if (route === 'off') { hidden.push({ investor: e.investor, key: e.key, why: 'route_off', reason: 'This investor is switched off for pricing.' }); continue; }
-    if (!shown.length) {
-      // "The program is down" and "the program is up and did not quote them" are
-      // different problems for different people, and the wording says which.
-      const src = board.sources && board.sources[route];
-      const outage = src && src.answered === false;
+    const row = settingsOf.settingFor(e.key, settings);
+
+    if (!row.enabled) {
       hidden.push({
-        investor: e.investor, key: e.key, why: outage ? 'routed_source_did_not_answer' : 'routed_source_absent',
-        reason: outage
-          ? `Routed to ${label(route)}, which did not answer at all${src.error ? ` (${src.error})` : ''}. The other program's price is deliberately NOT shown in its place — this investor is priced there, so ours would be second-hand.`
-          : `Routed to ${label(route)}, which answered but did not quote this investor for this scenario. The other program's price is deliberately NOT shown in its place.`,
+        investor: e.investor, key: e.key, why: 'switched_off',
+        reason: row.note || 'This investor is switched off in the investor settings.',
       });
       continue;
     }
-    const programs = {};
-    for (const s of ['lenderprice', 'loannex']) programs[s] = shown.includes(s) ? (e.programs && e.programs[s]) || [] : [];
-    list.push({
-      ...e,
-      route,
-      // Three states, not two: a route somebody typed into the settings, the
-      // owner's own standing instruction for these three investors, and nothing
-      // at all. A screen that collapses the middle one into "default" cannot
-      // explain why Lender Price's NQM row is missing.
-      routeSource: Object.prototype.hasOwnProperty.call(routes, e.key) ? 'setting'
-        : (OWNER_ROUTES[e.key] ? 'owner_directed' : 'default'),
-      routeIsDefault: !Object.prototype.hasOwnProperty.call(routes, e.key) && !OWNER_ROUTES[e.key],
-      shownFrom: shown,
-      programs,
-      best: { lenderprice: shown.includes('lenderprice') ? e.best && e.best.lenderprice : null, loannex: shown.includes('loannex') ? e.best && e.best.loannex : null },
-    });
+
+    const shown = sourcesUnder(row.source, e.presentIn);
+    if (!shown.length) {
+      const src = board.sources && board.sources[row.source];
+      const outage = src && src.answered === false;
+      hidden.push({
+        investor: e.investor, key: e.key, why: outage ? 'source_did_not_answer' : 'source_had_no_quote',
+        reason: outage
+          ? `Set to ${label(row.source)}, which did not answer at all${src.error ? ` (${src.error})` : ''}. The other program's price is deliberately NOT shown in its place — this investor is priced there, so ours would be second-hand.`
+          : `Set to ${label(row.source)}, which answered but did not quote this investor for this scenario. The other program's price is deliberately NOT shown in its place.`,
+      });
+      continue;
+    }
+
+    // ONE FLAT LIST. The per-vendor split is what makes a board sound like two
+    // systems, so it is assembled away here and only handed back on request.
+    const flat = [];
+    for (const sName of shown) for (const p of (e.programs && e.programs[sName]) || []) flat.push(p);
+
+    const out = {
+      key: e.key,
+      investor: e.investor,
+      whiteLabel: row.whiteLabel,
+      whiteLabelMissing: row.whiteLabelMissing,
+      programs: reveal ? flat : flat.map(stripSource),
+      programCount: flat.length,
+      best: bestOfMany(shown.map((sName) => e.best && e.best[sName]).filter(Boolean)),
+    };
+    if (reveal) {
+      out.source = row.source;
+      out.sourceOrigin = row.sourceOrigin;
+      out.shownFrom = shown;
+      out.bySource = { lenderprice: shown.includes('lenderprice') ? (e.programs && e.programs.lenderprice) || [] : [], loannex: shown.includes('loannex') ? (e.programs && e.programs.loannex) || [] : [] };
+      out.comparison = e.comparison || null;
+      out.electionBasis = e.electionBasis || null;
+      out.reason = e.reason || null;
+    }
+    list.push(out);
   }
 
+  // An investor the registry does not know cannot have a settings row, so they
+  // cannot be switched off and cannot carry a client-safe name. They are
+  // REPORTED rather than displayed — putting an unnamed company on a board is
+  // how a real investor name reaches somebody who may not see one.
   const unmapped = [];
-  for (const u of board.unmapped || []) {
-    const sup = suppressionFor(u.name);
-    if (sup) { hidden.push({ investor: u.name, key: null, why: 'suppressed', reason: sup.reason, source: u.source }); continue; }
-    unmapped.push(u);
-  }
+  for (const u of board.unmapped || []) unmapped.push(u);
 
-  // The summary must describe the board that is actually RETURNED. Carrying the
-  // pre-routing counts through would print "9 investors" over a list of six and
-  // leave nobody able to reconcile the two.
   const counts = (pred) => list.filter(pred).length;
   const summary = {
     ...(board.summary || {}),
     investorCount: list.length,
-    inBoth: counts((x) => x.shownFrom.length === 2),
-    lenderpriceOnly: counts((x) => x.shownFrom.length === 1 && x.shownFrom[0] === 'lenderprice'),
-    loannexOnly: counts((x) => x.shownFrom.length === 1 && x.shownFrom[0] === 'loannex'),
     unmappedNames: new Set(unmapped.map((u) => u.name)).size,
     hiddenCount: hidden.length,
   };
+  // The per-vendor counts describe where the board came FROM, which is exactly
+  // what an ordinary reader is not shown. They ride with the reveal.
+  if (reveal) {
+    summary.fromLenderPrice = counts((x) => x.shownFrom && x.shownFrom.length === 1 && x.shownFrom[0] === 'lenderprice');
+    summary.fromLoanNex = counts((x) => x.shownFrom && x.shownFrom.length === 1 && x.shownFrom[0] === 'loannex');
+    summary.fromBoth = counts((x) => x.shownFrom && x.shownFrom.length === 2);
+  } else {
+    delete summary.inBoth; delete summary.lenderpriceOnly; delete summary.loannexOnly;
+    delete summary.electedLoannex; delete summary.electedLenderprice;
+    delete summary.noComparableBasis; delete summary.ties;
+  }
 
-  return {
+  const out = {
     ...board,
     summary,
     investors: list,
     unmapped,
     hidden,
-    routing: {
-      applied: Object.keys(routes).length,
-      routes,
+    settings: {
+      applied: Object.keys(settings).length,
       problems: cfg.problems,
-      // Stated rather than implied: nothing was decided for the investors below.
-      defaultRoute: DEFAULT_ROUTE,
-      ownerDirected: { ...OWNER_ROUTES },
-      note: 'NQM, Acra and eResi lock on LoanX, so they are priced there and NOT shown on Lender Price (owner-directed). Every other investor with no route set is shown from BOTH programs. Nothing is routed automatically by the comparison — the comparison is the recommendation, the route is the decision.',
+      defaultSource: DEFAULT_ROUTE,
+      note: 'One investor, one source — so the board reads as one system. Ask for the source explicitly to see where each row came from.',
     },
   };
+  // `sources` names the two vendors and their errors; that is provenance, and
+  // provenance is what the reveal is for.
+  if (!reveal) delete out.sources;
+  return out;
 }
 
-function label(src) { return src === 'loannex' ? 'LoanX' : src === 'lenderprice' ? 'Lender Price' : src; }
+/** A program row with every trace of which vendor produced it removed. */
+function stripSource(p) {
+  if (!p || typeof p !== 'object') return p;
+  const { source, lenderId, investorOrganizationGuid, ...rest } = p;
+  return rest;
+}
+
+/** The best headline across however many sources are being shown. */
+function bestOfMany(list) {
+  let best = null;
+  for (const b of list) {
+    if (!b || b.rate == null) continue;
+    if (!best || b.rate < best.rate || (b.rate === best.rate && (b.price || -Infinity) > (best.price || -Infinity))) best = b;
+  }
+  return best;
+}
+
+function label(src) { return src === 'loannex' ? 'LoanNEX' : src === 'lenderprice' ? 'Lender Price' : src; }
 
 module.exports = {
-  SUPPRESSED, ROUTES, DEFAULT_ROUTE, OWNER_ROUTES,
-  nameKey, suppressionFor, isSuppressed, readRoutes, routeFor, sourcesUnder, applyRouting,
-  _internals: { label },
+  ROUTES, DEFAULT_ROUTE, sourcesUnder, applyRouting,
+  // Re-exported so a caller has ONE door to the investor decisions rather than
+  // needing to know which of the two modules holds which half.
+  readSettings: settingsOf.readSettings, settingFor: settingsOf.settingFor,
+  resolveRaw: settingsOf.resolveRaw,
+  roster: settingsOf.roster, describeSettings: settingsOf.describe,
+  _internals: { label, stripSource, bestOfMany },
 };

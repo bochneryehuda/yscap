@@ -25,14 +25,35 @@
  *   5. map `multifamily` back to TwoToFourUnits                       → PROP-3
  *   6. let `attachEvidence` skip `evidenceCoversRate`                 → SHAPE-5
  *   7. make `applyRouting` fall back to the other source              → ROUTE-4
- *   8. drop Button Finance from SUPPRESSED                            → HIDE-1/2
- *   9. report a failed portal login as a success                      → LOGIN-5
+ *   8. report a failed portal login as a success                          → LOGIN-5
+ *
+ * And, for the three things the owner added on 2026-08-30 — the margin holdback,
+ * the investor settings and the one-system view:
+ *   9.  move the holdback from 0.25 to 0.5                                → MARGIN-1
+ *  10.  recompute the points off the rounded price instead of shifting    → MARGIN-2
+ *  11.  drop the already-applied guard, so a second call takes 0.50       → MARGIN-5
+ *  12.  hold back on Lender Price too, whose feed already carries ours    → MARGIN-6
+ *  13.  leave the program's best-price figure quoting the raw number      → MARGIN-8
+ *  14.  skip the holdback in combined-pricer.js entirely                    → MARGIN-9
+ *  15.  pre-fill a missing white label with the investor's REAL name      → SET-2/2b/3
+ *  16.  stop pre-filling Button Finance off                               → HIDE-2, SET-6
+ *  17.  coerce a non-boolean on/off instead of refusing it                → SET-7
+ *  18.  make the pre-filled source `both` again                           → ROUTE-1, SET-5
+ *  19.  drop NQM/Acra/eResi from the owner's standing instruction         → OWNER-1/2/5
+ *  20.  keep the vendor on every row of the ordinary board                → ONE-2/3
+ *  21.  keep the per-vendor summary counts on the ordinary board          → ONE-4
+ *  22.  turn the source reveal on by default                              → ONE-7
+ *  23.  keep `source` on the unified option rows nobody asked about       → ONE-8
+ *
+ * A crashing test also "fails" and looks like proof, so every fixture here is
+ * built so a wrong answer fails CLEANLY rather than throwing out of the battery.
  *
  * LT-only. No network, no DB, no RTL imports.
  */
 const shared = require('../src/longterm/pricing/scenario-defaults');
 const routing = require('../src/longterm/pricing/investor-routing');
 const quoteShape = require('../src/longterm/pricing/quote-shape');
+const vendorMargin = require('../src/longterm/pricing/vendor-margin');
 const nexScenario = require('../src/longterm/loannex/scenario');
 const nexParse = require('../src/longterm/loannex/parse');
 const nexRegistry = require('../src/longterm/loannex/field-registry');
@@ -239,99 +260,129 @@ console.log('Two programs, one loan — parity');
     'SHAPE-5 an evidence for a DIFFERENT rate is refused — one rate\'s LLPAs are never copied onto another');
 }
 
-// ---- 7. BUTTON FINANCE IS NOT DISPLAYED ------------------------------------
+// ---- 7. BUTTON FINANCE IS PRE-FILLED OFF — AS A SETTING, NOT AS CODE --------
+// Owner-directed 2026-08-30: *"For Button Finance, just pre-fill that as off,
+// and whenever we're ready for it, we're gonna turn it on over there. We're
+// gonna put in the white label name for it, and we're gonna put it there so
+// that it should take it from LoanNEX."*
+//
+// These assertions were RE-POINTED, not reverted, when the hard-coded
+// suppression list was replaced by the investor settings: the OUTCOME the owner
+// asked for is unchanged (they are not displayed), and what moved is that
+// turning them on is now a setting rather than a deploy.
 {
   const merged = {
+    sources: { lenderprice: { answered: true }, loannex: { answered: true } },
     summary: {},
     investors: [
-      { key: 'pennymac', investor: 'PennyMac', presentIn: ['lenderprice', 'loannex'], programs: { lenderprice: [{}], loannex: [{}] }, best: {} },
-      { key: 'button', investor: 'Button Finance, Inc.', presentIn: ['loannex'], programs: { lenderprice: [], loannex: [{}] }, best: {} },
+      { key: 'pennymac', investor: 'PennyMac', presentIn: ['lenderprice', 'loannex'], programs: { lenderprice: [{ source: 'lenderprice' }], loannex: [{ source: 'loannex' }] }, best: {} },
+      { key: 'button_finance', investor: 'Button Finance', presentIn: ['loannex'], programs: { lenderprice: [], loannex: [{ source: 'loannex' }] }, best: {} },
     ],
-    unmapped: [{ source: 'loannex', name: 'Button Finance, Inc.', programs: ['DSCR'] }, { source: 'loannex', name: 'Somebody Else' }],
+    unmapped: [],
   };
   const out = routing.applyRouting(merged, { routes: {} });
   ok(!out.investors.some((i) => /button/i.test(String(i.investor))),
     'HIDE-1 Button Finance is not on the investor list');
-  ok(!out.unmapped.some((u) => /button/i.test(String(u.name))),
-    'HIDE-2 …nor on the unmapped list, which is the road they actually arrive by (they resolve to no investor key)');
-  ok(out.hidden.filter((h) => /button/i.test(String(h.investor))).length === 2 && out.hidden.every((h) => !!h.reason),
-    'HIDE-3 …and every removal is REPORTED with its reason, so a short board can always be accounted for');
-  ok(/button ?finance/i.test(JSON.stringify(routing.SUPPRESSED)) && routing.suppressionFor('button finance llc') && !routing.suppressionFor('Acra Lending'),
-    'HIDE-4 the match survives the punctuation and the corporate suffix, and catches nobody else');
-  // NOT a price change. The owner's 0.25 sentence is an open question, not a rule.
-  ok(!/0\.25|holdback/i.test(require('fs').readFileSync(require.resolve('../src/longterm/pricing/investor-routing'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')),
-    'HIDE-5 no price is adjusted anywhere in the routing code — the 0.25 holdback is a question, not an implemented rule');
+  ok(out.hidden.some((h) => h.key === 'button_finance' && h.why === 'switched_off' && /pre-filled off/i.test(String(h.reason))),
+    'HIDE-2 …and the removal is REPORTED with its reason, so a short board can always be accounted for');
+  // They used to arrive as an UNMAPPED NAME, which is how they slipped past a
+  // key-based rule in the first place. The registry knows them now, so they
+  // resolve to a key on every road in and the setting can actually reach them.
+  const resolved = require('../src/longterm/encompass/investors').resolve('Button Finance, Inc.');
+  ok(resolved && resolved.key === 'button_finance',
+    'HIDE-3 the vendor\'s own spelling resolves to a key — an unmapped NAME could never be switched off by a setting');
+  const on = routing.applyRouting(merged, { routes: { button_finance: { enabled: true, source: 'loannex', whiteLabel: 'Slate Capital' } } });
+  const btn = on.investors.find((i) => i.key === 'button_finance');
+  ok(btn && btn.whiteLabel === 'Slate Capital' && btn.programCount === 1,
+    'HIDE-4 …and "whenever we\'re ready" is one setting away — on, named, and fetched from LoanNEX, with no deploy');
+  // NOT a price change. The holdback the owner authorized lives in ONE module,
+  // and it is not this one — a board that both routes AND re-prices is a board
+  // where nobody can say which of the two moved a number.
+  ok(!/0\.25|holdback/i.test(require('fs').readFileSync(require.resolve('../src/longterm/pricing/investor-routing'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')),
+    'HIDE-5 no price is adjusted anywhere in the routing code — the margin holdback lives in vendor-margin.js and nowhere else');
 }
 
-// ---- 8. THE PER-INVESTOR SOURCE SWITCH -------------------------------------
+// ---- 8. THE PER-INVESTOR SOURCE SETTING ------------------------------------
 {
   // Deliberately investors with NO standing instruction — otherwise these
   // assertions would be re-testing the owner rule rather than the default.
   const board = () => ({
+    sources: { lenderprice: { answered: true }, loannex: { answered: true } },
     summary: {},
     investors: [
-      { key: 'pennymac', investor: 'PennyMac', presentIn: ['lenderprice', 'loannex'], programs: { lenderprice: [{ p: 1 }], loannex: [{ p: 2 }] }, best: { lenderprice: { rate: 7 }, loannex: { rate: 6.9 } } },
-      { key: 'champions', investor: 'Champions', presentIn: ['loannex'], programs: { lenderprice: [], loannex: [{ p: 3 }] }, best: { lenderprice: null, loannex: { rate: 7.1 } } },
+      { key: 'pennymac', investor: 'PennyMac', presentIn: ['lenderprice', 'loannex'], programs: { lenderprice: [{ source: 'lenderprice', p: 1 }], loannex: [{ source: 'loannex', p: 2 }] }, best: { lenderprice: { rate: 7 }, loannex: { rate: 6.9 } } },
+      { key: 'visio', investor: 'Visio Lending', presentIn: ['lenderprice', 'loannex'], programs: { lenderprice: [{ source: 'lenderprice', p: 4 }], loannex: [{ source: 'loannex', p: 5 }] }, best: { lenderprice: { rate: 7.2 }, loannex: { rate: 7.15 } } },
+      // Quoted by LoanNEX ONLY — the case ROUTE-4 is about.
+      { key: 'champions', investor: 'Champions', presentIn: ['loannex'], programs: { lenderprice: [], loannex: [{ source: 'loannex', p: 3 }] }, best: { lenderprice: null, loannex: { rate: 7.1 } } },
     ],
     unmapped: [],
   });
-  const dflt = routing.applyRouting(board(), { routes: {} });
-  ok(dflt.investors.length === 2 && dflt.investors.every((i) => i.route === 'both' && i.routeIsDefault),
-    'ROUTE-1 with nothing set, every investor is shown from BOTH programs — nothing routes itself');
-  const one = routing.applyRouting(board(), { routes: { pennymac: 'loannex' } });
-  const acra = one.investors.find((i) => i.key === 'pennymac');
-  ok(acra.shownFrom.join() === 'loannex' && acra.programs.lenderprice.length === 0 && acra.programs.loannex.length === 1,
-    'ROUTE-2 routing an investor to LoanX shows LoanX\'s programs and drops the other side\'s');
-  ok(one.investors.find((i) => i.key === 'champions').route === 'both',
+  // ONE INVESTOR, ONE SOURCE. The pre-fill is Lender Price — that is where the
+  // system fetches everything today, and the owner's own framing is "not touch
+  // our own pricing engine that we currently have".
+  const dflt = routing.applyRouting(board(), { routes: {}, revealSource: true });
+  const pm = dflt.investors.find((i) => i.key === 'pennymac');
+  ok(pm && pm.source === 'lenderprice' && pm.sourceOrigin === 'default' && pm.programCount === 1,
+    'ROUTE-1 with nothing set an investor comes from ONE program — Lender Price, the one everything is fetched from today');
+  const one = routing.applyRouting(board(), { routes: { pennymac: { source: 'loannex' } }, revealSource: true });
+  const moved = one.investors.find((i) => i.key === 'pennymac');
+  ok(moved.shownFrom.join() === 'loannex' && moved.bySource.lenderprice.length === 0 && moved.bySource.loannex.length === 1,
+    'ROUTE-2 switching an investor to LoanNEX shows LoanNEX\'s programs and drops the other side\'s');
+  const untouched = one.investors.find((i) => i.key === 'visio');
+  ok(untouched && untouched.source === 'lenderprice' && untouched.sourceOrigin === 'default',
     'ROUTE-3 …and touches no other investor');
-  const away = routing.applyRouting(board(), { routes: { champions: 'lenderprice' } });
-  ok(!away.investors.some((i) => i.key === 'champions') && away.hidden.some((h) => h.key === 'champions' && h.why === 'routed_source_absent'),
-    'ROUTE-4 an investor routed to a program that did not quote them is HIDDEN with a reason — never quietly served the other program\'s price');
-  const off = routing.applyRouting(board(), { routes: { pennymac: 'off' } });
-  ok(!off.investors.some((i) => i.key === 'pennymac') && off.hidden.some((h) => h.why === 'route_off'),
+  const away = routing.applyRouting(board(), { routes: {} });
+  ok(!away.investors.some((i) => i.key === 'champions') && away.hidden.some((h) => h.key === 'champions' && h.why === 'source_had_no_quote'),
+    'ROUTE-4 an investor whose source answered but did not quote them is HIDDEN with a reason — never quietly served the other program\'s price');
+  const off = routing.applyRouting(board(), { routes: { pennymac: { enabled: false } } });
+  ok(!off.investors.some((i) => i.key === 'pennymac') && off.hidden.some((h) => h.why === 'switched_off'),
     'ROUTE-5 an investor switched off is off on both programs');
   ok(off.summary.investorCount === off.investors.length,
-    'ROUTE-6 the summary counts the board that is actually returned, not the one before routing');
+    'ROUTE-6 the summary counts the board that is actually returned, not the one before the settings were applied');
   // ── THE THREE INVESTORS THE OWNER NAMED ────────────────────────────────
-  // "NQM, ACRA and eResi lock on LoanX… it shouldn't populate these three
-  // investors from Lender Price, and these three should be populated from LoanX
-  // instead." Everything else stays exactly as it was.
+  // "There are three investors that are actually using LoanNEX for their
+  // locking, and it's much more accurate: NQM, ACRA and eResi… these three
+  // investors should be populated from LoanNEX instead."
   {
     const b = {
       sources: { lenderprice: { answered: true }, loannex: { answered: true } }, summary: {}, unmapped: [],
       investors: [
-        { key: 'nqm', investor: 'NQM Funding', presentIn: ['lenderprice', 'loannex'], programs: { lenderprice: [{ a: 1 }], loannex: [{ b: 1 }] }, best: {} },
-        { key: 'acra', investor: 'Acra Lending - Corr', presentIn: ['lenderprice', 'loannex'], programs: { lenderprice: [{ a: 1 }], loannex: [{ b: 1 }] }, best: {} },
-        { key: 'eresi', investor: 'eResi', presentIn: ['lenderprice', 'loannex'], programs: { lenderprice: [{ a: 1 }], loannex: [{ b: 1 }] }, best: {} },
-        { key: 'pennymac', investor: 'PennyMac', presentIn: ['lenderprice', 'loannex'], programs: { lenderprice: [{ a: 1 }], loannex: [{ b: 1 }] }, best: {} },
+        { key: 'nqm', investor: 'NQM Funding', presentIn: ['lenderprice', 'loannex'], programs: { lenderprice: [{ source: 'lenderprice' }], loannex: [{ source: 'loannex' }] }, best: {} },
+        { key: 'acra', investor: 'Acra Lending - Corr', presentIn: ['lenderprice', 'loannex'], programs: { lenderprice: [{ source: 'lenderprice' }], loannex: [{ source: 'loannex' }] }, best: {} },
+        { key: 'eresi', investor: 'eResi', presentIn: ['lenderprice', 'loannex'], programs: { lenderprice: [{ source: 'lenderprice' }], loannex: [{ source: 'loannex' }] }, best: {} },
+        { key: 'pennymac', investor: 'PennyMac', presentIn: ['lenderprice', 'loannex'], programs: { lenderprice: [{ source: 'lenderprice' }], loannex: [{ source: 'loannex' }] }, best: {} },
       ],
     };
-    const out = routing.applyRouting(b, { routes: {} });
+    const out = routing.applyRouting(b, { routes: {}, revealSource: true });
     const three = ['nqm', 'acra', 'eresi'].map((k) => out.investors.find((i) => i.key === k));
-    ok(three.every((i) => i && i.shownFrom.join() === 'loannex' && i.programs.lenderprice.length === 0),
-      'OWNER-1 NQM, Acra and eResi are priced from LoanX and are NOT populated from Lender Price');
-    ok(three.every((i) => i.routeSource === 'owner_directed'),
-      'OWNER-2 …and the board says WHY — an owner instruction, not a default and not something the comparison decided');
+    ok(three.every((i) => i && i.shownFrom.join() === 'loannex' && i.bySource.lenderprice.length === 0),
+      'OWNER-1 NQM, Acra and eResi are priced from LoanNEX and are NOT populated from Lender Price');
+    ok(three.every((i) => i.sourceOrigin === 'owner_directed'),
+      'OWNER-2 …and the board says WHY — an owner instruction, not a default and not something a comparison decided');
     const other = out.investors.find((i) => i.key === 'pennymac');
-    ok(other && other.route === 'both' && other.shownFrom.length === 2 && other.programs.lenderprice.length === 1,
-      'OWNER-3 …and every OTHER investor is untouched, still shown from both — "not touch our own pricing engine"');
-    // The environment must still be able to put one back without a deploy.
-    const over = routing.applyRouting(b, { routes: { nqm: 'both' } });
+    ok(other && other.source === 'lenderprice' && other.sourceOrigin === 'default' && other.bySource.lenderprice.length === 1,
+      'OWNER-3 …and every OTHER investor is untouched, still fetched exactly where it was — "not touch our own pricing engine"');
+    // The settings must still be able to put one back without a deploy.
+    const over = routing.applyRouting(b, { routes: { nqm: { source: 'lenderprice' } }, revealSource: true });
     const nqm = over.investors.find((i) => i.key === 'nqm');
-    ok(nqm && nqm.shownFrom.length === 2 && nqm.routeSource === 'setting',
-      'OWNER-4 a setting overrides the standing instruction, so a bad day at LoanX is one change away and not a deploy');
-    // If LoanX is DOWN, those three are hidden — never quietly served Lender
+    ok(nqm && nqm.shownFrom.join() === 'lenderprice' && nqm.sourceOrigin === 'setting',
+      'OWNER-4 a setting overrides the standing instruction, so a bad day at LoanNEX is one change away and not a deploy');
+    // If LoanNEX is DOWN, those three are hidden — never quietly served Lender
     // Price's second-hand number — and the reason names the outage.
-    const down = routing.applyRouting({ ...b, sources: { lenderprice: { answered: true }, loannex: { answered: false, error: 'loannex_login_not_configured' } }, investors: b.investors.map((i) => ({ ...i, presentIn: ['lenderprice'], programs: { lenderprice: [{ a: 1 }], loannex: [] } })) }, { routes: {} });
+    const down = routing.applyRouting({
+      ...b,
+      sources: { lenderprice: { answered: true }, loannex: { answered: false, error: 'loannex_login_not_configured' } },
+      investors: b.investors.map((i) => ({ ...i, presentIn: ['lenderprice'], programs: { lenderprice: [{ source: 'lenderprice' }], loannex: [] } })),
+    }, { routes: {} });
     const outage = down.hidden.filter((h) => ['nqm', 'acra', 'eresi'].includes(h.key));
-    ok(outage.length === 3 && outage.every((h) => h.why === 'routed_source_did_not_answer' && /did not answer/.test(h.reason)),
-      'OWNER-5 with LoanX down those three are HIDDEN and the reason says the program did not answer — Lender Price is never substituted for them');
+    ok(outage.length === 3 && outage.every((h) => h.why === 'source_did_not_answer' && /did not answer/.test(h.reason)),
+      'OWNER-5 with LoanNEX down those three are HIDDEN and the reason says the program did not answer — Lender Price is never substituted for them');
   }
 
-  const junk = routing.readRoutes('{"acra":"sometimes"}');
-  ok(!junk.routes.acra && junk.problems.some((p) => p.error === 'unknown_route'),
-    'ROUTE-7 an unrecognised route is refused BY NAME, never read as "off" — a typo must not hide a lender');
-  ok(routing.readRoutes('not json').problems.some((p) => p.error === 'unparsable'),
+  const junk = routing.readSettings('{"acra":{"source":"sometimes"}}');
+  ok(!junk.settings.acra && junk.problems.some((p) => p.error === 'unknown_source'),
+    'ROUTE-7 an unrecognised source is refused BY NAME, never read as "off" — a typo must not hide a lender');
+  ok(routing.readSettings('not json').problems.some((p) => p.error === 'unparsable'),
     'ROUTE-8 …and unreadable settings complain instead of silently applying nothing');
 }
 
@@ -365,6 +416,217 @@ console.log('Two programs, one loan — parity');
   const src = require('fs').readFileSync(require.resolve('../src/longterm/loannex/portal-login'), 'utf8');
   ok(/tokenKey/.test(src) && /if \(!tokenKey\)/.test(src),
     'LOGIN-5 success is judged by a TICKET coming back, not by guessing the shape of a response body nobody recorded');
+}
+
+
+// ---- 10. THE MARGIN HOLDBACK WE ADD OURSELVES ------------------------------
+// Owner-directed 2026-08-30, in writing: *"Every investor from LoanNEX needs to
+// get the 0.25 margin hold back added, the same way you see in certain programs
+// that Lender Price is adding it manually. On LoanNEX, everybody, you need to
+// add this manually."*
+{
+  const raw = nexParse.parse(capture.response);
+  const held = vendorMargin.applyToBoard(raw, 'loannex');
+  const rawRungs = raw.programs.flatMap((p) => p.rungs || []);
+  const heldRungs = held.programs.flatMap((p) => p.rungs || []);
+
+  let priced = 0, exact = 0, worstPrice = 0, worstPoints = 0, disagree = 0;
+  for (let i = 0; i < heldRungs.length; i++) {
+    const a = rawRungs[i], b = heldRungs[i];
+    if (!Number.isFinite(Number(a.price))) continue;
+    priced++;
+    worstPrice = Math.max(worstPrice, Math.abs((Number(a.price) - Number(b.price)) - 0.25));
+    worstPoints = Math.max(worstPoints, Math.abs((Number(b.points) - Number(a.points)) - 0.25));
+    if (Math.abs((Number(a.price) - Number(b.price)) - 0.25) < 1e-9) exact++;
+    // The price and the points must still describe ONE number: 100 − price is
+    // the identity between them, and a board where they disagree by a
+    // thousandth is a board somebody spends an afternoon on.
+    if (Math.abs(Number(b.points) - (100 - Number(b.price))) > 0.0011) disagree++;
+  }
+  ok(priced > 5000 && exact === priced && worstPrice < 1e-9,
+    `MARGIN-1 every LoanNEX price is held back by EXACTLY 0.25 — ${exact}/${priced} rungs, worst deviation ${worstPrice.toFixed(9)}`);
+  ok(worstPoints < 1e-9,
+    `MARGIN-2 …and the points move up by exactly the same 0.25, so the two still describe one number (worst ${worstPoints.toFixed(9)})`);
+  ok(disagree === 0,
+    `MARGIN-3 …with price and points never drifting apart — points are SHIFTED, never recomputed off a rounded price (${disagree} disagreements)`);
+  ok(heldRungs.every((r) => !Number.isFinite(Number(r.price)) || (Number.isFinite(Number(r.vendorPrice)) && r.marginHoldback === 0.25)),
+    'MARGIN-4 the vendor\'s own number is kept on every rung — a number we changed must always reconcile to the number we were given');
+  const twice = vendorMargin.applyToBoard(held, 'loannex');
+  ok(twice === held,
+    'MARGIN-5 applying it twice is a NO-OP, not 0.50 — a board already held back refuses to be held back again');
+  const lpBoard = { programs: [{ rungs: [{ rate: 7, price: 100.5, points: -0.5 }] }] };
+  ok(vendorMargin.applyToBoard(lpBoard, 'lenderprice') === lpBoard && vendorMargin.holdbackFor('lenderprice') === 0,
+    'MARGIN-6 Lender Price holds back NOTHING here — its feed already carries ours, and taking it again would double it');
+  ok(vendorMargin.holdbackFor('somebody_else') === 0,
+    'MARGIN-7 …and a vendor nobody has authorized a holdback for gets none, rather than inheriting LoanNEX\'s');
+  {
+    // The per-program summary is derived from the rungs, so it has to move with
+    // them: a `maxPrice` still quoting the raw number contradicts every row.
+    const p = held.programs.find((x) => (x.rungs || []).some((r) => Number.isFinite(Number(r.price))));
+    const best = Math.max(...p.rungs.filter((r) => Number.isFinite(Number(r.price))).map((r) => Number(r.price)));
+    ok(Math.abs(Number(p.maxPrice) - best) < 1e-9,
+      'MARGIN-8 the program\'s own best-price figure is recomputed from the held-back rungs, not left quoting the raw one');
+  }
+  {
+    // ORDER MATTERS, and it is the subtle version of the same bug: hold back
+    // AFTER the comparison and the merge elects on raw prices while the board
+    // shows held-back ones, so the stated reason would not match the numbers.
+    const src = require('fs').readFileSync(require.resolve('../src/longterm/routes/combined-pricer'), 'utf8');
+    const atMargin = src.indexOf('vendorMargin.applyToBoard');
+    const atMerge = src.indexOf('routing.applyRouting(merge(');
+    ok(atMargin > 0 && atMerge > atMargin,
+      'MARGIN-9 …and it is applied BEFORE the merge and the comparison, so nothing is ever elected on a number the board does not show');
+  }
+}
+
+// ---- 11. THE INVESTOR SETTINGS ---------------------------------------------
+// Owner-directed 2026-08-30: *"You should open a settings menu where you have
+// every single investor listed. Pre-fill a white label name for everybody, and
+// if their products are coming up, pre-fill where it's fetching their product…
+// For every investor, we can always switch it from where we want to take the
+// information."*
+{
+  const registry = require('../src/longterm/encompass/investors');
+  const d = routing.describeSettings('');
+  const keys = new Set(d.investors.map((r) => r.key));
+  ok(d.investors.length === registry.list().length && registry.list().every((x) => keys.has(x.key)),
+    `SET-1 EVERY investor is listed (${d.investors.length}) — the roster is derived from the one investor registry, so there is no second list to go stale`);
+  // MEASURED AGAINST THE SHEET, never against the row's own flag: a pre-fill
+  // that invents a name also clears the flag, so an assertion built on the flag
+  // agrees with itself and proves nothing. The count and the NAME are the two
+  // independent facts a guess cannot satisfy.
+  const sheet = require('../src/longterm/lenderprice/investor-programs');
+  const namedBySheet = registry.list().filter((x) => sheet.whiteLabelOf(x.key)).length;
+  ok(d.investors.filter((r) => r.whiteLabel).length === namedBySheet,
+    `SET-2 a white label is never INVENTED to fill a box — exactly the ${namedBySheet} the white-label sheet actually names carry one, and no more`);
+  ok(d.investors.every((r) => !r.whiteLabel || String(r.whiteLabel).trim().toLowerCase() !== String(r.label).trim().toLowerCase()),
+    'SET-2b …and no row is pre-filled with the investor\'s REAL name, which is the one name a client may never see');
+  ok(d.summary.missingWhiteLabel === d.investors.length - namedBySheet && d.investors.every((r) => r.whiteLabelMissing === !r.whiteLabel),
+    `SET-3 …and the ones with no client-safe name yet are REPORTED (${d.summary.missingWhiteLabel}), so they can be named on purpose`);
+  const three = ['nqm', 'acra', 'eresi'].map((k) => d.investors.find((r) => r.key === k));
+  ok(three.every((r) => r && r.source === 'loannex' && r.sourceOrigin === 'owner_directed'),
+    'SET-4 the three the owner named are pre-filled to LoanNEX, and the row says the instruction is where that came from');
+  ok(d.investors.filter((r) => r.key !== 'nqm' && r.key !== 'acra' && r.key !== 'eresi').every((r) => r.source === 'lenderprice'),
+    'SET-5 …and every other investor is pre-filled to Lender Price — where the system fetches everything today');
+  const btn = d.investors.find((r) => r.key === 'button_finance');
+  ok(btn && btn.enabled === false && btn.enabledOrigin === 'owner_directed' && d.summary.off === 1,
+    'SET-6 Button Finance is pre-filled OFF and is the only one that is — the rest are on');
+  const set = routing.readSettings('{"acra":{"enabled":"yes"},"not_an_investor":{"source":"loannex"}}');
+  ok(set.problems.some((p) => p.investor === 'acra' && p.error === 'non_boolean_enabled') && set.settings.acra === undefined,
+    'SET-7 a non-boolean "on" is REFUSED rather than coerced — the string "no" is truthy, and a coerced switch is a lender switched on by a typo');
+  ok(set.problems.some((p) => p.investor === 'not_an_investor' && p.error === 'unknown_investor'),
+    'SET-8 …and a setting for an investor nobody has heard of is reported BY NAME rather than silently matching nothing');
+}
+
+// ---- 12. ONE SYSTEM --------------------------------------------------------
+// Owner-directed 2026-08-30: *"At our system, it shouldn't be a difference from
+// where it's taking the information. It should be something where the admin can
+// go in and click to see the source of the info, and it's telling him the
+// source. At our system, it should sound like one system. It shouldn't sound
+// like it's coming from different places."*
+{
+  const board = () => ({
+    sources: { lenderprice: { answered: true }, loannex: { answered: false, error: 'loannex_login_not_configured' } },
+    summary: { inBoth: 1, lenderpriceOnly: 0, loannexOnly: 0, electedLoannex: 1 },
+    unmapped: [],
+    investors: [
+      {
+        key: 'nqm', investor: 'NQM Funding', presentIn: ['lenderprice', 'loannex'],
+        programs: { lenderprice: [{ source: 'lenderprice', lenderId: 42, program: 'A' }], loannex: [{ source: 'loannex', investorOrganizationGuid: 'g', program: 'B' }] },
+        best: { lenderprice: { rate: 7 }, loannex: { rate: 6.9 } }, comparison: { x: 1 }, reason: 'because',
+      },
+      {
+        key: 'pennymac', investor: 'PennyMac', presentIn: ['lenderprice'],
+        programs: { lenderprice: [{ source: 'lenderprice', lenderId: 7, program: 'C' }], loannex: [] },
+        best: { lenderprice: { rate: 7.5 } },
+      },
+    ],
+  });
+  const plain = routing.applyRouting(board(), { routes: {} });
+  const flat = plain.investors.flatMap((i) => i.programs);
+  ok(plain.investors.every((i) => Array.isArray(i.programs)) && flat.length === 2,
+    'ONE-1 an investor comes back with ONE flat list of programs — not a list per vendor, which is what makes a board read as two systems');
+  ok(!/"source"|lenderId|investorOrganizationGuid/.test(JSON.stringify(flat)),
+    'ONE-2 …and not one row says which vendor produced it — the vendor id goes too, or the name is one lookup away');
+  ok(plain.sources === undefined && !/lenderprice|loannex/i.test(JSON.stringify(plain.investors)),
+    'ONE-3 …and the board carries no vendor names at all: `sources`, its errors, and every per-investor mention are gone');
+  ok(plain.summary.inBoth === undefined && plain.summary.electedLoannex === undefined && plain.summary.fromLoanNex === undefined,
+    'ONE-4 …nor the per-vendor counts, which describe where the board came FROM — exactly what an ordinary reader is not shown');
+  const admin = routing.applyRouting(board(), { routes: {}, revealSource: true });
+  const nqm = admin.investors.find((i) => i.key === 'nqm');
+  ok(nqm.source === 'loannex' && nqm.sourceOrigin === 'owner_directed' && nqm.shownFrom.join() === 'loannex' && !!nqm.bySource && !!admin.sources,
+    'ONE-5 an admin who ASKS is told the source, where it came from, and the per-vendor split — the owner\'s "click to see the source"');
+  ok(plain.investors.length === admin.investors.length
+    && plain.investors.every((p, i) => p.programCount === admin.investors[i].programCount),
+    'ONE-6 NOTHING is discarded either way — the same investors, the same programs; the flag decides what is SHOWN, not what is kept');
+  {
+    const src = require('fs').readFileSync(require.resolve('../src/longterm/routes/combined-pricer'), 'utf8');
+    ok(/revealSource:\s*b\.revealSource === true \|\| String\(req\.query\.source \|\| ''\) === 'show'/.test(src),
+      'ONE-7 …and the reveal is an explicit ASK on the route — never the default, so the ordinary board can never leak it');
+    ok(/delete row\.source/.test(src),
+      'ONE-8 …including on the unified option rows, which carry the vendor internally because the two are shaped differently on the wire');
+  }
+}
+
+
+// ---- 13. THE COMBINED BOARD IS THE GENERAL ENGINE'S OWN SHAPE --------------
+// Owner-directed 2026-08-30: *"Don't touch our current setup that we currently
+// have: our General Pricing Engine. Just make this totally separate, but copy
+// everything from the General Pricing Engine and add this as it is… That should
+// be jumping and going between Lender Price and LoanNEX."*
+//
+// The Combined Pricing Engine's screen is a COPY of the general one, so the
+// board it reads has to be the shape that screen already reads. That is what
+// these assertions are about: a LoanNEX ladder arriving as `options[]` with a
+// `priceBuild`, exactly like a Lender Price program.
+{
+  const nexBoard = vendorMargin.applyToBoard(nexParse.parse(capture.response), 'loannex');
+  // A Lender Price program in that vendor's OWN shape — options + priceBuild.
+  const lpBoard = {
+    programs: [{
+      lender: 'PennyMac', investor: 'PennyMac', program: 'DSCR 30', product: '30 Yr Fixed', lenderId: 9,
+      options: [{ priceBuild: { noteRate: 7.25, price: 100.5, adjustedPoints: -0.5 }, monthlyPayment: { monthlyPI: 2100 }, rateSheet: { expired: false, name: 'sheet' } }],
+    }],
+  };
+  const merged = routing.applyRouting(
+    require('../src/longterm/pricing/merge').merge({ lenderprice: lpBoard, loannex: nexBoard }, { errors: {} }),
+    { routes: { pennymac: { source: 'lenderprice' } } },
+  );
+  const progs = quoteShape.programsForBoard(merged);
+  ok(progs.length > 20 && progs.every((p) => Array.isArray(p.options)),
+    `BOARD-1 every program on the combined board carries options[] — the shape the general engine's screen reads (${progs.length} programs)`);
+  ok(progs.every((p) => !Array.isArray(p.rungs)),
+    'BOARD-2 …and no LoanNEX ladder reaches the screen as `rungs`, which that screen would draw as nothing at all');
+  const lpRow = progs.find((p) => p.lender === 'PennyMac');
+  ok(lpRow && lpRow.options[0].priceBuild.price === 100.5 && lpRow.options[0].rateSheet.expired === false,
+    'BOARD-3 a Lender Price row passes through UNTOUCHED — the general engine\'s own answer, not a re-shaping of it');
+  const nxRow = progs.find((p) => p.options.length && p.options[0].stalenessUnknown === true);
+  ok(nxRow && Number.isFinite(nxRow.options[0].priceBuild.noteRate) && Number.isFinite(nxRow.options[0].priceBuild.price),
+    'BOARD-4 …and a LoanNEX rung arrives as an option with a real rate and price beside it');
+  ok(nxRow && nxRow.options[0].rateSheet.expired === null,
+    'BOARD-5 THE ONE THAT MATTERS: a LoanNEX option\'s rate-sheet staleness stays NULL — the screen reads `!!expired`, so a false here is a clean bill of health LoanNEX never gave us');
+  ok(nxRow && nxRow.options[0].monthlyPayment && nxRow.options[0].monthlyPayment.monthlyPI > 0,
+    'BOARD-6 …and the payment is the VENDOR\'s own, under the key that screen reads — never re-derived, or two screens would quote one loan two ways');
+  ok(nxRow && nxRow.options[0].priceBuild.pointsDerivedFromPrice === true && nxRow.options[0].priceBuild.basePoints === null,
+    'BOARD-7 …with the points flagged as DERIVED from the price, and the un-fetched LLPA base left null rather than a fabricated 0');
+  ok(!/"source"|lenderId|investorOrganizationGuid/.test(JSON.stringify(progs)),
+    'BOARD-8 and not one row on the ordinary board names a vendor — the one-system rule reaches the copied screen too');
+  // The reveal has to be asked for in BOTH places, and the route does exactly
+  // that (one `opts.revealSource` feeds both calls). Asking only here cannot
+  // work and must not appear to: `applyRouting` has already stripped the vendor
+  // off the Lender Price rows by then, and nothing downstream can restore a fact
+  // that was thrown away — which is the honest behaviour, not a gap.
+  const adminBoard = routing.applyRouting(
+    require('../src/longterm/pricing/merge').merge({ lenderprice: lpBoard, loannex: nexBoard }, { errors: {} }),
+    { routes: { pennymac: { source: 'lenderprice' } }, revealSource: true },
+  );
+  const shown = quoteShape.programsForBoard(adminBoard, { reveal: true });
+  ok(shown.some((p) => p.source === 'loannex') && shown.some((p) => p.source === 'lenderprice'),
+    'BOARD-9 …while an admin who asks gets the vendor back on every row, both vendors named');
+  ok(quoteShape.programsForBoard(merged, { reveal: true }).every((p) => p.source === undefined || p.source === 'loannex'),
+    'BOARD-9b …and a reveal asked for HERE alone cannot resurrect what the one-system view already dropped — the flag travels together or not at all');
+  ok(progs.every((p) => p.investorKey) && progs.every((p) => p.whiteLabel !== undefined),
+    'BOARD-10 every row carries the canonical investor key and the client-safe name the server resolved — never re-derived in a browser');
 }
 
 console.log(fail ? `\nFAILURES: ${fail} (${pass} passed, ${fail} failed)` : `\nOFFLINE: all passed (${pass} passed, 0 failed)`);

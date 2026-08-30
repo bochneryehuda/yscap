@@ -14,7 +14,8 @@
  *
  * PROVEN TO FAIL: compare across lock days and DELTA-2 goes red; drop the product
  * class from the comparison key and CLASS-1 goes red; let an unresolved investor
- * name merge into a neighbouring key and UNMAPPED-1 goes red; allow a write path
+ * name merge into a neighbouring key and UNMAPPED-1 goes red; print an unnamed
+ * investor's REAL name as their white label and LABEL-2 goes red; allow a write path
  * onto the LoanNEX client and READONLY-* go red.
  *
  * LT-only. No network, no DB, no RTL imports.
@@ -124,9 +125,22 @@ function shift(b, d) {
 
 // ---- an unresolved investor is reported, never merged ----------------------
 {
-  const m = merge({ lenderprice: null, loannex: clone(board) }, { errors: { lenderprice: 'lp_creds_missing' } });
+  // RE-POINTED 2026-08-30, not weakened. This used to use Button Finance as its
+  // example of an investor the registry does not know — and they were ADDED to
+  // the registry that day, on purpose: an unmapped NAME can never be switched
+  // off by a per-investor setting, which is the whole point of the settings
+  // screen. So the example is now a name nobody will ever add, which is what the
+  // RULE was always about; using a real company as the fixture is what made this
+  // assertion describe a registry entry rather than a behaviour.
+  const withStranger = clone(board);
+  withStranger.programs.push({
+    ...withStranger.programs[0],
+    lender: 'Nobody Capital Partners LLC', investor: 'Nobody Capital Partners LLC',
+    lenderId: null, investorOrganizationGuid: null,
+  });
+  const m = merge({ lenderprice: null, loannex: withStranger }, { errors: { lenderprice: 'lp_creds_missing' } });
   const names = m.unmapped.map((u) => u.name).sort();
-  ok(names.includes('Button Finance, Inc.'),
+  ok(names.includes('Nobody Capital Partners LLC'),
     'UNMAPPED-1 an investor on no sheet is REPORTED by name, never guessed into a neighbouring key');
   ok(!m.investors.some((i) => i.key === null),
     'UNMAPPED-2 …and never appears as a merged investor with no identity');
@@ -143,8 +157,17 @@ function shift(b, d) {
   const m = merge({ lenderprice: null, loannex: clone(board) });
   ok(m.investors.every((i) => i.whiteLabel !== i.investor),
     'LABEL-1 every merged investor carries a white-label name distinct from the real one');
-  ok(m.investors.every((i) => typeof i.whiteLabel === 'string' && i.whiteLabel.length > 0),
-    'LABEL-2 …and every investor on this board has one (an unnamed investor would be null, never its real name)');
+  // RE-POINTED 2026-08-30 for the same reason as UNMAPPED-1: Button Finance now
+  // resolves to a real key and has NO white-label name yet, so "every investor on
+  // this board has one" stopped being true of this fixture. The RULE it was
+  // guarding is the one that matters and is asserted directly instead — an
+  // investor nobody has named carries NULL, and never their real name, because
+  // the white label is the one name a client may see.
+  ok(m.investors.every((i) => i.whiteLabel === null || (typeof i.whiteLabel === 'string' && i.whiteLabel.length > 0)),
+    'LABEL-2 an investor nobody has named yet carries NULL — never an empty string somebody could print, and never their real name');
+  const named = m.investors.filter((i) => i.whiteLabel);
+  ok(named.length > 0 && named.every((i) => i.whiteLabel !== i.investor),
+    `LABEL-2b …and every investor who HAS been named carries a name of their own (${named.length} of ${m.investors.length} on this board)`);
 }
 
 // ---- the client is a VIEWER: the read-only wall -----------------------------

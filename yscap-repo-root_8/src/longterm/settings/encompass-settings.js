@@ -811,6 +811,31 @@ const SETTINGS = [
     evidence: 'The read-only sweep of 400 loans on 2026-08-14 found conditions ONLY on '
       + 'investor post-purchase files — 0 on all 136 active-pipeline loans — so nothing in '
       + 'the live book is waiting on this screen.' },
+
+  // ── The COMBINED PRICING ENGINE (owner-directed 2026-08-30) ───────────────
+  // One row per investor: what we call them for a client, which of the two
+  // pricing programs their products are fetched from, and whether they are on.
+  //
+  // A `map`, so the generic settings screen shows it READ-ONLY as JSON — which is
+  // right: this is edited on the Combined Pricing Engine's own settings screen,
+  // where each investor is a row with a picker rather than a brace somebody can
+  // mistype. Declaring it here is what gives it a home in the ONE settings store
+  // and puts it on the "what has this lender changed?" list.
+  //
+  // The DEFAULT IS EMPTY on purpose. The pre-fills — every investor's white-label
+  // name, Lender Price as the source, NQM/Acra/eResi on LoanNEX, Button Finance
+  // off — are DERIVED in `pricing/investor-settings.js` from the investor
+  // registry and the white-label sheet. Copying them here would be a second copy
+  // of a roster that already exists, and the one that drifts is the one somebody
+  // prices a loan on. This map holds only what a person has deliberately CHANGED.
+  { key: 'pricing.combinedInvestors', group: 'Pricing', label: 'Combined engine — investor settings',
+    type: 'map', default: {},
+    description: 'Per investor: { source: "lenderprice" | "loannex" | "both", enabled: true|false, '
+      + 'whiteLabel: "..." }. Only deliberate changes are stored; everything else falls back to the '
+      + 'pre-fill derived from the investor registry.',
+    evidence: 'Owner-directed 2026-08-30: "You should open a settings menu where you have every '
+      + 'single investor listed… For every investor, we can always switch it from where we want to '
+      + 'take the information."' },
 ];
 
 const BY_KEY = new Map(SETTINGS.map((s) => [s.key, s]));

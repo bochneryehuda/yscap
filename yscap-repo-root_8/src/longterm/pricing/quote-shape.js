@@ -274,8 +274,121 @@ function filterInterestOnly(options, want) {
   return { options: want ? s.io : s.amortizing, filtered: true, unknown: s.unknown };
 }
 
+
+/**
+ * ONE BOARD, IN THE GENERAL PRICING ENGINE'S OWN SHAPE.
+ *
+ * ── WHY THIS EXISTS ────────────────────────────────────────────────────────
+ * Owner-directed 2026-08-30: *"copy everything from the General Pricing Engine
+ * and add this as it is… That should be jumping and going between Lender Price
+ * and LoanNEX."* The Combined Pricing Engine's screen is a COPY of the general
+ * one, so it reads a program exactly the way that screen does:
+ *
+ *     { lender, investor, program, product, investorKey, whiteLabel,
+ *       options: [ { priceBuild: { noteRate, price, adjustedPoints },
+ *                    monthlyPayment: { monthlyPI }, rateSheet: {...} } ] }
+ *
+ * A Lender Price program ALREADY is that. A LoanNEX program is a ladder of
+ * `rungs`. `programsFromLoanNex` is the adapter, and it is here rather than in a
+ * module of its own because this file is already the one place that answers
+ * "shape one vendor's answer like the other's" — a second shaper is a second
+ * place the two can disagree about what a price is.
+ *
+ * ── THE ONE THING THAT MAY NOT BE FLATTENED ────────────────────────────────
+ * ⛔ `rateSheet.expired` STAYS NULL on a LoanNEX row. The general screen reads
+ * `!!(o.rateSheet && o.rateSheet.expired)`, so a missing rate sheet renders as
+ * "not expired" — a reassurance LoanNEX never gave us. Lender Price's own audit
+ * found 37–61% of its board priced from expired sheets, which is why that flag
+ * exists at all. So the option carries `stalenessUnknown: true`, and the copied
+ * screen shows an em dash for it rather than a clean bill of health. Never
+ * "simplify" that to `expired: false`.
+ *
+ * ⛔ AND `monthlyPI` IS THE VENDOR'S OWN PAYMENT, never re-derived. LoanNEX
+ * returns a payment per rung; recomputing one here would put two different
+ * numbers for one loan on two screens.
+ */
+function programsFromLoanNex(board, opts = {}) {
+  const out = [];
+  for (const p of (board && board.programs) || []) {
+    const options = [];
+    for (const r of p.rungs || []) {
+      const price = round3(r.price);
+      options.push({
+        priceBuild: {
+          noteRate: round3(r.rate),
+          price,
+          // LoanNEX quotes PRICE, Lender Price quotes POINTS; `100 − price` is
+          // the identity, flagged as derived so a reader never mistakes it for
+          // something the vendor sent.
+          adjustedPoints: price == null ? null : round3(100 - price),
+          pointsDerivedFromPrice: price != null,
+          basePoints: null, adjustmentPoints: null,
+        },
+        monthlyPayment: r.payment == null ? null : { monthlyPI: numOrNull(r.payment) },
+        // NOT `{ expired: false }` — see the header.
+        rateSheet: { expired: null, name: p.rateSheetName || null, validAsOf: null },
+        stalenessUnknown: true,
+        dayLock: r.lockDays == null ? null : r.lockDays,
+        cushionedLockDays: r.cushionedLockDays == null ? null : r.cushionedLockDays,
+        dscr: numOrNull(r.dscr),
+        interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
+        isException: !!r.isException,
+        softStop: !!r.hasSoftStopViolation,
+        explain: r.priceHashKey
+          ? { vendor: 'loannex', priceHashKey: r.priceHashKey, rate: round3(r.rate), price, lockDays: r.lockDays, productId: p.productId, lenderId: p.lenderId }
+          : null,
+      });
+    }
+    const row = {
+      lender: p.lender || null, investor: p.investor || null,
+      program: p.program || null, product: p.product || null,
+      investorKey: opts.investorKey != null ? opts.investorKey : null,
+      whiteLabel: opts.whiteLabel || null,
+      consumerLabel: opts.whiteLabel || null,
+      rateGridId: p.programId == null ? null : String(p.programId),
+      termInMonths: p.termInMonths == null ? null : p.termInMonths,
+      amortizationType: p.amortizationType || null,
+      isInterestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
+      options,
+    };
+    if (opts.reveal) row.source = 'loannex';
+    out.push(row);
+  }
+  return out;
+}
+
+/**
+ * The whole board, in the general engine's shape — both vendors, one list.
+ *
+ * ⛔ ONE SYSTEM. Without `reveal` no row says which vendor produced it: the
+ * Lender Price rows are copied with `source`, `lenderId` and the investor GUID
+ * stripped, and the LoanNEX rows never gain one. That is the owner's rule —
+ * *"it should sound like one system"* — and it is why this returns a NEW array
+ * of NEW rows rather than the merged board's own objects.
+ */
+function programsForBoard(merged, opts = {}) {
+  const reveal = opts.reveal === true;
+  const rows = [];
+  for (const e of (merged && merged.investors) || []) {
+    for (const p of e.programs || []) {
+      const base = { ...p, investorKey: e.key, whiteLabel: e.whiteLabel || null, consumerLabel: e.whiteLabel || null };
+      if (!reveal) { delete base.source; delete base.lenderId; delete base.investorOrganizationGuid; }
+      // A LoanNEX program carries `rungs`; a Lender Price one carries `options`.
+      // Which it is decides how it is shaped, and NOT the row's `source`, which
+      // the one-system view has already stripped by the time this runs.
+      if (Array.isArray(p.rungs) && !Array.isArray(p.options)) {
+        rows.push(...programsFromLoanNex({ programs: [p] }, { investorKey: e.key, whiteLabel: e.whiteLabel || null, reveal }));
+      } else {
+        rows.push(base);
+      }
+    }
+  }
+  return rows;
+}
+
 module.exports = {
   emptyOption, optionsFromLoanNex, optionsFromLenderPrice,
+  programsFromLoanNex, programsForBoard,
   attachEvidence, evidenceCoversRate, splitInterestOnly, filterInterestOnly,
   _internals: { round3, numOrNull, deepMerge },
 };

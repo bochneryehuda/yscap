@@ -28,7 +28,7 @@ const path = require('path');
 // here, which is exactly the problem: without the flag those doors would be
 // "covered" by a call that never reached a handler. Set for THIS PROCESS ONLY —
 // it changes nothing about any deployment, and no other route reads it.
-process.env.LT_MERGED_PRICING = 'on';
+process.env.LT_COMBINED_PRICING = 'on';
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -216,18 +216,20 @@ async function main() {
       // a scope fragment whose placeholder arithmetic is off (Postgres 42P18),
       // surfaces here rather than on the screen.
       '/api/lt/clickup/status-reviews',
-      // ── the MERGED pricing board (Lender Price + LoanNEX) ──────────────────
-      // Reachable only with LT_MERGED_PRICING=on, which this file sets above —
-      // WITHOUT it the mount answers 404 at its gate and the handlers never run,
-      // which is a hollow call: this suite exists to execute handlers, not gates.
+      // ── the COMBINED PRICING ENGINE (Lender Price + LoanNEX) ───────────────
+      // SUPER-ADMIN ONLY, which the token above is — WITHOUT that the mount
+      // answers 404 at its gate and the handlers never run, which is a hollow
+      // call: this suite exists to execute handlers, not gates. (The gate itself
+      // is asserted separately below, from a loan officer's token.)
       // Both of these are pure config reads that reach no vendor.
-      '/api/lt/dscr/merged/health',
-      '/api/lt/dscr/merged/loannex/login-check',
-      // Which investors are routed where, and which are never displayed. Another
-      // pure config read — it answers from the environment and the suppression
-      // list and reaches nobody — so a wrong shape surfaces here rather than as
-      // an empty board somebody cannot explain.
-      '/api/lt/dscr/merged/routing',
+      '/api/lt/dscr/combined/health',
+      '/api/lt/dscr/combined/loannex/login-check',
+      // The INVESTOR SETTINGS roster — every investor, its white-label name, and
+      // which of the two pricing programs its products are fetched from. Another
+      // pure config read: it answers from the investor registry plus the
+      // environment and reaches nobody, so a wrong shape surfaces here rather
+      // than as an empty settings screen somebody cannot explain.
+      '/api/lt/dscr/combined/investors',
     ];
 
     // ── WHAT THE LIST OMITS, SAID OUT LOUD ──────────────────────────────────
@@ -246,11 +248,11 @@ async function main() {
     // actually opening the door finds it.
     const EXEMPT = {
       '/api/lt/dscr/login-check': 'dials LenderPrice to check a vendor login — a smoke test that reaches an outside company is not a smoke test, and a failure there would report OUR side as broken',
-      // Its SIBLING, /dscr/merged/loannex/login-check, IS called above: that one
+      // Its SIBLING, /dscr/combined/loannex/login-check, IS called above: that one
       // reports "we are not set up yet" as a 200, so it exercises its handler
       // without reaching anybody. This one cannot — with no session it can only
       // answer 503, and with one it would dial LoanNEX for a real transaction.
-      '/api/lt/dscr/merged/loannex/disqualify/:transactionId': 'reads one LoanNEX transaction\'s ineligibility tree — it needs a live vendor session, so it either reaches an outside company or answers 503; neither is a smoke test',
+      '/api/lt/dscr/combined/loannex/disqualify/:transactionId': 'reads one LoanNEX transaction\'s ineligibility tree — it needs a live vendor session, so it either reaches an outside company or answers 503; neither is a smoke test',
     };
 
     const declared = deriveGetDoors();
@@ -328,6 +330,26 @@ async function main() {
       const res = await fetch(`${base}/api/lt/borrowers`, { headers: { authorization: `Bearer ${loToken}` } });
       check(res.status === 200,
         `a SCOPED officer's borrower list answers 200 (got ${res.status}) — that caller is what assembles the scope's WHERE into a real statement`);
+
+      // THE COMBINED PRICING ENGINE IS SUPER-ADMIN ONLY, and this is the only
+      // place that proves it: every other call in this file carries a super
+      // admin's token, so the gate would be invisible to all of them. The owner
+      // is auditing that engine privately before it reaches the general one —
+      // *"only for super admin to see it and super admin to be able to test
+      // it"* — so an ordinary officer must get NOTHING, and 404 rather than 403
+      // so its existence is not advertised.
+      for (const door of ['/api/lt/dscr/combined/health', '/api/lt/dscr/combined/investors']) {
+        const shut = await fetch(base + door, { headers: { authorization: `Bearer ${loToken}` } });
+        check(shut.status === 404,
+          `${door} is 404 for a loan officer (got ${shut.status}) — the combined engine is the super admin's alone while it is under audit`);
+      }
+      // …and the GENERAL pricing engine is untouched by that gate. This is the
+      // assertion that would catch the combined engine's role check being
+      // applied one mount too high and quietly taking the live board away from
+      // every officer in the company.
+      const general = await fetch(`${base}/api/lt/dscr/health`, { headers: { authorization: `Bearer ${loToken}` } });
+      check(general.status === 200,
+        `…while the GENERAL pricing engine still answers that same officer 200 (got ${general.status}) — "don't touch our current setup"`);
     }
 
     console.log('\na door nobody may open stays shut');
