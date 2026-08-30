@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
+import { useUrlState } from '../lib/useUrlState.js';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 
 /**
@@ -56,6 +57,7 @@ function fmtCell(field, v) {
   return String(v);
 }
 
+const MODE_VALUES = ['list', 'totals'];   // stable identity — the hook memoizes on `allow`
 let seq = 1;
 const blankFilter = () => ({ _k: seq++, field: '', op: '', value: '', value2: '' });
 const blankGroup = () => ({ _k: seq++, rows: [blankFilter()] });
@@ -101,7 +103,7 @@ export default function StaffReports() {
   const [columns, setColumns] = useState(['ys_loan_number', 'borrower_name', 'property_address', 'file_status', 'loan_amount', 'loan_officer']);
   const [sortField, setSortField] = useState('');
   const [sortDir, setSortDir] = useState('desc');
-  const [mode, setMode] = useState('list');                 // 'list' | 'totals'
+  const [mode, setMode] = useUrlState('view', 'list', { remember: 'reports.view', allow: MODE_VALUES });
   const [groupBy, setGroupBy] = useState(['investor']);
   const [metrics, setMetrics] = useState([{ _k: seq++, fn: 'count', field: '' }]);
   const [result, setResult] = useState(null);
