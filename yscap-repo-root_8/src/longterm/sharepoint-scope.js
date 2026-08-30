@@ -37,9 +37,12 @@
  * decide whether a document is mirrored or PARKED, and a disagreement is either a
  * document that never files or a doomed upload that retries until it is DEAD.
  *
- * PURE. No database handle, no network, no config, and no require() of anything —
- * every input is passed in, so the whole policy is testable without a Postgres.
+ * PURE. No database handle, no network and no config — every input is passed in, so
+ * the whole policy is testable without a Postgres. It requires exactly one module,
+ * `./access`, which is itself pure (zero requires of its own) and which owns the
+ * effective-person expression; see below for why that is imported rather than typed.
  */
+const { effectiveStaffSql } = require('./access');
 
 /** The fourth owner scope of the one Condition Center (db/650). */
 const SCOPE = 'lt_loan';
@@ -152,10 +155,20 @@ function enrichJoinsSql(ownerExpr) {
       LEFT JOIN lt_properties ltp  ON ltp.loan_id = ltl.id
       LEFT JOIN borrowers     ltb  ON ltb.id = ltl.borrower_id
       LEFT JOIN staff_users   ltsu ON ltsu.id = ltl.loan_officer_id
+      -- WHO THE OFFICER IS, ASKED RATHER THAN RETYPED. A long-term file can be
+      -- reassigned on the PILOT side, so "the officer" is not simply the resolved
+      -- staff_id — the local override wins where one exists. That rule was once
+      -- typed out in five places, drifted in the one nobody thought of as a copy,
+      -- and left a reassigned file in the previous officer's filter while staying
+      -- in their own pipeline. access.js owns the expression now and exports
+      -- effectiveStaffSql(alias) for callers like this one, which takes the alias
+      -- because every caller joins the table under its own name.
+      -- test-lt-contact-override-pure.js fails the build if a sixth copy appears —
+      -- which is why this comment describes the rule instead of spelling it.
       LEFT JOIN LATERAL (
         SELECT COALESCE(NULLIF(BTRIM(csu.full_name), ''), NULLIF(BTRIM(c.encompass_name), '')) AS officer_name
           FROM lt_loan_contacts c
-          LEFT JOIN staff_users csu ON csu.id = COALESCE(c.override_staff_id, c.staff_id)
+          LEFT JOIN staff_users csu ON csu.id = ${effectiveStaffSql('c')}
          WHERE c.loan_id = ltl.id AND c.role = 'loan_officer'
          LIMIT 1
       ) ltoff ON true`;
