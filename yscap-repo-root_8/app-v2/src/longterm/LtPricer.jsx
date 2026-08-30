@@ -5,7 +5,7 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
-import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey } from './priceBuild.js';
+import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey, programLine } from './priceBuild.js';
 // The compensation OVERLAY (owner-directed 2026-08-23) — display math on top of the numbers
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
@@ -397,20 +397,23 @@ function Check({ id, checked, onChange, children }) {
  * has. Colour is not the only carrier either — the dollar figure keeps its sign, so the meaning
  * survives a grayscale print and a reader who cannot tell the two hues apart.
  */
-function MoneyCells({ m, strong }) {
+function MoneyCells({ m, strong, priceKey }) {
   const c = toneColor(m.tone, SLATE);
   const w = strong ? 700 : 600;
   const sz = strong ? 14 : 13;
   const cell = { textAlign: 'right', ...NUM };
   return (
     <>
-      <span style={{ ...cell, flex: '0 0 82px', fontSize: sz, fontWeight: w, color: m.tone ? c : INK }}>
+      <span className="ltq-cell ltq-price" data-k={priceKey || 'Price'}
+        style={{ ...cell, flex: '0 0 82px', fontSize: sz, fontWeight: w, color: m.tone ? c : INK }}>
         {price(m.price)}
       </span>
-      <span style={{ ...cell, flex: '0 0 82px', fontSize: sz - 0.5, fontWeight: 600, color: c }}>
+      <span className="ltq-cell" data-k="Points"
+        style={{ ...cell, flex: '0 0 82px', fontSize: sz - 0.5, fontWeight: 600, color: c }}>
         {pts(m.points)}
       </span>
-      <span style={{ ...cell, flex: '0 0 108px', fontSize: sz - 0.5, fontWeight: 600, color: c }}>
+      <span className="ltq-cell" data-k="Cost / credit"
+        style={{ ...cell, flex: '0 0 108px', fontSize: sz - 0.5, fontWeight: 600, color: c }}>
         {m.dollars == null ? '—' : `${m.dollars < 0 ? '−' : ''}${money(Math.abs(m.dollars))}`}
       </span>
     </>
@@ -1082,9 +1085,15 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
      A constant shift never reorders anything — best stays best — so the grouping and the
      sort are untouched; only what the figures READ as changes. Raw shifts by zero. */
   const dP = (v) => shiftedPrice(v, comp && comp.mode !== 'raw' && Number.isFinite(comp.shift) ? comp.shift : 0);
+  /* WHAT THE PRICE COLUMN IS SHOWING, named ONCE. The heading says which lens the
+     figures are drawn through, and on a phone that heading is hidden and the same
+     words ride on the cell itself (`data-k`) — so both must come from one place or
+     the two surfaces could disagree about which position is on screen. */
+  const priceKey = comp && comp.mode === 'borrowerPaid' ? 'Price \u00b7 b-paid'
+    : comp && comp.mode === 'lenderPaid' ? 'Price \u00b7 l-paid' : 'Price';
   return (
     <div style={{ border: `1px solid ${open ? GOLD : 'rgba(20,27,34,.12)'}`, borderRadius: 10, marginBottom: 8, overflow: 'hidden' }}>
-      <button type="button" onClick={onToggle}
+      <button type="button" onClick={onToggle} className="ltq-ratehead"
         style={{
           width: '100%', textAlign: 'left', background: open ? PAPER : '#fff', border: 0, cursor: 'pointer',
           padding: '10px 14px', display: 'flex', gap: 16, alignItems: 'baseline', flexWrap: 'wrap',
@@ -1098,7 +1107,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
           `${row.quotes.length} ${row.quotes.length === 1 ? 'quote' : 'quotes'}`
           + ` · ${row.lenderCount} ${row.lenderCount === 1 ? 'lender' : 'lenders'}`
         }</span>
-        <span style={{ flex: 1 }} />
+        <span className="ltq-gap" style={{ flex: 1 }} />
         <span style={{ fontSize: 12, color: MUTED }}>best price</span>
         {/* THE SAME VERDICT AS THE COLUMNS UNDERNEATH. A headline reading in plain ink over a red
             column would be the row disagreeing with itself about its own price. */}
@@ -1110,15 +1119,12 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
 
       {open && (
         <div style={{ padding: '0 14px 12px' }}>
-          <div style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: `1px solid ${GOLD}44`, fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
+          <div className="ltq-head" style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: `1px solid ${GOLD}44`, fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
             <span style={{ flex: '2 1 200px' }}>Investor / programme</span>
             {/* THE COLUMN NAMES ITS LENS (design research 2026-08-23: the comp switch silently
                 changes every figure on screen, so the price column says which position it is
                 showing — the sticky strip alone can be scrolled past a reader's attention). */}
-            <span style={{ flex: '0 0 82px', textAlign: 'right' }}>{
-              comp && comp.mode === 'borrowerPaid' ? 'Price · b-paid'
-                : comp && comp.mode === 'lenderPaid' ? 'Price · l-paid' : 'Price'
-            }</span>
+            <span style={{ flex: '0 0 82px', textAlign: 'right' }}>{priceKey}</span>
             <span style={{ flex: '0 0 82px', textAlign: 'right' }}>Points</span>
             <span style={{ flex: '0 0 108px', textAlign: 'right' }}>Cost / credit</span>
             <span style={{ flex: '0 0 104px', textAlign: 'right' }}>Monthly P&amp;I</span>
@@ -1144,12 +1150,12 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                     inside it, and a button inside a button is invalid HTML that browsers silently
                     re-parse, which moves the inner control out of the row it belongs to. The
                     chevron is its own button instead. */}
-                <div style={{
+                <div className="ltq-row" style={{
                   display: 'flex', gap: 10, alignItems: 'baseline', padding: '9px 0',
                   borderBottom: '1px solid rgba(20,27,34,.07)', flexWrap: 'wrap',
                   background: gOpen ? 'rgba(174,135,70,.05)' : 'transparent',
                 }}>
-                  <span style={{ flex: '2 1 200px', minWidth: 180 }}>
+                  <span className="ltq-name" style={{ flex: '2 1 200px', minWidth: 180 }}>
                     {/* THE BEST PRICE AT THIS RATE wears one quiet gold dot (design research
                         2026-08-23 — Optimal Blue marks its best execution; ours is ARITHMETIC,
                         the same fact the sort already states, said visually). First row only:
@@ -1175,7 +1181,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                     )}
                     <div style={{ fontSize: 12, color: SLATE }}>
                       {g.best && g.best.investor && g.best.investor !== g.lender ? `${g.best.investor} · ` : ''}
-                      {(g.best && g.best.program) || '—'}{g.best && g.best.product ? ` · ${g.best.product}` : ''}
+                      {programLine(g.best)}
                       {/* The CONSUMER label for THIS programme ("Pearl-2") — the back-office
                           answer to "which real programme was priced under which client name"
                           (owner-directed 2026-08-27). Shown only when it says more than the
@@ -1190,9 +1196,9 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                       </div>
                     )}
                   </span>
-                  <MoneyCells m={priceMoney(dP(g.bestPrice), loanAmount)} strong />
-                  <span style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{money2(g.best && g.best.monthlyPi)}</span>
-                  <span style={{ flex: '0 0 70px', textAlign: 'right' }}>
+                  <MoneyCells m={priceMoney(dP(g.bestPrice), loanAmount)} strong priceKey={priceKey} />
+                  <span className="ltq-cell" data-k="Monthly P&I" style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{money2(g.best && g.best.monthlyPi)}</span>
+                  <span className="ltq-act" style={{ flex: '0 0 70px', textAlign: 'right' }}>
                     <button type="button" className="btn ghost" style={{ fontSize: 12 }}
                       onClick={() => onOpenQuote(openQuote === (g.best && g.best.key) ? null : (g.best && g.best.key))}>
                       {openQuote === (g.best && g.best.key) ? 'Hide' : 'Details'}
@@ -1208,14 +1214,14 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                   const isOpen = openQuote === q.key;
                   return (
                     <div key={q.key}>
-                      <div style={{
+                      <div className="ltq-row" style={{
                         display: 'flex', gap: 10, alignItems: 'baseline', padding: '8px 0 8px 18px',
                         borderBottom: '1px solid rgba(20,27,34,.05)', flexWrap: 'wrap',
                         borderLeft: `2px solid ${GOLD}55`,
                       }}>
-                        <span style={{ flex: '2 1 200px', minWidth: 170 }}>
+                        <span className="ltq-name" style={{ flex: '2 1 200px', minWidth: 170 }}>
                           <div style={{ fontSize: 13, color: INK }}>
-                            {q.program || '—'}{q.product ? ` · ${q.product}` : ''}
+                            {programLine(q)}
                             {q.consumerLabel && q.consumerLabel !== q.whiteLabel
                               ? <span style={{ color: MUTED, fontSize: 11.5 }}> · {q.consumerLabel}</span> : null}
                           </div>
@@ -1227,9 +1233,9 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                             <div style={{ fontSize: 11, color: CAUTION, fontWeight: 700 }}>rate sheet expired</div>
                           )}
                         </span>
-                        <MoneyCells m={priceMoney(dP(q.price), loanAmount)} />
-                        <span style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{money2(q.monthlyPi)}</span>
-                        <span style={{ flex: '0 0 70px', textAlign: 'right' }}>
+                        <MoneyCells m={priceMoney(dP(q.price), loanAmount)} priceKey={priceKey} />
+                        <span className="ltq-cell" data-k="Monthly P&I" style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{money2(q.monthlyPi)}</span>
+                        <span className="ltq-act" style={{ flex: '0 0 70px', textAlign: 'right' }}>
                           <button type="button" className="btn ghost" style={{ fontSize: 12 }}
                             onClick={() => onOpenQuote(isOpen ? null : q.key)}>
                             {isOpen ? 'Hide' : 'Details'}
@@ -1459,7 +1465,7 @@ function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
 
             {open && (
               <div style={{ padding: '0 14px 12px' }}>
-                <div style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: `1px solid ${GOLD}44`, fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
+                <div className="ltq-head" style={{ display: 'flex', gap: 10, padding: '6px 0', borderBottom: `1px solid ${GOLD}44`, fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
                   <span style={{ flex: '2 1 200px' }}>Lender / programme</span>
                   <span style={{ flex: '0 0 82px', textAlign: 'right' }}>Price</span>
                   <span style={{ flex: '0 0 82px', textAlign: 'right' }}>Points</span>
@@ -1480,12 +1486,12 @@ function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
                         const first = qi === 0;
                         return (
                           <div key={q.key}>
-                            <div style={{
+                            <div className="ltq-row" style={{
                               display: 'flex', gap: 10, alignItems: 'baseline', padding: '9px 0',
                               borderBottom: '1px solid rgba(20,27,34,.07)', flexWrap: 'wrap',
                               background: gOpen ? 'rgba(174,135,70,.05)' : 'transparent',
                             }}>
-                              <span style={{ flex: '2 1 200px', minWidth: 180 }}>
+                              <span className="ltq-name" style={{ flex: '2 1 200px', minWidth: 180 }}>
                                 {first && <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>{g.lender || '—'}</span>}
                                 {/* The white-label tag beside the real name, SAME as the eligible
                                     board — internally the team always sees both (owner-directed
@@ -1502,11 +1508,11 @@ function IneligibleBoard({ d, loanAmount, initialOpen, comp }) {
                                   </button>
                                 )}
                                 <span style={{ display: 'block', fontSize: 12.5, color: SLATE, marginTop: 2 }}>
-                                  {`${q.program || '—'}${q.product ? ` · ${q.product}` : ''}`}
+                                  {programLine(q)}
                                 </span>
                               </span>
                               <MoneyCells m={priceMoney(dP(q.price), loanAmount)} />
-                              <span style={{ flex: '0 0 70px', textAlign: 'right' }}>
+                              <span className="ltq-act" style={{ flex: '0 0 70px', textAlign: 'right' }}>
                                 <button type="button" className="btn ghost" style={{ fontSize: 12 }}
                                   onClick={() => setOpenItem(iOpen ? null : iKey)}>
                                   {iOpen ? 'Hide' : 'Details'}

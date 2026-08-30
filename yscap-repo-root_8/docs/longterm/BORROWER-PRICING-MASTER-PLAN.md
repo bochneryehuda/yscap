@@ -2,7 +2,7 @@
 
 **STATUS: RESEARCH for the BORROWER side — nothing of it is built and nothing is
 live. The OFFICER-side term sheet (Phase 1) IS built as of 2026-08-30, behind
-`termSheet.officerEnabled`, which ships OFF; see
+`termSheet.officerEnabled`, switched ON 2026-08-30 (owner-directed); see
 `TERM-SHEETS-AND-COMPARISON.md` §13a. The owner's answers of 2026-08-30 and what
 each one changed are §10a below.**
 Owner-directed 2026-08-30: *"we're not putting it live yet we're just starting to work on it …
