@@ -111,13 +111,13 @@ footer p{max-width:74ch;margin:0 0 9px}
   This is a picture of a copy — nothing here can change anything.</p>
   <div class="figs">
     <div class="fig"><b>390</b><span>tables</span></div>
-    <div class="fig"><b>6,256</b><span>fields</span></div>
+    <div class="fig"><b>6,258</b><span>fields</span></div>
     <div class="fig"><b>803</b><span>connections</span></div>
     <div class="fig"><b>37</b><span>automatic rules</span></div>
     <div class="fig"><b>323</b><span>value guards</span></div>
-    <div class="fig"><b>1,344</b><span>lookups</span></div>
+    <div class="fig"><b>1,345</b><span>lookups</span></div>
   </div>
-  <p class="stamp">Generated from the committed schema map — built from 637 migration files, up to db/640. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
+  <p class="stamp">Generated from the committed schema map — built from 638 migration files, up to db/641. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
 </div></header>
 
 <section><div class="wrap">
@@ -4087,10 +4087,10 @@ footer p{max-width:74ch;margin:0 0 9px}
   </div>
 </div></details><details class="tbl" data-name="report_definitions" data-note="">
 <summary><span class="tn">report_definitions</span>
-<span class="tm">8 fields · 2 links</span>
+<span class="tm">10 fields · 2 links</span>
 </summary>
 <div class="detail">
-  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">created_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">definition <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'{}'::jsonb</td></tr><tr><td class="c">description</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t">gen_random_uuid()</td></tr><tr><td class="c">name <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">updated_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">updated_by</td><td class="t">uuid</td><td class="t"></td></tr></tbody></table></div>
+  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">created_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">definition <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'{}'::jsonb</td></tr><tr><td class="c">description</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t">gen_random_uuid()</td></tr><tr><td class="c">last_sent_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">name <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">schedule</td><td class="t">jsonb</td><td class="t"></td></tr><tr><td class="c">updated_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">updated_by</td><td class="t">uuid</td><td class="t"></td></tr></tbody></table></div>
   <div class="links">
     <div><h4>Depends on</h4><ul><li><span class="a">created_by</span> → <span class="a">staff_users</span><span class="tag">on delete set null</span></li><li><span class="a">updated_by</span> → <span class="a">staff_users</span><span class="tag">on delete set null</span></li></ul></div>
     <div><h4>Depended on by</h4><ul><li style="color:var(--ink-3)">Nothing points at this table.</li></ul></div>
