@@ -471,11 +471,41 @@ function makeRouter(opts = {}) {
       .catch((e) => res.status(e.status || 400).json({ ok: false, error: e.code || 'lt_combined_price_error', field: e.field || null, message: reasonOf(e) }));
   });
 
-  /** LoanNEX alone — for comparing the two boards side by side. */
-  router.post('/loannex/price', (req, res) => {
-    nex.price(scenarioOf(req), { portal: (req.body || {}).portal, raw: !!(req.body || {}).raw })
-      .then((r) => res.json({ ok: true, ...r }))
-      .catch((e) => res.status(400).json({ ok: false, error: e.code || 'loannex_price_error', field: e.field || null, message: reasonOf(e) }));
+  /**
+   * LoanNEX alone.
+   *
+   * ⛔ ITS BOARD CARRIES OUR HOLDBACK, exactly as the combined board's does
+   * (owner-directed 2026-08-30, shown that this door served the vendor's raw
+   * prices under a note inviting a comparison with the other board:
+   * *"Corrected prices with our holdback."*).
+   *
+   * THE REASON IS THE WHOLE REASON THE HOLDBACK EXISTS. Lender Price's feed
+   * already carries our margin and LoanNEX's does not, so a LoanNEX board served
+   * raw reads BETTER than a Lender Price board of the same loan for no reason
+   * but which vendor it came from — the exact misleading comparison the holdback
+   * is there to prevent, served from a door whose own comment used to invite it.
+   * A price that leaves this process is a price somebody may quote, so there is
+   * no door on which the two programs are not on the same footing.
+   *
+   * It is applied through the SAME `applyToBoard` and the SAME saved setting the
+   * combined board reads — never a second copy of the number — so moving the
+   * holdback in the settings moves it here in the same breath, and the board
+   * stamps WHERE the figure came from so this can never be read as raw again.
+   * `raw:true` still returns the vendor's own untouched response beside it: this
+   * is a diagnostics seam, and seeing what LoanNEX actually said is the point of
+   * it — what must not happen is our BOARD quietly being that.
+   */
+  router.post('/loannex/price', async (req, res) => {
+    const b = req.body || {};
+    try {
+      // The same explicit-override rule the combined board follows, so a caller
+      // can price a what-if at another holdback without saving one.
+      const saved = b.marginHoldback !== undefined ? b.marginHoldback : await holdbackRaw();
+      const r = await nex.price(scenarioOf(req), { portal: b.portal, raw: !!b.raw });
+      res.json({ ok: true, ...r, board: vendorMargin.applyToBoard(r.board, 'loannex', { saved }) });
+    } catch (e) {
+      res.status(e.status || 400).json({ ok: false, error: e.code || 'loannex_price_error', field: e.field || null, message: reasonOf(e) });
+    }
   });
 
   /**

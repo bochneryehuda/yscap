@@ -34,8 +34,12 @@ const http = require('http');
 const nexClient = require('../src/longterm/loannex/client');
 const lpClient = require('../src/longterm/lenderprice/client');
 const VENDOR_PRICE = 101.5;
-nexClient.price = async () => ({
+nexClient.price = async (sc, opts) => ({
   board: { source: 'loannex', programs: [{ lender: 'NQM Funding', investor: 'NQM Funding', program: 'P', product: '30 Yr Fixed', rungs: [{ rate: 7, price: VENDOR_PRICE, points: -1.5, lockDays: 30 }] }] },
+  // The vendor's own untouched answer, returned only when a caller asks for it —
+  // the real client's contract, mirrored so section H can assert that a
+  // diagnostics seam keeps its diagnostics while its BOARD stops being raw.
+  raw: opts && opts.raw ? { vendorSaid: VENDOR_PRICE } : undefined,
 });
 lpClient.price = async () => ({ source: 'lenderprice', programs: [] });
 
@@ -197,6 +201,57 @@ const ok = (c, m) => { if (c) { pass++; console.log(`  ok   ${m}`); } else { fai
     const lp = vendorMargin.applyToBoard({ source: 'lenderprice', programs: [{ program: 'A', rungs: [{ rate: 7, price: 100.5, points: -0.5 }] }] }, 'lenderprice', { saved: 0.5 });
     ok(lp.marginHoldback === undefined && lp.programs[0].rungs[0].price === 100.5,
       'G1 a saved holdback cannot reach Lender Price — its feed already carries ours, so a second one would take it twice');
+
+    console.log('\n== H. NO DOOR SERVES A RAW LOANNEX PRICE ==');
+    // Owner-directed 2026-08-30, on being shown that the LoanNEX-alone door
+    // served the vendor's prices untouched under a note inviting a comparison
+    // with the other board: *"Corrected prices with our holdback."*
+    //
+    // ⛔ THIS IS THE ASSERTION THE OTHER SECTIONS CANNOT MAKE. Every one of them
+    // drives `priceBoth`, so all of them would stay green with a SECOND door
+    // handing out raw prices beside it — which is exactly the state this fixes.
+    // A price that leaves this process is a price somebody may quote.
+    const NEX_DOOR = '/api/lt/dscr/combined/loannex/price';
+    const SC_BODY = { purpose: 'Purchase', value: 500000, loan: 375000, zip: '08201', fico: 760, dscr: 1.3 };
+    const nexRung = (b) => {
+      const pr = b && b.board && b.board.programs && b.board.programs[0];
+      return pr && pr.rungs && pr.rungs[0] ? pr.rungs[0] : null;
+    };
+
+    await call('PUT', DOOR, { points: null });   // back to the owner's standing number
+    let h = await call('POST', NEX_DOOR, SC_BODY);
+    let hr = nexRung(h.body);
+    ok(h.status === 200 && hr && hr.price === 101.25,
+      `H1 the LoanNEX-alone board is CORRECTED — a 101.5 vendor price is served at 101.25 (got ${hr && hr.price}), never raw beside a Lender Price board that already carries our margin`);
+    ok(hr && hr.vendorPrice === 101.5 && hr.marginHoldback === 0.25,
+      'H2 …with the vendor\'s own number and the size of the deduction kept beside it, so the two reconcile');
+    ok(h.body.board.marginHoldback === 0.25 && h.body.board.marginHoldbackOrigin === 'default'
+      && /same footing/.test(String(h.body.board.marginHoldbackNote || '')),
+      'H3 …and the board SAYS what was taken and why, so this door can never be read as raw again');
+
+    // It reads the SAVED number, not a constant — the same proof section B makes
+    // for the combined board, made again for this door because they are two
+    // reads and only one of them was ever asserted.
+    await call('PUT', DOOR, { points: 0.5 });
+    h = await call('POST', NEX_DOOR, SC_BODY);
+    hr = nexRung(h.body);
+    ok(hr && hr.price === 101 && hr.marginHoldback === 0.5,
+      `H4 …and it follows the SAVED holdback rather than a constant — at 0.5 the same price boards at 101 (got ${hr && hr.price})`);
+
+    // THE TWO DOORS AGREE. The whole point of the correction is that a loan
+    // cannot look better on one screen than another because of which door was
+    // asked, so this compares them on the same scenario at the same setting.
+    p = await pricedAt();
+    ok(hr && p.price === hr.price,
+      `H5 …and the two doors price the same loan identically (combined ${p.price}, LoanNEX-alone ${hr && hr.price}) — no door quotes a better execution than another`);
+
+    // The diagnostics half is kept: seeing what LoanNEX actually said is the
+    // point of this seam. What must not happen is our BOARD quietly being it.
+    h = await call('POST', NEX_DOOR, { ...SC_BODY, raw: true });
+    hr = nexRung(h.body);
+    ok(h.body.raw && h.body.raw.vendorSaid === 101.5 && hr && hr.price === 101,
+      'H6 …while `raw:true` still returns the vendor\'s untouched answer BESIDE the corrected board — a diagnostics seam keeps its diagnostics');
+    await call('PUT', DOOR, { points: null });
 
     console.log(`\n${fail === 0 ? 'all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
   } finally {

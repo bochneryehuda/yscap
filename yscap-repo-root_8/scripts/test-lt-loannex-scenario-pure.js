@@ -243,6 +243,63 @@ refuses(() => scenario.buildNexApp({ purpose: 'Purchase', loan: 3.75e5, fico: 76
     }
   }
 
+  // ---- THE LTV IS LIFTED, NEVER ROUNDED (owner-directed 2026-08-30) -----------
+  // The DSCR bug pointing the other way. An LTV sits in a band and a HIGHER band
+  // prices WORSE, so the dangerous direction here is DOWN: a loan at 80.0002%
+  // rounded to nearest is sent as "80.00", asking the vendor to price a loan one
+  // band better than the one we have. Shown that, the owner's answer was *"Round
+  // this up."*
+  {
+    ok(scenario.ltvString(0.800002) === '80.01',
+      'LTV-1 the owner\'s own case: a loan at 80.0002% is sent as 80.01, not 80.00 — never a band it has not earned');
+
+    // ⛔ THE FLOAT GUARD, AND IT IS LOAD-BEARING RATHER THAN TIDY. `0.7 * 100` is
+    // 70.00000000000001 in floating point, so a bare `Math.ceil` would push a plain
+    // 70% loan to 70.01% and price EVERY round-number scenario in the system one
+    // tier worse — a far bigger error than the one being fixed, and silent.
+    const tiers = [];
+    for (let p = 5; p <= 100; p += 0.25) tiers.push(Math.round(p * 100) / 100);
+    const moved = tiers.filter((p) => scenario.ltvString(p / 100) !== p.toFixed(2));
+    ok(moved.length === 0,
+      `LTV-2 an LTV that lands exactly on a tier is UNMOVED across every quarter-point from 5% to 100% (${moved.length} moved${moved.length ? ': ' + moved.slice(0, 3).join(', ') : ''})`);
+
+    // The whole point, swept: the sent figure is NEVER below the real one, so the
+    // vendor is never asked to price a better band than the loan has earned.
+    let below = 0, worstBelowAt = null, worstLift = 0;
+    for (let i = 0; i < 50000; i++) {
+      const pct = 5 + (i * 7919 % 950000) / 10000; // 5% .. 100%, irregular so tiers are not favoured
+      const sent = Number(scenario.ltvString(pct / 100));
+      if (sent < pct - 1e-9) { below++; if (worstBelowAt == null) worstBelowAt = pct; }
+      worstLift = Math.max(worstLift, sent - pct);
+    }
+    ok(below === 0,
+      `LTV-3 …and across 50000 LTVs spread over 5–100% not one is sent LOWER than the real figure (${below}${worstBelowAt == null ? '' : ', first at ' + worstBelowAt})`);
+    // The other half: lifting must not overshoot either, or it would hand the
+    // borrower a worse price than the loan deserves. One cent of LTV is the most
+    // it may ever add, which is smaller than any real tier step.
+    ok(worstLift < 0.010000001,
+      `LTV-3b …nor lifted by more than a single cent of LTV, so it can never jump a whole tier (worst ${worstLift.toFixed(9)})`);
+
+    // A supplied percentage and a supplied decimal are ONE figure — the wire form
+    // must not depend on which way a person typed it.
+    ok(scenario.deriveAmounts({ value: 500000, ltv: 80 }).ltvString === '80.00'
+      && scenario.deriveAmounts({ value: 500000, ltv: 0.8 }).ltvString === '80.00',
+      'LTV-4 80 and 0.80 are the same LTV, and both are sent as 80.00');
+
+    // A DERIVED LTV goes the same way — this is the shape that actually produces
+    // the fractions, since loan ÷ value rarely lands on a tier.
+    ok(scenario.deriveAmounts({ loan: 400001, value: 500000 }).ltvString === '80.01'
+      && scenario.deriveAmounts({ loan: 400000, value: 500000 }).ltvString === '80.00',
+      'LTV-5 …and an LTV worked out from loan ÷ value is lifted the same way, while an exact one is not');
+
+    // NEVER FABRICATED. With only one figure the triangle refuses outright, so
+    // there is no path on which an absent LTV becomes a confident 0.00.
+    let refused = false;
+    try { scenario.deriveAmounts({ value: 500000 }); } catch (e) { refused = e.code === 'insufficient_amounts'; }
+    ok(refused && scenario.ltvString(null) === null,
+      'LTV-6 an LTV nobody stated is never invented — one figure alone is refused, and a null LTV stays null');
+  }
+
   console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
   process.exit(fail === 0 ? 0 : 1);
 })();

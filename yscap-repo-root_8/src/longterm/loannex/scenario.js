@@ -144,7 +144,30 @@ function deriveAmounts(sc) {
   if (value == null) value = money(loan / ltv);
   else if (loan == null) loan = money(value * ltv);
   else if (ltv == null) ltv = value > 0 ? loan / value : null;
-  return { value: money(value), loan: money(loan), ltv, ltvString: ltv == null ? null : (ltv * 100).toFixed(2) };
+  return { value: money(value), loan: money(loan), ltv, ltvString: ltvString(ltv) };
+}
+
+/**
+ * LoanNEX takes the LTV as a 2dp percentage string.
+ *
+ * ⛔ IT IS LIFTED, NEVER ROUNDED — owner-directed 2026-08-30, on being shown that the LTV carried
+ * the DSCR bug pointing the other way: *"Round this up."*
+ *
+ * AN LTV SITS IN A BAND AND A HIGHER BAND PRICES WORSE, which is the exact mirror of DSCR. So the
+ * dangerous direction here is DOWN: a loan at 80.0002% rounded to nearest is sent as "80.00", which
+ * on a sheet whose next tier begins above 80 asks the vendor to price a loan one band better than
+ * the one we actually have — and the quote comes back missing the add-on the investor applies at
+ * lock. Same failure as the DSCR one, same cost: a borrower shown a price nobody will honour.
+ *
+ * Lifting can only ever land the loan in the band it has actually earned or a worse one, so the
+ * error it can still make is the safe one. An LTV that is exactly on a tier is UNMOVED — that is
+ * what `ceil2`'s float guard is for, and it is load-bearing rather than tidy: an ordinary
+ * `0.7 * 100` is 70.00000000000001 in floating point, so a bare `Math.ceil` would push a plain 70%
+ * loan to 70.01% and quietly price every round-number scenario in the system one tier worse.
+ */
+function ltvString(ltv) {
+  if (ltv == null) return null;
+  return ceil2(ltv * 100).toFixed(2);
 }
 
 /**
@@ -162,6 +185,19 @@ function floor2(n) {
   const x = n * 100;
   const whole = Math.round(x);
   return (Math.abs(x - whole) < 1e-9 ? whole : Math.floor(x)) / 100;
+}
+
+/**
+ * Lift a number UP to 2 decimals — never down. The mirror of `floor2`, and deliberately written
+ * beside it so the two directions carry ONE float guard between them: the reason a value within a
+ * billionth of a whole number IS that whole number is identical in both, and a copy of that rule
+ * that drifted would move a figure the user typed exactly, by a whole cent, in the direction the
+ * function exists to prevent going unnoticed.
+ */
+function ceil2(n) {
+  const x = n * 100;
+  const whole = Math.round(x);
+  return (Math.abs(x - whole) < 1e-9 ? whole : Math.ceil(x)) / 100;
 }
 
 /**
@@ -314,6 +350,6 @@ function buildQuickPriceBody(sc, registry, opts = {}) {
 }
 
 module.exports = {
-  buildNexApp, buildQuickPriceBody, deriveAmounts, dscrString, floor2, NexValidationError,
+  buildNexApp, buildQuickPriceBody, deriveAmounts, dscrString, floor2, ceil2, ltvString, NexValidationError,
   _internals: { PURPOSE_ALIASES, PROPERTY_ALIASES, CONDO_TYPE_ALIASES, CITIZENSHIP_ALIASES, ESCROW_ALIASES, aliasKey, mapAlias, num, shared },
 };

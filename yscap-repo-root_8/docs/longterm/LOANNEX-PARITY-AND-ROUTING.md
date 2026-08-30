@@ -656,22 +656,56 @@ disagreeing by exactly 0.001**, and the holdback preserves that gap and creates 
 same 114 after, 0 created). It now asserts what is actually true — the holdback creates no gap — and
 `MARGIN-3b` reports the measured parser gap instead of hiding it.
 
+### Answered by the owner — 2026-08-30
+
+- **The parser's own 0.001 — LEFT AS IT IS.** `loannex/parse.js` rounds `price` and `100 − price`
+  **independently** off the unrounded vendor number, so on 114 of 5,286 rungs the two disagree by a
+  thousandth and the board and the option list show slightly different points for the same quote. No
+  money moves (dollars come from the price). Put to the owner: *"This one is not a problem."* So it
+  stands, deliberately — do not "tidy" it into a change that moves a displayed pricing figure on 114
+  rungs.
+
+- **LTV is LIFTED now, never rounded to nearest.** An LTV sits in a band and a *higher* band prices
+  **worse**, so this is the DSCR bug pointing the other way: rounding **down** is what asks the vendor
+  to price a band the loan has not earned. Measured before the fix: `400001 / 500000` is 80.0002% and
+  went out as `80.00`. Shown that, the owner's answer was *"Round this up."* — so
+  `scenario.ltvString` runs the figure through `ceil2`, the mirror of `floor2` and sharing its float
+  guard.
+
+  **THE FLOAT GUARD IS LOAD-BEARING, not tidiness.** An ordinary `0.7 * 100` is `70.00000000000001`
+  in floating point, so a bare `Math.ceil` would push a plain 70% loan to 70.01% and price **every
+  round-number scenario in the system** one tier worse — a far bigger error than the one being
+  fixed, and a silent one. Guarded by LTV-1..6 in `test-lt-loannex-scenario-pure.js`: the owner's own
+  case, every quarter-point tier from 5% to 100% proven UNMOVED, 50,000 LTVs proven never sent low,
+  and never lifted by more than a single cent. Three mutations were each proven to fail it —
+  round-to-nearest kills LTV-1/3/5, a bare `Math.ceil` kills LTV-2, and flooring kills LTV-3 — each
+  with a green control either side.
+
+- **`POST /loannex/price` serves CORRECTED prices now.** It used to return the vendor's board
+  untouched under a comment calling it *"for comparing the two boards side by side"* — which invites
+  exactly the comparison the holdback exists to prevent, since Lender Price's feed already carries our
+  margin and LoanNEX's does not. The owner: *"Corrected prices with our holdback."* It now applies the
+  same `applyToBoard` through the same saved setting the combined board reads, so moving the holdback
+  in settings moves it here in the same breath, and the board stamps what was taken and why so this
+  door can never read as raw again. `raw:true` still returns the vendor's own untouched answer
+  **beside** the corrected board — this is a diagnostics seam and seeing what LoanNEX actually said
+  is the point of it; what must not happen is our BOARD quietly being that.
+
+  Guarded by section H of `test-lt-margin-holdback-db.js`, over real HTTP. **That section exists
+  because no other one could see this:** every other assertion drives `priceBoth`, so all of them
+  would have stayed green with a second door handing out raw prices beside it — which is the exact
+  state this fixed. H5 compares the two doors on one scenario at one setting, and under the mutation
+  it reads `combined 101, LoanNEX-alone 101.5`. Two mutations proven to fail it.
+
 ### Still open, and the owner's to decide
 
-- **The parser's own 0.001.** `loannex/parse.js` rounds `price` and `100 − price` **independently**
-  off the unrounded vendor number, so on 114 rungs the two disagree by a thousandth — and the board
-  and the option list then show **different points for the same quote** (the option row recomputes
-  `100 − price` and is self-consistent; the board rung is not). Points are display-only here (dollars
-  are derived from price), so no money moves either way. Deriving points from the rounded price would
-  fix it and would move a displayed pricing figure on 114 rungs, so it is reported rather than
-  changed.
-- **LTV has the same class of bug, pointing the other way.** `deriveAmounts` formats LTV with
-  round-to-nearest, and a *higher* LTV prices worse — so rounding **down** is what hands the borrower
-  a band they did not earn. Measured: `400001 / 500000` is 80.0002% and is sent as `80.00`. The owner
-  named only the DSCR direction, so the fix is stated rather than applied.
-- **`POST /loannex/price` returns the vendor's raw answer**, before our holdback, under a comment
-  saying it is *"for comparing the two boards side by side"* — which invites exactly the comparison
-  the holdback exists to make meaningless. No screen calls it and it is super-admin only.
+- **Lender Price's connector has the SAME LTV rounding, and it is the LIVE engine.**
+  `lenderprice/client.js buildSearchPayload` computes `Math.round((loan / value) * 10000) / 10000`
+  — round-to-nearest at two decimals of the percent, the same class just fixed on the LoanNEX side.
+  Measured: `400001 / 500000` (80.0002%) and even `400010 / 500000` (80.002%) both go out as
+  `80.0000%`. The owner's *"Round this up"* was given about the LoanNEX finding, and this one changes
+  what the **live general pricing engine** asks Lender Price to price — which moves live quotes —
+  so it is **reported and not applied**. It needs one word from the owner.
 - **Per-investor holdbacks** are not offered. The owner's rule is *"everybody"*, so one number is
   faithful to it; a per-investor override would be a new business rule.
 
