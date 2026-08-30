@@ -77,6 +77,32 @@ export function monthlyPI({ loanAmount, ratePct, termYears, interestOnly }) {
 }
 
 /**
+ * THE TOTAL MONTHLY HOUSING PAYMENT — principal, interest, taxes, insurance and association dues.
+ *
+ * This is the SAME figure the DSCR divides into (field 912, the "proposed total monthly housing
+ * expense"), and `dscrFrom` below is built on it rather than repeating the sum — so the payment a
+ * board column shows and the payment the ratio qualifies on are ONE number by construction. Two
+ * copies would be two answers to "what does this cost a month" on one screen, and the one that
+ * drifts is the one somebody quotes.
+ *
+ * It takes the P&I RATHER THAN COMPUTING IT, which is the whole reason it is separate: the pricing
+ * board prints the VENDOR's own monthly P&I per quote, so a column built on a locally-recomputed
+ * payment could differ from the P&I sitting one column to its left and the row would not add up.
+ * Handed that vendor figure, the arithmetic on screen reconciles exactly.
+ *
+ * ⛔ NOTHING IS GUESSED. No P&I, no tax or no insurance means NO ANSWER — never a total that
+ * silently treats a blank as zero and reads as a cheaper property than it is. HOA is the one
+ * exception, and only because the owner set it that way for the ratio: blank means none.
+ */
+export function housingPayment({ pi, taxMonthly, insuranceMonthly, hoaMonthly }) {
+  if (!nn(pi) || pi < 0) return null;
+  if (!nn(taxMonthly) || taxMonthly < 0) return null;
+  if (!nn(insuranceMonthly) || insuranceMonthly < 0) return null;
+  const hoa = nn(hoaMonthly) && hoaMonthly > 0 ? hoaMonthly : 0;
+  return cents(cents(pi) + cents(taxMonthly) + cents(insuranceMonthly) + cents(hoa));
+}
+
+/**
  * The whole calculation, in one answer: what each part costs a month, what they come to, and the
  * ratio that falls out of them.
  *
@@ -117,7 +143,7 @@ export function dscrFrom(input) {
 
   // The denominator is rounded to cents FIRST, because on the loan file it is a currency field
   // (912) holding a settled amount, and the tenant's formula divides by that stored figure.
-  const pitia = cents(pi + tax + insurance + hoa);
+  const pitia = housingPayment({ pi, taxMonthly: tax, insuranceMonthly: insurance, hoaMonthly: hoa });
   if (pitia <= 0) return { pi, tax, insurance, hoa, pitia, dscr: null, missing: ['a payment above zero'] };
   return { pi, tax, insurance, hoa, pitia, dscr: Math.round((rent / pitia) * 100) / 100, missing: [] };
 }

@@ -238,6 +238,44 @@ rtl-import app-v2/src/screens/Dashboard.jsx
 import src/lib/address-canon.js
 
 # ---------------------------------------------------------------------------
+# THE ADDRESS LOOK-UP BOX ON A LONG-TERM TERM SHEET — recorded in writing by the
+# owner, 2026-08-30:
+#   "You can put in property addresses. The property address should be linked
+#    with the Find My Property address to autofill the property address from the
+#    short-term site. You can use the same credentials."
+#
+# WHAT SHIPPED IS **NOT A CROSSING**, and this block exists so that the next
+# reader does not have to work that out again.
+#
+# `app-v2/src/longterm/AddressField.jsx` is a brand-new Long-Term component. It
+# imports NO short-term code — it calls `GET /api/address/suggest` and
+# `GET /api/address/details`, which are:
+#
+#   · mounted at the TOP LEVEL of the server, not under /api/staff or any
+#     product namespace;
+#   · described by their own header as serving "the marketing site AND portal",
+#     i.e. every surface this company has;
+#   · a PROXY whose only reason to exist is that the provider's key must not
+#     leave the server. They hold no loan data, read no RTL table, and return
+#     nothing about either product.
+#
+# So this is the same class as the LOGIN TOKEN that `app-v2/src/longterm/http.js`
+# already reads and documents: infrastructure both products stand on, not a
+# short-term feature lifted across. The owner described it as coming "from the
+# short-term site" because that is where they have seen it, which is why it is
+# written down here rather than left to inference.
+#
+# NO `import` LINE IS ADDED, deliberately — the five entry kinds describe module
+# and table crossings, and an HTTP call to a shared door is neither. Adding a
+# line that matches no kind would fail the gate's own parser.
+#
+# WHAT WOULD BE A CROSSING, and is not done: importing RTL's own address input
+# component, or reaching `src/lib/address*` from Long-Term server code. The
+# geocoder crossing directly above (`address-canon.js`) is separate, already
+# authorized, and still unused.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # THE COMPANY'S SENDING IDENTITY — authorized in writing by the owner,
 # 2026-08-30, answering a direct question about the first Long-Term feature
 # that sends email (the daily rate-movement reports):
@@ -509,6 +547,7 @@ sql-write service_contacts
 | 2026-08-30 | `import src/lib/email/index.js` — the mail sender | RTL → LT | *"make sure all the orders are coming from the user that is actually ordering, from his email, from his name"* — sending the order IS the order. One account, one From identity, one deliverability posture. **Recorded explicitly: the shared outbound rate budget reaches the RTL pool (db/619), because there is one Resend ceiling and two budgets would burst it. No loan data crosses, and Long-Term sends with `_skipCapture` so the short-term Email Center is never written** | #1376 |
 | 2026-08-30 | `import src/lib/storage.js` + `import src/lib/upload-bytes.js` + `import src/lib/order-return-filter.js` — where a returned document's bytes go, what the bytes actually are, and the email-signature filter | RTL → LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* A second storage layer is a second place a document is lost; a second sniffer is a second answer to "is this a PDF"; a second signature filter means re-living the months of rejecting company logos by hand | #1376 |
 | 2026-08-30 | `import src/lib/vendor-directory.js` — the PURE half only: how a vendor card's addresses and phones are read | RTL → LT | The same directory is shared, so the same reading of it must be. db/224's `email` scalar + `emails` array pair drops addresses when either is read alone. **`suggest()` is off limits** — it reaches the short-term pool; Long-Term queries `service_contacts` on its own pool and folds with these helpers | #1376 |
+| 2026-08-30 | **Not a crossing — recorded for the record.** The Long-Term term sheet's property-address box calls the shared `/api/address/*` proxy | neither | *"The property address should be linked with the Find My Property address to autofill the property address from the short-term site. You can use the same credentials."* — a top-level, product-neutral vendor-key proxy serving the marketing site and both portals, holding no loan data and reading no RTL table. Same class as the shared login token. **No RTL module is imported**, so no `authorized` line is needed or added | #1383 |
 | 2026-08-30 | `import src/lib/email/reply-cut.js` — where a person's own reply ends and the quoted history begins | RTL → LT | The order letter prints the SHARED reply marker; this is the reader that cuts on it. Two halves of one mechanism — a second copy files the vendor's whole thread on the loan every round |  #1376 |
 | 2026-08-30 | `import src/lib/send-as.js` — who an order comes from | RTL → LT | *"make sure all the orders are coming from the user that is actually ordering, from his email, from his name."* One company identity, one verified sending domain, one answer to whether an address may go in a From line — the rule is DKIM alignment, not a preference. The short-term desk is deliberately NOT switched over; that is the owner's call | #1376 |
 | 2026-08-30 | `import src/lib/integrations/docusign.js` — the DocuSign transport (envelope create, void, status, documents, the Connect HMAC) | RTL → LT | *"it can go by DocuSign, as an email attachment, or both"* on the long-term verification of rent. One DocuSign account, one integration key, one JWT consent, one token cache, one Connect HMAC — a second client would mint a second JWT against the same rate-limited endpoint and be a second copy of a signature verifier. **The transport only: the module's own header says it does not decide when to send, own the send-once claim or clear a condition — Long-Term builds all of that in `src/longterm/vor/**` against its own `lt_vor_*` tables. The shared Connect webhook carries a long-term claim in front of the RTL route, because the RTL drainer answers an envelope it does not own with `skipped: 'untracked'` and would have swallowed the landlord's signature** | #1376 |

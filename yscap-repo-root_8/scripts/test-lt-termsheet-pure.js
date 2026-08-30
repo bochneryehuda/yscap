@@ -406,7 +406,12 @@ section('a term sheet is only issued complete — the export gate');
   // ⛔ IT NAMES EVERY MISSING THING AT ONCE. A gate that reveals its blockers one
   // at a time is four round trips, and each of these is a box on the screen the
   // officer is already looking at.
-  for (const k of ['rentMonthly', 'taxMonthly', 'insuranceMonthly', 'dscr', 'borrowerName', 'propertyAddress']) {
+  // ⛔ `partyName`, NOT `borrowerName` — RE-POINTED, never loosened (2026-08-30). The gate used to
+  // demand the individual's name; the owner then asked for *"a name of the person and/or a name of
+  // the entity"*, so one key now covers both and either one satisfies it. This suite's subject is
+  // that EVERY shortfall is reported at once, which is unchanged; `test-lt-termsheet-party-pure.mjs`
+  // owns the either-name rule itself.
+  for (const k of ['rentMonthly', 'taxMonthly', 'insuranceMonthly', 'dscr', 'partyName', 'propertyAddress']) {
     check(g.missing.includes(k), `…and it names ${k} rather than revealing it on the next attempt`);
   }
   check(/monthly rent/.test(g.message) && /export a comparison/.test(g.message),

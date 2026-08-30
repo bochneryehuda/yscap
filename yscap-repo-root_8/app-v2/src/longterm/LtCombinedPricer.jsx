@@ -19,7 +19,7 @@ import {
   selectionActive, filterPrograms, filterDisqualifiedLenders, toggleKey,
   missingFromAnswer, overlaySummary, expandAllKeys,
 } from './investorFilter.js';
-import { perMonth, monthlyPI, dscrFrom } from './dscrCalc.js';
+import { perMonth, monthlyPI, dscrFrom, housingPayment } from './dscrCalc.js';
 // The form's own rules — which options exist, when a field appears, and the amount triangle. Also a
 // plain `.js` module, and for the same reason: CI can run it, and a rule CI cannot run is a rule
 // nobody is holding. See scenarioFields.js.
@@ -1199,7 +1199,7 @@ export function PriceBuild({ o, comp }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    ONE RATE, AND EVERY INVESTOR AT IT.
    ────────────────────────────────────────────────────────────────────────── */
-export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLenders, onToggleLender, loanAmount, comp }) {
+export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLenders, onToggleLender, loanAmount, comp, housing }) {
   /* EVERY DISPLAYED PRICE ON THIS ROW TAKES THE SAME SHIFT (owner-directed 2026-08-23).
      A constant shift never reorders anything — best stays best — so the grouping and the
      sort are untouched; only what the figures READ as changes. Raw shifts by zero. */
@@ -1210,6 +1210,33 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
      the two surfaces could disagree about which position is on screen. */
   const priceKey = comp && comp.mode === 'borrowerPaid' ? 'Price \u00b7 b-paid'
     : comp && comp.mode === 'lenderPaid' ? 'Price \u00b7 l-paid' : 'Price';
+  /* THE WHOLE MONTHLY PAYMENT — PORTED FROM THE GENERAL ENGINE (owner-directed 2026-08-30:
+     *"it should also have another column of principle, interest, taxes, and insurance"*).
+     The general engine grew this column and the fork guard (section F) is what caught that it
+     had not come across; a readability hook the two screens do not share is exactly how one
+     board becomes unreadable on a phone while the other stays fine.
+
+     THE COLUMN EXISTS ONLY WHEN THE CARRYING COSTS DO. Tax and insurance are typed into the
+     Calculate panel, the ONLY place this screen learns them — so with the panel unfilled there
+     is no column at all, rather than one showing an em dash on every row or, far worse, a total
+     that quietly treated a blank as zero and read as a cheaper property than it is.
+
+     `pitiKey` NAMES WHAT IS IN IT. The figure is the one the DSCR qualifies on, which INCLUDES
+     association dues; on the great majority of properties there are none and "PITI" is exactly
+     right, so the header only says otherwise when an HOA was actually entered. */
+  const pitiOn = !!(housing && Number.isFinite(housing.taxMonthly) && Number.isFinite(housing.insuranceMonthly));
+  const pitiKey = pitiOn && Number.isFinite(housing.hoaMonthly) && housing.hoaMonthly > 0
+    ? 'PITI + HOA' : 'PITI';
+  /* ⛔ BUILT ON THE ROW'S OWN VENDOR P&I, never a recomputed one — so PITI minus the carrying
+     costs equals the Monthly P&I sitting one column to its left, exactly, on every row. On THIS
+     board that matters twice over: the two programs state their own P&I, so recomputing here
+     would put one screen's arithmetic over another vendor's answer. */
+  const pitiOf = (q) => (pitiOn
+    ? housingPayment({
+      pi: q && q.monthlyPi, taxMonthly: housing.taxMonthly,
+      insuranceMonthly: housing.insuranceMonthly, hoaMonthly: housing.hoaMonthly,
+    })
+    : null);
   return (
     <div style={{ border: `1px solid ${open ? GOLD : 'rgba(20,27,34,.12)'}`, borderRadius: 10, marginBottom: 8, overflow: 'hidden' }}>
       <button type="button" onClick={onToggle} className="ltq-ratehead"
@@ -1250,6 +1277,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
             <span style={{ flex: '0 0 82px', textAlign: 'right' }}>Points</span>
             <span style={{ flex: '0 0 108px', textAlign: 'right' }}>Cost / credit</span>
             <span style={{ flex: '0 0 104px', textAlign: 'right' }}>Monthly P&amp;I</span>
+            {pitiOn && <span style={{ flex: '0 0 104px', textAlign: 'right' }}>{pitiKey}</span>}
             <span style={{ flex: '0 0 70px' }} />
           </div>
           {groupByLender(row.quotes).map((g, gi) => {
@@ -1320,6 +1348,9 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                   </span>
                   <MoneyCells m={priceMoney(dP(g.bestPrice), loanAmount)} strong priceKey={priceKey} />
                   <span className="ltq-cell" data-k="Monthly P&I" style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 13, color: SLATE, ...NUM }}>{money2(g.best && g.best.monthlyPi)}</span>
+                  {pitiOn && (
+                    <span className="ltq-cell" data-k={pitiKey} style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 13, fontWeight: 600, color: INK, ...NUM }}>{money2(pitiOf(g.best))}</span>
+                  )}
                   <span className="ltq-act" style={{ flex: '0 0 70px', textAlign: 'right' }}>
                     <button type="button" className="btn ghost" style={{ fontSize: 12 }}
                       onClick={() => onOpenQuote(openQuote === (g.best && g.best.key) ? null : (g.best && g.best.key))}>
@@ -1357,6 +1388,9 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                         </span>
                         <MoneyCells m={priceMoney(dP(q.price), loanAmount)} priceKey={priceKey} />
                         <span className="ltq-cell" data-k="Monthly P&I" style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 12.5, color: SLATE, ...NUM }}>{money2(q.monthlyPi)}</span>
+                        {pitiOn && (
+                          <span className="ltq-cell" data-k={pitiKey} style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 12.5, fontWeight: 600, color: INK, ...NUM }}>{money2(pitiOf(q))}</span>
+                        )}
                         <span className="ltq-act" style={{ flex: '0 0 70px', textAlign: 'right' }}>
                           <button type="button" className="btn ghost" style={{ fontSize: 12 }}
                             onClick={() => onOpenQuote(isOpen ? null : q.key)}>
@@ -2042,6 +2076,22 @@ export default function LtCombinedPricer() {
      which is exactly the case `amt` already solves for the rest of the screen. Falls back to the
      typed box so it still works the moment a property value has not been entered. */
   const formLoanAmount = toNumber(amt && amt.loan != null ? amt.loan : f.loan);
+  /* THE CARRYING COSTS THE BOARD'S PITI COLUMN IS BUILT FROM — ported from the general engine
+     (owner-directed 2026-08-30). Read straight off the same Calculate boxes the DSCR ratio is,
+     so the column and the ratio are describing one property.
+
+     ⛔ THROUGH `perMonth`, THE SAME CONVERSION THE CALCULATOR RUNS. Tax and insurance are typed
+     either monthly or yearly with the basis a control right beside the box, so reading the raw
+     number would put a yearly tax bill on the board as a monthly one — a payment twelve times
+     too high, in a column an officer quotes out loud.
+
+     LIVE, like the ratio: these are facts about the property rather than about either vendor's
+     answer, so correcting the tax moves the column without re-running a paid search. */
+  const housing = {
+    taxMonthly: perMonth(toNumber(calc.tax), calc.taxBasis),
+    insuranceMonthly: perMonth(toNumber(calc.insurance), calc.insBasis),
+    hoaMonthly: calc.hoa === '' ? 0 : perMonth(toNumber(calc.hoa), 'monthly'),
+  };
   const um = unitsMode(f.propertyType);
   /* THE OVERLAY, APPLIED — on the ANSWER, never the request. With nothing selected
      `filterPrograms` returns the programs untouched, so the unfiltered board is
@@ -2742,6 +2792,7 @@ export default function LtCombinedPricer() {
                   </div>
                 ) : stack.rates.map((row) => (
                   <RateRow key={row.key} row={row} loanAmount={loanAmount} comp={comp}
+                    housing={housing}
                     open={openRates.has(row.key)}
                     onToggle={() => toggleRate(row.key)}
                     openQuote={openQuote} onOpenQuote={setOpenQuote} openLenders={openLenders} onToggleLender={toggleLender} />
