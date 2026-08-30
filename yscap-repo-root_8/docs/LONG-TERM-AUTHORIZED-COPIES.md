@@ -341,6 +341,30 @@ import src/lib/email/reply-cut.js
 # docs/SEND-AS-USER-AND-DELIVERABILITY.md is the research behind it.
 import src/lib/send-as.js
 
+# THE DOCUSIGN TRANSPORT — the low-level client only.
+#
+# The owner asked for the long-term verification of rent to go out "by DocuSign, as
+# an email attachment, or both". There is ONE DocuSign account, ONE integration key,
+# ONE one-time JWT impersonation consent granted to it, ONE access-token cache and
+# ONE Connect HMAC secret — so a second client would mint a second JWT against the
+# same user on the same rate-limited token endpoint, and would be a second place the
+# inbound webhook's signature is verified. A second copy of a signature verifier is
+# the one duplication that must never exist.
+#
+# WHAT IS SHARED IS THE TRANSPORT, NOT THE WORKFLOW. This module's own header says
+# it: "It does NOT decide WHEN to send, own the send-once claim, or clear
+# conditions." Long-Term builds all of that itself in src/longterm/vor/** against
+# its own lt_vor_* tables; nothing here reads an RTL table and no RTL module reads a
+# long-term envelope.
+#
+# THE SHARED CONNECT WEBHOOK NEEDED A CLAIM, exactly like the shared inbound-email
+# endpoint: DocuSign posts every envelope's events to one URL, and the RTL drainer
+# answers an envelope it does not own with `skipped: 'untracked'` — correct for it,
+# and it would have swallowed the landlord's signature in silence. Long-Term's claim
+# is mounted IN FRONT of the RTL route at that endpoint and hands on anything that is
+# not one of its own.
+import src/lib/integrations/docusign.js
+
 # HOW A VENDOR'S ADDRESSES AND PHONES ARE READ — the PURE half only
 # (`allEmails` / `allPhones` / `dedupBy`). db/224 added an `emails text[]` beside
 # the legacy scalar `email` and backfilled only the rows that existed then, so on
@@ -392,6 +416,7 @@ sql-write service_contacts
 | 2026-08-30 | `import src/lib/vendor-directory.js` — the PURE half only: how a vendor card's addresses and phones are read | RTL → LT | The same directory is shared, so the same reading of it must be. db/224's `email` scalar + `emails` array pair drops addresses when either is read alone. **`suggest()` is off limits** — it reaches the short-term pool; Long-Term queries `service_contacts` on its own pool and folds with these helpers | #1376 |
 | 2026-08-30 | `import src/lib/email/reply-cut.js` — where a person's own reply ends and the quoted history begins | RTL → LT | The order letter prints the SHARED reply marker; this is the reader that cuts on it. Two halves of one mechanism — a second copy files the vendor's whole thread on the loan every round |  #1376 |
 | 2026-08-30 | `import src/lib/send-as.js` — who an order comes from | RTL → LT | *"make sure all the orders are coming from the user that is actually ordering, from his email, from his name."* One company identity, one verified sending domain, one answer to whether an address may go in a From line — the rule is DKIM alignment, not a preference. The short-term desk is deliberately NOT switched over; that is the owner's call | #1376 |
+| 2026-08-30 | `import src/lib/integrations/docusign.js` — the DocuSign transport (envelope create, void, status, documents, the Connect HMAC) | RTL → LT | *"it can go by DocuSign, as an email attachment, or both"* on the long-term verification of rent. One DocuSign account, one integration key, one JWT consent, one token cache, one Connect HMAC — a second client would mint a second JWT against the same rate-limited endpoint and be a second copy of a signature verifier. **The transport only: the module's own header says it does not decide when to send, own the send-once claim or clear a condition — Long-Term builds all of that in `src/longterm/vor/**` against its own `lt_vor_*` tables. The shared Connect webhook carries a long-term claim in front of the RTL route, because the RTL drainer answers an envelope it does not own with `skipped: 'untracked'` and would have swallowed the landlord's signature** | #1376 |
 | 2026-08-30 | `import src/lib/email/{template,quote}.js` — the one branded email | RTL → LT | *"it should have the same feel … the same Gmail-style box"* | #1376 |
 | 2026-08-30 | `import src/lib/file-address.js` — the unique per-order reply address | RTL → LT | *"Everything should share the code … If the code is updated, he's also updating it."* | #1376 |
 | 2026-08-30 | `sql-ref` / `sql-read` / `sql-write service_contacts` — the shared vendor directory | RTL ↔ LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* | #1376 |

@@ -490,6 +490,9 @@ model LtLoan {
   vendors        LtLoanVendor[]
   orders         LtFileOrder[]
   orderEvents    LtOrderEvent[]
+  vorForms       LtVorForm[]
+  vorEnvelopes   LtVorEnvelope[]
+  vorReturns     LtVorReturn[]
 
   @@index([borrowerId])
   @@index([loanOfficerId])
@@ -2687,4 +2690,112 @@ model LtOrderEvent {
   @@index([orderId, occurredAt(sort: Desc)], map: "lt_order_events_order_idx")
   @@index([loanId, occurredAt(sort: Desc)], map: "lt_order_events_loan_idx")
   @@map("lt_order_events")
+}
+
+/// THE VERIFICATION OF RENT — the form itself. ONE per loan.
+///
+/// What is stored is the form's DATA, not the rendered PDF: the preview is
+/// re-rendered from this on every look and again at the moment of sending, so the
+/// document that goes out is by construction the one that was reviewed. A
+/// hand-edited PDF could not be re-anchored, and every reader downstream reads the
+/// data anyway.
+///
+/// Deliberately holds OUR half only — the landlord's answers arrive in
+/// LtVorReturn. A column that could hold both is a column somebody eventually fills
+/// in on the landlord's behalf.
+model LtVorForm {
+  id     String @id @default(uuid()) @db.Uuid
+  loanId String @map("loan_id") @db.Uuid
+
+  /// Keyed by the field keys in src/longterm/vor/fields.js.
+  data Json @default("{}") @db.JsonB
+
+  /// Whether a person has looked at the prefill. A form nobody has opened is still
+  /// sendable — the prefill is the whole point — but the desk says which it is.
+  reviewedBy String?   @map("reviewed_by") @db.Uuid
+  reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  loan      LtLoan          @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  envelopes LtVorEnvelope[]
+
+  @@unique([loanId], map: "lt_vor_forms_loan_uk")
+  @@map("lt_vor_forms")
+}
+
+/// One DocuSign envelope. A re-send after a void is a NEW row, because the landlord
+/// genuinely received two and collapsing them would lose which one they signed.
+/// This is also the table the inbound Connect claim looks a long-term envelope up
+/// in, which is what stops the shared webhook dropping the landlord's signature.
+model LtVorEnvelope {
+  id     String  @id @default(uuid()) @db.Uuid
+  loanId String  @map("loan_id") @db.Uuid
+  formId String? @map("form_id") @db.Uuid
+
+  /// DocuSign's own id. NULL for the moment between claiming the row and the
+  /// provider answering — which is what makes a lost response recoverable rather
+  /// than a second envelope to the same landlord.
+  envelopeId String? @map("envelope_id")
+
+  /// created | sent | delivered | completed | declined | voided | failed
+  status String @default("created")
+
+  recipientName  String? @map("recipient_name")
+  recipientEmail String? @map("recipient_email")
+
+  /// 'docusign' or 'both'. An email-only send creates no envelope at all, which is
+  /// why 'email' never appears here.
+  sendMethod String @default("docusign") @map("send_method")
+
+  sentBy      String?   @map("sent_by") @db.Uuid
+  sentAt      DateTime? @map("sent_at") @db.Timestamptz(6)
+  completedAt DateTime? @map("completed_at") @db.Timestamptz(6)
+
+  /// Why an envelope in flight was stopped, in words. The only record afterwards.
+  voidReason String?   @map("void_reason")
+  voidedAt   DateTime? @map("voided_at") @db.Timestamptz(6)
+
+  lastError String?  @map("last_error")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  loan    LtLoan        @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  form    LtVorForm?    @relation(fields: [formId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  returns LtVorReturn[]
+
+  @@unique([envelopeId], map: "lt_vor_envelopes_envelope_uk")
+  @@index([loanId, createdAt], map: "lt_vor_envelopes_loan_idx")
+  @@map("lt_vor_envelopes")
+}
+
+/// What came back, however it came back — DocuSign's completed copy, or a form
+/// somebody filled in by hand and emailed. Both answer the same question, so both
+/// sit on one timeline; that is what makes "a manual return voids the envelope"
+/// expressible rather than a rule somebody remembers.
+model LtVorReturn {
+  id         String  @id @default(uuid()) @db.Uuid
+  loanId     String  @map("loan_id") @db.Uuid
+  envelopeId String? @map("envelope_id") @db.Uuid
+
+  /// 'docusign' | 'manual'
+  source String
+
+  /// The landlord's answers where we have them. A manual return usually has none
+  /// until somebody types them in, and an empty object is the honest record of that.
+  answers Json @default("{}") @db.JsonB
+
+  storageRef String? @map("storage_ref")
+  filename   String?
+
+  recordedBy String?  @map("recorded_by") @db.Uuid
+  note       String?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  loan     LtLoan         @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  envelope LtVorEnvelope? @relation(fields: [envelopeId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+
+  @@index([loanId, createdAt], map: "lt_vor_returns_loan_idx")
+  @@map("lt_vor_returns")
 }

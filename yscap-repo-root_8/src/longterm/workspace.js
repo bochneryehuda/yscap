@@ -117,6 +117,19 @@ const SECTIONS = [
     label: 'Orders',
   },
   {
+    /* THE VERIFICATION OF RENT. Its own section rather than a card inside Orders,
+       for one reason: it is a FORM WE BUILD and a signature request, not a letter to
+       a vendor — it has a form to edit, a document to look at, an envelope out for
+       signature and a return to record, and folding all of that into an order card
+       would bury the one thing a processor comes here to do.
+
+       ALWAYS AVAILABLE, for the same reason as Orders: a file with no landlord on it
+       is exactly the one somebody opens this to fix. What is missing is said on the
+       form, in words. */
+    key: 'vor',
+    label: 'Verification of rent',
+  },
+  {
     key: 'conditions',
     label: 'Investor conditions (Encompass)',
     // Greyed rather than hidden, for the same reason as employment: somebody told

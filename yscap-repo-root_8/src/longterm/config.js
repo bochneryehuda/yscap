@@ -92,6 +92,16 @@ function resolveEmailProvider() {
 }
 const emailProvider = resolveEmailProvider();
 
+/* WHETHER THE DOCUSIGN CONNECT WEBHOOK CAN BE AUTHENTICATED AT ALL.
+   The long-term claim on that shared endpoint has to know this to decide whether to
+   hand the delivery on untouched (the short-term route owns the 503) — so it is read
+   here, from the SAME environment variable, for the same reason the domain and the
+   mail provider are. There is ONE DocuSign account and therefore ONE Connect key.
+   Unset = the claim looks at nothing, which is the only safe reading of "we cannot
+   authenticate anyone". */
+const docusignConnectKeys = (process.env.DOCUSIGN_CONNECT_HMAC_SECRET || '')
+  .split(',').map((x) => x.trim()).filter(Boolean);
+
 module.exports = {
   env,
   databaseUrl: process.env.DATABASE_URL || '',
@@ -104,4 +114,5 @@ module.exports = {
   sendAsUser,
   notifyFrom,
   emailProvider,
+  docusignConnectKeys,
 };

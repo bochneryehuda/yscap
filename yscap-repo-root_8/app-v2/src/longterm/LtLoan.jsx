@@ -12,6 +12,7 @@ import LtFileSection, { hasFileSection } from './LtFileSections.jsx';
 import LtConditionCenter from './LtConditionCenter.jsx';
 import LtFileConditions from './LtFileConditions.jsx';
 import LtOrders from './LtOrders.jsx';
+import LtVor from './LtVor.jsx';
 import LtTiming from './LtTiming.jsx';
 import LtClickupSection from './LtClickupSection.jsx';
 import LtEncompassSection from './LtEncompassSection.jsx';
@@ -723,6 +724,7 @@ const SECTION_BLURB = {
   reo: 'Every other property on the borrower\u2019s schedule.',
   declarations: 'The borrower\u2019s own answers on the application.',
   contacts: 'Who is on this file, and whose pipeline it sits in.',
+  vor: 'The rent verification \u2014 filled in from the file, sent to the landlord, and what came back.',
   file_conditions: 'What this file still needs to get submitted, cleared to close, docked, funded and sold.',
   orders: 'Every vendor this file has to ask for something, and the whole conversation with each of them.',
   conditions: 'What the investor\u2019s underwriter raised on this loan, read from Encompass. Read-only.',
@@ -912,6 +914,7 @@ export default function LtLoan() {
     // the URLA sections `file` carries.
     if (s.key === 'file_conditions') return <LtFileConditions loanId={loanId} />;
     if (s.key === 'orders') return <LtOrders loanId={loanId} />;
+    if (s.key === 'vor') return <LtVor loanId={loanId} />;
     if (s.key === 'conditions') return <LtConditionCenter loanId={loanId} />;
     if (s.key === 'contacts') {
       return (

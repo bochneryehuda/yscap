@@ -322,6 +322,10 @@ async function place(loanId, kind, opts = {}) {
       from: opts.from || { name: opts.fromName || (d.officer && d.officer.name) || null,
         email: opts.fromEmail || (d.officer && d.officer.email) || null },
       threadState: null,
+      /* An order may carry a document of ours — the verification of rent goes out as
+         a PDF attachment on this same letter. Absent on every other kind, so an
+         ordinary order is byte-for-byte what it always was. */
+      attachments: opts.attachments,
     });
     if (!sent.ok && !sent.ambiguous) {
       await client.query('ROLLBACK');

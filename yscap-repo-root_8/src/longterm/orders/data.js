@@ -32,7 +32,6 @@
 
 const db = require('../db');
 const orderEmail = require('../../lib/order-email');
-const vendorDirectory = require('../../lib/vendor-directory');
 const kinds = require('./kinds');
 
 /** A one-line property address from the long-term property row. */

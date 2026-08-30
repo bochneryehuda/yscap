@@ -8,7 +8,7 @@
 // The one rule: a path here always starts `/api/lt/`. Anything else belongs to the
 // other product.
 
-import { ltGet, ltPost, ltPut, ltPatch, ltDel, ltDownload } from './http.js';
+import { ltGet, ltPost, ltPut, ltPatch, ltDel, ltDownload, ltBlobUrl } from './http.js';
 
 const lt = (p) => `/api/lt${p}`;
 
@@ -281,6 +281,19 @@ export const ltApi = {
   orderVendorUnlink: (loanId, linkId) => ltDel(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/${encodeURIComponent(linkId)}`)),
 
   orderLetters: () => ltGet(lt('/orders/letters')),
+
+  /* THE VERIFICATION OF RENT. The form's DATA is what is edited and saved; the PDF
+     is RENDERED from it on every preview and again at the moment of sending, so the
+     document that goes out is by construction the one that was reviewed. There is
+     deliberately no endpoint that takes PDF bytes from the browser: a hand-edited
+     document cannot be re-anchored, so its required questions would silently stop
+     being asked. */
+  vor: (loanId) => ltGet(lt(`/vor/loans/${encodeURIComponent(loanId)}`)),
+  vorSave: (loanId, data) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/form`), { data }),
+  vorPreviewUrl: (loanId) => ltBlobUrl(lt(`/vor/loans/${encodeURIComponent(loanId)}/preview.pdf`)),
+  vorDownload: (loanId) => ltDownload(lt(`/vor/loans/${encodeURIComponent(loanId)}/preview.pdf`), 'verification-of-rent.pdf'),
+  vorSend: (loanId, body) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/send`), body),
+  vorManualReturn: (loanId, body) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/manual-return`), body),
 
   dscrDisqualifications: (searchKey, params) => {
     const q = new URLSearchParams();

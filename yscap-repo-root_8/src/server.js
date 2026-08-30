@@ -76,6 +76,18 @@ app.use('/api/inbound/file-email', require('./longterm/routes/order-inbox'));
 app.use('/api/inbound/file-email', require('./routes/inbound-file-email'));
 // DocuSign Connect webhook — RAW body for the base64 HMAC verification, mounted
 // BEFORE the JSON parser for the same reason as the ClickUp/inbound webhooks.
+//
+// LONG-TERM claims its OWN envelopes on the SAME endpoint, immediately in front of
+// the short-term receiver — the same seam, and for the same reason, as the inbound
+// order addresses above. There is ONE DocuSign account, so Connect posts EVERY
+// envelope's events to ONE URL, and the short-term drainer answers an envelope it
+// does not own with `skipped: 'untracked'`: correct for it, and it would swallow a
+// landlord's signature on a long-term verification of rent in complete silence.
+// The claim verifies the same HMAC, looks the envelope up in `lt_vor_envelopes`,
+// and calls next() for anything that is not its own — so the short-term route sees
+// the request exactly as it always has (body-parser marks req._body once, so its
+// own express.raw is a no-op over the very Buffer whose signature was checked).
+app.use('/api/esign/webhook', require('./longterm/routes/esign-claim'));
 app.use('/api/esign/webhook', require('./routes/esign-webhook'));
 // TrustPoint webhook — its OWN small JSON parser + rate limit (never the global 32MB
 // parser: unauthenticated callers must not force huge parses), token-authenticated.
