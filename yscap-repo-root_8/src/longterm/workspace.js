@@ -52,6 +52,20 @@ const SECTIONS = [
     key: 'milestones',
     label: 'Milestones',
   },
+  {
+    // HOW LONG EACH PART TOOK, on this one file (owner-directed 2026-08-30: "for
+    // every file how long it took between which and which step and who the
+    // processor was in that file"). It sits directly under Milestones because it
+    // is the same ladder read a second way — the steps above, the time between
+    // them here.
+    //
+    // ALWAYS AVAILABLE, and that is the point. A file PILOT has not witnessed a
+    // step on is exactly the file somebody needs this section to explain: it says
+    // WHY each span is unknown rather than leaving a blank the reader has to guess
+    // at. Greying it out on such a file would be backwards.
+    key: 'timing',
+    label: 'How long it took',
+  },
   { key: 'borrowers', label: 'Borrowers' },
   { key: 'property', label: 'Property' },
   { key: 'terms', label: 'Loan terms' },

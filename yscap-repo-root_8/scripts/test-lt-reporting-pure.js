@@ -313,6 +313,29 @@ check(/function days\(/.test(screen) && /return '—'/.test(screen),
 check(!/var\(--ink/.test(screen),
   'no --ink token is used as a text colour — in this palette those are LIGHT and render white on white');
 
+// THE PER-FILE HALF. `GET /reports/loans/:id/timeline` answers the owner's "for
+// every file how long it took between which and which step and who the processor
+// was in that file" — and a route with no consumer is not a feature. It is a
+// SECTION on the file screen, and the section is deliberately ALWAYS available:
+// the file PILOT has witnessed least is exactly the one somebody needs it to
+// explain, so greying it there would be backwards.
+const workspace = code('src/longterm/workspace.js');
+const loanScreen = code('app-v2/src/longterm/LtLoan.jsx');
+const timing = code('app-v2/src/longterm/LtTiming.jsx');
+
+check(/key: 'timing'/.test(workspace), 'the file screen has a "how long it took" section');
+check(!/key: 'timing',[\s\S]{0,200}applies:/.test(workspace),
+  'and it is always available — never greyed on the very file it exists to explain');
+check(/s\.key === 'timing'/.test(loanScreen) && /<LtTiming loanId=\{loanId\}/.test(loanScreen),
+  'the section is actually rendered, so the timeline route has a consumer');
+check(/ltApi\.fileTimeline\(loanId\)/.test(timing),
+  'and it reads the timeline from the server rather than re-deriving a duration in the browser');
+check(/s\.why/.test(timing),
+  'an unmeasurable span shows the SERVER\'s own reason — one wording, so the file screen and the reporting centre can never explain one gap two ways');
+check(/data\.degraded/.test(timing),
+  'and a failed read says so instead of rendering as an empty, finished-looking file');
+check(!/var\(--ink/.test(timing), 'no --ink token is used as a text colour here either');
+
 // ═══════════════════════════════════════════════════════════════════════════
 // G. SEPARATION — this whole build is Long-Term's own
 // ═══════════════════════════════════════════════════════════════════════════

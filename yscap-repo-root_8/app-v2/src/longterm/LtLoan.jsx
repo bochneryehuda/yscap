@@ -10,6 +10,7 @@ import LtLayout from './LtLayout.jsx';
 import FileOverviewSlideOver from '../components/FileOverviewSlideOver.jsx';
 import LtFileSection, { hasFileSection } from './LtFileSections.jsx';
 import LtConditionCenter from './LtConditionCenter.jsx';
+import LtTiming from './LtTiming.jsx';
 import LtClickupSection from './LtClickupSection.jsx';
 import LtEncompassSection from './LtEncompassSection.jsx';
 import ProductStamp from './ProductStamp.jsx';
@@ -710,6 +711,7 @@ function Contacts({ contacts, canReassign = false, staff = [], onReassign }) {
 const SECTION_BLURB = {
   summary: 'The loan\u2019s headline figures, exactly as Encompass has them.',
   milestones: 'Every step of the ladder, with Encompass\u2019s own date and the associate on each step.',
+  timing: 'How long this file sat between each step, who held it, and \u2014 where PILOT could not measure a step \u2014 why not.',
   borrowers: 'The people on the loan \u2014 names, contact details and how they take title.',
   property: 'The subject property \u2014 address, type, units and value.',
   terms: 'Rate, term, interest-only and the prepayment penalty.',
@@ -888,6 +890,11 @@ export default function LtLoan() {
       return <p style={{ margin: 0, color: MUTED, fontSize: 13, lineHeight: 1.55 }}>{s.why}</p>;
     }
     if (s.key === 'milestones') return <MilestoneBoard board={milestoneBoard} history={milestoneHistory} />;
+    // HOW LONG EACH PART TOOK, on this file. It loads ITSELF from the reporting
+    // routes rather than riding on `file`: the ladder history and the completion
+    // snapshots are their own tables (db/642), and folding them into the workspace
+    // payload would make every file screen pay for a read most openings never use.
+    if (s.key === 'timing') return <LtTiming loanId={loanId} />;
     if (s.key === 'clickup') return <LtClickupSection loanId={loanId} />;
     if (s.key === 'encompass') return <LtEncompassSection loanId={loanId} />;
     if (s.key === 'lock') return <LockCard lock={lock} bare />;
