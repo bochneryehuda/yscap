@@ -71,6 +71,17 @@ try {
   ltScope = {
     SCOPE_KEY_PREFIX: 'lt',
     scopeKey: (id) => `lt:${id}`,
+    /* isScopeKey MUST be in this stub, and its absence was not a cosmetic gap.
+       mirrorRowInner asks `scopeKey.startsWith('app:') || ltScope.isScopeKey(...)`
+       for EVERY row it mirrors. An `app:` row survives on the `||` short-circuit,
+       but a `borrower:` one — every photo ID, every track-record document, every
+       borrower-profile document in the live RTL product — reaches the second
+       operand. Without this function that is a TypeError, runOnce catches it and
+       calls recordFailure, and eight sweeps later the row is terminally DEAD with
+       a review card and a standing backlog-SLO breach. In other words, losing the
+       side build would have inflicted on RTL precisely the fail-loop this shipment
+       exists to abolish. Same predicate as the real module, deliberately. */
+    isScopeKey: (key) => String(key || '').startsWith('lt:'),
     OFFICER_SQL: 'NULL::text', BORROWER_FIRST_SQL: 'NULL::text', BORROWER_LAST_SQL: 'NULL::text',
     BORROWER_NAME_SQL: 'NULL::text', ADDRESS_ONE_LINE_SQL: 'NULL::text', LOAN_NUMBER_SQL: 'NULL::text',
     enrichJoinsSql: () => '',
@@ -3203,6 +3214,13 @@ module.exports = {
   // instead of re-deriving it. These are the historically divergence-prone bits;
   // one definition keeps the FSM claim and the legacy drain forever in agreement.
   REGEN_KIND_SQL, NEVER_MIRROR_SQL, snapshotSettleSec, DEFAULT_BATCH,
+  // The resolved Long-Term scope helpers — the real module when the side build is
+  // present, the fallback stub when it is not. Exported ONLY so a test can reach the
+  // stub and check it answers everything this file asks of it: the stub shipped once
+  // without isScopeKey, and every borrower-scoped RTL document would have fail-looped
+  // to DEAD the moment the side build went missing. A test that re-implements the
+  // stub's predicate instead of reading THIS one proves nothing.
+  _ltScope: ltScope,
   // Exported for the pure unit test (scripts/test-sharepoint-shortpath.js).
   stripPathEchoes,
   // The re-find that runs before an "item-missing" verdict, and the pure name
