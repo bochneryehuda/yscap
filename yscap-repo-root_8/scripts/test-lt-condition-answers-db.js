@@ -174,6 +174,50 @@ async function main() {
   const plain = await workspace.forCondition(loanId, untouched, { db });
   check(plain === null, 'and an ordinary condition has no workspace, which is a normal answer rather than an error');
 
+  // ── F. THE SETTINGS DOOR, whose SQL is built from what was sent ──────────
+  // `PATCH /library/:code` assembles `SET ${sets.join(', ')}` from the fields in
+  // the body, so it is not a statement until it is assembled and cannot be
+  // prepared from source. `test-lt-sql-prepared-db.js` therefore requires it to
+  // be EXECUTED somewhere in this job — the same reasoning as every other
+  // interpolated statement in the long-term tree. Driven here through the real
+  // handler, because a GET smoke test cannot reach a write door.
+  console.log('the settings door that builds its own SET clause');
+
+  const express = require('express');
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => { req.actor = { id: null, kind: 'staff', role: 'super_admin', perms: {} }; next(); });
+  app.use('/cc', require('../src/longterm/routes/condition-center.js'));
+
+  const patch = (code, body) => new Promise((resolve) => {
+    const http = require('http');
+    const server = app.listen(0, () => {
+      const payload = JSON.stringify(body);
+      const req = http.request({
+        host: '127.0.0.1', port: server.address().port, method: 'PATCH',
+        path: `/cc/library/${encodeURIComponent(code)}`,
+        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) },
+      }, (r) => {
+        let raw = ''; r.on('data', (d) => { raw += d; });
+        r.on('end', () => { server.close(); let b = null; try { b = JSON.parse(raw); } catch (_) {} resolve({ status: r.statusCode, body: b }); });
+      });
+      req.on('error', () => { server.close(); resolve({ status: 0, body: null }); });
+      req.end(payload);
+    });
+  });
+
+  const hintBefore = (await db.query(`SELECT hint FROM lt_condition_templates WHERE code = 'lt_cash_out_letter'`)).rows[0].hint;
+  const edited = await patch('lt_cash_out_letter', { hint: 'A settings edit, made by the test.' });
+  check(edited.status === 200, `the assembled UPDATE really runs (got ${edited.status})`);
+  const hintAfter = (await db.query(`SELECT hint FROM lt_condition_templates WHERE code = 'lt_cash_out_letter'`)).rows[0].hint;
+  check(hintAfter === 'A settings edit, made by the test.', 'and the wording it was handed is what the row now holds');
+  await db.query(`UPDATE lt_condition_templates SET hint = $2 WHERE code = $1`, ['lt_cash_out_letter', hintBefore]);
+
+  const nothing = await patch('lt_cash_out_letter', {});
+  check(nothing.status === 400, 'a body with nothing in it is refused rather than assembling an empty SET');
+  const missing = await patch('no_such_condition', { hint: 'x' });
+  check(missing.status === 404, 'and a code nobody has is a 404, not a silent no-op');
+
   await db.query(`DELETE FROM lt_file_conditions WHERE loan_id = $1::uuid`, [loanId]);
   await db.query(`DELETE FROM lt_loans WHERE id = $1::uuid`, [loanId]);
 }

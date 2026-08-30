@@ -111,7 +111,8 @@ async function saveForm(loanId, raw, staffId, client = db) {
      ON CONFLICT (loan_id) DO UPDATE
         SET data = lt_vor_forms.data || EXCLUDED.data,
             reviewed_by = EXCLUDED.reviewed_by,
-            reviewed_at = now()
+            reviewed_at = now(),
+            updated_at = now()
      RETURNING id, data`,
     [id, JSON.stringify(data), staffId || null])).rows[0];
   return { ok: true, formId: row.id, data: row.data };
@@ -270,7 +271,7 @@ async function sendEnvelope({ loanId, form, pdf, method, staffId, client }) {
   try {
     const res = await docusign.createEnvelope(def, { idempotencyKey: `lt-vor-${claim.id}` });
     await client.query(
-      `UPDATE lt_vor_envelopes SET envelope_id = $2, status = 'sent', sent_at = now(), last_error = NULL WHERE id = $1`,
+      `UPDATE lt_vor_envelopes SET envelope_id = $2, status = 'sent', sent_at = now(), last_error = NULL, updated_at = now() WHERE id = $1`,
       [claim.id, String(res.envelopeId)]);
     return { ok: true, id: claim.id, envelopeId: String(res.envelopeId), to: ll.email };
   } catch (e) {
@@ -282,7 +283,7 @@ async function sendEnvelope({ loanId, form, pdf, method, staffId, client }) {
 async function failEnvelope(client, rowId, e) {
   try {
     await client.query(
-      `UPDATE lt_vor_envelopes SET status = 'failed', last_error = $2 WHERE id = $1`,
+      `UPDATE lt_vor_envelopes SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1`,
       [rowId, String((e && e.message) || e).slice(0, 500)]);
   } catch (_) { /* the send already failed; losing the note must not mask that */ }
 }
@@ -366,7 +367,7 @@ async function recordManualReturn(loanId, opts = {}, client = db) {
   const voided = [];
   for (const e of live) {
     await client.query(
-      `UPDATE lt_vor_envelopes SET status = 'voided', void_reason = $2, voided_at = now() WHERE id = $1`,
+      `UPDATE lt_vor_envelopes SET status = 'voided', void_reason = $2, voided_at = now(), updated_at = now() WHERE id = $1`,
       [e.id, reason]);
     voided.push({ id: e.id, envelopeId: e.envelope_id, provider: null });
     if (!e.envelope_id || !docusignReady()) continue;
@@ -379,7 +380,7 @@ async function recordManualReturn(loanId, opts = {}, client = db) {
       const msg = String((err && err.message) || err).slice(0, 500);
       voided[voided.length - 1].provider = `failed: ${msg}`;
       try {
-        await client.query(`UPDATE lt_vor_envelopes SET last_error = $2 WHERE id = $1`, [e.id, msg]);
+        await client.query(`UPDATE lt_vor_envelopes SET last_error = $2, updated_at = now() WHERE id = $1`, [e.id, msg]);
       } catch (_) { /* nothing further to do */ }
     }
   }
@@ -413,7 +414,8 @@ async function applyEnvelopeStatus(envelopeId, status, opts = {}) {
   await client.query(
     `UPDATE lt_vor_envelopes
         SET status = $2,
-            completed_at = CASE WHEN $2 = 'completed' THEN now() ELSE completed_at END
+            completed_at = CASE WHEN $2 = 'completed' THEN now() ELSE completed_at END,
+            updated_at = now()
       WHERE id = $1`,
     [row.id, next]);
 
