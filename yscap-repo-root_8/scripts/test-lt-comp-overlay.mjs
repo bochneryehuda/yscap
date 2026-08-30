@@ -16,6 +16,7 @@
 //
 // Runs with no bundler and no browser: compOverlay.js is plain ESM.
 
+import { readFileSync } from 'node:fs';
 import {
   COMP_MODES, DEFAULT_COMP_MODE, DEFAULT_COMP_PLAN,
   normalizePlan, compShiftPoints, shiftedPrice, shiftBuild, quoteCharges, closingSheet,
@@ -91,8 +92,25 @@ console.log('\nE. lender-paid charges — the owner’s three rows');
 console.log('\nF. the waive — cash off the credit, then onto the buydown');
 {
   const c = quoteCharges('lenderPaid', PLAN, 103, LOAN, true);
-  ok(!lineOf(c, 'applicationFee') && !lineOf(c, 'commitmentFee'),
-    'F1 the two fee lines do not populate — "it should not populate as fees"');
+  // ⛔ THIS ASSERTION WAS RE-POINTED, NOT LOOSENED (2026-08-30). It used to read
+  // `!lineOf(c,'applicationFee')` — the line ABSENT. Its stated subject has always
+  // been the owner's *"it should not populate as fees"*: the borrower must not be
+  // CHARGED them. The owner then asked, on the term sheet, to *"list out the lender
+  // fees, because the next one, you're waiving the lender fees — you need to be able
+  // to see the difference"*, so the line is now LISTED at zero and marked waived.
+  // Both instructions hold at once, and what is asserted here is strictly MORE than
+  // before: the lines exist, they are marked waived, they carry $0, they carry what
+  // they WOULD have been, and they contribute nothing to what the borrower pays.
+  const appFee = lineOf(c, 'applicationFee');
+  const commFee = lineOf(c, 'commitmentFee');
+  ok(!!appFee && !!commFee,
+    'F1 both fee lines are LISTED — a waived column with two fewer rows hides the saving');
+  ok(appFee.waived === true && commFee.waived === true,
+    'F1a …each marked waived, so no surface can read the 0 as "this program has no such fee"');
+  eq(appFee.dollars, 0, 'F1b the application fee does not populate AS A FEE');
+  eq(commFee.dollars, 0, 'F1c …nor does the commitment fee');
+  eq(appFee.fullDollars, 1595, 'F1d …while carrying what it would have been, so the saving is visible');
+  eq(commFee.fullDollars, 500, 'F1e …and the same for the commitment fee');
   eq(c.waivedDollars, 2095, 'F2 $2,095 waived');
   eq(c.credit && c.credit.dollars, 1405, 'F3 the credit absorbs it: $3,500 − $2,095 = $1,405');
   eq(c.netDollars, -1405, 'F4 net unchanged by the waive — the same money, said once');
@@ -218,6 +236,33 @@ console.log('\nK. the closing sheet — totals summed FROM the charge list (owne
   const s2 = closingSheet(c, { purpose: 'Purchase', propertyValue: null, loanAmount: LOAN });
   ok(s2.downPaymentDollars === null && s2.cashToCloseDollars === s2.closingCostDollars,
     'K17 no value → no down payment; cash to close falls back to the closing cost');
+}
+
+console.log('\nL. the board never prints a waived fee as a row of $0.00');
+{
+  // ⛔ NO UNIT TEST OF THE OVERLAY CAN SEE THE SCREEN. `quoteCharges` LISTS a waived
+  // line at dollars:0 because the TERM SHEET must show it (the owner asked to see the
+  // difference against the option beside it). The staff pricing board renders the same
+  // array, and drawing that line raw prints "Application fee $0.00" — which reads as
+  // "this program has no application fee", the opposite of the truth. That board
+  // already answers the question better, with its "Lender fees waived — $X taken out
+  // of the figures above in cash" note, so it FILTERS the waived rows rather than
+  // drawing them. test-lt-pricer-screen-render R79 proves it in a real render; this
+  // pins the filter at the source, where the reason lives.
+  const src = readFileSync(new URL('../app-v2/src/longterm/LtPricer.jsx', import.meta.url), 'utf8')
+    // Strip comments first: the note explaining this rule necessarily names the very
+    // strings asserted below, so a guard that read comments would pass on prose alone.
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const list = src.slice(src.indexOf('export function ChargeList'));
+  const body = list.slice(0, list.indexOf('\nexport '));
+  ok(/charges\.lines\.filter\(\(l\) => l\.waived !== true\)/.test(body),
+    'L1 ChargeList draws only the lines that were actually charged');
+  ok(/shownLines\.map/.test(body),
+    'L2 …and maps THAT list, so no waived row can reach the screen');
+  ok(/shownLines\.length === 0/.test(body),
+    'L3 …and the "none" fallback keys off the drawn list, not the raw one');
+  ok(/waivedDollars > 0/.test(body) && /Lender fees waived/.test(body),
+    'L4 …with the waive summarised instead, so the saving is still on the screen');
 }
 
 if (bad) { console.error(`\n${bad} FAILED`); process.exit(1); }

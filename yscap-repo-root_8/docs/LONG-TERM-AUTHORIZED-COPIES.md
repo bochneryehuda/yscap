@@ -238,6 +238,47 @@ rtl-import app-v2/src/screens/Dashboard.jsx
 import src/lib/address-canon.js
 
 # ---------------------------------------------------------------------------
+# THE COMPANY'S SENDING IDENTITY — authorized in writing by the owner,
+# 2026-08-30, answering a direct question about the first Long-Term feature
+# that sends email (the daily rate-movement reports):
+#
+#   "Yes I'm giving you a written authorization to use the sender credentials
+#    from the short-term side. Send it out from lock desk @ YS Capital
+#    Whatever. Basically that should be the idea but follow the resend
+#    credentials."
+#
+# WHAT CROSSES, AND WHY IT IS THE TRANSPORT AND NOT THE EMAIL. A sending
+# domain's reputation, its DMARC alignment and its suppression list are
+# properties of THE COMPANY, not of a product: two independent senders on one
+# domain is how a domain's deliverability is damaged, and the second sender is
+# the one that gets it wrong. So Long-Term uses `src/lib/email/index.js` as a
+# TRANSPORT — hand it a rendered message, it picks the configured provider
+# (Resend, per the owner's direction) and sends. The same reasoning the owner
+# applied to the ClickUp connector on 2026-08-23: the WORKSPACE was the
+# company's, not RTL's.
+#
+# WHAT DOES NOT CROSS: RTL's notification machinery. No `notify.js`, no
+# `catalog.js`, no `template.js`, no digests, no in-app rows, no
+# `notifications` table. Long-Term builds its own message bodies in
+# `src/longterm/**` and hands the finished thing to the transport, exactly as
+# it has its own Encompass client and its own ClickUp client.
+#
+# THE FROM ADDRESS is the owner's ("lock desk @ YS Capital"), configured in the
+# hosting environment like every other address here — never a value in code.
+#
+# NOT USED YET, DELIBERATELY. The reports are Phase 2 and are not built. The
+# grant is recorded now, in the owner's own words, so the authorization is the
+# ledger entry rather than a chat message that scrolls away — the same shape as
+# the `address-canon.js` line above, which is likewise authorized and unused.
+# ---------------------------------------------------------------------------
+
+# The DIRECTIVE for this crossing is declared ONCE, further down, on the entry
+# that describes it in use (the order sender). Main authorized the same module
+# independently and in more detail on the same day; this block records the
+# SECOND owner conversation — the rate-movement reports — because the two grants
+# were given separately and both belong in the record. One crossing, one line.
+# ---------------------------------------------------------------------------
+
 # THE FILE-OVERVIEW SLIDE-OVER — authorized in writing by the owner, 2026-08-30:
 #   "Right now, the file overview is always displaying on the right side. We want
 #    to go and do the same thing that we have on the short term side, where we
@@ -481,6 +522,7 @@ sql-write service_contacts
 | 2026-08-14 | `rtl-import app-v2/src/App.jsx` + `rtl-import app-v2/src/components/StaffLayout.jsx` — the FRONT-END mount seam: the router mounts the Long-Term screens, and the staff shell renders the Short-Term / Long-Term switch | LT → RTL | *"You were authorized to touch that switch of the short-term shell."* Asked directly, because rule 5 forbids touching RTL to make LT work and the switch cannot exist without it. Deliberately as narrow as the back-end seam (`src/server.js`): these two files may reference LT code ONLY to mount it and to render the switch — no RTL screen may import an LT component for its own use, and no LT logic may move into a shared file | this PR |
 | 2026-08-17 | `rtl-import app-v2/src/screens/Dashboard.jsx` — the borrower's HOME SCREEN renders the Short-Term / Long-Term switch | LT → RTL | *"put the switch on the borrower's home screen"* — answering a direct question that named the cost: the client's long-term page was already built and routed at `/long-term`, and moving its entry point onto the borrower dashboard makes an RTL screen reference LT code, which the 2026-08-14 seam permits only per file, in writing. Scoped exactly as narrowly as the staff shell: this file imports ONE component (`BorrowerLongTermSwitch`) and renders it — no LT logic, no LT data read, no second LT import. Whether there is anything to switch TO is decided on the Long-Term side, so the RTL screen never carries that rule | this PR |
 | 2026-08-16 | `import src/lib/address-canon.js` — ZIP → city/state/county/county-FIPS lookup for the Long-Term DSCR pricer | RTL → LT | *"Yes, you have my written OK to reuse that."* Asked as one specific question: the vendor's own screen turns a ZIP into the full location before pricing, while our connector required the caller to supply the county FIPS and refused an incomplete location. Scoped to this one module used as a READ-ONLY lookup — NOT the RTL address writers, and Long-Term still rewrites no RTL address record. **CORRECTION (2026-08-16, same day): the authorized module was ultimately NOT used.** It returns a county NAME with no FIPS, refuses a bare ZIP (it is built for a full street address), and needs a `DATABASE_URL` — none of which suits a pure pricing path, and the owner separately corrected the premise: the screen is ZIP-driven, no street address is involved. The shipped answer is `src/longterm/lenderprice/zip-county.js` + a committed Census ZCTA table — LT-only, so not a crossing at all. The permission stands and is recorded here as granted, not as a description of the shipment | #1220 |
+| 2026-08-30 | `import src/lib/email/index.js` — the company's one email TRANSPORT, so Long-Term's rate-movement reports send from the same identity as everything else | RTL → LT | *"Yes I'm giving you a written authorization to use the sender credentials from the short-term side. Send it out from lock desk @ YS Capital Whatever. Basically that should be the idea but follow the resend credentials."* Asked as one specific question, naming the cost: Long-Term has no mailer, and a second sender on the company's own domain damages the domain's own deliverability — a sending identity is a fact about the COMPANY, the same reasoning that authorized the ClickUp workspace on 2026-08-23. Scoped to the TRANSPORT only: no `notify.js`, no `catalog.js`, no `template.js`, no digests, no in-app rows, no `notifications` table — Long-Term renders its own bodies and hands over a finished message. **AUTHORIZED, NOT YET USED** — the reports are Phase 2 and are not built; recorded now so the authorization lives in the ledger rather than in a chat message | this PR |
 | 2026-08-30 | `import app-v2/src/components/FileOverviewSlideOver.jsx` — the long-term file screen opens its overview in the ONE shared slide-over, behind a button, instead of an always-on right-hand rail | RTL → LT | *"Right now, the file overview is always displaying on the right side. We want to go and do the same thing that we have on the short term side, where we have a file overview button. It should be the same feel."* — and, governing the whole instruction, *"You need to make sure you're not copying the information. You're just using the information from the short-term side … Everything should share the code, so we don't need to rewrite the code … If the code is updated, he's also updating it."* Scoped to this ONE component, which is product-neutral by construction (it takes a `fetcher` and renders whatever `{header, sections[]}` it resolves) and is already mounted on three RTL surfaces with three different fetchers; Long-Term is the fourth caller and supplies its own payload, so the audience boundary stays with the caller. NOT a licence for any other RTL file-screen component | this PR |
 | 2026-08-14 | **The Encompass integration — brought into Long-Term as a self-contained BY-VALUE copy** (logic, authorization, requests, credentials mechanism, field map). Lives entirely in `src/longterm/encompass/**`. | RTL → LT | *"Pull in and copy: the logic of Encompass integration, the credentials of Encompass integration, the requests, the authorization. We need to start long-term loans with a full Encompass understanding … take also all the fields from this mapping and bring it in."* This is a specific, owner-directed exception to the 2026-08-03 "no shared integrations" line below (Encompass only; everything else still stays separate). | this PR |
 
@@ -502,6 +544,7 @@ write stays RTL-only). None of this knowledge is enforced — it is memory for t
 the back end of the entire thing will be different, the workflow will be different, the sets will be different,
 integrations will be different, it will be a brand new build. Don't assume anything that we're building on one
 thing to build that also on the other thing — it's totally separate."*
+| 2026-08-30 | The **PILOT term-sheet DESIGN and the YS Capital lockup**, copied BY VALUE into `src/longterm/termsheet/brand.js` + `src/longterm/termsheet/assets/pilot-lockup-light.png` | RTL → LT | *"Everything should be in our pilot branding the same way our RTL term sheet is. Follow the same kind of design that our RTL term sheet have … Look at the design we have on the RTL. Try to bring in that nice pilot design … Make sure to include our logos and our designs."* **What crossed is the DESIGN**: the palette (`INK` / `TEAL` / `GOLD` / `LINE` / ivory), the header-band geometry (a 76pt full-bleed ink band, a 2.2pt gold rule, the lockup 30pt tall at the left margin), the teal section band with its gold tab, the ivory accent row, the three-line footer, and the SHAPE of a disclosures page — each value read off `web/v2/tools/termsheet.js`'s own `header()` / `band()` / `rowIn` / `footer()` / `disclosuresPage()`. **NOT ONE LINE OF RTL LOGIC CROSSED, and it may not**: that file is a FROZEN RTL pricing engine, so requiring it would put a frozen engine on Long-Term's render path and break rule 4 outright. The lockup is the same PNG the RTL sheet embeds (`web/v2/tools/rb-logo.js`), extracted to its own asset so Long-Term reads no RTL file at runtime. The disclosure TEXT is deliberately NOT copied — the RTL page describes a business-purpose bridge loan (minimum earned interest, a deferred origination fee at exit, construction draws) and a 30-year DSCR rental loan has none of those, so copying it would put terms on the document that are not terms of the loan | this PR |
 
 ## Log of things we ASKED for and were told NO / not yet
 

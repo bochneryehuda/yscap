@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**935 objects**, and a database rebuilt from the Prisma
+**940 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 645 numbered migrations in `db/` (highest `db/648`) remain the only thing that builds this database.
+rebuild a database from them.** The 646 numbered migrations in `db/` (highest `db/649`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 402 |
-| Columns | 6444 |
+| Tables | 405 |
+| Columns | 6478 |
 | Triggers | 37 |
 | Functions | 140 |
-| CHECK constraints | 341 |
+| CHECK constraints | 346 |
 | Generated columns | 12 |
 | Partial indexes | 405 |
-| Primary keys | 402 |
-| Foreign keys | 821 |
+| Primary keys | 405 |
+| Foreign keys | 825 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1390 |
+| Indexes (all kinds) | 1399 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -639,7 +639,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (341)
+## CHECK constraints (346)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -900,6 +900,11 @@ the live database.
 - **lt_ppe_rule_source_chk** on `lt_ppe_rule`
 - **lt_ppe_rule_suggestion_status_chk** on `lt_ppe_rule_suggestion`
 - **lt_report_definitions_visibility_check** on `lt_report_definitions`
+- **lt_term_sheet_created_by_chk** on `lt_term_sheet`
+- **lt_term_sheet_kind_chk** on `lt_term_sheet`
+- **lt_term_sheet_mode_chk** on `lt_term_sheet`
+- **lt_term_sheet_scenario_mode_chk** on `lt_term_sheet_scenario`
+- **lt_term_sheet_scenario_parent_chk** on `lt_term_sheet_scenario`
 - **lt_vor_envelopes_method_chk** on `lt_vor_envelopes`
 - **lt_vor_envelopes_status_chk** on `lt_vor_envelopes`
 - **lt_vor_returns_source_chk** on `lt_vor_returns`
@@ -983,7 +988,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (821)
+## Foreign keys (825)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1561,6 +1566,10 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lt_staff_links** → `staff_users` — `FOREIGN KEY (confirmed_by) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_staff_links** → `lt_encompass_users` — `FOREIGN KEY (encompass_login_id) REFERENCES lt_encompass_users(login_id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_staff_links** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_term_sheet** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_term_sheet_cart** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_term_sheet** → `staff_users` — `FOREIGN KEY (created_by_staff) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_term_sheet** → `lt_term_sheet` — `FOREIGN KEY (supersedes) REFERENCES lt_term_sheet(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_vor_envelopes** → `lt_vor_forms` — `FOREIGN KEY (form_id) REFERENCES lt_vor_forms(id) ON DELETE SET NULL`
 - **lt_vor_envelopes** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
 - **lt_vor_forms** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
@@ -1881,7 +1890,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 402 primary keys and 1390 indexes is
+Every one of the 405 primary keys and 1399 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

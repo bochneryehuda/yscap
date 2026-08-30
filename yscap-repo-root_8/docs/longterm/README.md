@@ -55,6 +55,11 @@ alone will break.
 | **`LOS-BUILD-STRUCTURE.md`** | **The plan** — what is built, what comes next, and in what order |
 | **`LOS-VISION-AIM-PORTAL.md`** | **The portal the owner wants this to feel like**, in his own words. Direction, not a spec — every section needs his confirmation before it is built |
 | **`AUDIENCE-RULES.md`** | **HARD RULE** — who may see what, and why the investor's name never reaches a borrower or a broker |
+| **`BORROWER-PRICING-MASTER-PLAN.md`** | **RESEARCH, not built** — the borrower-facing DSCR Pricing engine: the four-gate entitlement chain (company off → officer on → borrower), per-officer and per-borrower investor visibility, per-borrower pricing overrides, the data model, the API, the phasing, and the open questions |
+| **`BORROWER-PRICING-LANGUAGE.md`** | **RESEARCH** — how price is said to a borrower: the vocabulary, the worked rate ladder, and the finding that under the company defaults the two compensation positions cost the borrower exactly the same |
+| **`TERM-SHEETS-AND-COMPARISON.md`** | **PHASE 1 BUILT (officer side, 2026-08-30), behind `termSheet.officerEnabled` which ships OFF; the borrower side is research** — the term sheet (ID, frozen snapshot, replay, PDF) and the two comparison workflows, with the anchor rule and the break-even arithmetic. §13a records what the build changed, including the pdf-lib measurement trap that put text past the margin |
+| **`PRICING-RATE-MOVEMENT-REPORTS.md`** | **RESEARCH** — the daily "what moved" reports for loan officers, measured by price and not by rate, with the company default at 1:30 PM New York on weekdays |
+| **`PREPAY-PENALTY-MAPPING.md`** | **RESEARCH** — the declared blocker: 19 vendor structures against the 7 terms and 8 types our own book actually uses, why the two describe prepayment on different axes, and the probe that settles it |
 
 Outside this folder:
 `docs/LONG-TERM-LOANS-SEPARATION-CHARTER.md` (why RTL and LT are two systems),

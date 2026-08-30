@@ -230,6 +230,16 @@ async function main() {
       // stored file. Both answer their own 404 on the no-such-loan id.
       `/api/lt/vor/loans/${NO_LOAN}`,
       `/api/lt/vor/loans/${NO_LOAN}/preview.pdf`,
+      // TERM SHEETS (db/649). Four reads, and each opens a different query that a
+      // phantom column would answer as a confident empty rather than an error:
+      // the officer's own issued sheets, the comparison cart (which ALSO reads the
+      // company settings, so the switch's own read is exercised), and the two
+      // replay doors on an ID nobody issued — where the route's own 404 proves
+      // the normalizer and the SELECT both ran.
+      '/api/lt/dscr/term-sheet',
+      '/api/lt/dscr/term-sheet/cart',
+      '/api/lt/dscr/term-sheet/TS-ZZZZZZ',
+      '/api/lt/dscr/term-sheet/TS-ZZZZZZ/pdf',
       // The ClickUp syncing section (#36). On the no-such-loan id the scoped
       // loader answers its own 404 — the route's uuid check + SELECT both run,
       // so a phantom column in either would surface here as a 500.
