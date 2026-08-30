@@ -39,6 +39,7 @@
 const db = require('../db');
 const vocab = require('./vocabulary');
 const { ownerOf, ownerWhere } = require('../../lib/condition-owner');
+const audience = require('../audience');
 
 const CLIENT_VISIBLE = new Set(['external', 'both']);
 
@@ -126,7 +127,30 @@ async function forLoan(loanId, opts = {}) {
                 WHERE d.checklist_item_id = c.id AND d.is_current) AS file_count,
               (SELECT count(*) FROM documents d
                 WHERE d.checklist_item_id = c.id AND d.is_current
-                  AND d.review_status = 'accepted') AS accepted_count
+                  AND d.review_status = 'accepted') AS accepted_count,
+              -- WHY A REJECTED CONDITION HAS TO SAY WHY, TO THE BORROWER TOO.
+              -- Rejecting a document sets the condition back to outstanding (see
+              -- condition-docs/review.js). With no reason the borrower watches a
+              -- condition re-open unexplained and uploads the same wrong document
+              -- again, which is the whole cost of leaving it out.
+              --
+              -- THE TWO SOURCES ARE THE ONES THE SHORT-TERM BORROWER DOOR READS,
+              -- in its order: the condition's own borrower-SAFE issue reason,
+              -- then the newest rejected document's reason. The issue reason is
+              -- written by short-term paths only and is always NULL on a
+              -- long-term row today; it is read anyway so that the day anything
+              -- writes one, this door already shows the better answer instead of
+              -- silently omitting it. The internal note is never a candidate --
+              -- it is precisely the field this pair exists to avoid.
+              --
+              -- KEEP THIS COMMENT CLAUSE-FREE AND BACKTICK-FREE. It sits inside a
+              -- SQL template literal: a backtick ends the literal outright, and
+              -- the separation gate parses the prose as SQL, so an ordinary
+              -- sentence naming a table reads as a cross-product query.
+              COALESCE(c.issue_reason,
+                (SELECT d.rejection_reason FROM documents d
+                  WHERE d.checklist_item_id = c.id AND d.review_status = 'rejected'
+                  ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1)) AS rejection_reason
          FROM checklist_items c
          LEFT JOIN checklist_templates t ON t.id = c.template_id
          LEFT JOIN staff_users sat ON sat.id = c.signed_off_by
@@ -231,6 +255,17 @@ function shape(r, internal, docs = []) {
       ...base,
       label: r.borrower_label || r.label,
       hint: r.borrower_hint || null,
+      /* THE REASON A DOCUMENT CAME BACK, SCRUBBED. This is the one piece of staff
+         free text a client is entitled to, because rejecting their document is
+         an instruction to them and an instruction with no reason cannot be
+         followed. It goes through the investor scrub for exactly the reason the
+         charter names: it is a sentence a human typed, so it is the second
+         defence's own case, not the whitelist's. Null unless something really
+         was rejected — an empty reason on a healthy condition would read as a
+         problem nobody has. */
+      rejectionReason: r.rejection_reason
+        ? audience.scrubInvestorNames(String(r.rejection_reason), 'borrower')
+        : null,
       // DELIBERATELY ABSENT for a client: the internal note, who signed it off,
       // why it was waived, the condition's own settings, and whether the
       // template is switched on. Every one of those is a fact about how WE work.

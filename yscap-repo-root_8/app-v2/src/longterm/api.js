@@ -51,6 +51,16 @@ export const ltApi = {
   // It answers 200 with `enabled:false` when the owner has not switched the
   // borrower-facing side on, so the portal can tell "off" from "broken".
   myLoans: () => ltGet(lt('/my/loans')),
+  /* THE BORROWER'S OWN CONDITIONS, on the same borrower-authenticated mount as
+     their loans list. Their file is resolved from the SESSION plus the loan id —
+     never from anything the page passes about who they are. */
+  myConditions: (loanId) => ltGet(lt(`/my/loans/${encodeURIComponent(loanId)}/conditions`)),
+  /* THE STREAMED DOOR, for the same reason the staff side takes it: a borrower
+     photographing a bank statement on a phone is exactly the upload that would
+     hit the base64 ceiling. */
+  myConditionDocUpload: (loanId, conditionId, body) => ltUpload(
+    lt(`/my/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(conditionId)}/documents/binary`),
+    { ...body, checklistItemId: conditionId }),
 
   // The BOOK — the owner's census of every long-term file, with the folder, the
   // status and the milestone each one sits in, plus how much of the borrower and
