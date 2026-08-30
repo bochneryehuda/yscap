@@ -482,6 +482,36 @@ console.log('Two programs, one loan — parity');
   const twice = vendorMargin.applyToBoard(held, 'loannex');
   ok(twice === held,
     'MARGIN-5 applying it twice is a NO-OP, not 0.50 — a board already held back refuses to be held back again');
+
+  // ---- SHAPES THE PARSER DOES NOT PRODUCE TODAY --------------------------
+  // ⛔ `Number.isFinite(Number(v))` IS NOT "IS THIS A NUMBER". `Number(null)`,
+  // `Number('')`, `Number(false)` and `Number([])` are all 0, so the loose form
+  // calls each of them finite and this module then does arithmetic on it. The
+  // LoanNEX parser skips a rung with no price and always sets points, so none of
+  // this is reachable through it — which is exactly why it needs pinning: the
+  // guard is exported, a vendor payload is not ours to promise, and every one of
+  // these failures is silent.
+  {
+    const one = (rung) => vendorMargin.applyToBoard(
+      { source: 'loannex', programs: [{ rungs: [rung] }] }, 'loannex').programs[0].rungs[0];
+
+    const nullPoints = one({ rate: 7, price: 101.5, points: null });
+    ok(Math.abs(nullPoints.price + nullPoints.points - 100) < 1e-9,
+      `MARGIN-10 a rung whose points are null still comes out with price and points describing ONE number (${nullPoints.price} + ${nullPoints.points}) — the loose guard read null as 0 and returned 0.25, so the two summed to 101.5`);
+
+    const noPrice = one({ rate: 7, price: null });
+    ok(noPrice.price === null && noPrice.vendorPrice === undefined,
+      `MARGIN-11 …and a rung the vendor never priced is LEFT ALONE, never given a fabricated one (got ${JSON.stringify(noPrice.price)}) — the loose guard turned a null price into −0.25`);
+
+    let survived = true;
+    try {
+      const withNull = vendorMargin.applyToBoard(
+        { source: 'loannex', programs: [{ rungs: [null, { rate: 7, price: 101.5, points: -1.5 }] }] }, 'loannex');
+      survived = withNull.programs[0].rungs[1].price === 101.25;
+    } catch (_) { survived = false; }
+    ok(survived,
+      'MARGIN-12 …and one null rung in the array does not take the WHOLE board down with it — the summary pass read its points without checking it existed');
+  }
   const lpBoard = { programs: [{ rungs: [{ rate: 7, price: 100.5, points: -0.5 }] }] };
   ok(vendorMargin.applyToBoard(lpBoard, 'lenderprice') === lpBoard && vendorMargin.holdbackFor('lenderprice') === 0,
     'MARGIN-6 Lender Price holds back NOTHING here — its feed already carries ours, and taking it again would double it');

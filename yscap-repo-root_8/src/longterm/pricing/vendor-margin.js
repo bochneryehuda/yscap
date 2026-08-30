@@ -58,7 +58,26 @@ const MARGIN_HOLDBACK_POINTS = {
 };
 
 const r3 = (n) => Math.round(Number(n) * 1000) / 1000;
-const nn = (v) => Number.isFinite(Number(v));
+/**
+ * Is this actually a number?
+ *
+ * ⛔ `Number.isFinite(Number(v))` IS NOT THAT TEST, and the difference is not
+ * academic here. `Number(null)`, `Number('')`, `Number(false)` and `Number([])`
+ * are all 0, so the loose form calls every one of them a finite number — and
+ * this module then does arithmetic on it. Measured on the loose form:
+ *   · a rung with a real price and `points: null` came out with points 0.25
+ *     instead of −1.25, so its price and points summed to 101.5 rather than 100
+ *     — a board contradicting itself, which is the one thing the shift-don't-
+ *     recompute rule above exists to prevent;
+ *   · a rung with `price: null` was given a FABRICATED price of −0.25, on a
+ *     quote the vendor never priced.
+ * The LoanNEX parser happens to skip both shapes today, so neither is reachable
+ * through it — but this function is exported and a vendor payload is not ours to
+ * promise. A number is a number, or a string that spells one; nothing else.
+ */
+const nn = (v) => (typeof v === 'number'
+  ? Number.isFinite(v)
+  : (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))));
 
 /**
  * The most a holdback may be set to, in points.
@@ -186,8 +205,11 @@ function applyToBoard(board, source, opts) {
   // The board's own summary figures are derived from the rungs, so they move too
   // — a `maxPrice` still quoting the raw number would contradict every row.
   for (const p of programs) {
-    p.minPoints = p.rungs.reduce((m, r) => (nn(r.points) && (m == null || r.points < m) ? r.points : m), null);
-    p.maxPrice = p.rungs.reduce((m, r) => (nn(r.price) && (m == null || r.price > m) ? r.price : m), null);
+    // `r &&` because a null rung in the array threw here and took the WHOLE
+    // board with it — the rung loop above returns a null rung untouched, and
+    // then this read its `.points`.
+    p.minPoints = p.rungs.reduce((m, r) => (r && nn(r.points) && (m == null || r.points < m) ? r.points : m), null);
+    p.maxPrice = p.rungs.reduce((m, r) => (r && nn(r.price) && (m == null || r.price > m) ? r.price : m), null);
   }
   return {
     ...board,
