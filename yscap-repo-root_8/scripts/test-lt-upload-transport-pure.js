@@ -41,6 +41,18 @@
 
 const fs = require('fs');
 const path = require('path');
+/* THE SHARED STRIPPER, and using it here is not tidiness — it is the difference
+   between this guard reading the file and reading a hole where the file was.
+   The obvious two-line idiom (`replace(/\/\*[\s\S]*?\*\//g,'')` then the line
+   comments) removes BLOCK comments FIRST, so it cannot tell that a `/*` it
+   found is inside a LINE comment. `app-v2/src/longterm/api.js` — one of the
+   three files this suite reads — opens with `// Every call goes to /api/lt/*`,
+   and that stray `/*` makes the naive idiom swallow everything down to the next
+   genuine `*` `/`: measured, 86 of its 156 live lines, its own `export const
+   ltApi = {` among them. THE DIRECTION THAT MATTERS is that a "must not appear"
+   assertion PASSES over a file the stripper ate — a guard reporting a clean bill
+   of health on a file it never read, invisible in a green build. */
+const { stripComments } = require('./lib/strip-comments.js');
 
 const REPO = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(REPO, p), 'utf8');
@@ -49,9 +61,7 @@ const read = (p) => fs.readFileSync(path.join(REPO, p), 'utf8');
    removed the base64 reader necessarily NAMES it in the note explaining why, and
    a guard that read comments would fail on its own explanation and then get
    "fixed" by deleting the explanation. */
-const noComments = (src) => src
-  .replace(/\/\*[\s\S]*?\*\//g, '')
-  .replace(/^\s*\/\/.*$/gm, '');
+const noComments = (src) => stripComments(src);
 
 let pass = 0;
 let fail = 0;

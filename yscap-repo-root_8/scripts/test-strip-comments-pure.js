@@ -49,8 +49,31 @@ check(NEEDLE.test(apiRaw), 'the call really is in the file — the guard was not
 check(!NEEDLE.test(naive(apiRaw)),
   'and the OLD stripper loses it, so this test is about a real defect and not a hypothetical');
 check(NEEDLE.test(stripComments(apiRaw)), 'the shared stripper keeps it');
-check(stripComments(apiRaw).length > naive(apiRaw).length * 5,
-  'keeping an order of magnitude more of the file than the old idiom left standing');
+/* HOW BIG THE DAMAGE IS, COUNTED IN LIVE CODE — not in bytes.
+   This asked for a 5:1 BYTE ratio and went red on a commit that added a block
+   comment to `api.js` around line 240. Nothing about the defect changed: the
+   stray `/*` on line 3 still opens a fake block, it simply now runs to that new
+   `*` `/` instead of to the one 282 lines down, so it swallows fewer BYTES.
+   A byte ratio is a statement about how much COMMENTARY the file happens to
+   carry, which moves every time anybody writes a note in it; the defect is
+   about how much CODE is lost. So the claim is made in the terms it is really
+   about — and it comes out stronger for it: the naive idiom does not lose a
+   token, it loses the module's own `import` and its `export const ltApi = {`,
+   which is to say it loses the file. The floor sits far under the measured
+   figure (86 of 156 live lines at the time of writing) because the exact count
+   legitimately moves with the file; what cannot move, while a line comment
+   above the export contains a stray `/*`, is that the loss is a long
+   contiguous run rather than a slip. */
+const liveLines = (t) => new Set(String(t).split('\n').map((l) => l.trim()).filter(Boolean));
+{
+  const kept = liveLines(stripComments(apiRaw));
+  const naiveKept = liveLines(naive(apiRaw));
+  const lost = [...kept].filter((l) => !naiveKept.has(l));
+  check(lost.length >= 10,
+    `the old idiom loses a long run of this file's live code, not a token (${lost.length} lines)`);
+  check(lost.some((l) => /^export const ltApi = \{/.test(l)),
+    '…including the module\u2019s own export, which is to say it loses the file');
+}
 check(/\/api\/lt\//.test(apiRaw) && !/Every call goes to/.test(stripComments(apiRaw)),
   'the line comment carrying the stray slash-star is itself removed, comment and all');
 
