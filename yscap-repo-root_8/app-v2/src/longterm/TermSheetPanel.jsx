@@ -443,6 +443,14 @@ export function TermSheetLookup() {
         <div style={{ marginTop: 12 }}>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'baseline' }}>
             <span style={{ fontSize: 20, fontWeight: 800, color: GOLD_TEXT, ...NUM }}>{d.code}</span>
+            {/* WHICH of the three documents this was, read off the stored
+                snapshot. A sheet issued before the three documents existed
+                carries no `docKind`, so it falls back to the rendering shape —
+                which is exactly what this line has always shown. */}
+            <span style={{ fontSize: 12, fontWeight: 700, color: INK }}>
+              {KIND_TITLE[(d.snapshot && d.snapshot.docKind)
+                || (d.issued && d.issued.kind === 'comparison' ? 'comparison' : 'term_sheet')] || 'Term sheet'}
+            </span>
             <span style={{ fontSize: 12, color: MUTED }}>
               {d.issued && d.issued.borrowerName ? `for ${d.issued.borrowerName} · ` : ''}
               issued {String(d.issued && d.issued.at || '').slice(0, 10)}

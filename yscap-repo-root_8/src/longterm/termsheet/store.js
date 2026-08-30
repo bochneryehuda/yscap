@@ -229,6 +229,15 @@ async function listForStaff(staffId, { limit = 50, offset = 0 } = {}, dbc = null
     `SELECT id, code, borrower_name, kind, mode, waive_lender_fees,
             priced_at, expires_at, created_at,
             snapshot #>> '{members,0,consumerLabel}' AS first_program,
+            -- WHICH of the three documents this was. It lives in the snapshot
+            -- rather than in a column because the kind column is CHECK-constrained
+            -- to the RENDERING shape (one option or several) and a scenario
+            -- comparison and a comparison are both "several" — the finer question
+            -- is the document's own, frozen with it. A sheet issued before the
+            -- three documents existed answers NULL, and the screen falls back to
+            -- the shape, which is what it has always shown.
+            -- (No backticks in here: this is inside a JS template literal.)
+            snapshot ->> 'docKind' AS doc_kind,
             jsonb_array_length(COALESCE(snapshot -> 'members', '[]'::jsonb)) AS option_count
        FROM lt_term_sheet
       WHERE created_by_staff = $1::uuid
