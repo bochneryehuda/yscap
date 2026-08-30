@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
+import LtInvestorLinks from './LtInvestorLinks.jsx';
 import { money, money2, noteRate as rate, price, points as pts } from './format.js';
 // The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
@@ -51,7 +52,7 @@ import {
  * The end state they named is that this gets merged BACK into `LtPricer.jsx`; until then:
  *
  *   · `LtPricer.jsx` is the live General Pricing Engine and is NOT to be edited to serve this one.
- *   · Every divergence from it is marked `FORK n of 7:` below, and there are only seven.
+ *   · Every divergence from it is marked `FORK n of 8:` below, and there are only eight.
  *   · `scripts/test-lt-combined-pricer-fork.mjs` records the general screen's fingerprint AT THE
  *     FORK and FAILS THE BUILD when it moves — so "the general engine changed and the copy did
  *     not" is caught by CI rather than found months later on a board somebody was pricing on.
@@ -246,7 +247,7 @@ export function buildRateStack(programs) {
         adjustedPoints: nn(b.adjustedPoints) ? b.adjustedPoints : null,
         monthlyPi: o && o.monthlyPayment && nn(o.monthlyPayment.monthlyPI) ? o.monthlyPayment.monthlyPI : null,
         expired: !!(o && o.rateSheet && o.rateSheet.expired),
-        // FORK 2 of 7 — STALENESS HAS THREE STATES HERE, not two. Lender Price states whether the
+        // FORK 2 of 8 — STALENESS HAS THREE STATES HERE, not two. Lender Price states whether the
         // sheet a quote priced from has expired; LoanNEX states nothing on the subject. The general
         // engine reads `!!expired`, which turns "we do not know" into "not expired" — a reassurance
         // LoanNEX never gave us, on a board where 37-61% of the other vendor's rows have genuinely
@@ -892,7 +893,7 @@ export function PriceBuild({ o, comp }) {
     })
     : null;
   const adj = Array.isArray(o && o.adjustments) ? o.adjustments : [];
-  /* FORK 6 of 7 — read straight off the option the server built. Nothing here is
+  /* FORK 6 of 8 — read straight off the option the server built. Nothing here is
      re-derived in the browser: the server's own breakdown layer already decided
      what "provided" means and what wording an absent block gets. */
   const elig = (o && o.eligibility) || null;
@@ -927,7 +928,7 @@ export function PriceBuild({ o, comp }) {
   return (
     <div style={{ background: '#fff', borderRadius: 10, padding: 14, marginTop: 10, border: `1px solid ${GOLD}33` }}>
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
-        {/* FORK 6 of 7 — LAY OUT ALL THE DETAILS THE SAME WAY, WHATEVER PRICED IT.
+        {/* FORK 6 of 8 — LAY OUT ALL THE DETAILS THE SAME WAY, WHATEVER PRICED IT.
             Owner-directed 2026-08-30: "Our pilot should lay out all the details the same
             layout no matter if it comes from with software."
 
@@ -953,7 +954,7 @@ export function PriceBuild({ o, comp }) {
                   display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
                   padding: '5px 0 5px 12px', borderBottom: '1px solid rgba(20,27,34,.07)',
                 }}>
-                  {/* FORK 6 of 7 — the grid CELL, not just the grid. One rate sheet names
+                  {/* FORK 6 of 8 — the grid CELL, not just the grid. One rate sheet names
                       only the grid ("FICO/CLTV"); the other also states the bucket it drew
                       from ("FICO : 760 - 779, CLTV : 70.01% - 75.00%"), which is the actual
                       answer to "why is this price this price" and was being thrown away.
@@ -992,7 +993,7 @@ export function PriceBuild({ o, comp }) {
         </Track>
       </div>
 
-      {/* FORK 7 of 7 — THE TERM SHEET CONTROLS ARE DELIBERATELY ABSENT HERE.
+      {/* FORK 7 of 8 — THE TERM SHEET CONTROLS ARE DELIBERATELY ABSENT HERE.
 
           The general engine gained them on 2026-08-30 (QuoteTermSheetActions /
           ComparisonStrip / useTermSheetCart) and the fork fingerprint caught the
@@ -1012,7 +1013,7 @@ export function PriceBuild({ o, comp }) {
           drifting in with a future port. When the owner promotes this engine, the
           port is one change and the guard comes off with it. */}
 
-      {/* FORK 6 of 7 — WHAT THE PROGRAM CHECKED, and anything it said out loud.
+      {/* FORK 6 of 8 — WHAT THE PROGRAM CHECKED, and anything it said out loud.
 
           One rate sheet publishes every criterion it screened, with its OWN wording of the
           requirement and a pass/fail on each; the other publishes none. The block renders in
@@ -1731,7 +1732,7 @@ export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp, invSe
 
 /* ── the screen ───────────────────────────────────────────────────────────── */
 /**
- * FORK 4 of 7 — THE COMBINED ENGINE'S OWN PANEL. The general engine has no concept of a second
+ * FORK 4 of 8 — THE COMBINED ENGINE'S OWN PANEL. The general engine has no concept of a second
  * program, so this exists only here.
  *
  * It answers the two questions a person auditing this board actually has: WHAT IS NOT ON IT (and
@@ -1788,7 +1789,7 @@ export default function LtCombinedPricer() {
   const [err, setErr] = useState(null);
   const [res, setRes] = useState(null);
   const [view, setView] = useState('priced');
-  /* FORK 4 of 7 — the admin's "click to see the source of the info". OFF by default, because the
+  /* FORK 4 of 8 — the admin's "click to see the source of the info". OFF by default, because the
      owner's rule is that the board reads as ONE SYSTEM until somebody asks. Ticking it re-prices:
      the server strips the vendor before the answer leaves, so there is nothing on this side to
      un-mask. */
@@ -1924,7 +1925,7 @@ export default function LtCombinedPricer() {
      empty and the picker says so; the board simply shows everybody. */
   useEffect(() => {
     let live = true;
-    // FORK 3 of 7 — the picker's roster is EVERY investor the combined engine knows, not Lender
+    // FORK 3 of 8 — the picker's roster is EVERY investor the combined engine knows, not Lender
     // Price's alone. An investor this board shows from LoanNEX and Lender Price has never heard of
     // would otherwise be un-selectable in the filter and would read as missing from the answer.
     ltApi.combinedInvestors()
@@ -2129,7 +2130,7 @@ export default function LtCombinedPricer() {
     const t0 = Date.now();
     timer.current = setInterval(() => setElapsed(Math.round((Date.now() - t0) / 100) / 10), 200);
     try {
-      // FORK 1 of 7 — the only door that differs. The COMBINED engine prices both programs and
+      // FORK 1 of 8 — the only door that differs. The COMBINED engine prices both programs and
       // hands back the same `programs[].options[].priceBuild` shape this screen already reads
       // (src/longterm/pricing/quote-shape.js `programsForBoard`), so everything below is unchanged.
       const r = await ltApi.combinedPrice(toScenario(f), { full: true, revealSource: reveal });
@@ -2216,7 +2217,7 @@ export default function LtCombinedPricer() {
 
   return (
     <LtLayout title="Combined Pricing Engine">
-      {/* FORK 5 of 7 — SAY WHAT THIS SCREEN IS, at the top, before anything else. The owner is
+      {/* FORK 5 of 8 — SAY WHAT THIS SCREEN IS, at the top, before anything else. The owner is
           auditing a second engine beside the live one (*"Test everything should just be testing…
           so I can audit everything before I want to go live to the general pricing engine"*), and
           two pricing screens that look identical is exactly how somebody quotes a borrower off the
@@ -2570,6 +2571,30 @@ export default function LtCombinedPricer() {
               hidden={res.hidden} settings={res.settings} revealed={revealSrc} busy={busy}
               onReveal={(v) => { setRevealSrc(v); run(null, { reveal: v }); }}
             />
+            {/* FORK 8 of 8 — LINK TWO SPELLINGS OF ONE INVESTOR, FROM THE BOARD THAT
+                FOUND THEM. The general engine prices ONE program, so it has no concept
+                of the same investor spelled two ways and nothing here belongs in it.
+
+                Owner-directed 2026-08-30: *"Those investors are spelled differently and
+                have different names, but we need to be able to link it and say, 'This
+                investor and this investor are the same.' … We should be able to link them
+                together side by side and then select this one."*
+
+                MOUNTED HERE AS WELL AS ON THE SETTINGS SCREEN, and it is the SAME
+                component both times — never a second arrangement, or the two screens
+                would disagree about what is linked. What only exists here is the live
+                side-by-side: `investorPairing` is what the two programs ACTUALLY called
+                each investor on THIS board, so this is the one place a person can see the
+                two names together and the one moment an unrecognised spelling is in front
+                of them. Drawing it on the settings screen would mean pricing two vendors
+                to open a settings page.
+
+                A re-price is deliberately NOT fired on save: the links change how the NEXT
+                board is joined, and silently re-pricing under somebody would replace the
+                answer they are reading. The person presses Price again. */}
+            {res.investorPairing && (
+              <LtInvestorLinks pairing={res.investorPairing} />
+            )}
             <div style={card}>
               <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'baseline' }}>
                 <div style={{ flex: '1 1 260px' }}>

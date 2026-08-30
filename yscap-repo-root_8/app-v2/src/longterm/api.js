@@ -202,6 +202,19 @@ export const ltApi = {
   // not express "take this setting back off and return the investor to its
   // pre-fill", which is the thing somebody auditing this will do most often.
   combinedSaveInvestors: (investors) => ltPut(lt('/dscr/combined/investors'), { investors }),
+  // "THIS INVESTOR AND THIS INVESTOR ARE THE SAME" — the human-recorded links, plus
+  // the pick-list of canonical investors so nobody has to type a key. A free read
+  // of our own server; it prices nothing, so a screen may fetch it from an effect.
+  combinedInvestorLinks: () => ltGet(lt('/dscr/combined/investor-links')),
+  // The WHOLE map, always — a partial write cannot express a link somebody took
+  // away, and a deleted link quietly surviving is the worst outcome here. The
+  // server REFUSES a bad map whole (422 naming each row) rather than storing the
+  // half of it that happened to be readable.
+  combinedSaveInvestorLinks: (links) => ltPut(lt('/dscr/combined/investor-links'), { links }),
+  // What might this spelling be? A PROPOSAL — nothing here writes. An automatic
+  // join would put one investor's pricing under another investor's name, and that
+  // name is the one thing a client may see.
+  combinedLinkSuggest: (name) => ltGet(lt(`/dscr/combined/investor-links/suggest?name=${encodeURIComponent(name)}`)),
   // Is each program configured? No login attempted, no vendor reached.
   combinedHealth: () => ltGet(lt('/dscr/combined/health')),
 

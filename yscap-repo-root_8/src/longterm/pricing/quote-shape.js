@@ -56,6 +56,21 @@
  */
 
 const round3 = (n) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n) * 1000) / 1000);
+
+/**
+ * A loan term, in BOTH units, from whichever one the vendor stated.
+ *
+ * The only judgement here is refusing to guess: a term that is not a positive
+ * finite number yields nulls rather than a 0 that would read as "no term". The
+ * conversion itself is arithmetic, not a rule, so there is nothing to get wrong
+ * — which is exactly why it belongs in one place rather than at each reader.
+ */
+function termPair(value, unit) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return { termMonths: null, termYears: null };
+  if (unit === 'months') return { termMonths: Math.round(n), termYears: round3(n / 12) };
+  return { termMonths: Math.round(n * 12), termYears: round3(n) };
+}
 const numOrNull = (n) => (n == null || n === '' || !Number.isFinite(Number(n)) ? null : Number(n));
 
 /**
@@ -89,7 +104,21 @@ function emptyOption() {
     comp: null,
     fees: null,
     terms: {
-      loanAmount: null, term: null, termInMonths: false, dayLock: null, cushionedLockDays: null,
+      loanAmount: null, term: null, termInMonths: false,
+      // ── THE SAME FIELD NAME MEANT TWO DIFFERENT THINGS ────────────────────
+      // MEASURED by the combined audit, 2026-08-30: on one 30-year loan Lender
+      // Price fills `term` with 30 and LoanNEX fills it with 360. Neither is
+      // wrong — `termInMonths` says which, and both mappers set it correctly —
+      // but a reader who takes `term` alone sees 30 against 360 for two
+      // identical loans, and that is the exact "the meaning is not the same"
+      // the owner asked to be rid of.
+      //
+      // So the UNITS ARE IN THE NAME. `termMonths` and `termYears` are derived
+      // once, here, from whichever the vendor stated, and every consumer reads
+      // one of them without having to know a flag exists. `term` and
+      // `termInMonths` are untouched, so nothing that reads them today changes.
+      termMonths: null, termYears: null,
+      dayLock: null, cushionedLockDays: null,
       mortgageType: null, loanPurpose: null, interestOnly: null, interestOnlyTerm: null,
       amortizationType: null, dscr: null, fico: null, ltv: null, cltv: null, dti: null, hti: null,
     },
@@ -144,6 +173,7 @@ function optionsFromLoanNex(board, opts = {}) {
           interestOnlyTerm: p.interestOnlyTerm == null ? null : p.interestOnlyTerm,
           amortizationType: p.amortizationType || null,
           term: p.termInMonths == null ? null : p.termInMonths, termInMonths: p.termInMonths != null,
+          ...termPair(p.termInMonths, 'months'),
           dscr: numOrNull(r.dscr), fico: numOrNull(opts.fico),
           ltv: numOrNull(opts.ltv), loanPurpose: opts.loanPurpose || null,
         },
@@ -178,7 +208,12 @@ function optionsFromLenderPrice(options) {
     adjustments: o.adjustments || [],
     rateAdjustments: o.rateAdjustments || [],
     holdback: o.holdback || null, comp: o.comp || null, fees: o.fees || null,
-    terms: { ...(o.terms || {}) },
+    terms: {
+      ...(o.terms || {}),
+      // Lender Price states the term in YEARS and carries its own flag for the
+      // rare leaf that does not; the flag is honoured rather than assumed.
+      ...termPair((o.terms || {}).term, (o.terms || {}).termInMonths ? 'months' : 'years'),
+    },
     monthlyPayment: o.monthlyPayment || null,
     flags: { ...(o.flags || {}), expired: o.rateSheet ? !!o.rateSheet.expired : null },
     rateSheet: { ...(o.rateSheet || {}) },

@@ -278,6 +278,17 @@ async function main() {
       // environment and reaches nobody, so a wrong shape surfaces here rather
       // than as an empty settings screen somebody cannot explain.
       '/api/lt/dscr/combined/investors',
+      // "THIS INVESTOR AND THIS INVESTOR ARE THE SAME" — the recorded links plus
+      // the pick-list of canonical investors. A pure read of the settings store
+      // and the investor registry that reaches no vendor; opening it here is what
+      // proves the stored map is READABLE, because `readLinks` never throws by
+      // design and a shape it cannot read yields an empty map — which on a screen
+      // is indistinguishable from "nobody has linked anything yet".
+      '/api/lt/dscr/combined/investor-links',
+      // …and the SUGGESTER, which is the one door here that computes rather than
+      // reads. It is called WITH a name because it answers 400 without one, and
+      // an assertion satisfied by a 400 would prove only that the door refuses.
+      '/api/lt/dscr/combined/investor-links/suggest?name=A%20%26%20D%20Mortgage%20-%20Delegated',
     ];
 
     // ── WHAT THE LIST OMITS, SAID OUT LOUD ──────────────────────────────────
@@ -386,7 +397,8 @@ async function main() {
       // *"only for super admin to see it and super admin to be able to test
       // it"* — so an ordinary officer must get NOTHING, and 404 rather than 403
       // so its existence is not advertised.
-      for (const door of ['/api/lt/dscr/combined/health', '/api/lt/dscr/combined/investors']) {
+      for (const door of ['/api/lt/dscr/combined/health', '/api/lt/dscr/combined/investors',
+        '/api/lt/dscr/combined/investor-links']) {
         const shut = await fetch(base + door, { headers: { authorization: `Bearer ${loToken}` } });
         check(shut.status === 404,
           `${door} is 404 for a loan officer (got ${shut.status}) — the combined engine is the super admin's alone while it is under audit`);

@@ -53,6 +53,7 @@
  */
 
 const investors = require('../encompass/investors');
+const investorLinks = require('./investor-links');
 const whiteLabel = require('../lenderprice/investor-programs');
 const { classify } = require('./product-class');
 
@@ -62,16 +63,22 @@ const round3 = (n) => (n == null ? null : Math.round(Number(n) * 1000) / 1000);
 /**
  * Which canonical investor a program row belongs to. Both vendors' name fields
  * are asked, fullest first; unresolved is null and the caller must not guess.
+ *
+ * `links` is the map a PERSON recorded — "this spelling and that one are the
+ * same investor" (owner-directed 2026-08-30). It is consulted first and it is
+ * OPTIONAL, so every existing caller behaves exactly as it did.
  */
-function resolveInvestor(row) {
+function resolveInvestor(row, links) {
   const r = row || {};
   for (const raw of [r.investor, r.lender]) {
     if (raw == null || String(raw).trim() === '') continue;
-    const hit = investors.resolve(raw);
-    if (hit && hit.key) return { key: hit.key, label: hit.label, match: hit.match, raw: String(raw) };
+    const hit = links ? investorLinks.resolveWithLinks(raw, links) : investors.resolve(raw);
+    if (hit && hit.key) {
+      return { key: hit.key, label: hit.label, match: hit.match, raw: String(raw), linked: !!hit.linked };
+    }
   }
   const raw = r.investor || r.lender || null;
-  return { key: null, label: null, match: 'none', raw: raw == null ? null : String(raw) };
+  return { key: null, label: null, match: 'none', raw: raw == null ? null : String(raw), linked: false };
 }
 
 /**
@@ -193,16 +200,36 @@ function label(src) { return src === 'loannex' ? 'LoanNEX' : 'Lender Price'; }
 function merge(boards, opts = {}) {
   const input = boards || {};
   const errors = opts.errors || {};
+  // The human's "these two names are the same investor" map. Absent → the code
+  // registry alone, which is exactly what this did before it existed.
+  const links = opts.links || null;
   const byInvestor = new Map();
   const unmapped = [];
+  const matchedByGuess = new Set();
+  const matchedByLink = new Set();
 
   for (const src of SOURCES) {
     const board = input[src];
     if (!board || !Array.isArray(board.programs)) continue;
     for (const p of board.programs) {
-      const id = resolveInvestor(p);
+      const id = resolveInvestor(p, links);
       const row = { ...p, source: src };
-      if (!id.key) { unmapped.push({ source: src, name: id.raw, program: p.program || null, product: p.product || null }); continue; }
+      if (!id.key) {
+        // NEVER SILENTLY: a row nobody can name cannot be white-labelled, and the
+        // investor's REAL name may never reach a client — so it is kept OFF the
+        // priced board and reported here instead. What is new is that the report
+        // now carries what a person needs to ACT on it: which program said it and
+        // which investors it might be. Before, the only fix was a code change.
+        unmapped.push({
+          source: src, name: id.raw, program: p.program || null, product: p.product || null,
+          suggestions: id.raw ? investorLinks.suggestFor(id.raw) : [],
+        });
+        continue;
+      }
+      // How it joined travels with the row, so a screen can tell a person's
+      // decision from the registry's last-resort guess.
+      if (investorLinks.isGuess(id.match)) matchedByGuess.add(id.key);
+      if (id.linked) matchedByLink.add(id.key);
       let e = byInvestor.get(id.key);
       if (!e) { e = { key: id.key, label: id.label, whiteLabel: whiteLabel.whiteLabelOf(id.key), programs: { lenderprice: [], loannex: [] } }; byInvestor.set(id.key, e); }
       e.programs[src].push(row);
@@ -216,6 +243,11 @@ function merge(boards, opts = {}) {
     const verdict = elect(presentIn, cmp);
     list.push({
       key: e.key, investor: e.label, whiteLabel: e.whiteLabel,
+      // Stated rather than implied: `joinedByGuess` is the registry's prefix
+      // heuristic, which is usually right and is still a guess. A screen that
+      // shows every join as settled is over-claiming.
+      joinedByGuess: matchedByGuess.has(e.key),
+      joinedByLink: matchedByLink.has(e.key),
       presentIn,
       chosen: verdict.chosen, electionBasis: verdict.basis, reason: verdict.reason,
       comparison: cmp,
@@ -270,7 +302,20 @@ function dedupeUnmapped(rows) {
   const m = new Map();
   for (const r of rows) {
     const k = `${r.source}|${r.name}`;
-    if (!m.has(k)) m.set(k, { source: r.source, name: r.name, programs: [] });
+    // The SUGGESTIONS ride through the de-duplication. They are what turns "this
+    // investor was dropped" into something a person can act on, and computing them
+    // per PROGRAM row and then throwing them away here is how the actionable half
+    // of the report goes missing.
+    //
+    // SET ONCE, AT THE HEAD, AND THAT IS COMPLETE — not a shortcut. The key is
+    // `source|name` and BOTH the name and the suggestions are derived from the
+    // same `id.raw`, so every row sharing a key carries an identical suggestion
+    // list. An earlier cut also re-checked on each later row ("fill them in if the
+    // first row had none"), which cannot fire: it can only ever restore what the
+    // head already had. Its one effect was to hide this line from the mutation
+    // that was meant to prove it — the two covered for each other and the suite
+    // stayed green with either one gone.
+    if (!m.has(k)) m.set(k, { source: r.source, name: r.name, programs: [], suggestions: r.suggestions || [] });
     const e = m.get(k);
     if (r.program && !e.programs.includes(r.program)) e.programs.push(r.program);
   }

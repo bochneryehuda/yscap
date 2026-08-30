@@ -836,6 +836,30 @@ const SETTINGS = [
     evidence: 'Owner-directed 2026-08-30: "You should open a settings menu where you have every '
       + 'single investor listed… For every investor, we can always switch it from where we want to '
       + 'take the information."' },
+  // "THIS INVESTOR AND THIS INVESTOR ARE THE SAME" — the human-recorded overlay
+  // (owner-directed 2026-08-30: *"we need to be able to link a investor from
+  // lender price and loannex by if the name is a little different the system
+  // should still understand that it's the same investor… Those investors are
+  // spelled differently and have different names, but we need to be able to link
+  // it and say, 'This investor and this investor are the same.'"*).
+  //
+  // WHY THIS EXISTS AND NOT JUST A BIGGER REGISTRY: identity came from the code
+  // registry alone, so a spelling it did not carry resolved to nothing, the merge
+  // dropped that row, and the investor's WHOLE BOARD disappeared with the only fix
+  // being a code change. This is the door a person can open. The map is keyed on
+  // the vendor's spelling and points at a CANONICAL investor key — a link may
+  // never invent an investor or rename one, and a key nobody knows is refused at
+  // the settings door rather than stored as though it had worked.
+  //
+  // EMPTY BY DEFAULT, for the same reason as the map above: nothing here is a
+  // second copy of the registry, only what a person has deliberately decided.
+  { key: 'pricing.investorLinks', group: 'Pricing', label: 'Combined engine — investor links',
+    type: 'map', default: {},
+    description: 'Per vendor spelling: { key: "<canonical investor key>", source: "lenderprice" | '
+      + '"loannex", linkedBy, linkedAt }. A link outranks every registry match, so a person\'s '
+      + 'decision beats a lookup; the label always comes from the canonical investor.',
+    evidence: 'Owner-directed 2026-08-30: "We should be able to link them together side by side '
+      + 'and then select this one. Want to see from this program."' },
   // -- Term sheets ----------------------------------------------------------
   // The officer-side term sheet (owner-directed 2026-08-30: *"we want to be able
   // also on the staff side to enable the term sheet option from today"*). The

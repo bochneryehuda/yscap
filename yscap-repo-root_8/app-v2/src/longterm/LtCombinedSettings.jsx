@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
+import LtInvestorLinks from './LtInvestorLinks.jsx';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub, input, label, LINE } from './ppeStyles.js';
 
 /**
@@ -244,6 +245,14 @@ export default function LtCombinedSettings() {
           <div style={{ fontSize: 13, color: MUTED }}>No investor matches “{q}”.</div>
         </div>
       )}
+
+      <div style={{ height: 8, borderTop: `1px solid ${LINE}`, marginTop: 16 }} />
+
+      {/* THE LINKS. Mounted here rather than re-implemented, so the settings screen
+          and the priced board show ONE arrangement of the same thing — the board
+          additionally passes the live side-by-side, which only exists there. */}
+      <LtInvestorLinks />
+
       <div style={{ height: 24, borderTop: `1px solid ${LINE}`, marginTop: 8 }} />
     </LtLayout>
   );

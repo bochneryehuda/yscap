@@ -215,6 +215,61 @@ mutations of the production code were each proven to fail it.
 
 ---
 
+### 3d. "This investor and this investor are the same" — the link
+
+Owner-directed 2026-08-30: *"we need to be able to link a investor from lender price and loannex by
+if the name is a little different the system should still understand that it's the same investor…
+Those investors are spelled differently and have different names, but we need to be able to link it
+and say, 'This investor and this investor are the same.' Now we want to follow settings where we can
+choose where we want to take the information of this investor. … We should be able to link them
+together side by side and then select this one."*
+
+**What was broken, and it was MEASURED rather than suspected.** `scripts/test-lt-combined-audit.mjs`
+found it: identity came from the hand-maintained code registry and nothing else, so a spelling the
+registry did not carry resolved to nothing, `merge.js` skipped the row, and **that investor's whole
+board disappeared** — with no way for a person to fix it short of a code change. On the live board,
+**"A & D Mortgage - Delegated"** — a second channel of an investor the board was already carrying —
+was one of the names that vanished. Measured end to end: without a link the board carries 8
+investors and drops 1; with the link, 9 and drops none.
+
+**`src/longterm/pricing/investor-links.js` is the overlay**, and it is an overlay on the ONE resolver
+rather than a second one. Five rules, each of which a mutation was run against:
+
+1. **A person's decision beats a lookup** — a link outranks every registry match, `exact` included.
+   The registry is a list somebody maintained once; the link is somebody looking at this board.
+2. **A link may only point at an investor that EXISTS**, and the label always comes from that
+   canonical investor. A link can never invent an investor or rename one — which matters because the
+   white-label name is the one name a client may see.
+3. **Refused whole, never half-repaired.** A map with a bad row is rejected with every problem named
+   (422); handing back the readable half invites a caller to save it, and a person told their map was
+   rejected would find part of it stored anyway.
+4. **A suggestion is offered, never applied.** An automatic join would put one investor's pricing
+   under another investor's name. `suggestFor` reads a name two ways — the registry's own normalized
+   form for exact equality, and a letters-only form for resemblance — because the registry strips the
+   very company words that carry the resemblance ("mortgage", "funding", "capital", "lending"). A
+   name nothing resembles gets **no** suggestion; refusing to guess is the point.
+5. **It can only ever cost the links, never the board.** An unreadable setting yields no links, which
+   is exactly how this behaved before links existed — the code registry still answers, so a broken
+   setting can never take an investor off the board.
+
+**The lookup form is the registry's own `normalize`, called directly.** An earlier cut reached for it
+under `_internals` and silently fell through to a private fallback when it was not there — which is
+precisely the second normalizer that rule exists to forbid, and it made "Acra Lending" and "Acra
+Lending LLC" two different link entries. There is no fallback now.
+
+**Where it is seen.** The same component is mounted on both screens — never two arrangements, or one
+screen would show a link the other did not. The **settings screen** manages the recorded links and
+lets one be typed by hand; the **board** additionally draws the live side-by-side, because
+`investorPairing` is what the two programs ACTUALLY called each investor on that board and is the
+only place those names exist. Drawing it on the settings screen would mean pricing two vendors to
+open a settings page. Each row says whether **both** programs quoted that investor — which is what
+makes "take it from this one" a real choice — and a row joined only by the registry's last-resort
+prefix heuristic is marked **confirm this** rather than shown as settled. On the live board 4 of the
+9 names join that way today.
+
+Saving does **not** re-price: the links change how the NEXT board is joined, and silently re-pricing
+under somebody would replace the answer they are reading.
+
 ## 4. One quote shape
 
 `src/longterm/pricing/quote-shape.js` maps **both** vendors into Lender Price's own option object —
@@ -470,7 +525,12 @@ fabricated 0 (`B5`). The money the overlay charges never depended on it.
    four investors — three full breakdowns that reconcile exactly, one investor that answers with
    nothing.** Still open, and it is the owner's to answer: **why does that investor return no
    breakdown?** It may be a permission on our account, or that investor may simply not publish one.
-7. **The Lender Price half has still never been priced live in the same request.** Everything about
+7. ~~An investor whose spelling the registry does not carry loses its whole board.~~ **Answered
+   2026-08-30 (§3d): a person can now link two spellings and the board picks the investor up on the
+   next search.** Still open, and it is a confirmation rather than a defect: **4 of the 9 live
+   LoanNEX names join by the registry's PREFIX heuristic** rather than by a recorded fact. They are
+   right today, the screen marks them "confirm this", and confirming one is a click.
+8. **The Lender Price half has still never been priced live in the same request.** Everything about
    the LoanNEX side is now measured against the real API; the Lender Price credentials are not in
    this environment, so no scenario has yet been priced on both programs at once. That is the same
    measurement item 1 is waiting on, and until it is done the *size* of the 0.25 is the owner's
@@ -489,6 +549,11 @@ are byte-for-byte what they were. `LT_COMBINED_PRICING=off` is the kill switch.
 `src/longterm/loannex/capture/evidence-live.json` — the real API's own answers, 2026-08-30, the first
 time the explain endpoint was ever called for real; includes the investor that answered with nothing.
 `scripts/test-lt-breakdown-parity-pure.js` — the layout parity suite (55 assertions, 15 mutations).
+`src/longterm/pricing/investor-links.js` — "these two names are the same investor" (§3d).
+`app-v2/src/longterm/LtInvestorLinks.jsx` — the side-by-side, mounted on BOTH screens as one component.
+`scripts/test-lt-investor-link-pure.js` — the link suite (35 assertions, 10 mutations).
+`scripts/test-lt-combined-audit.mjs` — the readable field-by-field audit of the two boards, with its
+own assertions on the things a reading must not get wrong.
 
 ## 9. Where things are
 
@@ -500,6 +565,8 @@ time the explain endpoint was ever called for real; includes the investor that a
 | `pricing/investor-routing.js` | applies the settings to a board; the one-system view |
 | `pricing/vendor-margin.js` | the 0.25 margin holdback, applied once, before anything reads the board |
 | `pricing/merge.js` | the two-source comparison and election (the *recommendation*) |
+| `pricing/investor-links.js` | "these two names are the same investor" — the human overlay on the one resolver |
+| `pricing/breakdown.js` | the ONE itemized breakdown layout, whatever priced it |
 | `loannex/portal-login.js` | stage 1: cookie jar, antiforgery, the ticket |
 | `loannex/client.js` | stages 2–3 and the read-only pricing calls |
 | `loannex/scenario.js` | the LoanNEX wire body |
@@ -507,6 +574,7 @@ time the explain endpoint was ever called for real; includes the investor that a
 | `routes/combined-pricer.js` | `/api/lt/dscr/combined` — the Combined Pricing Engine, super-admin only |
 | `app-v2/.../LtCombinedPricer.jsx` | the engine's screen — a deliberate, watched FORK of `LtPricer.jsx` |
 | `app-v2/.../LtCombinedSettings.jsx` | the investor settings screen |
+| `app-v2/.../LtInvestorLinks.jsx` | the side-by-side and the link — one component, both screens |
 
 | `app-v2/src/longterm/compOverlay.js` | the compensation overlay — one plan, both programs, no vendor named |
 

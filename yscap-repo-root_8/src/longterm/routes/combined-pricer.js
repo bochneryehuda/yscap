@@ -73,6 +73,12 @@ const { validateScenario } = require('../lenderprice/search-model');
 const nex = require('../loannex/client');
 const { merge } = require('../pricing/merge');
 const routing = require('../pricing/investor-routing');
+const investorLinks = require('../pricing/investor-links');
+// The canonical investor roster and the client-safe names, both read-only here —
+// the pick-list a person chooses from is DERIVED from the one registry, never a
+// second list this route keeps for itself.
+const investors = require('../encompass/investors');
+const { whiteLabelOf } = require('../lenderprice/investor-programs');
 const quoteShape = require('../pricing/quote-shape');
 const breakdown = require('../pricing/breakdown');
 const vendorMargin = require('../pricing/vendor-margin');
@@ -108,6 +114,32 @@ async function settingsRaw() {
     return routing.resolveRaw({ stored });
   } catch (e) {
     return { ...routing.resolveRaw({ stored: null }), problem: reasonOf(e) };
+  }
+}
+
+/** Every investor name a board actually returned, in the order it returned them. */
+function namesOf(board) {
+  const out = [];
+  for (const p of (board && board.programs) || []) {
+    const n = p.investor || p.lender;
+    if (n && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * The human's "these two names are the same investor" map.
+ *
+ * Read exactly like the routing settings above and with the same posture: an
+ * unreadable store yields NO links, which is the behaviour this engine had
+ * before links existed — a broken setting can cost the links, never the board.
+ */
+async function linksRaw() {
+  try {
+    const stored = await settingsStore.get(investorLinks.SETTING_KEY, 'company');
+    return { raw: stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}, problem: null };
+  } catch (e) {
+    return { raw: {}, problem: reasonOf(e) };
   }
 }
 
@@ -243,7 +275,10 @@ async function priceBoth(scenario, opts = {}) {
   // different copies would eventually disagree about which investor comes from
   // where, and the board is the one somebody prices a loan on.
   const saved = opts.routes !== undefined ? { raw: opts.routes } : await settingsRaw();
-  const merged = routing.applyRouting(merge(boards, { errors }), { routes: saved.raw, revealSource: opts.revealSource === true });
+  // The human's investor links, resolved the same way the routing is, so the
+  // board and the settings screen can never disagree about who is who.
+  const linked = opts.links !== undefined ? { raw: opts.links } : await linksRaw();
+  const merged = routing.applyRouting(merge(boards, { errors, links: linked.raw }), { routes: saved.raw, revealSource: opts.revealSource === true });
 
   // The unified option list, on request. Built from the ROUTED board so a
   // suppressed or routed-away investor cannot reappear through a second door.
@@ -293,6 +328,14 @@ async function priceBoth(scenario, opts = {}) {
     programCount: programs.length,
     investorRoster: merged.investors.map((e) => ({ key: e.key, investor: e.investor, whiteLabel: e.whiteLabel || null, programCount: e.programCount })),
     investorsUnmapped: merged.unmapped || [],
+    // The side-by-side the owner asked for, computed from what the two boards
+    // ACTUALLY returned rather than from the registry's idea of them: one row per
+    // investor, what each program calls them, whether both quoted it (so "take it
+    // from this one" is even a choice), and which joins are still a guess.
+    investorPairing: investorLinks.pairing({
+      lenderprice: namesOf(boards.lenderprice),
+      loannex: namesOf(boards.loannex),
+    }, linked.raw),
     // What is NOT on the board, and why — so a short board can always be
     // accounted for without asking anybody.
     hidden: merged.hidden || [],
@@ -463,6 +506,71 @@ function makeRouter(opts = {}) {
     const d = routing.describeSettings(src.raw, { origin: src.origin });
     res.json({ ok: true, saved: Object.keys(check.settings).length, ...d,
       needsWhiteLabel: d.investors.filter((r) => r.whiteLabelMissing).map((r) => ({ key: r.key, investor: r.label })) });
+  });
+
+  /**
+   * THE INVESTOR LINKS — "this one and this one are the same investor".
+   *
+   * Owner-directed 2026-08-30. GET returns the map a person has recorded plus
+   * every investor the registry knows, so the screen can offer a list to pick
+   * from rather than asking somebody to type a key.
+   *
+   * It deliberately does NOT price anything. The side-by-side of what each
+   * program actually called an investor comes back on the PRICE answer
+   * (`investorPairing`), because that is the only place the real names exist —
+   * asking this door for them would mean pricing two vendors to draw a settings
+   * screen.
+   */
+  router.get('/investor-links', async (req, res) => {
+    const cur = await linksRaw();
+    res.json({
+      ok: true,
+      links: cur.raw,
+      linkCount: Object.keys(cur.raw || {}).length,
+      problem: cur.problem || null,
+      // The pick-list. Sorted by how often the registry has actually seen each
+      // investor, so the common ones are at the top of a list of 42.
+      investors: investors.list().map((i) => ({
+        key: i.key, label: i.label, whiteLabel: whiteLabelOf(i.key) || null,
+      })),
+    });
+  });
+
+  /**
+   * RECORD THE LINKS. The WHOLE map is sent, exactly like the investor settings
+   * beside it — a partial write cannot express a REMOVED link, and a link
+   * somebody meant to delete quietly surviving is the worst outcome here.
+   *
+   * REFUSES RATHER THAN REPAIRS (422 with every problem named): a link that
+   * points at an investor this system does not know cannot be honoured, and
+   * storing it anyway would look to the person like it had worked.
+   */
+  router.put('/investor-links', async (req, res) => {
+    const check = investorLinks.validateLinks((req.body || {}).links);
+    if (!check.ok) return res.status(422).json({ ok: false, error: 'bad_links', problems: check.problems });
+    try {
+      await settingsStore.save({ [investorLinks.SETTING_KEY]: check.links }, {
+        scope: 'company', staffId: (req.actor && req.actor.id) || null,
+      });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: 'save_failed', message: reasonOf(e) });
+    }
+    const cur = await linksRaw();
+    res.json({ ok: true, saved: Object.keys(check.links).length, links: cur.raw });
+  });
+
+  /**
+   * WHAT MIGHT THIS NAME BE? A proposal, never applied.
+   *
+   * The screen asks this for a spelling nobody has linked, and a person clicks
+   * one. Nothing here writes: an automatic join would put one investor's pricing
+   * under another investor's name, and that name is the one thing a client may
+   * see.
+   */
+  router.get('/investor-links/suggest', (req, res) => {
+    const name = String((req.query && req.query.name) || '').trim();
+    if (!name) return res.status(400).json({ ok: false, error: 'missing_name', message: 'Send the spelling you want suggestions for.' });
+    res.json({ ok: true, name, suggestions: investorLinks.suggestFor(name) });
   });
 
   /**
