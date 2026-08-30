@@ -706,6 +706,15 @@ same 114 after, 0 created). It now asserts what is actually true — the holdbac
   `80.0000%`. The owner's *"Round this up"* was given about the LoanNEX finding, and this one changes
   what the **live general pricing engine** asks Lender Price to price — which moves live quotes —
   so it is **reported and not applied**. It needs one word from the owner.
+
+  **MEASURED, because fixing one side means the two programs can now be asked a DIFFERENT LTV for
+  one loan.** Across 4,785,029 realistic whole-dollar loan/value pairs (values $200k–$900k, LTVs
+  55–85%): the two would be sent a different 2dp LTV on **49.1%** of them, and land in a **different
+  pricing tier** on **0.098%** — about one loan in a thousand. In every one of those the LoanNEX
+  side is in the correct, more conservative tier and Lender Price is in the too-generous one, so the
+  combined board is now MORE right on its LoanNEX rows and unchanged on its Lender Price ones. That
+  is the honest case for fixing the other side; it is still the owner's call, because it moves live
+  quotes.
 - **Per-investor holdbacks** are not offered. The owner's rule is *"everybody"*, so one number is
   faithful to it; a per-investor override would be a new business rule.
 
