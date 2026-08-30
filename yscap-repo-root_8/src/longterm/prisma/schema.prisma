@@ -482,6 +482,11 @@ model LtLoan {
   ladderEvents  LtLadderEvent[]
   conditions    LtCondition[]
   documents     LtDocument[]
+  // OUR OWN conditions (db/643), deliberately beside Encompass's mirrored ones
+  // above rather than merged with them: `conditions` is what the investor's
+  // underwriter raised after buying the loan, `fileConditions` is what WE need
+  // to get the file submitted, cleared, docked, funded and sold.
+  fileConditions LtFileCondition[]
 
   @@index([borrowerId])
   @@index([loanOfficerId])
@@ -2343,4 +2348,194 @@ model LtClickupReviewQueue {
 
   @@index([ltLoanId, createdAt(sort: Desc)], map: "lt_cu_review_loan_idx")
   @@map("lt_clickup_review_queue")
+}
+
+// ============================================================================
+// THE GENERAL CONDITION CENTER (db/643).
+//
+// DELIBERATELY SEPARATE FROM `LtCondition` / `LtDocument` (db/612), which are
+// ENCOMPASS'S conditions and eFolder, mirrored. Those rows are keyed on
+// Encompass's own ids and must be safe to delete and re-read at any time; these
+// carry a human's sign-off, their note and the documents they uploaded, and the
+// next mirror pass would destroy them. One table for both would also make "is
+// this ours or theirs?" a column somebody has to remember to filter on.
+//
+// Everything below is a ROW rather than a constant because the owner asked for
+// it (2026-08-30): *"everything should be setup with not setting it on a hard
+// level everything should be able to be configured differently in settings. The
+// system is only prefilled with the rules of the system."*
+// ============================================================================
+
+/// A gate a condition can block — "prior to submission", "prior to clear to
+/// close", and so on. A ROW, not an enum, so a buyer can add, rename or retire
+/// one without a migration; `position` orders them on every screen.
+model LtConditionBucket {
+  id       String  @id @default(uuid()) @db.Uuid
+  key      String  @unique(map: "lt_condition_buckets_key_uk")
+  label    String
+  /// What this gate means, in the words a person reads. Held here rather than in
+  /// code so a buyer's own description travels with their own bucket.
+  blurb    String?
+  position Int     @default(100)
+  isActive Boolean @default(true) @map("is_active")
+  /// TRUE for a row db/643 seeded — what lets a reseed tell "our default,
+  /// untouched" from "a buyer's own gate", so neither overwrites the other.
+  isSeeded Boolean @default(false) @map("is_seeded")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("lt_condition_buckets")
+}
+
+/// THE LIBRARY — one row per condition this company can ask for. A file gets a
+/// COPY (LtFileCondition), never a pointer: editing a template must not silently
+/// rewrite what a borrower was already told on a file somebody is working.
+model LtConditionTemplate {
+  id        String @id @default(uuid()) @db.Uuid
+  code      String @unique(map: "lt_condition_templates_code_uk")
+  bucketKey String @map("bucket_key")
+
+  /// The team's wording, and the borrower's. A borrower-facing condition with no
+  /// borrower wording is applied STAFF-ONLY by the engine rather than shown to a
+  /// client under an internal label.
+  label         String
+  hint          String?
+  borrowerLabel String? @map("borrower_label")
+  borrowerHint  String? @map("borrower_hint")
+
+  /// 'internal' | 'external' | 'both'. Three values rather than a boolean: a
+  /// condition can be BOTH, and collapsing that is how one ends up either
+  /// invisible to whoever must satisfy it or exposed to a borrower it was never
+  /// written for.
+  audience String @default("internal")
+  /// The owner's own taxonomy: informational | form | order | esign | document.
+  kind String @default("document")
+  /// 'always' | 'rules' | 'manual'.
+  autoApply String @default("manual") @map("auto_apply")
+  /// `{combinator, rules:[…]}`, one level of nesting. NOTHING IN IT IS EVER
+  /// EVALUATED AS CODE: it names field keys the engine's registry carries, and a
+  /// key the registry does not carry makes the rule refuse rather than match.
+  ruleLogic Json? @map("rule_logic")
+
+  isRequired Boolean @default(true) @map("is_required")
+  /// The named places a document goes ("Binder", "Invoice"). jsonb because a slot
+  /// has no life of its own and is never queried across files.
+  slots  Json @default("[]")
+  /// This condition's own settings — which appraisal form for which property
+  /// type, which vendors an order may go to. Every condition's shape is its own.
+  config Json @default("{}")
+
+  /// BUILT but deliberately not switched on. Distinct from `isActive = false`,
+  /// which is a buyer retiring one: this shows on the file, greyed, WITH ITS
+  /// REASON, so nobody thinks a feature vanished.
+  isEnabled      Boolean @default(true) @map("is_enabled")
+  disabledReason String? @map("disabled_reason")
+
+  isActive  Boolean  @default(true) @map("is_active")
+  sortOrder Int      @default(100) @map("sort_order")
+  isSeeded  Boolean  @default(false) @map("is_seeded")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@index([bucketKey, sortOrder], map: "lt_condition_templates_bucket_idx")
+  @@map("lt_condition_templates")
+}
+
+/// One loan's own conditions. The WORDING IS A SNAPSHOT, not a join — editing
+/// the library must not change what a borrower was already asked for on a live
+/// file, and a template retired next year must not blank the condition a file
+/// was cleared on.
+model LtFileCondition {
+  id         String  @id @default(uuid()) @db.Uuid
+  loanId     String  @map("loan_id") @db.Uuid
+  templateId String? @map("template_id") @db.Uuid
+  code       String?
+  bucketKey  String  @map("bucket_key")
+  /// Lets ONE template legitimately appear twice on a file — one per borrower,
+  /// one per property — told apart by a key rather than by two look-alike rows.
+  fieldKey String? @map("field_key")
+
+  label         String
+  hint          String?
+  borrowerLabel String? @map("borrower_label")
+  borrowerHint  String? @map("borrower_hint")
+  audience      String  @default("internal")
+  kind          String  @default("document")
+  isRequired    Boolean @default(true) @map("is_required")
+  slots         Json    @default("[]")
+  config        Json    @default("{}")
+  /// What the file has actually answered — a form's fields, an order's chosen
+  /// vendor, an acknowledgement. Its shape is the condition's own.
+  answer Json @default("{}")
+
+  /// outstanding | in_progress | received | satisfied | waived | not_applicable.
+  /// The last three are three DIFFERENT facts and are never collapsed: provided
+  /// and accepted, decided not needed here, and never applied at all.
+  status String @default("outstanding")
+  /// WHY it is on the file. 'auto' is the engine's, and only the engine may
+  /// retract one; 'manual' is a person's and is never removed automatically.
+  origin    String @default("auto")
+  sortOrder Int    @default(100) @map("sort_order")
+
+  notes String?
+
+  satisfiedAt  DateTime? @map("satisfied_at") @db.Timestamptz(6)
+  satisfiedBy  String?   @map("satisfied_by") @db.Uuid
+  waivedAt     DateTime? @map("waived_at") @db.Timestamptz(6)
+  waivedBy     String?   @map("waived_by") @db.Uuid
+  waivedReason String?   @map("waived_reason")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  loan  LtLoan              @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  files LtConditionFile[]
+
+  @@index([loanId, bucketKey, sortOrder], map: "lt_file_conditions_loan_idx")
+  @@index([templateId], map: "lt_file_conditions_template_idx")
+  @@map("lt_file_conditions")
+}
+
+/// PILOT's OWN documents against one of these conditions — deliberately NOT
+/// db/612's `LtDocument`, which is Encompass's eFolder mirrored and would be
+/// destroyed by the next mirror pass.
+///
+/// NOTHING IS EVER DELETED: a superseded document is `isCurrent = false`,
+/// because the record of what was once provided is part of the story of the loan
+/// and a rejected document's reason is what tells the borrower what to send.
+model LtConditionFile {
+  id          String  @id @default(uuid()) @db.Uuid
+  conditionId String  @map("condition_id") @db.Uuid
+  loanId      String  @map("loan_id") @db.Uuid
+  /// Which named place on the condition this fills, when it has slots.
+  slotKey String? @map("slot_key")
+
+  filename    String
+  contentType String? @map("content_type")
+  byteSize    BigInt? @map("byte_size")
+  sha256      String?
+  storageRef  String  @map("storage_ref")
+
+  uploadedBy String? @map("uploaded_by") @db.Uuid
+  /// 'staff' | 'borrower' — who put it there, which decides whether it is born
+  /// awaiting review. Text rather than a CHECK: a third door (a vendor returning
+  /// an order by email) must not need a migration to file its first document.
+  uploadedByKind String @default("staff") @map("uploaded_by_kind")
+
+  /// pending | accepted | rejected | superseded. Nothing un-reviewed is ever
+  /// treated as fulfilment — `<> 'rejected'` is a test for "nobody threw this
+  /// away", not for "somebody checked this".
+  reviewStatus String    @default("pending") @map("review_status")
+  reviewedAt   DateTime? @map("reviewed_at") @db.Timestamptz(6)
+  reviewedBy   String?   @map("reviewed_by") @db.Uuid
+  reviewReason String?   @map("review_reason")
+
+  isCurrent Boolean  @default(true) @map("is_current")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  condition LtFileCondition @relation(fields: [conditionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([loanId, createdAt(sort: Desc)], map: "lt_condition_files_loan_idx")
+  @@map("lt_condition_files")
 }

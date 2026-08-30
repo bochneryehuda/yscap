@@ -93,8 +93,21 @@ const SECTIONS = [
   { key: 'declarations', label: 'Declarations' },
   { key: 'contacts', label: 'Who is on this file' },
   {
-    key: 'conditions',
+    // OUR OWN conditions — what this file needs to get submitted, cleared to
+    // close, docked, funded and sold (owner-directed 2026-08-30). It sits ABOVE
+    // the Encompass mirror below because it is the work an officer is doing
+    // TODAY; the mirror is what an investor's underwriter raised after the loan
+    // was already sold.
+    //
+    // ALWAYS AVAILABLE. A file with no conditions worked out yet is exactly the
+    // one somebody opens this to fix — the section carries the button that runs
+    // the rules against it, so greying it would hide the only way forward.
+    key: 'file_conditions',
     label: 'Conditions',
+  },
+  {
+    key: 'conditions',
+    label: 'Investor conditions (Encompass)',
     // Greyed rather than hidden, for the same reason as employment: somebody told
     // about it must not think it vanished. The reason names the SWITCH rather than
     // a date — the centre is built, so the answer is "turn it on", not "wait".

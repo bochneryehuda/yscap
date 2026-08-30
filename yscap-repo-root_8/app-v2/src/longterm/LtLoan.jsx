@@ -10,6 +10,7 @@ import LtLayout from './LtLayout.jsx';
 import FileOverviewSlideOver from '../components/FileOverviewSlideOver.jsx';
 import LtFileSection, { hasFileSection } from './LtFileSections.jsx';
 import LtConditionCenter from './LtConditionCenter.jsx';
+import LtFileConditions from './LtFileConditions.jsx';
 import LtTiming from './LtTiming.jsx';
 import LtClickupSection from './LtClickupSection.jsx';
 import LtEncompassSection from './LtEncompassSection.jsx';
@@ -721,7 +722,8 @@ const SECTION_BLURB = {
   reo: 'Every other property on the borrower\u2019s schedule.',
   declarations: 'The borrower\u2019s own answers on the application.',
   contacts: 'Who is on this file, and whose pipeline it sits in.',
-  conditions: 'What is still outstanding on this loan, and the documents against it.',
+  file_conditions: 'What this file still needs to get submitted, cleared to close, docked, funded and sold.',
+  conditions: 'What the investor\u2019s underwriter raised on this loan, read from Encompass. Read-only.',
   investor: 'Who bought this loan, and when.',
   lock: 'The rate lock, and everything we have watched change on it.',
   clickup: 'What the sync does for this file on its own \u2014 and the buttons to do any of it by hand.',
@@ -903,6 +905,10 @@ export default function LtLoan() {
     // LtFileSection — which stays about the URLA sections it documents. While the
     // switch is off the server greys this section and the branch above shows its
     // reason, so the screen never renders a centre the API would refuse.
+    // OUR OWN conditions. It loads ITSELF — the rules, the buckets and the
+    // per-file rows are their own tables (db/643) and have nothing to do with
+    // the URLA sections `file` carries.
+    if (s.key === 'file_conditions') return <LtFileConditions loanId={loanId} />;
     if (s.key === 'conditions') return <LtConditionCenter loanId={loanId} />;
     if (s.key === 'contacts') {
       return (

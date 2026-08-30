@@ -108,6 +108,16 @@ router.use('/encompass-file', require('./routes/encompass-file'));
 // /api/lt/conditions
 router.use('/conditions', require('./routes/conditions'));
 
+// THE GENERAL CONDITION CENTER — OUR OWN conditions, not Encompass's.
+//
+// The router above is db/612's READ-ONLY mirror of Encompass's Enhanced
+// Conditions and eFolder: what the investor's underwriter raised AFTER buying
+// the loan. This one is what WE need to get a file submitted, cleared to close,
+// docked, funded and sold (owner-directed 2026-08-30). Two centres, two routers,
+// two sets of tables — db/643's header records why they must never become one.
+// /api/lt/condition-center
+router.use('/condition-center', require('./routes/condition-center'));
+
 // The signed-in person's own long-term preferences — today, which product side
 // they open on (the owner's switch), remembered per user. /api/lt/me
 router.use('/me', require('./routes/me'));

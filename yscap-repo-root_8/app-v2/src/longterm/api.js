@@ -202,6 +202,36 @@ export const ltApi = {
   // rate-limited into being wrong.
   clickupStatusReviews: (limit) => ltGet(
     lt(`/clickup/status-reviews${limit ? `?limit=${encodeURIComponent(limit)}` : ''}`)),
+  // THE GENERAL CONDITION CENTER (owner-directed 2026-08-30) — OUR OWN
+  // conditions, not the Encompass mirror above.
+  //
+  // NAMED `fileConditions*`, NOT `conditionCenter*`, AND THAT MATTERS: this
+  // client already has a `conditionCenter()` for the Encompass mirror, and in an
+  // object literal the LATER key silently wins. A second `conditionCenter` here
+  // would have re-pointed the existing mirror screen at this endpoint with no
+  // error anywhere — the screen would simply have started showing the wrong
+  // conditions. Two centres, two names.
+  fileConditions: (loanId) => ltGet(lt(`/condition-center/loans/${encodeURIComponent(loanId)}`)),
+  fileConditionsEvaluate: (loanId) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/evaluate`), {}),
+  conditionSatisfy: (loanId, id) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/satisfy`), {}),
+  conditionWaive: (loanId, id, reason) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/waive`), { reason }),
+  conditionReopen: (loanId, id) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/reopen`), {}),
+  conditionStatus: (loanId, id, status) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/status`), { status }),
+  conditionNote: (loanId, id, note) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/note`), { note }),
+  conditionAdd: (loanId, code, fieldKey) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions`), { code, fieldKey }),
+  conditionRemove: (loanId, id) => ltDel(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}`)),
+
+  // The LIBRARY — the settings side. The rule builder draws its whole field
+  // picker from this response, so a screen can never offer a field the evaluator
+  // would then refuse.
+  conditionLibrary: () => ltGet(lt('/condition-center/library')),
+  conditionTemplateSave: (code, patch) => ltPatch(lt(`/condition-center/library/${encodeURIComponent(code)}`), patch),
+  conditionRulePreview: (rule, loanId) => ltPost(lt('/condition-center/library/preview'), { rule, loanId }),
+  conditionReseed: () => ltPost(lt('/condition-center/library/reseed'), {}),
+  conditionBuckets: () => ltGet(lt('/condition-center/buckets')),
+  conditionBucketSave: (b) => ltPost(lt('/condition-center/buckets'), b),
+  conditionBucketRetire: (key) => ltDel(lt(`/condition-center/buckets/${encodeURIComponent(key)}`)),
+
   // THE REPORTING CENTRE (owner-directed 2026-08-30). The field catalog comes from
   // the SERVER, so the column picker and the compiler can never disagree about what
   // exists — the browser keeps no second copy of the field list. A report definition

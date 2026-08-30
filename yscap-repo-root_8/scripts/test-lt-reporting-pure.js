@@ -50,6 +50,29 @@ const code = (p) => R(p)
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/(^|[^:])\/\/.*$/gm, '$1');
 
+/**
+ * The ONE section object out of `workspace.js`'s SECTIONS list, by key.
+ *
+ * WHY NOT A WINDOW REGEX. The first cut of this guard asked
+ * `/key: 'file_conditions',[\s\S]{0,200}applies:/` — and a window that size
+ * spills straight into the NEXT entry, so it reported the section as greyed
+ * because the section AFTER it has an `applies`. A guard that scans a window can
+ * always be satisfied by its neighbour; this cuts at the entry's own closing
+ * brace instead.
+ */
+function sectionEntry(sectionsSrc, key) {
+  const i = sectionsSrc.indexOf(`key: '${key}'`);
+  if (i < 0) return null;
+  // Walk back to this entry's opening brace, then forward to the matching close.
+  const open = sectionsSrc.lastIndexOf('{', i);
+  let depth = 0;
+  for (let j = open; j < sectionsSrc.length; j += 1) {
+    if (sectionsSrc[j] === '{') depth += 1;
+    else if (sectionsSrc[j] === '}') { depth -= 1; if (depth === 0) return sectionsSrc.slice(open, j + 1); }
+  }
+  return null;
+}
+
 const spans = require('../src/longterm/reporting/spans');
 const fields = require('../src/longterm/reporting/fields');
 const query = require('../src/longterm/reporting/query');
@@ -323,9 +346,12 @@ const workspace = code('src/longterm/workspace.js');
 const loanScreen = code('app-v2/src/longterm/LtLoan.jsx');
 const timing = code('app-v2/src/longterm/LtTiming.jsx');
 
-check(/key: 'timing'/.test(workspace), 'the file screen has a "how long it took" section');
-check(!/key: 'timing',[\s\S]{0,200}applies:/.test(workspace),
+const timingSection = sectionEntry(workspace, 'timing');
+check(!!timingSection, 'the file screen has a "how long it took" section');
+check(timingSection && !/applies:/.test(timingSection),
   'and it is always available — never greyed on the very file it exists to explain');
+check(/applies:/.test(sectionEntry(workspace, 'employment') || ''),
+  '(control) the same reader DOES find the `applies` on a section that has one');
 check(/s\.key === 'timing'/.test(loanScreen) && /<LtTiming loanId=\{loanId\}/.test(loanScreen),
   'the section is actually rendered, so the timeline route has a consumer');
 check(/ltApi\.fileTimeline\(loanId\)/.test(timing),
