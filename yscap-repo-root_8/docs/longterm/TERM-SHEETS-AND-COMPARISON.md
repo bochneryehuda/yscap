@@ -1,8 +1,15 @@
 # Term sheets and the comparison engine
 
-**STATUS: RESEARCH. NOT BUILT.** Companion to `BORROWER-PRICING-MASTER-PLAN.md`.
-The officer-side half of this (§2, Phase 1) is the piece the owner said may go live now:
-*"we can add live right away on the officer side to export term sheets."*
+**STATUS: PHASE 1 (the officer side) IS BUILT — 2026-08-30. The borrower side is
+still research.** Companion to `BORROWER-PRICING-MASTER-PLAN.md`. The officer half
+is the piece the owner said may go live now: *"we can add live right away on the
+officer side to export term sheets."* It is behind `termSheet.officerEnabled`,
+which ships **OFF**.
+
+**What shipped, and where it differs from what is written below, is §13a — read
+that before this.** Four things came out differently in the build, including a
+pdf-lib measurement trap that put text past the margin and two bugs in the term
+sheet ID that made about one in six unlookupable.
 
 ---
 
@@ -446,6 +453,77 @@ it is printed, it lands in inboxes we do not control. Three defences, in order:
 | `test-lt-term-sheet-layout.mjs` | Every block fits; the anchor repeats across pages | A member's column overflows |
 | `test-lt-term-sheet-investor-block.js` | Extracted PDF text, all 150 spellings | Any spelling survives |
 | `test-lt-term-sheet-replay-db.js` | As-issued is the default; live re-run on demand; expired still replays | Replay silently re-prices |
+
+---
+
+## 13a. WHAT PHASE 1 ACTUALLY SHIPPED, and the four things the build changed
+
+The officer side is built (2026-08-30). Four things came out differently from
+this document, and each one is a decision worth keeping rather than a detail.
+
+### 1. The comp mode and the fee waive are PER OPTION, not per sheet
+
+This document assumed one comp position per document. The owner's *"I want to
+give someone 3 offers"* — borrower-paid at par, lender-paid with the fees
+waived, lender-paid with a credit — puts two positions on ONE sheet. So
+`lt_term_sheet_scenario` carries `mode` and `waive_lender_fees` with their own
+CHECK, and the sheet-level columns describe the FIRST option only, as a summary
+for a list. Both layers refuse `raw`: without the member-level CHECK a sheet
+whose first option is issuable while a later one is not would slip straight
+past the sheet's.
+
+### 2. The renderer measures un-kerned, because that is what a viewer draws
+
+**pdf-lib's `widthOfTextAtSize` applies the font's kern pairs; its `drawText`
+emits a plain show-text operator carrying no kern adjustments at all.** So the
+measurement is about **1% NARROWER than the ink** — the dangerous direction,
+because every wrap comes out optimistic and the last word of a long line lands
+past the margin. Measured on `"218 Forest Avenue, Lakewood, NJ 08701"` at 10pt:
+Adobe's published Helvetica advances sum to **183.990**, pdf.js reports
+**183.990**, pdf-lib answers **182.290**. It put three overshoots into the first
+render of this feature and was invisible until the geometry was read back out of
+the bytes.
+
+`pdf.js` therefore measures as the **sum of per-character advances** — a single
+character has no pair to kern — and `scripts/test-lt-termsheet-render.mjs`
+re-reads every drawn box with `unpdf` and checks all four margins at **zero
+tolerance**. **Never call `font.widthOfTextAtSize` on a multi-character string
+in that file.**
+
+### 3. The box is enforced at the draw chokepoint, and its default is the page
+
+`put`/`putRight` take the column width and CLIP to it, defaulting to the widest
+box that still fits the sheet. A caller that forgets its column produces an ugly
+clip, never ink off the paper. And a figure too long to sit beside its label
+WRAPS underneath rather than squeezing the label away: clipping the figure hides
+money, and clipping the label leaves *"The property …"*, which reads as a
+rendering fault rather than as an address.
+
+### 4. Two bugs in the term sheet ID, both found by round-tripping a real code
+
+The ID looked right and could not be looked up. **`Q` was being folded to `0`** —
+but Crockford drops I, L, O and U and **KEEPS Q**, so about **one code in six**
+resolved to a different code and found nothing, silently, with the officer told
+the ID does not exist. And the `TS-` prefix was stripped by its letters rather
+than by the length, so a code that legitimately BEGINS `TS` lost its first two
+characters when typed without the prefix. Both are pinned by an exhaustive
+round-trip over 60,000 minted codes in `scripts/test-lt-termsheet-pure.js`.
+
+### What is proven, and how
+
+| Suite | What it holds up |
+|---|---|
+| `test-lt-termsheet-pure.js` | the ID, the wording against the language spec's own worked ladder, the comparison arithmetic against the documented break-evens, the whitelist, the hash |
+| `test-lt-termsheet-overlay-mirror.mjs` | ~95,000 evaluations through BOTH copies of the compensation overlay — the browser's and the server's — failing on any disagreement |
+| `test-lt-termsheet-render.mjs` | real PDF bytes read back: every margin at zero tolerance, no overprinting, and all 199 recorded investor spellings swept through four free-text fields |
+| `test-lt-termsheet-db.js` | the write-once row, the ID lookup, the CHECKs, the cart, and a sheet outliving the officer who issued it |
+
+**Twenty-one mutations of the production code were each proven to fail them**,
+with a green control either side. Two of those mutations survived the first
+draft and were what fixed the tests: a wrap fixture with no kern pairs (`"a a a
+a"` has no pair Helvetica kerns, so the two measurements agreed and reverting
+the measurement was invisible), and two guards that cover each other so cleanly
+that geometry alone could not tell which was working.
 
 ---
 

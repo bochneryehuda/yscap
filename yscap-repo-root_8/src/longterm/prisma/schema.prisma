@@ -2238,3 +2238,101 @@ model LtClickupReviewQueue {
   @@index([ltLoanId, createdAt(sort: Desc)], map: "lt_cu_review_loan_idx")
   @@map("lt_clickup_review_queue")
 }
+
+/// db/642 — A TERM SHEET IS WRITE-ONCE, AND ITS ID IS THE PROMISE.
+///
+/// The owner: *"every term sheet that you export should have a term sheet ID,
+/// and every loan officer can go to their pull up term sheet and put in the term
+/// sheet ID and pull up the exact scenario that was searched."* So the whole row
+/// is frozen at issue: the `snapshot` is the document, `snapshotHash` is what
+/// makes a replay able to say it IS the document rather than merely resemble it,
+/// and a correction is a NEW sheet naming the one it replaces.
+///
+/// `mode` is 'borrowerPaid' | 'lenderPaid' and NEVER 'raw' — the CHECK is the
+/// last of three layers under the owner's *"raw pricing should not be able to
+/// export term sheets"*. It describes the FIRST option only; each member carries
+/// its own, because the owner's three offers put borrower-paid and lender-paid
+/// side by side on one sheet.
+model LtTermSheet {
+  id              String  @id @default(uuid()) @db.Uuid
+  /// TS-4K7P2M. Unique on upper(code), so it resolves however it is typed.
+  code            String
+  borrowerId      String? @map("borrower_id") @db.Uuid
+  borrowerName    String? @map("borrower_name")
+  createdByStaff  String? @map("created_by_staff") @db.Uuid
+  /// 'officer' | 'borrower' (CHECK lt_term_sheet_created_by_chk)
+  createdBy       String  @default("officer") @map("created_by")
+  /// 'borrowerPaid' | 'lenderPaid' (CHECK lt_term_sheet_mode_chk)
+  mode            String
+  waiveLenderFees Boolean @default(false) @map("waive_lender_fees")
+  /// 'single' | 'comparison' (CHECK lt_term_sheet_kind_chk)
+  kind            String  @default("single")
+  /// The compensation the figures were derived from, as the server resolved it.
+  compPlan        Json    @default("{}") @map("comp_plan") @db.JsonB
+  /// The document itself. Consumer-safe by construction — snapshot.js is a
+  /// WHITELIST, so no investor, lender or rate-sheet key exists on it.
+  snapshot        Json    @default("{}") @db.JsonB
+  snapshotHash    String  @map("snapshot_hash")
+  /// The sheet this one replaces. Never an edit — the record keeps both.
+  supersedes      String? @db.Uuid
+
+  pricedAt  DateTime @default(now()) @map("priced_at") @db.Timestamptz(6)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdByStaff, createdAt(sort: Desc)], map: "lt_term_sheet_staff_idx")
+  @@index([borrowerId, createdAt(sort: Desc)], map: "lt_term_sheet_borrower_idx")
+  @@map("lt_term_sheet")
+}
+
+/// db/642 — ONE OPEN COMPARISON PER OFFICER.
+///
+/// The owner: *"you can do one search and click start comparison. You check mark
+/// two programs from that search, and then you go back into another search."*
+/// The unique index on staffId is what makes the second search add to the SAME
+/// comparison rather than open a rival one.
+model LtTermSheetCart {
+  id             String  @id @default(uuid()) @db.Uuid
+  staffId        String? @map("staff_id") @db.Uuid
+  /// Which option everything else is compared against. One anchor, always.
+  anchorPosition Int     @default(0) @map("anchor_position")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([staffId], map: "lt_term_sheet_cart_staff_uk")
+  @@map("lt_term_sheet_cart")
+}
+
+/// db/642 — ONE OPTION, on a comparison or on an issued sheet.
+///
+/// `cartId` points at a cart while `parentKind` is 'cart' and at the SHEET once
+/// it is 'sheet' — the members are re-pointed when the sheet is issued and the
+/// cart goes with it. `mode` and `waiveLenderFees` are PER MEMBER, which is the
+/// owner's three offers: borrower-paid at par beside lender-paid with the fees
+/// waived beside lender-paid with a credit, on one document. Raw is refused here
+/// too — a sheet whose first option is issuable while a later one is not would
+/// otherwise slip past the sheet-level CHECK.
+model LtTermSheetScenario {
+  id         String @id @default(uuid()) @db.Uuid
+  cartId     String @map("cart_id") @db.Uuid
+  /// 'cart' | 'sheet' (CHECK lt_term_sheet_scenario_parent_chk)
+  parentKind String @default("cart") @map("parent_kind")
+  position   Int
+  label      String?
+  /// 'borrowerPaid' | 'lenderPaid' (CHECK lt_term_sheet_scenario_mode_chk)
+  mode            String  @default("lenderPaid")
+  waiveLenderFees Boolean @default(false) @map("waive_lender_fees")
+
+  scenario Json @default("{}") @db.JsonB
+  program  Json @default("{}") @db.JsonB
+  charges  Json @default("{}") @db.JsonB
+  closing  Json @default("{}") @db.JsonB
+
+  pricedAt  DateTime @default(now()) @map("priced_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([cartId, parentKind, position], map: "lt_term_sheet_scenario_pos_uk")
+  @@index([cartId, position], map: "lt_term_sheet_scenario_parent_idx")
+  @@map("lt_term_sheet_scenario")
+}

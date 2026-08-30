@@ -117,6 +117,15 @@ router.use('/settings', require('./routes/settings'));
 //   /api/lt/dscr/investor-groups
 router.use('/dscr/investor-groups', require('./routes/pricer-groups'));
 
+// TERM SHEETS (owner-directed 2026-08-30) — issue, replay by ID, and the
+// comparison cart. Registered BEFORE the /dscr mount for the same reason the
+// investor groups are, and deliberately NOT inside makeRouter: that router is
+// also mounted on the secret-gated diagnostics seam, where there is no signed-in
+// person — and a term sheet is issued BY somebody, priced on THEIR compensation,
+// and compared in THEIR cart.
+//   /api/lt/dscr/term-sheet
+router.use('/dscr/term-sheet', require('./routes/term-sheet'));
+
 // DSCR pricer (Lender Price backend) — staff-gated at the mount:
 //   /api/lt/dscr/{health,login-check,price,investors,selftest}
 router.use('/dscr', require('./routes/dscr-pricer').makeRouter());

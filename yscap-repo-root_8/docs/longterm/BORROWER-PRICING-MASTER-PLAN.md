@@ -1,6 +1,10 @@
 # The borrower-facing DSCR Pricing Engine — the research, and how it gets built
 
-**STATUS: RESEARCH. NOTHING HERE IS BUILT AND NOTHING HERE IS LIVE.**
+**STATUS: RESEARCH for the BORROWER side — nothing of it is built and nothing is
+live. The OFFICER-side term sheet (Phase 1) IS built as of 2026-08-30, behind
+`termSheet.officerEnabled`, which ships OFF; see
+`TERM-SHEETS-AND-COMPARISON.md` §13a. The owner's answers of 2026-08-30 and what
+each one changed are §10a below.**
 Owner-directed 2026-08-30: *"we're not putting it live yet we're just starting to work on it …
 do the research how to set it up."* This document is the design that a build would follow, the
 decisions it rests on, and the questions that must be answered before a line of it ships.
@@ -683,6 +687,95 @@ not a bad number — it is a name.
 
 ---
 
+## 10a. ANSWERED BY THE OWNER, 2026-08-30 — and what each answer changed
+
+These were put to the owner while Phase 1 was being built. Each one is recorded
+with what it settled, because the reasoning behind a design is worth more later
+than the design itself.
+
+### The three findings, and the correction to the first two
+
+The research reported three things. The owner confirmed all three and corrected
+the framing of the first two, which is the more useful half.
+
+**Finding 1 — borrower-paid and lender-paid cost the borrower the same at every
+price.** The arithmetic is
+`net(borrowerPaid) − net(lenderPaid) = loan/100 × (borrowerPaid + YSP − lenderPaid)`,
+which is zero under the company defaults. The owner:
+
+> *"That's basically right but it's the way you phrase it … if you say borrower
+> paid and you give him four points credit, then two points goes for the
+> origination and two points goes for him, but if you want to phrase it in a
+> better nicer way, it's no points and two points back to him. So it's
+> technically the same."*
+
+And then the shape it is actually for:
+
+> *"Let's say I want to give someone 3 offers: borrower paid 2 points and you
+> give him basically a par rate and he pays the two points. You give him lender
+> paid and you're waiving him the two points so it's a higher rate and he doesn't
+> pay the points. You give him a point credit back, lender paid plus a point
+> credit back. Same thing with waiving the lender fees. It's technically a wash
+> that comes off of his credit but it's phrasing it nicer for him, and it's all
+> the way the officer wants to phrase it for his client."*
+
+**WHAT THIS CHANGED, and it is a real design change rather than a note.** The
+comp mode and the fee waive had been SHEET-level columns — one position, one
+document. They are now **per OPTION**: `lt_term_sheet_scenario.mode` and
+`.waive_lender_fees`, each with its own CHECK. Three offers on one sheet, one
+borrower-paid and two lender-paid, is the ordinary case rather than an
+impossible one. `snapshot.buildMember` reads the mode off the member, and the
+DB refuses `raw` on a MEMBER as well as on the sheet — otherwise a sheet whose
+first option is issuable while a later one is not would slip past.
+
+**Finding 2 — waiving the lender fees is net-neutral**; the $2,095 comes out of
+the borrower's own credit. The owner:
+
+> *"You're right, that's correct. It's a wash. It's the same thing but it's how
+> we present it for the client, how the officer wants to present it, whether he
+> wants to charge fees and give a credit or he wants to remove the credit and not
+> charge fees."*
+
+So the waive is a PRESENTATION choice, not an economic one — which is exactly
+why it sits per option beside the mode.
+
+**Finding 3 — Lender Price has no soft/hard prepay selector** while soft-vs-hard
+is 63% of the live typed book. The owner:
+
+> *"Leave this aside. We're going to work on prepayment penalties later on. Now
+> just know that you're building something that will take it from the prepayment
+> penalty options available. We're going to narrow this down like crazy to give
+> only a few options."*
+
+So the term sheet prints the prepayment term it is given and never invents a
+structure. `wording.prepaySentence` maps what the vendor returns to plain words
+and falls back to the plain term rather than guessing — which is what makes the
+narrowing a later change to ONE map instead of a change to the document.
+
+### The pricing officer, when there is none
+
+> *"If no officer is involved then it should follow the company defaults. The
+> company defaults for now should be off."*
+
+This settles **OQ-1's fallback**, not OQ-1 itself: a borrower nobody has claimed
+is governed by the company setting, which is OFF, so they see nothing. The
+ladder in §2.2 still decides WHICH officer when there is more than one.
+
+### Email
+
+The owner gave written authorization to use the existing sender credentials for
+the Long-Term side rather than provisioning a second account:
+
+> *"Yes I'm giving you a written authorization to use the sender credentials from
+> the short-term side. Send it out from lock desk @ YS Capital … but follow the
+> resend credentials."*
+
+Recorded as a crossing in `docs/LONG-TERM-AUTHORIZED-COPIES.md` — it is an
+IMPORT of `src/lib/email/index.js`, which is a crossing rule 3 requires be
+written down before the first line, and the sender address is a setting.
+
+---
+
 ## 11. Open questions — the owner's to answer
 
 | # | Question | Why it blocks | Recommendation |
@@ -694,7 +787,7 @@ not a bad number — it is a name.
 | **OQ-5** | How long is a borrower's term sheet good for before the ID replays as "expired pricing"? | Term sheet design | 2 business days, as a setting |
 | **OQ-6** | Does a borrower see the loan officer's name and contact on their board and term sheet? | Branding, and it is a trust question | Yes on the term sheet, yes on the board |
 | **OQ-7** | Does an officer get notified when their borrower exports a term sheet? | It is a buying signal | Yes — and it belongs in the daily digest, not as an instant email |
-| **OQ-8** | The prepay question in `PREPAY-PENALTY-MAPPING.md` §4 | Gates Phase 4 going live | See that document |
+| **OQ-8** | ~~The prepay question in `PREPAY-PENALTY-MAPPING.md` §4~~ | ~~Gates Phase 4 going live~~ | **ANSWERED 2026-08-30 — set aside.** *"We're going to work on prepayment penalties later on… we're going to narrow this down like crazy."* The term sheet prints the term it is given and never invents a structure, so the narrowing is a later change to one wording map |
 
 ---
 

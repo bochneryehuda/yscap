@@ -208,6 +208,26 @@ export const ltApi = {
     const s = q.toString();
     return ltGet(lt(`/dscr/disqualifications/${encodeURIComponent(searchKey)}${s ? `?${s}` : ''}`));
   },
+
+  // ── TERM SHEETS (owner-directed 2026-08-30) ───────────────────────────────
+  // Issue, replay by ID, and the comparison cart. `preview` mints NO code and
+  // stores nothing — a term sheet ID is a promise that a document exists and can
+  // be pulled up again, so it is never spent on a look.
+  termSheetPreview: (body) => ltPost(lt('/dscr/term-sheet/preview'), body),
+  termSheetIssue: (body) => ltPost(lt('/dscr/term-sheet'), body),
+  termSheetList: () => ltGet(lt('/dscr/term-sheet')),
+  termSheetGet: (code) => ltGet(lt(`/dscr/term-sheet/${encodeURIComponent(code)}`)),
+  // The PDF is rebuilt from the STORED snapshot, never re-priced, so the download
+  // is the document that was sent.
+  termSheetPdf: (code) => ltDownload(
+    lt(`/dscr/term-sheet/${encodeURIComponent(code)}/pdf`), `term-sheet-${code}.pdf`),
+  termSheetReplay: (code, body) => ltPost(lt(`/dscr/term-sheet/${encodeURIComponent(code)}/replay`), body),
+
+  termSheetCart: () => ltGet(lt('/dscr/term-sheet/cart')),
+  termSheetCartAdd: (selection) => ltPost(lt('/dscr/term-sheet/cart'), { selection }),
+  termSheetCartAnchor: (anchorPosition) => ltPatch(lt('/dscr/term-sheet/cart'), { anchorPosition }),
+  termSheetCartRemove: (memberId) => ltDel(lt(`/dscr/term-sheet/cart/${encodeURIComponent(memberId)}`)),
+  termSheetCartClear: () => ltDel(lt('/dscr/term-sheet/cart')),
 };
 
 export default ltApi;
