@@ -298,8 +298,36 @@ console.log('Two programs, one loan — parity');
   // NOT a price change. The holdback the owner authorized lives in ONE module,
   // and it is not this one — a board that both routes AND re-prices is a board
   // where nobody can say which of the two moved a number.
-  ok(!/0\.25|holdback/i.test(require('fs').readFileSync(require.resolve('../src/longterm/pricing/investor-routing'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')),
-    'HIDE-5 no price is adjusted anywhere in the routing code — the margin holdback lives in vendor-margin.js and nowhere else');
+  //
+  // ⛔ THIS GUARD IS ABOUT ARITHMETIC, NOT ABOUT A WORD. It used to fail on the
+  // mere STRING "holdback", and went red the day routing learned to STRIP the
+  // holdback's audit trail off the ordinary board — the OPPOSITE of adjusting a
+  // price. A guard that reads as a broken feature is a guard somebody loosens to
+  // nothing, so it is re-pointed rather than relaxed: the holdback's SIZE still
+  // may not be written down a second time, and the BEHAVIOUR is pinned directly,
+  // which no future wording can drift past.
+  {
+    const code = require('fs').readFileSync(require.resolve('../src/longterm/pricing/investor-routing'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    ok(!/0\.25/.test(code),
+      'HIDE-5 the holdback SIZE is written down in exactly one module, and it is not this one');
+
+    // The behavioural half: route a board and every rung comes back with the
+    // price and the points it went in with, to the cent, with the reveal on and
+    // with it off. A module that re-priced could not pass this whatever it said.
+    const rung = { rate: 7.25, price: 101.25, points: -1.25, lockDays: 30 };
+    const priced = {
+      investors: [{ key: 'nqm', investor: 'NQM Funding', presentIn: ['loannex'],
+        programs: { lenderprice: [], loannex: [{ source: 'loannex', program: 'P', rungs: [{ ...rung }] }] }, best: {} }],
+      unmapped: [],
+    };
+    const rungsOf = (b) => b.investors.flatMap((i) => i.programs).flatMap((p) => p.rungs || []);
+    const plainRungs = rungsOf(routing.applyRouting(priced, { routes: {} }));
+    const shownRungs = rungsOf(routing.applyRouting(priced, { routes: {}, revealSource: true }));
+    ok(plainRungs.length === 1 && plainRungs[0].price === rung.price && plainRungs[0].points === rung.points
+      && shownRungs.length === 1 && shownRungs[0].price === rung.price && shownRungs[0].points === rung.points,
+      'HIDE-5b …and routing a board moves no price and no points figure, either way the source flag is set');
+  }
 }
 
 // ---- 8. THE PER-INVESTOR SOURCE SETTING ------------------------------------
@@ -516,6 +544,60 @@ console.log('Two programs, one loan — parity');
     'SET-7 a non-boolean "on" is REFUSED rather than coerced — the string "no" is truthy, and a coerced switch is a lender switched on by a typo');
   ok(set.problems.some((p) => p.investor === 'not_an_investor' && p.error === 'unknown_investor'),
     'SET-8 …and a setting for an investor nobody has heard of is reported BY NAME rather than silently matching nothing');
+
+  // ---- THE WAY BACK TO THE PRE-FILL --------------------------------------
+  // The whole map is sent on every save, so a row that HAS a setting must re-send
+  // it or the save would drop it — which means that without a deliberate way back,
+  // a row that was ever touched is pinned FOREVER: setting it to exactly the
+  // pre-fill value still stores a restatement, and a later change to the owner's
+  // standing instruction never reaches it. The route's own note calls returning a
+  // row to its pre-fill "the one thing somebody auditing this will want to do most
+  // often", so this pins BOTH halves — the server telling the screen what the
+  // pre-fill would answer, and the screen's own rule for expressing it.
+  {
+    const fresh = routing.describeSettings(null, {}).investors.find((r) => r.key === 'nqm');
+    ok(fresh && fresh.prefill && fresh.prefill.source === 'loannex' && fresh.prefill.enabled === true,
+      'SET-9 every row says what it WOULD answer with no setting of its own, so a screen can offer the way back rather than only describe it');
+    const btnPinnedOn = routing.describeSettings({ button_finance: { enabled: true } }, {})
+      .investors.find((r) => r.key === 'button_finance');
+    ok(btnPinnedOn && btnPinnedOn.enabled === true && btnPinnedOn.prefill.enabled === false,
+      'SET-9b …and the pre-fill it reports is the owner\'s instruction, not a copy of whatever is stored right now');
+
+    // The SCREEN'S OWN rule, lifted verbatim out of the JSX — never retyped here,
+    // or this would prove only that the test agrees with itself.
+    const jsx = require('fs').readFileSync(require.resolve('../app-v2/src/longterm/LtCombinedSettings.jsx'), 'utf8');
+    const from = jsx.indexOf('function patchOf(');
+    const patchOf = eval('(' + jsx.slice(from, jsx.indexOf('\n}\n', from) + 3).replace(/^function patchOf/, 'function') + ')');
+    const sendWhole = (rows, edits) => {
+      const body = {};
+      for (const r of rows) { const patch = patchOf(r, edits[r.key] || {}); if (Object.keys(patch).length) body[r.key] = patch; }
+      return body;
+    };
+    const pinned = routing.readSettings(
+      sendWhole(routing.describeSettings(null, {}).investors, { nqm: { source: 'lenderprice' } })).settings;
+    const afterPin = routing.describeSettings(pinned, {}).investors.find((r) => r.key === 'nqm');
+    ok(afterPin.source === 'lenderprice' && afterPin.sourceOrigin === 'setting',
+      'SET-10 a row somebody moved off the pre-fill is stored, and the row says the setting is where that came from');
+
+    // Typed BACK to the pre-fill value by hand: still pinned. That is the trap.
+    const byHand = routing.readSettings(
+      sendWhole(routing.describeSettings(pinned, {}).investors, { nqm: { source: 'loannex' } })).settings;
+    ok(routing.describeSettings(byHand, {}).investors.find((r) => r.key === 'nqm').sourceOrigin === 'setting',
+      'SET-10b …and typing it back to the pre-fill VALUE leaves it pinned — a restatement is still a setting, which is why a way back has to exist');
+
+    // The button: the key leaves the map entirely and the row answers to the pre-fill again.
+    const reset = sendWhole(routing.describeSettings(pinned, {}).investors, { nqm: { reset: true } });
+    const afterReset = routing.describeSettings(routing.readSettings(reset).settings, {}).investors.find((r) => r.key === 'nqm');
+    ok(reset.nqm === undefined && afterReset.source === 'loannex' && afterReset.sourceOrigin === 'owner_directed',
+      'SET-11 "use the pre-fill" leaves the row out of the saved map altogether, so it follows the standing instruction again');
+
+    // …and it touches nobody else, which is what makes it safe to press.
+    const others = routing.describeSettings(routing.readSettings(reset).settings, {}).investors
+      .filter((r) => r.key !== 'nqm');
+    const base = routing.describeSettings(null, {}).investors.filter((r) => r.key !== 'nqm');
+    ok(others.length === base.length && others.every((r, i) => r.source === base[i].source && r.enabled === base[i].enabled),
+      'SET-11b …and resetting one row changes nothing about any other');
+  }
 }
 
 // ---- 12. ONE SYSTEM --------------------------------------------------------
@@ -525,6 +607,12 @@ console.log('Two programs, one loan — parity');
 // source. At our system, it should sound like one system. It shouldn't sound
 // like it's coming from different places."*
 {
+  // Built by the REAL holdback, exactly as the pipeline builds it.
+  const heldNexPrograms = vendorMargin.applyToBoard({
+    source: 'loannex',
+    programs: [{ source: 'loannex', investorOrganizationGuid: 'g', program: 'B', rungs: [{ rate: 6.9, price: 101.5, points: -1.5, lockDays: 30 }] }],
+  }, 'loannex').programs;
+
   const board = () => ({
     sources: { lenderprice: { answered: true }, loannex: { answered: false, error: 'loannex_login_not_configured' } },
     summary: { inBoth: 1, lenderpriceOnly: 0, loannexOnly: 0, electedLoannex: 1 },
@@ -532,7 +620,14 @@ console.log('Two programs, one loan — parity');
     investors: [
       {
         key: 'nqm', investor: 'NQM Funding', presentIn: ['lenderprice', 'loannex'],
-        programs: { lenderprice: [{ source: 'lenderprice', lenderId: 42, program: 'A' }], loannex: [{ source: 'loannex', investorOrganizationGuid: 'g', program: 'B' }] },
+        // ⛔ THE LOANNEX SIDE GOES THROUGH THE REAL HOLDBACK. This fixture had NO
+        // RUNGS AT ALL, so ONE-2 and ONE-3 were structurally unable to reach the
+        // fingerprint the holdback leaves — `marginHoldback` and `vendorPrice` on
+        // every LoanNEX rung and on no Lender Price one — and both passed for
+        // months over a board that still said which vendor produced each row.
+        // Deriving the rungs from `vendor-margin.js` itself is what stops the
+        // guard drifting from the thing it guards.
+        programs: { lenderprice: [{ source: 'lenderprice', lenderId: 42, program: 'A', rungs: [{ rate: 7, price: 100.75, points: -0.75, lockDays: 30 }] }], loannex: heldNexPrograms },
         best: { lenderprice: { rate: 7 }, loannex: { rate: 6.9 } }, comparison: { x: 1 }, reason: 'because',
       },
       {
@@ -546,8 +641,19 @@ console.log('Two programs, one loan — parity');
   const flat = plain.investors.flatMap((i) => i.programs);
   ok(plain.investors.every((i) => Array.isArray(i.programs)) && flat.length === 2,
     'ONE-1 an investor comes back with ONE flat list of programs — not a list per vendor, which is what makes a board read as two systems');
-  ok(!/"source"|lenderId|investorOrganizationGuid/.test(JSON.stringify(flat)),
-    'ONE-2 …and not one row says which vendor produced it — the vendor id goes too, or the name is one lookup away');
+  ok(!/"source"|lenderId|investorOrganizationGuid|marginHoldback|vendorPrice/.test(JSON.stringify(flat)),
+    'ONE-2 …and not one row says which vendor produced it — the vendor ids go too, and so does the holdback trail, which is stamped on LoanNEX rungs and no others and so names the vendor by its mere presence');
+  {
+    // The fingerprint is REMOVED, never NEUTRALISED: the price and the points a
+    // rung carries are the held-back ones and must come through untouched.
+    const nexRung = flat.flatMap((p) => p.rungs || []).find((r) => r.rate === 6.9);
+    ok(!!nexRung && nexRung.price === heldNexPrograms[0].rungs[0].price && nexRung.points === heldNexPrograms[0].rungs[0].points,
+      'ONE-2b …while the held-back price and points themselves are untouched — the trail is dropped, not the deduction');
+    const adminFlat = routing.applyRouting(board(), { routes: {}, revealSource: true }).investors.flatMap((i) => i.programs);
+    const adminRung = adminFlat.flatMap((p) => p.rungs || []).find((r) => r.rate === 6.9);
+    ok(!!adminRung && adminRung.marginHoldback === 0.25 && adminRung.vendorPrice === 101.5,
+      'ONE-2c …and an admin who ASKS still gets the whole trail — the raw vendor price and the size of the deduction');
+  }
   ok(plain.sources === undefined && !/lenderprice|loannex/i.test(JSON.stringify(plain.investors)),
     'ONE-3 …and the board carries no vendor names at all: `sources`, its errors, and every per-investor mention are gone');
   ok(plain.summary.inBoth === undefined && plain.summary.electedLoannex === undefined && plain.summary.fromLoanNex === undefined,

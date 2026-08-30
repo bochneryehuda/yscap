@@ -179,6 +179,16 @@ function settingFor(key, settings = {}) {
     source, sourceOrigin,
     enabled, enabledOrigin,
     note: disabledNote,
+    // WHAT THIS ROW WOULD ANSWER WITH NO SETTING OF ITS OWN — the standing
+    // instruction where there is one, the plain default otherwise. A settings
+    // screen needs it to offer the way BACK: without it "use the pre-fill" could
+    // only be described, never shown, so nobody would press it without knowing
+    // what the row is about to become.
+    prefill: {
+      source: OWNER_SOURCE[key] || DEFAULT_SOURCE,
+      enabled: !OWNER_DISABLED[key],
+      whiteLabel: wlSheet || null,
+    },
   };
 }
 

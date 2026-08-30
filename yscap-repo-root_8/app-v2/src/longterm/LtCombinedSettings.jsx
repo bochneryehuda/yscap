@@ -48,8 +48,26 @@ const ORIGIN_NOTE = {
   unset: 'not named yet',
 };
 
+/** Is this row pinned — does it carry a setting of its own rather than the pre-fill? */
+function isPinned(row) {
+  return row.sourceOrigin === 'setting' || row.enabledOrigin === 'setting' || row.whiteLabelOrigin === 'setting';
+}
+
 /** The row as the server would store it — only what a person has actually CHANGED. */
 function patchOf(row, edit) {
+  // ⛔ "USE THE PRE-FILL" IS THE WAY BACK, AND WITHOUT IT THERE IS NONE. The whole
+  // map is sent on every save, so a row that already HAS a setting must re-send it
+  // or the save would drop it — which is what every branch below does. The cost is
+  // that once a row is touched it is pinned FOREVER: setting it back to exactly
+  // the pre-fill still stores a restatement, `sourceOrigin` stays 'setting', and a
+  // later change to the owner's standing instruction silently never reaches it.
+  // The server has always supported the way back (leave the key out); this screen
+  // could not express it, and the route's own note calls returning a row to its
+  // pre-fill "the one thing somebody auditing this will want to do most often".
+  //
+  // An empty patch IS that expression: the key is left out of the whole map, the
+  // stored setting disappears, and the row goes back to answering to the pre-fill.
+  if (edit.reset) return {};
   const out = {};
   if (edit.whiteLabel !== undefined && String(edit.whiteLabel).trim() !== String(row.whiteLabel || '')) {
     const wl = String(edit.whiteLabel).trim();
@@ -97,7 +115,13 @@ export default function LtCombinedSettings() {
 
   const edit = (key, patch) => {
     setSaved(null);
-    setEdits((s) => ({ ...s, [key]: { ...(s[key] || {}), ...patch } }));
+    // A reset REPLACES this row's pending edits rather than merging into them: a
+    // half-typed white label left sitting beside it would be re-applied the moment
+    // anything else on the row moved, quietly re-pinning the row somebody had just
+    // asked to un-pin.
+    setEdits((s) => (patch.reset
+      ? { ...s, [key]: { reset: true } }
+      : { ...s, [key]: { ...(s[key] || {}), ...patch } }));
   };
 
   const dirty = Object.keys(edits).length > 0;
@@ -200,15 +224,41 @@ export default function LtCombinedSettings() {
 
       {data && shown.map((r) => {
         const e = edits[r.key] || {};
-        const wl = e.whiteLabel !== undefined ? e.whiteLabel : (r.whiteLabel || '');
-        const src = e.source !== undefined ? e.source : r.source;
-        const on = e.enabled !== undefined ? e.enabled : r.enabled;
+        // A pending reset shows the row as it will read once saved: whatever the
+        // pre-fill answers. `resetPreview` is what the row would fall back to with
+        // no setting of its own — the standing instruction where there is one, and
+        // the plain default otherwise; the server sends both on every row.
+        const pending = !!e.reset;
+        const pre = r.prefill || {};
+        const wl = pending ? (pre.whiteLabel || '') : (e.whiteLabel !== undefined ? e.whiteLabel : (r.whiteLabel || ''));
+        const src = pending ? (pre.source || r.source) : (e.source !== undefined ? e.source : r.source);
+        const on = pending ? (pre.enabled !== undefined ? pre.enabled : r.enabled) : (e.enabled !== undefined ? e.enabled : r.enabled);
+        const pinned = isPinned(r);
         return (
           <div key={r.key} style={{ ...card, opacity: on ? 1 : 0.72 }}>
             <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
               <div style={{ flex: '1 1 220px', minWidth: 0 }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: INK }}>{r.label}</div>
                 {r.note && <div style={{ fontSize: 12, color: CAUTION, marginTop: 4, lineHeight: 1.6 }}>{r.note}</div>}
+                {(pinned || pending) && (
+                  <button
+                    type="button"
+                    onClick={() => edit(r.key, pending ? { reset: false } : { reset: true })}
+                    style={{
+                      marginTop: 6, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
+                      font: 'inherit', fontSize: 12, fontWeight: 700, color: pending ? SLATE : GOLD_TEXT,
+                      textDecoration: 'underline',
+                    }}
+                  >
+                    {pending ? 'Keep this row’s own setting after all' : 'Use the pre-fill instead'}
+                  </button>
+                )}
+                {pending && (
+                  <div style={{ fontSize: 11, color: SLATE, marginTop: 4, lineHeight: 1.6 }}>
+                    On save this row goes back to having no setting of its own, so it follows the
+                    pre-fill from then on.
+                  </div>
+                )}
               </div>
               <div style={{ flex: '1 1 220px' }}>
                 <label style={label} htmlFor={`wl-${r.key}`}>
@@ -216,21 +266,21 @@ export default function LtCombinedSettings() {
                 </label>
                 <input
                   id={`wl-${r.key}`} style={{ ...input, borderColor: r.whiteLabelMissing ? `${CAUTION}88` : undefined }}
-                  value={wl} placeholder="(none yet)"
+                  value={wl} placeholder="(none yet)" disabled={pending}
                   onChange={(ev) => edit(r.key, { whiteLabel: ev.target.value })}
                 />
                 <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>{ORIGIN_NOTE[r.whiteLabelOrigin] || ''}</div>
               </div>
               <div style={{ flex: '0 1 190px' }}>
                 <label style={label} htmlFor={`src-${r.key}`}>Fetch their pricing from</label>
-                <select id={`src-${r.key}`} style={input} value={src} onChange={(ev) => edit(r.key, { source: ev.target.value })}>
+                <select id={`src-${r.key}`} style={input} value={src} disabled={pending} onChange={(ev) => edit(r.key, { source: ev.target.value })}>
                   {(data.sources || []).map((s) => <option key={s} value={s}>{SOURCE_LABEL[s] || s}</option>)}
                 </select>
                 <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>{ORIGIN_NOTE[r.sourceOrigin] || ''}</div>
               </div>
               <div style={{ flex: '0 0 auto' }}>
                 <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
-                  <input type="checkbox" checked={!!on} onChange={(ev) => edit(r.key, { enabled: ev.target.checked })} />
+                  <input type="checkbox" checked={!!on} disabled={pending} onChange={(ev) => edit(r.key, { enabled: ev.target.checked })} />
                   <span style={{ fontSize: 13, color: SLATE, fontWeight: 600 }}>{on ? 'Showing' : 'Not showing'}</span>
                 </label>
                 <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>{ORIGIN_NOTE[r.enabledOrigin] || ''}</div>

@@ -173,10 +173,35 @@ function applyRouting(merged, opts = {}) {
   return out;
 }
 
-/** A program row with every trace of which vendor produced it removed. */
+/**
+ * A program row with every trace of which vendor produced it removed.
+ *
+ * ⛔ THE VENDOR IS A FINGERPRINT, NOT ONLY A NAME. Dropping `source` and the two
+ * vendor ids is not enough on its own: the 0.25 margin holdback stamps
+ * `marginHoldback` and `vendorPrice` on every rung it touches, and it touches
+ * LoanNEX's rungs and no others (`pricing/vendor-margin.js` — Lender Price's
+ * feed already carries our holdback, so nothing is taken there). So a rung
+ * CARRYING those fields is a LoanNEX rung and a rung without them is a Lender
+ * Price one, which is exactly the tell this module exists to remove — a screen
+ * could branch on it and the board would read as two systems again while every
+ * field that NAMES a vendor was gone.
+ *
+ * NO PRICE MOVES. `price` and `points` already have the holdback in them and are
+ * untouched; what goes is the AUDIT TRAIL beside them — the raw pre-holdback
+ * price and the size of the deduction — which rides with the reveal like every
+ * other piece of provenance.
+ */
 function stripSource(p) {
   if (!p || typeof p !== 'object') return p;
   const { source, lenderId, investorOrganizationGuid, ...rest } = p;
+  if (Array.isArray(rest.rungs)) rest.rungs = rest.rungs.map(stripHoldbackTrail);
+  return rest;
+}
+
+/** One rung with the holdback's own audit trail removed — never its price. */
+function stripHoldbackTrail(r) {
+  if (!r || typeof r !== 'object') return r;
+  const { marginHoldback, vendorPrice, ...rest } = r;
   return rest;
 }
 
@@ -199,5 +224,5 @@ module.exports = {
   readSettings: settingsOf.readSettings, settingFor: settingsOf.settingFor,
   resolveRaw: settingsOf.resolveRaw,
   roster: settingsOf.roster, describeSettings: settingsOf.describe,
-  _internals: { label, stripSource, bestOfMany },
+  _internals: { label, stripSource, stripHoldbackTrail, bestOfMany },
 };
