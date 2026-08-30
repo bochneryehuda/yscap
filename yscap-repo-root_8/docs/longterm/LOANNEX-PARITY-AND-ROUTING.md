@@ -521,7 +521,7 @@ investor whose source did not answer is left out with the reason stated instead 
 served the other program's price, and a typo'd source (`loanex`) is reported by name and falls back
 to the standing instruction rather than reading as "off".
 
-### Two defects, both fixed
+### Three defects, all fixed
 
 **1. The vendor was still on the board — as a fingerprint rather than a name.** `applyRouting`
 strips `source`, `lenderId` and `investorOrganizationGuid` from every row an ordinary reader sees.
@@ -546,6 +546,24 @@ often"*; the screen simply could not express it. Each row now reports what it **
 no setting of its own, and carries a **"use the pre-fill instead"** control that leaves its key out
 of the saved map.
 
+**3. The unified option list emptied itself unless an admin asked for the source.** `?shape=options`
+builds the one-option-per-quote list — the shape the general engine's screen reads — and it needs
+each row's vendor, because the two vendors' rows are shaped differently on the wire. It got it by
+grouping the investor's flat program list by each row's own `source`. That list is the **one-system
+copy**, which has had `source` taken off every row, and the grouper correctly drops a row whose
+vendor it cannot read (shaping a LoanNEX row with the Lender Price mapper silently produces an
+option with no price) — so it dropped **every** row and the list came back empty. `shape` and
+`source` are separate request parameters, so the pairing that hid this was never guaranteed.
+Measured on a one-investor board: **1** row shaped with the source revealed, **0** without.
+
+The split now comes from a second routing pass over the same merged board with the reveal on — a
+pure function of its input, so it costs no vendor call and can never disagree with the board about
+which investors are on or where each is fetched from; it shapes only, and every row built still has
+its `source` deleted unless the caller asked for one. **This one predates the fingerprint fix**:
+`source` was stripped from that path long before, and it was found by reading the interaction rather
+than by a failing test. The screen does not use `shape=options` today, so it was latent rather than
+live.
+
 ### The coverage gap that let the first one live
 
 `ONE-2`/`ONE-3` are real guards and they were **unreachable**: their fixture's program rows had no
@@ -557,8 +575,13 @@ change that *removes* a price adjustment; it now pins the holdback's size appear
 only, plus the behaviour itself: routing a board moves no price and no points figure, with the
 reveal on or off.
 
-Nine mutations were applied to the production code and each was proven to turn the named assertion
-red with a green control either side.
+`MARGIN-9` was re-pointed for the same reason: it matched `routing.applyRouting(merge(` — the two
+calls written as one expression — and went red when the merged board was given a name so the
+internal pass could re-use it, while the order it guards had not moved at all. It anchors on the
+merge call itself now.
+
+Twelve mutations were applied to the production code and each was proven to turn the named
+assertion red with a green control either side.
 
 ### One thing reported rather than changed
 
