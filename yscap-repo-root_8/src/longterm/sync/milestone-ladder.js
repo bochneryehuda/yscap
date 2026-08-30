@@ -256,9 +256,157 @@ async function readLadder(guid, opts = {}) {
  *
  * Never throws — one unrecordable ladder must not undo a loan we just mirrored.
  */
+/**
+ * WHAT THE LADDER LOOKED LIKE LAST TIME, keyed by milestone name.
+ *
+ * Read BEFORE the upsert overwrites it, because the whole of the history below is
+ * a comparison against it. A read that fails answers an EMPTY map, which the
+ * caller reads as "we have never seen this loan" — so the pass writes baselines
+ * rather than inventing completions, which is the safe direction: a baseline is
+ * reported as UNKNOWN, a fabricated completion is reported as a duration.
+ */
+async function readPriorLadder(loanId, db) {
+  try {
+    const { rows } = await db.query(
+      `SELECT milestone_name, done, observed_done_at, observed_is_baseline,
+              associate_id, associate_name, done_associate_id, done_associate_name
+         FROM lt_loan_milestones WHERE loan_id = $1::uuid`,
+      [String(loanId)],
+    );
+    const map = new Map();
+    for (const r of rows) map.set(r.milestone_name, r);
+    return { ok: true, map };
+  } catch (e) {
+    return { ok: false, map: new Map(), reason: String((e && e.message) || e).slice(0, 200) };
+  }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * WHAT PILOT SAW CHANGE — the append-only ladder history (db/642).
+ *
+ * Owner-directed 2026-08-30: *"every status … needs to have in the system not only
+ * a time stamp of the date, but also … the actual TIME when the file is assigned
+ * to processor. When the file was changed to submitted and every other status like
+ * that … so I can see for every file how long it took between which and which step
+ * and WHO THE PROCESSOR WAS in that file."*
+ *
+ * THREE FACTS THE MIRROR ABOVE CANNOT HOLD, and each is a separate event type:
+ *   · a step COMPLETING — the moment a duration ends and the next one begins;
+ *   · a completed step RE-OPENING — it happens, and a report that silently kept
+ *     the first completion would show a file clearing a step it stands in front of;
+ *   · the ASSIGNED ASSOCIATE CHANGING — which is "the file is assigned to the
+ *     processor", the owner's own words, and is NOT the same moment as LO Prep
+ *     completing on every file.
+ *
+ * THE FIRST SIGHTING IS A BASELINE, NEVER A COMPLETION. On a loan PILOT has never
+ * read, most of the ladder is already done and we have no idea when any of it
+ * happened. Stamping "completed today" would give the whole book a same-day
+ * hand-off on the day the sweep first ran and make the processor scorecard —
+ * the entire point of this — confidently wrong on exactly the files it exists to
+ * measure. So `observed_is_baseline` marks it and every consumer treats a span
+ * resting on one as UNKNOWN.
+ *
+ * IT NEVER THROWS AND NEVER BLOCKS THE MIRROR. The ladder is the thing the rest of
+ * the system reads; a history row is a bonus, and losing one must never cost a
+ * loan its current state.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+async function recordLadderHistory(loanId, rows, prior, db) {
+  // A prior map we could not READ is not evidence that this is a first sighting,
+  // so the caller passes `firstSighting` explicitly rather than inferring it from
+  // an empty map — the difference is a whole book of false baselines.
+  const events = [];
+  const firstSighting = prior.ok && prior.map.size === 0;
+
+  for (const r of rows) {
+    const was = prior.map.get(r.milestoneName) || null;
+    const wasDone = !!(was && was.done);
+
+    if (r.done && !wasDone) {
+      // ALREADY DONE THE FIRST TIME WE LOOKED = a baseline. Not a date it reached
+      // anything, and no consumer may render it as one.
+      events.push({
+        type: (firstSighting || !was) ? 'observed_baseline' : 'observed_completed',
+        row: r, was,
+      });
+    } else if (!r.done && wasDone) {
+      events.push({ type: 'observed_reopened', row: r, was });
+    }
+
+    // THE ASSIGNMENT IS ITS OWN EVENT, and it is asked SEPARATELY from the
+    // completion above: a step can be handed to somebody without completing, and
+    // completing without ever being assigned. Only a real change counts — the
+    // sync re-reads the same ladder every pass, and an unchanged associate must
+    // not write a row on each one. A first sighting is not an assignment we
+    // witnessed, so it is skipped for the same reason a completion is.
+    const wasWho = was ? (was.associate_id || null) : null;
+    const nowWho = r.associateId || null;
+    if (!firstSighting && was && wasWho !== nowWho && nowWho) {
+      events.push({ type: 'observed_assigned', row: r, was });
+    }
+  }
+
+  for (const e of events) {
+    try {
+      await db.query(
+        `INSERT INTO lt_ladder_events
+           (loan_id, milestone_name, position, event_type, encompass_date,
+            from_associate_id, from_associate_name,
+            to_associate_id, to_associate_name, to_associate_role, to_associate_email,
+            encompass_synced_at)
+         VALUES ($1::uuid, $2, $3, $4, $5::timestamptz, $6, $7, $8, $9, $10, $11, now())`,
+        [String(loanId), e.row.milestoneName, e.row.position, e.type, e.row.startDate,
+          e.was ? e.was.associate_id : null, e.was ? e.was.associate_name : null,
+          e.row.associateId, e.row.associateName, e.row.associateRole, e.row.associateEmail],
+      );
+    } catch (_) { /* history is a bonus; the mirror above is the thing that matters */ }
+  }
+  return events;
+}
+
+/**
+ * The four columns db/642 added, written from the events we just recorded.
+ *
+ * FILL-ONCE, and the exception proves the rule: `observed_done_at` is set when a
+ * step is first seen done and CLEARED by an observed re-open, so a genuine second
+ * completion is stamped afresh rather than reporting the first one's time forever.
+ * The completing associate is SNAPSHOTTED here and never touched again — that is
+ * what stops a reassignment in Encompass re-attributing every past duration.
+ */
+async function stampObservedDone(loanId, events, db) {
+  for (const e of events) {
+    try {
+      if (e.type === 'observed_completed' || e.type === 'observed_baseline') {
+        await db.query(
+          `UPDATE lt_loan_milestones
+              SET observed_done_at = COALESCE(observed_done_at, now()),
+                  observed_is_baseline = $3::boolean,
+                  done_associate_id = COALESCE(done_associate_id, $4),
+                  done_associate_name = COALESCE(done_associate_name, $5)
+            WHERE loan_id = $1::uuid AND milestone_name = $2`,
+          [String(loanId), e.row.milestoneName, e.type === 'observed_baseline',
+            e.row.associateId, e.row.associateName],
+        );
+      } else if (e.type === 'observed_reopened') {
+        await db.query(
+          `UPDATE lt_loan_milestones
+              SET observed_done_at = NULL, observed_is_baseline = false,
+                  done_associate_id = NULL, done_associate_name = NULL
+            WHERE loan_id = $1::uuid AND milestone_name = $2`,
+          [String(loanId), e.row.milestoneName],
+        );
+      }
+    } catch (_) { /* never costs the mirror its write */ }
+  }
+}
+
 async function writeLadder(loanId, rows, opts = {}) {
   const db = opts.db || lazy.db;
   try {
+    // BEFORE the upsert overwrites it — the whole history is a comparison
+    // against what we held a moment ago.
+    const prior = await readPriorLadder(loanId, db);
     for (const r of rows) {
       await db.query(
         `INSERT INTO lt_loan_milestones
@@ -288,11 +436,15 @@ async function writeLadder(loanId, rows, opts = {}) {
         WHERE loan_id = $1::uuid AND NOT (milestone_name = ANY($2::text[]))`,
       [String(loanId), rows.map((r) => r.milestoneName)],
     );
+    // The history is recorded AFTER the mirror is right, so a loan is never left
+    // with events describing a ladder the mirror does not hold.
+    const events = await recordLadderHistory(loanId, rows, prior, db);
+    await stampObservedDone(loanId, events, db);
     await db.query(
       'UPDATE lt_loans SET ladder_synced_at = now(), updated_at = now() WHERE id = $1::uuid',
       [String(loanId)],
     );
-    return { ok: true, written: rows.length };
+    return { ok: true, written: rows.length, events: events.length };
   } catch (e) {
     return { ok: false, reason: String((e && e.message) || e).slice(0, 300) };
   }
@@ -586,5 +738,10 @@ module.exports = {
   ladderOne,
   backfillLadders,
   realignStanding,
+  // Exported so the reporting suite can prove the history writer against a real
+  // ladder without driving a whole Encompass sync.
+  recordLadderHistory,
+  stampObservedDone,
+  readPriorLadder,
   _internals: { text, ladderDue },
 };

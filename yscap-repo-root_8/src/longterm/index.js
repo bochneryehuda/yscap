@@ -72,6 +72,14 @@ router.use('/book', require('./routes/book'));
 // /api/lt/views
 router.use('/views', require('./routes/views'));
 
+// The REPORTING CENTRE (owner-directed 2026-08-30: "a full reporting center where I
+// can see for every file how long it took between which and which step and who the
+// processor was in that file, and then reporting per processor"). A report names
+// catalog KEYS, never SQL, and the viewer's own access is appended to every run —
+// so a shared report can only ever narrow, exactly like a saved view.
+// /api/lt/reports
+router.use('/reports', require('./routes/reports'));
+
 // The archive — Encompass's deleted loans (its `(Trash)` folder), out of every
 // pipeline view and totaled here, with the super-admin's permanent delete
 // (owner-directed 2026-08-23).

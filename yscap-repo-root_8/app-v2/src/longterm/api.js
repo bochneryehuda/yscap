@@ -202,6 +202,30 @@ export const ltApi = {
   // rate-limited into being wrong.
   clickupStatusReviews: (limit) => ltGet(
     lt(`/clickup/status-reviews${limit ? `?limit=${encodeURIComponent(limit)}` : ''}`)),
+  // THE REPORTING CENTRE (owner-directed 2026-08-30). The field catalog comes from
+  // the SERVER, so the column picker and the compiler can never disagree about what
+  // exists — the browser keeps no second copy of the field list. A report definition
+  // is a set of catalog KEYS and operators; it is never SQL, and the server refuses
+  // a key its catalog does not carry.
+  reportFields: () => ltGet(lt('/reports/fields')),
+  runReport: (report) => ltPost(lt('/reports/run'), { report }),
+  describeReport: (report) => ltPost(lt('/reports/describe'), { report }),
+  savedReports: () => ltGet(lt('/reports/saved')),
+  saveReport: (body) => ltPost(lt('/reports/saved'), body),
+  deleteReport: (id) => ltDel(lt(`/reports/saved/${encodeURIComponent(id)}`)),
+  // Per-person figures over the whole book. Refused to somebody scoped to their own
+  // pipeline — a processor's average measured over a slice of their work, printed
+  // under their name, is worse than no number at all.
+  scorecard: (params = {}) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v != null && v !== '') q.set(k, String(v));
+    const s = q.toString();
+    return ltGet(lt(`/reports/scorecard${s ? `?${s}` : ''}`));
+  },
+  // One file's own story: every span it can measure, the ladder with Encompass's
+  // date and OUR observation side by side, and the events behind them.
+  fileTimeline: (loanId) => ltGet(lt(`/reports/loans/${encodeURIComponent(loanId)}/timeline`)),
+
   dscrDisqualifications: (searchKey, params) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') q.set(k, String(v));
