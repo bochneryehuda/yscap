@@ -15,6 +15,15 @@
  * Only a still-CURRENT identical upload dedups — a real replacement (different
  * bytes, or a fresh upload after a rejection/supersede) has a different size or
  * is no longer current, so it inserts normally through the existing path.
+ *
+ * THE OWNER IS PART OF THE IDENTITY, ALL FOUR OF THEM (db/650 added `lt_loan_id`
+ * as the fourth). Two products now file into one `documents` table, and the same
+ * person can genuinely upload the same file to a Long-Term loan and to an RTL
+ * file within two minutes — collapsing those onto one row would leave one of the
+ * two loans holding a document that answers for the other. `lt_loan_id` is
+ * NULL-safe (`IS NOT DISTINCT FROM`) exactly like the other owners, and every
+ * RTL row has it NULL, so an RTL caller that says nothing about it behaves
+ * byte-for-byte as it always did.
  */
 const db = require('../db');
 
@@ -29,7 +38,7 @@ async function recentDuplicateDocId(keys, { windowSec = 120, client = db } = {})
   // guard read the row as settled. Term sheets only: every other doc_kind passes
   // NULL on both sides, so this clause is a no-op for them.
   const stampClause = (k.docKind === 'term_sheet')
-    ? 'AND term_sheet_final IS NOT DISTINCT FROM $12::boolean'
+    ? 'AND term_sheet_final IS NOT DISTINCT FROM $13::boolean'
     : '';
   const r = await client.query(
     `SELECT id FROM documents
@@ -43,16 +52,18 @@ async function recentDuplicateDocId(keys, { windowSec = 120, client = db } = {})
         AND COALESCE(track_record_id::text,'')   = COALESCE($8::text,'')
         AND COALESCE(slot_label,'')              = COALESCE($9,'')
         AND COALESCE(doc_kind,'')                = COALESCE($11,'')
+        AND lt_loan_id IS NOT DISTINCT FROM $12::uuid
         ${stampClause}
         AND created_at > now() - (($10)::text || ' seconds')::interval
       ORDER BY created_at DESC
       LIMIT 1`,
     // A placeholder Postgres never sees BINDS NOTHING — the extra parameter is
     // appended only when the clause above references it (the same params
-    // discipline as the viewer-scope SQL; an unreferenced $12 fails the bind).
+    // discipline as the viewer-scope SQL; an unreferenced $13 fails the bind).
     [k.filename, Number(k.sizeBytes), k.uploadedByKind || null, k.uploadedById || null,
      k.applicationId || null, k.checklistItemId || null, k.llcId || null,
      k.trackRecordId || null, k.slotLabel || null, Number(windowSec), k.docKind || null,
+     k.ltLoanId || null,
      ...(stampClause ? [k.termSheetFinal === true] : [])]);
   return r.rows[0] ? r.rows[0].id : null;
 }

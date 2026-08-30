@@ -135,13 +135,26 @@ for (const [file, re, what] of bornAccepted) {
 // which files everything pending — so the acceptance rule would have dropped it
 // from the export AND made closing-prep refuse every order for want of a term
 // sheet sitting right there. Both doors accept it, and ONLY it.
-for (const f of ['src/routes/staff.js', 'src/routes/borrower.js']) {
+//
+// THE STAFF DOOR'S INSERT MOVED (2026-08-30, the shared Condition Center): the
+// statement now lives in `src/lib/condition-docs/upload.js`, which BOTH products
+// call, so the guard is RE-POINTED at the file that carries it rather than
+// loosened — a stale guard reads as a broken feature and gets "fixed" by deleting
+// it. The bind POSITION is deliberately no longer pinned (it is an implementation
+// detail of one statement, and pinning it is exactly what went stale here); what
+// is pinned is the RULE — that kind is born accepted and every other upload
+// through the same door is still born pending.
+for (const f of ['src/lib/condition-docs/upload.js', 'src/routes/borrower.js']) {
   const src = read(f);
-  assert(/CASE WHEN \$12='term_sheet' THEN 'accepted' ELSE 'pending' END/.test(src),
+  assert(/CASE WHEN \$\d+='term_sheet' THEN 'accepted' ELSE 'pending' END/.test(src),
     `${f}: a studio-generated term sheet is born accepted`);
   assert(/ELSE 'pending' END/.test(src),
     `${f}: and every OTHER upload through the same door is still born pending`);
 }
+// …and the staff route really does go through that shared door, or the assertion
+// above would be about a module nothing calls.
+assert(/condDocs\.uploadConditionDocument\(/.test(staff),
+  'the staff upload door calls the shared condition-document service');
 
 // …and the two that must NOT be, because a human genuinely reviews them.
 const adopt = read('src/lib/underwriting/entity-adopt.js');
