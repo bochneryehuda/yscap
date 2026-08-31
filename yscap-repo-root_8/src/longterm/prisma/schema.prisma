@@ -1296,6 +1296,52 @@ model LtPricerInvestorGroup {
   @@map("lt_pricer_investor_groups")
 }
 
+/// A saved SCENARIO for the Pricing Engine (db/658, owner-directed 2026-08-31;
+/// docs/longterm/SAVED-SCENARIOS-RESEARCH.md).
+///
+/// ⛔ IT IS INPUTS, NEVER A PRICE. Rates move daily and the board is a live
+/// answer, so a scenario re-run tomorrow is a different board — the same
+/// question, a new answer. `savedBoard` is a DATED HEADLINE kept so a re-run can
+/// say what MOVED (D4); every surface that reads it must show it dated and
+/// worded as what it was on that day. The stamped, expiring, coded version of
+/// "what we saw on Tuesday" already exists and is called a term sheet.
+///
+/// ⛔ `form` AND `scenario` ARE BOTH STORED, AND THAT IS NOT REDUNDANT.
+/// `scenarioFields.toScenario` deliberately drops what was not typed — which is
+/// what keeps the server the single authority on the third figure when somebody
+/// types an LTV instead of a loan amount — so a scenario that has been through
+/// it cannot restore the boxes: re-loading one would silently move a person from
+/// LTV mode into loan mode. `form` is what was typed; `scenario` is re-derived
+/// from it by that same one function.
+///
+/// Personal only (D2) and never aged out (D5) — there is deliberately no expiry
+/// column for a future sweep to find. Identity FK ON DELETE SET NULL like every
+/// LT identity link, so `staffId` is nullable and an orphaned scenario simply
+/// stops appearing.
+model LtPricerScenario {
+  id       String  @id @default(uuid()) @db.Uuid
+  staffId  String? @map("staff_id") @db.Uuid
+  name     String?
+
+  borrowerName    String? @map("borrower_name")
+  entityName      String? @map("entity_name")
+  propertyAddress String? @map("property_address")
+
+  form     Json  @default("{}") @db.JsonB
+  scenario Json  @default("{}") @db.JsonB
+  calc     Json  @default("{}") @db.JsonB
+
+  savedBoard   Json?     @map("saved_board") @db.JsonB
+  savedBoardAt DateTime? @map("saved_board_at") @db.Timestamptz(6)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([staffId, updatedAt])
+  @@map("lt_pricer_scenarios")
+}
+
 /// The current lock posture, mirrored. READ-ONLY from Encompass.
 ///
 /// HARD RULE: TRUST `expirationDate`. Never recompute it from lock date plus
