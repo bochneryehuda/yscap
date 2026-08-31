@@ -360,6 +360,12 @@ export const ltApi = {
   orderCancel: (loanId, kind, reason) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/${encodeURIComponent(kind)}/cancel`), { reason }),
 
   // The vendor cards on a loan, and the SHARED directory behind them.
+  /* THE ONE APPLICABILITY FACT A PERSON CAN SET. Writing it also re-runs the
+     rules, so the flood-insurance CONDITION appears in the same click — the
+     server does both, because doing them in two calls is how a file ends up
+     ungreyed with no condition on it. */
+  orderFloodZone: (loanId, inFloodZone) =>
+    ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/flood-zone`), { inFloodZone }),
   orderVendors: (loanId) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors`)),
   orderVendorSearch: (loanId, kind, q) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/search?kind=${encodeURIComponent(kind)}&q=${encodeURIComponent(q)}`)),
   orderVendorLink: (loanId, body) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors`), body),

@@ -43,6 +43,7 @@ const { ltOrderReplyTo } = require('../../lib/file-address');
 const sendAs = require('../../lib/send-as');
 const kinds = require('./kinds');
 const enclosures = require('./enclosures');
+const appliesRule = require('./applies');
 const switches = require('./switches');
 const data = require('./data');
 const letter = require('./letter');
@@ -105,6 +106,20 @@ async function desk(loanId, client = db) {
       enabled: switches.stateFor(d.enabled, k).enabled,
       disabledReason: switches.stateFor(d.enabled, k).reason,
       switchedBy: switches.stateFor(d.enabled, k).source,
+      /* WHETHER THIS ORDER IS FOR THIS KIND OF FILE — a third question, kept
+         apart from `enabled` (a company setting) and `blockers` (a to-do). A
+         card that does not apply is GREYED AND COLLAPSED, never dropped: a desk
+         that silently loses three of its seven cards reads as one that broke. */
+      ...(() => {
+        const a = appliesRule.appliesTo(k, d);
+        return {
+          appliesToFile: a.applies,
+          notForThisFile: a.applies === false ? a.why : null,
+          appliesUnknown: a.applies === null ? a.why : null,
+          appliesFact: a.fact,
+          appliesSettable: a.settable,
+        };
+      })(),
       condition: def.condition,
       docCondition: def.docCondition || null,
       letterKind: letter.letterKeyFor(k, d),

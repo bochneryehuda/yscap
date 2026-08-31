@@ -148,6 +148,13 @@ function Message({ ev }) {
    and stuff like that." Two cards would be two previews of one letter, and the
    one that drifts is the one somebody sends. */
 export function OrderCard({ loanId, order, onChanged }) {
+  /* NOT FOR THIS FILE: greyed, COLLAPSED, and still on the desk with its reason.
+     Owner-directed 2026-08-31 — *"Be visible that doesn't belong for this
+     file."* An `appliesToFile` of null means the file has not said yet, which is
+     drawn as an ordinary card with a note: an unknown is not a no, and hiding an
+     order somebody needs costs a closing while showing a spare one costs a
+     click. */
+  const notForThisFile = order.appliesToFile === false;
   const [open, setOpen] = useState(false);
   const [preview, setPreview] = useState(null);
   const [thread, setThread] = useState(null);
@@ -187,7 +194,7 @@ export function OrderCard({ loanId, order, onChanged }) {
 
   const disabled = !order.enabled;
   return (
-    <div style={{ ...card, opacity: disabled ? 0.72 : 1 }}>
+    <div style={{ ...card, opacity: (disabled || notForThisFile) ? 0.72 : 1 }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', justifyContent: 'space-between' }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 600, color: INK }}>{order.label}</div>
@@ -201,9 +208,13 @@ export function OrderCard({ loanId, order, onChanged }) {
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <Pill status={order.status} />
-          <button type="button" style={btn} onClick={() => setOpen((v) => !v)}>
-            {open ? 'Hide' : 'Open'}
-          </button>
+          {notForThisFile ? (
+            <span style={{ fontSize: 12, color: MUTED, fontWeight: 600 }}>Not for this file</span>
+          ) : (
+            <button type="button" style={btn} onClick={() => setOpen((v) => !v)}>
+              {open ? 'Hide' : 'Open'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -211,7 +222,49 @@ export function OrderCard({ loanId, order, onChanged }) {
         <div style={{ fontSize: 13, color: MUTED, marginTop: 8 }}>{order.disabledReason}</div>
       ) : null}
 
-      {!disabled && order.blockerText.length ? (
+      {/* WHY IT IS NOT FOR THIS FILE, and — for the one fact a person owns — the
+          switch that changes it. Flipping it also populates the flood-insurance
+          condition; the server does both in the one call, so the desk and the
+          conditions list can never disagree about a file. */}
+      {!disabled && notForThisFile ? (
+        <div style={{ fontSize: 13, color: MUTED, marginTop: 8 }}>
+          {order.notForThisFile}
+          {order.appliesSettable ? (
+            <button type="button" className="btn ghost small" disabled={busy}
+              style={{ marginLeft: 8 }}
+              onClick={() => run(() => ltApi.orderFloodZone(loanId, true),
+                'Marked as a flood zone — the flood insurance condition is on the file.')}>
+              This property IS in a flood zone
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* An UNKNOWN is not a no. The card stays fully usable and simply says the
+          file has not answered yet — with the same switch, so the answer can be
+          given from here rather than hunted for on another screen. */}
+      {!disabled && !notForThisFile && order.appliesUnknown ? (
+        <div style={{ fontSize: 13, color: AMBER, marginTop: 8 }}>
+          {order.appliesUnknown}
+          {order.appliesSettable ? (
+            <>
+              <button type="button" className="btn ghost small" disabled={busy}
+                style={{ marginLeft: 8 }}
+                onClick={() => run(() => ltApi.orderFloodZone(loanId, true),
+                  'Marked as a flood zone — the flood insurance condition is on the file.')}>
+                It is in a flood zone
+              </button>
+              <button type="button" className="btn ghost small" disabled={busy}
+                style={{ marginLeft: 6 }}
+                onClick={() => run(() => ltApi.orderFloodZone(loanId, false), 'Marked as not in a flood zone.')}>
+                It is not
+              </button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+
+      {!disabled && !notForThisFile && order.blockerText.length ? (
         <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 13, color: AMBER }}>
           {order.blockerText.map((t, i) => <li key={i}>{t}</li>)}
         </ul>

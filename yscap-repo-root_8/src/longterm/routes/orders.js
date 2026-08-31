@@ -140,6 +140,68 @@ router.post('/loans/:loanId/:kind/follow-up', async (req, res) => {
   res.json(out);
 });
 
+/**
+ * IS THIS PROPERTY IN A FLOOD ZONE? — the one applicability fact a person can set.
+ *
+ * Owner-directed 2026-08-31: *"The Flood Insurance Order should be grayed out
+ * unless you switch this switch so that this property is in a flood zone. If you
+ * flip that switch, it should also populate the condition for the flood
+ * insurance."*
+ *
+ * TWO THINGS HAPPEN AND THE SECOND IS THE POINT. Writing the column alone would
+ * ungrey the order and leave the file with no flood-insurance CONDITION, so the
+ * work would exist on one screen and not the other. `evaluateLoan` is the ONE
+ * thing that decides which conditions a file carries, so it is re-run rather
+ * than a condition being inserted here — an insert here would be a second
+ * writer of the same fact, and the one that drifts is the one that leaks.
+ *
+ * The re-evaluation is BEST-EFFORT: the switch itself is saved either way. A
+ * person who flipped it and got an error would flip it again, and the second
+ * flip would write the same value while the conditions still had not run.
+ *
+ * The state OTHER than New York is deliberately NOT settable from here. It is
+ * read from Encompass and correcting it in PILOT would put the two at odds on a
+ * fact the investor's own file is the authority on.
+ */
+router.post('/loans/:loanId/flood-zone', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-orders');
+  if (!scoped) return;
+  const b = req.body || {};
+  // EXACTLY true or false. A missing or unparseable answer must not read as
+  // "not in a flood zone" — that is the state that greys the order, and getting
+  // there by accident is how a flood file quietly stops asking for insurance.
+  if (b.inFloodZone !== true && b.inFloodZone !== false) {
+    return res.status(400).json({ error: 'Say whether the property is in a flood zone.' });
+  }
+  try {
+    const { rowCount } = await db.query(
+      `UPDATE lt_properties SET in_flood_zone = $2, updated_at = now() WHERE loan_id = $1::uuid`,
+      [scoped.loan.id, b.inFloodZone]);
+    if (!rowCount) {
+      return res.status(404).json({ error: 'This loan has no property record to mark.' });
+    }
+  } catch (e) {
+    console.error('[lt-orders] flood-zone write failed:', (e && e.message) || e);
+    return res.status(503).json({ error: 'Could not save that just now.' });
+  }
+
+  let conditions = null;
+  try {
+    conditions = await require('../conditions-center/engine').evaluateLoan(scoped.loan.id, { db });
+  } catch (e) {
+    console.error('[lt-orders] flood-zone condition re-run failed:', (e && e.message) || e);
+  }
+  res.json({
+    ok: true,
+    inFloodZone: b.inFloodZone,
+    // What CHANGED on the conditions list, so the screen can say so rather than
+    // leaving somebody to go and look.
+    conditionsAdded: (conditions && conditions.added) || [],
+    conditionsRemoved: (conditions && conditions.removed) || [],
+    conditionsUnreadable: !conditions,
+  });
+});
+
 /** Stand it down, with a reason. */
 router.post('/loans/:loanId/:kind/cancel', async (req, res) => {
   const scoped = await loadScopedLoan(req, res, 'lt-orders');
