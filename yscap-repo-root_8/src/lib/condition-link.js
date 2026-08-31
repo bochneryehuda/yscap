@@ -91,13 +91,21 @@ function liveLink(row) {
 
 /** Mint a link for one recipient. Returns { link, token } — the clear token
     exists only here and in the email built from it. */
-async function mintLink({ applicationId, borrowerId, email, createdBy }, client = db) {
+async function mintLink({ applicationId, ltLoanId, borrowerId, email, createdBy }, client = db) {
+  /* EXACTLY ONE OWNER, refused here rather than left to the database. The
+     CHECK in db/654 would catch it either way, but a caller that passes both
+     has a bug worth naming — and a 23514 surfacing from three layers down as
+     "server error" is the shape this repo's rules exist to prevent. */
+  if ((applicationId && ltLoanId) || (!applicationId && !ltLoanId)) {
+    throw new Error('mintLink: a link opens exactly one file — pass applicationId OR ltLoanId');
+  }
   const token = C.randomToken(24);
   const r = await client.query(
-    `INSERT INTO condition_links (application_id, borrower_id, sent_to_email, token_hash, created_by, expires_at)
-     VALUES ($1,$2,$3,$4,$5, now() + ($6 || ' days')::interval)
+    `INSERT INTO condition_links (application_id, lt_loan_id, borrower_id, sent_to_email, token_hash, created_by, expires_at)
+     VALUES ($1,$2,$3,$4,$5,$6, now() + ($7 || ' days')::interval)
      RETURNING *`,
-    [applicationId, borrowerId, String(email || '').trim().toLowerCase(), C.sha256(token), createdBy || null, String(LINK_TTL_DAYS)]);
+    [applicationId || null, ltLoanId || null, borrowerId, String(email || '').trim().toLowerCase(),
+      C.sha256(token), createdBy || null, String(LINK_TTL_DAYS)]);
   return { link: r.rows[0], token };
 }
 
