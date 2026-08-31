@@ -28,6 +28,10 @@ import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, PAPER, CAUTION, segTrack, segBtn } 
 
 const NUM = { fontVariantNumeric: 'tabular-nums' };
 
+/** The owner's own sentence for why the issue button is greyed, in ONE place — the
+ *  hover, and nothing else, so it can never disagree with itself. */
+const RATIO_BLOCK_HINT = 'Because the ratio is low, you need to reprice before you can issue the term sheet.';
+
 const btn = (kind) => ({
   border: kind === 'primary' ? `1px solid ${GOLD}` : '1px solid rgba(20,27,34,.18)',
   background: kind === 'primary' ? GOLD : '#fff',
@@ -38,6 +42,26 @@ const btn = (kind) => ({
   fontWeight: 600,
   cursor: 'pointer',
   minHeight: 30,
+});
+
+/* ⛔ A BUTTON THAT CANNOT BE PRESSED MUST NOT LOOK LIKE ONE THAT CAN (owner-reported
+   2026-08-31: *"it sounds like the Issue Term Sheet button is a real button, but when
+   I try to click it, nothing happens because it's black. This is a real problem with
+   that button."*).
+
+   The button was ALREADY `disabled` for the ratio case — the refusal worked. What was
+   wrong is that it kept `btn('primary')`: full gold, white text, `cursor: pointer`. So
+   it advertised itself as the primary action, swallowed the click, and said nothing.
+   An officer reasonably reads that as the screen being broken.
+
+   Greying is only half: `cursor: not-allowed` is what answers the press itself, at the
+   moment of the press, before any reading. */
+const btnBlocked = () => ({
+  ...btn(),
+  background: 'rgba(20,27,34,.06)',
+  color: '#8A9096',
+  border: '1px solid rgba(20,27,34,.12)',
+  cursor: 'not-allowed',
 });
 
 /**
@@ -52,6 +76,288 @@ const field = () => ({
   fontSize: 16, color: INK, background: '#fff',
 });
 const fieldLabel = () => ({ fontSize: 11.5, color: MUTED, fontWeight: 600 });
+
+/**
+ * EVENING OUT A PRICE — one control, all three documents (§40).
+ *
+ * The owner (2026-08-31): *"you should be able to manually even out the numbers by
+ * manually adding a charge or manually giving a concession. The system should
+ * automatically give suggestions which should help you even it out to straight
+ * numbers ... let's say if you type -0.1, it's going to bring it down from a 101.1
+ * to a 101.0."* And, on what actually moves: *"either reducing our compensation or
+ * increasing our compensation to even it out."*
+ *
+ * ⛔ IT COMPUTES NO MONEY, and that is the whole reason the suggestions are a round
+ * trip. The compensation an adjustment comes out of is the SERVER's own resolution
+ * and is deliberately never sent to the browser; a board that worked the
+ * suggestions out for itself would need that number and would then be a second
+ * place our compensation is decided. Every figure and every refusal here is the
+ * server's, shown verbatim.
+ *
+ * ⛔ ONE CONTROL, THREE DOCUMENTS. A single term sheet, a pricing comparison and a
+ * scenario comparison all reach it, because the owner asked for it on all three and
+ * three copies would be three answers to "what may I give away here".
+ *
+ * ⛔ IT REPORTS POINTS UPWARDS AND NOTHING ELSE. The parent puts `priceAdjustment`
+ * on the selection it was already sending; the server re-derives every figure from
+ * it when the sheet is previewed and again when it is issued. Nothing this screen
+ * calculated is ever stored.
+ */
+function PriceAdjuster({ mode, rawPrice, value, onChange, compact }) {
+  const [open, setOpen] = React.useState(false);
+  const [typed, setTyped] = React.useState(value == null ? '' : String(value));
+  const [state, setState] = React.useState(null);   // the server's answer
+  const [err, setErr] = React.useState(null);
+
+  const adjustable = mode === 'borrowerPaid' || mode === 'lenderPaid';
+
+  /* Asked of the server whenever the box changes, debounced — an undebounced
+     effect would post once per character typed. The TYPED value rides along so
+     the answer carries what that exact adjustment would do, from the same
+     function the issue will use. */
+  React.useEffect(() => {
+    if (!open || !adjustable) return undefined;
+    let dead = false;
+    const t = setTimeout(async () => {
+      try {
+        const r = await ltApi.termSheetPriceAdjust({ mode, rawPrice, deltaPoints: typed === '' ? null : typed });
+        if (!dead) { setState(r); setErr(null); }
+      } catch (e) {
+        if (!dead) setErr((e && (e.message || e.error)) || 'Could not work that adjustment out.');
+      }
+    }, 300);
+    return () => { dead = true; clearTimeout(t); };
+  }, [open, adjustable, mode, rawPrice, typed]);
+
+  if (!adjustable) return null;
+
+  function choose(points) {
+    const next = points === null || points === '' ? null : Number(points);
+    setTyped(next == null ? '' : String(next));
+    onChange(next != null && Number.isFinite(next) && next !== 0 ? next : null);
+  }
+
+  const applied = state && state.applied;
+  const set = value != null && value !== 0;
+
+  if (!open) {
+    return (
+      <div style={{ marginTop: compact ? 5 : 8 }}>
+        <button type="button" style={{ ...btn(), padding: '4px 9px', minHeight: 26, fontSize: 12 }}
+          onClick={() => setOpen(true)}>
+          {set ? `Price evened out by ${value > 0 ? '+' : ''}${value}` : 'Even out the price'}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      marginTop: 8, padding: 10, borderRadius: 8,
+      background: PAPER, border: '1px solid rgba(20,27,34,.10)',
+    }}>
+      <div style={{ fontSize: 11.5, color: MUTED, fontWeight: 600 }}>
+        Even out the price
+        {state && state.priceNow != null
+          ? <span style={{ color: INK, ...NUM }}>{` — it reads ${Number(state.priceNow).toFixed(3)} now`}</span>
+          : null}
+      </div>
+
+      {/* THE SUGGESTIONS ARE THE SERVER'S. Each one names what it costs us, because
+          the point of a suggestion here is not the round number — it is knowing what
+          the round number is worth. */}
+      {state && Array.isArray(state.suggestions) && state.suggestions.length ? (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 7 }}>
+          {state.suggestions.map((sg) => (
+            <button key={sg.key} type="button" title={sg.detail}
+              style={{ ...btn(), padding: '4px 9px', minHeight: 26, fontSize: 12 }}
+              onClick={() => choose(sg.deltaPoints)}>
+              {sg.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div style={{ fontSize: 11.5, color: MUTED, marginTop: 6 }}>
+          {state ? 'That price is already on a round number.' : 'Working out what it could round to…'}
+        </div>
+      )}
+
+      <div style={{ marginTop: 9 }}>
+        <label style={fieldLabel()} htmlFor={`ts-adj-${mode}-${rawPrice}`}>
+          Or type it, in points
+        </label>
+        <input
+          id={`ts-adj-${mode}-${rawPrice}`}
+          type="text"
+          inputMode="decimal"
+          style={{ ...field(), ...NUM }}
+          value={typed}
+          placeholder="-0.1"
+          onChange={(e) => choose(e.target.value.trim() === '' ? null : e.target.value)}
+        />
+      </div>
+
+      {/* WHAT IT DOES TO THE MONEY, in the server's own sentence — or its refusal,
+          verbatim. "That is capped at 2 points" is something a person can act on;
+          a bare failure is not. */}
+      {err ? (
+        <div style={{ fontSize: 12, color: '#8A2A2A', marginTop: 7, lineHeight: 1.5 }}>{err}</div>
+      ) : null}
+      {applied && applied.ok === false ? (
+        <div style={{ fontSize: 12, color: '#8A2A2A', marginTop: 7, lineHeight: 1.5 }}>{applied.message}</div>
+      ) : null}
+      {applied && applied.ok ? (
+        <div style={{ fontSize: 12, color: INK, marginTop: 7, lineHeight: 1.5, ...NUM }}>{applied.summary}</div>
+      ) : null}
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 9 }}>
+        <button type="button" style={btn('primary')} onClick={() => setOpen(false)}>Done</button>
+        {set ? (
+          <button type="button" style={btn()} onClick={() => { choose(null); }}>
+            Put it back
+          </button>
+        ) : null}
+      </div>
+      <div style={{ fontSize: 11.5, color: MUTED, marginTop: 7, lineHeight: 1.5 }}>
+        The rate and the investor&rsquo;s own price never move — this comes out of our
+        compensation, and the sheet is priced on it when it is issued.
+      </div>
+    </div>
+  );
+}
+
+/**
+ * SEND IT TO THE BORROWER — one control, mounted wherever a sheet has been issued.
+ *
+ * The owner (2026-08-31): *"we should be able to put in an email address from a
+ * borrower, which should deliver them the PDF and the nice email ... It should
+ * deliver it from the loan officer's email address and from the loan officer's
+ * name."*
+ *
+ * ⛔ ONE DEFINITION, THREE MOUNTS. There are three places on this screen where a
+ * sheet reports itself as issued, and each already offers the download. Copying an
+ * address box into all three would be three answers to "may I send this, and to
+ * whom" — and the copy that drifts is the one somebody presses.
+ *
+ * ⛔ IT DECIDES NOTHING. Whether the address is usable, whether the note may go out,
+ * and who it comes from are the SERVER's answers — the refusal it sends back is the
+ * sentence shown here, verbatim. A screen that pre-judged any of them would have to
+ * carry a second copy of a rule (rule 10 among them), and the copy that drifts is
+ * the one that leaks.
+ *
+ * ⛔ IT SAYS WHO IT HAS ALREADY GONE TO, before offering to send it again. "Did she
+ * get it?" answered by sending another copy is the failure this avoids.
+ *
+ * Every colour is an explicit dark on white — an `--ink*` token is a LIGHT paper
+ * colour in this palette and renders white on white.
+ */
+function SendToBorrower({ code }) {
+  const [open, setOpen] = React.useState(false);
+  const [to, setTo] = React.useState('');
+  const [note, setNote] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);      // {tone:'ok'|'bad', text}
+  const [past, setPast] = React.useState(null);    // null = not looked yet
+
+  const load = React.useCallback(async () => {
+    if (!code) return;
+    try {
+      const r = await ltApi.termSheetDeliveries(code);
+      setPast(Array.isArray(r && r.deliveries) ? r.deliveries : []);
+    } catch (_) {
+      // A history we cannot read must never stop somebody sending the document.
+      setPast([]);
+    }
+  }, [code]);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  async function send() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await ltApi.termSheetEmail(code, { to, note: note.trim() || undefined });
+      setMsg({ tone: 'ok', text: `Sent to ${(r && r.sent && r.sent.to) || to}.` });
+      setTo('');
+      setNote('');
+      setOpen(false);
+      await load();
+    } catch (e) {
+      /* THE SERVER'S OWN SENTENCE, verbatim. Every refusal here is something a
+         person fixes and tries again — a mistyped address, a note naming the
+         investor — and replacing it with "could not send" would take away the one
+         thing that says what to do about it. */
+      setMsg({ tone: 'bad', text: (e && (e.message || e.error)) || 'Could not send it.' });
+    } finally { setBusy(false); }
+  }
+
+  const already = Array.isArray(past) && past.length > 0;
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      {already ? (
+        <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5 }}>
+          {past.length === 1 ? 'Already sent to ' : `Already sent ${past.length} times — most recently to `}
+          <strong style={{ color: INK }}>{past[0].to_email}</strong>
+          {past[0].created_at ? ` on ${new Date(past[0].created_at).toLocaleDateString()}` : ''}.
+        </div>
+      ) : null}
+
+      {msg ? (
+        <div style={{
+          marginTop: 6, fontSize: 12, lineHeight: 1.5,
+          color: msg.tone === 'bad' ? '#8A2A2A' : '#1F5E3A',
+        }}>
+          {msg.text}
+        </div>
+      ) : null}
+
+      {!open ? (
+        <button type="button" style={{ ...btn(), marginTop: 7 }} onClick={() => { setOpen(true); setMsg(null); }}>
+          {already ? 'Send it again' : 'Email it to the borrower'}
+        </button>
+      ) : (
+        <div style={{
+          marginTop: 8, padding: 10, borderRadius: 8,
+          background: PAPER, border: '1px solid rgba(20,27,34,.10)',
+        }}>
+          <label style={fieldLabel()} htmlFor={`ts-email-${code}`}>Borrower’s email address</label>
+          <input
+            id={`ts-email-${code}`}
+            type="email"
+            style={field()}
+            value={to}
+            placeholder="name@example.com"
+            onChange={(e) => setTo(e.target.value)}
+          />
+          <div style={{ marginTop: 8 }}>
+            <label style={fieldLabel()} htmlFor={`ts-note-${code}`}>A note to go with it (optional)</label>
+            <textarea
+              id={`ts-note-${code}`}
+              rows={2}
+              style={{ ...field(), resize: 'vertical' }}
+              value={note}
+              placeholder="Here is the pricing we discussed…"
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </div>
+          <div style={{ fontSize: 11.5, color: MUTED, marginTop: 6, lineHeight: 1.5 }}>
+            It goes out from your own name and address, with the PDF attached and the
+            expiry stated. One borrower at a time.
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 9 }}>
+            <button type="button" style={btn('primary')} disabled={busy || !to.trim()} onClick={send}>
+              {busy ? 'Sending…' : 'Send it'}
+            </button>
+            <button type="button" style={btn()} disabled={busy} onClick={() => { setOpen(false); setMsg(null); }}>
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * THE THREE DOCUMENTS, in the officer's words. Owner-directed 2026-08-30:
@@ -110,6 +416,10 @@ export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount, 
   const [note, setNote] = useState(null);
   const [open, setOpen] = useState(false);
   const [gate, setGate] = useState(null);      // the SERVER's verdict — never re-derived here
+  /* §40 — how many POINTS this one option's price was evened out by, or null. It
+     rides on the selection and nothing else: the server re-derives every figure
+     from it, at preview and again at issue, so the screen never holds a price. */
+  const [adjust, setAdjust] = useState(null);
   /**
    * WHAT IS THIS SHEET STILL MISSING? — asked of the SERVER, never worked out here.
    *
@@ -131,7 +441,9 @@ export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount, 
   const ask = useCallback(async () => {
     if (!issue) return null;
     try {
-      const r = await ltApi.termSheetPreview({ selections: [issue.selectionNow()], prepared: issue.prepared });
+      const r = await ltApi.termSheetPreview({
+        selections: [{ ...issue.selectionNow(), priceAdjustment: adjust }], prepared: issue.prepared,
+      });
       setGate(r && r.gate ? r.gate : null);
       return r && r.gate ? r.gate : null;
     } catch (e) {
@@ -141,7 +453,7 @@ export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount, 
       setNote({ tone: 'bad', text: (e && (e.message || e.error)) || 'Could not check what is still needed.' });
       return null;
     }
-  }, [issue]);
+  }, [issue, adjust]);
 
   const [issued, setIssued] = useState(null);
 
@@ -183,7 +495,9 @@ export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount, 
   async function doIssue() {
     setBusy('issue'); setNote(null);
     try {
-      const r = await ltApi.termSheetIssue({ selections: [issue.selectionNow()], prepared: issue.prepared });
+      const r = await ltApi.termSheetIssue({
+        selections: [{ ...issue.selectionNow(), priceAdjustment: adjust }], prepared: issue.prepared,
+      });
       setIssued(r);
       setOpen(false);
       if (onAdded) onAdded();
@@ -208,6 +522,7 @@ export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount, 
             Issue another
           </button>
         </div>
+        <SendToBorrower code={issued.code} />
       </div>
     );
   }
@@ -241,7 +556,8 @@ export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount, 
           </div>
           {open && canIssue ? (
             <IssueFields issue={issue} gate={gate} onChanged={ask}
-              busy={busy} onIssue={doIssue} onCancel={() => setOpen(false)} />
+              busy={busy} onIssue={doIssue} onCancel={() => setOpen(false)}
+              mode={mode} adjust={adjust} onAdjust={setAdjust} />
           ) : null}
         </>
       )}
@@ -273,7 +589,7 @@ const outstanding = (gate, key) => !!(gate && Array.isArray(gate.missing) && gat
  * with the outstanding ones marked: a form that reflows under the cursor as each
  * answer lands is a form people lose their place in.
  */
-export function IssueFields({ issue, gate, onChanged, busy, onIssue, onCancel }) {
+export function IssueFields({ issue, gate, onChanged, busy, onIssue, onCancel, mode, adjust, onAdjust }) {
   const c = issue.calc;
   const set = (k) => (v) => issue.setCalc((p) => ({ ...p, [k]: v }));
   const setBasis = (k, val) => issue.setCalc((p) => ({ ...p, [k]: val }));
@@ -365,6 +681,20 @@ export function IssueFields({ issue, gate, onChanged, busy, onIssue, onCancel })
         </label>
       </div>
 
+      {/* §40 — the price may be evened out out of OUR compensation before the sheet
+          is issued. Above the ratio check on purpose: it changes what the document
+          will say, so it belongs with the fields that do, not with the actions. */}
+      {onAdjust ? (
+        <div style={{ padding: '0 11px 4px' }}>
+          <PriceAdjuster
+            mode={mode}
+            rawPrice={(issue.selectionNow ? issue.selectionNow() : {} || {}).rawPrice}
+            value={adjust}
+            onChange={onAdjust}
+          />
+        </div>
+      ) : null}
+
       <RatioCheck check={check} onReprice={issue.onReprice} busy={busy} />
 
       <div style={{
@@ -377,12 +707,25 @@ export function IssueFields({ issue, gate, onChanged, busy, onIssue, onCancel })
             ratio below the one the price was bought at is not a box anybody can
             fill, it is a re-price, and the button for that is right above. The
             SERVER refuses it either way (`dscr_below_priced`); this only stops
-            an officer pressing something that cannot succeed. */}
-        <button type="button" style={btn('primary')}
-          disabled={busy != null || ratioBlocks}
-          aria-disabled={ratioBlocks} onClick={onIssue}>
-          {busy === 'issue' ? 'Issuing…' : 'Issue the term sheet'}
-        </button>
+            an officer pressing something that cannot succeed.
+
+            ⛔ THE TITLE SITS ON THE WRAPPER, NOT ON THE BUTTON, and that is the
+            whole reason the wrapper exists. A DISABLED control receives no mouse
+            events in several browsers, so a `title` on the button itself is a
+            tooltip that never appears — which would have left the owner's actual
+            request ("hovering on top of it should come up and say...") quietly
+            unimplemented while looking done in the source. The wrapper is not
+            disabled, so it always gets the hover.
+
+            The wording is the owner's own, so the button, the sentence beside it
+            and the panel above cannot drift into three descriptions of one rule. */}
+        <span title={ratioBlocks ? RATIO_BLOCK_HINT : undefined} style={{ display: 'inline-flex' }}>
+          <button type="button" style={ratioBlocks ? btnBlocked() : btn('primary')}
+            disabled={busy != null || ratioBlocks}
+            aria-disabled={ratioBlocks} onClick={onIssue}>
+            {busy === 'issue' ? 'Issuing…' : 'Issue the term sheet'}
+          </button>
+        </span>
         <button type="button" style={btn()} disabled={busy != null} onClick={onCancel}>Not now</button>
         {/* ⛔ THE BUTTON IS NEVER DISABLED ON THE GATE. The server refuses and
             names every missing field at once; a greyed button explains nothing
@@ -785,6 +1128,12 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
   const [prepared, setPrepared] = useState({ borrowerName: '', entityName: '', propertyAddress: '' });
   // A program the white-label sheet has not named yet, named here by the officer.
   const [names, setNames] = useState({});
+  /* §40 — how many POINTS each collected option's price is evened out by, keyed on
+     the member the same way `names` is. Held here rather than on the cart row on
+     purpose: the adjustment is a decision about the DOCUMENT being assembled, and
+     the server re-derives every figure from it at preview and again at issue, so
+     nothing half-decided is ever written down as priced. */
+  const [adjusts, setAdjusts] = useState({});
   const [plan, setPlan] = useState(null);   // { docKind, gate } from the server
 
   const anchor = cart && Number.isFinite(cart.anchor_position) ? cart.anchor_position : 0;
@@ -823,7 +1172,10 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
     // straight back; nothing here reads or reshapes it.
     internal: m.internal,
     pricedAt: m.priced_at,
-  })), [members, names]);
+    // §40 — evened out of OUR compensation. The server re-prices the whole option
+    // from it; nothing about the money is worked out on this screen.
+    priceAdjustment: adjusts[m.id] == null ? null : adjusts[m.id],
+  })), [members, names, adjusts]);
 
   // ⛔ WHICH DOCUMENT THIS IS, AND WHAT IS STILL MISSING, COME FROM THE SERVER.
   // The kind is derived from the options and the gate is the same function the
@@ -852,7 +1204,7 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
       }
     }, 350);
     return () => { dead = true; clearTimeout(t); };
-  }, [open, members, names, anchor, selectionsOf]);
+  }, [open, members, names, adjusts, anchor, selectionsOf]);
 
   async function issue() {
     setBusy('issue'); setNote(null);
@@ -895,6 +1247,7 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
           <button type="button" style={btn()}
             onClick={() => { setIssued(null); if (onIssued) onIssued(null); }}>Start another</button>
         </div>
+        <SendToBorrower code={issued.code} />
       </div>
     );
   }
@@ -955,6 +1308,26 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
                 <span style={{ fontSize: 12, color: SLATE, ...NUM }}>
                   {p.ratePct != null ? `${Number(p.ratePct).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}%` : '—'}
                 </span>
+                {/* ⛔ THE PRICE, WHICH THIS ROW NEVER SHOWED (owner-directed 2026-08-31:
+                    *"It also needs to come up with how much the program is, like how many
+                    points it is, 101, 98, whatever."*).
+
+                    A rate alone does not say what an option COSTS, so two rows at the same
+                    rate read as the same deal while one is at 98 and the other at 101.5 —
+                    which is precisely the comparison this strip exists to make.
+
+                    ⛔ IT IS THE PRICE AFTER OUR COMPENSATION, read off the member's OWN
+                    stored `charges` (`overlay.quoteCharges` → `displayPrice`), never
+                    recomputed here and never the raw vendor price. The raw price is the
+                    number before our compensation; showing it beside a borrower-facing
+                    rate would put two different stories on one line, and it is also the
+                    figure §40's adjuster moves AGAINST. One number, one source. */}
+                <span style={{ fontSize: 12, color: INK, fontWeight: 600, ...NUM }}
+                  title="The price after our compensation">
+                  {m.charges && m.charges.displayPrice != null
+                    ? Number(m.charges.displayPrice).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')
+                    : '—'}
+                </span>
                 <span style={{ fontSize: 11.5, color: MUTED }}>{p.consumerLabel || ''}</span>
                 <span style={{ fontSize: 11.5, color: MUTED }}>
                   {m.mode === 'lenderPaid' ? 'lender paid' : 'borrower paid'}{m.waive_lender_fees ? ' · fees waived' : ''}
@@ -981,6 +1354,19 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
                     />
                   </div>
                 )}
+                {/* §40 — PER OPTION, because a comparison is several offers and the
+                    owner rounds them one at a time. The mode is this member's own:
+                    three framings of one deal legitimately sit side by side, and the
+                    compensation an adjustment comes out of is different in each. */}
+                <div style={{ flexBasis: '100%' }}>
+                  <PriceAdjuster
+                    compact
+                    mode={m.mode}
+                    rawPrice={(m.program || {}).rawPrice}
+                    value={adjusts[m.id] == null ? null : adjusts[m.id]}
+                    onChange={(pts) => setAdjusts((st) => ({ ...st, [m.id]: pts }))}
+                  />
+                </div>
               </div>
             );
           })}
@@ -1168,6 +1554,7 @@ export function TermSheetLookup() {
             <button type="button" style={btn('primary')} onClick={() => ltApi.termSheetPdf(d.code)}>
               Download the PDF
             </button>
+            <SendToBorrower code={d.code} />
           </div>
         </div>
       )}

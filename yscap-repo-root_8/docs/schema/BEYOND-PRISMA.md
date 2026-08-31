@@ -9,7 +9,7 @@ columns or partial indexes. On this database that is
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 652 numbered migrations in `db/` (highest `db/655`) remain the only thing that builds this database.
+rebuild a database from them.** The 654 numbered migrations in `db/` (highest `db/657`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,17 +19,17 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 405 |
-| Columns | 6485 |
+| Tables | 406 |
+| Columns | 6499 |
 | Triggers | 38 |
 | Functions | 142 |
 | CHECK constraints | 347 |
 | Generated columns | 12 |
 | Partial indexes | 410 |
-| Primary keys | 405 |
-| Foreign keys | 825 |
+| Primary keys | 406 |
+| Foreign keys | 826 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1404 |
+| Indexes (all kinds) | 1407 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -997,7 +997,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (825)
+## Foreign keys (826)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1577,6 +1577,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lt_staff_links** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_term_sheet** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_term_sheet_cart** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_term_sheet_delivery** → `lt_term_sheet` — `FOREIGN KEY (sheet_id) REFERENCES lt_term_sheet(id) ON DELETE CASCADE`
 - **lt_term_sheet** → `staff_users` — `FOREIGN KEY (created_by_staff) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_term_sheet** → `lt_term_sheet` — `FOREIGN KEY (supersedes) REFERENCES lt_term_sheet(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_vor_envelopes** → `lt_vor_forms` — `FOREIGN KEY (form_id) REFERENCES lt_vor_forms(id) ON DELETE SET NULL`
@@ -1899,7 +1900,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 405 primary keys and 1404 indexes is
+Every one of the 406 primary keys and 1407 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
