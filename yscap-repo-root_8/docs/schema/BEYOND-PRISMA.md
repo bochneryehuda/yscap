@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**944 objects**, and a database rebuilt from the Prisma
+**946 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 649 numbered migrations in `db/` (highest `db/653`) remain the only thing that builds this database.
+rebuild a database from them.** The 650 numbered migrations in `db/` (highest `db/654`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -20,16 +20,16 @@ the live database.
 | | |
 |---|---|
 | Tables | 405 |
-| Columns | 6483 |
+| Columns | 6484 |
 | Triggers | 37 |
 | Functions | 140 |
-| CHECK constraints | 346 |
+| CHECK constraints | 347 |
 | Generated columns | 12 |
-| Partial indexes | 409 |
+| Partial indexes | 410 |
 | Primary keys | 405 |
 | Foreign keys | 825 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1403 |
+| Indexes (all kinds) | 1404 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -231,7 +231,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (409)
+## Partial indexes (410)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -251,6 +251,7 @@ the live database.
 - **closing_handling_buyer_uk** on `closing_handling_settings`
 - **closing_handling_company_uk** on `closing_handling_settings`
 - **closing_thread_msgs_dedupe_uk** on `closing_thread_messages`
+- **condition_links_lt_idx** on `condition_links`
 - **draw_media_display_pending_idx** on `draw_media`
 - **esign_recipients_uninvited_idx** on `esign_recipients`
 - **finding_decisions_live_idx** on `finding_decisions`
@@ -643,7 +644,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (346)
+## CHECK constraints (347)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -757,6 +758,7 @@ the live database.
 - **closing_workflow_stage_check** on `closing_workflow`
 - **condition_clearance_proofs_result_check** on `condition_clearance_proofs`
 - **condition_intents_materiality_check** on `condition_intents`
+- **condition_links_one_owner** on `condition_links`
 - **conditions_audience_check** on `conditions`
 - **conditions_severity_check** on `conditions`
 - **conditions_status_check** on `conditions`
@@ -1894,7 +1896,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 405 primary keys and 1403 indexes is
+Every one of the 405 primary keys and 1404 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

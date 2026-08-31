@@ -111,13 +111,13 @@ footer p{max-width:74ch;margin:0 0 9px}
   This is a picture of a copy — nothing here can change anything.</p>
   <div class="figs">
     <div class="fig"><b>405</b><span>tables</span></div>
-    <div class="fig"><b>6,483</b><span>fields</span></div>
+    <div class="fig"><b>6,484</b><span>fields</span></div>
     <div class="fig"><b>825</b><span>connections</span></div>
     <div class="fig"><b>37</b><span>automatic rules</span></div>
-    <div class="fig"><b>346</b><span>value guards</span></div>
-    <div class="fig"><b>1,403</b><span>lookups</span></div>
+    <div class="fig"><b>347</b><span>value guards</span></div>
+    <div class="fig"><b>1,404</b><span>lookups</span></div>
   </div>
-  <p class="stamp">Generated from the committed schema map — built from 649 migration files, up to db/653. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
+  <p class="stamp">Generated from the committed schema map — built from 650 migration files, up to db/654. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
 </div></header>
 
 <section><div class="wrap">
@@ -921,10 +921,10 @@ footer p{max-width:74ch;margin:0 0 9px}
   </div>
 </div></details><details class="tbl" data-name="condition_links" data-note="">
 <summary><span class="tn">condition_links</span>
-<span class="tm">12 fields · 4 links</span>
+<span class="tm">13 fields · 4 links</span>
 </summary>
 <div class="detail">
-  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">application_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">borrower_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">created_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">expires_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t">gen_random_uuid()</td></tr><tr><td class="c">last_used_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">revoked_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">revoked_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">sent_to_email <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">token_hash <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">use_count <span class="req">required</span></td><td class="t">integer</td><td class="t">0</td></tr></tbody></table></div>
+  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">application_id</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">borrower_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">created_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">expires_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t">gen_random_uuid()</td></tr><tr><td class="c">last_used_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">lt_loan_id</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">revoked_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">revoked_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">sent_to_email <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">token_hash <span class="req">required</span></td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">use_count <span class="req">required</span></td><td class="t">integer</td><td class="t">0</td></tr></tbody></table></div>
   <div class="links">
     <div><h4>Depends on</h4><ul><li><span class="a">application_id</span> → <span class="a">applications</span><span class="tag cascade">on delete cascade</span></li><li><span class="a">borrower_id</span> → <span class="a">borrowers</span><span class="tag cascade">on delete cascade</span></li><li><span class="a">created_by</span> → <span class="a">staff_users</span><span class="tag">on delete set null</span></li><li><span class="a">revoked_by</span> → <span class="a">staff_users</span><span class="tag">on delete set null</span></li></ul></div>
     <div><h4>Depended on by</h4><ul><li style="color:var(--ink-3)">Nothing points at this table.</li></ul></div>
