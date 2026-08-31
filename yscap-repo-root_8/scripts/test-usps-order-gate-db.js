@@ -118,7 +118,11 @@ const ok = (name, cond) => { if (cond) { pass++; console.log('  ok   ' + name); 
   {
     const app = await mk('outstanding');                       // USPS itself is NOT cleared
     const other = (await db.query(
-      `SELECT id FROM checklist_templates WHERE code <> 'usps_address_verification' LIMIT 1`)).rows[0];
+      // ANOTHER APPLICATION-SCOPED one. "Any template but this one" reaches
+      // `gov_id`, which belongs to the PERSON, and db/655 refuses a profile
+      // condition on a loan file.
+      `SELECT id FROM checklist_templates WHERE code <> 'usps_address_verification'
+         AND scope='application' AND is_active ORDER BY sort_order, code LIMIT 1`)).rows[0];
     ok('there is another template to test the scope with', !!other);
     if (other) {
       await db.query(
