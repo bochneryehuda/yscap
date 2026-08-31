@@ -231,6 +231,90 @@ const path = require("path");
       ok(!/Deephaven/i.test(b), "C3 …with no investor named on either");
     }
 
+    // ====================================================================
+    section("D. ALL THREE workflows carry it — and each option keeps its OWN");
+    // ====================================================================
+    /* The owner asked for this "on all three workflows": the single term sheet,
+       the comparison of PRICES on one deal, and the comparison of DEALS. A and B
+       above only ever issued ONE option, and with one member every list in this
+       path is length 1 — which is exactly the length at which a misaligned list
+       still looks right. `store.issueSheet` merges the adjustments BESIDE the
+       members by index (it has to: the client whitelist would strip a forged one
+       carried ON a member), so the case that can actually catch a slip is a
+       MULTI-option document with the adjustment on the SECOND option only. */
+    {
+      /* The compensation is taken from the SERVER'S OWN answer in section A
+         (103.1 raw came back as `priceNow`), never from the 2 points this suite
+         happens to have saved — an expectation written against our own fixture
+         would still pass if the door stopped resolving a plan at all. */
+      const comp = 103.1 - priceNow;
+      const optA = Object.assign({}, selection(null), { label: "A", ratePct: 7.375, rawPrice: 103.1 });
+      const optB = Object.assign({}, selection(-0.1), { label: "B", ratePct: 6.875, rawPrice: 101.4 });
+      // Same scenario on both = a comparison of PRICES. A different scenario on
+      // the second = a comparison of DEALS. Both are issued, because the owner
+      // named both and they are separate document kinds in the store.
+      const otherScenario = Object.assign({}, SCENARIO, { loan: 300000, ltv: 60 });
+      const kinds = [
+        { what: "prices", body: { selections: [optA, optB], prepared: PREPARED }, expect: "comparison" },
+        {
+          what: "deals",
+          body: {
+            selections: [optA, Object.assign({}, optB, { scenario: otherScenario })],
+            prepared: PREPARED,
+          },
+          expect: "scenario_comparison",
+        },
+      ];
+
+      for (const k of kinds) {
+        const res = await call("POST", P, k.body);
+        ok(res.status === 200, `D1[${k.what}] a two-option comparison issues (${res.status})`);
+        if (res.status !== 200) continue;
+        madeSheets.push(res.body.code);
+
+        const row = (await ltDb.query(
+          `SELECT snapshot ->> 'docKind' AS kind,
+                  snapshot -> 'members' -> 0 -> 'charges' ->> 'displayPrice' AS p0,
+                  snapshot -> 'members' -> 1 -> 'charges' ->> 'displayPrice' AS p1
+             FROM lt_term_sheet WHERE code = $1`,
+          [res.body.code],
+        )).rows[0];
+        ok(row.kind === k.expect,
+          `D2[${k.what}] …and it really is that document kind (${row.kind})`);
+
+        /* ⛔ THE ONE THAT MATTERS. Option A was never adjusted and must read at
+           its own unadjusted price; option B must read exactly 0.1 lower than
+           ITS unadjusted price. An adjustment applied to the wrong option, or to
+           both, or dropped, all fail here — and none of them can fail on a
+           one-option sheet. */
+        const rawlessA = Number(row.p0);
+        const rawlessB = Number(row.p1);
+        ok(Math.abs(rawlessA - (103.1 - comp)) < 1e-9,
+          `D3[${k.what}] ⛔ the UNTOUCHED option is at its own price, unmoved (${rawlessA})`);
+        ok(Math.abs(rawlessB - (101.4 - comp - 0.1)) < 1e-9,
+          `D4[${k.what}] ⛔ …and only the SECOND option moved, by exactly what was typed (${rawlessB})`);
+
+        const recs = (await ltDb.query(
+          `SELECT sc.position, sc.internal FROM lt_term_sheet_scenario sc
+             JOIN lt_term_sheet t ON t.id = sc.cart_id AND sc.parent_kind = 'sheet'
+            WHERE t.code = $1 ORDER BY sc.position`,
+          [res.body.code],
+        )).rows;
+        ok(recs.length === 2, `D5[${k.what}] both options are on the staff-side record`);
+        ok(recs.length === 2 && recs[0].internal.adjustmentPoints === undefined,
+          `D6[${k.what}] ⛔ the first option's record says nothing was given away on it`);
+        ok(recs.length === 2 && recs[1].internal.adjustmentPoints === -0.1,
+          `D7[${k.what}] ⛔ …while the second's records the 0.1 — the decision landed on the option it was made on`);
+
+        const snapText = (await ltDb.query(
+          "SELECT snapshot::text AS s FROM lt_term_sheet WHERE code = $1", [res.body.code],
+        )).rows[0].s;
+        ok(!/adjustmentPoints|compBefore|compAfter/.test(snapText),
+          `D8[${k.what}] and none of the compensation arithmetic is on the document`);
+        ok(!/Deephaven/i.test(snapText), `D9[${k.what}] …nor the investor, on a comparison either`);
+      }
+    }
+
     console.log("");
     if (bad) { console.error(`${bad} FAILED`); process.exit(1); }
     console.log("ALL PASSED");
