@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ltApi } from './api.js';
+import { GOLD_TEXT } from './ppeStyles.js';
 
 /**
  * A CONTACT CONDITION IS A FORM WIRED TO THE FILE'S CONTACTS — not a drop zone.
@@ -45,7 +46,6 @@ import { ltApi } from './api.js';
 const INK = '#141B22';
 const MUTED = '#4B585C';
 const LINE = '#E6E1D6';
-const GOLD = '#AE8746';
 const GREEN = '#2F6B4F';
 const RED = '#8A2D2D';
 
@@ -108,7 +108,7 @@ function ContactRow({ loanId, type, vendors, onChanged, busy, setBusy }) {
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: INK }}>{type.label}</div>
         {type.required && !greyed
-          ? <span style={{ fontSize: 11, color: GOLD, fontWeight: 700 }}>REQUIRED</span> : null}
+          ? <span style={{ fontSize: 11, color: GOLD_TEXT, fontWeight: 700 }}>REQUIRED</span> : null}
         {on ? <span style={{ fontSize: 11, color: GREEN, fontWeight: 700 }}>ON THE FILE</span> : null}
         {greyed ? <span style={{ fontSize: 12, color: MUTED }}>{type.whyNot || 'Not for this file.'}</span> : null}
         {unknown ? <span style={{ fontSize: 12, color: MUTED }}>{type.whyNot}</span> : null}
@@ -253,7 +253,7 @@ export default function LtConditionContacts({ loanId, condition, onChanged }) {
       ))}
 
       {missingRequired.length ? (
-        <p style={{ margin: '10px 0 0', fontSize: 12.5, color: GOLD, lineHeight: 1.5 }}>
+        <p style={{ margin: '10px 0 0', fontSize: 12.5, color: GOLD_TEXT, lineHeight: 1.5 }}>
           Still needed before the matching order can go out:{' '}
           {missingRequired.map((t) => t.label).join(', ')}.
         </p>
