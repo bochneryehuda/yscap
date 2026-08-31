@@ -258,6 +258,12 @@ async function main() {
       '/api/lt/dscr/term-sheet/cart',
       '/api/lt/dscr/term-sheet/TS-ZZZZZZ',
       '/api/lt/dscr/term-sheet/TS-ZZZZZZ/pdf',
+      // Who this sheet has been emailed to (db/656). Same replay shape as the two
+      // above: on a code nobody issued the by-code load answers its own 404, which
+      // is what proves the normalizer and that SELECT both ran. The delivery-table
+      // read itself is opened on a REAL issued sheet by
+      // test-lt-term-sheet-deliver-db.js, where there is something to list.
+      '/api/lt/dscr/term-sheet/TS-ZZZZZZ/deliveries',
       // The ClickUp syncing section (#36). On the no-such-loan id the scoped
       // loader answers its own 404 — the route's uuid check + SELECT both run,
       // so a phantom column in either would surface here as a 500.
