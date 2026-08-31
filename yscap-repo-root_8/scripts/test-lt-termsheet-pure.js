@@ -287,8 +287,20 @@ section('the layout — the block list a renderer walks');
   check(breakEven && breakEven[2] === '67 months (5 years 7 months)',
     `the break-even row reads in years and months, as the docs print it (got ${breakEven && breakEven[2]})`);
   const paras = lay.blocks.filter((b) => b.t === 'para').map((b) => b.text).join(' ');
-  check(/costs \$8,438 more at closing than No points and saves \$127 a month\. You are ahead after 67 months \(5 years 7 months\)/.test(paras),
-    'the buydown sentence is the documented one, verbatim');
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. This pinned the sentence VERBATIM,
+     and the owner asked for exactly that sentence to say more: *"you need to
+     explain a little bit more what your head means, and the same thing for the
+     opposite of your head."* A verbatim pin on prose somebody has been asked to
+     improve fails on the improvement and then gets deleted, so it now holds the
+     three FACTS it was really about — the closing cost, the monthly saving and
+     the month they meet — plus the explanation that was added, which is the part
+     a reader actually needed. */
+  check(/costs \$8,438 more at closing than No points and saves \$127 a month/.test(paras),
+    'the buydown sentence states what it costs at closing and what it saves a month, against the named option');
+  check(/pays that back after 67 months \(5 years 7 months\)/.test(paras),
+    '…and the month the closing money is paid back, in years and months');
+  check(/from then on you are ahead/.test(paras) && /Sell or refinance before then/.test(paras),
+    'THE ONE THAT MATTERS: it says what "ahead" MEANS and what happens on the other side of that month — a date with no explanation is a number the reader has to interpret');
   check(/costs \$6,563 less at closing than No points and \$129 more a month/.test(paras), 'and so is the credit sentence');
   // ⛔ EVERY FIGURE IN THOSE SENTENCES IS A DIFFERENCE, so each one NAMES what it
   // is a difference from. They used to read "costs $8,438 today" — true, and it
@@ -301,13 +313,28 @@ section('the layout — the block list a renderer walks');
     'and every comparative sentence names the option it is comparing against, so no figure on the page reads as absolute when it is a difference');
   const hard = lay.blocks.filter((b) => b.t === 'pagebreak' && !Number.isFinite(b.ifLessThan));
   const soft = lay.blocks.filter((b) => b.t === 'pagebreak' && Number.isFinite(b.ifLessThan));
-  check(hard.length === 3, 'one detail page per option — the owner\'s "it\'s just adding pages to it", literally');
+  /* ⛔ REVERSED 2026-08-31, ON THE OWNER'S OWN REPORT. This asserted a page per
+     option, and it was right about the design of the day. Then the owner read
+     one: *"everything is way too big … just thrown on the sheet without an
+     order."* MEASURED, those pages were three of a seven-page comparison and
+     every figure on them already sat in the table or the shared block above —
+     so the sheet said each fact four times and could not be read at a glance.
+     They are gone, the table carries what they carried, and
+     `test-lt-sheet-nothing-lost-pure.js` fails the build on a fact that stopped
+     being printed. A HARD break on a comparison now means somebody re-added the
+     repeat. */
+  check(hard.length === 0,
+    'a comparison forces NO page of its own — the per-option repeat is what made it seven pages');
   // ⛔ THE DISCLOSURES BREAK IS SOFT, AND THAT DISTINCTION IS LOAD-BEARING. A
   // hard break there produced a page carrying five rows and ten inches of
   // nothing on the first sheet rendered; a per-option break stays hard because
   // "one option per page" is a statement about the document, not about the room.
-  check(soft.length === 1 && soft[0].ifLessThan > 0,
-    'and exactly one SOFT break, for the disclosures, which move to their own page only when there is no room left');
+  /* Every break left is SOFT, and each moves something only when there is not
+     enough room to hold it: the comparison table (so the columns a reader is
+     choosing between are never split across a fold) and the disclosures (a hard
+     break there produced a page carrying five rows and ten inches of nothing). */
+  check(soft.length === 2 && soft.every((b) => b.ifLessThan > 0),
+    'and the two breaks left are both SOFT — the table and the disclosures each move only when the room runs out');
 
   const single = layout.buildLayout(snapshot.buildSnapshot({ selections: [quote('The offer', 7.375, 102)], plan: PLAN, prepared: {} }).snapshot, {});
   check(!single.blocks.some((b) => b.t === 'table'), 'a one-option sheet renders NO comparison table — a table with one column is not a comparison');
@@ -531,9 +558,21 @@ section('the fees are listed out, and broken down');
   'listing a waived fee changes no total — its dollars are the zero the absent line already contributed');
 
   const table = layout.comparisonTable(built.snapshot);
-  const feeRow = table.rows.find((r) => r[0] === 'Lender fees');
-  check(feeRow && feeRow.some((c) => /^Waived \(\$2,095\)$/.test(String(c))) && feeRow.some((c) => c === '$2,095'),
-    'and the comparison table puts the waived column beside the charged one, both naming the same $2,095');
+  /* ⛔ RE-POINTED, AND THE REQUIREMENT IS SERVED BETTER RATHER THAN RELAXED. The
+     table carried one "Lender fees $2,095" cell; the owner asked to *"list out
+     the lender fees, because the next one, you're waiving the lender fees — you
+     need to be able to see the difference."* One cell answers neither question:
+     which fees, and which of them this option charges. Each fee is its own row
+     now, so the waived column names it fee by fee AND the total it saves. */
+  const appRow = table.rows.find((r) => r[0] === 'Application fee');
+  const comRow = table.rows.find((r) => r[0] === 'Commitment fee');
+  check(appRow && appRow.some((c) => /^Waived \(\$500\)$/.test(String(c))) && appRow.some((c) => c === '$500'),
+    'the application fee is its own row, waived beside charged, both naming the same $500');
+  check(comRow && comRow.some((c) => /^Waived \(\$1,595\)$/.test(String(c))) && comRow.some((c) => c === '$1,595'),
+    '…and so is the commitment fee, at its own $1,595');
+  const savedRow = table.rows.find((r) => r[0] === 'Lender fees you are not paying');
+  check(savedRow && savedRow.some((c) => c === '$2,095'),
+    '…and what the waive is WORTH is totalled, because on that option it is the reason to choose it rather than a subtotal');
 }
 
 // =============================================================================
