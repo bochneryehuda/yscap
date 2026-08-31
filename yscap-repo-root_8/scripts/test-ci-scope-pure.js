@@ -170,8 +170,7 @@ console.log(`ci-scope: ${n} assertions passed ` +
 // side of it: the map may ADD a test, never excuse one. So the interesting
 // cases are all the ways it must REFUSE to narrow, not the happy path.
 // ---------------------------------------------------------------------------
-const { loadDepMap, impactedTests, stepRunsImpacted, MAX_MAP_AGE_DAYS, mapFreshness,
-  REBUILD_HINT, _internals: I2 } = require('./ci-scope');
+const { loadDepMap, impactedTests, stepRunsImpacted, MAX_MAP_AGE_DAYS, _internals: I2 } = require('./ci-scope');
 
 const TODAY = '2026-08-16';
 const MAP = {
@@ -338,64 +337,6 @@ ok(loadDepMap({ readFileSync: () => PLAIN }, path, __dirname).tests['test-a.js']
   'a plain-path map still loads');
 
 // ---------------------------------------------------------------------------
-// THE FRESHNESS NOTICE — it must REPORT, and must decide nothing
-// ---------------------------------------------------------------------------
-//
-// Nothing regenerates the dependency map, so it ages past the limit on a timer
-// and every branch quietly starts running the whole suite. `mapFreshness` is
-// what lets the planner say so a few days BEFORE that happens. It is a notice,
-// not a gate: these assertions pin that it can never change an outcome.
-{
-  const T = '2026-08-30';
-  const at = (day) => mapFreshness({ builtAtUtcDay: day, tests: {} }, T);
-
-  eq(at('2026-08-30').age, 0, 'a map built today is 0 days old');
-  eq(at('2026-08-30').stale, false, 'and is not stale');
-  eq(at('2026-08-30').soon, false, 'and is nowhere near it');
-
-  // The window opens at limit - 4 and closes the moment it is genuinely stale.
-  eq(at('2026-08-21').age, 9, 'nine days old');
-  eq(at('2026-08-21').soon, false, 'nine days is still comfortably fresh');
-  eq(at('2026-08-20').soon, true, 'ten days in, the warning starts');
-  eq(at('2026-08-20').stale, false, 'and it is still only a warning');
-  eq(at('2026-08-16').age, 14, 'fourteen days is the limit itself');
-  eq(at('2026-08-16').stale, false, 'AT the limit is not yet over it — the rule is strictly greater');
-  eq(at('2026-08-16').soon, true, 'but it is the last day of warning');
-  eq(at('2026-08-15').stale, true, 'fifteen days is over the limit');
-  eq(at('2026-08-15').soon, false,
-    'and once stale, "nearly stale" would be noise — the honest word is stale');
-
-  // NEVER GUESSES. An unusable or absent date reports "cannot tell" rather
-  // than picking a side, and a future-dated map is not reported as fresh.
-  eq(at('nonsense').age, null, 'an unreadable date reports no age');
-  eq(at('nonsense').stale, false, 'and claims nothing about staleness');
-  eq(mapFreshness(null, T).age, null, 'no map at all reports no age');
-  eq(mapFreshness(undefined, T).age, null, 'undefined reports no age');
-  eq(at('2026-09-05').age, null, 'a map dated in the future is not given an age');
-  ok(!at('2026-09-05').stale && !at('2026-09-05').soon,
-    'and is reported neither stale nor nearly stale — impactedTests refuses it on its own');
-
-  // It is PURE — the same map and day always answer the same way, and asking
-  // does not change the map.
-  const m = { builtAtUtcDay: '2026-08-20', tests: {} };
-  const first = JSON.stringify(mapFreshness(m, T));
-  eq(JSON.stringify(mapFreshness(m, T)), first, 'asking twice answers the same');
-  eq(m.builtAtUtcDay, '2026-08-20', 'and never edits the map it was handed');
-
-  // THE NOTICE MAY NEVER BECOME A DECISION. A stale map and a fresh one must
-  // produce the SAME selection for the same input, because the age is already
-  // handled by impactedTests — this helper exists only to print.
-  const MAPPED = { tests: { 'test-pricing-pure.js': ['src/lib/pricing.js'] } };
-  const freshPick = impactedTests([P('src/lib/pricing.js')],
-    { ...MAPPED, builtAtUtcDay: '2026-08-29' }, T);
-  ok(freshPick.ok && freshPick.tests.has('test-pricing-pure.js'),
-    'a fresh map still selects exactly as before the notice existed');
-
-  ok(typeof REBUILD_HINT === 'string' && REBUILD_HINT.includes('ci:deps'),
-    'the rebuild hint names the command that actually rebuilds the map');
-}
-
-// ---------------------------------------------------------------------------
 // THE SEAM — the planner must ACT on what the scope decides
 // ---------------------------------------------------------------------------
 //
@@ -445,6 +386,9 @@ ok(loadDepMap({ readFileSync: () => PLAIN }, path, __dirname).tests['test-a.js']
     'yscap-repo-root_8/scripts/ci-scope.js',
     'yscap-repo-root_8/scripts/ci-test-plan.js',
     'yscap-repo-root_8/scripts/test-ci-scope-pure.js',
+    // The builder of the map is selector machinery too — its guards live in
+    // THIS file, so a change to it must reach them.
+    'yscap-repo-root_8/scripts/ci-deps-build.js',
     '.github/workflows/test.yml',
   ]) {
     const r = planFor(p);
@@ -482,5 +426,102 @@ ok(loadDepMap({ readFileSync: () => PLAIN }, path, __dirname).tests['test-a.js']
     }
   }
 }
+
+
+// ---------------------------------------------------------------------------
+// H. THE MAP'S AGE IS WARNED ABOUT BEFORE IT BITES.
+//
+// MAX_MAP_AGE_DAYS is a cliff, and on 2026-08-31 the repository went over it:
+// a map built 2026-08-16 expired overnight and section G's narrowing assertion
+// went red on every open pull request at once, on a file none of them touched.
+// The alarm was correct; there was simply no warning before it.
+//
+// The governing property of the warning is that it is ONLY A SENTENCE. If it
+// could ever change which tests run it would be a second, quieter copy of the
+// age rule — so the last assertion here pins selection as byte-identical either
+// side of the threshold, which is the one that would catch that.
+// ---------------------------------------------------------------------------
+{
+  const { mapAgeWarning, WARN_MAP_AGE_DAYS, MAX_MAP_AGE_DAYS: MAX } = require('./ci-scope');
+  const TODAY = '2026-08-31';
+  const dayAged = (age) => {
+    const d = new Date(Date.UTC(2026, 7, 31) - age * 86400000);
+    return d.toISOString().slice(0, 10);
+  };
+  const at = (age) => mapAgeWarning({ builtAtUtcDay: dayAged(age), tests: {} }, TODAY);
+
+  eq(WARN_MAP_AGE_DAYS, 10, 'the warning starts at ten days');
+  ok(WARN_MAP_AGE_DAYS < MAX, 'and it starts BEFORE the cliff, or it is not a warning');
+
+  // Silent while there is nothing to say.
+  for (const age of [0, 1, 5, 9]) {
+    eq(at(age), null, `a ${age}-day-old map says nothing`);
+  }
+
+  // The window that matters: four days of notice, inclusive at both ends.
+  for (const age of [10, 11, 12, 13, 14]) {
+    const w = at(age);
+    ok(typeof w === 'string' && w.length > 0, `a ${age}-day-old map warns`);
+    ok(w.includes(String(age)), `and says how old it is (${age})`);
+    ok(w.includes('npm run ci:deps'), 'and names the exact command that fixes it');
+  }
+
+  // PAST the cliff it goes quiet again — deliberately. There the planner's own
+  // refusal reason is louder and more accurate than a warning about an expiry
+  // that has already happened, and two messages about one fact is worse than
+  // one. This is the case the repository was actually in on 2026-08-31.
+  for (const age of [15, 16, 40]) {
+    eq(at(age), null, `a ${age}-day-old map has already expired — the refusal speaks, not the warning`);
+  }
+
+  // Everything unreadable is somebody else's refusal, with its own reason.
+  eq(mapAgeWarning(null, TODAY), null, 'no map: silent');
+  eq(mapAgeWarning(undefined, TODAY), null, 'undefined map: silent');
+  eq(mapAgeWarning('nonsense', TODAY), null, 'a non-object does not throw');
+  eq(mapAgeWarning({ builtAtUtcDay: 'not-a-date' }, TODAY), null, 'an unusable date: silent');
+  eq(mapAgeWarning({}, TODAY), null, 'a missing date: silent');
+  eq(mapAgeWarning({ builtAtUtcDay: '2027-01-01' }, TODAY), null, 'a future date: silent');
+
+  // THE ONE THAT MATTERS. Crossing the warning threshold must not move a single
+  // test. Same map contents, one day apart, straddling day 10.
+  {
+    const mapAt = (age) => ({ builtAtUtcDay: dayAged(age), tests: { 'test-a.js': ['src/lib/pricing.js'] } });
+    const before = impactedTests([P('src/lib/pricing.js')], mapAt(9), TODAY);
+    const after = impactedTests([P('src/lib/pricing.js')], mapAt(10), TODAY);
+    eq(after.ok, before.ok, 'warning day and the day before agree on whether the map is usable');
+    eq(JSON.stringify(after.tests), JSON.stringify(before.tests),
+      'and select byte-identical tests — the warning changes the log, never the plan');
+    eq(at(9), null, 'with the control genuinely silent on day 9');
+    ok(at(10), 'and genuinely warning on day 10');
+  }
+
+  // WIRED. A pure rule nothing calls is decoration, and no unit test of the
+  // rule can see whether the planner reads it — so read the planner's source.
+  {
+    const plan = fs.readFileSync(path.join(__dirname, 'ci-test-plan.js'), 'utf8');
+    ok(/mapAgeWarning/.test(plan), 'the planner imports the warning');
+    ok(/const ageWarning = mapAgeWarning\(map, today\)/.test(plan), 'and actually calls it');
+    ok(/\[ci-plan\] WARNING/.test(plan), 'and prints it in plain text for a local run and the raw log');
+    ok(/::warning title=/.test(plan), 'and as an annotation, which is what puts it on the run summary');
+  }
+
+  // AND THE HEADER NO LONGER CLAIMS A CADENCE IT DOES NOT HAVE. This is the
+  // false statement that let the map rot for fifteen days: the builder said the
+  // scheduled run regenerated it and nothing ever did. Comments are stripped
+  // from the workflow read so this cannot pass on a comment about the comment.
+  {
+    const build = fs.readFileSync(path.join(__dirname, 'ci-deps-build.js'), 'utf8');
+    ok(!/The map is regenerated by the scheduled full run/.test(build),
+      'the false cadence claim is gone from ci-deps-build.js');
+    ok(/MAINTAINED BY HAND|NOTHING REBUILDS IT ON A CADENCE/.test(build),
+      'and it says plainly that it is manual');
+
+    const wf = fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'test.yml'), 'utf8');
+    const code = wf.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    ok(!/ci-deps-build|ci:deps/.test(code),
+      'and the workflow still does not run it — the day that changes, correct the header again');
+  }
+}
+
 
 console.log(`ci-scope impact: ${n} assertions passed in total`);
