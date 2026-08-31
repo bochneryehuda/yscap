@@ -1,0 +1,918 @@
+{
+ "ConsumerPurpose": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "Personal",
+   "text": "Personal/TRID",
+   "class": ""
+  },
+  {
+   "value": "Business",
+   "text": "Business Purpose",
+   "class": ""
+  }
+ ],
+ "LoanProgramType": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "Conventional",
+   "text": "Conventional",
+   "class": ""
+  },
+  {
+   "value": "FHA",
+   "text": "FHA",
+   "class": ""
+  },
+  {
+   "value": "VA",
+   "text": "VA",
+   "class": ""
+  },
+  {
+   "value": "USDA",
+   "text": "USDA",
+   "class": ""
+  },
+  {
+   "value": "Jumbo",
+   "text": "Jumbo",
+   "class": ""
+  }
+ ],
+ "LoanPurpose": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "Purchase",
+   "text": "Purchase",
+   "class": ""
+  },
+  {
+   "value": "Refinance",
+   "text": "Refinance",
+   "class": ""
+  }
+ ],
+ "RefiPurpose": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "CashOut",
+   "text": "CashOut",
+   "class": ""
+  },
+  {
+   "value": "Rate/Term",
+   "text": "Rate/Term",
+   "class": ""
+  },
+  {
+   "value": "FHA Streamlined",
+   "text": "FHA Streamlined",
+   "class": ""
+  },
+  {
+   "value": "VA IRRRL",
+   "text": "VA IRRRL",
+   "class": ""
+  }
+ ],
+ "DocType": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "Full Doc",
+   "text": "Full Doc 2 Year",
+   "class": "loanTerm3040yr"
+  },
+  {
+   "value": "Personal Bank Stmt: 1 Mo",
+   "text": "Full Doc 1 Year",
+   "class": "forNonQM loanTerm3040yr"
+  },
+  {
+   "value": "Streamlined Refinance",
+   "text": "Streamlined Refinance",
+   "class": ""
+  },
+  {
+   "value": "Investor - No Ratio",
+   "text": "Investor Bridge - Rehab - Ground Up",
+   "class": "forNonQM loanTerm1218mo"
+  },
+  {
+   "value": "Investor - DSCR",
+   "text": "Investor - DSCR",
+   "class": "forNonQM loanTerm3040yr"
+  },
+  {
+   "value": "1 Year Alt Doc",
+   "text": "1099 1 Year",
+   "class": "forNonQM loanTerm3040yr"
+  },
+  {
+   "value": "2 Year Alt Doc",
+   "text": "1099 2 Year",
+   "class": "forNonQM loanTerm3040yr"
+  },
+  {
+   "value": "Asset Related",
+   "text": "Asset Qualifier",
+   "class": "forNonQM loanTerm3040yr"
+  },
+  {
+   "value": "Business Bank Stmt: 12 Mos",
+   "text": "Business Bank Stmt: 12 Mos",
+   "class": "forNonQM loanTerm3040yr"
+  },
+  {
+   "value": "Business Bank Stmt: 24 Mos",
+   "text": "Business Bank Stmt: 24 Mos",
+   "class": "forNonQM loanTerm3040yr"
+  },
+  {
+   "value": "Personal Bank Stmt: 12 Mos",
+   "text": "Personal Bank Stmt: 12 Mos",
+   "class": "forNonQM loanTerm3040yr"
+  },
+  {
+   "value": "Personal Bank Stmt: 24 Mos",
+   "text": "Personal Bank Stmt: 24 Mos",
+   "class": "forNonQM loanTerm3040yr"
+  },
+  {
+   "value": "P&L: 1 Year",
+   "text": "P&L: 1 Year",
+   "class": "forNonQM loanTerm3040yr"
+  },
+  {
+   "value": "Business Bank Stmt: 1 Mo",
+   "text": "Primary Bridge",
+   "class": "forNonQM loanTerm12mo"
+  },
+  {
+   "value": "Restricted Stock",
+   "text": "One Time Close",
+   "class": "forNonQM loanTerm12mo"
+  }
+ ],
+ "RentIndicator": [
+  {
+   "value": "",
+   "text": "None",
+   "class": ""
+  },
+  {
+   "value": "Short Term Rental",
+   "text": "Short Term Rental",
+   "class": ""
+  },
+  {
+   "value": "Long Term Rental",
+   "text": "Long Term Rental",
+   "class": ""
+  }
+ ],
+ "LoanTerm": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": ".5",
+   "text": "6 Month",
+   "class": ""
+  },
+  {
+   "value": "1",
+   "text": "12 Month",
+   "class": "loanTerm12mo loanTerm1218mo"
+  },
+  {
+   "value": "2",
+   "text": "24 Month",
+   "class": ""
+  },
+  {
+   "value": "5",
+   "text": "5 Year",
+   "class": ""
+  },
+  {
+   "value": "10",
+   "text": "10 Year",
+   "class": ""
+  },
+  {
+   "value": "15",
+   "text": "15 Year",
+   "class": ""
+  },
+  {
+   "value": "20",
+   "text": "20 Year",
+   "class": ""
+  },
+  {
+   "value": "25",
+   "text": "25 Year",
+   "class": ""
+  },
+  {
+   "value": "30",
+   "text": "30 Year",
+   "class": "loanTerm3040yr"
+  },
+  {
+   "value": "40",
+   "text": "40 Year",
+   "class": "loanTerm3040yr"
+  }
+ ],
+ "CreditGrade": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "Grade A",
+   "text": "A",
+   "class": ""
+  },
+  {
+   "value": "Grade B",
+   "text": "B",
+   "class": ""
+  },
+  {
+   "value": "Grade C",
+   "text": "C",
+   "class": ""
+  }
+ ],
+ "UnderwritingResult": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "DU Approve/Eligible",
+   "text": "DU Approve/Eligible",
+   "class": ""
+  },
+  {
+   "value": "DU Approve/Ineligible",
+   "text": "DU Approve/Ineligible",
+   "class": ""
+  },
+  {
+   "value": "DU Refer/Eligible",
+   "text": "DU Refer/Eligible",
+   "class": ""
+  },
+  {
+   "value": "DU Refer/Ineligible",
+   "text": "DU Refer/Ineligible",
+   "class": ""
+  },
+  {
+   "value": "LP Accept/Eligible",
+   "text": "LP Accept/Eligible",
+   "class": ""
+  },
+  {
+   "value": "LP Accept/Ineligible",
+   "text": "LP Accept/Ineligible",
+   "class": ""
+  },
+  {
+   "value": "Manual",
+   "text": "Manual",
+   "class": ""
+  }
+ ],
+ "PrepayPenaltyPeriod": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "0",
+   "text": "0 Year",
+   "class": ""
+  },
+  {
+   "value": "1",
+   "text": "1 Year",
+   "class": ""
+  },
+  {
+   "value": "2",
+   "text": "2 Year",
+   "class": ""
+  },
+  {
+   "value": "3",
+   "text": "3 Year",
+   "class": ""
+  },
+  {
+   "value": "4",
+   "text": "4 Year",
+   "class": ""
+  },
+  {
+   "value": "5",
+   "text": "5 Year",
+   "class": ""
+  }
+ ],
+ "LTCPercent": [
+  {
+   "value": "",
+   "text": "N/A",
+   "class": ""
+  },
+  {
+   "value": "1+ -60",
+   "text": "1+ -60",
+   "class": ""
+  },
+  {
+   "value": "60+ -75",
+   "text": "60+ -75",
+   "class": ""
+  },
+  {
+   "value": "75+ -80",
+   "text": "75+ -80",
+   "class": ""
+  },
+  {
+   "value": "80+ -85",
+   "text": "80+ -85",
+   "class": ""
+  },
+  {
+   "value": "85+ -90",
+   "text": "85+ -90",
+   "class": ""
+  },
+  {
+   "value": "90+ -95",
+   "text": "90+ -95",
+   "class": ""
+  },
+  {
+   "value": "95+ -100",
+   "text": "95+ -100",
+   "class": ""
+  }
+ ],
+ "CitizenshipType": [
+  {
+   "value": "US Citizen",
+   "text": "US Citizen",
+   "class": ""
+  },
+  {
+   "value": "US Citizen Abroad",
+   "text": "US Citizen Abroad",
+   "class": ""
+  },
+  {
+   "value": "Permanent Resident",
+   "text": "Permanent Resident",
+   "class": ""
+  },
+  {
+   "value": "Non-Permanent Resident",
+   "text": "Non-Permanent Resident",
+   "class": ""
+  },
+  {
+   "value": "Foreign National",
+   "text": "Foreign National",
+   "class": ""
+  }
+ ],
+ "VarianceType": [
+  {
+   "value": "",
+   "text": "N/A",
+   "class": ""
+  },
+  {
+   "value": "HomeReady",
+   "text": "HomeReady",
+   "class": ""
+  },
+  {
+   "value": "HomePossible",
+   "text": "HomePossible",
+   "class": ""
+  }
+ ],
+ "BankruptcyType": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "Chapter7",
+   "text": "Chapter7",
+   "class": ""
+  },
+  {
+   "value": "Chapter11",
+   "text": "Chapter11",
+   "class": ""
+  },
+  {
+   "value": "Chapter13",
+   "text": "Chapter13",
+   "class": ""
+  }
+ ],
+ "BankruptcyResolution": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "Active",
+   "text": "Active",
+   "class": ""
+  },
+  {
+   "value": "Discharged",
+   "text": "Discharged",
+   "class": ""
+  },
+  {
+   "value": "Dismissed",
+   "text": "Dismissed",
+   "class": ""
+  }
+ ],
+ "Channel": [
+  {
+   "value": "Wholesale",
+   "text": "Wholesale",
+   "class": ""
+  },
+  {
+   "value": "Correspondent",
+   "text": "Correspondent",
+   "class": ""
+  },
+  {
+   "value": "CorrNonDel",
+   "text": "CorrNonDel",
+   "class": ""
+  }
+ ],
+ "CompensationSource": [
+  {
+   "value": "LenderPaid",
+   "text": "Lender Paid",
+   "class": ""
+  },
+  {
+   "value": "BorrowerPaid",
+   "text": "Borrower Paid",
+   "class": ""
+  }
+ ],
+ "compBase": [
+  {
+   "value": "GrossLoanAmount",
+   "text": "Total Loan Amount",
+   "class": ""
+  },
+  {
+   "value": "LoanAmount",
+   "text": "Loan Amount",
+   "class": ""
+  }
+ ],
+ "PropState": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "AL",
+   "text": "AL",
+   "class": ""
+  },
+  {
+   "value": "AK",
+   "text": "AK",
+   "class": ""
+  },
+  {
+   "value": "AZ",
+   "text": "AZ",
+   "class": ""
+  },
+  {
+   "value": "AR",
+   "text": "AR",
+   "class": ""
+  },
+  {
+   "value": "CA",
+   "text": "CA",
+   "class": ""
+  },
+  {
+   "value": "CO",
+   "text": "CO",
+   "class": ""
+  },
+  {
+   "value": "CT",
+   "text": "CT",
+   "class": ""
+  },
+  {
+   "value": "DE",
+   "text": "DE",
+   "class": ""
+  },
+  {
+   "value": "DC",
+   "text": "DC",
+   "class": ""
+  },
+  {
+   "value": "FL",
+   "text": "FL",
+   "class": ""
+  },
+  {
+   "value": "GA",
+   "text": "GA",
+   "class": ""
+  },
+  {
+   "value": "HI",
+   "text": "HI",
+   "class": ""
+  },
+  {
+   "value": "ID",
+   "text": "ID",
+   "class": ""
+  },
+  {
+   "value": "IL",
+   "text": "IL",
+   "class": ""
+  },
+  {
+   "value": "IN",
+   "text": "IN",
+   "class": ""
+  },
+  {
+   "value": "IA",
+   "text": "IA",
+   "class": ""
+  },
+  {
+   "value": "KS",
+   "text": "KS",
+   "class": ""
+  },
+  {
+   "value": "KY",
+   "text": "KY",
+   "class": ""
+  },
+  {
+   "value": "LA",
+   "text": "LA",
+   "class": ""
+  },
+  {
+   "value": "ME",
+   "text": "ME",
+   "class": ""
+  },
+  {
+   "value": "MD",
+   "text": "MD",
+   "class": ""
+  },
+  {
+   "value": "MA",
+   "text": "MA",
+   "class": ""
+  },
+  {
+   "value": "MI",
+   "text": "MI",
+   "class": ""
+  },
+  {
+   "value": "MN",
+   "text": "MN",
+   "class": ""
+  },
+  {
+   "value": "MS",
+   "text": "MS",
+   "class": ""
+  },
+  {
+   "value": "MO",
+   "text": "MO",
+   "class": ""
+  },
+  {
+   "value": "MT",
+   "text": "MT",
+   "class": ""
+  },
+  {
+   "value": "NE",
+   "text": "NE",
+   "class": ""
+  },
+  {
+   "value": "NV",
+   "text": "NV",
+   "class": ""
+  },
+  {
+   "value": "NH",
+   "text": "NH",
+   "class": ""
+  },
+  {
+   "value": "NJ",
+   "text": "NJ",
+   "class": ""
+  },
+  {
+   "value": "NM",
+   "text": "NM",
+   "class": ""
+  },
+  {
+   "value": "NY",
+   "text": "NY",
+   "class": ""
+  },
+  {
+   "value": "NC",
+   "text": "NC",
+   "class": ""
+  },
+  {
+   "value": "ND",
+   "text": "ND",
+   "class": ""
+  },
+  {
+   "value": "OH",
+   "text": "OH",
+   "class": ""
+  },
+  {
+   "value": "OK",
+   "text": "OK",
+   "class": ""
+  },
+  {
+   "value": "OR",
+   "text": "OR",
+   "class": ""
+  },
+  {
+   "value": "PA",
+   "text": "PA",
+   "class": ""
+  },
+  {
+   "value": "RI",
+   "text": "RI",
+   "class": ""
+  },
+  {
+   "value": "SC",
+   "text": "SC",
+   "class": ""
+  },
+  {
+   "value": "SD",
+   "text": "SD",
+   "class": ""
+  },
+  {
+   "value": "TN",
+   "text": "TN",
+   "class": ""
+  },
+  {
+   "value": "TX",
+   "text": "TX",
+   "class": ""
+  },
+  {
+   "value": "UT",
+   "text": "UT",
+   "class": ""
+  },
+  {
+   "value": "VA",
+   "text": "VA",
+   "class": ""
+  },
+  {
+   "value": "VT",
+   "text": "VT",
+   "class": ""
+  },
+  {
+   "value": "WA",
+   "text": "WA",
+   "class": ""
+  },
+  {
+   "value": "WV",
+   "text": "WV",
+   "class": ""
+  },
+  {
+   "value": "WI",
+   "text": "WI",
+   "class": ""
+  },
+  {
+   "value": "WY",
+   "text": "WY",
+   "class": ""
+  }
+ ],
+ "PropertyType": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "SFD",
+   "text": "SFD",
+   "class": ""
+  },
+  {
+   "value": "SFA",
+   "text": "SFA",
+   "class": ""
+  },
+  {
+   "value": "2",
+   "text": "2",
+   "class": ""
+  },
+  {
+   "value": "3",
+   "text": "3",
+   "class": ""
+  },
+  {
+   "value": "4",
+   "text": "4",
+   "class": ""
+  },
+  {
+   "value": "Condo",
+   "text": "Condo",
+   "class": ""
+  },
+  {
+   "value": "PUD",
+   "text": "PUD",
+   "class": ""
+  }
+ ],
+ "Units": [
+  {
+   "value": "1",
+   "text": "1",
+   "class": ""
+  },
+  {
+   "value": "2",
+   "text": "2",
+   "class": ""
+  },
+  {
+   "value": "3",
+   "text": "3",
+   "class": ""
+  },
+  {
+   "value": "4",
+   "text": "4",
+   "class": ""
+  },
+  {
+   "value": "5",
+   "text": "5",
+   "class": "forDSCR"
+  },
+  {
+   "value": "6",
+   "text": "6",
+   "class": "forDSCR"
+  },
+  {
+   "value": "7",
+   "text": "7",
+   "class": "forDSCR"
+  },
+  {
+   "value": "8",
+   "text": "8",
+   "class": "forDSCR"
+  },
+  {
+   "value": "9",
+   "text": "9",
+   "class": "forDSCR"
+  },
+  {
+   "value": "10",
+   "text": "10",
+   "class": "forDSCR"
+  }
+ ],
+ "Occupancy": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "Primary",
+   "text": "Primary",
+   "class": ""
+  },
+  {
+   "value": "Secondary",
+   "text": "Secondary",
+   "class": ""
+  },
+  {
+   "value": "Investment",
+   "text": "Investment",
+   "class": ""
+  }
+ ],
+ "LockTerm": [
+  {
+   "value": "",
+   "text": "-- Select --",
+   "class": ""
+  },
+  {
+   "value": "30",
+   "text": "30 Day",
+   "class": ""
+  },
+  {
+   "value": "45",
+   "text": "45 Day",
+   "class": ""
+  }
+ ]
+}

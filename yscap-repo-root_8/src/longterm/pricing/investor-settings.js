@@ -47,8 +47,20 @@
 const investors = require('../encompass/investors');
 const whiteLabel = require('../lenderprice/investor-programs');
 
-/** Where an investor's pricing may be fetched. */
-const SOURCES = ['lenderprice', 'loannex', 'both'];
+/**
+ * Where an investor's pricing may be fetched.
+ *
+ * `both` means the two MULTI-INVESTOR aggregators side by side — it predates the
+ * third entry and its meaning is unchanged.
+ *
+ * ⚠️ `ahl` IS NOT AN AGGREGATOR AND IS NOT INTERCHANGEABLE WITH THE OTHER TWO.
+ * American Heritage Lending's Quick Pricer prices AHL's own sheet and nobody
+ * else's, so it can only ever be the source for ONE investor. Setting it on any
+ * other is accepted-and-reported rather than silently honoured, because an
+ * investor pointed at a source that structurally cannot quote them would show an
+ * empty row with a plausible-sounding reason. See `SINGLE_INVESTOR_SOURCES`.
+ */
+const SOURCES = ['lenderprice', 'loannex', 'both', 'ahl'];
 /**
  * The most an investor's own extra may be, either way — the same decimal-slip
  * guard the global holdback carries, and deliberately the same number, because
@@ -59,6 +71,9 @@ const SOURCES = ['lenderprice', 'loannex', 'both'];
 const MAX_INVESTOR_HOLDBACK = 10;
 /** What everything is fetched from today. */
 const DEFAULT_SOURCE = 'lenderprice';
+
+/** A source that can only ever quote one named investor, and which one. */
+const SINGLE_INVESTOR_SOURCES = { ahl: 'american_heritage' };
 
 /**
  * THE THREE THE OWNER MOVED. *"There are three investors that are actually using
@@ -73,6 +88,18 @@ const OWNER_SOURCE = {
   nqm: 'loannex',
   acra: 'loannex',
   eresi: 'loannex',
+  /**
+   * AMERICAN HERITAGE LENDING — owner-directed 2026-08-30: *"This particular
+   * integration is going to be for American Heritage Lending auto link. It and
+   * the price should populate from here."* AHL publishes its own live Quick
+   * Pricer, so this is their sheet first-hand rather than an aggregator's copy
+   * of it — the same reason NQM, Acra and eResi were moved to LoanNEX.
+   *
+   * It is a PRE-FILL like every other row here: the settings screen can move it
+   * back to Lender Price at any time, and `prefill` below is what offers the way
+   * back.
+   */
+  american_heritage: 'ahl',
 };
 
 /**
@@ -119,7 +146,21 @@ function readSettings(raw) {
     const row = {};
     if (value.source !== undefined) {
       if (!isSource(value.source)) { out.problems.push({ investor: key, error: 'unknown_source', value: String(value.source), message: `Source must be one of ${SOURCES.join(', ')}.` }); }
-      else row.source = String(value.source).toLowerCase();
+      else {
+        const src = String(value.source).toLowerCase();
+        const only = SINGLE_INVESTOR_SOURCES[src];
+        // KEPT AND REPORTED, never silently dropped. The setting is honoured so
+        // nobody's saved choice disappears without a word, and the problem is
+        // named so a screen can say WHY that investor's row will be empty rather
+        // than leaving somebody to conclude the vendor is down.
+        if (only && only !== key) {
+          out.problems.push({
+            investor: key, error: 'single_investor_source', value: src,
+            message: `${src} prices only ${only} — it is that investor's own pricer, not an aggregator, so it can never quote ${key}. The setting is kept, but this investor will have no programs while it stands.`,
+          });
+        }
+        row.source = src;
+      }
     }
     if (value.enabled !== undefined) {
       if (value.enabled !== true && value.enabled !== false) out.problems.push({ investor: key, error: 'non_boolean_enabled', message: 'enabled must be true or false.' });
@@ -270,6 +311,7 @@ function describe(raw, opts = {}) {
       fromLenderPrice: rows.filter((r) => r.enabled && r.source === 'lenderprice').length,
       fromLoanNex: rows.filter((r) => r.enabled && r.source === 'loannex').length,
       fromBoth: rows.filter((r) => r.enabled && r.source === 'both').length,
+      fromAhl: rows.filter((r) => r.enabled && r.source === 'ahl').length,
       missingWhiteLabel: rows.filter((r) => r.whiteLabelMissing).length,
       // How many investors carry an extra of their own, so a screen can say at a
       // glance whether the board is priced on one number or several.
@@ -280,7 +322,7 @@ function describe(raw, opts = {}) {
 }
 
 module.exports = {
-  SOURCES, DEFAULT_SOURCE, OWNER_SOURCE, OWNER_DISABLED, MAX_INVESTOR_HOLDBACK,
+  SOURCES, DEFAULT_SOURCE, OWNER_SOURCE, OWNER_DISABLED, SINGLE_INVESTOR_SOURCES, MAX_INVESTOR_HOLDBACK,
   readSettings, resolveRaw, settingFor, roster, needsWhiteLabel, describe,
   _internals: { isSource },
 };

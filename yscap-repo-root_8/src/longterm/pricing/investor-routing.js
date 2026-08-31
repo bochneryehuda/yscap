@@ -47,7 +47,12 @@ function sourcesUnder(source, presentIn) {
   const has = (x) => (presentIn || []).includes(x);
   if (source === 'lenderprice') return has('lenderprice') ? ['lenderprice'] : [];
   if (source === 'loannex') return has('loannex') ? ['loannex'] : [];
-  return [...(presentIn || [])];
+  // AHL is a single-investor source, so it narrows exactly like the other two.
+  // `both` deliberately does NOT sweep it in: `both` has always meant the two
+  // aggregators side by side, and quietly widening it would change the answer
+  // for the one investor that carries an AHL row without anybody asking.
+  if (source === 'ahl') return has('ahl') ? ['ahl'] : [];
+  return (presentIn || []).filter((x) => x !== 'ahl');
 }
 
 /**
@@ -120,7 +125,11 @@ function applyRouting(merged, opts = {}) {
       out.source = row.source;
       out.sourceOrigin = row.sourceOrigin;
       out.shownFrom = shown;
-      out.bySource = { lenderprice: shown.includes('lenderprice') ? (e.programs && e.programs.lenderprice) || [] : [], loannex: shown.includes('loannex') ? (e.programs && e.programs.loannex) || [] : [] };
+      out.bySource = {
+        lenderprice: shown.includes('lenderprice') ? (e.programs && e.programs.lenderprice) || [] : [],
+        loannex: shown.includes('loannex') ? (e.programs && e.programs.loannex) || [] : [],
+        ahl: shown.includes('ahl') ? (e.programs && e.programs.ahl) || [] : [],
+      };
       out.comparison = e.comparison || null;
       out.electionBasis = e.electionBasis || null;
       out.reason = e.reason || null;
@@ -147,6 +156,7 @@ function applyRouting(merged, opts = {}) {
   if (reveal) {
     summary.fromLenderPrice = counts((x) => x.shownFrom && x.shownFrom.length === 1 && x.shownFrom[0] === 'lenderprice');
     summary.fromLoanNex = counts((x) => x.shownFrom && x.shownFrom.length === 1 && x.shownFrom[0] === 'loannex');
+    summary.fromAhl = counts((x) => x.shownFrom && x.shownFrom.length === 1 && x.shownFrom[0] === 'ahl');
     summary.fromBoth = counts((x) => x.shownFrom && x.shownFrom.length === 2);
   } else {
     delete summary.inBoth; delete summary.lenderpriceOnly; delete summary.loannexOnly;
@@ -214,10 +224,25 @@ function stripSource(p) {
   return rest;
 }
 
-/** One rung with the holdback's own audit trail removed — never its price. */
+/**
+ * One rung with the holdback's own audit trail removed — never its price.
+ *
+ * ⛔ AND WITH AHL'S OWN EXTRAS, FOR THE SAME REASON THE HOLDBACK TRAIL GOES.
+ * AHL's page hands over three figures the other two vendors do not state at all
+ * — the rebate in DOLLARS, the target price, and the MI payment. A rung carrying
+ * `rebateDollars` is therefore an AHL rung as surely as one carrying
+ * `marginHoldback` is a held-back one: a screen could branch on it and the board
+ * would read as three systems again while every field that NAMES a vendor was
+ * gone. They ride with the reveal like every other piece of provenance.
+ *
+ * `basePrice` and `baseRate` deliberately STAY. They are first-class fields on
+ * the common quote shape (`quote-shape.emptyOption().priceBuild`), which Lender
+ * Price also fills — so they identify nobody, and they are half of the "base →
+ * adjustments → final" layout the whole board is supposed to share.
+ */
 function stripHoldbackTrail(r) {
   if (!r || typeof r !== 'object') return r;
-  const { marginHoldback, vendorPrice, ...rest } = r;
+  const { marginHoldback, vendorPrice, rebateDollars, targetPrice, miPayment, ...rest } = r;
   return rest;
 }
 
@@ -231,7 +256,15 @@ function bestOfMany(list) {
   return best;
 }
 
-function label(src) { return src === 'loannex' ? 'LoanNEX' : src === 'lenderprice' ? 'Lender Price' : src; }
+function label(src) {
+  if (src === 'loannex') return 'LoanNEX';
+  if (src === 'lenderprice') return 'Lender Price';
+  // The lender's own pricer, named as a PROGRAM rather than as the investor —
+  // this string reaches the "set to X, which did not answer" wordings, and the
+  // investor's real name may never reach a client.
+  if (src === 'ahl') return "the lender's own pricer";
+  return src;
+}
 
 module.exports = {
   ROUTES, DEFAULT_ROUTE, sourcesUnder, applyRouting,

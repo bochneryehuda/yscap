@@ -1,0 +1,3313 @@
+<!DOCTYPE html>
+<!--[if IE 8]>    <html class="no-js lt-ie9" lang="en"> <![endif]-->
+<!--[if gt IE 8]><!-->
+<html class="no-js" lang="en">
+<!--<![endif]-->
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="X-UA-Compatible" content="IE=edge" />
+<meta name="robots" content="index,follow">
+<!-- Set the viewport width to device width for mobile -->
+<meta name="viewport" content="width=device-width" />
+<title>Quick Pricer</title>
+<meta name="keywords" content="" />
+<meta name="description" content="" />
+<link rel="shortcut icon" href="/contentimages/1388145259_16_FavIconImg.ico" />
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:100,100italic,300,300italic,regular,italic,500,500italic,700,700italic,900,900italic&amp;subset=latin,latin-ext&amp;display=swap" type="text/css" media="all">
+<link rel="stylesheet" href="/fontawesome/4.2.0/css/font-awesome.min.css" type="text/css" />
+<link rel="stylesheet" href="/templates/ahlending/stylesheets/foundation.css" type="text/css" />
+<link rel="stylesheet" href="/templates/ahlending/javascripts/jquery-ui/jquery-ui-1.10.4.custom.css" type="text/css" media="screen" />
+<link rel="stylesheet" href="/templates/ahlending/javascripts/jquery-ui/jquery-ui-1.10.4.custom11.css" type="text/css" media="screen" />
+<link rel="stylesheet" href="/styles/common.css" type="text/css" media="screen" />
+<link rel="stylesheet" href="/templates/ahlending/stylesheets/app.css"  type="text/css" />
+<link rel="stylesheet" type="text/css" href="/styles/ahlending_1388145259.css" media="all" />
+<style type="text/css">
+body {
+    font-family: 'Roboto',Helvetica,Arial,Lucida,sans-serif;
+}
+</style>
+<script type="text/javascript" src="/templates/ahlending/javascripts/jquery-1.11.1.min.js"></script>
+<script type="text/javascript" src="/templates/ahlending/javascripts/jquery-ui/jquery-ui-1.10.4.custom.min.js"></script>
+<!-- 
+<script type="text/javascript" src="/script/jquery/jquery.tools.min.js"></script>
+ -->
+<script type="text/javascript" src="/script/common_script_nojq.js"></script>
+<script type="text/javascript" src="/script/common_utils.js"></script>
+<script type="text/javascript" src="/templates/ahlending/foundation/javascripts/modernizr.foundation.js"></script>
+<script type="text/javascript" src="/script/responsiveslides.js"></script>
+
+<link rel="stylesheet" href="/styles/datatables.css" media="all" />
+<script type="text/javascript" src="/script/jquery/datatables-1.9.4/jquery.dataTables.js"></script>
+<script type="text/javascript" src="/script/jquery/jquery.scrollTo-min.js"></script>
+</head>
+<body class="contentpage">
+<div id="header_wrapper">
+   	<div id="nav_button"></div>
+	<div class="row collapse">
+		<div class="three columns">
+			<div class="logobox"><a href="https://client.ahlend.com"><img id="logo" src="/contentimages/1388145259_17_LogoImgPNG.png" alt="American Heritage Lending, LLC" /></a></div>
+		</div>
+		<div class="nine columns">
+			<div class="navbar-container">
+				<div class="buttons-container"> </div>
+				
+<ul id="navbar" class="nav-bar">
+<li class="first"><a href="/tpo/" >Broker Login</a></li>
+<li><a href="/tpo/ratesheets.php" >Rates</a></li>
+<li class="last"><a href="/quickpricer/" >Quick Pricer</a></li>
+</ul>
+ 
+			</div>
+		</div>
+	</div>
+</div>
+<div id="page_wrapper">
+	<div class="row">
+		<div class="twelve columns" id="content">
+			<div class="padding">
+           <!-- begin main content area -->
+              <h1>Quick Pricer</h1>
+<script src="/script/FormValidation.js?v=2.0" type="text/javascript"></script>
+
+<form action="/quickpricer/index.php" method="post" name="dataform" id="dataform">
+    <input type="hidden" name="source" value="">
+    <input type="hidden" name="contactid" value="">
+    <input type="hidden" name="ticketid" value="">
+    <input type="hidden" name="Submitted" value="1">
+    <input type="hidden" name="loanID" value="">
+    <input type="hidden" name="Action" id="Action" value="">
+    <input type="hidden" name="PriceMode" id="PriceMode" value="quick">
+    <input type="hidden" name="RegisterType" id="RegisterType" value="">
+    <input type="hidden" name="EstCloseDate" id="EstCloseDate" value="">
+    <input type="hidden" name="LenderFeeBuyoutCost" id="LenderFeeBuyoutCost" value="1699">
+    <input type="hidden" name="LenderFeeOther" id="LenderFeeOther" value="">
+    <input type="hidden" name="lPrice" id="lPrice" value="">
+    <input type="hidden" name="lTargetPrice" id="lTargetPrice" value="">
+    <input type="hidden" name="lRate" id="lRate" value="">
+    <input type="hidden" name="lLockTerm" id="lLockTerm" value="">
+    <input type="hidden" name="lAmortization" id="lAmortization" value="">
+    <input type="hidden" name="lProgramID" id="lProgramID" value="">
+    <input type="hidden" name="lProgramName" id="lProgramName" value="">
+    <input type="hidden" name="lProgramCode" id="lProgramCode" value="">
+    <input type="hidden" name="lPIPayment" id="lPIPayment" value="">
+	<input type="hidden" name="lMIPayment" id="lMIPayment" value="">
+    <input type="hidden" name="bp_compEdit" id="bp_compEdit" value="">
+        <div class="lonform">
+        <div class="row one_column">
+            <div class="one_column_width qpInterfaceContainer">
+                <table class="form smalltext" style="width:100%" border="0" >
+                    <tr>
+                        <th style="text-align:left">
+                            Loan Scenario
+                                                    </th>
+                    </tr>
+                    <tr>
+                        <td valign="top"><input type="hidden" name="compDisclosed" id="compDisclosed" value="">
+<input type="hidden" name="CompAdjustment" id="CompAdjustment" value="">
+<input type="hidden" name="EstimatedPrepaidFees" id="EstimatedPrepaidFees" value="">
+<input type="hidden" name="EstimatedClosingCosts" id="EstimatedClosingCosts" value="">
+<input type="hidden" name="OwnerOccupied" id="OwnerOccupied" value="Yes">
+<input type="hidden" name="ThirdPartyFees" id="ThirdPartyFees" value="">
+<input type="hidden" name="SellerContribution" id="SellerContribution" class="SellerContribution" value="">
+<input type="hidden" name="AvailableLenderCredit" id="AvailableLenderCredit" value="">
+<input type="hidden" name="FundingFeeAmount" id="FundingFeeAmount" value="">
+<input type="hidden" name="FundingFeePercent" id="FundingFeePercent" value="">
+
+<fieldset>
+	<legend>Mortgage Information</legend>
+	<div class="lonform">
+    	<div class="row two_column">
+           <div class="one_column_width">
+				<table class="innerform" width="100%">
+					<tr><td width="40%"></td><td width="60%"></td></tr>
+					<tr class="hidden"> 
+						<td align="right"><label for="NonQM" id="lblNonQM">Non-QM or Business Purpose</label></td>
+						<td>
+							<span style="white-space:nowrap"><input class="formtest NonQM" tabindex="1" type="radio" name="NonQM" id="NonQM" value="No" >No</span>
+							<span style="white-space:nowrap"><input class="formtest NonQM" tabindex="1" type="radio" name="NonQM" value="Yes"  checked>Yes</span>
+						</td>
+					</tr>
+					<tr class="lt_nonqm hidden">
+					  <td align="right"><label for="ConsumerPurpose" id="lblConsumerPurpose">Consumer Purpose <span class="required">*</span></label><br />
+<button class="button small" onclick="showAlert($('#tipConsumerPurpose').html()); return false;">What is this?</button></td>
+					  <td><select class="formtest" tabindex="1" name="ConsumerPurpose" id="ConsumerPurpose">
+							<option value="">-- Select --</option>
+							<option value="Personal">Personal/TRID</option>
+							<option value="Business" selected>Business Purpose</option>
+							</select>
+						</td>
+					</tr>
+					<tr class="NOT_nonqm"> 
+					  <td align="right"><label for="LoanProgramType" id="lblLoanProgramType">Loan Type <span class="required">*</span></label></td>
+					  <td> <select class="formtest" tabindex="1" name="LoanProgramType" id="LoanProgramType">
+							<option value="">-- Select --</option>
+													<option value="Conventional" selected>Conventional</option>
+																				<option value="FHA">FHA</option>
+																				<option value="VA">VA</option>
+																				<option value="USDA">USDA</option>
+																				<option value="Jumbo">Jumbo</option>
+																				</select> </td>
+					</tr>
+					<tr>
+						<td align="right"><label id="lblLoanPurpose" for="LoanPurpose">Loan Purpose <span class="required">*</span></label></td>
+						<td> <select class="formtest" tabindex="1" name="LoanPurpose" id="LoanPurpose">
+							<option value="">-- Select --</option>
+													<option value="Purchase">Purchase</option>
+													<option value="Refinance" selected>Refinance</option>
+													</select></td>
+					</tr>
+					<tr class="forRefinance">
+						<td align="right"><label for="RefiPurpose" id="lblRefiPurpose">Purpose of Refinance <span class="required">*</span></label></td>
+						<td><select class="formtest" tabindex="1" name="RefiPurpose" id="RefiPurpose">
+							<option value="">-- Select --</option>
+													<option value="CashOut" selected>CashOut</option>
+													<option value="Rate/Term">Rate/Term</option>
+													<option value="FHA Streamlined">FHA Streamlined</option>
+													<option value="VA IRRRL">VA IRRRL</option>
+													</select></td>
+					</tr>
+					<tr class="forCashOut hidden">
+						<td align="right"><label for="CashOutAmount" id="lblCashOutAmount">Cash Out Amount <span class="required">*</span></label></td>
+						<td><input class="formtest" tabindex="1" type="text" name="CashOutAmount" id="CashOutAmount" size="10" value="" /></td>
+					</tr>
+									<tr>
+					  <td align="right"><label for="DocType" id="lblDocType">Income Verification <span class="required">*</span></label></td>
+					  <td> <select class="formtest" tabindex="1" name="DocType" id="DocType">
+							<option value="">-- Select --</option>
+													<option class=" loanTerm3040yr" value="Full Doc">Full Doc 2 Year</option>
+													<option class="forNonQM loanTerm3040yr" value="Personal Bank Stmt: 1 Mo">Full Doc 1 Year</option>
+													<option class="" value="Streamlined Refinance">Streamlined Refinance</option>
+													<option class="forNonQM loanTerm1218mo" value="Investor - No Ratio">Investor Bridge - Rehab - Ground Up</option>
+													<option class="forNonQM loanTerm3040yr" value="Investor - DSCR" selected>Investor - DSCR</option>
+													<option class="forNonQM loanTerm3040yr" value="1 Year Alt Doc">1099 1 Year</option>
+													<option class="forNonQM loanTerm3040yr" value="2 Year Alt Doc">1099 2 Year</option>
+													<option class="forNonQM loanTerm3040yr" value="Asset Related">Asset Qualifier</option>
+													<option class="forNonQM loanTerm3040yr" value="Business Bank Stmt: 12 Mos">Business Bank Stmt: 12 Mos</option>
+													<option class="forNonQM loanTerm3040yr" value="Business Bank Stmt: 24 Mos">Business Bank Stmt: 24 Mos</option>
+													<option class="forNonQM loanTerm3040yr" value="Personal Bank Stmt: 12 Mos">Personal Bank Stmt: 12 Mos</option>
+													<option class="forNonQM loanTerm3040yr" value="Personal Bank Stmt: 24 Mos">Personal Bank Stmt: 24 Mos</option>
+													<option class="forNonQM loanTerm3040yr" value="P&L: 1 Year">P&L: 1 Year</option>
+													<option class="forNonQM loanTerm12mo" value="Business Bank Stmt: 1 Mo">Primary Bridge</option>
+													<option class="forNonQM loanTerm12mo" value="Restricted Stock">One Time Close</option>
+													</select> </td>
+					</tr>
+									<tr class="forRentIndicator hidden">
+						<td align="right"><label for="RentIndicator" id="lblRentIndicator">Rent Indicator<span class="required">*</span></label></td>
+						<td> <select class="formtest" tabindex="1" name="RentIndicator" id="RentIndicator">
+								<option value="">None</option>
+								<option value="Short Term Rental">Short Term Rental</option>
+								<option value="Long Term Rental" selected>Long Term Rental</option>
+								</select></td>
+					</tr>
+									<tr>
+					  <td align="right" valign="top"><label for="LoanTerm" id="lblLoanTerm">Loan Term</label></td>
+					  <td> <select class="formtest" tabindex="1" name="LoanTerm" id="LoanTerm">
+							<option value="">-- Select --</option>
+													<option class="" value=".5">6 Month</option>
+													<option class="loanTerm12mo loanTerm1218mo" value="1">12 Month</option>
+													<option class="" value="2">24 Month</option>
+													<option class="" value="5">5 Year</option>
+													<option class="" value="10">10 Year</option>
+													<option class="" value="15">15 Year</option>
+													<option class="" value="20">20 Year</option>
+													<option class="" value="25">25 Year</option>
+													<option class="loanTerm3040yr" value="30" selected>30 Year</option>
+													<option class="loanTerm3040yr" value="40">40 Year</option>
+													</select> </td>
+					</tr>
+					<tr>
+					  <td align="right" valign="top"><label for="cbAmortFixed" id="lblAmortization">Amortization</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input class="formtest Amortization" tabindex="1" type="checkbox" name="Amortization[]" id="cbAmortFixed" value="Fixed" >Fixed</span>
+							<span style="white-space:nowrap"><input class="formtest Amortization" tabindex="1" type="checkbox" name="Amortization[]" id="cbAmortARM" value="ARM" >ARM</span>
+						</td>
+					</tr>
+                					<tr>
+					  <td align="right"><label for="FICO" id="lblFICO">Low-Mid FICO <span class="required">*</span></label></td>
+					  <td><input class="formtest" tabindex="1" name="FICO" id="FICO" type="text" value="760" size="10" /> </td>
+					</tr>
+					<tr>
+					  <td align="right" valign="top"><label for="CoBorrower" id="lblCoBorrower">Is there a Co-Borrower?</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input class="formtest CoBorrower" tabindex="1" type="radio" name="CoBorrower" id="CoBorrower" value="No"  checked>No</span>
+							<span style="white-space:nowrap"><input class="formtest CoBorrower" tabindex="1" type="radio" name="CoBorrower" value="Yes" >Yes</span>
+						</td>
+					</tr>
+					<tr class="forCoBorrower hidden">
+						<td align="right"><label for="NonOccupantCoBorrower" id="lblNonOccupantCoBorrower">Non-Occupant Co-Borrower?</label></td>
+						<td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="NonOccupantCoBorrower" class="formtest NonOccupantCoBorrower" id="NonOccupantCoBorrower" value="No" checked>No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="NonOccupantCoBorrower" class="formtest NonOccupantCoBorrower" value="Yes">Yes</span>
+						</td>
+					</tr>
+					
+					<tr class="forDTI hidden">
+					  <td align="right"><label for="CreditGrade" id="lblCreditGrade">Credit Grade <span class="required">*</span></label><br />
+<button class="button small" onclick="showAlert($('#tipCreditGrade').html()); return false;">What is this?</button>
+						</td>
+					  <td><select class="formtest" tabindex="1" name="CreditGrade" id="CreditGrade">
+							<option value="" selected>-- Select --</option>
+							<option value="Grade A">A</option>
+							<option value="Grade B">B</option>
+							<option value="Grade C">C</option>
+							</select></td>
+					</tr>
+													<tr class="forDTI hidden">
+					  <td align="right"><label for="DTI" id="lblDTI">DTI <span class="required">*</span></label></td>
+					  <td><input class="formtest" tabindex="1" type="text" name="DTI" id="DTI" size="6" value="" /></td>
+					</tr>
+													<tr class="forDSCR hidden">
+					  <td align="right"><label for="DSCR" id="lblDSCR">DSCR %<span class="required">*</span></label></td>
+					  <td><input class="formtest" tabindex="1" type="text" name="DSCR" id="DSCR" size="6" value="1.30" /></td>
+					</tr>
+																	<tr class="NOT_nonqm"> 
+					  <td align="right"><label for="UnderwritingResult" id="lblUnderwritingResult">Underwriting Result</label></td>
+					  <td> <select class="formtest" tabindex="1" name="UnderwritingResult" id="UnderwritingResult">
+							<option value="">-- Select --</option>
+													<option value="DU Approve/Eligible" selected>DU Approve/Eligible</option>
+													<option value="DU Approve/Ineligible">DU Approve/Ineligible</option>
+													<option value="DU Refer/Eligible">DU Refer/Eligible</option>
+													<option value="DU Refer/Ineligible">DU Refer/Ineligible</option>
+													<option value="LP Accept/Eligible">LP Accept/Eligible</option>
+													<option value="LP Accept/Ineligible">LP Accept/Ineligible</option>
+													<option value="Manual">Manual</option>
+													</select></td>
+					</tr>
+													<tr class="lt_nonqm hidden">
+					  <td align="right"><label for="PrepayPenaltyPeriod" id="lblPrepayPenaltyPeriod">Prepay Period <span class="required">*</span></label></td>
+					  <td><select class="formtest" tabindex="1" name="PrepayPenaltyPeriod" id="PrepayPenaltyPeriod">
+							<option value="">-- Select --</option>
+													<option value="0">0 Year</option>
+													<option value="1">1 Year</option>
+													<option value="2">2 Year</option>
+													<option value="3">3 Year</option>
+													<option value="4">4 Year</option>
+													<option value="5" selected>5 Year</option>
+													</select></td>
+					</tr>
+					<tr class="lt_nonqm hidden">
+					  <td align="right"><label for="PrepayPenaltyType" id="lblPrepayPenaltyType">Prepay Type</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="PrepayPenaltyType" class="formtest PrepayPenaltyType" id="PrepayPenaltyType" value="">None</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="PrepayPenaltyType" class="formtest PrepayPenaltyType" value="Fixed Percentage" checked>Fixed</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="PrepayPenaltyType" class="formtest PrepayPenaltyType" value="Declining Structure">Declining</span>
+						</td>
+					</tr>
+								                    
+									<tr class="forNoRatio hidden">
+					  <td align="right"><label for="Renovation" id="lblRenovation">Renovation Loan?</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="Renovation" class="formtest Renovation" id="Renovation" value="No" checked>No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="Renovation" class="formtest Renovation" value="Yes">Yes</span>
+					  </td>
+					</tr>
+					<tr class="forRenovation hidden"> 
+					  <td align="right"><label for="CompletedProjects" id="lblCompletedProjects"># Completed Projects</label></td>
+					  <td><input class="formtest" tabindex="1" type="text" name="CompletedProjects" id="CompletedProjects" size="6" value="" /></td>
+					</tr>
+					<tr class="forRenovation hidden"> 
+					  <td align="right"><label for="GroundUpConstruction" id="lblGroundUpConstruction">Ground Up Construction?</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="GroundUpConstruction" class="formtest GroundUpConstruction" id="GroundUpConstruction" value="No" checked>No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="GroundUpConstruction" class="formtest GroundUpConstruction" value="Yes">Yes</span>
+                      </td>
+					</tr>
+					<tr class="forRenovation hidden"> 
+					  <td align="right"><label for="RenoBudget" id="lblRenoBudget">Renovation Budget</label></td>
+					  <td><input class="formtest" tabindex="1" type="text" name="RenoBudget" id="RenoBudget" size="6" value="" /></td>
+					</tr>
+					<tr class="forRenovation hidden"> 
+					  <td align="right"><label for="DutchInterest" id="lblDutchInterest">Dutch Interest?</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="DutchInterest" class="formtest DutchInterest" id="DutchInterest" value="No">No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="DutchInterest" class="formtest DutchInterest" value="Yes" checked>Yes</span>
+                      </td>
+					</tr>
+					<tr class="forRenovation hidden"> 
+					  <td align="right"><label for="LTCPercent" id="lblLTCPercent">Loan To Cost %</label></td>
+					  <td> <select class="formtest" tabindex="1" name="LTCPercent" id="LTCPercent">
+							<option value="">N/A</option>
+							<option value="1+ -60">1+ -60</option>
+							<option value="60+ -75">60+ -75</option>
+							<option value="75+ -80">75+ -80</option>
+							<option value="80+ -85">80+ -85</option>
+							<option value="85+ -90">85+ -90</option>
+							<option value="90+ -95">90+ -95</option>
+							<option value="95+ -100">95+ -100</option>
+							</select> </td>
+					</tr>
+				                    
+									<tr class="lt_nonqm_jumbo hidden">
+					  <td align="right"><label for="SelfEmployed" id="lblSelfEmployed">Self Employed</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input class="formtest SelfEmployed" tabindex="1" type="radio" name="SelfEmployed" id="SelfEmployed" value="No"  checked>No</span>
+							<span style="white-space:nowrap"><input class="formtest SelfEmployed" tabindex="1" type="radio" name="SelfEmployed" value="Yes" >Yes</span>
+					</td>
+					</tr>
+													<tr class="lt_nonqm_jumbo hidden">
+					  <td align="right"><label for="InterestOnly" id="lblInterestOnly">Interest Only</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input class="formtest InterestOnly" tabindex="1" type="radio" name="InterestOnly" id="InterestOnly" value="No"  checked>No</span>
+							<span style="white-space:nowrap"><input class="formtest InterestOnly" tabindex="1" type="radio" name="InterestOnly" value="Yes" >Yes</span>
+					</td>
+					</tr>
+					<tr class="forInterestOnly hidden">
+					  <td align="right"></td>
+					  <td><span class="alert">Term must equal 40 years</span></td>
+					</tr>
+																	<tr class="lt_nongov">
+					  <td align="right"><label for="WaiveEscrows" id="lblWaiveEscrows">Waive Escrows</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="WaiveEscrows" class="formtest WaiveEscrows" id="WaiveEscrows" value="No" checked>No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="WaiveEscrows" class="formtest WaiveEscrows" value="Yes">Yes</span>
+						</td>
+					</tr>
+													<tr class="lt_conventional hidden">
+					  <td align="right"><label for="MtgInsurance" id="lblMtgInsurance">Mtg Insurance</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="MtgInsurance" class="formtest MtgInsurance" id="MtgInsurance" value="No" checked>No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="MtgInsurance" class="formtest MtgInsurance" value="Yes">Yes</span>
+						</td>
+					</tr>
+													<tr class="lt_conventional forLPMI">
+					  <td align="right"><label for="LPMI" id="lblLPMI">Lender paid MI</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="LPMI" class="formtest LPMI" id="LPMI" value="No" checked>No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="LPMI" class="formtest LPMI" value="Yes">Yes</span>
+					  </td>
+					</tr>
+									<tr>
+					  <td align="right"><label for="FinanceBuydown" id="lblFinanceBuydown">Stacking Fees?</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="FinanceBuydown" class="formtest FinanceBuydown" id="FinanceBuydown" value="No" checked>No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="FinanceBuydown" class="formtest FinanceBuydown" value="Yes">Yes</span>
+						    <span class="forFinanceBuydown hidden alert"><br />Loan Amount should include stacked fees.</span>
+						</td>
+					</tr>
+					<tr class="lt_fha_usda">
+					  <td align="right"><label for="FinanceUFMIP" id="lblFinanceUFMIP">Finance the upfront MIP?</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="FinanceUFMIP" class="formtest FinanceUFMIP" id="FinanceUFMIP" value="No">No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="FinanceUFMIP" class="formtest FinanceUFMIP" value="Yes" checked>Yes</span>
+						</td>
+					</tr>
+					<tr class="lt_va">
+					  <td align="right"><label for="ExemptVAFF" id="lblExemptVAFF">Are you Exempt from VAFF?</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="ExemptVAFF" class="formtest ExemptVAFF" id="ExemptVAFF" value="No" checked>No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="ExemptVAFF" class="formtest ExemptVAFF" value="Yes">Yes</span>
+					  </td>
+					</tr>
+					<tr class="lt_va">
+					  <td align="right"><label for="FirstTimeVA" id="lblFirstTimeVA">Is this a first time VA Loan?</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="FirstTimeVA" class="formtest FirstTimeVA" id="FirstTimeVA" value="No">No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="FirstTimeVA" class="formtest FirstTimeVA" value="Yes">Yes</span>
+						</td>
+					</tr>
+					<tr class="lt_va forVAFF">
+					  <td align="right"><label for="FinanceVAFF" id="lblFinanceVAFF">Do you want to finance the VAFF?</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="FinanceVAFF" class="formtest FinanceVAFF" id="FinanceVAFF" value="No" checked>No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="FinanceVAFF" class="formtest FinanceVAFF" value="Yes">Yes</span>
+					  </td>
+					</tr>
+					<tr class="lt_conventional_nonqm">
+					  <td align="right"><label for="FirstTimeHomeBuyer" id="lblFirstTimeHomeBuyer">First Time Homebuyer?</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="FirstTimeHomeBuyer" class="formtest FirstTimeHomeBuyer" id="FirstTimeHomeBuyer" value="No" checked>No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="FirstTimeHomeBuyer" class="formtest FirstTimeHomeBuyer" value="Yes">Yes</span>
+					  </td>
+					</tr>
+									<tr class="forNoRatio hidden">
+					  <td align="right"><label for="FirstTimeInvestor" id="lblFirstTimeInvestor">First Time Investor?</label></td>
+					  <td>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="FirstTimeInvestor" class="formtest FirstTimeInvestor" id="FirstTimeInvestor" value="No" checked>No</span>
+							<span style="white-space:nowrap"><input type="radio" tabindex="1" name="FirstTimeInvestor" class="formtest FirstTimeInvestor" value="Yes">Yes</span>
+					  </td>
+					</tr>
+								<tr class="forNOTDSCR_NORATIO hidden">
+					<td align="right"><label for="AssetLift" id="lblAssetLift">Asset Lift?</label></td>
+					<td>
+						<span style="white-space:nowrap"><input type="radio" tabindex="1" name="AssetLift" class="formtest AssetLift" id="AssetLift" value="No" checked>No</span>
+						<span style="white-space:nowrap"><input type="radio" tabindex="1" name="AssetLift" class="formtest AssetLift" value="Yes">Yes</span>
+					</td>
+				</tr>
+				<tr class="forDscrInvestment hidden">
+					<td align="right"><label for="RentFree" id="lblRentFree">Rent Free?</label></td>
+					<td>
+						<span style="white-space:nowrap"><input type="radio" tabindex="1" name="RentFree" class="formtest RentFree" id="RentFree" value="No" checked>No</span>
+						<span style="white-space:nowrap"><input type="radio" tabindex="1" name="RentFree" class="formtest RentFree" value="Yes">Yes</span>
+					</td>
+				</tr>
+				<tr class="">
+					<td align="right"><label for="RuralArea" id="lblRuralArea">Rural</label></td>
+					<td>
+						<span style="white-space:nowrap"><input type="radio" tabindex="1" name="RuralArea" class="formtest RuralArea" id="RuralArea" value="No" checked>No</span>
+						<span style="white-space:nowrap"><input type="radio" tabindex="1" name="RuralArea" class="formtest RuralArea" value="Yes">Yes</span>
+					</td>
+				</tr>
+													<tr class="lt_nonqm"> 
+					  <td align="right"><label for="CitizenshipType" id="lblCitizenshipType">Citizenship</label></td>
+					  <td> <select class="formtest" tabindex="1" name="CitizenshipType" id="CitizenshipType">
+													<option value="US Citizen" selected>US Citizen</option>
+													<option value="US Citizen Abroad">US Citizen Abroad</option>
+													<option value="Permanent Resident">Permanent Resident</option>
+													<option value="Non-Permanent Resident">Non-Permanent Resident</option>
+													<option value="Foreign National">Foreign National</option>
+													</select> </td>
+					</tr>
+													<tr class="lt_conventional"> 
+					  <td align="right"><label for="VarianceType" id="lblVarianceType">Agency Program</label></td>
+					  <td> <select class="formtest" tabindex="1" name="VarianceType" id="VarianceType">
+							<option value="">N/A</option>
+													<option value="HomeReady">HomeReady</option>
+													<option value="HomePossible">HomePossible</option>
+													</select> </td>
+					</tr>
+							   
+			   					<tr class="lt_nonqm">
+					  <td align="right"><label for="MortgageLates" id="lblMortgageLates">Mortgage Lates?</label></td>
+					  <td>
+						<span style="white-space:nowrap"><input type="radio" tabindex="1" name="MortgageLates" class="formtest MortgageLates" id="MortgageLates" value="No" checked>No</span>
+						<span style="white-space:nowrap"><input type="radio" tabindex="1" name="MortgageLates" class="formtest MortgageLates" value="Yes">Yes</span>
+					</td>
+					</tr>
+									<tr class="forMortgageLates hidden">
+					  	<td colspan="2">
+							<table class="innerform" width="100%">
+								<tr><td width="40%"></td><td ># Lates</td><td >Seasoning</td></tr>
+								
+																<tr><td align="right"><label for="MortgageLates30" id="lblMortgageLates30">30 Day</label></td>
+									<td><input tabindex="1" type="text" name="MortgageLates30" class="formtest MortgageLates" placeholder="#" id="MortgageLates30" size="4" value="" /></td>
+									<td><input tabindex="1" type="text" name="MortgageLates30Seasoning" placeholder="Months" id="MortgageLates30Seasoning" class="formtest MortgageLates" size="4" value="" /></td>
+								</tr>
+																								<tr><td align="right"><label for="MortgageLates60" id="lblMortgageLates60">60 Day</label></td>
+									<td><input tabindex="1" type="text" name="MortgageLates60" class="formtest MortgageLates" placeholder="#" id="MortgageLates60" size="4" value="" /></td>
+									<td><input tabindex="1" type="text" name="MortgageLates60Seasoning" class="formtest MortgageLates" placeholder="Months" id="MortgageLates60Seasoning" size="4" value="" /></td>
+								</tr>
+																								<tr><td align="right"><label for="MortgageLates90" id="lblMortgageLates90">90 Day</label></td>
+									<td><input tabindex="1" type="text" name="MortgageLates90" class="formtest MortgageLates" placeholder="#" id="MortgageLates90" size="4" value="" /></td>
+									<td><input tabindex="1" type="text" name="MortgageLates90Seasoning" class="formtest MortgageLates" placeholder="Months" id="MortgageLates90Seasoning" size="4" value="" /></td>
+								</tr>
+																							</table>
+						</td>
+					</tr>
+																	
+									<tr class="lt_nonqm">
+				  <td align="right"><label for="Foreclosure" id="lblForeclosure">Foreclosure?</label></td>
+					<td>
+						<span style="white-space:nowrap"><input type="radio" tabindex="1" name="Foreclosure" class="formtest Foreclosure" id="Foreclosure" value="No" checked>No</span>
+						<span style="white-space:nowrap"><input type="radio" tabindex="1" name="Foreclosure" class="formtest Foreclosure" value="Yes">Yes</span>
+						</td>
+					</tr>
+									<tr class="forForeclosure hidden">
+				  <td align="right"><label for="ForeclosureSeasoning" id="lblForeclosureSeasoning">Seasoning</label></td>
+					  <td><input tabindex="1" type="text" name="ForeclosureSeasoning" id="ForeclosureSeasoning" class="formtest Foreclosure" placeholder="Months" size="6" value="" /></td>
+					</tr>
+																		<tr class="lt_nonqm">
+				  <td align="right"><label for="Bankruptcy" id="lblBankruptcy">Bankruptcy?</label></td>
+					<td>
+						<span style="white-space:nowrap"><input type="radio" tabindex="1" name="Bankruptcy" class="formtest Bankruptcy" id="Bankruptcy" value="No" checked>No</span>
+						<span style="white-space:nowrap"><input type="radio" tabindex="1" name="Bankruptcy" class="formtest Bankruptcy" value="Yes">Yes</span>
+					</td>
+					</tr>
+										<tr class="forBankruptcy hidden">
+					  <td align="right"><label for="BankruptcyType" id="lblBankruptcyType">Type</label></td>
+					  <td> <select class="formtest Bankruptcy" tabindex="1" name="BankruptcyType" id="BankruptcyType">
+					  		<option value="">-- Select --</option>
+														<option value="Chapter7">Chapter7</option>
+														<option value="Chapter11">Chapter11</option>
+														<option value="Chapter13">Chapter13</option>
+														</select>
+					  </td>
+					</tr>
+															<tr class="forBankruptcy hidden">
+					  <td align="right"><label for="BankruptcyResolution" id="lblBankruptcyResolution">Resolution</label></td>
+					  <td> <select class="formtest Bankruptcy" tabindex="1" name="BankruptcyResolution" id="BankruptcyResolution">
+					  		<option value="">-- Select --</option>
+													<option value="Active">Active</option>
+													<option value="Discharged">Discharged</option>
+													<option value="Dismissed">Dismissed</option>
+													</select>
+						</td>
+					</tr>
+															<tr class="forBankruptcy hidden">
+					  <td align="right"><label for="BankruptcySeasoning" id="lblBankruptcySeasoning">Seasoning</label></td>
+				  <td><input tabindex="1" type="text" class="formtest Bankruptcy" name="BankruptcySeasoning" id="BankruptcySeasoning" placeholder="Months" size="6" value="" /></td>
+					</tr>
+													</table>
+			</div>
+       		<div class="one_column_width">
+				<table class="innerform" width="100%">
+					<tr><td width="40%"></td><td width="60%"></td></tr>
+					<tr> 
+					  <td align="right"><label for="Channel" id="lblChannel">Channel <span class="required">*</span></label></td>
+					  <td> <select class="formtest" tabindex="1" name="Channel" id="Channel">
+													<option value="Wholesale">Wholesale</option>
+													<option value="Correspondent">Correspondent</option>
+													<option value="CorrNonDel" selected>CorrNonDel</option>
+													</select> </td>
+					</tr>
+					<tr class="forWholesale">
+					  <td align="right"><label for="CompensationSource" id="lblCompensationSource">Comp source</label></td>
+					  <td> <select class="formtest" tabindex="1" name="CompensationSource" id="CompensationSource">
+							<option value="LenderPaid">Lender Paid</option>
+							<option value="BorrowerPaid" selected>Borrower Paid</option>
+							</select>
+					  </td>
+					</tr>
+					<tr class="forWholesale">
+						<td align="right">Comp %:</td>
+						<td><input tabindex="1" type="text" class="formtest" name="compPercent" id="compPercent" size="5" value="0.000" /></td>
+					</tr>
+					<tr class="forWholesale">
+						<td align="right">Min:</td>
+						<td><input tabindex="1" type="text" class="formtest" name="compMin" id="compMin" size="5" value="1000" /></td>
+					</tr>
+					<tr class="forWholesale">
+						<td align="right">Max:</td>
+						<td><input tabindex="1" type="text" class="formtest" name="compMax" id="compMax" size="5" value="30000" /></td>
+					</tr>
+					<tr class="forWholesale">
+						<td align="right">Base:</td>
+						<td><select tabindex="1" class="formtest" name="compBase" id="compBase">
+									<option value="GrossLoanAmount" selected>Total Loan Amount</option>
+									<option value="LoanAmount">Loan Amount</option>
+							</select></td>
+					</tr>
+   					<tr class="forWholesale">
+    				  <td align="right"><label for="LenderFeeBuyout" id="lblLenderFeeBuyout">Lender fee buyout <span class="required">*</span></label></td>
+					  <td>
+						<input type="radio" tabindex="1" name="LenderFeeBuyout" class="formtest LenderFeeBuyout" id="LenderFeeBuyout" value="No" checked>No&nbsp;
+						<input type="radio" tabindex="1" name="LenderFeeBuyout" class="formtest LenderFeeBuyout" value="Yes">Yes (Fee bought-out)
+					  </td>
+					</tr>
+					<tr class="forPurchase">
+					  <td align="right"><label for="SalesPrice" id="lblSalesPrice">Purchase price <span class="required">*</span></label></td>
+					  <td><input class="formtest" tabindex="1" type="text" name="SalesPrice" id="SalesPrice" size="10" value="" /></td>
+					</tr>
+					<tr>
+					  <td align="right"><label for="PropertyValue" id="lblPropertyValue">Est. value <span class="required">*</span></label></td>
+					  <td><input class="formtest" tabindex="1" type="text" name="PropertyValue" id="PropertyValue" size="10" value="500000" /></td>
+					</tr>
+					<tr>
+					  <td align="right"><label for="LoanAmount" id="lblLoanAmount">Loan amount <span class="required">*</span></label></td>
+					  <td><input class="formtest" tabindex="1" type="text" name="LoanAmount" id="LoanAmount" size="10" value="350000" /></td>
+					</tr>
+					<tr class="forSubFinancing">
+					  <td align="right"><label for="SubFinancing" id="lblSubFinancing">Subordinate financing</label></td>
+					  <td><input class="formtest" tabindex="1" type="text" name="SubFinancing" id="SubFinancing" size="10" value="" /></td>
+					</tr>
+					<tr>
+					  <td align="right"><label for="LTV" id="lblLTV">LTV <span class="required">*</span></label></td>
+					  <td><input class="formtest" tabindex="1" type="text" name="LTV" id="LTV" size="6" value="" /> </td>
+					</tr>
+					<tr class="forSubFinancing">
+					  <td align="right"><label for="CLTV" id="lblCLTV">CLTV</label></td>
+					  <td><input class="formtest" tabindex="1" type="text" name="CLTV" id="CLTV" size="6" value="" /></td>
+					</tr>
+					<tr class="lt_gov">
+					  <td align="right"><label for="GrossLoanAmount" id="lblGrossLoanAmount">Gross loan amount</label></td>
+					  <td><input class="formtest" tabindex="1" type="text" name="GrossLoanAmount" id="GrossLoanAmount" size="10" value="" readonly /></td>
+					</tr>
+				</table>
+			</div>
+		</div>
+	</div>
+</fieldset>
+<fieldset>
+	<legend>Property Information</legend>
+	<div class="lonform">
+    	<div class="row two_column">
+           <div class="one_column_width">
+				<table class="innerform" width="100%">
+					<tr><td width="40%"></td><td width="60%"></td></tr>
+					<tr>
+					  <td align="right"><label for="PropZip" id="lblPropZip">Property zip</label></td>
+					  <td><input class="formtest" tabindex="1" type="text" name="PropZip" id="PropZip" size="10" value="06105" /></td>
+					</tr>
+					<tr>
+					  <td align="right"><label for="PropState" id="lblPropState"> Property state <span class="required">*</span></label></td>
+					  <td><select class="formtest" tabindex="1" name="PropState" id="PropState">
+							<option value="">-- Select --</option>
+													<option value="AL">AL</option>
+													<option value="AK">AK</option>
+													<option value="AZ">AZ</option>
+													<option value="AR">AR</option>
+													<option value="CA">CA</option>
+													<option value="CO">CO</option>
+													<option value="CT" selected>CT</option>
+													<option value="DE">DE</option>
+													<option value="DC">DC</option>
+													<option value="FL">FL</option>
+													<option value="GA">GA</option>
+													<option value="HI">HI</option>
+													<option value="ID">ID</option>
+													<option value="IL">IL</option>
+													<option value="IN">IN</option>
+													<option value="IA">IA</option>
+													<option value="KS">KS</option>
+													<option value="KY">KY</option>
+													<option value="LA">LA</option>
+													<option value="ME">ME</option>
+													<option value="MD">MD</option>
+													<option value="MA">MA</option>
+													<option value="MI">MI</option>
+													<option value="MN">MN</option>
+													<option value="MS">MS</option>
+													<option value="MO">MO</option>
+													<option value="MT">MT</option>
+													<option value="NE">NE</option>
+													<option value="NV">NV</option>
+													<option value="NH">NH</option>
+													<option value="NJ">NJ</option>
+													<option value="NM">NM</option>
+													<option value="NY">NY</option>
+													<option value="NC">NC</option>
+													<option value="ND">ND</option>
+													<option value="OH">OH</option>
+													<option value="OK">OK</option>
+													<option value="OR">OR</option>
+													<option value="PA">PA</option>
+													<option value="RI">RI</option>
+													<option value="SC">SC</option>
+													<option value="SD">SD</option>
+													<option value="TN">TN</option>
+													<option value="TX">TX</option>
+													<option value="UT">UT</option>
+													<option value="VA">VA</option>
+													<option value="VT">VT</option>
+													<option value="WA">WA</option>
+													<option value="WV">WV</option>
+													<option value="WI">WI</option>
+													<option value="WY">WY</option>
+												</select></td>
+					</tr>
+					<tr>
+					  <td align="right"><label for="PropCity" id="lblPropCity">Property city</label></td>
+					  <td><input class="formtest" tabindex="1" type="text" name="PropCity" id="PropCity" size="10" value="Hartford" /></td>
+					</tr>
+				</table>
+			</div>
+			<div class="one_column_width">
+				<table class="innerform" width="100%">
+					<tr><td width="40%"></td><td width="60%"></td></tr>
+					<tr>
+					  <td align="right"><label for="PropertyType" id="lblPropertyType">Property type <span class="required">*</span></label></td>
+					  <td> <select class="formtest" tabindex="1" name="PropertyType" id="PropertyType">
+							<option value="">-- Select --</option>
+													<option value="SFD">SFD</option>
+													<option value="SFA">SFA</option>
+													<option value="2">2</option>
+													<option value="3">3</option>
+													<option value="4">4</option>
+													<option value="Condo" selected>Condo</option>
+													<option value="PUD">PUD</option>
+												</select></td>
+					</tr>
+									<tr class="trCondo">
+					  <td align="right"><label for="WarrantableCondo" id="lblWarrantableCondo">Warrantable condo</label></td>
+					  <td>
+						<input type="radio" tabindex="1" name="WarrantableCondo" class="formtest WarrantableCondo" id="WarrantableCondo" value="No">No&nbsp;
+						<input type="radio" tabindex="1" name="WarrantableCondo" class="formtest WarrantableCondo" value="Yes" checked>Yes
+				      </td>
+					</tr>
+					<tr class="trCondo">
+					  <td align="right"></td>
+					  <td><span class="forNonWarrantableCondo hidden alert">You have selected Non-Warrantable, LTV restrictions may apply</span></td>
+					</tr>
+					<tr class="trCondo">
+					  <td align="right"><label for="DetachedCondo" id="lblDetachedCondo">Detached condo</label></td>
+					  <td>
+						<input type="radio" tabindex="1" name="DetachedCondo" class="formtest DetachedCondo" id="DetachedCondo" value="No" checked>No&nbsp;
+						<input type="radio" tabindex="1" name="DetachedCondo" class="formtest DetachedCondo" value="Yes">Yes
+					  </td>
+					</tr>
+													<tr class="trCondo">
+					  <td align="right"><label for="Condotel" id="lblCondotel">Condotel</label></td>
+					  <td>
+							<input type="radio" tabindex="1" name="Condotel" class="formtest Condotel" id="Condotel" value="No" checked>No&nbsp;
+							<input type="radio" tabindex="1" name="Condotel" class="formtest Condotel" value="Yes">Yes
+					  </td>
+					</tr>
+													<tr>
+					  <td align="right"><label for="Units" id="lblUnits">Units</label></td>
+					  <td> <select class="formtest" tabindex="1" name="Units" id="Units">
+																				<option class="" value="1">1</option>
+																				<option class="" value="2">2</option>
+																				<option class="" value="3">3</option>
+																				<option class="" value="4" selected>4</option>
+																				<option class="forDSCR" value="5">5</option>
+																				<option class="forDSCR" value="6">6</option>
+																				<option class="forDSCR" value="7">7</option>
+																				<option class="forDSCR" value="8">8</option>
+																				<option class="forDSCR" value="9">9</option>
+																				<option class="forDSCR" value="10">10</option>
+												</select></td>
+					</tr>
+													<tr>
+					  <td align="right"><label for="Occupancy" id="lblOccupancy">Occupancy type <span class="required">*</span></label></td>
+					  <td> <select class="formtest" tabindex="1" name="Occupancy" id="Occupancy">
+							<option value="">-- Select --</option>
+													<option value="Primary">Primary</option>
+													<option value="Secondary">Secondary</option>
+													<option value="Investment" selected>Investment</option>
+												</select></td>
+					</tr>
+				</table>
+        	</div>
+		</div>
+	</div>
+</fieldset>
+
+
+<div id="tipConsumerPurpose" class="hidden">
+<div style="text-align: left;">
+<p>Personal is a loan for a primary, secondary, or investment property that must follow TRID requirements that is used for a consumer purpose; or business purpose is a loan for an investment property that will not follow TRID requirements and the loan and loan proceeds are strictly for a business purpose.
+</p>
+</div>
+</div>
+						
+<div id="tipCreditGrade" class="hidden">
+<div style="text-align: left;">
+	<p><strong>Credit Grade A</strong> equals max 0x30x12 Mortgage History and all major credit events such as a bankruptcy or foreclosure seasoned for 36 months</p>
+
+	<p><strong>Credit Grade B</strong> equals max 1x30x12 Mortgage History and all major credit events such as a bankruptcy or foreclosure seasoned for 24 months</p>
+
+	<p><strong>Credit Grade C</strong> equals max 1x60x12 Mortgage History and all major credit events such as a bankruptcy or foreclosure seasoned for 12 months</p>
+</div>
+</div>
+						
+
+<script>
+
+function showhelp(f) {}
+function hidehelp() {}
+//
+// form validation code
+//
+var iAjaxCount = 0;
+function validateAndSubmit(v) {
+	computeFormValues();
+	setTimeout( function wfaTimer() {
+			if (iAjaxCount>0) {
+				setTimeout(wfaTimer, 100); 
+			} else {
+				// final code to complete the process
+				calcCompensation();
+				if (document.dataform.validate()) {
+					if (runQMTests()==true) {
+						document.dataform.Action.value = v;
+						$('input:disabled').prop('disabled',false);
+						$('select:disabled').prop('disabled',false);
+						document.dataform.submit();
+						showWaitBox('Please wait...');
+					}
+				} else {
+					window.location="#errlink";
+				}
+			}
+
+		}, 100);
+}
+function fieldToInt(v) {
+    if (typeof v === 'string') { v=v.replace(/[^0-9.-]/g,''); }
+    v = parseInt(v,10); return (isNaN(v)) ? 0 : v; 
+}
+function fieldToFloat(v) {
+    if (typeof v === 'string') { v=v.replace(/[^0-9.-]/g,''); }
+    v = parseFloat(v,10); return (isNaN(v)) ? 0 : v;
+}
+
+// BORROWER INFORMATION
+// personal information
+validations.FICO = new Validator("Est. credit score");
+validations.FICO.required = function() {
+	var ct = $('#CitizenshipType').val();
+	return (!/foreign/i.test(ct)); 
+}
+validations.FICO.datatype = "Integer";
+validations.FICO.compute = function() {
+	var v = parseInt($('#FICO').val());
+	var ct = $('#CitizenshipType').val();
+	return (!/foreign/i.test(ct) && (v>999 || v<0)) ? "Credit Score must be between 0 and 999":"";
+}
+	
+// Loan information 
+validations.LoanAmount = new Validator("Loan amount");
+validations.LoanAmount.datatype = "Integer";
+validations.LoanAmount.required = true;
+validations.LoanAmount.min = 1000;
+
+validations.SalesPrice = new Validator("Sales price");
+validations.SalesPrice.datatype = "Integer";
+validations.SalesPrice.required = function() { return ($('#LoanPurpose').val()!=='Refinance'); };
+
+validations.PropertyValue = new Validator("Estimated value");
+validations.PropertyValue.datatype = "Integer";
+validations.PropertyValue.required = true;
+
+validations.LTV = new Validator("LTV");
+validations.LTV.required = true;
+validations.LTV.datatype = "Decimal";
+validations.LTV.min = 1.0;
+validations.CLTV = new Validator("CLTV");
+validations.CLTV.datatype = "Decimal";
+
+validations.SubFinancing = new Validator("Subordinate financing");
+validations.SubFinancing.datatype = "Integer";
+validations.LenderFeeBuyout = new Validator("Lender fee buyout");
+
+validations.lp_ThirdPartyFees = new Validator("Third party closing costs");
+validations.lp_ThirdPartyFees.datatype = "Integer";
+
+validations.lp_SellerContribution = new Validator("Seller credits");
+validations.lp_SellerContribution.datatype = "Integer";
+
+validations.lp_BorrowerBuydown = new Validator("Borrower buy down");
+validations.lp_BorrowerBuydown.datatype = "Integer";
+
+validations.bp_BorrowerBuydown = new Validator("Borrower buy down");
+validations.bp_BorrowerBuydown.datatype = "Integer";
+
+validations.bp_AppliedLenderCredit = new Validator("Amount applied to lender credit");
+validations.bp_AppliedLenderCredit.datatype = "SignedInteger";
+
+validations.bp_ThirdPartyFees = new Validator("Third party closing costs");
+validations.bp_ThirdPartyFees.datatype = "Integer";
+
+validations.bp_SellerContribution = new Validator("Seller credits");
+validations.bp_SellerContribution.datatype = "Integer";
+
+validations.lp_brokerAppliedCredit = new Validator("Broker credit for rate");
+validations.lp_brokerAppliedCredit.datatype = "SignedInteger";
+
+validations.LoanProgramType = new Validator("Loan Type");
+validations.LoanProgramType.required = true;
+// subject property
+var zipCodeLookup = 0;
+validations.PropZip = new Validator("Subject property zip");
+validations.PropZip.required = function() { return false; };
+validations.PropZip.compute = function() {
+	return (zipCodeLookup<0) ? "Not a valid USPS zip code":"";
+}
+
+validations.PropState = new Validator("Subject property state");
+validations.PropState.required = true;
+
+validations.PropertyType = new Validator("Property type");
+validations.PropertyType.required = true;
+
+validations.Occupancy = new Validator("Occupancy");
+validations.Occupancy.required = true;
+
+validations.DocType = new Validator("Income Verification");
+validations.DocType.required = true;
+
+// Loan Information
+validations.LoanPurpose = new Validator("Loan purpose");
+validations.LoanPurpose.required = true;
+validations.RefiPurpose = new Validator("Refinance purpose");
+validations.RefiPurpose.required = function() { return bisRefinance; };
+validations.CashOutAmount = new Validator("CashOut Amount");
+validations.CashOutAmount.datatype = "Integer";
+validations.CashOutAmount.required = function() { return (bisRefinance && $('#RefiPurpose').val()=='CashOut'); }
+validations.Channel = new Validator("Channel");
+validations.Channel.required = true;
+validations.DTI = new Validator("DTI");
+validations.DTI.required = function() {
+	var v = $('#DocType').val();
+	return ((bisNonQM || bisCPerm || bisConventional) && !/no ratio|dscr|restricted stock|bank statement: 1 mo|business bank stmt: 1 mo/i.test(v)); 
+};
+validations.DTI.datatype = "Decimal";
+validations.DTI.scale = 2;
+validations.DTI.compute = function() {
+	var v = parseFloat($('#DTI').val());
+    var r = validations.DTI.required();
+	return (r && (v>100.00 || v<1.00)) ? "DTI must be between 1.00 and 100.00":"";
+}
+validations.DSCR = new Validator("DSCR");
+validations.DSCR.scale = 2;
+validations.DSCR.compute = function() {
+	var v = parseFloat($('#DSCR').val());
+	return ((bisNonQM) && (v>2.00 || v<0.01)) ? "DSCR must be between 0.01 and 2.00":"";
+}
+validations.DSCR.required = function () {
+	var dt = $('#DocType');
+	return (bisNonQM && dt) ? /dscr/i.test(dt.val()) : false;
+};
+validations.RentIndicator = new Validator("Rent Indicator");
+validations.RentIndicator.required = function () {
+	var dt = $('#DocType').val();
+	var oc = $('#Occupancy').val();
+	if (
+		!bisNonQM
+		|| oc !== 'Investment'
+		|| ['Full Doc', 'Personal Bank Stmt: 1 Mo', 'Investor - DSCR', '1 Year Alt Doc', '2 Year Alt Doc', 'Business Bank Stmt: 12 Mos',
+			'Business Bank Stmt: 24 Mos', 'Personal Bank Stmt: 12 Mos', 'Personal Bank Stmt: 24 Mos'].indexOf(dt) === -1
+	) {
+		return false;
+	}
+	return true;
+};
+
+validations.CompletedProjects = new Validator("# Completed Projects");
+validations.CompletedProjects.datatype = "Integer";
+validations.CompletedProjects.required = function() {
+	var isReno = $('input[name="Renovation"]:checked').val();
+	return ((bisNonQM) && isReno=='Yes');
+}
+validations.RenoBudget = new Validator("Renovation Budget");
+validations.RenoBudget.datatype = "Integer";
+validations.RenoBudget.required = function() {
+	var isReno = $('input[name="Renovation"]:checked').val();
+	var isGroundUp = $('input[name="GroundUpConstruction"]:checked').val();
+	return ((bisNonQM) && isReno=='Yes' && isGroundUp=='Yes');
+}
+validations.RenoBudget.compute = function() {
+	var isReno = $('input[name="Renovation"]:checked').val();
+	var isGroundUp = $('input[name="GroundUpConstruction"]:checked').val();
+	var v = fieldToInt($('#RenoBudget').val());
+	return (bisNonQM && isReno=='Yes' && isGroundUp=='Yes' && v <= 0) ? "Renovation Budget must be > 0":"";
+}
+	
+validations.Bankruptcy = new Validator("Bankruptcy");
+validations.Bankruptcy.required = false;
+validations.Bankruptcy.compute = computeBankruptcy;
+function isBankruptcyChecked() {
+	var b = $('input[name="Bankruptcy"]:checked');
+	return (b.length==1 && b.val()=='Yes'); 
+}
+function computeBankruptcy() {
+	var v = $('input[name="Bankruptcy"]:checked').val();
+	var l = $('#LoanProgramType').val();
+	$('.forBankruptcy').toggle(bisNonQM && v=='Yes');
+	return '';
+}
+
+validations.BankruptcySeasoning = new Validator("Bankruptcy Seasoning");
+validations.BankruptcySeasoning.datatype = "Integer";
+validations.BankruptcySeasoning.required = function() {
+	var b = $('#BankruptcyResolution').val();
+	return (bisNonQM && isBankruptcyChecked() && (b=='Discharged' || b=='Dismissed'));
+}
+validations.BankruptcyType = new Validator("Bankruptcy Type");
+validations.BankruptcyType.required = function() {
+	var b = $('#BankruptcyType').val();
+	return (bisNonQM && isBankruptcyChecked() && b=='');
+}
+validations.BankruptcyResolution = new Validator("Bankruptcy Resolution");
+validations.BankruptcyResolution.required =  function() {
+	var b = $('#BankruptcyResolution').val();
+	return (bisNonQM && isBankruptcyChecked() && b=='');
+}
+
+
+validations.Foreclosure = new Validator("Foreclosure");
+validations.Foreclosure.required = false;
+validations.ForeclosureSeasoning = new Validator("Foreclosure Seasoning");
+validations.ForeclosureSeasoning.required = false;
+validations.ForeclosureSeasoning.datatype = "Integer";
+
+validations.Foreclosure.compute = computeForeclosure;
+function computeForeclosure() {
+	var v = $('input[name="Foreclosure"]:checked').val();
+	var l = $('#LoanProgramType').val();
+	$('.forForeclosure').toggle(bisNonQM && v=='Yes');
+	return "";
+}
+validations.HousingEvent = new Validator("HousingEvent");
+validations.HousingEvent.required = false;
+validations.HousingEventSeasoning = new Validator("HousingEvent Seasoning");
+validations.HousingEventSeasoning.datatype = "Integer";
+validations.HousingEventSeasoning.required = function () {
+	var b = $('input[name="HousingEvent"]:checked');
+	return (bisNonQM && b.length==1 && b.val()=='Yes'); 
+}
+validations.HousingEvent.compute = computeHousingEvent;
+function computeHousingEvent() {
+	var v = $('input[name="HousingEvent"]:checked').val();
+	var l = $('#LoanProgramType').val();
+	$('.forHousingEvent').toggle((v=='Yes' && bisNonQM));
+	return "";
+}
+
+validations.ConsumerPurpose = new Validator("Consumer Purpose");
+validations.ConsumerPurpose.required =  function () { return bisNonQM; }
+
+validations.FirstTimeVA = new Validator("First Time VA");
+validations.FirstTimeVA.required =  function () { return bisVA; }
+
+validations.PrepayPenaltyPeriod = new Validator("Prepay Period");
+validations.PrepayPenaltyPeriod.required = function () { return (bisNonQM); }
+validations.PrepayPenaltyPeriod.compute = computePrepayPenaltyPeriod;
+function computePrepayPenaltyPeriod() {
+	var ppp = $('#PrepayPenaltyPeriod').val();
+	if (bisNonQM && ppp!=='' && ppp !=='0') {
+		var ppt = $('input[name="PrepayPenaltyType"]:checked').val();
+		if (ppt=='') {
+			return 'Prepay Penalty Type cannot be None if Prepay Period > 0.';
+		}
+	}
+	return "";
+}
+
+    
+    
+validations.MortgageLates = new Validator("Mortgage Lates");
+validations.MortgageLates.required = false;
+validations.MortgageLates.compute = computeMortgageLates;
+function isMortgageLatesChecked() {
+	var b = $('input[name="MortgageLates"]:checked');
+	return (bisNonQM && b.length==1 && b.val()=='Yes'); 
+}
+
+function computeMortgageLates() {
+	var v = $('input[name="MortgageLates"]:checked').val();
+	$('.forMortgageLates').toggle(bisNonQM && v=='Yes');
+	return "";
+}
+
+validations.MortgageLates30 = new Validator("# Mtg Lates");
+validations.MortgageLates30.required = function() {
+	return (bisNonQM &&
+			isMortgageLatesChecked() &&
+			($('#MortgageLates60').length==0 || $('#MortgageLates60').val()=='') &&
+			($('#MortgageLates90').length==0 || $('#MortgageLates90').val()=='') &&
+			($('#MortgageLates120').length==0 || $('#MortgageLates120').val()==''));
+};
+validations.MortgageLates30.datatype = "Integer";
+validations.MortgageLates30Seasoning = new Validator("30 Day Mtg Late Seasoning");
+validations.MortgageLates30Seasoning.datatype = "Integer";
+validations.MortgageLates30Seasoning.required = function() { return (bisNonQM && isMortgageLatesChecked() && $('#MortgageLates30').val()!==''); };
+validations.MortgageLates60 = new Validator("60 Day Mtg Lates");
+validations.MortgageLates60.required = false;
+validations.MortgageLates60.datatype = "Integer";
+validations.MortgageLates60Seasoning = new Validator("60 Day Mtg Late Seasoning");
+validations.MortgageLates60Seasoning.datatype = "Integer";
+validations.MortgageLates60Seasoning.required = function() { return (bisNonQM && isMortgageLatesChecked() && $('#MortgageLates60').val()!==''); };
+validations.MortgageLates90 = new Validator("90 Day Mtg Lates");
+validations.MortgageLates90.required = false;
+validations.MortgageLates90.datatype = "Integer";
+validations.MortgageLates90Seasoning = new Validator("90 Day Mtg Late Seasoning");
+validations.MortgageLates90Seasoning.datatype = "Integer";
+validations.MortgageLates90Seasoning.required = function() { return (bisNonQM && isMortgageLatesChecked() && $('#MortgageLates90').val()!==''); };
+
+
+validations.LockTerm = new Validator("Lock Term");
+validations.LockTerm.required = true;
+
+// qm test
+function runQMTests() {
+	if (bisNonQM) return true;
+	if ($('#Channel').val()!=='Wholesale') { return true; }
+	var csrc = ($('#CompensationSource').val()=='BorrowerPaid') ? 'bp' : 'lp';
+	var lf = 0;
+	if ($('input[name="LenderFeeBuyout"]:checked').val()=='No') {
+		lf = fieldToInt($('#'+csrc+'_LenderFee').val());
+	}
+
+	var cbase = $('#compBase').val();
+	var cbla = fieldToInt($('#'+cbase).val());
+	var cpcnt = fieldToFloat($('#compPercent').val());
+	var cfixed = fieldToInt($('#compFixed').val());
+	if (csrc=='bp' && $('#bp_compPercent').length) {
+		cpcnt = fieldToFloat($('#bp_compPercent').val()); 
+	}
+	var lamnt = fieldToInt($('#LoanAmount').val());	
+	var cmax = fieldToInt($('#compMax').val());	
+	var cmin = fieldToInt($('#compMin').val());	
+	var ccalc = Math.trunc(cbla * cpcnt / 100) + cfixed;
+	var tbc = fieldToInt($('#'+csrc+'_TotalBrokerComp').val());
+	var tbc_max = tbc;
+
+	// QM points/fees limits tests
+	var lplimit = '3%';
+	if (bisNonQM) {
+        if (lamnt <= 150000) {
+            tbc_max = Math.min((Math.trunc(cbla * .05)), tbc);
+            lplimit = '5.00%';
+        } else {
+            tbc_max = Math.min((Math.trunc(cbla * .03)), tbc);
+            lplimit = '3.00%';
+        }
+	} else {
+		var qm_fees = lf;
+		// 2025 QM limits
+qm_fees = (typeof qm_fees === "undefined" || qm_fees===null ) ? 0 : qm_fees;
+if (cbla < 16855) { 
+	tbc_max = Math.min((Math.trunc(cbla * .08) - qm_fees), tbc);
+	lplimit = '8%';
+} else if (cbla < 26968) {
+	tbc_max = Math.min((1348 - qm_fees), tbc); 
+	lplimit = '$1348';
+} else if (cbla < 80095) {
+	tbc_max = Math.min((Math.trunc(cbla * .05) - qm_fees), tbc);
+	lplimit = '5%';
+} else if (cbla < 134841) {
+	tbc_max = Math.min((4045 - qm_fees), tbc); 
+	lplimit = '$4045';
+} else {
+	tbc_max = Math.min((Math.trunc(cbla * .03) - qm_fees), tbc);
+	lplimit = '3%';
+}	}
+	if (tbc > tbc_max) {
+		var message = "";
+		if (csrc=='bp') {
+			message += "Broker Compensation cannot exceed $"+tbc_max+" for this loan.<br />Change Compensation Amount";
+		} else {
+			message += "Broker Compensation + Lender Fee cannot exceed "+lplimit+" for this loan.<br />Change to Borrower Paid compensation";
+		}
+		if (bisNonQM) {
+			if ($('input[name="LenderFeeBuyout"]:checked').val()=='No') {
+				message += " or set Lender Fee Buyout to 'Yes'";
+			}
+		}
+		showAlert("<p><strong>QM Fail:</strong> "+message+".</p>");
+		return false;
+	}
+	return true;
+}
+
+// define some constants
+///////////////////////////////////////////////////////////////////
+// constants for LONPricer last updated 1/1/2023
+//
+// standard agency ltv/cltv limits
+const _maxltv_nonqm = 999;
+const _maxltv_conv = 97.0;
+const _maxltv_fthb = 97.0;
+const _maxltv_fnma_high_ltv_refi = 150.0;
+const _maxltv_fha = 96.5;
+const _maxcltv_fha = 999;
+const _maxltv_fha_streamline = 125.00;
+const _maxltv_fha_refi = 97.75;
+const _maxltv_fha_cashout = 85;
+const _maxltv_fha_sec184_purch = 97.75;
+const _maxltv_fha_sec184_purch_50K = 98.75;
+const _maxltv_fha_sec184_refi = 98.75;
+const _maxltv_fha_sec184_cashout = 85;
+
+const _maxltv_va = 100.0;
+const _maxltv_va_irrrl = 125.0;
+const _maxltv_va_non_irrrl = 90.0;
+const _maxltv_usda = 100.0;
+
+// seller contribution limits
+const _sellercontr_limit_conv = 0.06;
+const _sellercontr_limit_conv_lowltv = 0.09;
+const _sellercontr_limit_highltv = 0.03;
+const _sellercontr_limit_investment = 0.03;
+const _sellercontr_limit_va = 0.08;
+const _sellercontr_limit_fha = 0.06;
+
+// conforming loan limits      2025		2024
+const _conf_loanlimit_1unit = 806500;	//766550;
+const _conf_loanlimit_2unit = 1032650;	//981500;
+const _conf_loanlimit_3unit = 1248150;	//1186350;
+const _conf_loanlimit_4unit = 1551250;	//1474400;
+
+// 2023 funding fee limits
+const _funding_fee_va_100 = 0.0215;
+const _funding_fee_va_95 = 0.0150;
+const _funding_fee_va_90 = 0.0125;
+const _funding_fee_va_2nd_Use = 0.0330;
+const _funding_fee_va_2nd_Use_100 = 0.0330;
+const _funding_fee_va_2nd_Use_95 = 0.0150;
+const _funding_fee_va_2nd_Use_90 = 0.0125;
+const _funding_fee_va_irrrl = 0.005;
+const _funding_fee_fha = 0.0175;
+const _funding_fee_fha_sec184 = 0.0100;
+const _funding_fee_usda = 0.0100;
+
+
+$('#ConsumerPurpose').change(function() {
+    var v = $(this).val();
+    if (v === 'Personal') {
+        $('#PrepayPenaltyPeriod').val('0');
+        $('input[name="PrepayPenaltyType"]').val(['']);
+    }
+}).trigger('change');
+
+function calcVAFundingFee() {
+	var firstTimeVA = ($('input[name="FirstTimeVA"]:checked').val()!='No');
+	var exemptVAFF = ($('input[name="ExemptVAFF"]:checked').val()=='Yes');
+	var ltv = fieldToFloat($('#LTV').val());
+	var funding_fee = 0;
+	if (ltv>0 && !exemptVAFF) {
+		if (bisRefinance) {
+			if ($('#RefiPurpose').val()=='VA IRRRL') { funding_fee = _funding_fee_va_irrrl; }
+			else { funding_fee = (firstTimeVA) ? _funding_fee_va_100 : _funding_fee_va_2nd_Use_100; }
+		} else { // purchase
+			if (ltv>95) { funding_fee = (firstTimeVA) ?  _funding_fee_va_100 : _funding_fee_va_2nd_Use_100; }
+			else if (ltv>90) { funding_fee = (firstTimeVA) ? _funding_fee_va_95 : _funding_fee_va_2nd_Use_95; }
+			else { funding_fee = (firstTimeVA) ? _funding_fee_va_90 : _funding_fee_va_2nd_Use_90; }
+		}
+	}
+	return funding_fee;
+}
+
+function computeLenderFee() {
+//	if (!bisWholesale) { return; }
+	var buyout = $('input[name="LenderFeeBuyout"]:checked').val();
+	$('.forLenderFeeBuyout').toggle((buyout==='Yes'));
+	$('.forLenderFeeNoBuyout').toggle((buyout!=='Yes'));
+}
+function computeFormValues() {
+	if (!bFormInitialized) { return; }
+
+	var lt = $('#LoanProgramType').val();
+	var rp = $('#RefiPurpose').val();
+	var lvar = $('#VarianceType').val();
+	// compute LTV
+	var la = fieldToInt($('#LoanAmount').val());
+	var old_la = la;
+	var pv = fieldToInt($('#PropertyValue').val());
+	if (!bisRefinance) {
+		var sp = fieldToInt($('#SalesPrice').val());
+		pv = Math.min(pv,sp);
+	}
+	var ltv = fieldToFloat($('#LTV').val());
+	var mltv = calcMaxLTV();
+    if (ltv>mltv) { ltv = 0; }
+	if (ltv==0 && pv>0) {
+		ltv = parseFloat( la  / pv * 100);
+		if (ltv>mltv) {
+			ltv = mltv;
+			la = Math.trunc(pv * ltv / 100);
+		}
+		$('#LTV').val( ltv.toFixed(3) );
+	}
+	if (pv>0 && ltv>0) {
+
+		var forceEscrows = false;
+		if (bisNonQM || !bisConventional) {
+			$('input[name="MtgInsurance"]').val(['No']); 
+		} else {
+			if (ltv > 80) {
+				$('input[name="MtgInsurance"]').val(['Yes']); 
+				$('.forLPMI').toggle(bisConventional);
+				var st = $('#PropState').val();
+				forceEscrows = (st!='CA' || ltv>=90);
+				if (forceEscrows) {
+					$('input[name="WaiveEscrows"]').val(['No']);
+				} 
+			} 
+			$('input[name="MtgInsurance"]').prop('disabled',(ltv > 80 ));
+		}
+		$('input[name="WaiveEscrows"]').prop('disabled',forceEscrows);
+	
+		// compute GLA
+		var gla = la;
+		var funding_fee = 0;
+		var finance_fee = false;
+		var funding_fee_amount = 0;
+		if (bisVA) {
+			if ($('input[name="ExemptVAFF"]:checked').val()!='Yes') {
+				finance_fee = ($('input[name="FinanceVAFF"]:checked').val()=='Yes');
+				funding_fee = calcVAFundingFee();
+				if (bisRefinance) {
+					if ($('#RefiPurpose').val()=='VA IRRRL') {
+						funding_fee_amount = _round(la * funding_fee,2);
+						if (finance_fee) { gla += Math.floor(funding_fee_amount); }
+					} else { 
+						la = gla = Math.trunc(pv * ltv / 100);
+						funding_fee_amount = gla - _round(gla/(1+funding_fee),2);
+						if (finance_fee) { la = Math.floor(gla - funding_fee_amount); }
+					}
+				} else { // purchase
+					funding_fee_amount = _round(la * funding_fee,2);
+					if (finance_fee) { gla += Math.floor(funding_fee_amount); }
+				}
+			}
+		}
+		else if (bisFHA) {
+			finance_fee = ($('input[name="FinanceUFMIP"]:checked').val()=='Yes');
+			funding_fee = _funding_fee_fha; 
+            funding_fee_amount = _round(la * funding_fee,2);
+            if (finance_fee) { gla += Math.floor(funding_fee_amount); }
+		}
+		else if (bisUSDA) {
+			finance_fee = ($('input[name="FinanceUFMIP"]:checked').val()=='Yes');
+			funding_fee = _funding_fee_usda; 
+            if (finance_fee) { funding_fee = (.01/(1-funding_fee)); }
+			funding_fee_amount = _round(la * funding_fee,2);
+            if (finance_fee) { gla += Math.floor(funding_fee_amount); }
+		}
+
+		$('#LoanAmount').val( la );
+		$('#GrossLoanAmount').val( gla );
+		$('#FundingFeePercent').val( funding_fee );
+		$('#FundingFeeAmount').val( funding_fee_amount );
+		$('#FundingFeeNotFinanced').val( (finance_fee) ? '' : Math.floor(funding_fee_amount) );	
+
+		// compute CLTV
+		var tla = la;
+		if (!bisVA) {
+			tla += fieldToInt($('#SubFinancing').val());
+		}
+		var cltv = (ltv>0) ? parseFloat( tla / pv * 100) : 0;
+		if (cltv>0) {
+			var mcltv = calcMaxCLTV();
+			cltv = Math.min( cltv, mcltv);
+			$('#SubFinancing').val((pv*cltv/100).toFixed(0) - la);
+			$('#CLTV').val(cltv.toFixed(3));
+		} else {
+			$('#SubFinancing').val('');
+			$('#CLTV').val('');
+		}
+		if (la!=old_la || !bHasThirdPartyFees) {
+			getThirdPartyFees();
+		}
+
+		calcCashToClose();
+	}
+}
+
+
+$.fn.serializeIncludeDisabled = function () {
+    var disabled = this.find(":input:disabled").prop('disabled',false);
+    var data = this.serialize();
+    disabled.prop('disabled',true);
+    return data;
+};
+
+var bHasThirdPartyFees = false;
+function getThirdPartyFees() {
+	if (!bFormInitialized) { return; }
+	if (!bisWholesale) { return; }
+
+	if (fieldToInt($('#LoanAmount').val())>0  && 
+		fieldToInt($('#PropertyValue').val())>0  && 
+		$('#PropertyType').val()!==''  && 
+		$('#Occupancy').val()!==''  && 
+		(bisDSCR || $('#PropZip').val()!=='')  &&
+		$('#LoanPurpose').val()!==''  && 
+		$('#LoanProgramType').val()!==''  && 
+		$('#PropState').val()!=='') {
+		
+		var fdata = $('#dataform').serializeIncludeDisabled();
+		++iAjaxCount;
+		$.ajax({ method: "POST",
+				 url: "/tpo/ajax/getthirdpartyfees.php",
+				 data: fdata
+				})
+				.done( function(data){ if (data) {
+						$("#bp_ThirdPartyFees").val(data.total_fees);
+						$("#lp_ThirdPartyFees").val(data.total_fees);
+						$("#EstimatedPrepaidFees").val(data.prepaid_fees);
+						$("#EstimatedClosingCosts").val(data.closing_costs);
+						$("#lp_LenderFee").val(data.lenderfee_buyout_cost);
+						$("#bp_LenderFee").val(data.lenderfee_buyout_cost);
+						$("#LenderFeeBuyoutCost").val(data.lenderfee_buyout_cost);
+
+						var h = '';
+						if (data.fee_details && data.fee_details.length>0) {
+							h = '<table>';
+							for(var i = 0; i<data.fee_details.length; ++i) {
+								h += '<tr>';
+								h += '<td>'+data.fee_details[i].name + '</td>';
+								h += '<td align="right">'+data.fee_details[i].amount + '</td>';
+								h += '</tr>';
+							}
+							h += '</table>';
+						}
+						$('#tt_ThirdPartyFees .tooltip-content').html(h);
+							bHasThirdPartyFees = true;
+						$('#CompensationSource').change();
+						--iAjaxCount;
+						calcCashToClose();				
+						
+					}
+			});
+		}
+}
+
+function calcSellerContribution() {
+	var sc = fieldToInt( $('#SellerContribution').val());
+	var pv = fieldToInt($('#PropertyValue').val());
+	var ltv = fieldToFloat($('#LTV').val());
+	var lt = $('#LoanProgramType').val();
+	var ot = $('#Occupancy').val();
+	if (!bisRefinance) {
+		var sp = fieldToInt($('#SalesPrice').val());
+		pv = Math.min(pv,sp);
+	}
+	var sclim = _sellercontr_limit_conv;
+	switch (lt) {
+		case 'Conventional':
+			sclim = (ltv>90) ? _sellercontr_limit_highltv : _sellercontr_limit_conv;
+			if (ot=='Investment') sclim = _sellercontr_limit_investment;
+			break;
+		case 'FHA':
+			sclim = _sellercontr_limit_fha;
+			break;
+		case 'VA':
+			sclim = _sellercontr_limit_va;
+			break;
+		default:
+			sclim = _sellercontr_limit_conv;
+			break;
+	}
+
+	sc = Math.min((pv * sclim),sc);
+	sc = sc.toFixed(0);
+	$('input.SellerContribution').val(sc);
+	return sc;
+}
+
+function calcCompensation() {
+	if ($('#CompensationSource').val()=='BorrowerPaid') {
+		calcBorrowerPaidCompensation();
+	} else {
+		calcLenderPaidCompensation();
+	}
+	calcCashToClose();
+}
+
+// lender paid compensation calculations
+function calcLenderPaidCompensation() {
+	if (!bFormInitialized) { return; }
+	if (!bisWholesale) { return; }
+	var cbase = $('#compBase').val();
+	var cbla = fieldToInt($('#'+cbase).val());
+	if (cbla>0) {
+		var lt = $('#LoanProgramType').val();
+		var ot = $('#Occupancy').val();
+		var ltv = fieldToFloat($('#LTV').val());
+		var bac = fieldToFloat($('#lp_brokerAppliedCredit').val());
+		var cltv = fieldToFloat($('#CLTV').val());
+		// calculate Total 3rd party fees
+		var tpf = fieldToInt($('#lp_ThirdPartyFees').val());
+		var ttpf = tpf;
+		if ($('input[name="LenderFeeBuyout"]:checked').val()=='No') {
+			var lf = fieldToInt($('#lp_LenderFee').val());
+			ttpf += lf; 
+		}
+		$('#lp_TotalFees').val(ttpf);
+
+		// calculate the fees and comp
+		var cpcnt = fieldToFloat($('#compPercent').val());
+		var cmax = fieldToInt($('#compMax').val());	
+		var cmin = fieldToInt($('#compMin').val());	
+		var tbc = Math.trunc(cbla * cpcnt / 100);
+		tbc = Math.min(cmax, tbc);
+		tbc = Math.max(cmin, tbc);
+		var disclosed_cmax = fieldToInt($('#compDisclosed').val());	
+		// 12/12/23 gs: AHLend requested to remove the comp disclosed check
+		//if (disclosed_cmax>0) {
+		//	tbc = Math.min(disclosed_cmax, tbc);
+		//}
+		$('#lp_TotalBrokerComp').val(tbc.toFixed(0));
+
+		var sc = calcSellerContribution();
+		var abc = ttpf - sc; 
+		$('#lp_AvailableBrokerCredit').val(abc);
+		$('.forBrokerCharge').toggle((abc<0));
+		$('.forBrokerCredit').toggle((abc>=0));
+		$('.forlp_BorrowerBuydown').toggle((bac<=0));
+		if (bac>0) { $('#lp_BorrowerBuydown,  #BorrowerBuydown').val('0'); }
+	}
+}
+
+// borrower paid compensation calculations
+function calcBorrowerPaidCompensation() {
+	if (!bFormInitialized) { return; }
+	if (!bisWholesale) { return; }
+	var cbase = $('#compBase').val();
+	var cbla = fieldToInt($('#'+cbase).val());
+	if (cbla>0) {
+		// calculate Total 3rd party fees
+		var lt = $('#LoanProgramType').val();
+		var ot = $('#Occupancy').val();
+		var ltv = fieldToFloat($('#LTV').val());
+		var cltv = fieldToFloat($('#CLTV').val());
+		var tpf = fieldToInt($('#bp_ThirdPartyFees').val());
+		var ttpf = tpf;
+		var lf = 0;
+		if ($('input[name="LenderFeeBuyout"]:checked').val()=='No') {
+			lf = fieldToInt($('#bp_LenderFee').val());
+			ttpf += lf; 
+		}
+		$('#bp_TotalFees').val(ttpf);
+
+		// calculate the fees and comp
+		var cmax = fieldToInt($('#compMax').val());	
+		var disclosed_cmax = fieldToInt($('#compDisclosed').val());	
+		var cmin = fieldToInt($('#compMin').val());	
+		var cfixed = fieldToInt($('#compFixed').val());	
+		var lp_cpcnt = fieldToFloat($('#compPercent').val());
+		
+        if (bisNonQM) {
+            lp_cpcnt = (cbla>150000) ? 3.0 : 5.0; // limits for BP/NonQM comp
+        }
+		var bp_cpcnt = fieldToFloat($('#compPercent').val());
+		bp_cpcnt = Math.min(bp_cpcnt,lp_cpcnt);
+		
+		var ccalc = (cbla * lp_cpcnt / 100 ) + cfixed;
+		var tbc = (cbla * bp_cpcnt / 100 ) + cfixed;
+		if ($('#bp_compEdit').val()=='1') {
+			tbc = fieldToInt($('#bp_TotalBrokerComp').val()); // pull this from the broker's input
+			var lpcmax = cbla * lp_cpcnt / 100;
+			if (tbc>lpcmax) { tbc = lpcmax; }
+		}
+		// comp plan limits tests
+		tbc = Math.min(ccalc, tbc);
+		// tbc = Math.min(cmax, tbc); // comment this out for LCS-2016
+		// 12/12/23 gs: AHLend requested to remove the comp disclosed check
+		//if (disclosed_cmax>0) {
+		//	tbc = Math.min(disclosed_cmax, tbc);
+		//}
+		if (!bisNonQM) { tbc = Math.max(cmin, tbc); }
+		var bcp = tbc / cbla * 100;
+		$('#bp_TotalBrokerCompPercent').val( bcp.toFixed(3) );
+		if (cfixed>0) { bcp = (tbc-cfixed) / cbla * 100; }
+		$('#compPercent').val( bcp.toFixed(3) );
+		tbc = Math.trunc(tbc);
+		$('#bp_TotalBrokerComp').val(tbc.toFixed(0));
+
+		var ttpfc = ttpf + tbc;
+		$('#bp_TotalFeesComp').val(ttpfc);
+
+		var sc = calcSellerContribution();
+		var tbc_s = Math.min(sc, tbc);
+		var tbc_r = Math.max(0, tbc - tbc_s);
+		$('#bp_TotalBrokerComp_seller').val(tbc_s);
+		$('#bp_TotalBrokerComp_remaining').val(tbc_r);
+		sc = Math.max(0, sc - tbc_s);
+		var ttpf_s = Math.min(sc, ttpf);
+		var ttpf_r = Math.max(0, ttpf - ttpf_s);
+		$('#bp_TotalFees_seller').val(ttpf_s);
+		$('#bp_TotalFees_remaining').val(ttpf_r);
+
+		$('#bp_AllowedLenderCredit').val(ttpf - sc);
+		$('.forBrokerCharge').toggle(((ttpf - sc)<0));
+		$('.forBrokerCredit').toggle(((ttpf - sc)>=0));
+
+		$('#bp_TotalFeesComp_seller').val(tbc_s + ttpf_s);
+		$('#bp_TotalFeesComp_remaining').val(tbc_r + ttpf_r);
+		$('#bp_AppliedLenderCredit').change();
+		
+	}
+}
+
+function _round(number,decimals) {
+  	if (isNaN(decimals)) { decimals = 3; }
+	var ften = Math.pow(10,decimals);
+	return Math.round( number * ften ) / ften;
+}
+
+function calcCashToClose() {
+	if (!bFormInitialized) { return; }
+	if (!bisWholesale) { return; }
+
+	var lp = $('#LoanPurpose').val();
+	var rp = $('#RefiPurpose').val();
+	var pt = $('#PropertyType').val();
+	var lt = $('#LoanProgramType').val();
+	var oc = $('#Occupancy').val();
+	var vt = $('#VarianceType').val();
+	var sp = fieldToInt($('#SalesPrice').val());
+	var la = fieldToInt($('#LoanAmount').val());
+	var gla = fieldToInt($('#GrossLoanAmount').val());
+	var cs = $('#CompensationSource').val();
+	var ct = $('#compBase').val();
+	var fthb = $('input[name="FirstTimeHomeBuyer"]:checked').val();
+	var cla = fieldToInt($('#'+ct).val());
+	var lfbuyout = $('input[name="LenderFeeBuyout"]:checked').val();
+	var lfbuyoutCost = $('#LenderFeeBuyoutCost').val();
+	var is_construction = (lp=='Construction' || lp=='Construction-Perm');
+	
+
+	var targetPrice = 0;
+	var netTargetPrice = 0;
+	var basePrice = 0;
+	var brokerComp = 0;
+	var compAdjustment = 0;
+	var buyout = 0;
+	var costcredit = 0;
+	var borrowerBuydown = 0;
+	var thirdPartyFees = 0;
+	var sellerContribution = 0;
+	var availableLenderCredit = 0;
+	var appliedLenderCredit	= 0;
+	var remainingCash = 0;
+	var totalCashToClose = 0;
+	var compMode = '';
+
+	var downPayment = 0;
+	if (lp=="Purchase") { downPayment = sp - la; }
+
+	var minRequiredInvestment = downPayment;
+	if (lt=='FHA') {
+		var mltv_fha = calcMaxLTV();
+		minRequiredInvestment = sp * (100 - mltv_fha) / 100; 
+	}
+	
+	var fundingFeeNotFinanced = fieldToInt($('#FundingFeeNotFinanced').val());
+
+	if (bisWholesale) {
+		if (cs == 'LenderPaid') {
+			compMode = 'Lender';
+			appliedLenderCredit = fieldToInt($('#lp_brokerAppliedCredit').val());
+			thirdPartyFees = $('#lp_ThirdPartyFees').val();
+			sellerContribution = $('#lp_SellerContribution').val();
+			borrowerBuydown = fieldToInt($('#lp_BorrowerBuydown').val());
+			availableLenderCredit = fieldToInt($('#lp_AvailableBrokerCredit').val());
+			if (gla>0) {
+				brokerComp = fieldToInt($('#lp_TotalBrokerComp').val());
+				compAdjustment = _round((brokerComp / cla * 100),3);
+				basePrice = 100.000 + compAdjustment;
+				buyout = (lfbuyout=='Yes') ? _round((lfbuyoutCost / cla * 100 ),3) : 0;
+				var buydown = (appliedLenderCredit<=0) ? _round(((borrowerBuydown) / gla * 100),3) : 0;
+				costcredit = _round(((appliedLenderCredit) / gla * 100),3) - buydown;
+				targetPrice = basePrice + buyout + costcredit;
+				netTargetPrice = 100 + costcredit + buyout;
+			}
+			remainingCash = Math.max(0, availableLenderCredit - appliedLenderCredit);
+			totalCashToClose = downPayment + remainingCash + borrowerBuydown + fundingFeeNotFinanced;
+
+		} else { // borrower paid 
+			compMode = 'Borrower';
+			borrowerBuydown = fieldToInt($('#bp_BorrowerBuydown').val());
+			appliedLenderCredit = fieldToInt($('#bp_AppliedLenderCredit').val());
+
+			if (gla>0) {
+				basePrice = 100.000;
+				brokerComp = fieldToInt($('#bp_TotalBrokerComp').val());
+				buyout = (lfbuyout=='Yes') ? _round((lfbuyoutCost / cla * 100 ),3) : 0;
+				var buydown = (appliedLenderCredit<=0) ? _round(((borrowerBuydown) / gla * 100),3) : 0;
+				costcredit = _round((appliedLenderCredit / gla * 100), 3) - buydown;
+				targetPrice = basePrice + buyout + costcredit;
+				netTargetPrice = 100 + costcredit + buyout;
+			}
+
+			thirdPartyFees = $('#bp_ThirdPartyFees').val();
+			sellerContribution = $('#bp_SellerContribution').val();
+			availableLenderCredit = $('#bp_AllowedLenderCredit').val();
+			remainingCash = Math.max(0, $('#bp_CashFromBorrowerForFees').val());
+			totalCashToClose = Math.max(0, (downPayment + remainingCash + borrowerBuydown + fundingFeeNotFinanced));
+		}
+	}
+	$('#BorrowerBuydown').val(parseInt(borrowerBuydown));
+	$('#ThirdPartyFees').val(parseInt(thirdPartyFees));
+	$('#SellerContribution').val(parseInt(sellerContribution));
+	$('#BrokerComp').val(parseInt(brokerComp));
+	$('#CompAdjustment').val(parseFloat(compAdjustment).toFixed(3));
+	$('#BasePrice').val(parseFloat(basePrice).toFixed(3));
+	$('#LenderFeeBuyoutAmount').val(parseFloat(buyout).toFixed(3));
+	$('#BuyDownCostCredit').val(parseFloat(costcredit).toFixed(3));
+	$('.forLenderFeeBuyout').toggle((lfbuyout=='Yes' && buyout>0.00));
+	$('.forBuyDownCost').toggle((costcredit<0));
+	$('.forBuyDownCredit').toggle((costcredit>=0));
+	$('#TargetPrice').val(parseFloat(targetPrice).toFixed(3));
+	$('#NetTargetPrice').val(parseFloat(netTargetPrice).toFixed(3));
+	$('#AvailableLenderCredit').val(parseInt(availableLenderCredit));
+	$('#DownPayment').val(parseInt(downPayment));
+	$('#RemainingCash').val(parseInt(remainingCash));
+	$('#TotalCashToClose').val(parseInt(totalCashToClose));
+	$('#MinRequiredInvestment').val(parseInt(minRequiredInvestment));
+	
+}
+
+function calcMaxLTV() {
+	var lp = $('#LoanPurpose').val();
+	var rp = $('#RefiPurpose').val();
+	var pt = $('#PropertyType').val();
+	var lt = $('#LoanProgramType').val();
+	var oc = $('#Occupancy').val();
+	var vt = $('#VarianceType').val();
+	var fthb = $('input[name="FirstTimeHomeBuyer"]:checked').val();
+
+	var max = _maxltv_conv;
+	switch (lt) {
+		case 'Conventional':
+			if (bisNonQM) {
+				max = 999;
+			} else {
+				if (vt==='FNMAHighLTVRefi') { max = _maxltv_fnma_high_ltv_refi; }
+				else if (vt!=='' || fthb==='Yes') { max = _maxltv_fthb; }
+				else { max = _maxltv_conv; }
+			}
+			break;
+		case 'FHA':
+			max = _maxltv_fha;
+			if (bisRefinance) {
+                if (rp==='CashOut') { max = _maxltv_fha_cashout; }
+                else if (rp==='FHA Streamlined') { max = _maxltv_fha_streamline; }
+			}
+			break;
+		case 'VA':
+			max = (bisRefinance && rp=='VA IRRRL') ? _maxltv_va_irrrl : _maxltv_va;
+			if ($('input[name="ExemptVAFF"]:checked').val()!='Yes' && $('input[name="FinanceVAFF"]:checked').val()=='Yes') {
+				if (bisRefinance && rp!='VA IRRRL') {
+					var funding_fee = calcVAFundingFee();
+					max = _round( (max / (1+funding_fee)),2);
+				}
+			}
+			
+			break;
+		case 'USDA':
+			max = _maxltv_usda;
+			break;
+		default:
+			max = _maxltv_conv;
+			break;
+	}
+	return max;
+}
+
+function calcMaxCLTV() {
+	var max = calcMaxLTV();
+	var lt = $('#LoanProgramType').val();
+	var rp = $('#RefiPurpose').val();
+	if (lt == 'FHA') {
+        max = _maxltv_fha;
+		if (bisRefinance) {
+            if (rp==='CashOut') { max = _maxltv_fha_cashout; }
+            else if (rp==='FHA Streamlined') { max = _maxltv_fha_streamline; }
+		}
+	}
+
+	return max;
+}
+		
+function updateChannels() { return true; }
+		
+var bFormChanged = false;
+var bNonQM_BonaFide = false;
+var bFormInitialized = false;
+var bisWholesale = false;
+var bisConventional = true;
+var bisVA = false;
+var bisFHA = false;
+var bisUSDA = false;
+var bisNonQM = true;
+var bisJumbo = false;
+var bisRefinance = true;
+var bisCPerm = false;
+var bisDSCR = true;
+var loanprogramtype = 'Conventional';
+var loanpurpose = 'Refinance';
+var lienposition = 'First';
+var occupancy = 'Investment';
+var propertytype = 'Condo';
+var propertyvalue = '500000';
+var salesprice = '';
+var loanamount = '350000';
+var refipurpose = 'CashOut';
+
+$(document).ready(function($) {
+	$('.lonform select').wrap('<div class="lonselect"></div>');
+	$('#compEditor').click(function(e) {
+		if ($('#compEdit').val()!=='1') {
+			// turn on editing
+			$('.compLabel').hide();
+			$('.compField').show();
+			$('#compEdit').val('1');
+
+		} else {
+			// turn off editing
+			$('.compField').hide();
+			$('#compPercent_txt').html($('#compPercent').val()).show();
+			$('#compMin_txt').html($('#compMin').val()).show();
+			$('#compMax_txt').html($('#compMax').val()).show();
+			$('#compEdit').val('0');
+		}
+	});
+
+	$('#PropZip').change(function(e) {
+		zipCodeLookup = 0;
+		if ($(this).val()!='') {
+			++iAjaxCount;
+			$.ajax({ method: "POST",
+					 url: "/ajax/getcitystatecountyfromzip.json",
+					 data: { zip: $(this).val() }
+					})
+					.done( function(data){ if (data && data.state) {
+												$("#PropState").val(data.state); 
+												$("#PropCity").val(data.city); 
+												zipCodeLookup = 1;
+												getThirdPartyFees();
+											} else {
+												zipCodeLookup = -1;
+												$("#PropState").val(''); 
+												$("#PropCity").val(''); 
+												if (data.error) {
+													showAlert(data.error);
+												} else {
+													showAlert('Zip Code Not Found..')
+												}
+											}
+											--iAjaxCount;
+										});
+		}
+    }).change();
+
+	initFormValidation();
+	
+	$('i.tooltip').stickytip({position:['center','right'],relative:true}); 
+
+
+	$('#dataform input, #dataform select').on( 'change', function() {
+		bFormChanged = true;
+	}); 
+
+	$('#dataform input, #dataform select').on( 'blur', function() {
+		if (bFormChanged) {
+			bFormChanged = false;
+			getThirdPartyFees();
+		}
+	}); 
+
+	$('#compMin, #compMax, #compPercent, #compBase, #bp_compPercent, #bp_TotalBrokerComp').change(function(e){
+		bFormChanged = true;
+		calcCompensation();
+	});
+	
+	$('input[name="NonQM"]').change(function(e) {
+		bisNonQM = ($('input[name="NonQM"]:checked').val()=='Yes');
+		if (bisNonQM) {
+			$("#LoanProgramType option[value!='Conventional']").prop('disabled',true).hide();
+			$("#LoanProgramType").val('Conventional');
+			$('.NOT_nonqm').hide();
+			$('.forNonQM').show();
+			calcCompensation();
+		} else {
+			$("#LoanProgramType option").prop('disabled',false).show();
+			$('.NOT_nonqm').show();
+			$('.forNonQM').hide();
+		}
+		if (bFormInitialized) {
+			if (bisNonQM) {
+				if ($('#PrepayPenaltyPeriod').val()=='') {
+					$('#PrepayPenaltyPeriod').val('5');
+				}
+			} else { 
+				$("#PrepayPenaltyPeriod").val('').change();
+				$('input[name="Renovation"]').val(['No']).change();
+				if (!bisJumbo) { 
+					$("#Reserves").val('');
+					$('input[name="InterestOnly"]').val(['No']).change(); 				
+				}
+			}
+			loanprogramtype = '';
+			$('#LoanProgramType').change();
+		}
+	}).change();
+	
+	$('#SalesPrice, #PropertyValue').change(function(e) {
+		bFormChanged = true;
+
+		if (bFormInitialized && e.target.id === 'SalesPrice') {
+			$('#PropertyValue').val($('#SalesPrice').val());
+		}
+
+		var la = fieldToInt($('#LoanAmount').val());
+		var pv = fieldToInt($('#PropertyValue').val());
+		var sp = fieldToInt($('#SalesPrice').val());
+		var mpv = (bisRefinance) ? pv : Math.min(pv,sp);
+		var mltv = calcMaxLTV();
+		if (la==0 && mltv<999) {
+			// update loan amount if Sales Price changed manually
+			var mla = Math.trunc(mpv * mltv / 100);
+			if (!la) { la = mla; }
+			la = Math.min(la,mla);
+			$('#LoanAmount').val(la);
+		}
+		if (la>0) {
+			var ltv = (mpv==0) ? 0.000 : parseFloat( la  / mpv * 100);
+			$('#LTV').val(ltv.toFixed(3));
+		}
+		computeFormValues();
+		if (pv!=propertyvalue || sp!=salesprice) {
+			propertyvalue = pv;
+			salesprice = sp;
+			getThirdPartyFees(); 
+		}
+    });
+
+	$('#LoanAmount').change(function(e) {
+		bFormChanged = true;
+		var mltv = calcMaxLTV();
+		var la = fieldToInt($('#LoanAmount').val());
+		var pv = fieldToInt($('#PropertyValue').val());
+		var sp = fieldToInt($('#SalesPrice').val());
+		if (!bisRefinance) { pv = Math.min(pv,sp); }
+		if (pv>0) {
+			if (mltv<999) {
+				var mla = Math.trunc(pv * mltv / 100);
+				la = Math.min(la,mla);
+				$('#LoanAmount').val(la);
+			}
+			$('#LTV').val(parseFloat( la  / pv * 100).toFixed(3));
+		}
+		
+		computeFormValues();
+ 		if (la!=loanamount) {
+			loanamount = la;
+			getThirdPartyFees(); 
+		}
+    });
+
+
+    $('#LTV').change(function(e) {
+		bFormChanged = true;
+		var lt = $('#LoanProgramType').val();
+		var ltv = fieldToFloat($('#LTV').val());
+		var mltv = calcMaxLTV();
+		ltv = Math.min( ltv, mltv);
+		$('#LTV').val( ltv.toFixed(3) );
+
+		var pv = fieldToInt($('#PropertyValue').val());
+		if (!bisRefinance) {
+			var sp = fieldToInt($('#SalesPrice').val());
+			pv = Math.min(pv,sp);
+		}
+		
+		var la = (pv>0 && ltv>0) ? Math.trunc(pv * ltv / 100) : '';
+		$('#LoanAmount').val(la);
+ 		if (la!=loanamount) {
+			loanamount = la;
+			getThirdPartyFees(); 
+		}
+		
+		computeFormValues();
+
+    });
+    $('#CLTV').change(function(e) {
+		bFormChanged = true;
+		var lt = $('#LoanProgramType').val();
+		var ltv = fieldToFloat($('#LTV').val());
+		var cltv = fieldToFloat($('#CLTV').val());
+		cltv = Math.max( cltv, ltv);
+
+		var pv = fieldToInt($('#PropertyValue').val());
+		if (!bisRefinance) {
+			var sp = fieldToInt($('#SalesPrice').val());
+			pv = Math.min(pv,sp);
+		}
+
+		var mcltv = calcMaxCLTV();
+		cltv = Math.min( cltv, mcltv);
+		$('#CLTV').val( cltv.toFixed(3) );
+		if (lt !== 'VA') {
+			var sf = (pv>0 && ltv>0 && cltv>0) ? Math.trunc(pv * (cltv - ltv) / 100) : '';
+			$('#SubFinancing').val(sf);
+		}
+		computeFormValues();
+    });
+	
+    $('input[name="LenderFeeBuyout"]').change(function(e) {
+		bFormChanged = true;
+//		if (!bisWholesale) { return; }
+		computeLenderFee();
+		computeFormValues();
+		calcCompensation();
+    }).change();
+
+	$("#cbAmortFixed").change(function(e) {
+		if ($("#VarianceType").val()=='HomeOne' && !$("#cbAmortFixed").is(':checked')) {
+			$("#VarianceType").val('');
+		}
+		$("option[value='HomeOne']").prop('disabled',(!$("#cbAmortFixed").is(':checked')));
+    }).change();
+
+    $('#CompensationSource').change(function(e) {
+		if (!bisWholesale) { return; }
+		bFormChanged = true;
+		var v = $('#CompensationSource').val();
+		$('.forLenderPaid').toggle((v === 'LenderPaid'));
+		$('.forBorrowerPaid').toggle((v !== 'LenderPaid'));
+		calcCompensation();
+	}).change();
+
+
+    $('input[name="MtgInsurance"]').change(function(e) {
+		bFormChanged = true;
+		var v = $('input[name="MtgInsurance"]:checked').val();
+		$('.forLPMI').toggle((!bisNonQM && bisConventional && v === 'Yes'));
+		computeFormValues();
+	}).change();
+    $('input[name="WarrantableCondo"]').change(function(e) {
+		var v = $('input[name="WarrantableCondo"]:checked').val();
+		$('.forWarrantableCondo').toggle((v === 'Yes'));
+		$('.forNonWarrantableCondo').toggle((v !== 'Yes'));
+	}).change();
+
+    $('#LoanPurpose').change(function(e) {
+		bFormChanged = true;
+		var lp = $('#LoanPurpose').val();
+		bisRefinance = (lp==='Refinance');
+		bisCPerm = (lp==='Construction-Perm');
+		$('.forPurchase').toggle(!bisRefinance);
+		$('.forRefinance').toggle(bisRefinance);
+		// update Lock Terms
+		$("#LockTerm option.forJumbo").prop('disabled',(!(bisJumbo || bisNonQM))).toggle((bisJumbo || bisNonQM));
+		$("#LockTerm option.forCPerm").prop('disabled',(!bisCPerm)).toggle(bisCPerm);
+		$("#LockTerm option.NOTforJumbo").prop('disabled',(bisJumbo || bisCPerm || bisNonQM)).toggle(!(bisJumbo || bisCPerm || bisNonQM));
+		if ($("#LockTerm :selected").prop('disabled')) { $("#LockTerm").val(''); }
+		
+		$('.forCashOut').toggle((bisRefinance && $('#RefiPurpose').val() === 'CashOut'));
+		
+		if (bFormInitialized && bisRefinance && $('#RefiPurpose').val() === 'CashOut') {
+			$('#RefiPurpose').change();
+		}
+		$("option[value='OpenAccess'],option[value='FNMAHighLTVRefi']").prop('disabled',(!bisRefinance));
+
+		if ($("#VarianceType :selected").prop('disabled')) {
+			$("#VarianceType").val('');
+		}
+		if ($("#RefiPurpose :selected").prop('disabled')) {
+			$("#RefiPurpose").val('');
+		}
+		computeFormValues();
+		updateChannels();
+	}).change();
+	
+    $('#RefiPurpose').change(function(e) {
+		bFormChanged = true;
+		var rp = $('#RefiPurpose').val();
+		$('.forCashOut').toggle((bisRefinance && rp === 'CashOut'));
+		$('.forVACashOut').toggle((bisVA && bisRefinance && rp === 'CashOut'));
+		if (rp!=refipurpose) {
+			refipurpose = rp;
+			getThirdPartyFees(); 
+		}
+		
+		computeFormValues();
+	}).change();
+
+    $('#PropertyType').change(function(e) {
+		bFormChanged = true;
+		var v = $('#PropertyType').val();
+		$('.trCondo').toggle((v==='Condo'));
+		if (v!='Condo') {
+			$('input.WarrantableCondo').val(['No']).change();
+			$('input.DetachedCondo').val(['No']);
+			$('input.Condotel').val(['No']);
+		}
+		
+		if (loanpurpose!=v) { getThirdPartyFees(); }
+		loanpurpose = v;
+		
+	}).change();
+
+    $('#Occupancy').change(function(e) {
+		bFormChanged = true;
+		var v = $('#Occupancy').val();
+		$('input[name="OwnerOccupied"]').val((v==='Investment')?['No']:['Yes']);
+		$('.occupancy_investment').toggle((v==='Investment'));
+		toggleRentIndicator();
+		handleDscrInvestment();
+		if (occupancy!=v) { getThirdPartyFees(); }
+		occupancy = v;
+	}).change();
+
+    $('#DocType').change(function(e) {
+		bFormChanged = true;
+		var dt = $('#DocType').val();
+		// not required for No Ratio  or  Debt Service Coverage (DSCR)
+		var disableDTI = (bisNonQM && /no ratio|dscr|investor|restricted stock|business bank stmt: 1 mo/i.test(dt));
+		$('.forDTI').toggle(disableDTI===false);
+		if (disableDTI) {
+			$('#DTI').val(''); 
+			$('#CreditGrade').val(''); 
+		}
+		var dtOpt = $('#DocType option:selected');
+		if (dtOpt.hasClass('loanTerm3040yr')) {
+			$('#LoanTerm option').hide();
+			$('#LoanTerm option.loanTerm3040yr').show();
+			if (['30', '40'].indexOf($('#LoanTerm').val()) == -1) {
+				$('#LoanTerm').val('30').change();
+			}
+		} else if (dtOpt.hasClass('loanTerm1218mo')) {
+			$('#LoanTerm option').hide();
+			$('#LoanTerm option.loanTerm1218mo').show();
+			if (['1', '1.5'].indexOf($('#LoanTerm').val()) == -1) {
+				$('#LoanTerm').val('1').change();
+			}
+		} else if (dtOpt.hasClass('loanTerm12mo')) {
+			$('#LoanTerm option').hide();
+			$('#LoanTerm option.loanTerm12mo').show();
+			if (['1'].indexOf($('#LoanTerm').val()) == -1) {
+				$('#LoanTerm').val('1').change();
+			}
+		} else {
+			$('#LoanTerm option').show();
+		}
+
+		if (bFormInitialized) {
+			if (dtOpt.val() === 'Business Bank Stmt: 1 Mo') {
+				$('input.Amortization').val(['ARM']).change();
+			} else {
+				$('input.Amortization').val(['Fixed']).change();
+			}
+		}
+		
+		// required for Debt Service Coverage (DSCR)
+		bisDSCR = (bisNonQM && /dscr/i.test(dt));
+		$('.forDSCR').toggle(bisDSCR);
+		if (bFormInitialized) {
+			if (bisDSCR) {
+				$('#Occupancy').val('Investment').change();
+				$('#PrepayPenaltyPeriod').val('5').change();
+			}
+			if ($('#PropertyType').val() == '') {
+				$('#PropertyType').val('SFD').change();
+			}
+		}
+		toggleRentIndicator();
+		handleDscrInvestment();
+		if (!bisDSCR && $('#Units').val() > 4) {
+			$('#Units').val('4');
+		}
+		if (bisDSCR===false) { $('#DSCR').val(''); }
+		
+		var enableNoRatio = (bisNonQM && /ratio/i.test(dt));
+		var enableOTC = (bisNonQM && /restricted stock/i.test(dt));
+		
+		$('.forNoRatio').toggle(enableNoRatio || enableOTC);
+		$('.forNOTDSCR_NORATIO').toggle((bisDSCR==false && enableNoRatio==false));
+		if ((bisDSCR==false && enableNoRatio==false)) { $('input[name="Renovation"]').val(['No']).change(); }
+		
+		var io = $('input[name="InterestOnly"]:checked').val();
+		$('.forInterestOnly').toggle((io=='Yes' && enableNoRatio == false) );
+		
+		
+	}).change();
+    $('#lp_SellerContribution, #bp_SellerContribution').change(function(e) {
+		if (!bisWholesale) { return; }
+		bFormChanged = true;
+		$('#SellerContribution').val($(this).val());
+		calcSellerContribution();
+		calcCompensation();
+	});
+    $('#lp_BorrowerBuydown').change(function(e) {
+		if (!bisWholesale) { return; }
+		bFormChanged = true;
+
+		var bac = Math.abs(fieldToInt($('#lp_brokerAppliedCredit').val()));
+		var bbd = fieldToInt($('#lp_BorrowerBuydown').val());
+		var gla = fieldToInt($('#GrossLoanAmount').val());
+		if (!bisNonQM || bNonQM_BonaFide) {
+			var lim = Math.trunc( gla * 0.02 ); // Bona Fide test
+			if ((bbd + bac) > lim ) {
+				bbd = lim - bac;
+			}
+		}
+		$('#lp_BorrowerBuydown, #BorrowerBuydown').val(bbd);
+		
+		calcCompensation();
+	});
+   $('input[name="WaiveEscrows"]').change(function(e) {
+		getThirdPartyFees();
+	});
+
+    $('#lp_brokerAppliedCredit').change(function(e) {
+		if (!bisWholesale) { return; }
+		bFormChanged = true;
+		var bac = fieldToInt($('#lp_brokerAppliedCredit').val());
+		var abc = fieldToInt($('#lp_AvailableBrokerCredit').val());
+		var gla = fieldToInt($('#GrossLoanAmount').val());
+		if (abc<0) {
+			if (!bisNonQM || bNonQM_BonaFide) {
+				bac = Math.max(bac, Math.trunc( gla * -0.02 )); // Bona Fide test
+			}
+			bac = (bac < abc) ? abc : Math.min(bac,0);
+		} else {
+			if (!bisNonQM || bNonQM_BonaFide) {
+				bac = Math.min((gla*0.0200),bac); // Bona Fide Test
+			}
+			bac = (bac > abc) ? abc : Math.max(bac,0);		
+		}
+		$('#lp_brokerAppliedCredit').val(bac);
+		calcCompensation();
+	});
+
+    $('#bp_AppliedLenderCredit').change(function(e) {
+		if (!bisWholesale) { return; }
+		bFormChanged = true;
+		
+		var appliedlc = fieldToInt(	$('#bp_AppliedLenderCredit').val());
+		var allowedlc = fieldToInt(	$('#bp_AllowedLenderCredit').val());
+		var bcr = fieldToInt( $('#bp_TotalBrokerComp_remaining').val());
+		var lcmax = fieldToInt(	$('#bp_TotalFeesComp_remaining').val());
+		var gla = fieldToInt($('#GrossLoanAmount').val());
+		var cfbff = 0;
+		
+		if (allowedlc>0) {
+			appliedlc = Math.min(allowedlc,appliedlc);
+			if (!bisNonQM || bNonQM_BonaFide) {
+				appliedlc = Math.min((gla*0.0200),appliedlc);
+			}
+			appliedlc = Math.max(appliedlc,0);
+			cfbff = lcmax - appliedlc;
+		}
+		else 
+		{
+			if (!bisNonQM || bNonQM_BonaFide) {
+				appliedlc = Math.max(appliedlc, Math.trunc( gla * -0.02 )); // Bona Fide Test
+			}
+			appliedlc = Math.max(allowedlc,appliedlc);
+			appliedlc = Math.min(appliedlc,0);
+			cfbff = 0;
+		}
+		$('#bp_AppliedLenderCredit').val(appliedlc);
+		$('#bp_CashFromBorrowerForFees').val(cfbff);
+		$('#bp_LenderCreditsAppliedToPricing').val(appliedlc);
+		
+		$('.forbp_BorrowerBuydown').toggle((appliedlc==0));
+		if (appliedlc>0) { $('#bp_BorrowerBuydown,  #BorrowerBuydown').val('0'); }
+		
+
+	});
+    $('#bp_BorrowerBuydown').change(function(e) {
+		if (!bisWholesale) { return; }
+		bFormChanged = true;
+
+		var alc = Math.abs(fieldToInt($('#bp_AppliedLenderCredit').val()));
+		var bbd = fieldToInt($('#bp_BorrowerBuydown').val());
+		var gla = fieldToInt($('#GrossLoanAmount').val());
+		if (!bisNonQM || bNonQM_BonaFide) {
+			bbd = Math.min(bbd, Math.trunc( gla * 0.02 )); // Bona Fide Test
+		}
+		$('#bp_BorrowerBuydown, #BorrowerBuydown').val(bbd);
+		calcCompensation();
+	});
+
+    $('#SubFinancing').change(function(e) {
+		var la = fieldToInt($('#LoanAmount').val());
+		var pv = fieldToInt($('#PropertyValue').val());
+		var sp = fieldToInt($('#SalesPrice').val());
+		var sf = fieldToInt($('#SubFinancing').val());
+		if (!bisRefinance) { pv = Math.min(pv,sp); }
+		if (sf<0) {
+			sf = 0 - sf;
+			$('#SubFinancing').val(sf);
+		}
+		if (pv>0 && la>0) {
+			var cltv = parseFloat( (la + sf) / pv * 100);
+			var mcltv = calcMaxCLTV();
+			if (cltv>mcltv) {
+				cltv = mcltv;
+				sf = (pv*cltv/100).toFixed(0) - la;
+				$('#SubFinancing').val(sf);
+			}
+			$('#CLTV').val(cltv.toFixed(3));
+		} else {
+			$('#SubFinancing').val('');
+			$('#CLTV').val('');
+		}
+		bFormChanged = true;
+		computeFormValues();
+	});
+
+    $('#LoanProgramType').change(function(e) {
+		bFormChanged = true;
+		var v = $('#LoanProgramType').val();
+		var dt = $('#DocType').val();
+		bisJumbo = (v === 'Jumbo');
+		bisNonQM = ($('input[name="NonQM"]:checked').val()=='Yes');
+		bisConventional = (v === 'Conventional' && !bisNonQM);
+		bisFHA = (v === 'FHA');
+		bisVA = (v === 'VA');
+		bisUSDA = (v === 'USDA');
+		$('.lt_jumbo').toggle(bisJumbo);
+		$('.lt_nonqm').toggle(bisNonQM);
+		$('.NOT_nonqm').toggle(!bisNonQM);
+		$('.lt_nonqm_jumbo').toggle((bisNonQM || bisJumbo));
+		$('.lt_conventional_nonqm').toggle(bisConventional);
+		$('.lt_conventional').toggle((bisConventional && !bisNonQM));
+		$('.lt_conventional_jumbo').toggle((bisConventional || bisJumbo));
+		
+		$('.lt_conventional_fha').toggle((bisFHA || bisConventional));
+		$('.lt_conventional_fha_va').toggle((bisFHA || bisVA || bisConventional));
+		$('.lt_fha_usda').toggle((bisFHA || bisUSDA));
+		$('.lt_va').toggle(bisVA);
+		$('.lt_gov').toggle((bisVA || bisFHA || bisUSDA));
+		$('.lt_nongov').toggle((!bisVA && !bisFHA && !bisUSDA));
+		$('.forSubFinancing').toggle((bisNonQM || bisCPerm || bisJumbo || bisFHA || bisConventional));
+
+		$("#VarianceType option.forJumbo").prop('disabled',(!bisJumbo));
+		$("#VarianceType option.forConventional").prop('disabled',(!bisConventional));
+		if ($("#VarianceType :selected").prop('disabled')) { $("#VarianceType").val(''); }
+		if (!bisConventional && !bisJumbo) { $("#VarianceType").val(''); }
+
+    	if (!bisNonQM) { 
+            $("#PrepayPenaltyPeriod").val('').change();
+            if (!bisJumbo) { 
+                $("#Reserves").val('');
+				$('input[name="InterestOnly"]').val(['No']).change(); 				
+            }
+        }
+		// not required for No Ratio  or  Debt Service Coverage (DSCR)
+		var disableDTI = (bisNonQM && /no ratio|dscr|investor|restricted stock|business bank stmt: 1 mo/i.test(dt));
+		$('.forDTI').toggle(disableDTI===false);
+		if (disableDTI) {
+			$('#DTI').val(''); 
+			$('#CreditGrade').val(''); 
+		}
+		
+		// required for Debt Service Coverage (DSCR)
+		bisDSCR = (bisNonQM && /dscr/i.test(dt));
+		$('.forDSCR').toggle(bisDSCR);
+		toggleRentIndicator();
+		handleDscrInvestment();
+		if (!bisDSCR && $('#Units').val() > 4) {
+			$('#Units').val('4');
+		}
+
+		var enableNoRatio = (bisNonQM && /ratio/i.test(dt));
+		var enableOTC = (bisNonQM && /restricted stock/i.test(dt));
+		$('.forNoRatio').toggle(enableNoRatio || enableOTC);
+		$('.forNOTDSCR_NORATIO').toggle((bisDSCR==false && enableNoRatio==false));
+
+		if (bisDSCR===false) { $('#DSCR').val(''); }
+        
+		// update Lock Terms
+		$("#LockTerm option.forJumbo").prop('disabled',(!(bisJumbo || bisNonQM))).toggle((bisJumbo || bisNonQM));
+		$("#LockTerm option.forCPerm").prop('disabled',(!bisCPerm)).toggle(bisCPerm);
+		$("#LockTerm option.NOTforJumbo").prop('disabled',(bisJumbo || bisCPerm || bisNonQM)).toggle(!(bisJumbo || bisCPerm || bisNonQM));
+		if ($("#LockTerm :selected").prop('disabled')) { $("#LockTerm").val(''); }
+
+		$("#DocType option").prop('disabled',false);
+
+		if (bisNonQM) {
+			$("#DocType option[value='Streamlined Refinance']").prop('disabled',true).hide();
+			$("#DocType option.forNonQM").prop('disabled',false).show();
+		} else {
+			$("#DocType option[value='Streamlined Refinance']").prop('disabled',(!bisFHA && !bisVA)).show();
+			$("#DocType option.forNonQM").prop('disabled',true).hide();
+		}
+		if ($("#DocType :selected").prop('disabled')) { $("#DocType").val(''); }
+
+		$("#DocType").change();
+		
+		if (bisVA || bisUSDA) { 
+			$('#SubFinancing').val('');
+			$('#CLTV').val('');
+		}
+		if (!bisConventional) { $("#VarianceType").val(''); }
+		
+		$("option[value='Rate/Term']").prop('disabled',(bisVA)).toggle((!bisVA));
+		$("option[value='FHA Streamlined']").prop('disabled',(!bisFHA)).toggle(bisFHA);
+		$("option[value='VA IRRRL']").prop('disabled',(!bisVA)).toggle(bisVA);
+		if ($("#RefiPurpose :selected").prop('disabled')) { $("#RefiPurpose").val(''); }
+		$('.forVACashOut').toggle((bisVA && bisRefinance && $("#RefiPurpose").val() === 'CashOut'));
+		
+		$("option[value='Construction-Perm']").prop('disabled',((!bisConventional)));
+		if ($("#LoanPurpose :selected").prop('disabled')) { $("#LoanPurpose").val(''); }
+		if (typeof(computeBankruptcy)=='function') computeBankruptcy();
+		if (typeof(computeForeclosure)=='function') computeForeclosure();
+		if (typeof(computeHousingEvent)=='function') computeHousingEvent();
+		if (typeof(computeCreditEvent)=='function') computeCreditEvent();
+		if (typeof(computeMortgageLates)=='function') computeMortgageLates();
+		
+		if (loanprogramtype != v) {
+			loanprogramtype = v;
+			getThirdPartyFees();
+		}
+		updateChannels();
+		computeFormValues();
+
+	}).change();
+	
+    $('#Channel').change(function(e) {
+		bFormChanged = true;
+		var chnl = $(this).val();
+		bisWholesale = (chnl=='Wholesale');
+		if ( !bisWholesale ) {
+			$('input[name="LenderFeeBuyout"]').val(['No']); 
+			$('#CompensationSource').val('BorrowerPaid'); 
+		}
+		$('.forWholesale').toggle(bisWholesale);
+		$('.forCorrespondent').toggle(!bisWholesale);
+		if (bFormInitialized) {
+			$('#CompensationSource').change();
+			if ($('#LockTerm > option:selected').css('display') === 'none') {
+				$('#LockTerm').val('');
+			}
+		}
+	}).change();
+
+	var current_ppp = '5';
+	var current_ppt = 'Fixed Percentage';
+	$('input[name="PrepayPenaltyType"]').change(function(e) {
+	   var new_ppt = $('input[name="PrepayPenaltyType"]:checked').val();
+	   if (new_ppt == '') {
+		   $("#PrepayPenaltyPeriod").val('0');
+			current_ppp = '0';
+	   } else if ( new_ppt == 'Fixed Percentage' && (current_ppt == '' || current_ppt == 'None') && (current_ppp=='' || current_ppp=='0')) {
+		   $("#PrepayPenaltyPeriod").val('1');
+			current_ppp = '1';
+	   }
+	   current_ppt = new_ppt;
+	});
+    $('#PrepayPenaltyPeriod').change(function(e) {
+		bFormChanged = true;
+		var new_ppp = $(this).val();
+		if ( new_ppp == '' || new_ppp == '0' ) {
+			$('input[name="PrepayPenaltyType"]').val(['']);
+			current_ppt = '';
+		} else if ( (current_ppt == '' || current_ppt == 'None') && (current_ppp == '' || current_ppp == '0') ) {
+			$('input[name="PrepayPenaltyType"]').val(['Fixed Percentage']); 
+			current_ppt = 'Fixed Percentage';
+		}
+		current_ppp = new_ppp;
+	}).change();
+	
+    $('input[name="FirstTimeVA"]').change(function(e) {
+		if (bisVA) {
+			bFormChanged = true;
+			computeFormValues();
+		}
+	}).change();
+
+    $('input[name="FinanceBuydown"]').change(function(e) {
+		var v = $('input[name="FinanceBuydown"]:checked').val();
+		$('.forFinanceBuydown').toggle((v=='Yes'));
+	}).change();
+	
+    $('input[name="Renovation"]').change(function(e) {
+		var v = $('input[name="Renovation"]:checked').val();
+		$('.forRenovation').toggle((v=='Yes') );
+		if (v=='No') {
+			$('#RenoBudget').val(''); 
+			$('input[name="GroundUpConstruction"]').val(['No']);
+			$('input[name="CompletedProjects"]').val('');
+		}
+		bFormChanged = true;
+	}).change();
+	
+    $('input[name="InterestOnly"]').change(function(e) {
+		var io = $('input[name="InterestOnly"]:checked').val();
+		var dt = $('#DocType').val();
+		$('.forInterestOnly').toggle((io=='Yes' && /no ratio/i.test(dt) == false) );
+	}).change();
+	
+    $('input[name="ExemptVAFF"]').change(function(e) {
+		if (bisVA) {
+			var v = $('input[name="ExemptVAFF"]:checked').val();
+			$('.forVAFF').toggle((v=='No' && bisVA) );
+			if (v=='Yes') { $('input[name="FinanceVAFF"]').val(['No']); }
+			bFormChanged = true;
+			computeFormValues();
+		}
+	}).change();
+    $('input[name="FinanceVAFF"]').change(function(e) {
+		var v = $('input[name="FinanceVAFF"]:checked').val();
+		$('.forFundingFeeNotFinanced').toggle((v=='No' && bisVA));
+		if (bisVA) {
+			bFormChanged = true;
+			computeFormValues();
+		}
+	}).change();
+    $('input[name="FinanceUFMIP"]').change(function(e) {
+		var v = $('input[name="FinanceUFMIP"]:checked').val();
+		$('.forFundingFeeNotFinanced').toggle((v=='No' && (bisFHA || bisUSDA)));
+		if (bisFHA || bisUSDA) {
+			bFormChanged = true;
+			computeFormValues();
+		}
+	}).change();
+    $('input[name="WarrantableCondo"]').change(function(e) {
+		if ($('#PropertyType').val()=='Condo') {
+			var v = $('input[name="WarrantableCondo"]:checked').val();
+			$('input.Condotel').prop('disabled',(v=='Yes'));
+			if (v=='Yes') { $('input.Condotel').val(['No']); }
+		}
+	}).change();
+	
+    $('input[name="CoBorrower"]').change(function(e) {
+        var cb = $('input[name="CoBorrower"]:checked').val();
+        $('.forCoBorrower').toggle((cb=='Yes'));
+	}).change();
+	
+	function toggleRentIndicator() {
+		var dt = $('#DocType').val();
+		var oc = $('#Occupancy').val();
+		if (
+			!bisNonQM
+			|| oc !== 'Investment'
+			|| ['Full Doc', 'Personal Bank Stmt: 1 Mo', 'Investor - DSCR', '1 Year Alt Doc', '2 Year Alt Doc', 'Business Bank Stmt: 12 Mos',
+				'Business Bank Stmt: 24 Mos', 'Personal Bank Stmt: 12 Mos', 'Personal Bank Stmt: 24 Mos'].indexOf(dt) === -1
+		) {
+			$('.forRentIndicator').hide();
+		} else {
+			$('.forRentIndicator').show();
+		}
+	}
+
+	function handleDscrInvestment() {
+		const dt = $('#DocType').val();
+		const occ = $('#Occupancy').val();
+		$('.forDscrInvestment').toggle((bisNonQM && /dscr/i.test(dt) && occ === 'Investment'));
+		if (!$('.forDscrInvestment').is(':visible')) {
+			$('.RentFree').val(['No']);
+		}
+	}
+
+	bFormInitialized = true;
+	computeFormValues();
+
+	if (typeof(computeBankruptcy)=='function') computeBankruptcy();
+	if (typeof(computeForeclosure)=='function') computeForeclosure();
+	if (typeof(computeHousingEvent)=='function') computeHousingEvent();
+	if (typeof(computeCreditEvent)=='function') computeCreditEvent();
+	if (typeof(computeMortgageLates)=='function') computeMortgageLates();
+
+	// set this as the last step
+	if (typeof(formSetupComplete)=='function') formSetupComplete();
+	bFormChanged = false;
+});
+
+</script>
+</td>
+                    </tr>
+                </table>
+            </div>
+            <div class="one_column_width hidden">
+                <table class="form smalltext" style="width:100%" border="0" >
+                    <tr class="forWholesale hidden">
+                        <th><div style="float:left">Pricing Details</div></th>
+                    </tr>
+                    <tr class="forWholesale hidden">
+                        <td valign="top"><table class="innerform forBorrowerPaid hidden" style="width:100%">
+                                <tr>
+                                    <td width="55%" valign="top" align="center"></td>
+                                    <td width="15%" valign="bottom" align="center"></td>
+                                    <td width="15%" valign="bottom" align="center">Paid<br />
+                                        By Seller</td>
+                                    <td width="15%" valign="bottom" align="center">Remaining</td>
+                                </tr>
+                                <tr>
+                                    <td valign="top" align="right"><label>Seller contribution:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_SellerContribution" id="bp_SellerContribution" class="SellerContribution" style="width:100%" value="0" /></td>
+                                    <td valign="top"></td>
+                                    <td valign="top"></td>
+                                </tr>
+                                <tr>
+                                    <td valign="top" align="right"><label>100% of your compensation will be paid by the borrower:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_TotalBrokerComp" id="bp_TotalBrokerComp" style="width:80%" disabled value=""  />
+                                        &nbsp;<i id="bp_compEditor" class="fa fa-unlock"></i></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_TotalBrokerComp_seller" id="bp_TotalBrokerComp_seller" style="width:100%" disabled value="" /></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_TotalBrokerComp_remaining" id="bp_TotalBrokerComp_remaining" style="width:100%" disabled value="" /></td>
+                                </tr>
+                                <tr>
+                                    <td valign="top" align="right"><label>3rd party closing costs:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_ThirdPartyFees" id="bp_ThirdPartyFees" style="width:100%" disabled value="" /></td>
+                                    <td valign="top"><i class="fa fa-info-circle icon-info-sign tooltip" data-tooltip="#tt_ThirdPartyFees"></i></td>
+                                    <td valign="top"></td>
+                                </tr>
+                                <tr class="forLenderFeeNoBuyout hidden">
+                                    <td valign="top" align="right"><label>Add lender fee:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_LenderFee" id="bp_LenderFee" style="width:100%" disabled value="1699" /></td>
+                                    <td valign="top"></td>
+                                    <td valign="top"></td>
+                                </tr>
+                                <tr class="forLenderFeeOther hidden">
+                                    <td valign="top" align="right"><label>Other fees:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_LenderFeeOther" id="bp_LenderFeeOther" style="width:100%" disabled value="" /></td>
+                                    <td valign="top"></td>
+                                    <td valign="top"></td>
+                                </tr>
+                                <tr>
+                                    <td valign="top" align="right"><label>Total 3rd party costs:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_TotalFees" id="bp_TotalFees" style="width:100%" disabled value="" /></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_TotalFees_seller" id="bp_TotalFees_seller" style="width:100%" disabled value="" /></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_TotalFees_remaining" id="bp_TotalFees_remaining" style="width:100%" disabled value="" /></td>
+                                </tr>
+                                <tr class="forBorrowerPaid hidden">
+                                    <td valign="top" align="right"><label>Total 3rd party and compensation costs:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_TotalFeesComp" id="bp_TotalFeesComp" style="width:100%" disabled value="" /></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_TotalFeesComp_seller" id="bp_TotalFeesComp_seller" style="width:100%" disabled value="" /></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_TotalFeesComp_remaining" id="bp_TotalFeesComp_remaining" style="width:100%" disabled value="" /></td>
+                                </tr>
+                                <tr>
+                                    <td valign="top" align="right" colspan="3"><label class="forBrokerCharge hidden">Amount broker charge available to buy rate down:</label>
+                                        <label class="forBrokerCredit hidden">Allowable lender credit:<br/>
+                                            <span class="smalltext">LC cannot be applied to Compensation</span></label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_AllowedLenderCredit" id="bp_AllowedLenderCredit" style="width:100%"  disabled value="" /></td>
+                                </tr>
+                                <tr>
+                                    <td valign="top" align="right" colspan="3"><label>Amount to be applied:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_AppliedLenderCredit" id="bp_AppliedLenderCredit" style="width:100%" disabled value="" /></td>
+                                </tr>
+                                <tr class="forbp_BorrowerBuydown hidden">
+                                    <td valign="top" align="right" colspan="3"><label>Discount to buy the rate down:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_BorrowerBuydown" id="bp_BorrowerBuydown" style="width:100px" disabled value="" /></td>
+                                </tr>
+                                <tr>
+                                    <td valign="top" align="right" colspan="3"><label>Remaining cash from borrower for fees after lender credit:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_CashFromBorrowerForFees" id="bp_CashFromBorrowerForFees" style="width:100%" disabled value="" /></td>
+                                </tr>
+                                <tr>
+                                    <td valign="top" align="right" colspan="3"><label>Amount to be built into pricing:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="bp_LenderCreditsAppliedToPricing" id="bp_LenderCreditsAppliedToPricing" style="width:100%" disabled value="" /></td>
+                                </tr>
+                            </table>
+                            <table class="innerform forLenderPaid" width="100%">
+                                <tr>
+                                    <td width="50%" valign="top" align="center"></td>
+                                    <td width="50%" valign="bottom" align="center"></td>
+                                </tr>
+                                <tr>
+                                    <td valign="top" align="right"><label>100% of your compensation will be paid by
+                                            American Heritage Lending, LLC                                            :</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="lp_TotalBrokerComp" id="lp_TotalBrokerComp" style="width:100px" disabled value="" /></td>
+                                </tr>
+                                <tr>
+                                    <td valign="top" align="right"><label>3rd party closing costs:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="lp_ThirdPartyFees" id="lp_ThirdPartyFees" style="width:100px" disabled value="" />
+                                        <i class="fa fa-info-circle icon-ifno-sign tooltip" data-tooltip="#tt_ThirdPartyFees"></i></td>
+                                </tr>
+                                <tr class="forLenderFeeNoBuyout hidden">
+                                    <td valign="top" align="right"><label>Add lender fee:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="lp_LenderFee" id="lp_LenderFee" style="width:100px" disabled value="1699" /></td>
+                                </tr>
+                                <tr class="forLenderFeeOther hidden">
+                                    <td valign="top" align="right"><label>Other fees:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="lp_LenderFeeOther" id="lp_LenderFeeOther" style="width:100px" disabled value="" /></td>
+                                </tr>
+                                <tr>
+                                    <td valign="top" align="right"><label>Total 3rd party costs:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="lp_TotalFees" id="lp_TotalFees" style="width:100px" disabled value="" /></td>
+                                </tr>
+                                <tr class="forPurchase hidden">
+                                    <td valign="top" align="right"><label>Seller or other credits for 3rd party fees:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="lp_SellerContribution" id="lp_SellerContribution" class="SellerContribution" style="width:100px" value="" /></td>
+                                </tr>
+                                <tr>
+                                    <td valign="top" align="right"><label class="forBrokerCharge hidden">Amount available to buy rate down:</label>
+                                        <label class="forBrokerCredit hidden">Amount available for lender credit:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="lp_AvailableBrokerCredit" id="lp_AvailableBrokerCredit" style="width:100px" disabled value="" /></td>
+                                </tr>
+                                <tr>
+                                    <td valign="top" align="right"><label>Applied lender credit:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="lp_brokerAppliedCredit" id="lp_brokerAppliedCredit" style="width:100px" disabled value="" /></td>
+                                </tr>
+                                <tr class="forlp_BorrowerBuydown hidden">
+                                    <td valign="top" align="right"><label>Discount to buy the rate down:</label></td>
+                                    <td valign="top"><input tabindex="1" type="text" name="lp_BorrowerBuydown" id="lp_BorrowerBuydown" style="width:100px" disabled value="" /></td>
+                                </tr>
+                            </table>
+                            <div id="tt_ThirdPartyFees" class="tooltip right">
+                                <div class="tooltip-content"></div>
+                            </div></td>
+                    </tr>
+                    <tr>
+                        <td valign="top"><table style="width:100%">
+                                <tr>
+                                    <td width="50%" valign="top"><table class="forWholesale hidden">
+                                            <tr>
+                                                <td valign="top" align="right" width="80%"><span class="forLenderPaid hidden">Lender</span><span class="forBorrowerPaid hidden">Borrower</span> paid broker comp:</td>
+                                                <td align="left"><input type="text" class="align-right" size="7" disabled name="BrokerComp" id="BrokerComp" value=""></td>
+                                            </tr>
+                                            <tr>
+                                                <td valign="top" align="right">Base pricing:</td>
+                                                <td align="left"><input type="text" class="align-right" size="7" disabled name="BasePrice" id="BasePrice" value=""></td>
+                                            </tr>
+                                            <tr class="forLenderFeeBuyout hidden">
+                                                <td valign="top" align="right">Lender fee buyout:</td>
+                                                <td align="left"><input type="text" class="align-right" size="7" disabled name="LenderFeeBuyoutAmount" id="LenderFeeBuyoutAmount" value=""></td>
+                                            </tr>
+                                            <tr>
+                                                <td valign="top" align="right"><span class="forBuyDownCost hidden">Charge to buy down rate:</span><span class="forBuyDownCredit hidden">Credit applied to 3rd party:</span></td>
+                                                <td align="left"><input type="text" class="align-right" size="7" disabled name="BuyDownCostCredit" id="BuyDownCostCredit" value=""></td>
+                                            </tr>
+                                            <tr>
+                                                <td valign="top" align="right">Target price:</td>
+                                                <td align="left"><input type="text" class="align-right" size="7" disabled name="TargetPrice" id="TargetPrice" value=""></td>
+                                            </tr>
+                                            <tr>
+                                                <td valign="top" align="right">Net Target price:</td>
+                                                <td align="left"><input type="text" class="align-right" size="7" disabled name="NetTargetPrice" id="NetTargetPrice" value=""></td>
+                                            </tr>
+                                        </table></td>
+                                    <td width="50%" valign="top"><div class="forPurchase hidden">
+                                            <table class="forWholesale hidden">
+                                                <tr>
+                                                    <td valign="top" align="left" width="80%">Summary cash to close</td>
+                                                    <td align="left"></td>
+                                                </tr>
+                                                <tr>
+                                                    <td valign="top" align="right">Down payment:</td>
+                                                    <td align="left"><input type="text" class="align-right" size="7" disabled name="DownPayment" id="DownPayment" value=""></td>
+                                                </tr>
+                                                <tr>
+                                                    <td valign="top" align="right">Remaining cash for fees after credits:</td>
+                                                    <td align="left"><input type="text" class="align-right" size="7" disabled name="RemainingCash" id="RemainingCash" value=""></td>
+                                                </tr>
+                                                <tr>
+                                                    <td valign="top" align="right"><label>Discount to buy the rate down:</label></td>
+                                                    <td valign="top"><input type="text" class="align-right" size="7" disabled name="BorrowerBuydown" id="BorrowerBuydown" value="" /></td>
+                                                </tr>
+                                                <tr class="lt_gov forFundingFeeNotFinanced hidden">
+                                                    <td valign="top" align="right"><label>FF/UFMIP Not Financed:</label></td>
+                                                    <td valign="top"><input type="text" class="align-right" size="7" disabled name="FundingFeeNotFinanced" id="FundingFeeNotFinanced" value="" /></td>
+                                                </tr>
+                                                <tr>
+                                                    <td valign="top" align="right">Total cash to close:</td>
+                                                    <td align="left"><input type="text" class="align-right" size="7" disabled name="TotalCashToClose" id="TotalCashToClose" value=""></td>
+                                                </tr>
+                                                <tr>
+                                                    <td valign="top" align="right">Minimum required investment:</td>
+                                                    <td align="left"><input type="text" class="align-right" size="7" disabled name="MinRequiredInvestment" id="MinRequiredInvestment" value=""></td>
+                                                </tr>
+                                            </table>
+                                        </div></td>
+                                </tr>
+                            </table></td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+        <div class="row two_column">
+            <div class="tablehead align-center"><span style="white-space:nowrap">Lock Term:
+                <select name="LockTerm" id="LockTerm">
+                    <option value="">-- Select --</option>
+			  						<option value="30" >30 Day</option>
+									<option value="45"  selected>45 Day</option>
+				                </select>
+                &nbsp;
+                <input type="button" class="button" value="Get Pricing" onclick="validateAndSubmit('Get Pricing');" /></span>
+			</div>
+            <div class="one_column_width">
+                <div class="padding-small"> <a name="pricer_results"></a>
+                        <table class="dataTable pricingResults" id="datatable" width="100%">
+        <thead>
+            <tr>
+                <th>Loan&nbsp;Program</th>
+                <th>Rate</th>
+		                
+		                <th>45 Day<br />Price</th>
+				<th>Rebate/<br />Discount</th>
+		                <th>P&amp;I</th>
+		                
+            </tr>
+        </thead>
+        <tbody>
+    					<tr class=" grp_59994847" data-eligible="yes">
+					<td>59994847</td>
+					<td>6.125</td>
+											<td>
+					98.250								<button type="button" class="button small lockrequest" onclick="selectPrice(this,'6.125','98.250','98.250','59994847','AHL CORR - NON-DEL Invest Star - Fixed 30 Yr','DSCR30FG75','6.125','98.500','2126','0','6125','45','Fixed');return false"><i class="fa fa-check icon-check"></i></button>
+																		</td>
+					<td>$6,125</td>
+				
+						<td>2126</td>
+									</tr>
+								<tr class=" grp_59994847" data-eligible="yes">
+					<td>59994847</td>
+					<td>6.250</td>
+											<td>
+					98.875								<button type="button" class="button small lockrequest" onclick="selectPrice(this,'6.250','98.875','98.875','59994847','AHL CORR - NON-DEL Invest Star - Fixed 30 Yr','DSCR30FG75','6.250','99.125','2155','0','3938','45','Fixed');return false"><i class="fa fa-check icon-check"></i></button>
+																		</td>
+					<td>$3,938</td>
+				
+						<td>2155</td>
+									</tr>
+								<tr class=" grp_59994847" data-eligible="yes">
+					<td>59994847</td>
+					<td>6.375</td>
+											<td>
+					99.500								<button type="button" class="button small lockrequest" onclick="selectPrice(this,'6.375','99.500','99.500','59994847','AHL CORR - NON-DEL Invest Star - Fixed 30 Yr','DSCR30FG75','6.375','99.750','2183','0','1750','45','Fixed');return false"><i class="fa fa-check icon-check"></i></button>
+																		</td>
+					<td>$1,750</td>
+				
+						<td>2183</td>
+									</tr>
+								<tr class=" grp_59994847" data-eligible="yes">
+					<td>59994847</td>
+					<td>6.500</td>
+											<td>
+					100.125								<button type="button" class="button small lockrequest" onclick="selectPrice(this,'6.500','100.125','100.125','59994847','AHL CORR - NON-DEL Invest Star - Fixed 30 Yr','DSCR30FG75','6.500','100.375','2212','0','-438','45','Fixed');return false"><i class="fa fa-check icon-check"></i></button>
+																		</td>
+					<td>($438)</td>
+				
+						<td>2212</td>
+									</tr>
+								<tr class=" grp_59994847" data-eligible="yes">
+					<td>59994847</td>
+					<td>6.625</td>
+											<td>
+					100.750								<button type="button" class="button small lockrequest" onclick="selectPrice(this,'6.625','100.750','100.750','59994847','AHL CORR - NON-DEL Invest Star - Fixed 30 Yr','DSCR30FG75','6.625','101.000','2241','0','-2625','45','Fixed');return false"><i class="fa fa-check icon-check"></i></button>
+																		</td>
+					<td>($2,625)</td>
+				
+						<td>2241</td>
+									</tr>
+								<tr class=" grp_59994847" data-eligible="yes">
+					<td>59994847</td>
+					<td>6.750</td>
+											<td>
+					101.375								<button type="button" class="button small lockrequest" onclick="selectPrice(this,'6.750','101.375','101.375','59994847','AHL CORR - NON-DEL Invest Star - Fixed 30 Yr','DSCR30FG75','6.750','101.625','2270','0','-4812','45','Fixed');return false"><i class="fa fa-check icon-check"></i></button>
+																		</td>
+					<td>($4,812)</td>
+				
+						<td>2270</td>
+									</tr>
+								<tr class=" grp_59994847" data-eligible="yes">
+					<td>59994847</td>
+					<td>6.875</td>
+											<td>
+					102.000								<button type="button" class="button small lockrequest" onclick="selectPrice(this,'6.875','102.000','102.000','59994847','AHL CORR - NON-DEL Invest Star - Fixed 30 Yr','DSCR30FG75','6.875','102.250','2299','0','-7000','45','Fixed');return false"><i class="fa fa-check icon-check"></i></button>
+																		</td>
+					<td>($7,000)</td>
+				
+						<td>2299</td>
+									</tr>
+								<tr class=" grp_59994847" data-eligible="yes">
+					<td>59994847</td>
+					<td>7.000</td>
+											<td>
+					102.500								<button type="button" class="button small lockrequest" onclick="selectPrice(this,'7.000','102.500','102.500','59994847','AHL CORR - NON-DEL Invest Star - Fixed 30 Yr','DSCR30FG75','7.000','102.750','2328','0','-8750','45','Fixed');return false"><i class="fa fa-check icon-check"></i></button>
+																		</td>
+					<td>($8,750)</td>
+				
+						<td>2328</td>
+									</tr>
+								<tr class=" grp_59994847" data-eligible="yes">
+					<td>59994847</td>
+					<td>7.125</td>
+											<td>
+					103.125								<button type="button" class="button small lockrequest" onclick="selectPrice(this,'7.125','103.125','103.125','59994847','AHL CORR - NON-DEL Invest Star - Fixed 30 Yr','DSCR30FG75','7.125','103.375','2358','0','-10938','45','Fixed');return false"><i class="fa fa-check icon-check"></i></button>
+																		</td>
+					<td>($10,938)</td>
+				
+						<td>2358</td>
+									</tr>
+								<tr class=" grp_59994847" data-eligible="yes">
+					<td>59994847</td>
+					<td>7.250</td>
+											<td>
+					103.750								<button type="button" class="button small lockrequest" onclick="selectPrice(this,'7.250','103.750','103.750','59994847','AHL CORR - NON-DEL Invest Star - Fixed 30 Yr','DSCR30FG75','7.250','104.000','2387','0','-13125','45','Fixed');return false"><i class="fa fa-check icon-check"></i></button>
+																		</td>
+					<td>($13,125)</td>
+				
+						<td>2387</td>
+									</tr>
+								<tr class=" grp_59994847" data-eligible="yes">
+					<td>59994847</td>
+					<td>7.375</td>
+											<td>
+					104.250								<button type="button" class="button small lockrequest" onclick="selectPrice(this,'7.375','104.250','104.250','59994847','AHL CORR - NON-DEL Invest Star - Fixed 30 Yr','DSCR30FG75','7.375','104.500','2417','0','-14875','45','Fixed');return false"><i class="fa fa-check icon-check"></i></button>
+																		</td>
+					<td>($14,875)</td>
+				
+						<td>2417</td>
+									</tr>
+								<tr class=" grp_59994847" data-eligible="yes">
+					<td>59994847</td>
+					<td>7.500</td>
+											<td>
+					104.750								<button type="button" class="button small lockrequest" onclick="selectPrice(this,'7.500','104.750','104.750','59994847','AHL CORR - NON-DEL Invest Star - Fixed 30 Yr','DSCR30FG75','7.500','105.000','2447','0','-16625','45','Fixed');return false"><i class="fa fa-check icon-check"></i></button>
+																		</td>
+					<td>($16,625)</td>
+				
+						<td>2447</td>
+									</tr>
+								<tr class=" grp_59994847" data-eligible="yes">
+					<td>59994847</td>
+					<td>7.625</td>
+											<td>
+					105.000								<button type="button" class="button small lockrequest" onclick="selectPrice(this,'7.625','105.000','105.000','59994847','AHL CORR - NON-DEL Invest Star - Fixed 30 Yr','DSCR30FG75','7.625','105.250','2477','0','-17500','45','Fixed');return false"><i class="fa fa-check icon-check"></i></button>
+																		</td>
+					<td>($17,500)</td>
+				
+						<td>2477</td>
+									</tr>
+							<tr data-eligible="no" class="hidden">
+				<td>59994864</td>
+                <td></td>
+        		                <td></td>
+                <td></td>
+		                <td></td>
+        			</tr>
+						<tr data-eligible="no" class="hidden">
+				<td>59994873</td>
+                <td></td>
+        		                <td></td>
+                <td></td>
+		                <td></td>
+        			</tr>
+						<tr data-eligible="no" class="hidden">
+				<td>94004741</td>
+                <td></td>
+        		                <td></td>
+                <td></td>
+		                <td></td>
+        			</tr>
+				</tbody>
+</table>    
+<div id="content_59994847" class="tooltip right">
+	<div class="tooltip-content">
+      <table class="form">
+      <thead><tr><th>Adjustments</th><th>Rate</th><th>Price</th></tr></thead>
+      <tbody>
+      <tr><td>LTV is <=70, And Prepayment Term is 5 Years, And Prepayment Penalty Type is Fixed Percentage</td><td>&nbsp;</td><td align="center">0.750</td></tr>
+      <tr><td>Placeholder_FinancedDiscountPoints is No, And Max of LTV/CLTV/HCLTV is <=70, And DSCR is >= 1.25</td><td>&nbsp;</td><td align="center">0.375</td></tr>
+      <tr><td>Placeholder_FinancedDiscountPoints is No, And Max of LTV/CLTV/HCLTV is <=70, And Property Type is Condo</td><td>&nbsp;</td><td align="center">-0.500</td></tr>
+      <tr><td>Placeholder_FinancedDiscountPoints is No, And Max of LTV/CLTV/HCLTV is <=70, And Number of Units is 2-4 Units</td><td>&nbsp;</td><td align="center">-0.625</td></tr>
+      <tr><td>Credit Score Model is Classic FICO, And Placeholder_FinancedDiscountPoints is No, And Max of LTV/CLTV/HCLTV is <=70, And Representative Credit Score is >= 760, And Loan Purpose is Cash Out Refi</td><td>&nbsp;</td><td align="center">-0.250</td></tr>
+   	</tbody>
+    </table>
+ 
+    
+    </div>
+</div>
+
+<div id="content_59994864" class="tooltip right"><div class="tooltip-content"><table width="100%" class="smalltext"><tr><td align="left" valign="top">Income Verification Type is Investor - DSCR</td><td>&nbsp;</td><td align="right" valign="top">X</td></tr><tr><td align="left" valign="top">Credit Score Model is Classic FICO, And Placeholder_FinancedDiscountPoints is No, And 1st Mtg Loan Amt (Total) is &lt;= $1.0M, And Occupancy is Investment Property, And Representative Credit Score is &gt;=760, And Loan Purpose is Cash Out Refi, And Max of LTV/CLTV/HCLTV &gt; 0</td><td>&nbsp;</td><td align="right" valign="top">X</td></tr><tr><td align="left" valign="top">Prepayment Term is not None</td><td>&nbsp;</td><td align="right" valign="top">X</td></tr><tr><td align="left" valign="top">Placeholder_Consumer Purpose is Business</td><td>&nbsp;</td><td align="right" valign="top">X</td></tr></table></div></div>
+<div id="content_59994873" class="tooltip right"><div class="tooltip-content"><table width="100%" class="smalltext"><tr><td align="left" valign="top">Income Verification Type is Investor - DSCR</td><td>&nbsp;</td><td align="right" valign="top">X</td></tr><tr><td align="left" valign="top">Prepayment Term is not None</td><td>&nbsp;</td><td align="right" valign="top">X</td></tr><tr><td align="left" valign="top">Placeholder_Consumer Purpose is Business</td><td>&nbsp;</td><td align="right" valign="top">X</td></tr></table></div></div>
+<div id="content_94004741" class="tooltip right"><div class="tooltip-content"><table width="100%" class="smalltext"><tr><td align="left" valign="top">Income Verification Type is Investor - DSCR</td><td>&nbsp;</td><td align="right" valign="top">X</td></tr></table></div></div>
+<div id="title_59994847" style="display:none;"><div style="float:left;">AHL CORR - NON-DEL Invest Star - Fixed 30 Yr&nbsp;<i class="fa fa-info-circle icon-info-sign tooltip" data-tooltip="#content_59994847"></i>&nbsp;&nbsp;&nbsp;</div><div style="float:right;"><small style='float:right;'><i class='fa fa-expand'></i> <span id='expandGroupDesc_59994847'>(Expand to View Rates)</span></small>&nbsp;&nbsp;</div></div>
+<div id="title_59994864" style="display:none;"><div style="float:left;">AHL CORR - NON-DEL All Star - Fixed 30 Yr <strong>Ineligible</strong>&nbsp;<i class="fa fa-info-circle icon-info-sign tooltip" data-tooltip="#content_59994864"></i>&nbsp;&nbsp;&nbsp;</div></div>
+<div id="title_59994873" style="display:none;"><div style="float:left;">AHL CORR - NON-DEL Rising Star - Fixed 30 Yr <strong>Ineligible</strong>&nbsp;<i class="fa fa-info-circle icon-info-sign tooltip" data-tooltip="#content_59994873"></i>&nbsp;&nbsp;&nbsp;</div></div>
+<div id="title_94004741" style="display:none;"><div style="float:left;">AHL CORR - NON-DEL Invest Star Income - 30 Yr Fixed <strong>Ineligible</strong>&nbsp;<i class="fa fa-info-circle icon-info-sign tooltip" data-tooltip="#content_94004741"></i>&nbsp;&nbsp;&nbsp;</div></div>
+<script>
+var $form = $('#dataform .formtest');
+var origForm = '';
+function formSetupComplete() {
+	setTimeout( function fscTimer() {
+			if (iAjaxCount>0) {
+				setTimeout(fscTimer, 100); 
+			} else {
+				// final code to complete the process
+				var dts = oTable.fnSettings();
+				if (dts && dts.nTable) {
+					var scroller = dts.nTable.parentNode;
+					if ($('tr.selected').length > 0) {
+						$('tr.selected').prevAll('tr.group:first').click();
+						$(scroller).scrollTo('tr.selected',1,{offset:{top:-100,left:0}});
+						$('tr.selected button').click();
+					}
+				}
+				origForm = $form.serialize();
+				$('#dataform .formtest').on('change input', function() {
+					$('#changemessage').toggle($form.serialize() !== origForm);
+				});
+			}
+		}, 2000);
+}
+
+function selectPrice(obj,rate,price,tprice,programID,programName,programCode,brate,bprice,pipayment,mipayment,discount,term,amort) {
+	$('tr.selected').removeClass('selected');
+	$(obj).closest('tr').addClass('selected');
+
+	if (typeof rate !== 'undefined' && typeof price !== 'undefined' && typeof programID !== 'undefined') {
+		var ok = false;
+		if (typeof confirmRateSelect === 'function') {
+			confirmRateSelect(rate,price,tprice,programID,programName,programCode,brate,bprice,pipayment,mipayment,discount,term,amort);
+		} else {
+			showConfirm(programName+"<br />Rate: "+rate+"<br />Price: "+price+"<br /><br />Select This Rate / Price?", 
+							function(ok) {
+								if (ok) {
+									document.dataform.lLockTerm.value = term;
+									document.dataform.lTargetPrice.value = tprice;
+									document.dataform.lPrice.value = price;
+									document.dataform.lRate.value = rate;
+									document.dataform.lProgramID.value = programID;
+									document.dataform.lProgramName.value = programName;
+									document.dataform.lProgramCode.value = programCode;
+									document.dataform.lPIPayment.value = pipayment;
+									document.dataform.lMIPayment.value = mipayment;
+									document.dataform.lAmortization.value = amort;
+									document.dataform.Action.value = 'Select Rate';
+									document.dataform.submit();
+								}
+							}
+						);
+		}
+	}
+}
+
+var oTable = '';
+ $(document).ready(function($) {
+	var collapsedGroups = {};
+	oTable = $('#datatable').dataTable({
+			'bPaginate' : false,
+			'sScrollY': '400px',
+			'bSort':false,
+			'bFilter':false,
+			'bInfo':false,
+			"fnDrawCallback": function ( oSettings ) {
+				if ( oSettings.aiDisplay.length == 0 ) { return; }
+				
+				var nTrs = $('#datatable > tbody > tr');
+				var iColspan = nTrs[0].getElementsByTagName('td').length;
+				var sLastGroup = "";
+				var g=0;
+				for ( var i=0 ; i<nTrs.length ; i++ )
+				{
+					var iDisplayIndex = oSettings._iDisplayStart + i;
+					var o = oSettings.aoData[ oSettings.aiDisplay[iDisplayIndex] ].nTr;
+					var eligible = $(o).data('eligible');
+					var sGroup = oSettings.aoData[ oSettings.aiDisplay[iDisplayIndex] ]._aData[0];
+					if ( sGroup != sLastGroup )
+					{
+						collapsedGroups[sGroup] = true;
+						var nGroup = document.createElement( 'tr' );
+						var nCell = document.createElement( 'td' );
+						nCell.colSpan = iColspan;
+						nCell.className = ((eligible=='no')?'':'eligible');
+						nGroup.className = "group";
+						nGroup.setAttribute('data-group', sGroup);
+						nCell.innerHTML = $('#title_'+sGroup).html();
+						nGroup.appendChild( nCell );
+						nTrs[i].parentNode.insertBefore( nGroup, nTrs[i] );
+						sLastGroup = sGroup;
+						++g;
+					}
+				}
+				$('#datatable i.tooltip').each(function(index, element) {
+                   $(this).stickytip({position:['center','right'],relative:true}); 
+                });
+				$('#datatable tr.group').each(function() {
+					var grp = $(this).data('group');
+					$('#datatable tr.grp_'+grp).toggle(!collapsedGroups[grp]);
+
+					$('#expandGroupDesc_'+grp).text((collapsedGroups[grp])?'Expand to View Rates':'Collapse Rates');
+                }).on('click',function() {
+					var grp = $(this).data('group');
+					collapsedGroups[grp] = !collapsedGroups[grp];
+					$('#datatable tr.grp_'+grp).toggle(!collapsedGroups[grp]);
+					$('#expandGroupDesc_'+grp).text((collapsedGroups[grp])?'Expand to View Rates':'Collapse Rates');
+					//showAlert('Group:'+grp + ((collapsedGroups[grp])?' collapsed': ' not collapsed'));
+                });
+			},
+			"fnInitComplete": function ( oSettings, json ) {
+				
+			},
+			"aoColumnDefs": [
+				{ "bVisible": false, "aTargets": [ 0 ] },
+				{ "sClass": 'alignCenter', "aTargets": [ 1,2 ] }
+			],
+			"aaSortingFixed": [[ 0, 'asc' ]],
+			"aaSorting": [[ 1, 'asc' ]],
+			"sDom": 'lfr<"giveHeight"t>ip'
+		});
+
+	$("#datatable tr").hover(
+		function() { $(this).addClass('hover'); },
+		function() { $(this).removeClass('hover'); }
+		);
+ });		
+		
+var resizeTimer=0;
+$(window).resize(function() {
+	if (resizeTimer) { clearTimeout(resizeTimer); }
+	resizeTimer = setTimeout(function(){ 
+		if (oTable) { oTable.fnDraw(); }
+	},100);
+});
+
+
+</script>
+                    <input type="hidden" name="search_id" value="809909">
+                                    </div>
+            </div>
+            <div class="one_column_width">
+                <div class="padding-small"> <a name="rate_summary"></a>
+                    <p class="alert" id="changemessage" style="display:none;">
+                                                <strong>You have changed elements on the Loan Scenario and must re-run pricing before you can select a program.</strong>
+                                            </p>
+                    <div id="rate_summary_container"></div>
+                </div>
+            </div>
+        </div>
+        <div class="row one_column">
+            <div class="one_column_width">
+                                                <p class="smalltext"><strong>Disclosure:</strong> Pricing is subject to change without notice. This is not an eligibility engine, please refer to the program guidelines for eligibility.</p>
+                            </div>
+        </div>
+    </div>
+</form>
+<script>
+$(document).ready(function(e) {
+	$(location).attr('href','#pricer_results');
+});
+</script>
+
+	<div id="dlg_confirmRateSelect" style="display: none;">
+    <div class="padding-small">
+		<div class="tablehead">Pricing Snapshot</div>
+       <br />
+        <table>
+            <tr><td align="right"><strong>Program Name:</strong>&nbsp;&nbsp;</td><td>[PROGRAM_NAME]</td></tr>
+            <tr><td align="right"><strong>Comp Source:</strong>&nbsp;&nbsp;</td><td>[COMPENSATION_SOURCE]</td></tr>
+            <tr><td align="right"><strong>Lock Term:</strong>&nbsp;&nbsp;</td><td>[LOCKTERM] Day</td></tr>
+            <tr><td align="right"><strong>P&amp;I Payment:</strong>&nbsp;&nbsp;</td><td>[PIPAYMENT]</td></tr>
+            <tr><td align="right"><strong>Lender Fee Buyout:</strong>&nbsp;&nbsp;</td><td>[LENDER_FEE_BUYOUT]</td></tr>
+            <tr><td align="right"><strong>[DISCOUNT_TITLE]</strong>&nbsp;&nbsp;</td><td>[DISCOUNT_VALUE]</td></tr>
+        </table>
+        <br />
+        <table class="borders" style="width:100%;max-width:500px;">
+            <tr><td width="60%" class="no-border"></td><td class="even" width="20%" align="center">Rate</td><td class="even" width="20%" align="center">Price</td></tr>
+            <tr><td class="even">Base</td><td align="center">[BASE_RATE]</td><td align="center">[BASE_PRICE]</td></tr>
+        </table>
+        <br />
+        [ADJUSTMENTS_TABLE]
+        <br />
+        <table class="borders" style="width:100%;max-width:500px;">
+            <tr><td width="60%" class="no-border"></td><td class="even" width="20%" align="center">Rate</td><td class="even" width="20%" align="center">Price</td></tr>
+            <tr><td class="even">Final</td><td align="center">[RATE]</td><td align="center">[PRICE]</td></tr>
+        </table>
+		      </div>
+</div>
+<script>
+function confirmRateSelect(rate,price,tprice,programID,programName,programCode,brate,bprice,pipayment,mipayment,discount,term,amort) {
+	var html = $('#dlg_confirmRateSelect').html();
+	html = html.replace(/\[PROGRAM_NAME\]/g,programName);
+	html = html.replace(/\[PROGRAM_CODE\]/g,programCode);
+	html = html.replace(/\[PROGRAM_ID\]/g,programID);
+	html = html.replace(/\[BASE_RATE\]/g,brate);
+	html = html.replace(/\[BASE_PRICE\]/g,bprice);
+	html = html.replace(/\[RATE\]/g,rate);
+	html = html.replace(/\[PRICE\]/g,price);
+	html = html.replace(/\[AMORTIZATION\]/g,amort);
+	html = html.replace(/\[TARGET_PRICE\]/g,tprice);
+	html = html.replace(/\[PIPAYMENT\]/g,pipayment);
+	html = html.replace(/\[MIPAYMENT\]/g,mipayment);
+	html = html.replace(/\[DISCOUNT_TITLE\]/g,((discount>0) ? 'Borrower discount:' : 'Applied lender credit:'));
+	html = html.replace(/\[DISCOUNT_VALUE\]/g,'$'+Math.abs(discount));
+
+	if ($('#CompensationSource').val()=='LenderPaid') {
+		$('#lp_BorrowerBuydown, #BorrowerBuydown').val((discount>0)?discount:'');
+		$('#lp_brokerAppliedCredit').val((discount<0)?(-discount):'');
+		$('#lp_BorrowerBuydown').change();
+		$('#lp_brokerAppliedCredit').change();
+	} else {
+		$('#bp_BorrowerBuydown, #BorrowerBuydown').val((discount>0)?discount:'');
+		$('#bp_AppliedLenderCredit').val((discount<0)? (-discount):'');
+		$('#bp_BorrowerBuydown').change();
+		$('#bp_AppliedLenderCredit').change();
+	}
+	calcCompensation();
+	calcCashToClose();
+
+	html = html.replace(/\[DISCOUNT\]/g,discount);
+	html = html.replace(/\[LOCKTERM\]/g,$('#LockTerm').val());
+	
+	var adj = $('#content_'+programID+' > div > table > tbody').html();
+	if (adj != undefined) {
+		adj = '<table class="borders" style="width:100%;max-width:500px;">' +
+			  '<tr><td width="60%" class="even">Adjustments</td><td class="even" width="20%" align="center">Rate</td><td class="even" width="20%" align="center">Price</td></tr>' +
+			  adj + '</table>';
+	} else { adj = ''; }
+	html = html.replace(/\[ADJUSTMENTS_TABLE\]/g,adj);
+	html = html.replace(/\[LENDER_FEE_BUYOUT\]/g,$('input[name="LenderFeeBuyout"]:checked').val());
+	html = html.replace(/\[COMPENSATION_SOURCE\]/g,$('#CompensationSource').val());
+
+ 
+	if ($('#rate_summary_container').length>0)  {
+		$('#rate_summary_container').html(html);
+	} else {
+        var dlg = $(html);
+        doModalDialogNoClose(dlg);
+    }
+}
+
+function completeRateSelect(rate,price,tprice,programID,programName,programCode,brate,bprice,pipayment,mipayment,discount,term,amort) {
+	if ($form.serialize() != origForm) {
+		showAlert("You have changed elements on the Loan Scenario and must re-run pricing before you can select a program.");
+	} else  {
+		if ($('#CompensationSource').val()=='LenderPaid') {
+			$('#lp_BorrowerBuydown, #BorrowerBuydown').val((discount>0)?discount:'');
+			$('#lp_brokerAppliedCredit').val((discount<0)?(-discount):'');
+			$('#lp_BorrowerBuydown').change();
+			$('#lp_brokerAppliedCredit').change();
+		} else {
+			$('#bp_BorrowerBuydown, #BorrowerBuydown').val((discount>0)?discount:'');
+			$('#bp_AppliedLenderCredit').val((discount<0)? (-discount):'');
+			$('#bp_BorrowerBuydown').change();
+			$('#bp_AppliedLenderCredit').change();
+		}
+
+		document.dataform.lLockTerm.value = term;
+		document.dataform.lTargetPrice.value = tprice;
+		document.dataform.lPrice.value = price;
+        document.dataform.BasePrice.value = bprice;
+		document.dataform.lRate.value = rate;
+		document.dataform.lProgramID.value = programID;
+		document.dataform.lProgramName.value = programName;
+		document.dataform.lProgramCode.value = programCode;
+		document.dataform.lPIPayment.value = pipayment;
+		document.dataform.lMIPayment.value = mipayment;
+		document.dataform.lAmortization.value = amort;
+		document.dataform.Action.value = 'Save To CRM';
+		$('input:disabled').readonly(false);
+		$('select:disabled').readonly(false);
+		document.dataform.submit();
+		showWaitBox('Please wait...');
+	}
+}
+</script>
+           <!-- end main content area -->
+			</div>
+		</div>
+	</div>
+</div>
+<div id="sitemap_wrapper">
+    <div class="row">
+		<div class="twelve columns footer text-left">
+            <div class="sitemap">
+                            </div>
+		</div>
+    </div>
+</div>
+<div id="footer_wrapper">
+    <div class="row footer">
+		<div class="two columns text-center">
+		</div>
+		<div class="eight columns text-center">
+            <div class="affiliates">
+	                        </div>
+		</div>
+		<div class="two columns text-center">
+			<div class="social-media">
+				            </div>
+		</div>
+    </div>
+    <div class="row footer">
+      <div class="two columns large text-center">
+          <a href="/admin/">Administration Login</a>
+      </div>
+      <div class="eight columns large text-center">
+        	&copy; Copyright 2026 American&nbsp;Heritage&nbsp;Lending,&nbsp;LLC All Rights Reserved NMLS #93735      </div>
+      <div class="two columns large text-center">
+       Powered&nbsp;By&nbsp;<a target="_blank" href="http://www.loanoriginator.net/">L.O.N.</a>
+      </div>
+    </div>
+</div>
+<!-- Included JS Files (Uncompressed) --> 
+<script src="/templates/ahlending/foundation/javascripts/jquery.foundation.mediaQueryToggle.js"></script> 
+<script src="/templates/ahlending/foundation/javascripts/jquery.event.move.js"></script> 
+<script src="/templates/ahlending/foundation/javascripts/jquery.event.swipe.js"></script> 
+<script src="/templates/ahlending/foundation/javascripts/jquery.foundation.navigation.js"></script> 
+<script src="/templates/ahlending/foundation/javascripts/jquery.foundation.topbar.js"></script> 
+<script src="/templates/ahlending/javascripts/app.js"></script> 
+<script src="/script/quick_slider.js"></script> 
+<script>
+	$(document).ready(function(e) {
+		$('#page_wrapper > .row').equalHeights();
+		var d = new Date();
+		var tz = d.getTimezoneOffset()/60; 
+		$.ajax({ 
+			url: '/ajax/settimezone.php?timezone='+tz, 
+			success: function(){},
+			type: 'post',
+			cache: false 
+		});
+		
+
+	});// document ready
+
+	$(window).load(function(e) {
+	});	
+
+</script>
+</body>
+</html>
