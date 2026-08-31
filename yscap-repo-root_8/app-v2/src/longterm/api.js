@@ -410,6 +410,13 @@ export const ltApi = {
     lt(`/dscr/term-sheet/${encodeURIComponent(code)}/pdf`), `term-sheet-${code}.pdf`),
   termSheetReplay: (code, body) => ltPost(lt(`/dscr/term-sheet/${encodeURIComponent(code)}/replay`), body),
 
+  // EVENING OUT A PRICE (§40) — what the price reads at, what it could be rounded
+  // to, and what each of those would cost us. READ-ONLY and a round trip on
+  // purpose: the compensation an adjustment comes out of is the server's own
+  // resolution and is never sent to the browser, so this screen cannot work the
+  // suggestions out for itself — which is exactly the point.
+  termSheetPriceAdjust: (body) => ltPost(lt('/dscr/term-sheet/price-adjust'), body),
+
   // EMAIL IT TO THE BORROWER — the same PDF the download gives, with the branded
   // letter, from the officer's own name and address. The server decides who it
   // comes from (off the roster) and refuses a note that names the investor, so

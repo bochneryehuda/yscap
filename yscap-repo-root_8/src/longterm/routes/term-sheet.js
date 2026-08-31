@@ -31,6 +31,7 @@ const internalRecord = require('../termsheet/internal');
 const code = require('../termsheet/code');
 const comparison = require('../termsheet/comparison');
 const deliver = require('../termsheet/deliver');
+const priceAdjust = require('../termsheet/price-adjust');
 const settingsStore = require('../settings/store');
 const db = require('../db');
 const { resolveCompPlan } = require('../comp-plan');
@@ -215,7 +216,10 @@ async function snapshotFor(req, res) {
   // staff-only note about who funds each option, and the snapshot is the
   // client's own document. Only the ISSUE door passes it on; the preview
   // deliberately drops it, because a preview is a look at the document.
-  return { snapshot: built.snapshot, internal: built.internal, plan, company, expiryHours, expiresAt };
+  return {
+    snapshot: built.snapshot, internal: built.internal, adjustments: built.adjustments,
+    plan, company, expiryHours, expiresAt,
+  };
 }
 
 // ── PREVIEW ─────────────────────────────────────────────────────────────────
@@ -244,6 +248,65 @@ router.post('/preview', async (req, res) => {
   } catch (e) {
     console.error('[lt] term sheet preview failed:', (e && e.message) || e);
     return res.status(500).json({ ok: false, error: 'Could not build that term sheet.' });
+  }
+});
+
+/**
+ * EVENING OUT A PRICE — the suggestions, and what one would cost us (§40).
+ *
+ * Owner-directed 2026-08-31: *"The system should automatically give suggestions
+ * which should help you even it out to straight numbers ... bring it up to the
+ * nearest 0.00 or to the nearest 0.25 or to the nearest 0.50 or 0.75."*
+ *
+ * ⛔ THIS SCREEN COMPUTES NO MONEY, which is why the suggestions are a round trip
+ * rather than a local calculation. The compensation an adjustment comes out of is
+ * the SERVER's own resolution — person, then company, then the declared default,
+ * with the company figure as a floor — and it is deliberately never sent to the
+ * browser. A board that worked the suggestions out for itself would need that
+ * number, and would then be a second place our compensation is decided.
+ *
+ * READ-ONLY. It stores nothing and issues nothing: it answers "what could you do
+ * to this price, and what would each one cost us". The adjustment itself only
+ * becomes real when a sheet is previewed or issued carrying it.
+ */
+router.post('/price-adjust', async (req, res) => {
+  try {
+    if (!staffId(req)) return res.status(401).json({ ok: false, error: 'Sign in first.' });
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const { plan } = await officerPlan(req);
+    const mode = String(body.mode || '');
+    const rawPrice = Number(body.rawPrice);
+
+    if (!Number.isFinite(rawPrice)) {
+      return res.status(422).json({ ok: false, error: 'no_price', message: 'That option has no price to adjust.' });
+    }
+
+    const suggestions = priceAdjust.roundingSuggestions({ plan, mode, rawPrice });
+
+    /* When the officer has typed one, say what it would do — the same sentence the
+       issue would produce, from the same function, so the preview of a decision and
+       the decision itself can never differ. A refusal is returned as a refusal, with
+       the module's own words: "that is capped at 2 points" is something a person can
+       act on; a bare 422 is not. */
+    let applied = null;
+    if (body.deltaPoints != null && body.deltaPoints !== '') {
+      const r = priceAdjust.applyAdjustment({ plan, mode, rawPrice, deltaPoints: Number(body.deltaPoints) });
+      applied = r.ok ? r : { ok: false, error: r.code, message: r.message };
+    }
+
+    return res.json({
+      ok: true,
+      mode,
+      // What the price reads at right now, so the screen has the number the
+      // suggestions are relative to without deriving it from a plan it cannot see.
+      priceNow: priceAdjust.priceNow({ plan, mode, rawPrice }),
+      maxPoints: priceAdjust.MAX_DELTA_POINTS,
+      suggestions,
+      applied,
+    });
+  } catch (e) {
+    console.error('[lt] price adjust failed:', (e && e.message) || e);
+    return res.status(500).json({ ok: false, error: 'Could not work that adjustment out.' });
   }
 });
 
@@ -283,6 +346,8 @@ router.post('/', async (req, res) => {
       expiresAt: built.expiresAt.toISOString(),
       cartId: body.cartId || null,
       internal: built.internal,
+      // §40 — beside `internal`, never inside it. See `store.issueSheet`.
+      adjustments: built.adjustments,
     });
     return res.json({ ok: true, docKind: built.snapshot.docKind, ...issued });
   } catch (e) {

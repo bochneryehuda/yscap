@@ -197,9 +197,90 @@ function roundingSuggestions({ plan, mode, rawPrice }) {
   return out.sort((a, b) => a.target - b.target);
 }
 
+/**
+ * WHAT THE PRICE READS AT RIGHT NOW, before anybody adjusts it.
+ *
+ * The SAME arithmetic `overlay.shiftedPrice` uses — `rawPrice − comp` — asked
+ * here so a screen that may not be told our compensation still has the number its
+ * suggestions are relative to. Null when the mode or the plan cannot answer,
+ * never a silent zero: a price of 0.000 on a screen is a claim, and "we cannot
+ * tell you" is the truth.
+ */
+function priceNow({ plan, mode, rawPrice }) {
+  const comp = compOf(plan, mode);
+  if (!nn(rawPrice) || comp == null) return null;
+  return r3(rawPrice - comp);
+}
+
+/**
+ * THE ADJUSTED COMPENSATION PLAN — the ONE way an adjustment reaches the money.
+ *
+ * ⛔ THERE IS NO SECOND MONEY PATH, and that is the whole reason this function
+ * exists rather than a `priceAdjustment` figure carried alongside the price.
+ * `overlay.compShiftPoints` reads `plan.ysp` on borrower-paid and
+ * `plan.lenderPaid` on lender-paid, and EVERY figure on a long-term sheet — the
+ * displayed price, the origination line, the closing sheet, the cash to close —
+ * is derived from the plan through that one function. So an adjustment expressed
+ * as a MOVED PLAN is picked up by all of them for free and can never disagree
+ * with itself; an adjustment carried as its own number would have to be added in
+ * by hand at each of those places, and the one that was missed would be the one
+ * that quietly under-charged.
+ *
+ * The key it moves is the SAME key `compOf` reads, so "what is our compensation
+ * on this option" has one answer whether it is being read or written.
+ *
+ * A zero or absent adjustment returns the plan UNTOUCHED — by identity, not by a
+ * copy — so an option nobody adjusted prices byte-for-byte as it always did.
+ *
+ * @returns {{ok:true, plan, applied:(object|null), adjusted:boolean}
+ *          | {ok:false, code, message}}
+ */
+function effectivePlan({ plan, mode, deltaPoints }) {
+  if (deltaPoints == null || deltaPoints === '' || Number(deltaPoints) === 0) {
+    return { ok: true, plan, applied: null, adjusted: false };
+  }
+  const delta = Number(deltaPoints);
+  if (!nn(delta)) {
+    return refuse('no_delta', 'Type how much to move the price by, in points.');
+  }
+  const applied = applyAdjustment({ plan, mode, rawPrice: rawFor(plan, mode), deltaPoints: delta });
+  if (!applied.ok) return applied;
+
+  /* The key is chosen by the same rule `compOf` reads it by, so a mode added
+     later cannot be written through a branch that does not exist here. */
+  const key = mode === 'lenderPaid' ? 'lenderPaid' : 'ysp';
+  return {
+    ok: true,
+    plan: { ...plan, [key]: applied.compAfter },
+    applied,
+    adjusted: true,
+  };
+}
+
+/**
+ * A raw price that makes `applyAdjustment`'s own guards reachable without one.
+ *
+ * ⛔ THIS IS NOT A PRICE AND IT NEVER LEAVES. `effectivePlan` answers a question
+ * about the PLAN — "what compensation is left after giving away δ" — which does
+ * not depend on the raw price at all: every figure `applyAdjustment` returns that
+ * this function reads (`compAfter`, `compDelta`) is `comp − δ`, and the price
+ * fields it does not read are the only ones the raw price feeds. But the guards
+ * that matter — the 2-point cap, the negative-compensation refusal, the mode and
+ * plan checks — live in `applyAdjustment`, and re-implementing them here would be
+ * a second copy of the rules that keep us from writing a borrower a cheque. So
+ * the caller's own raw price is handed in where one is known, and this stands in
+ * where the question genuinely does not need one.
+ */
+function rawFor(plan, mode) {
+  const comp = compOf(plan, mode);
+  return nn(comp) ? comp : 0;
+}
+
 module.exports = {
   applyAdjustment,
   roundingSuggestions,
+  effectivePlan,
+  priceNow,
   ADJUSTABLE_MODES,
   MAX_DELTA_POINTS,
   GRIDS,

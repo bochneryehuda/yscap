@@ -94,6 +94,7 @@ async function issueSheet({
   snapshot, snapshotHash, compPlan, staffId, borrowerId, borrowerName,
   createdBy = 'officer', supersedes = null, expiryDays = 2, expiresAt: expiresAtIn = null, cartId = null,
   internal = [],
+  adjustments = [],
 }) {
   if (!snapshot || !Array.isArray(snapshot.members) || !snapshot.members.length) {
     throw new Error('A term sheet needs at least one option.');
@@ -147,7 +148,16 @@ async function issueSheet({
          function and a caller that assembled its own list must not be able to
          widen what is recorded. An absent entry stores `{}`, which is exactly
          what every sheet issued before this column says. */
-      const prov = internalRecord.projectInternal(Array.isArray(internal) ? internal[i] : null);
+      /* ⛔ THE CLIENT'S BLOCK IS PROJECTED; THE SERVER'S OWN ARITHMETIC IS MERGED
+         ON TOP. §40's price adjustment — how much of our compensation was given
+         away to round this option's price — is not a vendor fact and is never on
+         the whitelist, precisely so a browser cannot post one. It arrives in its
+         own list from `buildSnapshot`, aligned the same way, and is added after the
+         projection so widening what a caller may record stays impossible. */
+      const prov = internalRecord.withAdjustment(
+        internalRecord.projectInternal(Array.isArray(internal) ? internal[i] : null),
+        Array.isArray(adjustments) ? adjustments[i] : null,
+      );
       await client.query(
         `INSERT INTO lt_term_sheet_scenario
            (id, cart_id, parent_kind, position, label, mode, waive_lender_fees,
