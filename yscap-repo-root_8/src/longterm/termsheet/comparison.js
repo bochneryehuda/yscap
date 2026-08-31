@@ -197,7 +197,19 @@ function buildComparison(members, anchorIndex = 0) {
       deltaCostDollars: isAnchor ? null : dCost,
       deltaMonthlyDollars: isAnchor ? null : dMonthly,
       breakEvenMonths: isAnchor || workflow !== 'A' ? null : breakEvenMonths(m, anchor),
-      incrementalCostPct: isAnchor || workflow !== 'B' ? null : incrementalCostPct(m, anchor),
+      /* ⛔ THE GAP IS ONE FACT, SO BOTH SIDES OF IT GET THE NUMBER. The cost of
+         the extra borrowing is a property of the SPACE between two options, not
+         of the bigger one — but `incrementalCostPct` answers only when its first
+         argument borrows more, so every option below the officer's chosen anchor
+         printed a dash on the one row the sheet exists to answer. The anchor is
+         a deliberate choice ("you need to compare stuff to one thing", db/649)
+         and is NOT overridden here; the arguments are simply swapped, which is
+         the same arithmetic on the same two loans and can never produce a second
+         answer about one gap. `deltaLoanDollars` already carries the direction,
+         and the wording layer says it in the borrower's terms. */
+      incrementalCostPct: isAnchor || workflow !== 'B'
+        ? null
+        : (incrementalCostPct(m, anchor) ?? incrementalCostPct(anchor, m)),
       cashDeltaDollars: isAnchor || workflow !== 'B' ? null : cashDeltaDollars(m, anchor),
       deltaLoanDollars: isAnchor || workflow !== 'B' || !nn(m.loanAmount) || !nn(anchor.loanAmount)
         ? null : r2(m.loanAmount - anchor.loanAmount),
