@@ -8,7 +8,7 @@
 // The one rule: a path here always starts `/api/lt/`. Anything else belongs to the
 // other product.
 
-import { ltGet, ltPost, ltPut, ltPatch, ltDel, ltDownload, ltBlobUrl } from './http.js';
+import { ltGet, ltPost, ltPut, ltPatch, ltDel, ltDownload, ltBlobUrl, ltUpload, ltBlob } from './http.js';
 
 const lt = (p) => `/api/lt${p}`;
 
@@ -51,6 +51,16 @@ export const ltApi = {
   // It answers 200 with `enabled:false` when the owner has not switched the
   // borrower-facing side on, so the portal can tell "off" from "broken".
   myLoans: () => ltGet(lt('/my/loans')),
+  /* THE BORROWER'S OWN CONDITIONS, on the same borrower-authenticated mount as
+     their loans list. Their file is resolved from the SESSION plus the loan id —
+     never from anything the page passes about who they are. */
+  myConditions: (loanId) => ltGet(lt(`/my/loans/${encodeURIComponent(loanId)}/conditions`)),
+  /* THE STREAMED DOOR, for the same reason the staff side takes it: a borrower
+     photographing a bank statement on a phone is exactly the upload that would
+     hit the base64 ceiling. */
+  myConditionDocUpload: (loanId, conditionId, body) => ltUpload(
+    lt(`/my/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(conditionId)}/documents/binary`),
+    { ...body, checklistItemId: conditionId }),
 
   // The BOOK — the owner's census of every long-term file, with the folder, the
   // status and the milestone each one sits in, plus how much of the borrower and
@@ -231,6 +241,71 @@ export const ltApi = {
   conditionAdd: (loanId, code, fieldKey) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions`), { code, fieldKey }),
   conditionRemove: (loanId, id) => ltDel(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}`)),
 
+  /* THE LOGIN-FREE LINK — email this loan's borrower everything still needed,
+     with a direct button per condition (owner-directed 2026-08-28: *"an email
+     directly with links to upload and enter the information over there …
+     without him being able to set up an account or portal."*).
+
+     The preview is a READ that changes nothing: it says who it could go to,
+     what would be sent, every link already out, and — the part that matters on
+     screen — every reason it CANNOT be sent, in words a person can act on. The
+     send re-checks all of them, so the screen's answer is never what authorises
+     the email. */
+  conditionsOutreach: (loanId) => ltGet(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/outreach`)),
+  conditionsOutreachSend: (loanId, emails, note) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/outreach`), { emails, note }),
+  conditionsOutreachRevoke: (loanId, linkId) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/outreach/${encodeURIComponent(linkId)}/revoke`), {}),
+
+  /* THE DOCUMENTS ON A CONDITION — the owner's own list of verbs, in one place:
+     *"the way you preview stuff, the way you preview the PDFs, the way you drag
+     and drop, accept, reject, preview, download, and delete."* Each of these is a
+     thin call to the /api/lt door, which is itself a thin caller of the ONE
+     shared condition-document service. The `checklistItemId` rides in the
+     metadata so the shared upload-progress store files the bar against the right
+     condition without this client passing it twice. */
+  /* THE STREAMED DOOR (`…/documents/binary`), which is the short-term side's own
+     pair: the JSON door caps at 25 MB because a base64 body must be held in memory
+     to decode, and this one writes to storage as the bytes arrive. Same handler
+     behind both — `takeUpload` reads `req.uploaded` first — so nothing but the
+     transport differs. */
+  conditionDocUpload: (loanId, conditionId, body) => ltUpload(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(conditionId)}/documents/binary`),
+    { ...body, checklistItemId: conditionId }),
+  /* THE VESTING COMPANY ON THE BORROWER'S PROFILE — the write half of the
+     entity block the condition already reads.
+
+     `vestingEntityToProfile` puts the company on the profile (create-or-REUSE)
+     and gives it its document slots. `vestingEntityDocUpload` then files a
+     document onto one of the COMPANY's own slots — not onto this loan — so the
+     next loan for the same company finds it already there. Nothing is copied
+     anywhere: the shared upload door files it against the company the first
+     time, which is why this takes the slot's own item id rather than a
+     condition's. Streamed door for the same reason every other upload here uses
+     one — an operating agreement is routinely past the JSON ceiling. */
+  /* THE CARD ON THE PERSON. The body carries a card number, so the response
+     deliberately carries back only the brand and the last four — the server
+     never decrypts a number and nothing here could render one. */
+  appraisalCardSave: (loanId, body) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/appraisal-card`), body),
+  vestingEntityToProfile: (loanId) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/vesting-entity`), {}),
+  vestingEntityDocUpload: (loanId, slotItemId, body) => ltUpload(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/vesting-entity/slots/${encodeURIComponent(slotItemId)}/documents/binary`),
+    { ...body, checklistItemId: slotItemId }),
+  conditionDocReview: (documentId, body) => ltPost(
+    lt(`/condition-center/documents/${encodeURIComponent(documentId)}/review`), body),
+  conditionDocRemove: (documentId) => ltDel(
+    lt(`/condition-center/documents/${encodeURIComponent(documentId)}`)),
+  // Two ways to reach the same door. A download saves the file; a PREVIEW asks
+  // the shared serving path to render it inline (`?inline=1`) and hands the bytes
+  // to the shared previewer — an `<iframe src>` cannot carry the session token,
+  // which is why a preview fetches rather than pointing a frame at the route.
+  conditionDocDownload: (documentId, filename) => ltDownload(
+    lt(`/condition-center/documents/${encodeURIComponent(documentId)}/file`), filename || 'document'),
+  conditionDocBlob: (documentId) => ltBlob(
+    lt(`/condition-center/documents/${encodeURIComponent(documentId)}/file?inline=1`)),
+
   // The LIBRARY — the settings side. The rule builder draws its whole field
   // picker from this response, so a screen can never offer a field the evaluator
   // would then refuse.
@@ -288,6 +363,15 @@ export const ltApi = {
   orderVendors: (loanId) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors`)),
   orderVendorSearch: (loanId, kind, q) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/search?kind=${encodeURIComponent(kind)}&q=${encodeURIComponent(q)}`)),
   orderVendorLink: (loanId, body) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors`), body),
+  /* A contact NOBODY has entered yet: the card is written into the shared
+     directory and linked in one breath. Link (above) needs a card that already
+     exists; this is the other half, and without it the only way a vendor reaches
+     a long-term loan is for somebody to have typed it on a short-term file first
+     — which is how a second contact store gets started. */
+  orderVendorCreate: (loanId, body) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/new`), body),
+  /* Correcting a card corrects it EVERYWHERE — it is the one shared row. That is
+     the owner's "one company, one card, corrected in one place", not a leak. */
+  orderVendorEdit: (loanId, linkId, body) => ltPatch(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/${encodeURIComponent(linkId)}`), body),
   orderVendorUnlink: (loanId, linkId) => ltDel(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/${encodeURIComponent(linkId)}`)),
 
   orderLetters: () => ltGet(lt('/orders/letters')),

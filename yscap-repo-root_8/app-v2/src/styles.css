@@ -2384,7 +2384,8 @@ details[open]>.appr-sec-sum .appr-sec-chev{transform:rotate(180deg)}
    calm white "them" bubbles + refined teal "me" bubbles, tight professional
    radius with a 4px tail, monogram avatars, quiet inline timestamps + read
    states, disciplined spacing, and a clean composer. Presentation only — every
-   selector below is an equal-specificity override of the .cv-*/.msg-* rules
+   selector below is an equal-specificity override of the `.cv-` and `.msg-`
+   rules
    earlier in this file, so it wins by source order and touches NO logic. The
    same component drives the STAFF chat, the BORROWER in-file conversation, and
    the standalone lists, so one system serves all three.
@@ -5229,6 +5230,17 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
 .lt-card.lt-card-flush{padding:0;overflow:hidden}
 @media(max-width:720px){ .lt-card{padding:14px 14px;border-radius:10px} }
 
+/* ── THE PRODUCT SWITCH — a real thumb target on a phone ─────────────────────
+   `ProductSwitch` is inline-styled, so it never saw the app's own
+   `@media(max-width:720px){ .btn{min-height:44px} }` rule and sat at 26px —
+   the control that moves a person between the two products was one of the
+   smallest tap targets on every long-term screen. The desktop pill is
+   deliberately unchanged; only the phone grows, and it grows by PADDING so the
+   words stay where they are rather than being stretched. */
+@media(max-width:720px){
+  .lt-prodswitch > button{min-height:40px;padding-left:16px;padding-right:16px}
+}
+
 /* ── THE PIPELINE'S FILE ROWS — "one file, next file, next file" ─────────────
    The rows carry the hairline, the last one does not (a rule under the final
    row draws a second border against the card's own edge), and the whole row
@@ -6636,10 +6648,38 @@ tr.tape-row-on{background:rgba(47,127,134,.07)}
    static, mirroring .file-top's own fallback — a phone gives the pin no room to earn.
    Explicit white background: a sticky surface must never be transparent, or the rows it
    pins over read straight through it. */
-.lt-strip{position:sticky;top:72px;z-index:29;background:#fff;
+.lt-strip{position:sticky;top:calc(72px + var(--lt-comp-h, 0px));z-index:29;background:#fff;
   border:1px solid rgba(20,27,34,.14);border-radius:12px;
   box-shadow:0 8px 18px -14px rgba(20,27,34,.45)}
 @media(max-width:900px){.lt-strip{position:static;box-shadow:none}}
+
+/* LONG-TERM PRICING ENGINE — the comparison rail stays on screen the whole time
+   (owner-directed 2026-08-30: *"the top of the screen pop up each and every thing that
+   you are adding to the comparisons. The entire time when you are scrolling, that
+   section should be visible, and you can issue the comparison sheet from there. You
+   don't need to scroll back up."*).
+
+   It pins ABOVE the search strip because it comes first in the document, so the strip
+   must move down by exactly what this rail occupies — and that number is MEASURED and
+   published as `--lt-comp-h` by the rail itself, never written here as a constant. The
+   rail's height genuinely changes (options are ticked in and out, the issue form opens),
+   so a hard-coded offset would either overlap the strip or leave a gap under it. Same
+   discipline as the officer branding bar: a header that grew pushes the page down by
+   what it grew, measured.
+
+   ⛔ THE BODY IS CAPPED AND SCROLLS INSIDE ITSELF. A rail that grows with every option
+   collected would eventually pin the whole viewport and leave no board to pick from —
+   the opposite of what being able to see it is worth.
+
+   Explicit white background for the same reason .lt-strip has one: a transparent sticky
+   surface reads straight through to the rows it is pinned over. */
+.lt-comp-rail{position:sticky;top:72px;z-index:30;
+  box-shadow:0 10px 22px -16px rgba(20,27,34,.5)}
+.lt-comp-rail .lt-comp-body{max-height:min(46vh,420px);overflow-y:auto;overscroll-behavior:contain}
+@media(max-width:900px){
+  .lt-comp-rail{position:static;box-shadow:none}
+  .lt-comp-rail .lt-comp-body{max-height:none;overflow-y:visible}
+}
 /* One search fact on the strip: a small label and its value, reading as one unit. */
 .lt-chip{display:inline-flex;gap:5px;align-items:baseline;white-space:nowrap;
   font-size:12px;color:#3A4550;font-variant-numeric:tabular-nums}

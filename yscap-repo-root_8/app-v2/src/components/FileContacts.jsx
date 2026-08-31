@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { PhoneInput, EmailInput } from './FormattedInputs.jsx';
 import { api } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
@@ -8,9 +8,32 @@ import { askConfirm } from '../lib/dialog.js';
    every contact flows into the company-wide vendor directory and is shared with
    everyone on the file. Works on the borrower side and the staff side (isStaff).
    Contact TYPES cover the real-estate transaction; "Other" takes a free-text
-   label. Minimal requirement to add: any one detail. */
+   label. Minimal requirement to add: any one detail.
 
-const TYPES = [
+   ONE COMPONENT, MORE THAN ONE PRODUCT (owner-directed 2026-08-30, the
+   share-the-code directive: "the FileContacts should come directly from the
+   short-term side … they should all be built from our Vendor Contact and
+   connected always"). What used to be hard-coded here was the pair of api calls
+   for each verb, chosen by `isStaff`, and the RTL type vocabulary. Both are now
+   INJECTED:
+
+     · `adapter` — { list, add, edit, remove, suggest? } over whatever endpoints
+       the caller's product has. Omit it and you get exactly the RTL pair this
+       component always used, chosen by `isStaff` (`apiFileContactsAdapter`), so
+       the two existing callers pass nothing new and render unchanged.
+     · `types`   — [[value, label], …]. Omit it and you get FILE_CONTACT_TYPES,
+       the RTL list this file has always carried.
+
+   The adapter's `list()` answers ROWS IN THIS COMPONENT'S SHAPE — link_id,
+   contact_id, contact_type, custom_type, company_name, contact_name, email,
+   phone, address, notes. A product whose own columns are named differently maps
+   them in its adapter; the mapping belongs there, not in a branch here, because
+   a branch here is how the second product's rules leak into the first one's. */
+
+/* THE RTL CONTACT TYPES — the default vocabulary, and the only one before
+   2026-08-30. Kept in step with FILE_CONTACT_TYPES in routes/staff.js and
+   routes/borrower.js (see the note on `settlement_agent` below). */
+export const FILE_CONTACT_TYPES = [
   ['realtor', 'Realtor / agent'],
   ['attorney', 'Attorney'],
   ['title_company', 'Title company'],
@@ -26,23 +49,74 @@ const TYPES = [
   ['escrow', 'Escrow'],
   ['other', 'Other'],
 ];
-const LABEL = Object.fromEntries(TYPES);
-export function contactTypeLabel(c) {
+
+/* What a row's type is CALLED, read out of the same list the picker offers — so a
+   product that carries its own vocabulary labels its rows with its own words and
+   never with RTL's. An unknown value prints itself rather than disappearing: a
+   contact whose type nobody recognises is still a contact, and a blank pill would
+   hide it. */
+export function contactTypeLabel(c, types = FILE_CONTACT_TYPES) {
   if (c.contact_type === 'other') return (c.custom_type || 'Other');
-  return LABEL[c.contact_type] || c.contact_type;
+  const hit = (types || []).find(([v]) => v === c.contact_type);
+  return (hit && hit[1]) || c.contact_type;
 }
 
-const BLANK = { contactType: 'realtor', customType: '', companyName: '', contactName: '', email: '', phone: '', notes: '' };
+const blankFor = (types) => ({
+  contactType: (types && types[0] && types[0][0]) || 'other',
+  customType: '', companyName: '', contactName: '', email: '', phone: '', notes: '',
+});
 
-export default function FileContacts({ appId, isStaff, heading = 'File contacts' }) {
+/**
+ * THE DEFAULT ADAPTER — the RTL pair of endpoints, chosen by `isStaff`.
+ *
+ * Exactly the calls this component made inline before the seam existed, moved out
+ * so "no adapter" is a real object rather than a branch inside every handler.
+ * `suggest` is the fifth verb of the contract: this component does not draw a
+ * type-ahead (the condition forms do, against the same endpoints), but an adapter
+ * shape that leaves it out on one product and carries it on the other is drift on
+ * day one.
+ */
+export function apiFileContactsAdapter(appId, isStaff) {
+  return isStaff ? {
+    list: () => api.staffFileContacts(appId),
+    add: (f) => api.staffAddFileContact(appId, f),
+    edit: (linkId, f) => api.staffEditFileContact(linkId, f),
+    remove: (linkId) => api.staffDelFileContact(linkId),
+    suggest: (type, q) => api.staffVendorSuggest(appId, type, q),
+  } : {
+    list: () => api.fileContacts(appId),
+    add: (f) => api.addFileContact(appId, f),
+    edit: (linkId, f) => api.editFileContact(linkId, f),
+    remove: (linkId) => api.delFileContact(linkId),
+    suggest: (type, q) => api.vendorSuggest(type, q),
+  };
+}
+
+/* THE RTL WORDING, CHARACTER FOR CHARACTER — including the plain ASCII apostrophe
+   the JSX carried. It moved out of the markup so a second product can say what its
+   own contacts are, and the two existing callers pass nothing and read exactly what
+   they always read. */
+const DEFAULT_BLURB = "Realtors, attorneys, title, insurance, flood, contractors and anyone else on this deal. "
+  + "Everyone on the file sees them, and they're saved to the company vendor directory.";
+
+export default function FileContacts({
+  appId, isStaff, heading = 'File contacts',
+  adapter = null, types = FILE_CONTACT_TYPES, blurb = DEFAULT_BLURB,
+}) {
   const [list, setList] = useState(null);
   const [adding, setAdding] = useState(false);
   const [editId, setEditId] = useState(null);   // link_id being edited in place
+  const BLANK = useMemo(() => blankFor(types), [types]);
   const [f, setF] = useState(BLANK);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
-  const load = () => (isStaff ? api.staffFileContacts(appId) : api.fileContacts(appId)).then(setList).catch(() => setList([]));
+  // No adapter = the RTL pair, which is what both existing callers rely on.
+  const io = useMemo(() => adapter || apiFileContactsAdapter(appId, isStaff), [adapter, appId, isStaff]);
+  const load = () => io.list().then(setList).catch(() => setList([]));
+  // Keyed on the FILE, not on the adapter: a caller that builds its adapter inline
+  // would otherwise re-fetch on every render. A second product passes its own id
+  // as `appId` and inherits the same reload rule.
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [appId, isStaff]);
 
   const gate = useSubmitGate();
@@ -52,7 +126,7 @@ export default function FileContacts({ appId, isStaff, heading = 'File contacts'
     if (!gate.enter()) return;             // a contact is already being added
     setBusy(true);
     try {
-      await (isStaff ? api.staffAddFileContact(appId, f) : api.addFileContact(appId, f));
+      await io.add(f);
       setF(BLANK); setAdding(false); await load();
     } catch (e) { setErr((e && e.message) || 'Could not add the contact.'); }
     finally { setBusy(false); gate.leave(); }
@@ -71,14 +145,14 @@ export default function FileContacts({ appId, isStaff, heading = 'File contacts'
     if (!f.companyName && !f.contactName && !f.email && !f.phone) { setErr('Enter at least one detail (company, name, email or phone).'); return; }
     setBusy(true);
     try {
-      await (isStaff ? api.staffEditFileContact(editId, f) : api.editFileContact(editId, f));
+      await io.edit(editId, f);
       setF(BLANK); setEditId(null); await load();
     } catch (e) { setErr((e && e.message) || 'Could not save the contact.'); }
     finally { setBusy(false); }
   }
   async function remove(linkId) {
     if (!(await askConfirm('Remove this contact from the file? (It stays in the company vendor directory.)'))) return;
-    try { await (isStaff ? api.staffDelFileContact(linkId) : api.delFileContact(linkId)); await load(); } catch (_) { /* ignore */ }
+    try { await io.remove(linkId); await load(); } catch (_) { /* ignore */ }
   }
 
   return (
@@ -89,7 +163,7 @@ export default function FileContacts({ appId, isStaff, heading = 'File contacts'
         {!adding && !editId && <button className="btn ghost small" onClick={() => { setF(BLANK); setErr(''); setEditId(null); setAdding(true); }}>+ Add contact</button>}
       </div>
       <p className="muted small" style={{ marginTop: 0 }}>
-        Realtors, attorneys, title, insurance, flood, contractors and anyone else on this deal. Everyone on the file sees them, and they're saved to the company vendor directory.
+        {blurb}
       </p>
 
       {(adding || editId) && (
@@ -98,7 +172,7 @@ export default function FileContacts({ appId, isStaff, heading = 'File contacts'
             <div>
               <label className="muted small">Type</label>
               <select className="input" value={f.contactType} onChange={e => setF({ ...f, contactType: e.target.value })}>
-                {TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                {types.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
               </select>
             </div>
             {f.contactType === 'other' && (
@@ -127,7 +201,7 @@ export default function FileContacts({ appId, isStaff, heading = 'File contacts'
           <div style={{ display: 'grid', gap: 6 }}>
             {list.map(c => (
               <div key={c.link_id} className="checkitem" style={{ alignItems: 'center' }}>
-                <span className="pill" style={{ marginRight: 8 }}>{contactTypeLabel(c)}</span>
+                <span className="pill" style={{ marginRight: 8 }}>{contactTypeLabel(c, types)}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 600 }}>{c.company_name || c.contact_name || c.email || '—'}</div>
                   <div className="muted small" style={{ wordBreak: 'break-word' }}>

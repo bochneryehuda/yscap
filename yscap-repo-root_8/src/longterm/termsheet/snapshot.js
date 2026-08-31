@@ -39,6 +39,12 @@ const audience = require('../audience');
 const overlay = require('./overlay');
 const wording = require('./wording');
 const comparison = require('./comparison');
+// The Census ZCTA→county table the pricing search itself uses, so the document and the
+// search can never disagree about which county a property is in.
+const zipCounty = require('../lenderprice/zip-county');
+// db/651 — the STAFF-ONLY note about who is behind a price. Deliberately a
+// separate module: nothing it produces is a key on the snapshot.
+const internalRecord = require('./internal');
 
 const num = (v) => {
   if (v == null || v === '') return null;
@@ -66,13 +72,37 @@ function refuse(code, message) { return { ok: false, error: code, message }; }
 function projectScenario(raw) {
   const s = raw && typeof raw === 'object' ? raw : {};
   const termFromMonths = num(s.term) != null ? num(s.term) / 12 : null;
+  const valueOf = num(s.value != null ? s.value : s.propertyValue);
+  const loanOf = num(s.loan != null ? s.loan : s.loanAmount);
+  /* ⛔ THE LTV FILLS ITSELF IN FROM THE DOLLARS (owner-reported 2026-08-31: *"if you fill in the
+     loan amount and the LTV is auto-calculated technically, it doesn't fill in on the PDF reports
+     that are exported afterwards. It needs to auto-fill based on the dollar amounts."*).
+
+     It was taken verbatim from the scenario, so an officer who typed the loan amount and let the
+     board work the ratio out got a BLANK "Loan to value" row on the document — the one figure an
+     investor and a borrower both look for first.
+
+     ⛔ IT IS DERIVED, NEVER OVERRIDDEN. A stated LTV always wins: the search ran on it, and a deal
+     legitimately sizes on a value the sheet does not carry. This only fills a hole, and only when
+     both dollars are really there — it never invents a ratio out of one of them. Rounded to two,
+     the same precision the sheet prints (75, 87.5), so a derived figure is indistinguishable from
+     a typed one on the page rather than betraying itself with a long decimal. */
+  const zipStr = str(s.zip, 10);
+  const zipFacts = zipStr ? zipCounty.lookupZip(zipStr) : null;
+  const stateStr = str(s.state, 2) || (zipFacts ? str(zipFacts.state, 2) : null);
+  const countyStr = str(s.county, 60)
+    || (zipFacts && zipFacts.split !== true ? str(zipFacts.countyName, 60) : null);
+  const ltvStated = num(s.ltv);
+  const ltvDerived = (ltvStated == null && valueOf != null && loanOf != null && valueOf > 0)
+    ? Math.round((loanOf / valueOf) * 10000) / 100
+    : null;
   return {
     purpose: str(s.purpose, 40),
     propertyType: str(s.propertyType, 40),
     units: num(s.units),
-    propertyValue: num(s.value != null ? s.value : s.propertyValue),
-    loanAmount: num(s.loan != null ? s.loan : s.loanAmount),
-    ltv: num(s.ltv),
+    propertyValue: valueOf,
+    loanAmount: loanOf,
+    ltv: ltvStated != null ? ltvStated : ltvDerived,
     termYears: num(s.termYears) != null ? num(s.termYears) : termFromMonths,
     interestOnly: s.io === true || s.interestOnly === true,
     escrowWaive: s.escrowWaive === true,
@@ -80,9 +110,25 @@ function projectScenario(raw) {
     prepayStructure: str(s.prepayStructure, 40),
     dscr: num(s.dscr),
     fico: num(s.fico),
-    zip: str(s.zip, 10),
-    state: str(s.state, 2),
-    county: str(s.county, 60),
+    zip: zipStr,
+    /* ⛔ THE COUNTY AND THE STATE FILL THEMSELVES IN FROM THE ZIP (owner-reported 2026-08-31:
+       *"even if you didn't put in a full property address, it's only coming up with the zip code.
+       It should also come up with the county and the state of the property."*).
+
+       Both were already fields on this scenario and both were simply left blank whenever the
+       officer had typed only a ZIP — so a sheet went out identifying the property by five digits.
+       The answer was already in the building: `lenderprice/zip-county.js` is the Census ZCTA
+       relationship file the pricing search itself uses to tell the vendor which county it is in.
+
+       ⛔ A STATED VALUE ALWAYS WINS. This only fills a hole.
+
+       ⛔ AND A SPLIT ZIP GETS NO COUNTY. That module is explicit that 28% of ZIPs straddle more
+       than one county and that it resolves the DOMINANT one — fine for choosing a rate sheet,
+       NOT fine for printing "Ocean County" on a client's document as though it were established.
+       The state is still filled (a ZIP does not straddle one), so the sheet reads "NJ 08701"
+       rather than a county it cannot stand behind. Never guess on a document. */
+    state: stateStr,
+    county: countyStr,
     city: str(s.city, 60),
     // The qualifying figures the officer typed into the DSCR calculator. They
     // are facts about the deal, not about the vendor, and a borrower reading the
@@ -301,9 +347,145 @@ const GATE_LABELS = {
   taxMonthly: 'the monthly property taxes',
   insuranceMonthly: 'the monthly insurance',
   dscr: 'the calculated DSCR',
+  dscrMismatch: 'a price obtained at the ratio these figures actually produce',
   partyName: "the borrower's name or the vesting entity",
   propertyAddress: 'the full property address',
 };
+
+/**
+ * THE RATIO THE PRICE WAS OBTAINED AT MUST BE ONE THIS DEAL ACTUALLY MEETS.
+ *
+ * ⛔ OWNER-REPORTED 2026-08-30, and it is a MONEY rule, not a tidiness one:
+ * *"you allow the system to issue the term sheet even if the DSCR disagrees …
+ * if the scenario was 1.25 but the details that I'm entering to issue the term
+ * sheet are 1.2, it allows the system to issue the term sheet. This means we are
+ * giving him better pricing than we should have given him."*
+ *
+ * The board prices a SEARCH — the officer types a DSCR and Lender Price answers
+ * at that ratio, applying the investor's own DSCR adjustment. The term sheet
+ * then prints the rent, taxes and insurance actually entered. If those work out
+ * LOWER than the ratio the search ran at, the price on the document was bought
+ * in a band this loan does not qualify for, and the borrower gets a rate we
+ * would not have quoted. That is a loss on every such sheet.
+ *
+ * ⛔ IT REFUSES, IT NO LONGER WARNS. This shipped as a prominent warning that
+ * still let the sheet issue, on the reasoning that a hard stop with no way
+ * through would trap an officer who knew better. That reasoning was wrong: the
+ * way through is to RE-PRICE at the true ratio, which is one press, and the cost
+ * of the warning being ignored is money. Corrected at the owner's direction.
+ *
+ * ⛔ THE TEST IS THE BRACKET, NOT THE NUMBER (owner-directed 2026-08-31, who
+ * supplied the ladder himself: *"So if anything is changing from one bracket to
+ * the next one, then it needs a reprice, but make sure it's very easy."*).
+ *
+ * A DSCR bracket is a PRICE BAND. Two ratios inside one band buy the same price,
+ * so a sheet priced at 1.45 and issued on figures of 1.42 is the same money and
+ * must not nag anybody — the earlier cut compared the raw numbers and refused
+ * exactly that, which is why the officer was being sent back to re-price on
+ * moves that changed nothing. What genuinely invalidates the price is LEAVING
+ * the band the search ran in.
+ *
+ * ⛔ AND IT IS DIRECTION-AGNOSTIC, WHICH IS THE OWNER'S OWN RULE. Downward is
+ * the money case (a rate bought in a band this loan no longer reaches). Upward
+ * is not free either: the borrower now qualifies for BETTER pricing than the
+ * paper shows, and a term sheet that understates what somebody qualifies for is
+ * still wrong — so it is re-priced too, and the wording says which way it went
+ * rather than accusing anybody.
+ *
+ * ⛔ AND IT NEVER GUESSES. The comparison needs the ratio the search was priced
+ * at AND every figure the true ratio is worked out from. Missing any of them,
+ * this rule stands down entirely and the ordinary completeness gate — which
+ * already demands the rent, the taxes, the insurance and a ratio — is what
+ * refuses. A refusal invented from half a scenario would be worse than none.
+ */
+
+/* THE LADDER, IN THE OWNER'S OWN WORDS AND NUMBERS (2026-08-31). Ten tiers, each
+   stated as [from, to) on the ratio ROUNDED TO TWO — which is what a DSCR is
+   here (Round([1005]/[912], 2), owner-confirmed) and what both the paper and a
+   band edge carry. Rounding first is what makes 1.2449 and 1.24 one claim, and
+   what stops a hair of float landing a loan in the wrong tier.
+
+   `app-v2/src/longterm/dscrCalc.js` carries the browser's copy so the screen can
+   warn before the button is pressed; test-lt-comparison-ux-pure runs BOTH over
+   every ratio from 0 to 2.00 in hundredths and fails on any disagreement. Change
+   one, change the other. */
+const DSCR_TIERS = [
+  { tier: 1,  from: null, to: 0.50 },   // < 0.50 — very low
+  { tier: 2,  from: 0.50, to: 0.75 },
+  { tier: 3,  from: 0.75, to: 0.85 },
+  { tier: 4,  from: 0.85, to: 1.00 },
+  { tier: 5,  from: 1.00, to: 1.10 },
+  { tier: 6,  from: 1.10, to: 1.15 },   // owner-added 2026-08-31: *"I missed one band up to 1.1"*
+  { tier: 7,  from: 1.15, to: 1.25 },
+  { tier: 8,  from: 1.25, to: 1.30 },
+  { tier: 9,  from: 1.30, to: 1.40 },
+  { tier: 10, from: 1.40, to: 1.50 },
+  { tier: 11, from: 1.50, to: null },   // >= 1.50 — strongest
+];
+
+/* ⛔ THE LADDER MUST BE CONTIGUOUS AND MUST NOT OVERLAP, AND THAT IS CHECKED RATHER THAN TRUSTED.
+   `dscrTier` returns the FIRST band a ratio falls in, so two bands that overlap are resolved
+   silently by array order — a real hazard, found when a deliberate mutation of one boundary
+   changed no behaviour at all because its neighbour still claimed the ratio. A ladder with a hole
+   is worse still: a ratio in the gap gets no tier and the rule quietly stands down on a live loan.
+   Verified once at load, so a bad edit fails loudly here instead of mispricing quietly. */
+function assertLadder(tiers) {
+  for (let i = 0; i < tiers.length; i += 1) {
+    const t = tiers[i];
+    const prev = tiers[i - 1];
+    if (i === 0 && t.from !== null) throw new Error('DSCR ladder: the first band must be open below');
+    if (i === tiers.length - 1 && t.to !== null) throw new Error('DSCR ladder: the last band must be open above');
+    if (prev && prev.to !== t.from) {
+      throw new Error(`DSCR ladder: tier ${prev.tier} ends at ${prev.to} but tier ${t.tier} starts at ${t.from}`);
+    }
+  }
+  return tiers;
+}
+assertLadder(DSCR_TIERS);
+
+
+/** Which tier a ratio sits in, or null when it is not a usable ratio. */
+function dscrTier(ratio) {
+  const n = Number(ratio);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const r = Math.round(n * 100) / 100;
+  for (const t of DSCR_TIERS) {
+    if ((t.from == null || r >= t.from) && (t.to == null || r < t.to)) return t.tier;
+  }
+  return null;
+}
+
+function ratioProblem(member) {
+  const m = member && typeof member === 'object' ? member : {};
+  const sc = m.scenario || {};
+  const priced = num(sc.dscr);
+  if (priced == null || priced <= 0) return null;
+
+  const pi = num(m.monthlyPI);
+  const rent = num(sc.rentMonthly);
+  const tax = num(sc.taxMonthly);
+  const ins = num(sc.insuranceMonthly);
+  if (pi == null || rent == null || tax == null || ins == null) return null;
+  const hoa = num(sc.hoaMonthly) || 0;
+  const housing = pi + tax + ins + hoa;
+  if (!(housing > 0) || !(rent > 0)) return null;
+
+  const actual = Math.round((rent / housing) * 100) / 100;
+  const pricedRounded = Math.round(priced * 100) / 100;
+  const actualTier = dscrTier(actual);
+  const pricedTier = dscrTier(pricedRounded);
+  // A ratio neither side can place is not a bracket change anybody can act on.
+  if (actualTier == null || pricedTier == null) return null;
+  if (actualTier === pricedTier) return null;
+
+  return {
+    priced: pricedRounded,
+    actual,
+    pricedTier,
+    actualTier,
+    direction: actualTier < pricedTier ? 'down' : 'up',
+  };
+}
 
 function exportGate(snapshot) {
   const s = snapshot && typeof snapshot === 'object' ? snapshot : {};
@@ -330,7 +512,39 @@ function exportGate(snapshot) {
   // single key `partyName` — the screen points at both boxes and either fills it.
   if (!str(p.borrowerName, 120) && !str(p.entityName, 120)) missing.push('partyName');
   if (!str(p.propertyAddress, 200)) missing.push('propertyAddress');
-  if (!missing.length) return { ok: true, kind, missing: [], message: null };
+  // ⛔ ASKED AFTER THE FIELDS ARE IN, DELIBERATELY. The ratio cannot be worked out
+  // until the rent, taxes and insurance are there, so a half-filled scenario must
+  // be told what is missing rather than accused of a mismatch it cannot yet have.
+  if (!missing.length) {
+    const r = ratioProblem(m);
+    if (r) {
+      return {
+        ok: false,
+        kind,
+        missing: ['dscrMismatch'],
+        // The code still names the money case, because that is the one a caller
+        // may want to treat specially; `direction` says which way it went.
+        error: 'dscr_below_priced',
+        repriceAt: r.actual,
+        pricedAt: r.priced,
+        pricedTier: r.pricedTier,
+        actualTier: r.actualTier,
+        direction: r.direction,
+        // ⛔ ONE SHORT SENTENCE AND A BUTTON — owner-directed: *"make sure it's
+        // very easy."* It states the two ratios, that they are in different
+        // bands, and what pressing the button does. It does not explain DSCR
+        // banding to somebody who prices loans all day.
+        message: r.direction === 'down'
+          ? `These figures come to ${r.actual.toFixed(2)}, which is a lower DSCR band than the `
+            + `${r.priced.toFixed(2)} this was priced in — so the rate on it is one this loan no `
+            + `longer qualifies for. Re-price at ${r.actual.toFixed(2)} and issue from the new price.`
+          : `These figures come to ${r.actual.toFixed(2)}, a higher DSCR band than the `
+            + `${r.priced.toFixed(2)} this was priced in — the borrower qualifies for better pricing `
+            + `than this sheet shows. Re-price at ${r.actual.toFixed(2)} and issue from the new price.`,
+      };
+    }
+    return { ok: true, kind, missing: [], message: null };
+  }
 
   const words = missing.map((k) => GATE_LABELS[k] || k);
   const list = words.length === 1 ? words[0]
@@ -360,16 +574,26 @@ function buildSnapshot({ selections, plan, anchorIndex = 0, prepared = {}, maxMe
       + 'and becomes a catalogue.');
   }
   const members = [];
+  /* ⛔ THE PROVENANCE TRAVELS BESIDE THE MEMBERS, NEVER INSIDE THEM (db/651).
+     Who really funds an option is what an officer pulling up an ID needs and is
+     the one thing a client's document may never carry, so it is built here — in
+     lock-step with the members, so index i of one is index i of the other and no
+     later code has to re-align two lists — and returned as a SIBLING of
+     `snapshot`. Nothing that renders, hashes or replays the document can reach
+     it, because it is not a key on the object those functions are handed. */
+  const internal = [];
   for (let i = 0; i < list.length; i += 1) {
     const r = buildMember(list[i], plan);
     if (!r.ok) return { ...r, memberIndex: i };
     members.push(r.member);
+    internal.push(internalRecord.projectInternal(list[i] && list[i].internal));
   }
   const compare = members.length > 1 ? comparison.buildComparison(members, anchorIndex) : null;
   const docKind = documentKind(members, compare);
 
   return {
     ok: true,
+    internal,
     snapshot: {
       version: 1,
       // `kind` is the RENDERING shape the layout has always branched on — one

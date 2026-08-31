@@ -25,15 +25,81 @@
  * An empty list reads as "nothing is outstanding", which is a claim and usually
  * a wrong one. Every read that could not complete says so.
  *
- * SEPARATION: reads `lt_*` only.
+ * ── WHERE IT READS FROM (db/652 + db/653) ───────────────────────────────────
+ *
+ * The conditions are `checklist_items` in the ONE Condition Center, owned by
+ * `lt_loan_id`; the BUCKETS are still Long-Term's own (`lt_condition_buckets` —
+ * the owner's headings and their order). Every enumerated value comes back
+ * through `vocabulary.js`, the same translation the seed wrote through, which is
+ * what keeps the three numbers below three: `waived` and `not_applicable` are
+ * recovered from (status, waived_at, is_required) rather than collapsed into
+ * "satisfied".
  */
 
 const db = require('../db');
+const vocab = require('./vocabulary');
+const { ownerOf, ownerWhere } = require('../../lib/condition-owner');
+const audience = require('../audience');
 
 const CLIENT_VISIBLE = new Set(['external', 'both']);
 
+/**
+ * ONE SCRUB FOR EVERY SENTENCE A CLIENT READS OFF A CONDITION.
+ *
+ * `audience.scrubInvestorNames` is the single definition (charter rule 10 — a
+ * second copy is how the two drift and the drifted one leaks); this only carries
+ * the two rules every caller here would otherwise repeat: a blank stays NULL
+ * rather than becoming an empty string, and a non-string is never handed to the
+ * scrubber. It FAILS CLOSED on nothing — the scrubber itself already refuses any
+ * audience that is not exactly `internal`.
+ */
+function scrubClient(v) {
+  if (v === null || v === undefined || v === '') return null;
+  return audience.scrubInvestorNames(String(v), 'borrower');
+}
+
 /** Statuses that mean the condition is no longer work. */
 const DONE = new Set(['satisfied', 'waived', 'not_applicable']);
+
+/**
+ * THE DOCUMENTS ON THIS FILE'S CONDITIONS, one query for the whole loan.
+ *
+ * INTERNAL ONLY — the caller adds these to the staff shape and never to the
+ * client one. The `shape()` header records what is deliberately absent from a
+ * borrower's payload and this belongs on that list for a sharper reason than
+ * most: a rejection reason and a slot label are staff free text.
+ *
+ * THE COLUMN NAMES ARE THE SHARED TABLE'S OWN, deliberately unrenamed. The
+ * screen hands these rows straight to the shared Condition Center components,
+ * which read `review_status` / `is_current` / `reviewed_by_name` /
+ * `rejection_reason` off a document row — renaming a field here to suit
+ * Long-Term would either force the LT screen to map back, or tempt somebody to
+ * rename it inside a SHARED component, which silently changes the short-term
+ * product. One owner-scoped statement, in the statement (`ownerWhere`), so a
+ * document from another loan or another product matches no row.
+ */
+async function documentsByCondition(loanId, client = db) {
+  const where = ownerWhere(ownerOf('lt_loan', loanId), 'd');
+  const { rows } = await client.query(
+    `SELECT d.id, d.checklist_item_id, d.filename, d.content_type, d.size_bytes,
+            d.slot_label, d.doc_kind, d.is_current, d.created_at,
+            COALESCE(d.review_status, 'pending') AS review_status,
+            d.rejection_reason, d.reviewed_at,
+            rev.full_name AS reviewed_by_name
+       FROM documents d
+       LEFT JOIN staff_users rev ON rev.id = d.reviewed_by
+      WHERE ${where.sql} AND d.checklist_item_id IS NOT NULL
+      ORDER BY d.created_at`,
+    where.params,
+  );
+  const byItem = new Map();
+  for (const r of rows) {
+    const key = String(r.checklist_item_id);
+    if (!byItem.has(key)) byItem.set(key, []);
+    byItem.get(key).push(r);
+  }
+  return byItem;
+}
 
 /** The buckets, in order, including any a buyer added. */
 async function buckets(client = db) {
@@ -59,37 +125,81 @@ async function forLoan(loanId, opts = {}) {
   let list = [];
   let bucketRows = [];
   let degraded = null;
+  let docsByItem = new Map();
   try {
     bucketRows = await buckets(client);
+    const where = ownerWhere(ownerOf('lt_loan', loanId), 'c');
     const { rows } = await client.query(
-      `SELECT c.id, c.code, c.bucket_key, c.field_key, c.label, c.hint,
-              c.borrower_label, c.borrower_hint, c.audience, c.kind,
-              c.is_required, c.slots, c.config, c.answer, c.status, c.origin,
-              c.sort_order, c.notes,
-              c.satisfied_at, c.waived_at, c.waived_reason,
+      `SELECT c.id, t.code, c.category, c.field_key, c.label, c.hint,
+              c.borrower_label, c.borrower_hint, c.audience, c.item_kind, c.tool_key,
+              c.is_required, c.slots, c.tool_payload AS answer,
+              c.status, c.origin_kind, c.sort_order, c.notes,
+              c.signed_off_at AS satisfied_at, c.waived_at, c.waived_reason,
               sat.full_name AS satisfied_by_name,
               wav.full_name AS waived_by_name,
-              t.is_enabled, t.disabled_reason,
-              (SELECT count(*) FROM lt_condition_files f
-                WHERE f.condition_id = c.id AND f.is_current) AS file_count,
-              (SELECT count(*) FROM lt_condition_files f
-                WHERE f.condition_id = c.id AND f.is_current
-                  AND f.review_status = 'accepted') AS accepted_count
-         FROM lt_file_conditions c
-         LEFT JOIN lt_condition_templates t ON t.id = c.template_id
-         LEFT JOIN staff_users sat ON sat.id = c.satisfied_by
+              t.config,
+              (SELECT count(*) FROM documents d
+                WHERE d.checklist_item_id = c.id AND d.is_current) AS file_count,
+              (SELECT count(*) FROM documents d
+                WHERE d.checklist_item_id = c.id AND d.is_current
+                  AND d.review_status = 'accepted') AS accepted_count,
+              -- WHY A REJECTED CONDITION HAS TO SAY WHY, TO THE BORROWER TOO.
+              -- Rejecting a document sets the condition back to outstanding (see
+              -- condition-docs/review.js). With no reason the borrower watches a
+              -- condition re-open unexplained and uploads the same wrong document
+              -- again, which is the whole cost of leaving it out.
+              --
+              -- THE TWO SOURCES ARE THE ONES THE SHORT-TERM BORROWER DOOR READS,
+              -- in its order: the condition's own borrower-SAFE issue reason,
+              -- then the newest rejected document's reason. The issue reason is
+              -- written by short-term paths only and is always NULL on a
+              -- long-term row today; it is read anyway so that the day anything
+              -- writes one, this door already shows the better answer instead of
+              -- silently omitting it. The internal note is never a candidate --
+              -- it is precisely the field this pair exists to avoid.
+              --
+              -- KEEP THIS COMMENT CLAUSE-FREE AND BACKTICK-FREE. It sits inside a
+              -- SQL template literal: a backtick ends the literal outright, and
+              -- the separation gate parses the prose as SQL, so an ordinary
+              -- sentence naming a table reads as a cross-product query.
+              COALESCE(c.issue_reason,
+                (SELECT d.rejection_reason FROM documents d
+                  WHERE d.checklist_item_id = c.id AND d.review_status = 'rejected'
+                  ORDER BY d.reviewed_at DESC NULLS LAST LIMIT 1)) AS rejection_reason
+         FROM checklist_items c
+         LEFT JOIN checklist_templates t ON t.id = c.template_id
+         LEFT JOIN staff_users sat ON sat.id = c.signed_off_by
          LEFT JOIN staff_users wav ON wav.id = c.waived_by
-        WHERE c.loan_id = $1::uuid
+        WHERE ${where.sql}
         ORDER BY c.sort_order, c.label`,
-      [String(loanId)],
+      where.params,
     );
-    list = rows;
+    // Read back into the owner's own wording BEFORE anything else looks at it,
+    // so the audience filter, the buckets and the three numbers all reason about
+    // one vocabulary. `config` is read off the TEMPLATE — one config, edited
+    // once, rather than a per-instance copy free to go stale.
+    list = rows.map((r) => ({
+      ...r,
+      bucket_key: vocab.bucketOf(r.category),
+      audience: vocab.audienceFromShared(r.audience),
+      kind: vocab.kindFromShared(r),
+      origin: vocab.originFromShared(r.origin_kind),
+      status: vocab.statusOf(r),
+      config: r.config || {},
+      is_enabled: !(r.config && r.config.enabled === false),
+      disabled_reason: (r.config && r.config.disabledReason) || null,
+    }));
+    // The documents are read only for the TEAM's screen. A failure here is the
+    // same class of degraded read as the conditions themselves — the file is
+    // reported with its counts and without the list, never as a file with no
+    // documents on it.
+    if (internal) docsByItem = await documentsByCondition(loanId, client);
   } catch (e) {
     degraded = String((e && e.message) || e).slice(0, 300);
   }
 
   const visible = list.filter((r) => internal || CLIENT_VISIBLE.has(String(r.audience || 'internal')));
-  const shaped = visible.map((r) => shape(r, internal));
+  const shaped = visible.map((r) => shape(r, internal, docsByItem.get(String(r.id)) || []));
 
   const byBucket = new Map();
   for (const b of bucketRows) byBucket.set(b.key, { ...b, conditions: [], summary: emptySummary() });
@@ -142,7 +252,7 @@ function count(s, c) {
  * borrower wording exists. So the fallback is unreachable in practice and is
  * there so a hand-inserted row can never render blank.
  */
-function shape(r, internal) {
+function shape(r, internal, docs = []) {
   const base = {
     id: r.id,
     code: r.code || null,
@@ -156,10 +266,28 @@ function shape(r, internal) {
   };
 
   if (!internal) {
+    /* THE WORDING A CLIENT READS IS SCRUBBED TOO, for the same reason the
+       rejection reason below is. `label` and `hint` are NOT a fixed whitelist:
+       the desk may PATCH both (routes/condition-center.js writes label / hint /
+       borrower_label / borrower_hint from free text), so what a borrower reads
+       here is a sentence a human typed, which is precisely the charter's second
+       defence — scrub the free text. MEASURED before it shipped: every one of
+       the 82 strings the shipped library carries passes through unchanged, so
+       this is inert on every word the owner wrote and bites only on a name a
+       staffer types afterwards. */
     return {
       ...base,
-      label: r.borrower_label || r.label,
-      hint: r.borrower_hint || null,
+      label: scrubClient(r.borrower_label || r.label),
+      hint: scrubClient(r.borrower_hint),
+      /* THE REASON A DOCUMENT CAME BACK, SCRUBBED. This is the one piece of staff
+         free text a client is entitled to, because rejecting their document is
+         an instruction to them and an instruction with no reason cannot be
+         followed. It goes through the investor scrub for exactly the reason the
+         charter names: it is a sentence a human typed, so it is the second
+         defence's own case, not the whitelist's. Null unless something really
+         was rejected — an empty reason on a healthy condition would read as a
+         problem nobody has. */
+      rejectionReason: scrubClient(r.rejection_reason),
       // DELIBERATELY ABSENT for a client: the internal note, who signed it off,
       // why it was waived, the condition's own settings, and whether the
       // template is switched on. Every one of those is a fact about how WE work.
@@ -168,6 +296,10 @@ function shape(r, internal) {
 
   return {
     ...base,
+    // The documents themselves, for the team only — see `documentsByCondition`.
+    // The two counts above stay exactly as they were, so every existing reader
+    // of `documents.total` / `.accepted` is untouched.
+    documents: { ...base.documents, list: docs },
     label: r.label,
     hint: r.hint || null,
     borrowerLabel: r.borrower_label || null,
@@ -213,4 +345,7 @@ function slotsFor(r, internal) {
     .map((s) => (internal ? s : { key: s.key, label: s.label, required: !!s.required }));
 }
 
-module.exports = { buckets, forLoan, DONE, CLIENT_VISIBLE, _internals: { shape, slotsFor, count, emptySummary } };
+module.exports = {
+  buckets, forLoan, documentsByCondition, DONE, CLIENT_VISIBLE,
+  _internals: { shape, slotsFor, count, emptySummary },
+};

@@ -653,9 +653,14 @@ console.log('LT Pricing Engine — structural guards\n');
       'PE-140 Edit search reopens the collapsed form');
     // The sticky class itself: pinned in the shared stylesheet, with the phone fallback.
     const css = fs.readFileSync(path.join(ROOT, 'app-v2/src/styles.css'), 'utf8');
-    ok(/\.lt-strip\{position:sticky;top:72px/.test(css)
+    // RE-POINTED 2026-08-30, not loosened. The subject is unchanged — pinned under the app
+    // header, static on a phone — but the comparison rail now sits ABOVE this strip, so the
+    // offset is the 72px header PLUS the rail's own MEASURED height rather than a bare 72px.
+    // Both halves are still asserted, and the variable is asserted too: a hand-typed constant
+    // for a box whose height changes as options are ticked in and out is the bug this guards.
+    ok(/\.lt-strip\{position:sticky;top:calc\(72px \+ var\(--lt-comp-h/.test(css)
       && /@media\(max-width:900px\)\{\.lt-strip\{position:static/.test(css),
-      'PE-141 .lt-strip is sticky under the app header, and static on a phone — the .file-top offsets');
+      'PE-141 .lt-strip is sticky under the app header (72px + the measured rail), static on a phone');
     ok(/\.lt-strip\{[^}]*background:#fff/.test(css),
       'PE-142 …with an explicit opaque background, or the board reads straight through it');
   }

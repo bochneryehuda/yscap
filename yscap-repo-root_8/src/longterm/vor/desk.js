@@ -2,10 +2,13 @@
 /**
  * LONG-TERM — THE VERIFICATION OF RENT DESK.
  *
- * Owner-directed 2026-08-30, in their own words: *"prefill part one and part two …
- * leave the landlord's sections blank and required on DocuSign … be able to preview
- * and edit the PDF before sending … send by DocuSign, by email attachment, or both
- * … and if it comes back filled in by hand, void the envelope."*
+ * Owner-directed 2026-08-30, in their own words: *"the VOR needs to be on the exact
+ * blank form that I sent you … leave the landlord's sections blank and required on
+ * DocuSign … be able to preview and edit the PDF before sending … send by DocuSign,
+ * by email attachment, or both … and if it comes back filled in by hand, void the
+ * envelope."* The form is items 1 to 9 of the owner's own blank and nothing below
+ * the "To Be Completed By Landlord" bar — see `vor/fields.js` for the corrected
+ * rule and why the first reading of it was wrong.
  *
  * ── THE PREVIEW IS THE DOCUMENT ─────────────────────────────────────────────
  *
@@ -258,7 +261,9 @@ async function sendEnvelope({ loanId, form, pdf, method, staffId, client }) {
            clientUserId would leave this landlord with no way in at all. */
         tabsByDoc: { 1: tabs },
       }],
-      subject: `${SUBJECT} — ${form.data.borrower_name || 'loan applicant'}`,
+      // Item 7's "Account in the name of" is the applicant, which is who the
+      // landlord recognises — the subject property never appears on this form.
+      subject: `${SUBJECT} — ${form.data.account_name || 'loan applicant'}`,
       emailBlurb: 'A short form to confirm a tenant’s rent. Every question is required; it takes a minute.',
       customFields: { textCustomFields: [{ name: 'pilot_lt_vor_loan', value: String(loanId), show: 'false' }] },
       status: 'sent',

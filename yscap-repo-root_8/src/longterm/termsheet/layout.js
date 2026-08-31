@@ -42,7 +42,7 @@ const wording = require('./wording');
 const brand = require('./brand');
 // `snapshot.js` decides which of the three documents this is; it requires
 // nothing from here, so this is not a cycle.
-const { DOC_KINDS } = require('./snapshot');
+const { DOC_KINDS, KIND_WORDS } = require('./snapshot');
 
 const nn = (v) => Number.isFinite(v);
 
@@ -69,11 +69,18 @@ function propertyLine(m) {
 }
 
 function locationLine(s) {
-  const bits = [];
-  if (s.city) bits.push(s.city);
-  if (s.state) bits.push(s.state);
-  if (s.zip) bits.push(s.zip);
-  return bits.join(' ') || null;
+  /* ⛔ THE COUNTY IS PRINTED WHEN THERE IS NO TOWN (owner-reported 2026-08-31: a sheet with no
+     typed address showed nothing but the ZIP). It is filled from the ZIP upstream in
+     `snapshot.projectScenario`, and only when that ZIP determines it — so a county printed here is
+     one we can stand behind.
+
+     ⛔ THE TOWN WINS WHEN THERE IS ONE. "Lakewood Ocean County NJ 08701" reads as three different
+     places; the county is the FALLBACK for the case the owner reported, not an extra line item.
+     Written "Ocean County" rather than "Ocean", because a bare county name reads as a town. */
+  const where = s.city
+    || (s.county ? (/county|parish|borough/i.test(s.county) ? s.county : `${s.county} County`) : null);
+  const tail = [s.state, s.zip].filter(Boolean).join(' ');
+  return [where, tail].filter(Boolean).join(', ') || null;
 }
 
 /** "$375,000 · 75% LTV · 30-year fixed" */
@@ -377,6 +384,62 @@ const DIFFER_LABELS = {
 function differLabel(k) { return DIFFER_LABELS[k] || k; }
 
 /** The band's own three lines, and the footer's. */
+/**
+ * THE DOCUMENT AT A GLANCE — the two or three figures a reader looks for first.
+ *
+ * Owner-reported 2026-08-31: all three sheets read as *"very ugly and very
+ * abrupt"*. Part of that is what they OPEN with. Every one of them began with
+ * the parties, then a callout, then a two-column table of small type — so the
+ * loan amount, the rate and the payment, which are the whole point, were four
+ * inches down in the same size as the property type.
+ *
+ * ⛔ IT RESTATES, IT NEVER COMPUTES. Every figure here is read straight off the
+ * member the tables below are built from — no arithmetic of its own — so the
+ * headline can never disagree with the body. That is the only thing that makes
+ * a summary safe to put on a document somebody signs.
+ *
+ * ⛔ AND IT NEVER INVENTS ONE. A cell whose figure is missing is DROPPED, and
+ * with fewer than two left the band is omitted entirely: two numbers are a
+ * summary, one is an orphan sitting where a summary should be.
+ */
+function heroCells(s, kind) {
+  const members = s.members || [];
+  const first = members[0] || {};
+  const cells = [];
+  const add = (label, value, note) => { if (value) cells.push({ label, value, note: note || null }); };
+
+  if (kind === DOC_KINDS.TERM_SHEET) {
+    add('Loan amount', nn(first.loanAmount) ? wording.money(first.loanAmount) : null);
+    add('Interest rate', nn(first.ratePct) ? wording.rate(first.ratePct) : null,
+      nn(first.termYears) ? `${Math.round(first.termYears)}-year${first.interestOnly ? ' interest-only' : ' fixed'}` : null);
+    // The PAYMENT a borrower budgets for is the whole housing cost when the sheet
+    // carries the taxes and insurance, and the note payment when it does not —
+    // the same rule `paymentRows` draws the table on, asked once here.
+    const piti = wording.housingCost(Object.assign({ monthlyPI: first.monthlyPI }, first.scenario || {}));
+    add('Monthly payment', piti && nn(piti.total) ? wording.moneyExact(piti.total) : (nn(first.monthlyPI) ? wording.moneyExact(first.monthlyPI) : null),
+      // The note is DERIVED from the table's own label, so "& dues" appears in
+      // the headline exactly when it appears in the body, from one definition.
+      piti && nn(piti.total)
+        ? String(piti.label).replace(/^Total monthly payment \(/, '').replace(/\)$/, '')
+        : 'principal & interest');
+    const cash = (first.closing || {}).cashToCloseDollars;
+    add('Cash to close', nn(cash) ? wording.money(cash) : null, 'estimated');
+  } else {
+    const rates = members.map((m) => m.ratePct).filter(nn);
+    const loans = members.map((m) => m.loanAmount).filter(nn);
+    const span = (list, fmt) => {
+      if (!list.length) return null;
+      const lo = Math.min(...list); const hi = Math.max(...list);
+      return lo === hi ? fmt(lo) : `${fmt(lo)}–${fmt(hi)}`;
+    };
+    add(kind === DOC_KINDS.SCENARIO ? 'Scenarios' : 'Options', members.length ? String(members.length) : null,
+      'side by side');
+    add('Loan amount', span(loans, wording.money));
+    add('Interest rate', span(rates, wording.rate));
+  }
+  return cells.length >= 2 ? cells : null;
+}
+
 function metaBlock(s, opts, code) {
   const p = s.prepared || {};
   const kind = s.docKind || DOC_KINDS.TERM_SHEET;
@@ -387,10 +450,17 @@ function metaBlock(s, opts, code) {
   const subtitle = kind === DOC_KINDS.TERM_SHEET
     ? [first.consumerLabel, PRODUCT_LINE].filter(Boolean).join(' · ')
     : `${n} ${kind === DOC_KINDS.SCENARIO ? 'scenarios' : 'options'} · ${PRODUCT_LINE}`;
+  /* ⛔ A DATE IS WRITTEN THE WAY A PERSON WRITES ONE (owner-reported 2026-08-31,
+     on all three documents being *"very ugly and very abrupt"*). This band and
+     the footer both carried the raw stored instant — `Issued
+     2026-08-31T14:00:00.000Z` — on every page of every sheet we have ever sent.
+     `wording.dateLong` answers null on anything it cannot read, so an unreadable
+     value drops the words rather than printing the machine's. */
+  const issuedOn = wording.dateLong(p.preparedAt);
   const identity = [
     p.companyName || null,
     p.companyNmls ? `NMLS ${p.companyNmls}` : null,
-    p.preparedAt ? `Issued ${p.preparedAt}` : null,
+    issuedOn ? `Issued ${issuedOn}` : null,
   ].filter(Boolean).join(' · ');
   const contactBits = [p.officerName, p.officerTitle, p.officerPhone, p.officerEmail].filter(Boolean);
   return {
@@ -400,7 +470,7 @@ function metaBlock(s, opts, code) {
     subtitle,
     identity,
     docLabel: title,
-    stamp: p.preparedAt || null,
+    stamp: issuedOn,
     contact: contactBits.length ? `Your ${p.companyName || 'YS Capital'} contact: ${contactBits.join('  ·  ')}` : null,
     disclaimer: `${s.disclosure || wording.DISCLOSURE} Subject to underwriting, appraisal, title and final `
       + `credit approval. Not valid until countersigned by ${p.companyName || 'YS Capital Group'}.`,
@@ -472,8 +542,30 @@ function recipientBlock(s) {
     entityName: p.entityName || null,
     preparedFor: preparedFor(p),
     propertyAddress: p.propertyAddress || locationLine(first.scenario || {}),
+    /* ⛔ ON A COMPARISON THE PROPERTY FACTS RIDE HERE, NOT IN A BAND OF THEIR OWN.
+       Page one of a comparison is the comparison: the whole value of the document
+       is the options standing side by side where a reader can run an eye down
+       them, and a table that spills onto a second page has stopped being one.
+       The two facts are the same two facts, printed under the address they are
+       about — one line instead of a heading and a two-row table, which reads
+       better AND leaves the table its page. A term sheet has the room and keeps
+       the band, where the structure earns its space. */
+    // Only where the band is not drawn, or the same two facts would appear
+    // twice on one page.
+    propertyFacts: (s.docKind || DOC_KINDS.TERM_SHEET) === DOC_KINDS.TERM_SHEET
+      ? null : propertyFacts(first),
     officer,
   };
+}
+
+/** "Single family · 2 units · valued at $500,000" — or null when we know none. */
+function propertyFacts(m) {
+  const sc = (m && m.scenario) || {};
+  return kept([
+    sc.propertyType || null,
+    nn(sc.units) && sc.units > 1 ? `${Math.round(sc.units)} units` : null,
+    nn(m && m.propertyValue) ? `valued at ${wording.money(m.propertyValue)}` : null,
+  ]).join(' · ') || null;
 }
 
 /**
@@ -491,6 +583,14 @@ function recipientBlock(s) {
 function expiryBlock(s, opts) {
   const p = s.prepared || {};
   if (!p.expiresAt) return null;
+  /* ⛔ EVERY DOCUMENT SAYS WHEN ITS PRICING DIES, NOT ONLY THE TERM SHEET
+     (owner-reported 2026-08-31). The store has always stamped `expires_at` on a
+     comparison too, and the lookup screen has always marked one expired — the
+     PAPER was the only place that did not say so, so a borrower holding a
+     week-old comparison had nothing on it telling them the rates had moved.
+     The wording names WHICH document it is, from the same table the filename
+     and the title come from, so the three can never disagree. */
+  const kindWord = KIND_WORDS[s.docKind || DOC_KINDS.TERM_SHEET] || KIND_WORDS[DOC_KINDS.TERM_SHEET];
   const hours = nn(opts.expiryHours) ? Math.round(opts.expiryHours) : null;
   // ⛔ SAY IT THE WAY THE OWNER SAID IT. A 24-hour window rendered as "1 day" is
   // arithmetically identical and reads as a looser promise; the owner's words
@@ -503,11 +603,15 @@ function expiryBlock(s, opts) {
       : hours % 24 === 0
         ? `${hours / 24} days`
         : `${hours} hours`;
+  const through = wording.dateTimeLong(p.expiresAt);
   return {
     t: 'callout',
-    title: window ? `This term sheet expires in ${window}.` : 'This term sheet expires.',
-    text: `Good through ${p.expiresAt}. Pricing moves with the market, so after that it has to be re-quoted. `
-      + 'Nothing here is locked until we lock it in writing.',
+    title: window ? `This ${kindWord} expires in ${window}.` : `This ${kindWord} expires.`,
+    // The deadline is an INSTANT, so it is printed with its hour AND its zone —
+    // a borrower cannot act on a moment they have to interpret. An unreadable
+    // one drops the sentence rather than printing the stored value at them.
+    text: `${through ? `Good through ${through}. ` : ''}Pricing moves with the market, so after that it has to `
+      + 'be re-quoted. Nothing here is locked until we lock it in writing.',
   };
 }
 
@@ -528,22 +632,38 @@ function buildLayout(snapshot, opts = {}) {
 
   blocks.push(metaBlock(s, opts, code));
   blocks.push(recipientBlock(s));
+  // The headline sits ABOVE the expiry callout: what the loan IS comes before
+  // how long the price holds, which is the order a person reads them in.
+  const hero = heroCells(s, kind);
+  if (hero) blocks.push({ t: 'hero', cells: hero });
 
-  if (isTermSheet) {
-    const exp = expiryBlock(s, opts);
-    if (exp) blocks.push(exp);
-  }
+  /* ⛔ EVERY DOCUMENT SAYS WHEN ITS PRICING DIES (owner-directed 2026-08-31).
+     This was a RECORDED decision the other way — "a comparison is a working
+     document, not an offer with a clock on it" — so it was put to the owner
+     rather than reversed by a tidying pass, and they chose to add it.
+
+     The reasoning they were shown: the store has always stamped `expires_at` on
+     a comparison too, and the lookup screen has always marked one expired. The
+     PAPER was the only place that did not say so, so a borrower holding a
+     week-old comparison had nothing on it telling them the rates had moved.
+
+     The wording names WHICH document it is, from the same `KIND_WORDS` table the
+     filename and the title come from, so the three can never disagree. */
+  const exp = expiryBlock(s, opts);
+  if (exp) blocks.push(exp);
 
   const first = s.members[0];
 
   // ── the property, and (on a term sheet) the loan ─────────────────────────
   const fs0 = first.scenario || {};
-  blocks.push({ t: 'band', title: 'The property' });
-  blocks.push({ t: 'figures', rows: kept([
-    row('Property type', fs0.propertyType),
-    row('Units', nn(fs0.units) && fs0.units > 1 ? String(Math.round(fs0.units)) : null),
-    row('Estimated value', nn(first.propertyValue) ? wording.money(first.propertyValue) : null),
-  ]) });
+  if (isTermSheet) {
+    blocks.push({ t: 'band', title: 'The property' });
+    blocks.push({ t: 'figures', rows: kept([
+      row('Property type', fs0.propertyType),
+      row('Units', nn(fs0.units) && fs0.units > 1 ? String(Math.round(fs0.units)) : null),
+      row('Estimated value', nn(first.propertyValue) ? wording.money(first.propertyValue) : null),
+    ]) });
+  }
 
   if (isTermSheet) {
     blocks.push({ t: 'band', title: 'The loan' });
@@ -640,4 +760,7 @@ module.exports = {
   buildLayout, optionBlocks, comparisonTable, qualifyingRows, shownDscr, paymentRows, chargeRows, lenderFeeRows,
   closingRows, loanRows, propertyLine, loanLine, disclosureItems, metaBlock, expiryBlock,
   DIFFER_LABELS, PRODUCT_LINE,
+  // Exported for the suites only: the headline band's rule, so "a band with one
+  // figure is not a band" can be asserted rather than described.
+  _internals: { heroCells, propertyFacts },
 };

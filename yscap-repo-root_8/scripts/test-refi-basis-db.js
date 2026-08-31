@@ -75,7 +75,13 @@ if (!process.env.DATABASE_URL) {
     // A CLEARED, SIGNED-OFF condition on each refinance. If the migration let the
     // economics triggers fire, these would be reopened — which is the whole
     // reason it disables them.
-    const tpl = (await db.query(`SELECT id FROM checklist_templates LIMIT 1`)).rows[0];
+    // AN APPLICATION-SCOPED TEMPLATE, not whichever one comes back first. This
+    // suite only needs A condition to sign off, but the row it stages is
+    // `scope='application'` — and an unordered LIMIT 1 returns `gov_id`, which
+    // lives on the PERSON. db/655 refuses that outright: a condition set never
+    // crosses. The fixture was staging a shape the product cannot produce.
+    const tpl = (await db.query(
+      `SELECT id FROM checklist_templates WHERE scope='application' AND is_active ORDER BY sort_order, code LIMIT 1`)).rows[0];
     for (const id of [refiNoAsIs, refiWithAsIs]) {
       await db.query(
         `INSERT INTO checklist_items (application_id, template_id, label, audience, item_kind, scope, status, signed_off_at)

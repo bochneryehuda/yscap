@@ -315,9 +315,13 @@ check(engine.effectiveAudience({ audience: 'internal', borrower_label: 'x' }).au
 
 console.log('\nD3. only the engine\'s own untouched work is ever retracted');
 const eng = code('src/longterm/conditions-center/engine.js');
-check(/origin = 'auto'/.test(eng) && /status = \$2/.test(eng) && /COALESCE\(notes,''\) = ''/.test(eng),
+check(/origin_kind = 'auto'/.test(eng) && /status = \$2/.test(eng) && /COALESCE\(notes,''\) = ''/.test(eng),
   'the DELETE is guarded on origin, on status AND on there being no note — in the STATEMENT, not by a check somebody has to remember');
-check(/NOT EXISTS \(SELECT 1 FROM lt_condition_files/.test(eng),
+// The conditions are `checklist_items` since db/653, so their documents are the
+// shared `documents` rows. The guard is the same guard; only the table it names
+// moved, and it must stay INSIDE the DELETE — a read-then-write here is the
+// shape db/401 records as having cost real duplicate conditions on the RTL side.
+check(/NOT EXISTS \(SELECT 1 FROM documents d WHERE d\.checklist_item_id/.test(eng),
   'and on there being no documents on it — a condition somebody has provided for is theirs');
 check(/pg_advisory_lock/.test(eng) && /pg_advisory_unlock/.test(eng),
   'the pass takes a per-file advisory lock and releases it');
@@ -329,7 +333,10 @@ check(/out\.locked = true/.test(eng) && /lockClient = null/.test(eng),
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('\nE. what may be marked done');
 
-const doc = (over) => ({ id: 'f', is_current: true, review_status: 'accepted', slot_key: null, ...over });
+// A DOCUMENT IS A SHARED `documents` ROW NOW (db/653), so the per-slot key
+// travels in `slot_label` — the ordinary document plumbing carries it, with no
+// second table. The RULE the fixtures exercise is unchanged.
+const doc = (over) => ({ id: 'f', is_current: true, review_status: 'accepted', slot_label: null, ...over });
 const CONDITION = { kind: 'document', is_required: true, slots: [{ key: 'a', label: 'Thing A', required: true }] };
 
 check(!write.signOffProblem(CONDITION, [doc({ review_status: 'pending' })]).ok,
@@ -338,11 +345,11 @@ check(/not been looked at/i.test(write.signOffProblem(CONDITION, [doc({ review_s
   '...and the refusal says what to do about it');
 check(!write.signOffProblem(CONDITION, []).ok,
   'a required document condition with nothing on it cannot be signed off');
-check(!write.signOffProblem(CONDITION, [doc({ slot_key: 'other' })]).ok,
+check(!write.signOffProblem(CONDITION, [doc({ slot_label: 'other' })]).ok,
   'a required SLOT that is still empty blocks it');
-check(/Thing A/.test(write.signOffProblem(CONDITION, [doc({ slot_key: 'other' })]).why),
+check(/Thing A/.test(write.signOffProblem(CONDITION, [doc({ slot_label: 'other' })]).why),
   '...and names the slot, so the refusal is actionable');
-check(write.signOffProblem(CONDITION, [doc({ slot_key: 'a' })]).ok,
+check(write.signOffProblem(CONDITION, [doc({ slot_label: 'Thing A' })]).ok,
   'and the accepted document in the right slot clears it');
 check(write.signOffProblem({ ...CONDITION, is_required: false, slots: [] }, []).ok,
   'an OPTIONAL condition may be signed off with nothing — otherwise there is no way to close one');
@@ -358,9 +365,12 @@ check(/skipped|did not check/i.test(failed.checkSkipped),
 console.log('\nE2. a waiver is a decision and is recorded as one');
 const wsrc = code('src/longterm/conditions-center/write.js');
 check(/clean\.length < 4/.test(wsrc), 'a waiver with no reason is refused');
-check(/waived_reason = NULL/.test(wsrc) && /satisfied_at = NULL/.test(wsrc),
+check(/waived_reason = NULL/.test(wsrc) && /signed_off_at = NULL/.test(wsrc),
   'and every finish CLEARS the other one\'s stamps — a row that reads "satisfied" and "waived by" at once contradicts itself');
-check(/origin = 'manual'/.test(wsrc),
+// `manual_library` is the shared table's own word for "a person added this out
+// of the library" — the same distinction, under the name this table has always
+// used for it, which is what the retraction rule depends on.
+check(/origin_kind = \$3/.test(wsrc) && /originToShared\('manual'\)/.test(wsrc),
   'only a condition somebody ADDED by hand can be removed; a rule-driven one is waived with a reason instead');
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -428,8 +438,33 @@ check(/ltApi\.fileConditions\(/.test(section) && !/ltApi\.conditionCenter\(/.tes
   'the section calls fileConditions, NOT conditionCenter — that name belongs to the Encompass mirror and an object literal lets the later key silently win');
 check(/rowErr/.test(section) && /problem/.test(section),
   'a refusal is rendered on the ROW that caused it, not in a banner at the top of a long screen');
-check(!/from '\.\.\/lib\//.test(section) && !/from '\.\.\/components\//.test(section),
-  'and the section imports nothing from the short-term side — the separation gate refused the shared dialog host, so the confirm and the reason are inline');
+/* RE-POINTED 2026-08-30, and it is a change of FACT rather than a loosening.
+   This asserted that the section imported NOTHING from the short-term side,
+   which was true and correct while the crossing was unauthorized. The owner then
+   authorized exactly this one — *"the same look of the Condition Center … the way
+   you preview stuff, the way you preview the PDFs, the way you drag and drop,
+   accept, reject, preview, download, and delete … it should update them both
+   places. You need to share the code."* — and the whole point of the shipment is
+   that the section now mounts those components rather than a lookalike. So the
+   guard asserts the SHARE, and then keeps the two properties the original was
+   really protecting. */
+for (const shared of ['ConditionLine', 'ConditionActions', 'DocPreview', 'DropZone', 'UploadRows', 'LoudHint']) {
+  check(new RegExp(`from '\\.\\./components/${shared}\\.jsx'`).test(section),
+    `the section mounts the REAL shared ${shared} — the owner's "share the code", not a Long-Term lookalike`);
+}
+/* THE DIALOG HOST IS STILL NOT IMPORTED, and that is the property the original
+   guard existed for: a SECOND overlay host inside one app is worse than either,
+   so a refusal, a waiver's reason and a rejection's reason are all typed ON THE
+   ROW. (`ConditionActions` reaches the short-term host for its own send-back
+   prompt — which is why this screen passes `canSendBack={false}`, so that path is
+   never taken here.) */
+check(!/from '\.\.\/lib\/dialog/.test(section),
+  'and the section still never imports the shared dialog host — a refusal and a reason are typed on the row');
+/* AND IT STILL HAS ITS OWN CLIENT. `lib/api.js` is the short-term request layer;
+   Long-Term speaks to /api/lt through `ltApi`, which is what keeps the two
+   products' request layers apart. */
+check(!/from '\.\.\/lib\/api/.test(section) && /from '\.\/api\.js'/.test(section),
+  'and it still calls the Long-Term client, never the short-term one');
 
 check(/ruleInWords/.test(libScreen) && /ruleInWords/.test(routes),
   'the library screen shows each rule IN WORDS, from the server — a rule an administrator cannot read is one they cannot safely change');
@@ -454,19 +489,45 @@ check(dupes.length === 0,
 // ═══════════════════════════════════════════════════════════════════════════
 // H. SEPARATION — this is Long-Term's own build
 // ═══════════════════════════════════════════════════════════════════════════
-console.log('\nH. nothing here crosses into the short-term product');
+console.log('\nH. nothing here crosses without the owner\'s written authorization');
+// THIS USED TO ASSERT THAT NOTHING CROSSED AT ALL, and that was the right rule
+// until 2026-08-30, when the owner ordered the Long-Term conditions INTO the one
+// Condition Center — *"take that exact Condition Center and make your conditions
+// in that Condition Center follow those rules … you need to share the code."*
+// The rule did not disappear, it became PER ITEM: a crossing is legal only when
+// the ledger names it.
+//
+// SO THE ALLOW-LIST IS READ OUT OF THE LEDGER RATHER THAN TYPED HERE. A list
+// retyped in a test is a second copy of the authorization, and the copy that
+// drifts is the one that quietly permits something nobody agreed to; deriving it
+// means adding a require without a ledger line still fails the build, which is
+// exactly what the blanket rule was protecting.
+const ledgerBlock = (R('docs/LONG-TERM-AUTHORIZED-COPIES.md').match(/```authorized\n([\s\S]*?)```/) || [])[1] || '';
+const AUTHORIZED = new Set(
+  ledgerBlock.split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'))
+    .map((l) => (l.match(/^import\s+(\S+)\s*$/) || [])[1])
+    .filter(Boolean));
+check(AUTHORIZED.size > 0, `the crossing ledger was read (${AUTHORIZED.size} authorized imports)`);
+
 for (const f of [
   'src/longterm/conditions-center/rules.js',
   'src/longterm/conditions-center/field-registry.js',
   'src/longterm/conditions-center/library.js',
+  'src/longterm/conditions-center/vocabulary.js',
   'src/longterm/conditions-center/engine.js',
   'src/longterm/conditions-center/read.js',
   'src/longterm/conditions-center/write.js',
+  'src/longterm/conditions-center/workspace.js',
   'src/longterm/routes/condition-center.js',
 ]) {
   const requires = [...code(f).matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]);
   const crossing = requires.filter((r) => /^\.\.\/\.\.\//.test(r));
-  check(crossing.length === 0, `${f} requires nothing outside src/longterm${crossing.length ? ` (found ${crossing.join(', ')})` : ''}`);
+  // A relative require out of src/longterm/<dir>/x.js resolves under src/.
+  const unauthorized = crossing.filter((r) => !AUTHORIZED.has(`src/${r.replace(/^\.\.\/\.\.\//, '')}${/\.[a-z]+$/.test(r) ? '' : '.js'}`));
+  check(unauthorized.length === 0,
+    `${f} crosses only where the ledger says it may${unauthorized.length ? ` (unauthorized: ${unauthorized.join(', ')})` : ''}`);
 }
 // The migration must not have quietly become part of the Encompass mirror.
 const mig = R('db/643_lt_general_condition_center_buckets_templates_and_file_condi.sql');

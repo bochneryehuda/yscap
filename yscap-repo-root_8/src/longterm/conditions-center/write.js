@@ -2,7 +2,7 @@
 /**
  * LONG-TERM — CHANGING A CONDITION ON A FILE.
  *
- * Every write to `lt_file_conditions` that a person makes goes through here, so
+ * Every write to a Long-Term condition that a person makes goes through here, so
  * the rules below have one home rather than one per route.
  *
  * ── THE GATE IS THE POINT ───────────────────────────────────────────────────
@@ -30,33 +30,44 @@
  * that fails allows the sign-off and SAYS the check could not run, which is a
  * recorded decision rather than a silent one.
  *
- * SEPARATION: `lt_*` only.
+ * ── WHERE IT WRITES (db/652 + db/653) ───────────────────────────────────────
+ *
+ * `checklist_items` in the ONE Condition Center, owned by `lt_loan_id`, through
+ * the shared owner descriptor. Six Long-Term statuses round-trip onto the shared
+ * five plus the two stamps this table has carried for a long time — the mapping
+ * and the reason for it are in `vocabulary.js`; the short version is that this
+ * system already had a way to say "waived" (`waived_at` beside status
+ * 'satisfied') and inventing a second one is not sharing a Condition Center.
  */
 
 const db = require('../db');
-const answers = require('./answers');
+// SHARED (2026-08-30): the owner's one-out-of-three rule now lives in
+// src/lib/conditions/answers.js so the ONE sign-off gate can read it too — while
+// it lived here, this door and the shared gate disagreed about the same condition.
+const answers = require('../../lib/conditions/answers');
 const entityPrefill = require('./entity-prefill');
+const vocab = require('./vocabulary');
+const { ownerOf, ownerWhere, ownerCols } = require('../../lib/condition-owner');
+// The generic required-slots rule, PORTED OUT OF HERE into the shared gate so
+// the sign-off door and this module can never disagree about what a condition is
+// still waiting on. It is imported back rather than kept as a second copy —
+// which is the whole point of the port.
+const requiredSlots = require('../../lib/conditions/required-slots');
 
 /** How many accepted documents a slot-bearing condition still needs. */
 function missingSlots(condition, files) {
-  const slots = Array.isArray(condition.slots) ? condition.slots : [];
-  const required = slots.filter((s) => s.required !== false);
-  if (!required.length) return [];
-  const filled = new Set(
-    (files || [])
-      .filter((f) => f.is_current && f.review_status === 'accepted' && f.slot_key)
-      .map((f) => String(f.slot_key)),
-  );
-  return required.filter((s) => !filled.has(String(s.key))).map((s) => s.label || s.key);
+  return requiredSlots.missingSlots(condition && condition.slots, files);
 }
 
 /** Which per-line keys have an ACCEPTED document against them. A per-line
-    condition tags each upload with the liability's own key in `slot_key`, so the
-    ordinary document plumbing carries it with no second table. */
+    condition tags each upload with the liability's own key in `slot_label`, so
+    the ordinary document plumbing carries it with no second table. */
 function documentsByLine(files) {
   const out = {};
   for (const f of files || []) {
-    if (f.is_current && f.review_status === 'accepted' && f.slot_key) out[String(f.slot_key)] = true;
+    if (f.is_current !== false && String(f.review_status || 'pending') === 'accepted' && f.slot_label) {
+      out[String(f.slot_label)] = true;
+    }
   }
   return out;
 }
@@ -131,7 +142,7 @@ function signOffProblem(condition, files, opts = {}) {
   if (kind === 'document') {
     const short = missingSlots(condition, current);
     if (short.length) {
-      return { ok: false, why: `Still waiting on: ${short.join(', ')}.` };
+      return { ok: false, why: requiredSlots.missingSlotsMsg(short) };
     }
     const accepted = current.filter((f) => f.review_status === 'accepted');
     // A REQUIRED document condition with NOTHING on it cannot be signed off.
@@ -147,18 +158,34 @@ function signOffProblem(condition, files, opts = {}) {
 
 /** One condition plus its documents, scoped to a loan so an id alone reaches nothing. */
 async function loadCondition(loanId, conditionId, client = db) {
+  const where = ownerWhere(ownerOf('lt_loan', loanId), 'c', 2);
   const { rows } = await client.query(
-    `SELECT * FROM lt_file_conditions WHERE id = $1::uuid AND loan_id = $2::uuid`,
-    [String(conditionId), String(loanId)],
+    `SELECT c.*, t.code, t.config
+       FROM checklist_items c
+       LEFT JOIN checklist_templates t ON t.id = c.template_id
+      WHERE c.id = $1::uuid AND ${where.sql}`,
+    [String(conditionId), ...where.params],
   );
   if (!rows.length) return null;
-  const condition = rows[0];
+  // Read back into this module's own vocabulary, once, at the door — so every
+  // rule below reasons about `kind`/`status`/`answer` the way the owner's rules
+  // are written, and only the statements at the bottom speak the shared column
+  // names.
+  const row = rows[0];
+  const condition = {
+    ...row,
+    kind: vocab.kindFromShared(row),
+    status: vocab.statusOf(row),
+    answer: row.tool_payload || {},
+    config: row.config || {},
+  };
   let files = [];
   let readFailed = false;
   try {
     ({ rows: files } = await client.query(
-      `SELECT id, slot_key, review_status, is_current, filename
-         FROM lt_condition_files WHERE condition_id = $1::uuid`,
+      `SELECT id, slot_label, COALESCE(review_status,'pending') AS review_status,
+              is_current, filename
+         FROM documents WHERE checklist_item_id = $1::uuid`,
       [String(conditionId)],
     ));
   } catch (_) {
@@ -233,15 +260,20 @@ async function recordAnswer(loanId, conditionId, incoming, staffId, client = db)
 
   merged.answeredBy = staffId || null;
 
+  // `tool_payload` IS the shared table's answer column — the place RTL already
+  // keeps a submitted tool answer, which is why undoing a sign-off there reads
+  // it to decide whether a condition goes back to 'received' or 'outstanding'.
+  // Long-Term gets that behaviour for free by using it rather than a new column.
+  const w = ownerWhere(ownerOf('lt_loan', loanId), null, 2);
   const { rows } = await client.query(
-    `UPDATE lt_file_conditions
-        SET answer = $3::jsonb, updated_at = now()
-      WHERE id = $1::uuid AND loan_id = $2::uuid
-      RETURNING id, answer, status`,
-    [String(conditionId), String(loanId), JSON.stringify(merged)],
+    `UPDATE checklist_items
+        SET tool_payload = $3::jsonb, updated_at = now()
+      WHERE id = $1::uuid AND ${w.sql}
+      RETURNING id, tool_payload AS answer, status`,
+    [String(conditionId), ...w.params, JSON.stringify(merged)],
   );
   if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
-  return { ok: true, condition: rows[0] };
+  return { ok: true, condition: { ...rows[0], status: vocab.statusOf(rows[0]) } };
 }
 
 /** Mark a condition satisfied, if the gate allows it. */
@@ -257,14 +289,14 @@ async function satisfy(loanId, conditionId, staffId, client = db) {
     : found.condition.notes;
 
   const { rows } = await client.query(
-    `UPDATE lt_file_conditions
-        SET status = 'satisfied', satisfied_at = now(), satisfied_by = $2::uuid,
+    `UPDATE checklist_items
+        SET status = 'satisfied', signed_off_at = now(), signed_off_by = $2::uuid,
             waived_at = NULL, waived_by = NULL, waived_reason = NULL,
             notes = $3, updated_at = now()
-      WHERE id = $1::uuid RETURNING id, status`,
+      WHERE id = $1::uuid RETURNING id, status, waived_at, is_required`,
     [String(conditionId), staffId || null, note],
   );
-  return { ok: true, condition: rows[0], checkSkipped: gate.checkSkipped || null };
+  return { ok: true, condition: shapeStatus(rows[0]), checkSkipped: gate.checkSkipped || null };
 }
 
 /**
@@ -279,15 +311,23 @@ async function waive(loanId, conditionId, staffId, reason, client = db) {
   const found = await loadCondition(loanId, conditionId, client);
   if (!found) return { ok: false, status: 404, error: 'That condition is not on this file.' };
 
+  // A WAIVE IS `satisfied` PLUS THE STAMP — this system's own way of recording
+  // one, and the reason `vocabulary.js` maps rather than widens the status CHECK
+  // (src/routes/staff.js says it in those words at the RTL waive). The REASON
+  // lands in its own column (db/653) rather than in free-text notes, because a
+  // waiver nobody can explain a year later is the thing the rule exists to stop.
+  // `is_required` is deliberately LEFT ALONE: a waived condition was required
+  // and somebody decided against it, which is a different fact from one that
+  // never applied.
   const { rows } = await client.query(
-    `UPDATE lt_file_conditions
-        SET status = 'waived', waived_at = now(), waived_by = $2::uuid,
+    `UPDATE checklist_items
+        SET status = 'satisfied', waived_at = now(), waived_by = $2::uuid,
             waived_reason = $3,
-            satisfied_at = NULL, satisfied_by = NULL, updated_at = now()
-      WHERE id = $1::uuid RETURNING id, status`,
+            signed_off_at = NULL, signed_off_by = NULL, updated_at = now()
+      WHERE id = $1::uuid RETURNING id, status, waived_at, is_required`,
     [String(conditionId), staffId || null, clean.slice(0, 500)],
   );
-  return { ok: true, condition: rows[0] };
+  return { ok: true, condition: shapeStatus(rows[0]) };
 }
 
 /**
@@ -298,17 +338,18 @@ async function waive(loanId, conditionId, staffId, reason, client = db) {
  * would believe the stamp over the status.
  */
 async function reopen(loanId, conditionId, client = db) {
+  const w = ownerWhere(ownerOf('lt_loan', loanId), null, 2);
   const { rows } = await client.query(
-    `UPDATE lt_file_conditions
+    `UPDATE checklist_items
         SET status = 'outstanding',
-            satisfied_at = NULL, satisfied_by = NULL,
+            signed_off_at = NULL, signed_off_by = NULL,
             waived_at = NULL, waived_by = NULL, waived_reason = NULL,
             updated_at = now()
-      WHERE id = $1::uuid AND loan_id = $2::uuid RETURNING id, status`,
-    [String(conditionId), String(loanId)],
+      WHERE id = $1::uuid AND ${w.sql} RETURNING id, status, waived_at, is_required`,
+    [String(conditionId), ...w.params],
   );
   if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
-  return { ok: true, condition: rows[0] };
+  return { ok: true, condition: shapeStatus(rows[0]) };
 }
 
 /** Move a condition to a working state without claiming it is finished. */
@@ -317,24 +358,35 @@ async function setStatus(loanId, conditionId, status, client = db) {
   if (!allowed.has(String(status))) {
     return { ok: false, status: 400, error: 'That is not a status a condition can be moved to here. Satisfying or waiving one has its own door.' };
   }
+  // `statusWrite` is the COMPLETE instruction for a status — the column plus
+  // both stamps — so this door cannot move a condition while forgetting one.
+  // "Did not apply" is `satisfied` + the waive stamp + `is_required=false`,
+  // which is exactly how this system already reads a not-applicable condition.
+  const w = vocab.statusWrite(status);
+  const where = ownerWhere(ownerOf('lt_loan', loanId), null, 2);
   const { rows } = await client.query(
-    `UPDATE lt_file_conditions
+    `UPDATE checklist_items
         SET status = $3, updated_at = now(),
-            satisfied_at = NULL, satisfied_by = NULL,
-            waived_at = NULL, waived_by = NULL, waived_reason = NULL
-      WHERE id = $1::uuid AND loan_id = $2::uuid RETURNING id, status`,
-    [String(conditionId), String(loanId), String(status)],
+            signed_off_at = NULL, signed_off_by = NULL,
+            waived_at = CASE WHEN $4 THEN now() ELSE NULL END,
+            waived_by = NULL,
+            waived_reason = CASE WHEN $4 THEN waived_reason ELSE NULL END,
+            is_required = CASE WHEN $5 THEN false ELSE is_required END
+      WHERE id = $1::uuid AND ${where.sql}
+      RETURNING id, status, waived_at, is_required`,
+    [String(conditionId), ...where.params, w.status, w.waived, w.notApplicable],
   );
   if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
-  return { ok: true, condition: rows[0] };
+  return { ok: true, condition: shapeStatus(rows[0]) };
 }
 
 /** The internal note. Staff-only by construction — the client read never selects it. */
 async function setNote(loanId, conditionId, note, client = db) {
+  const w = ownerWhere(ownerOf('lt_loan', loanId), null, 2);
   const { rows } = await client.query(
-    `UPDATE lt_file_conditions SET notes = $3, updated_at = now()
-      WHERE id = $1::uuid AND loan_id = $2::uuid RETURNING id`,
-    [String(conditionId), String(loanId), String(note == null ? '' : note).slice(0, 4000) || null],
+    `UPDATE checklist_items SET notes = $3, updated_at = now()
+      WHERE id = $1::uuid AND ${w.sql} RETURNING id`,
+    [String(conditionId), ...w.params, String(note == null ? '' : note).slice(0, 4000) || null],
   );
   if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
   return { ok: true };
@@ -350,10 +402,11 @@ async function setNote(loanId, conditionId, note, client = db) {
 async function addFromTemplate(loanId, code, opts = {}) {
   const client = opts.db || db;
   const { rows: t } = await client.query(
-    `SELECT * FROM lt_condition_templates WHERE code = $1 AND is_active = true`, [String(code)],
+    `SELECT * FROM checklist_templates
+      WHERE code = $1 AND scope = 'lt_loan' AND is_active = true`, [String(code)],
   );
   if (!t.length) return { ok: false, status: 404, error: 'There is no such condition in the library.' };
-  const tpl = t[0];
+  const tpl = { ...t[0], audience: vocab.audienceFromShared(t[0].audience) };
 
   // The engine's own audience rule, applied here too: a borrower-facing
   // condition with no borrower wording is added STAFF-ONLY rather than shown to
@@ -362,19 +415,22 @@ async function addFromTemplate(loanId, code, opts = {}) {
   const audience = wantsClient && String(tpl.borrower_label || '').trim() ? tpl.audience : 'internal';
 
   try {
+    const owner = ownerOf('lt_loan', loanId);
+    const cols = ownerCols(owner);
     const { rows } = await client.query(
-      `INSERT INTO lt_file_conditions
-         (loan_id, template_id, code, bucket_key, field_key, label, hint,
-          borrower_label, borrower_hint, audience, kind, is_required, slots,
-          config, origin, sort_order)
-       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-               $13::jsonb, $14::jsonb, 'manual', $15)
+      `INSERT INTO checklist_items
+         (scope, application_id, lt_loan_id, template_id, category, field_key,
+          label, hint, borrower_label, borrower_hint, audience,
+          item_kind, tool_key, is_required, slots, origin_kind, sort_order)
+       VALUES ($1, $2::uuid, $3::uuid, $4::uuid, $5, $6,
+               $7, $8, $9, $10, $11,
+               $12, $13, $14, $15::jsonb, $16, $17)
        ON CONFLICT DO NOTHING
        RETURNING id`,
-      [String(loanId), tpl.id, tpl.code, tpl.bucket_key, opts.fieldKey || null,
-        tpl.label, tpl.hint, tpl.borrower_label, tpl.borrower_hint, audience,
-        tpl.kind, tpl.is_required, JSON.stringify(tpl.slots || []),
-        JSON.stringify(tpl.config || {}), tpl.sort_order],
+      [owner.scope, cols.application_id, cols.lt_loan_id, tpl.id, tpl.category, opts.fieldKey || null,
+        tpl.label, tpl.hint, tpl.borrower_label, tpl.borrower_hint, vocab.audienceToShared(audience),
+        tpl.item_kind, tpl.tool_key, tpl.is_required, JSON.stringify(tpl.slots || []),
+        vocab.originToShared('manual'), tpl.sort_order],
     );
     if (!rows.length) {
       return { ok: false, status: 409, error: 'That condition is already on this file.' };
@@ -394,11 +450,12 @@ async function addFromTemplate(loanId, code, opts = {}) {
  * to say "not on this file", and it keeps the reason.
  */
 async function removeManual(loanId, conditionId, client = db) {
+  const w = ownerWhere(ownerOf('lt_loan', loanId), null, 2);
   const { rows } = await client.query(
-    `DELETE FROM lt_file_conditions
-      WHERE id = $1::uuid AND loan_id = $2::uuid AND origin = 'manual'
+    `DELETE FROM checklist_items
+      WHERE id = $1::uuid AND ${w.sql} AND origin_kind = $3
     RETURNING id`,
-    [String(conditionId), String(loanId)],
+    [String(conditionId), ...w.params, vocab.originToShared('manual')],
   );
   if (!rows.length) {
     return {
@@ -408,6 +465,13 @@ async function removeManual(loanId, conditionId, client = db) {
     };
   }
   return { ok: true };
+}
+
+/** A written row, read back in this module's own words — so a caller never has
+    to know that a waive is `satisfied` plus a stamp. */
+function shapeStatus(row) {
+  if (!row) return row;
+  return { id: row.id, status: vocab.statusOf(row) };
 }
 
 function appendNote(existing, line) {

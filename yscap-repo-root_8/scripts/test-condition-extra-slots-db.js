@@ -230,7 +230,8 @@ function call(server, method, path, token, body) {
     const tplItem = (await db.query(
       `INSERT INTO checklist_items (scope,application_id,template_id,label,audience,item_kind,is_required,created_by_kind)
        SELECT 'application',$1,t.id,t.label,'both','document',true,'system'
-         FROM checklist_templates t WHERE t.slots IS NOT NULL AND jsonb_array_length(t.slots) > 0 LIMIT 1
+         FROM checklist_templates t WHERE t.slots IS NOT NULL AND jsonb_array_length(t.slots) > 0
+          AND t.scope = 'application' ORDER BY t.sort_order, t.code LIMIT 1
        RETURNING id, (SELECT slots FROM checklist_templates t2 WHERE t2.id=template_id) AS slots`, [appId])).rows[0];
     if (tplItem) {
       const tplSlotLabel = tplItem.slots[0].label;
