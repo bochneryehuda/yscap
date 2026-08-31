@@ -756,12 +756,34 @@ section('the expiry says what the owner said');
   const lay = layout.buildLayout(s, { expiryHours: 24 });
   check(lay.blocks.some((b) => b.t === 'callout' && /24 hours/.test(b.title)),
     'the term sheet carries the expiry as its own panel, where it cannot be skimmed past');
-  const cmp = snapshot.buildSnapshot({
+  /* ⛔ A COMPARISON CARRIES ONE TOO, AND IT NAMES ITSELF (owner-directed
+     2026-08-31). This assertion used to say the opposite, on a recorded reason
+     — "a comparison is a working document, not an offer with a clock on it". It
+     was put to the owner rather than reversed by a tidying pass, because the
+     record has ALWAYS carried an expiry on every kind (the store stamps one and
+     the lookup screen marks a stale sheet) and the paper was the only place that
+     did not say so. They chose to add it.
+
+     ⛔ IT MUST NOT CALL ITSELF A TERM SHEET. That is the half a copy-paste would
+     get wrong, and it is the one thing a comparison must never be mistaken for:
+     a comparison offers several options and commits to none. The words come from
+     `KIND_WORDS`, the same table the filename and the PDF title read. */
+  const cmpSnap = snapshot.buildSnapshot({
     selections: [quote('A', 7.375, 102), quote('B', 6.875, 99.75)], plan: PLAN,
     prepared: { expiresAt: 'September 1, 2026' },
   }).snapshot;
-  check(!layout.buildLayout(cmp, { expiryHours: 48 }).blocks.some((b) => b.t === 'callout'),
-    'a comparison does not — it is a working document, not an offer with a clock on it');
+  const cmpCallout = layout.buildLayout(cmpSnap, { expiryHours: 48 }).blocks.find((b) => b.t === 'callout');
+  check(!!cmpCallout, 'a comparison carries one too — the record has always held an expiry, the paper simply never said so');
+  check(/This comparison sheet expires in 48 hours\./.test(cmpCallout.title),
+    '…naming ITSELF, never "term sheet" — the one thing a comparison must not be mistaken for');
+  const scen = snapshot.buildSnapshot({
+    selections: [quote('A', 7.375, 102), quote('B', 7.125, 101, { scenario: { ...SCENARIO, loan: 300000, ltv: 60 } })],
+    plan: PLAN,
+    prepared: { expiresAt: 'September 1, 2026' },
+  }).snapshot;
+  const scenCallout = layout.buildLayout(scen, { expiryHours: 48 }).blocks.find((b) => b.t === 'callout');
+  check(!!scenCallout && /This scenario comparison expires/.test(scenCallout.title),
+    '…and a scenario comparison names itself too, from the same one table');
 }
 
 // =============================================================================

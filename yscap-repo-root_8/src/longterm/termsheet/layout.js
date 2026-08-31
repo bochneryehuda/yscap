@@ -637,19 +637,20 @@ function buildLayout(snapshot, opts = {}) {
   const hero = heroCells(s, kind);
   if (hero) blocks.push({ t: 'hero', cells: hero });
 
-  /* ⛔ THE CLOCK STAYS ON THE TERM SHEET ALONE, and that is a RECORDED decision
-     rather than an omission: a term sheet is an offer with a deadline, a
-     comparison is a working document you talk through. Widening it was tried
-     during the 2026-08-31 redesign and reverted — the owner asked for the three
-     documents to read better, not for a comparison to grow a deadline, and a
-     recorded design decision is not something a tidying pass reverses on its
-     own. (The record DOES carry an expiry on every kind — the store stamps one
-     and the lookup screen marks a stale sheet — so putting it on the paper is a
-     live question for the owner, not a bug.) */
-  if (isTermSheet) {
-    const exp = expiryBlock(s, opts);
-    if (exp) blocks.push(exp);
-  }
+  /* ⛔ EVERY DOCUMENT SAYS WHEN ITS PRICING DIES (owner-directed 2026-08-31).
+     This was a RECORDED decision the other way — "a comparison is a working
+     document, not an offer with a clock on it" — so it was put to the owner
+     rather than reversed by a tidying pass, and they chose to add it.
+
+     The reasoning they were shown: the store has always stamped `expires_at` on
+     a comparison too, and the lookup screen has always marked one expired. The
+     PAPER was the only place that did not say so, so a borrower holding a
+     week-old comparison had nothing on it telling them the rates had moved.
+
+     The wording names WHICH document it is, from the same `KIND_WORDS` table the
+     filename and the title come from, so the three can never disagree. */
+  const exp = expiryBlock(s, opts);
+  if (exp) blocks.push(exp);
 
   const first = s.members[0];
 

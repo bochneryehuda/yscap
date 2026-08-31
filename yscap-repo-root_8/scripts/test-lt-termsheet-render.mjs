@@ -557,6 +557,16 @@ console.log('\nthe paper reads like a document, not like a database');
     check(drawn.includes(label), `"${label}" is drawn on one line, not broken across two`);
   }
 
+  /* THE COMPARISON SAYS WHEN ITS PRICING DIES, AND NAMES ITSELF WHILE DOING IT
+     (owner-directed 2026-08-31). Asserted on the PAPER, and on page ONE with the
+     table intact -- the reason the clock could not be added before was that it
+     pushed the table onto a second page, so "it fits" is half the requirement. */
+  const p1cmp = (cmp.pages[0] || []).map((i) => i.s).join(' ').replace(/\s+/g, ' ');
+  check(/This comparison sheet expires in \d+ hours\./.test(p1cmp),
+    'the comparison sheet states its own expiry, on page one, beside the table');
+  check(!/This term sheet expires/.test(p1cmp),
+    'and never calls itself a term sheet -- the one thing a comparison must not be mistaken for');
+
   /* ⛔ THE HEADLINE IS ON THE PAGE, AND IT AGREES WITH THE TABLE UNDER IT. A
      summary that restates is safe; one that computes is a second opinion on a
      document somebody signs. */
