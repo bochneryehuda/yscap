@@ -100,7 +100,7 @@ const isLtFile = (abs) => insideAny(abs, LT_ROOTS);
 // can never quietly become a real permission.
 // ---------------------------------------------------------------------------
 function readLedger() {
-  const allow = { import: new Set(), 'rtl-import': new Set(), 'sql-ref': new Set(), 'sql-read': new Set(), 'sql-write': new Set() };
+  const allow = { import: new Set(), 'rtl-import': new Set(), 'sql-ref': new Set(), 'sql-read': new Set(), 'sql-write': new Set(), column: new Set() };
   if (!fs.existsSync(LEDGER)) {
     fail(rel(LEDGER), 'The crossing ledger is missing.',
       'Restore docs/LONG-TERM-AUTHORIZED-COPIES.md — it is the only record of what the owner authorized to cross between the two products.');
@@ -116,10 +116,10 @@ function readLedger() {
   for (const raw of block[1].split('\n')) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
-    const m = line.match(/^(import|rtl-import|sql-ref|sql-read|sql-write)\s+(\S+)\s*$/);
+    const m = line.match(/^(import|rtl-import|sql-ref|sql-read|sql-write|column)\s+(\S+)\s*$/);
     if (!m) {
       fail(rel(LEDGER), `Unreadable ledger line: "${line}"`,
-        'Each line must be "import <path>", "rtl-import <path>", "sql-ref <table>", "sql-read <table>" or "sql-write <table>" — see the entry-kinds table in the ledger.');
+        'Each line must be "import <path>", "rtl-import <path>", "sql-ref <table>", "sql-read <table>", "sql-write <table>" or "column <table>.<column>" — see the entry-kinds table in the ledger.');
       continue;
     }
     allow[m[1]].add(m[2].replace(/^\.\//, ''));
@@ -545,8 +545,17 @@ function checkSql(allow) {
       while ((c = ADD_COL.exec(rest))) {
         const col = cleanIdent(c[1]);
         if (!isLtName(table) && /^(lt_|long_?term)/i.test(col)) {
+          // The 2026-08-30 SHARE-THE-CODE directive made this class AUTHORIZABLE
+          // per item: the owner ordered the Long-Term conditions into the ONE
+          // Condition Center — "take that exact Condition Center and make your
+          // conditions in that Condition Center follow those rules" — and a
+          // fourth owner scope needs its owner column. Only a column the ledger
+          // names EXACTLY (`column <table>.<column>`) passes; every other
+          // lt-column on an RTL table fails exactly as it always has, and the
+          // gate's own test proves this still bites.
+          if (allow.column.has(`${table}.${col}`)) continue;
           fail(where, `Column "${col}" is being added to the RTL table "${table}".`,
-            'Long-Term does not get columns on RTL tables — it gets its own lt_* tables. The owner: "don\'t add any columns don\'t add any mapping unless we specifically ask you to."');
+            'Long-Term does not get columns on RTL tables — it gets its own lt_* tables. The owner: "don\'t add any columns don\'t add any mapping unless we specifically ask you to." Under the 2026-08-30 share-the-code grant a specific column can be authorized: add "column ' + table + '.' + col + '" to docs/LONG-TERM-AUTHORIZED-COPIES.md — only with the owner\'s words recorded.');
         }
       }
       refCheck(table, rest, 'gains');

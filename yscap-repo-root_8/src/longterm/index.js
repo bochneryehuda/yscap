@@ -15,6 +15,21 @@
 
 const express = require('express');
 
+/* THE PHOTO ID IS SHARED BOTH WAYS, AND THE REGISTRATION HAS TO HAPPEN HERE.
+   Owner-directed 2026-08-31: *"if it's uploaded to the short term, it should
+   share it to the long term."* The rule lives in ONE shared place, but RTL may
+   never name `lt_loans` — so the shared module ASKS each product where its own
+   ID conditions are, and Long-Term answers by registering on require.
+
+   IT IS REQUIRED AT THE TOP OF THE ROUTER, NOT LAZILY INSIDE A HANDLER, AND
+   THAT IS THE WHOLE POINT: the direction that needs it is a SHORT-TERM upload
+   reopening a LONG-TERM condition, which never touches a Long-Term handler. A
+   lazy require would leave the reopener unregistered until somebody happened to
+   upload on this side — so the sharing would work in one direction only, and
+   silently. Mounting the router is what registers it, and `src/server.js`
+   mounting this router is the existing seam, so this adds no new one. */
+require('./conditions-center/photo-id-share');
+
 const router = express.Router();
 
 // Liveness / identity of the LT side (no DB) — lets the front end and ops confirm

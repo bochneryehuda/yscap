@@ -167,12 +167,17 @@ ok('forceAttemptDoc is exported (per-doc safety net)', typeof backup.forceAttemp
     /superseded/.test(ex({ storage_provider: 'local', is_regen: true, is_current: false, app_id: 'a' })));
   ok('explains a NULL is_current regen snapshot',
     /NULL is_current/.test(ex({ storage_provider: 'local', is_regen: true, is_current: null, app_id: 'a' })));
-  ok('explains a doc with no borrower/application scope',
-    /no application\/borrower scope/.test(ex({ storage_provider: 'local', app_id: null, borrower_id: null })));
+  // RE-POINTED (not loosened) when the lt_loan scope landed: the sentence names
+  // every owner the mirror looked for, and there are four of them now. The
+  // assertion's subject is unchanged — a document with NO scope explains itself.
+  ok('explains a doc with no borrower/application/long-term-loan scope',
+    /no application\/borrower\/long-term-loan scope/.test(ex({ storage_provider: 'local', app_id: null, borrower_id: null })));
+  ok('a long-term loan IS a scope — never mislabeled "nothing to file it under"',
+    !/scope resolves/.test(ex({ storage_provider: 'local', app_id: null, borrower_id: null, lt_loan_id: 'l1' })));
   ok('a well-formed local row with a scope has NO obvious exclusion (drain/lease health)',
     /drain\/lease health/.test(ex({ storage_provider: 'local', is_regen: false, is_current: true, app_id: 'a', borrower_id: 'b' })));
   ok('a stray with a scope does NOT get mislabeled no-scope',
-    !/no application\/borrower scope/.test(ex({ storage_provider: 's3', app_id: 'a', borrower_id: 'b' })));
+    !/scope resolves/.test(ex({ storage_provider: 's3', app_id: 'a', borrower_id: 'b' })));
 }
 
 // ---------------- persistent SLO-alert dedup (stop duplicate emails on restart)

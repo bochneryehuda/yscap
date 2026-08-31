@@ -153,18 +153,26 @@ async function authenticate(req, res, next) {
       console.error('[auth] guest-link check failed (db):', db.describeError(e));
       return res.status(503).json({ error: 'The service is briefly unavailable — please try again in a moment.' });
     }
+    /* THE TOKEN MUST STILL DESCRIBE THE LINK IT WAS MINTED FROM, and the owner
+       KIND is compared before the id. The obvious
+       `String(lrow.application_id) !== String(guestLink.applicationId)` reads
+       "null" === "null" as agreement, so on a LONG-TERM link — where both
+       sides carry a null application_id — one borrower's token would satisfy a
+       DIFFERENT borrower's link. `linkMatchesGuest` resolves each side to its
+       single owner first. */
     if (!lrow || !bexists.rows[0]
         || lrow.borrower_id !== claims.sub
-        || String(lrow.application_id) !== String(guestLink.applicationId)) {
+        || !conditionLink.linkMatchesGuest(lrow, guestLink)) {
       return sessionDenied(req, res, 'guest_link_revoked',
         'This link is no longer active. Ask your loan team to send a fresh one.');
     }
     // The jail — before any route runs. `baseUrl + path` is the full mount path.
     const fullPath = `${req.baseUrl || ''}${req.path}`;
+    // The jail is built from the ROW, not from the claims — so a token can never
+    // widen its own doors, and the owner is read in exactly one place.
+    const guestOwner = conditionLink.guestFromLink(lrow);
     if (!conditionLink.allowedRequest(
-      { method: req.method, fullPath, body: req.body, headers: req.headers }, {
-        linkId: lrow.id, applicationId: lrow.application_id,
-      })) {
+      { method: req.method, fullPath, body: req.body, headers: req.headers }, guestOwner)) {
       return res.status(403).json({ error: 'This link only opens your outstanding items on this loan. For anything else, ask your loan team.' });
     }
     // Past this line the session is PROVEN good (same chokepoint reasoning as
@@ -175,7 +183,12 @@ async function authenticate(req, res, next) {
     const _jsonG = res.json.bind(res);
     res.json = (body) => _jsonG(borrowerAssistant.scrubPii(body));
     req.actor = { id: claims.sub, kind: 'borrower', role: 'borrower', guestConditions: true };
-    req.guestConditions = { linkId: lrow.id, applicationId: lrow.application_id, email: lrow.sent_to_email };
+    req.guestConditions = {
+      linkId: lrow.id,
+      applicationId: lrow.application_id,
+      ltLoanId: lrow.lt_loan_id || null,
+      email: lrow.sent_to_email,
+    };
     // Best-effort usage stamp — the staff screen shows whether a link was opened.
     db.query(`UPDATE condition_links SET last_used_at=now(), use_count=use_count+1 WHERE id=$1`, [lrow.id]).catch(() => {});
     // Sliding session — re-mint WITH the envelope, so a guest token can never
@@ -183,8 +196,12 @@ async function authenticate(req, res, next) {
     const nowSecG = Math.floor(Date.now() / 1000);
     if (claims.exp && claims.iat
         && (nowSecG - claims.iat) > Math.min(cfg.sessionRefreshAfterSec, (claims.exp - claims.iat) / 2)) {
+      // Re-mint WITH the same owner — a long-term guest token must never slide
+      // into a short-term one (or into a plain borrower token, which would drop
+      // the jail and the PII strip together).
       res.set('X-Refresh-Token', conditionLink.mintGuestToken({
-        borrowerId: claims.sub, linkId: lrow.id, applicationId: lrow.application_id,
+        borrowerId: claims.sub, linkId: lrow.id,
+        applicationId: lrow.application_id, ltLoanId: lrow.lt_loan_id || null,
       }));
     }
     return next();
@@ -1499,10 +1516,21 @@ router.post('/condition-link', async (req, res) => {
       return res.status(404).json({ error: 'This link is no longer active — it may have expired. Reply to the email and your loan team will send a fresh one.' });
     }
     const token = conditionLink.mintGuestToken({
-      borrowerId: link.borrower_id, linkId: link.id, applicationId: link.application_id,
+      borrowerId: link.borrower_id, linkId: link.id,
+      applicationId: link.application_id, ltLoanId: link.lt_loan_id || null,
     });
     db.query(`UPDATE condition_links SET last_used_at=now(), use_count=use_count+1 WHERE id=$1`, [link.id]).catch(() => {});
-    res.json({ ok: true, accessToken: token, applicationId: link.application_id });
+    /* THE SCREEN IS TOLD WHICH PRODUCT IT LANDED ON. One guest entry point
+       serves both — the token decides which endpoints exist, and the page has
+       to know which to call. `product` is the plain answer; `applicationId` is
+       kept for the short-term screen exactly as before. */
+    res.json({
+      ok: true,
+      accessToken: token,
+      product: link.lt_loan_id ? 'long_term' : 'short_term',
+      applicationId: link.application_id,
+      ltLoanId: link.lt_loan_id || null,
+    });
   } catch (e) {
     console.error('[auth] condition-link exchange failed:', db.describeError(e));
     res.status(500).json({ error: 'Something went wrong opening this link — try again in a moment.' });

@@ -511,6 +511,24 @@ scenario('an ordinary RTL column change is untouched by the gate', (app) => {
   write(app, 'db/507_col.sql', 'ALTER TABLE applications ADD COLUMN IF NOT EXISTS rehab_type text;\n');
 }, 'pass');
 
+// The 2026-08-30 share-the-code grant: a column the ledger names PER ITEM
+// passes; the channel must never become a blanket permission.
+scenario('an lt_ column the ledger authorizes by name passes', (app) => {
+  write(app, 'db/508_col.sql', 'ALTER TABLE documents ADD COLUMN IF NOT EXISTS lt_loan_id uuid;\n');
+}, 'pass', null, { ledger: ['column documents.lt_loan_id'] });
+
+scenario('the column grant is PER ITEM — another lt_ column on the same table still FAILS', (app) => {
+  write(app, 'db/509_col.sql', 'ALTER TABLE documents ADD COLUMN IF NOT EXISTS lt_extra_flag boolean;\n');
+}, 'fail', 'is being added to the RTL table', { ledger: ['column documents.lt_loan_id'] });
+
+scenario('the column grant is PER TABLE too — the same column name elsewhere still FAILS', (app) => {
+  write(app, 'db/510_col.sql', 'ALTER TABLE applications ADD COLUMN IF NOT EXISTS lt_loan_id uuid;\n');
+}, 'fail', 'is being added to the RTL table', { ledger: ['column documents.lt_loan_id'] });
+
+scenario('a column grant authorizes a COLUMN, never an import', (app) => {
+  write(app, 'src/longterm/x.js', "require('../lib/crypto');\n");
+}, 'fail', 'Long-Term starts at zero', { ledger: ['column documents.lt_loan_id'] });
+
 // ---- 5. one migration touching both products -------------------------------
 scenario('a migration that touches BOTH products FAILS', (app) => {
   write(app, 'db/508_mixed.sql',

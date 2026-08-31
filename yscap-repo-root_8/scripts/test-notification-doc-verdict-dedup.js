@@ -52,7 +52,11 @@ function call(server, method, path, token, body) {
     const token = C.signJwt({ sub: adminId, kind: 'staff', role: 'super_admin', tv: 0 });
     borrowerId = (await db.query(`INSERT INTO borrowers (first_name,last_name,email) VALUES ('Verdict','Test',$1) RETURNING id`, [bEmail])).rows[0].id;
     appId = (await db.query(`INSERT INTO applications (borrower_id, loan_officer_id, status) VALUES ($1,$2,'processing') RETURNING id`, [borrowerId, adminId])).rows[0].id;
-    const tpl = (await db.query(`SELECT id FROM checklist_templates LIMIT 1`)).rows[0].id;
+    // AN APPLICATION-SCOPED TEMPLATE, not whichever comes back first: the row
+    // staged below is `scope='application'`, and an unordered LIMIT 1 returns
+    // `gov_id`, which lives on the PERSON. db/655 refuses that crossing outright.
+    const tpl = (await db.query(
+      `SELECT id FROM checklist_templates WHERE scope='application' AND is_active ORDER BY sort_order, code LIMIT 1`)).rows[0].id;
     const mkItem = async () => (await db.query(
       `INSERT INTO checklist_items (template_id, scope, application_id, label, status, item_kind, is_required)
        VALUES ($1,'application',$2,'Construction / rehab budget','received','document',true) RETURNING id`, [tpl, appId])).rows[0].id;

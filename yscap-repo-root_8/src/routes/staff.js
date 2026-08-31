@@ -29,6 +29,19 @@ const { decodeUploadBase64, safeFilename } = require('../lib/upload-bytes');
 // nobody can ever get (found live on the track-record export, 2026-08-21).
 const { setContentDisposition } = require('../lib/content-disposition');
 const docAccept = require('../lib/document-acceptance');  // what "accepted" means — one definition
+// WHO A CONDITION BELONGS TO — one descriptor for all four owner scopes, so the
+// sign-off gate can tell an unowned row from a row owned by the other product
+// instead of treating "not an application" as "no rules apply" (db/652, db/653).
+const conditionOwner = require('../lib/condition-owner');
+// THE ONE CONDITION-DOCUMENT SERVICE, shared with the Long-Term loan (2026-08-30
+// share-the-code directive). These routes keep their registration, their
+// middleware and their RTL side effects; the document RULES live in the lib.
+const { ownerOf } = require('../lib/condition-owner');
+const condDocs = require('../lib/condition-docs/upload');
+const condReview = require('../lib/condition-docs/review');
+const condRemove = require('../lib/condition-docs/remove');
+const condServe = require('../lib/condition-docs/serve');
+const condHooks = require('../lib/condition-docs/hooks-rtl');
 const cfg = require('../config');
 const storage = require('../lib/storage');
 const { requireAuth, requireRole, issueEmailToken } = require('../auth');
@@ -9983,6 +9996,98 @@ async function pendingDocumentsBlock(itemId) {
   } catch (_) { return null; }
 }
 
+/**
+ * THE SIGN-OFF RULES THAT ARE TRUE OF EVERY OWNER, NOT ONLY OF AN APPLICATION.
+ *
+ * Reached for an item whose owner is a scope other than the application — today
+ * that is the Long-Term loan (db/652: `scope='lt_loan'`, `lt_loan_id`). It is
+ * DELIBERATELY the generic arm and nothing else: no `rtl_…` code is consulted,
+ * because those codes name RTL conditions and an owner that is not an
+ * application has none of them.
+ *
+ * The wording is the RTL generic arm's, VERBATIM, and that is the point of
+ * sharing the code — two products refusing the same thing should refuse it in
+ * the same sentence, and a fix to that sentence should land on both.
+ *
+ * The owner-neutral arms (pending documents, extra slots, the condition's own
+ * required slots) have ALREADY run before this is called, so by here the only
+ * question left is the one the owner reported as broken: *"you can't really
+ * upload stuff … nothing actually works."*
+ */
+async function sharedOwnerSignOffGate(itemId, item, owner) {
+  /* ── A CONDITION THAT IS ANSWERED ANOTHER WAY IS ASKED FIRST ───────────────
+     Some conditions are a CHOICE, not an upload, and the owner said so plainly
+     about the subject property's mortgage: *"you can just select that it's FCI,
+     whatever, and then you don't need anything, not an attachment and not a
+     form."* The same is true of a credit-report mortgage that is the home the
+     borrower lives in, and of a file with no mortgages on the report at all —
+     *"a condition with no mortgages on it is ANSWERED, not blocked."*
+
+     This arm runs BEFORE the document arm for exactly that reason: those
+     conditions are `item_kind='document'` (deliberately — see the library, which
+     keeps them documents so that if this rule ever stops governing them the gate
+     falls back to asking for the statement, which is the SAFE way to be wrong),
+     so without this they fall straight into the document arm and are refused
+     FOREVER, with no way through but a super-admin override. That is not
+     hypothetical: it is what this gate did between the widening and this fix, and
+     it disagreed with the Long-Term product door, which allowed the very same
+     answer. Two gates, two answers, one condition.
+
+     lib/conditions/answers.js is the ONE definition — the door that RECORDS an
+     answer and both gates that JUDGE one all read it, so what may be recorded and
+     what finishes a condition can never drift apart. */
+  const answers = require('../lib/conditions/answers');
+  const plan = answers.plan({ code: item.template_code || '' });
+  if (plan) {
+    const recorded = item.tool_payload && typeof item.tool_payload === 'object' ? item.tool_payload : {};
+    const docs = (await db.query(
+      `SELECT slot_label, review_status FROM documents
+         WHERE checklist_item_id=$1 AND is_current`, [itemId])).rows;
+    const byLine = {};
+    for (const d of docs) {
+      if (!d.slot_label) continue;
+      // The same shape the Long-Term door builds: a line counts as documented
+      // when its slot carries an ACCEPTED document, never merely a present one.
+      if (d.review_status === 'accepted') byLine[d.slot_label] = true;
+    }
+    const mortgages = Array.isArray(recorded.mortgages) ? recorded.mortgages : [];
+    const verdict = answers.satisfies({ code: item.template_code || '' }, recorded, {
+      // The lines to answer are the ones a PERSON marked as mortgages, read off
+      // the condition's own recorded answer — never re-derived here, or the gate
+      // and the screen could disagree about how many there are.
+      lines: mortgages.map((m) => (typeof m === 'string' ? { key: m, label: m } : m)),
+      documentsByLine: byLine,
+      hasDocument: docs.some((d) => d.review_status === 'accepted'),
+    });
+    return verdict.ok ? null : verdict.why;
+  }
+
+  // A REQUIRED DOCUMENT CONDITION WITH NOTHING ACCEPTED ON IT CANNOT BE SIGNED
+  // OFF. `item_kind='document' AND tool_key IS NULL` is the same test the RTL
+  // arm uses, and it is why the Long-Term vocabulary maps a form / order / esign
+  // condition onto a tool_key: those are answered another way and must not be
+  // refused for want of a document (src/longterm/conditions-center/vocabulary.js).
+  // An OPTIONAL condition may still be completed empty — that is what optional
+  // means, and refusing it would leave no way to close one.
+  if (item.item_kind === 'document' && !item.tool_key && item.is_required !== false) {
+    // ACCEPTED, not merely "not rejected" (owner-directed 2026-08-03). The
+    // pending check has already run, so documents on the item at this point were
+    // rejected — which is a different problem with a different next step, and
+    // telling somebody to upload a document that is already sitting there is
+    // advice nobody can act on.
+    const has = await db.query(
+      `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current
+         AND ${docAccept.ACCEPTED_SQL('')} LIMIT 1`, [itemId]);
+    if (!has.rows.length) {
+      const any = await db.query(
+        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current LIMIT 1`, [itemId]);
+      if (any.rows.length) return docAccept.ALL_REJECTED_MSG;
+      return 'Upload a document to this condition before signing it off — a document-based condition cannot be completed with nothing uploaded.';
+    }
+  }
+  return null;
+}
+
 async function signOffGate(itemId, actor) {
   const pendingBlock = await pendingDocumentsBlock(itemId);
   if (pendingBlock) return pendingBlock;
@@ -9992,12 +10097,50 @@ async function signOffGate(itemId, actor) {
   // per-condition branches. One definition: lib/conditions/extra-slots.js.
   const extraSlotBlock = await require('../lib/conditions/extra-slots').gateProblem(itemId);
   if (extraSlotBlock) return extraSlotBlock;
+  // REQUIRED NAMED SLOTS THE CONDITION DECLARES FOR ITSELF (db/653). The same
+  // rule as the arm above and for the same reason it runs here — it is true of
+  // every condition of every owner — but the slots come from the condition's own
+  // list rather than from somebody asking for one by hand. It is ported out of
+  // the Long-Term build (`conditions-center/write.js` missingSlots), which had a
+  // generic version of the rule RTL states three times by hand below.
+  //
+  // A NO-OP FOR EVERY RTL CONDITION, BY CONSTRUCTION RATHER THAN BY CARE: it
+  // reads `checklist_items.slots`, RTL writes that column nowhere, and an empty
+  // list returns null on the module's first line. The hard-coded binder+invoice
+  // and xml+pdf arms below keep owning their four conditions — deliberately, and
+  // lib/conditions/required-slots.js says exactly why reading the TEMPLATE's
+  // slots here would have changed live RTL behaviour in two places.
+  const requiredSlotBlock = await require('../lib/conditions/required-slots').gateProblem(itemId);
+  if (requiredSlotBlock) return requiredSlotBlock;
   const it = await db.query(
-    `SELECT ci.application_id, ci.borrower_id, ci.field_key, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
+    `SELECT ci.application_id, ci.borrower_id, ci.llc_id, ci.lt_loan_id, ci.scope,
+            ci.field_key, ci.tool_key, ci.tool_payload, ci.item_kind, ci.is_required,
             (SELECT code FROM checklist_templates t WHERE t.id=ci.template_id) AS template_code
        FROM checklist_items ci WHERE ci.id=$1`, [itemId]);
   const item = it.rows[0];
-  if (!item || !item.application_id) return null;
+  if (!item) return null;
+  // THE GATE LEARNS THE FOURTH OWNER SCOPE (db/652 + db/653, the 2026-08-30
+  // share-the-code grant).
+  //
+  // THIS LINE USED TO READ `if (!item || !item.application_id) return null;` AND
+  // THAT WAS A HOLE, not a simplification: it made the ENTIRE gate a no-op for
+  // any item that is not application-scoped. Harmless while the only such items
+  // were borrower-profile and LLC rows, which carry no document rules — and a
+  // real defect the moment a Long-Term loan became the fourth owner, because a
+  // Long-Term DOCUMENT condition would then have signed off WITH NOTHING
+  // UPLOADED, silently, on every file.
+  //
+  // Widened THROUGH THE OWNER DESCRIPTOR (lib/condition-owner.js) rather than by
+  // adding a second `||` test, because "which product owns this row" is exactly
+  // the question that must have one answer: `ownerOfRow` returns null for the
+  // scopes that have no rules here, and those keep the historical no-op to the
+  // byte. The RTL path below is untouched — it is reached only when
+  // `application_id` is set, exactly as before.
+  if (!item.application_id) {
+    const owner = conditionOwner.ownerOfRow(item);
+    if (!owner || owner.scope === 'application') return null;
+    return sharedOwnerSignOffGate(itemId, item, owner);
+  }
   const code = item.template_code || '';
   const isProduct = code === 'rtl_p1_product' || item.tool_key === 'product_pricing';
   const isBudget = code === 'rtl_p1_budget' || item.tool_key === 'rehab_budget';
@@ -19206,8 +19349,11 @@ const UPLOAD_AI_READBACK_BYTES = 25 * 1024 * 1024;
    drift, and the one that drifts is the one that leaks a document to a borrower. */
 const uploadAppDocument = async (req, res) => {
   const b = req.body || {};
-  if (!b.filename || !b.dataBase64) return res.status(400).json({ error: 'filename + dataBase64 required' });
-  b.filename = safeFilename(b.filename);   // S4-10: sanitize + length-cap before it hits the DB / emails
+  // The intake contract AND the one filename sanitiser are the shared door's, so the
+  // two products answer the same refusal to the same bad request (S4-10: sanitize +
+  // length-cap before it hits the DB / emails).
+  try { condDocs.assertUploadIntake(b); }
+  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   const appOk = await db.query(`SELECT id, borrower_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [req.params.id]);
   if (!appOk.rows[0]) return res.status(404).json({ error: 'not found' });
   let borrowerId = appOk.rows[0].borrower_id;
@@ -19240,41 +19386,35 @@ const uploadAppDocument = async (req, res) => {
       [req.params.id]);
     if (pp.rows[0]) { b.checklistItemId = pp.rows[0].id; if (!b.slot) b.slot = 'Term sheet'; }
   }
-  let itemLabel = '';
-  let itemAudience = null;
-  let itemTrackRecordId = null;
-  let itemCode = null;
-  if (b.checklistItemId) {
-    // An LLC slot item has application_id NULL — look it up by llc_id instead.
-    const it = llcId
-      ? await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience, track_record_id, (SELECT code FROM checklist_templates ct WHERE ct.id=checklist_items.template_id) AS template_code FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, llcId])
-      : await db.query(`SELECT id, COALESCE(borrower_label,label) AS label, audience, track_record_id, (SELECT code FROM checklist_templates ct WHERE ct.id=checklist_items.template_id) AS template_code FROM checklist_items WHERE id=$1 AND application_id=$2`, [b.checklistItemId, req.params.id]);
-    if (!it.rows[0]) return res.status(404).json({ error: 'checklist item not found on this file' });
-    itemLabel = it.rows[0].label;
-    itemCode = it.rows[0].template_code || null;
-    itemAudience = it.rows[0].audience;
-    // A condition raised FOR one track-record line item: the upload belongs to
-    // that line too (same contract as the borrower path).
-    itemTrackRecordId = it.rows[0].track_record_id || null;
+  /* THE SHARED DOOR (src/lib/condition-docs/upload.js). Everything from "which
+     condition is this landing in" through the INSERT, the supersede rules and the
+     evidence re-open was lifted out VERBATIM so the Long-Term door runs the same
+     code — the inbound-mail extraction pattern: the module moves, this file calls
+     it, and the behaviour is byte-identical. The RTL side effects that follow
+     (appraisal auto-import, the research XML catch, the AI classifier, the
+     SharePoint kick, the pipeline shadow) stay HERE, where the request and this
+     route's own audit trail are; the two that are interleaved with the shared work
+     — the ClickUp push and the borrower notification — ride as hooks, defaulted to
+     the RTL set for an application owner. */
+  // NAMED `landed`, not `out`: the appraisal auto-import below already binds an
+  // `out` of its own inside a nested block, and two different results under one
+  // name in one function is how the wrong one gets read.
+  let landed;
+  try {
+    landed = await condDocs.uploadConditionDocument(req, {
+      owner: ownerOf('application', req.params.id),
+      body: b, actorId: req.actor.id, borrowerId, llcId, q: db,
+    });
+  } catch (e) {
+    // Only a refusal this door RAISED carries a status; anything else (a database
+    // failure, a bug) keeps travelling to safe-router, exactly as it always did.
+    if (!e || !e.status) throw e;
+    return res.status(e.status).json({ error: e.message });
   }
-  // Internal (staff-audience) conditions like Insurance / Title never leak to the
-  // borrower: store the document staff-only and skip the borrower notification.
-  // A caller may ask for STAFF-ONLY explicitly — never for borrower-visible. This
-  // is how a document with no staff-audience condition to hang on (the purchase
-  // advice, which names the note buyer and the sale price) can be uploaded
-  // without being borrower-visible for the window before it is designated. The
-  // request can only ever RESTRICT, so no caller can widen a document's reach.
-  const staffOnly = itemAudience === 'staff' || b.staffOnly === true;
-  const docVisibility = staffOnly ? 'staff_only' : 'borrower';
-  /* THE BYTES, WHICHEVER DOOR THEY CAME THROUGH (owner-directed 2026-08-21).
-     A JSON body is decoded strictly and stored here; a STREAMED upload is already in
-     storage and `takeUpload` simply reports where — so this handler, its authorization,
-     its condition lookups and its visibility rules are the SAME code on both doors.
-     Any refusal carries its real reason and its real status. */
-  let up;
-  try { up = await require('../lib/upload-stream').takeUpload(req, b); }
-  catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  const uploadBytes = up.bytes;
+  if (landed.deduped) {
+    return res.status(201).json({ ok: true, documentId: landed.documentId, deduped: true, visibility: landed.visibility });
+  }
+  const { documentId, visibility: docVisibility, up, uploadBytes, docKind, slot } = landed;
   /* THREE THINGS DOWNSTREAM WANT THE ACTUAL BYTES — the appraisal XML auto-import, the
      research warehouse's XML catch, and the AI classifier. On the JSON door they are
      already in memory; on the STREAMING door reading them back costs memory equal to the
@@ -19284,132 +19424,6 @@ const uploadAppDocument = async (req, res) => {
      into a failed upload. */
   const bytesFor = (limit) => require('../lib/upload-stream').readUploadBytes(up, limit);
   const looksXmlUpload = /\.xml$/i.test(b.filename || '') || /xml/i.test(b.contentType || '');
-  // A manual upload onto the Heter Iska condition gets an explicit doc_kind so it is
-  // provenance-distinguishable from the DocuSign-fed executed copy (heter_iska_signed +
-  // source_type system) AND is kept in-system only — heter_iska_manual is on the
-  // SharePoint never-mirror list, the TPR-export denylist and closing-prep's FROZEN_KINDS,
-  // exactly like heter_iska_signed (owner policy: the Heter Iska never leaves the building).
-  // A client can never forge heter_iska_signed here (only term_sheet is client-settable).
-  // A wire form uploaded onto the draw condition (draw_cond_signed_request) — whether from
-  // the draw desk's own manual-upload route or straight from the conditions list — gets
-  // doc_kind='draw_request_signed' so it's picked up by the money gate AND the investor-delivery
-  // attachment exactly like a DocuSign-fed copy (owner-directed 2026-08). A manual copy is told
-  // apart from a DocuSign one only by source_type (this door → not 'system'). Unlike the Heter
-  // Iska, the wire form DOES leave the building (it goes to the investor), so it is on no denylist.
-  const docKind = b.docKind === 'term_sheet' ? 'term_sheet'
-    : (itemCode === 'rtl_cond_iska' ? 'heter_iska_manual'
-      : (itemCode === 'draw_cond_signed_request' ? 'draw_request_signed' : null));
-  // WHICH STAMP these bytes print (owner-directed 2026-08-02, db/404). The
-  // INITIAL/FINAL wording is drawn into the PDF at generation time, so the
-  // generator is the only thing that knows — it reports what it printed and we
-  // record it. This is a description of the file, never an authorization: the
-  // send gate still decides whether a package may go out, and orchestrate.js
-  // reads this only to refuse mailing a sheet whose own face says "NOT FINAL".
-  const termSheetFinal = docKind === 'term_sheet' ? (b.termSheetFinal === true) : null;
-  let slot = b.slot ? String(b.slot).trim().slice(0, 80) : null;
-  // Every slot keeps every document. On a plain ADD (not an explicit replace),
-  // if the slot label collides with a document already on the item, make it
-  // unique so the two never display under one identical label — a fixed slot
-  // becomes "Insurance binder (2)", a free-form add "Document 3", etc.
-  if (slot && b.checklistItemId && !b.replaceDocumentId) {
-    slot = await require('../lib/slot-label').uniqueSlotLabel(b.checklistItemId, slot);
-  }
-  const dupApp = await require('../lib/doc-dedup').recentDuplicateDocId({   // idempotency (#87)
-    filename: b.filename, sizeBytes: uploadBytes, uploadedByKind: 'staff', uploadedById: req.actor.id,
-    applicationId: llcId ? null : req.params.id, checklistItemId: b.checklistItemId || null,
-    llcId: llcId || null, trackRecordId: itemTrackRecordId, slotLabel: slot, docKind, termSheetFinal });
-  if (dupApp) {
-    /* The bytes are ALREADY in storage on both doors now (the streaming one cannot know
-       about a duplicate until they have landed), so a de-duplicated upload would leave an
-       object nothing points at. Remove it — best-effort, because an orphan blob is waste,
-       never a correctness problem, and must not turn a successful de-dupe into an error. */
-    try { await storage.remove(up.ref); } catch (_) { /* orphan cleanup is best-effort */ }
-    return res.status(201).json({ ok: true, documentId: dupApp, deduped: true, visibility: docVisibility });
-  }
-  const { ref, provider } = up;
-  const r = await db.query(
-    // A `term_sheet` here is PILOT'S OWN generated PDF, captured from the Term
-    // Sheet Studio at registration (that is the ONLY thing that sets this kind
-    // at this door — a human uploading a document never passes docKind). So it
-    // is born ACCEPTED: nobody reviews a sheet the system just drew, and left
-    // pending the acceptance rule would drop it from the TPR export's Term Sheet
-    // folder AND make `closing-prep.blockers` refuse every order on the file for
-    // want of a term sheet. Every other upload through this door stays pending
-    // and waits for a reviewer. Owner-directed 2026-08-03; see
-    // lib/document-acceptance.js.
-    `INSERT INTO documents (application_id,checklist_item_id,borrower_id,llc_id,track_record_id,filename,content_type,size_bytes,storage_provider,storage_ref,
-                            uploaded_by_kind,uploaded_by_id,doc_kind,slot_label,visibility,term_sheet_final,
-                            review_status,reviewed_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'staff',$11,$12,$13,$14,$15,
-             CASE WHEN $12='term_sheet' THEN 'accepted' ELSE 'pending' END,
-             CASE WHEN $12='term_sheet' THEN now() ELSE NULL END) RETURNING id`,
-    [llcId ? null : req.params.id, b.checklistItemId || null,
-     (b.checklistItemId || llcId) ? borrowerId : null, llcId, itemTrackRecordId,
-     b.filename, b.contentType || 'application/octet-stream', uploadBytes, provider, ref,
-     req.actor.id, docKind, slot, docVisibility, termSheetFinal]);
-  if (itemTrackRecordId) {
-    await db.query(
-      `UPDATE track_records SET docs_status='received', updated_at=now()
-        WHERE id=$1 AND docs_status IN ('outstanding','requested')`, [itemTrackRecordId]);
-  }
-  if (docKind === 'term_sheet') {
-    await db.query(
-      `UPDATE documents SET is_current=false,
-          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-        WHERE application_id=$1 AND doc_kind='term_sheet' AND id<>$2 AND is_current=true`,
-      [req.params.id, r.rows[0].id]);
-  }
-  // A wire form is a ONE-CURRENT document like the term sheet: a wire form uploaded onto the
-  // draw condition supersedes any OTHER current draw_request_signed so the money gate and the
-  // investor-delivery attachment see EXACTLY ONE (mirrors the draw-desk manual route and the
-  // DocuSign completion). Without this, a corrected wire form uploaded from the conditions list
-  // after a prior accept would leave two current copies — the gate green off the old accepted
-  // one while delivery attached the new unaccepted one. A superseded ACCEPTED copy drops off the
-  // gate (is_current=false), forcing the new form to be re-accepted before any wire can move.
-  if (docKind === 'draw_request_signed') {
-    await db.query(
-      `UPDATE documents SET is_current=false,
-          review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-        WHERE application_id=$1 AND doc_kind='draw_request_signed' AND id<>$2 AND is_current=true`,
-      [req.params.id, r.rows[0].id]);
-  }
-  if (b.checklistItemId) {
-    // EVERY document slot keeps EVERY document (owner-directed): a plain ADD never
-    // deletes what's already there. Only an EXPLICIT replace (the user clicked
-    // "Replace" on one document, sending replaceDocumentId) supersedes — and it
-    // supersedes ONLY that one document, never its siblings or the whole slot.
-    //
-    // This fixes the "upload a 2nd document and the 1st disappears" bug at its
-    // root: the old blanket supersede matched every current document on the
-    // condition whenever the slot label was null or collided (a free-form add) and
-    // matched the same-labelled document on a fixed slot (appraisal xml/pdf,
-    // insurance binder/invoice), so a second upload wiped the first. Now a fixed
-    // slot accumulates just like a free-form one, and nothing is ever lost on add.
-    if (b.replaceDocumentId) {
-      await db.query(
-        `UPDATE documents SET is_current=false,
-            review_status=CASE WHEN review_status IN ('pending','rejected') THEN 'superseded' ELSE review_status END
-          WHERE id=$1 AND checklist_item_id=$2`,
-        [b.replaceDocumentId, b.checklistItemId]);
-    }
-    // A superseding upload replaces the reviewed evidence with a new UNREVIEWED
-    // file, so a prior sign-off no longer matches what's on the item — drop it so
-    // the new version is re-reviewed before the file can clear-to-close.
-    await require('../lib/checklist-evidence').reopenConditionEvidence(db, b.checklistItemId, 'received');
-    enqueueChecklistStatusPush(b.checklistItemId).catch(() => {}); // mapped conditions → ClickUp dropdown
-    // The shared list works both ways — tell the borrower their team added it.
-    // Staff-only (internal) conditions are never surfaced or emailed to them.
-    if (borrowerId && !staffOnly) {
-      try {
-        const ctx = await notify.fileContext(req.params.id);
-        await notify.notifyBorrower(borrowerId, {
-          type: 'doc_uploaded', title: `Your loan team added a document to "${itemLabel}"`,
-          body: `"${b.filename}" was uploaded to ${llcId ? 'your entity documents' : `condition "${itemLabel}"`}${slot ? ` (${slot})` : ''}${ctx ? ` on ${ctx.label}` : ''} on your behalf.`,
-          meta: (ctx && ctx.borrowerMeta) || undefined,
-          applicationId: llcId ? null : req.params.id, link: llcId ? '/entities' : `/app/${req.params.id}` });
-      } catch (_) { /* best-effort */ }
-    }
-  }
   // An LLC-slot upload re-drives the umbrella LLC condition on every open file
   // vesting in the entity (all slots present → received; etc).
   if (llcId) { try { await llcLib.syncLlcConditions(llcId); } catch (_) { /* best-effort */ } }
@@ -19434,7 +19448,7 @@ const uploadAppDocument = async (req, res) => {
           [b.checklistItemId])).rows[0];
         const out = await require('../lib/appraisal/desk').runAppraisalImport({
           appId: req.params.id, xml, importedBy: req.actor.id,
-          xmlDocumentId: r.rows[0].id, pdfDocumentId: pdfDoc && pdfDoc.id,
+          xmlDocumentId: documentId, pdfDocumentId: pdfDoc && pdfDoc.id,
         });
         if (out && out.ok) {
           // Surface the result so the upload UI can announce "findings built" and
@@ -19455,7 +19469,7 @@ const uploadAppDocument = async (req, res) => {
     } catch (e) { console.error('[appraisal] condition auto-import failed (non-fatal):', e && e.message); }
   }
 
-  await audit(req, 'upload_document', 'document', r.rows[0].id, { filename: b.filename, docKind, checklistItemId: b.checklistItemId || null, llcId });
+  await audit(req, 'upload_document', 'document', documentId, { filename: b.filename, docKind, checklistItemId: b.checklistItemId || null, llcId });
   try { require('../lib/sharepoint-backup').kick(); } catch (_) {}
 
   // EVERY APPRAISAL XML FEEDS THE RESEARCH WAREHOUSE, WHEREVER IT WAS FILED
@@ -19482,7 +19496,7 @@ const uploadAppDocument = async (req, res) => {
     require('../lib/research/xml-catch').fireCatch({
       bytes: looksXmlUpload ? await bytesFor(UPLOAD_XML_READBACK_BYTES) : (up.buf || null),
       filename: b.filename, contentType: b.contentType,
-      documentId: r.rows[0].id,
+      documentId: documentId,
       uploadedByStaffId: req.actor && req.actor.kind === 'staff' ? req.actor.id : null,
       why: 'a loan file (staff upload)',
     });
@@ -19495,7 +19509,7 @@ const uploadAppDocument = async (req, res) => {
   // belongs to a different condition than where it was filed, (b) splitter if the
   // document looks like a combined package. Fires in setImmediate so upload stays
   // fast; every step is best-effort and never blocks the response.
-  const uploadedDocId = r.rows[0].id;
+  const uploadedDocId = documentId;
   const appIdForAi = llcId ? null : req.params.id;
   if (appIdForAi && uploadBytes) setImmediate(() => {
     (async () => {
@@ -19549,7 +19563,7 @@ const uploadAppDocument = async (req, res) => {
   // eligible staff upload feeds the shadow line (not just the docs V1 auto-reads). Inert unless the
   // shadow flag is on (zero db work when off), idempotent, never throws — it can't affect this upload.
   try { await require('../pipeline/enqueue-on-upload').enqueueUploadedDocument(db, { documentId: uploadedDocId, loanId: appIdForAi, checklistItemId: b.checklistItemId || null, docKind }); } catch (_) { /* advisory only */ }
-  res.status(201).json({ ok: true, documentId: r.rows[0].id, visibility: docVisibility, ...(apprImport ? { appraisal: apprImport } : {}) });
+  res.status(201).json({ ok: true, documentId: documentId, visibility: docVisibility, ...(apprImport ? { appraisal: apprImport } : {}) });
 };
 router.post('/applications/:id/documents', uploadAppDocument);
 router.post('/applications/:id/documents/binary',
@@ -19571,87 +19585,32 @@ router.post('/applications/:id/documents/binary',
 // one cascading action or three quick clicks) — the first format's verdict
 // notifies, the sibling formats update silently. Returns true if THIS call should
 // notify. No checklist item to key on (LLC/profile doc) → always notify.
-async function claimItemVerdictEmail(checklistItemId, action) {
-  if (!checklistItemId) return true;   // no logical item to key on → always notify
-  // Use the shared ATOMIC claim (pg_advisory_xact_lock in its own statement) —
-  // a plain INSERT…WHERE NOT EXISTS is NOT race-safe under READ COMMITTED, so two
-  // of the export formats' parallel reject calls could both win and re-send. The
-  // helper also FAILS CLOSED on a DB error (returns null → no email) instead of
-  // throwing a 500 out of the handler after the review already committed.
-  const { claimOncePerPeriod } = require('../lib/throttle-claim');
-  return (await claimOncePerPeriod({ action, entityId: checklistItemId, interval: '5 minutes', entityType: 'checklist_item' })) != null;
-}
+// The throttle itself is the shared door's (lib/condition-docs/review) so both
+// products claim the same window the same way; this stays as the local name every
+// call site below already uses.
+const claimItemVerdictEmail = (checklistItemId, action) => condReview.claimVerdictEmail(checklistItemId, action);
 router.post('/documents/:id/review', async (req, res) => {
   const b = req.body || {};
   const action = b.action;
-  if (!['accept', 'reject'].includes(action)) return res.status(400).json({ error: 'action must be accept or reject' });
-  // Accepting a document completes its condition — processor/admin only.
-  // Anyone on the file may reject (the document lands in the file's trash).
-  if (action === 'accept' && !can(req.actor, 'sign_off_conditions')) {
-    return res.status(403).json({ error: 'Only the processor can accept a document — you can reject it or mark the condition reviewed.' });
-  }
-  if (action === 'reject' && !String(b.reason || '').trim()) return res.status(400).json({ error: 'a rejection reason is required' });
-  // Accept + request another document: the borrower must be told WHAT else is
-  // needed, so the note is required too (owner-directed 2026-07-12) — an empty
-  // "request more" left the borrower with a still-open condition and no reason.
-  if (action === 'accept' && b.requestMore && !String(b.note || '').trim()) {
-    return res.status(400).json({ error: 'tell the borrower what additional document is needed' });
-  }
+  // The verdict contract — which actions exist, who may accept, and which refusal
+  // comes first — is the shared door's (lib/condition-docs/review), so the two
+  // products can never answer a different sentence to the same bad request. WHO may
+  // accept stays ours: the two products have different role systems.
+  let verdict;
+  try { verdict = condReview.validateVerdict(b, { canAccept: can(req.actor, 'sign_off_conditions') }); }
+  catch (e) { if (!e || !e.status) throw e; return res.status(e.status).json({ error: e.message }); }
   try {
-    const r = await db.query(
-      `SELECT id,filename,application_id,borrower_id,llc_id,checklist_item_id,track_record_id FROM documents WHERE id=$1`, [req.params.id]);
-    const doc = r.rows[0];
+    const doc = await condReview.loadDocument(db, req.params.id);
     if (!doc) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
 
-    const status = action === 'accept' ? 'accepted' : 'rejected';
-    // Accept-and-request-more: the document itself is GOOD and stays accepted,
-    // but the condition is not satisfied yet — the reviewer asks the borrower
-    // for one more document on the same condition (a new slot), so the
-    // condition stays open instead of signing off.
-    const requestMore = action === 'accept' && !!b.requestMore;
-    const moreNote = requestMore ? String(b.note || '').trim().slice(0, 500) : '';
-    await db.query(
-      `UPDATE documents SET review_status=$2, rejection_reason=$3, reviewed_by=$4, reviewed_at=now() WHERE id=$1`,
-      [doc.id, status, action === 'reject' ? String(b.reason).slice(0, 1000) : null, req.actor.id]);
-
-    // Move the linked checklist item: accept -> satisfied, reject -> issue —
-    // unless the reviewer asked for another document, which keeps it open.
-    if (doc.checklist_item_id) {
-      if (requestMore) {
-        // The note must reach the BORROWER — ci.notes is internal-only (never
-        // sent to borrowers), so the ask lands in borrower_hint, replacing any
-        // previous "Still needed:" suffix instead of stacking them.
-        const cur = await db.query(`SELECT COALESCE(borrower_hint, hint, '') AS bh FROM checklist_items WHERE id=$1`, [doc.checklist_item_id]);
-        const baseHint = String((cur.rows[0] && cur.rows[0].bh) || '').replace(/\s*·?\s*Still needed:.*$/s, '').trim();
-        const newHint = moreNote ? (baseHint ? `${baseHint} · Still needed: ${moreNote}` : `Still needed: ${moreNote}`) : null;
-        await db.query(
-          `UPDATE checklist_items SET status='outstanding',
-                  signed_off_at=NULL, signed_off_by=NULL, reviewed_at=NULL, reviewed_by=NULL,
-                  notes=CASE WHEN $2 <> '' THEN $2 ELSE notes END,
-                  borrower_hint=COALESCE($3, borrower_hint), updated_at=now() WHERE id=$1`,
-          [doc.checklist_item_id, moreNote ? `Still needed: ${moreNote}` : '', newHint]);
-      } else if (action === 'accept') {
-        // Accepting a document only marks the condition RECEIVED — NOT satisfied
-        // (owner-directed 2026-07-12). The condition stays open on the list until
-        // a reviewer explicitly SIGNS IT OFF (which routes through signOffGate and
-        // therefore enforces every required document/slot — e.g. a background AND
-        // criminal report, insurance binder AND invoice). This prevents a
-        // multi-document condition from "flying away" the moment ONE of its
-        // documents is accepted, and keeps accept (doc is good) distinct from
-        // sign-off (the whole condition is complete).
-        await db.query(`UPDATE checklist_items SET status='received', updated_at=now() WHERE id=$1`,
-          [doc.checklist_item_id]);
-      } else {
-        // Reject -> issue, AND drop any prior sign-off: the rejected document was
-        // the evidence the sign-off attested to, so the condition must re-open
-        // (otherwise a signed-off condition stays "cleared" for the clear-to-close
-        // gate with rejected/zero evidence). Same class as the LLC/track-record
-        // reject-revokes-verification handling below.
-        await require('../lib/checklist-evidence').reopenConditionEvidence(db, doc.checklist_item_id, 'issue');
-      }
-      enqueueChecklistStatusPush(doc.checklist_item_id).catch(() => {}); // mapped conditions → ClickUp dropdown
-    }
+    // The stamps and the condition moves are the shared door's — accept marks the
+    // condition RECEIVED and never satisfied (#135), reject re-opens it to 'issue'
+    // and drops the sign-off the rejected document was the evidence for, and a
+    // request-for-more writes the ask into borrower_hint rather than the internal
+    // notes. The ClickUp push rides as this product's own hook.
+    const { status, requestMore, moreNote } = verdict;
+    await condReview.applyVerdict(db, { doc, verdict, actorId: req.actor.id, hooks: condHooks.RTL });
     await audit(req, action === 'accept' ? (requestMore ? 'accept_document_request_more' : 'accept_document') : 'reject_document', 'document', doc.id,
       action === 'reject' ? { reason: b.reason } : requestMore ? { note: moreNote } : null);
 
@@ -19779,11 +19738,7 @@ router.post('/documents/:id/review', async (req, res) => {
 // docs) since they all live in one `documents` table, keyed by the doc id.
 router.delete('/documents/:id', async (req, res) => {
   try {
-    const r = await db.query(
-      `SELECT id,filename,storage_provider,storage_ref,application_id,borrower_id,llc_id,
-              checklist_item_id,track_record_id,review_status,is_current,sharepoint_backed_up_at
-         FROM documents WHERE id=$1`, [req.params.id]);
-    const doc = r.rows[0];
+    const doc = await condRemove.loadDocument(db, req.params.id);
     if (!doc) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
     // Permanent, irreversible deletion (and SharePoint-backup suppression) is
@@ -19798,44 +19753,12 @@ router.delete('/documents/:id', async (req, res) => {
     if (!can(req.actor, 'sign_off_conditions') && !isLoanOfficer)
       return res.status(403).json({ error: 'You do not have permission to permanently delete documents.' });
 
-    // Remove the stored bytes best-effort (never block the DB delete on a
-    // storage hiccup). local unlinks; s3/sharepoint providers are no-op removes.
-    try { if (doc.storage_ref) await storage.remove(doc.storage_ref); } catch (_) { /* orphan bytes are acceptable */ }
-
-    // A document PULLED from Sitewire onto a draw (draw_attachments.source_key) must have its
-    // removal REMEMBERED before the row dies — the delete below CASCADES the draw_attachments
-    // row away (db/507), and without the ledger entry the next Sitewire poll re-downloads and
-    // re-files the document forever (re-audit 2026-08-10: the draw card's own Remove was fixed;
-    // this general door reaches the same rows). Best-effort, never blocks the delete.
-    let swSourceKey = null, swAppId = null;
-    try {
-      const da = (await db.query(`SELECT application_id, source_key FROM draw_attachments WHERE document_id=$1 AND source_key IS NOT NULL LIMIT 1`, [doc.id])).rows[0];
-      if (da) { swSourceKey = da.source_key; swAppId = da.application_id; }
-    } catch (_) {}
-
-    // Hard-delete the row. Most FKs into documents are ON DELETE SET NULL
-    // (borrowers.photo_id_document_id); draw_attachments.document_id CASCADES (db/507) — a
-    // binding to a deleted document is meaningless — which is exactly why the source_key was
-    // captured above before the delete.
-    await db.query(`DELETE FROM documents WHERE id=$1`, [doc.id]);
-    if (swSourceKey) { try { await require('../sitewire/property-doc-ingest').rememberRemoved(swAppId, swSourceKey); } catch (_) {} }
-
-    // If this was the current document on a checklist condition and nothing
-    // accepted remains, reopen the condition so it's re-requested (unless it was
-    // already signed off — a signed-off item stays; staff can reopen it
-    // explicitly). Mirrors the review endpoint's condition handling.
-    if (doc.checklist_item_id) {
-      const remain = await db.query(
-        `SELECT 1 FROM documents WHERE checklist_item_id=$1 AND is_current=true AND review_status='accepted' LIMIT 1`,
-        [doc.checklist_item_id]);
-      if (!remain.rows[0]) {
-        await db.query(
-          `UPDATE checklist_items SET status='outstanding', updated_at=now()
-            WHERE id=$1 AND status IN ('received','issue','requested') AND signed_off_at IS NULL`,
-          [doc.checklist_item_id]);
-        try { await enqueueChecklistStatusPush(doc.checklist_item_id); } catch (_) {}
-      }
-    }
+    // The removal itself is the shared door's (lib/condition-docs/remove) — the
+    // bytes, the hard delete, and the condition re-open when nothing accepted is
+    // left. The Sitewire memory rides as this product's own before/after hooks:
+    // the source key must be READ while the row exists and RECORDED once it is
+    // gone, or the next poll re-files the document forever.
+    await condRemove.removeDocument(db, { doc, hooks: condHooks.RTL });
 
     // Removing CURRENT evidence un-does the downstream state the same way a
     // reject does — deleting a mistake pending doc changes nothing, but deleting
@@ -19894,6 +19817,32 @@ router.getApprovedDocuments = getApprovedDocuments;
 // be assigned to the document's application, or (for borrower/llc-scoped docs)
 // to some application belonging to that borrower.
 async function canSeeDocument(req, doc) {
+  /* ── A LONG-TERM DOCUMENT IS NOT REACHED THROUGH THIS DOOR ─────────────────
+     THIS RUNS BEFORE THE see-all SHORT-CIRCUIT, and that order is the whole fix.
+     A Long-Term condition document carries `lt_loan_id` and has application_id,
+     borrower_id and llc_id all NULL — so every branch below falls through to
+     `return false`, and a non-see-all actor was refused by ACCIDENT rather than by
+     a rule. A see-all actor was not refused at all.
+
+     Measured on a real server before this guard existed: an RTL processor who is
+     not a contact on the loan got 404 from every /api/lt door — loadScopedLoan
+     doing its job — and 200 from /api/staff/documents/:id/download, /review and
+     DELETE on the SAME document id. The delete was permanent and the Long-Term
+     condition fell back to outstanding. Underwriter, loan_coordinator, admin,
+     processor and closer all reached it; only loan_officer did not.
+
+     The hole is older than the Long-Term rows, but nothing produced such a row
+     until the Long-Term upload door shipped, so this is the commit that makes it
+     live — which is why it is closed in the same one.
+
+     REFUSED OUTRIGHT, not delegated. Long-Term files have their own authorization
+     model (src/longterm/access.js: the LT role map, SCOPE_OWN vs SCOPE_ALL, the
+     per-loan contact list) and their own doors, which apply it through
+     loadScopedLoan. Re-deriving any of that here would be a second copy of a scope
+     — the exact drift this codebase has paid for before. A staffer who may work
+     the loan reaches its documents through /api/lt/condition-center; this door
+     answers for RTL files and says so. */
+  if (doc && doc.lt_loan_id) return false;
   if (seesAll(req)) return true;
   if (doc.application_id) {
     // An application document is authorized SOLELY by assignment to its own
@@ -20135,14 +20084,16 @@ router.get('/documents/:id/dossier', async (req, res) => {
 
 router.get('/documents/:id/download', async (req, res) => {
   try {
-    const r = await db.query(
-      `SELECT id,filename,content_type,storage_ref,application_id,borrower_id,llc_id FROM documents WHERE id=$1`,
-      [req.params.id]);
-    const doc = r.rows[0];
+    // The row lookup is the shared door's (lib/condition-docs/serve). NO owner is
+    // passed, deliberately: this door authorizes through canSeeDocument, the one
+    // gate that also understands a borrower-owned or entity-owned document with no
+    // file at all — narrowing the statement to a file owner would 403 exactly the
+    // documents that gate exists to reach.
+    const doc = await condServe.documentForServe(db, req.params.id);
     if (!doc) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeDocument(req, doc))) return res.status(403).json({ error: 'forbidden' });
     await audit(req, 'download_document', 'document', doc.id);
-    return serveDocument(res, doc, { inline: req.query.inline === '1' });
+    return condServe.serveConditionDocument(res, doc, { inline: req.query.inline === '1' });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
 

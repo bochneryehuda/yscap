@@ -38,6 +38,7 @@ const db = require('../db');
 const cfg = require('../config');
 const email = require('../../lib/email');
 const orderEmail = require('../../lib/order-email');
+const { ownerOf, ownerWhere } = require('../../lib/condition-owner');
 const { ltOrderReplyTo } = require('../../lib/file-address');
 const sendAs = require('../../lib/send-as');
 const kinds = require('./kinds');
@@ -443,11 +444,20 @@ async function cancel(loanId, kind, opts = {}) {
     engine has run, and refusing on that would be refusing on our own timing. */
 async function markConditionAsked(loanId, code) {
   if (!code) return;
+  /* THE SHARED CONDITION CENTER, not `lt_file_conditions`. db/653 moved the
+     long-term conditions into the one `checklist_items` table (scope 'lt_loan')
+     and this statement was left pointing at the old one — where it matched ZERO
+     rows, silently, on every order ever placed. An UPDATE that changes nothing
+     raises no error, so nothing said the condition had stopped moving. */
+  const w = ownerWhere(ownerOf('lt_loan', loanId), 'c', 2);
   await db.query(
-    `UPDATE lt_file_conditions
+    `UPDATE checklist_items c
         SET status = 'received', updated_at = now()
-      WHERE loan_id = $1::uuid AND code = $2 AND status = 'outstanding'`,
-    [String(loanId), code]);
+       FROM checklist_templates t
+      WHERE t.id = c.template_id AND t.code = $1
+        AND c.status = 'outstanding'
+        AND ${w.sql}`,
+    [code, ...w.params]);
 }
 
 module.exports = {
