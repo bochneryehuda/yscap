@@ -338,7 +338,10 @@ section('the layout — the block list a renderer walks');
 
   const single = layout.buildLayout(snapshot.buildSnapshot({ selections: [quote('The offer', 7.375, 102)], plan: PLAN, prepared: {} }).snapshot, {});
   check(!single.blocks.some((b) => b.t === 'table'), 'a one-option sheet renders NO comparison table — a table with one column is not a comparison');
-  const rowsOf = (blocks) => blocks.filter((b) => b.t === 'figures').flatMap((b) => b.rows);
+  // ⛔ THROUGH THE SHARED FLATTENER, never a bare filter: a `columns` block
+  //    HOLDS blocks, so a plain filter goes silently blind to every row inside
+  //    one and reports a clean page for a fact it has stopped checking.
+  const rowsOf = (blocks) => layout.flattenBlocks(blocks).filter((b) => b.t === 'figures').flatMap((b) => b.rows);
   const singleRows = rowsOf(single.blocks);
   check(singleRows.some((r) => r[0] === 'Monthly rent') && singleRows.some((r) => r[0] === 'DSCR'),
     '…and it does show what the loan qualified on — the rent and the ratio');
@@ -460,7 +463,10 @@ section('a term sheet is only issued complete — the export gate');
     plan: PLAN, prepared: {},
   });
   check(snapshot.exportGate(cmpBare.snapshot).ok, 'a comparison with no taxes or insurance still exports');
-  const cmpRows = layout.buildLayout(cmpBare.snapshot, {}).blocks
+  /* Through the flattener even here, where the comparison uses no container
+     today: this is a NEGATIVE assertion, and a walker that goes blind makes a
+     negative assertion pass for the wrong reason. */
+  const cmpRows = layout.flattenBlocks(layout.buildLayout(cmpBare.snapshot, {}).blocks)
     .filter((b) => b.t === 'figures').flatMap((b) => b.rows);
   check(!cmpRows.some((r) => /Total monthly payment/.test(r[0])),
     '…and carries NO total monthly payment, because there is no real one to carry');
@@ -591,7 +597,7 @@ section('"no points either way" no longer sits over an origination fee');
   });
   const m = built.snapshot.members[0];
   const lay = layout.buildLayout(built.snapshot, { expiryHours: 24 });
-  const rows = lay.blocks.filter((b) => b.t === 'figures').flatMap((b) => b.rows);
+  const rows = layout.flattenBlocks(lay.blocks).filter((b) => b.t === 'figures').flatMap((b) => b.rows);
 
   const parRow = rows.find((r) => /No points either way/.test(String(r[1])));
   check(!parRow, 'the par phrase no longer appears as a figure at all on a sheet that charges an origination fee');
@@ -760,7 +766,8 @@ section('the document opens with what it is about');
      facts under the address (one line, so the table keeps its page); a term
      sheet prints the band, where it has the room. */
   const rec = (l) => l.blocks.find((b) => b.t === 'recipient');
-  check(rec(lay).propertyFacts === null && lay.blocks.some((b) => b.t === 'band' && b.title === 'The property'),
+  check(rec(lay).propertyFacts === null
+    && layout.flattenBlocks(lay.blocks).some((b) => b.t === 'band' && b.title === 'The property'),
     'a term sheet keeps the property band and adds nothing to the address');
   check(/Single family/.test(rec(cmpLay).propertyFacts || '')
     && !cmpLay.blocks.some((b) => b.t === 'band' && b.title === 'The property'),

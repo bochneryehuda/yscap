@@ -78,6 +78,28 @@ const GUTTER = 2;
 const TEXT_RIGHT = RIGHT_X - GUTTER;
 const TEXT_W = CONTENT_W - GUTTER;
 
+/**
+ * ⛔ A BLOCK IS DRAWN INTO A BOX, AND THE FULL CONTENT COLUMN IS JUST THE
+ * DEFAULT ONE.
+ *
+ * The approved design puts two groups SIDE BY SIDE on page one — the loan and
+ * its monthly payment, then what the rate costs beside what lands at the table
+ * — which is how the whole story is seen in one view instead of over three
+ * sheets. Every compiler used to read `M.left` / `CONTENT_W` / `RIGHT_X`
+ * straight out of module scope, so a narrower column was not expressible at all.
+ *
+ * ⛔ AND THE ANSWER IS A PARAMETER, NEVER A SECOND SET OF DRAWING CODE. A
+ * column-shaped copy of `compileFigures` would be a second definition of what a
+ * labelled row looks like, and the one that drifts is the one a reader is
+ * looking at. So the geometry is passed in and the SAME compilers draw both.
+ * Omit it and every call is byte-identical to what it was.
+ */
+function boxOf(box) {
+  const x = box && Number.isFinite(box.x) ? box.x : M.left;
+  const w = box && Number.isFinite(box.w) ? box.w : CONTENT_W;
+  return { x, w, right: x + w, textRight: x + w - GUTTER, textW: w - GUTTER };
+}
+
 // ── the ink ─────────────────────────────────────────────────────────────────
 // Every one of them is DARK on white, or LIGHT on the dark band. The V2 tokens
 // named `--ink*` are LIGHT paper colours and would render white on white; these
@@ -89,21 +111,63 @@ const MUTED = col(brand.RGB.GRAY);
 const HAIR = col(brand.RGB.LINE);
 const IVORY = col(brand.RGB.IVORY);
 const SOFT = col(brand.RGB.SOFT);
-const WHITE = col(brand.RGB.WHITE);
 const ONBAND = col(brand.RGB.ONBAND);
 const PAPER = col(brand.RGB.PAPER);
 const FAINT = col(brand.RGB.FAINT);
 
 // ── the type ────────────────────────────────────────────────────────────────
+/**
+ * ⛔ EVERY SIZE HERE IS READ OFF THE APPROVED DESIGN, NOT CHOSEN.
+ *
+ * The owner's report, holding a real export beside the sketch they had signed
+ * off: *"The redesign is way far off from the sketch that you presented. Your
+ * sketch was much nicer."* MEASURED rather than guessed at — the sketch is
+ * `docs/longterm/design/quiet-ledger-v2.pdf`, an 8.5×11in HTML page printed at
+ * the browser's 0.75 CSS-px→point scale, so each of its CSS sizes is 0.75× in
+ * points. Against that, this sheet's body type was **30–50% larger**: its table
+ * rows 8.4pt against 6.7, its labels 9.5 against 6.5, its headline figures 19
+ * against 11.6. That is the whole of *"everything is way too big"*, and it is
+ * arithmetic rather than taste.
+ *
+ * So every size below is `<the sketch's own point size> × 1.10`, rounded to a
+ * tenth. **The 1.10 is a deliberate, stated departure**: the sketch's 6.4pt
+ * body is at the small end of comfortable for a document a borrower reads on
+ * paper and signs, so it is set a shade above rather than matched exactly. It
+ * is one number and it is here — move it and the whole page moves together,
+ * which is the point of deriving a scale instead of picking sizes one at a time.
+ *
+ * ⛔ AND THE PROPORTIONS ARE THE DESIGN, NOT THE ABSOLUTES. Quiet Ledger's
+ * third rule is *"hierarchy is built from three weights and no more — one
+ * figure per view may be large, two or three may be medium, everything else is
+ * small"*. The headline band is the large one; a resolving total is medium
+ * (`big`, at 1.29× the ordinary value, where it used to be 1.5×); everything
+ * else sits at one small size. Enlarging any one of these is almost always the
+ * wrong move — the design's own instruction is to quieten its neighbours.
+ */
 const SZ = {
-  bandTitle: 18, bandSub: 9.5, bandId: 7.5,
-  section: 8, label: 9.5, value: 10, big: 15, bigLabel: 9.5,
-  eyebrow: 7.4, name: 12.5,
-  para: 9.5, small: 8.3, table: 8.4, hero: 19,
-  discHead: 8.7, discBody: 8,
-  footContact: 7.6, footDisc: 7, footId: 6,
+  // the brand band: the document's name, its programme line, its identity line
+  bandTitle: 15.5, bandSub: 7.1, bandId: 6,
+  // a section's own label, and the label/value pair of an ordinary row
+  section: 6.3, label: 7.2, value: 7.3, big: 9.4, bigLabel: 7.2,
+  eyebrow: 5.7, name: 10.2,
+  para: 7.2, small: 6, table: 7.3, hero: 12.8,
+  discHead: 6.6, discBody: 6,
+  footContact: 5.9, footDisc: 5.4, footId: 5,
 };
 const LEAD = 1.32;   // line height as a multiple of the size
+/**
+ * THE RHYTHM, and it is the design's signature: *"wide, tight, tight, tight,
+ * wide"*. Rows inside a group sit close, ruled by a hairline so fine it reads
+ * as a change of tone; groups are set apart by real air. Both halves are here
+ * so the two can never be tuned against each other by accident.
+ */
+const RHYTHM = {
+  rowPad: 4,        // inside an ordinary row
+  rowPadTight: 2.5, // inside a row in a tight list
+  rowPadBig: 5,     // under a resolving total
+  sectionAbove: 20, // the air BEFORE a section header — the "wide"
+  sectionBelow: 7,  // and the little that follows it, so it binds to its rows
+};
 /** What a table cell gives up to its own padding. ONE constant, because the
  *  column width and the text width inside it must be computed in the same
  *  units — two literals is how a label comes to be 4pt short of its own cell. */
@@ -242,6 +306,38 @@ function wrap(ctx, s, font, size, maxW) {
   return out;
 }
 
+/**
+ * Wrap where the FIRST line is narrower than the rest — a paragraph that starts
+ * beside a bold opening clause. Shares `wrap`'s hard-break guarantee, so a word
+ * too long for either width still cannot run off the column.
+ */
+function wrapAfter(ctx, s, font, size, firstW, restW) {
+  const words = String(s || '').split(' ').filter(Boolean);
+  if (!words.length) return [''];
+  const lines = [];
+  let cur = '';
+  const widthFor = () => (lines.length === 0 ? firstW : restW);
+  for (const w of words) {
+    const t = cur ? `${cur} ${w}` : w;
+    if (!cur && advance(ctx, w, font, size) > widthFor()) {
+      // Nothing fits on this line at all — start the next one rather than
+      // hard-breaking a word into a two-character stub beside the title.
+      if (lines.length === 0 && firstW < restW) { lines.push(''); cur = w; continue; }
+    }
+    if (!cur || advance(ctx, t, font, size) <= widthFor()) { cur = t; continue; }
+    lines.push(cur);
+    cur = w;
+  }
+  if (cur) lines.push(cur);
+  const out = [];
+  lines.forEach((l, i) => {
+    const w = i === 0 ? firstW : restW;
+    if (advance(ctx, l, font, size) <= w || !(w > 0)) out.push(l);
+    else out.push(...hardBreak(ctx, l, font, size, restW));
+  });
+  return out;
+}
+
 /** One line, clipped rather than wrapped — for a cell that must stay one line. */
 function clip(ctx, s, font, size, maxW) {
   const str = String(s || '');
@@ -283,48 +379,6 @@ function rect(ctx, x, yTop, w, h, color) {
   ctx.page.drawRectangle({ x, y: yTop - h, width: w, height: h, color });
 }
 
-/**
- * A rounded rectangle, as EXPLICIT CUBIC BÉZIERS.
- *
- * ⛔ NEVER AN SVG `A` ARC. `drawSvgPath` places a path with SVG's own y-DOWN
- * convention and flips it, and an arc's sweep flag is defined relative to the
- * axis direction — so the same `A` command that draws a rounded corner in a
- * browser can draw its INVERSE here, and the failure is silent: the shape still
- * fills, it just grows four little wings. A cubic is unambiguous under a flip,
- * and 0.5523 is the standard circle approximation, so this reads identically to
- * the RTL sheet's `roundedRect(…, 2.5, 2.5, "F")`.
- */
-const KAPPA = 0.5523;
-function roundedRect(ctx, x, yTop, w, h, r, color) {
-  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
-  if (!(w > 0) || !(h > 0)) return;
-  if (rr <= 0.01) { rect(ctx, x, yTop, w, h, color); return; }
-  const k = rr * KAPPA;
-  const d = [
-    `M ${rr} 0`,
-    `H ${w - rr}`,
-    `C ${w - rr + k} 0 ${w} ${rr - k} ${w} ${rr}`,
-    `V ${h - rr}`,
-    `C ${w} ${h - rr + k} ${w - rr + k} ${h} ${w - rr} ${h}`,
-    `H ${rr}`,
-    `C ${rr - k} ${h} 0 ${h - rr + k} 0 ${h - rr}`,
-    `V ${rr}`,
-    `C 0 ${rr - k} ${rr - k} 0 ${rr} 0`,
-    'Z',
-  ].join(' ');
-  ctx.page.drawSvgPath(d, { x, y: yTop, color, borderWidth: 0 });
-}
-
-/**
- * ⛔ THE BOX IS ENFORCED HERE, NOT BY THE CALLER — and its DEFAULT is the page.
- *
- * A caller that forgets to say how wide its column is gets the widest box that
- * still fits on the sheet, so forgetting produces an ugly clip and never ink off
- * the paper. Every wrapped context passes its real width; a one-line context (a
- * heading, a figure, a code) CLIPS rather than wraps, because wrapping a value
- * that is meant to sit on one line silently changes the row's height and walks
- * the whole page off its own measurement.
- */
 function put(ctx, s, x, yTop, font, size, color, maxW) {
   const t = clip(ctx, ctx.text(s), font, size, maxW == null ? TEXT_RIGHT - x : maxW);
   if (!t) return 0;
@@ -435,27 +489,36 @@ function compileRecipient(b, ctx) {
 }
 
 /**
- * A SECTION BAND — the RTL sheet's `band()`, to the point: a teal rounded
- * rectangle the width of the content column, a gold tab inset from its left
- * edge, the title in tracked white capitals.
+ * A SECTION HEADING — a teal tick, tracked ink capitals, an ink rule under both.
+ *
+ * See `brand.SECTION` for why this is no longer a filled teal bar. The two
+ * numbers that matter to the page's rhythm are here rather than inline: the
+ * WIDE gap above (this is the "wide" in wide-tight-tight-tight-wide) and the
+ * small one below, which is what binds a heading to the rows it names instead
+ * of letting it float between two groups.
+ *
+ * `keepNext` still holds: a heading may never be the last thing on a page.
  */
-function compileBand(b, ctx) {
+function compileBand(b, ctx, box) {
   const F = ctx.fonts;
   const S = brand.SECTION;
-  const gap = 12;
-  const h = gap + S.advance;
+  const B = boxOf(box);
+  const above = RHYTHM.sectionAbove;
+  const h = above + SZ.section * LEAD + S.rulePad + RHYTHM.sectionBelow;
   return [item(h, (c, y) => {
-    const top = y - gap;
-    roundedRect(c, M.left, top, CONTENT_W, S.h, S.radius, TEAL);
-    rect(c, M.left + S.tabX, top - (S.h - S.tabH) / 2, S.tabW, S.tabH, GOLD);
-    putTracked(c, String(b.title || '').toUpperCase(), M.left + S.textX,
-      top - (S.h - S.textSize) / 2 + 0.5, F.bold, S.textSize, WHITE, S.tracking,
-      CONTENT_W - S.textX - 8);
+    const top = y - above;
+    const base = top - SZ.section;         // where the capitals sit
+    rect(c, B.x, top - (SZ.section - S.tickH) / 2 - 0.5, S.tickW, S.tickH, TEAL);
+    putTracked(c, String(b.title || '').toUpperCase(), B.x + S.tickW + S.gap,
+      top, F.bold, SZ.section, INK, S.tracking,
+      B.w - S.tickW - S.gap);
+    line(c, base - S.rulePad, B.x, B.right, INK, S.rule);
   }, { keepNext: true })];
 }
 
-function compileRule() {
-  return [item(14, (c, y) => line(c, y - 8, M.left, RIGHT_X, HAIR, 0.7))];
+function compileRule(b, ctx, box) {
+  const B = boxOf(box);
+  return [item(14, (c, y) => line(c, y - 8, B.x, B.right, HAIR, 0.7))];
 }
 
 /**
@@ -465,14 +528,15 @@ function compileRule() {
  * be visibly THE LENDER'S OWN FEES, which is the pair the waive switch turns
  * off and the pair the owner asked to be able to see the difference on.
  */
-function compileSubhead(b, ctx) {
+function compileSubhead(b, ctx, box) {
   const F = ctx.fonts;
+  const B = boxOf(box);
   const gap = 10;
   const h = gap + SZ.eyebrow * LEAD + 5;
   return [item(h, (c, y) => {
     const top = y - gap;
-    putTracked(c, String(b.text || '').toUpperCase(), M.left, top, F.bold, SZ.eyebrow, GOLD, 0.7, TEXT_W);
-    line(c, top - SZ.eyebrow - 3, M.left, RIGHT_X, HAIR, 0.5);
+    putTracked(c, String(b.text || '').toUpperCase(), B.x, top, F.bold, SZ.eyebrow, GOLD, 0.7, B.textW);
+    line(c, top - SZ.eyebrow - 3, B.x, B.right, HAIR, 0.5);
   }, { keepNext: true })];
 }
 
@@ -490,8 +554,9 @@ function compileSubhead(b, ctx) {
  * last carries the 0.4pt hairline under it that makes a figures list read as a
  * list rather than as a paragraph of numbers.
  */
-function compileFigures(b, ctx) {
+function compileFigures(b, ctx, box) {
   const F = ctx.fonts;
+  const B = boxOf(box);
   const tight = !!b.tight;
   const rows = (b.rows || []).filter(Boolean);
   const out = [];
@@ -502,65 +567,88 @@ function compileFigures(b, ctx) {
     const big = !!o.big;
     const size = big ? SZ.big : SZ.value;
     const lsize = big ? SZ.bigLabel : SZ.label;
-    const pad = tight ? 3 : (big ? 7 : 5);
+    const pad = tight ? RHYTHM.rowPadTight : (big ? RHYTHM.rowPadBig : RHYTHM.rowPad);
     const vf = o.strong || big || o.total ? F.bold : F.reg;
     const vc = o.credit ? GOLD : INK;
     const last = ri === rows.length - 1;
     const divider = !tight && !o.noDivider && !last;
 
-    const labelMax = Math.round(TEXT_W * 0.55);
-    const labelW = label ? Math.min(advance(ctx, label, F.reg, lsize), labelMax) : 0;
-    const roomBeside = TEXT_W - labelW - 14;
+    // ⛔ THE LABEL'S SHARE IS OF ITS OWN BOX, NEVER OF THE PAGE. In a column
+    // half the width, a fraction of the full page would let a label run into
+    // the neighbouring column and a figure be measured against room it does
+    // not have.
+    const labelMax = Math.round(B.textW * 0.55);
+    /* ⛔ A LABEL WRAPS; IT IS NEVER CLIPPED. This file's own rule two paragraphs
+       up is that the label is what makes the figure mean anything and is never
+       the one that gives way — and it was being CLIPPED to one line all the
+       same, which nothing noticed while every label fitted the full content
+       column. MEASURED the moment a column was half as wide: "Total monthly
+       payment (principal, interest, taxes & insurance)" drew as "Total monthly
+       payment (principal, inter…", which reads as a rendering fault on the one
+       row that resolves the arithmetic. */
+    const labelLines = label ? wrap(ctx, label, F.reg, lsize, labelMax) : [];
+    // The figure sits beside the label's FIRST line, so that is the line the
+    // room beside it is measured against — not the widest one.
+    const firstLabelW = labelLines.length ? advance(ctx, labelLines[0], F.reg, lsize) : 0;
+    const roomBeside = B.textW - firstLabelW - 14;
     const valueW = advance(ctx, value, vf, size);
     const inline = !label || valueW <= roomBeside;
-    const valueLines = inline ? null : wrap(ctx, value, vf, size, TEXT_W);
+    const valueLines = inline ? null : wrap(ctx, value, vf, size, B.textW);
 
     const noteLines = o.note ? wrap(ctx, ctx.text(o.note), F.italic, SZ.small, labelMax) : [];
-    const h = Math.max(size, lsize) * LEAD
+    const labelH = Math.max(1, labelLines.length) * lsize * LEAD;
+    const h = Math.max(size * LEAD, labelH)
       + (inline ? 0 : valueLines.length * size * LEAD)
       + pad + noteLines.length * SZ.small * LEAD;
 
     out.push(item(h, (c, y) => {
       // The ivory band is drawn FIRST, behind everything, and it is inset by
-      // nothing — it runs the full content column exactly as the RTL row does.
-      if (o.accent) rect(c, M.left, y + brand.ROW.accentPad, CONTENT_W, h, IVORY);
-      if (o.total) line(c, y + 2, M.left, RIGHT_X, HAIR, 0.7);
+      // nothing — it runs the full width of its own box exactly as the RTL row
+      // runs the full content column.
+      if (o.accent) rect(c, B.x, y + brand.ROW.accentPad, B.w, h, IVORY);
+      if (o.total) line(c, y + 2, B.x, B.right, HAIR, 0.7);
       const baseTop = y - (big ? 1 : 0);
-      let ny = baseTop - Math.max(size, lsize) * LEAD;
+      const lcolor = o.strong || big ? INK : MUTED;
+      const drawLabel = (top) => {
+        let ly = top;
+        for (const ll of labelLines) { put(c, ll, B.x, ly, F.reg, lsize, lcolor, labelMax); ly -= lsize * LEAD; }
+        return ly;
+      };
+      let ny = baseTop - Math.max(size * LEAD, labelH);
       if (!label) {
         // A continuation line: no label, so the value reads on the left.
-        put(c, value, M.left, baseTop, F.reg, lsize, MUTED, TEXT_W);
+        put(c, value, B.x, baseTop, F.reg, lsize, MUTED, B.textW);
       } else if (inline) {
-        putRight(c, value, TEXT_RIGHT, baseTop, vf, size, vc, roomBeside);
-        put(c, label, M.left, baseTop - (big ? size - lsize : 0), F.reg, lsize,
-          o.strong || big ? INK : MUTED, labelMax);
+        putRight(c, value, B.textRight, baseTop, vf, size, vc, roomBeside);
+        drawLabel(baseTop - (big ? size - lsize : 0));
       } else {
-        put(c, label, M.left, baseTop, F.reg, lsize, o.strong || big ? INK : MUTED, labelMax);
+        ny = drawLabel(baseTop);
         for (const vl of valueLines) {
-          put(c, vl, M.left, ny, vf, size, vc, TEXT_W);
+          put(c, vl, B.x, ny, vf, size, vc, B.textW);
           ny -= size * LEAD;
         }
       }
       for (const nl of noteLines) {
-        put(c, nl, M.left, ny, F.italic, SZ.small, MUTED, labelMax);
+        put(c, nl, B.x, ny, F.italic, SZ.small, MUTED, labelMax);
         ny -= SZ.small * LEAD;
       }
-      if (divider) line(c, y - h + 3, M.left, RIGHT_X, HAIR, brand.ROW.hair);
+      if (divider) line(c, y - h + 3, B.x, B.right, HAIR, brand.ROW.hair);
     }));
   });
   return out;
 }
 
-function compilePara(b, ctx) {
+function compilePara(b, ctx, box) {
   const F = ctx.fonts;
+  const B = boxOf(box);
   const size = b.small ? SZ.small : SZ.para;
   const font = b.small ? F.italic : F.reg;
   const color = b.small ? MUTED : INK;
-  const lines = wrap(ctx, ctx.text(b.text), font, size, TEXT_W);
+  const lines = wrap(ctx, ctx.text(b.text), font, size, B.textW);
   const out = [];
   lines.forEach((l, i) => {
     const gap = i === 0 ? 9 : 0;
-    out.push(item(size * LEAD + gap, (c, y) => put(c, l, M.left, y - gap, font, size, color),
+    out.push(item(size * LEAD + gap, (c, y) => put(c, l, B.x, y - gap, font, size, color, B.textW),
       { keepNext: i < lines.length - 1 && i === 0 }));
   });
   return out;
@@ -645,28 +733,58 @@ function compileHero(b, ctx) {
   })];
 }
 
+/**
+ * A CALLOUT — one ruled statement, led by a gold dot, NOT a filled box.
+ *
+ * ⛔ THE EXPIRY IS A SENTENCE, NOT A PANEL. It was an ivory box with a gold bar
+ * down its side, set near the top of the sheet, which made the shortest-lived
+ * fact on the page the second-loudest thing on it — competing with the headline
+ * figures for the eye it is not the answer to. The approved design states it as
+ * one line between two hairlines with a small gold dot: read on the first pass,
+ * never mistaken for the point of the document.
+ *
+ * ⛔ AND THE TITLE RUNS INTO ITS OWN SENTENCE. "This term sheet expires in 24
+ * hours." set as a heading over a paragraph reads as two facts; set as a bold
+ * opening clause it reads as one, which is what it is. So the first line is
+ * wrapped to the room left BESIDE the title and the rest to the full column —
+ * the only reason this needs its own wrap rather than the shared one.
+ */
 function compileCallout(b, ctx) {
   const F = ctx.fonts;
-  const padX = 12;
-  const innerW = CONTENT_W - padX * 2 - 4;
+  const dot = 2.4;
+  const indent = dot + 6;
+  const innerW = TEXT_W - indent;
   const title = ctx.text(b.title || '');
-  const bodyLines = b.text ? wrap(ctx, ctx.text(b.text), F.reg, SZ.small, innerW) : [];
-  const inner = (title ? SZ.para * LEAD : 0) + bodyLines.length * SZ.small * LEAD;
-  const boxH = inner + 16;
-  const h = boxH + 14;
+  const body = b.text ? ctx.text(b.text) : '';
+  const size = SZ.small;
+  const titleW = title ? advance(ctx, title, F.bold, size) : 0;
+  // A title that has eaten its own line leaves no room beside it; the body then
+  // simply starts underneath, which is the honest fallback rather than a first
+  // line squeezed to two words.
+  const firstW = Math.max(0, innerW - titleW - advance(ctx, ' ', F.reg, size));
+  const lines = body ? wrapAfter(ctx, body, F.reg, size, firstW, innerW) : [];
+  const rows = Math.max(lines.length, title ? 1 : 0);
+  const padY = 6;
+  const h = padY * 2 + rows * size * LEAD + 12;
   return [item(h, (c, y) => {
-    const top = y - 7;
-    rect(c, M.left, top, CONTENT_W, boxH, IVORY);
-    rect(c, M.left, top, 3, boxH, GOLD);
-    let ty = top - 8;
+    const top = y - 5;
+    line(c, top, M.left, RIGHT_X, HAIR, 0.6);
+    let ty = top - padY;
+    // The dot sits on the first line's optical centre, never on its baseline.
+    rect(c, M.left, ty - size * 0.34, dot, dot, GOLD);
+    let x = M.left + indent;
     if (title) {
-      put(c, title, M.left + padX + 4, ty, F.bold, SZ.para, INK, innerW);
-      ty -= SZ.para * LEAD;
+      put(c, title, x, ty, F.bold, size, INK, innerW);
+      x += titleW + advance(ctx, ' ', F.reg, size);
     }
-    for (const l of bodyLines) {
-      put(c, l, M.left + padX + 4, ty, F.reg, SZ.small, col(brand.RGB.FOOTNOTE), innerW);
-      ty -= SZ.small * LEAD;
-    }
+    lines.forEach((l, i) => {
+      if (i === 0 && title && !l) return;
+      put(c, l, i === 0 ? x : M.left + indent, ty, F.reg, size,
+        col(brand.RGB.FOOTNOTE), i === 0 ? Math.max(firstW, 1) : innerW);
+      ty -= size * LEAD;
+    });
+    if (!lines.length) ty -= size * LEAD;
+    line(c, ty - padY + size * 0.3, M.left, RIGHT_X, HAIR, 0.6);
   })];
 }
 
@@ -704,19 +822,26 @@ function compileSignature(b, ctx) {
   const F = ctx.fonts;
   const lines = (b.lines || []).filter(Boolean);
   if (!lines.length) return [];
-  const colW = (CONTENT_W - 24) / 2;
-  const rowH = 46;
+  /* ⛔ THREE SIGNATURE LINES ACROSS, NOT TWO — the approved design's own row,
+     and the reason the acceptance block fits beneath the disclosures instead of
+     taking a third sheet of its own. Two-up left half the width empty and split
+     an entity's signer, its guarantor and the date over two rows, which reads as
+     two separate acts rather than one signing. */
+  const per = Math.min(3, lines.length);
+  const gap = 20;
+  const colW = (CONTENT_W - gap * (per - 1)) / per;
+  const rowH = 44;
   const out = [];
-  for (let i = 0; i < lines.length; i += 2) {
-    const pair = lines.slice(i, i + 2);
+  for (let i = 0; i < lines.length; i += per) {
+    const group = lines.slice(i, i + per);
     out.push(item(rowH, (c, y) => {
-      pair.forEach((l, j) => {
-        const x = M.left + j * (colW + 24);
+      group.forEach((l, j) => {
+        const x = M.left + j * (colW + gap);
         line(c, y - 26, x, x + colW, HAIR, 0.8);
         put(c, l.role || '', x, y - 30, F.reg, SZ.small, MUTED, colW);
         if (l.name) put(c, l.name, x, y - 8, F.bold, SZ.value, INK, colW);
       });
-    }, { keepNext: i + 2 < lines.length }));
+    }, { keepNext: i + per < lines.length }));
   }
   return out;
 }
@@ -822,6 +947,68 @@ const PAGEBREAK = Symbol('pagebreak');
  */
 const isSoftBreak = (x) => !!x && typeof x === 'object' && x.soft === true;
 
+/**
+ * TWO GROUPS, SIDE BY SIDE — the approved design's page one.
+ *
+ * ⛔ IT IS ONE ATOMIC ITEM, AND THAT IS THE WHOLE SAFETY PROPERTY. A pair of
+ * columns that could break across a page would put a label on one sheet and its
+ * figure on the next, in two different columns, with nothing saying which
+ * belongs to which. So both sides are compiled, the taller decides the height,
+ * and `flow` places or moves the pair as one thing.
+ *
+ * ⛔ AND IT FALLS BACK RATHER THAN OVERFLOWING. Two cases give up and emit the
+ * two sides one after another down the full column, which is exactly the page
+ * this file drew before columns existed: a pair taller than a whole page (the
+ * flow can move it but has nowhere to move it TO), and a side carrying a block
+ * type that has no box — a hero, a table, a signature, all of which are
+ * page-wide by nature. Neither is a defect to be worked around; a document that
+ * reads down one column is worse-looking and still correct, and a document that
+ * draws off the paper is neither.
+ *
+ * `COLUMN_TYPES` is therefore the honest statement of what may go in a column,
+ * and adding to it means giving that compiler a box first.
+ */
+const COLUMN_TYPES = new Set(['band', 'section', 'rule', 'subhead', 'figures', 'para']);
+const COLUMN_GAP = 22;
+
+function compileSide(blocks, ctx, box) {
+  const items = [];
+  for (const b of blocks || []) {
+    if (!b || typeof b !== 'object') continue;
+    switch (b.t) {
+      case 'band': case 'section': items.push(...compileBand(b, ctx, box)); break;
+      case 'rule': items.push(...compileRule(b, ctx, box)); break;
+      case 'subhead': items.push(...compileSubhead(b, ctx, box)); break;
+      case 'figures': items.push(...compileFigures(b, ctx, box)); break;
+      case 'para': items.push(...compilePara(b, ctx, box)); break;
+      default: break;
+    }
+  }
+  return items;
+}
+
+function compileColumns(b, ctx) {
+  const left = (b.left || []).filter((x) => x && typeof x === 'object');
+  const right = (b.right || []).filter((x) => x && typeof x === 'object');
+  const sequential = () => compile([...left, ...right], ctx);
+  if (!left.length || !right.length) return sequential();
+  if (![...left, ...right].every((x) => COLUMN_TYPES.has(x.t))) return sequential();
+
+  const w = (CONTENT_W - COLUMN_GAP) / 2;
+  const boxes = [{ x: M.left, w }, { x: M.left + w + COLUMN_GAP, w }];
+  const sides = [compileSide(left, ctx, boxes[0]), compileSide(right, ctx, boxes[1])];
+  const heights = sides.map((items) => items.reduce((a, it) => a + it.h, 0));
+  const h = Math.max(...heights);
+  if (!(h > 0) || h > USABLE_H) return sequential();
+
+  return [item(h, (c, y) => {
+    for (const items of sides) {
+      let yy = y;
+      for (const it of items) { it.draw(c, yy); yy -= it.h; }
+    }
+  })];
+}
+
 function compile(blocks, ctx) {
   const items = [];
   for (const b of blocks || []) {
@@ -833,7 +1020,7 @@ function compile(blocks, ctx) {
       case 'recipient': items.push(...compileRecipient(b, ctx)); break;
       case 'band': items.push(...compileBand(b, ctx)); break;
       case 'section': items.push(...compileBand(b, ctx)); break;
-      case 'rule': items.push(...compileRule()); break;
+      case 'rule': items.push(...compileRule(b, ctx)); break;
       case 'subhead': items.push(...compileSubhead(b, ctx)); break;
       case 'figures': items.push(...compileFigures(b, ctx)); break;
       case 'para': items.push(...compilePara(b, ctx)); break;
@@ -842,6 +1029,7 @@ function compile(blocks, ctx) {
       case 'disclosures': items.push(...compileDisclosures(b, ctx)); break;
       case 'signature': items.push(...compileSignature(b, ctx)); break;
       case 'table': items.push(...compileTable(b, ctx)); break;
+      case 'columns': items.push(...compileColumns(b, ctx)); break;
       case 'pagebreak':
         items.push(Number.isFinite(b.ifLessThan) ? { soft: true, room: b.ifLessThan } : PAGEBREAK);
         break;
@@ -1067,5 +1255,8 @@ const ZONES = {
 module.exports = {
   renderTermSheet,
   PAGE, M, CONTENT_W, TOP_Y, BOTTOM_Y, USABLE_H, ZONES,
-  _internals: { advance, charW, wrap, hardBreak, clip, makeText, compile, roundedRect, GLYPH_MAP, SZ },
+  _internals: {
+    advance, charW, wrap, wrapAfter, hardBreak, clip, makeText, compile,
+    GLYPH_MAP, SZ, RHYTHM, COLUMN_TYPES, COLUMN_GAP, compileColumns, boxOf,
+  },
 };

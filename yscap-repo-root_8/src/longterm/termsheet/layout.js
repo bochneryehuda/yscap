@@ -46,6 +46,42 @@ const { DOC_KINDS, KIND_WORDS } = require('./snapshot');
 
 const nn = (v) => Number.isFinite(v);
 
+/**
+ * ⛔ THE SOFT-BREAK THRESHOLDS ARE CALIBRATED AGAINST THE TYPE SCALE, AND GO
+ * STALE THE MOMENT IT MOVES.
+ *
+ * A soft break says *"start the next group on a fresh page if less than this
+ * many points are left"*. Each number is a MEASUREMENT of how tall the group it
+ * protects actually is, so it is only correct for the type it was measured at —
+ * and when the sheet was re-set to the approved design (`pdf.js` `SZ`, roughly
+ * a quarter smaller) all three became too LARGE, which is the failure that
+ * costs a page: a group that now fits comfortably is pushed to the next sheet
+ * and the reader is left looking at four inches of nothing.
+ *
+ * These were re-measured on real renders at the current scale, not scaled
+ * arithmetically. **Re-measure them if `SZ` moves again** — `scripts/
+ * test-lt-termsheet-render.mjs` reports the unused space at the foot of every
+ * page for exactly this reason, so a stale threshold shows up as a page that
+ * ends early with content still to come.
+ */
+/**
+ * ⛔ THE WAIVED-FEE NOTE CARRIES NO POSITIONAL WORD, AND THAT IS DELIBERATE.
+ * It read *"your cash to close BELOW already reflects that"*, which was true of
+ * a page that ran down one column and false the moment the closing figures moved
+ * into a column beside it. A sentence that describes where a figure sits on the
+ * paper is a sentence that goes wrong every time the paper is re-set; this one
+ * describes the figure instead, so it is true in either arrangement.
+ */
+const FEES_COVERED = 'The lender fees on this option are covered rather than charged to you. '
+  + 'Your cash to close already reflects that.';
+
+const SOFT_BREAK = {
+  costStory: 150,    // origination + lender fees + what lands at the table
+  comparison: 225,   // the options table, which must be seen in one view
+  disclosures: 180,  // the disclosures block
+  acceptance: 145,   // the acceptance heading, its sentence and one row of signature lines (measured 139)
+};
+
 /** A figures row, dropped entirely when the value is unknown — a term sheet that
  *  says "Draw fee —" teaches the reader our numbers are unreliable. */
 function row(label, value, opts) {
@@ -311,7 +347,7 @@ function optionBlocks(m, { heading } = {}) {
      next page when there is not enough left of this one to hold it, and does
      nothing at all when there is — so a sheet that fits is unchanged. */
   if (charges.length || fees.rows.length || closing.length) {
-    out.push({ t: 'pagebreak', ifLessThan: 200 });
+    out.push({ t: 'pagebreak', ifLessThan: SOFT_BREAK.costStory });
   }
   if (charges.length) {
     out.push({ t: 'subhead', text: 'What this rate costs' });
@@ -322,13 +358,117 @@ function optionBlocks(m, { heading } = {}) {
     out.push({ t: 'figures', rows: fees.rows });
   }
   if (fees.waived) {
-    out.push({ t: 'para', small: true,
-      text: 'The lender fees on this option are covered rather than charged to you. Your cash to close below '
-        + 'already reflects that.' });
+    out.push({ t: 'para', small: true, text: FEES_COVERED });
   }
   if (closing.length) {
     out.push({ t: 'subhead', text: 'At closing' });
     out.push({ t: 'figures', rows: closing });
+  }
+  out.push({ t: 'para', small: true, text: wording.THIRD_PARTY });
+  return out;
+}
+
+/**
+ * ⛔ A BLOCK CAN NOW CONTAIN BLOCKS, SO EVERY WALKER OF THE LIST COMES THROUGH
+ * HERE.
+ *
+ * `{t:'columns'}` holds two stacks of ordinary blocks. Anything that scanned the
+ * list for, say, every `figures` row — three separate places in the suites did
+ * exactly that — goes BLIND the moment a row moves inside one, and goes blind
+ * SILENTLY: the filter still returns rows, just not those ones, so a guard
+ * reports a clean page while the fact it was written to protect has quietly
+ * stopped being checked. That is the most expensive kind of test failure there
+ * is, because it looks like a pass.
+ *
+ * So there is ONE flattener, exported, and the container type is handled in one
+ * place rather than in each caller. Reading order is preserved — the children
+ * appear where their container was — and the container itself is dropped, so a
+ * caller asking "what is on the page" gets exactly the blocks that draw.
+ */
+function flattenBlocks(blocks) {
+  const out = [];
+  for (const b of blocks || []) {
+    if (!b || typeof b !== 'object') continue;
+    if (b.t === 'columns') {
+      out.push(...flattenBlocks(b.left), ...flattenBlocks(b.right));
+      continue;
+    }
+    out.push(b);
+  }
+  return out;
+}
+
+/**
+ * THE TERM SHEET'S BODY, IN TWO COLUMNS — the approved design's page one.
+ *
+ * ⛔ IT COMPOSES THE SAME ROW BUILDERS `optionBlocks` DOES, AND NEVER A SECOND
+ * SET. `loanRows`, `paymentRows`, `qualifyingRows`, `chargeRows`,
+ * `lenderFeeRows` and `closingRows` are the one definition of WHAT a term sheet
+ * states; this and `optionBlocks` are two ARRANGEMENTS of them. A second row
+ * builder here is how a term sheet comes to state a fact its own comparison
+ * does not, so `scripts/test-lt-sheet-nothing-lost-pure.js` proves — against a
+ * real built layout — that every label `optionBlocks` would print still reaches
+ * the page.
+ *
+ * ⛔ AND EVERY PAIRING IS A READING ORDER, NOT A SPACE-SAVING. The loan sits
+ * beside its own monthly payment because *"what am I borrowing"* and *"what do I
+ * pay"* are one question asked twice; what the rate costs sits beside what lands
+ * at the table because the second is the first plus the borrower's own money.
+ * The design's own rule for a comparison is *"show only what differs"*, and its
+ * rule for a single sheet is the same instinct: the whole argument in one view,
+ * answered in the first three seconds and rewarding a second, slower reading.
+ * MEASURED: this is what takes a term sheet from three sheets to two.
+ *
+ * ⛔ THE COLUMNS ARE A REQUEST, NOT A GUARANTEE. `pdf.js` falls back to one
+ * column whenever the pair could not be drawn safely, and either way is a
+ * correct document — which is what makes it safe to ask for.
+ */
+function termSheetBody(m) {
+  const s = m.scenario || {};
+  const out = [];
+
+  const piti = paymentRows(m);
+  const qual = qualifyingRows(m, piti);
+
+  const left = [];
+  const propertyRows = kept([
+    row('Property type', wording.propertyTypeWords(s.propertyType)),
+    row('Units', nn(s.units) && s.units > 1 ? String(Math.round(s.units)) : null),
+    row('Estimated value', nn(m.propertyValue) ? wording.money(m.propertyValue) : null),
+  ]);
+  if (propertyRows.length) {
+    left.push({ t: 'band', title: 'The property' }, { t: 'figures', rows: propertyRows });
+  }
+  left.push({ t: 'band', title: 'The loan' }, { t: 'figures', rows: loanRows(m) });
+
+  const right = [];
+  if (piti.rows.length) {
+    right.push({ t: 'band', title: 'Monthly payment' }, { t: 'figures', rows: piti.rows });
+  }
+  if (qual.length) right.push({ t: 'figures', rows: qual });
+
+  if (right.length) out.push({ t: 'columns', left, right });
+  else out.push(...left);
+
+  // ── what it costs to close ───────────────────────────────────────────────
+  const charges = chargeRows(m);
+  const fees = lenderFeeRows(m);
+  const closing = closingRows(m);
+  if (charges.length || fees.rows.length || closing.length) {
+    /* The cost story is ONE story and does not split — see `optionBlocks`, whose
+       comment records the render on which it split four rows adrift from what
+       they belong to. In two columns it is roughly half as tall, which is why
+       `SOFT_BREAK.costStory` is measured rather than carried over. */
+    out.push({ t: 'pagebreak', ifLessThan: SOFT_BREAK.costStory });
+    out.push({ t: 'band', title: 'What it costs to close' });
+    const cl = [];
+    if (charges.length) cl.push({ t: 'subhead', text: 'What this rate costs' }, { t: 'figures', rows: charges });
+    if (fees.rows.length) cl.push({ t: 'subhead', text: 'Lender fees' }, { t: 'figures', rows: fees.rows });
+    if (fees.waived) cl.push({ t: 'para', small: true, text: FEES_COVERED });
+    const cr = [];
+    if (closing.length) cr.push({ t: 'subhead', text: 'At closing' }, { t: 'figures', rows: closing });
+    if (cl.length && cr.length) out.push({ t: 'columns', left: cl, right: cr });
+    else out.push(...cl, ...cr);
   }
   out.push({ t: 'para', small: true, text: wording.THIRD_PARTY });
   return out;
@@ -839,20 +979,8 @@ function buildLayout(snapshot, opts = {}) {
   const first = s.members[0];
 
   // ── the property, and (on a term sheet) the loan ─────────────────────────
-  const fs0 = first.scenario || {};
   if (isTermSheet) {
-    blocks.push({ t: 'band', title: 'The property' });
-    blocks.push({ t: 'figures', rows: kept([
-      row('Property type', wording.propertyTypeWords(fs0.propertyType)),
-      row('Units', nn(fs0.units) && fs0.units > 1 ? String(Math.round(fs0.units)) : null),
-      row('Estimated value', nn(first.propertyValue) ? wording.money(first.propertyValue) : null),
-    ]) });
-  }
-
-  if (isTermSheet) {
-    blocks.push({ t: 'band', title: 'The loan' });
-    blocks.push({ t: 'figures', rows: loanRows(first) });
-    blocks.push(...optionBlocks(first));
+    blocks.push(...termSheetBody(first));
   } else {
     const cmp = s.comparison;
     blocks.push({ t: 'band', title: kind === DOC_KINDS.SCENARIO ? 'The scenarios' : 'Your options' });
@@ -891,7 +1019,7 @@ function buildLayout(snapshot, opts = {}) {
        reader consults second, and a reference list is the one thing here that
        breaks across a page harmlessly. So the order follows what the reader is
        doing, not what reads tidily in the source. */
-    blocks.push({ t: 'pagebreak', ifLessThan: 300 });
+    blocks.push({ t: 'pagebreak', ifLessThan: SOFT_BREAK.comparison });
     blocks.push(table);
     const anchor = s.members[cmp.anchorIndex];
     blocks.push({ t: 'para', small: true, text: `Every comparison below is against ${anchor.label}.` });
@@ -970,7 +1098,7 @@ function buildLayout(snapshot, opts = {}) {
   // A SOFT break: they get their own page when there is not enough left of this
   // one to be worth starting on, and simply continue when there is. A hard break
   // here is what produced a page carrying five rows and ten inches of nothing.
-  blocks.push({ t: 'pagebreak', ifLessThan: 240 });
+  blocks.push({ t: 'pagebreak', ifLessThan: SOFT_BREAK.disclosures });
   blocks.push({ t: 'band', title: 'Disclosures & conditions' });
   blocks.push({ t: 'para', small: true,
     text: 'The following supplements the terms above and forms part of this document.' });
@@ -981,6 +1109,12 @@ function buildLayout(snapshot, opts = {}) {
   // to nothing in particular, and the one thing a signed page must be is
   // unambiguous about what was signed.
   if (isTermSheet) {
+    /* ⛔ THE ACCEPTANCE IS ONE ACT AND DOES NOT SPLIT. A heading and "sign below"
+       at the foot of one sheet with the rules on the next is a page nobody can
+       sign from, and `keepNext` binds a heading to its first LINE, not to the
+       block it introduces. A soft break moves the whole thing when there is not
+       enough left of the page and does nothing at all when there is. */
+    blocks.push({ t: 'pagebreak', ifLessThan: SOFT_BREAK.acceptance });
     blocks.push({ t: 'band', title: 'Acceptance' });
     blocks.push({ t: 'para',
       text: 'Signing below confirms you have read this term sheet, including the disclosures above, and wish to '
@@ -1016,6 +1150,7 @@ function disclosureItems(s) {
 }
 
 module.exports = {
+  flattenBlocks,
   buildLayout, optionBlocks, comparisonTable, qualifyingRows, shownDscr, paymentRows, chargeRows, lenderFeeRows,
   closingRows, loanRows, propertyLine, loanLine, disclosureItems, metaBlock, expiryBlock,
   DIFFER_LABELS, PRODUCT_LINE,

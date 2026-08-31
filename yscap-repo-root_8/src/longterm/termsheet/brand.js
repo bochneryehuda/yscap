@@ -54,24 +54,55 @@ const RGB = {
 // at 79.4, the lockup 30pt tall at (M, 23). Full-bleed on purpose — the band is
 // the one element that runs edge to edge, which is what makes the sheet read as
 // ours from across a desk.
+/**
+ * ⛔ THE BAND'S PROPORTIONS ARE THE APPROVED DESIGN'S, MEASURED OFF IT.
+ *
+ * It was the RTL sheet's, at 76pt deep with an 18pt title. The sketch's is
+ * 74 CSS px — 55.5pt — with a 15pt title, and the extra 20pt it gives back is
+ * spent as AIR between the band and the first line of content, which is where
+ * the design does its breathing: *"a generous margin is an argument for the
+ * importance of what sits inside it"*. Content therefore starts LOWER than
+ * before (96, not 92) on a band that is shorter, which is not a contradiction
+ * — the gap under the rule roughly trebles.
+ *
+ * Every baseline below is measured DOWN from the top of the paper, and every
+ * one of them is inside `h` with its descender to spare.
+ */
 const BAND = {
-  h: 76,          // the ink band
-  rule: 2.2,      // the gold rule directly under it
-  hair: 1.4,      // the gap from the gold rule down to the hairline
-  logoH: 30,      // the lockup's drawn height
-  logoTop: 23,    // its top, measured DOWN from the top of the paper
-  titleBase: 35,  // baselines, measured DOWN from the top of the paper
-  subBase: 51,
-  idBase: 65,
-  contentTop: 92, // where page content starts under the band (RTL's `y = 92`)
+  h: 56,          // the ink band
+  rule: 1.7,      // the gold rule directly under it
+  hair: 1.1,      // the gap from the gold rule down to the hairline
+  logoH: 23,      // the lockup's drawn height
+  logoTop: 17,    // its top, measured DOWN from the top of the paper
+  titleBase: 27,  // baselines, measured DOWN from the top of the paper
+  subBase: 40,
+  idBase: 50,
+  contentTop: 96, // where page content starts under the band
 };
 
-// ── a section band ──────────────────────────────────────────────────────────
-// RTL `band()`: a TEAL rounded rectangle the width of the content column, a
-// 2.2×9 GOLD tab inset 4pt from its left edge, the title in white 8pt bold with
-// 0.6 letter-spacing, and 23pt of advance in total.
+// ── a section heading ───────────────────────────────────────────────────────
+/**
+ * ⛔ A SECTION HEADING IS A RULE AND A TICK, NEVER A FILLED BAR.
+ *
+ * It was a full-width TEAL rounded rectangle carrying white capitals — the RTL
+ * sheet's own `band()`. Read beside the approved design it is the single
+ * loudest thing on the page: four saturated bars, each shouting a heading, on a
+ * document whose entire argument is the figures. Quiet Ledger's fourth rule is
+ * *"colour carries one job each, and never two — a single saturated accent
+ * reserved exclusively for STRUCTURE"*, and a filled bar the width of the
+ * column is decoration wearing structure's clothes.
+ *
+ * So the design's own shape: a 1.8×6 teal TICK, the label in tracked ink
+ * capitals beside it, and a 0.9pt ink rule under the pair. The accent still
+ * marks every heading — it is simply spent on a tick rather than on 500 square
+ * points of ink. Measured off `.sec` / `.tick` in the sketch (CSS px × 0.75).
+ *
+ * ⛔ THE IVORY GROUND IS NOT FREED BY THIS. It stays reserved for the one row
+ * per group that RESOLVES the arithmetic — a total, a cash-to-close — which is
+ * what teaches a reader, without being told, that a warm row is an answer.
+ */
 const SECTION = {
-  h: 17, radius: 2.5, tabX: 4, tabW: 2.2, tabH: 9, textX: 11, textSize: 8, tracking: 0.6, advance: 23,
+  tickW: 1.8, tickH: 6, gap: 6, tracking: 1, rule: 0.9, rulePad: 3.2,
 };
 
 /** The accent row's ivory band, and the hairline under every row. RTL `rowIn`. */

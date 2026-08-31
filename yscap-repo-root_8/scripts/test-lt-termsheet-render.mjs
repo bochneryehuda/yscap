@@ -316,12 +316,20 @@ console.log('\nthe PILOT design is on every page — the band, the lockup, the f
     if (!squash(inBand.map((it) => it.s).join('')).includes('comparisonsheet')) bandless.push(i + 1);
     if (!squash(inFoot.map((it) => it.s).join('')).includes('notacommitmenttolend')) footerless.push(i + 1);
   });
-  /* The band-and-footer sweep below needs SEVERAL pages to be worth running; it
-     used to get them from the per-option repeat, which is gone. Five options
-     still make a multi-page document through the table and the disclosures, and
-     the check is on what it needs (more than one page) rather than on a page
-     count that was really a symptom of the bloat. */
-  check(back.pageCount >= 3, `a five-option comparison runs to ${back.pageCount} pages — enough for the band-and-footer sweep to mean something`);
+  /* The band-and-footer sweep below needs MORE THAN ONE page to be worth
+     running: what it proves is that a page produced by a BREAK cannot come out
+     bare. It used to get them from the per-option repeat, which is gone, and
+     then from five options at the old type size.
+
+     ⛔ IT SAYS 2, AND IT SAID 3 UNTIL THE SHEET WAS RE-SET TO THE APPROVED
+     DESIGN. That is the number moving because the DOCUMENT got shorter — the
+     same five options now fit in two pages rather than three — not a guard
+     loosened to let a change through: the sweep still runs over every page of a
+     multi-page document, which is the whole of what it was written to do, and
+     its own comment has always said "more than one page". If it ever falls to
+     1, the sweep has stopped proving anything and the fixture needs more
+     content, not a smaller number. */
+  check(back.pageCount >= 2, `a five-option comparison runs to ${back.pageCount} pages — enough for the band-and-footer sweep to mean something`);
   check(bandless.length === 0, `the brand band names the document on EVERY page (missing on ${bandless.join(', ') || 'none'})`);
   check(footerless.length === 0, `and the footer disclaims on EVERY page (missing on ${footerless.join(', ') || 'none'})`);
 
@@ -602,6 +610,89 @@ console.log('\nthe paper reads like a document, not like a database');
     'the term sheet opens with the loan, the rate and the payment, before the tables');
   check(/\$375,000/.test(p1) && /7\.375%/.test(p1),
     '…stating the same figures the table below states, never a second calculation');
+
+  // ── the design, on the paper ──────────────────────────────────────────────
+  console.log('\nthe sheet is set the way the approved design is set');
+
+  /* ⛔ THE LOAN AND ITS MONTHLY PAYMENT ARE SIDE BY SIDE, AND THIS IS THE ONLY
+     WAY TO PROVE IT. `layout.js` can ASK for two columns; `pdf.js` falls back to
+     one whenever the pair could not be drawn safely, and both are valid
+     documents — so a source check on the request proves nothing about the page.
+     In one column the payment rows come strictly BELOW the loan rows; in two,
+     the payment's first row sits HIGHER on the same page than the loan's last.
+     That single comparison cannot be true of a fallback, so it is the assertion.
+     MEASURED: this is what takes the sheet from three sheets to two on a real
+     file, and it is the design's own page one. */
+  const at = (page, label) => (ts.pages[page] || []).find((i) => i.s.trim() === label);
+  const prepay = at(0, 'Prepayment');
+  const pandi = at(0, 'Principal & interest');
+  check(!!prepay && !!pandi, 'the loan and the payment are both on page one');
+  if (prepay && pandi) {
+    check(pandi.y > prepay.y,
+      `the payment column starts ABOVE the loan column's last row (${pandi.y.toFixed(0)} vs ${prepay.y.toFixed(0)}) — two columns, not one`);
+    check(pandi.x > prepay.x + 150,
+      `…and to the right of it (x ${pandi.x.toFixed(0)} vs ${prepay.x.toFixed(0)})`);
+  }
+
+  /* ⛔ NOTHING IN THE CONTENT IS CLIPPED. `clip()` ends a string it could not fit
+     with an ellipsis, which on a label reads as a rendering fault rather than as
+     a shortened word — and it is a SILENT failure, because the page still draws.
+     It went unnoticed for as long as every row had the full content column: the
+     moment a column was half as wide, "Total monthly payment (principal,
+     interest, taxes & insurance)" drew as "Total monthly payment (principal,
+     inter…" on the one row that resolves the arithmetic. The band's own identity
+     lines are excluded because a very long programme name may honestly be
+     shortened there; a figure or a label may not. */
+  const Zc = pdf.ZONES.content;
+  const clipped = [];
+  for (const doc of [ts, cmp]) {
+    doc.pages.forEach((items, pi) => {
+      for (const it of items) {
+        if (!(it.y >= Zc.bottom - 0.5 && it.y + it.h <= Zc.top + 2)) continue;
+        if (/…$/.test(it.s.trim())) clipped.push(`p${pi + 1} "${it.s.trim()}"`);
+      }
+    });
+  }
+  check(clipped.length === 0, `no label or figure is cut short with an ellipsis${clipped.length ? `: ${clipped.join(', ')}` : ''}`);
+  check(ts.pages.some((items) => items.some((i) => /^Total monthly payment/.test(i.s.trim()))),
+    '…and the row that used to be cut short is on the page in full, which is what makes the sweep above mean something');
+
+  /* ⛔ THREE WEIGHTS AND NO MORE — the design's third rule, asserted as the two
+     PROPORTIONS that were actually wrong rather than as a table of absolute
+     sizes nobody may ever change. The headline band was 2.26× the table it
+     summarised (the design's own is 1.73) and a resolving total was 1.5× the
+     ordinary figure beside it, which is the "everything is way too big" the
+     owner read off a real export. A ratio guard leaves the scale free to move as
+     one and still refuses the change that makes one figure shout. */
+  const SZ = pdf._internals.SZ;
+  check(SZ.hero / SZ.table <= 2,
+    `the headline is at most twice the table it summarises (${(SZ.hero / SZ.table).toFixed(2)}×)`);
+  check(SZ.big / SZ.value <= 1.35,
+    `a resolving total is MEDIUM beside its neighbours, never large (${(SZ.big / SZ.value).toFixed(2)}×)`);
+  check(Math.max(SZ.label, SZ.value, SZ.table, SZ.para, SZ.small, SZ.section, SZ.eyebrow) <= SZ.hero,
+    '…and nothing in the body is larger than the one figure that may be');
+
+  /* ⛔ A SECTION HEADING IS A RULE AND A TICK, NEVER A FILLED BAR — and this one
+     is asserted on the SOURCE, which is a real limitation stated rather than
+     hidden. The property is about a FILLED RECTANGLE, and the text extractor
+     this suite reads the paper with reports strings and their boxes; it cannot
+     see a fill at all. So what is checked is that `compileBand` draws a rule and
+     does not paint a rounded rectangle behind its label — which is exactly the
+     change, and would catch it coming back. Four saturated bars the width of the
+     column were the loudest thing on a page whose entire argument is the
+     figures, on a document the owner read beside the design and called *"way far
+     off from the sketch"*. */
+  const pdfSrc = fs.readFileSync(new URL('../src/longterm/termsheet/pdf.js', import.meta.url), 'utf8');
+  const bandFn = pdfSrc.slice(pdfSrc.indexOf('function compileBand('), pdfSrc.indexOf('function compileRule('));
+  check(bandFn.length > 100, 'compileBand was found in the source to read');
+  check(!/roundedRect\(/.test(bandFn),
+    'a section heading paints no rounded bar behind its label');
+  check(/line\([^)]*INK/.test(bandFn) || /line\(c, base - S\.rulePad, B\.x, B\.right, INK/.test(bandFn),
+    '…it rules under it in ink instead');
+  check(/tickW/.test(bandFn) && /TEAL/.test(bandFn),
+    '…and spends the accent on a tick, so the heading is still marked');
+  check(brand.SECTION && brand.SECTION.h === undefined && brand.SECTION.radius === undefined,
+    '…and the filled bar\'s own geometry is gone from brand.js, not merely unused');
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASSED' : `${failures} FAILED`}`);
