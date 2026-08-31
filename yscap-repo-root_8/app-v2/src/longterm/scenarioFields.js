@@ -178,7 +178,32 @@ export const PURPOSES = [
 // the arithmetic to stay stable. Calling them the same thing is the `pct`/`rate` confusion this
 // codebase already carries a guard against, so they are named for what they do.
 const roundCents = (n) => Math.round(n * 100) / 100;
-const roundRatio = (n) => Math.round(n * 1e6) / 1e6;
+// AN LTV IS LIFTED, NEVER ROUNDED TO NEAREST — the browser twin of the server's
+// ONE rounding rule (`src/longterm/pricing/tier-rounding.js`, `sendAs('ltv', n, 6)`).
+//
+// A higher LTV prices WORSE, so rounding it to nearest can round a loan into a
+// BETTER tier than it earns. The owner's rule is that we never see better:
+// "The DSCR should always be rounded down, and the LTV should always be rounded
+// up, so we should never see better."
+//
+// THIS MUST TRACK THE SERVER EXACTLY, and not only for tidiness: `toScenario`
+// deliberately sends only the figure the person TYPED, because the server
+// refuses a supplied LTV that disagrees with loan ÷ value — so a browser that
+// rounds one way and a server that rounds the other turns an ordinary quote
+// into `ltv_conflict` instead of a price. Section C of
+// `scripts/test-lt-pricer-fields.mjs` runs both over the same battery and
+// failed on 9 of 220 cases the moment these two drifted apart.
+//
+// The float guard is part of the rule, not decoration: 0.7 * 1e6 is
+// 700000.0000000001 in IEEE-754, and a bare Math.ceil would lift an exact 70%
+// to 70.0001%. A value within `slack` of a whole number IS that whole number.
+const ratioSlack = (x) => Math.max(1e-9, Math.abs(x) * 1e-12);
+const roundRatio = (n) => {
+  if (!Number.isFinite(n)) return null;
+  const x = n * 1e6;
+  const whole = Math.round(x);
+  return (Math.abs(x - whole) < ratioSlack(x) ? whole : Math.ceil(x)) / 1e6;
+};
 // ONE reading of a typed figure, shared with the amount triangle below.
 const numOf = toNumber;
 /** Accept 75 or 0.75, exactly as the server does. */
