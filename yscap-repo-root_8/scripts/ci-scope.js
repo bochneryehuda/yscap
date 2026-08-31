@@ -175,6 +175,45 @@ function stepRuns(step, scope) {
 const MAX_MAP_AGE_DAYS = 14;
 
 /**
+ * WARN BEFORE IT EXPIRES, because the expiry itself is not an early warning.
+ *
+ * MAX_MAP_AGE_DAYS is a cliff: on day 14 everything is normal and on day 15 the
+ * planner stops narrowing, `test-ci-scope-pure.js` goes red, and EVERY open
+ * pull request in the repository fails on a file nobody touched. That is what
+ * happened on 2026-08-31 against a map built on 2026-08-16 — the alarm worked
+ * exactly as designed and the first anybody heard of it was the whole
+ * repository going red at once.
+ *
+ * Nothing rebuilds this map on a cadence (see the header of ci-deps-build.js),
+ * so somebody has to run `npm run ci:deps` by hand. This gives them four days'
+ * notice instead of none.
+ *
+ * It is DELIBERATELY NOT A FAILURE and DELIBERATELY DOES NOT TOUCH SELECTION:
+ * a warning that could change which tests run would be a second, quieter copy
+ * of the age rule, and the one that drifts is the one that leaks. The only
+ * thing this decides is whether to print a sentence.
+ */
+const WARN_MAP_AGE_DAYS = 10;
+
+/**
+ * The sentence, or null when there is nothing to say.
+ *
+ * Silent in all four cases something else already handles: no map at all, an
+ * unusable or future date (both are refusals with their own reason), and a map
+ * that has ALREADY expired — there the refusal reason is louder and more
+ * accurate than a warning about an expiry that has happened.
+ */
+function mapAgeWarning(map, todayUtcDay) {
+  if (!map || typeof map !== 'object') return null;
+  const age = daysBetween(map.builtAtUtcDay, todayUtcDay);
+  if (age === null || age < 0) return null;
+  if (age > MAX_MAP_AGE_DAYS) return null;
+  if (age < WARN_MAP_AGE_DAYS) return null;
+  return `the dependency map is ${age} days old and stops narrowing at `
+    + `${MAX_MAP_AGE_DAYS} — rebuild it with \`npm run ci:deps\` (needs DATABASE_URL)`;
+}
+
+/**
  * Load the recorded map. Any problem at all answers null, which means "run everything".
  *
  * ON THE INNER GUARDS BELOW, HONESTLY: this function's `try/catch` is the
@@ -354,5 +393,7 @@ module.exports = {
   impactedTests,
   stepRunsImpacted,
   MAX_MAP_AGE_DAYS,
+  WARN_MAP_AGE_DAYS,
+  mapAgeWarning,
   _internals: { LT_PATTERNS, ALWAYS_FULL, ALWAYS_RUN_STEPS, LT_STEP, isLtPath, isAlwaysFull, cleanPath, daysBetween },
 };
