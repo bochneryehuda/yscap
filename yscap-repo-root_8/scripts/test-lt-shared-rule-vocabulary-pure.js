@@ -210,6 +210,24 @@ const eq = (a, b, m) => rec(Object.is(a, b), `${m} (got ${JSON.stringify(a)}, wa
   eq(evalDrift, 0, `D2 every shipped long-term rule evaluates identically in both modules (${cmp} evaluations)`);
   eq(wordDrift, 0, 'D3 …and reads identically, so no screen changes wording when they merge');
 
+  // D4 EXISTS BECAUSE D3 CANNOT SEE IT. `describeRule` now delegates to the
+  // shared summariser, so it uses the SHARED label table internally — which
+  // means drifting the long-term table no longer changes the sentence, and D3
+  // stays green through it. But that table is not dead: the long-term route
+  // ships it to the rule BUILDER as `operatorLabels` (routes/condition-center.js),
+  // so a drift there would have the picker offer "is blank" while the sentence
+  // underneath it reads "is empty" — one operator, two words, on one screen.
+  // Proven by mutation: re-adding `is_empty: 'is blank'` leaves D3 green and
+  // fails only here.
+  const shipsShared = LT.OPERATOR_LABEL === SH.OPERATOR_LABEL
+    || JSON.stringify(LT.OPERATOR_LABEL) === JSON.stringify(SH.OPERATOR_LABEL);
+  ok(shipsShared,
+    'D4 the long-term rule BUILDER is handed the shared operator wording, so the picker and the sentence can never say different words for one operator');
+  const routeSrc = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'src/longterm/routes/condition-center.js'), 'utf8');
+  ok(/operatorLabels:\s*rules\.OPERATOR_LABEL/.test(routeSrc),
+    'D4b …and it really is that table the builder receives — a route that built its own would put the drift back where nothing is watching');
+
   // EVERY TYPE THE LONG-TERM REGISTRY DECLARES IS NOW KNOWN HERE. This is the
   // check that fails when somebody adds a Long-Term field of a type the shared
   // evaluator cannot judge — which would validate nowhere and evaluate to

@@ -16,7 +16,7 @@
 // *** runs without a single error and silently leaves out every one of those
 // *** 949 objects — including the guard that keeps a budget
 // *** condition from being signed off unless the totals match to the cent.
-// *** The 653 numbered migrations in db/ (highest db/656) are the only
+// *** The 654 numbered migrations in db/ (highest db/657) are the only
 // *** thing that builds this database.
 //
 // Snapshot: 406 tables, 6499 columns.

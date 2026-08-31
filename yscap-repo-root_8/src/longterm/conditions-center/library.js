@@ -75,6 +75,9 @@ const when = (field, operator, value) => ({
   rules: [value === undefined ? { field, operator } : { field, operator, value }],
 });
 
+/** The same, for a condition that applies when ANY one of several rows holds. */
+const whenAny = (rows) => ({ combinator: 'or', rules: rows });
+
 // ═══════════════════════════════════════════════════════════════════════════
 // PRIOR TO SUBMISSION — everything the file needs before it goes to underwriting.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -135,7 +138,30 @@ const PRIOR_TO_SUBMISSION = [
     audience: 'both',
     kind: 'document',
     autoApply: 'rules',
-    rule: when('vests_in_entity', 'is_true'),
+    // ── "IN AN ENTITY, **OR** WE HAVE NOT BEEN TOLD" ────────────────────────
+    //
+    // Field 4008 decides and nothing else (owner-directed 2026-08-23, restated
+    // 2026-08-31: "if 4008 is individual instead of officer, then no entity
+    // condition"). `vests_in_entity` now reads 4008 rather than the parties, so
+    // an Individual-vested loan carrying a STALE company name on a borrower row
+    // is no longer asked for formation documents it does not need.
+    //
+    // WHY THE SECOND ARM, AND WHY IT IS NOT A FIELD THAT DEFAULTS. That field
+    // answers `null` when Encompass has not said — honestly, because nothing
+    // stated is not "Individual" — and `rules.js` turns a blank into FALSE, so a
+    // single `is_true` arm would take this condition OFF every unanswered loan
+    // (19 of the measured 486, plus every loan not yet read). The owner chose the
+    // other direction: keep asking until 4008 positively says Individual. The
+    // first shape tried was a new field that returned `true` on a blank, and it
+    // was WRONG — it would have had to claim a fact about the title that nobody
+    // has told us, which is the one thing this registry's own header forbids.
+    // `is_empty` says the same thing without inventing anything, and the settings
+    // screen renders it in plain words: "Title is taken in an entity is yes OR
+    // Title is taken in an entity is blank".
+    rule: whenAny([
+      { field: 'vests_in_entity', operator: 'is_true' },
+      { field: 'vests_in_entity', operator: 'is_empty' },
+    ]),
     slots: [
       { key: 'formation', label: 'Articles of formation', required: true },
       { key: 'agreement', label: 'Operating agreement or bylaws', required: true },
