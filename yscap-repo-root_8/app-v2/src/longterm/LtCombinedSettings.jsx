@@ -50,7 +50,8 @@ const ORIGIN_NOTE = {
 
 /** Is this row pinned — does it carry a setting of its own rather than the pre-fill? */
 function isPinned(row) {
-  return row.sourceOrigin === 'setting' || row.enabledOrigin === 'setting' || row.whiteLabelOrigin === 'setting';
+  return row.sourceOrigin === 'setting' || row.enabledOrigin === 'setting'
+    || row.whiteLabelOrigin === 'setting' || row.holdbackOrigin === 'setting';
 }
 
 /** The row as the server would store it — only what a person has actually CHANGED. */
@@ -74,6 +75,22 @@ function patchOf(row, edit) {
     if (wl) out.whiteLabel = wl;
   } else if (row.whiteLabelOrigin === 'setting') {
     out.whiteLabel = row.whiteLabel;
+  }
+  /**
+   * THIS INVESTOR'S OWN EXTRA MARGIN HOLDBACK.
+   *
+   * ⛔ A BLANK BOX MEANS "NOTHING OF MY OWN", NOT ZERO, and the two are stored
+   * differently on purpose: leaving the key out returns the row to the standing
+   * holdback, while a typed 0 is a person saying "hold nothing back on this
+   * investor" and is stored as a decision. That is the same distinction the
+   * source and the on/off switch already make, and it is what lets the screen
+   * show which rows somebody has actually answered.
+   */
+  const hbTyped = edit.holdback !== undefined ? String(edit.holdback).trim() : null;
+  if (hbTyped !== null) {
+    if (hbTyped !== '' && Number.isFinite(Number(hbTyped))) out.holdback = Number(hbTyped);
+  } else if (row.holdbackOrigin === 'setting') {
+    out.holdback = row.holdback;
   }
   const source = edit.source !== undefined ? edit.source : row.source;
   // Store the source only when it DIFFERS from what the pre-fill would answer.
@@ -327,6 +344,11 @@ export default function LtCombinedSettings() {
         const wl = pending ? (pre.whiteLabel || '') : (e.whiteLabel !== undefined ? e.whiteLabel : (r.whiteLabel || ''));
         const src = pending ? (pre.source || r.source) : (e.source !== undefined ? e.source : r.source);
         const on = pending ? (pre.enabled !== undefined ? pre.enabled : r.enabled) : (e.enabled !== undefined ? e.enabled : r.enabled);
+        // A blank box is the honest reading of "nothing of my own here": only a row
+        // somebody has actually answered shows a figure, so the placeholder 0 never
+        // reads as a decision nobody made.
+        const hb = pending ? (pre.holdback != null ? String(pre.holdback) : '')
+          : (e.holdback !== undefined ? e.holdback : (r.holdbackOrigin === 'setting' ? String(r.holdback) : ''));
         const pinned = isPinned(r);
         return (
           <div key={r.key} style={{ ...card, opacity: on ? 1 : 0.72 }}>
@@ -371,6 +393,29 @@ export default function LtCombinedSettings() {
                   {(data.sources || []).map((s) => <option key={s} value={s}>{SOURCE_LABEL[s] || s}</option>)}
                 </select>
                 <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>{ORIGIN_NOTE[r.sourceOrigin] || ''}</div>
+              </div>
+              {/* THIS INVESTOR'S OWN EXTRA (owner-directed 2026-08-30: *"We can add extra
+                  company margin holdbacks on top of each and every program. If it's a set
+                  on LoanNEX, we should be able to increase or decrease the margin holdbacks
+                  accordingly."*).
+
+                  ONE SIGNED NUMBER answers both halves: positive adds on top of whatever
+                  the feed already holds back, negative takes it back down. Two boxes — one
+                  to add and one to reduce — would be two ways to say one thing, and the
+                  screen would then have to decide what they mean together. */}
+              <div style={{ flex: '0 1 150px' }}>
+                <label style={label} htmlFor={`hb-${r.key}`}>Extra holdback (points)</label>
+                <input
+                  id={`hb-${r.key}`} style={input} inputMode="decimal" disabled={pending}
+                  value={hb} placeholder="0"
+                  onChange={(ev) => edit(r.key, { holdback: ev.target.value })}
+                />
+                <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>
+                  {r.holdbackOrigin === 'setting'
+                    ? (Number(r.holdback) === 0 ? 'you set nothing extra here'
+                      : (Number(r.holdback) > 0 ? `you add ${r.holdback} on top` : `you take ${Math.abs(Number(r.holdback))} back off`))
+                    : 'the standing holdback only'}
+                </div>
               </div>
               <div style={{ flex: '0 0 auto' }}>
                 <label style={{ display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>

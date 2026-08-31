@@ -202,6 +202,72 @@ const ok = (c, m) => { if (c) { pass++; console.log(`  ok   ${m}`); } else { fai
     ok(lp.marginHoldback === undefined && lp.programs[0].rungs[0].price === 100.5,
       'G1 a saved holdback cannot reach Lender Price — its feed already carries ours, so a second one would take it twice');
 
+    console.log('\n== I. EACH INVESTOR\'S OWN EXTRA, THROUGH THE REAL DOORS ==');
+    // Owner-directed 2026-08-30: *"We can add extra company margin holdbacks on
+    // top of each and every program. If it's a set on LoanNEX, we should be able
+    // to increase or decrease the margin holdbacks accordingly."*
+    //
+    // ⛔ THIS IS THE ASSERTION NO PURE TEST CAN MAKE. The arithmetic is proven in
+    // `test-lt-investor-holdback-pure.js`; what needs a real database and a real
+    // HTTP door is that a value SAVED on the settings screen is the value THAT
+    // INVESTOR'S rows are priced on. A resolver that is perfect and a route that
+    // never hands it in would pass every unit test and price every board on one
+    // number — which is exactly the state this replaced.
+    {
+      const realNexPrice = nexClient.price;
+      // Two investors, identical vendor prices, so any difference between their
+      // rows can only have come from their own settings.
+      nexClient.price = async () => ({
+        board: { source: 'loannex', programs: [
+          { lender: 'NQM Funding', investor: 'NQM Funding', program: 'P1', product: '30 Yr Fixed', rungs: [{ rate: 7, price: VENDOR_PRICE, points: -1.5, lockDays: 30 }] },
+          { lender: 'Acra Lending', investor: 'Acra Lending', program: 'P2', product: '30 Yr Fixed', rungs: [{ rate: 7, price: VENDOR_PRICE, points: -1.5, lockDays: 30 }] },
+        ] },
+      });
+      try {
+        await call('PUT', DOOR, { points: null });   // the standing 0.25 for everybody
+        const INV_DOOR = '/api/lt/dscr/combined/investors';
+        const iv = await call('PUT', INV_DOOR, { investors: { nqm: { holdback: 0.25 }, acra: { holdback: -0.25 } } });
+        ok(iv.status === 200, `I1 the settings door accepts a per-investor extra (${iv.status})`);
+        const row = (iv.body.investors || []).find((r) => r.key === 'nqm');
+        ok(row && row.holdback === 0.25 && row.holdbackOrigin === 'setting',
+          `I2 …and reads it back on that investor's row, marked as somebody's own setting (${row && row.holdback})`);
+
+        const out = await priceBoth(SCENARIO, { revealSource: true });
+        const priceOf = (key) => {
+          const e = (out.merged.investors || []).find((x) => x.key === key);
+          const pr = e && e.programs && e.programs[0];
+          return pr && pr.rungs && pr.rungs[0] ? pr.rungs[0].price : null;
+        };
+        ok(priceOf('nqm') === 101,
+          `I3 …and the investor with +0.25 is BOARDED at 101 — 0.5 held back (got ${priceOf('nqm')}). This is the assertion a pure test cannot make.`);
+        ok(priceOf('acra') === 101.5,
+          `I4 …the one with −0.25 keeps the vendor's own 101.5 (got ${priceOf('acra')}), so one number per investor really does move both ways`);
+
+        // AND IT MUST NOT LEAK. On the ORDINARY board — what a consumer would be
+        // handed — the deduction is in the price and named nowhere.
+        const plain = await priceBoth(SCENARIO, {});
+        const text = JSON.stringify(plain.merged.investors || []);
+        ok(!/marginHoldback|vendorPrice/.test(text),
+          'I5 …and none of it is named on the ordinary board — the holdback is baked into the rate, which is the owner\'s own rule for what a consumer sees');
+        const pe = (plain.merged.investors || []).find((x) => x.key === 'nqm');
+        const pp = pe && pe.programs && pe.programs[0];
+        ok(pp && pp.rungs[0].price === 101,
+          `I6 …while the PRICE a consumer is shown still carries it (got ${pp && pp.rungs[0].price})`);
+
+        await call('PUT', INV_DOOR, { investors: {} });
+        const back = await priceBoth(SCENARIO, { revealSource: true });
+        const bp = ((back.merged.investors || []).find((x) => x.key === 'nqm') || {}).programs;
+        ok(bp && bp[0].rungs[0].price === 101.25,
+          `I7 …and clearing the extras returns that investor to the standing holdback (got ${bp && bp[0].rungs[0].price}) — the way back is a real one`);
+
+        const bad = await call('PUT', INV_DOOR, { investors: { nqm: { holdback: 25 } } });
+        ok(bad.status === 422 && (bad.body.problems || []).some((x) => x.error === 'holdback_too_large'),
+          `I8 …and a slipped decimal is refused at the door, naming the investor (${bad.status})`);
+      } finally {
+        nexClient.price = realNexPrice;
+      }
+    }
+
     console.log('\n== H. NO DOOR SERVES A RAW LOANNEX PRICE ==');
     // Owner-directed 2026-08-30, on being shown that the LoanNEX-alone door
     // served the vendor's prices untouched under a note inviting a comparison

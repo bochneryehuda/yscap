@@ -71,7 +71,8 @@ const lp = require('../lenderprice/client');
 const lpPrograms = require('../lenderprice/investor-programs');
 const { validateScenario } = require('../lenderprice/search-model');
 const nex = require('../loannex/client');
-const { merge } = require('../pricing/merge');
+const mergeMod = require('../pricing/merge');
+const { merge } = mergeMod;
 const routing = require('../pricing/investor-routing');
 const investorLinks = require('../pricing/investor-links');
 // The canonical investor roster and the client-safe names, both read-only here —
@@ -286,6 +287,27 @@ async function priceBoth(scenario, opts = {}) {
   // wins so a caller can price a what-if without saving it (the same rule the
   // investor routes follow).
   const heldSetting = opts.marginHoldback !== undefined ? opts.marginHoldback : await holdbackRaw();
+  /**
+   * EACH INVESTOR'S OWN EXTRA, read from the SAME saved settings the routing and
+   * the settings screen read (owner-directed 2026-08-30). Resolved BEFORE the
+   * vendors are called for the same reason the global figure is: the answer has
+   * to be in hand at the moment a board lands.
+   *
+   * ⛔ THE INVESTOR A ROW BELONGS TO IS RESOLVED BY `merge.resolveInvestor`, the
+   * ONE resolver — the same one the merge itself uses, with the same recorded
+   * links. A second lookup here would eventually put one investor's extra on
+   * another investor's rows, and the price on the board is what somebody quotes.
+   */
+  const savedForHoldback = opts.routes !== undefined ? { raw: opts.routes } : await settingsRaw();
+  const linksForHoldback = opts.links !== undefined ? { raw: opts.links } : await linksRaw();
+  const investorRows = routing.readSettings(savedForHoldback.raw).settings;
+  const linkMapForHoldback = investorLinks.readLinks(linksForHoldback.raw).links;
+  const extraFor = (prog) => {
+    const hit = mergeMod.resolveInvestor(prog, linkMapForHoldback);
+    if (!hit || !hit.key) return null;
+    const row = routing.settingFor(hit.key, investorRows);
+    return row && row.holdbackOrigin === 'setting' ? row.holdback : null;
+  };
 
   const [lpRes, nxRes] = await Promise.allSettled([
     (async () => {
@@ -301,7 +323,19 @@ async function priceBoth(scenario, opts = {}) {
       // same way. `decorate` takes the PROGRAMS ARRAY and answers
       // { programs, roster, unmapped }.
       const deco = lpPrograms.decorate(parsed.programs) || {};
-      return { ...parsed, programs: deco.programs || parsed.programs, searchKey: r.searchKey || null, provenance: r.provenance || null };
+      const withPrograms = { ...parsed, programs: deco.programs || parsed.programs };
+      /**
+       * ⛔ AN INVESTOR'S OWN EXTRA REACHES LENDER PRICE; THE GLOBAL FIGURE STILL
+       * DOES NOT. Those are two different decisions. The global holdback exists
+       * to bring LoanNEX's raw feed onto the same footing as this one, which
+       * ALREADY carries our standard margin — applying it here would take it
+       * twice, and `resolveHoldback` refuses it for that reason. An extra is the
+       * owner naming ONE investor they want more held back on, which the owner
+       * asked for on "each and every program". With none set anywhere this
+       * returns the same object it was handed.
+       */
+      const held = vendorMargin.applyToBoard(withPrograms, 'lenderprice', { extraFor });
+      return { ...held, searchKey: r.searchKey || null, provenance: r.provenance || null };
     })(),
     nex.price(sc, opts.loannex || {}),
   ]);
@@ -313,7 +347,7 @@ async function priceBoth(scenario, opts = {}) {
     // Price's feed already carries it and LoanNEX's does not, so this is what
     // puts the two on the same footing; applying it any later would have the
     // comparison electing on one set of numbers and the board showing another.
-    loannex: nxRes.status === 'fulfilled' ? vendorMargin.applyToBoard(nxRes.value.board, 'loannex', { saved: heldSetting }) : null,
+    loannex: nxRes.status === 'fulfilled' ? vendorMargin.applyToBoard(nxRes.value.board, 'loannex', { saved: heldSetting, extraFor }) : null,
   };
   const errors = {
     lenderprice: lpRes.status === 'rejected' ? reasonOf(lpRes.reason) : null,
@@ -673,7 +707,7 @@ function makeRouter(opts = {}) {
   router.put('/investors', async (req, res) => {
     const body = (req.body && typeof req.body === 'object' && req.body.investors) || req.body || {};
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      return res.status(400).json({ ok: false, error: 'not_an_object', message: 'Send an object of investorKey -> {source, enabled, whiteLabel}.' });
+      return res.status(400).json({ ok: false, error: 'not_an_object', message: 'Send an object of investorKey -> {source, enabled, whiteLabel, holdback}.' });
     }
     const check = routing.readSettings(body);
     if (check.problems.length) {

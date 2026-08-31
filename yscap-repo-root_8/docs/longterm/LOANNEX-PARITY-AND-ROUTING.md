@@ -697,26 +697,120 @@ same 114 after, 0 created). It now asserts what is actually true — the holdbac
   state this fixed. H5 compares the two doors on one scenario at one setting, and under the mutation
   it reads `combined 101, LoanNEX-alone 101.5`. Two mutations proven to fail it.
 
+## 7e. The rounding rule, the near-tier flag and the per-investor holdback — 2026-08-30
+
+### One rounding rule, both programs
+
+The owner, shown that the LTV carried the DSCR bug pointing the other way: *"The DSCR should always
+be rounded down, and the LTV should always be rounded up, so we should never see better."*
+
+`pricing/tier-rounding.js` states the direction ONCE and both connectors read it. A higher DSCR
+prices better and a higher LTV prices worse, so the two run opposite ways and either one cut the
+wrong way asks a vendor for a band the loan has not earned. It takes the FIELD rather than a
+direction — a connector asks "cut this DSCR" and cannot get it backwards — and an unknown field
+THROWS rather than defaulting one.
+
+**CORRECTION, MEASURED.** An earlier note here said Lender Price sent 80.002% as 80.0000%. That was
+`buildSearchPayload`, which only tests call; the LIVE builder is `buildSearch`, which has always kept
+4 decimals of the percent. The live exposure was about 100× smaller than stated. The rule still
+applies to it and now does — and the move is measured rather than asserted, because this is the
+engine the company prices on today: across **446,344** derived LTVs **not one** goes out lower than
+before, the largest move is a **single 4dp step (0.0001 of a percentage point)**, and **every
+round-number scenario is byte-identical** — a 75% loan is still 75%. The test-only builder was wired
+to the same rule rather than left holding the opposite one.
+
+**The DSCR reaches Lender Price EXACT**, and that is asserted rather than assumed: nothing rounds it,
+so the rule holds there by construction — which is only true until somebody adds a rounder.
+
+**THE FLOAT GUARD IS THE PART THAT MATTERS.** A $178,750 loan on a $325,000 property is exactly 55%,
+and `178750 / 325000` is `0.5500000000000001` — so unguarded the LTV goes out as **55.01%**, a plain
+55% loan pushed into a worse tier. The first cut of that assertion used `0.7 * 100`, which is exactly
+70 in IEEE-754, so it passed with the guard deleted and proved nothing.
+
+### "You are almost at a better tier"
+
+*"You can make a nice flag that you're almost at the edge. If you move down your loan amount a little
+bit, you can be in a better tier, where every 5% is a better tier… Also, on the ratio, if the ratio is
+almost at a tier, make a pop-up that if you enhance it a little bit, you're in a better tier."*
+
+**THE TIER IS READ OFF THE SHEET, NOT ASSUMED.** Every priced quote carries the vendor's own grid cell
+in words — measured on the live explain capture: `"LTV : 70.01% - 75.00%, DSCR : >= 1.25"`. So the
+better tier is that band's lower edge and nothing is guessed. The owner's 5% steps are the FALLBACK
+for a quote that published none, and the answer always says which of the two it used.
+
+**THE DOLLAR FIGURE IS PROVEN, NOT COMPUTED AND HOPED.** The loan amount it states is re-run through
+the real rounding rule until it genuinely lands inside the better band, and is the LARGEST such loan.
+That verification looked redundant and is not: a $100,000.37 property at the 70% tier gets a naive
+figure of $70,000.26, which is **sent as 70.01% and misses the tier it was meant to reach**. Deleting
+the verification left the battery GREEN, because the sweep used only round property values — it now
+walks awkward ones and asserts it CONTAINS **1,673** cases the arithmetic alone gets wrong.
+
+Rendered as an unmissable callout at the top of the board rather than a modal: a dialog on every
+priced board is one people learn to dismiss without reading, and it would sit between an officer and
+the prices they just paid for.
+
+### Each investor's own margin holdback
+
+*"We can add extra company margin holdbacks on top of each and every program… If it's a set on
+LoanNEX, we should be able to increase or decrease the margin holdbacks accordingly."*
+
+**ONE SIGNED NUMBER PER INVESTOR answers both halves.** Positive adds on top of whatever the feed
+holds back; negative takes it back down, so the standing 0.25 on a LoanNEX investor moves to 0.10
+(−0.15) or is removed outright (−0.25) without touching what every other investor is priced on. Two
+fields — "add" and "reduce" — would be two ways to say one thing, and the code would then have to
+decide what they mean together.
+
+**IT CAN NEVER BECOME A GIVEAWAY.** A negative effective holdback would ADD to the vendor's price and
+quote better execution than the investor offered, so the sum is floored at zero and the floor is
+REPORTED — somebody who typed −0.40 against a 0.25 base asked for something arithmetic cannot do.
+
+**AN EXTRA REACHES LENDER PRICE; THE GLOBAL FIGURE STILL DOES NOT.** Those are different decisions.
+The global figure exists to bring LoanNEX's raw feed onto the same footing as Lender Price's, which
+already carries our standard margin — applying it there too would take it twice. A per-investor extra
+is the owner naming ONE investor, on "each and every program".
+
+**WHICH INVESTOR A ROW BELONGS TO IS `merge.resolveInvestor`, THE ONE RESOLVER**, handed in by the
+route rather than looked up again inside the pricing module. A second lookup would eventually put one
+investor's extra on another investor's rows, and the price on the board is what somebody quotes.
+
+**HIDDEN FROM CONSUMERS, BAKED INTO THE RATE.** Since the holdback became per-investor the PROGRAM
+carries it as well as the rung — and a program-level field is not touched by the rung mapping — so
+`stripSource` names them too. The PRICE is untouched: the deduction is already in it, which is
+exactly what "baked into the rate" means, and an admin who asks for the source still gets the whole
+trail.
+
+Guards: `test-lt-tier-rounding-pure.js` (29), `test-lt-near-tier-pure.js` (22),
+`test-lt-investor-holdback-pure.js` (29) and section I of `test-lt-margin-holdback-db.js` over real
+HTTP. **Fifteen mutations were each proven to fail them**, including one that reproduces the whole
+per-investor feature being silently off (the route dropping the seam), and two that were MISSED
+first time and led to real strengthening of the guards.
+
+### Answered by the owner — 2026-08-30, and now built
+
+- **The parser's own 0.001 — LEFT AS IT IS.** `loannex/parse.js` rounds `price` and `100 − price`
+  independently off the unrounded vendor number, so on 114 of 5,286 rungs the two disagree by a
+  thousandth and the board and the option list show slightly different points for the same quote. No
+  money moves (dollars come from the price). Put to the owner: *"This one is not a problem."* So it
+  stands, deliberately — do not "tidy" it into a change that moves a displayed pricing figure on 114
+  rungs.
+- ~~**`POST /loannex/price` returns the vendor's raw answer.**~~ **Answered: *"Corrected prices with
+  our holdback."* Built — see §7d.**
+- ~~**LTV rounds the wrong way, and so does Lender Price's connector.**~~ **Answered: *"The DSCR
+  should always be rounded down, and the LTV should always be rounded up, so we should never see
+  better."* Built on BOTH programs — see §7e. The earlier note that this needed the owner's word
+  before touching the live engine is superseded: they gave it, generally.**
+- ~~**Per-investor holdbacks are not offered.**~~ **Answered: *"We can add extra company margin
+  holdbacks on top of each and every program… we should be able to increase or decrease the margin
+  holdbacks accordingly."* Built — one signed number per investor, see §7e.**
+
 ### Still open, and the owner's to decide
 
-- **Lender Price's connector has the SAME LTV rounding, and it is the LIVE engine.**
-  `lenderprice/client.js buildSearchPayload` computes `Math.round((loan / value) * 10000) / 10000`
-  — round-to-nearest at two decimals of the percent, the same class just fixed on the LoanNEX side.
-  Measured: `400001 / 500000` (80.0002%) and even `400010 / 500000` (80.002%) both go out as
-  `80.0000%`. The owner's *"Round this up"* was given about the LoanNEX finding, and this one changes
-  what the **live general pricing engine** asks Lender Price to price — which moves live quotes —
-  so it is **reported and not applied**. It needs one word from the owner.
-
-  **MEASURED, because fixing one side means the two programs can now be asked a DIFFERENT LTV for
-  one loan.** Across 4,785,029 realistic whole-dollar loan/value pairs (values $200k–$900k, LTVs
-  55–85%): the two would be sent a different 2dp LTV on **49.1%** of them, and land in a **different
-  pricing tier** on **0.098%** — about one loan in a thousand. In every one of those the LoanNEX
-  side is in the correct, more conservative tier and Lender Price is in the too-generous one, so the
-  combined board is now MORE right on its LoanNEX rows and unchanged on its Lender Price ones. That
-  is the honest case for fixing the other side; it is still the owner's call, because it moves live
-  quotes.
-- **Per-investor holdbacks** are not offered. The owner's rule is *"everybody"*, so one number is
-  faithful to it; a per-investor override would be a new business rule.
+- **Whether the near-tier flag belongs on the GENERAL engine too.** It is built on the combined board
+  only, because the owner's standing instruction is *"Don't touch our current setup that we currently
+  have: our General Pricing Engine."* Porting it moves no number — it is a hint — but it is their call.
+- **Whether an investor's extra should be able to differ by SOURCE.** Today one investor carries one
+  extra whichever program prices it. Splitting it would be a new business rule and nobody has asked
+  for one.
 
 ---
 
