@@ -55,6 +55,55 @@ ok(s2.tabs.signHereTabs.length === 1 && s2.tabs.signHereTabs[0].anchorString ===
 ok(def.customFields.textCustomFields[0].value === 'app-1', 'custom field correlation carried');
 ok(def.eventNotification.requireAcknowledgment === 'true', 'eventNotification requires ack (no silent loss)');
 ok(def.eventNotification.includeCertificateOfCompletion === 'true', 'CoC included in webhook');
+// A package with no fillable boxes keeps the minimal shape it always had — the
+// borrower/Iska/term-sheet envelopes must not grow empty tab arrays.
+ok(!('textTabs' in s1.tabs) && !('radioGroupTabs' in s1.tabs), 'sign/date-only signer carries no empty tab arrays');
+
+// 2b. buildEnvelopeDefinition — either/or RADIO GROUPS (the long-term VOR's
+// "Is account satisfactory? Yes/No"). Two independent checkboxes would let a
+// signer tick both or neither and return a form that answers nothing.
+const radioDef = d.buildEnvelopeDefinition({
+  subject: 'Verify',
+  documents: [{ base64: 'AAAA', name: 'VOR', documentId: 1 }],
+  signers: [{ recipientId: 1, name: 'Landlord', email: 'll@example.com',
+    tabsByDoc: { 1: {
+      sign: ['/vor_ll_sig/'],
+      text: [{ anchor: '/vor_ll_rent/', tabLabel: 'll_rent_amount', required: true }],
+      radio: [{ group: 'll_satisfactory', required: true, radios: [
+        { anchor: '/vor_ll_sat_yes/', value: 'Yes' },
+        { anchor: '/vor_ll_sat_no/', value: 'No' },
+      ] }],
+    } } }],
+});
+const rg = radioDef.recipients.signers[0].tabs.radioGroupTabs;
+ok(Array.isArray(rg) && rg.length === 1, 'radio group reaches the envelope definition');
+ok(rg[0].groupName === 'll_satisfactory', 'the group name is the key the answer comes back under');
+ok(rg[0].required === 'true', 'a required group blocks Finish until it is answered');
+ok(rg[0].documentId === '1', 'the group is documentId-scoped like every other tab');
+ok(rg[0].radios.length === 2 && rg[0].radios.map((r) => r.value).join(',') === 'Yes,No', 'both options carried');
+ok(rg[0].radios.every((r) => r.selected === 'false'), 'nothing is pre-selected — the signer answers');
+ok(rg[0].radios.every((r) => r.anchorIgnoreIfNotPresent === 'true'), 'radios are anchored like the other tabs');
+// A group with no usable radios is dropped rather than posted as an empty question.
+const emptyRadio = d.buildEnvelopeDefinition({
+  documents: [{ base64: 'A', name: 'D', documentId: 1 }],
+  signers: [{ recipientId: 1, name: 'L', email: 'l@e.co', tabsByDoc: { 1: { radio: [{ group: 'g', radios: [{ value: 'Yes' }] }] } } }],
+});
+ok(!('radioGroupTabs' in emptyRadio.recipients.signers[0].tabs), 'a group whose radios have no anchors is dropped');
+
+// 2c. the selected radio comes back in the same map as the typed boxes, keyed by
+// the group name — an answer that landed anywhere else would never be filed.
+const radioBack = d.parseRecipients({
+  recipients: { signers: [{ recipientId: '1', routingOrder: '1', status: 'completed', tabs: {
+    textTabs: [{ tabLabel: 'll_rent_amount', value: ' 2450 ' }],
+    radioGroupTabs: [
+      { groupName: 'll_satisfactory', radios: [{ value: 'Yes', selected: 'true' }, { value: 'No', selected: 'false' }] },
+      { groupName: 'll_arrears', radios: [{ value: 'Yes', selected: 'false' }, { value: 'No', selected: 'false' }] },
+    ],
+  } }] },
+})[0].textValues;
+ok(radioBack.ll_rent_amount === '2450', 'a typed box still comes back trimmed');
+ok(radioBack.ll_satisfactory === 'Yes', 'the SELECTED radio is what comes back for the group');
+ok(!('ll_arrears' in radioBack), 'an unanswered group is absent, not an empty string');
 
 // 3. arg validation
 let threw = false;

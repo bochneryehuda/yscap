@@ -67,7 +67,19 @@ const FIELDS = [
   // ── The deal ──────────────────────────────────────────────────────────────
   {
     key: 'loan_purpose', label: 'Loan purpose', type: 'enum', group: 'The deal',
-    options: ['purchase', 'refinance', 'cash_out_refinance'],
+    /* `{v, label}` IS THE SHARED CONDITION CENTER'S OPTION SHAPE, and matching it
+       is what lets the ONE shared validator check an enum rule's value against
+       the vocabulary that field actually has. While these were bare strings the
+       shared check found no `o.v` on any of them and refused every real value as
+       unknown — and before the validators were joined, nothing checked them at
+       all, so a typo'd enum value saved happily and then silently never matched.
+       Nothing read the old shape: it was served by `catalog()` and consumed by no
+       screen, which is what made this safe to correct rather than adapt. */
+    options: [
+      { v: 'purchase', label: 'Purchase' },
+      { v: 'refinance', label: 'Refinance' },
+      { v: 'cash_out_refinance', label: 'Cash-out refinance' },
+    ],
     read: (c) => text(c.loan && c.loan.loan_purpose),
   },
   {
@@ -93,7 +105,13 @@ const FIELDS = [
   },
   {
     key: 'product_kind', label: 'Product', type: 'enum', group: 'The deal',
-    options: ['dscr', 'full_doc', 'bank_statement', 'other'],
+    // Same shared `{v, label}` shape as `loan_purpose` above, for the same reason.
+    options: [
+      { v: 'dscr', label: 'DSCR' },
+      { v: 'full_doc', label: 'Full doc' },
+      { v: 'bank_statement', label: 'Bank statement' },
+      { v: 'other', label: 'Other' },
+    ],
     read: (c) => text(c.loan && c.loan.product_kind),
   },
   { key: 'program', label: 'Program', type: 'text', group: 'The deal', read: (c) => text(c.loan && c.loan.program_name) },

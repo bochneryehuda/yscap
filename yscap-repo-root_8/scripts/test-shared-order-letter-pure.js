@@ -215,4 +215,40 @@ assert.ok(/require\(\s*'\.\/inbound-mail'\s*\)/.test(inboxSrc), 'file-inbox read
 assert.ok(!/async function retrieveAttachmentsSafe\(/.test(inboxSrc), 'the retrieval is not re-inlined in file-inbox');
 ok('neither definition has been re-inlined into the product-specific desk');
 
+/* ── THE OWNER'S TITLE ASK IS ALL SEVEN ITEMS ────────────────────────────────
+   Owner-directed 2026-08-30: the drafts in docs/longterm/OWNER-ORDER-DRAFTS.md list
+   seven title deliverables and the code asked for five. The owner chose to apply the
+   two missing ones to BOTH products, so this assertion guards the SHARED list — the
+   whole point of one title letter is that neither product quietly grows its own ask. */
+const oe = require('../src/lib/order-email');
+const full = oe.titleWants('NJ');
+for (const want of ['Title Commitment', 'CPL', 'Settlement agent E&O Insurance', 'Tax Certificate',
+  'Wiring Instructions', 'Preliminary Settlement Statement']) {
+  assert.ok(full.includes(want), `a non-NY title order asks for ${want}`);
+}
+// The survey ask is deliberately an EITHER/OR: on a great many files no survey exists
+// and the correct answer is the affidavit or endorsement saying so. An ask worded only
+// "Survey" gets silence on those files, so the alternative must survive in the text.
+const survey = full.find((w) => /^Survey/.test(w));
+assert.ok(survey && /no survey is required/.test(survey) && /Affidavit or Endorsement/.test(survey),
+  `the survey ask offers the no-survey alternative: ${survey}`);
+assert.strictEqual(full.length, 7, 'the non-NY title ask is exactly the owner\'s seven items');
+ok('the shared title ask is the owner\'s full seven-item list');
+
+/* ── AND NEW YORK STILL CUTS THE SETTLEMENT AGENT'S ITEMS ────────────────────
+   In New York title does not settle, so the four items the SETTLEMENT AGENT owns
+   never appear on a New-York title order. The E&O joined that cut when it joined the
+   list (it is the settlement agent's own certificate). The CPL stays cut and is NOT
+   reassigned: New York uses an Agent Authorization letter in lieu of a CPL
+   (underwriting/investor-guidelines/corrfirst-fnf-spec.js:108), so on a NY file there
+   is no CPL for anyone to produce. */
+const ny = oe.titleWants('NY');
+for (const cut of ['CPL', 'Wiring Instructions', 'Preliminary Settlement Statement', 'Settlement agent E&O Insurance']) {
+  assert.ok(!ny.includes(cut), `a New-York title order never asks title for ${cut}`);
+}
+assert.deepStrictEqual(ny.filter((w) => !/^Survey/.test(w)), ['Title Commitment', 'Tax Certificate'],
+  'what remains on a NY title order is the commitment and the tax certificate (plus the survey ask)');
+assert.ok(ny.some((w) => /^Survey/.test(w)), 'the survey ask survives in New York — a survey is title\'s, not the settler\'s');
+ok('the New-York cut still removes every settlement-agent item, and only those');
+
 console.log(`\ntest-shared-order-letter-pure: ${n} checks passed`);

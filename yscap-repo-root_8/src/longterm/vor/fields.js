@@ -1,17 +1,36 @@
 'use strict';
 /**
- * LONG-TERM — THE VERIFICATION OF RENT: WHAT THE FORM ASKS, AND WHO ANSWERS IT.
+ * LONG-TERM — THE VERIFICATION OF RENT: WHAT THE OWNER'S OWN FORM ASKS, AND WHO
+ * ANSWERS IT.
  *
- * Owner-directed 2026-08-30: *"prefill part one and part two … leave the landlord's
- * sections blank and required on DocuSign … be able to preview and edit the PDF
- * before sending … send by DocuSign, by email attachment, or both … and if it comes
- * back filled in by hand, void the envelope."*
+ * THE FORM IS THE OWNER'S BLANK, NOT ONE OF OURS. `src/longterm/assets/blank-vor.pdf`
+ * is the standard Request for Verification of Rent (form mark `GVOR_S 11/15`) — one
+ * page, 612 x 792 pt, flat, no AcroForm fields. Every coordinate below was read off
+ * THAT file and is written down in `docs/longterm/VOR-FORM-MAP.md`; this module is
+ * the machine-readable half of that map. Nothing here describes a document we draw.
  *
- * This module is the ONE definition of the form: every field, which PART it sits in,
- * WHO answers it, and — for the landlord's half — the invisible anchor its DocuSign
- * tab lands on. It is PURE: no database, no config, no PDF engine, no network, so
- * every rule here is unit-testable and the three consumers (the prefill, the PDF and
- * the envelope's tab list) cannot drift from one another.
+ * ── THE RULE, IN THE OWNER'S WORDS (corrected 2026-08-30) ────────────────────
+ *
+ * An earlier reading of this had us "prefill part one and part two". THAT WAS WRONG
+ * and the owner said so: *"You messed up by far. You're not using our blank VOR.
+ * You're pre-filling some of the information from part two."* and *"the VOR needs to
+ * be on the exact blank form that I sent you."*
+ *
+ * The corrected rule, which this file exists to enforce:
+ *
+ *   WE FILL IN ITEMS 1 THROUGH 9 — everything above the "To Be Completed By
+ *   Landlord" bar. PART II AND PART III ARE NEVER PREFILLED BY US. Not partially,
+ *   not helpfully, and not because `assets/vor-field-ids-reference.pdf` (the same
+ *   form with Encompass field ids printed in the blanks) shows an id in one of those
+ *   boxes. That sheet says where data COMES FROM; it is not a list of what gets
+ *   printed. The owner: *"You leave empty even if it's pre-filled on the field ID
+ *   call."*
+ *
+ * The bar is at y = 334 on the page, so the rule is a NUMBER rather than a habit:
+ * every field we answer sits above it, every field the landlord answers sits at or
+ * below it, and `assertBandsMatchWhoAnswers` below refuses to load a build where
+ * that is not true. The overlay test then proves the same thing about the rendered
+ * bytes.
  *
  * ── THE ANCHOR IS THE CONTRACT, AND IT IS DECLARED ONCE ─────────────────────
  *
@@ -25,11 +44,11 @@
  *
  * A rent verification is a request WE make of a landlord, and the borrower's
  * permission to make it was given when they signed the application — which is what
- * the authorization paragraph on the form cites. So the envelope has ONE recipient:
- * the landlord. Routing it through the borrower first would double the turnaround on
- * a submission-gating condition to collect a signature we already hold.
- * The owner named only the landlord's tabs; this states the reading out loud so it
- * can be reversed deliberately rather than discovered.
+ * the form's own "To Landlord:" paragraph cites, and why item 9 carries the words
+ * "See attached signature" rather than a second signing ceremony. So the envelope
+ * has ONE recipient: the landlord. Routing it through the borrower first would
+ * double the turnaround on a submission-gating condition to collect a signature we
+ * already hold.
  *
  * ── "REQUIRED" MEANS DOCUSIGN REFUSES TO FINISH WITHOUT IT ──────────────────
  *
@@ -42,135 +61,313 @@
  * SEPARATION: pure. Nothing here reads a table, a config value or another module.
  */
 
-/** The three parts, in the order they print. */
+/** The owner's page. A blank of any other size moves every coordinate in this file,
+    which is why `vor/pdf.js` refuses to load one. */
+const PAGE = { w: 612, h: 792 };
+
+/** The form's own mark, printed at the foot of the page. The overlay test looks for
+    it in the RENDERED bytes: if it is gone we drew a lookalike instead of writing on
+    the owner's blank, which is the exact defect the owner reported. */
+const FORM_MARK = 'GVOR_S';
+
+/**
+ * The "To Be Completed By Landlord" bar, in PDF coordinates (bottom-up).
+ *
+ * This single number is the whole owner rule made mechanical: anything of ours that
+ * prints at or below it is prefill in the landlord's half, and that is the one thing
+ * this form may never contain. The only thing we put below the bar is an invisible
+ * 4pt anchor, which is not an answer — it is where DocuSign hangs the empty box.
+ */
+const LANDLORD_BAND_TOP = 334;
+
+/** The three parts, exactly as the form prints them. */
 const PARTS = [
   {
     key: 'request',
     number: 'I',
-    title: 'The request',
-    blurb: 'Completed by the lender. Nothing here is for the landlord to answer.',
+    title: 'Request',
     who: 'us',
+    blurb: 'Lender — complete items 1 through 8. Have applicant(s) complete item 9. '
+      + 'Forward directly to the landlord named in item 1.',
   },
   {
-    key: 'onfile',
+    key: 'rent',
     number: 'II',
-    title: 'What the borrower has told us',
-    blurb: 'Completed by the lender from the loan application. The landlord confirms or corrects it in Part III.',
-    who: 'us',
+    title: 'Verification of Rent',
+    who: 'landlord',
+    blurb: 'The landlord’s own answers. We never fill in any of it, even where the '
+      + 'field-id reference sheet shows an Encompass id in the blank.',
   },
   {
-    key: 'landlord',
+    key: 'signature',
     number: 'III',
-    title: 'To be completed by the landlord or managing agent',
-    blurb: 'Every answer below is required.',
+    title: 'Authorized Signature',
     who: 'landlord',
+    blurb: 'The landlord signs here. Left blank by us and required on DocuSign.',
   },
 ];
 
 /**
- * The fields.
+ * The fields, in the form's own order and under the form's own item numbers.
  *
- * `who: 'us'`       — we fill it in, it prints as text, the landlord cannot change it.
- * `who: 'landlord'` — it prints as a blank rule with an invisible anchor under it,
- *                     and DocuSign puts a REQUIRED tab there.
+ * `who: 'us'`       — we print it, at (x, y), above the bar.
+ * `who: 'landlord'` — nothing of ours is printed; an invisible anchor goes at (x, y)
+ *                     and DocuSign hangs the tab on it.
  *
- * `type` is what the PDF draws and what the editor offers:
- *   text | money | date | months | phone | email | multiline | yesno | signature
+ * `tab` is the DocuSign tab type for the landlord's half:
+ *   text | date | radio | sign | dateSigned
+ *
+ * `lines` > 1 marks a BAND rather than a rule — a box the form leaves several lines
+ * of room in (the two address blocks, item 7, item 8). `pdf.js` wraps into it and
+ * stops at `lines`; running past the band would print over the form's next printed
+ * label, which on a government-style form reads as vandalism rather than an answer.
  */
 const FIELDS = [
-  // ── Part I — the request ─────────────────────────────────────────────────
-  { key: 'lender_name',      part: 'request', who: 'us', type: 'text',      label: 'Lender' },
-  { key: 'lender_address',   part: 'request', who: 'us', type: 'text',      label: 'Lender address' },
-  { key: 'lender_nmls',      part: 'request', who: 'us', type: 'text',      label: 'NMLS' },
-  { key: 'loan_number',      part: 'request', who: 'us', type: 'text',      label: 'Loan number' },
-  { key: 'requested_on',     part: 'request', who: 'us', type: 'date',      label: 'Date of this request' },
-  { key: 'officer_name',     part: 'request', who: 'us', type: 'text',      label: 'Who to reply to' },
-  { key: 'officer_email',    part: 'request', who: 'us', type: 'email',     label: 'Reply-to email' },
-  { key: 'officer_phone',    part: 'request', who: 'us', type: 'phone',     label: 'Reply-to phone' },
-  { key: 'borrower_name',    part: 'request', who: 'us', type: 'text',      label: 'Applicant' },
-  { key: 'coborrower_name',  part: 'request', who: 'us', type: 'text',      label: 'Co-applicant', optional: true },
+  // ── PART I — items 1 to 9. OURS, all of it, all above the bar ─────────────
+  { key: 'landlord_block', part: 'request', who: 'us', item: '1',
+    label: 'To (Name and address of landlord)',
+    x: 60, y: 598, width: 240, lines: 4, lineHeight: 11, size: 9 },
 
-  // ── Part II — what we hold on file ───────────────────────────────────────
-  { key: 'rental_address',   part: 'onfile',  who: 'us', type: 'text',      label: 'Address the applicant rents' },
-  { key: 'stated_rent',      part: 'onfile',  who: 'us', type: 'money',     label: 'Monthly rent, as stated' },
-  { key: 'stated_since',     part: 'onfile',  who: 'us', type: 'date',      label: 'Renting since, as stated' },
-  { key: 'stated_months',    part: 'onfile',  who: 'us', type: 'months',    label: 'Months at this address, as stated' },
-  { key: 'landlord_name',    part: 'onfile',  who: 'us', type: 'text',      label: 'Landlord or managing agent' },
+  { key: 'lender_block', part: 'request', who: 'us', item: '2',
+    label: 'From (Name and address of lender)',
+    x: 320, y: 598, width: 240, lines: 4, lineHeight: 11, size: 9 },
 
-  // ── Part III — the landlord answers ──────────────────────────────────────
-  { key: 'll_rent',          part: 'landlord', who: 'landlord', type: 'money',
-    label: 'Current monthly rent', anchor: 'vor_ll_rent' },
-  { key: 'll_from',          part: 'landlord', who: 'landlord', type: 'date',
-    label: 'Tenancy began', anchor: 'vor_ll_from' },
-  { key: 'll_to',            part: 'landlord', who: 'landlord', type: 'text',
-    label: 'Tenancy ended (or “current”)', anchor: 'vor_ll_to' },
-  { key: 'll_paid_current',  part: 'landlord', who: 'landlord', type: 'yesno',
-    label: 'Is the rent paid to date?', anchor: 'vor_ll_current' },
-  { key: 'll_late_12',       part: 'landlord', who: 'landlord', type: 'text',
-    label: 'Payments 30+ days late in the last 12 months', anchor: 'vor_ll_late12' },
-  { key: 'll_notice',        part: 'landlord', who: 'landlord', type: 'yesno',
-    label: 'Has notice to vacate been given by either party?', anchor: 'vor_ll_notice' },
-  { key: 'll_comments',      part: 'landlord', who: 'landlord', type: 'multiline',
-    label: 'Anything else we should know', anchor: 'vor_ll_comments', optional: true },
-  { key: 'll_signer_name',   part: 'landlord', who: 'landlord', type: 'text',
-    label: 'Name of the person signing', anchor: 'vor_ll_who' },
-  { key: 'll_signer_title',  part: 'landlord', who: 'landlord', type: 'text',
-    label: 'Title', anchor: 'vor_ll_title' },
-  { key: 'll_signer_phone',  part: 'landlord', who: 'landlord', type: 'phone',
-    label: 'Telephone', anchor: 'vor_ll_phone' },
-  { key: 'll_signature',     part: 'landlord', who: 'landlord', type: 'signature',
-    label: 'Signature', anchor: 'vor_ll_sig' },
-  { key: 'll_signed_on',     part: 'landlord', who: 'landlord', type: 'date',
-    label: 'Date signed', anchor: 'vor_ll_dt' },
+  { key: 'lender_signature', part: 'request', who: 'us', item: '3',
+    label: 'Signature of Lender',
+    x: 60, y: 512, width: 115, size: 9 },
+
+  { key: 'lender_title', part: 'request', who: 'us', item: '4',
+    label: 'Title',
+    x: 190, y: 512, width: 150, size: 9 },
+
+  { key: 'request_date', part: 'request', who: 'us', item: '5', type: 'date',
+    label: 'Date',
+    x: 353, y: 512, width: 95, size: 9 },
+
+  /* Item 6 prints "(Optional)" on the form itself, so it is optional HERE too — a
+     missing loan number must not be what stops a landlord being asked about a
+     tenancy. We do hold one on every long-term file, so in practice it prints. */
+  { key: 'loan_number', part: 'request', who: 'us', item: '6', optional: true,
+    label: 'Lender’s No. (Optional)',
+    x: 467, y: 512, width: 90, size: 9 },
+
+  /* ITEM 7 IS THE ADDRESS THE BORROWER RENTS — NOT THE SUBJECT PROPERTY. On a
+     long-term file the subject is an investment property somebody else lives in, so
+     printing it here would ask this landlord about a house they have never seen,
+     and the answer would be "we have no such tenant". */
+  { key: 'property_address', part: 'request', who: 'us', item: '7',
+    label: 'Property Address',
+    x: 49, y: 477, width: 250, lines: 3, lineHeight: 11, size: 9 },
+
+  { key: 'account_name', part: 'request', who: 'us', item: '7',
+    label: 'Account in the name of',
+    x: 310, y: 477, width: 248, lines: 3, lineHeight: 11, size: 9 },
+
+  { key: 'applicant_block', part: 'request', who: 'us', item: '8',
+    label: 'Name and Address of Applicant(s)',
+    x: 49, y: 393, width: 280, lines: 4, lineHeight: 10, size: 8.5 },
+
+  /* ITEM 9 IS NOT A SIGNING CEREMONY. The applicant already signed the application
+     that authorises this request, so the owner directed the words "See attached
+     signature" onto the form's X-lines rather than a second DocuSign recipient. The
+     two X-lines are the applicant and the co-applicant; the second prints only when
+     there IS one, because an empty X-line is the form's own way of saying so. */
+  { key: 'applicant_signature', part: 'request', who: 'us', item: '9',
+    label: 'Signature of Applicant(s)',
+    x: 356, y: 383, width: 200, size: 8.5 },
+
+  { key: 'coapplicant_signature', part: 'request', who: 'us', item: '9', optional: true,
+    label: 'Signature of Co-Applicant',
+    x: 356, y: 356, width: 200, size: 8.5 },
+
+  // ── PART II — the landlord's rental information. ALL BLANK, ALL BELOW 334 ──
+  /* Every x below is "just past the form's own printed label", measured in the
+     8pt Helvetica the blank is set in: e.g. "Tenant rented from" starts at x=49 and
+     ends at 116.1, so the blank begins at 120. The one place the map quotes the
+     LABEL position rather than the blank is the satisfactory Yes/No pair (444/493);
+     those labels end at 456.7 and 503.2, so the buttons go at 460 and 506 by the
+     same rule every other blank on this line follows. */
+  { key: 'll_rented_from', part: 'rent', who: 'landlord', item: '10', tab: 'date',
+    label: 'Tenant rented from', anchor: 'vor_ll_from',
+    x: 124, y: 292, width: 84, height: 14 },
+
+  { key: 'll_rented_to', part: 'rent', who: 'landlord', item: '10', tab: 'date',
+    label: 'Tenant rented to', anchor: 'vor_ll_to',
+    x: 224, y: 292, width: 84, height: 14 },
+
+  /* AN EITHER/OR, NOT TWO BOXES. A pair of independent checkboxes lets a landlord
+     tick both or neither and return a form that answers nothing; a radio group makes
+     DocuSign enforce exactly one. The group name is the field key, which is what the
+     answer comes back keyed by. */
+  { key: 'll_satisfactory', part: 'rent', who: 'landlord', item: '10', tab: 'radio',
+    label: 'Is account satisfactory?',
+    options: [
+      { value: 'Yes', anchor: 'vor_ll_sat_yes', x: 460, y: 292 },
+      { value: 'No', anchor: 'vor_ll_sat_no', x: 506, y: 292 },
+    ] },
+
+  { key: 'll_rent_amount', part: 'rent', who: 'landlord', item: '10', tab: 'text',
+    label: 'Amount of rent', anchor: 'vor_ll_rent',
+    x: 127, y: 281, width: 120, height: 14 },
+
+  { key: 'll_arrears', part: 'rent', who: 'landlord', item: '10', tab: 'radio',
+    label: 'Is rent in arrears?',
+    options: [
+      { value: 'Yes', anchor: 'vor_ll_arr_yes', x: 155, y: 269 },
+      { value: 'No', anchor: 'vor_ll_arr_no', x: 200, y: 269 },
+    ] },
+
+  /* The arrears AMOUNT and PERIOD are optional because they only exist when the
+     answer above is Yes — demanding them would stop a landlord with nothing to
+     report from ever pressing Finish. */
+  { key: 'll_arrears_amount', part: 'rent', who: 'landlord', item: '10', tab: 'text',
+    optional: true, label: 'Arrears amount', anchor: 'vor_ll_arr_amt',
+    x: 127, y: 258, width: 100, height: 14 },
+
+  { key: 'll_arrears_period', part: 'rent', who: 'landlord', item: '10', tab: 'text',
+    optional: true, label: 'Arrears period', anchor: 'vor_ll_arr_period',
+    x: 242, y: 258, width: 120, height: 14 },
+
+  { key: 'll_late_12', part: 'rent', who: 'landlord', item: '10', tab: 'text',
+    optional: true, label: 'No. of late payments past due 30 in the last 12 months',
+    anchor: 'vor_ll_late12',
+    x: 160, y: 235, width: 90, height: 14 },
+
+  { key: 'll_additional', part: 'rent', who: 'landlord', item: '11', tab: 'text',
+    optional: true,
+    label: 'Additional information which may be of assistance in determination of credit worthiness',
+    anchor: 'vor_ll_addl',
+    x: 52, y: 206, width: 500, height: 30 },
+
+  // ── PART III — the landlord's signature block. ALSO ALL BLANK ─────────────
+  { key: 'll_signature', part: 'signature', who: 'landlord', item: '12', tab: 'sign',
+    label: 'Signature of Landlord', anchor: 'vor_ll_sig',
+    x: 52, y: 122 },
+
+  { key: 'll_title', part: 'signature', who: 'landlord', item: '13', tab: 'text',
+    label: 'Title (Please print or type)', anchor: 'vor_ll_title',
+    x: 280, y: 122, width: 180, height: 14 },
+
+  /* ITEM 14 IS STAMPED, NOT TYPED. A dateSigned tab is filled in by DocuSign from
+     the signature itself (owner-directed), so a landlord cannot mistype the date
+     they signed on, or back-date it. */
+  { key: 'll_signed_on', part: 'signature', who: 'landlord', item: '14', tab: 'dateSigned',
+    label: 'Date', anchor: 'vor_ll_dt',
+    x: 485, y: 122 },
+
+  { key: 'll_printed_name', part: 'signature', who: 'landlord', item: '15', tab: 'text',
+    label: 'Please print or type name signed in item 12', anchor: 'vor_ll_printed',
+    x: 52, y: 95, width: 200, height: 14 },
+
+  { key: 'll_phone', part: 'signature', who: 'landlord', item: '16', tab: 'text',
+    label: 'Phone No.', anchor: 'vor_ll_phone',
+    x: 280, y: 95, width: 160, height: 14 },
 ];
 
 const BY_KEY = new Map(FIELDS.map((f) => [f.key, f]));
 
 /** The fields WE fill in — the ones the preview lets a person edit. */
 function ourFields() { return FIELDS.filter((f) => f.who === 'us'); }
-/** The fields the LANDLORD answers — one DocuSign tab each. */
+/** The fields the LANDLORD answers — one DocuSign tab each, and no ink of ours. */
 function landlordFields() { return FIELDS.filter((f) => f.who === 'landlord'); }
 
 /**
- * The DocuSign tab list for the landlord, derived from the fields above.
- *
- * A `signature` field becomes a signHere tab, a `date` field signed BY the signer
- * becomes a dateSigned tab (DocuSign stamps it — a person cannot mistype the date
- * they signed on), and everything else is a text tab. Every one of them is REQUIRED
- * unless the field says otherwise, because an optional tab is a blank we then have
- * to chase.
- *
- * The anchor string is what DocuSign searches the document for, so it is returned
- * EXACTLY as the PDF draws it — slashes included. Two different fields can never
- * share an anchor (asserted below and by the test): DocuSign would put both tabs on
- * whichever occurrence it found first.
+ * PDF y is measured UP from the bottom of the page; a DocuSign tab's y is measured
+ * DOWN from the top. Every coordinate in this file is the PDF one (it has to be —
+ * it is where the ink goes), so the flip lives HERE, once, rather than as a `792 -`
+ * somebody remembers to write at each call site and eventually forgets at one.
+ */
+function docusignY(yPdf) { return PAGE.h - Number(yPdf); }
+
+/**
+ * The anchor string as DocuSign searches for it, and as the PDF draws it — slashes
+ * included. Returned from ONE place so the two can never be spelled differently.
  */
 function anchorString(field) {
   if (!field || !field.anchor) return null;
   return `/${field.anchor}/`;
 }
 
-function tabsForLandlord() {
-  const out = { sign: [], date: [], text: [] };
+/** The same, for one option of a radio group. */
+function optionAnchorString(option) {
+  if (!option || !option.anchor) return null;
+  return `/${option.anchor}/`;
+}
+
+/**
+ * Everything the PDF must draw invisibly, and everything DocuSign will search for:
+ * one string per landlord field, plus one per radio OPTION (a group with a missing
+ * option anchor is a question with one answer, which is not a question).
+ */
+function allAnchors() {
+  const out = [];
   for (const f of landlordFields()) {
-    const anchor = anchorString(f);
-    if (!anchor) continue;
-    if (f.type === 'signature') { out.sign.push(anchor); continue; }
-    if (f.key === 'll_signed_on') { out.date.push(anchor); continue; }
-    out.text.push({
-      anchor,
-      tabLabel: f.key,                 // what the answer comes BACK keyed by
-      required: !f.optional,
-      width: f.type === 'multiline' ? 380 : 180,
-      height: f.type === 'multiline' ? 40 : 14,
-    });
+    if (f.tab === 'radio') {
+      for (const o of f.options || []) {
+        const a = optionAnchorString(o);
+        if (a) out.push(a);
+      }
+      continue;
+    }
+    const a = anchorString(f);
+    if (a) out.push(a);
   }
   return out;
 }
 
-/** Every anchor the PDF must draw, so the test can prove none is missing. */
-function allAnchors() {
-  return landlordFields().map(anchorString).filter(Boolean);
+/**
+ * Where each anchor is DRAWN, so `pdf.js` never re-derives a coordinate and the
+ * overlay test can check the ink landed where the map says it would.
+ */
+function anchorPlacements() {
+  const out = [];
+  for (const f of landlordFields()) {
+    if (f.tab === 'radio') {
+      for (const o of f.options || []) {
+        out.push({ key: f.key, value: o.value, anchor: optionAnchorString(o), x: o.x, y: o.y });
+      }
+      continue;
+    }
+    out.push({ key: f.key, anchor: anchorString(f), x: f.x, y: f.y });
+  }
+  return out.filter((p) => p.anchor);
+}
+
+/**
+ * The DocuSign tab list for the landlord, in the shared client's own shape.
+ *
+ * `sign` and `date` are bare anchor strings (a signHere and a dateSigned tab);
+ * `text` and `radio` carry the rest of what the box needs. Every tab is REQUIRED
+ * unless the field says otherwise, because an optional tab is a blank we then have
+ * to chase — which is the work this form exists to remove.
+ *
+ * `yTop` rides along on every tab purely so the ONE bottom-up/top-down conversion is
+ * visible in what we hand the provider, rather than implied.
+ */
+function tabsForLandlord() {
+  const out = { sign: [], date: [], text: [], radio: [] };
+  for (const f of landlordFields()) {
+    if (f.tab === 'radio') {
+      const radios = (f.options || [])
+        .filter((o) => o.anchor)
+        .map((o) => ({ anchor: optionAnchorString(o), value: o.value, yTop: docusignY(o.y) }));
+      if (radios.length) out.radio.push({ group: f.key, required: !f.optional, radios });
+      continue;
+    }
+    const anchor = anchorString(f);
+    if (!anchor) continue;
+    if (f.tab === 'sign') { out.sign.push(anchor); continue; }
+    if (f.tab === 'dateSigned') { out.date.push(anchor); continue; }
+    out.text.push({
+      anchor,
+      tabLabel: f.key,                 // what the answer comes BACK keyed by
+      required: !f.optional,
+      width: f.width || 180,
+      height: f.height || 14,
+      yTop: docusignY(f.y),
+    });
+  }
+  return out;
 }
 
 /* A duplicate anchor puts two tabs on one line and leaves the other blank — a
@@ -182,6 +379,56 @@ function allAnchors() {
   for (const a of allAnchors()) {
     if (seen.has(a)) throw new Error(`vor/fields: two fields share the anchor ${a}`);
     seen.add(a);
+  }
+})();
+
+/* THE OWNER'S RULE, ENFORCED BY ARITHMETIC RATHER THAN BY CARE. A field of OURS
+   whose y slipped at or below the "To Be Completed By Landlord" bar would print our
+   text into the landlord's half — the exact defect the owner reported — and a
+   landlord field that drifted above it would hang an empty DocuSign box over
+   something we already answered. Neither is visible in a diff, so neither is left to
+   a reviewer to notice. */
+/* The prefill's default type size, and the ONE definition of it. pdf.js draws at
+   `f.size || DEFAULT_SIZE` and the band guard below computes a block's footprint from
+   the same number — two spellings of it is how the guard comes to bless a layout the
+   renderer does not actually produce. */
+const DEFAULT_SIZE = 9;
+
+(function assertBandsMatchWhoAnswers() {
+  for (const f of FIELDS) {
+    const ys = f.tab === 'radio' ? (f.options || []).map((o) => o.y) : [f.y];
+    for (const y of ys) {
+      if (typeof y !== 'number' || !Number.isFinite(y)) {
+        throw new Error(`vor/fields: ${f.key} has no y on the owner's page`);
+      }
+      if (f.who === 'us' && y <= LANDLORD_BAND_TOP) {
+        throw new Error(`vor/fields: ${f.key} is ours but sits at y=${y}, inside the landlord's half (<= ${LANDLORD_BAND_TOP})`);
+      }
+      /* THE WHOLE FOOTPRINT, NOT JUST THE FIRST LINE. Items 1, 2, 7 and 8 are
+         name-and-address BLOCKS: pdf.js draws line i at `f.y - (i * lineHeight)` for
+         up to `f.lines` lines. Checking f.y alone left the guard blind to the edit
+         most likely to break it — giving a block more room. Changing item 8 from
+         `lines: 4` to `lines: 8` loaded clean, passed the whole suite (because the
+         fixture's address was only two lines and never reached line five), and then
+         printed a real eight-line applicant block at y=333 and y=323: our prefill
+         inside Part II. The rule is about where the TEXT lands, so the arithmetic
+         has to be about where the text lands. */
+      if (f.who === 'us') {
+        const lineHeight = f.lineHeight || (f.size || DEFAULT_SIZE) + 2;
+        const lowest = y - ((Math.max(1, f.lines || 1) - 1) * lineHeight);
+        if (lowest <= LANDLORD_BAND_TOP) {
+          throw new Error(`vor/fields: ${f.key} is ours and starts at y=${y}, but with ${f.lines || 1} line(s) `
+            + `at ${lineHeight}pt its last line lands at y=${lowest}, inside the landlord's half `
+            + `(<= ${LANDLORD_BAND_TOP}). Give it fewer lines, a tighter lineHeight, or a higher start.`);
+        }
+      }
+      if (f.who === 'landlord' && y > LANDLORD_BAND_TOP) {
+        throw new Error(`vor/fields: ${f.key} is the landlord's but sits at y=${y}, above the bar (> ${LANDLORD_BAND_TOP})`);
+      }
+    }
+    if (f.who === 'landlord' && f.tab !== 'radio' && !f.anchor) {
+      throw new Error(`vor/fields: ${f.key} is the landlord's and has no anchor, so DocuSign would never ask it`);
+    }
   }
 })();
 
@@ -222,13 +469,15 @@ function cleanOurData(raw) {
     const f = BY_KEY.get(k);
     if (!f || f.who !== 'us') continue;
     if (v == null) { out[k] = null; continue; }
-    out[k] = String(v).slice(0, f.type === 'multiline' ? 2000 : 200).trim();
+    out[k] = String(v).slice(0, (f.lines || 1) > 1 ? 400 : 200).trim();
   }
   return out;
 }
 
 module.exports = {
-  PARTS, FIELDS, BY_KEY,
-  ourFields, landlordFields, anchorString, tabsForLandlord, allAnchors,
+  DEFAULT_SIZE,
+  PAGE, FORM_MARK, LANDLORD_BAND_TOP, PARTS, FIELDS, BY_KEY,
+  ourFields, landlordFields, docusignY, anchorString, optionAnchorString,
+  tabsForLandlord, allAnchors, anchorPlacements,
   missing, cleanOurData,
 };

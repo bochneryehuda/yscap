@@ -88,8 +88,24 @@ const MORTGAGEE_CLAUSE_RCN = [
    statement"), so the rule lives HERE, with the letter that prints it, and
    `lib/closing-handling.js` re-exports it: one definition, two products, and the
    order email and the itemized title slots can never disagree about a state. */
-const NY_TITLE_CUT = Object.freeze(['CPL', 'Wiring Instructions', 'Preliminary Settlement Statement']);
-const TITLE_WANTS_FULL = Object.freeze(['Title Commitment', 'CPL', 'Tax Certificate', 'Wiring Instructions', 'Preliminary Settlement Statement']);
+/* The E&O rides with the CPL and the preliminary statement: all three are the
+   SETTLEMENT AGENT's to produce, and in New York that is not title. The owner's own
+   New-York settlement-agent order asks that agent for exactly these three
+   (docs/longterm/OWNER-ORDER-DRAFTS.md, "New York rule"), so a New-York title order
+   asking title for the settlement agent's own E&O would be asking the wrong party
+   for a document they do not hold. Everywhere else title IS the settlement agent
+   and the full list stands. Owner-directed 2026-08-30. */
+const NY_TITLE_CUT = Object.freeze(['CPL', 'Wiring Instructions', 'Preliminary Settlement Statement',
+  'Settlement agent E&O Insurance']);
+/* THE OWNER'S OWN TITLE ASK, all seven items, as written in their draft. The two
+   added 2026-08-30 (owner-directed, applied to BOTH products so the one shared
+   title letter keeps asking one question): the settlement agent's E&O, and the
+   survey — which is deliberately worded as an EITHER/OR, because on a great many
+   files no survey exists and the correct answer is the affidavit or endorsement
+   that says so. Asking only for "Survey" gets silence on those files. */
+const TITLE_WANTS_FULL = Object.freeze(['Title Commitment', 'CPL', 'Settlement agent E&O Insurance',
+  'Tax Certificate', 'Wiring Instructions', 'Preliminary Settlement Statement',
+  'Survey or Plat Map, or confirmation that no survey is required along with the applicable Survey Affidavit or Endorsement']);
 
 function isNyState(state) { return String(state || '').trim().toUpperCase() === 'NY'; }
 

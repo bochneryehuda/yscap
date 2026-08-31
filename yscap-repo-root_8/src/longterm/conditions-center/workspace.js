@@ -36,8 +36,11 @@
  */
 
 const db = require('../db');
-const answers = require('./answers');
+const answers = require('../../lib/conditions/answers');
 const entityPrefill = require('./entity-prefill');
+const profileLinks = require('./profile-links');
+const vocab = require('./vocabulary');
+const { ownerOf, ownerWhere } = require('../../lib/condition-owner');
 
 /**
  * IS THIS LIABILITY A MORTGAGE? A PROPOSAL, never a decision.
@@ -127,12 +130,16 @@ async function vestingFor(loanId, client) {
 async function documentsByLine(conditionId, client) {
   try {
     const { rows } = await client.query(
-      `SELECT slot_key, id, filename FROM lt_condition_files
-        WHERE condition_id = $1::uuid AND is_current AND review_status = 'accepted' AND slot_key IS NOT NULL`,
+      // The per-line key travels in `documents.slot_label` — the ordinary
+      // document plumbing carries it, with no second table (db/653 moved these
+      // rows into the ONE Condition Center).
+      `SELECT slot_label, id, filename FROM documents
+        WHERE checklist_item_id = $1::uuid AND is_current
+          AND review_status = 'accepted' AND slot_label IS NOT NULL`,
       [String(conditionId)],
     );
     const out = {};
-    for (const r of rows) out[String(r.slot_key)] = { id: r.id, filename: r.filename };
+    for (const r of rows) out[String(r.slot_label)] = { id: r.id, filename: r.filename };
     return out;
   } catch (_) {
     return {};
@@ -149,12 +156,20 @@ async function forCondition(loanId, conditionId, opts = {}) {
 
   let condition = null;
   try {
+    const where = ownerWhere(ownerOf('lt_loan', loanId), 'c', 2);
     const { rows } = await client.query(
-      `SELECT id, code, label, kind, config, answer, status
-         FROM lt_file_conditions WHERE id = $1::uuid AND loan_id = $2::uuid`,
-      [String(conditionId), String(loanId)],
+      `SELECT c.id, t.code, c.label, c.item_kind, c.tool_key, t.config,
+              c.tool_payload AS answer, c.status, c.waived_at, c.is_required
+         FROM checklist_items c
+         LEFT JOIN checklist_templates t ON t.id = c.template_id
+        WHERE c.id = $1::uuid AND ${where.sql}`,
+      [String(conditionId), ...where.params],
     );
-    condition = rows[0] || null;
+    // Read back into the owner's own wording, once, so everything below reasons
+    // about `kind` and `status` the way the rules are written.
+    condition = rows[0]
+      ? { ...rows[0], kind: vocab.kindFromShared(rows[0]), status: vocab.statusOf(rows[0]), config: rows[0].config || {} }
+      : null;
   } catch (_) {
     return null;
   }
@@ -176,6 +191,24 @@ async function forCondition(loanId, conditionId, opts = {}) {
       profile: prefill,
       alreadyDone: settled.ok,
       note: settled.why,
+    };
+  }
+
+  /* ── THE CARD AND THE PHOTO ID: the answer lives on the PERSON ────────────
+     Both conditions declare `readsFromBorrowerProfile` and their hints promise
+     that a card or an ID given before is already here. `profile-links.js` is the
+     one reader; this is only the seam that puts its answer on the screen, so
+     there is no second reading of what the borrower already has. Never throws —
+     an unreadable profile is reported as such rather than as "nothing given". */
+  if (code === 'lt_appraisal_card' || code === 'lt_photo_id') {
+    const links = await profileLinks.forLoan(loanId, { db: client });
+    return {
+      code,
+      shape: code === 'lt_appraisal_card' ? 'card' : 'photo_id',
+      card: links.card,
+      photoId: links.photoId,
+      unreadable: !!links.unreadable,
+      why: links.why || null,
     };
   }
 

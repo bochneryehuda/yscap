@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ltApi } from './api.js';
 import { GOLD_TEXT } from './ppeStyles.js';
+import AddressField from './AddressField.jsx';
 
 /**
  * THE THREE CONDITIONS THAT ARE A CHOICE, NOT AN UPLOAD.
@@ -53,6 +54,270 @@ const btn = (on) => ({
   color: INK,
 });
 
+/**
+ * THE VESTING COMPANY — WHAT THE BORROWER ALREADY HOLDS, AND HOW TO ADD TO IT.
+ *
+ * ── THIS SCREEN USED TO PROMISE SOMETHING THE CODE DID NOT DO ───────────────
+ *
+ * It told people, on every file whose company was not on the profile: *"What is
+ * uploaded here will be saved to it, and verified once — so the next loan for
+ * the same company starts already done."* Nothing did that. The read side was
+ * shared and correct and there was no write side at all, so a document collected
+ * here stayed on this loan's condition and the next loan asked for it again.
+ *
+ * The sentence is true now, and it is true because of WHERE the upload goes, not
+ * because anything copies it afterwards: each row below files straight onto that
+ * slot on the COMPANY, through the shared upload door. One document, on the
+ * profile, which is the thing `entity-prefill.js` reads on the next loan.
+ *
+ * ── SAVING THE COMPANY IS A BUTTON, NEVER AUTOMATIC ─────────────────────────
+ *
+ * Putting a company on a person's permanent record is a decision, so somebody
+ * makes it. It is also what the slots hang off, which is why nothing can be
+ * uploaded until it has been done — said plainly rather than by a disabled
+ * control with no explanation.
+ *
+ * EVERY REFUSAL IS THE SERVER'S OWN WORDS, like the rest of this file.
+ */
+function EntityBlock({ ws, loanId, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const profile = ws.profile || null;
+
+  const save = useCallback(async () => {
+    setBusy(true); setErr(null);
+    try {
+      await ltApi.vestingEntityToProfile(loanId);
+      if (onChanged) await onChanged();
+    } catch (e) {
+      setErr((e && (e.error || e.message)) || 'That could not be saved.');
+    } finally { setBusy(false); }
+  }, [loanId, onChanged]);
+
+  const upload = useCallback(async (slotItemId, file) => {
+    if (!file) return;
+    setBusy(true); setErr(null);
+    try {
+      // The RAW File — the streamed door takes the bytes as they arrive, so an
+      // operating agreement past the JSON ceiling still lands.
+      await ltApi.vestingEntityDocUpload(loanId, slotItemId, { file, filename: file.name });
+      if (onChanged) await onChanged();
+    } catch (e) {
+      setErr((e && (e.error || e.message)) || 'That document could not be filed.');
+    } finally { setBusy(false); }
+  }, [loanId, onChanged]);
+
+  return (
+    <div>
+      <div style={eyebrow}>On the borrower’s profile</div>
+
+      {/* AN UNREADABLE PROFILE IS NOT "NOTHING ON FILE". Saying the second when
+          the first is true would ask a borrower for documents they already sent. */}
+      {profile && profile.unreadable && (
+        <p style={{ margin: 0, fontSize: 13, color: RED, lineHeight: 1.55 }}>{profile.why}</p>
+      )}
+
+      {profile && !profile.unreadable && !profile.found && (
+        <div>
+          <p style={{ margin: 0, fontSize: 13, color: MUTED, lineHeight: 1.55 }}>
+            {ws.entityName
+              ? `${ws.entityName} is not on this borrower’s profile yet. Save it there and its documents live on the profile — so the next loan for the same company starts already done.`
+              : 'This loan has no vesting company recorded yet. It comes from Encompass once somebody enters it.'}
+          </p>
+          {ws.entityName && (
+            <button
+              type="button" disabled={busy}
+              style={{ ...btn(true), marginTop: 10, opacity: busy ? 0.5 : 1 }}
+              onClick={save}>
+              {busy ? 'Saving…' : 'Save this company to the borrower’s profile'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {profile && profile.found && (
+        <div>
+          <p style={{ margin: 0, fontSize: 13, color: INK, lineHeight: 1.55 }}>
+            <strong>{ws.entityName}</strong> is already on this borrower’s profile
+            {profile.verified ? ' and verified.' : ', not yet verified.'}
+          </p>
+          <ul style={{ margin: '8px 0 0', padding: 0, listStyle: 'none', fontSize: 13 }}>
+            {profile.slots.map((sl) => (
+              <li key={sl.key} style={{
+                marginTop: 6, display: 'flex', flexWrap: 'wrap',
+                alignItems: 'center', gap: 8,
+              }}>
+                <span style={{ color: sl.filled ? GREEN : MUTED }}>
+                  {sl.label} — {sl.filled ? 'already on file' : 'not on file'}
+                  {sl.note ? ` (${sl.note})` : ''}
+                </span>
+                {/* A SLOT WITH NO ITEM ID CANNOT BE UPLOADED INTO, and that is
+                    an honest state rather than a broken control: the company is
+                    on the profile but its slots have not been built yet. */}
+                {!sl.filled && sl.itemId && (
+                  <label style={{ ...btn(false), display: 'inline-block', opacity: busy ? 0.5 : 1 }}>
+                    {busy ? 'Working…' : 'Upload'}
+                    <input
+                      type="file" disabled={busy}
+                      style={{ display: 'none' }}
+                      onChange={(e) => {
+                        const f = e.target.files && e.target.files[0];
+                        e.target.value = '';
+                        upload(sl.itemId, f);
+                      }} />
+                  </label>
+                )}
+              </li>
+            ))}
+          </ul>
+          {ws.note && (
+            <p style={{ margin: '8px 0 0', fontSize: 12, color: MUTED, lineHeight: 1.5 }}>{ws.note}</p>
+          )}
+        </div>
+      )}
+
+      {err && <p style={{ margin: '8px 0 0', fontSize: 13, color: RED, lineHeight: 1.55 }}>{err}</p>}
+    </div>
+  );
+}
+
+/**
+ * THE APPRAISAL CARD — held on the borrower's PROFILE, both directions.
+ *
+ * The owner's directive, item 7: the card is *"BIDIRECTIONAL with the shared
+ * profile"*. So this says what is already on file before asking for anything,
+ * and a card entered here is kept on the person rather than on this loan — which
+ * is what makes the condition's own promise ("a card given on one loan is
+ * already here on the next") true.
+ *
+ * THE NUMBER IS NEVER SHOWN AND NEVER COMES BACK. The server returns brand, last
+ * four and expiry only; nothing on this path decrypts a card number, so there is
+ * nothing here that could render one. The input is `inputMode="numeric"` and
+ * `autoComplete="cc-number"` so a phone offers the right keyboard and a password
+ * manager the right field — but it is never re-populated from the server.
+ *
+ * AN EXPIRED CARD IS ITS OWN STATE, not an absent one: those need different
+ * sentences, because one asks for a card and the other says the one on file has
+ * run out.
+ */
+function CardBlock({ ws, loanId, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ number: '', cvc: '', exp: '', zip: '' });
+  const card = ws.card || { available: false };
+
+  const save = useCallback(async () => {
+    setBusy(true); setErr(null);
+    try {
+      // `exp` goes as typed ("MM/YY"); the SERVER splits it through the shared
+      // module's own parser, so this screen never decides what an expiry looks
+      // like.
+      await ltApi.appraisalCardSave(loanId, f);
+      setF({ number: '', cvc: '', exp: '', zip: '' });
+      setOpen(false);
+      if (onChanged) await onChanged();
+    } catch (e) {
+      setErr((e && (e.error || e.message)) || 'That card could not be saved.');
+    } finally { setBusy(false); }
+  }, [loanId, f, onChanged]);
+
+  const set = (k) => (e) => setF((d) => ({ ...d, [k]: e.target.value }));
+
+  return (
+    <div>
+      <div style={eyebrow}>On the borrower’s profile</div>
+
+      {ws.unreadable && (
+        <p style={{ margin: 0, fontSize: 13, color: RED, lineHeight: 1.55 }}>{ws.why}</p>
+      )}
+
+      {!ws.unreadable && card.available && (
+        <p style={{ margin: 0, fontSize: 13, color: card.expired ? RED : INK, lineHeight: 1.55 }}>
+          {card.expired
+            ? `The ${card.brand || 'card'} ending ${card.last4} on this borrower’s profile expired (${card.exp}). A new one is needed.`
+            : `A ${card.brand || 'card'} ending ${card.last4} is already on this borrower’s profile${card.exp ? `, good to ${card.exp}` : ''}.`}
+        </p>
+      )}
+      {!ws.unreadable && !card.available && (
+        <p style={{ margin: 0, fontSize: 13, color: MUTED, lineHeight: 1.55 }}>
+          No card on this borrower’s profile yet. One entered here is kept on the profile, so the
+          next loan for the same borrower already has it.
+        </p>
+      )}
+
+      {!open && (
+        <button type="button" style={{ ...btn(!card.available), marginTop: 10 }}
+          onClick={() => setOpen(true)}>
+          {card.available ? 'Replace the card on file' : 'Add a card'}
+        </button>
+      )}
+
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          <label htmlFor="lt-cc-num" style={{ display: 'block', fontSize: 12, color: MUTED }}>Card number</label>
+          <input id="lt-cc-num" style={input} value={f.number} onChange={set('number')}
+            inputMode="numeric" autoComplete="cc-number" />
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+            <div style={{ flex: '1 1 7rem' }}>
+              <label htmlFor="lt-cc-exp" style={{ display: 'block', fontSize: 12, color: MUTED }}>Expiry (MM/YY)</label>
+              <input id="lt-cc-exp" style={input} value={f.exp} onChange={set('exp')}
+                inputMode="numeric" autoComplete="cc-exp" placeholder="04/29" />
+            </div>
+            <div style={{ flex: '1 1 5rem' }}>
+              <label htmlFor="lt-cc-cvc" style={{ display: 'block', fontSize: 12, color: MUTED }}>Security code</label>
+              <input id="lt-cc-cvc" style={input} value={f.cvc} onChange={set('cvc')}
+                inputMode="numeric" autoComplete="cc-csc" />
+            </div>
+            <div style={{ flex: '1 1 6rem' }}>
+              <label htmlFor="lt-cc-zip" style={{ display: 'block', fontSize: 12, color: MUTED }}>Billing ZIP</label>
+              <input id="lt-cc-zip" style={input} value={f.zip} onChange={set('zip')}
+                inputMode="numeric" autoComplete="postal-code" />
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+            <button type="button" disabled={busy} style={{ ...btn(true), opacity: busy ? 0.5 : 1 }}
+              onClick={save}>{busy ? 'Saving…' : 'Save to the profile'}</button>
+            <button type="button" disabled={busy} style={btn(false)}
+              onClick={() => { setOpen(false); setErr(null); }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {err && <p style={{ margin: '8px 0 0', fontSize: 13, color: RED, lineHeight: 1.55 }}>{err}</p>}
+    </div>
+  );
+}
+
+/**
+ * THE GOVERNMENT PHOTO ID — read only, and that is deliberate rather than
+ * unfinished. An ID already on the borrower's profile answers this condition,
+ * which is exactly what its own hint promises. Making an upload HERE become the
+ * profile's ID is an open question with the owner: on the short-term side that
+ * act also reopens every government-ID condition across the borrower's files,
+ * and Long-Term writing those would be one product reaching into the other's
+ * workflow. `src/longterm/conditions-center/profile-links.js` records why.
+ * Uploading against this condition works as it does for any other document.
+ */
+function PhotoIdBlock({ ws }) {
+  const id = ws.photoId || { available: false };
+  return (
+    <div>
+      <div style={eyebrow}>On the borrower’s profile</div>
+      {ws.unreadable && (
+        <p style={{ margin: 0, fontSize: 13, color: RED, lineHeight: 1.55 }}>{ws.why}</p>
+      )}
+      {!ws.unreadable && (
+        <p style={{ margin: 0, fontSize: 13, color: id.available ? GREEN : MUTED, lineHeight: 1.55 }}>
+          {id.available
+            ? `A photo ID is already on this borrower’s profile${id.filename ? ` (${id.filename})` : ''} — it was given on an earlier loan and does not need sending again.`
+            : 'No photo ID on this borrower’s profile yet.'}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** One field, drawn from the server's own description of it. */
 function Field({ field, value, onChange }) {
   const id = `f-${field.key}`;
@@ -66,6 +331,28 @@ function Field({ field, value, onChange }) {
             <option key={o} value={o}>{o === 'second_home' ? 'Second home' : 'Investment'}</option>
           ))}
         </select>
+      ) : field.type === 'address' ? (
+        /* THE LOOK-UP THE OWNER ASKED FOR, IN THE PLACE THEY ASKED FOR IT.
+           The sharing directive's item 8 is "the address lookup (the existing
+           autocomplete) INSIDE LT conditions", and the box was built and then
+           wired only to the term sheet — so the one condition that asks for an
+           address, "say which property this mortgage is secured by" on the
+           REO/mortgages list, has been a bare text box since it shipped. The
+           server has said `type: 'address'` about that field all along
+           (`src/lib/conditions/answers.js`); this renderer simply had no branch
+           for it and fell through to a plain input, silently, which is why
+           nothing ever errored.
+           `AddressField` emits a one-line string exactly like the plain input
+           it replaces, so nothing downstream changes — the answer is stored,
+           validated and read the same way. It degrades to an ordinary text box
+           on any provider failure, so a rural parcel or a bad minute at the
+           vendor can never stop somebody answering the condition. */
+        <AddressField
+          id={id}
+          style={input}
+          value={value == null ? '' : value}
+          onChange={onChange}
+          ariaLabel={field.label} />
       ) : (
         <input
           id={id} style={input} value={value == null ? '' : value}
@@ -160,38 +447,16 @@ export default function LtConditionAnswer({ loanId, conditionId, onSaved }) {
     <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${LINE}` }}>
       {/* ── The vesting entity: what the borrower already holds ─────────────── */}
       {ws.shape === 'entity' && (
-        <div>
-          <div style={eyebrow}>On the borrower’s profile</div>
-          {ws.profile && ws.profile.unreadable && (
-            <p style={{ margin: 0, fontSize: 13, color: RED, lineHeight: 1.55 }}>{ws.profile.why}</p>
-          )}
-          {ws.profile && !ws.profile.unreadable && !ws.profile.found && (
-            <p style={{ margin: 0, fontSize: 13, color: MUTED, lineHeight: 1.55 }}>
-              {ws.entityName
-                ? `${ws.entityName} is not on this borrower’s profile yet. What is uploaded here will be saved to it, and verified once — so the next loan for the same company starts already done.`
-                : 'This loan has no vesting company recorded yet.'}
-            </p>
-          )}
-          {ws.profile && ws.profile.found && (
-            <div>
-              <p style={{ margin: 0, fontSize: 13, color: INK, lineHeight: 1.55 }}>
-                <strong>{ws.entityName}</strong> is already on this borrower’s profile
-                {ws.profile.verified ? ' and verified.' : ', not yet verified.'}
-              </p>
-              <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 13, color: INK }}>
-                {ws.profile.slots.map((sl) => (
-                  <li key={sl.key} style={{ marginTop: 2, color: sl.filled ? GREEN : MUTED }}>
-                    {sl.label} — {sl.filled ? 'already on file' : 'not on file'}
-                    {sl.note ? ` (${sl.note})` : ''}
-                  </li>
-                ))}
-              </ul>
-              {ws.note && (
-                <p style={{ margin: '8px 0 0', fontSize: 12, color: MUTED, lineHeight: 1.5 }}>{ws.note}</p>
-              )}
-            </div>
-          )}
-        </div>
+        <EntityBlock ws={ws} loanId={loanId} onChanged={load} />
+      )}
+
+      {/* THE CARD AND THE ID LIVE ON THE PERSON, so both say what the borrower
+          already has before asking for anything. */}
+      {ws.shape === 'card' && (
+        <CardBlock ws={ws} loanId={loanId} onChanged={load} />
+      )}
+      {ws.shape === 'photo_id' && (
+        <PhotoIdBlock ws={ws} />
       )}
 
       {/* ── One choice ─────────────────────────────────────────────────────── */}

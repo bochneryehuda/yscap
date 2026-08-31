@@ -8,6 +8,15 @@
  * that attaches a vetted library template — see src/lib/underwriting/ai-suggestions.js
  * and the convert_to_condition route in src/routes/underwriting.js).
  *
+ * WHICH "AI" THIS MEANS, said plainly because the wording has been read too
+ * broadly once (owner-directed 2026-08-30, in their own words): *"the intent of
+ * this rule … was that the AI within our system, which is the ChatGPT 5.5, their
+ * own PILOT's AI, cannot add conditions automatically."* So the freeze is about
+ * the PRODUCT's AI adding conditions to a live file behind a person's back. It is
+ * not a rule about who writes the source — an engineer adding a deterministic,
+ * human-triggered writer names it in the ALLOWLIST below and that is the sanctioned
+ * path, exactly as the failure message says.
+ *
  * This test fails the build if ANY code path — an AI module, an AI suggestion
  * producer, or any NEW unreviewed file — inserts a `checklist_items`,
  * `checklist_templates`, OR first-class `conditions` (db/022) row. The complete
@@ -46,6 +55,25 @@ const ALLOWLIST = new Set([
   'src/lib/co-borrower.js',          // co-borrower doc condition (staff adds a co-borrower)
   'src/lib/credit/co-condition.js',  // co-borrower CREDIT condition (staff splits a credit pull)
   'src/lib/conditions/engine.js',    // deterministic rules engine (admin-defined templates)
+  // ── THE LONG-TERM SIDE OF THE ONE CONDITION CENTER (db/652, db/653) ────────
+  // These three began writing `checklist_items` / `checklist_templates` when the
+  // Long-Term loan became the FOURTH OWNER SCOPE of the shared Condition Center
+  // (the owner's 2026-08-30 share-the-code directive). They wrote Long-Term's own
+  // parallel table before that, which is why this lock had never seen them — the
+  // move is what surfaced them, and the lock did exactly its job.
+  //
+  // NONE IS AN AI PATH, and that was CHECKED rather than assumed: not one of the
+  // three requires an AI module, a model client or an ai-* helper. Each is the
+  // Long-Term twin of an entry already on this list:
+  //   engine.js  — the deterministic rules engine, the exact analogue of
+  //                lib/conditions/engine.js above; templates in, rows out, no model.
+  //   library.js — seeds the FIXED, vetted library (the owner's own 28 conditions,
+  //                written by hand in that file) into checklist_templates.
+  //   write.js   — the staff door: addFromTemplate attaches a vetted template when
+  //                a person asks for it. Nothing here runs without that ask.
+  'src/longterm/conditions-center/engine.js',
+  'src/longterm/conditions-center/library.js',
+  'src/longterm/conditions-center/write.js',
   'src/lib/appraisal/desk.js',       // appraisal desk condition (fixed template)
   'src/lib/vesting.js',              // entity / LLC vesting condition
   // Staff press "Add this LLC to the borrower's profile" on a different-entity bank finding; this

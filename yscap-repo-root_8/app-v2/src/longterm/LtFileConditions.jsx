@@ -1,7 +1,37 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ltApi } from './api.js';
+import LtSendConditions from './LtSendConditions.jsx';
 import { stamp } from './format.js';
 import LtConditionAnswer from './LtConditionAnswer.jsx';
+
+/* THE SHORT-TERM CONDITION CENTER'S OWN COMPONENTS, MOUNTED HERE.
+ *
+ * Authorized in writing by the owner, 2026-08-30 (the share-the-code directive,
+ * docs/longterm/SHARE-THE-CODE-DIRECTIVE.md, and one line each in the crossing
+ * ledger): *"the same look of the Condition Center … the way you preview stuff,
+ * the way you preview the PDFs, the way you drag and drop, accept, reject,
+ * preview, download, and delete … it should update them both places. You need to
+ * share the code."*
+ *
+ * These are the REAL components the short-term file screen draws, not a copy of
+ * them. Every one takes its I/O as function props and none of them imports an
+ * API client, which is what makes them mountable here at all — the adapter below
+ * is backed by `ltApi` and hits the /api/lt doors, so the components cannot tell
+ * which product they are drawing.
+ *
+ * ── DO NOT EDIT A SHARED COMPONENT TO MAKE LONG-TERM FIT ────────────────────
+ *
+ * They are read by the short-term file screen at the same time. Renaming a field
+ * they read, or restyling one to suit this page, silently changes the live
+ * product — which is the one thing the owner named in the same breath: *"watch
+ * what you're doing not to break the other side of the business."* Anything
+ * Long-Term needs differently is normalized HERE, on the way in and out. */
+import ConditionLine, { ConditionCollapse, ConditionNote } from '../components/ConditionLine.jsx';
+import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
+import DocPreview from '../components/DocPreview.jsx';
+import DropZone from '../components/DropZone.jsx';
+import UploadRows from '../components/UploadRows.jsx';
+import LoudHint from '../components/LoudHint.jsx';
 
 /**
  * THE GENERAL CONDITION CENTER, on one loan.
@@ -11,6 +41,20 @@ import LtConditionAnswer from './LtConditionAnswer.jsx';
  * ENCOMPASS MIRROR: what the investor's underwriter raised after buying the
  * loan. Two centres, on purpose.
  *
+ * ── WHAT IS SHARED, AND WHAT IS THIS PAGE'S OWN ─────────────────────────────
+ *
+ * SHARED: the condition line, the action bar and its More menu, the document
+ * row's verbs, the PDF previewer with its own find bar, the drag-and-drop zone,
+ * the uploading bar, the loud-hint banner. Those are the owner's list, and they
+ * update in both products at once because there is one of each.
+ *
+ * OURS: the LONG-TERM LOOK. *"This is not a redesign … I like the design that we
+ * have on the long-term side. Don't change the design. Stick with the design and
+ * with the fonts."* So the page around the shared parts is unchanged — the gates
+ * in the buckets' own order, the three-number summary, the white boxes, the
+ * fonts — and the shared components are dropped INTO it rather than the page
+ * being rebuilt around them.
+ *
  * ── FIVE THINGS ON THIS SCREEN ARE DELIBERATE ───────────────────────────────
  *
  * 1. GROUPED BY THE GATE IT BLOCKS, in the buckets' own order, because that is
@@ -19,57 +63,124 @@ import LtConditionAnswer from './LtConditionAnswer.jsx';
  *
  * 2. A REFUSAL IS THE ANSWER, AND IT IS SHOWN. Signing off a condition with a
  *    document nobody has looked at is refused BY THE SERVER, in words; this
- *    screen prints those words rather than a generic "that did not work".
+ *    screen prints those words rather than a generic "that did not work" — and
+ *    it prints them ON THE ROW, because a refusal at the top of a long screen,
+ *    away from the button that caused it, reads as "nothing happened".
  *
  * 3. "DONE" IS THREE DIFFERENT FACTS. Satisfied, waived and did-not-apply are
  *    shown differently and a waiver always shows its reason — that reason is the
- *    thing somebody reads a year later.
+ *    thing somebody reads a year later. The shared audit line states who and
+ *    when; the REASON is printed beside it, because that line has no room for it
+ *    and Long-Term will not let a waiver go unexplained.
  *
  * 4. A CONDITION WHOSE TEMPLATE IS SWITCHED OFF IS GREYED WITH ITS REASON, not
- *    hidden. A feature that
- *    silently disappears is worse than one that says it is off.
+ *    hidden. A feature that silently disappears is worse than one that says it
+ *    is off.
  *
  * 5. EVERY COLOUR IS AN EXPLICIT DARK ON WHITE. `--ink*` is a LIGHT paper colour
  *    in this palette — the names are legacy and they lie.
  *
- * ── NO MESSAGE BOX, AND THAT IS BOTH RULES AT ONCE ──────────────────────────
+ * ── THE WAIVER IS TYPED ON THE ROW, AND THAT IS BOTH RULES AT ONCE ──────────
  *
- * The short-term side has a shared `showMessage` / `askConfirm` / `askPrompt`
- * host. Long-Term may not import it — that is a crossing and the owner has not
- * authorized it — and the separation gate refused it when this file first tried.
- * Building a SECOND dialog host inside Long-Term would put two overlays in one
- * app, which is worse than either.
- *
- * So a refusal is rendered ON THE ROW it belongs to and a waiver is typed in a
- * field ON THE ROW, which is what this repo's own rule asks for anyway: a
- * refusal shown at the top of a long screen, away from the button that caused
- * it, reads as "nothing happened".
+ * The shared action bar offers "Not required" only on an OPTIONAL condition and
+ * carries no reason box; Long-Term's rule is that ANY condition may be waived
+ * and that the reason is required. So the waiver rides in the bar's own `extra`
+ * slot — inside the same More menu, in the same place a person already looks —
+ * and the reason is typed on the row rather than in a dialog. That is what this
+ * repo's own rule asks for anyway.
  */
 
 const INK = '#141B22';
 const MUTED = '#4B585C';
 const LINE = '#E6E1D6';
-const GOLD = '#AE8746';
-const GREEN = '#2F6B4F';
 const AMBER = '#8A6A17';
 const RED = '#8A2D2D';
 
-const STATUS = {
-  outstanding: { label: 'Outstanding', colour: INK, tone: '#FFFFFF' },
-  in_progress: { label: 'Being worked', colour: AMBER, tone: '#FDF8EC' },
-  received: { label: 'Received — not checked yet', colour: AMBER, tone: '#FDF8EC' },
-  satisfied: { label: 'Satisfied', colour: GREEN, tone: '#F1F7F3' },
-  waived: { label: 'Waived', colour: MUTED, tone: '#F6F5F2' },
-  not_applicable: { label: 'Does not apply', colour: MUTED, tone: '#F6F5F2' },
-};
+/** The statuses that mean the condition is no longer work. */
+const DONE_STATUSES = new Set(['satisfied', 'waived', 'not_applicable']);
+/** …and the two of those that are a WAIVE rather than a satisfaction. */
+const WAIVED_STATUSES = new Set(['waived', 'not_applicable']);
 
-const KIND = {
-  informational: 'Information',
-  form: 'Form',
-  order: 'Order',
-  esign: 'Signature',
-  document: 'Document',
+/* ── THE ROW SHAPE, NORMALIZED ON THE LONG-TERM SIDE ONLY ───────────────────
+ *
+ * The shared components read a `checklist_items` row in the SHORT-TERM
+ * vocabulary — `staff` / `borrower` / `both` for the audience, and the five
+ * statuses that column's CHECK constraint admits. The Long-Term read hands back
+ * the OWNER'S wording (`internal` / `external`, and six statuses including
+ * `waived` and `not_applicable`), because that is what the owner's own library
+ * is written in and what every other Long-Term screen shows.
+ *
+ * `src/longterm/conditions-center/vocabulary.js` is the one translation between
+ * them on the server, and these two maps are its front-end counterpart — the
+ * SAME pairs, in the same direction. They live here, on the Long-Term side, and
+ * NEVER inside a shared component: renaming a field in there to make Long-Term
+ * fit would change what the short-term product reads off its own rows.
+ */
+const AUDIENCE_TO_SHARED = { internal: 'staff', external: 'borrower', both: 'both' };
+const STATUS_TO_SHARED = {
+  outstanding: 'outstanding',
+  in_progress: 'requested',
+  received: 'received',
+  satisfied: 'satisfied',
+  // A WAIVE is `satisfied` plus the stamp — this system's own way of recording
+  // one, and the reason `vocabulary.js` maps rather than widening the column.
+  // The stamp below is what tells the shared line it was waived rather than met.
+  waived: 'satisfied',
+  not_applicable: 'satisfied',
+  // RTL's push-back state has no Long-Term word and is reported AS ITSELF by the
+  // read, so it is carried straight through rather than flattened.
+  issue: 'issue',
 };
+/** The inverse, for the ONE status door Long-Term exposes (`write.setStatus`). */
+const SHARED_STATUS_TO_LT = { outstanding: 'outstanding', requested: 'in_progress', received: 'received' };
+
+/**
+ * One Long-Term condition, in the shape the shared components read.
+ *
+ * Everything absent here is absent ON PURPOSE, and each one would be a claim we
+ * cannot back: `reviewed_at` (Long-Term has no separate loan-officer "done"
+ * step), `assignee_staff_id` (no assignment door — and the shared bar hides that
+ * control entirely when no team is passed), `note_buyer_mark` / `esign_auto` /
+ * `is_gate` / `override_at` (short-term facts, derived server-side over there).
+ * A field left off simply does not render.
+ */
+function asSharedCondition(c) {
+  const waived = WAIVED_STATUSES.has(c.status);
+  return {
+    id: c.id,
+    label: c.label,
+    audience: AUDIENCE_TO_SHARED[c.audience] || 'staff',
+    status: STATUS_TO_SHARED[c.status] || 'outstanding',
+    is_required: c.isRequired !== false,
+    signed_off_at: c.status === 'satisfied' ? (c.satisfiedAt || null) : null,
+    signed_off_name: c.satisfiedBy || null,
+    waived_at: waived ? (c.waivedAt || null) : null,
+    waived_by_name: c.waivedBy || null,
+    notes: c.notes || '',
+  };
+}
+
+/**
+ * A FILTER THIS PERSON PICKED, REMEMBERED — under a LONG-TERM key.
+ *
+ * The short-term screen keeps its sticky filters under `pilot.filter.*`. Sharing
+ * that namespace would make a processor's Long-Term choice silently apply to
+ * their short-term list and back again, on a screen where the two products' rows
+ * mean different things. So the prefix is the product's own, and the two can
+ * never reach each other's value.
+ */
+function useLtStickyFilter(key, fallback) {
+  const full = `pilot.lt.filter.${key}`;
+  const [v, setV] = useState(() => {
+    try { const s = localStorage.getItem(full); return s == null ? fallback : s === '1'; } catch { return fallback; }
+  });
+  const set = useCallback((next) => {
+    setV(next);
+    try { localStorage.setItem(full, next ? '1' : '0'); } catch { /* private mode */ }
+  }, [full]);
+  return [v, set];
+}
+
 
 export default function LtFileConditions({ loanId }) {
   const [data, setData] = useState(null);
@@ -78,7 +189,17 @@ export default function LtFileConditions({ loanId }) {
   const [note, setNote] = useState('');
   const [open, setOpen] = useState(() => new Set());
   const [rowErr, setRowErr] = useState({});
-  const [showDone, setShowDone] = useState(false);
+  const [showDone, setShowDone] = useLtStickyFilter('condDone', false);
+  const [role, setRole] = useState(null);
+  const [preview, setPreview] = useState(null);   // the document being looked at
+  const [dlBusy, setDlBusy] = useState(null);     // the document being downloaded
+
+  /* ONE hidden file input for the whole screen, aimed by a ref.
+     A per-row input would be one element per condition on a list of forty, and
+     the REPLACE action has no element of its own to hang one on — it is a button
+     inside a document's More menu. */
+  const fileRef = useRef(null);
+  const aimRef = useRef(null);                    // { conditionId, replaceDocumentId }
 
   const load = useCallback(() => {
     setErr(null);
@@ -88,12 +209,27 @@ export default function LtFileConditions({ loanId }) {
   }, [loanId]);
   useEffect(load, [load]);
 
+  /* WHICH BUTTONS THIS PERSON SEES comes from their own long-term role, read from
+     the server. The shared ladder decides what a role may do, so passing anything
+     else here would show a control the server then refuses — or hide one it
+     allows. A role we could not read shows the non-completer's view, which is the
+     safe direction: it offers less, never more. */
+  useEffect(() => {
+    let alive = true;
+    ltApi.me()
+      .then((m) => { if (alive) setRole(m && m.ltRole ? String(m.ltRole) : null); })
+      .catch(() => { /* the ladder degrades to the smaller set of actions */ });
+    return () => { alive = false; };
+  }, []);
+
   // A REFUSAL BELONGS TO THE ROW THAT CAUSED IT. Keyed on the condition id, so
   // two rows can never show each other's message and the server's own words are
   // what a person reads — its refusals name what is missing and what to do about
   // it, and replacing them with "that did not work" is what makes a condition
   // feel like a dead end.
-  const act = async (id, fn, okNote) => {
+  const say = useCallback((id, message) => setRowErr((prev) => ({ ...prev, [id]: message })), []);
+
+  const act = useCallback(async (id, fn, okNote) => {
     setBusy(true); setNote('');
     setRowErr((prev) => ({ ...prev, [id]: null }));
     try {
@@ -102,25 +238,12 @@ export default function LtFileConditions({ loanId }) {
       load();
       return true;
     } catch (e) {
-      setRowErr((prev) => ({ ...prev, [id]: e.message || 'That did not work.' }));
+      say(id, e.message || 'That did not work.');
       return false;
     } finally {
       setBusy(false);
     }
-  };
-
-  const satisfy = (c) => act(
-    c.id,
-    () => ltApi.conditionSatisfy(loanId, c.id),
-    `Marked “${c.label}” satisfied.`,
-  );
-
-  const waive = async (c, reason) => {
-    const ok = await act(c.id, () => ltApi.conditionWaive(loanId, c.id, reason), `Waived “${c.label}”.`);
-    return ok;
-  };
-
-  const reopen = (c) => act(c.id, () => ltApi.conditionReopen(loanId, c.id), `Reopened “${c.label}”.`);
+  }, [load, say]);
 
   const evaluate = () => act('__file', async () => {
     const out = await ltApi.fileConditionsEvaluate(loanId);
@@ -135,13 +258,155 @@ export default function LtFileConditions({ loanId }) {
     setNote(`Re-checked the rules: ${bits.join(', ')}.${out.degraded ? ` Some of the file could not be read (${out.degraded}), so this is not the whole picture.` : ''}`);
   });
 
-  const remove = (c) => act(c.id, () => ltApi.conditionRemove(loanId, c.id), `Removed “${c.label}”.`);
-
   const toggle = (id) => setOpen((prev) => {
     const next = new Set(prev);
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
+
+  /* ── THE ADAPTER ────────────────────────────────────────────────────────────
+   *
+   * The shared components speak ONE verb — `onPatch(id, patch)` — because on the
+   * short-term side one PATCH route accepts every field. Long-Term has a door per
+   * verb instead (satisfy / waive / reopen / status / note), which is its own
+   * design and not something to change to suit a component. So this is the
+   * translation, and it is deliberately EXHAUSTIVE: a patch shape with no
+   * Long-Term door says so in plain words on the row rather than doing nothing,
+   * because a button that silently does nothing is the worst of the three
+   * possible answers.
+   */
+  const [waiving, setWaiving] = useState(null);   // the condition id being waived
+
+  const patchCondition = useCallback(async (id, patch) => {
+    const p = patch || {};
+
+    /* A SUPER ADMIN'S OVERRIDE has no Long-Term door. On the short-term side it
+       clears a condition WITHOUT what it asks for and records the reason; here
+       the recorded way through is a WAIVE, which requires the same reason and
+       stores it in its own column. Say so and put them in the box, rather than
+       calling a waive an override — they are different facts and the file has to
+       be able to tell them apart a year later. */
+    if (p.adminOverride) {
+      setWaiving(id);
+      say(id, 'Long-Term has no override door. Waiving the condition records the same reason on the file — type it below.');
+      return false;
+    }
+    if (p.signedOff === true) return act(id, () => ltApi.conditionSatisfy(loanId, id), 'Marked satisfied.');
+    if (p.signedOff === false || p.waived === false) {
+      return act(id, () => ltApi.conditionReopen(loanId, id), 'Reopened.');
+    }
+    // "Not required" — Long-Term always asks WHY, so the box opens instead of the
+    // condition being cleared on the spot.
+    if (p.waived === true) { setWaiving(id); say(id, null); return false; }
+    if (Object.prototype.hasOwnProperty.call(p, 'reviewed')) {
+      say(id, 'Long-Term has no separate loan-officer “done” step — a condition is either being worked, satisfied or waived.');
+      return false;
+    }
+    if (Object.prototype.hasOwnProperty.call(p, 'status')) {
+      if (p.status === 'satisfied') return act(id, () => ltApi.conditionSatisfy(loanId, id), 'Marked satisfied.');
+      const ltStatus = SHARED_STATUS_TO_LT[p.status];
+      if (!ltStatus) {
+        say(id, 'That status is not one a Long-Term condition can be moved to here.');
+        return false;
+      }
+      return act(id, () => ltApi.conditionStatus(loanId, id, ltStatus), null);
+    }
+    if (Object.prototype.hasOwnProperty.call(p, 'notes')) {
+      return act(id, () => ltApi.conditionNote(loanId, id, p.notes), 'Note saved.');
+    }
+    if (Object.prototype.hasOwnProperty.call(p, 'externalNote')) {
+      say(id, 'Long-Term has no borrower-facing note on a condition yet.');
+      return false;
+    }
+    say(id, 'That action is not available on the Long-Term side yet.');
+    return false;
+  }, [act, loanId, say]);
+
+  const waive = (id, reason) => act(id, () => ltApi.conditionWaive(loanId, id, reason), 'Waived.');
+  const removeCondition = (id) => act(id, () => ltApi.conditionRemove(loanId, id), 'Removed.');
+
+  /* ── THE DOCUMENTS ─────────────────────────────────────────────────────────*/
+
+  // A verdict that needs words (reject, accept-and-ask-for-more) and the delete
+  // confirmation are typed ON THE ROW, for the same reason a waiver is: the
+  // short-term host's dialog layer is that product's, and a second overlay host
+  // inside one app is worse than either.
+  const [docAsk, setDocAsk] = useState(null);     // { conditionId, doc, action }
+
+  const reviewDoc = useCallback((conditionId, doc, action) => {
+    if (action === 'accept') {
+      return act(conditionId, () => ltApi.conditionDocReview(doc.id, { action: 'accept' }), 'Document accepted.');
+    }
+    // reject / accept_more / delete each need something from the person first.
+    setDocAsk({ conditionId, doc, action });
+    say(conditionId, null);
+    return Promise.resolve(false);
+  }, [act, say]);
+
+  const submitDocAsk = async (text) => {
+    if (!docAsk) return;
+    const { conditionId, doc, action } = docAsk;
+    let ok = false;
+    if (action === 'reject') {
+      ok = await act(conditionId, () => ltApi.conditionDocReview(doc.id, { action: 'reject', reason: text }), 'Document rejected.');
+    } else if (action === 'accept_more') {
+      ok = await act(conditionId, () => ltApi.conditionDocReview(doc.id, { action: 'accept', requestMore: true, note: text }), 'Accepted — one more document asked for.');
+    } else if (action === 'delete') {
+      ok = await act(conditionId, () => ltApi.conditionDocRemove(doc.id), 'Document deleted.');
+    }
+    if (ok) setDocAsk(null);
+  };
+
+  const downloadDoc = useCallback(async (conditionId, doc) => {
+    setDlBusy(doc.id);
+    try { await ltApi.conditionDocDownload(doc.id, doc.filename); }
+    catch (e) { say(conditionId, e.message || 'Could not download that document.'); }
+    finally { setDlBusy(null); }
+  }, [say]);
+
+  /* THE UPLOAD. The bytes are read here and posted to the /api/lt door, which is
+     itself a thin caller of the ONE shared upload service — so a Long-Term
+     document lands under exactly the rules a short-term one does. The bar comes
+     from the shared upload store, published by Long-Term's own transport. */
+  const uploadFiles = useCallback(async (conditionId, files, replaceDocumentId) => {
+    if (!files || !files.length) return;
+    setRowErr((prev) => ({ ...prev, [conditionId]: null }));
+    let failed = 0;
+    for (const file of Array.from(files)) {
+      try {
+        /* THE FILE GOES STRAIGHT ON THE WIRE. Reading it into base64 first put the
+           whole document in a JSON body, which the server caps at 25 MB — and
+           base64 inflates by about a third, so the real ceiling was nearer 18 MB
+           of actual file. The streamed door takes what the short-term side takes.
+           No `await readAsBase64` here is also why a large file no longer freezes
+           the tab while the browser encodes it. */
+        await ltApi.conditionDocUpload(loanId, conditionId, {
+          file,
+          filename: file.name,
+          contentType: file.type || 'application/octet-stream',
+          ...(replaceDocumentId ? { replaceDocumentId } : {}),
+        });
+      } catch (e) {
+        failed += 1;
+        // The uploading row already carries the reason in place; this puts it on
+        // the condition too, because that row disappears once it is dismissed.
+        say(conditionId, e.message || `Could not upload “${file.name}”.`);
+      }
+    }
+    if (failed < Array.from(files).length) load();
+  }, [loanId, load, say]);
+
+  const pickFiles = useCallback((conditionId, replaceDocumentId) => {
+    aimRef.current = { conditionId, replaceDocumentId: replaceDocumentId || null };
+    if (fileRef.current) { fileRef.current.value = ''; fileRef.current.click(); }
+  }, []);
+
+  const onPicked = (e) => {
+    const aim = aimRef.current;
+    const files = e.target.files;
+    aimRef.current = null;
+    if (aim && files && files.length) uploadFiles(aim.conditionId, files, aim.replaceDocumentId);
+  };
 
   const summary = (data && data.summary) || null;
 
@@ -153,7 +418,7 @@ export default function LtFileConditions({ loanId }) {
     // list nobody reads.
     return list.map((b) => ({
       ...b,
-      conditions: b.conditions.filter((c) => !['satisfied', 'waived', 'not_applicable'].includes(c.status)),
+      conditions: b.conditions.filter((c) => !DONE_STATUSES.has(c.status)),
     }));
   }, [data, showDone]);
 
@@ -162,6 +427,13 @@ export default function LtFileConditions({ loanId }) {
 
   return (
     <>
+      {/* THE LOGIN-FREE LINK. Above the list on purpose: it is about the whole
+          file rather than any one condition, and the moment a person wants it is
+          when they are looking at what is still outstanding. It reads its own
+          state from the server and offers nothing when the loan cannot be sent
+          one. */}
+      <LtSendConditions loanId={loanId} />
+
       {/* A DEGRADED READ IS NOT AN EMPTY FILE. */}
       {data.degraded && (
         <p style={{ margin: '0 0 10px', color: RED, fontSize: 13, lineHeight: 1.55 }}>
@@ -197,6 +469,9 @@ export default function LtFileConditions({ loanId }) {
         </div>
       )}
 
+      {/* The one file picker for the whole screen — see the aim ref above. */}
+      <input ref={fileRef} type="file" multiple style={{ display: 'none' }} onChange={onPicked} />
+
       {groups.map((b) => (
         <div key={b.key} style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
@@ -214,10 +489,26 @@ export default function LtFileConditions({ loanId }) {
 
           <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
             {b.conditions.map((c) => (
-              <ConditionRow key={c.id} c={c} open={open.has(c.id)} onToggle={() => toggle(c.id)}
-                busy={busy} problem={rowErr[c.id] || null} loanId={loanId} onChanged={load}
-                onSatisfy={() => satisfy(c)} onWaive={(reason) => waive(c, reason)}
-                onReopen={() => reopen(c)} onRemove={() => remove(c)} />
+              <ConditionRow key={c.id} c={c} role={role} loanId={loanId}
+                open={open.has(c.id)} onToggle={() => toggle(c.id)}
+                busy={busy} problem={rowErr[c.id] || null}
+                onChanged={load}
+                onPatch={patchCondition}
+                waiving={waiving === c.id}
+                onWaiveOpen={() => setWaiving(c.id)}
+                onWaiveCancel={() => setWaiving(null)}
+                onWaive={async (reason) => { if (await waive(c.id, reason)) setWaiving(null); }}
+                onRemove={() => removeCondition(c.id)}
+                onUpload={(files) => uploadFiles(c.id, files)}
+                onPick={(replaceDocumentId) => pickFiles(c.id, replaceDocumentId)}
+                onReviewDoc={(doc, action) => reviewDoc(c.id, doc, action)}
+                onDownloadDoc={(doc) => downloadDoc(c.id, doc)}
+                onPreview={(doc) => setPreview(doc)}
+                dlBusy={dlBusy}
+                docAsk={docAsk && docAsk.conditionId === c.id ? docAsk : null}
+                onDocAskCancel={() => setDocAsk(null)}
+                onDocAskSubmit={submitDocAsk}
+              />
             ))}
             {b.conditions.length === 0 && (
               <div style={{ fontSize: 13, color: MUTED }}>
@@ -234,60 +525,81 @@ export default function LtFileConditions({ loanId }) {
           to run the library against it.
         </p>
       )}
+
+      {/* THE PREVIEWER IS THE SHORT-TERM ONE — the PDF renderer, its find bar, the
+          image and text branches and the layering rules all come with it. It is
+          handed an authenticated loader because a sandboxed frame cannot carry
+          the session token, which is the same reason the short-term side fetches
+          the bytes rather than pointing a frame at the route. */}
+      {preview && (
+        <DocPreview
+          title={preview.slot_label || preview.filename}
+          filename={preview.filename}
+          contentType={preview.content_type}
+          load={() => ltApi.conditionDocBlob(preview.id)}
+          onDownload={() => ltApi.conditionDocDownload(preview.id, preview.filename)}
+          onClose={() => setPreview(null)}
+        />
+      )}
     </>
   );
 }
 
-function ConditionRow({ c, open, onToggle, busy, problem, loanId, onChanged, onSatisfy, onWaive, onReopen, onRemove }) {
-  const s = STATUS[c.status] || STATUS.outstanding;
-  const done = ['satisfied', 'waived', 'not_applicable'].includes(c.status);
-  const [waiving, setWaiving] = useState(false);
+/**
+ * ONE CONDITION — the shared line, and the shared parts under it.
+ *
+ * The LONG-TERM box is this page's own (its border, its background, its
+ * spacing); everything inside it that the owner named is the short-term
+ * component doing its own job.
+ */
+function ConditionRow({
+  c, role, loanId, open, onToggle, busy, problem, onChanged, onPatch,
+  waiving, onWaiveOpen, onWaiveCancel, onWaive, onRemove,
+  onUpload, onPick, onReviewDoc, onDownloadDoc, onPreview, dlBusy,
+  docAsk, onDocAskCancel, onDocAskSubmit,
+}) {
+  const it = asSharedCondition(c);
+  const docs = (c.documents && c.documents.list) || [];
+  const done = DONE_STATUSES.has(c.status);
   const [reason, setReason] = useState('');
+  const [askText, setAskText] = useState('');
   const [confirmRemove, setConfirmRemove] = useState(false);
 
+  useEffect(() => { if (!waiving) setReason(''); }, [waiving]);
+  useEffect(() => { setAskText(''); }, [docAsk && docAsk.doc && docAsk.doc.id, docAsk && docAsk.action]);
+
   return (
-    <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, background: s.tone, overflow: 'hidden' }}>
-      <button type="button" onClick={onToggle}
-        style={{
-          display: 'flex', gap: 10, alignItems: 'center', width: '100%', textAlign: 'left',
-          background: 'transparent', border: 0, cursor: 'pointer', padding: '10px 14px', font: 'inherit',
-        }}>
-        <span aria-hidden="true" style={{
-          width: 8, height: 8, flex: '0 0 8px', borderRadius: 8,
-          background: done ? GREEN : (c.status === 'outstanding' ? GOLD : AMBER),
-        }} />
-        <span style={{ minWidth: 0, flex: 1 }}>
-          <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: INK }}>{c.label}</span>
-          <span style={{ display: 'block', fontSize: 12, color: MUTED, marginTop: 2 }}>
-            {KIND[c.kind] || c.kind}
-            {!c.isRequired && ' · optional'}
-            {c.origin === 'manual' && ' · added by hand'}
-            {c.audience !== 'internal' && ' · the borrower sees this'}
-            {' · '}{s.label}
-          </span>
-        </span>
+    <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, background: '#FFFFFF', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px' }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <ConditionLine it={it} role={role} docs={docs} open={open}
+            onToggle={onToggle} onPatch={onPatch} done={done} />
+        </div>
         {/* A condition whose TEMPLATE is switched off is greyed WITH its reason
             rather than hidden — a feature that vanishes reads as one that broke. */}
         {c.enabled === false && (
           <span style={{ fontSize: 11, color: AMBER, whiteSpace: 'nowrap' }}>switched off</span>
         )}
-      </button>
+        {open && <ConditionCollapse onToggle={onToggle} />}
+      </div>
 
       {open && (
         <div style={{ padding: '0 14px 12px', borderTop: `1px solid ${LINE}` }}>
           {c.enabled === false && c.disabledReason && (
             <p style={{ margin: '10px 0 0', fontSize: 13, color: AMBER, lineHeight: 1.55 }}>{c.disabledReason}</p>
           )}
-          {c.hint && <p style={{ margin: '10px 0 0', fontSize: 13, color: INK, lineHeight: 1.55 }}>{c.hint}</p>}
+
+          {/* A hint whose first line is marked carries a requirement the owner
+              wants UNMISSABLE; the shared renderer draws it as a callout and an
+              ordinary hint exactly as before. */}
+          {c.hint && <div style={{ marginTop: 10 }}><LoudHint hint={c.hint} className="" style={{ fontSize: 13, color: INK, lineHeight: 1.55 }} /></div>}
 
           {/* THE THREE CONDITIONS THAT ARE A CHOICE draw their own ways here —
               the mortgages on the credit report, the mortgage on the property
               being refinanced, and the vesting entity reading the borrower's
               profile. It self-hides on every other condition (the workspace
               door answers `null`), so nothing is added to an ordinary row. */}
-          {open && (
-            <LtConditionAnswer loanId={loanId} conditionId={c.id} onSaved={onChanged} />
-          )}
+          <LtConditionAnswer loanId={loanId} conditionId={c.id} onSaved={onChanged} />
 
           {c.slots && c.slots.length > 0 && (
             <div style={{ marginTop: 10 }}>
@@ -303,28 +615,76 @@ function ConditionRow({ c, open, onToggle, busy, problem, loanId, onChanged, onS
             </div>
           )}
 
-          <div style={{ marginTop: 10, fontSize: 12, color: MUTED }}>
-            {c.documents.total > 0
-              ? `${c.documents.accepted} of ${c.documents.total} document${c.documents.total === 1 ? '' : 's'} accepted`
-              : 'No documents on this condition yet'}
+          {/* ── THE DOCUMENTS ──────────────────────────────────────────────── */}
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase',
+              color: MUTED, fontWeight: 700 }}>Documents</div>
+
+            {/* The bar, in the place the finished document will appear. It draws
+                only what the shared upload store holds, which Long-Term's own
+                transport publishes into — so an upload shows its name and its
+                percentage from the moment the file is chosen. */}
+            <UploadRows target={`condition:${c.id}`} />
+
+            {docs.length === 0 && (
+              <div style={{ fontSize: 13, color: MUTED, marginTop: 4 }}>
+                Nothing uploaded against this condition yet.
+              </div>
+            )}
+            {docs.map((doc) => (
+              <div key={doc.id} style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${LINE}` }}>
+                <div style={{ fontSize: 13, color: INK, wordBreak: 'break-word' }}>
+                  {doc.slot_label ? <strong>{doc.slot_label}: </strong> : null}{doc.filename}
+                  {doc.is_current === false && (
+                    <span style={{ fontSize: 12, color: MUTED }}> · an older version</span>
+                  )}
+                </div>
+                <DocActions doc={doc} role={role}
+                  onReviewDoc={(d, action) => onReviewDoc(d, action)}
+                  onDownloadDoc={onDownloadDoc}
+                  onPreview={onPreview}
+                  onReplace={() => onPick(doc.id)}
+                  dlBusy={dlBusy} />
+                {docAsk && docAsk.doc.id === doc.id && (
+                  <DocAsk action={docAsk.action} value={askText} onChange={setAskText}
+                    busy={busy} onCancel={onDocAskCancel} onSubmit={() => onDocAskSubmit(askText)} />
+                )}
+              </div>
+            ))}
+
+            {/* DRAG AND DROP, the owner's own words — the same zone the
+                short-term side uses, so a drag out of the Outlook desktop app
+                works here for the same reason it works there. */}
+            <DropZone className="cond-drop" enabled={!busy} onFiles={onUpload}
+              title="Drop a document here, or press Upload."
+              style={{ marginTop: 10, padding: '10px 12px', border: `1px dashed ${LINE}`,
+                borderRadius: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13, color: MUTED }}>Drop a document here, or</span>
+              <button type="button" className="btn soft small" disabled={busy}
+                onClick={() => onPick(null)}>Upload…</button>
+            </DropZone>
           </div>
 
+          {/* ── WHAT HAPPENED TO IT ────────────────────────────────────────── */}
           {c.status === 'waived' && (
             <p style={{ margin: '10px 0 0', fontSize: 13, color: INK, lineHeight: 1.55 }}>
               Waived{c.waivedBy ? ` by ${c.waivedBy}` : ''}{c.waivedAt ? ` on ${stamp(c.waivedAt)}` : ''}
               {c.waivedReason ? ` — ${c.waivedReason}` : ''}
             </p>
           )}
-          {c.status === 'satisfied' && (
-            <p style={{ margin: '10px 0 0', fontSize: 13, color: MUTED }}>
-              Satisfied{c.satisfiedBy ? ` by ${c.satisfiedBy}` : ''}{c.satisfiedAt ? ` on ${stamp(c.satisfiedAt)}` : ''}
+          {c.status === 'not_applicable' && (
+            <p style={{ margin: '10px 0 0', fontSize: 13, color: INK, lineHeight: 1.55 }}>
+              Did not apply to this file{c.waivedBy ? `, recorded by ${c.waivedBy}` : ''}
+              {c.waivedAt ? ` on ${stamp(c.waivedAt)}` : ''}{c.waivedReason ? ` — ${c.waivedReason}` : ''}
             </p>
           )}
-          {c.notes && (
-            <p style={{ margin: '10px 0 0', fontSize: 13, color: INK, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
-              {c.notes}
-            </p>
-          )}
+
+          {/* THE INTERNAL NOTE — the shared editor, so a note behaves the same in
+              both products (shown when there is one, a quiet link when there is
+              not, rather than an empty box on every row). */}
+          <div style={{ marginTop: 10 }}>
+            <ConditionNote it={it} onPatch={onPatch} />
+          </div>
 
           {/* THE REFUSAL, WHERE THE BUTTON IS. The server names what is missing
               and what to do about it; this prints those words verbatim. */}
@@ -344,33 +704,92 @@ function ConditionRow({ c, open, onToggle, busy, problem, loanId, onChanged, onS
                 value={reason} onChange={(e) => setReason(e.target.value)} />
               <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                 <button className="btn" disabled={busy || reason.trim().length < 4}
-                  onClick={async () => { if (await onWaive(reason)) { setWaiving(false); setReason(''); } }}>
-                  Waive it
-                </button>
-                <button className="btn ghost" onClick={() => { setWaiving(false); setReason(''); }}>Cancel</button>
+                  onClick={() => onWaive(reason)}>Waive it</button>
+                <button className="btn ghost" onClick={onWaiveCancel}>Cancel</button>
               </div>
             </div>
           ) : (
-            <div className="act-bar" style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {!done && <button className="btn" onClick={onSatisfy} disabled={busy}>Mark satisfied</button>}
-              {!done && <button className="btn soft" onClick={() => setWaiving(true)} disabled={busy}>Waive…</button>}
-              {done && <button className="btn soft" onClick={onReopen} disabled={busy}>Reopen</button>}
-              {c.origin === 'manual' && (confirmRemove
-                ? (
-                  <>
-                    <button className="btn ghost" style={{ color: RED }} disabled={busy}
-                      onClick={() => { setConfirmRemove(false); onRemove(); }}>
-                      Yes, remove it
+            <div style={{ marginTop: 12 }}>
+              {/* THE SHARED ACTION BAR — one prominent next step, everything else
+                  behind More, the plain sentence under it saying what will
+                  happen, and the audit line saying who cleared it and when.
+                  `team` is deliberately absent (Long-Term has no assignment door,
+                  and the control hides itself), and `canSendBack` is false
+                  because the borrower's own long-term view is its own door. */}
+              <ConditionActions it={it} role={role} onPatch={onPatch}
+                docs={docs} canSendBack={false}
+                extra={!done ? (
+                  <button className="btn ghost small" onClick={onWaiveOpen}
+                    title="Clear this condition without what it asks for, and record why. The reason is saved on the file.">
+                    Waive with a reason…
+                  </button>
+                ) : null} />
+              {c.origin === 'manual' && (
+                <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {confirmRemove ? (
+                    <>
+                      <button className="btn ghost small" style={{ color: RED }} disabled={busy}
+                        onClick={() => { setConfirmRemove(false); onRemove(); }}>
+                        Yes, take it off the file
+                      </button>
+                      <button className="btn ghost small" onClick={() => setConfirmRemove(false)}>Keep it</button>
+                    </>
+                  ) : (
+                    <button className="btn ghost small" onClick={() => setConfirmRemove(true)} disabled={busy}>
+                      Remove this condition
                     </button>
-                    <button className="btn ghost" onClick={() => setConfirmRemove(false)}>Keep it</button>
-                  </>
-                )
-                : <button className="btn ghost" onClick={() => setConfirmRemove(true)} disabled={busy}>Remove</button>
+                  )}
+                </div>
               )}
             </div>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * THE ONE THING A DOCUMENT VERDICT NEEDS FROM A PERSON, asked on the row.
+ *
+ * A rejection always needs a reason and an accept-and-ask-for-more always needs
+ * a note — both are the SHARED service's own rules, refused there, so the box is
+ * required here rather than letting somebody send an empty one and read the
+ * refusal back. A delete asks for nothing but confirmation, because it is
+ * permanent.
+ */
+function DocAsk({ action, value, onChange, busy, onCancel, onSubmit }) {
+  const copy = {
+    reject: {
+      label: 'Why is this being rejected? The borrower is told this.',
+      go: 'Reject it',
+      min: 1,
+    },
+    accept_more: {
+      label: 'What else is needed on this condition? The borrower is told this.',
+      go: 'Accept, and ask for one more',
+      min: 1,
+    },
+    delete: {
+      label: 'This deletes the document permanently — it is not kept as an old version.',
+      go: 'Yes, delete it',
+      min: 0,
+    },
+  }[action];
+  if (!copy) return null;
+  return (
+    <div style={{ marginTop: 8 }}>
+      <label style={{ fontSize: 12, color: MUTED, display: 'block', marginBottom: 4 }}>{copy.label}</label>
+      {copy.min > 0 && (
+        <textarea className="input" rows={2} style={{ width: '100%', fontSize: 14 }}
+          value={value} onChange={(e) => onChange(e.target.value)} />
+      )}
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+        <button className="btn small" disabled={busy || (copy.min > 0 && value.trim().length < copy.min)}
+          style={action === 'delete' ? { color: RED } : undefined}
+          onClick={onSubmit}>{copy.go}</button>
+        <button className="btn ghost small" onClick={onCancel}>Cancel</button>
+      </div>
     </div>
   );
 }

@@ -49,6 +49,72 @@ const VENDOR_KINDS = Object.freeze({
 });
 
 /**
+ * WHAT A CARD IS, IN THE SHARED DIRECTORY'S OWN VOCABULARY.
+ *
+ * Owner-directed 2026-08-30: *"The contact should save in the future the type of
+ * contact: attorney contact, realtor contact, everything should share the Vendor
+ * FileContacts section that we have already in the RTL side."* The type lives ON
+ * the card (`service_contacts.contact_type`), so a company entered once as an
+ * attorney is an attorney everywhere and forever — which only works if BOTH
+ * products write the same word for the same thing.
+ *
+ * The two vocabularies are genuinely different and both are right for their own
+ * side: this desk asks "what job does this company do on THIS loan" (an attorney
+ * is the buyer's or ours; a servicer is being paid off), while the directory asks
+ * "what kind of company is this" (an attorney is an attorney). So a long-term
+ * kind is MAPPED to a directory type when a card is created, rather than either
+ * list being bent to the other.
+ *
+ * EVERY VALUE ON THE RIGHT IS ONE `lib/vendor-directory`'s SUGGEST_TYPES ALREADY
+ * CARRIES — the type-ahead answers nothing for a type it does not know, so a card
+ * written with a long-term word would be a card nobody could ever find again.
+ * `test-lt-orders-pure.js` reads that set out of the shared module and fails the
+ * build the day this table names something outside it.
+ *
+ * Three kinds fold into `other`, and two of them carry a label of their own: the
+ * directory has no word for an HOA management company or a landlord, so the
+ * long-term LABEL is written to `custom_type` — the field that exists for exactly
+ * that — and the card still reads "HOA management company" wherever it is shown.
+ * The kind literally called `other` carries none, because there the free text is
+ * the PERSON'S ("e.g. Surveyor") and a stored "Other" would overwrite it.
+ */
+const CONTACT_TYPE_FOR_KIND = Object.freeze({
+  title: 'title_company',
+  hazard_insurance: 'insurance_agent',
+  flood_insurance: 'flood_insurance',
+  ny_settlement_agent: 'settlement_agent',
+  buyers_attorney: 'attorney',
+  our_attorney: 'attorney',
+  realtor: 'realtor',
+  appraisal: 'appraiser',
+  // A payoff goes to whoever HOLDS the loan being paid off — a lender or its
+  // servicer. `lender` is the directory's word for that, and it is the one an
+  // RTL payoff contact is already filed under.
+  payoff: 'lender',
+  hoa: 'other',
+  landlord: 'other',
+  other: 'other',
+});
+
+/**
+ * The directory type a card for this job is filed under, and the free-text label
+ * that goes with it when the directory has no word of its own.
+ *
+ * @returns {{contactType: string, customType: string|null}|null} null for a kind
+ *   this desk does not carry — never a default, because a card filed under a
+ *   guessed type is a card found by the wrong search. `customType` is null when
+ *   the directory has its own word for the job, and null again for the kind
+ *   called `other`, where the free text belongs to the person filling the form.
+ */
+function directoryTypeFor(kind) {
+  const k = String(kind || '').trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(CONTACT_TYPE_FOR_KIND, k)) return null;
+  const contactType = CONTACT_TYPE_FOR_KIND[k];
+  const named = contactType === 'other' && k !== 'other';
+  return { contactType, customType: named ? (VENDOR_KINDS[k] || null) : null };
+}
+
+/**
  * THE ORDERS.
  *
  *  · `condition`   the condition this order answers — the row that goes from
@@ -198,6 +264,6 @@ function vendorKindFor(kind) {
 }
 
 module.exports = {
-  VENDOR_KINDS, ORDER_KINDS, ORDER_KIND_KEYS,
-  orderKind, isEnabled, slotForFilename, vendorKindFor,
+  VENDOR_KINDS, ORDER_KINDS, ORDER_KIND_KEYS, CONTACT_TYPE_FOR_KIND,
+  orderKind, isEnabled, slotForFilename, vendorKindFor, directoryTypeFor,
 };
