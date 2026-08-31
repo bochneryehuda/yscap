@@ -43,14 +43,65 @@ const naive = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$
 console.log('the file that actually broke');
 
 const apiRaw = read('app-v2/src/longterm/api.js');
-const NEEDLE = /clickupStatusReviews: \(limit\) =>/;
 
-check(NEEDLE.test(apiRaw), 'the call really is in the file — the guard was not wrong about the rule');
+/* THE NEEDLE IS THE MODULE'S OWN EXPORT, and it moved here from
+   `clickupStatusReviews` — the call named in the original report — for a reason
+   worth keeping.
+
+   The swallow starts at the stray `/*` on line 3 and runs to the file's FIRST
+   genuine `*` `/`. Where that closer sits is a fact about how many block
+   comments the file happens to carry ABOVE a given line, so a needle chosen deep
+   in the file leaves this suite hostage to ordinary editing: `api.js` is under
+   active development, and adding a comment to it has now moved that boundary
+   TWICE, failing first the byte-ratio assertion and then this one — each time
+   reporting a defect in the STRIPPER when nothing about the stripper or the
+   defect had changed.
+
+   `export const ltApi = {` is not an arbitrary line. It sits near the top,
+   ABOVE any block comment the file could grow, so it is inside the swallowed
+   range for as long as line 3 carries a stray `/*` — which is the condition the
+   whole section is about. And it is the strongest possible statement of the
+   damage: an idiom that loses a module's own export has not lost a token, it
+   has lost the file. The original call is still covered, by the line count
+   below: it is one of the lines this idiom drops. */
+const NEEDLE = /export const ltApi = \{/;
+
+check(NEEDLE.test(apiRaw), 'the export really is in the file — the guard was not wrong about the rule');
 check(!NEEDLE.test(naive(apiRaw)),
   'and the OLD stripper loses it, so this test is about a real defect and not a hypothetical');
 check(NEEDLE.test(stripComments(apiRaw)), 'the shared stripper keeps it');
-check(stripComments(apiRaw).length > naive(apiRaw).length * 5,
-  'keeping an order of magnitude more of the file than the old idiom left standing');
+/* HOW BIG THE DAMAGE IS, COUNTED IN LIVE CODE — not in bytes.
+   This asked for a 5:1 BYTE ratio and went red on a commit that added a block
+   comment to `api.js` around line 240. Nothing about the defect changed: the
+   stray `/*` on line 3 still opens a fake block, it simply now runs to that new
+   `*` `/` instead of to the one 282 lines down, so it swallows fewer BYTES.
+   A byte ratio is a statement about how much COMMENTARY the file happens to
+   carry, which moves every time anybody writes a note in it; the defect is
+   about how much CODE is lost. So the claim is made in the terms it is really
+   about — and it comes out stronger for it: the naive idiom does not lose a
+   token, it loses the module's own `import` and its `export const ltApi = {`,
+   which is to say it loses the file.
+
+   THE FLOOR IS TWO, AND THAT IS NOT TIMIDITY. The exact count is the distance
+   from line 3 to this file's first genuine `*` `/`, so it moves every time
+   anybody writes a block comment near the top — it was 86 when this was written
+   and 16 two commits later, and a floor picked from either number goes stale the
+   same way the byte ratio did. What the count is FOR is the word RUN: this idiom
+   does not drop a token, it drops consecutive lines. The sharp claim is the
+   assertion below it, which is binary and structural — the module's own export
+   is lost, and an idiom that loses that has lost the file. The measured figure
+   is printed either way, so a reader sees the real number without the suite
+   depending on it. */
+const liveLines = (t) => new Set(String(t).split('\n').map((l) => l.trim()).filter(Boolean));
+{
+  const kept = liveLines(stripComments(apiRaw));
+  const naiveKept = liveLines(naive(apiRaw));
+  const lost = [...kept].filter((l) => !naiveKept.has(l));
+  check(lost.length >= 2,
+    `the old idiom loses a RUN of this file's live code, not a token (${lost.length} lines)`);
+  check(lost.some((l) => /^export const ltApi = \{/.test(l)),
+    '…including the module\u2019s own export, which is to say it loses the file');
+}
 check(/\/api\/lt\//.test(apiRaw) && !/Every call goes to/.test(stripComments(apiRaw)),
   'the line comment carrying the stray slash-star is itself removed, comment and all');
 

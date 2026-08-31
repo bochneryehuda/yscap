@@ -33,10 +33,17 @@ const section = (t) => console.log(`\n${t}`);
 // Comp: 2 points of YSP, so a borrower-paid display price is the raw price less
 // 2.000 — which puts 7.375% at exactly par and reproduces the printed table.
 const PLAN = { borrowerPaid: 2, ysp: 2, lenderPaid: 2, applicationFee: 500, commitmentFee: 1595 };
+  // ⛔ THIS SCENARIO IS INTERNALLY CONSISTENT, AND THAT IS NOW LOAD-BEARING. 375,000 at
+  // 7.375% over 30 years is 2,590.03 a month; with 620 of tax and 145 of insurance the
+  // housing payment is 3,355.03, and a 1.24 DSCR needs 4,161 of rent. The fixture used to
+  // say 3,900 — a loan whose own figures only reach 1.16 while claiming a price bought in
+  // the 1.24 band, which is exactly the mis-priced sheet the export gate now refuses
+  // (owner-reported 2026-08-30). A fixture that could not be issued in production must not
+  // be the one every other assertion here is built on.
 const SCENARIO = {
   purpose: 'Purchase', propertyType: 'Single family', value: 500000, loan: 375000,
   ltv: 75, termYears: 30, dscr: 1.24, fico: 740, state: 'NJ', city: 'Lakewood', zip: '08701',
-  rentMonthly: 3900, taxMonthly: 620, insuranceMonthly: 145, hoaMonthly: 0,
+  rentMonthly: 4161, taxMonthly: 620, insuranceMonthly: 145, hoaMonthly: 0,
   prepayMonths: 60, prepayStructure: '5 Year',
 };
 const quote = (label, ratePct, rawPrice, extra) => Object.assign({
@@ -627,6 +634,101 @@ section('an unnamed program may be named — and never after the investor');
 }
 
 // =============================================================================
+section('a date is written the way a person writes one');
+// =============================================================================
+// Owner-reported 2026-08-31: all three documents read as *"very ugly and very
+// abrupt"*, and the most machine-like thing on the paper was the date — every
+// page carried the stored instant twice, and the expiry callout read *"Good
+// through 2026-09-01T14:00:00.000Z."*
+{
+  check(wording.dateLong('2026-08-31T14:00:00.000Z') === 'August 31, 2026',
+    'a stored instant becomes a date in words');
+  check(wording.dateTimeLong('2026-09-01T14:00:00.000Z') === 'September 1, 2026 at 10:00 AM EDT',
+    '…and a DEADLINE carries its hour and its zone, in ours, because a borrower cannot act on a moment they have to interpret');
+  check(wording.dateTimeLong('2026-01-15T14:00:00.000Z') === 'January 15, 2026 at 9:00 AM EST',
+    '…which follows the clock through the year rather than being a fixed offset');
+  check(wording.dateTimeLong('2026-09-01T10:00:00-04:00') === wording.dateTimeLong('2026-09-01T14:00:00.000Z'),
+    'the same instant written two ways reads the same');
+
+  /* ⛔ ONLY AN INSTANT THAT STATES ITS OFFSET MAY BE RE-CLOCKED, and this is the
+     assertion that matters most. `2026-08-31` resolves to UTC midnight, which
+     renders as the THIRTIETH in every US zone, and a bare "August 31, 2026 9:14
+     AM" resolves to whatever the server's clock happens to be — so re-printing
+     either in New York would silently move a date somebody wrote. A value with
+     no offset is left exactly as it was given. */
+  check(wording.dateLong('2026-08-31') === '2026-08-31',
+    'a bare calendar day is NOT re-clocked — it would render as the day before');
+  check(wording.dateTimeLong('August 31, 2026 9:14 AM') === 'August 31, 2026 9:14 AM',
+    '…and a string a person already wrote is left exactly as it is');
+  for (const v of [null, undefined, '', '   ']) {
+    if (wording.dateLong(v) !== null || wording.dateTimeLong(v) !== null) {
+      check(false, `nothing in yields nothing out (${JSON.stringify(v)})`);
+    }
+  }
+  check(true, 'nothing in yields nothing out — never "Invalid Date"');
+}
+
+// =============================================================================
+section('the document opens with what it is about');
+// =============================================================================
+{
+  const built = snapshot.buildSnapshot({
+    selections: [quote('The offer', 7.375, 102)], plan: PLAN,
+    prepared: { borrowerName: 'Jonathan Reyes', propertyAddress: '218 Forest Ave' },
+  }).snapshot;
+  const lay = layout.buildLayout(built, { code: 'TS-4KH92B', expiryHours: 24 });
+  const hero = lay.blocks.find((b) => b.t === 'hero');
+  check(!!hero, 'a term sheet carries a headline band');
+  const cell = (label) => (hero.cells || []).find((c) => c.label === label);
+  check(hero.cells.length >= 3, `…with the figures a reader looks for first (${hero.cells.map((c) => c.label).join(', ')})`);
+  /* ⛔ IT RESTATES, IT NEVER COMPUTES. Every figure is compared to the value the
+     TABLE below is drawn from, so the headline can never be a second opinion on
+     a document somebody signs. */
+  const m = built.members[0];
+  check(cell('Loan amount').value === wording.money(m.loanAmount), 'the loan amount is the member\'s own');
+  check(cell('Interest rate').value === wording.rate(m.ratePct), 'the rate is the member\'s own');
+  const piti = wording.housingCost(Object.assign({ monthlyPI: m.monthlyPI }, m.scenario));
+  check(cell('Monthly payment').value === wording.moneyExact(piti.total),
+    'the payment is the same total the table prints, not a fresh sum');
+  check(cell('Cash to close').value === wording.money(m.closing.cashToCloseDollars),
+    'and the cash to close is the closing sheet\'s own');
+
+  // ⛔ NEVER AN ORPHAN. Two numbers are a summary; one is a figure sitting where
+  // a summary should be, which is worse than none.
+  // ⛔ THE FIXTURE HAS TO PRODUCE EXACTLY ONE CELL, or the assertion proves the
+  // wrong thing: a member with NOTHING produces zero cells and is refused by any
+  // threshold at all, so it cannot tell "two" from "one". MEASURED — this one
+  // yields the loan amount and nothing else.
+  const cells1 = layout._internals.heroCells({ members: [{ loanAmount: 375000 }] }, 'term_sheet');
+  check(cells1 === null, 'ONE figure is not a summary — the band is dropped rather than left as an orphan');
+  const cells2 = layout._internals.heroCells({ members: [{ loanAmount: 375000, ratePct: 7.375 }] }, 'term_sheet');
+  check(Array.isArray(cells2) && cells2.length === 2,
+    '…and two is, so the threshold is a real one and not "anything at all"');
+  check(layout._internals.heroCells({ members: [{}] }, 'term_sheet') === null,
+    'a member with nothing to state carries no band either');
+
+  // A comparison's headline is about the comparison.
+  const cmpLay = layout.buildLayout(snapshot.buildSnapshot({
+    selections: [quote('A', 7.375, 102), quote('B', 7.625, 101.25)], plan: PLAN, prepared: {},
+  }).snapshot, {});
+  const cHero = cmpLay.blocks.find((b) => b.t === 'hero');
+  check(!!cHero && (cHero.cells.find((c) => c.label === 'Options') || {}).value === '2',
+    'a comparison says how many options it is comparing');
+  check((cHero.cells.find((c) => c.label === 'Interest rate') || {}).value === '7.375%–7.625%',
+    '…and states the rates as a RANGE, because there is no single rate to state');
+
+  /* ⛔ AND THE PROPERTY IS NOT SAID TWICE ON ONE PAGE. A comparison prints its
+     facts under the address (one line, so the table keeps its page); a term
+     sheet prints the band, where it has the room. */
+  const rec = (l) => l.blocks.find((b) => b.t === 'recipient');
+  check(rec(lay).propertyFacts === null && lay.blocks.some((b) => b.t === 'band' && b.title === 'The property'),
+    'a term sheet keeps the property band and adds nothing to the address');
+  check(/Single family/.test(rec(cmpLay).propertyFacts || '')
+    && !cmpLay.blocks.some((b) => b.t === 'band' && b.title === 'The property'),
+    'a comparison states them under the address instead — the same facts, one line');
+}
+
+// =============================================================================
 section('the expiry says what the owner said');
 // =============================================================================
 {
@@ -654,12 +756,34 @@ section('the expiry says what the owner said');
   const lay = layout.buildLayout(s, { expiryHours: 24 });
   check(lay.blocks.some((b) => b.t === 'callout' && /24 hours/.test(b.title)),
     'the term sheet carries the expiry as its own panel, where it cannot be skimmed past');
-  const cmp = snapshot.buildSnapshot({
+  /* ⛔ A COMPARISON CARRIES ONE TOO, AND IT NAMES ITSELF (owner-directed
+     2026-08-31). This assertion used to say the opposite, on a recorded reason
+     — "a comparison is a working document, not an offer with a clock on it". It
+     was put to the owner rather than reversed by a tidying pass, because the
+     record has ALWAYS carried an expiry on every kind (the store stamps one and
+     the lookup screen marks a stale sheet) and the paper was the only place that
+     did not say so. They chose to add it.
+
+     ⛔ IT MUST NOT CALL ITSELF A TERM SHEET. That is the half a copy-paste would
+     get wrong, and it is the one thing a comparison must never be mistaken for:
+     a comparison offers several options and commits to none. The words come from
+     `KIND_WORDS`, the same table the filename and the PDF title read. */
+  const cmpSnap = snapshot.buildSnapshot({
     selections: [quote('A', 7.375, 102), quote('B', 6.875, 99.75)], plan: PLAN,
     prepared: { expiresAt: 'September 1, 2026' },
   }).snapshot;
-  check(!layout.buildLayout(cmp, { expiryHours: 48 }).blocks.some((b) => b.t === 'callout'),
-    'a comparison does not — it is a working document, not an offer with a clock on it');
+  const cmpCallout = layout.buildLayout(cmpSnap, { expiryHours: 48 }).blocks.find((b) => b.t === 'callout');
+  check(!!cmpCallout, 'a comparison carries one too — the record has always held an expiry, the paper simply never said so');
+  check(/This comparison sheet expires in 48 hours\./.test(cmpCallout.title),
+    '…naming ITSELF, never "term sheet" — the one thing a comparison must not be mistaken for');
+  const scen = snapshot.buildSnapshot({
+    selections: [quote('A', 7.375, 102), quote('B', 7.125, 101, { scenario: { ...SCENARIO, loan: 300000, ltv: 60 } })],
+    plan: PLAN,
+    prepared: { expiresAt: 'September 1, 2026' },
+  }).snapshot;
+  const scenCallout = layout.buildLayout(scen, { expiryHours: 48 }).blocks.find((b) => b.t === 'callout');
+  check(!!scenCallout && /This scenario comparison expires/.test(scenCallout.title),
+    '…and a scenario comparison names itself too, from the same one table');
 }
 
 // =============================================================================

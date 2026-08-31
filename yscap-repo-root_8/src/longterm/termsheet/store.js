@@ -19,6 +19,9 @@
  */
 
 const code = require('./code');
+// db/651 — the STAFF-ONLY note about who is behind each price. It is stored on
+// the member row, never on the snapshot: see `internal.js`.
+const internalRecord = require('./internal');
 
 const lazy = { get db() { return require('../db'); } };
 
@@ -90,6 +93,7 @@ async function insertWithFreshCode(client, row) {
 async function issueSheet({
   snapshot, snapshotHash, compPlan, staffId, borrowerId, borrowerName,
   createdBy = 'officer', supersedes = null, expiryDays = 2, expiresAt: expiresAtIn = null, cartId = null,
+  internal = [],
 }) {
   if (!snapshot || !Array.isArray(snapshot.members) || !snapshot.members.length) {
     throw new Error('A term sheet needs at least one option.');
@@ -137,12 +141,19 @@ async function issueSheet({
 
     for (let i = 0; i < members.length; i += 1) {
       const m = members[i];
+      /* db/651 — the vendor's own identity for THIS option, positionally aligned
+         with the member because `buildSnapshot` builds the two lists in one pass.
+         Projected again here rather than trusted: `issueSheet` is a public
+         function and a caller that assembled its own list must not be able to
+         widen what is recorded. An absent entry stores `{}`, which is exactly
+         what every sheet issued before this column says. */
+      const prov = internalRecord.projectInternal(Array.isArray(internal) ? internal[i] : null);
       await client.query(
         `INSERT INTO lt_term_sheet_scenario
            (id, cart_id, parent_kind, position, label, mode, waive_lender_fees,
-            scenario, program, charges, closing, priced_at)
+            scenario, program, charges, closing, internal, priced_at)
          VALUES (gen_random_uuid(), $1::uuid, 'sheet', $2, $3, $4, $5,
-                 $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10::timestamptz)`,
+                 $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11::timestamptz)`,
         [sheet.id, i, m.label, m.mode, !!m.waiveLenderFees,
           JSON.stringify(m.scenario || {}),
           JSON.stringify({
@@ -150,6 +161,7 @@ async function issueSheet({
             ratePct: m.ratePct, monthlyPI: m.monthlyPI, prepayLabel: m.prepayLabel,
           }),
           JSON.stringify(m.charges || {}), JSON.stringify(m.closing || {}),
+          JSON.stringify(prov),
           m.pricedAt || pricedAt],
       );
     }
@@ -276,7 +288,8 @@ async function readCart(staffId, dbc = null) {
   const cart = rows[0] || null;
   if (!cart) return { cart: null, members: [] };
   const { rows: members } = await q.query(
-    `SELECT id, position, label, mode, waive_lender_fees, scenario, program, charges, closing, priced_at
+    `SELECT id, position, label, mode, waive_lender_fees, scenario, program, charges, closing,
+            internal, priced_at
        FROM lt_term_sheet_scenario
       WHERE cart_id = $1::uuid AND parent_kind = 'cart'
       ORDER BY position`,
@@ -317,10 +330,10 @@ async function addToCart({ staffId, member, max = 8 }) {
   const { rows } = await lazy.db.query(
     `INSERT INTO lt_term_sheet_scenario
        (id, cart_id, parent_kind, position, label, mode, waive_lender_fees,
-        scenario, program, charges, closing, priced_at)
+        scenario, program, charges, closing, internal, priced_at)
      SELECT gen_random_uuid(), $1::uuid, 'cart',
             COALESCE(max(position), -1) + 1, $2, $3, $4,
-            $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9::timestamptz
+            $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10::timestamptz
        FROM lt_term_sheet_scenario WHERE cart_id = $1::uuid AND parent_kind = 'cart'
      RETURNING id, position`,
     [cart.id, member.label, member.mode, !!member.waiveLenderFees,
@@ -328,6 +341,10 @@ async function addToCart({ staffId, member, max = 8 }) {
       JSON.stringify(member.program || {}),
       JSON.stringify(member.charges || {}),
       JSON.stringify(member.closing || {}),
+      // db/651 — the cart is where a comparison is assembled, so the provenance
+      // has to survive the round trip: an option parked here and issued an hour
+      // later must record the same investor as one issued straight off the board.
+      JSON.stringify(internalRecord.projectInternal(member.internal)),
       member.pricedAt || new Date().toISOString()],
   );
   await lazy.db.query('UPDATE lt_term_sheet_cart SET updated_at = now() WHERE id = $1::uuid', [cart.id]);
@@ -371,8 +388,34 @@ async function clearCart(staffId) {
   return { ok: rowCount > 0 };
 }
 
+/**
+ * The STAFF-ONLY provenance behind one issued sheet, in the members' own order.
+ *
+ * ⛔ ITS OWN QUERY, NEVER FOLDED INTO `findByCode`. That row is what the PDF and
+ * the replay are built from, and the one guarantee worth keeping here is that
+ * the object those two are handed cannot carry an investor's name. Fetching it
+ * separately is one round trip and it makes the separation structural: a
+ * projection mistake in the replay route cannot leak what the replay route never
+ * loaded.
+ *
+ * Returns [] on a sheet issued before db/651 in the sense that every entry is
+ * `{}` — `internal.isEmpty` is how a screen tells that apart from a real record.
+ */
+async function readInternal(sheetId, dbc = null) {
+  if (!isUuid(sheetId)) return [];
+  const q = dbc || lazy.db;
+  const { rows } = await q.query(
+    `SELECT position, internal
+       FROM lt_term_sheet_scenario
+      WHERE cart_id = $1::uuid AND parent_kind = 'sheet'
+      ORDER BY position`,
+    [sheetId],
+  );
+  return rows.map((r) => ({ position: r.position, internal: r.internal || {} }));
+}
+
 module.exports = {
-  issueSheet, findByCode, verifyIntegrity, listForStaff,
+  issueSheet, findByCode, verifyIntegrity, listForStaff, readInternal,
   openCart, readCart, addToCart, removeFromCart, setAnchor, clearCart,
   _internals: { insertWithFreshCode, isUuid, MINT_TRIES, UNIQUE_VIOLATION },
 };

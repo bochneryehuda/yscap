@@ -93,9 +93,23 @@ const ok = (c, m) => { console.log(`${c ? 'PASS' : 'FAIL'} ${m}`); if (!c) failu
     const c = new Client({ connectionString: process.env.DATABASE_URL });
     await c.connect();
     try {
+      // SCOPED TO THE TEMPLATES THIS TAXONOMY IS ABOUT, and the exclusion is
+      // written as a NEGATIVE on purpose. `condition-subjects.js` groups the
+      // conditions list on the RTL loan file (StaffApplication.jsx is its only
+      // reader); since db/653 the Long-Term library lives in this same table
+      // under `scope='lt_loan'`, and those conditions render on the Long-Term
+      // screens under the owner's OWN headings (`lt_condition_buckets`) — they
+      // never reach this list, so mapping them here would be a second, unread
+      // taxonomy going stale beside the real one.
+      //
+      // `<> 'lt_loan'` rather than an allow-list of the three RTL scopes so the
+      // guard FAILS CLOSED: a fifth scope added next year stays checked until
+      // somebody deliberately decides it does not belong, which is the whole
+      // posture of this test.
       const rows = (await c.query(
         `SELECT code FROM checklist_templates
           WHERE item_kind IN ('document','condition') AND code IS NOT NULL
+            AND scope <> 'lt_loan'
           ORDER BY code`)).rows.map(r => r.code);
       ok(rows.length > 0, `the live template table was read (${rows.length} condition/document templates)`);
       const unmapped = rows.filter(code => !CODE_SUBJECT[code]);

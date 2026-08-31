@@ -122,11 +122,48 @@ const TAG = 'tsf-' + Date.now().toString(36);
       return r.rows[0];
     };
     {
-      const src = require('fs').readFileSync(REPO + '/src/routes/staff.js', 'utf8');
-      ok(/b\.termSheetFinal === true/.test(src),
-        'the staff upload door reads the generator\'s reported stamp (and only an explicit true counts)');
-      ok(/docKind, slot, docVisibility, termSheetFinal\]/.test(src),
-        'and persists it on the insert');
+      /* THESE TWO USED TO GREP src/routes/staff.js FOR THE RULE'S SPELLING, and they
+         broke the moment the upload door was extracted into src/lib/condition-docs/
+         (the shared service both products now call) — while the rule itself was
+         carried over intact. A test that fails on a refactor it should not care
+         about, and would keep passing if somebody changed `=== true` to `!!` in the
+         new home, is testing the wrong thing.
+
+         So they now go through the REAL door and read the column back. Same rule,
+         asserted where it actually matters: an explicit true is FINAL, and anything
+         else — including the truthy-looking strings that make `!!` wrong — is not. */
+      const condUpload = require(REPO + '/src/lib/condition-docs/upload');
+      const { ownerOf } = require(REPO + '/src/lib/condition-owner');
+      const owner = ownerOf('application', appId);
+      const viaDoor = async (termSheetFinal, name) => {
+        const up = await condUpload.uploadConditionDocument({}, {
+          owner,
+          body: {
+            filename: name,
+            contentType: 'application/pdf',
+            dataBase64: Buffer.from(`%PDF-1.4\n${name}\n`).toString('base64'),
+            docKind: 'term_sheet',
+            termSheetFinal,
+          },
+          actorId: adminId,
+          q: db,
+        });
+        const r = await db.query('SELECT doc_kind, term_sheet_final FROM documents WHERE id=$1', [up.documentId]);
+        return r.rows[0];
+      };
+
+      const yes = await viaDoor(true, 'stamp-true.pdf');
+      ok(yes.doc_kind === 'term_sheet' && yes.term_sheet_final === true,
+        'the staff upload door reads the generator\'s reported stamp and persists it on the insert');
+
+      // ONLY AN EXPLICIT TRUE COUNTS. 'false' and 1 are both truthy in JavaScript, so
+      // a `!!` here would stamp a document FINAL that the generator called initial —
+      // and the send gate reads this column to decide whether the wording may relax.
+      for (const [value, label] of [[false, 'false'], [undefined, 'absent'], ['false', "the string 'false'"], [1, 'the number 1']]) {
+        const row = await viaDoor(value, `stamp-${String(label).replace(/[^a-z0-9]+/gi, '-')}.pdf`);
+        ok(row.term_sheet_final === false,
+          `…and ${label} is NOT final — only an explicit true counts`);
+      }
       const bsrc = require('fs').readFileSync(REPO + '/src/routes/borrower.js', 'utf8');
       ok(/b\.termSheetFinal === true/.test(bsrc) && /docKind, slot, termSheetFinal\]/.test(bsrc),
         'the borrower door does the same — a borrower-generated sheet is recorded honestly, not assumed');

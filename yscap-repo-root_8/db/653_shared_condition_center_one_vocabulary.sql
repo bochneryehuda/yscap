@@ -1,0 +1,241 @@
+-- ============================================================================
+-- db/653 — THE ONE CONDITION CENTER SPEAKS ONE VOCABULARY, AND GAINS THE THREE
+--          COLUMNS A LONG-TERM CONDITION NEEDS TO LIVE IN IT
+--
+-- db/652 made `checklist_items` / `documents` accept a FOURTH owner (scope
+-- 'lt_loan', column lt_loan_id) and NOTHING USED IT: Long-Term conditions still
+-- lived in `lt_file_conditions`, a parallel table, so no shared upload door
+-- could be mounted for them (the shared document service hangs a document on
+-- `checklist_items.id`). This file removes the last reason a Long-Term condition
+-- cannot BE a checklist_item.
+--
+-- ── THE DECISION THIS FILE MAKES: MAP, DO NOT WIDEN ─────────────────────────
+--
+-- Three CHECK constraints reject the Long-Term wording. VERIFIED AGAINST THE
+-- LIVE SCHEMA (pg_constraint on a database booted from db/schema.sql + db/001…
+-- db/652), not from the files, because a later migration re-asserting a CHECK is
+-- exactly the kind of thing that is true in one file and false in the database:
+--
+--   checklist_templates_audience_check  borrower | staff | both
+--   chk_templates_category              prior_to_approval | prior_to_docs |
+--                                       prior_to_closing | prior_to_funding |
+--                                       at_closing | post_closing | draw
+--   checklist_items_status_check        outstanding | requested | received |
+--                                       satisfied | issue
+--
+-- and the Long-Term library is written in internal/external/both, in five
+-- buckets (prior_to_submission, prior_to_ctc, prior_to_docs, prior_to_funding,
+-- prior_to_purchase) and in six statuses (…, in_progress, waived,
+-- not_applicable).
+--
+-- WE MAP AT THE SEAM AND WIDEN NOTHING. The owner asked for "the same exact
+-- condition center", and two vocabularies inside one column is not one condition
+-- center — it is one table with two dialects, which is the drift this whole
+-- shipment exists to prevent. Concretely, widening would break readers that are
+-- correct today: every `audience = 'borrower'` test in the RTL tree would
+-- silently answer FALSE for a Long-Term row that means exactly "the borrower
+-- sees this", and every `status = 'satisfied'` roll-up (the pipeline counts, the
+-- advancement blockers, the TPR export, the ClickUp mirror) would silently miss
+-- a Long-Term condition that was waived. Nobody notices a condition that is not
+-- counted.
+--
+-- AND THE MAPPING IS NOT A COMPROMISE — THIS SYSTEM ALREADY HAS THESE WORDS.
+-- src/routes/staff.js says so in its own voice, at the RTL waive:
+--
+--     "WAIVED is recorded the way this system records a waive — `waived_at` set
+--      alongside status 'satisfied' (the status column's CHECK allows only
+--      outstanding/requested/received/satisfied/issue; there is no 'waived'
+--      value, and the waive is the STAMP). `is_required=false` so it reads as
+--      not-applicable rather than as a requirement somebody met."
+--
+-- So "waived" and "not applicable" are ALREADY expressible here, in the place
+-- this system already keeps them. Nothing is lost: the Long-Term read recovers
+-- all six statuses from (status, waived_at, is_required) — see
+-- src/longterm/conditions-center/vocabulary.js, which is the ONE definition of
+-- this mapping in both directions, and which the library's verify() runs against
+-- the LIVE constraint text so a value the database would refuse fails the BUILD.
+--
+--   audience   internal → staff      external → borrower   both → both
+--   bucket     prior_to_submission → prior_to_approval     (the gate before UW)
+--              prior_to_ctc        → prior_to_closing      (CTC = clear to close)
+--              prior_to_docs       → prior_to_docs
+--              prior_to_funding    → prior_to_funding
+--              prior_to_purchase   → post_closing          (the investor buys
+--                                                           after the loan funds)
+--   status     outstanding    → outstanding
+--              in_progress    → requested      (somebody has started it)
+--              received       → received
+--              satisfied      → satisfied
+--              waived         → satisfied + waived_at
+--              not_applicable → satisfied + waived_at + is_required=false
+--   kind       document → item_kind 'document', tool_key NULL
+--              form/order/esign/informational → item_kind 'condition',
+--                                               tool_key 'lt_<kind>'
+--
+-- The `lt_` prefix on tool_key is what keeps the LT kind recoverable AND keeps a
+-- non-document Long-Term condition out of the generic document arm of the
+-- sign-off gate (which requires `tool_key IS NULL`), exactly as RTL's own
+-- tool-backed conditions are kept out of it. No RTL tool_key can ever collide:
+-- every one of them is a bare word (product_pricing, rehab_budget, track_record,
+-- appraisal_card, title_contact, insurance_contact).
+--
+-- ── SO WHY DOES THIS FILE CHANGE ANYTHING AT ALL? ───────────────────────────
+--
+-- Because three things a Long-Term condition carries have NOWHERE to live in the
+-- shared tables, and losing them would be losing the owner's own content. Each
+-- is a NULLABLE, ADDITIVE column: no default changes, no existing row changes
+-- meaning, no RTL reader selects it, no RTL writer sets it.
+--
+-- ── PRODUCT SEPARATION, AND WHY THIS FILE IS NOT NAMED db/NNN_lt_… ──────────
+--
+-- Every table below is an RTL table, and the separation gate's own instruction
+-- for that case is explicit: "A Long-Term migration may only touch lt_* tables.
+-- If the owner asked for a change to an RTL table, it belongs in its own
+-- migration that is not named _lt_." This is that migration, and db/652 (the
+-- same grant, the same tables) set the precedent. The authorization is the
+-- 2026-08-30 share-the-code grant, recorded with the owner's words in
+-- docs/longterm/SHARE-THE-CODE-DIRECTIVE.md and in the crossing ledger. This
+-- file touches NO lt_* table, in either direction.
+--
+-- ── EXISTING lt_file_conditions ROWS: WHAT HAPPENS TO THEM, SAID OUT LOUD ───
+--
+-- NOTHING IS DROPPED AND NOTHING IS MOVED BY THIS FILE, and that is a decision
+-- rather than an omission:
+--
+--  1. `lt_file_conditions` SURVIVES INTACT. It still has readers that have not
+--     moved (src/longterm/orders/desk.js, orders/inbox.js,
+--     src/routes/condition-center.js, the prisma schema and several suites), and
+--     dropping a table out from under a live reader is its own commit, after
+--     they move. Every row that exists today still exists after this file runs,
+--     under the same id, readable by the same code.
+--
+--  2. NO BACKFILL RUNS HERE, AND IT COULD NOT. A backfill would have to join
+--     each row to its new `checklist_templates` row — and those rows do not
+--     exist at migration time. The Long-Term library is deliberately NOT SQL: it
+--     is JavaScript (src/longterm/conditions-center/library.js), because a rule
+--     written in SQL cannot be checked against the field registry, so a typo in a
+--     field key would sit in the database until the day the condition silently
+--     stopped attaching. It seeds on FIRST USE, after the migrations the request
+--     it arrived on has already run. A backfill in this file would therefore find
+--     no template to point at and would write nothing — quietly, which is the
+--     worst of the three outcomes.
+--
+--  3. AN AUTO CONDITION IS NOT LOST — IT IS RE-DERIVED. The engine's next pass
+--     over a loan re-materializes every `origin='auto'` condition into
+--     checklist_items from the same library that put it in lt_file_conditions.
+--     That is the whole point of an engine-owned row.
+--
+--  4. WHAT IS NOT RE-DERIVABLE IS WHAT A PERSON DID: a hand-added condition, a
+--     note, a status past outstanding, a waiver and its reason, and the files in
+--     `lt_condition_files`. Those rows stay exactly where they are and are NOT
+--     visible in the new Condition Center until the retirement commit carries
+--     them across WITH their documents. Anyone reading this before that commit
+--     ships should expect a Long-Term loan worked before it to show its history
+--     in the old screen and its live conditions in the new one. Said here so it
+--     is discovered by reading rather than by a person wondering where their
+--     note went.
+--
+-- ── WHAT MOVED IN THIS COMMIT, AND WHAT DID NOT — SAID PRECISELY ────────────
+--
+-- MOVED: the library (it seeds `checklist_templates`, scope='lt_loan'), the
+-- engine, the read, the write, the per-condition workspace, the order-kind
+-- switches and the settings screen's library read + save. Those all speak the
+-- shared tables now.
+--
+-- NOT MOVED, DELIBERATELY, and each is the next commit's work rather than an
+-- oversight: `src/longterm/orders/inbox.js` (the only writer of
+-- `lt_condition_files` — moving it IS the upload door, which is its own
+-- shipment) and `src/longterm/orders/desk.js`'s condition stamp. Until they
+-- move, an order return files against `lt_condition_files` and an order-placed
+-- stamp updates `lt_file_conditions` — where, after this commit, the engine no
+-- longer writes. So on a Long-Term loan worked across the two commits an order's
+-- returned document will not appear on the condition until the orders seam
+-- lands. Stated here because a reader deserves to find it by reading rather than
+-- by wondering where a document went.
+--
+-- IDEMPOTENT. ensureSchema replays every db/*.sql on every boot, and the suite
+-- runs the whole replay twice: every statement below is ADD COLUMN IF NOT EXISTS
+-- or a DROP-then-CREATE of an index this file owns by name.
+-- ============================================================================
+
+-- ── checklist_templates.config — the Long-Term condition's own settings ─────
+-- The library's per-condition settings blob: which contacts a condition asks
+-- for, whether a typed address goes through the address lookup, whether the
+-- answer is saved back to the shared borrower profile, whether the mortgage
+-- classification is proposed or decided, and whether the condition is SHIPPED
+-- SWITCHED OFF (built, shown greyed, WITH ITS REASON — so nobody thinks a
+-- feature vanished). There is no column in this table that holds any of that,
+-- and dropping it would drop behaviour the owner dictated. It is read from the
+-- TEMPLATE, never copied onto the instance: one config, edited once, so a
+-- settings change reaches every file instead of only the next one.
+ALTER TABLE checklist_templates ADD COLUMN IF NOT EXISTS config jsonb;
+
+-- ── checklist_items.slots — the per-instance required-document slots ────────
+-- `checklist_templates.slots` already exists and already carries a slot list
+-- (rtl_cond_insurance binder+invoice, rtl_cond_appraisaldocs xml+pdf,
+-- rtl_cond_fraud background+criminal). This is its per-ITEM counterpart, and the
+-- distinction is load-bearing rather than cosmetic:
+--
+--   THE GENERIC REQUIRED-SLOTS ARM OF THE SIGN-OFF GATE READS THIS COLUMN AND
+--   ONLY THIS COLUMN. RTL never writes it, so the new arm is a NO-OP for every
+--   RTL condition BY CONSTRUCTION — not by a code path that could be edited into
+--   biting. That is what makes a generic gate safe to add to a gate that already
+--   hard-codes binder+invoice and xml+pdf: had the arm read the TEMPLATE's slots
+--   instead, it would have started demanding the CRIMINAL report on every file
+--   (today it is required only on Gold) and the appraisal XML on a file whose XML
+--   is waived — two live behaviour changes, invisible until somebody could not
+--   sign off.
+--
+-- Shape: [{key, label, required}] — the same shape checklist_templates.slots
+-- already uses, so one renderer serves both.
+ALTER TABLE checklist_items ADD COLUMN IF NOT EXISTS slots jsonb;
+
+-- ── checklist_items.waived_reason — WHY, not just WHO and WHEN ──────────────
+-- `waived_by` and `waived_at` have been here for a long time; the REASON has
+-- not, so on the RTL side it lands in free-text notes when it lands anywhere.
+-- The Long-Term rule is the owner's: a waiver without a reason is an
+-- unanswerable question a year later, and this is the one place it can be asked.
+-- Nullable, so every existing waive is unchanged and the RTL door is free to
+-- start filling it whenever somebody wants it — the shared table gaining a field
+-- the shared Condition Center should always have had.
+ALTER TABLE checklist_items ADD COLUMN IF NOT EXISTS waived_reason text;
+
+-- ── ONE CONDITION PER TEMPLATE PER LONG-TERM LOAN ───────────────────────────
+--
+-- The Long-Term side has REAL duplicate suppression today
+-- (db/643 `lt_file_conditions_one_per_template_uk`) and it must not lose it by
+-- moving house. Same three terms as db/643, for the same reasons:
+--
+--   · COALESCE(field_key,'') is load-bearing: two NULLs are DISTINCT in a unique
+--     index, so without it every no-key duplicate would sail straight through —
+--     and WITH it, a per-line condition (one instance per liability, keyed by
+--     field_key) is still allowed its several rows.
+--   · WHERE template_id IS NOT NULL, because a hand-written condition with no
+--     template is not a duplicate of anything.
+--   · WHERE lt_loan_id IS NOT NULL, which is what makes it PARTIAL — and the
+--     partiality is the point.
+--
+-- THE APPLICATION-SCOPED EQUIVALENT IS DELIBERATELY NOT ADDED. RTL's engine
+-- suppresses duplicates by reading, deciding, then inserting, with nothing in
+-- between (db/401 is the incident), so live RTL files carry duplicate rows this
+-- index would refuse — CREATE UNIQUE INDEX would fail outright on the real
+-- database and take the boot's whole migration replay with it. The Long-Term
+-- side gets the guarantee because it has never been allowed to accumulate them.
+--
+-- IF NOT EXISTS, AND DELIBERATELY NOT A DROP-THEN-CREATE. Every file here
+-- replays on EVERY boot, so an unconditional DROP + CREATE would rebuild a
+-- unique index over the whole of `checklist_items` — and take its lock — on
+-- every deploy forever. IF NOT EXISTS tests the NAME rather than the shape
+-- (db/617 is the incident that taught this repo the difference), so if this
+-- definition ever has to change, the correction belongs in a LATER file that
+-- KEEPS THIS NAME and drops only on a proven definition mismatch — never a
+-- rename, which would leave this statement free to rebuild the old shape.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_checklist_items_lt_one_per_template
+  ON checklist_items (lt_loan_id, template_id, COALESCE(field_key, ''))
+  WHERE lt_loan_id IS NOT NULL AND template_id IS NOT NULL;
+
+-- The library is read by scope on every engine pass; the templates table is
+-- small but the read is hot enough to deserve its own index, and a partial one
+-- costs nothing on the RTL rows.
+CREATE INDEX IF NOT EXISTS idx_templates_lt_loan_scope
+  ON checklist_templates (scope, sort_order) WHERE scope = 'lt_loan';

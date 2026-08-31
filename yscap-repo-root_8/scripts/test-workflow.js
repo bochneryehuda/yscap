@@ -148,7 +148,11 @@ async function clearEngineConditions(appId) {
     assert(liveProc === 1, 're-submitting the same type supersedes the prior live hand-off (exactly one live)');
 
     // ---- Condition Clearing gate: below 80% blocked, then allowed ----
-    const tpl = (await db.query(`SELECT id FROM checklist_templates LIMIT 1`)).rows[0].id;
+    // AN APPLICATION-SCOPED TEMPLATE — an unordered LIMIT 1 returns `gov_id`,
+    // which is scoped to the PERSON, and db/655 refuses a profile condition on a
+    // loan file. The fixture was staging a shape the product cannot produce.
+    const tpl = (await db.query(
+      `SELECT id FROM checklist_templates WHERE scope='application' AND is_active ORDER BY sort_order, code LIMIT 1`)).rows[0].id;
     const mkCond = async (signed) => db.query(
       `INSERT INTO checklist_items (template_id, scope, application_id, label, status, item_kind, is_required, signed_off_at)
        VALUES ($1,'application',$2,'C','${signed ? 'satisfied' : 'outstanding'}','condition',true,${signed ? 'now()' : 'NULL'})`, [tpl, appId]);

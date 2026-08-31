@@ -188,8 +188,13 @@ console.log('\nB. the boxes, on the row');
     'B5 the boxes are filled from the board\'s OWN calculator state — one property, one set of facts');
   ok(html.includes('A term sheet states the whole loan'),
     'B6 the server\'s own sentence is printed, not a local restatement of the rule');
-  ok(!/disabled/.test(html.split('Issue the term sheet')[0].slice(-260)),
-    'B7 the issue button is NOT disabled by the gate — the server refuses and names every field at once');
+  // ⛔ THE ATTRIBUTE, NOT THE SUBSTRING. `aria-disabled="false"` contains the word "disabled", so a
+  // bare search for it reports a live button as greyed — the first cut of this assertion did
+  // exactly that and went red on a button that was working perfectly.
+  const beforeIssue = html.split('Issue the term sheet')[0].slice(-300);
+  ok(!/\sdisabled=""/.test(beforeIssue),
+    'B7 a shortfall of FIELDS does not grey the issue button — each one is a box on this panel, and '
+    + 'the server names them all at once');
 }
 
 console.log('\nC. the ratio check says only what it can prove');
@@ -199,13 +204,45 @@ console.log('\nC. the ratio check says only what it can prove');
   ok(draw(globalThis.__RatioCheck, { check: null }) === '',
     'C2 …and so does no check at all');
   const agree = draw(globalThis.__RatioCheck, { check: { state: 'agree', computed: '1.24', priced: '1.24' } });
-  ok(agree.includes('1.24') && /priced at/.test(agree),
-    'C3 an agreeing ratio is confirmed against the one this was priced at');
+  // RE-POINTED 2026-08-31, not loosened: the rule became a BAND test at the owner's direction, so
+  // an agreeing ratio is now confirmed as being in the same band rather than as the same number.
+  // The subject is unchanged — a matching ratio is stated back, never left silent.
+  ok(agree.includes('1.24') && /same band this was priced in/.test(agree),
+    'C3 an agreeing ratio is confirmed as being in the band this was priced in');
   const differs = draw(globalThis.__RatioCheck, { check: { state: 'differs', computed: '1.18', priced: '1.24' } });
   ok(differs.includes('1.18') && differs.includes('1.24'),
     'C4 a differing ratio names BOTH figures — the officer needs to see the gap, not be told there is one');
-  ok(/run the search again/i.test(differs),
-    'C5 …and says what to do about it, so the warning is not a dead end');
+  // ⛔ RE-POINTED, NOT LOOSENED (owner-directed 2026-08-30). This used to assert that the ratio
+  // mismatch merely ADVISED re-running the search; the owner found that a sheet issued at a lower
+  // ratio than it was priced at hands the borrower a rate bought in a band they do not qualify for
+  // — money out of the door on every such sheet. It is a REFUSAL now, and the remedy is a button.
+  ok(/cannot be issued/i.test(differs),
+    'C5 a ratio below the one the price was obtained at REFUSES — it is money, not a nicety');
+  ok(/re-price/i.test(differs),
+    'C5a …and names the re-price, so the refusal is never a dead end');
+  const withButton = draw(globalThis.__RatioCheck, {
+    check: { state: 'differs', computed: '1.18', priced: '1.24' }, onReprice: () => {},
+  });
+  ok(/Re-price at 1\.18/.test(withButton),
+    'C5b …and offers the button, at the ratio the figures actually produce');
+  ok(!/Re-price at/.test(draw(globalThis.__RatioCheck, { check: { state: 'agree', computed: '1.24', priced: '1.24' } })),
+    'C5c …and never offers it when the ratio agrees — there is nothing to re-price');
+}
+
+{
+  // ⛔ AND THE BUTTON IS GREYED FOR THIS ONE THING ALONE. Every other shortfall is a box on the
+  // panel, so greying would explain nothing the sentence does not; a ratio below the priced one is
+  // not a box anybody can fill, it is a re-price. The SERVER refuses it either way — this only
+  // stops an officer pressing something that cannot succeed.
+  const blocked = draw(globalThis.__IssueFields, {
+    issue: issueObj({ ratioCheck: () => ({ state: 'differs', computed: '1.18', priced: '1.24' }) }),
+    gate: { ok: true, missing: [] }, onChanged: () => {}, busy: null, onIssue: () => {}, onCancel: () => {},
+  });
+  const before = blocked.split('Issue the term sheet')[0].slice(-300);
+  ok(/\sdisabled=""/.test(before),
+    'C6 a ratio below the priced one GREYS the issue button, even with every field filled');
+  ok(/Re-price at the ratio/.test(blocked),
+    'C6a …and the line beside it says the re-price is the way through');
 }
 
 console.log('\nD. the address box');

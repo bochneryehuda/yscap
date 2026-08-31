@@ -49,6 +49,7 @@ import LtPricer from './longterm/LtPricer.jsx';
 // own header and scripts/test-lt-combined-pricer-fork.mjs.
 import LtCombinedPricer from './longterm/LtCombinedPricer.jsx';
 import LtCombinedSettings from './longterm/LtCombinedSettings.jsx';
+import LtSheetLookup from './longterm/LtSheetLookup.jsx';
 import LtReports from './longterm/LtReports.jsx';
 import LtConditionLibrary from './longterm/LtConditionLibrary.jsx';
 import LtLoan from './longterm/LtLoan.jsx';
@@ -298,6 +299,10 @@ export default function App() {
               one that drifts is never the server's. */}
           <Route path="/internal/lt/combined" element={<StaffPrivate><LtCombinedPricer /></StaffPrivate>} />
           <Route path="/internal/lt/combined-settings" element={<StaffPrivate><LtCombinedSettings /></StaffPrivate>} />
+          {/* PULL UP A TERM SHEET BY ITS ID. Staff-only for the same reason the
+              pricer is: it shows which investor was really behind each price, and
+              an investor name never reaches a borrower or a TPO. */}
+          <Route path="/internal/lt/sheets" element={<StaffPrivate><LtSheetLookup /></StaffPrivate>} />
           <Route path="/internal/lt/loan/:loanId" element={<StaffPrivate><LtLoan /></StaffPrivate>} />
           <Route path="/internal/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
           <Route path="/internal/tasks" element={<StaffPrivate><StaffTasks /></StaffPrivate>} />

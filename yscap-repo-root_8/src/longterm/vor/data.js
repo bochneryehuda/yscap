@@ -1,20 +1,31 @@
 'use strict';
 /**
- * LONG-TERM — FILLING THE VERIFICATION OF RENT IN FROM WHAT WE ALREADY KNOW.
+ * LONG-TERM — FILLING THE OWNER'S VERIFICATION OF RENT IN FROM WHAT WE ALREADY KNOW.
  *
- * Owner-directed: *"prefill part one and part two."* This builds our half of the
- * form from the loan — the lender block, the applicant, the address they rent, the
- * rent and the term as THEY stated them, and the landlord we already have on file —
- * so a processor confirms rather than retypes.
+ * Owner-directed, corrected 2026-08-30: *"the VOR needs to be on the exact blank
+ * form that I sent you"* and *"You leave empty even if it's pre-filled on the field
+ * ID call."* So this builds ITEMS 1 THROUGH 9 of the form — the landlord we are
+ * writing to, us, who is asking, the address the applicant rents and the applicants
+ * themselves — and NOTHING ELSE. Part II and Part III belong to the landlord.
  *
- * ── IT NEVER FILLS IN THE LANDLORD'S HALF ───────────────────────────────────
+ * ── WHAT CHANGED, AND WHY IT MATTERS ────────────────────────────────────────
  *
- * The whole point of a verification of rent is that an independent party answers.
- * `fields.cleanOurData` refuses a landlord key at the door and this module never
- * produces one: we know the rent the BORROWER stated, and it goes in Part II
- * labelled as exactly that, so the landlord confirms it or corrects it in Part III.
- * Printing the borrower's figure into the landlord's blank would turn the form into
- * a piece of paper that verifies nothing.
+ * An earlier reading prefilled "part two" as well — the rent and the term the
+ * BORROWER stated, printed into the landlord's own boxes. The owner reported it:
+ * *"You're pre-filling some of the information from part two."* It is not a
+ * cosmetic error. A verification of rent is worth having only because an
+ * independent party answers it; a form that arrives with the answers already typed
+ * in invites a signature on our own numbers and verifies nothing. So the rent and
+ * the duration are still READ from the file where they inform the desk, but they
+ * are no longer form data and nothing prints them.
+ *
+ * ── ITEM 7 IS THE ADDRESS THEY RENT, NOT THE SUBJECT PROPERTY ───────────────
+ *
+ * On a long-term file the subject property is usually an investment property with
+ * somebody else's tenant in it. Item 7 asks about the applicant's OWN tenancy, so it
+ * takes the current residence off `lt_residences` — the same row whose
+ * `residency_basis` is what put this form on the file at all. Sending the subject
+ * address instead asks the right landlord about the wrong house.
  *
  * ── AN UNREADABLE READ SAYS SO ──────────────────────────────────────────────
  *
@@ -29,10 +40,29 @@ const db = require('../db');
 const F = require('./fields');
 const vendorDirectory = require('../../lib/vendor-directory');   // the PURE half only — see the ledger
 
+/** Item 2, "From (Name and address of lender)" — printed as the form's own block of
+    lines rather than one run, because that is what a landlord's mailroom reads. */
 const LENDER = {
   name: 'YS Capital Group',
-  address: '5 New Montrose Avenue, Brooklyn, NY 11211',
+  address: '5 New Montrose Avenue, #Bsmt',
+  cityStateZip: 'Brooklyn, NY 11211',
   nmls: '2609746',
+};
+const LENDER_BLOCK = [LENDER.name, LENDER.address, LENDER.cityStateZip].join('\n');
+
+/** Item 9, in the owner's own words. The applicant's authorisation was given on the
+    signed application the form's "To Landlord:" paragraph cites, so item 9 says
+    where it is rather than collecting a second one. */
+const APPLICANT_SIGNATURE = 'See attached signature';
+
+/** Item 4, "Title". `staff_users.role` is the only title we hold, and a form that
+    says "Loan Officer" is a form a landlord can place. An unknown role falls back to
+    nothing rather than printing a database token at a stranger. */
+const TITLE_BY_ROLE = {
+  loan_officer: 'Loan Officer',
+  processor: 'Loan Processor',
+  underwriter: 'Underwriter',
+  admin: 'Loan Administrator',
 };
 
 function addressLine(r) {
@@ -67,17 +97,6 @@ function dayOf(v) {
   return null;
 }
 
-/** The month a tenancy began, derived from "they have been there N months" when no
-    start date was captured. Derived rather than guessed: it is labelled "as stated"
-    on the form, and the landlord corrects it. */
-function sinceFromMonths(months) {
-  const n = Number(months);
-  if (!Number.isFinite(n) || n <= 0 || n > 1200) return null;
-  const now = new Date();
-  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - Math.round(n), 1));
-  return d.toISOString().slice(0, 10);
-}
-
 /**
  * Build our half of the form for a loan.
  *
@@ -88,10 +107,9 @@ async function prefill(loanId, client = db) {
   const id = String(loanId);
   const unreadable = [];
   const data = {
-    lender_name: LENDER.name,
-    lender_address: LENDER.address,
-    lender_nmls: LENDER.nmls,
-    requested_on: new Date().toISOString().slice(0, 10),
+    lender_block: LENDER_BLOCK,
+    request_date: new Date().toISOString().slice(0, 10),
+    applicant_signature: APPLICANT_SIGNATURE,
   };
   let landlord = null;
   let borrowerRents = null;
@@ -108,10 +126,12 @@ async function prefill(loanId, client = db) {
     [id], (rows) => { loan = (rows && rows[0]) || null; });
   if (!loan && !unreadable.length) return null;
   loan = loan || {};
+  // Item 6, "Lender's No. (Optional)" — our own file number, so a landlord's reply
+  // files itself and a second request on the same loan is recognisable as one.
   if (loan.loan_number) data.loan_number = String(loan.loan_number);
-  if (loan.borrower_name) data.borrower_name = String(loan.borrower_name);
+  if (loan.borrower_name) data.account_name = String(loan.borrower_name);
 
-  // ── who is applying ───────────────────────────────────────────────────────
+  // ── who is applying: items 7 (account name) and 8 (name and address) ──────
   let parties = [];
   await one('parties',
     `SELECT pa.id, pa.role, pa.party_type, pa.first_name, pa.middle_name, pa.last_name,
@@ -121,17 +141,28 @@ async function prefill(loanId, client = db) {
       WHERE bp.loan_id = $1::uuid
       ORDER BY bp.pair_number, pa.role`,
     [id], (rows) => { parties = rows || []; });
+  /* An ENTITY does not rent an apartment — a person does, and it is that person's
+     tenancy the form asks about. So the borrowing LLC is dropped here even though it
+     is the borrower on the note. */
   const people = parties.filter((p) => String(p.party_type || '').toLowerCase() !== 'entity');
   const primary = people.find((p) => String(p.role || '').toLowerCase() === 'borrower') || people[0] || null;
   const co = people.find((p) => p !== primary) || null;
-  if (!data.borrower_name && primary) data.borrower_name = partyName(primary);
-  if (co) data.coborrower_name = partyName(co);
+  const names = [partyName(primary), partyName(co)].filter(Boolean);
+  if (names.length) data.account_name = names.join(' and ');
+  /* Item 9's second X-line only exists when there IS a co-applicant. Leaving it
+     empty otherwise is the form's own way of saying "one applicant". */
+  if (co) data.coapplicant_signature = APPLICANT_SIGNATURE;
 
   /* ── where they live, and whether they RENT it ──────────────────────────────
      The condition this form answers only exists on a file where the borrower rents
      (Encompass FR0115, mirrored here as `residency_basis`). The CURRENT residence
      is the one being verified; a previous one is somebody else's landlord and a
-     different form. */
+     different form.
+
+     `monthly_rent` and `duration_months` are read but NEVER put on the form: they
+     are the BORROWER's account of Part II, and Part II is the landlord's to answer.
+     They ride back on the result so the desk can show a processor what the file
+     says, beside — never inside — the form. */
   await one('residence',
     `SELECT r.street, r.city, r.state, r.zip, r.residency_basis, r.residency_type,
             r.duration_months, r.monthly_rent
@@ -148,20 +179,21 @@ async function prefill(loanId, client = db) {
       const basis = String(current.residency_basis || '').toLowerCase();
       borrowerRents = basis ? /rent/.test(basis) : null;
       const line = addressLine(current);
-      if (line) data.rental_address = line;
-      if (current.monthly_rent != null) data.stated_rent = String(current.monthly_rent);
-      if (current.duration_months != null) {
-        data.stated_months = String(current.duration_months);
-        const since = sinceFromMonths(current.duration_months);
-        if (since) data.stated_since = since;
+      if (line) {
+        data.property_address = line;
+        // Item 8 is "Name AND Address of Applicant(s)" — one block, the way the
+        // form's own box is ruled.
+        data.applicant_block = [names.join(' and '), line].filter(Boolean).join('\n');
       }
     });
+  if (!data.applicant_block && names.length) data.applicant_block = names.join(' and ');
 
-  // ── the landlord we already hold ──────────────────────────────────────────
+  // ── item 1: the landlord we already hold ─────────────────────────────────
   // The same vendor card the orders desk would send to, so the form and the order
-  // can never name two different landlords.
+  // can never name two different landlords. `address` is read here because item 1 is
+  // "Name AND address of landlord" — a name alone is a form nobody can post.
   await one('landlord',
-    `SELECT sc.company_name, sc.contact_name, sc.email, sc.emails, sc.phone, sc.phones
+    `SELECT sc.company_name, sc.contact_name, sc.address, sc.email, sc.emails, sc.phone, sc.phones
        FROM lt_loan_vendors v
        JOIN service_contacts sc ON sc.id = v.service_contact_id
       WHERE v.loan_id = $1::uuid AND v.kind = 'landlord'
@@ -176,22 +208,29 @@ async function prefill(loanId, client = db) {
          crossing was authorized in the first place. Same for the phones. */
       const emails = vendorDirectory.allEmails(r);
       const phones = vendorDirectory.allPhones(r);
-      const name = String(r.contact_name || '').trim() || String(r.company_name || '').trim() || null;
+      const company = String(r.company_name || '').trim();
+      const person = String(r.contact_name || '').trim();
+      const name = person || company || null;
       landlord = { name, email: emails[0] || null, emails, phone: phones[0] || null };
-      if (name) data.landlord_name = name;
+      /* Both names print when we hold both — "Rivka Stein" alone at a management
+         company is a letter that reaches nobody, and the company alone loses the
+         person who actually answers. */
+      const block = [person, company !== person ? company : null, String(r.address || '').trim()]
+        .filter(Boolean).join('\n');
+      if (block) data.landlord_block = block;
     });
 
-  // ── who at YS Capital is asking ───────────────────────────────────────────
+  // ── items 3 and 4: who at YS Capital is asking, and what they are ────────
   await one('officer',
-    `SELECT NULLIF(btrim(su.full_name), '') AS name, su.email, su.phone
+    `SELECT NULLIF(btrim(su.full_name), '') AS name, su.role, su.email, su.phone
        FROM staff_users su
       WHERE su.id = $1::uuid AND su.is_active = true`,
     [loan.loan_officer_id || null], (rows) => {
       const r = rows && rows[0];
       if (!r) return;
-      if (r.name) data.officer_name = String(r.name);
-      if (r.email) data.officer_email = String(r.email);
-      if (r.phone) data.officer_phone = String(r.phone);
+      if (r.name) data.lender_signature = String(r.name);
+      const title = TITLE_BY_ROLE[String(r.role || '').toLowerCase()];
+      if (title) data.lender_title = title;
     });
 
   return { data: F.cleanOurData(data), unreadable, landlord, borrowerRents };
@@ -214,4 +253,7 @@ function mergeSaved(prefilled, saved) {
   return F.cleanOurData(out);
 }
 
-module.exports = { prefill, mergeSaved, LENDER, _internals: { addressLine, partyName, dayOf, sinceFromMonths } };
+module.exports = {
+  prefill, mergeSaved, LENDER, LENDER_BLOCK, APPLICANT_SIGNATURE, TITLE_BY_ROLE,
+  _internals: { addressLine, partyName, dayOf },
+};

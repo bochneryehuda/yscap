@@ -222,6 +222,41 @@ console.log('\nF. a general-engine change that WAS ported stays ported');
   // from the same value or they could disagree about which position is on screen.
   ok(/const priceKey = comp/.test(fb),
     'F3 …and the copy names the price lens once, so its heading and its phone cells cannot disagree');
+
+  /* F4 — THE ACTION COLUMN THE HEADING RESERVES IS THE ONE THE ROWS USE.
+
+     Owner-reported 2026-08-30 on the general engine: *"the column that we added for PITI
+     is off, and it's not aligned with the dollar amounts."* The cause was not the PITI
+     column at all — the rows' action cell had been widened to fit a new tick-box and the
+     heading's trailing spacer had not, and because the name column is `flex: 2 1 200px`
+     it simply GAVE UP the difference. Nothing overflows and nothing wraps, so every figure
+     sits left of the heading that names it and it reads as one column being subtly wrong.
+
+     ⛔ THIS HOLDS THE INVARIANT, NEVER THE NUMBER, and that is what lets it guard BOTH
+     screens with one rule: the two boards legitimately differ (the general engine's cell
+     carries the tick-box, the copy's deliberately does not — FORK 7), so a pinned width
+     would be a third place the answer lives and would fail on the copy for being correct.
+     What must be true on each screen SEPARATELY is that the set of widths its heading
+     reserves is the set its rows use.
+
+     ⛔ AND IT IS WHY MAIN'S 2026-08-30 WIDTH FIX IS *NOT* PORTED. It was not a defect in
+     the copy: with no tick-box the copy's rows never widened, so its heading and its rows
+     have always agreed. Porting the constant would put the same NAME on two different
+     values in two files a person reads side by side — the drift hazard the fork exists to
+     avoid. Recorded here rather than left silent, because re-stamping the fingerprint is a
+     deliberate act and nothing afterwards re-checks the copy. If the cart is ever ported,
+     the tick-box widens the rows and THIS assertion is what fails until the heading moves
+     with it. */
+  const actWidths = (src) => new Set((src.match(/className="ltq-act"\s+style=\{\{\s*flex:\s*(?:[A-Za-z_$][\w$]*|'[^']*')/g) || [])
+    .map((m) => m.replace(/^[\s\S]*flex:\s*/, '')));
+  const headWidths = (src) => new Set((src.match(/<span style=\{\{\s*flex:\s*(?:[A-Za-z_$][\w$]*|'[^']*')\s*\}\}\s*\/>/g) || [])
+    .map((m) => m.replace(/^[\s\S]*flex:\s*/, '').replace(/\s*\}\}\s*\/>$/, '')));
+  for (const [label, src] of [['the general engine', gb], ['the copy', fb]]) {
+    const a = [...actWidths(src)].sort();
+    const h = [...headWidths(src)].sort();
+    ok(a.length > 0 && h.length > 0 && a.join('|') === h.join('|'),
+      `F4 ${label}: every action-column width its heading reserves is one its rows use (heading ${h.join(', ') || 'none'} / rows ${a.join(', ') || 'none'})`);
+  }
 }
 
 console.log(bad ? `\nFAILURES: ${bad}` : '\nOFFLINE: all passed');

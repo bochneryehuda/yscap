@@ -34,10 +34,15 @@
  *
  * It never CREATES an entity and never marks one verified. Reading the profile
  * to show what is already there is a different act from putting a new company on
- * a person's permanent record, so creating goes through the entity screen a
- * person is looking at. This module answers one question: what does this
+ * a person's permanent record. This module answers one question: what does this
  * borrower already have for this company, and how much of the condition is
  * therefore already done?
+ *
+ * ITS WRITE HALF IS `entity-profile.js`, the sibling — put the company on the
+ * profile (a button, never automatic) and file its documents onto the company's
+ * OWN slots. Read them as a pair: the `itemId` this module now returns per slot
+ * is what the write half's upload door targets, so a document lands ON the
+ * profile the first time rather than being copied there afterwards.
  *
  * NEVER THROWS. An unreadable profile answers "nothing on file", which shows the
  * condition as it would have been shown anyway — never an error on a loan screen,
@@ -74,7 +79,7 @@ function slotFilled(row) {
  *
  * @returns {Promise<{
  *   found: boolean, llcId: string|null, verified: boolean,
- *   slots: Array<{key,label,filled,documentId,filename,status,note}>,
+ *   slots: Array<{key,itemId,label,filled,documentId,filename,status,note}>,
  *   filled: string[], missing: string[], stillNeeded: string[],
  *   unreadable: boolean, why: string|null
  * }>}
@@ -104,7 +109,16 @@ async function forEntity(borrowerId, entityName, client) {
   } catch (e) {
     return { ...empty, llcId, unreadable: true, why: 'PILOT found the company on the profile but could not read its documents.' };
   }
-  if (!bundle || !bundle.llc) return { ...empty, llcId };
+  /* THE BUNDLE **IS** THE COMPANY ROW, SPREAD — `getLlcBundle` returns
+     `{ ...llc, entity, members, slots, completeness }`, so there is no
+     `bundle.llc` key and never was. Reading one made this whole module answer
+     "not on the profile" for EVERY company on EVERY long-term file, silently,
+     since the day it shipped: `findLlcByName` found the company and the very
+     next line threw the answer away. Every RTL caller of `getLlcBundle` treats
+     it as the row; this was the one that did not. `id` is the presence test
+     because `getLlcBundle` returns null — not a row without an id — when there
+     is no such company. */
+  if (!bundle || !bundle.id) return { ...empty, llcId };
 
   const rows = Array.isArray(bundle.slots) ? bundle.slots : [];
   const slots = [];
@@ -116,6 +130,12 @@ async function forEntity(borrowerId, entityName, client) {
     const isFilled = slotFilled(r);
     slots.push({
       key,
+      /* THE SLOT'S OWN CHECKLIST ITEM. This is what lets the long-term screen
+         file a document ONTO the company rather than onto the loan: the upload
+         door takes this id with the company's, and the shared module scopes the
+         one to the other. Without it the screen could only ever say what is
+         missing, which is the read-only half this module started as. */
+      itemId: r.item_id ? String(r.item_id) : null,
       label: r.label || key,
       filled: isFilled,
       documentId: r.document_id || null,
@@ -133,7 +153,7 @@ async function forEntity(borrowerId, entityName, client) {
   // of formation it will never have.
   let stillNeeded = [];
   try {
-    stillNeeded = llc.missingForVerification(bundle.llc, bundle.members || [], rows) || [];
+    stillNeeded = llc.missingForVerification(bundle, bundle.members || [], rows) || [];
   } catch (_) {
     stillNeeded = [];
   }
@@ -141,7 +161,7 @@ async function forEntity(borrowerId, entityName, client) {
   return {
     found: true,
     llcId,
-    verified: !!bundle.llc.is_verified,
+    verified: !!bundle.is_verified,
     slots,
     filled,
     missing,

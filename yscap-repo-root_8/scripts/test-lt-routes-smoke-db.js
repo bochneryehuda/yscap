@@ -214,6 +214,24 @@ async function main() {
       // rather than trusted: a wrong column name in any of them answers a
       // confident empty forever and nothing anywhere says so.
       `/api/lt/condition-center/loans/${NO_LOAN}/conditions/${NO_LOAN}/workspace`,
+      // THE EMAILED CONDITION LINK's own read — what the desk sees before it
+      // sends: the borrower it would reach, the property line, the outstanding
+      // list and every reason it is refusing. It joins lt_properties, borrowers
+      // and staff_users and then reads the whole condition view, so it is
+      // exactly the shape this suite exists for: several queries whose failures
+      // are each reported rather than thrown, any one of which could answer a
+      // confident "no blockers" forever on a wrong column name.
+      `/api/lt/condition-center/loans/${NO_LOAN}/outreach`,
+      // The conditions answered from the borrower's PROFILE rather than this
+      // loan (photo ID, credit card) — it reaches across to the shared identity
+      // zone, which is the read most likely to break when a shared table moves.
+      `/api/lt/condition-center/loans/${NO_LOAN}/profile-links`,
+      // The document BYTES door. Opened with an id that cannot exist, so it runs
+      // its authorization join and answers its own 404 without ever reaching
+      // storage — which is the half that can carry a phantom column. A door that
+      // serves bytes is no less able to 500 than one that serves JSON, and this
+      // one decides who may read a borrower's document.
+      `/api/lt/condition-center/documents/${NO_LOAN}/file`,
       // ── The ORDERS desk (#8) ─────────────────────────────────────────────
       // `letters` is the shipped drafts, pure. The rest are per-loan and answer
       // their own 404 on the no-such-loan id, having run their real statements.
