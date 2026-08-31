@@ -80,6 +80,57 @@ export async function ltFetch(method, path, body) {
  * A FAILURE IS THROWN, never saved. Without the `res.ok` check the caller would
  * "download" the error JSON as a .csv — a file that opens to a shrug.
  */
+/**
+ * WHAT THE SERVER CALLED THE FILE — its `Content-Disposition`, or null.
+ *
+ * ⛔ THE SERVER IS THE AUTHORITY ON A DOCUMENT'S NAME, AND THE CALLER'S IS ONLY A
+ * FALLBACK (owner-reported 2026-08-31: *"the comparison, when you want to export
+ * it, is basically issued and downloaded as the term sheet. It needs to be called
+ * the comparison sheet."*).
+ *
+ * That was fixed on the SERVER — the term-sheet PDF route names the file from
+ * `snapshot.KIND_WORDS`, so a comparison leaves as `comparison-sheet-TS-XXXXXX.pdf`
+ * — and the fix could not be seen, because `a.download` OVERRIDES the header and
+ * the one caller passed a hard-coded `term-sheet-${code}.pdf`. So a comparison
+ * still landed in the officer's downloads named as a term sheet, which is the one
+ * thing it must not be mistaken for: a comparison offers several options and
+ * commits to none. Reading the header here fixes it for every download through
+ * this function, present and future, and keeps the naming rule in the ONE place
+ * that knows what kind of document it just drew.
+ *
+ * ⛔ IT IS SANITISED EVEN THOUGH WE SEND IT. A filename reaches the file system:
+ * path separators and control characters are stripped and a leading dot is
+ * refused, so a header that is ever wrong cannot become a path.
+ */
+export function filenameFromDisposition(header) {
+  const h = typeof header === 'string' ? header : '';
+  if (!h) return null;
+  // RFC 5987 first — `filename*=UTF-8''name.pdf` wins over the plain form when
+  // both are present, because it is the one that can carry a non-ASCII name.
+  let raw = null;
+  const ext = /filename\*\s*=\s*([^;]+)/i.exec(h);
+  if (ext) {
+    const v = ext[1].trim();
+    const parts = v.split("'");
+    const tail = parts.length >= 3 ? parts.slice(2).join("'") : v;
+    try { raw = decodeURIComponent(tail); } catch { raw = tail; }
+  }
+  if (!raw) {
+    // NOT named `plain`: `format.js` exports a formatter by that name and every
+    // long-term module is swept for a local that shadows one.
+    const quoted = /filename\s*=\s*("([^"]*)"|[^;]+)/i.exec(h);
+    if (quoted) raw = (quoted[2] !== undefined ? quoted[2] : quoted[1]).trim();
+  }
+  if (!raw) return null;
+  const clean = String(raw)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001F\u007F]/g, '')
+    .replace(/[\\/]/g, '')
+    .trim();
+  if (!clean || clean === '.' || clean === '..' || clean.startsWith('.')) return null;
+  return clean.slice(0, 200);
+}
+
 export async function ltDownload(path, filename) {
   const headers = {};
   const t = token();
@@ -99,7 +150,9 @@ export async function ltDownload(path, filename) {
   try {
     const a = document.createElement('a');
     a.href = url;
-    a.download = filename;
+    // The server's own name wins; the caller's is what to fall back to when
+    // there is no header (or it cannot be read).
+    a.download = filenameFromDisposition(res.headers.get('Content-Disposition')) || filename;
     document.body.appendChild(a);
     a.click();
     a.remove();

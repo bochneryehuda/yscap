@@ -2891,6 +2891,14 @@ model LtTermSheetScenario {
   charges  Json @default("{}") @db.JsonB
   closing  Json @default("{}") @db.JsonB
 
+  /// db/651 — STAFF-ONLY provenance: the investor, the lender, their own
+  /// programme name, the rate sheet and the raw price behind this option. It is
+  /// a SIBLING of `program` rather than a key on it, and it is deliberately NOT
+  /// on the snapshot: the snapshot is the client's document, and an investor's
+  /// name never reaches a client (CLAUDE.md rule 10). Empty on every sheet
+  /// issued before db/651 — no backfill was possible.
+  internal Json @default("{}") @db.JsonB
+
   pricedAt  DateTime @default(now()) @map("priced_at") @db.Timestamptz(6)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 

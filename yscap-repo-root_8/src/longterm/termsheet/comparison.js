@@ -116,22 +116,47 @@ function breakEvenMonths(m, anchor) {
 /**
  * The incremental cost of the EXTRA borrowing, as an annual rate — workflow B's
  * headline, and the number that turns "which LTV" into a question a borrower can
- * answer against their own opportunity cost:
+ * answer against their own opportunity cost.
  *
- *     Δmonthly × 12 ÷ Δloan
+ * ⛔ IT IS BUILT ON INTEREST, NOT ON THE PAYMENT (owner-corrected 2026-08-31).
+ * It used to be `Δmonthly × 12 ÷ Δloan`, and the owner took it apart precisely:
+ * *"the $162.15 payment includes both interest and principal repayment. The
+ * actual contractual interest rate on that extra $25,000 is still 6.75%."* Quite
+ * right — a P&I payment is part repayment of capital, so annualising it prices
+ * the borrower's own money back to them as if it were a cost. On their example
+ * it read 7.78% for borrowing at 6.75%.
  *
- * Null unless this member genuinely borrows MORE than the anchor and pays MORE
- * every month for it; the reverse direction is the anchor's own comparison, and
- * a negative "cost of borrowing" is a number nobody can act on.
+ * ⛔ AND IT COUNTS THE RE-PRICING OF THE WHOLE LOAN, which is the real answer to
+ * the question being asked. The owner: *"if you borrow at 6%, and then you have
+ * an option of 500,000 at 7%, technically you're also paying for the original
+ * 400,000 plus one extra point … effectively, on the extra 100,000, you're
+ * paying about 12%."* Taking the bigger loan does not only cost the rate on the
+ * extra slice — it usually re-prices every dollar already being borrowed. So:
+ *
+ *     (bigger × its rate − smaller × its rate) ÷ (bigger − smaller)
+ *
+ * VERIFIED AGAINST BOTH OF THE OWNER'S OWN WORKED EXAMPLES, which is why this
+ * shape rather than another: 375,000 and 400,000 both at 6.75% answers exactly
+ * 6.75% (their "the actual contractual interest rate … is still 6.75%"), and
+ * 400,000 at 6% against 500,000 at 7% answers 11.00% (their "about 12%", and
+ * their own hand-working — 1 point on 400,000 is 4 points of the extra 100,000,
+ * plus 7 on the slice itself — comes to the same 11).
+ *
+ * Null — never a number — unless this member genuinely borrows MORE than the
+ * anchor: the reverse direction is the anchor's own comparison. A borrower who
+ * takes more money at a LOWER blended cost is possible (a better rate on the
+ * whole balance), so a negative result is returned rather than suppressed; it is
+ * a real and useful answer, and the wording layer decides how to say it.
  */
 function incrementalCostPct(m, anchor) {
   if (!m || !anchor) return null;
   if (!nn(m.loanAmount) || !nn(anchor.loanAmount)) return null;
-  if (!nn(m.monthlyPI) || !nn(anchor.monthlyPI)) return null;
+  if (!nn(m.ratePct) || !nn(anchor.ratePct)) return null;
   const dLoan = r2(m.loanAmount - anchor.loanAmount);
-  const dMonthly = r2(m.monthlyPI - anchor.monthlyPI);
-  if (dLoan <= 0 || dMonthly <= 0) return null;
-  return Math.round(((dMonthly * 12) / dLoan) * 10000) / 100;
+  if (dLoan <= 0) return null;
+  const annualHere = m.loanAmount * (m.ratePct / 100);
+  const annualThere = anchor.loanAmount * (anchor.ratePct / 100);
+  return Math.round(((annualHere - annualThere) / dLoan) * 10000) / 100;
 }
 
 /** Cash the borrower keeps by taking the SMALLER loan's alternative — Δ cash to close. */
