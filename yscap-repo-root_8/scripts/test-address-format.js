@@ -98,6 +98,60 @@ eq(ADDR.normalizeCityName('Township'), 'Township', 'a city we would blank is kep
 eq(ADDR.preferBorough('New York', 'Brooklyn'), 'Brooklyn', 'a borough beats the "New York" municipality');
 eq(ADDR.preferBorough('New York', 'Manhattan'), 'New York', 'Manhattan really does mail as New York');
 eq(ADDR.preferBorough('Lakewood', 'South Lakewood'), 'Lakewood', 'no ordinary city is affected');
+
+/* ⛔ ONLY A REAL BOROUGH REPLACES THE CITY — the Manhattan "New York County"
+   quirk, reproduced from the LIVE geocoder rather than imagined. Nominatim
+   answers a Manhattan address with city "New York", suburb "Manhattan" AND
+   city_district "New York COUNTY"; the county was consulted first and won, so
+   every Manhattan address printed as "New York County". The other three
+   boroughs escaped only because OSM leaves their city_district empty. */
+const MANHATTAN_OSM = {
+  house_number: '350', road: '5th Avenue', neighbourhood: 'Koreatown',
+  suburb: 'Manhattan', city_district: 'New York County', city: 'New York',
+  state: 'New York', postcode: '10118', country_code: 'us',
+};
+eq(ADDR.osmComponentsToAddress(MANHATTAN_OSM).city, 'New York',
+  'a Manhattan address mails as New York, never as "New York County"');
+eq(ADDR.canonicalOneLine(ADDR.osmComponentsToAddress(MANHATTAN_OSM)),
+  '350 5th Ave, New York, NY 10118', '…and the whole one-line is right');
+// The control: the OLD rule, written out here, really did produce the county —
+// so the assertion above is not passing for some other reason.
+eq((function old(locality, borough) {
+  const city = String(locality || '').trim();
+  const b = String(borough || '').replace(/^the\s+/i, '').trim();
+  if (!city) return b;
+  if (/^(city of )?new york$/i.test(city) && b && !/^manhattan$/i.test(b)) return b;
+  return city;
+}('New York', MANHATTAN_OSM.city_district)), 'New York County',
+  '…and the rule it replaced really did answer "New York County" — the control');
+eq(ADDR.preferBorough('New York', 'New York County', 'Manhattan'), 'New York',
+  'a COUNTY in the borough slot never becomes the city');
+eq(ADDR.preferBorough('New York', 'Koreatown'), 'New York',
+  '…and neither does a neighbourhood — the wider class the county was one of');
+eq(ADDR.preferBorough('New York', 'The Bronx'), 'Bronx', '"The Bronx" is the Bronx');
+eq(ADDR.preferBorough('New York', 'Staten Island'), 'Staten Island', 'Staten Island is a borough');
+eq(ADDR.preferBorough('', 'Brooklyn'), 'Brooklyn', 'with no city at all the borough still stands');
+eq(ADDR.preferBorough('', 'New York County'), '',
+  '…but a county is never a mailing city, even when there is nothing else');
+eq(ADDR.preferBorough('', 'Manhattan'), 'New York',
+  '…and Manhattan alone still mails as New York');
+
+/* ⛔ AND THE PERMANENT CACHE IS REPAIRED ON READ. `address_canon_cache` stores
+   the formatted STRING and never expires a resolved row, so every Manhattan
+   address geocoded before the fix would answer "New York County" forever with
+   no components left to re-derive from. Both halves of the guard — the state
+   AND the exact county segment — are proven, because Richmond County is a real
+   county in Virginia and "Kings County Road" a real street in California. */
+[
+  ['350 5th Ave, New York County, NY 10118', '350 5th Ave, New York, NY 10118', 'a cached Manhattan address is repaired on the way out'],
+  ['26 S 10th St, Kings County, NY 11249', '26 S 10th St, Brooklyn, NY 11249', 'Kings County reads as Brooklyn'],
+  ['2400 Grand Concourse, Bronx County, NY 10458', '2400 Grand Concourse, Bronx, NY 10458', 'Bronx County reads as the Bronx'],
+  ['90-10 Sutphin Blvd, Queens County, NY 11435', '90-10 Sutphin Blvd, Queens, NY 11435', 'Queens County reads as Queens'],
+  ['1150 Clove Rd, Richmond County, NY 10301', '1150 Clove Rd, Staten Island, NY 10301', 'Richmond County reads as Staten Island'],
+  ['12 Main St, Richmond County, VA 22572', '12 Main St, Richmond County, VA 22572', '…and a Virginia Richmond County is left exactly alone'],
+  ['400 Kings County Road, Hanford, CA 93230', '400 Kings County Road, Hanford, CA 93230', '…and a street named for a county is never touched'],
+  ['14 Oak St, Lakewood, NJ 08701', '14 Oak St, Lakewood, NJ 08701', '…and an ordinary address is byte-identical'],
+].forEach(([inp, want, why]) => eq(ADDR.compactFormattedAddress(inp), want, why));
 // the OSM component mapping the geocoder + autocomplete share
 const comp = ADDR.osmComponentsToAddress({
   house_number: '26', road: 'South 10th Street', suburb: 'Williamsburg', borough: 'Brooklyn',
