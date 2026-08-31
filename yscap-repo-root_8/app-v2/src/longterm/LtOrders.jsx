@@ -141,7 +141,13 @@ function Message({ ev }) {
   );
 }
 
-function OrderCard({ loanId, order, onChanged }) {
+/* EXPORTED so the ORDER CONDITION mounts this exact card rather than drawing a
+   second one. Owner-directed 2026-08-31: an order condition "should be directly
+   linked to the order button, where you can click Order, and it follows the
+   exact thing that happens in the order section: it actually pops up the draft
+   and stuff like that." Two cards would be two previews of one letter, and the
+   one that drifts is the one somebody sends. */
+export function OrderCard({ loanId, order, onChanged }) {
   const [open, setOpen] = useState(false);
   const [preview, setPreview] = useState(null);
   const [thread, setThread] = useState(null);

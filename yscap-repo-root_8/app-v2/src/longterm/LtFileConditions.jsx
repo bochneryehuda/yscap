@@ -28,6 +28,8 @@ import LtConditionAnswer from './LtConditionAnswer.jsx';
  * Long-Term needs differently is normalized HERE, on the way in and out. */
 import ConditionLine, { ConditionCollapse, ConditionNote } from '../components/ConditionLine.jsx';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
+import LtConditionContacts from './LtConditionContacts.jsx';
+import LtConditionOrder from './LtConditionOrder.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import DropZone from '../components/DropZone.jsx';
 import UploadRows from '../components/UploadRows.jsx';
@@ -561,6 +563,11 @@ function ConditionRow({
   const it = asSharedCondition(c);
   const docs = (c.documents && c.documents.list) || [];
   const done = DONE_STATUSES.has(c.status);
+  /* WHAT KIND OF CONDITION THIS IS decides whether it takes an upload at all.
+     Read off the server's own vocabulary, so the screen and the library can
+     never disagree about what a condition is. */
+  const isForm = c.kind === 'form';
+  const isOrder = c.kind === 'order';
   const [reason, setReason] = useState('');
   const [askText, setAskText] = useState('');
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -607,6 +614,20 @@ function ConditionRow({
               door answers `null`), so nothing is added to an ordinary row. */}
           <LtConditionAnswer loanId={loanId} conditionId={c.id} onSaved={onChanged} />
 
+          {/* ── WHAT KIND OF CONDITION THIS ACTUALLY IS ─────────────────────
+              The library has carried `kind` on every condition since it was
+              written — `form` on the contacts, `order` on the six orders — and
+              this renderer READ NONE OF IT, so a contacts form and a title
+              order both drew a file-upload box. Owner-reported 2026-08-31:
+              "The file contacts condition has an upload slot. This is not the
+              intent" and "Title ordered and insurance ordered now have a file
+              upload. This is a different kind of condition."
+
+              Both components SELF-HIDE on the wrong kind, so an ordinary
+              document condition renders exactly as it did. */}
+          <LtConditionContacts loanId={loanId} condition={c} onChanged={onChanged} />
+          <LtConditionOrder loanId={loanId} condition={c} onChanged={onChanged} />
+
           {c.slots && c.slots.length > 0 && (
             <div style={{ marginTop: 10 }}>
               <div style={{ fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase',
@@ -621,7 +642,16 @@ function ConditionRow({
             </div>
           )}
 
-          {/* ── THE DOCUMENTS ──────────────────────────────────────────────── */}
+          {/* ── THE DOCUMENTS ────────────────────────────────────────────────
+              A CONTACTS FORM AND AN ORDER TAKE NO UPLOAD. The contacts answer
+              is a contact record; the order's answer arrives on the matching
+              documents condition, which is where its slots live. An upload box
+              on either is what the owner reported.
+
+              But a document that somehow IS on one is still SHOWN — never
+              hidden. Evidence that exists and is invisible is worse than a box
+              that should not be there. */}
+          {(!isForm && !isOrder) || docs.length > 0 ? (
           <div style={{ marginTop: 12 }}>
             <div style={{ fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase',
               color: MUTED, fontWeight: 700 }}>Documents</div>
@@ -632,7 +662,7 @@ function ConditionRow({
                 percentage from the moment the file is chosen. */}
             <UploadRows target={`condition:${c.id}`} />
 
-            {docs.length === 0 && (
+            {docs.length === 0 && !isForm && !isOrder && (
               <div style={{ fontSize: 13, color: MUTED, marginTop: 4 }}>
                 Nothing uploaded against this condition yet.
               </div>
@@ -661,15 +691,18 @@ function ConditionRow({
             {/* DRAG AND DROP, the owner's own words — the same zone the
                 short-term side uses, so a drag out of the Outlook desktop app
                 works here for the same reason it works there. */}
-            <DropZone className="cond-drop" enabled={!busy} onFiles={onUpload}
-              title="Drop a document here, or press Upload."
-              style={{ marginTop: 10, padding: '10px 12px', border: `1px dashed ${LINE}`,
-                borderRadius: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 13, color: MUTED }}>Drop a document here, or</span>
-              <button type="button" className="btn soft small" disabled={busy}
-                onClick={() => onPick(null)}>Upload…</button>
-            </DropZone>
+            {!isForm && !isOrder ? (
+              <DropZone className="cond-drop" enabled={!busy} onFiles={onUpload}
+                title="Drop a document here, or press Upload."
+                style={{ marginTop: 10, padding: '10px 12px', border: `1px dashed ${LINE}`,
+                  borderRadius: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, color: MUTED }}>Drop a document here, or</span>
+                <button type="button" className="btn soft small" disabled={busy}
+                  onClick={() => onPick(null)}>Upload…</button>
+              </DropZone>
+            ) : null}
           </div>
+          ) : null}
 
           {/* ── WHAT HAPPENED TO IT ────────────────────────────────────────── */}
           {c.status === 'waived' && (

@@ -330,8 +330,8 @@ What has to be true before the file can be cleared to close.
 
 *Internal only · Upload*
 
-**What it is.** The completed questionnaire, the association’s master insurance, and its budget.
+**What it is.** The completed questionnaire, the association’s current budget, the bylaws, and its master insurance.
 
-**How it behaves.** appears only when the file calls for it; 3 named slots (Condo questionnaire (completed), Master insurance policy, Association budget).
+**How it behaves.** appears only when the file calls for it; 4 named slots (Condo questionnaire (completed), Association budget, Bylaws, Master insurance policy).
 
 <sub>`lt_condo_docs`</sub>
