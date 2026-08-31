@@ -427,8 +427,15 @@ export default function LtConditionAnswer({ loanId, conditionId, onSaved }) {
   const save = useCallback(async (answer) => {
     setBusy(true); setErr(null); setNote(null);
     try {
-      await ltApi.conditionAnswer(loanId, conditionId, answer);
-      setNote('Saved.');
+      const r = await ltApi.conditionAnswer(loanId, conditionId, answer);
+      /* TWO CONDITIONS, ONE CLICK — so the second one is REPORTED. Marking a
+         mortgage as the one on the subject property fills in the statement
+         condition, and a person who is not told that has no reason to look at
+         it. A reason it could NOT be filled in matters just as much: silence
+         would read as "done". */
+      const sub = (r && r.subjectMortgage) || {};
+      const extra = sub.note || sub.why || null;
+      setNote(extra ? `Saved. ${extra}` : 'Saved.');
       await load();
       if (onSaved) onSaved();
     } catch (e) {
@@ -463,6 +470,19 @@ export default function LtConditionAnswer({ loanId, conditionId, onSaved }) {
       {ws.shape === 'choice' && (
         <div>
           <div style={eyebrow}>How you want to answer this</div>
+          {/* THE MARK. When these figures came off the credit report rather than
+              from the person reading them, the screen says so — including that a
+              credit report carries only the last four digits of an account, so
+              nobody keys four digits into Encompass as a loan number. */}
+          {ws.sourceNote && (
+            <p style={{
+              margin: '0 0 10px', padding: '8px 10px', borderRadius: 8,
+              background: '#FFF7E6', border: '1px solid #E4C77A',
+              fontSize: 12.5, color: '#3A4550', lineHeight: 1.55,
+            }}>
+              {ws.sourceNote}
+            </p>
+          )}
           <Ways
             ways={ws.ways} chosen={draft.way} values={draft.values}
             onChoose={(k) => setDraft((d) => ({ ...d, way: k }))}
