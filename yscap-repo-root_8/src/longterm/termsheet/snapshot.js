@@ -42,6 +42,9 @@ const comparison = require('./comparison');
 // The Census ZCTA→county table the pricing search itself uses, so the document and the
 // search can never disagree about which county a property is in.
 const zipCounty = require('../lenderprice/zip-county');
+// db/651 — the STAFF-ONLY note about who is behind a price. Deliberately a
+// separate module: nothing it produces is a key on the snapshot.
+const internalRecord = require('./internal');
 
 const num = (v) => {
   if (v == null || v === '') return null;
@@ -571,16 +574,26 @@ function buildSnapshot({ selections, plan, anchorIndex = 0, prepared = {}, maxMe
       + 'and becomes a catalogue.');
   }
   const members = [];
+  /* ⛔ THE PROVENANCE TRAVELS BESIDE THE MEMBERS, NEVER INSIDE THEM (db/651).
+     Who really funds an option is what an officer pulling up an ID needs and is
+     the one thing a client's document may never carry, so it is built here — in
+     lock-step with the members, so index i of one is index i of the other and no
+     later code has to re-align two lists — and returned as a SIBLING of
+     `snapshot`. Nothing that renders, hashes or replays the document can reach
+     it, because it is not a key on the object those functions are handed. */
+  const internal = [];
   for (let i = 0; i < list.length; i += 1) {
     const r = buildMember(list[i], plan);
     if (!r.ok) return { ...r, memberIndex: i };
     members.push(r.member);
+    internal.push(internalRecord.projectInternal(list[i] && list[i].internal));
   }
   const compare = members.length > 1 ? comparison.buildComparison(members, anchorIndex) : null;
   const docKind = documentKind(members, compare);
 
   return {
     ok: true,
+    internal,
     snapshot: {
       version: 1,
       // `kind` is the RENDERING shape the layout has always branched on — one

@@ -28,6 +28,7 @@ const snapshot = require('../termsheet/snapshot');
 const layout = require('../termsheet/layout');
 const pdf = require('../termsheet/pdf');
 const store = require('../termsheet/store');
+const internalRecord = require('../termsheet/internal');
 const code = require('../termsheet/code');
 const comparison = require('../termsheet/comparison');
 const settingsStore = require('../settings/store');
@@ -170,7 +171,11 @@ async function snapshotFor(req, res) {
     res.status(422).json({ ok: false, error: built.error, message: built.message });
     return null;
   }
-  return { snapshot: built.snapshot, plan, company, expiryHours, expiresAt };
+  // `internal` rides BESIDE the snapshot, never inside it (db/651): it is the
+  // staff-only note about who funds each option, and the snapshot is the
+  // client's own document. Only the ISSUE door passes it on; the preview
+  // deliberately drops it, because a preview is a look at the document.
+  return { snapshot: built.snapshot, internal: built.internal, plan, company, expiryHours, expiresAt };
 }
 
 // ── PREVIEW ─────────────────────────────────────────────────────────────────
@@ -237,6 +242,7 @@ router.post('/', async (req, res) => {
       // The instant the DOCUMENT prints, so the column and the page agree.
       expiresAt: built.expiresAt.toISOString(),
       cartId: body.cartId || null,
+      internal: built.internal,
     });
     return res.json({ ok: true, docKind: built.snapshot.docKind, ...issued });
   } catch (e) {
@@ -306,6 +312,11 @@ router.post('/cart', async (req, res) => {
           ratePct: r.member.ratePct, monthlyPI: r.member.monthlyPI,
           prepayLabel: r.member.prepayLabel, rawPrice: (req.body.selection || {}).rawPrice,
         },
+        // db/651 — the STAFF-ONLY record of who funds this option, kept on the
+        // cart member so it survives to the sheet. `addToCart` projects it
+        // through the same whitelist the issue does, so the two paths can never
+        // record different fields for one quote.
+        internal: (req.body.selection || {}).internal,
       },
       max: Number(setting(company, 'termSheet.cartMax', 8)) || 8,
     });
@@ -393,9 +404,33 @@ router.get('/:code', async (req, res) => {
     const row = await loadByCode(req, res);
     if (!row) return undefined;
     const integrity = store.verifyIntegrity(row);
+    /* ⛔ THE PROVENANCE IS FETCHED SEPARATELY AND RETURNED AS ITS OWN KEY (db/651).
+       The owner's ask was *"see exactly what the input was and what exactly they
+       priced in the real program and the real investors behind everything"*, and
+       the input half already replayed — every figure the officer typed is on each
+       member's `scenario`. The investor half never could, because the snapshot is
+       the borrower's document and an investor's name may never be on one.
+
+       So it is loaded from the STAFF-side member rows and answered as a sibling
+       of `snapshot`, never merged into it: this door is staff-gated, but the
+       snapshot object it returns is the same one the PDF is drawn from, and the
+       moment an investor becomes a key on it, one careless projection puts it on
+       a client's page. A read that fails is REPORTED as unavailable rather than
+       silently returning an empty list, which would read as "nobody funds this". */
+    let internal = null;
+    let internalError = null;
+    try {
+      internal = await store.readInternal(row.id);
+    } catch (e) {
+      internalError = 'Could not read who was behind these prices.';
+      console.error('[lt] term sheet provenance read failed:', (e && e.message) || e);
+    }
     return res.json({
       ok: true,
       code: row.code,
+      internal,
+      internalError,
+      internalNotRecorded: internalRecord.NOT_RECORDED,
       issued: {
         at: row.created_at, pricedAt: row.priced_at, expiresAt: row.expires_at,
         by: row.created_by, borrowerName: row.borrower_name, kind: row.kind,

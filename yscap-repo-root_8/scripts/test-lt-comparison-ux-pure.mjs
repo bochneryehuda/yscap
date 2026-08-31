@@ -250,5 +250,46 @@ console.log('\nI. the tick-box is on the row, on both row shapes');
 ok((B.match(/<PickBox /g) || []).length === 2, 'I1 the lender\'s front row and its other programmes both carry it');
 ok(/ts\.picking/.test(B), 'I2 …and it only appears while a comparison is being built');
 
+console.log('\nJ. a comparison is DOWNLOADED as a comparison, not as a term sheet');
+// Owner-reported 2026-08-31: *"the comparison, when you want to export it, is basically issued
+// and downloaded as the term sheet. It needs to be called the comparison sheet."*
+//
+// ⛔ THE SERVER-SIDE HALF SHIPPED AND COULD NOT BE SEEN. The PDF route names the file from
+// `snapshot.KIND_WORDS`, so a comparison genuinely leaves as `comparison-sheet-TS-XXXXXX.pdf` —
+// and `a.download` OVERRIDES `Content-Disposition`, so the browser saved the caller's
+// hard-coded `term-sheet-…` name anyway. Half a fix on a naming bug is no fix: the officer
+// still ends up with a comparison in their downloads called a term sheet.
+{
+  const words = snapshot.KIND_WORDS;
+  ok(words[snapshot.DOC_KINDS.COMPARISON] === 'comparison sheet'
+    && words[snapshot.DOC_KINDS.SCENARIO] === 'scenario comparison',
+    'J1 the server has one table of what each document is called');
+  const ROUTE = bare(readFileSync(new URL('../src/longterm/routes/term-sheet.js', import.meta.url), 'utf8'));
+  ok(/KIND_WORDS\[lay\.docKind/.test(ROUTE) && /Content-Disposition/.test(ROUTE),
+    'J2 …and the PDF route names the download from it');
+
+  const HTTP = readFileSync(new URL('../app-v2/src/longterm/http.js', import.meta.url), 'utf8');
+  ok(/filenameFromDisposition\(res\.headers\.get\('Content-Disposition'\)\) \|\| filename/.test(HTTP),
+    'J3 ⛔ the browser honours that name, falling back to the caller\'s only when there is none');
+
+  // The parser is read out of the source and run, so this asserts the RULE rather
+  // than that the file contains a function with the right name.
+  const m = /export function filenameFromDisposition[\s\S]*?\n}\n/.exec(HTTP);
+  // eslint-disable-next-line no-eval
+  const parse = m ? eval(`(${m[0].replace('export function', 'function')})`) : null;
+  ok(!!parse, 'J4 the parser is there to run');
+  ok(parse('attachment; filename="comparison-sheet-TS-4KH92B.pdf"') === 'comparison-sheet-TS-4KH92B.pdf',
+    'J5 a comparison keeps the name the server gave it');
+  ok(parse("attachment; filename*=UTF-8''sc%C3%A9nario.pdf") === 'scénario.pdf',
+    'J6 …including a non-ASCII name, which only the RFC 5987 form can carry');
+  ok(parse('attachment') === null && parse('') === null && parse(null) === null,
+    'J7 no header means fall back, never an empty filename');
+  // A filename reaches the file system. Even a header we send ourselves is
+  // sanitised, or a header that is ever wrong becomes a path.
+  ok(parse('attachment; filename="../../etc/passwd"') === null,
+    'J8 ⛔ a traversal attempt is refused outright rather than tidied into a name');
+  ok(parse('attachment; filename="a/b/c.pdf"') === 'abc.pdf', 'J9 …and separators are stripped');
+}
+
 console.log(bad === 0 ? '\nOFFLINE: all passed' : `\nOFFLINE: ${bad} FAILED`);
 process.exit(bad === 0 ? 0 : 1);

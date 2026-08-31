@@ -2083,6 +2083,28 @@ export default function LtPricer() {
       ratePct: q.noteRate,
       rawPrice: q.price,
       vendorMonthlyPI: q.monthlyPi,
+      /* WHO IS REALLY BEHIND THIS PRICE — recorded, never printed (db/651).
+         Owner-reported 2026-08-31: pulling up a term sheet ID has to show *"the
+         real program and the real investors behind everything"*, and the sheet
+         itself carries none of that on purpose (rule 10). So the board sends it
+         as its OWN block, the server stores it on the staff-side member row, and
+         it never becomes a key on the document. `investorKey` is the server's
+         own canonical identity, carried through the price response — never
+         re-derived here, because a browser copy of that registry would drift. */
+      internal: {
+        investor: q.investor || null,
+        investorKey: q.investorKey != null ? q.investorKey : null,
+        lender: q.lender || null,
+        // THEIR name for the programme. The document prints the white label, so
+        // without this an officer can never get back from "30-Year Rental Select"
+        // to what the investor calls it — which is the whole question being asked.
+        program: q.program || null,
+        product: q.product || null,
+        rateSheet: q.sheet || null,
+        rateGridId: q.rateGridId != null ? q.rateGridId : null,
+        rawPrice: q.price,
+        adjustedPoints: q.adjustedPoints,
+      },
       pricedAt: (o && o.rateSheet && o.rateSheet.effectiveAt) || (res && res.pricedAt) || null,
       scenario: {
         purpose: dealPurpose,

@@ -816,6 +816,12 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
     rawPrice: (m.program || {}).rawPrice,
     vendorMonthlyPI: (m.program || {}).monthlyPI,
     scenario: m.scenario,
+    // db/651 — the cart is where a comparison is assembled, so the staff-only
+    // record of who funds each option has to survive the round trip: an option
+    // parked here and issued an hour later must name the same investor as one
+    // issued straight off the board. It is stored on the cart member and handed
+    // straight back; nothing here reads or reshapes it.
+    internal: m.internal,
     pricedAt: m.priced_at,
   })), [members, names]);
 
