@@ -574,17 +574,42 @@ const PRIOR_TO_CTC = [
     code: 'lt_housing_history',
     bucket: B.CTC,
     label: 'Housing history verified',
+    /* THREE WAYS TO ANSWER ONE QUESTION, AND THE FILE PICKS — owner-directed
+       2026-08-31: *"If he is renting, then the housing history verified condition
+       is tied directly to the verification of rent order and gets the documents
+       from there. You can either upload it manually as well, but it's tied
+       directly and populated by himself. If he is owning, then that housing
+       history verified should have a note that it is a verification of mortgage
+       of primary residence. If he is living rent-free, then the housing history
+       verified should be the rent-free letter."*
+
+       The RENT branch is fed by the verification-of-rent order (orders/kinds.js
+       `vor.docCondition` names this condition and its `slotMap` names the slot),
+       so a completed form that comes back by reply files itself. The other two
+       are uploaded, and so is a rent verification that arrives some other way —
+       "tied directly" adds a route, it never closes the manual one. */
     hint: 'One of three, decided by what the borrower said about where they live (FR0115): the rent '
-      + 'verification back from the landlord if they rent, a mortgage verification on their own home '
-      + 'if they own it, or a letter if they live somewhere rent free. They are alternatives, not a '
-      + 'list — asking for all three would be asking for two things that cannot exist.',
+      + 'verification back from the landlord if they rent, a verification of mortgage on the home they '
+      + 'live in if they own it, or a letter if they live somewhere rent free. They are alternatives, not '
+      + 'a list — asking for all three would be asking for two things that cannot exist. The rent one '
+      + 'fills itself in from the verification of rent order; any of the three can also be uploaded here.',
     audience: 'internal',
     kind: 'document',
     autoApply: 'always',
     slots: [
-      { key: 'vor', label: 'Verification of rent (completed)', required: false, whenField: 'borrower_rents' },
-      { key: 'vom_primary', label: 'Verification of mortgage — their own home', required: false, whenField: 'borrower_owns_home' },
-      { key: 'rent_free_letter', label: 'Living rent free letter', required: false, whenField: 'borrower_lives_rent_free' },
+      { key: 'vor', label: 'Verification of rent (completed)', required: false, whenField: 'borrower_rents',
+        hint: 'Comes back on the verification of rent order and files itself here. It can also be uploaded.' },
+      // THE OWNER ASKED FOR THIS TO SAY PRIMARY RESIDENCE, in those words. The
+      // file already carries a `lt_vom_subject` for the SUBJECT property on a
+      // refinance, and two conditions both called "verification of mortgage" with
+      // nothing saying which house is how the wrong one gets uploaded.
+      { key: 'vom_primary', label: 'Verification of mortgage — primary residence', required: false, whenField: 'borrower_owns_home',
+        hint: 'The home the borrower LIVES in, not the subject property — the subject property has its own verification of mortgage on this file.' },
+      // Worded "Written by" rather than "From" on purpose: the separation gate
+      // reads `FROM <word>` in a Long-Term file as a Long-Term module querying
+      // an RTL table, so ordinary prose in that shape fails the build.
+      { key: 'rent_free_letter', label: 'Living rent free letter', required: false, whenField: 'borrower_lives_rent_free',
+        hint: 'Written by whoever they live with, confirming the borrower pays no rent.' },
     ],
     config: { oneOf: true },
   },
@@ -643,12 +668,20 @@ const PRIOR_TO_CTC = [
     code: 'lt_payoff_received',
     bucket: B.CTC,
     label: 'Payoff received',
-    hint: 'The statement back from the servicer, still good on the closing date.',
+    /* FED BY THE PAYOFF ORDER — owner-directed 2026-08-31: *"The payoff received
+       should be tied directly to the payoff order, and you should also be able to
+       upload manually."* `orders/kinds.js payoff.docCondition` names this
+       condition and its `slotMap` names the slot below, so a statement that comes
+       back by reply files itself; the slot stays an ordinary upload for a payoff
+       that arrives any other way. */
+    hint: 'The statement back from the servicer, still good on the closing date. It files itself in from '
+      + 'the payoff order, and can also be uploaded here.',
     audience: 'internal',
     kind: 'document',
     autoApply: 'rules',
     rule: when('is_refinance', 'is_true'),
-    slots: [{ key: 'payoff', label: 'Payoff statement', required: true }],
+    slots: [{ key: 'payoff', label: 'Payoff statement', required: true,
+      hint: 'Comes back on the payoff order and files itself here. It can also be uploaded.' }],
   },
   {
     code: 'lt_condo_docs',
