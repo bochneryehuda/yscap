@@ -386,6 +386,9 @@ ok(loadDepMap({ readFileSync: () => PLAIN }, path, __dirname).tests['test-a.js']
     'yscap-repo-root_8/scripts/ci-scope.js',
     'yscap-repo-root_8/scripts/ci-test-plan.js',
     'yscap-repo-root_8/scripts/test-ci-scope-pure.js',
+    // The builder of the map is selector machinery too — its guards live in
+    // THIS file, so a change to it must reach them.
+    'yscap-repo-root_8/scripts/ci-deps-build.js',
     '.github/workflows/test.yml',
   ]) {
     const r = planFor(p);

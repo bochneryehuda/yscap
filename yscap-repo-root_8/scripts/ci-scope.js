@@ -65,6 +65,15 @@ const ALWAYS_FULL = [
   /^yscap-repo-root_8\/scripts\/ci-scope\.js$/,    // this file
   /^yscap-repo-root_8\/scripts\/ci-test-plan\.js$/,
   /^yscap-repo-root_8\/scripts\/test-ci-scope-pure\.js$/,
+  // THE BUILDER OF THE MAP IS PART OF THE SELECTOR TOO. Its guards live in
+  // `test-ci-scope-pure.js`, so unless a change to it runs that suite, the
+  // guards do not police the file they are about. That is not hypothetical:
+  // the 2026-08-31 pass added a guard on this builder's header while the map
+  // had already recorded that suite WITHOUT this file as a dependency, so the
+  // new guard would not have been selected by a change to the thing it guards.
+  // An exemption fixes that for good; a recorded dependency only fixes it
+  // until the next rebuild happens to miss it again.
+  /^yscap-repo-root_8\/scripts\/ci-deps-build\.js$/,
 ];
 
 /**
