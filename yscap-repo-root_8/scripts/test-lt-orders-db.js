@@ -395,6 +395,88 @@ email.sendMail = async (payload) => {
       'F1 a loan with no order of its own files nothing — a reply cannot create the order it claims to answer');
   }
 
+  /* ── G. THE STATEMENT THAT FINDS THE CONDITION A RETURNED DOCUMENT BELONGS ON
+     ────────────────────────────────────────────────────────────────────────────
+     `inbox.docConditionFor` is the read that turns "a vendor replied to the
+     title order" into "file this onto the title-documents condition". It is the
+     whole point of the per-order reply address.
+
+     IT HAD NEVER ONCE BEEN RUN. Section E drives `handleOne`, which is the
+     caller — but the paths exercised there settle before reaching this read, so
+     the assembled statement was never executed against a real schema by
+     anything. Its own comment records why that matters: db/653 moved the
+     long-term conditions into the shared `checklist_items` table and this read
+     was left on `lt_file_conditions`, which nothing has written since, so it
+     found NOTHING and a returned document could never reach the condition that
+     asked for it. Nothing errored. That is the silent class
+     `test-lt-sql-prepared-db` exists for, and it cannot prepare this statement
+     from source because it is only a statement once the shared owner descriptor
+     assembles it — so the only way to check it is to RUN it.
+
+     Asserted in BOTH directions, because a read that finds nothing and a read
+     that finds everything are both wrong, and only one of them is obvious. */
+  {
+    const kinds = require('../src/longterm/orders/kinds');
+    const def = kinds.orderKind('title');
+    const code = def && def.docCondition;
+    assert(!!code, 'G0 the title order still names a documents condition to file returns onto');
+
+    /* REUSE the condition if this loan already carries one for that template.
+       `uq_checklist_items_lt_one_per_template` allows exactly ONE per (loan,
+       template) — the shared table's own duplicate guard — so a second insert
+       raises 23505. Working around that rule to make a fixture convenient would
+       be staging a state the product forbids, which is how a test ends up
+       proving something about a database nobody can have. */
+    const existing = (await db.query(
+      `SELECT c.id FROM checklist_items c
+         JOIN checklist_templates t ON t.id = c.template_id
+        WHERE c.lt_loan_id = $1::uuid AND t.code = $2 LIMIT 1`, [loan, code])).rows[0];
+    const condId = existing ? String(existing.id) : await mkCondition(loan, code);
+
+    /* A DATABASE ERROR HERE IS A CLEAN FAILURE, NOT A CRASH. Reverting this read
+       to the table it used to point at makes Postgres refuse the statement, and
+       an unwrapped throw would kill the whole suite where it stands — reporting
+       a pass count that means nothing and hiding every section after it. That is
+       the "a crashing test also fails, and looks like proof" trap, and it caught
+       me once on this very check: the first mutation run printed nothing at all
+       and read as though the guard had not bitten.
+       Production is UNAFFECTED by this shape — `handleOne` calls this with
+       `.catch(() => null)` on purpose (a document that cannot be filed is a
+       skip), which is exactly why the statement has to be RUN here: in the
+       product a phantom column is silent by design. */
+    const run = async (loanId, kind) => {
+      try { return { ok: true, row: await inbox.docConditionFor(loanId, kind) }; } catch (e) {
+        return { ok: false, why: (e && e.message) || String(e) };
+      }
+    };
+
+    const got = await run(loan, 'title');
+    assert(got.ok, `G1a the read runs at all against the real schema${got.ok ? '' : ` — it threw: ${got.why}`}`);
+    const found = got.row;
+    assert(found && String(found.id) === String(condId),
+      'G1 THE ONE THAT MATTERS: the read finds the condition on the SHARED table — the exact thing that silently found nothing before db/653 was followed through');
+    assert(found && found.code === code,
+      'G2 …and it is the documents condition the order kind names, not merely some condition on the loan');
+
+    // It is SCOPED to the loan. The owner descriptor's WHERE is what does that,
+    // and a descriptor that stopped scoping would file a vendor's document onto
+    // another borrower's loan — which is worse than not filing it at all.
+    const existingOther = (await db.query(
+      `SELECT c.id FROM checklist_items c
+         JOIN checklist_templates t ON t.id = c.template_id
+        WHERE c.lt_loan_id = $1::uuid AND t.code = $2 LIMIT 1`, [other, code])).rows[0];
+    const strayCond = existingOther ? String(existingOther.id) : await mkCondition(other, code);
+    const gotOther = await run(other, 'title');
+    const forOther = gotOther.row;
+    assert(gotOther.ok && forOther && String(forOther.id) === String(strayCond),
+      'G3 …and each loan resolves to ITS OWN condition, so a return can never file onto another borrower\'s loan');
+
+    // An order kind that asks for no document answers null rather than guessing.
+    const none = await run(loan, '__no_such_kind__');
+    assert(none.ok && none.row === null,
+      'G4 an unknown order kind answers null — it never guesses a condition to file onto');
+  }
+
   console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL PASS');
   process.exit(failures ? 1 : 0);
 })().catch((e) => { console.error('FATAL', e); process.exit(1); });
