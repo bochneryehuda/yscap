@@ -195,7 +195,13 @@ const ORDER_KINDS = Object.freeze({
     docCondition: 'lt_payoff_received',
     letter: 'generic',
     wants: ['Payoff statement good through the estimated closing date', 'Per-diem interest', 'Wire instructions'],
-    slotMap: [[/payoff|demand|statement/i, null]],
+    /* THE STATEMENT LANDS IN THE SLOT THAT IS WAITING FOR IT. Found by the
+       A-to-Z audit: this mapped to `null`, so a payoff statement that arrived by
+       reply filed on the condition with NO slot — while `lt_payoff_received`
+       carries a REQUIRED `payoff` slot, which then still read as missing the
+       document sitting right there. There is exactly one slot on that condition,
+       so there is nothing for a guess to get wrong. */
+    slotMap: [[/payoff|demand|statement/i, 'payoff']],
   },
   condo_questionnaire: {
     label: 'Condo questionnaire',
@@ -238,7 +244,17 @@ const ORDER_KINDS = Object.freeze({
     docCondition: 'lt_housing_history',
     letter: 'generic',
     wants: ['The completed verification of rent'],
-    slotMap: [[/vor|verification|rent/i, null]],
+    /* ORDERED, AND THE ORDER IS THE POINT — the same rule as the condo slots
+       above. `lt_housing_history` carries three slots, and a bare
+       `verification` would swallow a VERIFICATION OF MORTGAGE into the rent
+       slot: a document filed in the wrong slot is worse than an unfiled one,
+       because it reads as satisfied. So the two that can be named unambiguously
+       are tested FIRST, and the rent verification is what is left. */
+    slotMap: [
+      [/\bvom\b|verification\s+of\s+mortgage|mortgage\s+verification/i, 'vom_primary'],
+      [/rent[\s-]*free|living\s+rent/i, 'rent_free_letter'],
+      [/\bvor\b|verification\s+of\s+rent|rent\s+verification|verification|rent/i, 'vor'],
+    ],
   },
 });
 

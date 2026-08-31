@@ -129,7 +129,7 @@ async function desk(loanId, client = db) {
       vendorExtra: (d.vendorsExtra || {})[k] || [],
       to: card && !card.missing ? data.vendorEmails(k, d) : [],
       blockers: blocks,
-      blockerText: blocks.map((b) => data.blockerText(b)),
+      blockerText: blocks.map((b) => data.blockerText(b, k, d)),
       canOrder: blocks.length === 0,
       status: row ? row.status : 'not_ordered',
       orderId: row ? row.id : null,
@@ -299,7 +299,10 @@ async function place(loanId, kind, opts = {}) {
 
   const blocks = data.blockers(kind, d);
   if (blocks.length) {
-    return { ok: false, status: 422, error: data.blockerText(blocks[0]), blockers: blocks, blockerText: blocks.map(data.blockerText) };
+    return {
+      ok: false, status: 422, error: data.blockerText(blocks[0], kind, d),
+      blockers: blocks, blockerText: blocks.map((b) => data.blockerText(b, kind, d)),
+    };
   }
 
   const template = opts.template || null;

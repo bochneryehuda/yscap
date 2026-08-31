@@ -102,7 +102,7 @@ router.get('/loans/:loanId/:kind/preview', async (req, res) => {
     res.json({
       subject: built.subject, html: built.html, text: built.text,
       to: recips.to, cc: recips.cc, replyTo: recips.replyTo,
-      blockers: blocks, blockerText: blocks.map(data.blockerText), canOrder: blocks.length === 0,
+      blockers: blocks, blockerText: blocks.map((b) => data.blockerText(b, kind, d)), canOrder: blocks.length === 0,
     });
   } catch (e) {
     console.error('[lt-orders] preview failed:', (e && e.message) || e);

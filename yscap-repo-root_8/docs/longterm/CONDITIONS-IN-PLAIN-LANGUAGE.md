@@ -12,7 +12,7 @@ answer it themselves.
 file at all. *Order* sends an email out to a company and waits for what comes back.
 *Signature* goes out to be signed.
 
-**28 conditions in total** — 15 internal only, 13 that the borrower sees too.
+**29 conditions in total** — 15 internal only, 14 that the borrower sees too.
 
 ---
 
@@ -20,7 +20,7 @@ file at all. *Order* sends an email out to a company and waits for what comes ba
 
 Everything the file needs before it goes to underwriting.
 
-16 conditions.
+17 conditions.
 
 ### Mortgages on the credit report — a statement for each
 
@@ -155,6 +155,18 @@ Everything the file needs before it goes to underwriting.
 **How it behaves.** appears on every file; 1 named slot (Photo ID); the answer is saved to the shared borrower profile, so the next loan starts from it.
 
 <sub>`lt_photo_id`</sub>
+
+### Servicer of the loan being paid off
+
+*Internal + external · Form*
+
+**What it is.** Only on a refinance. The payoff request goes to whoever services the loan being paid off, so their details are collected before it is ordered.
+
+**What the borrower is asked.** “The name of the company you send your mortgage payment to, and an email address or phone number for them if you have one.”
+
+**How it behaves.** appears only when the file calls for it.
+
+<sub>`lt_payoff_contact`</sub>
 
 ### Payoff ordered
 

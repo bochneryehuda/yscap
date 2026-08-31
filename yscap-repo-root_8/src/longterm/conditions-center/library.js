@@ -341,6 +341,40 @@ const PRIOR_TO_SUBMISSION = [
     config: { readsFromBorrowerProfile: true, savesToBorrowerProfile: true },
   },
   {
+    /* WHO THE PAYOFF IS ORDERED FROM — collected, like every other order's
+       contact, on a condition (owner-directed 2026-08-31: *"Make sure each and
+       every FileContacts should be linked to the correct order … Do a lot of A
+       to Z order to make sure everything is linked to the correct place."*).
+
+       FOUND BY THE A-TO-Z AUDIT: `lt_payoff_ordered` addresses the `payoff`
+       card, and NO condition anywhere collected it — so on every refinance the
+       payoff order sat on the desk saying "add them on the file contacts" and
+       the only way in was the file-contacts section, which is not where the
+       condition sends you. Six of the seven orders prompted for their contact;
+       this was the seventh. Same shape as the landlord and the HOA management
+       company above: a `contactTypes` row, so it lands in the shared vendor
+       directory and on `lt_loan_vendors`, which is where the order desk looks.
+
+       BOTH audiences, like the landlord: the borrower knows who services the
+       mortgage being paid off, and asking them is faster than us guessing from a
+       credit report — which carries the SERVICER'S NAME but no email address. */
+    code: 'lt_payoff_contact',
+    bucket: B.SUBMISSION,
+    label: 'Servicer of the loan being paid off',
+    hint: 'Only on a refinance. The payoff request goes to whoever services the loan being paid '
+      + 'off, so their details are collected before it is ordered.',
+    borrowerLabel: 'Who you pay your current mortgage to',
+    borrowerHint: 'The name of the company you send your mortgage payment to, and an email address '
+      + 'or phone number for them if you have one.',
+    audience: 'both',
+    kind: 'form',
+    autoApply: 'rules',
+    rule: when('is_refinance', 'is_true'),
+    config: {
+      contactTypes: [{ key: 'payoff', label: 'Servicer being paid off', required: true }],
+    },
+  },
+  {
     code: 'lt_payoff_ordered',
     bucket: B.SUBMISSION,
     label: 'Payoff ordered',
