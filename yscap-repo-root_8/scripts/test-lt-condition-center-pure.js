@@ -159,13 +159,83 @@ check(v.is_refinance === true && v.is_cash_out === true && v.is_purchase === fal
 check(v.is_condo === true, 'a condominium reads as a condo');
 check(v.is_new_york === true, 'New York is derived from the state, so the two can never disagree');
 check(v.borrower_rents === true, 'FR0115 (the residency basis) is what says the borrower rents — the owner named this field themselves');
-check(v.vests_in_entity === true, 'an entity party means title is taken in an entity');
+// RE-POINTED 2026-08-31, not loosened. This fixture's loan carries NO
+// vesting_type, and field 4008 is now the only thing that decides how a loan
+// vests — so the honest answer here is "we have not been told", not "yes". The
+// old assertion pinned the PARTIES reading, which is the defect fixed below.
+check(v.vests_in_entity === null,
+  'a company name on a borrower row does NOT decide the vesting — only field 4008 does, and this fixture has not been told');
 check(v.in_flood_zone === null, 'and the flood determination stays UNKNOWN rather than becoming false');
 
 console.log('\nB3. a reader that throws costs its own field, never the evaluation');
 const hostile = registry.read({ residences: 'not an array', parties: null, property: 7 });
 check(Object.keys(hostile).length === Object.keys(empty).length,
   'malformed context still yields every field — one bad part cannot take down the rest');
+
+console.log('\nB3b. field 4008 decides how a loan vests, and nothing else');
+// Owner-directed 2026-08-23 and restated 2026-08-31: "if 4008 is individual
+// instead of officer, then no entity condition". 4008 is the vesting field
+// (Officer / Individual / Trustee); across the measured book of 486 loans it
+// reads 445 Officer, 22 Individual, 19 blank.
+//
+// EVERY CASE BELOW CARRIES A STALE COMPANY NAME ON A BORROWER ROW, and that is
+// the whole point: before this, that row is what switched the condition on, so
+// an Individual-vested loan was asked for formation documents it does not need.
+const stale = [{ party_type: 'entity', entity_legal_name: 'Stale Holdings LLC' }];
+const vestRead = (vesting_type) => registry.read({ loan: { vesting_type }, parties: stale });
+
+check(vestRead('Individual').vests_in_entity === false,
+  'Individual means individual — the company name on the borrower row is not even consulted');
+check(vestRead('Officer').vests_in_entity === true, 'Officer means the title is in a company');
+check(vestRead('Trustee').vests_in_entity === true, 'Trustee is an entity vesting too — the tenant\'s own completion rule says so');
+check(vestRead(null).vests_in_entity === null,
+  'and nothing stated is NOT "Individual" — an unanswered loan says so rather than claiming a fact');
+check(vestRead('a word the book has never shown').vests_in_entity === null,
+  'a word nobody has seen draws no conclusion either');
+
+// THE WORDS HAVE ONE DEFINITION. A second copy of "individual"/"officer"/
+// "trustee" here is how one screen calls a loan individual while another asks it
+// for company papers, so the registry must delegate rather than re-type them.
+const regSrc = R('src/longterm/conditions-center/field-registry.js');
+check(/require\('\.\.\/vesting'\)/.test(regSrc),
+  'the registry asks vesting.js what 4008\'s words mean rather than keeping its own list');
+check(!/['\"](officer|trustee|individual)['\"]/i.test(regSrc.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')),
+  '...and does not spell those words itself, so the two can never drift');
+
+console.log('\nB3c. the company-documents condition follows 4008 — including when it is blank');
+const entityCond = library.library().find((c) => c.code === 'lt_vesting_entity');
+check(!!entityCond && !!entityCond.ruleLogic,
+  'CONTROL: the condition really carries a rule — an absent rule applies to EVERY file, so an assertion against `undefined` would pass for the wrong reason');
+const asks = (vesting_type) => rules.evaluateRule(
+  entityCond.ruleLogic, registry.read({ loan: { vesting_type }, parties: stale }), FIELDS);
+check(asks('Individual') === false,
+  'THE ONE THAT MATTERS: an Individual-vested loan is NOT asked for company documents, even with a stale company name on it');
+check(asks('Officer') === true && asks('Trustee') === true,
+  'an entity-vested loan still is');
+check(asks(null) === true,
+  'and a loan Encompass has not answered for KEEPS being asked (owner-directed 2026-08-31: "keep asking for them") — a blank must never quietly drop the condition');
+
+// ── THE ENTITY NAME (field 1859) NEVER DECIDES — 4008 does ──────────────────
+// Owner, 2026-08-31: "entity name is 1859, but if 4008 Individual then 1859
+// will be empty. But if 4008 is officer, then even if 1859 is empty, it means
+// that it was just not entered yet, but it's going to be an entity."
+//
+// So the name is a CONSEQUENCE of the vesting, never an input to it. Both
+// halves are pinned because both are one careless change away: requiring a name
+// before asking for the documents would silently drop the condition off every
+// Officer loan whose name has not been typed in yet, and consulting a stale
+// name on an Individual loan is the defect this whole change fixed.
+const asksNamed = (vesting_type, vesting_entity_name) => rules.evaluateRule(
+  entityCond.ruleLogic,
+  registry.read({ loan: { vesting_type, vesting_entity_name }, parties: [] }),
+  FIELDS);
+
+check(asksNamed('Officer', '') === true && asksNamed('Officer', null) === true,
+  'THE OWNER\'S OWN CASE: an Officer loan whose entity name has NOT been entered yet is still asked for the company documents — the name is coming, the vesting is already decided');
+check(asksNamed('Officer', 'MW Trading LLC') === true,
+  '...and one that HAS a name is asked for exactly the same thing, so the name changes nothing either way');
+check(asksNamed('Individual', 'Stale Holdings LLC') === false,
+  'while an Individual loan is not asked, even when field 1859 still carries a name from a previous vesting');
 
 console.log('\nB4. the investor is not a rule field, on purpose');
 check(!registry.catalog().some((f) => /investor/i.test(f.key) || /investor/i.test(f.label)),
