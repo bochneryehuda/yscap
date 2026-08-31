@@ -205,12 +205,19 @@ async function getOrderData(loanId, client = db) {
   // person the vendor can telephone, and — once send-as-user is on — the address
   // the order comes FROM.
   await one('officer',
-    `SELECT su.id, NULLIF(btrim(su.full_name), '') AS name, su.email, su.phone, su.title, su.nmls_id
+    /* `staff_users.nmls` — NOT `nmls_id`, which is what this asked for and which
+       does not exist. Every read here is its own try/catch, so the wrong name did
+       not throw: the officer read simply FAILED, `unreadable` was never empty,
+       and `blockers` then refused EVERY long-term order with the generic "could
+       not read the whole loan". The desk could not place an order at all, and
+       the reason a person saw named nothing they could fix. The short-term side
+       reads `lo.nmls` (notify.js), which is the column that exists. */
+    `SELECT su.id, NULLIF(btrim(su.full_name), '') AS name, su.email, su.phone, su.title, su.nmls
        FROM staff_users su
       WHERE su.id = $1::uuid AND su.is_active = true`,
     [loan.loan_officer_id || null], (rows) => {
       const r = rows && rows[0];
-      out.officer = r ? { id: r.id, name: r.name || null, title: r.title || 'Loan Officer', email: r.email || null, phone: r.phone || null, nmls: r.nmls_id || null } : null;
+      out.officer = r ? { id: r.id, name: r.name || null, title: r.title || 'Loan Officer', email: r.email || null, phone: r.phone || null, nmls: r.nmls || null } : null;
     });
 
   // The processor, off the loan's own Encompass-mirrored contact roles. Their card
