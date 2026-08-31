@@ -249,6 +249,19 @@ async function forLoan(loanId, opts = {}) {
  * property row could not be read.
  */
 async function liveFieldValues(loanId, client) {
+  /* A CALLER'S MISTAKE IS NOT A DEGRADED READ, and the catch below cannot tell
+     them apart — which is what makes this two lines rather than a comment.
+     Passing `{ db: client }` instead of the client is an easy slip (the sibling
+     modules take exactly that shape), and the ONLY symptom is a desk on which
+     every conditional contact reads "not established on this file yet": the
+     landlord, the HOA, the flood agent and the New York settlement agent all
+     quietly greyed, on a file where they apply. That is a wrong answer wearing
+     a safe one's clothes, and nothing anywhere would say so.
+     A real read failure still degrades to null exactly as before — this refuses
+     only something that could never have worked. */
+  if (!client || typeof client.query !== 'function') {
+    throw new TypeError('liveFieldValues needs the database client itself, not an options object');
+  }
   try {
     const engine = require('./engine');
     const registry = require('./field-registry');
