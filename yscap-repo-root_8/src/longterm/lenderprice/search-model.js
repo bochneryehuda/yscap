@@ -256,6 +256,32 @@ function dscrBand(dscr) {
   return             { ratio: '1.25',    smo: 'DSCR >=1.25 - J' };
 }
 
+// ---- §39 SEARCH TERMS -----------------------------------------------------
+// Which loan terms one search asks for. PURE and total: it always returns a non-empty array of
+// allowed terms, so the request can never carry an empty `termsCriteria` (which the vendor reads
+// as "no term matches" and answers with nothing at all).
+function resolveSearchTerms(sc, effTermYears) {
+  const clean = (list) => {
+    const out = [];
+    for (const raw of (Array.isArray(list) ? list : [])) {
+      const n = num(raw);
+      // An unusable or unoffered term is DROPPED rather than sent: `validateInputs` refuses one a
+      // caller states outright, so anything reaching here is either already checked or a default
+      // we built, and a bad number in the array would lose the whole search.
+      if (n != null && ALLOWED_TERMS.includes(n) && !out.includes(n)) out.push(n);
+    }
+    return out.sort((a, b) => a - b);
+  };
+  const explicit = clean(sc && sc.terms);
+  if (explicit.length) return explicit;
+  const io = sc && (sc.io === true || sc.interestOnly === true);
+  if (io) {
+    const pair = clean([effTermYears, IO_EXTRA_TERM]);
+    if (pair.length) return pair;
+  }
+  return ALLOWED_TERMS.includes(effTermYears) ? [effTermYears] : [30];
+}
+
 // ---- §32.4 RESERVES SELECTOR TABLE ----------------------------------------
 // GLOBAL_RESERVES dynamic token. The DSCR profile FORCES a default (Reserves_24, env-overridable via
 // LP_RESERVES_TOKEN) when the caller omits reserves — the audit's rule "explicitly override the
@@ -643,7 +669,28 @@ function buildSearch(sc = {}, opts = {}) {
   // termsInMonths=false means the number is years, NOT a day-lock.
   const termYears = num(sc.termYears != null ? sc.termYears : sc.term);
   const effTermYears = termYears != null ? termYears : 30;
-  c.loanYear = effTermYears; m.termsCriteria = [effTermYears]; m.termsInMonths = false;
+  /* §39 — A SEARCH MAY CARRY MORE THAN ONE TERM, AND INTEREST-ONLY CARRIES TWO BY DEFAULT
+     (owner-directed 2026-08-31): *"anytime somebody is searching for interest-only … you should
+     not only search for 30 years, you should also search for 40 years … lender price has certain
+     programs on interest-only, which are only 40 years and are not populated. Both of them need to
+     be checked by default if it's interest-only. In general, you should allow checking more than
+     one term to populate."*
+
+     `termsCriteria` has always been an ARRAY and the vendor's own result grouping is
+     `LoanTypeAndTerm`, so several terms in one search is the shape it was built for — we were
+     simply only ever putting one in it. The consequence the owner reported is real: an investor
+     whose interest-only product exists ONLY at 40 years could never appear, however the officer
+     searched, and nothing said so.
+
+     ⛔ `loanYear` STAYS SINGULAR AND STAYS THE ONE THE OFFICER ASKED FOR. It is the loan's own
+     term (the figure the payment is worked out from), not a filter; `termsCriteria` is the filter.
+     Sending a different number there would quietly re-quote the deal on a term nobody chose.
+
+     ⛔ AN EXPLICIT CHOICE IS NEVER OVERRIDDEN — a caller passing `terms` gets exactly those. The
+     interest-only pair is a DEFAULT for when nobody chose, and it ADDS 40 to whatever the officer
+     asked for rather than replacing it, so choosing 20-year interest-only still searches 20. */
+  const searchTerms = resolveSearchTerms(sc, effTermYears);
+  c.loanYear = effTermYears; m.termsCriteria = searchTerms; m.termsInMonths = false;
   // Rate-LOCK days. The intentional DSCR profile default is a 30-day lock; forced when omitted so a
   // live default carrying a different lock can never change the profile. This is a LOCK period
   // (days), NOT the loan term (years).
@@ -1061,6 +1108,9 @@ function envRatio(name, dflt) {
 }
 const MIN_LTV = envRatio('LP_MIN_LTV', 0.001);
 const LIVE_TERMS = [5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 40];
+// The term an interest-only search is widened WITH, by owner direction: several investors publish
+// their interest-only product only at 40 years, so a 30-only search silently omits them.
+const IO_EXTRA_TERM = Number(process.env.LP_IO_EXTRA_TERM || 40);
 const ALLOWED_TERMS = (process.env.LP_ALLOWED_TERMS
   ? process.env.LP_ALLOWED_TERMS.split(',').map((x) => Number(x.trim())).filter((n) => isFinite(n))
   : LIVE_TERMS);
@@ -1173,6 +1223,26 @@ function validateInputs(sc = {}) {
   const termVal = t1.v != null ? t1.v : t2.v;
   if (termVal != null && !ALLOWED_TERMS.includes(termVal)) {
     return bad('unsupported_term', 'termYears', `Loan term ${termVal} years is not offered. Supported: ${ALLOWED_TERMS.join(', ')}.`);
+  }
+  /* §39 — AN EXPLICIT LIST OF TERMS IS CHECKED, NOT QUIETLY TRIMMED. `resolveSearchTerms` drops
+     an unusable entry because it also builds DEFAULTS and one bad number must not lose the whole
+     search — but a term a CALLER stated is a different thing: silently searching something other
+     than what was asked for is the silent-cap failure this codebase refuses everywhere else. So a
+     stated list is validated here and refused by name. */
+  if (sc.terms !== undefined) {
+    if (!Array.isArray(sc.terms)) {
+      return bad('unsupported_term', 'terms', 'Loan terms must be a list, e.g. [30, 40].');
+    }
+    for (const raw of sc.terms) {
+      const n = strictNum(raw);
+      if (n == null || !ALLOWED_TERMS.includes(n)) {
+        return bad('unsupported_term', 'terms',
+          `Loan term ${JSON.stringify(raw)} is not offered. Supported: ${ALLOWED_TERMS.join(', ')}.`);
+      }
+    }
+    if (!sc.terms.length) {
+      return bad('unsupported_term', 'terms', 'Give at least one loan term to search.');
+    }
   }
   const lock = numField('lockDays', {}); if (lock.err) return lock.err;
   if (lock.v != null && !ALLOWED_LOCKS.includes(lock.v)) {
@@ -1396,4 +1466,4 @@ function validateScenario(sc = {}) {
 }
 
 module.exports = { BASE, buildSearch, clearScenarioOwnedFields, mergeKnownRequestDefaults, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, resolveSearchTerms, IO_EXTRA_TERM, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };
