@@ -161,10 +161,59 @@ const nextYear = new Date().getUTCFullYear() + 3;
     assert(prof && String(prof.saved_card_last4) === '1111' && prof.saved_card_brand === 'Visa',
       'B3 …with the display fields a screen needs, and the brand read by the shared module');
 
+    /* THE SCOPED COUNT BELOW NEEDS SOMETHING IT COULD FIND, or it proves
+       nothing. `application_payment_cards.application_id` is NOT NULL, so with
+       no short-term file for this borrower the join can never match and the
+       assertion passes whatever the code does — a tautology, which is the trap
+       the first scoped cut fell into. So the person gets a real short-term file
+       too. That is also the honest shape of this feature: the whole point of a
+       shared profile is that ONE PERSON can hold a short-term file and a
+       long-term loan at once, and the card must still live in exactly one
+       place. With this row present, wiring the long-term save to the RTL
+       per-file writer — `saveApplicationCard`, which the crossing ledger marks
+       OFF LIMITS — would put a row here and B4 would catch it. */
+    const rtlFile = (await db.query(
+      `INSERT INTO applications (borrower_id, status) VALUES ($1::uuid,'underwriting') RETURNING id`,
+      [borrower])).rows[0].id;
+
+    /* SCOPED TO THIS BORROWER, NEVER A GLOBAL COUNT — and that is the whole
+       lesson of this assertion's first cut. It asked
+       `SELECT count(*) FROM application_payment_cards` with no WHERE at all,
+       so it was really asking "has ANY suite in this database ever stored a
+       per-file card?" — and in the full chain the answer is yes, because RTL's
+       own suites legitimately store them. It passed alone and failed in the
+       chain: a flaky assertion of my own making, and precisely the
+       "assert on the row, never on the aggregate count" trap this repo already
+       records elsewhere. The claim worth proving is about THIS card save, so
+       it is scoped to the borrower the save was made against — a borrower this
+       fixture created seconds ago, so any row here could only have come from
+       the code under test. */
     const perFile = Number((await db.query(
-      `SELECT count(*)::int AS n FROM application_payment_cards`)).rows[0].n);
+      `SELECT count(*)::int AS n
+         FROM application_payment_cards pc
+         JOIN applications a ON a.id = pc.application_id
+        WHERE a.borrower_id = $1::uuid`, [borrower])).rows[0].n);
     assert(perFile === 0,
-      'B4 …and NO per-file card row was created anywhere — a long-term twin of application_payment_cards would be a second store of a card number, which is the one outcome this design exists to avoid');
+      `B4 …and NO per-file card row was created for this borrower, who also holds short-term file ${rtlFile} — a long-term twin of application_payment_cards would be a second store of a card number, which is the one outcome this design exists to avoid`);
+
+    /* AND THE STRUCTURAL HALF, which no accumulated state can touch: there is
+       no Long-Term card table at all. B4 can only speak about the RTL table
+       (and could not be written against an LT twin that does not exist yet);
+       this asks the database's own catalogue whether one has appeared. A
+       long-term twin would be an `lt_*` table carrying a card number, and the
+       one and only place a card number may live is `borrowers`. */
+    const twins = (await db.query(
+      `SELECT c.table_name || '.' || c.column_name AS what
+         FROM information_schema.columns c
+         JOIN information_schema.tables t
+           ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+        WHERE c.table_schema = 'public'
+          AND t.table_type = 'BASE TABLE'
+          AND c.table_name LIKE 'lt\\_%'
+          AND (c.column_name LIKE '%card_number%' OR c.column_name LIKE '%card_last4%')
+        ORDER BY 1`)).rows.map((x) => x.what);
+    assert(twins.length === 0,
+      `B4b …and the long-term side has no card table of its own at all — the card lives on the person, once (found: ${twins.join(', ') || 'none'})`);
 
     /* ═════════════════ C. THE NUMBER NEVER COMES BACK ════════════════════════ */
 
