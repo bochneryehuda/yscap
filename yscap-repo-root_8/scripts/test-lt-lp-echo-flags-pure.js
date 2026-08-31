@@ -16,6 +16,7 @@
  * LT-only. No network, no DB, no RTL imports.
  */
 const sm = require('../src/longterm/lenderprice/search-model');
+const tierRounding = require('../src/longterm/pricing/tier-rounding');
 
 let pass = 0, fail = 0;
 function ok(cond, label) { if (cond) { pass++; console.log('  ok   ' + label); } else { fail++; console.log('  FAIL ' + label); } }
@@ -180,10 +181,25 @@ for (const junk of [null, undefined, {}, { value: 'abc' }, { ltv: NaN }, { loan:
   try { sm._internals.deriveAmounts(junk); } catch (_) { threw = true; }
   ok(!threw, `SAFE deriveAmounts(${JSON.stringify(junk)}) does not throw`);
 }
-// ---- a SUPPLIED ltv is rounded like a derived one ---------------------------
+// ---- a SUPPLIED ltv is treated exactly like a derived one -------------------
+// ⛔ RE-POINTED, NOT LOOSENED (2026-08-30). This pinned the literal 0.333333 —
+// round-to-NEAREST — and went red when the owner directed that an LTV must
+// always be rounded UP ("so we should never see better"). Its stated subject was
+// never the direction: it is that a SUPPLIED ltv and a DERIVED one are treated
+// the SAME, at the same precision, so the wire form cannot depend on which way
+// the figure arrived. That property is asserted directly now, against the
+// derived twin rather than against a copied constant, so it can never again
+// disagree with a deliberate change to the shared rule — and the direction is
+// pinned where the rule lives (test-lt-tier-rounding-pure.js).
 {
-  const t = sm._internals.deriveAmounts({ loan: 1e5, ltv: 33.333333 });
-  ok(t.ltv === 0.333333, `ROUND-1 a supplied LTV is rounded to 6dp like a derived one (got ${t.ltv})`);
+  const supplied = sm._internals.deriveAmounts({ loan: 1e5, ltv: 33.333333 }).ltv;
+  const derived = sm._internals.deriveAmounts({ loan: 1e5, value: 1e5 / 0.33333333 }).ltv;
+  ok(supplied === derived,
+    `ROUND-1 a supplied LTV and a derived one land on the SAME figure (${supplied} vs ${derived}) — the wire form must not depend on which way it arrived`);
+  ok(String(supplied).replace(/^0\./, '').length <= 6,
+    `ROUND-1b …at 6 decimals of the fraction, so 33.333333 cannot transmit as 0.33333333000000004 (got ${supplied})`);
+  ok(supplied === tierRounding.sendAs('ltv', 0.33333333, 6),
+    `ROUND-1c …and through the ONE shared rule, so the direction is whatever that rule says rather than a constant copied here (got ${supplied})`);
 }
 
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);

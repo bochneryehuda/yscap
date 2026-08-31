@@ -144,6 +144,26 @@ router.use('/settings', require('./routes/settings'));
 //   /api/lt/dscr/investor-groups
 router.use('/dscr/investor-groups', require('./routes/pricer-groups'));
 
+// THE COMBINED PRICING ENGINE — Lender Price + LoanNEX in one answer, with a
+// per-investor setting for which program each investor is fetched from
+// (owner-directed 2026-08-30). Registered BEFORE the /dscr mount so it wins the
+// match, exactly like /dscr/investor-groups above.
+//
+// A SECOND ENGINE, BESIDE THE FIRST — NEVER ON TOP OF IT. The owner's words:
+// *"Don't touch our current setup that we currently have: our General Pricing
+// Engine. Just make this totally separate… I am going to test the system that
+// works on both together. If it's going to be good, then I am going to merge
+// everything into the General Pricing Engine."* So the general engine below
+// (`/dscr/*`) is byte-for-byte what it was, and this is an additional mount.
+//
+// SUPER ADMIN ONLY, live on the domain. *"Merge this live into domain only for
+// super admin to be able to see it and super admin to be able to test it."* The
+// gate is inside the router (see combined-pricer.js) and is keyed on the REAL
+// staff role, so a long-term role override cannot hand it to anybody. The
+// LT_COMBINED_PRICING switch is a kill switch, default ON.
+//   /api/lt/dscr/combined/{health,price,investors,loannex/price,loannex/login-check,loannex/disqualify/:id}
+router.use('/dscr/combined', require('./routes/combined-pricer').makeRouter());
+
 // TERM SHEETS (owner-directed 2026-08-30) — issue, replay by ID, and the
 // comparison cart. Registered BEFORE the /dscr mount for the same reason the
 // investor groups are, and deliberately NOT inside makeRouter: that router is

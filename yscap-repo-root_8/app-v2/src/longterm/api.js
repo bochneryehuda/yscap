@@ -175,6 +175,53 @@ export const ltApi = {
   dscrSaveInvestorGroup: (name, investors) => ltPost(lt('/dscr/investor-groups'), { name, investors }),
   dscrDeleteInvestorGroup: (id) => ltDel(lt(`/dscr/investor-groups/${encodeURIComponent(id)}`)),
 
+  // ---- THE COMBINED PRICING ENGINE (owner-directed 2026-08-30) ----------------
+  // A SECOND ENGINE BESIDE THE FIRST, never on top of it. The owner's words:
+  // *"Don't touch our current setup that we currently have: our General Pricing
+  // Engine. Just make this totally separate… I am going to test the system that
+  // works on both together."* So the four `/dscr` methods above are UNTOUCHED and
+  // these are additional doors.
+  //
+  // ⛔ SUPER ADMIN ONLY. The server answers 404 to anybody else, which is why the
+  // screens that call these are hidden from every other role — a visible button
+  // that always 404s is worse than no button.
+  //
+  // ⛔ `combinedPrice` COSTS TWO LIVE VENDOR CALLS, one per program. Same rule as
+  // `dscrPrice`, doubled: only ever from a deliberate press.
+  //
+  // `revealSource` is the admin's *"click to see the source of the info"*. It is a
+  // RE-PRICE rather than an unmasking, because the server strips the vendor from
+  // every row before the answer leaves — the owner's one-system rule — so there is
+  // nothing on this side to un-strip.
+  combinedPrice: (scenario, opts) => ltPost(lt('/dscr/combined/price'), { scenario, ...(opts || {}) }),
+  // The investor SETTINGS roster: every investor, its client-safe name, which
+  // program its pricing is fetched from, and whether it is on. A free read of our
+  // own server — no vendor call — so a screen may fetch it from an effect.
+  combinedInvestors: () => ltGet(lt('/dscr/combined/investors')),
+  // Saves the WHOLE map, always — see the route's own note. A per-key patch could
+  // not express "take this setting back off and return the investor to its
+  // pre-fill", which is the thing somebody auditing this will do most often.
+  combinedSaveInvestors: (investors) => ltPut(lt('/dscr/combined/investors'), { investors }),
+  // The margin holdback: read what is in force, and move it up, down, or off.
+  // `points: null` returns it to the standing 0.25; `points: 0` removes it.
+  combinedMarginHoldback: () => ltGet(lt('/dscr/combined/margin-holdback')),
+  combinedSaveMarginHoldback: (points) => ltPut(lt('/dscr/combined/margin-holdback'), { points }),
+  // "THIS INVESTOR AND THIS INVESTOR ARE THE SAME" — the human-recorded links, plus
+  // the pick-list of canonical investors so nobody has to type a key. A free read
+  // of our own server; it prices nothing, so a screen may fetch it from an effect.
+  combinedInvestorLinks: () => ltGet(lt('/dscr/combined/investor-links')),
+  // The WHOLE map, always — a partial write cannot express a link somebody took
+  // away, and a deleted link quietly surviving is the worst outcome here. The
+  // server REFUSES a bad map whole (422 naming each row) rather than storing the
+  // half of it that happened to be readable.
+  combinedSaveInvestorLinks: (links) => ltPut(lt('/dscr/combined/investor-links'), { links }),
+  // What might this spelling be? A PROPOSAL — nothing here writes. An automatic
+  // join would put one investor's pricing under another investor's name, and that
+  // name is the one thing a client may see.
+  combinedLinkSuggest: (name) => ltGet(lt(`/dscr/combined/investor-links/suggest?name=${encodeURIComponent(name)}`)),
+  // Is each program configured? No login attempted, no vendor reached.
+  combinedHealth: () => ltGet(lt('/dscr/combined/health')),
+
   // THE CLICKUP SYNCING SECTION (#36): everything the writer does automatically,
   // visible + manually drivable per file. Every write goes through the guarded
   // writer on the server — these calls only press its buttons.
