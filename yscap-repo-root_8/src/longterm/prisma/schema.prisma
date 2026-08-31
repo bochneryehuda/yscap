@@ -2847,6 +2847,44 @@ model LtTermSheet {
   @@map("lt_term_sheet")
 }
 
+/// db/656 — ONE ROW PER SEND of a term sheet to a borrower.
+///
+/// Its own table rather than an `emailed_at` column, because a sheet is re-sent in
+/// the ordinary course (a corrected address, a second borrower) and one column
+/// would record only the last of those and lose the rest. It stores the document's
+/// HASH rather than the document: the bytes are rebuilt from the sheet's own
+/// snapshot and are byte-identical every time, so a second copy would be a second
+/// copy of something already immutable.
+model LtTermSheetDelivery {
+  id      String @id @default(uuid()) @db.Uuid
+  sheetId String @map("sheet_id") @db.Uuid
+  /// Denormalised so "every send of TS-4K7P2M" is one query with no join.
+  code    String
+
+  toEmail String  @map("to_email")
+  toName  String? @map("to_name")
+  /// The officer's own note AS SENT — already through `audience.scrubInvestorNames`.
+  note    String?
+
+  docKind   String? @map("doc_kind")
+  filename  String?
+  docSha256 String? @map("doc_sha256")
+
+  sentByStaff String? @map("sent_by_staff") @db.Uuid
+  fromEmail   String? @map("from_email")
+  /// `send-as.js`'s own verdict: did the From line really carry the officer's
+  /// address, or the company's under their name.
+  sentAsMode  String? @map("sent_as_mode")
+
+  messageId String? @map("message_id")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([sheetId, createdAt(sort: Desc)], map: "lt_term_sheet_delivery_sheet_idx")
+  @@index([toEmail, createdAt(sort: Desc)], map: "lt_term_sheet_delivery_to_idx")
+  @@map("lt_term_sheet_delivery")
+}
+
 /// db/642 — ONE OPEN COMPARISON PER OFFICER.
 ///
 /// The owner: *"you can do one search and click start comparison. You check mark
