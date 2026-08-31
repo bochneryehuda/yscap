@@ -24,6 +24,24 @@
  *   'gap'     — the short-term side does this and the long-term side does not,
  *               and somebody has to decide whether to build it. THESE ARE THE
  *               ROWS THE OWNER IS ASKING FOR.
+ *   'worker'  — NEITHER product calls it. One company-wide worker does the job
+ *               for both, finding each product's rows itself. The SharePoint
+ *               mirror is the whole reason this verdict exists: no long-term
+ *               screen "calls the mirror" — the mirror SELECTS long-term
+ *               documents. A 'via' claim would be false there, so the claim
+ *               made instead is `proof`: a module the WORKER ITSELF reaches.
+ *               The gate checks it, so "one worker serves both" can never be
+ *               asserted about a worker that has never heard of long-term.
+ *
+ * ── WHAT THIS ENGINE STRUCTURALLY CANNOT SEE, SAID OUT LOUD ─────────────────
+ *
+ * It measures what a PRODUCT'S OWN CODE reaches. The off-site vault (the
+ * nightly Cloudflare copy, `src/lib/backup/**`) is reached by NEITHER product:
+ * it is a scheduled job that enumerates the document store BY KEY and dumps the
+ * whole database with no table list. Listing those modules here would add ZERO
+ * measured rows while reading as coverage, so they are deliberately absent —
+ * the vault's side-by-side is proven where it can be, against real rows and
+ * real keys, in `scripts/test-lt-sharepoint-cloudflare-db.js`.
  *
  * ── THE LEDGER CANNOT GO STALE, BY CONSTRUCTION ─────────────────────────────
  *
@@ -41,6 +59,13 @@
  * @property {string} why      one plain sentence, readable by somebody who is not a developer
  */
 
+/* Every SharePoint-mirror row is the same shape, so it is written once here
+   rather than twenty times below: the mirror is ONE loop over the documents
+   table, and what makes that checkable is that the loop's own code reaches the
+   long-term scope. */
+const MIRROR_PROOF = 'src/longterm/sharepoint-scope.js';
+const mirrorWorker = (why) => ({ verdict: 'worker', proof: MIRROR_PROOF, why });
+
 /** module path → { capability name → Entry } */
 const LEDGER = {
   'src/lib/condition-docs/upload.js': {},
@@ -48,12 +73,6 @@ const LEDGER = {
   'src/lib/condition-docs/review.js': {},
 
   'src/lib/condition-docs/remove.js': {
-    supersede: {
-      verdict: 'shared',
-      via: 'src/lib/condition-docs/remove.js',
-      why: 'Retiring the copy a deleted document replaced happens inside the shared delete '
-        + 'itself, so both products get it from the one call they already make.',
-    },
   },
 
   'src/lib/condition-docs/serve.js': {
@@ -99,10 +118,6 @@ const LEDGER = {
   },
 
   'src/lib/llc.js': {
-    completeness: {
-      verdict: 'shared', via: 'src/lib/llc.js',
-      why: 'How complete a company is comes back inside the bundle both products read.',
-    },
     parseMembers: {
       verdict: 'shared', via: 'src/lib/llc-edit.js',
       why: 'Reading and checking the owners list — the percentages, the titles, the shares — '
@@ -177,13 +192,32 @@ const LEDGER = {
   },
 
   'src/lib/order-email.js': {
-    isNyState: {
-      verdict: 'n/a',
-      why: 'Used by the short-term closing desk, which Long-Term does not have.',
+    buildOrderEmail: {
+      verdict: 'shared', via: 'src/lib/order-email.js',
+      why: 'Writing the order letter itself — the subject, the wording, the attachments. '
+        + 'Long-Term calls it directly; the short-term desk reaches the same builder through '
+        + 'its own order screen, which is why one change to a letter changes both.',
     },
-    helperEmails: {
-      verdict: 'n/a',
-      why: 'Who the borrower’s helper is. Same reason: a long-term file carries no helper.',
+    money: {
+      verdict: 'shared', via: 'src/lib/order-email.js',
+      why: 'Writing an amount the way an order letter says it — same builder, reached the '
+        + 'other way round.',
+    },
+    transactionType: {
+      verdict: 'shared', via: 'src/lib/order-email.js',
+      why: 'Saying whether the deal is a purchase or a refinance in the letter — same.',
+    },
+    propertyLine: {
+      verdict: 'shared', via: 'src/lib/order-email.js',
+      why: 'The property line the vendor reads at the top of the order — same.',
+    },
+    vendorEmails: {
+      verdict: 'shared', via: 'src/lib/order-email.js',
+      why: 'Which addresses at the vendor the order goes to — same.',
+    },
+    recipientsFor: {
+      verdict: 'shared', via: 'src/lib/order-email.js',
+      why: 'The whole recipient list for an order, vendor and our own people together — same.',
     },
     dayText: {
       verdict: 'shared', via: 'src/lib/order-email.js',
@@ -240,11 +274,6 @@ const LEDGER = {
   },
 
   'src/lib/send-as.js': {
-    cleanName: {
-      verdict: 'shared', via: 'src/lib/send-as.js',
-      why: 'Tidying the name that appears in a From line happens inside the shared sender '
-        + 'resolver Long-Term already calls.',
-    },
     senderFor: {
       verdict: 'shared', via: 'src/lib/send-as.js',
       why: 'Who an order comes from. Long-Term calls it directly; the short-term desk reaches '
@@ -266,6 +295,47 @@ const LEDGER = {
   },
 
   'src/lib/order-return-filter.js': {},
+
+  /* ── THE SHAREPOINT MIRROR ──────────────────────────────────────────────
+     Every row here is the same shape, and it is the shape of the whole surface:
+     ONE mirror runs for the company and walks the documents table, so a
+     long-term document is picked up exactly the way a short-term one is and
+     nobody hands it either. 'shared' would be the wrong word (neither product
+     calls these) and 'gap' would be a false alarm. */
+  'src/lib/sharepoint-backup.js': {
+    start: mirrorWorker(
+      'Starting the copier when the site boots. It starts once, for everything.'),
+    enabled: mirrorWorker(
+      'Whether copying to SharePoint is switched on at all. It is one switch for the company, '
+      + 'not one per product.'),
+    kick: mirrorWorker(
+      'A nudge to copy sooner rather than waiting for the next round. Without a nudge the '
+      + 'document is still copied on the next pass, so this changes how SOON, never whether.'),
+    drain: mirrorWorker(
+      'The copier\'s work loop. It walks the documents table, so it picks up a long-term '
+      + 'document exactly as it picks up a short-term one.'),
+    health: mirrorWorker(
+      'Whether the copier is keeping up. It counts every document still waiting across both '
+      + 'products at once, so one number answers for the whole company.'),
+    drainVerify: mirrorWorker(
+      'The work loop of the check that re-reads copies already in SharePoint and makes sure '
+      + 'they are intact. Same loop, same table, both products.'),
+    reconciliation: mirrorWorker(
+      'The scoreboard — how many documents are in SharePoint, how many are waiting, and what '
+      + 'was deliberately not copied. It counts the whole table, so long-term documents are '
+      + 'in the totals and get their own line when they are held back.'),
+    stuckDocuments: mirrorWorker(
+      'The list of documents that have been waiting too long to be copied. It is read off the '
+      + 'same table, so a long-term document that gets stuck appears on it.'),
+    escalateStuckDocs: mirrorWorker(
+      'Forcing a fresh attempt at those stuck documents. Same list, so the same rescue reaches '
+      + 'a long-term document.'),
+    backfillAppraisalPhotoMirrorOnce: {
+      verdict: 'n/a',
+      why: 'A one-off tidy-up of appraisal photographs on short-term files. A long-term file has '
+        + 'no appraisal photo gallery, so there is nothing for it to tidy.',
+    },
+  },
 };
 
 /** The modules this engine compares, in the order the report prints them. */
@@ -293,9 +363,19 @@ const SURFACES = [
     'src/lib/inbound-mail.js',
     'src/lib/order-return-filter.js',
   ] },
+  /* THE MIRROR'S HELPERS ARE DELIBERATELY NOT LISTED. `sharepoint.js` (the
+     Microsoft client), `sharepoint-map.js` (the folder matcher) and
+     `sharepoint-shelf.js` (which shelf a copy sits on) are pulled in by the
+     MIRROR, never by a product, so this engine measures exactly zero rows on
+     them — listing them would read as coverage while proving nothing. They are
+     proven where they can be, on real rows, in
+     `scripts/test-lt-sharepoint-cloudflare-db.js`. */
+  { name: 'The SharePoint mirror', modules: [
+    'src/lib/sharepoint-backup.js',
+  ] },
 ];
 
-const VERDICTS = ['shared', 'n/a', 'gap'];
+const VERDICTS = ['shared', 'n/a', 'gap', 'worker'];
 
 function entryFor(moduleRel, name) {
   return (LEDGER[moduleRel] || {})[name] || null;

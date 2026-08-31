@@ -25,8 +25,8 @@ const reach = {
   lt: measure.reachableFrom(measure.productRoots(files, 'lt')),
 };
 
-const MARK = { shared: 'both', 'n/a': 'n/a ', gap: 'GAP ' };
-const totals = { both: 0, shared: 0, 'n/a': 0, gap: 0 };
+const MARK = { shared: 'both', 'n/a': 'n/a ', gap: 'GAP ', worker: 'auto' };
+const totals = { both: 0, shared: 0, 'n/a': 0, gap: 0, worker: 0 };
 const gaps = [];
 
 for (const surface of SURFACES) {
@@ -56,6 +56,7 @@ for (const surface of SURFACES) {
 
 console.log(`\n${'═'.repeat(78)}`);
 console.log(`  ${totals.both} used by both · ${totals.shared} long-term has through a shared module `
+  + `· ${totals.worker} one company-wide worker does for both `
   + `· ${totals['n/a']} belongs to a surface long-term does not have · ${totals.gap} still missing`);
 console.log('═'.repeat(78));
 

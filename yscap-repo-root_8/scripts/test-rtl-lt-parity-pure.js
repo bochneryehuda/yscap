@@ -90,7 +90,7 @@ assert(unrecorded.length === 0,
 for (const r of oneSided) {
   const e = entryFor(r.mod, r.name);
   if (!e) continue;
-  assert(VERDICTS.includes(e.verdict), `B2 ${r.name}: the verdict is one of the three (${e.verdict})`);
+  assert(VERDICTS.includes(e.verdict), `B2 ${r.name}: the verdict is one of the four (${e.verdict})`);
   assert(typeof e.why === 'string' && e.why.trim().length >= 40,
     `B3 ${r.name}: it says WHY, in a sentence a non-developer can read`);
   if (e.verdict === 'shared') {
@@ -103,6 +103,20 @@ for (const r of oneSided) {
       const side = r.rtlDirect ? 'lt' : 'rtl';
       assert(reach[side].has(e.via),
         `B5 ${r.name}: the ${side === 'lt' ? 'long' : 'short'}-term side really does reach ${e.via}`);
+    }
+  }
+  /* A 'worker' verdict says "neither product calls it — one company-wide worker
+     does it for both". That is exactly the claim a background job can hide
+     behind, so it is checked from the other end: the WORKER'S OWN module must
+     reach the module the entry names as its proof. For the SharePoint mirror
+     that proof is the long-term scope, so a mirror that had never heard of
+     long-term loans could not carry this verdict for one line. */
+  if (e.verdict === 'worker') {
+    assert(typeof e.proof === 'string' && e.proof,
+      `B6 ${r.name}: a "one worker serves both" claim NAMES the module that proves it`);
+    if (e.proof) {
+      assert(measure.reachableFrom([r.mod]).has(e.proof),
+        `B7 ${r.name}: the worker (${r.mod}) really does reach ${e.proof}`);
     }
   }
 }

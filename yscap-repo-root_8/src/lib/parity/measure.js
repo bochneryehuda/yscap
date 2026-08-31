@@ -176,7 +176,14 @@ function exportsOf(rel) {
     // Strip nested objects (an `_internals: { … }` bag is not a public feature)
     // and comments, then take the keys at the top level.
     let body = block[1].replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
-    body = body.replace(/\{[^{}]*\}/g, '');
+    /* REPEATEDLY, until nothing changes. One pass removes only the INNERMOST
+       braces, so a bag nested two deep (`_scoreboardSql: { buckets: [{…}] }`)
+       survived it and leaked its children — `other`, `buckets`, `reasons` were
+       being reported as public features of the SharePoint mirror, which exports
+       none of them. Phantom capabilities are worse than missed ones: each one
+       has to be explained away in the ledger, and a ledger full of explanations
+       for things that do not exist is a ledger nobody believes. */
+    for (let before = null; before !== body;) { before = body; body = body.replace(/\{[^{}]*\}/g, ''); }
     for (const part of body.split(',')) {
       const key = part.trim().replace(/:.*$/s, '').trim();
       if (/^[A-Za-z_$][\w$]*$/.test(key)) names.add(key);
@@ -198,6 +205,14 @@ function isCapability(name) {
  *
  * @returns Array<{ name, rtlDirect, ltDirect, rtlReached, ltReached, callers }>
  */
+/* One BFS per file that ever mentions a capability, kept for the run. */
+const _reachMemo = new Map();
+function canReach(rel) {
+  let r = _reachMemo.get(rel);
+  if (!r) { r = reachableFrom([rel]); _reachMemo.set(rel, r); }
+  return r;
+}
+
 function measureModule(moduleRel, opts = {}) {
   const files = opts.files || sourceFiles();
   const reach = opts.reach || {
@@ -214,11 +229,32 @@ function measureModule(moduleRel, opts = {}) {
        object KEY (`x:`) is not a use of the shared one, so both are excluded. */
     const re = new RegExp(`\\.${name}\\b(?!\\s*[:=][^=])`);
     const callers = [];
+    const binders = [];
     for (const rel of files) {
       if (rel === moduleRel) continue;
-      if (re.test(readFile(rel))) callers.push(rel);
+      if (!re.test(readFile(rel))) continue;
+      /* …AND THE MENTIONING FILE MUST BE ABLE TO REACH THIS MODULE.
+         A short name belongs to more than one module: `norm` is a folder-name
+         normaliser here and a completely different tidy-up in the MISMO reader
+         and in the Encompass comparison, so a mention test alone reported the
+         SharePoint matcher as used by files that have never heard of it — a
+         phantom one-sided row that then has to be explained away in the ledger,
+         which is how a ledger stops being true. Requiring the mention to come
+         from a file whose own import graph contains this module kills the whole
+         class of name collisions rather than this one instance. */
+      if (!canReach(rel).has(moduleRel)) continue;
+      callers.push(rel);
+      if (depsOf(rel).includes(moduleRel)) binders.push(rel);
     }
-    const has = (product) => callers.some((c) => productOf(c) === product);
+    /* DIRECT USE IS A REQUIRE PLUS A MENTION — not a mention alone.
+       Reachability narrows the field but cannot settle a name that half the
+       codebase uses: a dozen integrations each expose their own `configured`,
+       and two other modules export a `categoryFor`, so mentions of those were
+       being credited to the SharePoint client and the mirror by files that pull
+       in neither. Requiring the mentioning file to pull the module in itself is
+       the statement the report actually makes — "this product's own door calls
+       this shared capability" — and it is the one that can be trusted. */
+    const has = (product) => binders.some((c) => productOf(c) === product);
     // REACHED asks whether the product's own graph contains a file that calls
     // it — including the SHARED module that calls it on the product's behalf,
     // which is the whole point of sharing.
@@ -230,6 +266,7 @@ function measureModule(moduleRel, opts = {}) {
       rtlReached: reaches('rtl'),
       ltReached: reaches('lt'),
       callers,
+      binders,
     };
   });
 }
