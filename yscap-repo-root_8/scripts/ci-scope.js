@@ -175,6 +175,48 @@ function stepRuns(step, scope) {
 const MAX_MAP_AGE_DAYS = 14;
 
 /**
+ * How fresh is the map, and is it about to stop being useful?
+ *
+ * WHY THIS EXISTS. Nothing regenerates `docs/ci/test-deps.json` — there is no
+ * job anywhere in `.github/workflows/` that runs `npm run ci:deps`, so the map
+ * is only ever rebuilt when a person does it by hand. It therefore ages past
+ * MAX_MAP_AGE_DAYS on a fixed timer, and on the day it does, every branch in
+ * the repository starts running the whole suite. That is SAFE — a stale map
+ * costs time and never coverage, which is this module's whole design — but it
+ * arrives with no notice at all, and the first anybody knows of it is a build
+ * that suddenly takes the long route.
+ *
+ * So this reports the age BEFORE it matters. It changes no decision: the
+ * pass/fail behaviour of everything downstream is untouched, and the only
+ * consumer prints a line. It is a notice, not a gate — deliberately, because
+ * whether a stale selector should ever BLOCK a build is a policy question with
+ * a real cost either way (blocked deploys against burnt CI minutes), and this
+ * repository's standing posture on exactly that trade — the two schema drift
+ * checks — is that it is the owner's call and not an agent's.
+ *
+ * PURE, and it never throws: an unusable date reads as "cannot tell", which is
+ * reported as such rather than guessed in either direction.
+ *
+ * @returns {{age:number|null, limit:number, stale:boolean, soon:boolean}}
+ */
+function mapFreshness(map, todayUtcDay, warnWithinDays = 4) {
+  const out = { age: null, limit: MAX_MAP_AGE_DAYS, stale: false, soon: false };
+  if (!map || typeof map !== 'object') return out;
+  const age = daysBetween(map.builtAtUtcDay, todayUtcDay);
+  if (age === null || age < 0) return out;          // unusable — say nothing rather than guess
+  out.age = age;
+  out.stale = age > MAX_MAP_AGE_DAYS;
+  // "Nearly stale" is only meaningful while it is still FRESH; once it is over
+  // the limit `stale` is the honest word and `soon` would merely be noise.
+  out.soon = !out.stale && age >= MAX_MAP_AGE_DAYS - warnWithinDays;
+  return out;
+}
+
+/** The one sentence a human needs when the map is old. Kept here so the
+    planner and any future caller cannot word it differently. */
+const REBUILD_HINT = 'run `npm run ci:deps` with a DATABASE_URL to rebuild it';
+
+/**
  * Load the recorded map. Any problem at all answers null, which means "run everything".
  *
  * ON THE INNER GUARDS BELOW, HONESTLY: this function's `try/catch` is the
@@ -354,5 +396,7 @@ module.exports = {
   impactedTests,
   stepRunsImpacted,
   MAX_MAP_AGE_DAYS,
+  mapFreshness,
+  REBUILD_HINT,
   _internals: { LT_PATTERNS, ALWAYS_FULL, ALWAYS_RUN_STEPS, LT_STEP, isLtPath, isAlwaysFull, cleanPath, daysBetween },
 };

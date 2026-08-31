@@ -32,6 +32,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const {
   scopeFor, stepRuns, loadDepMap, impactedTests, stepRunsImpacted, isAlwaysFull,
+  mapFreshness, REBUILD_HINT,
 } = require('./ci-scope');
 
 /** Every step of `npm test`, in order, exactly as package.json declares them. */
@@ -97,6 +98,20 @@ function main() {
     const files = changed.map((s) => String(s).trim()).filter(Boolean);
     const map = loadDepMap(fs, path, __dirname);
     const today = new Date().toISOString().slice(0, 10);
+
+    /* SAY THE MAP IS GETTING OLD BEFORE IT COSTS ANYTHING. Nothing rebuilds
+       `docs/ci/test-deps.json` automatically, so it ages past the limit on a
+       timer and every branch silently falls back to the whole suite. This
+       prints; it decides nothing. */
+    const fresh = mapFreshness(map, today);
+    if (fresh.stale) {
+      console.log(`[ci-plan] the dependency map is ${fresh.age} days old (limit ${fresh.limit}) `
+        + `— every step will run until it is rebuilt: ${REBUILD_HINT}`);
+    } else if (fresh.soon) {
+      console.log(`[ci-plan] heads up: the dependency map is ${fresh.age} days old and stops `
+        + `narrowing at ${fresh.limit} — ${REBUILD_HINT}`);
+    }
+
     const impact = impactedTests(files, map, today);
     if (impact.ok) {
       plan = steps.filter((s) => stepRunsImpacted(s, impact.tests, impact.measured));

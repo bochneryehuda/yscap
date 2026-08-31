@@ -170,7 +170,8 @@ console.log(`ci-scope: ${n} assertions passed ` +
 // side of it: the map may ADD a test, never excuse one. So the interesting
 // cases are all the ways it must REFUSE to narrow, not the happy path.
 // ---------------------------------------------------------------------------
-const { loadDepMap, impactedTests, stepRunsImpacted, MAX_MAP_AGE_DAYS, _internals: I2 } = require('./ci-scope');
+const { loadDepMap, impactedTests, stepRunsImpacted, MAX_MAP_AGE_DAYS, mapFreshness,
+  REBUILD_HINT, _internals: I2 } = require('./ci-scope');
 
 const TODAY = '2026-08-16';
 const MAP = {
@@ -335,6 +336,64 @@ eq(loadDepMap({ readFileSync: () => INDEXED({ tests: { 'test-a.js': [-1] } }) },
 const PLAIN = JSON.stringify({ builtAtUtcDay: TODAY, tests: { 'test-a.js': ['src/lib/pricing.js'] } });
 ok(loadDepMap({ readFileSync: () => PLAIN }, path, __dirname).tests['test-a.js'][0] === 'src/lib/pricing.js',
   'a plain-path map still loads');
+
+// ---------------------------------------------------------------------------
+// THE FRESHNESS NOTICE — it must REPORT, and must decide nothing
+// ---------------------------------------------------------------------------
+//
+// Nothing regenerates the dependency map, so it ages past the limit on a timer
+// and every branch quietly starts running the whole suite. `mapFreshness` is
+// what lets the planner say so a few days BEFORE that happens. It is a notice,
+// not a gate: these assertions pin that it can never change an outcome.
+{
+  const T = '2026-08-30';
+  const at = (day) => mapFreshness({ builtAtUtcDay: day, tests: {} }, T);
+
+  eq(at('2026-08-30').age, 0, 'a map built today is 0 days old');
+  eq(at('2026-08-30').stale, false, 'and is not stale');
+  eq(at('2026-08-30').soon, false, 'and is nowhere near it');
+
+  // The window opens at limit - 4 and closes the moment it is genuinely stale.
+  eq(at('2026-08-21').age, 9, 'nine days old');
+  eq(at('2026-08-21').soon, false, 'nine days is still comfortably fresh');
+  eq(at('2026-08-20').soon, true, 'ten days in, the warning starts');
+  eq(at('2026-08-20').stale, false, 'and it is still only a warning');
+  eq(at('2026-08-16').age, 14, 'fourteen days is the limit itself');
+  eq(at('2026-08-16').stale, false, 'AT the limit is not yet over it — the rule is strictly greater');
+  eq(at('2026-08-16').soon, true, 'but it is the last day of warning');
+  eq(at('2026-08-15').stale, true, 'fifteen days is over the limit');
+  eq(at('2026-08-15').soon, false,
+    'and once stale, "nearly stale" would be noise — the honest word is stale');
+
+  // NEVER GUESSES. An unusable or absent date reports "cannot tell" rather
+  // than picking a side, and a future-dated map is not reported as fresh.
+  eq(at('nonsense').age, null, 'an unreadable date reports no age');
+  eq(at('nonsense').stale, false, 'and claims nothing about staleness');
+  eq(mapFreshness(null, T).age, null, 'no map at all reports no age');
+  eq(mapFreshness(undefined, T).age, null, 'undefined reports no age');
+  eq(at('2026-09-05').age, null, 'a map dated in the future is not given an age');
+  ok(!at('2026-09-05').stale && !at('2026-09-05').soon,
+    'and is reported neither stale nor nearly stale — impactedTests refuses it on its own');
+
+  // It is PURE — the same map and day always answer the same way, and asking
+  // does not change the map.
+  const m = { builtAtUtcDay: '2026-08-20', tests: {} };
+  const first = JSON.stringify(mapFreshness(m, T));
+  eq(JSON.stringify(mapFreshness(m, T)), first, 'asking twice answers the same');
+  eq(m.builtAtUtcDay, '2026-08-20', 'and never edits the map it was handed');
+
+  // THE NOTICE MAY NEVER BECOME A DECISION. A stale map and a fresh one must
+  // produce the SAME selection for the same input, because the age is already
+  // handled by impactedTests — this helper exists only to print.
+  const MAPPED = { tests: { 'test-pricing-pure.js': ['src/lib/pricing.js'] } };
+  const freshPick = impactedTests([P('src/lib/pricing.js')],
+    { ...MAPPED, builtAtUtcDay: '2026-08-29' }, T);
+  ok(freshPick.ok && freshPick.tests.has('test-pricing-pure.js'),
+    'a fresh map still selects exactly as before the notice existed');
+
+  ok(typeof REBUILD_HINT === 'string' && REBUILD_HINT.includes('ci:deps'),
+    'the rebuild hint names the command that actually rebuilds the map');
+}
 
 // ---------------------------------------------------------------------------
 // THE SEAM — the planner must ACT on what the scope decides
