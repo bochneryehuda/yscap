@@ -1,4 +1,4 @@
--- 656 — THE VESTING CONDITION KEEPS ASKING WHILE FIELD 4008 IS BLANK.
+-- 657 — THE VESTING CONDITION KEEPS ASKING WHILE FIELD 4008 IS BLANK.
 --
 -- Owner-directed 2026-08-31. Field 4008 decides whether a long-term loan is
 -- asked for its company's formation documents, and on the 19 loans (of 486)
