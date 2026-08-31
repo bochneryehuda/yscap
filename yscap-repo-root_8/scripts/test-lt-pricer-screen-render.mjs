@@ -479,9 +479,53 @@ const stack = buildRateStack(capture.programs);
 // `--ink*` is a LIGHT paper colour in this palette — the names LIE. A text colour taken from one
 // renders white on white, which is how a whole staff card went invisible once already.
 // ---------------------------------------------------------------------------
-for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/ppeStyles.js']) {
+for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/LtScenarioFields.jsx', 'app-v2/src/longterm/ppeStyles.js']) {
   const src = fs.readFileSync(path.join(repo, f), 'utf8');
   ok(!/color:\s*['"`]?var\(--ink/.test(src), `R44 ${path.basename(f)} never uses a --ink* token as a text colour`);
+}
+
+// ---------------------------------------------------------------------------
+// 7b) ⛔ THE SCENARIO'S FIELDS ARE ONE COMPONENT, AND EVERY SCREEN MOUNTS IT
+//
+// `docs/longterm/SAVED-SCENARIOS-RESEARCH.md` D1: the owner asked for saved scenarios on BOTH the
+// pricing engine and a scenario page. That research named the one real risk in the shape they chose
+// — *"a second screen means a second copy of twenty-one fields, and the copy which drifts is the one
+// that prices the wrong deal"* — and answered it with a BUILD RULE rather than an argument.
+//
+// So this is the rule, enforced: every pricing field id (`pe-*`) is declared in exactly ONE file.
+// A screen that grows its own copy of the loan amount, the FICO or the prepayment penalty fails
+// here, which is the only place that failure is cheap. It is a SOURCE check because the property is
+// about which FILE a control is written in; a render can only see the one screen it rendered.
+// ---------------------------------------------------------------------------
+{
+  const dir = path.join(repo, 'app-v2/src/longterm');
+  const owners = new Map();          // field id -> [files that declare it]
+  for (const f of fs.readdirSync(dir)) {
+    if (!/\.jsx?$/.test(f)) continue;
+    const src = fs.readFileSync(path.join(dir, f), 'utf8');
+    for (const m of src.matchAll(/\bid="(pe-[a-z0-9-]+)"/g)) {
+      const list = owners.get(m[1]) || [];
+      if (!list.includes(f)) list.push(f);
+      owners.set(m[1], list);
+    }
+  }
+  const shared = [...owners.entries()].filter(([, files]) => files.length > 1);
+  ok(owners.size >= 10, `R44b the sweep can see the scenario's fields at all (${owners.size} of them) — a sweep that found none would pass forever`);
+  ok(shared.length === 0,
+    `R44c every pricing field is declared in ONE file${shared.length ? `: ${shared.map(([k, v]) => `${k} in ${v.join(' + ')}`).join('; ')}` : ''}`);
+  /* ⛔ AND THE SCENARIO'S OWN FIELDS LIVE IN THE SHARED COMPONENT. The `pe-` prefix is the pricing
+     ENGINE's, not the field set's, so one control legitimately sits outside it: `pe-waive-fees`
+     belongs to the COMPENSATION SWITCH, which is a lens on the board (it is never sent to Lender
+     Price and is not part of what a scenario IS). It is named here rather than excluded by a looser
+     pattern, so a second stray cannot slip in behind it. */
+  const OUTSIDE = new Set(['pe-waive-fees']);
+  const strays = [...owners.entries()]
+    .filter(([id, files]) => !OUTSIDE.has(id) && !files.includes('LtScenarioFields.jsx'))
+    .map(([id, files]) => `${id} in ${files.join(' + ')}`);
+  ok(strays.length === 0,
+    `…and every one of them is declared in LtScenarioFields.jsx, which both screens mount${strays.length ? `: ${strays.join('; ')}` : ''}`);
+  ok([...owners.keys()].filter((id) => !OUTSIDE.has(id)).length >= 10,
+    '…with the named exception genuinely being an exception, not most of the list');
 }
 
 // ---------------------------------------------------------------------------
