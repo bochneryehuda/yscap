@@ -111,13 +111,13 @@ footer p{max-width:74ch;margin:0 0 9px}
   This is a picture of a copy — nothing here can change anything.</p>
   <div class="figs">
     <div class="fig"><b>405</b><span>tables</span></div>
-    <div class="fig"><b>6,484</b><span>fields</span></div>
+    <div class="fig"><b>6,485</b><span>fields</span></div>
     <div class="fig"><b>825</b><span>connections</span></div>
     <div class="fig"><b>37</b><span>automatic rules</span></div>
     <div class="fig"><b>347</b><span>value guards</span></div>
     <div class="fig"><b>1,404</b><span>lookups</span></div>
   </div>
-  <p class="stamp">Generated from the committed schema map — built from 650 migration files, up to db/654. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
+  <p class="stamp">Generated from the committed schema map — built from 651 migration files, up to db/654. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
 </div></header>
 
 <section><div class="wrap">
@@ -808,10 +808,10 @@ footer p{max-width:74ch;margin:0 0 9px}
   </div>
 </div></details><details class="tbl" data-name="lt_term_sheet_scenario" data-note="">
 <summary><span class="tn">lt_term_sheet_scenario</span>
-<span class="tm">13 fields · 0 links</span>
+<span class="tm">14 fields · 0 links</span>
 </summary>
 <div class="detail">
-  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">cart_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">charges <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'{}'::jsonb</td></tr><tr><td class="c">closing <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'{}'::jsonb</td></tr><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">label</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">mode <span class="req">required</span></td><td class="t">text</td><td class="t">'lenderPaid'::text</td></tr><tr><td class="c">parent_kind <span class="req">required</span></td><td class="t">text</td><td class="t">'cart'::text</td></tr><tr><td class="c">position <span class="req">required</span></td><td class="t">integer</td><td class="t"></td></tr><tr><td class="c">priced_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">program <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'{}'::jsonb</td></tr><tr><td class="c">scenario <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'{}'::jsonb</td></tr><tr><td class="c">waive_lender_fees <span class="req">required</span></td><td class="t">boolean</td><td class="t">false</td></tr></tbody></table></div>
+  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">cart_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">charges <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'{}'::jsonb</td></tr><tr><td class="c">closing <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'{}'::jsonb</td></tr><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">internal <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'{}'::jsonb</td></tr><tr><td class="c">label</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">mode <span class="req">required</span></td><td class="t">text</td><td class="t">'lenderPaid'::text</td></tr><tr><td class="c">parent_kind <span class="req">required</span></td><td class="t">text</td><td class="t">'cart'::text</td></tr><tr><td class="c">position <span class="req">required</span></td><td class="t">integer</td><td class="t"></td></tr><tr><td class="c">priced_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">program <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'{}'::jsonb</td></tr><tr><td class="c">scenario <span class="req">required</span></td><td class="t">jsonb</td><td class="t">'{}'::jsonb</td></tr><tr><td class="c">waive_lender_fees <span class="req">required</span></td><td class="t">boolean</td><td class="t">false</td></tr></tbody></table></div>
   <div class="links">
     <div><h4>Depends on</h4><ul><li style="color:var(--ink-3)">Nothing — this table stands on its own.</li></ul></div>
     <div><h4>Depended on by</h4><ul><li style="color:var(--ink-3)">Nothing points at this table.</li></ul></div>

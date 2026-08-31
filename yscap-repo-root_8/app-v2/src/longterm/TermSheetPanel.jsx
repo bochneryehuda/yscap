@@ -23,6 +23,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import ltApi from './api.js';
 import AddressField from './AddressField.jsx';
+import { memberForQuote } from './cartMatch.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, PAPER, CAUTION, segTrack, segBtn } from './ppeStyles.js';
 
 const NUM = { fontVariantNumeric: 'tabular-nums' };
@@ -296,6 +297,9 @@ export function IssueFields({ issue, gate, onChanged, busy, onIssue, onCancel })
     issue.prepared.borrowerName, issue.prepared.entityName, issue.prepared.propertyAddress]);
 
   const check = issue.ratioCheck();
+  // A ratio BELOW the one the price was obtained at is the money rule, and it is
+  // the server's to enforce — this is the screen agreeing with it.
+  const ratioBlocks = !!(check && check.state === 'differs');
   const mark = (key) => (outstanding(gate, key)
     ? { color: CAUTION, fontWeight: 700 } : null);
 
@@ -361,13 +365,22 @@ export function IssueFields({ issue, gate, onChanged, busy, onIssue, onCancel })
         </label>
       </div>
 
-      <RatioCheck check={check} />
+      <RatioCheck check={check} onReprice={issue.onReprice} busy={busy} />
 
       <div style={{
         display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center',
         padding: '9px 11px', borderTop: `1px solid ${GOLD}33`,
       }}>
-        <button type="button" style={btn('primary')} disabled={busy != null} onClick={onIssue}>
+        {/* ⛔ THE ONE THING THIS BUTTON IS DISABLED FOR. Everything else the gate
+            refuses is a box on this panel, so a greyed button would explain
+            nothing that the sentence beside it does not already say — but a
+            ratio below the one the price was bought at is not a box anybody can
+            fill, it is a re-price, and the button for that is right above. The
+            SERVER refuses it either way (`dscr_below_priced`); this only stops
+            an officer pressing something that cannot succeed. */}
+        <button type="button" style={btn('primary')}
+          disabled={busy != null || ratioBlocks}
+          aria-disabled={ratioBlocks} onClick={onIssue}>
           {busy === 'issue' ? 'Issuing…' : 'Issue the term sheet'}
         </button>
         <button type="button" style={btn()} disabled={busy != null} onClick={onCancel}>Not now</button>
@@ -375,8 +388,9 @@ export function IssueFields({ issue, gate, onChanged, busy, onIssue, onCancel })
             names every missing field at once; a greyed button explains nothing
             and a person cannot ask it why. */}
         <span style={{ fontSize: 11.5, color: gate && gate.ok ? MUTED : CAUTION, flex: '1 1 180px' }}>
-          {gate && gate.ok ? 'Everything a term sheet needs is here.'
-            : (gate && gate.message) || 'Fill these in and it will issue.'}
+          {ratioBlocks ? 'Re-price at the ratio these figures produce, then issue.'
+            : gate && gate.ok ? 'Everything a term sheet needs is here.'
+              : (gate && gate.message) || 'Fill these in and it will issue.'}
         </span>
       </div>
     </div>
@@ -424,20 +438,98 @@ export function Basis({ value, onChange }) {
  * ⛔ AND IT SAYS NOTHING IT CANNOT PROVE. A half-filled scenario, a missing rate
  * or a missing term yields no verdict at all — never a confident "they match".
  */
-export function RatioCheck({ check }) {
+export function RatioCheck({ check, onReprice, busy }) {
   if (!check || check.state === 'unknown') return null;
   const agree = check.state === 'agree';
   return (
     <div style={{
-      padding: '8px 11px', borderTop: `1px solid ${GOLD}33`,
+      padding: '9px 11px', borderTop: `1px solid ${GOLD}33`,
       fontSize: 12.5, lineHeight: 1.5, color: agree ? SLATE : CAUTION,
     }}>
-      {agree
-        ? `These figures work out to a DSCR of ${check.computed} — the ratio this was priced at.`
-        : `These figures work out to a DSCR of ${check.computed}, but this option was priced at `
-          + `${check.priced}. The sheet would state ${check.computed} against a price fetched at `
-          + `${check.priced} — run the search again at ${check.computed} if the price should match.`}
+      {agree ? (
+        `These figures work out to a DSCR of ${check.computed} — the same band this was priced in, so it issues.`
+      ) : (
+        <>
+          {/* ⛔ SHORT, AND IT SAYS WHICH WAY IT WENT — owner-directed: *"make sure it's very
+              easy."* Downward is the money case; upward means the borrower qualifies for better
+              pricing than the paper shows. Neither is an accusation and both are one press to fix. */}
+          <div style={{ fontWeight: 700 }}>
+            {check.direction === 'above'
+              ? `These figures come to ${check.computed} — a higher DSCR band than the ${check.priced} this was priced in.`
+              : `These figures come to ${check.computed} — a lower DSCR band than the ${check.priced} this was priced in.`}
+          </div>
+          {/* ⛔ THE REMEDY IS IN THE WORDS, not only on the button. The button is only drawn when
+              a re-price handler is wired, so a surface without one would otherwise state a refusal
+              and offer nothing — a dead end. Caught by the render suite when this sentence was
+              dropped in a rewrite. */}
+          <div style={{ marginTop: 3 }}>
+            {check.direction === 'above'
+              ? 'The borrower qualifies for better pricing than this sheet shows, so it cannot be issued '
+                + 'as it stands. Re-price at the true ratio and issue from the new price.'
+              : 'The rate on this row was bought in a band the loan no longer reaches, so it cannot be '
+                + 'issued as it stands. Re-price at the true ratio and issue from the new price.'}
+          </div>
+          {onReprice ? (
+            <button type="button" style={{ ...btn('primary'), marginTop: 7 }}
+              disabled={!!busy} onClick={() => onReprice(check.computed)}>
+              {`Re-price at ${check.computed}`}
+            </button>
+          ) : null}
+        </>
+      )}
     </div>
+  );
+}
+
+
+/**
+ * THE TICK-BOX ON A PROGRAMME'S OWN ROW.
+ *
+ * Owner-directed 2026-08-30: *"You don't understand how you select which program should be
+ * parked. I think it should be a checkbox, maybe, or a select mode by the two comparison things.
+ * Select which program should be included … I can't figure it out."*
+ *
+ * ⛔ WHAT WAS ACTUALLY WRONG: selecting lived at the BOTTOM of a programme's Details drawer, and
+ * the collected options lived in a strip somewhere else. Nothing on the board itself ever said
+ * "this one is in" — so an officer could not answer, by looking, which programmes they had picked.
+ * Two clicks deep to select, and no way to see the result: that is the whole complaint.
+ *
+ * ⛔ IT IS A REAL CHECKBOX, not a button that toggles. Choosing several things out of a list is
+ * what a checkbox is for, it announces its own state to a screen reader without being told, and it
+ * is the control everybody already knows.
+ *
+ * ⛔ AND IT ANSWERS FROM THE CART, never from a list kept here. `memberForQuote` matches on what
+ * the offer IS, so the tick survives a re-render, a re-price and a reload — the cart is the
+ * server's. A private "selected" set in the browser would drift from it the moment anything else
+ * changed the cart, and a tick that lies about what is collected is worse than no tick.
+ */
+export function PickBox({ quote, comp, members, busy, onAdd, onRemove }) {
+  const mine = memberForQuote(members, quote, comp);
+  const on = !!mine;
+  const label = on ? 'In the comparison — untick to take it out' : 'Add this programme to the comparison';
+  return (
+    <label
+      title={label}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 5, cursor: busy ? 'progress' : 'pointer',
+        // A real target on a phone, where a bare 13px box is a quarter of what a thumb lands on.
+        minHeight: 30, paddingRight: 2,
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={on}
+        disabled={!!busy}
+        aria-label={label}
+        onChange={() => (on ? onRemove(mine) : onAdd())}
+        style={{ width: 17, height: 17, accentColor: GOLD, cursor: 'inherit' }}
+      />
+      {/* The state in WORDS as well as in the box. A tick is shape and colour alone, and this line
+          is read across a board of near-identical rows. */}
+      <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', color: on ? GOLD_TEXT : MUTED }}>
+        {on ? 'IN' : 'ADD'}
+      </span>
+    </label>
   );
 }
 
@@ -531,11 +623,50 @@ export function workflowMismatch(chosen, docKind) {
  * an entry point. The STRIP below it is the opposite and stays that way — a list of collected
  * options is furniture when there are none.
  */
-export function ComparisonWorkflowPanel({ enabled, chosen, onChoose, count, docKind, children }) {
+export function ComparisonWorkflowPanel({
+  enabled, chosen, onChoose, count, docKind, children, note, offBoard,
+}) {
+  /* ⛔ EVERY HOOK IS ABOVE THE EARLY RETURN. `enabled` flips at runtime (the cart hook
+     resolves after the first paint), so a hook below it renders a different number of
+     hooks on the second pass and React throws. Guarded by test-react-hook-order. */
+  const railRef = useRef(null);
+
+  /* THE SEARCH STRIP BELOW MOVES DOWN BY EXACTLY WHAT THIS RAIL OCCUPIES — measured from
+     the rail's own box, never a constant. The rail's height genuinely changes as options
+     are ticked in and out and as the issue form opens, so a fixed offset would either
+     overlap the strip or leave a gap under it. Published as `--lt-comp-h`, which
+     `.lt-strip`'s `top` reads. Cleared on unmount, or the strip keeps an offset for a
+     rail that is no longer on the page. */
+  useEffect(() => {
+    const root = document.documentElement;
+    const el = railRef.current;
+    if (!enabled || !el || !root) { if (root) root.style.setProperty('--lt-comp-h', '0px'); return undefined; }
+    let stop = false;
+    const publish = () => {
+      if (stop) return;
+      /* getBoundingClientRect, not offsetHeight: the rail is a sticky box whose height we
+         want including its border, and a fractional height must not be rounded down into
+         a one-pixel overlap. */
+      const h = Math.round(el.getBoundingClientRect().height);
+      root.style.setProperty('--lt-comp-h', `${h > 0 ? h : 0}px`);
+    };
+    publish();
+    let ro = null;
+    if (typeof ResizeObserver === 'function') { ro = new ResizeObserver(publish); ro.observe(el); }
+    window.addEventListener('resize', publish);
+    return () => {
+      stop = true;
+      if (ro) ro.disconnect();
+      window.removeEventListener('resize', publish);
+      root.style.setProperty('--lt-comp-h', '0px');
+    };
+  }, [enabled, chosen, count, note && note.text, offBoard]);
+
   if (!enabled) return null;
   const warn = workflowMismatch(chosen, docKind);
+  const picked = COMPARISON_WORKFLOWS.find((w) => w.key === chosen) || null;
   return (
-    <div style={{
+    <div ref={railRef} className="lt-comp-rail" style={{
       border: `1px solid ${GOLD}55`, borderRadius: 12, background: '#fff', marginBottom: 12,
     }}>
       <div style={{
@@ -547,10 +678,26 @@ export function ComparisonWorkflowPanel({ enabled, chosen, onChoose, count, docK
         }}>
           Build a comparison
         </span>
-        <span style={{ fontSize: 11.5, color: MUTED }}>
+        <span style={{ fontSize: 11.5, color: count ? INK : MUTED, fontWeight: count ? 700 : 400 }}>
           {count ? `${count} option${count === 1 ? '' : 's'} collected` : 'Nothing collected yet'}
         </span>
       </div>
+      <div className="lt-comp-body">
+      {/* ⛔ THE CHOOSER COLLAPSES ONCE IT HAS BEEN ANSWERED. The rail is PINNED, so every
+          pixel it keeps is a pixel of board an officer cannot see — and two paragraphs
+          explaining a choice already made are the first thing that should fold away. */}
+      {picked ? (
+        <div style={{
+          padding: '9px 13px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+        }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: INK }}>{picked.title}</span>
+          <button type="button" onClick={() => onChoose(null)} style={{
+            border: 0, background: 'none', padding: 0, cursor: 'pointer', font: 'inherit',
+            fontSize: 12, fontWeight: 700, color: GOLD_TEXT, textDecoration: 'underline',
+            textUnderlineOffset: 3,
+          }}>change</button>
+        </div>
+      ) : (
       <div style={{ padding: 11, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         {COMPARISON_WORKFLOWS.map((w) => {
           const on = chosen === w.key;
@@ -572,13 +719,47 @@ export function ComparisonWorkflowPanel({ enabled, chosen, onChoose, count, docK
           );
         })}
       </div>
+      )}
+      {/* ⛔ SAY WHAT PICKING ONE DOES, in the panel that offers it. Owner-reported
+          2026-08-30: *"I can't figure it out."* A chooser that silently turns on
+          tick-boxes elsewhere on the page teaches nobody where to look next. */}
+      <div style={{
+        padding: '8px 13px', borderTop: `1px solid ${GOLD}33`,
+        fontSize: 12.5, lineHeight: 1.5, color: chosen ? INK : MUTED,
+      }}>
+        {chosen
+          ? 'Now tick the programmes below to put them in. Untick one to take it out.'
+          : 'Pick one of the two above, then tick the programmes you want on the board below.'}
+      </div>
+      {/* WHAT THE LAST TICK DID — the owner's *"what you selected and what you
+          removed"*. A tick that changes nothing visible leaves somebody
+          wondering whether it saved. */}
+      {note && note.text ? (
+        <div style={{
+          padding: '7px 13px', borderTop: `1px solid ${GOLD}33`, fontSize: 12.5,
+          color: note.tone === 'bad' ? CAUTION : GOLD_TEXT, fontWeight: 600,
+        }}>{note.text}</div>
+      ) : null}
       {warn ? (
         <div style={{
           padding: '8px 13px', borderTop: `1px solid ${GOLD}33`,
           fontSize: 12.5, lineHeight: 1.5, color: CAUTION,
         }}>{warn}</div>
       ) : null}
+      {/* ⛔ THE CART SPANS SEARCHES, SO SAY SO. An officer looking at four
+          collected options and three ticks would otherwise read the fourth as a
+          tick that failed — it is simply not on the board in front of them. */}
+      {offBoard > 0 ? (
+        <div style={{
+          padding: '7px 13px', borderTop: `1px solid ${GOLD}33`, fontSize: 12,
+          color: MUTED, lineHeight: 1.5,
+        }}>
+          {`${offBoard} of these ${offBoard === 1 ? 'was' : 'were'} priced in an earlier search, `
+            + 'so there is no row to tick on this board. They are still in — remove them below.'}
+        </div>
+      ) : null}
       {children}
+      </div>
     </div>
   );
 }
@@ -635,6 +816,12 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
     rawPrice: (m.program || {}).rawPrice,
     vendorMonthlyPI: (m.program || {}).monthlyPI,
     scenario: m.scenario,
+    // db/651 — the cart is where a comparison is assembled, so the staff-only
+    // record of who funds each option has to survive the round trip: an option
+    // parked here and issued an hour later must name the same investor as one
+    // issued straight off the board. It is stored on the cart member and handed
+    // straight back; nothing here reads or reshapes it.
+    internal: m.internal,
     pricedAt: m.priced_at,
   })), [members, names]);
 

@@ -99,11 +99,15 @@ const SZ = {
   bandTitle: 18, bandSub: 9.5, bandId: 7.5,
   section: 8, label: 9.5, value: 10, big: 15, bigLabel: 9.5,
   eyebrow: 7.4, name: 12.5,
-  para: 9.5, small: 8.3, table: 8.4,
+  para: 9.5, small: 8.3, table: 8.4, hero: 19,
   discHead: 8.7, discBody: 8,
   footContact: 7.6, footDisc: 7, footId: 6,
 };
 const LEAD = 1.32;   // line height as a multiple of the size
+/** What a table cell gives up to its own padding. ONE constant, because the
+ *  column width and the text width inside it must be computed in the same
+ *  units — two literals is how a label comes to be 4pt short of its own cell. */
+const CELL_PAD = 12;
 
 /**
  * WinAnsi cannot carry these, and each one has an honest plain-text reading.
@@ -265,6 +269,15 @@ function line(ctx, y, x1, x2, color, thickness) {
   });
 }
 
+/** A vertical hairline — the divider between the headline band's cells. */
+function vline(ctx, x, yTop, h, color) {
+  if (!(h > 0)) return;
+  ctx.page.drawLine({
+    start: { x, y: yTop }, end: { x, y: yTop - h },
+    thickness: 0.5, color: color || HAIR,
+  });
+}
+
 function rect(ctx, x, yTop, w, h, color) {
   if (!(w > 0) || !(h > 0)) return;
   ctx.page.drawRectangle({ x, y: yTop - h, width: w, height: h, color });
@@ -380,12 +393,17 @@ function compileRecipient(b, ctx) {
   const addr = ctx.text(b.propertyAddress || '');
   const nameLines = name ? wrap(ctx, name, F.bold, SZ.name, leftW) : [];
   const addrLines = addr ? wrap(ctx, addr, F.reg, SZ.value, leftW) : [];
+  // The property's own facts, under the address they are about — a comparison
+  // draws them here instead of a band, so page one stays the comparison.
+  const facts = ctx.text(b.propertyFacts || '');
+  const factLines = facts ? wrap(ctx, facts, F.reg, SZ.small, leftW) : [];
   const officer = (b.officer || []).map((l) => ctx.text(l)).filter(Boolean);
   const officerLines = [];
   for (const l of officer) officerLines.push(...wrap(ctx, l, F.reg, SZ.small, rightW));
 
   const leftH = (name ? SZ.eyebrow * LEAD + nameLines.length * SZ.name * LEAD + 2 : 0)
-    + (addr ? SZ.eyebrow * LEAD + 2 + addrLines.length * SZ.value * LEAD : 0);
+    + (addr ? SZ.eyebrow * LEAD + 2 + addrLines.length * SZ.value * LEAD : 0)
+    + (factLines.length ? factLines.length * SZ.small * LEAD + 1 : 0);
   const rightH = officerLines.length ? SZ.eyebrow * LEAD + officerLines.length * SZ.small * LEAD : 0;
   const h = Math.max(leftH, rightH) + 14;
 
@@ -401,6 +419,8 @@ function compileRecipient(b, ctx) {
       putTracked(c, 'PROPERTY', M.left, ly, F.bold, SZ.eyebrow, GOLD, 0.7, leftW);
       ly -= SZ.eyebrow * LEAD;
       for (const l of addrLines) { put(c, l, M.left, ly, F.reg, SZ.value, INK, leftW); ly -= SZ.value * LEAD; }
+      ly -= 1;
+      for (const l of factLines) { put(c, l, M.left, ly, F.reg, SZ.small, MUTED, leftW); ly -= SZ.small * LEAD; }
     }
     if (officerLines.length) {
       let ry = y;
@@ -554,6 +574,77 @@ function compilePara(b, ctx) {
  * "This term sheet expires" at the foot of one page and "in 24 hours" at the
  * head of the next.
  */
+/**
+ * THE HEADLINE BAND — two to four figures, large, across the top.
+ *
+ * Owner-reported 2026-08-31: all three documents read as *"very ugly and very
+ * abrupt"*, and part of that is that every one of them opened with the parties
+ * and then a two-column table of nine-point type — the loan amount, the rate and
+ * the payment, which are the whole point, were four inches down and the same
+ * size as the property type.
+ *
+ * ⛔ IT DRAWS WHAT IT IS GIVEN AND WORKS NOTHING OUT. `layout.heroCells` reads
+ * every figure straight off the member the tables below are built from, so the
+ * headline cannot state a number the body contradicts.
+ *
+ * ⛔ IT NEVER SPLITS ACROSS A PAGE. The band is one item — a headline broken in
+ * half across a page boundary is worse than no headline — and its value type is
+ * sized DOWN to fit its own column rather than being allowed to run into the
+ * cell beside it, because a $1,234,567.89 loan amount is a perfectly ordinary
+ * figure on this book.
+ */
+function compileHero(b, ctx) {
+  const F = ctx.fonts;
+  const cells = (b.cells || []).filter((c) => c && c.value);
+  if (cells.length < 2) return [];
+  const n = cells.length;
+  const padX = 12;
+  const colW = CONTENT_W / n;
+  const innerW = colW - padX * 2;
+
+  // The value's own size, per cell, so a long figure shrinks rather than
+  // colliding with its neighbour. Never below `SZ.value`, or the "headline" is
+  // smaller than the table it is summarising.
+  const sizeFor = (txt) => {
+    let size = SZ.hero;
+    while (size > SZ.value && advance(ctx, txt, F.bold, size) > innerW) size -= 0.5;
+    return size;
+  };
+  const drawn = cells.map((c) => {
+    const value = ctx.text(c.value);
+    const size = sizeFor(value);
+    return {
+      label: ctx.text(c.label || ''),
+      value,
+      size,
+      note: c.note ? wrap(ctx, ctx.text(c.note), F.italic || F.reg, SZ.footId + 0.6, innerW) : [],
+    };
+  });
+  const noteLines = Math.max(...drawn.map((d) => d.note.length));
+  const boxH = 12 + SZ.eyebrow * LEAD + SZ.hero * LEAD + noteLines * (SZ.footId + 0.6) * LEAD + 10;
+  const h = boxH + 16;
+  return [item(h, (c, y) => {
+    const top = y - 6;
+    rect(c, M.left, top, CONTENT_W, boxH, IVORY);
+    line(c, top - boxH, M.left, RIGHT_X, GOLD, 1.1);
+    drawn.forEach((d, i) => {
+      const x = M.left + i * colW + padX;
+      let ty = top - 12;
+      put(c, d.label.toUpperCase(), x, ty, F.bold, SZ.eyebrow, MUTED, innerW);
+      ty -= SZ.eyebrow * LEAD + 3;
+      put(c, d.value, x, ty - (SZ.hero - d.size), F.bold, d.size, INK, innerW);
+      ty -= SZ.hero * LEAD;
+      for (const l of d.note) {
+        put(c, l, x, ty, F.italic || F.reg, SZ.footId + 0.6, MUTED, innerW);
+        ty -= (SZ.footId + 0.6) * LEAD;
+      }
+      // A hairline between cells, never a box around each: the band reads as one
+      // statement about one loan, not as four unrelated tiles.
+      if (i > 0) vline(c, M.left + i * colW, top - 8, boxH - 16, HAIR);
+    });
+  })];
+}
+
 function compileCallout(b, ctx) {
   const F = ctx.fonts;
   const padX = 12;
@@ -644,15 +735,33 @@ function compileTable(b, ctx) {
   const cols = head.length;
   if (cols < 2) return [];
 
+  /* ⛔ THE LABEL COLUMN IS SIZED IN THE SAME UNITS THE CELL IS DRAWN IN, and it
+     was not (owner-reported 2026-08-31, on all three sheets reading as *"very
+     ugly"*). The width was the widest label PLUS 8, and `cellW` then subtracts
+     12 for the cell's own padding — so the longest label in every table this
+     renderer has ever drawn had four points LESS room than it needs, and wrapped
+     onto a second line by construction, every time. MEASURED on the comparison
+     sheet: "Estimated cash to close" is 88.7pt, its column was 96.7pt, its cell
+     84.7pt. Each data column meanwhile had ~20pt of white to spare — which is
+     what this looks like on the page: a two-line label beside three columns with
+     room in them, making the table taller and the document longer.
+
+     ⛔ THE PAD MUST BE AT LEAST WHAT `cellW` TAKES BACK, or the arithmetic says
+     one thing and the drawing does another. `CELL_PAD` is that figure and both
+     lines read it; the extra 2 is slack, not decoration — a label sitting flush
+     against its own boundary reads as clipped. The 92pt floor and the
+     third-of-the-page cap are UNCHANGED: past the cap a label still wraps, and
+     it should, because a label that grows at the expense of the figures has made
+     the table worse rather than better. */
   const labelNeed = Math.max(
     ...rows.map((r) => advance(ctx, ctx.text(r[0]), F.reg, SZ.table)),
     advance(ctx, ctx.text(head[0] || ''), F.bold, SZ.table),
     0,
-  ) + 8;
+  ) + CELL_PAD + 2;
   const labelW = Math.min(Math.max(labelNeed, 92), Math.round(CONTENT_W * 0.34));
   const colW = (CONTENT_W - labelW) / (cols - 1);
   const xOf = (i) => (i === 0 ? M.left : M.left + labelW + (i - 1) * colW);
-  const cellW = (i) => (i === 0 ? labelW : colW) - 12;
+  const cellW = (i) => (i === 0 ? labelW : colW) - CELL_PAD;
 
   const wrapRow = (cells, font) => cells.map((cell, i) => wrap(ctx, ctx.text(cell), font, SZ.table, cellW(i)));
   const rowHeight = (wrapped) => Math.max(...wrapped.map((w) => w.length)) * SZ.table * LEAD + 7;
@@ -728,6 +837,7 @@ function compile(blocks, ctx) {
       case 'subhead': items.push(...compileSubhead(b, ctx)); break;
       case 'figures': items.push(...compileFigures(b, ctx)); break;
       case 'para': items.push(...compilePara(b, ctx)); break;
+      case 'hero': items.push(...compileHero(b, ctx)); break;
       case 'callout': items.push(...compileCallout(b, ctx)); break;
       case 'disclosures': items.push(...compileDisclosures(b, ctx)); break;
       case 'signature': items.push(...compileSignature(b, ctx)); break;

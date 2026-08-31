@@ -519,6 +519,7 @@ export default function StaffLayout({ children }) {
             <NavLink className="sb-link" to="/internal/lt/condition-library" title="Every condition the long-term side can ask for, the gate it blocks, and the rule that decides which files get it. Pre-filled, not hard-wired."><NavIcon name="conditions" />Conditions library</NavLink>
             <NavLink className="sb-link" to="/internal/lt/reports" title="How long every file took between which and which step, who held it, and the same added up per person."><NavIcon name="dashboards" />Reporting</NavLink>
             <NavLink className="sb-link" to="/internal/lt/pricer" title="Price a scenario through Lender Price and see every rate, every investor at each rate, and the whole build behind each price."><NavIcon name="pricing" />Pricing Engine</NavLink>
+            <NavLink className="sb-link" to="/internal/lt/sheets" title="Type a term sheet ID and see it exactly as it was issued — every figure the officer typed, what the borrower was shown, and which investor was really behind each price."><NavIcon name="esign" />Look up a term sheet</NavLink>
             {/* The rules/parity console is PARKED FOR REAL now (owner-directed 2026-08-23,
                 second pass: "It's just written that it's parked, but it's not really parked.
                 Just get that removed from that screen and park it."). Its nav entry is GONE —

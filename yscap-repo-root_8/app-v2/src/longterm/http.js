@@ -90,6 +90,57 @@ export async function ltFetch(method, path, body) {
  * A FAILURE IS THROWN, never saved. Without the `res.ok` check the caller would
  * "download" the error JSON as a .csv — a file that opens to a shrug.
  */
+/**
+ * WHAT THE SERVER CALLED THE FILE — its `Content-Disposition`, or null.
+ *
+ * ⛔ THE SERVER IS THE AUTHORITY ON A DOCUMENT'S NAME, AND THE CALLER'S IS ONLY A
+ * FALLBACK (owner-reported 2026-08-31: *"the comparison, when you want to export
+ * it, is basically issued and downloaded as the term sheet. It needs to be called
+ * the comparison sheet."*).
+ *
+ * That was fixed on the SERVER — the term-sheet PDF route names the file from
+ * `snapshot.KIND_WORDS`, so a comparison leaves as `comparison-sheet-TS-XXXXXX.pdf`
+ * — and the fix could not be seen, because `a.download` OVERRIDES the header and
+ * the one caller passed a hard-coded `term-sheet-${code}.pdf`. So a comparison
+ * still landed in the officer's downloads named as a term sheet, which is the one
+ * thing it must not be mistaken for: a comparison offers several options and
+ * commits to none. Reading the header here fixes it for every download through
+ * this function, present and future, and keeps the naming rule in the ONE place
+ * that knows what kind of document it just drew.
+ *
+ * ⛔ IT IS SANITISED EVEN THOUGH WE SEND IT. A filename reaches the file system:
+ * path separators and control characters are stripped and a leading dot is
+ * refused, so a header that is ever wrong cannot become a path.
+ */
+export function filenameFromDisposition(header) {
+  const h = typeof header === 'string' ? header : '';
+  if (!h) return null;
+  // RFC 5987 first — `filename*=UTF-8''name.pdf` wins over the plain form when
+  // both are present, because it is the one that can carry a non-ASCII name.
+  let raw = null;
+  const ext = /filename\*\s*=\s*([^;]+)/i.exec(h);
+  if (ext) {
+    const v = ext[1].trim();
+    const parts = v.split("'");
+    const tail = parts.length >= 3 ? parts.slice(2).join("'") : v;
+    try { raw = decodeURIComponent(tail); } catch { raw = tail; }
+  }
+  if (!raw) {
+    // NOT named `plain`: `format.js` exports a formatter by that name and every
+    // long-term module is swept for a local that shadows one.
+    const quoted = /filename\s*=\s*("([^"]*)"|[^;]+)/i.exec(h);
+    if (quoted) raw = (quoted[2] !== undefined ? quoted[2] : quoted[1]).trim();
+  }
+  if (!raw) return null;
+  const clean = String(raw)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001F\u007F]/g, '')
+    .replace(/[\\/]/g, '')
+    .trim();
+  if (!clean || clean === '.' || clean === '..' || clean.startsWith('.')) return null;
+  return clean.slice(0, 200);
+}
+
 export async function ltDownload(path, filename) {
   const headers = {};
   const t = token();
@@ -109,7 +160,9 @@ export async function ltDownload(path, filename) {
   try {
     const a = document.createElement('a');
     a.href = url;
-    a.download = filename;
+    // The server's own name wins; the caller's is what to fall back to when
+    // there is no header (or it cannot be read).
+    a.download = filenameFromDisposition(res.headers.get('Content-Disposition')) || filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -273,24 +326,19 @@ export async function ltBlob(path) {
   };
 }
 
-/** The name the server gave the file, read off its Content-Disposition. */
-function filenameFromDisposition(value) {
-  const s = String(value || '');
-  // RFC 5987 first — it is the form that survives a non-ASCII filename.
-  const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(s);
-  if (star) {
-    try { return decodeURIComponent(star[1].replace(/^"|"$/g, '')); } catch { /* fall through */ }
-  }
-  /* NAMED `ascii`, NOT `plain`, DELIBERATELY. `plain` is one of `format.js`'s
-     exported formatters, and a long-term file declaring that name is exactly
-     what the shared-formatter guard watches for — a screen hand-rolling its own
-     copy of a shared formatter is how `pct` and `rate` come to be confused. This
-     is a regex match, not a formatter, so the collision was a false alarm; but a
-     `plain` in a long-term file that is NOT the shared `plain` is confusing to
-     read on its own merits, which is why the name moved rather than the guard. */
-  const ascii = /filename="?([^";]+)"?/i.exec(s);
-  return ascii ? ascii[1] : '';
-}
+/* THE FILENAME READER LIVES ONCE, ABOVE — main's exported version.
+   BOTH SIDES OF THIS MERGE ADDED ONE, and git auto-merged the file without a
+   conflict because the two landed in different places: the result declared the
+   same function twice, which the bundler refuses outright. A clean auto-merge is
+   not a correct merge.
+   Main's is kept because it is strictly the more careful of the two: it is
+   exported, it prefers the RFC 5987 form even when quoted, it falls back to the
+   plain form, and it strips control characters out of the name — which matters,
+   because that name is handed to a download. The only behavioural difference is
+   that it answers `null` rather than `''` when the header names nothing, and
+   NOTHING consumes that value: `ltBlob`'s `filename` is unused (the preview
+   screen takes the name from the document row), and the other caller writes
+   `... || filename`, which reads both the same way. */
 
 export const ltGet = (p) => ltFetch('GET', p);
 export const ltPost = (p, b) => ltFetch('POST', p, b);
