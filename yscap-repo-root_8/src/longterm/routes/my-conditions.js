@@ -185,7 +185,27 @@ const uploadOwnDoc = async (req, res) => {
       hooks: {},
       q: db,
     });
-    return res.status(201).json({ ok: true, documentId: landed.documentId, deduped: !!landed.deduped });
+    /* THE SAME RULE ON THE BORROWER'S OWN DOOR. An ID they send here is their
+       ID everywhere — the owner's *"it's on the profiles and the borrower
+       profile"* — through the ONE shared definition, so it can never mean one
+       thing given on this screen and another given on the short-term one.
+       Nothing about a long-term document's own disclosure changes: the row is
+       still filed with no `borrower_id` (see above), and what reaches the
+       profile is the POINTER on the person record, which is what both products
+       have always read. */
+    let profile = null;
+    if (!landed.deduped) {
+      profile = await require('../conditions-center/photo-id-share').adoptFromLoan({
+        loanId: loan.id,
+        documentId: landed.documentId,
+        conditionCode: landed.item && landed.item.code,
+        q: db,
+      });
+    }
+    return res.status(201).json({
+      ok: true, documentId: landed.documentId, deduped: !!landed.deduped,
+      savedToProfile: !!(profile && profile.adopted),
+    });
   } catch (e) {
     if (e && e.status) return res.status(e.status).json({ error: e.message });
     console.error('[lt] borrower condition upload failed:', (e && e.message) || e);

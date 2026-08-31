@@ -5,8 +5,8 @@
     "columns": 6485,
     "generatedColumns": 12,
     "checkConstraints": 347,
-    "triggers": 37,
-    "functions": 140,
+    "triggers": 38,
+    "functions": 142,
     "partialIndexes": 410,
     "primaryKeys": 405,
     "foreignKeys": 825,
@@ -1830,6 +1830,11 @@
         "definition": "CREATE TRIGGER trg_class_orders_touch BEFORE UPDATE ON public.class_orders FOR EACH ROW EXECUTE FUNCTION class_orders_touch_updated_at()"
       },
       {
+        "name": "trg_condition_product_guard",
+        "table": "checklist_items",
+        "definition": "CREATE TRIGGER trg_condition_product_guard BEFORE INSERT OR UPDATE ON public.checklist_items FOR EACH ROW EXECUTE FUNCTION pilot_condition_product_guard()"
+      },
+      {
         "name": "trg_default_deal_program",
         "table": "applications",
         "definition": "CREATE TRIGGER trg_default_deal_program BEFORE INSERT OR UPDATE OF program ON public.applications FOR EACH ROW EXECUTE FUNCTION default_deal_program()"
@@ -2365,6 +2370,16 @@
         "name": "pilot_appraisal_form_property_key(v text)",
         "returns": "text",
         "bodyHash": "d5b825352473c795"
+      },
+      {
+        "name": "pilot_condition_product_guard()",
+        "returns": "trigger",
+        "bodyHash": "13cb927e0f0fbbda"
+      },
+      {
+        "name": "pilot_condition_scope_name(s text)",
+        "returns": "text",
+        "bodyHash": "328f6897882d5849"
       },
       {
         "name": "pilot_fmt_money(v numeric)",
@@ -27555,8 +27570,8 @@
   ],
   "generatedFrom": {
     "migrations": {
-      "count": 651,
-      "highest": 654
+      "count": 652,
+      "highest": 655
     }
   }
 }

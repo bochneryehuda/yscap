@@ -655,6 +655,35 @@ sql-write documents
 # quietly defaulting to a product.
 import src/lib/condition-owner.js
 
+# A GOVERNMENT PHOTO ID BELONGS TO THE PERSON — one definition, both products.
+#
+# Owner-directed 2026-08-31, answering in one sentence whether a photo ID given
+# on a long-term loan should reopen the ID condition on that person's short-term
+# files:
+#
+#   "Basically, share the same condition: If he uploads it on the long term, it
+#    should share it to the short term. If it's uploaded to the short term, it
+#    should share it to the long term. It's on the profiles and the borrower
+#    profile."
+#
+# WHY IT IS AN IMPORT AND NOT A COPY. The module answers one question — "a new
+# government ID landed on this person, what follows?" — and the answer is a rule
+# about EVIDENCE, not about a product: record it on the person, and drop every
+# sign-off that attested to the ID it replaced. A second copy of that is a second
+# copy of the reopen rule, and the copy that drifts is the one that leaves a
+# condition signed off against paperwork that is gone. It reads and writes only
+# the shared identity zone (`borrowers.photo_id_document_id`, already authorized
+# above) and the shared Condition Center tables, both already granted.
+#
+# THE DIRECTION THAT CANNOT BE AN IMPORT. RTL is the live product and may never
+# name a `lt_*` table — in an import OR in raw SQL — and the gate rightly offers
+# no ledger escape for that direction. So the shared module cannot go looking for
+# Long-Term's ID conditions: each product REGISTERS its own finder, and
+# `src/longterm/conditions-center/photo-id-share.js` is Long-Term's, where naming
+# `lt_loans` is simply Long-Term code. Neither product's finder can return the
+# other's rows.
+import src/lib/profile-photo-id.js
+
 # ---------------------------------------------------------------------------
 # THE LOGIN-FREE GUEST CONDITION LINK — the same Condition Center grant.
 #

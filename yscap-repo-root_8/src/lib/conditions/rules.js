@@ -76,6 +76,40 @@ const NO_VALUE_OPS = ['is_empty', 'not_empty', 'is_true', 'is_false'];
 const RANGE_OPS = ['between'];
 const LIST_OPS = ['in', 'not_in'];
 
+/**
+ * WHEN ARE TWO WRITTEN VALUES THE SAME VALUE? — one definition, both products.
+ *
+ * Owner-directed 2026-08-31, answering exactly this question about "Purchase"
+ * vs "purchase" and "Single Family" vs "SingleFamily": *"yes, these two should
+ * technically mean the same because lowercase and uppercase should not be
+ * different."*
+ *
+ * So case and the punctuation between words are FORMATTING, not meaning. A rule
+ * an administrator typed as "Single Family" matches a file that stores
+ * "single_family", which is what they plainly intended — before this, that rule
+ * validated, saved, and then silently never matched anything, forever, with
+ * nothing anywhere saying so.
+ *
+ * ── WHY THIS IS SAFE, MEASURED RATHER THAN ARGUED ───────────────────────────
+ *
+ * A looser comparison can only do harm by collapsing two values that are
+ * genuinely DIFFERENT, so that a rule written for one silently also fires on
+ * the other. Checked across BOTH registries before this shipped: 205 short-term
+ * option values and 7 long-term ones, and NOT ONE pair collides once case and
+ * punctuation are ignored. And of the 18 rule rows the shipped short-term
+ * templates carry, every enum value already matches its field's options
+ * EXACTLY — so zero stored rules change their answer. The change can only ever
+ * make a rule start matching that previously could not match at all.
+ *
+ * This is also the last thing the two products' evaluators disagreed about: the
+ * long-term side has always compared this way, the short-term text branch
+ * lowercased only, and the short-term ENUM branch did neither — it was
+ * case-SENSITIVE while the text branch beside it was not. One normaliser now,
+ * so a condition cannot mean one thing on one product and another elsewhere.
+ */
+const normText = (v) => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]+/g, '');
+const sameText = (a, b) => normText(a) === normText(b);
+
 function isGroup(node) {
   return node && typeof node === 'object' && Array.isArray(node.rules);
 }
@@ -211,10 +245,13 @@ function evalRow(row, ctx, byKey) {
     }
   }
   if (f.type === 'enum') {
+    // Compared by MEANING, not by spelling — see `sameText` above. This branch
+    // used to be case-SENSITIVE while the text branch below was not, so the same
+    // two words could match on one field type and not on another.
     const a = String(actual);
     switch (row.operator) {
-      case 'eq': return a === String(row.value);
-      case 'neq': return a !== String(row.value);
+      case 'eq': return sameText(a, row.value);
+      case 'neq': return !sameText(a, row.value);
       /* THE ARRAY GUARD IS NOT DECORATION — without it these two THREW on a
          stored rule whose `in` value is not a list, and this evaluator is total
          by contract. It is reachable: a rule saved through the builder is
@@ -224,14 +261,18 @@ function evalRow(row, ctx, byKey) {
          `false`, so the fix changes NOTHING there — but the rule PREVIEW in
          `routes/admin-conditions.js` does not, so the same rule 500'd the
          screen that exists to show an admin what their rule would match. */
-      case 'in': return Array.isArray(row.value) && row.value.map(String).includes(a);
-      case 'not_in': return Array.isArray(row.value) && !row.value.map(String).includes(a);
+      case 'in': return Array.isArray(row.value) && row.value.some((v) => sameText(a, v));
+      case 'not_in': return Array.isArray(row.value) && !row.value.some((v) => sameText(a, v));
       default: return false;
     }
   }
-  // text
-  const a = String(actual).toLowerCase();
-  const v = String(row.value == null ? '' : row.value).toLowerCase();
+  /* TEXT — compared by MEANING through the one normaliser, so every operator on
+     this branch agrees with every other about what makes two strings the same,
+     and agrees with the enum branch above. `contains` / `starts_with` /
+     `ends_with` work on the normalised forms too, which is what lets "starts
+     with 30" match a stored "30-Year Fixed". */
+  const a = normText(actual);
+  const v = normText(row.value);
   switch (row.operator) {
     case 'eq': return a === v;
     case 'neq': return a !== v;
@@ -239,13 +280,11 @@ function evalRow(row, ctx, byKey) {
     case 'not_contains': return !a.includes(v);
     case 'starts_with': return a.startsWith(v);
     case 'ends_with': return a.endsWith(v);
-    /* "is any of these strings". Compared LOWER-CASED like every other test on
-       this branch, so `in` and `eq` can never disagree about the same pair of
-       strings. A non-array value answers FALSE rather than throwing — this
-       evaluator is total by contract, and the validator is what refuses a
-       malformed rule before it can be stored. */
-    case 'in': return Array.isArray(row.value) && row.value.map((x) => String(x).toLowerCase()).includes(a);
-    case 'not_in': return Array.isArray(row.value) && !row.value.map((x) => String(x).toLowerCase()).includes(a);
+    /* "is any of these strings". A non-array value answers FALSE rather than
+       throwing — this evaluator is total by contract, and the validator is what
+       refuses a malformed rule before it can be stored. */
+    case 'in': return Array.isArray(row.value) && row.value.some((x) => normText(x) === a);
+    case 'not_in': return Array.isArray(row.value) && !row.value.some((x) => normText(x) === a);
     default: return false;
   }
 }
@@ -444,6 +483,10 @@ function summarizeRule(tree, { depth = 0, fields } = {}) {
 }
 
 module.exports = {
+  // Exported so the long-term evaluator compares two written values the SAME
+  // way rather than keeping its own copy of the rule — which is what it did,
+  // and is the last thing the two products disagreed about.
+  normText, sameText,
   OPERATORS_BY_TYPE, OPERATOR_LABEL, NO_VALUE_OPS, RANGE_OPS, LIST_OPS, NUMERIC_TYPES,
   validateRule, evaluateRule, summarizeRule, isGroup,
   // The third answer, for an engine that must tell "no" from "cannot tell".

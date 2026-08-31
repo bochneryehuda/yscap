@@ -303,7 +303,13 @@ function compareDate(op, actual, value) {
  * could see from the rule. `norm` is the ONE normaliser, so every text operator
  * agrees about what two strings being "the same" means.
  */
-const norm = (v) => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]+/g, '');
+/* THE SHARED NORMALISER, not a copy of it. This rule — that case and the
+   punctuation between words are formatting rather than meaning — is now the
+   owner's answer for BOTH products (2026-08-31), and the short-term evaluator
+   compares the same way. Long-Term had it first; keeping a private copy is how
+   the two would come to disagree about whether "Single Family" is the same
+   value as "single_family", which decides whether a condition lands on a file. */
+const norm = shared.normText;
 
 function compareText(op, actual, value) {
   const a = norm(actual);

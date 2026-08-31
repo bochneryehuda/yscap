@@ -384,11 +384,31 @@ const uploadConditionDoc = async (req, res) => {
       hooks: {},
       q: db,
     });
+    /* THE PHOTO ID BELONGS TO THE PERSON (owner-directed 2026-08-31: *"if he
+       uploads it on the long term, it should share it to the short term"*).
+       Recorded on the shared profile through the ONE definition, so the
+       short-term side sees the same ID and every product's ID condition drops a
+       sign-off that attested to the old one. Only the photo-ID condition — the
+       module refuses any other code, so a document on some other condition can
+       never become the person's ID of record. A DEDUPE is skipped deliberately:
+       identical bytes were filed moments ago and already adopted. Never throws
+       (the document is filed either way), and the answer is reported so the
+       screen can say what happened rather than implying more than it did. */
+    let profile = null;
+    if (!landed.deduped) {
+      profile = await require('../conditions-center/photo-id-share').adoptFromLoan({
+        loanId: scoped.loan.id,
+        documentId: landed.documentId,
+        conditionCode: landed.item && landed.item.code,
+        q: db,
+      });
+    }
     return res.status(201).json({
       ok: true,
       documentId: landed.documentId,
       deduped: !!landed.deduped,
       visibility: landed.visibility,
+      savedToProfile: !!(profile && profile.adopted),
     });
   } catch (e) {
     // Only a refusal the shared door RAISED carries a status; anything else is a

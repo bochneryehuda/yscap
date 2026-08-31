@@ -286,6 +286,109 @@ const eq = (a, b, m) => rec(Object.is(a, b), `${m} (got ${JSON.stringify(a)}, wa
     'E8 …and every one of them has plain-English wording, so no rule renders as a raw operator key');
 }
 
+// ── F. THE OWNER'S SPELLING RULE — "Purchase" AND "purchase" ARE ONE VALUE ───
+// Owner-directed 2026-08-31, asked whether a rule should match a value spelled
+// slightly differently: *"yes, these two should technically mean the same
+// because lowercase and uppercase should not be different."*
+//
+// A rule is typed by a person into a settings screen and compared against a
+// value that arrived from a form, a spreadsheet import or another system. There
+// is no spelling authority between those two, so "Single Family" and
+// "SingleFamily" and "single family" are one value to everybody except a
+// character-by-character comparison. Before this, a rule an administrator wrote
+// and read back as correct simply never fired, and NOTHING anywhere said why —
+// which is the worst shape a rule engine can fail in.
+//
+// The whole risk of a LOOSER comparison is the other direction: two values that
+// are genuinely DIFFERENT collapsing into one, so a rule written for A silently
+// also fires on B. F6 is what holds that shut, and it is MEASURED against both
+// live registries on every run rather than asserted once.
+{
+  const LTR = require('../src/longterm/conditions-center/rules');
+  const ltReg = require('../src/longterm/conditions-center/field-registry');
+  const F = {
+    program: { type: 'enum', options: [{ v: 'Single Family' }, { v: '30-Year Fixed' }] },
+    note: { type: 'text' },
+  };
+  const fire = (rules, ctx, fields) => SH.evaluateRule({ combinator: 'and', rules }, ctx, fields || F);
+
+  // ONE normaliser, not two that agree today. The long-term module does not
+  // keep its own: it reads the shared one, so the two products cannot drift
+  // into meaning different things by the same rule.
+  ok(LTR._internals && LTR._internals.norm === SH.normText,
+    'F1 the long-term side uses the SHARED normaliser — not a copy of it');
+
+  // The owner's own two examples, on the ENUM branch (which was case-SENSITIVE)
+  // and the TEXT branch beside it (which lowercased but kept punctuation).
+  ok(fire([{ field: 'program', operator: 'eq', value: 'single family' }], { program: 'Single Family' }),
+    'F2 "single family" matches a stored "Single Family" — case is not a difference');
+  ok(fire([{ field: 'program', operator: 'eq', value: 'SingleFamily' }], { program: 'Single Family' }),
+    'F3 "SingleFamily" matches a stored "Single Family" — a missing space is not a difference');
+  ok(fire([{ field: 'note', operator: 'eq', value: 'Purchase' }], { note: 'purchase' }),
+    'F4 text answers the same way — "Purchase" is "purchase"');
+
+  // …AND IT HAS A FLOOR. A looser comparison that matched everything would pass
+  // F2–F4 and be worthless.
+  ok(!fire([{ field: 'program', operator: 'eq', value: 'Multi Family' }], { program: 'Single Family' }),
+    'F5a two genuinely different values still do NOT match');
+  ok(!fire([{ field: 'program', operator: 'eq', value: 'Single Family' }], { program: '' }),
+    'F5b a blank file value does not match a real one');
+  ok(fire([{ field: 'program', operator: 'neq', value: 'Multi Family' }], { program: 'Single Family' }),
+    'F5c "is not" still answers yes when the values really do differ');
+  ok(!fire([{ field: 'program', operator: 'neq', value: 'SINGLE-FAMILY' }], { program: 'Single Family' }),
+    'F5d …and "is not" answers NO on two spellings of one value, so the two operators agree');
+
+  // THE SAFETY PROPERTY, re-measured live against BOTH registries every run: no
+  // field anywhere offers two options that become the same string once case and
+  // punctuation are ignored. Add one and this fails, which is the point — it is
+  // the only way the looser comparison could ever match the wrong value.
+  const collisions = [];
+  const sweep = (product, fields) => {
+    for (const [key, f] of Object.entries(fields)) {
+      const seen = new Map();
+      for (const o of (f.options || [])) {
+        const v = typeof o === 'string' ? o : o.v;
+        const k = SH.normText(v);
+        if (seen.has(k) && seen.get(k) !== v) collisions.push(`${product}.${key}: "${seen.get(k)}" vs "${v}"`);
+        seen.set(k, v);
+      }
+    }
+  };
+  sweep('short-term', registry.BY_KEY);
+  sweep('long-term', ltReg.fieldMap());
+  eq(JSON.stringify(collisions), '[]',
+    'F6 NO field in either registry offers two options that collapse into one — the looser match cannot confuse two real values');
+
+  // Every operator on both branches agrees about what makes two strings the
+  // same. One of them disagreeing is how a rule means one thing written as "is"
+  // and another written as "is any of".
+  ok(fire([{ field: 'program', operator: 'in', value: ['single-family', 'condo'] }], { program: 'Single Family' }),
+    'F7a "is any of" is spelling-tolerant too');
+  ok(!fire([{ field: 'program', operator: 'not_in', value: ['single-family'] }], { program: 'Single Family' }),
+    'F7b …and so is "is none of"');
+  ok(fire([{ field: 'note', operator: 'contains', value: 'Year Fixed' }], { note: '30-year-fixed' }),
+    'F7c "contains" reads the two the same way');
+  ok(fire([{ field: 'note', operator: 'starts_with', value: '30 Year' }], { note: '30-Year Fixed' }),
+    'F7d …as does "starts with"');
+  ok(fire([{ field: 'note', operator: 'ends_with', value: 'FIXED' }], { note: '30-Year Fixed' }),
+    'F7e …and "ends with"');
+
+  // The long-term evaluator answers identically on its OWN registry, so a rule
+  // does not mean one thing on one product and something else on the other.
+  const LTF = ltReg.fieldMap();
+  const ltEnum = Object.entries(LTF).find(([, f]) => f.type === 'enum' && (f.options || []).length);
+  if (ltEnum) {
+    const [k, f] = ltEnum;
+    const real = typeof f.options[0] === 'string' ? f.options[0] : f.options[0].v;
+    const shouted = String(real).toUpperCase().replace(/[_\s]/g, '-');
+    ok(LTR.evaluateRule({ combinator: 'and', rules: [{ field: k, operator: 'eq', value: shouted }] },
+      { [k]: real }, LTF) === true,
+    `F8 the long-term evaluator answers the same way on its own field (${k}: "${shouted}" matches "${real}")`);
+  } else {
+    ok(false, 'F8 the long-term registry offers no enum options to check the spelling rule against');
+  }
+}
+
 if (failed) {
   console.log(`\ntest-lt-shared-rule-vocabulary-pure: ${failed} of ${n} checks FAILED`);
   process.exit(1);

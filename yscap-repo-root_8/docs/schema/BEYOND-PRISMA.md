@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**946 objects**, and a database rebuilt from the Prisma
+**949 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 651 numbered migrations in `db/` (highest `db/654`) remain the only thing that builds this database.
+rebuild a database from them.** The 652 numbered migrations in `db/` (highest `db/655`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -21,8 +21,8 @@ the live database.
 |---|---|
 | Tables | 405 |
 | Columns | 6485 |
-| Triggers | 37 |
-| Functions | 140 |
+| Triggers | 38 |
+| Functions | 142 |
 | CHECK constraints | 347 |
 | Generated columns | 12 |
 | Partial indexes | 410 |
@@ -33,13 +33,14 @@ the live database.
 | Enum types | 12 |
 | Views | 0 |
 
-## Triggers (37)
+## Triggers (38)
 
 - **trg_ai_suggestions_updated** on `ai_suggestions`
 - **trg_assignment_condition_is_purchase_only** on `checklist_items`
 - **trg_assignment_is_a_purchase_concept** on `applications`
 - **trg_borrower_auth_one_login_per_email** on `borrower_auth`
 - **trg_class_orders_touch** on `class_orders`
+- **trg_condition_product_guard** on `checklist_items`
 - **trg_default_deal_program** on `applications`
 - **trg_default_property_type** on `applications`
 - **trg_doclab_requests_touch** on `doclab_requests`
@@ -88,7 +89,7 @@ the live database.
 - **track_records.counts_from** — `COALESCE( CASE WHEN (lower(COALESCE(deal_type, ''::text)) ~~ '%flip%'::text) THEN sale_date ELSE COALESCE(rent_date, refi_date) END, CASE WHEN ((lower(COALESCE(deal_type, ''::text)) ~~ '%ground%'::text) OR (lower(COALESCE(deal_type, ''::text)) ~~ '%construction%'::text)) THEN COALESCE(sale_date, rent_date, refi_date) ELSE NULL::date END)`
 - **track_records.hold_days** — `(COALESCE( CASE WHEN (lower(COALESCE(deal_type, ''::text)) ~~ '%flip%'::text) THEN sale_date ELSE COALESCE(rent_date, refi_date) END, CASE WHEN ((lower(COALESCE(deal_type, ''::text)) ~~ '%ground%'::text) OR (lower(COALESCE(deal_type, ''::text)) ~~ '%construction%'::text)) THEN COALESCE(sale_date, rent_date, refi_date) ELSE NULL::date END) - purchase_date)`
 
-## Functions (140)
+## Functions (142)
 
 - **appraisal_review_guard()** → trigger
 - **armor(bytea)** → text
@@ -165,6 +166,8 @@ the live database.
 - **pilot_address_compare_key(v jsonb)** → text
 - **pilot_address_same_place(a jsonb, b jsonb)** → boolean
 - **pilot_appraisal_form_property_key(v text)** → text
+- **pilot_condition_product_guard()** → trigger
+- **pilot_condition_scope_name(s text)** → text
 - **pilot_fmt_money(v numeric)** → text
 - **pilot_fmt_txt(v text)** → text
 - **pilot_is_appraisal_form_code(v text)** → boolean
