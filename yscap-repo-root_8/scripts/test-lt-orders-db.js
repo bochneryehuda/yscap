@@ -218,8 +218,29 @@ email.sendMail = async (payload) => {
       `C1 when the provider refuses the message the order is not reported as placed (got ok=${r.ok})`);
     assert((await orderRows(loan)).length === 0,
       'C2 …and NO order row survives — the claim, the send and the settle are one transaction, so a file never shows an order that never went');
+    /* SCOPED TO THIS LOAN, NEVER THE WHOLE TABLE. The claim is "THIS failed
+       send left no thread event", and an unscoped count asks something else
+       entirely — "has any suite in this database ever written one?" — which is
+       true today only by luck and becomes false the moment another orders
+       suite runs first in the chain. The identical mistake in the profile-links
+       suite failed the full run on 2026-08-31; this is its twin, found by
+       sweeping for it. Section A above places a REAL order on this same loan
+       and asserts an event DOES appear through this very predicate, so the
+       scope is one the query can genuinely match — not so narrow it could
+       never find anything, which is the other half of the same trap.
+
+       HONESTLY: C3 IS REDUNDANT TODAY, and that is recorded rather than left
+       to imply more than it does. `lt_order_events.order_id` is NOT NULL with
+       a foreign key to `lt_file_orders`, so an event cannot exist without an
+       order at all — C2 above ("no order row survives") structurally implies
+       this. It was proven by trying to mutate it: a hand-written event for
+       this loan with no order is REFUSED by the database, so no faithful
+       mutation of C3 exists while the schema stands. It is kept because it
+       states the intent, and because it becomes load-bearing the day an event
+       may be written before its order exists — a shape any "log the attempt
+       first" change would introduce. */
     const ev = Number((await db.query(
-      `SELECT count(*)::int AS n FROM lt_order_events`)).rows[0].n);
+      `SELECT count(*)::int AS n FROM lt_order_events WHERE loan_id=$1::uuid`, [loan])).rows[0].n);
     assert(ev === 0, 'C3 …and no thread event was left behind either');
   }
 
@@ -238,6 +259,18 @@ email.sendMail = async (payload) => {
       'A3 …addressed to the title company on the file, not to a default');
     assert(typeof msg.subject === 'string' && msg.subject.length > 5,
       'A4 …with a real subject line');
+
+    /* THE CONTROL FOR C3. A scoped count only proves something if the scope
+       could match — the same trap the profile-links suite fell into, where the
+       join could never find a row and the assertion passed whatever the code
+       did. This is the positive half: a send that SUCCEEDS does leave a thread
+       event on this loan, read through the very predicate C3 used to find
+       none. Without it, C3 would be satisfied by a broken loan_id just as well
+       as by a correct rollback. */
+    const evAfter = Number((await db.query(
+      `SELECT count(*)::int AS n FROM lt_order_events WHERE loan_id=$1::uuid`, [loan])).rows[0].n);
+    assert(evAfter >= 1,
+      `A4a …and the thread event IS written for this loan — which is what makes C3's "none after a failed send" mean something (got ${evAfter})`);
 
     const condAfter = (await db.query(
       `SELECT status FROM checklist_items WHERE id=$1::uuid`, [orderCond])).rows[0];
