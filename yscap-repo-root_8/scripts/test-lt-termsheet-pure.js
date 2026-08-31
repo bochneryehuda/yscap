@@ -912,6 +912,25 @@ section('the renderer measures the way the page is actually drawn');
     check(broken.length > 1, 'a token wider than its column is HARD-BROKEN — the guarantee that pathological input cannot run off the sheet');
     check(pdf._internals.clip({ widths: new Map() }, 'The property', font, 10, 2) === '',
       'a clip with no room answers nothing, never a bare ellipsis — an ellipsis alone reads as a rendering fault rather than as a shortened label');
+
+    /* ⛔ `wrapAfter` — the wrap whose FIRST line is narrower than the rest,
+       for a paragraph that starts beside a bold opening clause (the expiry).
+       Its awkward case is a first line with no useful room at all: it answers
+       with an EMPTY first line so the body starts underneath, rather than
+       hard-breaking a word into a two-character stub beside the title. The
+       caller must then still ADVANCE on that empty line, or the body's first
+       real line lands on the title's own baseline at the title's own x. */
+    const wa = pdf._internals.wrapAfter;
+    const ctx0 = { widths: new Map() };
+    const wide = wa(ctx0, 'the quick brown fox jumps over the lazy dog', font, 10, 200, 200);
+    check(wide.every((l) => adv(l, 10) <= 200), 'wrapAfter fits every line when both widths are the same');
+    const narrowFirst = wa(ctx0, 'the quick brown fox jumps over the lazy dog', font, 10, 4, 200);
+    check(narrowFirst[0] === '',
+      '…and with no room beside the title it answers an EMPTY first line rather than a stub');
+    check(narrowFirst.slice(1).every((l) => adv(l, 10) <= 200) && narrowFirst.join(' ').trim().split(' ').filter(Boolean).length === 9,
+      '…with every word still there on the lines below');
+    check(wa(ctx0, 'supercalifragilisticexpialidocious', font, 10, 4, 30).every((l) => adv(l, 10) <= 30),
+      '…and a token wider than EITHER width is still hard-broken, so it cannot run off the column');
     finish();
   })().catch((e) => { failures += 1; console.error('  FAIL renderer measurement threw:', e.message); finish(); });
 }

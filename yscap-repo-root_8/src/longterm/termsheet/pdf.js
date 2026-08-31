@@ -778,9 +778,17 @@ function compileCallout(b, ctx) {
       x += titleW + advance(ctx, ' ', F.reg, size);
     }
     lines.forEach((l, i) => {
-      if (i === 0 && title && !l) return;
-      put(c, l, i === 0 ? x : M.left + indent, ty, F.reg, size,
-        col(brand.RGB.FOOTNOTE), i === 0 ? Math.max(firstW, 1) : innerW);
+      const first = i === 0;
+      /* ⛔ THE LINE ADVANCES EVEN WHEN IT DREW NOTHING. `wrapAfter` answers with
+         an EMPTY first line when the title has eaten the whole of it — the body
+         then starts underneath, which is the honest fallback. Skipping the
+         advance with the draw would put that body line on the title's own
+         baseline, at the title's own x, one word on top of another. It cannot
+         happen at today's wording and would the first time a title grew. */
+      if (!(first && title && !l)) {
+        put(c, l, first ? x : M.left + indent, ty, F.reg, size,
+          col(brand.RGB.FOOTNOTE), first ? Math.max(firstW, 1) : innerW);
+      }
       ty -= size * LEAD;
     });
     if (!lines.length) ty -= size * LEAD;
