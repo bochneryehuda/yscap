@@ -190,9 +190,66 @@ function runCase(sels, plan, prepared, tag) {
     }
   }
 
+  /* ── I9 A FIGURE THE PAGE STATES TWICE STATES THE SAME THING ────────────
+     THE INVARIANT THIS SUITE WAS MISSING, AND THE ONE THAT WOULD HAVE FOUND A
+     REAL DEFECT WITHOUT A HUMAN READING A RENDER. Every check above asks whether
+     something BAD is absent — junk, an investor's name, our compensation, a bare
+     points figure — or whether a structure is present. None asked whether the
+     document AGREES WITH ITSELF, and a page can be free of all of those and
+     still print two different answers to one question.
+
+     It did. MEASURED on a real scenario sheet: the table's column read
+     `DSCR 1.09` and the sentence directly beneath it read *"moves from 1.24 to
+     1.15"*. Both were honestly computed — the table divides by the total payment
+     it prints, the sentence read the single figure the board priced on — and a
+     reader dividing the two numbers printed above gets only one of them. It took
+     rendering a PDF and reading it to notice; over 6,710 documents this notices
+     it every time.
+
+     ⛔ IT COMPARES WHAT IS PRINTED, NOT WHAT IS COMPUTED. Re-deriving the ratio
+     here and checking both against it would pass the day both surfaces drift the
+     same way — and the failure being guarded is precisely two honest calculations
+     disagreeing. So the DSCR is read out of the table's own row and out of the
+     sentence's own words, and they are compared to each other. */
+  const cmp = s.comparison;
+  if (cmp && s.members.length > 1) {
+    const table = blocks.find((b) => b.t === 'table');
+    const dscrRow = table && (table.rows || []).find((r) => r[0] === 'DSCR');
+    if (dscrRow && Array.isArray(table.head)) {
+      // The table's column order is the head's, and the head names each option.
+      const shownFor = new Map();
+      table.head.forEach((h, i) => {
+        if (i === 0) return;
+        const label = String(h).replace(/\s*\(compared against\)\s*$/, '').trim();
+        const cell = dscrRow[i];
+        if (label && cell != null && cell !== '—') shownFor.set(label, String(cell));
+      });
+      for (const t of strings) {
+        if (typeof t !== 'string') continue;
+        const m = t.match(/^(.+?) (?:keeps|borrows) .*DSCR moves from (\d+\.\d+) to (\d+\.\d+)/);
+        if (!m) continue;
+        const [, label, from, to] = m;
+        const col = shownFor.get(label.trim());
+        if (col !== undefined) {
+          ok(col === to,
+            'I9 a DSCR the page states twice states the same thing',
+            `${tag} :: ${label} column says ${col}, its own sentence says ${to}`);
+        }
+        // The "from" is always the anchor's, whichever column that is.
+        const anchorLabel = String(table.head[1] || '').replace(/\s*\(compared against\)\s*$/, '').trim();
+        const anchorCol = shownFor.get(anchorLabel);
+        if (anchorCol !== undefined) {
+          ok(anchorCol === from,
+            'I9 …and the ratio it compares FROM is the anchor\'s own column',
+            `${tag} :: anchor column says ${anchorCol}, the sentence compares from ${from}`);
+        }
+      }
+    }
+  }
+
   // ── I1 THE ONE THE OWNER NAMED ─────────────────────────────────────────
   // Anything the options disagree about may not appear as a single stated fact.
-  const cmpModel = s.comparison;
+  const cmpModel = cmp;
   if (cmpModel && Array.isArray(cmpModel.differs) && s.members.length > 1) {
     const recipient = blocks.find((b) => b.t === 'recipient');
     for (const dim of cmpModel.differs) {
