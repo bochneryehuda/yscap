@@ -1,0 +1,713 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Quiet Ledger</title>
+<style>
+@font-face{font-family:PS;src:url(fonts/IBMPlexSerif-Regular.ttf);font-weight:400}
+@font-face{font-family:PS;src:url(fonts/IBMPlexSerif-Bold.ttf);font-weight:700}
+@font-face{font-family:PS;src:url(fonts/IBMPlexSerif-Italic.ttf);font-style:italic}
+@font-face{font-family:IS;src:url(fonts/InstrumentSans-Regular.ttf);font-weight:400}
+@font-face{font-family:IS;src:url(fonts/InstrumentSans-Bold.ttf);font-weight:700}
+@font-face{font-family:IS;src:url(fonts/InstrumentSans-Italic.ttf);font-style:italic}
+@font-face{font-family:PM;src:url(fonts/IBMPlexMono-Regular.ttf);font-weight:400}
+@font-face{font-family:PM;src:url(fonts/IBMPlexMono-Bold.ttf);font-weight:700}
+
+:root{
+  --ink:#141B22; --teal:#2F7F86; --gold:#AE8746; --gray:#4B585C;
+  --line:#DFD8CB; --ivory:#F8F5EE; --faint:#969EA2; --soft:#F4F1EA; --paper:#F4F0E7;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+@page{size:8.5in 11in;margin:0}
+html,body{background:#fff}
+body{font-family:IS,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+.page{width:8.5in;height:11in;position:relative;overflow:hidden;page-break-after:always;background:#fff}
+.page:last-child{page-break-after:auto}
+.pad{position:absolute;left:.62in;right:.62in;}
+.body{position:absolute;left:.62in;right:.62in;top:1.36in;bottom:1.06in;display:flex;flex-direction:column}
+.tail{margin-top:auto}
+
+/* ── band ───────────────────────────────────────────── */
+.band{position:absolute;top:0;left:0;right:0;height:74px;background:var(--ink)}
+.bandrule{position:absolute;top:74px;left:0;right:0;height:2.2px;background:var(--gold)}
+.bandhair{position:absolute;top:77.6px;left:0;right:0;height:.6px;background:var(--line)}
+.lock{position:absolute;left:.62in;top:23px;height:30px}
+.dt{position:absolute;right:.62in;top:20px;text-align:right}
+.dt h1{font-family:PS;font-weight:700;font-size:20px;color:#fff;letter-spacing:.005em;line-height:1}
+.dt .sub{font-family:PS;font-style:italic;font-size:8.6px;color:var(--gold);margin-top:6px;letter-spacing:.01em}
+.dt .id{font-size:7.2px;color:#B0B8BA;margin-top:5px;letter-spacing:.05em}
+
+/* ── parties ────────────────────────────────────────── */
+.eyebrow{font-size:6.9px;font-weight:700;letter-spacing:.155em;color:var(--gold);text-transform:uppercase}
+.eyebrow.t{color:var(--teal)}
+.eyebrow.g{color:var(--gray)}
+.parties{display:flex;gap:26px;align-items:flex-start}
+.parties .l{flex:1.35}.parties .r{flex:1;text-align:right}
+.pname{font-size:12.4px;font-weight:700;letter-spacing:-.005em;margin-top:3px;line-height:1.2}
+.paddr{font-size:9.1px;color:var(--ink);margin-top:2px;line-height:1.35}
+.pfact{font-size:7.7px;color:var(--gray);margin-top:2px}
+.oline{font-size:7.9px;color:var(--gray);line-height:1.45}
+.oline b{color:var(--ink);font-size:8.6px}
+
+/* ── hero strip ─────────────────────────────────────── */
+.hero{display:flex;border-top:1.1px solid var(--gold);border-bottom:.6px solid var(--line);background:var(--ivory)}
+.hero .c{flex:1;padding:11px 0 12px 13px;border-left:.6px solid var(--line)}
+.hero .c:first-child{border-left:0;padding-left:13px}
+.hero .k{font-size:6.6px;font-weight:700;letter-spacing:.15em;color:var(--gray);text-transform:uppercase}
+.hero .v{font-family:PM;font-size:15.5px;font-weight:700;letter-spacing:-.032em;margin-top:5px;line-height:1}
+.hero .n{font-size:6.8px;color:var(--gray);margin-top:4px;font-style:italic}
+
+/* ── section head ───────────────────────────────────── */
+.sec{display:flex;align-items:baseline;gap:8px;border-bottom:1px solid var(--ink);padding-bottom:3.5px}
+.sec .t{font-size:7.6px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--ink)}
+.sec .m{font-size:7px;color:var(--faint);font-style:italic;margin-left:auto}
+.tick{width:2.4px;height:8px;background:var(--teal);display:inline-block}
+
+/* ── rows ───────────────────────────────────────────── */
+.rows{width:100%;border-collapse:collapse}
+.rows td{font-size:8.5px;padding:4.05px 0;border-bottom:.4px solid var(--line);vertical-align:baseline}
+.rows td.k{color:var(--gray)}
+.rows td.v{font-family:PM;text-align:right;font-size:8.4px;letter-spacing:-.01em;color:var(--ink)}
+.rows tr.sum td{background:var(--ivory);font-weight:700;padding:5.6px 0;border-bottom:.6px solid var(--gold)}
+.rows tr.sum td.k{color:var(--ink);padding-left:5px}
+.rows tr.sum td.v{font-size:10.4px;font-weight:700;padding-right:5px}
+.rows tr.last td{border-bottom:0}
+.rows td.note{font-size:6.9px;color:var(--faint);font-style:italic;padding-top:0;padding-bottom:3.4px;border-bottom:.4px solid var(--line)}
+
+/* ── comparison table ───────────────────────────────── */
+.cmp{width:100%;border-collapse:collapse;table-layout:fixed}
+.cmp th{font-size:7.4px;text-align:left;padding:0 0 5px 0;border-bottom:1px solid var(--ink);vertical-align:bottom}
+.cmp th .lab{font-size:6.6px;font-weight:700;letter-spacing:.16em;color:var(--gold);text-transform:uppercase}
+.cmp th .nm{font-size:9.8px;font-weight:700;color:var(--ink);margin-top:3px;line-height:1.2}
+.cmp th.rowhead{border-bottom:1px solid var(--ink)}
+.cmp td{font-size:8.9px;padding:8.4px 0;border-bottom:.4px solid var(--line);vertical-align:baseline}
+.cmp td.k{color:var(--gray);font-size:8.7px;padding-right:10px}
+.cmp td.n{font-family:PM;letter-spacing:-.015em}
+.cmp tr.key td{background:var(--ivory)}
+.cmp tr.key td.k{color:var(--ink);font-weight:700;padding-left:5px}
+.cmp tr.key td.n{font-weight:700;font-size:10.1px}
+.cmp td.lead{color:var(--teal);font-weight:700}
+.cmp .colpad{padding-left:11px}
+.cmp tr.last td{border-bottom:.9px solid var(--ink)}
+
+/* ── shared strip ───────────────────────────────────── */
+.shared{border-left:2.2px solid var(--gold);background:var(--soft);padding:10px 12px 11px 11px}
+.shared .h{font-size:6.7px;font-weight:700;letter-spacing:.15em;color:var(--gray);text-transform:uppercase}
+.shared .b{display:flex;flex-wrap:wrap;gap:5px 22px;margin-top:7px}
+.shared .i{font-size:8.5px;color:var(--ink)}
+.shared .i s{font-family:PM;font-weight:700;text-decoration:none;letter-spacing:-.015em}
+.shared .i em{font-style:normal;color:var(--gray);font-size:7.5px}
+
+/* ── read line ──────────────────────────────────────── */
+.read{display:flex;gap:11px;align-items:baseline;padding:9.6px 0;border-bottom:.4px solid var(--line)}
+.read .tag{font-family:PM;font-size:8.8px;font-weight:700;color:var(--teal);width:13px;flex:none}
+.read .tx{font-size:8.7px;line-height:1.5;color:var(--ink)}
+.read .tx b{font-family:PM;letter-spacing:-.015em}
+
+.note{font-size:7.3px;color:var(--gray);font-style:italic;line-height:1.5}
+.expiry{display:flex;align-items:baseline;gap:7px;border-top:.6px solid var(--line);border-bottom:.6px solid var(--line);padding:7.5px 0}
+.expiry .d{width:3px;height:3px;background:var(--gold);border-radius:50%;flex:none;transform:translateY(-2px)}
+.expiry .x{font-size:8px;color:var(--ink);line-height:1.5}
+.expiry .x b{font-weight:700}
+
+/* ── footer ─────────────────────────────────────────── */
+.foot{position:absolute;left:.62in;right:.62in;bottom:.44in;border-top:.6px solid var(--line);padding-top:6px}
+.foot .c{font-size:7.1px;color:#3C4248}
+.foot .c b{font-weight:700;color:var(--ink)}
+.foot .d{font-size:6.5px;color:var(--faint);margin-top:3px;line-height:1.4}
+.foot .p{font-size:6.3px;color:var(--faint);margin-top:4px;text-align:right;font-family:PM}
+
+/* ── specimen page ──────────────────────────────────── */
+.spec{background:#fff}
+.sw{display:flex;height:46px;border:0}
+.sw div{flex:1;position:relative}
+.sw span{position:absolute;left:0;bottom:-13px;font-family:PM;font-size:6px;color:var(--gray);letter-spacing:.04em}
+.metric{font-family:PM;font-size:26px;font-weight:700;letter-spacing:-.03em;line-height:1}
+.mlab{font-size:6.8px;font-weight:700;letter-spacing:.15em;color:var(--gray);text-transform:uppercase;margin-top:6px}
+.rhy div{background:#CFC7B7;height:.5px}
+.fieldmap td{font-size:7.9px;padding:3.15px 0}
+.fieldmap td.k{font-size:7.9px}
+.fieldmap th{padding-bottom:4px}
+.fieldmap td.colpad{font-size:7.3px !important}
+</style></head><body>
+<style>
+/* ── v2 additions ─────────────────────────────────────────────── */
+.sharedbox{border:.8px solid var(--line);border-left:2.6px solid var(--gold);background:var(--soft);padding:10px 0 0 0}
+.sharedbox .hd{display:flex;align-items:baseline;padding:0 13px 8px 12px}
+.sharedbox .hd .t{font-size:6.8px;font-weight:700;letter-spacing:.15em;color:var(--gray);text-transform:uppercase}
+.sharedbox .hd .n{margin-left:auto;font-size:6.8px;color:var(--faint);font-style:italic}
+.sharedbox .grid{display:flex;flex-wrap:wrap;border-top:.5px solid var(--line)}
+.sharedbox .cell{width:25%;padding:6.5px 12px;border-right:.5px solid var(--line);border-bottom:.5px solid var(--line);box-sizing:border-box}
+.sharedbox .cell:nth-child(4n){border-right:0}
+.sharedbox .cell .k{font-size:6.7px;color:var(--gray);letter-spacing:.055em;text-transform:uppercase}
+.sharedbox .cell .v{font-family:PM;font-size:9px;font-weight:700;letter-spacing:-.02em;margin-top:2.5px;color:var(--ink)}
+.sharedbox .sfoot{padding:7px 12px 9px 12px;font-size:6.9px;color:var(--faint);font-style:italic}
+.pill{display:inline-block;font-size:6.4px;font-weight:700;letter-spacing:.11em;text-transform:uppercase;padding:1.6px 5px;border-radius:2px;vertical-align:1.5px}
+.pill.moved{background:var(--gold);color:#fff}
+.pill.new{background:var(--teal);color:#fff}
+.notice{display:flex;gap:8px;border:.8px solid var(--gold);background:#FDF9F1;padding:8px 11px;align-items:flex-start}
+.notice .b{width:2.4px;background:var(--gold);align-self:stretch;flex:none}
+.notice .x{font-size:7.9px;line-height:1.5;color:var(--ink)}
+.notice .x b{font-weight:700}
+.inc{border-top:.9px solid var(--ink);margin-top:2px}
+.inc td{font-size:8.9px;padding:8.4px 0;border-bottom:.4px solid var(--line);vertical-align:baseline}
+.answers td{font-size:8.1px;padding:7px 0;border-bottom:.5px solid var(--line);vertical-align:top;line-height:1.5}
+.answers td.n{font-family:PM;font-size:8.6px;font-weight:700;color:var(--gold);width:22px;vertical-align:top;padding-top:7.5px}
+.answers td.q{width:1.95in;color:var(--ink);font-weight:700;padding-right:14px}
+.answers td.a{color:var(--gray)}
+.answers td.a b{color:var(--ink)}
+.chk{font-family:PM;font-size:8px;color:var(--teal);font-weight:700}
+.mono{font-family:PM;letter-spacing:-.015em}
+</style>
+<!-- ═══════════ PAGE 1 — WHAT YOU ASKED, ANSWERED ═══════════ -->
+<div class="page spec">
+  <div class="pad" style="top:.62in">
+    <div style="display:flex;align-items:baseline">
+      <div class="eyebrow g" style="letter-spacing:.22em">Q U I E T&nbsp;&nbsp;L E D G E R&nbsp;&nbsp;·&nbsp;&nbsp;S E C O N D&nbsp;&nbsp;P A S S</div>
+      <div style="margin-left:auto;font-family:PM;font-size:6.4px;color:var(--faint);letter-spacing:.1em">QL · 002 · 001</div>
+    </div>
+    <div style="height:1.1px;background:var(--gold);margin-top:7px"></div>
+    <div style="display:flex;gap:30px;margin-top:15px;align-items:flex-end">
+      <h1 style="font-family:PS;font-weight:400;font-size:26px;letter-spacing:-.015em;line-height:1.05">Eleven notes,<br>answered against the code</h1>
+      <div style="font-size:7.7px;color:var(--gray);line-height:1.55;flex:1;padding-bottom:3px">
+        Every answer below was checked in the engine rather than agreed to. Three of your notes
+        found <b style="color:var(--ink)">real defects</b> — one in the design, two in the
+        product itself. Two of your formulas were <b style="color:var(--ink)">already correct</b>,
+        and the arithmetic proving it is on the last page.
+      </div>
+    </div>
+  </div>
+
+  <div class="pad" style="top:2.06in">
+    <table class="answers" style="width:100%;border-collapse:collapse">
+      <tr><td class="n">1</td><td class="q">If the prepayment differs, compare it</td>
+        <td class="a"><b>You were right, and the engine already knew.</b> <span class="mono">buildComparison</span> computes a
+          <span class="mono">differs</span> list — loan amount, LTV, term, prepayment, interest-only, property value —
+          and prepayment is on it. My first draft <b>hard-wrote</b> prepayment into the "same in all three" box instead of asking.
+          Now the box is <b>derived</b>: whatever differs leaves the box and gets its own compared row, marked <span class="pill moved">moved</span>.</td></tr>
+
+      <tr><td class="n">2</td><td class="q">The effective rate on the extra money went missing</td>
+        <td class="a"><b>Found it, and found why it vanished.</b> <span class="mono">incrementalCostPct</span> is your feature, and it answers
+          only when a scenario borrows <b>more</b> than the one it is compared against. My draft anchored on the
+          <b>largest</b> loan, so every other row asked "how much extra?" and got nothing. Anchored on the
+          <b>smallest</b>, it reads: <i>that extra $75,000 is costing you about 9.9% a year.</i></td></tr>
+
+      <tr><td class="n">3</td><td class="q">Is the payment P&amp;I or PITI?</td>
+        <td class="a">Fair — one line called "monthly payment" answered two questions. Every sheet now carries
+          <b>both, named</b>: <b>Principal &amp; interest</b>, then <b>Full monthly payment</b> with taxes and insurance in the label itself.</td></tr>
+
+      <tr><td class="n">4</td><td class="q">Everything expires in 24 hours</td>
+        <td class="a"><b>My draft said 72 and that was wrong on all three.</b> Live today: a term sheet 24 hours, a comparison and a
+          scenario <b>48</b> (<span class="mono">termSheet.expiryDays</span>, default 2). Set to 24 everywhere as you asked —
+          which <b>reverses</b> the 30 August decision that a comparison runs on a longer clock, so it is flagged rather than slipped in.</td></tr>
+
+      <tr><td class="n">5</td><td class="q">The re-price rule applies to every scenario</td>
+        <td class="a"><b>A real gap in the product, not the design.</b> <span class="mono">exportGate</span> returns
+          <span class="mono">ok</span> for anything that is not a term sheet, and even on a term sheet reads only
+          <span class="mono">members[0]</span>. So on a comparison or a scenario the DSCR bracket rule <b>never runs at all</b> —
+          three scenarios at 1.53, 1.42 and 1.24 sit in three different bands and none of them is checked. Now per option, every kind.</td></tr>
+
+      <tr><td class="n">6</td><td class="q">"The same in all three" is thrown out</td>
+        <td class="a">Agreed — it was a wrapped line pretending to be a panel. It is now a <b>ruled box on a four-column grid</b>,
+          each fact with its own cell and label, and it says how many rows it took out of the table below.</td></tr>
+
+      <tr><td class="n">7</td><td class="q">Split the lender fees into the real ones</td>
+        <td class="a">The real fees are exactly two — <b>application</b> and <b>commitment</b> (<span class="mono">LENDER_FEE_KEYS</span>).
+          Both are now named and priced separately instead of one "$2,095 lender fees". A waived fee still shows what it would have been.</td></tr>
+
+      <tr><td class="n">8</td><td class="q">Origination needs its percentage</td>
+        <td class="a">Now <b>2.000 points &middot; 2.00% of the $375,000 loan amount</b> — points, percent and the base it is taken on,
+          so the reader can check the multiplication without hunting for the loan amount.</td></tr>
+
+      <tr><td class="n">9</td><td class="q">Explain "you are ahead", and its opposite</td>
+        <td class="a">Both directions now say what they mean in one added line. <b>Paying more today</b> to save monthly has a date you
+          get your money back. <b>Taking money today</b> at a dearer rate is the mirror: you stay ahead <i>until</i> that date, then it turns.</td></tr>
+
+      <tr><td class="n">10</td><td class="q">Both compensation modes</td>
+        <td class="a">Checked by building both. On <b>lender-paid</b> there is no origination line at all, the net falls to the two lender
+          fees, and cash to close drops $7,500. Page 5 is the same comparison rendered lender-paid.</td></tr>
+
+      <tr class="last"><td class="n">11</td><td class="q">Are the formulas right?</td>
+        <td class="a"><b>Yes — both, and re-derived rather than taken on trust.</b> The incremental cost reproduces both of your own worked
+          examples to the digit; the break-even reproduces by hand in both directions and refuses correctly in three edge cases.
+          The workings are on page 6.</td></tr>
+    </table>
+  </div>
+
+  <div class="pad" style="bottom:.62in">
+    <div style="height:1px;background:var(--ink)"></div>
+    <div style="display:flex;margin-top:8px">
+      <div style="font-size:7.4px;color:var(--gray);line-height:1.55;flex:1">
+        <b style="color:var(--ink)">Still nothing is built.</b> Notes 1, 2, 3, 6, 7, 8 and 9 are page design. Notes 4 and 5 change
+        <b style="color:var(--ink)">behaviour</b> — an expiry setting, and a rule that has never run on two of the three documents —
+        so they need your word before they go in, and they are marked on the sheets where they land.</div>
+      <div style="margin-left:auto;font-family:PM;font-size:6.2px;color:var(--faint);letter-spacing:.1em;align-self:flex-end">001 / 006</div>
+    </div>
+  </div>
+</div>
+<!-- ═══════════ PAGE 2 — TERM SHEET v2 ═══════════ -->
+<div class="page">
+  <div class="band"></div><div class="bandrule"></div><div class="bandhair"></div>
+  <img class="lock" src="pilot-lockup-light.png">
+  <div class="dt"><h1>Term Sheet</h1>
+    <div class="sub">Platinum 30-Year Fixed &middot; business-purpose rental financing</div>
+    <div class="id">YS CAPITAL GROUP &middot; NMLS 2034117 &middot; ISSUED 31 AUGUST 2026</div></div>
+  <div class="body">
+    <div class="parties">
+      <div class="l">
+        <div class="eyebrow">Prepared for</div>
+        <div class="pname">Oak Street Holdings LLC</div>
+        <div class="pfact" style="margin-top:1px">Miriam Rosenberg, guarantor</div>
+        <div class="eyebrow" style="margin-top:9px">Property</div>
+        <div class="paddr">14 Oak Street, Lakewood, NJ 08701</div>
+        <div class="pfact">Single family &middot; Ocean County &middot; valued at $500,000</div>
+      </div>
+      <div class="r">
+        <div class="eyebrow">Prepared by</div>
+        <div class="oline" style="margin-top:3px"><b>Sara Klein</b></div>
+        <div class="oline">Senior Loan Officer</div>
+        <div class="oline">(732) 555-0142</div>
+        <div class="oline">sara.klein@yscapgroup.com</div>
+        <div class="oline" style="color:var(--faint)">NMLS #1234567</div>
+      </div>
+    </div>
+
+    <div class="hero" style="margin-top:23px">
+      <div class="c"><div class="k">Loan amount</div><div class="v">$375,000</div><div class="n">75% of value</div></div>
+      <div class="c"><div class="k">Interest rate</div><div class="v">7.375%</div><div class="n">30-year fixed</div></div>
+      <div class="c"><div class="k">Full monthly payment</div><div class="v">$3,355.03</div><div class="n">principal, interest, taxes &amp; insurance</div></div>
+      <div class="c"><div class="k">Cash to close</div><div class="v">$134,595</div><div class="n">estimated</div></div>
+    </div>
+
+    <div style="display:flex;gap:30px;margin-top:30px">
+      <div style="flex:1">
+        <div class="sec"><span class="tick"></span><span class="t">The loan</span></div>
+        <table class="rows" style="margin-top:2px">
+          <tr><td class="k">Program</td><td class="v">Platinum 30-Year Fixed</td></tr>
+          <tr><td class="k">Purpose</td><td class="v">Purchase</td></tr>
+          <tr><td class="k">Loan to value</td><td class="v">75%</td></tr>
+          <tr><td class="k">Term</td><td class="v">30 years, fixed</td></tr>
+          <tr><td class="k">Prepayment</td><td class="v">5-year</td></tr>
+          <tr><td class="k">Credit score used <span class="pill new">new</span></td><td class="v">740</td></tr>
+          <tr class="last"><td class="k">Escrows</td><td class="v">Impounded monthly</td></tr>
+        </table>
+      </div>
+      <div style="flex:1">
+        <div class="sec"><span class="tick"></span><span class="t">Monthly payment</span></div>
+        <table class="rows" style="margin-top:2px">
+          <tr><td class="k"><b style="color:var(--ink)">Principal &amp; interest</b> &mdash; the loan itself</td><td class="v" style="font-weight:700">$2,590.03</td></tr>
+          <tr><td class="k">Property taxes</td><td class="v">$620.00</td></tr>
+          <tr><td class="k">Insurance</td><td class="v">$145.00</td></tr>
+          <tr class="sum"><td class="k">Full monthly payment <span style="font-weight:400;color:var(--gray)">&mdash; with taxes &amp; insurance</span></td><td class="v">$3,355.03</td></tr>
+          <tr><td class="k">Monthly rent</td><td class="v">$4,161.00</td></tr>
+          <tr class="last"><td class="k">Debt-service coverage</td><td class="v">1.24&times;</td></tr>
+        </table>
+        <div class="note" style="margin-top:4px">Rent divided by the full monthly payment above.</div>
+      </div>
+    </div>
+
+    <div style="margin-top:34px">
+      <div class="sec"><span class="tick"></span><span class="t">What it costs to close</span><span class="m">third-party costs &mdash; title, escrow, recording, appraisal &mdash; are not included</span></div>
+      <div style="display:flex;gap:30px;margin-top:2px">
+        <div style="flex:1">
+          <table class="rows">
+            <tr><td class="k">Origination fee</td><td class="v">$7,500.00</td></tr>
+            <tr><td class="note" colspan="2">2.000 points &middot; 2.00% of the $375,000 loan amount</td></tr>
+            <tr><td class="k">Application fee</td><td class="v">$500.00</td></tr>
+            <tr><td class="k">Commitment fee</td><td class="v">$1,595.00</td></tr>
+            <tr><td class="k">Lender fees, total</td><td class="v" style="font-weight:700">$2,095.00</td></tr>
+            <tr class="last"><td class="k">Cost to get this rate</td><td class="v">None &mdash; priced at par</td></tr>
+          </table>
+        </div>
+        <div style="flex:1">
+          <table class="rows">
+            <tr><td class="k">Lender charges at closing, net</td><td class="v">$9,595.00</td></tr>
+            <tr><td class="k">Down payment (25%)</td><td class="v">$125,000.00</td></tr>
+            <tr class="sum last"><td class="k">Estimated cash to close</td><td class="v">$134,595.00</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="expiry tail">
+      <span class="d"></span>
+      <div class="x"><b>This term sheet expires in 24 hours</b> &mdash; good through 1 September 2026, 1:30&nbsp;pm ET.
+        Pricing moves with the market, so after that it has to be re-quoted. Nothing here is locked until we lock it in writing.</div>
+    </div>
+
+    <div class="tail">
+      <div class="eyebrow t">Acceptance</div>
+      <div style="font-size:8.1px;color:var(--gray);margin-top:5px;line-height:1.5;max-width:4.35in">Signing below accepts these terms as the basis for proceeding and authorises us to order third-party reports. It is not a commitment to lend.</div>
+      <div style="display:flex;gap:34px;margin-top:46px">
+        <div style="flex:1"><div style="border-bottom:.7px solid var(--ink)"></div><div class="pfact" style="margin-top:4px">Oak Street Holdings LLC &mdash; authorised signer</div></div>
+        <div style="flex:1"><div style="border-bottom:.7px solid var(--ink)"></div><div class="pfact" style="margin-top:4px">Miriam Rosenberg &mdash; guarantor</div></div>
+        <div style="flex:.5"><div style="border-bottom:.7px solid var(--ink)"></div><div class="pfact" style="margin-top:4px">Date</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="foot">
+    <div class="c"><b>Your YS Capital Group contact:</b> Sara Klein &middot; Senior Loan Officer &middot; (732) 555-0142 &middot; sara.klein@yscapgroup.com</div>
+    <div class="d">Pricing is indicative and subject to change until locked. This is not a commitment to lend. Subject to underwriting, appraisal, title and final credit approval. Disclosures and conditions continue on page 2.</div>
+    <div class="p">TERM SHEET &nbsp;·&nbsp; TS-4KQ7WM &nbsp;·&nbsp; PAGE 1 OF 2</div>
+  </div>
+</div>
+<!-- ═══════════ PAGE 3 — COMPARISON v2 ═══════════ -->
+<div class="page">
+  <div class="band"></div><div class="bandrule"></div><div class="bandhair"></div>
+  <img class="lock" src="pilot-lockup-light.png">
+  <div class="dt"><h1>Comparison Sheet</h1>
+    <div class="sub">One loan, three ways to price it &middot; business-purpose rental financing</div>
+    <div class="id">YS CAPITAL GROUP &middot; NMLS 2034117 &middot; ISSUED 31 AUGUST 2026</div></div>
+  <div class="body">
+    <div class="parties">
+      <div class="l">
+        <div class="eyebrow">Prepared for</div><div class="pname">Oak Street Holdings LLC</div>
+        <div class="eyebrow" style="margin-top:9px">Property</div>
+        <div class="paddr">14 Oak Street, Lakewood, NJ 08701</div>
+        <div class="pfact">Single family &middot; Ocean County &middot; valued at $500,000</div>
+      </div>
+      <div class="r">
+        <div class="eyebrow">Prepared by</div>
+        <div class="oline" style="margin-top:3px"><b>Sara Klein</b></div>
+        <div class="oline">Senior Loan Officer</div><div class="oline">(732) 555-0142</div>
+        <div class="oline">sara.klein@yscapgroup.com</div>
+        <div class="oline" style="color:var(--faint)">NMLS #1234567</div>
+      </div>
+    </div>
+
+    <div class="sharedbox" style="margin-top:21px">
+      <div class="hd"><span class="t">Identical in all three options</span>
+        <span class="n">worked out from the options themselves &mdash; nine rows taken out of the table below</span></div>
+      <div class="grid">
+        <div class="cell"><div class="k">Loan amount</div><div class="v">$375,000</div></div>
+        <div class="cell"><div class="k">Loan to value</div><div class="v">75%</div></div>
+        <div class="cell"><div class="k">Term</div><div class="v">30 years</div></div>
+        <div class="cell"><div class="k">Prepayment</div><div class="v">5-year</div></div>
+        <div class="cell"><div class="k">Credit score used</div><div class="v">740</div></div>
+        <div class="cell"><div class="k">Monthly rent</div><div class="v">$4,161.00</div></div>
+        <div class="cell"><div class="k">Taxes &amp; insurance</div><div class="v">$765.00</div></div>
+        <div class="cell"><div class="k">Origination &middot; 2.00%</div><div class="v">$7,500.00</div></div>
+        <div class="cell"><div class="k">Application fee</div><div class="v">$500.00</div></div>
+        <div class="cell"><div class="k">Commitment fee</div><div class="v">$1,595.00</div></div>
+        <div class="cell"></div><div class="cell"></div>
+      </div>
+      <div class="sfoot">Anything that differed between the options would leave this box and take a row of its own below.</div>
+    </div>
+
+    <div class="sec" style="margin-top:26px"><span class="tick"></span><span class="t">What differs</span><span class="m">every figure below is compared against option&nbsp;A</span></div>
+    <table class="cmp" style="margin-top:2px">
+      <colgroup><col style="width:1.72in"><col><col><col></colgroup>
+      <tr><th class="rowhead"></th>
+        <th class="colpad"><div class="lab">Option A &nbsp;<span style="color:var(--gray);letter-spacing:.06em">the anchor</span></div><div class="nm">Platinum<br>30-Year Fixed</div></th>
+        <th class="colpad"><div class="lab">Option B</div><div class="nm">Core<br>30-Year Fixed</div></th>
+        <th class="colpad"><div class="lab">Option C</div><div class="nm">Core<br>5/6 ARM</div></th></tr>
+      <tr><td class="k">Interest rate</td><td class="n colpad">7.375%</td><td class="n colpad">6.875%</td><td class="n colpad">6.500%</td></tr>
+      <tr><td class="k">Principal &amp; interest</td><td class="n colpad">$2,590.03</td><td class="n colpad">$2,463.48</td><td class="n colpad">$2,370.26</td></tr>
+      <tr class="key"><td class="k">Full monthly payment<br><span style="font-weight:400;font-size:7.4px;color:var(--gray)">with taxes &amp; insurance</span></td>
+        <td class="n colpad">$3,355.03</td><td class="n colpad">$3,228.48</td><td class="n colpad">$3,135.26</td></tr>
+      <tr><td class="k">&nbsp;&nbsp;&nbsp;compared with A</td><td class="n colpad" style="color:var(--faint)">&mdash;</td>
+        <td class="n colpad">&minus;$126.55 / mo</td><td class="n colpad">&minus;$219.77 / mo</td></tr>
+      <tr><td class="k">Cost to get this rate</td><td class="n colpad">None</td>
+        <td class="n colpad">$8,437.50 <span style="color:var(--gray);font-family:IS;font-size:7.3px">2.250 pts</span></td>
+        <td class="n colpad">$13,125.00 <span style="color:var(--gray);font-family:IS;font-size:7.3px">3.500 pts</span></td></tr>
+      <tr class="key"><td class="k">Cash to close</td><td class="n colpad">$134,595.00</td><td class="n colpad">$143,032.50</td><td class="n colpad">$147,720.00</td></tr>
+      <tr><td class="k">Debt-service coverage</td><td class="n colpad">1.24&times;</td><td class="n colpad">1.29&times;</td><td class="n colpad">1.33&times;</td></tr>
+      <tr class="last"><td class="k">You are ahead after</td><td class="n colpad" style="color:var(--faint)">&mdash;</td>
+        <td class="n colpad">67 months</td><td class="n colpad">60 months</td></tr>
+    </table>
+
+    <div class="tail">
+      <div class="eyebrow t">How to read this</div>
+      <div style="font-size:7.7px;color:var(--gray);line-height:1.55;margin-top:6px;max-width:6.6in">
+        <b style="color:var(--ink)">&ldquo;You are ahead after&rdquo;</b> is the month your money comes back. B and C cost more on the day you
+        close and less every month after it; divide the extra closing cost by the monthly saving and that is the month the
+        two cross. <b style="color:var(--ink)">Before that month the cheaper closing wins; after it, the cheaper payment does.</b>
+        The mirror also happens: an option that <i>pays you</i> at closing and charges a higher rate keeps you ahead
+        <i>until</i> that month, and behind from then on.
+      </div>
+      <div style="margin-top:8px">
+        <div class="read"><span class="tag">A</span><span class="tx">Cheapest to close, dearest to hold. Right if you may sell or refinance inside five years.</span></div>
+        <div class="read"><span class="tag">B</span><span class="tx">Costs <b>$8,438</b> more at closing and saves <b>$127</b> a month. Your money is back after <b>67</b> months &mdash; five years and seven months &mdash; and it is profit after that.</span></div>
+        <div class="read" style="border-bottom:0"><span class="tag">C</span><span class="tx">Costs <b>$13,125</b> more at closing and saves <b>$220</b> a month, back after <b>60</b> months. But the rate adjusts at five years, so the saving is not guaranteed past the day you break even.</span></div>
+      </div>
+    </div>
+
+    <div class="expiry tail">
+      <span class="d"></span>
+      <div class="x"><b>These prices expire in 24 hours</b> &mdash; good through 1 September 2026, 1:30&nbsp;pm ET. This is a working comparison, not an offer: there is nothing to sign here. Tell us which option you want and we will issue a term sheet for it.</div>
+    </div>
+  </div>
+  <div class="foot">
+    <div class="c"><b>Your YS Capital Group contact:</b> Sara Klein &middot; Senior Loan Officer &middot; (732) 555-0142 &middot; sara.klein@yscapgroup.com</div>
+    <div class="d">Pricing is indicative and subject to change until locked. This is not a commitment to lend. Subject to underwriting, appraisal, title and final credit approval. Break-even compares the extra closing cost with the monthly saving and ignores the time value of money. Disclosures continue on page 2.</div>
+    <div class="p">COMPARISON SHEET &nbsp;·&nbsp; TS-4KQ7WM &nbsp;·&nbsp; PAGE 1 OF 2</div>
+  </div>
+</div>
+<!-- ═══════════ PAGE 4 — SCENARIO v2 ═══════════ -->
+<div class="page">
+  <div class="band"></div><div class="bandrule"></div><div class="bandhair"></div>
+  <img class="lock" src="pilot-lockup-light.png">
+  <div class="dt"><h1>Scenario Sheet</h1>
+    <div class="sub">One property, three levels of leverage &middot; business-purpose rental financing</div>
+    <div class="id">YS CAPITAL GROUP &middot; NMLS 2034117 &middot; ISSUED 31 AUGUST 2026</div></div>
+  <div class="body">
+    <div class="parties">
+      <div class="l">
+        <div class="eyebrow">Prepared for</div><div class="pname">Oak Street Holdings LLC</div>
+        <div class="eyebrow" style="margin-top:9px">Property</div>
+        <div class="paddr">14 Oak Street, Lakewood, NJ 08701</div>
+        <div class="pfact">Single family &middot; Ocean County &middot; valued at $500,000</div>
+      </div>
+      <div class="r">
+        <div class="eyebrow">Prepared by</div>
+        <div class="oline" style="margin-top:3px"><b>Sara Klein</b></div>
+        <div class="oline">Senior Loan Officer</div><div class="oline">(732) 555-0142</div>
+        <div class="oline">sara.klein@yscapgroup.com</div>
+        <div class="oline" style="color:var(--faint)">NMLS #1234567</div>
+      </div>
+    </div>
+
+    <div class="sharedbox" style="margin-top:20px">
+      <div class="hd"><span class="t">Identical in all three scenarios</span>
+        <span class="n">prepayment is NOT here &mdash; it differs, so it has its own row below</span></div>
+      <div class="grid">
+        <div class="cell"><div class="k">Property value</div><div class="v">$500,000</div></div>
+        <div class="cell"><div class="k">Term</div><div class="v">30 years, fixed</div></div>
+        <div class="cell"><div class="k">Credit score used</div><div class="v">740</div></div>
+        <div class="cell"><div class="k">Monthly rent</div><div class="v">$4,161.00</div></div>
+        <div class="cell"><div class="k">Taxes &amp; insurance</div><div class="v">$765.00</div></div>
+        <div class="cell"><div class="k">Application fee</div><div class="v">$500.00</div></div>
+        <div class="cell"><div class="k">Commitment fee</div><div class="v">$1,595.00</div></div>
+        <div class="cell"></div>
+      </div>
+    </div>
+
+    <div class="sec" style="margin-top:22px"><span class="tick"></span><span class="t">Three scenarios</span><span class="m">smallest loan first &mdash; everything is measured up from it</span></div>
+    <table class="cmp" style="margin-top:2px">
+      <colgroup><col style="width:1.72in"><col><col><col></colgroup>
+      <tr><th class="rowhead"></th>
+        <th class="colpad"><div class="lab">Scenario C &nbsp;<span style="color:var(--gray);letter-spacing:.06em">the anchor</span></div><div class="nm">60% leverage</div></th>
+        <th class="colpad"><div class="lab">Scenario B</div><div class="nm">65% leverage</div></th>
+        <th class="colpad"><div class="lab">Scenario A</div><div class="nm">75% leverage</div></th></tr>
+
+      <tr><td colspan="4" style="padding:9px 0 4px 0;border-bottom:0">
+        <span style="display:inline-block;width:2.2px;height:7px;background:var(--gold);vertical-align:-1px"></span>
+        <span style="font-size:6.7px;font-weight:700;letter-spacing:.15em;color:var(--gold);text-transform:uppercase;margin-left:6px">What you changed</span></td></tr>
+      <tr><td class="k">Loan amount</td><td class="n colpad">$300,000</td><td class="n colpad">$325,000</td><td class="n colpad">$375,000</td></tr>
+      <tr><td class="k">Loan to value</td><td class="n colpad">60%</td><td class="n colpad">65%</td><td class="n colpad">75%</td></tr>
+      <tr class="last"><td class="k">Prepayment <span class="pill moved">moved</span></td><td class="n colpad">3-year</td><td class="n colpad">5-year</td><td class="n colpad">5-year</td></tr>
+
+      <tr><td colspan="4" style="padding:11px 0 4px 0;border-bottom:0">
+        <span style="display:inline-block;width:2.2px;height:7px;background:var(--teal);vertical-align:-1px"></span>
+        <span style="font-size:6.7px;font-weight:700;letter-spacing:.15em;color:var(--teal);text-transform:uppercase;margin-left:6px">What it produced</span></td></tr>
+      <tr><td class="k">Interest rate</td><td class="n colpad">6.750%</td><td class="n colpad">6.990%</td><td class="n colpad">7.375%</td></tr>
+      <tr><td class="k">Principal &amp; interest</td><td class="n colpad">$1,945.79</td><td class="n colpad">$2,160.05</td><td class="n colpad">$2,590.03</td></tr>
+      <tr class="key"><td class="k">Full monthly payment<br><span style="font-weight:400;font-size:7.4px;color:var(--gray)">with taxes &amp; insurance</span></td>
+        <td class="n colpad">$2,710.79</td><td class="n colpad">$2,925.05</td><td class="n colpad">$3,355.03</td></tr>
+      <tr><td class="k">Origination &mdash; 2.00%</td><td class="n colpad">$6,000.00</td><td class="n colpad">$6,500.00</td><td class="n colpad">$7,500.00</td></tr>
+      <tr><td class="k">Cost to get this rate</td>
+        <td class="n colpad">$7,500.00 <span style="color:var(--gray);font-family:IS;font-size:7.3px">2.500 pts</span></td>
+        <td class="n colpad">$5,687.50 <span style="color:var(--gray);font-family:IS;font-size:7.3px">1.750 pts</span></td>
+        <td class="n colpad">None</td></tr>
+      <tr class="key"><td class="k">Cash to close</td><td class="n colpad">$215,595.00</td><td class="n colpad">$189,282.50</td><td class="n colpad">$134,595.00</td></tr>
+      <tr class="last"><td class="k">Debt-service coverage</td><td class="n colpad">1.53&times;</td><td class="n colpad">1.42&times;</td><td class="n colpad">1.24&times;</td></tr>
+    </table>
+
+    <div class="tail">
+      <div class="eyebrow t">What the extra borrowing actually costs you</div>
+      <table class="cmp inc" style="margin-top:5px">
+        <colgroup><col style="width:1.72in"><col><col><col></colgroup>
+        <tr><td class="k">You borrow this much more than C</td><td class="n colpad" style="color:var(--faint)">&mdash;</td>
+          <td class="n colpad">$25,000</td><td class="n colpad">$75,000</td></tr>
+        <tr class="key"><td class="k">The extra money effectively costs</td><td class="n colpad" style="color:var(--faint);font-weight:400">&mdash;</td>
+          <td class="n colpad">9.87% a year</td><td class="n colpad">9.88% a year</td></tr>
+        <tr class="last"><td class="k">&nbsp;&nbsp;&nbsp;and adds to the payment</td><td class="n colpad" style="color:var(--faint)">&mdash;</td>
+          <td class="n colpad">$214.26 / mo</td><td class="n colpad">$644.24 / mo</td></tr>
+      </table>
+      <div style="font-size:7.7px;color:var(--gray);line-height:1.55;margin-top:8px;max-width:6.6in">
+        Borrowing more does not only cost the rate on the extra slice &mdash; <b style="color:var(--ink)">it re-prices every
+        dollar you were already borrowing.</b> Scenario A carries 7.375% on the whole $375,000, not 6.750% on $300,000 plus a
+        higher rate on the last $75,000. Netting the two off, the extra $75,000 is really costing <b style="color:var(--ink)">9.88%
+        a year</b>. That is the number to hold against what the money earns in your next deal.
+      </div>
+    </div>
+
+    <div class="notice tail"><div class="b"></div>
+      <div class="x"><b>Each scenario is priced in its own DSCR band <span class="pill new">new rule</span></b> &mdash;
+        1.53&times;, 1.42&times; and 1.24&times; sit in three different bands, so each one is checked against the band it was priced in
+        and re-priced on its own if the figures move it. Today the check runs only on a single-option term sheet, and only on the
+        first option; on this document it does not run at all.</div>
+    </div>
+
+    <div class="expiry tail">
+      <span class="d"></span>
+      <div class="x"><b>These prices expire in 24 hours</b> &mdash; good through 1 September 2026, 1:30&nbsp;pm ET. Each scenario is a different loan, so there is nothing to sign here. Choose one and we will issue a term sheet for it.</div>
+    </div>
+  </div>
+  <div class="foot">
+    <div class="c"><b>Your YS Capital Group contact:</b> Sara Klein &middot; Senior Loan Officer &middot; (732) 555-0142 &middot; sara.klein@yscapgroup.com</div>
+    <div class="d">Pricing is indicative and subject to change until locked. This is not a commitment to lend. Subject to underwriting, appraisal, title and final credit approval. The effective cost of the extra borrowing nets the two loans' annual interest and divides by the difference in loan amount. Disclosures continue on page 2.</div>
+    <div class="p">SCENARIO SHEET &nbsp;·&nbsp; TS-4KQ7WM &nbsp;·&nbsp; PAGE 1 OF 2</div>
+  </div>
+</div>
+<!-- ═══════════ PAGE 5 — BOTH COMPENSATION MODES ═══════════ -->
+<div class="page spec">
+  <div class="pad" style="top:.62in">
+    <div style="display:flex;align-items:baseline">
+      <div class="eyebrow g" style="letter-spacing:.22em">B O T H&nbsp;&nbsp;M O D E S</div>
+      <div style="margin-left:auto;font-family:PM;font-size:6.4px;color:var(--faint);letter-spacing:.1em">QL · 002 · 005</div>
+    </div>
+    <div style="height:1.1px;background:var(--gold);margin-top:7px"></div>
+    <div style="display:flex;gap:30px;margin-top:15px;align-items:flex-end">
+      <h1 style="font-family:PS;font-weight:400;font-size:26px;letter-spacing:-.015em;line-height:1.05">Lender-paid and<br>borrower-paid, built</h1>
+      <div style="font-size:7.7px;color:var(--gray);line-height:1.55;flex:1;padding-bottom:3px">
+        The same three options, priced both ways through the real engine. What changes is one row and
+        one total &mdash; and the layout must not assume the origination row exists, because on lender-paid
+        <b style="color:var(--ink)">it is not there at all</b>.
+      </div>
+    </div>
+  </div>
+
+  <div class="pad" style="top:2.42in">
+    <div class="eyebrow g">Borrower-paid &mdash; the borrower pays our origination</div>
+    <table class="cmp" style="margin-top:5px">
+      <colgroup><col style="width:1.72in"><col><col><col></colgroup>
+      <tr><th class="rowhead"></th>
+        <th class="colpad"><div class="lab">A</div><div class="nm">7.375%</div></th>
+        <th class="colpad"><div class="lab">B</div><div class="nm">6.875%</div></th>
+        <th class="colpad"><div class="lab">C</div><div class="nm">6.500%</div></th></tr>
+      <tr><td class="k">Origination &mdash; 2.00%</td><td class="n colpad">$7,500.00</td><td class="n colpad">$7,500.00</td><td class="n colpad">$7,500.00</td></tr>
+      <tr><td class="k">Cost to get this rate</td><td class="n colpad">None</td><td class="n colpad">$8,437.50</td><td class="n colpad">$13,125.00</td></tr>
+      <tr><td class="k">Lender fees</td><td class="n colpad">$2,095.00</td><td class="n colpad">$2,095.00</td><td class="n colpad">$2,095.00</td></tr>
+      <tr class="key"><td class="k">Cash to close</td><td class="n colpad">$134,595.00</td><td class="n colpad">$143,032.50</td><td class="n colpad">$147,720.00</td></tr>
+    </table>
+  </div>
+
+  <div class="pad" style="top:4.66in">
+    <div class="eyebrow g" style="color:var(--teal)">Lender-paid &mdash; we are paid by the investor, so there is no origination row</div>
+    <table class="cmp" style="margin-top:5px">
+      <colgroup><col style="width:1.72in"><col><col><col></colgroup>
+      <tr><th class="rowhead"></th>
+        <th class="colpad"><div class="lab">A</div><div class="nm">7.375%</div></th>
+        <th class="colpad"><div class="lab">B</div><div class="nm">6.875%</div></th>
+        <th class="colpad"><div class="lab">C</div><div class="nm">6.500%</div></th></tr>
+      <tr><td class="k" style="color:var(--faint)">Origination</td>
+        <td class="n colpad" style="color:var(--faint)">not charged</td><td class="n colpad" style="color:var(--faint)">not charged</td><td class="n colpad" style="color:var(--faint)">not charged</td></tr>
+      <tr><td class="k">Cost to get this rate</td><td class="n colpad">None</td><td class="n colpad">$8,437.50</td><td class="n colpad">$13,125.00</td></tr>
+      <tr><td class="k">Lender fees</td><td class="n colpad">$2,095.00</td><td class="n colpad">$2,095.00</td><td class="n colpad">$2,095.00</td></tr>
+      <tr class="key"><td class="k">Cash to close</td><td class="n colpad">$127,095.00</td><td class="n colpad">$135,532.50</td><td class="n colpad">$140,220.00</td></tr>
+    </table>
+  </div>
+
+  <div class="pad" style="top:6.9in">
+    <div class="eyebrow g">What the page has to survive</div>
+    <div style="height:1px;background:var(--ink);margin-top:6px"></div>
+    <div style="display:flex;gap:26px;margin-top:11px">
+      <div style="flex:1;font-size:7.6px;color:var(--gray);line-height:1.6">
+        <b style="color:var(--ink)">A row that is not there.</b> On lender-paid the origination line does not exist &mdash;
+        it is not zero, it is absent. So "origination" cannot be a fixed row on the sheet or in the shared box, and
+        it cannot be assumed when working out what is identical between options.</div>
+      <div style="flex:1;font-size:7.6px;color:var(--gray);line-height:1.6">
+        <b style="color:var(--ink)">A total that can point the other way.</b> A lender-paid option priced above par can
+        produce a <b style="color:var(--ink)">credit</b> rather than a charge, and the sheet must then read
+        <i>lender credit at closing</i> and <i>you receive</i>, not a negative charge.</div>
+      <div style="flex:1;font-size:7.6px;color:var(--gray);line-height:1.6">
+        <b style="color:var(--ink)">The rate never moves.</b> $7,500 comes off the cash to close and not one rate,
+        payment or coverage figure changes &mdash; which is the check that the two modes really are the same loan
+        priced two ways.</div>
+    </div>
+  </div>
+
+  <div class="pad" style="bottom:.62in">
+    <div style="height:.6px;background:var(--line)"></div>
+    <div style="display:flex;margin-top:6px">
+      <div style="font-size:6.8px;color:var(--faint);font-style:italic">Both tables built through snapshot.buildSnapshot on the same scenario, 31 August 2026. Nothing typed by hand.</div>
+      <div style="margin-left:auto;font-family:PM;font-size:6.2px;color:var(--faint);letter-spacing:.1em">005 / 006</div>
+    </div>
+  </div>
+</div>
+<!-- ═══════════ PAGE 6 — THE FORMULAS, CHECKED ═══════════ -->
+<div class="page spec">
+  <div class="pad" style="top:.62in">
+    <div style="display:flex;align-items:baseline">
+      <div class="eyebrow g" style="letter-spacing:.22em">T H E&nbsp;&nbsp;A R I T H M E T I C</div>
+      <div style="margin-left:auto;font-family:PM;font-size:6.4px;color:var(--faint);letter-spacing:.1em">QL · 002 · 006</div>
+    </div>
+    <div style="height:1.1px;background:var(--gold);margin-top:7px"></div>
+    <div style="display:flex;gap:30px;margin-top:15px;align-items:flex-end">
+      <h1 style="font-family:PS;font-weight:400;font-size:26px;letter-spacing:-.015em;line-height:1.05">Both formulas,<br>re-derived by hand</h1>
+      <div style="font-size:7.7px;color:var(--gray);line-height:1.55;flex:1;padding-bottom:3px">
+        You asked me to check them rather than trust them. Both are <b style="color:var(--ink)">correct</b>.
+        The incremental cost reproduces both of your own worked examples <b style="color:var(--ink)">to the digit</b>,
+        and the break-even reproduces by hand in both directions and refuses in the three cases where no answer exists.
+      </div>
+    </div>
+  </div>
+
+  <div class="pad" style="top:2.36in">
+    <div class="eyebrow t">1 &nbsp; The effective cost of the extra borrowing</div>
+    <div style="height:1px;background:var(--ink);margin-top:6px"></div>
+    <div style="font-family:PM;font-size:11px;margin-top:12px;letter-spacing:-.01em">
+      ( bigger&nbsp;&times;&nbsp;its&nbsp;rate &nbsp;&minus;&nbsp; smaller&nbsp;&times;&nbsp;its&nbsp;rate ) &nbsp;&divide;&nbsp; ( bigger &minus; smaller )
+    </div>
+    <div style="font-size:7.7px;color:var(--gray);line-height:1.55;margin-top:9px;max-width:6.5in">
+      It is built on <b style="color:var(--ink)">interest, not on the payment</b> &mdash; a P&amp;I payment is partly your own
+      capital coming back, so annualising it prices your money back to you as a cost. And it counts the
+      <b style="color:var(--ink)">re-pricing of the whole loan</b>, which is the question actually being asked.
+    </div>
+    <table class="cmp" style="margin-top:13px">
+      <colgroup><col style="width:2.5in"><col style="width:1.1in"><col style="width:1.1in"><col></colgroup>
+      <tr><th class="rowhead"><div class="lab" style="color:var(--gray)">Case</div></th>
+        <th class="colpad"><div class="lab">Engine</div></th><th class="colpad"><div class="lab">By hand</div></th>
+        <th class="colpad"><div class="lab" style="color:var(--gray)">Note</div></th></tr>
+      <tr><td class="k">$375,000 and $400,000, both at 6.75%</td>
+        <td class="n colpad">6.75%</td><td class="n colpad">6.75%</td>
+        <td class="colpad" style="font-size:7.4px;color:var(--gray)">your <i>&ldquo;still 6.75%&rdquo;</i> &mdash; same rate, no re-pricing <span class="chk">OK</span></td></tr>
+      <tr><td class="k">$400,000 @ 6.00% &rarr; $500,000 @ 7.00%</td>
+        <td class="n colpad">11.00%</td><td class="n colpad">11.00%</td>
+        <td class="colpad" style="font-size:7.4px;color:var(--gray)">1 pt on 400k = 4 pts of the extra 100k, + 7 on the slice <span class="chk">OK</span></td></tr>
+      <tr><td class="k">$300,000 @ 6.75% &rarr; $375,000 @ 7.375%</td>
+        <td class="n colpad">9.88%</td><td class="n colpad">9.8750%</td>
+        <td class="colpad" style="font-size:7.4px;color:var(--gray)">the scenario sheet on page 4 <span class="chk">OK</span></td></tr>
+      <tr class="last"><td class="k">$300,000 @ 6.75% &rarr; $325,000 @ 6.99%</td>
+        <td class="n colpad">9.87%</td><td class="n colpad">9.8700%</td>
+        <td class="colpad" style="font-size:7.4px;color:var(--gray)">the middle scenario <span class="chk">OK</span></td></tr>
+    </table>
+    <div class="notice" style="margin-top:14px"><div class="b"></div>
+      <div class="x"><b>The formula was right; the direction was mine to get wrong.</b> It answers only when the option
+      borrows MORE than the one it is measured against. My first draft anchored on the largest loan, so it returned
+      nothing on every row and the line quietly disappeared. Anchoring on the smallest is what brings it back.</div>
+    </div>
+  </div>
+
+  <div class="pad" style="top:7.06in">
+    <div class="eyebrow t">2 &nbsp; The break-even &mdash; &ldquo;you are ahead after&rdquo;</div>
+    <div style="height:1px;background:var(--ink);margin-top:6px"></div>
+    <div style="font-family:PM;font-size:11px;margin-top:12px;letter-spacing:-.01em">
+      months &nbsp;=&nbsp; &minus;&thinsp;( extra cost at closing ) &nbsp;&divide;&nbsp; ( monthly difference )
+    </div>
+    <table class="cmp" style="margin-top:11px">
+      <colgroup><col style="width:2.5in"><col style="width:1.1in"><col style="width:1.1in"><col></colgroup>
+      <tr><th class="rowhead"><div class="lab" style="color:var(--gray)">Case</div></th>
+        <th class="colpad"><div class="lab">Engine</div></th><th class="colpad"><div class="lab">By hand</div></th>
+        <th class="colpad"><div class="lab" style="color:var(--gray)">Note</div></th></tr>
+      <tr><td class="k">Pay $8,438 more, save $126.55 a month</td>
+        <td class="n colpad">66.7</td><td class="n colpad">66.68</td>
+        <td class="colpad" style="font-size:7.4px;color:var(--gray)">option B on page 3 <span class="chk">OK</span></td></tr>
+      <tr><td class="k">Pay $13,125 more, save $219.77 a month</td>
+        <td class="n colpad">59.7</td><td class="n colpad">59.72</td>
+        <td class="colpad" style="font-size:7.4px;color:var(--gray)">option C on page 3 <span class="chk">OK</span></td></tr>
+      <tr><td class="k">The mirror &mdash; take $8,438, pay $126.55 more</td>
+        <td class="n colpad">66.7</td><td class="n colpad">66.68</td>
+        <td class="colpad" style="font-size:7.4px;color:var(--gray)">same month, opposite meaning: ahead <i>until</i> then <span class="chk">OK</span></td></tr>
+      <tr class="last"><td class="k">Dearer today AND dearer monthly &middot; a sub-cent difference &middot; no closing figure</td>
+        <td class="n colpad" colspan="2" style="text-align:center">refused, all three</td>
+        <td class="colpad" style="font-size:7.4px;color:var(--gray)">no break-even exists, so none is printed <span class="chk">OK</span></td></tr>
+    </table>
+  </div>
+
+  <div class="pad" style="bottom:.62in">
+    <div style="height:.6px;background:var(--line)"></div>
+    <div style="display:flex;margin-top:6px">
+      <div style="font-size:6.8px;color:var(--faint);font-style:italic">Every engine figure produced by calling comparison.js directly, 31 August 2026. Every hand figure worked independently of it.</div>
+      <div style="margin-left:auto;font-family:PM;font-size:6.2px;color:var(--faint);letter-spacing:.1em">006 / 006</div>
+    </div>
+  </div>
+</div>
+</body></html>
