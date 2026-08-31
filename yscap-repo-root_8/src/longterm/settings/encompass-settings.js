@@ -840,11 +840,15 @@ const SETTINGS = [
       + 'and the number the sheet prints on its own face. Nothing is deleted when it does - '
       + 'an expired sheet still replays, and says it is expired.',
     evidence: 'Owner-directed 2026-08-30 - "it should also say that it is expiring in 24 hours."' },
-  { key: 'termSheet.expiryDays', group: 'Term sheets', label: 'A COMPARISON is good for (days)',
+  { key: 'termSheet.expiryDays', group: 'Term sheets', label: 'A COMPARISON is good for (days) - RETIRED',
     type: 'number', default: 2,
-    description: 'Days from issue until a comparison or scenario comparison says it has '
-      + 'expired. A comparison is a working document rather than an offer, so it runs on a '
-      + 'longer clock than a term sheet.' },
+    description: 'RETIRED 2026-08-31 and no longer read by anything. Every document now runs '
+      + 'on the single "A TERM SHEET is good for (hours)" clock above. This entry is kept so a '
+      + 'company that stored a value here can see what became of it rather than finding a '
+      + 'setting that silently disappeared; changing it has no effect.',
+    evidence: 'Owner-directed 2026-08-31 - "everything expires in 24 hours." This reverses the '
+      + '2026-08-30 decision that a comparison, being a working document rather than an offer, '
+      + 'should run on a longer clock. The owner was shown that reasoning and chose 24 anyway.' },
   { key: 'termSheet.cartMax', group: 'Term sheets', label: 'Options in one comparison',
     type: 'number', default: 8,
     description: 'The most options one comparison may hold. Past this it stops being a '
