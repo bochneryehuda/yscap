@@ -117,8 +117,14 @@ console.log('the mortgages on the credit report');
 
 const reo = byCode('lt_reo_liabilities');
 const reoWays = answers.plan(reo).ways.map((w) => w.key);
-check(JSON.stringify(reoWays) === JSON.stringify(['statement', 'primary', 'address']),
-  'a statement, "this is the home they live in", or the property it is secured by');
+/* RE-POINTED 2026-08-31, not loosened. A fourth way — "this is the mortgage on
+   the subject property" — was added by owner direction, so this assertion moved
+   to name all four rather than being relaxed into a length check that would let
+   a fifth appear unnoticed. The new way's OWN rules (refinance only, and what a
+   credit report may fill in from it) are proven in
+   test-lt-reo-subject-property-pure.js; here it is only the table's shape. */
+check(JSON.stringify(reoWays) === JSON.stringify(['statement', 'primary', 'subject_property', 'address']),
+  'a statement, "this is the home they live in", the mortgage on the subject property, or the property it is secured by');
 
 const lines = [{ key: 'liab:1', label: 'Chase ····4417' }, { key: 'liab:2', label: 'Wells ····9002' }];
 check(answers.satisfies(reo, { mortgages: [] }, { lines: [] }).ok === true,

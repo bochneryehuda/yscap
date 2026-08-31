@@ -251,9 +251,13 @@ const DEFAULT_LETTERS = Object.freeze({
   },
   condo_questionnaire: {
     title: 'Condominium Questionnaire',
+    /* The FORM IS ATTACHED (orders/enclosures.js encloses Fannie Mae 1076 on
+       every condo order), so the letter says so — asking an association to
+       complete a questionnaire without enclosing one is the version that was
+       shipped first and it simply produced a reply asking which form we meant. */
     intro: 'We are financing a unit in the association below and need the standard lender questionnaire completed. '
-      + 'Please let us know your fee and how you would like it paid.',
-    closing: 'If you use your own form rather than a lender’s, please send yours — we will work from it.',
+      + 'Our form is attached. Please let us know your fee and how you would like it paid.',
+    closing: 'If you use your own form rather than a lender’s, please send yours instead — we will work from it.',
   },
   vor: {
     title: 'Verification of Rent',

@@ -1,0 +1,502 @@
+<title>Long-Term Condition Sets</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Hanken+Grotesk:wght@400;500;600;700&display=swap">
+<style>
+:root {
+  --paper: #F6F3EC;
+  --card: #FFFFFF;
+  --ink: #141B22;
+  --slate: #4B585C;
+  --gold: #8F6D2F;
+  --gold-soft: #F3EADA;
+  --teal: #23636A;
+  --teal-soft: #E3EFEF;
+  --line: #E3DDD0;
+  --line-soft: #EFEAE0;
+  --slate-soft: #ECEAE4;
+  --shadow: 0 1px 2px rgba(20, 27, 34, .05), 0 8px 24px -18px rgba(20, 27, 34, .35);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #101519;
+    --card: #171E24;
+    --ink: #ECE7DC;
+    --slate: #A2AEB3;
+    --gold: #D3AC63;
+    --gold-soft: #2A2318;
+    --teal: #7CC3C8;
+    --teal-soft: #16262A;
+    --line: #28313A;
+    --line-soft: #212931;
+    --slate-soft: #212931;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -18px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #101519;
+  --card: #171E24;
+  --ink: #ECE7DC;
+  --slate: #A2AEB3;
+  --gold: #D3AC63;
+  --gold-soft: #2A2318;
+  --teal: #7CC3C8;
+  --teal-soft: #16262A;
+  --line: #28313A;
+  --line-soft: #212931;
+  --slate-soft: #212931;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -18px rgba(0,0,0,.8);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 58rem; margin: 0 auto; padding: 56px 20px 96px; }
+
+/* ---- masthead ---- */
+.mast { border-bottom: 2px solid var(--gold); padding-bottom: 22px; margin-bottom: 34px; }
+.eyebrow {
+  font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--gold); margin: 0 0 10px;
+}
+h1 {
+  font-family: Fraunces, ui-serif, Georgia, serif;
+  font-weight: 600; font-size: clamp(30px, 5vw, 44px); line-height: 1.12;
+  margin: 0 0 12px; letter-spacing: -.015em; text-wrap: balance;
+}
+.lede { margin: 0; max-width: 62ch; color: var(--slate); font-size: 17px; }
+.counts { display: flex; flex-wrap: wrap; gap: 8px 26px; margin: 20px 0 0; padding: 0; list-style: none; }
+.counts li { font-size: 14px; color: var(--slate); }
+.counts b { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* ---- legend ---- */
+.legend {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 18px 20px; margin-bottom: 40px; box-shadow: var(--shadow);
+}
+.legend h2 {
+  font-family: Fraunces, ui-serif, Georgia, serif; font-size: 17px; font-weight: 600;
+  margin: 0 0 4px;
+}
+.legend > p { margin: 0 0 16px; color: var(--slate); font-size: 14px; }
+.legend-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr)); gap: 14px 24px; }
+.legend-grid dl { margin: 0; }
+.legend-grid dt { font-size: 12px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--slate); margin-bottom: 7px; }
+.legend-grid dd { margin: 0 0 6px; font-size: 14px; color: var(--slate); display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.legend-grid dd b { color: var(--ink); font-weight: 500; }
+
+/* ---- gates ---- */
+.gate { margin-bottom: 52px; }
+.gate-h { margin-bottom: 20px; }
+.gate-h h2 {
+  font-family: Fraunces, ui-serif, Georgia, serif; font-weight: 600;
+  font-size: clamp(22px, 3.4vw, 28px); margin: 0 0 6px; letter-spacing: -.01em;
+}
+.gate-h > p { margin: 0 0 14px; color: var(--slate); max-width: 60ch; }
+.tally { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 0 0 6px; padding: 0; list-style: none; font-size: 14px; color: var(--slate); }
+.tally b { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+.tally.quiet { font-size: 13px; }
+.tally.quiet b { color: var(--slate); }
+
+.conds { display: flex; flex-direction: column; gap: 12px; }
+.cond {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 16px 18px; box-shadow: var(--shadow);
+}
+.cond-h { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: baseline; justify-content: space-between; }
+.cond-h h3 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: -.005em; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+}
+.chip.teal { color: var(--teal); background: var(--teal-soft); }
+.chip.gold { color: var(--gold); background: var(--gold-soft); }
+.chip.slate { color: var(--slate); background: var(--slate-soft); }
+
+.why { margin: 9px 0 0; color: var(--ink); max-width: 68ch; }
+.alias, .when { margin: 7px 0 0; font-size: 14px; color: var(--slate); }
+.alias span, .when span {
+  font-size: 11.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--slate); margin-right: 7px;
+}
+.when { color: var(--ink); }
+.slots { display: flex; flex-wrap: wrap; gap: 6px; margin: 11px 0 0; padding: 0; list-style: none; }
+.slots li {
+  font-size: 13px; color: var(--slate); border: 1px solid var(--line-soft);
+  border-radius: 7px; padding: 2px 9px; background: var(--paper);
+}
+/* The three conditions that are a CHOICE list their WAYS, not their slots. A way
+   is a sentence with a parenthetical, so it stacks instead of sitting in a chip
+   row — chips are for short nouns and these are not. */
+.slots.ways { flex-direction: column; gap: 5px; align-items: flex-start; }
+.slots.ways li { padding: 5px 11px; line-height: 1.5; max-width: 62ch; }
+.slots.ways em { font-style: normal; color: var(--muted); }
+.cond .why + .why { margin-top: 12px; }
+.cond .why strong { color: var(--ink); font-weight: 600; }
+
+/* ---- close ---- */
+.close { border-top: 1px solid var(--line); padding-top: 22px; margin-top: 8px; }
+.close h2 { font-family: Fraunces, ui-serif, Georgia, serif; font-size: 19px; font-weight: 600; margin: 0 0 10px; }
+.close p { margin: 0 0 12px; color: var(--slate); max-width: 66ch; }
+.close b { color: var(--ink); font-weight: 600; }
+
+@media (max-width: 620px) {
+  .wrap { padding: 36px 16px 64px; }
+  .cond-h { flex-direction: column; align-items: flex-start; gap: 8px; }
+}
+</style>
+
+<div class="wrap">
+  <header class="mast">
+    <p class="eyebrow">PILOT &middot; Long-Term</p>
+    <h1>Every condition, and why it is there</h1>
+    <p class="lede">The two gates a long-term file passes through, condition by condition &mdash; what each one is, who sees it,
+      which files get it, and what actually satisfies it. Everything here is a setting: the wording, the rule and whether it
+      applies at all are changed on the Condition Center screen, never in a release.</p>
+    <ul class="counts">
+      <li><b>29</b> conditions across both gates</li>
+      <li><b>14</b> the borrower sees</li>
+      <li><b>15</b> internal only</li>
+    </ul>
+  </header>
+
+  <section class="legend">
+    <h2>How to read this</h2>
+    <p>Two tags on every condition: who sees it, and what kind of thing it is.</p>
+    <div class="legend-grid">
+      <dl>
+        <dt>Who sees it</dt>
+        <dd><span class="chip teal">Borrower sees it</span> <b>on their own screen, in their own wording</b></dd>
+        <dd><span class="chip slate">Internal only</span> <b>our team only &mdash; never shown to them</b></dd>
+      </dl>
+      <dl>
+        <dt>What kind of thing it is</dt>
+        <dd><span class="chip gold">Form</span> <b>boxes filled in on screen</b></dd>
+        <dd><span class="chip gold">Document upload</span> <b>a file gets uploaded</b></dd>
+        <dd><span class="chip gold">Order</span> <b>an email to an outside company</b></dd>
+        <dd><span class="chip gold">DocuSign</span> <b>a form goes out for signature</b></dd>
+      </dl>
+    </div>
+  </section>
+
+
+<section class="gate" id="prior_to_submission">
+  <header class="gate-h">
+    <h2>Prior to submission</h2>
+    <p>Everything that has to be true before the file goes to the investor.</p>
+    <ul class="tally">
+      <li><b>17</b> conditions</li>
+      <li><b>10</b> the borrower sees</li>
+      <li><b>7</b> internal only</li>
+    </ul>
+    <ul class="tally quiet"><li><b>5</b> document upload</li><li><b>5</b> form</li><li><b>6</b> order</li><li><b>1</b> docusign</li></ul>
+  </header>
+  <div class="conds"><article class="cond">
+  <div class="cond-h">
+    <h3>Mortgages on the credit report — a statement for each</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">Read the liabilities off the credit report, mark which are mortgages and which are not, and collect a current statement for every mortgage. A mortgage that is the borrower’s own primary residence can be linked to it instead of uploaded again; anything else needs its own statement against the property it is secured by.</p>
+  <p class="alias"><span>They see it as</span> Statements for your other mortgages</p>
+  <p class="when"><span>Applies to</span> Every file.</p>
+  <p class="why"><strong>Each mortgage is answered one of three ways — not a form to fill in:</strong></p><ul class="slots ways"><li>Upload a statement for this mortgage <em>(nothing further)</em></li><li>This is the mortgage on the home they live in <em>(nothing further)</em></li><li>Say which property it is secured by <em>(property address, investment or second home, monthly rent, the last only when it applies)</em></li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Vesting entity — formation documents and ownership</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">The entity taking title: its articles, its operating agreement or bylaws, its EIN letter and who its members are. Verified once and then verified forever — the entity lives on the borrower’s profile, so a second loan for the same entity starts already done.</p>
+  <p class="alias"><span>They see it as</span> Your company’s documents</p>
+  <p class="when"><span>Applies to</span> Title is taken in an entity is yes.</p>
+  <ul class="slots"><li>Articles of formation</li><li>Operating agreement or bylaws</li><li>EIN letter</li><li>Certificate of good standing (optional)</li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Mortgage statement on the subject property</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">A current statement on the loan being paid off. Three ways to satisfy it: the statement itself; the payoff figures typed in — outstanding balance, servicer AND loan number, all three, none of them optional; or a waiver where the loan being refinanced is one of our own short-term loans serviced by FCI, where we already hold everything a statement would say.</p>
+  <p class="alias"><span>They see it as</span> Your current mortgage statement</p>
+  <p class="when"><span>Applies to</span> Is a refinance is yes.</p>
+  <p class="why"><strong>Answered one of three ways — a document is only one of them:</strong></p><ul class="slots ways"><li>Upload the mortgage statement <em>(nothing further)</em></li><li>Type the loan in instead <em>(outstanding principal balance, servicer, loan number)</em></li><li>This refinances one of our own short-term loans, serviced by FCI <em>(nothing further)</em></li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>File contacts</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="boxes filled in on screen">Form</span></div>
+  </div>
+  <p class="why">Who is on this closing: title, hazard insurance, flood insurance, the buyer’s attorney, the realtor, our attorney, and — in New York — the settlement agent. Picked from the shared vendor directory rather than typed, so the same company is the same record on every file.</p>
+  <p class="alias"><span>They see it as</span> Who is handling your closing</p>
+  <p class="when"><span>Applies to</span> Every file.</p>
+  
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Title ordered</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="an email goes out to an outside company">Order</span></div>
+  </div>
+  <p class="why">The title order goes out to the title company on the file, from the officer’s own address, so their reply lands on the file.</p>
+  <p class="when"><span>Applies to</span> Every file.</p>
+  
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Insurance ordered</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="an email goes out to an outside company">Order</span></div>
+  </div>
+  <p class="why">A quote on a purchase, or verification of the policy in force on a refinance — two different letters for two different questions.</p>
+  <p class="when"><span>Applies to</span> Every file.</p>
+  
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Flood insurance ordered</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="an email goes out to an outside company">Order</span></div>
+  </div>
+  <p class="why">Only where the property is in a flood zone. Until the determination has been read, this condition does not attach — an unread file has not been determined to be outside a flood zone, it has not been determined at all.</p>
+  <p class="when"><span>Applies to</span> In a flood zone is yes.</p>
+  
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>New York settlement agent ordered</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="an email goes out to an outside company">Order</span></div>
+  </div>
+  <p class="why">New York closes through a settlement agent rather than the title company, so the order goes to them.</p>
+  <p class="when"><span>Applies to</span> Property is in New York is yes.</p>
+  
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Card on file for the appraisal</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="boxes filled in on screen">Form</span></div>
+  </div>
+  <p class="why">The card the appraisal is charged to. It is held on the borrower’s shared profile, so a card given on one loan is already here on the next — and a card added here goes back to the profile the same way.</p>
+  <p class="alias"><span>They see it as</span> A card for the appraisal</p>
+  <p class="when"><span>Applies to</span> Every file.</p>
+  
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Landlord’s contact details</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="boxes filled in on screen">Form</span></div>
+  </div>
+  <p class="why">Only where the borrower rents where they live (Encompass field FR0115). This is what the verification of rent is sent to, so it is collected before the form is built.</p>
+  <p class="alias"><span>They see it as</span> Your landlord’s contact details</p>
+  <p class="when"><span>Applies to</span> Borrower rents where they live is yes.</p>
+  
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Verification of rent sent</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="it goes out for signature">DocuSign</span></div>
+  </div>
+  <p class="why">The form is filled in from what we already know — the property, the borrower, the rent, our own details — and every part the landlord has to answer is left blank and required. It can go by DocuSign, as an email attachment, or both; a form that comes back filled in by hand voids the envelope so there is never a second, half-signed copy in flight.</p>
+  <p class="when"><span>Applies to</span> Borrower rents where they live is yes.</p>
+  
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Government photo ID</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">Held on the borrower’s shared profile, so an ID given on any previous loan is already here.</p>
+  <p class="alias"><span>They see it as</span> Your photo ID</p>
+  <p class="when"><span>Applies to</span> Every file.</p>
+  <ul class="slots"><li>Photo ID</li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Servicer of the loan being paid off</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="boxes filled in on screen">Form</span></div>
+  </div>
+  <p class="why">Only on a refinance. The payoff request goes to whoever services the loan being paid off, so their details are collected before it is ordered.</p>
+  <p class="alias"><span>They see it as</span> Who you pay your current mortgage to</p>
+  <p class="when"><span>Applies to</span> Is a refinance is yes.</p>
+  
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Payoff ordered</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="an email goes out to an outside company">Order</span></div>
+  </div>
+  <p class="why">Requested from the servicer of the loan being paid off.</p>
+  <p class="when"><span>Applies to</span> Is a refinance is yes.</p>
+  
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>HOA management company</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="boxes filled in on screen">Form</span></div>
+  </div>
+  <p class="why">Only on a condo. The questionnaire goes to whoever manages the association, so their details are collected first.</p>
+  <p class="alias"><span>They see it as</span> Who manages the condo association</p>
+  <p class="when"><span>Applies to</span> Is a condo is yes.</p>
+  
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Condo questionnaire ordered</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="an email goes out to an outside company">Order</span></div>
+  </div>
+  <p class="why">Sent to the management company on the file.</p>
+  <p class="when"><span>Applies to</span> Is a condo is yes.</p>
+  
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Purchase contract</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">The fully executed contract, with every rider and amendment.</p>
+  <p class="alias"><span>They see it as</span> Your signed purchase contract</p>
+  <p class="when"><span>Applies to</span> Is a purchase is yes.</p>
+  <ul class="slots"><li>Executed contract</li></ul>
+</article></div>
+</section>
+<section class="gate" id="prior_to_ctc">
+  <header class="gate-h">
+    <h2>Prior to clear to close</h2>
+    <p>Everything the investor wants back before they will clear it.</p>
+    <ul class="tally">
+      <li><b>12</b> conditions</li>
+      <li><b>4</b> the borrower sees</li>
+      <li><b>8</b> internal only</li>
+    </ul>
+    <ul class="tally quiet"><li><b>12</b> document upload</li></ul>
+  </header>
+  <div class="conds"><article class="cond">
+  <div class="cond-h">
+    <h3>Cash-out letter</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">What the money is for, in the borrower’s own words and signed by them.</p>
+  <p class="alias"><span>They see it as</span> A letter about what the cash is for</p>
+  <p class="when"><span>Applies to</span> Is a cash-out refinance is yes.</p>
+  <ul class="slots"><li>Cash-out letter</li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Title documents</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">The title package. New York asks for less of it — there is no closing protection letter and no preliminary settlement statement there, because the settlement agent handles both — so a New York file is not left holding two slots nobody can ever fill.</p>
+  <p class="when"><span>Applies to</span> Every file.</p>
+  <ul class="slots"><li>Title commitment</li><li>Closing protection letter <em>(not when Property is in New York)</em></li><li>Preliminary settlement statement <em>(not when Property is in New York)</em></li><li>Wire instructions</li><li>Title invoice <em>(optional)</em></li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Settlement agent documents</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">New York only — what the settlement agent provides in place of the title company’s own closing package.</p>
+  <p class="when"><span>Applies to</span> Property is in New York is yes.</p>
+  <ul class="slots"><li>Engagement letter</li><li>Wire instructions</li><li>Settlement statement</li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Insurance documents</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">The binder or the declarations page, and the invoice or evidence that it is paid. Two slots because they are two different things: one says the cover exists, the other says it is paid for.</p>
+  <p class="when"><span>Applies to</span> Every file.</p>
+  <ul class="slots"><li>Binder or declarations page</li><li>Invoice or evidence of payment</li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Flood insurance documents</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">Only where the property is in a flood zone.</p>
+  <p class="when"><span>Applies to</span> In a flood zone is yes.</p>
+  <ul class="slots"><li>Flood binder or declarations page</li><li>Invoice or evidence of payment</li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Housing history verified</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">One of three, decided by what the borrower said about where they live (FR0115): the rent verification back from the landlord if they rent, a mortgage verification on their own home if they own it, or a letter if they live somewhere rent free. They are alternatives, not a list — asking for all three would be asking for two things that cannot exist.</p>
+  <p class="when"><span>Applies to</span> Every file.</p>
+  <ul class="slots"><li>Verification of rent (completed) <em>(optional, only when Borrower rents where they live)</em></li><li>Verification of mortgage — their own home <em>(optional, only when Borrower owns where they live)</em></li><li>Living rent free letter <em>(optional, only when Borrower lives rent free)</em></li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Verification of mortgage — the subject property</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">On a refinance: the payment history on the loan being paid off.</p>
+  <p class="when"><span>Applies to</span> Is a refinance is yes.</p>
+  <ul class="slots"><li>Verification of mortgage</li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Lease agreement</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">On a refinance of a property that is already rented: the lease the rent is coming from.</p>
+  <p class="alias"><span>They see it as</span> The lease on the property</p>
+  <p class="when"><span>Applies to</span> Is a refinance is yes.</p>
+  <ul class="slots"><li>Lease agreement</li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Cash to close</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">On a purchase: proof the borrower holds what they have to bring to the table.</p>
+  <p class="alias"><span>They see it as</span> Proof of the money for closing</p>
+  <p class="when"><span>Applies to</span> Is a purchase is yes.</p>
+  <ul class="slots"><li>Bank statements</li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Earnest money deposit</h3>
+    <div class="chips"><span class="chip teal" title="The borrower sees this on their own screen, in their own wording. We see it too.">Borrower sees it</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">On a purchase: evidence the deposit was actually paid — the cleared cheque or the wire, not the contract that says it was due.</p>
+  <p class="alias"><span>They see it as</span> Proof your deposit was paid</p>
+  <p class="when"><span>Applies to</span> Is a purchase is yes.</p>
+  <ul class="slots"><li>Evidence of the deposit</li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Payoff received</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">The statement back from the servicer, still good on the closing date.</p>
+  <p class="when"><span>Applies to</span> Is a refinance is yes.</p>
+  <ul class="slots"><li>Payoff statement</li></ul>
+</article>
+<article class="cond">
+  <div class="cond-h">
+    <h3>Condo documents</h3>
+    <div class="chips"><span class="chip slate" title="Only our team sees this. The borrower is never shown it.">Internal only</span><span class="chip gold" title="a file gets uploaded">Document upload</span></div>
+  </div>
+  <p class="why">The completed questionnaire, the association’s current budget, the bylaws, and its master insurance.</p>
+  <p class="when"><span>Applies to</span> Is a condo is yes.</p>
+  <ul class="slots"><li>Condo questionnaire (completed)</li><li>Association budget</li><li>Bylaws</li><li>Master insurance policy</li></ul>
+</article></div>
+</section>
+
+  <section class="close">
+    <h2>Two things worth knowing</h2>
+    <p><b>Nothing here is fixed in code.</b> Every condition&rsquo;s wording, the rule that decides which files get it, whether the
+      borrower sees it, and whether it applies at all are all edited on the Condition Center settings screen. What ships is the
+      pre-fill &mdash; our own rules of the road &mdash; not a limit.</p>
+    <p><b>A condition the borrower sees is written twice.</b> The internal wording is what our team reads; the borrower is shown
+      their own version, and their screen is built from that rather than by hiding parts of ours. That is why an internal note
+      can never leak onto their screen.</p>
+  </section>
+</div>
+
+</div>

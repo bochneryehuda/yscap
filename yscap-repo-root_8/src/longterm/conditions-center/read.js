@@ -199,7 +199,15 @@ async function forLoan(loanId, opts = {}) {
   }
 
   const visible = list.filter((r) => internal || CLIENT_VISIBLE.has(String(r.audience || 'internal')));
-  const shaped = visible.map((r) => shape(r, internal, docsByItem.get(String(r.id)) || []));
+  /* THE FILE'S OWN RULE VALUES, read ONCE for the whole list rather than per
+     condition — the same values the engine decided the conditions with, so a
+     slot that is dropped and a contact that is greyed are answering the same
+     question the rule answered. Best-effort by design: an unreadable context
+     leaves `live` null, `slotsFor` falls back to keeping every slot and
+     `contactTypesFor` answers `applies: null` ("we could not tell"), which is
+     the honest reading and never a confident "does not apply". */
+  const live = await liveFieldValues(loanId, client);
+  const shaped = visible.map((r) => shape(r, internal, docsByItem.get(String(r.id)) || [], live));
 
   const byBucket = new Map();
   for (const b of bucketRows) byBucket.set(b.key, { ...b, conditions: [], summary: emptySummary() });
@@ -228,6 +236,35 @@ async function forLoan(loanId, opts = {}) {
   return { buckets: groups, summary, degraded, audience: internal ? 'internal' : 'client' };
 }
 
+/**
+ * The loan's rule-field values, or null.
+ *
+ * `engine.loadContext` + `registry.read` is the SAME pair the engine itself uses
+ * to decide which conditions apply, so this cannot drift from the decision that
+ * put the conditions on the file. Required lazily: `read.js` is imported by the
+ * guest door and by the client view, and the engine pulls in the whole rule
+ * stack — a cost neither of those pays until a condition actually asks.
+ *
+ * NEVER THROWS. Reading the list of conditions must not fail because one
+ * property row could not be read.
+ */
+async function liveFieldValues(loanId, client) {
+  try {
+    const engine = require('./engine');
+    const registry = require('./field-registry');
+    // loadContext takes the CLIENT ITSELF, not an options object. Passing
+    // { db: client } gives it something with no .query, every read throws into
+    // its own per-query catch, and it answers a context whose every field is
+    // null — a silent, confident "nothing applies to this file".
+    const ctx = await engine.loadContext(loanId, client);
+    if (!ctx) return null;
+    const values = ctx.values || registry.read(ctx);
+    return values && typeof values === 'object' ? values : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function emptySummary() {
   return { total: 0, outstanding: 0, inProgress: 0, received: 0, satisfied: 0, waived: 0, notApplicable: 0, done: 0 };
 }
@@ -252,7 +289,7 @@ function count(s, c) {
  * borrower wording exists. So the fallback is unreachable in practice and is
  * there so a hand-inserted row can never render blank.
  */
-function shape(r, internal, docs = []) {
+function shape(r, internal, docs = [], live = null) {
   const base = {
     id: r.id,
     code: r.code || null,
@@ -261,7 +298,10 @@ function shape(r, internal, docs = []) {
     kind: r.kind,
     status: r.status,
     isRequired: r.is_required,
-    slots: slotsFor(r, internal),
+    slots: slotsFor(r, internal, live),
+    /* The contacts this condition asks for. Empty on every condition that asks
+       for none, so the screens that do not draw contacts are untouched. */
+    contactTypes: contactTypesFor(r, live),
     documents: { total: Number(r.file_count) || 0, accepted: Number(r.accepted_count) || 0 },
   };
 
@@ -333,9 +373,18 @@ function shape(r, internal, docs = []) {
  * when the engine wrote them there; where they are absent the slot is KEPT,
  * because hiding a slot on a guess is the expensive direction.
  */
-function slotsFor(r, internal) {
+function slotsFor(r, internal, live) {
   const slots = Array.isArray(r.slots) ? r.slots : [];
-  const values = (r.answer && r.answer.fields) || {};
+  /* THE LIVE VALUES WIN, and until they existed this filter never fired.
+     The comment below used to say the values come from the condition's own
+     stored `answer.fields` — but NOTHING WRITES THAT KEY (the engine reads the
+     rule context and never persists it), so `values` was always `{}` and every
+     slot was always kept. The visible cost: the owner asked for New York's title
+     package to drop the closing protection letter and the preliminary settlement
+     statement, `notWhenField: 'is_new_york'` was written to do it, and on a real
+     New York file both slots were still there. The stored answer is kept as the
+     fallback so a caller that cannot reach the context behaves as before. */
+  const values = { ...((r.answer && r.answer.fields) || {}), ...(live || {}) };
   return slots
     .filter((s) => {
       if (s.whenField && values[s.whenField] === false) return false;
@@ -345,7 +394,47 @@ function slotsFor(r, internal) {
     .map((s) => (internal ? s : { key: s.key, label: s.label, required: !!s.required }));
 }
 
+/**
+ * The contacts a condition asks for, each saying whether it applies to THIS file.
+ *
+ * DELIBERATELY NOT THE SAME TREATMENT AS A SLOT. A slot that cannot apply is
+ * REMOVED (a New York file genuinely has fewer documents, and an unfillable slot
+ * makes a finished file look incomplete). A contact that cannot apply is KEPT and
+ * MARKED — owner-directed 2026-08-31: *"The New York Settlement Agent Order
+ * should be grayed out. And collapsed. Be visible that doesn't belong for this
+ * file."* The two are different because a slot is a place to put something and a
+ * contact is a question about the deal: seeing that the question was asked and
+ * answered "not this file" is the reassurance; seeing an empty box is not.
+ *
+ * `applies` is THREE-VALUED and the third value is the point: `null` means we
+ * could not read the field, which must never render as a confident "no".
+ */
+function contactTypesFor(r, live) {
+  const types = (r.config && Array.isArray(r.config.contactTypes)) ? r.config.contactTypes : [];
+  const values = { ...((r.answer && r.answer.fields) || {}), ...(live || {}) };
+  return types.map((t) => {
+    let applies = true;
+    let whyNot = null;
+    if (t.whenField) {
+      const v = values[t.whenField];
+      if (v === true) applies = true;
+      else if (v === false) { applies = false; whyNot = FIELD_WHY[t.whenField] || 'This file does not need it.'; }
+      else { applies = null; whyNot = 'Not established on this file yet.'; }
+    }
+    return { key: t.key, label: t.label, required: !!t.required, applies, whyNot };
+  });
+}
+
+/* Plain-language reasons, keyed on the rule field. One wording, so the contact
+   row and the order card can never explain the same fact two different ways. */
+const FIELD_WHY = Object.freeze({
+  is_new_york: 'Only on a New York file.',
+  in_flood_zone: 'Only where the property is in a flood zone.',
+  is_condo: 'Only on a condominium.',
+  borrower_rents: 'Only where the borrower rents where they live.',
+});
+
 module.exports = {
   buckets, forLoan, documentsByCondition, DONE, CLIENT_VISIBLE,
-  _internals: { shape, slotsFor, count, emptySummary },
+  _internals: { shape, slotsFor, contactTypesFor, liveFieldValues, count, emptySummary },
 };

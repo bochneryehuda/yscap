@@ -103,7 +103,8 @@ function dayOf(v) {
  * @returns {Promise<{data:object, unreadable:string[], landlord:{name,email,phone}|null,
  *                    borrowerRents:boolean|null}>}
  */
-async function prefill(loanId, client = db) {
+async function prefill(loanId, client = db, opts = {}) {
+  const landlordDefaults = {};
   const id = String(loanId);
   const unreadable = [];
   const data = {
@@ -215,25 +216,70 @@ async function prefill(loanId, client = db) {
       /* Both names print when we hold both — "Rivka Stein" alone at a management
          company is a letter that reaches nobody, and the company alone loses the
          person who actually answers. */
-      const block = [person, company !== person ? company : null, String(r.address || '').trim()]
-        .filter(Boolean).join('\n');
+      /* THE WHOLE BLOCK, not just a name and a street. Owner-directed
+         2026-08-31: *"It needs to be able to be several lines: name of the
+         management, address of the management, contact information for the
+         management. We also need to be able to enter email address and phone
+         number."* Item 1 is a four-line band on the form, so the details fit
+         where the form already leaves room. Blank parts collapse — a block with
+         a trailing empty line reads as a form somebody abandoned. */
+      const block = [
+        person,
+        company !== person ? company : null,
+        String(r.address || '').trim(),
+        [emails[0] || null, phones[0] || null].filter(Boolean).join(' · ') || null,
+      ].filter(Boolean).join('\n');
       if (block) data.landlord_block = block;
+      /* AND THE SAME PHONE STARTS ITEM 16 — *"The phone number should
+         automatically populate the bottom, also where it asks for the Landlord
+         phone number."* It travels in its OWN channel, never in `data`:
+         `cleanOurData` drops every key whose field is not ours (which is what
+         keeps Part III the landlord's), so a landlord key put in `data` is
+         SILENTLY discarded and the pre-fill simply never appears. Kept apart it
+         can be drawn on the paper copy and offered as a DocuSign tab's starting
+         value without any of it becoming an answer WE gave. */
+      if (phones[0]) landlordDefaults.ll_phone = String(phones[0]);
     });
 
-  // ── items 3 and 4: who at YS Capital is asking, and what they are ────────
-  await one('officer',
-    `SELECT NULLIF(btrim(su.full_name), '') AS name, su.role, su.email, su.phone
-       FROM staff_users su
-      WHERE su.id = $1::uuid AND su.is_active = true`,
-    [loan.loan_officer_id || null], (rows) => {
-      const r = rows && rows[0];
-      if (!r) return;
-      if (r.name) data.lender_signature = String(r.name);
-      const title = TITLE_BY_ROLE[String(r.role || '').toLowerCase()];
-      if (title) data.lender_title = title;
-    });
+  /* ── items 3 and 4: who at YS Capital is asking, and what they are ────────
+     THE PERSON SENDING IT, not the file's officer. Owner-directed 2026-08-31:
+     *"On the VOR form, the signature of the lender and the title of the person
+     of the lender should be pre-filled with the user that is sending it out."*
+     A form signed in the officer's name by whoever happened to open it says the
+     wrong person asked — and on a document that goes to an outside landlord and
+     comes back as evidence, that is the name on the record.
 
-  return { data: F.cleanOurData(data), unreadable, landlord, borrowerRents };
+     TWO SHAPES REACH HERE and both are the same fact: the screen doors pass
+     `{actor: req.actor}`, and the SEND door passes `staffId` (it already needs
+     it for the envelope's `sent_by`). Reading only one would leave the single
+     path the owner actually named falling back to the file's officer.
+
+     The officer stays LAST as the fallback, so a form previewed by nobody in
+     particular still carries a real signatory. Only a row that resolves to an
+     ACTIVE staff member counts — an id we cannot place must never blank out the
+     officer we could. */
+  const signatoryIds = [
+    (opts && opts.actor && opts.actor.id) || null,
+    (opts && opts.staffId) || null,
+    loan.loan_officer_id || null,
+  ].filter(Boolean);
+  for (const staffId of signatoryIds) {
+    if (data.lender_signature) break;
+    // eslint-disable-next-line no-await-in-loop
+    await one('signatory',
+      `SELECT NULLIF(btrim(su.full_name), '') AS name, su.role, su.email, su.phone
+         FROM staff_users su
+        WHERE su.id = $1::uuid AND su.is_active = true`,
+      [staffId], (rows) => {
+        const r = rows && rows[0];
+        if (!r) return;
+        if (r.name) data.lender_signature = String(r.name);
+        const title = TITLE_BY_ROLE[String(r.role || '').toLowerCase()];
+        if (title) data.lender_title = title;
+      });
+  }
+
+  return { data: F.cleanOurData(data), landlordDefaults, unreadable, landlord, borrowerRents };
 }
 
 /**

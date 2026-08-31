@@ -71,6 +71,9 @@ const { syncExperienceChecklistForApplication, RECENT_EXIT_SQL, EXIT_DATE_SQL } 
 const { enqueueClickupPush, enqueueChecklistStatusPush } = require('../clickup/enqueue');
 const statusMap = require('../clickup/status');
 const llcLib = require('../lib/llc');
+// The entity EDIT rules, shared with Long-Term so "the exact verification
+// workflow" is the same code rather than a second copy of it.
+const llcEdit = require('../lib/llc-edit');
 const conditionEngine = require('../lib/conditions/engine');
 const esignCtcGate = require('../lib/esign/ctc-gate');
 const issuanceBackstop = require('../lib/underwriting/issuance-backstop'); // R6.18 (#202) issuance HARD-WARNING backstop
@@ -7127,6 +7130,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
    documents for the team to classify. Uses the orders lib for all email building.
    ═══════════════════════════════════════════════════════════════════════════ */
 const orders = require('../lib/orders');
+const orderCc = require('../lib/order-cc');   // who else is on an order's thread — shared with Long-Term
 const orderTracking = require('../lib/order-tracking');
 const orderSla = require('../lib/order-sla');
 const orderSlots = require('../lib/order-slots');
@@ -7198,17 +7202,22 @@ async function deadFileOrderReason(appId) {
  * Never throws: an unreadable LO setting falls through to the type default.
  */
 async function ccBorrowerFor(appId, kind, { explicit = null, storedMeta = null } = {}) {
-  if (explicit != null) return !!explicit;
-  if (storedMeta && typeof storedMeta === 'object' && storedMeta.ccBorrower != null) return !!storedMeta.ccBorrower;
-  let loCcSetting = false;
+  /* THE CHAIN MOVED, THE BEHAVIOUR DID NOT (2026-08-31). Explicit → stored →
+     the officer's own default → the company default is now `lib/order-cc.js`,
+     so the long-term order desk resolves it identically instead of reading only
+     what the person ticked. WHICH officer stays here, because that is a fact
+     about a short-term loan and lives in this product's own table. */
+  return orderCc.ccBorrowerFor(kind, {
+    explicit, storedMeta, officerId: await fileOfficerId(appId),
+  });
+}
+
+/** The loan officer on a short-term file, or null. Never throws. */
+async function fileOfficerId(appId) {
   try {
-    const key = orders.ccBorrowerSettingKey(kind); // TITLE vs INSURANCE — each has its own officer default
     const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
-    if (key && lo.rows[0] && lo.rows[0].loan_officer_id) {
-      loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, key);
-    }
-  } catch (_) { /* the company default stands (off) */ }
-  return orders.ccBorrowerDefault(kind, loCcSetting);
+    return (lo.rows[0] && lo.rows[0].loan_officer_id) || null;
+  } catch (_) { return null; }
 }
 
 /**
@@ -7227,17 +7236,9 @@ async function ccBorrowerFor(appId, kind, { explicit = null, storedMeta = null }
  * Never throws: an unreadable officer setting falls through to the company default (off).
  */
 async function ccHelperFor(appId, kind, { explicit = null, storedMeta = null } = {}) {
-  if (explicit != null) return !!explicit;
-  if (storedMeta && typeof storedMeta === 'object' && storedMeta.ccHelper != null) return !!storedMeta.ccHelper;
-  let loCcSetting = false;
-  try {
-    const key = orders.ccHelperSettingKey(kind); // TITLE vs INSURANCE — each has its own officer default
-    const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
-    if (key && lo.rows[0] && lo.rows[0].loan_officer_id) {
-      loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, key);
-    }
-  } catch (_) { /* the company default stands (off) */ }
-  return orders.ccHelperDefault(kind, loCcSetting);
+  return orderCc.ccHelperFor(kind, {
+    explicit, storedMeta, officerId: await fileOfficerId(appId),
+  });
 }
 
 // The whole Orders section for a file: both orders' state, whether each can be
@@ -7290,21 +7291,19 @@ router.get('/applications/:id/orders', async (req, res) => {
       const m = storedMetaOf(k);
       return m && m.ccBorrower != null ? !!m.ccBorrower : null;
     };
-    const ccEffective = (k) => {
-      const stored = storedCc(k);
-      if (stored != null) return stored;
-      const key = orders.ccBorrowerSettingKey(k);
-      return orders.ccBorrowerDefault(k, key ? loSettings[key] === true : false);
-    };
-    /* THE HELPER'S OWN FOOTING (owner-directed 2026-08-28), resolved by the SAME
-       three steps and read from the SAME loSettings bag — so the checkbox the panel
-       paints is the choice the send would actually make. */
-    const ccHelperEffective = (k) => {
-      const m = storedMetaOf(k);
-      if (m && m.ccHelper != null) return !!m.ccHelper;
-      const key = orders.ccHelperSettingKey(k);
-      return orders.ccHelperDefault(k, key ? loSettings[key] === true : false);
-    };
+    /* THE PANEL ASKS THE SAME RULE THE SEND ASKS (2026-08-31). This used to
+       restate the chain inline — a THIRD copy of it — reading the officer's
+       whole settings bag instead of one key, which is exactly how a screen ends
+       up painting a tick the send would not honour. `order-cc` takes the reader
+       as an argument for this case, so the bag is fetched ONCE for the panel and
+       the rule behind it is the one both products use.
+
+       The helper's footing is its OWN question (owner-directed 2026-08-28), so it
+       is asked separately — neither may quietly decide the other. */
+    const ccEffective = (k) => orderCc.ccBorrowerWith(k,
+      { storedMeta: storedMetaOf(k), settings: loSettings });
+    const ccHelperEffective = (k) => orderCc.ccHelperWith(k,
+      { storedMeta: storedMetaOf(k), settings: loSettings });
     // Returned documents per order (unassigned = no slot_label yet).
     const docs = (await db.query(
       `SELECT id, doc_kind, filename, content_type, slot_label, review_status, is_current, size_bytes, created_at
@@ -13347,7 +13346,15 @@ async function uploadLlcDocument(req, res) {
     const own = await db.query(`SELECT borrower_id, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
     if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
     if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-    if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — revoke verification before replacing its documents' });
+    // THE VERIFIED LOCK IS THE SHARED ONE (2026-08-31). The sentence, the status and
+    // the rule now live in `lib/llc-edit.js`, so this door, the file screen's entity
+    // slot below and the long-term doors all refuse the same upload the same way.
+    // The row is already in hand and the SCOPE check above has already run, so the
+    // pure half is what is asked — the order of those two refusals is deliberate.
+    {
+      const lock = llcEdit.documentLockFor(own.rows[0]);
+      if (!lock.ok) return res.status(lock.status).json({ error: lock.error });
+    }
     if (b.checklistItemId) {
       const ci = await db.query(`SELECT id FROM checklist_items WHERE id=$1 AND llc_id=$2`, [b.checklistItemId, req.params.id]);
       if (!ci.rows[0]) return res.status(404).json({ error: 'checklist item not found on this entity' });
@@ -13411,79 +13418,37 @@ router.post('/llcs/:id/documents/binary',
   require('../lib/upload-stream').binaryIntake, uploadLlcDocument);
 
 router.patch('/llcs/:id', async (req, res) => {
-  const own = await db.query(`SELECT borrower_id, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
+  const own = await db.query(`SELECT borrower_id FROM llcs WHERE id=$1`, [req.params.id]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-  if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — revoke verification before making changes' });
-  const b = req.body || {};
-  if (b.ein !== undefined) {
-    const ein = llcLib.normalizeEin(b.ein);
-    if (ein.error) return res.status(400).json({ error: ein.error });
-    b.ein = ein.ein === null ? '' : ein.ein;
-  }
-  if (b.llcName !== undefined && !String(b.llcName).trim()) return res.status(400).json({ error: 'llcName cannot be empty' });
-  const sets = [], vals = []; let i = 1;
-  const map = { llcName: 'llc_name', ein: 'ein', formationState: 'formation_state', formationDate: 'formation_date', ownershipPct: 'ownership_pct' };
-  /* WHAT KIND OF COMPANY THIS IS (owner-directed 2026-08-09). Not in the column
-     map above because recording a type is three columns PLUS a re-label of the
-     entity's document slots — a corporation is asked for bylaws and a stock
-     certificate, never an operating agreement. A value we cannot read is REFUSED
-     rather than silently dropped. */
-  let entityTypeChanged = false;
-  if (b.entityType !== undefined && String(b.entityType || '').trim()) {
-    const ET = require('../lib/entity-type');
-    if (!ET.isRecognized(b.entityType)) {
-      return res.status(400).json({ error: `Pick one of: ${ET.TYPES.map((t) => t.label).join(', ')}.` });
-    }
-    /* The sub-kind is normalized AGAINST the type being saved, so switching a
-       trust to an LLC cannot leave "revocable" behind on a type that has no
-       sub-kind — and an explicit blank CLEARS it, because "I picked the wrong
-       one" has to be undoable. */
-    const sub = ET.normalizeSubtype(ET.normalizeKey(b.entityType), b.entitySubtype) || null;
-    await db.query(
-      `UPDATE llcs SET entity_type=$2, entity_type_confirmed=true, entity_type_set_at=now(),
-                       entity_type_set_by=$3, entity_subtype=$4, updated_at=now()
-        WHERE id=$1 AND is_verified=false`,
-      [req.params.id, ET.normalizeKey(b.entityType), req.actor.id, sub]);
-    try { await llcLib.applyEntitySlotWording(req.params.id); } catch (_) { /* wording is cosmetic */ }
-    await audit(req, 'set_entity_type', 'llc', req.params.id,
-      { entityType: ET.normalizeKey(b.entityType), entitySubtype: sub });
-    entityTypeChanged = true;
-  }
-  // WO-6 (F-M11): normalize a mid-typed formation date so year-0026 can't persist.
-  if (b.formationDate !== undefined) b.formationDate = require('../lib/fields').normalizeTypedDate(b.formationDate);
-  for (const [k, col] of Object.entries(map)) if (b[k] !== undefined) { sets.push(`${col}=$${i++}`); vals.push(b[k] === '' ? null : b[k]); }
-  if (!sets.length) return entityTypeChanged ? res.json({ ok: true }) : res.status(400).json({ error: 'nothing to update' });
-  if (b.ownershipPct !== undefined && b.ownershipPct !== '' && b.ownershipPct != null) {
-    const p = Number(b.ownershipPct);
-    if (!isFinite(p) || p < 0 || p > 100) return res.status(400).json({ error: 'ownership % must be between 0 and 100' });
-    const mem = await db.query(`SELECT COALESCE(sum(ownership_pct),0) AS s FROM llc_members WHERE llc_id=$1`, [req.params.id]);
-    const total = p + Number(mem.rows[0].s);
-    if (total > 100.01) return res.status(400).json({ error: `ownership exceeds 100% (${total.toFixed(2)}% with the other members) — adjust the members first` });
-  }
-  sets.push('updated_at=now()'); vals.push(req.params.id);
-  await db.query(`UPDATE llcs SET ${sets.join(',')} WHERE id=$${i}`, vals);
-  await audit(req, 'update_llc', 'llc', req.params.id);
+  /* THE RULES MOVED, THE BEHAVIOUR DID NOT (2026-08-31). Every rule that used to
+     sit inline here — the verified lock, the EIN normalizer, the entity type plus
+     its slot re-wording, the mid-typed date, the ownership arithmetic — now lives
+     in `lib/llc-edit.js` so the Long-Term entity section runs the SAME ones. What
+     stays here is what is genuinely this door's: who may reach this entity, and
+     the audit row. */
+  const out = await llcEdit.updateDetails(req.params.id, req.body || {}, {
+    actorId: req.actor.id,
+    audit: (action, detail) => audit(req, action, 'llc', req.params.id, detail || undefined),
+  });
+  if (!out.ok) return res.status(out.status || 400).json({ error: out.error });
   res.json({ ok: true });
 });
 
 // Replace an entity's OTHER members on the borrower's behalf. Same shape/lock
 // as the borrower's PUT /llcs/:id/members.
 router.put('/llcs/:id/members', async (req, res) => {
-  const own = await db.query(`SELECT borrower_id, is_verified, ownership_pct, entity_type FROM llcs WHERE id=$1`, [req.params.id]);
+  const own = await db.query(`SELECT borrower_id FROM llcs WHERE id=$1`, [req.params.id]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-  if (own.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — revoke verification before making changes' });
   // Staff may set each owner's TITLE (from the fixed list for this entity's
   // type), and for a corporation the share count + certificate number.
-  const parsed = llcLib.parseMembers((req.body || {}).members || [], own.rows[0].ownership_pct,
-    { allowOwnerDetails: true, entityType: own.rows[0].entity_type });
-  if (parsed.error) return res.status(400).json({ error: parsed.error });
-  try { await llcLib.replaceMembers(req.params.id, parsed.members || [], { borrowerId: own.rows[0].borrower_id }); }
-  catch (e) { return res.status(e.status || 500).json({ error: e.status ? e.message : 'could not save the members' }); }
-  // Ownership feeds the entity condition (chain-aware) — recompute right away.
-  try { await llcLib.syncLlcConditions(req.params.id); } catch (_) { /* best-effort */ }
-  await audit(req, 'update_llc_members', 'llc', req.params.id, { count: (parsed.members || []).length });
+  const out = await llcEdit.saveMembers(req.params.id, (req.body || {}).members || [], {
+    allowOwnerDetails: true,
+    syncConditions: (id, o) => llcLib.syncLlcConditions(id, o),
+    audit: (action, detail) => audit(req, action, 'llc', req.params.id, detail || undefined),
+  });
+  if (!out.ok) return res.status(out.status || 400).json({ error: out.error });
   res.json({ ok: true });
 });
 
@@ -13492,69 +13457,46 @@ router.put('/llcs/:id/members', async (req, res) => {
 // Verifying auto-satisfies (and signs off) the LLC condition on every open
 // file vesting in this entity; revoking reopens those conditions.
 router.post('/llcs/:id/verify', async (req, res) => {
-  const own = await db.query(`SELECT borrower_id, llc_name, is_verified FROM llcs WHERE id=$1`, [req.params.id]);
+  const own = await db.query(`SELECT borrower_id FROM llcs WHERE id=$1`, [req.params.id]);
   if (!own.rows[0]) return res.status(404).json({ error: 'not found' });
   if (!(await canSeeBorrowerId(req, own.rows[0].borrower_id))) return res.status(403).json({ error: 'forbidden' });
-  const b = req.body || {};
-  const verified = b.verified !== false;   // default true (backward compatible)
 
-  // Verifying an LLC SIGNS OFF the rtl_p1_llc condition (satisfied + signed_off)
-  // on every vesting file — that is the processor's call, never a loan officer's
-  // (#126). Revoking is a "send it back" any reviewer may do, but it reopens the
-  // borrower's condition, so it now REQUIRES a reason the borrower is shown (#125).
-  if (verified && !can(req.actor, 'sign_off_conditions')) {
-    return res.status(403).json({ error: 'Only a processor can verify an LLC — verifying signs off the entity condition. Reject a document or raise an issue instead.' });
+  /* THE WORKFLOW MOVED TO `lib/llc-edit.js` AND IS UNCHANGED: verifying signs off
+     the entity condition on every vesting file, so it is a `sign_off_conditions`
+     call and never a loan officer's (#126); revoking is a "send it back" any
+     reviewer may do, but it reopens the borrower's condition and therefore needs
+     a reason they are shown (#125); and a revoke walks the ownership chain
+     downward, because a verified child cannot sit on an unverified owner.
+     What is passed IN is what belongs to this product: the RTL condition sync,
+     the audit row, and the borrower's notification. */
+  const out = await llcEdit.setVerified(req.params.id, req.body || {}, {
+    actorId: req.actor.id,
+    maySignOff: can(req.actor, 'sign_off_conditions'),
+    syncConditions: (id, o) => llcLib.syncLlcConditions(id, o),
+    audit: (action, detail, otherId) => audit(req, action, 'llc', otherId || req.params.id, detail || undefined),
+    notifyBorrower: async (ev) => {
+      if (ev.kind === 'verified') {
+        return notify.notifyBorrower(ev.borrowerId, {
+          type: 'llc_verified', title: 'Your entity is verified',
+          body: `"${ev.entityName}" is fully verified. Its documents and ownership details are on file and will be reused automatically on your loans.`,
+          link: '/profile', ctaLabel: 'View your profile' });
+      }
+      return notify.notifyBorrower(ev.borrowerId, {
+        type: 'llc_unverified', title: 'Your entity needs attention', badge: { text: 'Action needed', tone: 'action' },
+        body: `Verification of "${ev.entityName}" was revoked${ev.reason ? `: ${ev.reason}` : ''}.`
+          + (ev.revokedChildren.length ? ` Because it owns ${ev.revokedChildren.map(n => `"${n}"`).join(', ')}, verification there was reopened too.` : '')
+          + ' Please review the details and documents on your profile.',
+        link: '/profile', ctaLabel: 'Review your entity' });
+    },
+  });
+  if (!out.ok) {
+    const body = { error: out.error };
+    if (out.missing) body.missing = out.missing;
+    return res.status(out.status || 400).json(body);
   }
-  if (!verified && !String(b.reason || '').trim()) {
-    return res.status(400).json({ error: 'a reason is required to revoke verification — the borrower is told why' });
-  }
-
-  if (verified) {
-    const bundle = await llcLib.getLlcBundle(req.params.id);
-    const missing = llcLib.missingForVerification(bundle, bundle.members, bundle.slots);
-    if (missing.length) return res.status(409).json({ error: 'this LLC is not ready to verify', missing });
-    await db.query(`UPDATE llcs SET is_verified=true, verified_at=now(), verified_by=$2, updated_at=now() WHERE id=$1`,
-      [req.params.id, req.actor.id]);
-    await llcLib.syncLlcConditions(req.params.id, { verifiedBy: req.actor.id });
-    await audit(req, 'verify_llc', 'llc', req.params.id);
-    try {
-      await notify.notifyBorrower(own.rows[0].borrower_id, {
-        type: 'llc_verified', title: 'Your entity is verified',
-        body: `"${own.rows[0].llc_name}" is fully verified. Its documents and ownership details are on file and will be reused automatically on your loans.`,
-        link: '/profile', ctaLabel: 'View your profile' });
-    } catch (_) { /* best-effort */ }
-    return res.json({ ok: true, verified: true });
-  }
-
-  const reason = String(b.reason || '').trim().slice(0, 500);
-  await db.query(`UPDATE llcs SET is_verified=false, verified_at=NULL, verified_by=NULL, updated_at=now() WHERE id=$1`,
-    [req.params.id]);
-  await llcLib.syncLlcConditions(req.params.id, { reopen: true });
-  await audit(req, 'unverify_llc', 'llc', req.params.id, reason ? { reason } : null);
-  // Layered entities verify BOTTOM-UP, so a revoked owner invalidates every
-  // verified entity it (transitively) owns — revoke them too, with a derived
-  // reason, or the chain invariant silently breaks (a verified child would sit
-  // on an unverified owner and its file condition would stay signed off).
-  const revokedChildren = [];
-  try {
-    for (const childId of await llcLib.getDescendantEntityIds(req.params.id)) {
-      const c = (await db.query(`SELECT id, llc_name, is_verified FROM llcs WHERE id=$1`, [childId])).rows[0];
-      if (!c || !c.is_verified) continue;
-      await db.query(`UPDATE llcs SET is_verified=false, verified_at=NULL, verified_by=NULL, updated_at=now() WHERE id=$1`, [childId]);
-      await llcLib.syncLlcConditions(childId, { reopen: true });
-      await audit(req, 'unverify_llc', 'llc', childId, { reason: `owning entity "${own.rows[0].llc_name}" verification was revoked` });
-      revokedChildren.push(c.llc_name);
-    }
-  } catch (e) { console.warn('[llc-revoke] chain revoke failed:', e.message); }
-  try {
-    await notify.notifyBorrower(own.rows[0].borrower_id, {
-      type: 'llc_unverified', title: 'Your entity needs attention', badge: { text: 'Action needed', tone: 'action' },
-      body: `Verification of "${own.rows[0].llc_name}" was revoked${reason ? `: ${reason}` : ''}.`
-        + (revokedChildren.length ? ` Because it owns ${revokedChildren.map(n => `"${n}"`).join(', ')}, verification there was reopened too.` : '')
-        + ' Please review the details and documents on your profile.',
-      link: '/profile', ctaLabel: 'Review your entity' });
-  } catch (_) { /* best-effort */ }
-  res.json({ ok: true, verified: false, revokedChildren });
+  res.json(out.verified
+    ? { ok: true, verified: true }
+    : { ok: true, verified: false, revokedChildren: out.revokedChildren });
 });
 
 /* ── CHECK A: DOES THIS BORROWER CONTROL THIS ENTITY? ───────────────────────
@@ -19365,7 +19307,10 @@ const uploadAppDocument = async (req, res) => {
     const l = await db.query(`SELECT id, borrower_id, is_verified FROM llcs WHERE id=$1`, [b.llcId]);
     if (!l.rows[0]) return res.status(404).json({ error: 'entity not found' });
     if (l.rows[0].borrower_id !== appOk.rows[0].borrower_id) return res.status(403).json({ error: 'this entity is not on the borrower for this file' });
-    if (l.rows[0].is_verified) return res.status(409).json({ error: 'this LLC is verified — revoke verification before replacing its documents' });
+    {
+      const lock = llcEdit.documentLockFor(l.rows[0]);   // the SHARED verified lock
+      if (!lock.ok) return res.status(lock.status).json({ error: lock.error });
+    }
     llcId = l.rows[0].id;
     borrowerId = l.rows[0].borrower_id;
   }

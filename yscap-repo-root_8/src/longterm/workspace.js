@@ -106,6 +106,21 @@ const SECTIONS = [
     label: 'Conditions',
   },
   {
+    /* THE FILE'S CONTACTS — who is on this closing.
+       Owner-directed 2026-08-31: *"we added a section, especially for file
+       contacts where you can enter random file contacts and then the required
+       file contact comes up as conditions."* It sits directly ABOVE Orders
+       because it is what makes an order sendable: `orders/data.blockers`
+       refuses an order whose vendor kind is not on the loan, so a file with an
+       empty contacts desk is a file whose every order is blocked.
+
+       ALWAYS AVAILABLE, for the same reason the two sections below it are: a
+       loan with no contacts yet is precisely the one somebody opens this to
+       fix. */
+    key: 'file_contacts',
+    label: 'File contacts',
+  },
+  {
     // THE ORDERS DESK — every vendor this file has to ask for something, with the
     // whole conversation on the card.
     //

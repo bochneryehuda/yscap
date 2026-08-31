@@ -33,6 +33,9 @@
 const db = require('../db');
 const orderEmail = require('../../lib/order-email');
 const kinds = require('./kinds');
+// The ONE answer to "does this order belong on this file" — asked here so a card
+// the desk greys is also one the send door refuses.
+const appliesRule = require('./applies');
 const switches = require('./switches');
 
 /** A one-line property address from the long-term property row. */
@@ -237,6 +240,30 @@ async function getOrderData(loanId, client = db) {
   // and an absent key would read the same as an empty one only by luck.
   out.helpers = [];
 
+  /* ── WHICH OF THIS FILE'S CONDITIONS EXIST ────────────────────────────────
+     THE ONE ANSWER TO "DOES THIS ORDER BELONG ON THIS FILE". The engine already
+     decides that, per condition, from the owner's own rules — a payoff condition
+     on a refinance, a condo questionnaire on a condominium, a settlement agent
+     in New York — and `orders/applies.js` used to answer it a SECOND time from a
+     small table of its own. Two statements of one rule drift, and the A-to-Z
+     audit found exactly where: the table had no entry for the payoff order or the
+     verification of rent, so both showed as belonging on every file including the
+     purchases and the owner-occupied ones their conditions are never attached to.
+
+     `routes/orders.js` re-runs `evaluateLoan` immediately before reading the desk,
+     so this list is the engine's own current answer rather than a stale one.
+
+     NULL, NEVER AN EMPTY LIST, when it cannot be read — "this file has no
+     conditions" and "PILOT could not read them" are different facts, and only the
+     first would justify greying an order out. */
+  out.conditionCodes = null;
+  await one('conditions',
+    `SELECT t.code
+       FROM checklist_items ci
+       JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.lt_loan_id = $1::uuid AND t.code IS NOT NULL`,
+    [id], (rows) => { out.conditionCodes = rows ? rows.map((r) => String(r.code)) : null; });
+
   // ── The vendor cards ──────────────────────────────────────────────────────
   await one('vendors',
     `SELECT v.id AS link_id, v.kind, v.is_primary, v.service_contact_id,
@@ -326,6 +353,19 @@ function blockers(kind, data) {
   else if (card.missing) out.push('contact_removed');
   else if (!vendorEmails(def.key, data).length) out.push('contact_email');
   if (!String(data.borrowerName || '').trim()) out.push('borrower');
+
+  /* IS IT EVEN FOR THIS FILE? Found by the A-to-Z audit (2026-08-31): the desk
+     greyed a card that does not apply and `canOrder` was still TRUE, so `place`
+     cheerfully sent a verification of rent on a file with no landlord and a
+     condo questionnaire on a house. The greying was cosmetic — the screen hid
+     the button and the door accepted it anyway, which is the same class as a way
+     hidden from a condition form that its write door still records.
+
+     ONLY A PROVEN NO BLOCKS. `appliesTo` is three-valued and its own header is
+     explicit about the third: showing an order somebody cannot use costs a click,
+     hiding one they need costs a closing. So `null` — the file has not said yet —
+     goes through exactly as it did before. */
+  if (appliesRule.appliesTo(def.key, data).applies === false) out.push('not_for_file');
   return out;
 }
 
@@ -341,9 +381,26 @@ const BLOCKER_TEXT = Object.freeze({
   contact_removed: 'The company on this file is no longer in the vendor directory. Pick another card.',
   contact_email: 'The company on this file has no email address on its card.',
   borrower: 'The borrower’s name is not on the file yet.',
+  not_for_file: 'This order is not for this kind of file.',
 });
 
-function blockerText(code) { return BLOCKER_TEXT[code] || String(code); }
+/**
+ * Why an order cannot go, in words.
+ *
+ * `not_for_file` has no fixed sentence: the reason a card does not belong is the
+ * file's own ("this is a purchase, so there is no existing loan to pay off"), and
+ * it is the SAME sentence the greyed card shows — one wording, from
+ * `applies.js`, so a refusal can never say something different from the card the
+ * person is looking at. Without the kind and the file to ask, it falls back to
+ * the general form rather than pretending to know which.
+ */
+function blockerText(code, kind, data) {
+  if (code === 'not_for_file') {
+    const why = (kind && data) ? appliesRule.appliesTo(kind, data).why : null;
+    return why || 'This order is not for this kind of file.';
+  }
+  return BLOCKER_TEXT[code] || String(code);
+}
 
 module.exports = {
   getOrderData, blockers, blockerText, vendorEmails, BLOCKER_TEXT,
