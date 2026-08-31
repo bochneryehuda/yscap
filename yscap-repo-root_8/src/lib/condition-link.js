@@ -60,6 +60,35 @@ const LINK_TTL_DAYS = 30;
 // Minting + validation
 // ---------------------------------------------------------------------------
 
+/* A LEFT JOIN, NOT AN INNER ONE — and `app_row` is why the change is safe.
+   The join was inner, which is correct while every link names an application:
+   a link whose file is gone returns no row and reads as dead. A LONG-TERM link
+   names no application at all, so an inner join would drop every one of them
+   and the link would appear revoked the moment it was clicked. Left-joining
+   fixes that and would ALSO quietly resurrect a short-term link whose
+   application row had vanished — so the row's own id is selected and
+   `liveLink` refuses a short-term link that no longer has a file. (The FK is
+   ON DELETE CASCADE, so that row cannot exist today; the check is what keeps
+   the LEFT JOIN from being a behaviour change if it ever could.)
+
+   A LONG-TERM loan's liveness is deliberately NOT checked here. Shared code
+   may not reach into `src/longterm/**`, and it does not need to: every
+   borrower-facing long-term endpoint already scopes itself to
+   `my-scope.ownLoanSql` — the confirmed borrower link plus the trash
+   exclusion — so a guest holding a link to a parked loan authenticates and
+   then finds nothing there, which is the same answer by a safer route. */
+const LINK_SELECT = `
+  SELECT cl.*, a.id AS app_row, a.deleted_at AS app_deleted
+    FROM condition_links cl
+    LEFT JOIN applications a ON a.id = cl.application_id`;
+
+/** The row if the link is still live, else null. */
+function liveLink(row) {
+  if (!row) return null;
+  if (row.application_id && (!row.app_row || row.app_deleted)) return null;
+  return row;
+}
+
 /** Mint a link for one recipient. Returns { link, token } — the clear token
     exists only here and in the email built from it. */
 async function mintLink({ applicationId, borrowerId, email, createdBy }, client = db) {
@@ -77,13 +106,9 @@ async function linkByToken(token, client = db) {
   try {
     if (!token || !/^[A-Za-z0-9_-]{16,64}$/.test(String(token))) return null;
     const r = await client.query(
-      `SELECT cl.*, a.deleted_at AS app_deleted
-         FROM condition_links cl JOIN applications a ON a.id = cl.application_id
-        WHERE cl.token_hash=$1 AND cl.revoked_at IS NULL AND cl.expires_at > now()`,
+      `${LINK_SELECT} WHERE cl.token_hash=$1 AND cl.revoked_at IS NULL AND cl.expires_at > now()`,
       [C.sha256(String(token))]);
-    const row = r.rows[0];
-    if (!row || row.app_deleted) return null;
-    return row;
+    return liveLink(r.rows[0]);
   } catch (_) { return null; }
 }
 
@@ -91,12 +116,8 @@ async function linkByToken(token, client = db) {
 async function linkById(id, client = db) {
   try {
     const r = await client.query(
-      `SELECT cl.*, a.deleted_at AS app_deleted
-         FROM condition_links cl JOIN applications a ON a.id = cl.application_id
-        WHERE cl.id=$1 AND cl.revoked_at IS NULL AND cl.expires_at > now()`, [id]);
-    const row = r.rows[0];
-    if (!row || row.app_deleted) return null;
-    return row;
+      `${LINK_SELECT} WHERE cl.id=$1 AND cl.revoked_at IS NULL AND cl.expires_at > now()`, [id]);
+    return liveLink(r.rows[0]);
   } catch (_) { return null; }
 }
 
