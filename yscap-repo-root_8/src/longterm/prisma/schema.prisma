@@ -2589,11 +2589,52 @@ model LtLoanVendor {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  /// When the landlord-memory sweep last CONSIDERED this link (db/662). NULL =
+  /// not yet considered, which is what the sweep drains on. Nothing but that
+  /// sweep reads it, and it is stamped on a real answer only — a read that failed
+  /// leaves it NULL so the link is looked at again rather than declared done.
+  rememberedAt DateTime? @map("remembered_at") @db.Timestamptz(6)
+
   loan LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
 
   @@unique([loanId, kind, serviceContactId], map: "lt_loan_vendors_one_per_kind_uk")
   @@index([serviceContactId], map: "lt_loan_vendors_contact_idx")
   @@map("lt_loan_vendors")
+}
+
+/// THE LANDLORD A BORROWER HAD, AT ONE ADDRESS (db/662).
+///
+/// Owner-directed 2026-08-31: the landlord is filled in on a borrower's next file
+/// *"as long as he is still living at the same primary address — if his primary
+/// address has been updated in Encompass, then you should not automatically
+/// populate his landlord, because probably the landlord changed."*
+///
+/// The rule IS the key. A memory keyed on the person alone would post a
+/// verification of rent to their last landlord about a home that landlord has
+/// never heard of, so the key is the PAIR and a borrower who moved simply matches
+/// nothing — there is no "has the address changed?" test anywhere in the feature.
+/// `addressKey` is written by src/longterm/landlord-memory.js and never re-derived
+/// in SQL, or the two definitions drift and the copy that drifts is the one that
+/// decides.
+model LtBorrowerLandlord {
+  borrowerId String @map("borrower_id") @db.Uuid
+
+  /// The normalized home this landlord belongs to.
+  addressKey String @map("address_key")
+
+  serviceContactId String @map("service_contact_id") @db.Uuid
+
+  /// The same address as a person writes it, so a screen can say WHICH home
+  /// rather than show a key.
+  addressText String? @map("address_text")
+
+  lastLoanId  String?  @map("last_loan_id") @db.Uuid
+  firstSeenAt DateTime @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@id([borrowerId, addressKey], map: "lt_borrower_landlords_pkey")
+  @@index([serviceContactId], map: "lt_borrower_landlords_contact_idx")
+  @@map("lt_borrower_landlords")
 }
 
 /// One vendor order on one loan. The row IS the slot: it exists from the first

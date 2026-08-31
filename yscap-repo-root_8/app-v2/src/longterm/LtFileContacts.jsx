@@ -91,11 +91,19 @@ export default function LtFileContacts({ loanId }) {
      degrade: no slots is better than slots greyed on a guess. */
   const [slots, setSlots] = useState(null);
   const [kinds, setKinds] = useState(null);
+  /* SAID OUT LOUD WHEN A LANDLORD APPEARS BY ITSELF. The server fills in the
+     landlord this borrower already had at this same home (owner-directed
+     2026-08-31), and a card that turns up with nothing explaining where it came
+     from is one nobody trusts and everybody re-checks — which costs more than
+     typing it would have. Null on every read after the first, because the fill
+     only ever happens once. */
+  const [filled, setFilled] = useState(null);
 
   const adapter = useMemo(() => ({
     list: () => ltApi.orderVendors(loanId).then((r) => {
       setSlots(Array.isArray(r.contactTypes) && r.contactTypes.length ? r.contactTypes : null);
       setKinds(r.kinds && typeof r.kinds === 'object' ? Object.entries(r.kinds) : null);
+      setFilled(r.landlordFilled || null);
       return (r.vendors || []).map(toSharedRow);
     }),
     add: (f) => ltApi.orderVendorCreate(loanId, {
@@ -116,6 +124,20 @@ export default function LtFileContacts({ loanId }) {
   }), [loanId]);
 
   return (
+    <>
+      {filled ? (
+        /* Explicit darks: an `--ink*` token is a LIGHT paper colour in this
+           palette, so one used as a text colour renders white on white. */
+        <div style={{
+          margin: '0 0 12px', padding: '10px 12px', borderRadius: 8,
+          border: '1px solid #AE8746', background: '#FBF7EF', color: '#141B22', fontSize: 14,
+        }}>
+          <strong>{filled.name || 'The landlord'}</strong>{' '}
+          was filled in from this borrower&rsquo;s last file
+          {filled.addressText ? <> — they were renting <strong>{filled.addressText}</strong> then too</> : null}.
+          {' '}Change it if they have a different landlord now.
+        </div>
+      ) : null}
     <FileContacts
       appId={loanId}
       isStaff
@@ -128,5 +150,6 @@ export default function LtFileContacts({ loanId }) {
         + 'These are the records the orders are sent to, and they are saved to the same company vendor directory '
         + 'the short-term side uses — so one company is one card across both.'}
     />
+    </>
   );
 }
