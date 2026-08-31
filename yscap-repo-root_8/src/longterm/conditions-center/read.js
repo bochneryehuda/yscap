@@ -43,6 +43,21 @@ const audience = require('../audience');
 
 const CLIENT_VISIBLE = new Set(['external', 'both']);
 
+/**
+ * ONE SCRUB FOR EVERY SENTENCE A CLIENT READS OFF A CONDITION.
+ *
+ * `audience.scrubInvestorNames` is the single definition (charter rule 10 — a
+ * second copy is how the two drift and the drifted one leaks); this only carries
+ * the two rules every caller here would otherwise repeat: a blank stays NULL
+ * rather than becoming an empty string, and a non-string is never handed to the
+ * scrubber. It FAILS CLOSED on nothing — the scrubber itself already refuses any
+ * audience that is not exactly `internal`.
+ */
+function scrubClient(v) {
+  if (v === null || v === undefined || v === '') return null;
+  return audience.scrubInvestorNames(String(v), 'borrower');
+}
+
 /** Statuses that mean the condition is no longer work. */
 const DONE = new Set(['satisfied', 'waived', 'not_applicable']);
 
@@ -251,10 +266,19 @@ function shape(r, internal, docs = []) {
   };
 
   if (!internal) {
+    /* THE WORDING A CLIENT READS IS SCRUBBED TOO, for the same reason the
+       rejection reason below is. `label` and `hint` are NOT a fixed whitelist:
+       the desk may PATCH both (routes/condition-center.js writes label / hint /
+       borrower_label / borrower_hint from free text), so what a borrower reads
+       here is a sentence a human typed, which is precisely the charter's second
+       defence — scrub the free text. MEASURED before it shipped: every one of
+       the 82 strings the shipped library carries passes through unchanged, so
+       this is inert on every word the owner wrote and bites only on a name a
+       staffer types afterwards. */
     return {
       ...base,
-      label: r.borrower_label || r.label,
-      hint: r.borrower_hint || null,
+      label: scrubClient(r.borrower_label || r.label),
+      hint: scrubClient(r.borrower_hint),
       /* THE REASON A DOCUMENT CAME BACK, SCRUBBED. This is the one piece of staff
          free text a client is entitled to, because rejecting their document is
          an instruction to them and an instruction with no reason cannot be
@@ -263,9 +287,7 @@ function shape(r, internal, docs = []) {
          defence's own case, not the whitelist's. Null unless something really
          was rejected — an empty reason on a healthy condition would read as a
          problem nobody has. */
-      rejectionReason: r.rejection_reason
-        ? audience.scrubInvestorNames(String(r.rejection_reason), 'borrower')
-        : null,
+      rejectionReason: scrubClient(r.rejection_reason),
       // DELIBERATELY ABSENT for a client: the internal note, who signed it off,
       // why it was waived, the condition's own settings, and whether the
       // template is switched on. Every one of those is a fact about how WE work.

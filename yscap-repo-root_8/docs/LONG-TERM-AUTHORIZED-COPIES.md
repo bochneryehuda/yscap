@@ -745,6 +745,30 @@ import src/lib/conditions/live-check-values.js
 # judging one all read. Long-Term imports it back from the shared library here.
 import src/lib/conditions/answers.js
 
+# WHAT COUNTS AS A VALID RULE, AND WHAT ONE ANSWERS — the last second copy in
+# the Condition Center, removed under the same 2026-08-30 share-the-code grant:
+# *"We don't want to reinvent the code. We want to use the same exact condition
+# center, and when we update something, it should update on both."*
+#
+# src/longterm/conditions-center/rules.js carried its OWN operator table, its own
+# validator and its own evaluator — a literal second definition of which tests a
+# field type accepts. MEASURED before anything was shared: on the six types
+# Long-Term actually uses, the two tables were already IDENTICAL except that
+# Long-Term's text row offered `in` / `not_in` and the shared one offered
+# `ends_with`. Two tables agreeing today is not one definition; it is two copies
+# that have not drifted YET, and the one that drifts is the one that silently
+# stops putting a condition on a file.
+#
+# The shared module now speaks both vocabularies (the `pct` / `boolean` rows, the
+# tri-state evaluator, and now text `in` / `not_in`), each addition PROVEN inert
+# against the live short-term registry before it landed — 54,614 old-vs-new
+# comparisons across all 56 fields, zero drift on any operator the old table
+# already allowed. Long-Term keeps only what is genuinely its own: the plain-
+# English wording of a refusal, and the reading that a condition carrying NO rule
+# applies to every file (true of all 28 in its shipped library, and not a fact
+# about rule grammar at all).
+import src/lib/conditions/rules.js
+
 # THE THREE COLUMNS THE SHARED TABLES GAIN SO A LONG-TERM CONDITION CAN LIVE IN
 # THEM (db/653, the same grant). None is lt_-prefixed, so the gate does not
 # require these lines — they are recorded because the rule is per item and a

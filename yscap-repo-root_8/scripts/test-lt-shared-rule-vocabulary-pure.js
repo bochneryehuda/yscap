@@ -219,6 +219,73 @@ const eq = (a, b, m) => rec(Object.is(a, b), `${m} (got ${JSON.stringify(a)}, wa
   eq(JSON.stringify(unknown), '[]', `D4 the shared evaluator knows every long-term field type (${ltTypes.join(', ')})`);
 }
 
+// ── E. THE OPERATOR TABLE AND THE VALIDATOR ARE NOW ONE, NOT TWO THAT AGREE ──
+// Sections A–D proved the shared module CAN speak Long-Term. This one pins that
+// Long-Term actually USES it — the difference between a duplicate that has not
+// drifted yet and no duplicate at all.
+{
+  const LTR = require('../src/longterm/conditions-center/rules');
+  const ltReg = require('../src/longterm/conditions-center/field-registry');
+  const FIELDS = ltReg.fieldMap();
+
+  // IDENTITY, not deep equality. Two tables with the same contents is exactly
+  // the state this work removed, and an equality check would pass on it.
+  ok(LTR.OPERATORS_BY_TYPE === SH.OPERATORS_BY_TYPE,
+    'E1 the long-term operator table IS the shared object — not a copy that currently matches');
+
+  // The validator delegates. Proven by a refusal only the SHARED validator can
+  // produce: the long-term one never looked at an enum's option list at all, so
+  // a typo'd enum value saved happily and then silently never matched a file.
+  const typo = LTR.validateRule(
+    { combinator: 'and', rules: [{ field: 'loan_purpose', operator: 'eq', value: 'purchace' }] }, FIELDS);
+  ok(typo.ok === false && /unknown value/i.test(String(typo.problems[0] && typo.problems[0].detail)),
+    'E2 a typo\'d enum value is REFUSED — a check only the shared validator has, so the delegation is real');
+  ok(LTR.validateRule(
+    { combinator: 'and', rules: [{ field: 'loan_purpose', operator: 'eq', value: 'purchase' }] }, FIELDS).ok === true,
+  'E3 …and a real option is still accepted, so the check is not simply refusing everything');
+
+  // The two seams that stay Long-Term's own, and the shape its screens read.
+  ok(LTR.validateRule(null, FIELDS).ok === true,
+    'E4 a condition with NO rule is valid — every one of the shipped 28 relies on it');
+  ok(LTR.validateRule({ field: 'loan_purpose', operator: 'eq', value: 'purchase' }, FIELDS).ok === true,
+    'E5 a bare row at the root validates as the one-row group it means');
+  const bad = LTR.validateRule({ combinator: 'and', rules: [{ field: 'nope', operator: 'eq', value: 'x' }] }, FIELDS);
+  ok(bad.ok === false && bad.problems.length === 1 && bad.problems[0].reason === 'unknown_field'
+    && typeof bad.problems[0].why === 'string' && bad.problems[0].why.length > 0,
+  'E6 the answer keeps long-term\'s {ok, problems:[{reason, detail, why}]} shape, with wording for a person');
+
+  // THE ONE THAT MATTERS MOST: every operator the builder now OFFERS is one the
+  // evaluator can actually answer. Without this, sharing the table hands the
+  // rule builder a control that silently evaluates to "cannot tell" forever —
+  // which reads as a condition that mysteriously never applies.
+  const unanswerable = [];
+  for (const [key, f] of Object.entries(FIELDS)) {
+    for (const op of (SH.OPERATORS_BY_TYPE[f.type] || [])) {
+      const value = op === 'between' ? [1, 2]
+        : (op === 'in' || op === 'not_in') ? ['x']
+          : f.type === 'date' ? '2021-01-01' : (f.type === 'money' || f.type === 'number' || f.type === 'pct') ? 1 : 'x';
+      const tree = { combinator: 'and', rules: [{ field: key, operator: op, value }] };
+      // A non-blank context, so a blank cannot be the reason it says "cannot tell".
+      const ctx = { [key]: f.type === 'boolean' ? true : f.type === 'date' ? '2021-01-01'
+        : (f.type === 'money' || f.type === 'number' || f.type === 'pct') ? 1 : 'x' };
+      if (LTR.evaluateRule(tree, ctx, FIELDS) === null) unanswerable.push(`${key} (${f.type}) ${op}`);
+    }
+  }
+  eq(JSON.stringify(unanswerable), '[]',
+    'E7 every operator the shared table offers a long-term field is one the long-term evaluator answers');
+
+  // …AND ONE A PERSON CAN READ. `describeRule` falls through to the raw key when
+  // an operator has no label, so the settings screen reads "Program ends_with
+  // 30yr" — and a rule an administrator cannot READ is a rule they cannot safely
+  // change. Sharing the table brought in exactly one operator this side had
+  // never had to word, which is precisely the kind of gap that ships silently.
+  const offered = new Set();
+  for (const f of Object.values(FIELDS)) for (const op of (SH.OPERATORS_BY_TYPE[f.type] || [])) offered.add(op);
+  const unworded = [...offered].filter((op) => !LTR.OPERATOR_LABEL[op]);
+  eq(JSON.stringify(unworded.sort()), '[]',
+    'E8 …and every one of them has plain-English wording, so no rule renders as a raw operator key');
+}
+
 if (failed) {
   console.log(`\ntest-lt-shared-rule-vocabulary-pure: ${failed} of ${n} checks FAILED`);
   process.exit(1);

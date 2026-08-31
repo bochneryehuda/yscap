@@ -34,7 +34,16 @@ const OPERATORS_BY_TYPE = {
      live registry, ZERO short-term fields are typed `pct`, so no existing
      rule can reach this row. */
   pct:     ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'is_empty', 'not_empty'],
-  text:    ['eq', 'neq', 'contains', 'not_contains', 'starts_with', 'ends_with', 'is_empty', 'not_empty'],
+  /* `in` / `not_in` ON TEXT are the long-term builder's own two, and they were
+     the last operators the two products did not share. On a TEXT field they
+     mean "is any of these strings" — there is no vocabulary to check them
+     against, which is why `validateValue` below asks about the field's TYPE
+     rather than about whether it happens to declare options. Adding them is
+     PERMISSIVE ONLY in both directions: a short-term rule stored today could
+     not have used an operator the builder never offered, so nothing that
+     validates stops validating; and `evalRow`'s text branch answered `false`
+     for them by default until now, a state no stored rule could reach. */
+  text:    ['eq', 'neq', 'contains', 'not_contains', 'starts_with', 'ends_with', 'in', 'not_in', 'is_empty', 'not_empty'],
   enum:    ['eq', 'neq', 'in', 'not_in', 'is_empty', 'not_empty'],
   /* `is_empty` / `not_empty` ON A BOOLEAN ARE LEGAL, and leaving them off this
      row was a latent defect rather than a rule. `evalRow` has always handled
@@ -115,8 +124,23 @@ function validateValue(f, operator, value) {
   }
   if (LIST_OPS.includes(operator)) {
     if (!Array.isArray(value) || !value.length) return [`${f.label}: pick at least one value`];
-    const bad = value.filter((v) => !(f.options || []).some((o) => o.v === v));
-    return bad.length ? [`${f.label}: unknown value(s) ${bad.join(', ')}`] : [];
+    /* THE MEMBERSHIP CHECK IS ABOUT THE FIELD'S TYPE, NOT ABOUT WHETHER IT
+       HAPPENS TO CARRY OPTIONS. An ENUM has a fixed vocabulary, so a value
+       outside it can never match and is a typo worth refusing — that check is
+       unchanged here, and it stays exactly as strict for a custom enum as for
+       a built-in one. A TEXT field has no vocabulary, so the only thing to
+       check is that the list really is a list of strings. Keying this on
+       `f.options` being PRESENT instead would silently RELAX an enum whose
+       options failed to load, which is the expensive direction. Measured
+       against the live short-term registry: all 12 fields that accept these
+       two operators today are enums that declare options, so not one of them
+       changes its answer. */
+    if (f.type === 'enum') {
+      const bad = value.filter((v) => !(f.options || []).some((o) => o.v === v));
+      return bad.length ? [`${f.label}: unknown value(s) ${bad.join(', ')}`] : [];
+    }
+    const bad = value.filter((v) => typeof v !== 'string' && typeof v !== 'number');
+    return bad.length ? [`${f.label}: every value must be text`] : [];
   }
   if (f.type === 'enum') {
     return (f.options || []).some((o) => o.v === value) ? [] : [`${f.label}: unknown value "${value}"`];
@@ -191,8 +215,17 @@ function evalRow(row, ctx, byKey) {
     switch (row.operator) {
       case 'eq': return a === String(row.value);
       case 'neq': return a !== String(row.value);
-      case 'in': return row.value.map(String).includes(a);
-      case 'not_in': return !row.value.map(String).includes(a);
+      /* THE ARRAY GUARD IS NOT DECORATION — without it these two THREW on a
+         stored rule whose `in` value is not a list, and this evaluator is total
+         by contract. It is reachable: a rule saved through the builder is
+         refused by `validateValue`, but `checklist_templates.rule_logic` is a
+         jsonb column a migration writes directly and a seeded rule never meets
+         the validator. `engine.js` wraps the call in a catch that answers
+         `false`, so the fix changes NOTHING there — but the rule PREVIEW in
+         `routes/admin-conditions.js` does not, so the same rule 500'd the
+         screen that exists to show an admin what their rule would match. */
+      case 'in': return Array.isArray(row.value) && row.value.map(String).includes(a);
+      case 'not_in': return Array.isArray(row.value) && !row.value.map(String).includes(a);
       default: return false;
     }
   }
@@ -206,6 +239,13 @@ function evalRow(row, ctx, byKey) {
     case 'not_contains': return !a.includes(v);
     case 'starts_with': return a.startsWith(v);
     case 'ends_with': return a.endsWith(v);
+    /* "is any of these strings". Compared LOWER-CASED like every other test on
+       this branch, so `in` and `eq` can never disagree about the same pair of
+       strings. A non-array value answers FALSE rather than throwing — this
+       evaluator is total by contract, and the validator is what refuses a
+       malformed rule before it can be stored. */
+    case 'in': return Array.isArray(row.value) && row.value.map((x) => String(x).toLowerCase()).includes(a);
+    case 'not_in': return Array.isArray(row.value) && !row.value.map((x) => String(x).toLowerCase()).includes(a);
     default: return false;
   }
 }

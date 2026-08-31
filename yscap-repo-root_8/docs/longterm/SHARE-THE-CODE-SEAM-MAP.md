@@ -103,14 +103,21 @@ Measured field by field rather than assumed:
   the shared *validator* while its *evaluator* has always handled them, and
   while its own comment advises using `is_empty` on a boolean. That was a latent
   defect, not a rule. **CLOSED**, validation-only and permissive.
-- `in` / `not_in` on **text** (Long-Term) vs `ends_with` (shared) — **OPEN**.
-  Not closed on purpose: the shared *evaluator* cannot evaluate `in` on a text
-  field (its text branch has no such case and returns false), so permitting it
-  in the validator alone would let somebody save a rule that silently answers
-  false forever. Closing it means changing the shared evaluator, which decides
-  what attaches to live short-term files. **Zero rules on either product use any
-  of these three operators**, so the practical fix is that Long-Term adopts the
-  shared vocabulary when it switches — nothing breaks.
+- `in` / `not_in` on **text** (Long-Term) vs `ends_with` (shared) — **NOW
+  CLOSED** (2026-08-31), and closed in the order the caution above demanded: the
+  shared *evaluator*'s text branch gained real `in` / `not_in` cases FIRST, so
+  the validator never permits a rule the evaluator answers false to forever.
+  Long-Term's `compareText` gained `ends_with` in the same pass, so the shared
+  table and the Long-Term evaluator agree about every operator the builder
+  offers — pinned by check E7, which lists any that do not.
+
+  **Proven inert for the short-term product before it landed**: the module before
+  and after, run over **54,614 comparisons** (validation and evaluation, all 56
+  registry fields × every operator × a spread of values and contexts), differed
+  on **nothing** the old table already allowed. The baseline is the pre-change
+  file, not a git ref, and it is proven to genuinely differ — a git baseline
+  proves inertness only until the change is committed, after which it degenerates
+  into "the engine equals itself" and passes forever while proving nothing.
 
 **4. The one genuine semantic conflict is boolean truthiness, and it is
 unreachable.** Long-Term accepted `'true'` and `1` as true; the short-term rule
@@ -122,18 +129,65 @@ never a number. Likewise all eleven numeric fields emit only `number` and
 `null`, which is what let the tri-state's numeric coercion match the shared one
 exactly.
 
-**What that leaves.** The shared module can now evaluate every rule Long-Term
-ships — proven on all 19 of them, in every context, with identical answers AND
-identical wording, so no screen changes. What still blocks the deletion is the
-API shape: `validateRule`'s richer refusals and its null-is-valid reading. That
-is a contained piece of work on Long-Term call sites (six, across three files),
-not a rewrite — but it must not lose the plain-language refusals, and the
-short-term validator's return shape must not change under it.
+**5. THE VALIDATOR AND THE OPERATOR TABLE ARE NOW SHARED (2026-08-31).** The two
+things this section previously listed as blocking — the richer refusals and the
+null-is-valid reading — turned out not to need a rewrite at either end. They are
+a SEAM: `src/longterm/conditions-center/rules.js` `validateRule` now delegates to
+the shared validator and adds only the two things that are genuinely Long-Term's
+own, each of which is a fact about Long-Term's DATA rather than about rule
+grammar (which is why neither belongs in the shared module):
+
+- **a null rule is valid** — every one of the 28 conditions in the shipped
+  library carries `ruleLogic: null`, so this is load-bearing, not theoretical;
+- **a bare row at the root** validates as the one-row AND group it means. The
+  stored rule is untouched and the wrap cannot change the verdict.
+
+The refusal SHAPE stays Long-Term's (`{ok, problems:[{reason, detail, why}]}`),
+built from the shared validator's own sentences — so the two can never describe
+one refusal two different ways. `OPERATORS_BY_TYPE` is now the shared OBJECT, not
+a copy: check E1 asserts identity rather than equality, because two tables with
+matching contents is exactly the state this removed.
+
+**It fixed a real latent defect on the way.** The Long-Term validator never
+looked at an enum's option list, so a typo'd enum value saved happily and then
+silently never matched a file. It is refused now (check E2). Making that work
+required Long-Term's registry to declare options in the shared `{v, label}`
+shape; nothing consumed the old bare-string shape — it was served by `catalog()`
+and read by no screen — which is what made correcting it safe rather than needing
+an adapter.
+
+**What that leaves: the EVALUATOR, and it is a real question rather than a
+duplication.** The two evaluators genuinely disagree about what "the same string"
+means. Long-Term's `norm` is lowercase + strip every non-alphanumeric, so
+`"Single Family"` ≡ `"SingleFamily"`; the shared text branch lowercases only, and
+its ENUM branch does not even do that (it is case-SENSITIVE, while the text
+branch beside it is not — an inconsistency inside the shared module itself).
+MEASURED over 3,200 comparisons on Long-Term's own fields: the two disagree on
+**1,620** of them, and on **zero** where the two strings are byte-identical. So
+they agree exactly on canonical values — which is all either registry actually
+produces — and differ only when somebody types a rule value with different casing
+or punctuation than the stored value.
+
+That is a business rule ("should a rule match a value spelled differently?"), not
+a refactor's to settle, and changing the shared side would move which conditions
+attach to LIVE short-term files. **Open with the owner**, alongside the
+inconsistency that shared text is case-insensitive while shared enum is not.
 
 **Also recorded, not fixed:** the shared evaluator reads a boolean stored in a
 money field as the number 1 (`Number(true)`). Long-Term's refused it. That is a
 real question about the short-term product, it moves live files, and it is not a
 refactor's to decide — so it is written down here rather than changed quietly.
+
+**Fixed in passing, and worth knowing about:** the shared `evalRow`'s enum
+`in` / `not_in` called `.map()` on the rule's value without checking it was an
+array, so a stored rule whose `in` value is a scalar **threw** — in a module
+documented as total. It is reachable: a rule saved through the builder is refused
+by the validator, but `checklist_templates.rule_logic` is a jsonb column a
+migration writes directly, and a seeded rule never meets the validator.
+`engine.js` wraps the call in a catch that answers `false`, so the fix changes
+nothing there — but `routes/admin-conditions.js` does not, so the same rule 500'd
+the rule-preview screen. Found by the equivalence battery (384 cases), not by
+reading.
 
 ---
 
@@ -142,7 +196,7 @@ refactor's to decide — so it is written down here rather than changed quietly.
 | File | Duplicates | Port before deleting |
 |---|---|---|
 | `engine.js` (333) | `src/lib/conditions/engine.js:265-281`, `:320-338`, `:345-446` | the tri-state `apply true\|false\|null` (`:169-187`) — strictly better than RTL's catch→false at `engine.js:381`; the atomic retraction with `NOT EXISTS(files)` **inside** the DELETE (`:297-304`) vs RTL's read-then-write; `loadContext`'s per-read try/catch + `unreadable[]` (`:64-75`) |
-| `rules.js` (320) | `src/lib/conditions/rules.js` in full | the tri-state return (`:144-168`) as an opt-in |
+| `rules.js` | ~~`src/lib/conditions/rules.js` in full~~ — **SUPERSEDED, see §5 above.** The operator table and the validator ARE the shared ones now; what is left is not a duplicate but a genuine disagreement about text comparison, which is an owner question | done — the tri-state shipped as `evaluateRuleTri` |
 | `read.js` (216) | `staff.js:5030-5151` | the three-number summary that never collapses satisfied/waived/n-a (`:16-21`); the "a degraded read is not an empty file" posture (`:23-27`) |
 | `write.js` (431) | `staff.js:9986-10594`, `extra-slots.addSlot:110-130` | **`missingSlots` (`:41-51`) — the generic required-slots gate RTL does not have**; `documentsByLine` (`:56-62`); the already-verified-entity short-circuit (`:102-104`) |
 | `field-registry.js` (269) | the FRAMEWORK only (`fieldMap`/`catalog`/`read`, `:227-258`) | **KEEP the 30 FIELDS entries (`:66-226`)** as an LT field module the shared registry MERGES IN, exactly as it already merges `custom_fields` (`field-registry.js:605-610`) |

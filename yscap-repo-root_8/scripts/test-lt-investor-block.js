@@ -287,6 +287,68 @@ if (typeof shape === 'function') {
     '…while the file itself still reads as a file: the borrower keeps their program wording and their own status, scrubbed rather than blanked');
 }
 
+// ── N. THE CONDITION'S OWN WORDING IS SCRUBBED, NOT ONLY ITS REJECTION REASON ─
+// A condition's `label` and `hint` are NOT a fixed whitelist. The desk may PATCH
+// both from free text (routes/condition-center.js writes label / hint /
+// borrower_label / borrower_hint), so what a borrower reads on the portal — and
+// in the emailed outreach list, which is built from this same client view — is a
+// sentence a human typed. That is precisely the charter's SECOND defence: scrub
+// the free text. Before this, only `rejectionReason` went through the scrub, so
+// a staffer who typed an investor's name into a borrower-facing label handed it
+// straight to the borrower.
+{
+  const read = require(path.join(ROOT, 'src/longterm/conditions-center/read'));
+  const shape = read._internals.shape;
+
+  const row = {
+    id: 'c1', code: 'lt_x', bucket_key: 'prior_to_submission', kind: 'document',
+    status: 'outstanding', is_required: true, file_count: 0, accepted_count: 0,
+    label: 'INTERNAL: Deephaven approval', hint: 'internal hint',
+    borrower_label: 'Upload the Deephaven approval letter',
+    borrower_hint: 'Deephaven needs this before we can submit.',
+    rejection_reason: 'Deephaven rejected the copy you sent.',
+  };
+
+  const client = shape(row, false);
+  const json = JSON.stringify(client);
+  check(!/deephaven/i.test(json),
+    'THE ONE THAT MATTERS: no spelling of the investor survives anywhere in a client condition — label, hint or rejection reason');
+  check(client.label && client.label.length > 0 && client.hint && client.hint.length > 0,
+    '…and the condition still reads as an instruction: the wording is SCRUBBED, never blanked');
+  check(/upload/i.test(client.label), '…the borrower still knows what to do');
+
+  // The scrub must not invent wording where there was none: a condition with no
+  // borrower hint answers null, not an empty string, so a screen renders nothing
+  // rather than an empty line.
+  const bare = shape({ ...row, borrower_hint: null, rejection_reason: null }, false);
+  check(bare.hint === null && bare.rejectionReason === null,
+    'a condition with no hint and nothing rejected answers null on both — never an empty string');
+
+  // Internal staff still see every word, unscrubbed — the whole point of the rule.
+  const staff = shape(row, true);
+  check(/Deephaven/.test(staff.label) && /Deephaven/.test(staff.borrowerLabel),
+    'internal staff still read the real name — the scrub is on the CLIENT payload only');
+
+  // INERT ON EVERY WORD THE OWNER WROTE. A scrub that quietly rewrites the
+  // shipped library would change the wording of 28 conditions nobody asked to
+  // change, and nothing would report it. Measured over every string the library
+  // carries, not only the ones that look like wording.
+  const lib = require(path.join(ROOT, 'src/longterm/conditions-center/library'));
+  const conds = [...lib.PRIOR_TO_SUBMISSION, ...lib.PRIOR_TO_CTC];
+  let strings = 0; const moved = [];
+  for (const c of conds) {
+    for (const k of Object.keys(c)) {
+      const v = c[k];
+      if (typeof v !== 'string' || !v) continue;
+      strings += 1;
+      if (A.scrubInvestorNames(v, 'borrower') !== v) moved.push(`${c.code || '?'}.${k}`);
+    }
+  }
+  check(strings > 100, `the shipped library really was measured (${strings} strings across ${conds.length} conditions)`);
+  check(moved.length === 0,
+    `INERT: the scrub rewrites nothing in the shipped library${moved.length ? ` — it moved ${moved.join(', ')}` : ''}`);
+}
+
 // ── done ─────────────────────────────────────────────────────────────────────
 if (failures) {
   console.error(`\nFAILED — ${failures} check(s). The investor name could reach a client.`);
