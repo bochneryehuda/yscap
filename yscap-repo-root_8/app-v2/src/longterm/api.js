@@ -293,6 +293,51 @@ export const ltApi = {
   vestingEntityDocUpload: (loanId, slotItemId, body) => ltUpload(
     lt(`/condition-center/loans/${encodeURIComponent(loanId)}/vesting-entity/slots/${encodeURIComponent(slotItemId)}/documents/binary`),
     { ...body, checklistItemId: slotItemId }),
+
+  /* ── THE ENTITY SECTION, THE SHORT-TERM ONE ────────────────────────────────
+     Owner-directed 2026-08-31: *"The exact entity section, same exact form
+     information to type in an entity section. The exact verification workflow …
+     The exact document slots and bi-directional … Don't reinvent, just bring
+     over the same information."*
+
+     So these five are not an entity API — they are the ADAPTER the shared
+     `LlcManager` takes, pointed at `/api/lt/*`. Every rule behind them (what may
+     be edited, whether the ownership adds up, who may verify, what a revoke does
+     to the companies underneath) is `src/lib/llc-edit.js`, which the short-term
+     routes call too, so there is one answer for both products.
+
+     `entityId` is the COMPANY, and the loan is in the path because the loan is
+     what says which companies this desk may reach: its own vesting company and
+     the companies that OWN it (a layered entity verifies bottom-up, so an owner
+     has to be workable from the file that depends on it). Nothing else on the
+     borrower's profile is reachable from a loan file at all. */
+  entityGet: (loanId, entityId) => ltGet(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/entities/${encodeURIComponent(entityId)}`)),
+  entitySave: (loanId, entityId, body) => ltPatch(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/entities/${encodeURIComponent(entityId)}`), body),
+  entityMembers: (loanId, entityId, members) => ltPut(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/entities/${encodeURIComponent(entityId)}/members`),
+    { members }),
+  entityVerify: (loanId, entityId, body) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/entities/${encodeURIComponent(entityId)}/verify`), body),
+  // Streamed, for the reason every other upload here is: an operating agreement
+  // is a multi-page scan and is routinely past the 25 MB JSON ceiling.
+  entityDocUpload: (loanId, entityId, slotItemId, body) => ltUpload(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/entities/${encodeURIComponent(entityId)}/slots/${encodeURIComponent(slotItemId)}/documents/binary`),
+    { ...body, checklistItemId: slotItemId }),
+  /* AN ENTITY DOCUMENT HAS NO FILE OWNER — it belongs to the company, which is
+     what makes ONE operating agreement follow it to every loan it vests — so it
+     is NOT reachable through the condition-document door (whose first statement
+     is `lt_loan_id IS NOT NULL`). Its scope is the company, welded into the
+     read. `?inline=1` asks the shared serving path to render it rather than
+     save it, for the previewer.
+
+     THE COMPANY IS NOT IN THE PATH: the shared section renders a whole ownership
+     CHAIN from ONE adapter, so a nested owner's document has to download through
+     the same call as the vesting company's. The server derives the company from
+     the document and then asks whether THIS loan may reach it. */
+  entityDocBlob: (loanId, documentId) => ltBlob(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/entities/documents/${encodeURIComponent(documentId)}/file?inline=1`)),
   conditionDocReview: (documentId, body) => ltPost(
     lt(`/condition-center/documents/${encodeURIComponent(documentId)}/review`), body),
   conditionDocRemove: (documentId) => ltDel(

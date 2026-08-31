@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ltApi } from './api.js';
 import { GOLD_TEXT } from './ppeStyles.js';
 import AddressField from './AddressField.jsx';
+import LtEntity from './LtEntity.jsx';
 
 /**
  * THE THREE CONDITIONS THAT ARE A CHOICE, NOT AN UPLOAD.
@@ -54,132 +55,12 @@ const btn = (on) => ({
   color: INK,
 });
 
-/**
- * THE VESTING COMPANY — WHAT THE BORROWER ALREADY HOLDS, AND HOW TO ADD TO IT.
- *
- * ── THIS SCREEN USED TO PROMISE SOMETHING THE CODE DID NOT DO ───────────────
- *
- * It told people, on every file whose company was not on the profile: *"What is
- * uploaded here will be saved to it, and verified once — so the next loan for
- * the same company starts already done."* Nothing did that. The read side was
- * shared and correct and there was no write side at all, so a document collected
- * here stayed on this loan's condition and the next loan asked for it again.
- *
- * The sentence is true now, and it is true because of WHERE the upload goes, not
- * because anything copies it afterwards: each row below files straight onto that
- * slot on the COMPANY, through the shared upload door. One document, on the
- * profile, which is the thing `entity-prefill.js` reads on the next loan.
- *
- * ── SAVING THE COMPANY IS A BUTTON, NEVER AUTOMATIC ─────────────────────────
- *
- * Putting a company on a person's permanent record is a decision, so somebody
- * makes it. It is also what the slots hang off, which is why nothing can be
- * uploaded until it has been done — said plainly rather than by a disabled
- * control with no explanation.
- *
- * EVERY REFUSAL IS THE SERVER'S OWN WORDS, like the rest of this file.
- */
-function EntityBlock({ ws, loanId, onChanged }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState(null);
-  const profile = ws.profile || null;
-
-  const save = useCallback(async () => {
-    setBusy(true); setErr(null);
-    try {
-      await ltApi.vestingEntityToProfile(loanId);
-      if (onChanged) await onChanged();
-    } catch (e) {
-      setErr((e && (e.error || e.message)) || 'That could not be saved.');
-    } finally { setBusy(false); }
-  }, [loanId, onChanged]);
-
-  const upload = useCallback(async (slotItemId, file) => {
-    if (!file) return;
-    setBusy(true); setErr(null);
-    try {
-      // The RAW File — the streamed door takes the bytes as they arrive, so an
-      // operating agreement past the JSON ceiling still lands.
-      await ltApi.vestingEntityDocUpload(loanId, slotItemId, { file, filename: file.name });
-      if (onChanged) await onChanged();
-    } catch (e) {
-      setErr((e && (e.error || e.message)) || 'That document could not be filed.');
-    } finally { setBusy(false); }
-  }, [loanId, onChanged]);
-
-  return (
-    <div>
-      <div style={eyebrow}>On the borrower’s profile</div>
-
-      {/* AN UNREADABLE PROFILE IS NOT "NOTHING ON FILE". Saying the second when
-          the first is true would ask a borrower for documents they already sent. */}
-      {profile && profile.unreadable && (
-        <p style={{ margin: 0, fontSize: 13, color: RED, lineHeight: 1.55 }}>{profile.why}</p>
-      )}
-
-      {profile && !profile.unreadable && !profile.found && (
-        <div>
-          <p style={{ margin: 0, fontSize: 13, color: MUTED, lineHeight: 1.55 }}>
-            {ws.entityName
-              ? `${ws.entityName} is not on this borrower’s profile yet. Save it there and its documents live on the profile — so the next loan for the same company starts already done.`
-              : 'This loan has no vesting company recorded yet. It comes from Encompass once somebody enters it.'}
-          </p>
-          {ws.entityName && (
-            <button
-              type="button" disabled={busy}
-              style={{ ...btn(true), marginTop: 10, opacity: busy ? 0.5 : 1 }}
-              onClick={save}>
-              {busy ? 'Saving…' : 'Save this company to the borrower’s profile'}
-            </button>
-          )}
-        </div>
-      )}
-
-      {profile && profile.found && (
-        <div>
-          <p style={{ margin: 0, fontSize: 13, color: INK, lineHeight: 1.55 }}>
-            <strong>{ws.entityName}</strong> is already on this borrower’s profile
-            {profile.verified ? ' and verified.' : ', not yet verified.'}
-          </p>
-          <ul style={{ margin: '8px 0 0', padding: 0, listStyle: 'none', fontSize: 13 }}>
-            {profile.slots.map((sl) => (
-              <li key={sl.key} style={{
-                marginTop: 6, display: 'flex', flexWrap: 'wrap',
-                alignItems: 'center', gap: 8,
-              }}>
-                <span style={{ color: sl.filled ? GREEN : MUTED }}>
-                  {sl.label} — {sl.filled ? 'already on file' : 'not on file'}
-                  {sl.note ? ` (${sl.note})` : ''}
-                </span>
-                {/* A SLOT WITH NO ITEM ID CANNOT BE UPLOADED INTO, and that is
-                    an honest state rather than a broken control: the company is
-                    on the profile but its slots have not been built yet. */}
-                {!sl.filled && sl.itemId && (
-                  <label style={{ ...btn(false), display: 'inline-block', opacity: busy ? 0.5 : 1 }}>
-                    {busy ? 'Working…' : 'Upload'}
-                    <input
-                      type="file" disabled={busy}
-                      style={{ display: 'none' }}
-                      onChange={(e) => {
-                        const f = e.target.files && e.target.files[0];
-                        e.target.value = '';
-                        upload(sl.itemId, f);
-                      }} />
-                  </label>
-                )}
-              </li>
-            ))}
-          </ul>
-          {ws.note && (
-            <p style={{ margin: '8px 0 0', fontSize: 12, color: MUTED, lineHeight: 1.5 }}>{ws.note}</p>
-          )}
-        </div>
-      )}
-
-      {err && <p style={{ margin: '8px 0 0', fontSize: 13, color: RED, lineHeight: 1.55 }}>{err}</p>}
-    </div>
-  );
-}
+/* THE OLD READ-ONLY ENTITY BLOCK IS GONE (2026-08-31), not left beside its
+   replacement. It listed the three slots and put an Upload button next to each —
+   no details form, no entity type, no ownership, no titles, no layered
+   entities, no verification — and leaving it here would be a SECOND answer to
+   "what is the entity section" on the same screen. The real one is
+   `LtEntity.jsx`, which mounts the shared `components/LlcManager.jsx`. */
 
 /**
  * THE APPRAISAL CARD — held on the borrower's PROFILE, both directions.
@@ -452,9 +333,22 @@ export default function LtConditionAnswer({ loanId, conditionId, onSaved }) {
 
   return (
     <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${LINE}` }}>
-      {/* ── The vesting entity: what the borrower already holds ─────────────── */}
+      {/* ── THE ENTITY SECTION — the short-term one, on this file ────────────
+          Owner-directed 2026-08-31: *"The exact entity section, same exact form
+          information to type in an entity section. The exact verification
+          workflow … The exact document slots and bi-directional … Don't
+          reinvent."* `LtEntity` is the adapter and the verify control; the
+          section itself is `components/LlcManager.jsx`, the same component the
+          short-term file screen renders. What used to be here was a read-only
+          list of the three slots with an Upload button beside each — true, and a
+          long way short of an entity section. */}
       {ws.shape === 'entity' && (
-        <EntityBlock ws={ws} loanId={loanId} onChanged={load} />
+        <LtEntity
+          loanId={loanId}
+          entityName={ws.entityName}
+          profile={ws.profile}
+          note={ws.note}
+          onChanged={load} />
       )}
 
       {/* THE CARD AND THE ID LIVE ON THE PERSON, so both say what the borrower
