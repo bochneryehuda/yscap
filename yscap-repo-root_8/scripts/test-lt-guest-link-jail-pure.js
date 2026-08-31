@@ -254,6 +254,89 @@ eq(link.linkMatchesGuest(ltRow, null), false, 'G12 and no token matches nothing'
   eq(fresh.registerJail('', [{ m: 'GET', re: /x/ }]), false, 'H7 nor one with no owner kind');
 }
 
+// ---------------------------------------------------------------------------
+// I. THE SCREEN ACTUALLY KNOCKS ON THOSE DOORS.
+//
+// Everything above is about the RULE, and a rule nothing calls is decoration.
+// The doors were built, the jail admits them, and until the guest screen asks
+// for them a long-term borrower opening their emailed link still gets a page
+// calling the SHORT-TERM endpoints — which the jail correctly refuses, so the
+// page renders "this link isn't working" on a link that is perfectly good.
+//
+// That is the class `test-draw-routes-wired-pure` was written for: a back end
+// is not a feature. No unit test of the jail can see it, so this reads the
+// screen's own source. Comments are stripped first — the file necessarily
+// EXPLAINS both products while describing why one branch exists, and a guard
+// that read prose would pass on an explanation of a branch that was deleted.
+// ---------------------------------------------------------------------------
+{
+  const fs = require('fs');
+  const path = require('path');
+  const { stripComments } = require('./lib/strip-comments');
+
+  const SCREEN = path.join(__dirname, '..', 'app-v2', 'src', 'screens', 'GuestConditions.jsx');
+  const raw = fs.readFileSync(SCREEN, 'utf8');
+  const src = stripComments(raw);
+
+  // ONE SCREEN, NOT TWO. A second guest page is how the two products' link
+  // handling drifts, and the drifting one is the one somebody's borrower opens.
+  const screensDir = path.join(__dirname, '..', 'app-v2', 'src', 'screens');
+  const guestScreens = fs.readdirSync(screensDir).filter((f) => /^Guest.*Condition/i.test(f));
+  eq(guestScreens.length, 1, `I1 there is exactly ONE guest condition screen (${guestScreens.join(', ')})`);
+
+  // IT BRANCHES ON THE SERVER'S ANSWER, not on anything in the URL.
+  ok(/product\s*===\s*'long_term'/.test(src),
+    "I2 the screen branches on the server's own `product` answer");
+  ok(/j\.ltLoanId/.test(src), 'I3 and uses the loan id the exchange handed back');
+
+  // THE LONG-TERM SURFACE ASKS THE DOORS THE JAIL ADMITS — and the jail's own
+  // patterns are what it is checked against, so a route renamed on one side
+  // and not the other fails here rather than on a borrower's phone.
+  const readRe = ltJail.LT_GUEST_RULES.find((r) => r.m === 'GET');
+  const upRe = ltJail.LT_GUEST_RULES.find((r) => r.m === 'POST' && !/binary/.test(String(r.re)));
+  ok(/\/api\/lt\/my\/loans\/\$\{loanId\}\/conditions`/.test(src),
+    'I4 the long-term surface reads the conditions door');
+  ok(readRe && readRe.re.test('/api/lt/my/loans/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa/conditions'),
+    'I5 …and that is a door the jail admits');
+  ok(/\/api\/lt\/my\/loans\/\$\{loanId\}\/conditions\/\$\{itemId\}\/documents`/.test(src),
+    'I6 the long-term surface uploads through the loan-scoped document door');
+  ok(upRe && upRe.re.test('/api/lt/my/loans/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa/conditions/'
+    + 'dddddddd-4444-4444-8444-dddddddddddd/documents'),
+    'I7 …and that one is admitted too');
+
+  // IT FLATTENS THE BUCKETS. `read.forLoan` answers `{ buckets:[{conditions}] }`
+  // and there is no flat list — reading a top-level `conditions` would render an
+  // empty page on a loan with plenty outstanding, and nothing would error.
+  ok(/buckets/.test(src) && /\.conditions/.test(src),
+    'I8 it reads the conditions out of the buckets, which is where they live');
+
+  // THE SHORT-TERM SURFACE IS UNTOUCHED — the control. Without this, "the
+  // long-term one works" could be true of a screen that broke the other product.
+  ok(/\/api\/borrower\/applications\/\$\{appId\}\/checklist`/.test(src),
+    'I9 the short-term surface still reads the borrower checklist');
+  ok(/'\/api\/borrower\/documents'/.test(src),
+    'I10 …and still uploads through the borrower document door');
+  ok(/\/api\/borrower\/applications\/\$\{appId\}\/checklist\/\$\{itemId\}\/info`/.test(src),
+    'I11 …and still saves a typed answer');
+
+  // A TYPED BOX IS OFFERED ONLY WHERE THE DOOR EXISTS. `/api/lt/my` has a read
+  // and two upload doors and nothing else, so an unguarded info editor would
+  // render a Save button that 403s on every long-term link.
+  ok(/surface\s*&&\s*surface\.saveInfo/.test(src),
+    'I12 the typed-answer editor is gated on the surface actually having that door');
+  ok(/saveInfo:\s*null/.test(src),
+    'I13 and the long-term surface says plainly that it has none');
+
+  // THE SCREEN NEVER NAMES THE OTHER PRODUCT'S DOOR INSIDE THE LONG-TERM
+  // SURFACE. Cheap to check, and it is the exact copy-paste this refactor
+  // invites: an `/api/borrower/...` call left behind in the long-term adapter
+  // would be refused by the jail and read as a broken link.
+  const ltBlock = (src.match(/function longTermSurface[\s\S]*?\n}/) || [''])[0];
+  ok(ltBlock.length > 100, 'I14 the long-term surface was found in the source');
+  ok(!/\/api\/borrower\//.test(ltBlock),
+    'I15 …and calls no short-term door');
+}
+
 if (failed) {
   console.log(`\ntest-lt-guest-link-jail-pure: ${failed} of ${n} checks FAILED`);
   process.exit(1);
