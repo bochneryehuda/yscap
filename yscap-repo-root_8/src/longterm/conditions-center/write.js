@@ -53,6 +53,10 @@ const { ownerOf, ownerWhere, ownerCols } = require('../../lib/condition-owner');
 // still waiting on. It is imported back rather than kept as a second copy —
 // which is the whole point of the port.
 const requiredSlots = require('../../lib/conditions/required-slots');
+// LAZY on purpose: `workspace.js` requires nothing from here today, but the two
+// are the read and write halves of the same three conditions and a direct
+// require would make a cycle the first time it needs one of these rules.
+const workspace = require('./workspace');
 
 /** How many accepted documents a slot-bearing condition still needs. */
 function missingSlots(condition, files) {
@@ -211,6 +215,149 @@ async function loadCondition(loanId, conditionId, client = db) {
   return { condition, files, readFailed, entity };
 }
 
+/* ── THE SUBJECT-PROPERTY MORTGAGE, SATISFIED FROM THE CREDIT REPORT ────────
+   Owner-directed 2026-08-31: *"If you click that button then it links to subject
+   property and then the mortgage for subject property condition … It should
+   satisfy two things at once, one line item of the REO … and it satisfies the
+   condition for the mortgage statement for subject property."*
+
+   TWO CONDITIONS, ONE CLICK — and the second one is written HERE rather than by
+   the screen, because a screen that writes a second condition is a second write
+   path with its own idea of what a valid answer looks like. This one goes
+   through `answers.answerProblem` exactly as a typed answer does, so the fill is
+   held to the same standard as a person typing it.
+
+   IT NEVER OVERWRITES A PERSON. A subject-mortgage condition that already
+   carries an answer somebody chose is LEFT ALONE and said so — the credit report
+   is a convenience, not an authority, and quietly replacing a closer's typed
+   loan number with four digits off a credit report is exactly the kind of silent
+   overwrite this repo has been bitten by before. The only answer it will replace
+   is one IT wrote (`filledFromCreditReport`), which is what lets the fill follow
+   the line if somebody changes their mind about which mortgage it is.
+
+   AND IT RETRACTS ITSELF. Un-mark the line and the fill that came from it goes,
+   because an answer sourced from a line that no longer claims to be the subject
+   property is a claim nobody is making any more.
+
+   BEST-EFFORT, ALWAYS. The REO answer has already been recorded by the time this
+   runs; a failure here reports what did not happen and never un-records it. */
+const SUBJECT_CODE = 'lt_subject_mortgage_statement';
+
+/** Which line, if any, an answer says is the mortgage on the subject property. */
+function subjectLineKeys(answer) {
+  const lines = (answer && answer.lines && typeof answer.lines === 'object') ? answer.lines : {};
+  return Object.keys(lines).filter((k) => lines[k] && String(lines[k].way || '') === 'subject_property');
+}
+
+/** The subject-property mortgage condition on this loan, or null. */
+async function subjectCondition(loanId, client) {
+  const where = ownerWhere(ownerOf('lt_loan', loanId), 'c', 1);
+  const { rows } = await client.query(
+    `SELECT c.id, c.tool_payload AS answer, c.notes, c.status, c.signed_off_at, c.waived_at, t.code
+       FROM checklist_items c
+       JOIN checklist_templates t ON t.id = c.template_id
+      WHERE t.code = $${where.params.length + 1} AND ${where.sql}
+      ORDER BY c.created_at
+      LIMIT 1`,
+    [...where.params, SUBJECT_CODE],
+  );
+  return rows[0] || null;
+}
+
+/** The liability row behind one line key, shaped the way `answers` reads it. */
+async function liabilityForKey(loanId, lineKey, client) {
+  const id = String(lineKey || '').replace(/^liab:/, '');
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
+  const { rows } = await client.query(
+    `SELECT l.id, l.creditor_name, l.account_last4, l.unpaid_balance
+       FROM lt_liabilities l
+       JOIN lt_parties p ON p.id = l.party_id
+       JOIN lt_borrower_pairs bp ON bp.id = p.pair_id
+      WHERE bp.loan_id = $1::uuid AND l.id = $2::uuid`,
+    [String(loanId), id],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  const last4 = String(r.account_last4 || '').trim();
+  return {
+    key: `liab:${r.id}`,
+    label: last4 ? `${r.creditor_name || 'Unnamed creditor'} ····${last4}` : (r.creditor_name || 'Unnamed creditor'),
+    creditor: r.creditor_name || null,
+    last4: last4 || null,
+    balance: r.unpaid_balance == null ? null : Number(r.unpaid_balance),
+  };
+}
+
+/**
+ * Carry a `subject_property` answer across onto the subject-mortgage condition.
+ *
+ * @returns {Promise<{filled?:boolean, cleared?:boolean, why?:string, note?:string}>}
+ *   — a report, never a throw.
+ */
+async function crossFillSubjectMortgage(loanId, condition, merged, staffId, client) {
+  const out = {};
+  try {
+    if (String(condition.code || '') !== 'lt_reo_liabilities') return out;
+
+    const keys = subjectLineKeys(merged);
+    const target = await subjectCondition(loanId, client);
+    /* No such condition on the file is not a failure — on a purchase the engine
+       never attached one. It is only worth SAYING when somebody has just claimed
+       a line; otherwise every ordinary save of this condition would carry a
+       sentence about a condition that has nothing to do with it. */
+    if (!target) {
+      return keys.length
+        ? { why: 'There is no subject-property mortgage condition on this file to fill in.' }
+        : out;
+    }
+
+    const existing = target.answer && typeof target.answer === 'object' ? target.answer : {};
+    const ours = answers.filledFromCreditReport(existing);
+
+    if (!keys.length) {
+      // RETRACT — but only our own fill, and never one somebody has signed off.
+      if (!ours) return out;
+      if (target.signed_off_at || target.waived_at) {
+        return { why: 'The subject-property mortgage condition is already signed off, so its answer was left as it is.' };
+      }
+      await client.query(
+        `UPDATE checklist_items
+            SET tool_payload = '{}'::jsonb, notes = $2, updated_at = now()
+          WHERE id = $1::uuid`,
+        [String(target.id), appendNote(target.notes, '[auto] The mortgage on the credit report is no longer marked as the one on the subject property, so the figures filled in from it were removed.')],
+      );
+      return { cleared: true, note: 'The figures that had been filled in from the credit report were removed.' };
+    }
+
+    if (!ours && answers._internals.has(existing.way)) {
+      return { why: 'The subject-property mortgage condition already has an answer somebody chose, so it was left alone.' };
+    }
+
+    const line = await liabilityForKey(loanId, keys[0], client);
+    if (!line) return { why: 'PILOT could not read that mortgage off the credit report to fill the statement condition in.' };
+
+    const fill = answers.creditReportFill(line);
+    if (!fill.ok) return { why: `The statement condition was not filled in because ${fill.why}.` };
+
+    // HELD TO THE SAME STANDARD AS A TYPED ANSWER — through the one validator.
+    const problem = answers.answerProblem({ code: SUBJECT_CODE }, fill.answer, { hasDocument: false });
+    if (problem) return { why: `The statement condition was not filled in: ${problem}` };
+
+    const answer = { ...fill.answer, answeredBy: staffId || null };
+    if (JSON.stringify(existing) === JSON.stringify(answer)) return { filled: true };
+
+    await client.query(
+      `UPDATE checklist_items
+          SET tool_payload = $2::jsonb, notes = $3, updated_at = now()
+        WHERE id = $1::uuid`,
+      [String(target.id), JSON.stringify(answer), appendNote(target.notes, `[auto] ${answers.sourceNote(answer)}`)],
+    );
+    return { filled: true, note: answers.sourceNote(answer) };
+  } catch (_) {
+    return { why: 'PILOT could not fill in the subject-property mortgage condition just now.' };
+  }
+}
+
 /**
  * RECORD THE ANSWER on a condition that is a CHOICE rather than an upload.
  *
@@ -245,9 +392,27 @@ async function recordAnswer(loanId, conditionId, incoming, staffId, client = db)
     merged.lines = lines;
   }
 
+  /* ONLY ONE MORTGAGE CAN BE THE ONE ON THE SUBJECT PROPERTY. Two lines both
+     claiming it is a contradiction, and the cross-fill below would silently pick
+     whichever came first — so it is refused here, in words, before anything is
+     written. */
+  const subjectKeys = subjectLineKeys(merged);
+  if (subjectKeys.length > 1) {
+    return {
+      ok: false,
+      status: 422,
+      error: 'Only one mortgage can be the one on the subject property — there is one loan being refinanced. Choose a different answer for the others.',
+    };
+  }
+
+  // WHAT KIND OF DEAL THIS IS — read through the SAME `dealFor` the screen uses,
+  // so a way this door refuses is one the screen never offered.
+  const deal = await workspace._internals.dealFor(loanId, client);
+
   // REFUSE A SHAPE THE GATE WOULD NOT HONOUR. A door that accepts what the gate
   // ignores leaves somebody pressing a button that changes nothing.
   const problem = answers.answerProblem(condition, merged, {
+    deal,
     hasDocument: current.some((f) => f.review_status === 'accepted'),
     documentsByLine: documentsByLine(current),
     lineLabels: Object.fromEntries(
@@ -273,7 +438,13 @@ async function recordAnswer(loanId, conditionId, incoming, staffId, client = db)
     [String(conditionId), ...w.params, JSON.stringify(merged)],
   );
   if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
-  return { ok: true, condition: { ...rows[0], status: vocab.statusOf(rows[0]) } };
+
+  // TWO CONDITIONS, ONE CLICK — best-effort, and only AFTER this answer is safely
+  // recorded. It reports what it did or could not do; it can never undo the write
+  // above, which is the answer the person actually made.
+  const subject = await crossFillSubjectMortgage(loanId, condition, merged, staffId, client);
+
+  return { ok: true, condition: { ...rows[0], status: vocab.statusOf(rows[0]) }, subjectMortgage: subject };
 }
 
 /** Mark a condition satisfied, if the gate allows it. */
@@ -481,6 +652,7 @@ function appendNote(existing, line) {
 
 module.exports = {
   recordAnswer,
+  crossFillSubjectMortgage,
   missingSlots,
   signOffProblem,
   loadCondition,

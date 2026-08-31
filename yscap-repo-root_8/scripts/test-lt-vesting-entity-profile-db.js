@@ -329,11 +329,19 @@ const uniq = `ltve-${process.pid}-${Date.now()}`;
        so an already-verified company never cleared the condition and the
        borrower was asked to prove the same fact again on every loan. The code's
        own comment promised the opposite. */
+    /* THE REAL TEMPLATE, THROUGH THE REAL SEEDER — never a hand-written stub.
+       This used to INSERT a minimal row under the library's own code with
+       `ON CONFLICT (code) DO NOTHING` semantics on the seeder's side, so in any
+       database where this suite ran FIRST the real library row could never be
+       written: `lt_vesting_entity` was left with no `auto_apply` and no rule, the
+       engine's library query (which selects only `always`/`rules`) skipped it,
+       and the condition silently stopped attaching to every long-term loan for
+       the rest of that database's life. Harmless in production, which seeds
+       cleanly — and a confusing false failure for every later suite. */
+    await require('../src/longterm/conditions-center/library').ensureSeeded(db);
     const tpl = String((await db.query(
-      `INSERT INTO checklist_templates (code, scope, label, audience, item_kind, is_active, sort_order)
-       VALUES ('lt_vesting_entity','lt_loan','Vesting entity','staff','document',true,100)
-       ON CONFLICT (code) DO UPDATE SET is_active = true
-       RETURNING id`)).rows[0].id);
+      `SELECT id FROM checklist_templates WHERE code='lt_vesting_entity' AND scope='lt_loan'`
+    )).rows[0].id);
     const cond = String((await db.query(
       `INSERT INTO checklist_items
          (scope, lt_loan_id, template_id, category, label, audience, status, item_kind, is_required)

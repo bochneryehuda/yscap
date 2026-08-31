@@ -1,0 +1,103 @@
+import React, { useMemo } from 'react';
+import FileContacts from '../components/FileContacts.jsx';
+import { ltApi } from './api.js';
+
+/**
+ * THE LONG-TERM FILE'S CONTACTS DESK — the SHORT-TERM component, not a copy.
+ *
+ * Owner-directed 2026-08-31: *"we added a section, especially for file contacts
+ * where you can enter random file contacts and then the required file contact
+ * comes up as conditions"*, and *"Bring over the entire file contact to just
+ * share our vendor settings that we have on the short term side to be the same,
+ * it should not copy. It should be the same, should be the exact same vendor
+ * setup and use the same information."*
+ *
+ * `FileContacts.jsx` was given an `adapter`/`types` seam in the 2026-08-30
+ * share-the-code pass precisely so this could exist, and then had no long-term
+ * caller — which is why the loan screen had no contacts desk at all and the
+ * orders had nobody to send to. This file is only the seam: no contacts logic
+ * lives here, and the component branches on nothing.
+ *
+ * THE ADAPTER IS THE WHOLE POINT. Long-Term's rows live on `lt_loan_vendors`
+ * pointing at the SAME shared `service_contacts` directory, and its columns are
+ * named for a loan rather than for an application. Mapping them HERE — and not
+ * with a branch inside the component — is what stops one product's vocabulary
+ * leaking into the other's screen.
+ */
+
+/** The long-term vendor kinds, in the order a file works through them. */
+const LT_TYPES = [
+  ['title', 'Title company'],
+  ['hazard_insurance', 'Hazard insurance agent'],
+  ['flood_insurance', 'Flood insurance agent'],
+  ['ny_settlement_agent', 'Settlement agent (New York)'],
+  ['buyers_attorney', 'Buyer’s attorney'],
+  ['our_attorney', 'Our attorney'],
+  ['realtor', 'Realtor'],
+  ['hoa', 'HOA / management company'],
+  ['landlord', 'Landlord / management company'],
+  ['appraisal', 'Appraisal management company'],
+  ['payoff', 'Servicer being paid off'],
+  ['other', 'Other'],
+];
+
+/**
+ * The long-term rows in the shared component's shape.
+ *
+ * `emails`/`phones` are ARRAYS on this side (db/224 put an `emails text[]` beside
+ * the legacy scalar). The component reads the singular, and the FIRST entry is
+ * the one every existing reader of `service_contacts` treats as primary — so
+ * taking `[0]` is the same value, not a lossy guess.
+ */
+function toSharedRow(v) {
+  return {
+    link_id: v.id,
+    contact_id: v.serviceContactId,
+    contact_type: v.kind,
+    custom_type: null,
+    company_name: v.companyName || '',
+    contact_name: v.contactName || '',
+    email: (v.emails || [])[0] || '',
+    phone: (v.phones || [])[0] || '',
+    address: v.address || '',
+    notes: '',
+    // A card removed from the shared directory reads as GONE rather than blank —
+    // "this company is no longer in the directory" is a different instruction
+    // from "nobody is on the file".
+    missing: !!v.missing,
+  };
+}
+
+export default function LtFileContacts({ loanId }) {
+  const adapter = useMemo(() => ({
+    list: () => ltApi.orderVendors(loanId).then((r) => (r.vendors || []).map(toSharedRow)),
+    add: (f) => ltApi.orderVendorCreate(loanId, {
+      kind: f.contactType, customType: f.customType,
+      companyName: f.companyName, contactName: f.contactName,
+      email: f.email, phone: f.phone, address: f.address, notes: f.notes,
+    }),
+    edit: (linkId, f) => ltApi.orderVendorEdit(loanId, linkId, {
+      kind: f.contactType, customType: f.customType,
+      companyName: f.companyName, contactName: f.contactName,
+      email: f.email, phone: f.phone, address: f.address, notes: f.notes,
+    }),
+    remove: (linkId) => ltApi.orderVendorUnlink(loanId, linkId),
+    /* The fifth verb. This component does not draw a type-ahead — the condition
+       forms do, against this same endpoint — but an adapter shape that carries
+       it on one product and omits it on the other is drift on day one. */
+    suggest: (type, q) => ltApi.orderVendorSearch(loanId, type, q).then((r) => r.results || []),
+  }), [loanId]);
+
+  return (
+    <FileContacts
+      appId={loanId}
+      isStaff
+      adapter={adapter}
+      types={LT_TYPES}
+      heading="File contacts"
+      blurb={'Title, insurance, the settlement agent, the association, the landlord and anyone else on this loan. '
+        + 'These are the records the orders are sent to, and they are saved to the same company vendor directory '
+        + 'the short-term side uses — so one company is one card across both.'}
+    />
+  );
+}

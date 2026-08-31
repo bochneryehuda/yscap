@@ -28,6 +28,8 @@ import LtConditionAnswer from './LtConditionAnswer.jsx';
  * Long-Term needs differently is normalized HERE, on the way in and out. */
 import ConditionLine, { ConditionCollapse, ConditionNote } from '../components/ConditionLine.jsx';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
+import LtConditionContacts from './LtConditionContacts.jsx';
+import LtConditionOrder from './LtConditionOrder.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import DropZone from '../components/DropZone.jsx';
 import UploadRows from '../components/UploadRows.jsx';
@@ -93,6 +95,7 @@ import LoudHint from '../components/LoudHint.jsx';
 const INK = '#141B22';
 const MUTED = '#4B585C';
 const LINE = '#E6E1D6';
+const GREEN = '#2F6B4F';
 const AMBER = '#8A6A17';
 const RED = '#8A2D2D';
 
@@ -364,6 +367,23 @@ export default function LtFileConditions({ loanId }) {
     finally { setDlBusy(null); }
   }, [say]);
 
+  /* FILE A DOCUMENT INTO ONE OF THE CONDITION'S SLOTS.
+     The order desk guesses from the filename when a return arrives; this is the
+     human's correction after previewing it. The server refuses a slot the
+     condition does not have, so a wrong pick answers with the reason rather than
+     filing the document somewhere nothing renders. The whole list is reloaded on
+     success because the SLOT BOARD above reads from the same documents. */
+  const setDocSlot = useCallback(async (conditionId, doc, slot) => {
+    setBusy(true);
+    setRowErr((prev) => ({ ...prev, [conditionId]: null }));
+    try {
+      await ltApi.conditionDocSlot(doc.id, slot);
+      await load();
+    } catch (e) {
+      say(conditionId, e.message || 'Could not file that document.');
+    } finally { setBusy(false); }
+  }, [say, load]);
+
   /* THE UPLOAD. The bytes are read here and posted to the /api/lt door, which is
      itself a thin caller of the ONE shared upload service — so a Long-Term
      document lands under exactly the rules a short-term one does. The bar comes
@@ -504,6 +524,7 @@ export default function LtFileConditions({ loanId }) {
                 onReviewDoc={(doc, action) => reviewDoc(c.id, doc, action)}
                 onDownloadDoc={(doc) => downloadDoc(c.id, doc)}
                 onPreview={(doc) => setPreview(doc)}
+                onSetSlot={(doc, slot) => setDocSlot(c.id, doc, slot)}
                 dlBusy={dlBusy}
                 docAsk={docAsk && docAsk.conditionId === c.id ? docAsk : null}
                 onDocAskCancel={() => setDocAsk(null)}
@@ -555,12 +576,17 @@ export default function LtFileConditions({ loanId }) {
 function ConditionRow({
   c, role, loanId, open, onToggle, busy, problem, onChanged, onPatch,
   waiving, onWaiveOpen, onWaiveCancel, onWaive, onRemove,
-  onUpload, onPick, onReviewDoc, onDownloadDoc, onPreview, dlBusy,
+  onUpload, onPick, onReviewDoc, onDownloadDoc, onPreview, onSetSlot, dlBusy,
   docAsk, onDocAskCancel, onDocAskSubmit,
 }) {
   const it = asSharedCondition(c);
   const docs = (c.documents && c.documents.list) || [];
   const done = DONE_STATUSES.has(c.status);
+  /* WHAT KIND OF CONDITION THIS IS decides whether it takes an upload at all.
+     Read off the server's own vocabulary, so the screen and the library can
+     never disagree about what a condition is. */
+  const isForm = c.kind === 'form';
+  const isOrder = c.kind === 'order';
   const [reason, setReason] = useState('');
   const [askText, setAskText] = useState('');
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -569,7 +595,13 @@ function ConditionRow({
   useEffect(() => { setAskText(''); }, [docAsk && docAsk.doc && docAsk.doc.id, docAsk && docAsk.action]);
 
   return (
-    <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, background: '#FFFFFF', overflow: 'hidden' }}>
+    /* NO `overflow:hidden` HERE, EVER. The condition's own "More ▾" menu is a
+       `position:absolute` popup (`.cond-more-menu`) rendered INSIDE this card, so
+       a clip on the card cuts its options off at the card's edge — which is
+       exactly what it did (owner-reported 2026-08-31). The card is a plain white
+       rounded box with no child that paints to its corners, so the clip bought
+       nothing; `styles.css` already records the same trap for `.lt-card`. */
+    <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, background: '#FFFFFF' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px' }}>
         <div style={{ minWidth: 0, flex: 1 }}>
           <ConditionLine it={it} role={role} docs={docs} open={open}
@@ -601,21 +633,62 @@ function ConditionRow({
               door answers `null`), so nothing is added to an ordinary row. */}
           <LtConditionAnswer loanId={loanId} conditionId={c.id} onSaved={onChanged} />
 
+          {/* ── WHAT KIND OF CONDITION THIS ACTUALLY IS ─────────────────────
+              The library has carried `kind` on every condition since it was
+              written — `form` on the contacts, `order` on the six orders — and
+              this renderer READ NONE OF IT, so a contacts form and a title
+              order both drew a file-upload box. Owner-reported 2026-08-31:
+              "The file contacts condition has an upload slot. This is not the
+              intent" and "Title ordered and insurance ordered now have a file
+              upload. This is a different kind of condition."
+
+              Both components SELF-HIDE on the wrong kind, so an ordinary
+              document condition renders exactly as it did. */}
+          <LtConditionContacts loanId={loanId} condition={c} onChanged={onChanged} />
+          <LtConditionOrder loanId={loanId} condition={c} onChanged={onChanged} />
+
+          {/* ── THE SLOTS, AS A BOARD ────────────────────────────────────────
+              Owner-directed 2026-08-31: *"Each document should be linked to a
+              slot within the condition … When the documents are coming back from
+              the order, we can assign each document to each and every slot after
+              previewing it."* A bullet list of names could not say which of them
+              had arrived, so a condition with four documents on it and three
+              slots filled looked exactly like one with nothing filed. */}
           {c.slots && c.slots.length > 0 && (
             <div style={{ marginTop: 10 }}>
               <div style={{ fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase',
                 color: MUTED, fontWeight: 700 }}>What goes here</div>
-              <ul style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 13, color: INK }}>
-                {c.slots.map((sl) => (
-                  <li key={sl.key} style={{ marginTop: 2 }}>
-                    {sl.label}{sl.required === false ? ' (optional)' : ''}
-                  </li>
-                ))}
+              <ul style={{ listStyle: 'none', margin: '4px 0 0', padding: 0, fontSize: 13, color: INK }}>
+                {c.slots.map((sl) => {
+                  const inIt = docs.filter((d) => d.slot_label === sl.label && d.is_current !== false);
+                  return (
+                    <li key={sl.key} style={{ marginTop: 3, display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                      <span style={{ color: inIt.length ? GREEN : MUTED, fontWeight: 700, fontSize: 12 }}>
+                        {inIt.length ? '✓' : '○'}
+                      </span>
+                      <span>{sl.label}{sl.required === false ? ' (optional)' : ''}</span>
+                      <span style={{ color: MUTED, fontSize: 12.5, minWidth: 0, wordBreak: 'break-word' }}>
+                        {inIt.length
+                          ? inIt.map((d) => d.filename).join(', ')
+                          : '— nothing filed here yet'}
+                      </span>
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}
 
-          {/* ── THE DOCUMENTS ──────────────────────────────────────────────── */}
+          {/* ── THE DOCUMENTS ────────────────────────────────────────────────
+              A CONTACTS FORM AND AN ORDER TAKE NO UPLOAD. The contacts answer
+              is a contact record; the order's answer arrives on the matching
+              documents condition, which is where its slots live. An upload box
+              on either is what the owner reported.
+
+              But a document that somehow IS on one is still SHOWN — never
+              hidden. Evidence that exists and is invisible is worse than a box
+              that should not be there. */}
+          {(!isForm && !isOrder) || docs.length > 0 ? (
           <div style={{ marginTop: 12 }}>
             <div style={{ fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase',
               color: MUTED, fontWeight: 700 }}>Documents</div>
@@ -626,7 +699,7 @@ function ConditionRow({
                 percentage from the moment the file is chosen. */}
             <UploadRows target={`condition:${c.id}`} />
 
-            {docs.length === 0 && (
+            {docs.length === 0 && !isForm && !isOrder && (
               <div style={{ fontSize: 13, color: MUTED, marginTop: 4 }}>
                 Nothing uploaded against this condition yet.
               </div>
@@ -639,6 +712,19 @@ function ConditionRow({
                     <span style={{ fontSize: 12, color: MUTED }}> · an older version</span>
                   )}
                 </div>
+                {c.slots && c.slots.length > 0 ? (
+                  <div style={{ marginTop: 4, display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 12, color: MUTED }}>File under</span>
+                    <select className="input" value={doc.slot_label || ''} disabled={busy}
+                      style={{ fontSize: 12.5, padding: '3px 6px', maxWidth: 260 }}
+                      onChange={(e) => onSetSlot(doc, e.target.value || null)}>
+                      <option value="">Not filed yet</option>
+                      {c.slots.map((sl) => (
+                        <option key={sl.key} value={sl.label}>{sl.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
                 <DocActions doc={doc} role={role}
                   onReviewDoc={(d, action) => onReviewDoc(d, action)}
                   onDownloadDoc={onDownloadDoc}
@@ -655,15 +741,18 @@ function ConditionRow({
             {/* DRAG AND DROP, the owner's own words — the same zone the
                 short-term side uses, so a drag out of the Outlook desktop app
                 works here for the same reason it works there. */}
-            <DropZone className="cond-drop" enabled={!busy} onFiles={onUpload}
-              title="Drop a document here, or press Upload."
-              style={{ marginTop: 10, padding: '10px 12px', border: `1px dashed ${LINE}`,
-                borderRadius: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 13, color: MUTED }}>Drop a document here, or</span>
-              <button type="button" className="btn soft small" disabled={busy}
-                onClick={() => onPick(null)}>Upload…</button>
-            </DropZone>
+            {!isForm && !isOrder ? (
+              <DropZone className="cond-drop" enabled={!busy} onFiles={onUpload}
+                title="Drop a document here, or press Upload."
+                style={{ marginTop: 10, padding: '10px 12px', border: `1px dashed ${LINE}`,
+                  borderRadius: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, color: MUTED }}>Drop a document here, or</span>
+                <button type="button" className="btn soft small" disabled={busy}
+                  onClick={() => onPick(null)}>Upload…</button>
+              </DropZone>
+            ) : null}
           </div>
+          ) : null}
 
           {/* ── WHAT HAPPENED TO IT ────────────────────────────────────────── */}
           {c.status === 'waived' && (

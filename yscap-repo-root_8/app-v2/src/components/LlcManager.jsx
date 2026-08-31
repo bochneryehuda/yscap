@@ -76,12 +76,20 @@ function SlotRow({ llc, slot, onPick, onDownload, onPreview, dlBusy, uploading, 
 // the UI stops offering deeper nesting one step earlier.
 const MAX_NESTED_DEPTH = 4;
 
-export default function LlcManager({ llcId, onChanged, compactHeader, staff = false, depth = 0, coBorrower = null }) {
-  // Staff and borrower hit different route namespaces for the SAME entity actions.
-  // This component was hard-wired to the borrower endpoints, so rendering it in a
-  // staff surface (the CRM entity section) 403'd ("borrower only"). The `staff`
-  // prop routes every call to the staff equivalents.
-  const A = staff ? {
+export default function LlcManager({ llcId, onChanged, compactHeader, staff = false, depth = 0, coBorrower = null, adapter = null }) {
+  /* THREE CALLERS, ONE COMPONENT.
+     Staff and borrower hit different route namespaces for the SAME entity
+     actions. This component was hard-wired to the borrower endpoints, so
+     rendering it in a staff surface (the CRM entity section) 403'd ("borrower
+     only"); the `staff` prop routes every call to the staff equivalents.
+
+     `adapter` is the third caller — the Long-Term file, which reaches the SAME
+     entity through `/api/lt/*` (owner-directed 2026-08-31: *"The exact entity
+     section, same exact form information … Don't reinvent, just bring over the
+     same information"*). It is the same seam `FileContacts.jsx` was given for
+     the same reason, and it is OPTIONAL: with none supplied this is byte-for-byte
+     the component both existing callers already render. */
+  const A = adapter || (staff ? {
     get: (id) => api.staffLlc(id),
     update: (id, b) => api.staffUpdateLlc(id, b),
     members: (id, m) => api.staffSaveLlcMembers(id, m),
@@ -93,7 +101,7 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
     members: (id, m) => api.saveLlcMembers(id, m),
     upload: (b) => api.uploadDoc(b),
     download: (id) => api.downloadDoc(id),
-  };
+  });
   const [llc, setLlc] = useState(null);
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
@@ -467,7 +475,12 @@ export default function LlcManager({ llcId, onChanged, compactHeader, staff = fa
                 <span style={{ fontWeight: 600 }}>{m.owner_llc_name || m.full_name}</span>
                 <span className="pill small">owns {m.ownership_pct}% of {llc.llc_name}</span>
               </div>
+              {/* THE ADAPTER TRAVELS DOWN THE CHAIN. Without it a Long-Term
+                  file's layered owner would fall back to the borrower's own
+                  endpoints and answer 403 — the entity would render and every
+                  control on it would fail, which is worse than not rendering it. */}
               <LlcManager llcId={m.owner_llc_id} staff={staff} depth={depth + 1} compactHeader
+                adapter={adapter}
                 onChanged={() => { load(); onChanged && onChanged(); }} />
             </div>
           ))}

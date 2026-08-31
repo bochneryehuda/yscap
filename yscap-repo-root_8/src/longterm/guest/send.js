@@ -367,6 +367,130 @@ async function sendOutreach({ loanId, emails, note, actorId }, client = db) {
 }
 
 /**
+ * THE BORROWER IS TOLD WHEN A DOCUMENT COMES BACK.
+ *
+ * Found by the two-product parity engine (`scripts/test-rtl-lt-parity-pure.js`),
+ * which the owner asked for on 2026-08-31: *"make sure that every single feature
+ * that is available on the short-term side, every single guard, every single way
+ * of operating, is also on the long-term side."* On a short-term file, rejecting
+ * a document — or accepting it and asking for one more — emails the borrower.
+ * On a long-term file the review landed, the condition reopened, and NOBODY WAS
+ * TOLD: the borrower had no way to learn their document had been sent back short
+ * of opening the portal and noticing.
+ *
+ * ── IT REUSES THE OUTSTANDING-CONDITIONS EMAIL, DELIBERATELY ────────────────
+ *
+ * A rejected condition IS outstanding again, so the thing the borrower needs is
+ * the list and a way in — which is exactly the email this module already sends,
+ * with the reviewer's own words on top as the note. A second email design would
+ * be a second thing to keep in step for no gain, and the login-free link, its
+ * expiry, its jail and its wording all come from the one shared module.
+ *
+ * ── THE THROTTLE IS THE SHORT-TERM SIDE'S OWN ──────────────────────────────
+ *
+ * `condition-docs/review.claimVerdictEmail` — an atomic claim keyed on the
+ * CONDITION, so a tool that saves three formats of one answer and has all three
+ * rejected sends ONE email rather than three, and both products claim the same
+ * window the same way.
+ *
+ * ── WHAT IT NEVER DOES ──────────────────────────────────────────────────────
+ *
+ * A plain ACCEPT tells the borrower nothing (owner-directed 2026-07-20:
+ * accepting is an internal step). A STAFF-ONLY condition tells them nothing —
+ * they cannot see it. And it NEVER THROWS: the verdict is already recorded by
+ * the time this runs, so a mail failure must never report a completed review as
+ * an error.
+ */
+async function sendVerdictNotice({ loanId, checklistItemId, filename, action, reason, actorId }, client = db) {
+  const out = { ok: false, sent: false, why: null };
+  try {
+    if (action !== 'reject' && action !== 'request_more') {
+      out.why = 'a plain accept is an internal step — the borrower is not told';
+      return out;
+    }
+
+    /* THE CONDITION HAS TO BE ONE THE BORROWER CAN SEE. Emailing somebody about
+       an internal condition would hand them a link to a list that does not
+       contain it, which reads as a broken email. */
+    let item = null;
+    if (checklistItemId) {
+      const r = await client.query(
+        `SELECT COALESCE(borrower_label, label) AS label, audience
+           FROM checklist_items WHERE id = $1::uuid`, [checklistItemId]);
+      item = r.rows[0] || null;
+    }
+    if (!item || item.audience === 'staff') {
+      out.why = 'that condition is internal — there is nothing for the borrower to do';
+      return out;
+    }
+
+    const loan = await loadLoan(loanId, client);
+    if (!loan) { out.why = 'that loan was not found'; return out; }
+    const blocked = blockers(loan);
+    if (blocked.length) { out.why = blocked[0]; return out; }
+
+    const to = borrowerEmail(loan);
+    if (!to) { out.why = 'this loan has no borrower email address on it'; return out; }
+
+    /* ONE EMAIL PER CONDITION PER WINDOW — the SHARED claim, so a set of
+       exported formats rejected together does not send one email each. Claimed
+       BEFORE the send, and the claim standing in for "already told them" is why
+       it is asked before anything expensive happens. */
+    const claimed = await require('../../lib/condition-docs/review')
+      .claimVerdictEmail(checklistItemId, `lt_doc_${action}_emailed`);
+    if (!claimed) { out.why = 'the borrower was already told about this condition just now'; return out; }
+
+    const outstanding = await outstandingFor(loanId, client);
+    if (!outstanding.ok) { out.why = outstanding.reason || 'PILOT could not read this loan’s conditions'; return out; }
+    if (!outstanding.items.length) {
+      // The reviewer's own move reopens the condition, so this should not
+      // happen — and if it does, a link to an empty list is worse than silence.
+      out.why = 'nothing is outstanding for the borrower on this loan';
+      return out;
+    }
+
+    const data = emailData(loan);
+    const name = String(filename || '').slice(0, 120);
+    const said = String(reason || '').trim().slice(0, 1000);
+    const note = action === 'reject'
+      ? `Your loan team reviewed ${name ? `"${name}"` : 'a document you sent'} for `
+        + `"${item.label}" and sent it back so it can be corrected.`
+        + (said ? `\n\nWhat they need: ${said}` : '')
+      : `Good news — ${name ? `"${name}"` : 'your document'} was accepted. To finish `
+        + `"${item.label}", your loan team needs one more document.`
+        + (said ? `\n\nWhat they still need: ${said}` : '');
+
+    const { token } = await conditionLink.mintLink({
+      ltLoanId: String(loan.id),
+      borrowerId: String(loan.borrower_id),
+      email: to,
+      createdBy: actorId || null,
+    }, client);
+    const built = conditionLink.buildOutstandingEmail({
+      items: outstanding.items, token, data, note,
+    });
+    const email = require('../../lib/email');
+    const r = await email.sendMail({
+      to,
+      subject: built.subject,
+      html: built.html,
+      text: built.text,
+      replyTo: loan.lo_email || undefined,
+      from: loan.lo_name && email.fromWithName ? email.fromWithName(loan.lo_name) : undefined,
+      _ctx: { ltLoanId: String(loan.id), type: `lt_doc_${action}`, audience: 'borrower' },
+    });
+    if (r && r.ok) { out.ok = true; out.sent = true; return out; }
+    out.why = r && r.skipped
+      ? 'email sending is turned off in this environment'
+      : 'the email provider did not accept it';
+    return out;
+  } catch (e) {
+    out.why = String((e && e.message) || e).slice(0, 200);
+    return out;
+  }
+}
+
+/**
  * REVOKE ONE LINK — the email was forwarded, or the deal moved on.
  *
  * SCOPED TO THE LOAN IN THE URL. Without the `lt_loan_id` term this would revoke
@@ -391,6 +515,7 @@ async function revokeLink({ loanId, linkId, actorId }, client = db) {
 
 
 module.exports = {
+  sendVerdictNotice,
   outstandingFor,
   outreachPreview,
   sendOutreach,

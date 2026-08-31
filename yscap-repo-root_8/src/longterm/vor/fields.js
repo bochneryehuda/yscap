@@ -132,24 +132,40 @@ const FIELDS = [
     label: 'From (Name and address of lender)',
     x: 320, y: 598, width: 240, lines: 4, lineHeight: 11, size: 9 },
 
+  /* ── THE SIGNATURE LINE SITS 11pt UNDER ITS LABEL, NOT 18 ────────────────
+     Owner-reported 2026-08-31: *"Look on the middle line where it has the
+     lender's loan number and next to it the date. The CSS is a little off. It's
+     a little too low. It needs to be a little bit higher."*
+
+     MEASURED off the owner's own blank rather than nudged by eye. The four
+     printed labels on this row — "Signature of Lender", "Title", "Date",
+     "Lender's No. (Optional)" — all sit on baseline y=530.4, and the next
+     printed label ("Information to be verified") sits on y=503.4, whose glyph
+     tops reach about 509.9. At the old y=512 a 9pt line's descenders reached
+     ~510.0 — INSIDE the next label — which is what "a little too low" is.
+
+     y=519 centres the answer in that band: ascenders to ~525.5 (5pt clear of
+     the label above) and descenders to ~517.1 (7pt clear of the label below).
+     All FOUR move together: they share one printed rule, and raising only the
+     two the owner named would leave the row visibly crooked. */
   { key: 'lender_signature', part: 'request', who: 'us', item: '3',
     label: 'Signature of Lender',
-    x: 60, y: 512, width: 115, size: 9 },
+    x: 60, y: 519, width: 115, size: 9 },
 
   { key: 'lender_title', part: 'request', who: 'us', item: '4',
     label: 'Title',
-    x: 190, y: 512, width: 150, size: 9 },
+    x: 190, y: 519, width: 150, size: 9 },
 
   { key: 'request_date', part: 'request', who: 'us', item: '5', type: 'date',
     label: 'Date',
-    x: 353, y: 512, width: 95, size: 9 },
+    x: 353, y: 519, width: 95, size: 9 },
 
   /* Item 6 prints "(Optional)" on the form itself, so it is optional HERE too — a
      missing loan number must not be what stops a landlord being asked about a
      tenancy. We do hold one on every long-term file, so in practice it prints. */
   { key: 'loan_number', part: 'request', who: 'us', item: '6', optional: true,
     label: 'Lender’s No. (Optional)',
-    x: 467, y: 512, width: 90, size: 9 },
+    x: 467, y: 519, width: 90, size: 9 },
 
   /* ITEM 7 IS THE ADDRESS THE BORROWER RENTS — NOT THE SUBJECT PROPERTY. On a
      long-term file the subject is an investment property somebody else lives in, so
@@ -344,7 +360,14 @@ function anchorPlacements() {
  * `yTop` rides along on every tab purely so the ONE bottom-up/top-down conversion is
  * visible in what we hand the provider, rather than implied.
  */
-function tabsForLandlord() {
+/**
+ * @param {object} [defaults]  starting values for the landlord's OWN fields,
+ *   keyed by field key. A tab with one arrives pre-filled and STAYS EDITABLE —
+ *   the landlord types over it if their answer differs. Owner-directed
+ *   2026-08-31 for the phone number: asking a landlord to re-type the number we
+ *   just used to reach them is what makes a form feel like a form.
+ */
+function tabsForLandlord(defaults = {}) {
   const out = { sign: [], date: [], text: [], radio: [] };
   for (const f of landlordFields()) {
     if (f.tab === 'radio') {
@@ -358,6 +381,7 @@ function tabsForLandlord() {
     if (!anchor) continue;
     if (f.tab === 'sign') { out.sign.push(anchor); continue; }
     if (f.tab === 'dateSigned') { out.date.push(anchor); continue; }
+    const suggested = defaults && defaults[f.key] != null ? String(defaults[f.key]).trim() : '';
     out.text.push({
       anchor,
       tabLabel: f.key,                 // what the answer comes BACK keyed by
@@ -365,6 +389,9 @@ function tabsForLandlord() {
       width: f.width || 180,
       height: f.height || 14,
       yTop: docusignY(f.y),
+      // Absent unless we actually hold one, so every other tab is byte-for-byte
+      // the empty box it has always been.
+      ...(suggested ? { value: suggested } : {}),
     });
   }
   return out;

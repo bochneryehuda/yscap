@@ -546,44 +546,372 @@ const uploadEntitySlotDoc = async (req, res) => {
     });
   }
 
+  return fileEntityDocument(req, res, {
+    llcId: prefill.llcId,
+    borrowerId: scoped.loan.borrower_id || null,
+    loanId: scoped.loan.id,
+    slotItemId: String(req.params.slotItemId),
+  });
+};
+
+/**
+ * FILE A DOCUMENT ONTO ONE OF A COMPANY'S SLOTS — the body BOTH entity upload
+ * doors share.
+ *
+ * The two doors differ only in HOW they establish which company: one resolves
+ * the loan's own vesting company from the profile, the other resolves any
+ * company in that loan's ownership chain (`scopedEntity`). By the time either
+ * of them gets here the company is settled, so everything that decides what
+ * happens to the BYTES — the verified lock, the intake contract, the slot coming
+ * from the path, the owner columns — is written once.
+ *
+ * A function DECLARATION on purpose: it is hoisted, so it can sit beside the
+ * doors that use it without the file having to be read in dependency order.
+ */
+async function fileEntityDocument(req, res, { llcId, borrowerId, loanId, slotItemId }) {
+  /* THE VERIFIED LOCK, and it is the SHORT-TERM one (2026-08-31). A verified
+     company's papers have been read and accepted, so replacing one behind the
+     verification would leave a company marked "checked" against documents nobody
+     checked — and the entity is SHARED, so a long-term upload that walked past
+     the lock would undermine a short-term verification of the same company.
+     Revoking is the recorded way through, and it is one click. */
+  const lock = await llcEdit.documentLock(llcId, db);
+  if (!lock.ok) return res.status(lock.status || 400).json({ error: lock.error });
+
   const body = Object.assign({}, req.body || {});
   try { condUpload.assertUploadIntake(body); }
   catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   // THE SLOT COMES FROM THE PATH, never the body — same rule as the condition id
-  // on the condition door.
-  body.checklistItemId = String(req.params.slotItemId);
+  // on the condition door. The shared door then scopes it to this company
+  // (`WHERE id=$1 AND llc_id=$2`), so a slot belonging to another company files
+  // nothing rather than reaching a row a later check is trusted to refuse.
+  body.checklistItemId = slotItemId;
 
   try {
     const landed = await condUpload.uploadConditionDocument(req, {
-      owner: ownerOf('lt_loan', scoped.loan.id),
+      owner: ownerOf('lt_loan', loanId),
       body,
       actorId: staffId(req),
       /* THE COMPANY, NOT THE LOAN. The shared door reads this and files the
          document against `llc_id` with BOTH file-owner columns null — the shape
          a short-term borrower upload has always produced. That is what makes
          this ONE document on the profile rather than a copy of one. */
-      llcId: prefill.llcId,
+      llcId,
       /* The entity documents ARE the borrower's, and the short-term entity
          screens select on `documents.borrower_id`, so unlike a long-term
          CONDITION document (which must never appear on the RTL borrower's
          screen) this one is stamped: it is a profile document by construction,
          and it is exactly what the next loan is meant to find. */
-      borrowerId: scoped.loan.borrower_id || null,
+      borrowerId: borrowerId || null,
       hooks: {},
       q: db,
     });
+    /* THE ENTITY'S OWN CONDITIONS, on BOTH products, after the write. A document
+       landing on a slot can complete an entity, and each product syncs its own
+       condition (the short-term one joins `applications`, so it can neither see
+       nor touch a long-term file, and the long-term one is this router's). Both
+       are best-effort: the document is already filed, and a condition that did
+       not re-sync is fixed by the next read, while a throw here would report a
+       successful upload as a failure. */
+    try { await llcLib.syncLlcConditions(llcId); } catch (_) { /* best-effort */ }
+    await syncLtEntityCondition(llcId);
+    /* NO SHAREPOINT KICK HERE, deliberately. The mirror's own drain finds this
+       document on its next pass exactly as it finds every other Long-Term one
+       (this router's condition-document door does not kick either), and a kick
+       is only a latency shortcut — it would buy seconds at the price of a
+       crossing into the short-term mirror that nothing else on this side makes. */
     return res.status(201).json({
       ok: true,
       documentId: landed.documentId,
       deduped: !!landed.deduped,
-      llcId: prefill.llcId,
+      llcId,
     });
   } catch (e) {
     if (e && e.status) return res.status(e.status).json({ error: e.message });
     console.error('[lt] entity slot upload failed:', (e && e.message) || e);
     return res.status(500).json({ error: 'That document could not be filed just now.' });
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE ENTITY SECTION — the SAME one, reached from a Long-Term file.
+
+   Owner-directed 2026-08-31: *"I think you're missing the entire entity section
+   that we were officially needing to bring in from the RTL side. The logic
+   should work the same: the exact entity section, same exact form information to
+   type in an entity section. The exact verification workflow. The entity section
+   should be directly linked to the profile. The exact document slots and
+   bi-directional … Bring in the entire logic, just giving you authorization to
+   share the code. Don't reinvent."*
+
+   NOT ONE RULE IS RE-STATED HERE. Every one of these doors is a scope check and
+   a call into `lib/llc-edit.js` — the module the short-term routes now call too,
+   so "may this be edited", "does the ownership add up", "who may verify", "what
+   does a revoke do to the entities underneath it" have ONE answer for both
+   products. What is passed in is what genuinely belongs to this side: which
+   entity this loan may reach, and which condition to re-sync afterwards.
+
+   ── WHICH ENTITY A LOAN MAY REACH ──────────────────────────────────────────
+   The loan's own vesting company, and the companies that OWN it. Layered
+   entities verify bottom-up, so an owner has to be workable from the file that
+   depends on it — and nothing else on the borrower's profile is reachable from
+   here at all. A caller naming another company gets the same answer as one
+   naming a company that does not exist.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const llcLib = require('../../lib/llc');
+const llcEdit = require('../../lib/llc-edit');
+
+/**
+ * Resolve `:llcId` against the loan, or answer the caller and return null.
+ *
+ * FAILS CLOSED on an unreadable profile: "we could not read it" is answered as a
+ * 503 a person can retry, never as "that is not your company".
+ */
+async function scopedEntity(req, res) {
+  const scoped = await loadScopedLoan(req, res, 'lt-entity');
+  if (!scoped) return null;
+  const llcId = String(req.params.llcId || '');
+  if (!UUID_RE.test(llcId)) {
+    res.status(404).json({ error: 'That company is not on this loan.' });
+    return null;
+  }
+  return entityReachable(req, res, scoped, llcId);
+}
+
+/**
+ * Is `llcId` a company THIS LOAN may reach, given the loan is already authorized?
+ *
+ * Split out of `scopedEntity` because the DOCUMENT door derives the company from
+ * the document rather than from the path, and both must answer that question the
+ * same way — a second copy is how one door ends up reaching a company the other
+ * refuses.
+ */
+async function entityReachable(req, res, scoped, llcId) {
+  let prefill = null;
+  try {
+    prefill = await entityPrefill.forEntity(scoped.loan.borrower_id, scoped.loan.vesting_entity_name, db);
+  } catch (_) { prefill = null; }
+  if (!prefill || prefill.unreadable) {
+    res.status(503).json({ error: 'PILOT could not read the borrower’s profile just now. Try again in a moment.' });
+    return null;
+  }
+  if (!prefill.found || !prefill.llcId) {
+    res.status(409).json({
+      error: 'This company is not on the borrower’s profile yet. Save it to the profile first.',
+    });
+    return null;
+  }
+
+  if (String(prefill.llcId) !== llcId) {
+    // An OWNER in the chain is reachable; anything else is not.
+    let ancestors = [];
+    try { ancestors = await llcLib.getAncestorEntityIds(prefill.llcId); } catch (_) { ancestors = null; }
+    if (!ancestors) {
+      res.status(503).json({ error: 'PILOT could not read the ownership chain just now. Try again in a moment.' });
+      return null;
+    }
+    if (!ancestors.map(String).includes(llcId)) {
+      res.status(404).json({ error: 'That company is not on this loan.' });
+      return null;
+    }
+  }
+  return { scoped, llcId, vestingLlcId: String(prefill.llcId) };
+}
+
+/* THE LONG-TERM CONDITION THIS ENTITY ANSWERS. `llc.syncLlcConditions` is the
+   SHORT-TERM one — it joins `applications` and `rtl_p1_llc` — so it can neither
+   see nor touch a long-term file, and calling it here would silently do nothing.
+   Each product syncs its OWN condition; the ENTITY is what is shared. */
+async function syncLtEntityCondition(llcId) {
+  try {
+    const bundle = await llcLib.getLlcBundle(llcId);
+    if (!bundle) return;
+    const verified = !!bundle.is_verified;
+    /* EVERY long-term file that vests in this company by NAME. The loan carries
+       `vesting_entity_name` rather than an entity id, which is the same join the
+       prefill read uses, so the two cannot disagree about which files a company
+       is on. */
+    /* EVERY PARAMETER BOUND HERE IS REFERENCED, and that is not tidiness:
+       Postgres REFUSES a statement carrying a parameter it cannot type, so an
+       unused `$1` makes the whole UPDATE throw — and `llc-edit` runs this as a
+       best-effort hook, which SWALLOWS the error. The first cut of this bound
+       the entity id and never used it (the match is by NAME, deliberately), so
+       verifying a company from a long-term file silently moved no condition at
+       all. Caught by the suite before it shipped; the same class this repo has
+       recorded once already on the borrower-view scope. */
+    await db.query(
+      `UPDATE checklist_items ci
+          SET status = CASE WHEN $1 THEN 'satisfied' ELSE 'outstanding' END,
+              signed_off_at = CASE WHEN $1 THEN COALESCE(ci.signed_off_at, now()) ELSE NULL END,
+              signed_off_by = CASE WHEN $1 THEN ci.signed_off_by ELSE NULL END,
+              notes = CASE WHEN ci.notes IS NULL OR ci.notes LIKE '[auto]%'
+                           THEN $2 ELSE ci.notes END,
+              updated_at = now()
+         FROM checklist_templates t, lt_loans l
+        WHERE t.id = ci.template_id AND t.code = 'lt_vesting_entity'
+          AND l.id = ci.lt_loan_id
+          AND lower(btrim(COALESCE(l.vesting_entity_name,''))) = lower(btrim($3))
+          AND ci.status IS DISTINCT FROM CASE WHEN $1 THEN 'satisfied' ELSE 'outstanding' END`,
+      [verified,
+        verified
+          ? `[auto] "${bundle.llc_name}" is verified on the borrower’s profile — condition satisfied.`
+          : `[auto] Verification of "${bundle.llc_name}" was revoked, so this condition is open again.`,
+        bundle.llc_name || ''],
+    );
+  } catch (e) {
+    // Best-effort by design: the entity is already written, and a condition that
+    // did not re-sync is fixed by the next read, while a throw here would report
+    // a successful verification as a failure.
+    console.warn('[lt] entity condition sync failed:', (e && e.message) || e);
+  }
+}
+
+// GET …/entities/:llcId — the whole bundle the shared entity section renders.
+router.get('/loans/:loanId/entities/:llcId', async (req, res) => {
+  const found = await scopedEntity(req, res);
+  if (!found) return;
+  try {
+    const bundle = await llcLib.getLlcBundle(found.llcId);
+    if (!bundle) return res.status(404).json({ error: 'That company is not on this loan.' });
+    res.json({ ...bundle, read_only: false, vesting: String(found.llcId) === found.vestingLlcId });
+  } catch (e) {
+    console.error('[lt] entity read failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not read that company just now.' });
+  }
+});
+
+// PATCH …/entities/:llcId — its own details.
+router.patch('/loans/:loanId/entities/:llcId', async (req, res) => {
+  const found = await scopedEntity(req, res);
+  if (!found) return;
+  const out = await llcEdit.updateDetails(found.llcId, req.body || {}, { actorId: staffId(req) });
+  if (!out.ok) return res.status(out.status || 400).json({ error: out.error });
+  res.json({ ok: true });
+});
+
+// PUT …/entities/:llcId/members — who owns it, and how much.
+router.put('/loans/:loanId/entities/:llcId/members', async (req, res) => {
+  const found = await scopedEntity(req, res);
+  if (!found) return;
+  const out = await llcEdit.saveMembers(found.llcId, (req.body || {}).members || [], {
+    // The long-term desk is STAFF, so it sets the signature title and, on a
+    // corporation, the shares and certificate number — exactly as the
+    // short-term staff door does.
+    allowOwnerDetails: true,
+    syncConditions: (id) => syncLtEntityCondition(id),
+  });
+  if (!out.ok) return res.status(out.status || 400).json({ error: out.error });
+  res.json({ ok: true });
+});
+
+// POST …/entities/:llcId/verify — the SAME workflow, with this side's condition.
+router.post('/loans/:loanId/entities/:llcId/verify', async (req, res) => {
+  const found = await scopedEntity(req, res);
+  if (!found) return;
+  const out = await llcEdit.setVerified(found.llcId, req.body || {}, {
+    actorId: staffId(req),
+    /* VERIFYING IS A SIGN-OFF and the rule that it is a processor's call is the
+       shared module's. This side's answer to "may this person sign off" is the
+       one its own condition doors use: working a long-term file is any staff
+       member's job (this router's header, rule 4). */
+    maySignOff: true,
+    syncConditions: (id) => syncLtEntityCondition(id),
+  });
+  if (!out.ok) {
+    const body = { error: out.error };
+    if (out.missing) body.missing = out.missing;
+    return res.status(out.status || 400).json(body);
+  }
+  res.json(out);
+});
+
+/* ── THE COMPANY'S DOCUMENT SLOTS, FOR EVERY COMPANY THIS LOAN REACHES ────────
+ *
+ * The pair above is the VESTING company's, resolved from the loan's own name.
+ * These are the same doors for any company `scopedEntity` admits — which is the
+ * vesting company AND the companies that own it, because a layered entity
+ * verifies bottom-up and its owner's operating agreement has to be fileable from
+ * the file that depends on it. Anything else on the borrower's profile is not
+ * reachable from here at all.
+ *
+ * TWO TRANSPORTS, ONE HANDLER, for the reason the condition door has two: the
+ * JSON door carries the file as base64 in the body and is capped at 25 MB, while
+ * the streamed door writes to storage as the bytes arrive and is bounded by the
+ * 1 GB document ceiling. An operating agreement is a multi-page scan and is
+ * routinely the largest thing anybody files on a loan.
+ * ──────────────────────────────────────────────────────────────────────────── */
+const uploadEntityDoc = async (req, res) => {
+  const found = await scopedEntity(req, res);
+  if (!found) return;
+  if (!UUID_RE.test(String(req.params.slotItemId || ''))) {
+    return res.status(404).json({ error: 'That document slot is not on this company.' });
+  }
+  return fileEntityDocument(req, res, {
+    llcId: found.llcId,
+    borrowerId: found.scoped.loan.borrower_id || null,
+    loanId: found.scoped.loan.id,
+    slotItemId: String(req.params.slotItemId),
+  });
 };
+router.post('/loans/:loanId/entities/:llcId/slots/:slotItemId/documents', uploadEntityDoc);
+router.post('/loans/:loanId/entities/:llcId/slots/:slotItemId/documents/binary',
+  require('../../lib/upload-stream').binaryIntake, uploadEntityDoc);
+
+/**
+ * GET …/entities/documents/:documentId/file — open one of a company's documents,
+ * or preview it with `?inline=1`.
+ *
+ * IT CANNOT GO THROUGH `scopedDocument`. That door's first statement is the
+ * product boundary — `lt_loan_id IS NOT NULL` — and an ENTITY document has NO
+ * file owner at all (both owner columns null, `llc_id` carries it), which is
+ * exactly what makes it follow the company to every loan it vests. So the scope
+ * is the COMPANY, and the company is DERIVED FROM THE DOCUMENT rather than taken
+ * from the path: the read below returns nothing for a document that belongs to a
+ * loan file on either product, and the company it does return is then put
+ * through the same `entityReachable` the path-scoped doors use. A document on
+ * another borrower's company is refused for the same reason and in the same
+ * sentence as one on a company that does not exist.
+ *
+ * NOT in the path deliberately — the shared entity section renders a whole
+ * ownership CHAIN from one adapter, and a nested owner's document must download
+ * through the same call as the vesting company's without every level having to
+ * carry its own copy of the id.
+ *
+ * The BYTES are the one implementation every download in this codebase uses, so
+ * the content-type scrub and the narrow inline allowlist are not restated here.
+ */
+router.get('/loans/:loanId/entities/documents/:documentId/file', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-entity-doc');
+  if (!scoped) return;
+  const documentId = String(req.params.documentId || '');
+  if (!UUID_RE.test(documentId)) {
+    return res.status(404).json({ error: 'That document is not on this company.' });
+  }
+  let row;
+  try {
+    ({ rows: [row] } = await db.query(
+      `SELECT llc_id FROM documents
+        WHERE id = $1::uuid AND llc_id IS NOT NULL
+          AND application_id IS NULL AND lt_loan_id IS NULL`,
+      [documentId],
+    ));
+  } catch (e) {
+    console.error('[lt] entity document lookup failed:', (e && e.message) || e);
+    return res.status(503).json({ error: 'Could not read that document just now. Try again in a moment.' });
+  }
+  if (!row) return res.status(404).json({ error: 'That document is not on this company.' });
+
+  const found = await entityReachable(req, res, scoped, String(row.llc_id));
+  if (!found) return;
+  try {
+    const doc = await condServe.entityDocumentForServe(db, documentId, found.llcId);
+    if (!doc) return res.status(404).json({ error: 'That document is not on this company.' });
+    return condServe.serveConditionDocument(res, doc, { inline: req.query.inline === '1' });
+  } catch (e) {
+    console.error('[lt] entity document serve failed:', (e && e.message) || e);
+    return res.status(503).json({ error: 'Could not open that document just now. Try again in a moment.' });
+  }
+});
 
 router.post('/loans/:loanId/vesting-entity/slots/:slotItemId/documents', uploadEntitySlotDoc);
 router.post('/loans/:loanId/vesting-entity/slots/:slotItemId/documents/binary',
@@ -614,10 +942,102 @@ router.post('/documents/:documentId/review', async (req, res) => {
     const out = await condReview.applyVerdict(db, {
       doc, verdict, actorId: staffId(req), hooks: {},
     });
-    return res.json({ ok: true, ...out });
+
+    /* AND THE BORROWER IS TOLD — the parity engine's own finding (2026-08-31).
+       Sending a document back reopened the condition and NOBODY WAS TOLD, so the
+       borrower had no way to learn short of opening the portal and noticing,
+       while the same act on a short-term file has emailed them since it shipped.
+
+       The notice decides for itself whether there is anything to say (a plain
+       accept is an internal step; an internal condition is not the borrower's),
+       throttles on the SHARED claim so a set of exported formats rejected
+       together sends one email, and NEVER THROWS — the verdict is already
+       recorded, so a mail failure must never report a completed review as an
+       error. Its answer rides on the response so the desk can see what happened
+       rather than having to guess. */
+    const told = await guestSend.sendVerdictNotice({
+      loanId: found.scoped.loan.id,
+      checklistItemId: doc.checklist_item_id,
+      filename: doc.filename,
+      action: verdict.status === 'rejected' ? 'reject'
+        : (verdict.requestMore ? 'request_more' : 'accept'),
+      reason: verdict.status === 'rejected' ? (req.body || {}).reason : verdict.moreNote,
+      actorId: staffId(req),
+    }, db);
+    return res.json({ ok: true, ...out, borrowerTold: told.sent === true, borrowerWhy: told.why });
   } catch (e) {
     console.error('[lt] condition document review failed:', (e && e.message) || e);
     return res.status(500).json({ error: 'Could not record that decision just now.' });
+  }
+});
+
+/**
+ * PUT …/documents/:documentId/slot — file a returned document into its slot.
+ *
+ * Owner-directed 2026-08-31: *"Each document should be linked to a slot within
+ * the condition … When the documents are coming back from the order, we can
+ * assign each document to each and every slot after previewing it."*
+ *
+ * The order desk already GUESSES on arrival (`orders/kinds.js slotMap` reads the
+ * filename), which is right for the common case and cannot be right for all of
+ * them — a title company that names three attachments "scan001.pdf" defeats any
+ * rule there will ever be. This is the human's correction, and until it existed
+ * `slot_label` was written ONCE at upload and could never be changed.
+ *
+ * THE SLOT MUST BE ONE THE CONDITION ACTUALLY HAS. A free-typed label files a
+ * document into a slot nothing renders — it is then invisible on the screen, and
+ * the condition reads as missing a document that is sitting right there. So the
+ * label is matched against the condition's own `slots`, and anything else is a
+ * refusal rather than a silent write.
+ *
+ * `null` UNFILES it, deliberately: a document put in the wrong slot has to be
+ * takeable back out, and forcing somebody to pick a different wrong slot to undo
+ * a mistake is how wrong data becomes permanent.
+ */
+router.put('/documents/:documentId/slot', async (req, res) => {
+  const found = await scopedDocument(req, res);
+  if (!found) return;
+  const raw = (req.body || {}).slot;
+  const wants = raw == null || raw === '' ? null : String(raw).trim();
+
+  try {
+    // The document's own condition, and that condition's slots. Read together so
+    // the check is against the slot list of the condition the document is
+    // actually on — not the one the caller says it is on.
+    const { rows } = await db.query(
+      `SELECT d.id, d.checklist_item_id, COALESCE(t.slots, ci.slots, '[]'::jsonb) AS slots
+         FROM documents d
+         JOIN checklist_items ci ON ci.id = d.checklist_item_id
+         LEFT JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE d.id = $1::uuid`,
+      [found.documentId]);
+    const row = rows[0];
+    if (!row) return res.status(404).json({ error: 'That document is not on this file.' });
+    if (!row.checklist_item_id) {
+      return res.status(409).json({ error: 'That document is not on a condition, so it has no slot to go in.' });
+    }
+
+    const slots = Array.isArray(row.slots) ? row.slots : [];
+    if (wants !== null) {
+      const hit = slots.find((sl) => String(sl.label) === wants || String(sl.key) === wants);
+      if (!hit) {
+        return res.status(400).json({
+          error: 'That is not one of this condition’s slots.',
+          slots: slots.map((sl) => sl.label),
+        });
+      }
+      // Stored as the LABEL, because that is what every existing reader of
+      // `slot_label` compares against (lib/order-slots.js matches on an exact
+      // label) and what the screen prints.
+      await db.query(`UPDATE documents SET slot_label = $2 WHERE id = $1::uuid`,
+        [found.documentId, String(hit.label)]);
+      return res.json({ ok: true, slot: String(hit.label) });
+    }
+    await db.query(`UPDATE documents SET slot_label = NULL WHERE id = $1::uuid`, [found.documentId]);
+    return res.json({ ok: true, slot: null });
+  } catch (e) {
+    console.error('[lt] condition document slot write failed:', (e && e.message) || e);
+    return res.status(500).json({ error: 'Could not file that document just now.' });
   }
 });
 

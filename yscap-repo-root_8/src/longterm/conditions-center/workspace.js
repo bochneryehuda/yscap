@@ -126,6 +126,36 @@ async function vestingFor(loanId, client) {
   }
 }
 
+/**
+ * WHAT KIND OF DEAL IS THIS? — for the ways that only apply to one.
+ *
+ * READ THROUGH THE FIELD REGISTRY, never a fresh `/refi/` here. "Is this a
+ * refinance" is already answered in ONE place for this product — the registry's
+ * `is_refinance` field, which is what the condition RULES are written against,
+ * and it is the rule on `lt_subject_mortgage_statement` that decides whether the
+ * subject-property mortgage condition is on the file at all. A second reading
+ * could offer a way to answer a condition that is not there.
+ *
+ * UNREADABLE IS NOT A PURCHASE. `null` travels as null and `answers.wayApplies`
+ * fails closed on it, so a file whose purpose has not arrived yet is simply not
+ * offered the refinance-only way — it appears the moment the purpose does.
+ */
+async function dealFor(loanId, client) {
+  try {
+    const { rows } = await client.query(
+      `SELECT loan_purpose FROM lt_loans WHERE id = $1::uuid`,
+      [String(loanId)],
+    );
+    if (!rows.length) return { isRefinance: null };
+    const registry = require('./field-registry');
+    const field = registry.fieldMap().is_refinance;
+    const isRefinance = field ? field.read({ loan: rows[0] }) : null;
+    return { isRefinance: isRefinance === true ? true : (isRefinance === false ? false : null) };
+  } catch (_) {
+    return { isRefinance: null };
+  }
+}
+
 /** Which line keys already carry an accepted document. */
 async function documentsByLine(conditionId, client) {
   try {
@@ -215,16 +245,25 @@ async function forCondition(loanId, conditionId, opts = {}) {
   if (!plan) return null;
 
   // ── The subject property's mortgage: one choice ───────────────────────────
+  // WHICH WAYS THIS DEAL IS OFFERED. `answers.waysFor` is the one filter, read
+  // by the write door too, so the screen can never show a way the door refuses.
+  const deal = await dealFor(loanId, client);
+  const shapeWay = (w) => ({
+    key: w.key, label: w.label, why: w.why || null,
+    needsDocument: !!w.needsDocument,
+    fields: (w.fields || []).concat(w.conditionalFields || []),
+  });
+
   if (plan.mode === 'choice') {
     return {
       code,
       shape: 'choice',
-      ways: plan.ways.map((w) => ({
-        key: w.key, label: w.label, why: w.why || null,
-        needsDocument: !!w.needsDocument,
-        fields: (w.fields || []).concat(w.conditionalFields || []),
-      })),
+      ways: answers.waysFor(condition, deal).map(shapeWay),
       answer: { way: recorded.way || null, values: recorded.values || {} },
+      // THE MARK. When this answer was filled in from the credit report the
+      // screen says so — including that the loan number is only the last four
+      // digits, which is all a credit report carries.
+      sourceNote: answers.sourceNote(recorded),
     };
   }
 
@@ -237,11 +276,7 @@ async function forCondition(loanId, conditionId, opts = {}) {
   return {
     code,
     shape: 'per_line',
-    ways: plan.ways.map((w) => ({
-      key: w.key, label: w.label, why: w.why || null,
-      needsDocument: !!w.needsDocument,
-      fields: (w.fields || []).concat(w.conditionalFields || []),
-    })),
+    ways: answers.waysFor(condition, deal).map(shapeWay),
     lines: liabilities.rows.map((l) => ({
       ...l,
       // A person's answer always wins over the proposal — including a person
@@ -259,5 +294,5 @@ async function forCondition(loanId, conditionId, opts = {}) {
 
 module.exports = {
   forCondition,
-  _internals: { proposeMortgage, lineKey, lineLabel, liabilitiesFor, vestingFor, documentsByLine },
+  _internals: { proposeMortgage, lineKey, lineLabel, liabilitiesFor, vestingFor, documentsByLine, dealFor },
 };
