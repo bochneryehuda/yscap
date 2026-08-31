@@ -135,10 +135,20 @@ const check = (cond, msg) => {
     for (const c of lib.library()) {
       for (const ct of ((c.config || {}).contactTypes) || []) collected.set(ct.key, c.code);
     }
+    /* AND THE FILE CONTACTS DESK, which is the other place a person adds one —
+       and since db/659 it is where most of them live. Owner-directed 2026-08-31,
+       the pre-submittal CONDITION asks for the two the file cannot be submitted
+       without and every other contact is a slot on the desk, greyed when the deal
+       does not want it. The question this check asks did not move: can the person
+       working the file add the contact this order has to be addressed to? A kind
+       that appears in NEITHER still fails, which is the defect that started this. */
+    for (const t of lib.FILE_CONTACT_TYPES) {
+      if (!collected.has(t.key)) collected.set(t.key, 'the File contacts desk');
+    }
     for (const k of kinds.ORDER_KIND_KEYS) {
       const vk = kinds.vendorKindFor(k);
       check(collected.has(vk),
-        `the ${k} order's ${vk} contact is collected on a condition (${collected.get(vk) || 'NOTHING COLLECTS IT'})`);
+        `the ${k} order's ${vk} contact can be added where the file is worked (${collected.get(vk) || 'NOTHING COLLECTS IT'})`);
     }
 
     console.log('\nB. EVERY REQUIRED SLOT HAS SOMETHING THAT FILES INTO IT');

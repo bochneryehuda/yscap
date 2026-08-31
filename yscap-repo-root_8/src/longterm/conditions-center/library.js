@@ -60,6 +60,10 @@ const registry = require('./field-registry');
 // through it, so a bucket cannot be filed under one heading and shown under
 // another (db/653 states the whole decision and why it is a MAP, not a widen).
 const vocab = require('./vocabulary');
+// The vendor VOCABULARY — what each contact is called, and the word a card is
+// filed under in the shared directory. PURE, no requires of its own, so this is
+// not a cycle. See FILE_CONTACT_TYPES below.
+const orderKinds = require('../orders/kinds');
 
 const B = {
   SUBMISSION: 'prior_to_submission',
@@ -77,6 +81,70 @@ const when = (field, operator, value) => ({
 
 /** The same, for a condition that applies when ANY one of several rows holds. */
 const whenAny = (rows) => ({ combinator: 'or', rules: rows });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WHO CAN BE ON A LONG-TERM FILE — THE ONE LIST
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * EVERY CONTACT A LONG-TERM FILE CAN CARRY, what each is called, and the ONE fact
+ * that decides whether it belongs on THIS file.
+ *
+ * ── WHY THIS IS ONE LIST AND NOT THREE ──────────────────────────────────────
+ *
+ * These names were written out three times: in the pre-submittal condition's
+ * `contactTypes`, in `orders/kinds.js VENDOR_KINDS`, and again as a flat array in
+ * the File contacts screen. Nothing could see the other two, so a company was
+ * "Settlement agent" on one and "Settlement agent (New York)" on another, and the
+ * screen offered a landlord row the condition had never heard of. The condition
+ * now DERIVES its two rows from here, the screen reads this list from the server,
+ * and `test-lt-orders-pure.js` holds the orders registry to it.
+ *
+ * ── `whenField` IS THE SAME MACHINERY THE CONDITIONS USE ────────────────────
+ *
+ * The rule engine cannot express a per-ROW condition, so `read.contactTypesFor`
+ * answers it from the same field a rule would — and it answers THREE ways, which
+ * is the point: yes, no, and *we cannot tell yet*. Owner-directed 2026-08-31,
+ * asked what an unread file should show: *"Show it greyed, saying we can't tell
+ * yet."* A row that does not apply is KEPT AND MARKED, never dropped — *"The New
+ * York Settlement Agent Order should be grayed out. And collapsed. Be visible
+ * that doesn't belong for this file."*
+ *
+ * `preSubmission` marks the two the file genuinely cannot be submitted without.
+ * Everything else is a slot on the desk, offered when the deal calls for it.
+ *
+ * THE LABEL IS NOT WRITTEN HERE — it is taken from `orders/kinds.js VENDOR_KINDS`,
+ * which is the word already written onto the shared directory card
+ * (`service_contacts.custom_type`) when one is created. So this file decides WHICH
+ * contacts a long-term file can carry and WHEN each is asked for, and that file
+ * decides what each is CALLED, and neither can drift from the other — which they
+ * had: this list first said "HOA / management company" while a card created from
+ * it was filed as "HOA management company", so the same company read two ways on
+ * two screens. A key with no entry there yields `undefined`, which `verify()`
+ * refuses at load, so a typo cannot ship as a blank pill.
+ */
+const FILE_CONTACT_TYPES = Object.freeze([
+  { key: 'title', required: true, preSubmission: true },
+  { key: 'hazard_insurance', required: true, preSubmission: true },
+  // Read from Encompass field 541 or ticked by hand — see src/longterm/flood-zone.js.
+  { key: 'flood_insurance', required: false, whenField: 'in_flood_zone' },
+  // New York closes through a settlement agent rather than the title company.
+  { key: 'ny_settlement_agent', required: false, whenField: 'is_new_york' },
+  // Owner-directed 2026-08-31: *"We should also have the HOA contact. That should
+  // be grayed out, and it should only be available on a condo."*
+  { key: 'hoa', required: false, whenField: 'is_condo' },
+  // …*"We should have the landlord contact information if the person is renting
+  // his primary residence, and if not, it should also be grayed out."* It is the
+  // contact the verification of rent is sent to, so it is a real slot rather than
+  // a note somebody types.
+  { key: 'landlord', required: false, whenField: 'borrower_rents' },
+  // Whoever holds the loan being paid off. Only a refinance has one.
+  { key: 'payoff', required: false, whenField: 'is_refinance' },
+  // The four that can be on any deal and are nobody's requirement.
+  { key: 'buyers_attorney', required: false },
+  { key: 'our_attorney', required: false },
+  { key: 'realtor', required: false },
+  { key: 'appraisal', required: false },
+].map((t) => Object.freeze({ ...t, label: orderKinds.VENDOR_KINDS[t.key] })));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PRIOR TO SUBMISSION — everything the file needs before it goes to underwriting.
@@ -214,28 +282,38 @@ const PRIOR_TO_SUBMISSION = [
     code: 'lt_file_contacts',
     bucket: B.SUBMISSION,
     label: 'File contacts',
-    hint: 'Who is on this closing: title, hazard insurance, flood insurance, the buyer’s attorney, '
-      + 'the realtor, our attorney, and — in New York — the settlement agent. Picked from the shared '
-      + 'vendor directory rather than typed, so the same company is the same record on every file.',
+    hint: 'The two the file cannot be submitted without: the title company and the hazard insurance '
+      + 'agent. Everyone else on the closing — the attorneys, the realtor, the settlement agent, the '
+      + 'HOA, the landlord — lives in the File contacts section rather than being asked for here. '
+      + 'Picked from the shared vendor directory rather than typed, so the same company is the same '
+      + 'record on every file.',
     borrowerLabel: 'Who is handling your closing',
-    borrowerHint: 'Your title company, your insurance agent, your attorney and your realtor.',
+    borrowerHint: 'Your title company and your insurance agent.',
     audience: 'both',
     kind: 'form',
     autoApply: 'always',
     slots: [],
     config: {
-      // The contact TYPES. The New York one only asks when the property is
-      // there, which the rule engine cannot express per-slot, so the form does
-      // it from the same `is_new_york` field a rule would use.
-      contactTypes: [
-        { key: 'title', label: 'Title company', required: true },
-        { key: 'hazard_insurance', label: 'Hazard insurance agent', required: true },
-        { key: 'flood_insurance', label: 'Flood insurance agent', required: false, whenField: 'in_flood_zone' },
-        { key: 'buyers_attorney', label: 'Buyer’s attorney', required: false },
-        { key: 'realtor', label: 'Realtor', required: false },
-        { key: 'our_attorney', label: 'Our attorney', required: false },
-        { key: 'ny_settlement_agent', label: 'Settlement agent', required: false, whenField: 'is_new_york' },
-      ],
+      // ONLY THE TWO. Owner-directed 2026-08-31: *"Our attorney, Realtor,
+      // Buyer's Attorney — those open slots should be only in the file contacts
+      // and not … a condition before submittal. The only stuff that should be a
+      // condition before submittal is the title company and the hazard insurance
+      // agent."*
+      //
+      // The other nine did not go anywhere: they are the FILE CONTACTS desk
+      // (`FILE_CONTACT_TYPES` below), which is where an open slot belongs. The
+      // difference is what a CONDITION means — a row on the list somebody has to
+      // clear before the file moves — and an attorney who may never be appointed
+      // is not that. Two of the nine are still asked for in their own right when
+      // the deal calls for it, by their own rule-driven ORDER conditions
+      // (`lt_order_flood_insurance`, `lt_order_ny_settlement_agent`), so nothing
+      // that was genuinely required has become optional.
+      //
+      // DERIVED, NEVER RETYPED: these are the two entries of `FILE_CONTACT_TYPES`
+      // marked `preSubmission`, so the desk and the condition can never disagree
+      // about what the title company is called or which fact greys it.
+      contactTypes: FILE_CONTACT_TYPES.filter((t) => t.preSubmission)
+        .map(({ preSubmission, ...t }) => t),
       // USES the short-term side's vendor directory rather than copying it, so a
       // company corrected once is corrected everywhere. The crossing is recorded
       // in docs/LONG-TERM-AUTHORIZED-COPIES.md before a line of it is written.
@@ -876,4 +954,4 @@ function ensureSeeded(client) {
 /** For tests: forget that the seed ran, so the next call re-runs it. */
 function _resetSeed() { seedPromise = null; }
 
-module.exports = { BUCKETS: B, PRIOR_TO_SUBMISSION, PRIOR_TO_CTC, library, verify, seed, ensureSeeded, _resetSeed };
+module.exports = { BUCKETS: B, FILE_CONTACT_TYPES, PRIOR_TO_SUBMISSION, PRIOR_TO_CTC, library, verify, seed, ensureSeeded, _resetSeed };

@@ -247,8 +247,22 @@ router.get('/loans/:loanId/vendors', async (req, res) => {
         WHERE v.loan_id = $1::uuid
         ORDER BY v.kind, v.is_primary DESC`,
       [scoped.loan.id]);
+    // THE EXPECTED ROWS, and which of them belong on THIS file. Owner-directed
+    // 2026-08-31: *"On the FileContacts, there should be the same logic that we
+    // have by New York settlement agents: it's grayed out."* The screen used to
+    // keep its own flat list of contact kinds, which had drifted from the
+    // condition's — so it is computed HERE, from the one definition, against the
+    // file's own live facts. Best-effort: a desk that cannot draw is worse than
+    // one drawn without its greying.
+    let contactTypes = null;
+    try {
+      contactTypes = await require('../conditions-center/read').fileContactTypes(scoped.loan.id, db);
+    } catch (e) {
+      console.error('[lt-orders] contact types failed:', (e && e.message) || e);
+    }
     res.json({
       kinds: kinds.VENDOR_KINDS,
+      contactTypes,
       vendors: rows.map((r) => ({
         id: r.id, kind: r.kind, isPrimary: r.is_primary,
         serviceContactId: r.service_contact_id,

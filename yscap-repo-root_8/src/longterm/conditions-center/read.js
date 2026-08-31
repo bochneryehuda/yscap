@@ -432,6 +432,7 @@ const FIELD_WHY = Object.freeze({
   in_flood_zone: 'Only where the property is in a flood zone.',
   is_condo: 'Only on a condominium.',
   borrower_rents: 'Only where the borrower rents where they live.',
+  is_refinance: 'Only on a refinance — a purchase has no loan being paid off.',
 });
 
 /* THE THIRD ANSWER, IN WORDS. `applies === null` means nobody has established the
@@ -446,9 +447,39 @@ const FIELD_UNKNOWN = Object.freeze({
   in_flood_zone: 'We cannot tell yet whether this is a flood zone. It turns on by itself once Encompass says so, or when somebody ticks the flood-zone switch on this file.',
   is_condo: 'We cannot tell yet whether this is a condominium. It turns on by itself once the file says.',
   borrower_rents: 'We cannot tell yet whether the borrower rents where they live. It turns on by itself once the file says.',
+  is_refinance: 'We cannot tell yet whether this is a refinance. It turns on by itself once the file says.',
 });
 
+/**
+ * THE FILE CONTACTS DESK'S OWN ROWS — every contact this file could carry, each
+ * saying whether it belongs here.
+ *
+ * ONE DEFINITION, TWO SURFACES. The pre-submittal condition asks for two of these
+ * (`FILE_CONTACT_TYPES.preSubmission`) and the File contacts section shows all
+ * eleven; both go through `contactTypesFor`, so a row cannot be greyed on one
+ * screen and offered on the other, and neither can name the same company two
+ * different ways. Before this the screen kept its own flat list and had drifted:
+ * it offered a landlord row the condition had never heard of and called the
+ * settlement agent something else.
+ *
+ * A ROW THAT DOES NOT APPLY IS KEPT AND MARKED, never dropped — and an UNREADABLE
+ * file answers `null` on every conditional row rather than a confident "no",
+ * because "we cannot tell yet" and "this file does not need it" send a reader to
+ * two different places.
+ *
+ * Never throws: a contacts desk that cannot draw is worse than one drawn without
+ * its greying, so an unreadable context falls back to the plain list.
+ */
+async function fileContactTypes(loanId, client) {
+  const { FILE_CONTACT_TYPES } = require('./library');
+  const values = await liveFieldValues(loanId, client);
+  // `preSubmission` is the CONDITION's business and means nothing on the desk, so
+  // it is dropped here rather than shipped to a screen that would have to ignore it.
+  const types = FILE_CONTACT_TYPES.map(({ preSubmission, ...t }) => t);
+  return contactTypesFor({ config: { contactTypes: types }, answer: {} }, values);
+}
+
 module.exports = {
-  buckets, forLoan, documentsByCondition, DONE, CLIENT_VISIBLE,
+  buckets, forLoan, documentsByCondition, fileContactTypes, DONE, CLIENT_VISIBLE,
   _internals: { shape, slotsFor, contactTypesFor, liveFieldValues, count, emptySummary },
 };

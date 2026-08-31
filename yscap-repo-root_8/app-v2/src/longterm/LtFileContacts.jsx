@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import FileContacts from '../components/FileContacts.jsx';
 import { ltApi } from './api.js';
 
@@ -25,17 +25,26 @@ import { ltApi } from './api.js';
  * leaking into the other's screen.
  */
 
-/** The long-term vendor kinds, in the order a file works through them. */
+/**
+ * THE DROPDOWN'S FALLBACK, and only that.
+ *
+ * The vendor kinds are the SERVER's (`orders/kinds.js VENDOR_KINDS`) and arrive
+ * with the contacts, so this list is what the dropdown shows for the moment
+ * before the first answer lands. It is a copy, which is exactly the shape that
+ * drifts — it already had, calling the settlement agent something the rest of the
+ * system does not — so `test-lt-file-contacts-pure.js` reads BOTH out of the
+ * source and fails the build the day they disagree. Add a kind on the server.
+ */
 const LT_TYPES = [
   ['title', 'Title company'],
   ['hazard_insurance', 'Hazard insurance agent'],
   ['flood_insurance', 'Flood insurance agent'],
-  ['ny_settlement_agent', 'Settlement agent (New York)'],
+  ['ny_settlement_agent', 'Settlement agent'],
   ['buyers_attorney', 'Buyer’s attorney'],
   ['our_attorney', 'Our attorney'],
   ['realtor', 'Realtor'],
-  ['hoa', 'HOA / management company'],
-  ['landlord', 'Landlord / management company'],
+  ['hoa', 'HOA management company'],
+  ['landlord', 'Landlord'],
   ['appraisal', 'Appraisal management company'],
   ['payoff', 'Servicer being paid off'],
   ['other', 'Other'],
@@ -69,8 +78,26 @@ function toSharedRow(v) {
 }
 
 export default function LtFileContacts({ loanId }) {
+  /* WHICH CONTACTS THIS FILE EXPECTS, and which of them belong on it — computed on
+     the SERVER from the one list (`conditions-center/library.js FILE_CONTACT_TYPES`)
+     against this loan's own facts, so the desk and the pre-submittal condition can
+     never disagree about what a row is called or which fact greys it.
+
+     It rides the SAME request the contacts do rather than a second one: the two
+     answers are about the same moment, and fetching them apart is how a screen
+     ends up greying a row against facts that have since moved. Null until the
+     first answer lands, and null again if the server could not read the facts —
+     the shared component then draws its ordinary list, which is the honest
+     degrade: no slots is better than slots greyed on a guess. */
+  const [slots, setSlots] = useState(null);
+  const [kinds, setKinds] = useState(null);
+
   const adapter = useMemo(() => ({
-    list: () => ltApi.orderVendors(loanId).then((r) => (r.vendors || []).map(toSharedRow)),
+    list: () => ltApi.orderVendors(loanId).then((r) => {
+      setSlots(Array.isArray(r.contactTypes) && r.contactTypes.length ? r.contactTypes : null);
+      setKinds(r.kinds && typeof r.kinds === 'object' ? Object.entries(r.kinds) : null);
+      return (r.vendors || []).map(toSharedRow);
+    }),
     add: (f) => ltApi.orderVendorCreate(loanId, {
       kind: f.contactType, customType: f.customType,
       companyName: f.companyName, contactName: f.contactName,
@@ -93,9 +120,11 @@ export default function LtFileContacts({ loanId }) {
       appId={loanId}
       isStaff
       adapter={adapter}
-      types={LT_TYPES}
+      types={kinds || LT_TYPES}
+      slots={slots}
       heading="File contacts"
       blurb={'Title, insurance, the settlement agent, the association, the landlord and anyone else on this loan. '
+        + 'A row that this deal does not need is greyed rather than hidden, so you can see the question was asked. '
         + 'These are the records the orders are sent to, and they are saved to the same company vendor directory '
         + 'the short-term side uses — so one company is one card across both.'}
     />
