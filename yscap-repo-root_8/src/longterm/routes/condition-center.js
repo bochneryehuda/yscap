@@ -52,6 +52,7 @@ const vocab = require('../conditions-center/vocabulary');
 const entityPrefill = require('../conditions-center/entity-prefill');
 const entityProfile = require('../conditions-center/entity-profile');
 const profileLinks = require('../conditions-center/profile-links');
+const guestSend = require('../guest/send');
 const { loadScopedLoan, UUID_RE } = require('./scoped-loan');
 
 /* THE ONE CONDITION-DOCUMENT SERVICE, SHARED WITH THE SHORT-TERM SIDE
@@ -644,6 +645,75 @@ router.get('/documents/:documentId/file', async (req, res) => {
 // GET /api/lt/condition-center/library — every bucket, every template, and the
 // fields a rule may name. The rule builder draws its whole picker from THIS, so
 // a screen can never offer a field the evaluator would refuse.
+// ─────────────────────────────────────────────────────────────────────────────
+// THE LOGIN-FREE LINK — email the borrower their outstanding conditions
+//
+// The owner asked for this on 2026-08-28: *"another way for borrowers to manage
+// their conditions if they're not so technical … an email directly with links to
+// upload and enter the information over there … without him being able to set up
+// an account or portal."*
+//
+// EVERY MOVING PART IS THE SHARED ONE. The link, its expiry, its revocation, the
+// jail that decides which doors a guest may reach, the token and the email body
+// all live in `src/lib/condition-link.js` — the same module the short-term desk
+// has used since it shipped, authorized in the crossing ledger. What is here is
+// the three things that are genuinely this product's: which loan, who its
+// borrower is, and which conditions are still outstanding.
+//
+// NOTHING IS RE-DERIVED ON THE SCREEN. The blockers, the recipients, the item
+// list and the preview all come from this router, and the send RE-CHECKS every
+// one of them rather than trusting what the screen was told a minute ago.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /api/lt/condition-center/loans/:loanId/outreach — what would be sent.
+router.get('/loans/:loanId/outreach', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-cond-outreach');
+  if (!scoped) return;
+  try {
+    answer(res, await guestSend.outreachPreview(scoped.loan.id, db));
+  } catch (e) {
+    console.error('[lt] outreach preview failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not build the outstanding-conditions preview.' });
+  }
+});
+
+// POST /api/lt/condition-center/loans/:loanId/outreach — send it.
+router.post('/loans/:loanId/outreach', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-cond-outreach');
+  if (!scoped) return;
+  const b = req.body || {};
+  try {
+    answer(res, await guestSend.sendOutreach({
+      loanId: scoped.loan.id,
+      emails: b.emails,
+      note: b.note,
+      actorId: staffId(req),
+    }, db));
+  } catch (e) {
+    console.error('[lt] outreach send failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not send the outstanding-conditions email.' });
+  }
+});
+
+// POST /api/lt/condition-center/loans/:loanId/outreach/:linkId/revoke — kill one link.
+router.post('/loans/:loanId/outreach/:linkId/revoke', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-cond-outreach');
+  if (!scoped) return;
+  if (!UUID_RE.test(String(req.params.linkId || ''))) {
+    return res.status(404).json({ error: 'That link was not found on this loan.' });
+  }
+  try {
+    answer(res, await guestSend.revokeLink({
+      loanId: scoped.loan.id,
+      linkId: req.params.linkId,
+      actorId: staffId(req),
+    }, db));
+  } catch (e) {
+    console.error('[lt] outreach revoke failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not revoke that link just now.' });
+  }
+});
+
 router.get('/library', async (req, res) => {
   try {
     const fields = registry.fieldMap();

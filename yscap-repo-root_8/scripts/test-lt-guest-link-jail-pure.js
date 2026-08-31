@@ -36,9 +36,20 @@ function requireFresh(rel) {
   return m;
 }
 
+/* A FAILURE MUST NAME ITSELF AND LET THE BATTERY FINISH. `assert.strictEqual`
+   THROWS, so the first failure stopped this suite where it stood and printed a
+   stack — which reads as "the suite crashed" rather than "these four checks
+   failed", and hides every check after it. That is the repo's own recorded trap
+   (a crashing test also "fails" and looks like proof). Counted and reported
+   instead, so a mutation run says exactly which properties stopped holding. */
 let n = 0;
-const ok = (c, m) => { assert.ok(c, m); n++; };
-const eq = (a, b, m) => { assert.strictEqual(a, b, m); n++; };
+let failed = 0;
+const record = (pass, m) => {
+  n++;
+  if (!pass) { failed++; console.log(`FAIL ${m}`); }
+};
+const ok = (c, m) => record(!!c, m);
+const eq = (a, b, m) => record(Object.is(a, b), `${m} (got ${JSON.stringify(a)}, wanted ${JSON.stringify(b)})`);
 
 const APP = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
 const LOAN = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
@@ -243,4 +254,8 @@ eq(link.linkMatchesGuest(ltRow, null), false, 'G12 and no token matches nothing'
   eq(fresh.registerJail('', [{ m: 'GET', re: /x/ }]), false, 'H7 nor one with no owner kind');
 }
 
+if (failed) {
+  console.log(`\ntest-lt-guest-link-jail-pure: ${failed} of ${n} checks FAILED`);
+  process.exit(1);
+}
 console.log(`test-lt-guest-link-jail-pure: ${n} checks passed`);
