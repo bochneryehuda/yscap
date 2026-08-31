@@ -41,7 +41,7 @@ const db = require('../db');
 const cfg = require('../config');
 const docusign = require('../../lib/integrations/docusign');
 const F = require('./fields');
-const { buildVorPdf } = require('./pdf');
+const { buildVorPdf, measureOverflow } = require('./pdf');
 const vorData = require('./data');
 const orders = require('../orders/desk');
 
@@ -588,6 +588,12 @@ async function state(loanId, client = db, opts = {}) {
     fields: F.FIELDS,
     parts: F.PARTS,
     missing: F.missing(form.data),
+    /* WHICH BLOCK IS LONGER THAN ITS BOX. Measured with the render's own wrap, so
+       the desk warns about the real document rather than guessing from a
+       character count — and it is said BEFORE anybody confirms, because the cut
+       is silent on the paper and the line most likely to fall off a landlord
+       block is their email and phone. */
+    overflow: await measureOverflow(form.data),
     landlord: form.landlord,
     borrowerRents: form.borrowerRents,
     reviewedAt: form.reviewedAt,

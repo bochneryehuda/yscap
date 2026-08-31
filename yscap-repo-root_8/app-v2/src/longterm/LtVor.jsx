@@ -76,8 +76,23 @@ const METHOD_LABEL = {
   both: 'Send both ways',
 };
 
-function Field({ field, value, onChange, readOnly }) {
-  const isLong = field.type === 'multiline';
+function Field({ field, value, onChange, readOnly, over }) {
+  /* A BLOCK IS MULTI-LINE, AND THE FORM ITSELF SAYS WHICH ONES ARE.
+     Owner-reported 2026-08-31: *"the way you display what we fill in, everything
+     is on one line — it doesn't even have a space. After 'YS Capital Group' we
+     have our address right away without a space."*
+
+     ROOT CAUSE, and it was worse than a display problem: `type: 'multiline'`
+     was declared on NO field, so every name-and-address block rendered in a
+     one-line <input>. A browser strips the newlines out of one of those, so the
+     block READ as one run — and the moment anybody touched the box it was SAVED
+     that way, so the printed form went to the landlord mangled too.
+
+     It is DERIVED from `lines`, which the field map already carries because it is
+     the height of the real box on the owner's blank — so a block added later gets
+     its proper editor without anybody remembering a second flag. */
+  const rows = Math.max(1, Number(field.lines) || 1);
+  const isLong = rows > 1 || field.type === 'multiline';
   return (
     <label style={{ display: 'block', marginBottom: 10 }}>
       <span style={{ display: 'block', fontSize: 12, fontWeight: 600, color: MUTED, marginBottom: 4 }}>
@@ -91,11 +106,21 @@ function Field({ field, value, onChange, readOnly }) {
           The landlord answers this
         </div>
       ) : isLong ? (
-        <textarea
-          style={{ ...input, minHeight: 64, resize: 'vertical' }}
-          value={value || ''}
-          onChange={(e) => onChange(field.key, e.target.value)}
-        />
+        <>
+          <textarea
+            rows={rows}
+            style={{ ...input, minHeight: 22 * rows, resize: 'vertical', lineHeight: 1.45, fontFamily: 'inherit' }}
+            value={value || ''}
+            onChange={(e) => onChange(field.key, e.target.value)}
+          />
+          {/* The box on the paper is this many lines, so a person typing a fifth
+              one should know before the landlord gets a form missing it. */}
+          <span style={{ display: 'block', fontSize: 11, color: over ? AMBER : MUTED, marginTop: 2 }}>
+            {over
+              ? `This is ${over.total} lines and the box on the form holds ${over.printed} — the last ${over.total - over.printed} will not print.`
+              : `Up to ${rows} lines — one per line, as it should read on the form.`}
+          </span>
+        </>
       ) : (
         <input
           style={input}
@@ -207,7 +232,8 @@ export default function LtVor({ loanId }) {
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(18rem, 100%), 1fr))', gap: '0 16px' }}>
           {ourFields.map((f) => (
-            <Field key={f.key} field={f} value={draft[f.key]} onChange={set} />
+            <Field key={f.key} field={f} value={draft[f.key]} onChange={set}
+              over={(state.overflow || []).find((o) => o.key === f.key) || null} />
           ))}
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 6 }}>
