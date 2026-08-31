@@ -992,6 +992,26 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
                 <span style={{ fontSize: 12, color: SLATE, ...NUM }}>
                   {p.ratePct != null ? `${Number(p.ratePct).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}%` : '—'}
                 </span>
+                {/* ⛔ THE PRICE, WHICH THIS ROW NEVER SHOWED (owner-directed 2026-08-31:
+                    *"It also needs to come up with how much the program is, like how many
+                    points it is, 101, 98, whatever."*).
+
+                    A rate alone does not say what an option COSTS, so two rows at the same
+                    rate read as the same deal while one is at 98 and the other at 101.5 —
+                    which is precisely the comparison this strip exists to make.
+
+                    ⛔ IT IS THE PRICE AFTER OUR COMPENSATION, read off the member's OWN
+                    stored `charges` (`overlay.quoteCharges` → `displayPrice`), never
+                    recomputed here and never the raw vendor price. The raw price is the
+                    number before our compensation; showing it beside a borrower-facing
+                    rate would put two different stories on one line, and it is also the
+                    figure §40's adjuster moves AGAINST. One number, one source. */}
+                <span style={{ fontSize: 12, color: INK, fontWeight: 600, ...NUM }}
+                  title="The price after our compensation">
+                  {m.charges && m.charges.displayPrice != null
+                    ? Number(m.charges.displayPrice).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')
+                    : '—'}
+                </span>
                 <span style={{ fontSize: 11.5, color: MUTED }}>{p.consumerLabel || ''}</span>
                 <span style={{ fontSize: 11.5, color: MUTED }}>
                   {m.mode === 'lenderPaid' ? 'lender paid' : 'borrower paid'}{m.waive_lender_fees ? ' · fees waived' : ''}

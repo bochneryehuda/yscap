@@ -182,6 +182,20 @@ ok(/<span title=\{ratioBlocks \? RATIO_BLOCK_HINT : undefined\}/.test(P),
 ok(!/<button[^>]*title=\{ratioBlocks/.test(P),
   'DB6 …and never pinned on the button itself, which is the version that silently does nothing');
 
+console.log('\nDC. a collected option says what it COSTS, not only what it rates at');
+/* Owner-directed 2026-08-31: *"It also needs to come up with how much the program is,
+   like how many points it is, 101, 98, whatever, if it's lender-paid or borrower-paid."*
+   The paid-by half was already on the row; the PRICE was not, so two options at one
+   rate read as the same deal while one is at 98 and the other at 101.5. */
+ok(/m\.charges && m\.charges\.displayPrice != null/.test(P),
+  'DC1 the strip shows each collected option\'s price');
+ok(/m\.charges\.displayPrice/.test(P) && !/strip[\s\S]{0,200}rawPrice - /.test(P),
+  'DC2 ⛔ …read off the member\'s OWN stored charges, never recomputed on the screen');
+ok(!/<span[^>]*>\{[^}]*p\.rawPrice[^}]*\}<\/span>/.test(P),
+  'DC3 ⛔ …and it is never the RAW vendor price, which is the number before our compensation');
+ok(/lender paid.*borrower paid/s.test(P),
+  'DC4 …beside how it is paid, which the row already carried');
+
 console.log('\nD2. the screen and the server never disagree about the same loan');
 /* THE WHOLE REASON THIS SECTION EXISTS: the refusal is the server's and the warning is the
    browser's, so they are two copies of one money rule. A screen that blocks what the server
