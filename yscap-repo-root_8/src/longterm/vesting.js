@@ -92,4 +92,29 @@ function describeVesting(row) {
   return { known: true, label: t, entityName: name };
 }
 
-module.exports = { FIELD_IDS, vestingOf, describeVesting, _internals: { ENTITY_WORDS, INDIVIDUAL_WORD, text } };
+/**
+ * THE STORED ROW, CLASSIFIED — the one place that turns `lt_loans.vesting_type`
+ * into a decision, so nothing downstream re-types the words.
+ *
+ * `vestingOf` above reads the LIVE fieldReader answer; this reads the value that
+ * read already stored. Both spell "individual" / "officer" / "trustee" from the
+ * SAME two constants, which is the whole reason this lives here rather than in
+ * the condition registry: a second copy of that word list is how one screen ends
+ * up calling a loan individual while another asks it for company papers.
+ *
+ * @returns 'individual' | 'entity' | 'unknown'
+ *   · 'unknown' is BLANK **and** a word the measured book has never shown. Both
+ *     mean the same thing to a caller — Encompass has not told us — and neither
+ *     may be read as "individual" (the mirror of vesting-view.js's own note:
+ *     nothing stated is not Individual).
+ */
+function classifyVesting(row) {
+  const t = text(row && (row.vesting_type != null ? row.vesting_type : row.vestingType));
+  if (!t) return 'unknown';
+  const word = t.toLowerCase();
+  if (word === INDIVIDUAL_WORD) return 'individual';
+  if (ENTITY_WORDS.has(word)) return 'entity';
+  return 'unknown';
+}
+
+module.exports = { FIELD_IDS, vestingOf, describeVesting, classifyVesting, _internals: { ENTITY_WORDS, INDIVIDUAL_WORD, text } };

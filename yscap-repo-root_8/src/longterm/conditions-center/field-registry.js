@@ -41,6 +41,10 @@
  * part of the context yields `null` rather than a throw.
  */
 
+// The ONE definition of what 4008's words mean. PURE (no database, no network),
+// so requiring it keeps this file's own purity claim intact.
+const vesting = require('../vesting');
+
 /** The residency basis Encompass field FR0115 lands in (`lt_residences`). */
 const BASIS_RENT = 'rent';
 const BASIS_OWN = 'own';
@@ -205,12 +209,25 @@ const FIELDS = [
     },
   },
   {
+    // ── FIELD 4008 DECIDES, AND NOTHING ELSE (owner-directed 2026-08-23, and
+    // again 2026-08-31: "if 4008 is individual instead of officer, then no
+    // entity condition").
+    //
+    // THIS USED TO READ THE PARTIES — whether any borrower row looked like a
+    // company — which is a SECOND answer to a question `vesting.js` already
+    // owns, and the two can disagree: a re-vested loan keeps a stale company
+    // name on a party row long after 4008 has moved to Individual, and that
+    // file was still being asked for company formation documents it does not
+    // need. The owner's rule is explicit that on Individual the entity name is
+    // never even read, so the parties are not consulted here at all.
     key: 'vests_in_entity', label: 'Title is taken in an entity', type: 'boolean', group: 'The borrower',
     read: (c) => {
-      const parties = (c && c.parties) || [];
-      if (!parties.length) return null;
-      return parties.some((p) => String(p.party_type || '').toLowerCase() === 'entity'
-        || !!text(p.entity_legal_name));
+      const v = vesting.classifyVesting(c && c.loan);
+      // `null`, NOT `false`, when Encompass has not said — the file's own
+      // doctrine above, and the mirror of vesting-view.js's "nothing stated is
+      // not Individual". This field states a FACT ABOUT THE TITLE and may not
+      // claim one nobody has told us.
+      return v === 'unknown' ? null : v === 'entity';
     },
   },
   {
