@@ -264,6 +264,21 @@ async function getOrderData(loanId, client = db) {
       WHERE ci.lt_loan_id = $1::uuid AND t.code IS NOT NULL`,
     [id], (rows) => { out.conditionCodes = rows ? rows.map((r) => String(r.code)) : null; });
 
+  /* HAS THE RENT FORM BEEN CONFIRMED? Owner-directed 2026-08-31: *"the
+     verification of rent form fill-out … needs to be confirmed before you can
+     order the VOR."* Read here rather than in the VOR desk because the ORDER is
+     the other of the owner's *"two different sections"*, and its own send door
+     is what has to refuse — a gate on one section only is the class where the
+     screen hides a button and the door accepts it anyway.
+
+     Read for EVERY file, not only a renting one: `blockers` is pure over this
+     object and asking a question of the database from inside it would make the
+     answer depend on which caller built the data. A file with no form row simply
+     reads as not confirmed, which it is. */
+  await one('vorConfirmed',
+    `SELECT confirmed_at FROM lt_vor_forms WHERE loan_id = $1::uuid`,
+    [id], (rows) => { out.vorFormConfirmed = rows ? !!(rows[0] && rows[0].confirmed_at) : null; });
+
   // ── The vendor cards ──────────────────────────────────────────────────────
   await one('vendors',
     `SELECT v.id AS link_id, v.kind, v.is_primary, v.service_contact_id,
@@ -366,6 +381,17 @@ function blockers(kind, data) {
      hiding one they need costs a closing. So `null` — the file has not said yet —
      goes through exactly as it did before. */
   if (appliesRule.appliesTo(def.key, data).applies === false) out.push('not_for_file');
+
+  /* AND THE RENT FORM ITSELF. The verification of rent is the one order that
+     carries OUR OWN completed paper out with it, so the letter going before the
+     form is agreed sends a landlord a document nobody checked — and the landlord
+     answers the version we sent. Every other kind encloses a fixed blank or
+     nothing, so this is deliberately the only kind it applies to.
+
+     `null` — the read failed — is NOT treated as confirmed; `unreadable` has
+     already blocked by then, and reading a failure as a yes on the one gate the
+     owner asked for would be the wrong direction twice over. */
+  if (def.key === 'vor' && data.vorFormConfirmed !== true) out.push('form_not_confirmed');
   return out;
 }
 
@@ -382,6 +408,7 @@ const BLOCKER_TEXT = Object.freeze({
   contact_email: 'The company on this file has no email address on its card.',
   borrower: 'The borrower’s name is not on the file yet.',
   not_for_file: 'This order is not for this kind of file.',
+  form_not_confirmed: 'The rent form has not been confirmed yet. Open it, read it through, and confirm it — then this can go out.',
 });
 
 /**

@@ -205,6 +205,27 @@ const check = (cond, msg) => {
         [wide, vk, sc]);
     }
 
+    /* THE RENT ORDER NOW WAITS ON ITS FORM (db/663, owner-directed 2026-08-31:
+       *"the verification of rent form fill-out … needs to be confirmed before you
+       can order the VOR"*). That is a real gate and this suite is about what
+       SENDS, so the fixture does what a processor does — fills the form in and
+       confirms it — rather than the gate being loosened to keep the audit green.
+       `test-lt-vor-confirm-db.js` is where the gate itself is proven. */
+    {
+      const vorDesk = require('../src/longterm/vor/desk.js');
+      const VF = require('../src/longterm/vor/fields.js');
+      const answers = {};
+      for (const f of VF.FIELDS) {
+        if (f.who !== 'us' || f.optional) continue;
+        answers[f.key] = `audit ${f.key}`;
+      }
+      await vorDesk.saveForm(wide, answers, null, db);
+      const confirmed = await vorDesk.confirmForm(wide, null, db);
+      check(confirmed.ok === true,
+        'the rent form is filled in and confirmed, which is what lets its order go '
+        + `(${confirmed.ok ? 'confirmed' : JSON.stringify(confirmed)})`);
+    }
+
     const deskWide = await deskMod.desk(wide, db);
     for (const o of deskWide.orders) {
       check(o.appliesToFile === true, `${o.kind} applies to this file`);

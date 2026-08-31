@@ -232,6 +232,40 @@ export default function LtVor({ loanId }) {
           ) : null}
         </div>
 
+        {/* ── CONFIRM IT ───────────────────────────────────────────────────
+            The owner's gate: *"the verification of rent form fill-out … needs to
+            be confirmed before you can order the VOR."* It sits with the form
+            rather than with the send, because it is a statement about the FORM —
+            and it is offered only once our own answers are all in, so nobody is
+            asked to agree to blanks. Every colour is an explicit dark: an
+            `--ink*` token is a LIGHT paper colour here and renders white on
+            white. */}
+        <div style={{
+          marginTop: 12, padding: '10px 12px', borderRadius: 8,
+          border: `1px solid ${state.confirmedAt ? '#2F7F86' : GOLD}`,
+          background: state.confirmedAt ? '#F1F7F7' : '#FBF7EF',
+          display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
+        }}>
+          <div style={{ flex: '1 1 260px', minWidth: 0, fontSize: 13, color: INK }}>
+            {state.confirmedAt ? (
+              <>This form is <strong>confirmed</strong> and can go out. Changing anything above asks for a fresh confirmation.</>
+            ) : (
+              <>Read the form through and confirm it. <strong>Nothing goes to the landlord until you do</strong> — the order and the form both wait on it.</>
+            )}
+          </div>
+          {state.confirmedAt ? null : (
+            <button
+              type="button"
+              style={state.missing.length ? { ...btn, opacity: 0.6 } : btnPrimary}
+              disabled={busy || state.missing.length > 0}
+              title={state.missing.length ? 'Fill our own answers in first.' : undefined}
+              onClick={() => run(() => ltApi.vorConfirm(loanId), 'Confirmed.')}
+            >
+              Confirm this form
+            </button>
+          )}
+        </div>
+
         {showPreview ? (
           previewUrl ? (
             <iframe

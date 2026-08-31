@@ -2762,6 +2762,18 @@ model LtVorForm {
   reviewedBy String?   @map("reviewed_by") @db.Uuid
   reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
 
+  /// WHO CONFIRMED THIS VERSION, and when (db/663). Owner-directed 2026-08-31:
+  /// the form *"needs to be confirmed before you can order the VOR"*, so NULL
+  /// here blocks both the rent order and the form's own send.
+  ///
+  /// NOT the same thing as `reviewedAt`, which every save stamps — treating a
+  /// keystroke as a person saying "this is right" is exactly what the gate is
+  /// for. Cleared by any save that CHANGES the data, because a confirmation is
+  /// about the version it was given for and the landlord answers the version we
+  /// sent.
+  confirmedBy String?   @map("confirmed_by") @db.Uuid
+  confirmedAt DateTime? @map("confirmed_at") @db.Timestamptz(6)
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 

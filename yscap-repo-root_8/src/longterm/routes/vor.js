@@ -61,6 +61,28 @@ router.post('/loans/:loanId/form', async (req, res) => {
 });
 
 /**
+ * CONFIRM THE FORM — the owner's gate on the whole thing going out.
+ *
+ * Its own door rather than a flag on the save, because a confirmation is a
+ * DECISION and a save is a keystroke: folding it into the save would make an
+ * autosave count as a person saying the form is right, which is precisely what
+ * the owner asked to stop.
+ */
+router.post('/loans/:loanId/confirm', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-vor');
+  if (!scoped) return;
+  try {
+    const out = await desk.confirmForm(scoped.loan.id, actorId(req), db, { actor: req.actor });
+    const view = await desk.state(scoped.loan.id, db, { actor: req.actor });
+    // A refusal is 409, not 500: the form is readable and the answer is "not yet",
+    // which is something the person reading it can act on.
+    res.status(out.ok ? 200 : 409).json({ ...out, state: view });
+  } catch (e) {
+    res.status(500).json({ error: 'That could not be confirmed.' });
+  }
+});
+
+/**
  * The preview — the actual PDF, rendered from the data as it stands.
  *
  * Served INLINE so it opens in the viewer rather than downloading, and with
