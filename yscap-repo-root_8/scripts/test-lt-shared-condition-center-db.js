@@ -135,8 +135,17 @@ const uniq = `ltcc-${process.pid}-${Date.now()}`;
   const tpl = (await db.query(
     `SELECT code, scope, audience, category, item_kind, tool_key, is_active, config, auto_apply
        FROM checklist_templates WHERE scope = 'lt_loan' ORDER BY sort_order, code`)).rows;
-  assert(tpl.length === library.library().length,
-    `B6 ${tpl.length} lt_loan-scoped templates are in checklist_templates`);
+  /* THE TABLE MAY HOLD MORE ROWS THAN THE LIBRARY, and since db/660 it does.
+     A retired condition is `is_active = false` and STAYS in the table — every file
+     that carries one points at that row, so deleting it would take their history —
+     while the library is what a new database is seeded from and what the engine
+     reads. So the count that means something is the ACTIVE one, and the extras are
+     asserted to be exactly the retired set rather than waved through. */
+  const activeTpl = tpl.filter((r) => r.is_active);
+  assert(activeTpl.length === library.library().length,
+    `B6 ${activeTpl.length} ACTIVE lt_loan-scoped templates are in checklist_templates, one per condition in the library`);
+  assert(tpl.filter((r) => !r.is_active).every((r) => r.config && r.config.enabled === false && r.config.disabledReason),
+    'B6b …and every inactive one is a RETIRED condition that says so, rather than a row nobody accounted for');
   assert(tpl.every((r) => r.scope === 'lt_loan'), 'B7 every one carries scope=lt_loan');
   assert(tpl.every((r) => /^lt_/.test(r.code)),
     'B8 every code is lt_-prefixed — a collision with an rtl_ template is impossible by naming');
@@ -156,7 +165,7 @@ const uniq = `ltcc-${process.pid}-${Date.now()}`;
   const nonDoc = tpl.filter((r) => r.item_kind !== 'document');
   assert(nonDoc.every((r) => /^lt_/.test(String(r.tool_key || ''))),
     'B11 a form / order / esign condition carries an lt_ tool_key — kept OUT of the document arm the same way RTL keeps its own tool-backed conditions out');
-  assert(tpl.every((r) => r.config && typeof r.config === 'object' && r.config.enabled === true),
+  assert(activeTpl.every((r) => r.config && typeof r.config === 'object' && r.config.enabled === true),
     'B12 the owner\'s per-condition config survives the move, enabled flag and all');
 
   // The round trip: what the read gives back is the wording the owner's rules

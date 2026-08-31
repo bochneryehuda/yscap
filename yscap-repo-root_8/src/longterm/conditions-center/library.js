@@ -382,34 +382,6 @@ const PRIOR_TO_SUBMISSION = [
     config: { savesToBorrowerProfile: true, readsFromBorrowerProfile: true },
   },
   {
-    code: 'lt_landlord_contact',
-    bucket: B.SUBMISSION,
-    label: 'Landlord’s contact details',
-    hint: 'Only where the borrower rents where they live (Encompass field FR0115). This is what the '
-      + 'verification of rent is sent to, so it is collected before the form is built.',
-    borrowerLabel: 'Your landlord’s contact details',
-    borrowerHint: 'Their name, email and phone number. We send them a short form to confirm your rent.',
-    audience: 'both',
-    kind: 'form',
-    autoApply: 'rules',
-    rule: when('borrower_rents', 'is_true'),
-    /* THE LANDLORD IS A CONTACT, not five free-text boxes (owner-directed
-       2026-08-31: "Make sure each and every FileContacts should be linked to the
-       correct order. The landlord contact should be linked to the preview on the
-       VOR form"). Typed into a box, the landlord exists only on this condition
-       and the verification-of-rent order has nobody to send to — which is
-       exactly what "the orders are not linked to the correct FileContacts, so
-       you can't even send it out" describes. As a `contactTypes` row it lands in
-       the shared vendor directory and on `lt_loan_vendors`, which is where the
-       order desk looks.
-       `fields` stays for the two things that are facts about the TENANCY rather
-       than about the landlord, and the VOR needs both. */
-    config: {
-      contactTypes: [{ key: 'landlord', label: 'Landlord / management company', required: true }],
-      fields: ['monthly_rent', 'rented_since'],
-    },
-  },
-  {
     code: 'lt_vor_sent',
     bucket: B.SUBMISSION,
     label: 'Verification of rent sent',
@@ -428,6 +400,17 @@ const PRIOR_TO_SUBMISSION = [
     // a button ends up on a screen with nothing behind it.
     config: {
       form: 'vor', orderType: 'vor', contactType: 'landlord',
+      // THE TWO TENANCY FACTS MOVED HERE (db/660). They were collected on a
+      // separate "Landlord's contact details" condition, which the owner asked to
+      // retire — *"You can technically remove that condition … You should also be
+      // able to fill it directly on the verification of rent condition and the
+      // entire verification of rent sent as well."* They are facts about the
+      // TENANCY rather than about the landlord, the form cannot be built without
+      // them, and this is the step that builds it — so they belong on the step
+      // that uses them rather than on a row somebody clears first. The LANDLORD
+      // themself is a contact and lives where every other contact does: the File
+      // contacts desk, which `contactType` above already addresses.
+      fields: ['monthly_rent', 'rented_since'],
       send: ['docusign', 'email', 'both'], manualReturnVoidsEnvelope: true,
     },
   },
@@ -443,40 +426,6 @@ const PRIOR_TO_SUBMISSION = [
     autoApply: 'always',
     slots: [{ key: 'id', label: 'Photo ID', required: true }],
     config: { readsFromBorrowerProfile: true, savesToBorrowerProfile: true },
-  },
-  {
-    /* WHO THE PAYOFF IS ORDERED FROM — collected, like every other order's
-       contact, on a condition (owner-directed 2026-08-31: *"Make sure each and
-       every FileContacts should be linked to the correct order … Do a lot of A
-       to Z order to make sure everything is linked to the correct place."*).
-
-       FOUND BY THE A-TO-Z AUDIT: `lt_payoff_ordered` addresses the `payoff`
-       card, and NO condition anywhere collected it — so on every refinance the
-       payoff order sat on the desk saying "add them on the file contacts" and
-       the only way in was the file-contacts section, which is not where the
-       condition sends you. Six of the seven orders prompted for their contact;
-       this was the seventh. Same shape as the landlord and the HOA management
-       company above: a `contactTypes` row, so it lands in the shared vendor
-       directory and on `lt_loan_vendors`, which is where the order desk looks.
-
-       BOTH audiences, like the landlord: the borrower knows who services the
-       mortgage being paid off, and asking them is faster than us guessing from a
-       credit report — which carries the SERVICER'S NAME but no email address. */
-    code: 'lt_payoff_contact',
-    bucket: B.SUBMISSION,
-    label: 'Servicer of the loan being paid off',
-    hint: 'Only on a refinance. The payoff request goes to whoever services the loan being paid '
-      + 'off, so their details are collected before it is ordered.',
-    borrowerLabel: 'Who you pay your current mortgage to',
-    borrowerHint: 'The name of the company you send your mortgage payment to, and an email address '
-      + 'or phone number for them if you have one.',
-    audience: 'both',
-    kind: 'form',
-    autoApply: 'rules',
-    rule: when('is_refinance', 'is_true'),
-    config: {
-      contactTypes: [{ key: 'payoff', label: 'Servicer being paid off', required: true }],
-    },
   },
   {
     code: 'lt_payoff_ordered',

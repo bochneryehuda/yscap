@@ -177,8 +177,20 @@ const check = (cond, msg) => {
       purpose: 'cash_out_refinance', state: 'NY', propertyType: 'Condominium', flood: true, rents: true,
     });
     const wideCodes = await codesOn(wide);
-    check(wideCodes.includes('lt_payoff_contact'),
-      'the refinance is asked who services the loan being paid off');
+    /* WHO SERVICES THE LOAN BEING PAID OFF IS STILL ASKED FOR — on the File
+       contacts desk since db/660, not as its own condition. Owner-directed
+       2026-08-31: *"Servicer of the loan being paid off — this is now a separate
+       condition. We don't need this to be a separate condition."* The question the
+       original defect asked has not moved: can the person working this refinance
+       add the contact the payoff order is addressed to? */
+    check(!wideCodes.includes('lt_payoff_contact'),
+      'the payoff servicer is no longer its own condition (db/660)');
+    {
+      const desk = await require('../src/longterm/conditions-center/read.js').fileContactTypes(wide, db);
+      const row = (desk || []).find((t) => t.key === 'payoff');
+      check(!!row && row.applies === true,
+        'the refinance is asked who services the loan being paid off — on the File contacts desk');
+    }
 
     // Enter one contact per order, through the vendor link the contact form writes.
     for (const k of kinds.ORDER_KIND_KEYS) {

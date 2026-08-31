@@ -35,8 +35,17 @@ const all = [...lib.PRIOR_TO_SUBMISSION, ...lib.PRIOR_TO_CTC];
 const missing = all.filter((c) => !text.includes(c.label));
 assert(missing.length === 0,
   `A1 every condition in the library is named on the page${missing.length ? ` — MISSING: ${missing.map((c) => c.code).join(', ')}` : ` (${all.length})`}`);
-assert(all.length >= 28,
-  `A2 …and there are at least the 28 the owner's own list named (${all.length})`);
+// THE FLOOR MOVED FROM 28 TO 26 ON 2026-08-31, AND ONLY BECAUSE THE OWNER ASKED.
+// The landlord and the payoff servicer stopped being conditions — *"You can
+// technically remove that condition"* and *"We don't need this to be a separate
+// condition"* — and both are now slots on the File contacts desk, where a contact
+// belongs. Nothing was dropped: `test-lt-retire-contact-conditions-db.js` proves
+// both are still asked for, that a file evaluated today gets neither, and that
+// any work already done on one is left alone. A floor is still a floor: it is
+// what catches a condition quietly disappearing without anybody deciding it
+// should, which is the failure this line exists for.
+assert(all.length >= 26,
+  `A2 …and there are at least the 26 remaining of the owner's own list (${all.length})`);
 
 /* ═══ B. EVERY DOCUMENT SLOT IS ON THE PAGE ════════════════════════════════
    This is the one that would have caught the condo bylaws: the condition was
