@@ -515,6 +515,12 @@ app.use('/api/tpo', require('./routes/tpo'));
   // staff login; it is OFF (404s) unless LP_DIAG_TOKEN is set. Still src/server.js →
   // src/longterm/routes/ — the permitted seam.
   app.use('/api/lt/_diag/lenderprice', require('./longterm/routes/lenderprice-diag'));
+  // Secret-gated diagnostics for the COMBINED PRICING ENGINE (Lender Price +
+  // LoanNEX, read-only). It has no signed-in person, so the shared secret stands
+  // in for the router's super-admin gate and is strictly narrower: OFF (404s)
+  // unless NEX_DIAG_TOKEN is set. The kill switch (LT_COMBINED_PRICING) still
+  // applies here, so switching the engine off switches this off too.
+  app.use('/api/lt/_diag/loannex', require('./longterm/routes/loannex-diag'));
   // Secret-gated LT BOOK read (match keys only) — the same shape and the same seam,
   // for the one-time job of telling every long-term loan which ClickUp card is already
   // its own before PILOT starts opening cards itself. OFF (404s) unless

@@ -178,7 +178,30 @@ export const PURPOSES = [
 // the arithmetic to stay stable. Calling them the same thing is the `pct`/`rate` confusion this
 // codebase already carries a guard against, so they are named for what they do.
 const roundCents = (n) => Math.round(n * 100) / 100;
-const roundRatio = (n) => Math.round(n * 1e6) / 1e6;
+/**
+ * AN LTV IS LIFTED UP, NEVER ROUNDED DOWN.
+ *
+ * The same directional rule the server applies in `pricing/tier-rounding.js`:
+ * *"A higher LTV prices worse, so an LTV is never rounded down — that would ask
+ * for a band the loan has not earned."*
+ *
+ * ⛔ THIS WAS `Math.round`, AND THAT IS EXACTLY THE DRIFT THIS FILE'S PARITY TEST
+ * EXISTS TO CATCH. When the server adopted directional rounding, this second copy
+ * of the triangle was not moved with it, so 87,500 / 375,000 read 0.233333 on the
+ * screen and 0.233334 on the server — the screen quoting a band the server would
+ * not price, on nine of the seventy-eight cases in the shared battery. The copy is
+ * deliberate (a browser cannot require server code); keeping the two rules
+ * identical is the price of it.
+ */
+const RATIO_SLACK = (x) => Math.max(1e-9, Math.abs(x) * 1e-12);
+const roundRatio = (n) => {
+  if (!Number.isFinite(n)) return null;
+  const x = n * 1e6;
+  const whole = Math.round(x);
+  // Within float noise of a representable 6dp figure, that figure IS the answer —
+  // lifting there would invent a band out of a rounding artefact.
+  return (Math.abs(x - whole) < RATIO_SLACK(x) ? whole : Math.ceil(x)) / 1e6;
+};
 // ONE reading of a typed figure, shared with the amount triangle below.
 const numOf = toNumber;
 /** Accept 75 or 0.75, exactly as the server does. */

@@ -1,0 +1,5174 @@
+{
+ "capturedAt": "2026-08-31T00:38:27.640Z",
+ "base": "https://aim.admortgage.com",
+ "groups": {
+  "33001": {
+   "name": "Non-QM",
+   "fields": [
+    {
+     "id": 6,
+     "label": "Occupancy",
+     "order": 1,
+     "type": "list",
+     "value": "175",
+     "message": "",
+     "values": [
+      {
+       "id": 175,
+       "label": "Primary Residence",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 177,
+       "label": "2nd Home",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 176,
+       "label": "Investment",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 8,
+     "label": "Property Type",
+     "order": 2,
+     "type": "list",
+     "value": "183",
+     "message": "",
+     "values": [
+      {
+       "id": 183,
+       "label": "1 Unit SFR",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 184,
+       "label": "SFR Rural",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 185,
+       "label": "PUD",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 528,
+       "label": "PUD Rural",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 186,
+       "label": "Condo",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 187,
+       "label": "2-4 Units",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 188,
+       "label": "Condotel",
+       "order": 9,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 13,
+     "label": "Number of Units",
+     "order": 3,
+     "type": "list",
+     "value": "257",
+     "message": "",
+     "values": [
+      {
+       "id": 257,
+       "label": "1 Unit",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 258,
+       "label": "2 Units",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 259,
+       "label": "3 Units",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 260,
+       "label": "4 Units",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 29,
+     "label": "ZIP",
+     "order": 6,
+     "type": "text",
+     "value": "_____",
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 10,
+     "label": "State",
+     "order": 7,
+     "type": "list",
+     "value": "194",
+     "message": "",
+     "values": [
+      {
+       "id": 194,
+       "label": "Alabama [AL]",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 195,
+       "label": "Alaska [AK]",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 196,
+       "label": "Arizona [AZ]",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 197,
+       "label": "Arkansas [AR]",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 198,
+       "label": "California [CA]",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 199,
+       "label": "Colorado [CO]",
+       "order": 5,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 200,
+       "label": "Connecticut [CT]",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 201,
+       "label": "Delaware [DE]",
+       "order": 7,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 202,
+       "label": "District of Columbia [DC]",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 203,
+       "label": "Florida [FL]",
+       "order": 9,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 204,
+       "label": "Georgia [GA]",
+       "order": 10,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 206,
+       "label": "Idaho [ID]",
+       "order": 12,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 207,
+       "label": "Illinois [IL]",
+       "order": 13,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 208,
+       "label": "Indiana [IN]",
+       "order": 14,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 209,
+       "label": "Iowa [IA]",
+       "order": 15,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 210,
+       "label": "Kansas [KS]",
+       "order": 16,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 211,
+       "label": "Kentucky [KY]",
+       "order": 17,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 212,
+       "label": "Louisiana [LA]",
+       "order": 18,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 213,
+       "label": "Maine [ME]",
+       "order": 19,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 214,
+       "label": "Maryland [MD]",
+       "order": 20,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 215,
+       "label": "Massachusetts [MA]",
+       "order": 21,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 216,
+       "label": "Michigan [MI]",
+       "order": 22,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 217,
+       "label": "Minnesota [MN]",
+       "order": 23,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 218,
+       "label": "Mississippi [MS]",
+       "order": 24,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 219,
+       "label": "Missouri [MO]",
+       "order": 25,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 220,
+       "label": "Montana [MT]",
+       "order": 26,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 221,
+       "label": "Nebraska [NE]",
+       "order": 27,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 222,
+       "label": "Nevada [NV]",
+       "order": 28,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 223,
+       "label": "New Hampshire [NH]",
+       "order": 29,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 224,
+       "label": "New Jersey [NJ]",
+       "order": 30,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 225,
+       "label": "New Mexico [NM]",
+       "order": 31,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 226,
+       "label": "New York [NY]",
+       "order": 32,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 227,
+       "label": "North Carolina [NC]",
+       "order": 33,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 228,
+       "label": "North Dakota [ND]",
+       "order": 34,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 229,
+       "label": "Ohio [OH]",
+       "order": 35,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 230,
+       "label": "Oklahoma [OK]",
+       "order": 36,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 231,
+       "label": "Oregon [OR]",
+       "order": 37,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 232,
+       "label": "Pennsylvania [PA]",
+       "order": 38,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 234,
+       "label": "Rhode Island [RI]",
+       "order": 40,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 235,
+       "label": "South Carolina [SC]",
+       "order": 41,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 236,
+       "label": "South Dakota [SD]",
+       "order": 42,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 237,
+       "label": "Tennessee [TN]",
+       "order": 43,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 238,
+       "label": "Texas [TX]",
+       "order": 44,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 239,
+       "label": "Utah [UT]",
+       "order": 45,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 240,
+       "label": "Vermont [VT]",
+       "order": 46,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 241,
+       "label": "Virginia [VA]",
+       "order": 47,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 242,
+       "label": "Washington [WA]",
+       "order": 48,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 243,
+       "label": "West Virginia [WV]",
+       "order": 49,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 244,
+       "label": "Wisconsin [WI]",
+       "order": 50,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 245,
+       "label": "Wyoming [WY]",
+       "order": 51,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 35,
+     "label": "County",
+     "order": 8,
+     "type": "list",
+     "value": "",
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 26,
+     "label": "New Construction",
+     "order": 10,
+     "type": "boolean",
+     "value": "399",
+     "message": "",
+     "values": [
+      {
+       "id": 399,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 400,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 44,
+     "label": "Channel",
+     "order": 21,
+     "type": "list",
+     "value": "437",
+     "message": "",
+     "values": [
+      {
+       "id": 437,
+       "label": "Wholesale",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 438,
+       "label": "Correspondent Plus",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 439,
+       "label": "Correspondent",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 4,
+     "label": "Citizenship",
+     "order": 22,
+     "type": "list",
+     "value": "155",
+     "message": "",
+     "values": [
+      {
+       "id": 155,
+       "label": "US Citizen / Permanent Resident",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 156,
+       "label": "Non-Permanent Resident",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 157,
+       "label": "Foreign national",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 158,
+       "label": "ITIN",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 7,
+     "label": "Purpose",
+     "order": 23,
+     "type": "list",
+     "value": "178",
+     "message": "",
+     "values": [
+      {
+       "id": 178,
+       "label": "Purchase",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 179,
+       "label": "Rate/Term Refinance",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 180,
+       "label": "Cashout",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 16,
+     "label": "FICO",
+     "order": 26,
+     "type": "interval",
+     "value": "720",
+     "step": 1,
+     "min": 620,
+     "max": 850,
+     "from": 620,
+     "to": 850,
+     "message": "",
+     "values": [
+      {
+       "id": 290,
+       "label": "No FICO",
+       "order": 12,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 2,
+     "label": "Loan Term",
+     "order": 27,
+     "type": "list",
+     "value": "3",
+     "message": "",
+     "values": [
+      {
+       "id": 3,
+       "label": "30 Year Fixed",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 2,
+       "label": "40 Year Fixed",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 8,
+       "label": "5/6 ARM SOFR",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 9,
+       "label": "7/6 ARM SOFR",
+       "order": 7,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 5,
+     "label": "Income Type",
+     "order": 28,
+     "type": "list",
+     "value": "160",
+     "message": "",
+     "values": [
+      {
+       "id": 160,
+       "label": "2Y Full Doc",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 161,
+       "label": "1Y Full Doc",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 162,
+       "label": "24 Months Bank Statement",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 163,
+       "label": "12 Months Bank Statement",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 164,
+       "label": "2Y P&L Only",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 165,
+       "label": "1Y P&L Only",
+       "order": 5,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 166,
+       "label": "Asset Utilization",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 167,
+       "label": "WVOE",
+       "order": 7,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 168,
+       "label": "1099",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 169,
+       "label": "DSCR >= 1.25",
+       "order": 9,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 170,
+       "label": "DSCR 1.10 - 1.24",
+       "order": 10,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 171,
+       "label": "DSCR 1.00 - 1.09",
+       "order": 11,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 172,
+       "label": "DSCR 0.75 - 0.99",
+       "order": 12,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 173,
+       "label": "DSCR < 0.75",
+       "order": 13,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 174,
+       "label": "Foreign income",
+       "order": 14,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 12,
+     "label": "DTI",
+     "order": 30,
+     "type": "interval",
+     "value": "1",
+     "step": 1,
+     "min": 1,
+     "max": 55,
+     "from": 1,
+     "to": 55,
+     "message": "",
+     "values": [
+      {
+       "id": 256,
+       "label": "Not required",
+       "order": 15,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 18,
+     "label": "Lock Period",
+     "order": 32,
+     "type": "list",
+     "value": "366",
+     "message": "",
+     "values": [
+      {
+       "id": 366,
+       "label": "30 Days",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 365,
+       "label": "15 Days",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 367,
+       "label": "45 Days",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 368,
+       "label": "60 Days",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 17,
+     "label": "Loan Amount",
+     "order": 33,
+     "type": "interval",
+     "value": "500001",
+     "step": 1,
+     "min": 75000,
+     "max": 5000000,
+     "from": 75000,
+     "to": 5000000,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 45,
+     "label": "Compensation type",
+     "order": 34,
+     "type": "list",
+     "value": "440",
+     "message": "",
+     "values": [
+      {
+       "id": 440,
+       "label": "Borrower Paid",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 441,
+       "label": "Lender Paid",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 15,
+     "label": "CLTV",
+     "order": 35,
+     "type": "interval",
+     "value": "70",
+     "step": 1,
+     "min": 1,
+     "max": 90,
+     "from": 1,
+     "to": 90,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 14,
+     "label": "Prepayment Penalty",
+     "order": 36,
+     "type": "list",
+     "value": "265",
+     "message": "",
+     "values": [
+      {
+       "id": 265,
+       "label": "No PPP",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 266,
+       "label": "6m PPP",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 267,
+       "label": "1Y PPP",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 268,
+       "label": "2Y PPP",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 269,
+       "label": "3Y PPP",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 270,
+       "label": "4Y PPP",
+       "order": 5,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 271,
+       "label": "5Y PPP",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 25,
+     "label": "Escrow Waiver",
+     "order": 38,
+     "type": "boolean",
+     "value": "397",
+     "message": "",
+     "values": [
+      {
+       "id": 397,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 398,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 28,
+     "label": "Admin Fee Buyout",
+     "order": 40,
+     "type": "boolean",
+     "value": "403",
+     "message": "",
+     "values": [
+      {
+       "id": 403,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 404,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 22,
+     "label": "FTHB",
+     "order": 44,
+     "type": "boolean",
+     "value": "391",
+     "message": "",
+     "values": [
+      {
+       "id": 391,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 392,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 23,
+     "label": "Mortgage History",
+     "order": 45,
+     "type": "list",
+     "value": "529",
+     "message": "",
+     "values": [
+      {
+       "id": 529,
+       "label": "0x30x24",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 393,
+       "label": "0x30x12",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 394,
+       "label": "0x60x12",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 9,
+     "label": "Interest Only",
+     "order": 46,
+     "type": "boolean",
+     "value": "192",
+     "message": "",
+     "values": [
+      {
+       "id": 192,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 193,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 21,
+     "label": "Short Term Rental",
+     "order": 48,
+     "type": "boolean",
+     "value": "389",
+     "message": "",
+     "values": [
+      {
+       "id": 389,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 390,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 24,
+     "label": "Credit Event",
+     "order": 53,
+     "type": "list",
+     "value": "395",
+     "message": "",
+     "values": [
+      {
+       "id": 395,
+       "label": "48+ months",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 530,
+       "label": "36 - 48 months",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 396,
+       "label": "< 36 months",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 34,
+     "label": "Temporary Buydown",
+     "order": 55,
+     "type": "list",
+     "value": "427",
+     "message": "",
+     "values": [
+      {
+       "id": 427,
+       "label": "None",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 424,
+       "label": "3-2-1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 425,
+       "label": "2-1",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 426,
+       "label": "1-0",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    }
+   ]
+  },
+  "33015": {
+   "name": "Non-QM Second Lien",
+   "fields": [
+    {
+     "id": 6,
+     "label": "Occupancy",
+     "order": 1,
+     "type": "list",
+     "value": "175",
+     "message": "",
+     "values": [
+      {
+       "id": 175,
+       "label": "Primary Residence",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 177,
+       "label": "2nd Home",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 176,
+       "label": "Investment",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 8,
+     "label": "Property Type",
+     "order": 2,
+     "type": "list",
+     "value": "183",
+     "message": "",
+     "values": [
+      {
+       "id": 183,
+       "label": "1 Unit SFR",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 185,
+       "label": "PUD",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 186,
+       "label": "Condo",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 187,
+       "label": "2-4 Units",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 13,
+     "label": "Number of Units",
+     "order": 3,
+     "type": "list",
+     "value": "257",
+     "message": "",
+     "values": [
+      {
+       "id": 257,
+       "label": "1 Unit",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 258,
+       "label": "2 Units",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 259,
+       "label": "3 Units",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 260,
+       "label": "4 Units",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 29,
+     "label": "ZIP",
+     "order": 6,
+     "type": "text",
+     "value": "_____",
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 10,
+     "label": "State",
+     "order": 7,
+     "type": "list",
+     "value": "194",
+     "message": "",
+     "values": [
+      {
+       "id": 194,
+       "label": "Alabama [AL]",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 195,
+       "label": "Alaska [AK]",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 196,
+       "label": "Arizona [AZ]",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 197,
+       "label": "Arkansas [AR]",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 198,
+       "label": "California [CA]",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 199,
+       "label": "Colorado [CO]",
+       "order": 5,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 200,
+       "label": "Connecticut [CT]",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 201,
+       "label": "Delaware [DE]",
+       "order": 7,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 202,
+       "label": "District of Columbia [DC]",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 203,
+       "label": "Florida [FL]",
+       "order": 9,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 204,
+       "label": "Georgia [GA]",
+       "order": 10,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 206,
+       "label": "Idaho [ID]",
+       "order": 12,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 207,
+       "label": "Illinois [IL]",
+       "order": 13,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 208,
+       "label": "Indiana [IN]",
+       "order": 14,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 209,
+       "label": "Iowa [IA]",
+       "order": 15,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 210,
+       "label": "Kansas [KS]",
+       "order": 16,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 211,
+       "label": "Kentucky [KY]",
+       "order": 17,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 212,
+       "label": "Louisiana [LA]",
+       "order": 18,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 213,
+       "label": "Maine [ME]",
+       "order": 19,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 214,
+       "label": "Maryland [MD]",
+       "order": 20,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 215,
+       "label": "Massachusetts [MA]",
+       "order": 21,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 216,
+       "label": "Michigan [MI]",
+       "order": 22,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 217,
+       "label": "Minnesota [MN]",
+       "order": 23,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 218,
+       "label": "Mississippi [MS]",
+       "order": 24,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 219,
+       "label": "Missouri [MO]",
+       "order": 25,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 220,
+       "label": "Montana [MT]",
+       "order": 26,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 221,
+       "label": "Nebraska [NE]",
+       "order": 27,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 222,
+       "label": "Nevada [NV]",
+       "order": 28,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 223,
+       "label": "New Hampshire [NH]",
+       "order": 29,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 224,
+       "label": "New Jersey [NJ]",
+       "order": 30,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 225,
+       "label": "New Mexico [NM]",
+       "order": 31,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 226,
+       "label": "New York [NY]",
+       "order": 32,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 227,
+       "label": "North Carolina [NC]",
+       "order": 33,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 228,
+       "label": "North Dakota [ND]",
+       "order": 34,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 229,
+       "label": "Ohio [OH]",
+       "order": 35,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 230,
+       "label": "Oklahoma [OK]",
+       "order": 36,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 231,
+       "label": "Oregon [OR]",
+       "order": 37,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 232,
+       "label": "Pennsylvania [PA]",
+       "order": 38,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 234,
+       "label": "Rhode Island [RI]",
+       "order": 40,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 235,
+       "label": "South Carolina [SC]",
+       "order": 41,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 236,
+       "label": "South Dakota [SD]",
+       "order": 42,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 237,
+       "label": "Tennessee [TN]",
+       "order": 43,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 238,
+       "label": "Texas [TX]",
+       "order": 44,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 239,
+       "label": "Utah [UT]",
+       "order": 45,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 240,
+       "label": "Vermont [VT]",
+       "order": 46,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 241,
+       "label": "Virginia [VA]",
+       "order": 47,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 242,
+       "label": "Washington [WA]",
+       "order": 48,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 243,
+       "label": "West Virginia [WV]",
+       "order": 49,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 244,
+       "label": "Wisconsin [WI]",
+       "order": 50,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 245,
+       "label": "Wyoming [WY]",
+       "order": 51,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 35,
+     "label": "County",
+     "order": 8,
+     "type": "list",
+     "value": "",
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 26,
+     "label": "New Construction",
+     "order": 10,
+     "type": "boolean",
+     "value": "399",
+     "message": "",
+     "values": [
+      {
+       "id": 399,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 400,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 44,
+     "label": "Channel",
+     "order": 21,
+     "type": "list",
+     "value": "437",
+     "message": "",
+     "values": [
+      {
+       "id": 437,
+       "label": "Wholesale",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 438,
+       "label": "Correspondent Plus",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 439,
+       "label": "Correspondent",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 4,
+     "label": "Citizenship",
+     "order": 22,
+     "type": "list",
+     "value": "155",
+     "message": "",
+     "values": [
+      {
+       "id": 155,
+       "label": "US Citizen / Permanent Resident",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 156,
+       "label": "Non-Permanent Resident",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 157,
+       "label": "Foreign national",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 7,
+     "label": "Purpose",
+     "order": 23,
+     "type": "list",
+     "value": "178",
+     "message": "",
+     "values": [
+      {
+       "id": 178,
+       "label": "Purchase",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 179,
+       "label": "Rate/Term Refinance",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 180,
+       "label": "Cashout",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 16,
+     "label": "FICO",
+     "order": 26,
+     "type": "interval",
+     "value": "720",
+     "step": 1,
+     "min": 680,
+     "max": 850,
+     "from": 680,
+     "to": 850,
+     "message": "",
+     "values": [
+      {
+       "id": 290,
+       "label": "No FICO",
+       "order": 12,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 2,
+     "label": "Loan Term",
+     "order": 27,
+     "type": "list",
+     "value": "3",
+     "message": "",
+     "values": [
+      {
+       "id": 3,
+       "label": "30 Year Fixed",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 5,
+       "label": "20 Year Fixed",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 6,
+       "label": "15 Year Fixed",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 7,
+       "label": "10 Year Fixed",
+       "order": 5,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 5,
+     "label": "Income Type",
+     "order": 28,
+     "type": "list",
+     "value": "159",
+     "message": "",
+     "values": [
+      {
+       "id": 159,
+       "label": "Full Doc",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 162,
+       "label": "24 Months Bank Statement",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 163,
+       "label": "12 Months Bank Statement",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 166,
+       "label": "Asset Utilization",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 167,
+       "label": "WVOE",
+       "order": 7,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 168,
+       "label": "1099",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 169,
+       "label": "DSCR >= 1.25",
+       "order": 9,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 170,
+       "label": "DSCR 1.10 - 1.24",
+       "order": 10,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 171,
+       "label": "DSCR 1.00 - 1.09",
+       "order": 11,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 174,
+       "label": "Foreign income",
+       "order": 14,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 12,
+     "label": "DTI",
+     "order": 30,
+     "type": "interval",
+     "value": "1",
+     "step": 1,
+     "min": 1,
+     "max": 50,
+     "from": 1,
+     "to": 50,
+     "message": "",
+     "values": [
+      {
+       "id": 256,
+       "label": "Not required",
+       "order": 15,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 18,
+     "label": "Lock Period",
+     "order": 32,
+     "type": "list",
+     "value": "366",
+     "message": "",
+     "values": [
+      {
+       "id": 366,
+       "label": "30 Days",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 365,
+       "label": "15 Days",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 367,
+       "label": "45 Days",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 368,
+       "label": "60 Days",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 17,
+     "label": "Loan Amount",
+     "order": 33,
+     "type": "interval",
+     "value": "69501",
+     "step": 1,
+     "min": 50000,
+     "max": 500000,
+     "from": 50000,
+     "to": 500000,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 45,
+     "label": "Compensation type",
+     "order": 34,
+     "type": "list",
+     "value": "440",
+     "message": "",
+     "values": [
+      {
+       "id": 440,
+       "label": "Borrower Paid",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 441,
+       "label": "Lender Paid",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 15,
+     "label": "CLTV",
+     "order": 35,
+     "type": "interval",
+     "value": "70",
+     "step": 1,
+     "min": 1,
+     "max": 90,
+     "from": 1,
+     "to": 90,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 14,
+     "label": "Prepayment Penalty",
+     "order": 36,
+     "type": "list",
+     "value": "265",
+     "message": "",
+     "values": [
+      {
+       "id": 265,
+       "label": "No PPP",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 266,
+       "label": "6m PPP",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 267,
+       "label": "1Y PPP",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 268,
+       "label": "2Y PPP",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 269,
+       "label": "3Y PPP",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 270,
+       "label": "4Y PPP",
+       "order": 5,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 271,
+       "label": "5Y PPP",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 28,
+     "label": "Admin Fee Buyout",
+     "order": 40,
+     "type": "boolean",
+     "value": "403",
+     "message": "",
+     "values": [
+      {
+       "id": 403,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 404,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 22,
+     "label": "FTHB",
+     "order": 44,
+     "type": "boolean",
+     "value": "391",
+     "message": "",
+     "values": [
+      {
+       "id": 391,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 392,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 23,
+     "label": "Mortgage History",
+     "order": 45,
+     "type": "list",
+     "value": "393",
+     "message": "",
+     "values": [
+      {
+       "id": 393,
+       "label": "0x30x12",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 21,
+     "label": "Short Term Rental",
+     "order": 48,
+     "type": "boolean",
+     "value": "389",
+     "message": "",
+     "values": [
+      {
+       "id": 389,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 390,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 24,
+     "label": "Credit Event",
+     "order": 53,
+     "type": "list",
+     "value": "395",
+     "message": "",
+     "values": [
+      {
+       "id": 395,
+       "label": "48+ months",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    }
+   ]
+  },
+  "33087": {
+   "name": "Jumbo",
+   "fields": [
+    {
+     "id": 6,
+     "label": "Occupancy",
+     "order": 1,
+     "type": "list",
+     "value": "175",
+     "message": "",
+     "values": [
+      {
+       "id": 175,
+       "label": "Primary Residence",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 177,
+       "label": "2nd Home",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 176,
+       "label": "Investment",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 8,
+     "label": "Property Type",
+     "order": 2,
+     "type": "list",
+     "value": "183",
+     "message": "",
+     "values": [
+      {
+       "id": 183,
+       "label": "1 Unit SFR",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 185,
+       "label": "PUD",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 186,
+       "label": "Condo",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 187,
+       "label": "2-4 Units",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 13,
+     "label": "Number of Units",
+     "order": 3,
+     "type": "list",
+     "value": "257",
+     "message": "",
+     "values": [
+      {
+       "id": 257,
+       "label": "1 Unit",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 258,
+       "label": "2 Units",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 259,
+       "label": "3 Units",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 260,
+       "label": "4 Units",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 29,
+     "label": "ZIP",
+     "order": 6,
+     "type": "text",
+     "value": "_____",
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 10,
+     "label": "State",
+     "order": 7,
+     "type": "list",
+     "value": "194",
+     "message": "",
+     "values": [
+      {
+       "id": 194,
+       "label": "Alabama [AL]",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 195,
+       "label": "Alaska [AK]",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 196,
+       "label": "Arizona [AZ]",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 197,
+       "label": "Arkansas [AR]",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 198,
+       "label": "California [CA]",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 199,
+       "label": "Colorado [CO]",
+       "order": 5,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 200,
+       "label": "Connecticut [CT]",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 201,
+       "label": "Delaware [DE]",
+       "order": 7,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 202,
+       "label": "District of Columbia [DC]",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 203,
+       "label": "Florida [FL]",
+       "order": 9,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 204,
+       "label": "Georgia [GA]",
+       "order": 10,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 206,
+       "label": "Idaho [ID]",
+       "order": 12,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 207,
+       "label": "Illinois [IL]",
+       "order": 13,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 208,
+       "label": "Indiana [IN]",
+       "order": 14,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 209,
+       "label": "Iowa [IA]",
+       "order": 15,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 210,
+       "label": "Kansas [KS]",
+       "order": 16,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 211,
+       "label": "Kentucky [KY]",
+       "order": 17,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 212,
+       "label": "Louisiana [LA]",
+       "order": 18,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 213,
+       "label": "Maine [ME]",
+       "order": 19,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 214,
+       "label": "Maryland [MD]",
+       "order": 20,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 215,
+       "label": "Massachusetts [MA]",
+       "order": 21,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 216,
+       "label": "Michigan [MI]",
+       "order": 22,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 217,
+       "label": "Minnesota [MN]",
+       "order": 23,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 218,
+       "label": "Mississippi [MS]",
+       "order": 24,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 219,
+       "label": "Missouri [MO]",
+       "order": 25,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 220,
+       "label": "Montana [MT]",
+       "order": 26,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 221,
+       "label": "Nebraska [NE]",
+       "order": 27,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 222,
+       "label": "Nevada [NV]",
+       "order": 28,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 223,
+       "label": "New Hampshire [NH]",
+       "order": 29,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 224,
+       "label": "New Jersey [NJ]",
+       "order": 30,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 225,
+       "label": "New Mexico [NM]",
+       "order": 31,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 226,
+       "label": "New York [NY]",
+       "order": 32,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 227,
+       "label": "North Carolina [NC]",
+       "order": 33,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 228,
+       "label": "North Dakota [ND]",
+       "order": 34,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 229,
+       "label": "Ohio [OH]",
+       "order": 35,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 230,
+       "label": "Oklahoma [OK]",
+       "order": 36,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 231,
+       "label": "Oregon [OR]",
+       "order": 37,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 232,
+       "label": "Pennsylvania [PA]",
+       "order": 38,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 234,
+       "label": "Rhode Island [RI]",
+       "order": 40,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 235,
+       "label": "South Carolina [SC]",
+       "order": 41,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 236,
+       "label": "South Dakota [SD]",
+       "order": 42,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 237,
+       "label": "Tennessee [TN]",
+       "order": 43,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 238,
+       "label": "Texas [TX]",
+       "order": 44,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 239,
+       "label": "Utah [UT]",
+       "order": 45,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 240,
+       "label": "Vermont [VT]",
+       "order": 46,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 241,
+       "label": "Virginia [VA]",
+       "order": 47,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 242,
+       "label": "Washington [WA]",
+       "order": 48,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 243,
+       "label": "West Virginia [WV]",
+       "order": 49,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 244,
+       "label": "Wisconsin [WI]",
+       "order": 50,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 245,
+       "label": "Wyoming [WY]",
+       "order": 51,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 35,
+     "label": "County",
+     "order": 8,
+     "type": "list",
+     "value": "",
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 44,
+     "label": "Channel",
+     "order": 21,
+     "type": "list",
+     "value": "437",
+     "message": "",
+     "values": [
+      {
+       "id": 437,
+       "label": "Wholesale",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 438,
+       "label": "Correspondent Plus",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 439,
+       "label": "Correspondent",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 4,
+     "label": "Citizenship",
+     "order": 22,
+     "type": "list",
+     "value": "155",
+     "message": "",
+     "values": [
+      {
+       "id": 155,
+       "label": "US Citizen / Permanent Resident",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 156,
+       "label": "Non-Permanent Resident",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 7,
+     "label": "Purpose",
+     "order": 23,
+     "type": "list",
+     "value": "178",
+     "message": "",
+     "values": [
+      {
+       "id": 178,
+       "label": "Purchase",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 179,
+       "label": "Rate/Term Refinance",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 180,
+       "label": "Cashout",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 16,
+     "label": "FICO",
+     "order": 26,
+     "type": "interval",
+     "value": "720",
+     "step": 1,
+     "min": 660,
+     "max": 850,
+     "from": 660,
+     "to": 850,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 2,
+     "label": "Loan Term",
+     "order": 27,
+     "type": "list",
+     "value": "3",
+     "message": "",
+     "values": [
+      {
+       "id": 3,
+       "label": "30 Year Fixed",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 6,
+       "label": "15 Year Fixed",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 8,
+       "label": "5/6 ARM SOFR",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 9,
+       "label": "7/6 ARM SOFR",
+       "order": 7,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 10,
+       "label": "10/6 ARM SOFR",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 5,
+     "label": "Income Type",
+     "order": 28,
+     "type": "list",
+     "value": "159",
+     "message": "",
+     "values": [
+      {
+       "id": 159,
+       "label": "Full Doc",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 12,
+     "label": "DTI",
+     "order": 30,
+     "type": "interval",
+     "value": "1",
+     "step": 1,
+     "min": 1,
+     "max": 50,
+     "from": 1,
+     "to": 50,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 18,
+     "label": "Lock Period",
+     "order": 32,
+     "type": "list",
+     "value": "366",
+     "message": "",
+     "values": [
+      {
+       "id": 366,
+       "label": "30 Days",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 365,
+       "label": "15 Days",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 367,
+       "label": "45 Days",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 368,
+       "label": "60 Days",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 17,
+     "label": "Loan Amount",
+     "order": 33,
+     "type": "interval",
+     "value": "832752",
+     "step": 1,
+     "min": 832752,
+     "max": 5000000,
+     "from": 832752,
+     "to": 5000000,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 45,
+     "label": "Compensation type",
+     "order": 34,
+     "type": "list",
+     "value": "440",
+     "message": "",
+     "values": [
+      {
+       "id": 440,
+       "label": "Borrower Paid",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 441,
+       "label": "Lender Paid",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 15,
+     "label": "HCLTV",
+     "order": 35,
+     "type": "interval",
+     "value": "70",
+     "step": 1,
+     "min": 1,
+     "max": 90,
+     "from": 1,
+     "to": 90,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 14,
+     "label": "Prepayment Penalty",
+     "order": 36,
+     "type": "list",
+     "value": "265",
+     "message": "",
+     "values": [
+      {
+       "id": 265,
+       "label": "No PPP",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 266,
+       "label": "6m PPP",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 267,
+       "label": "1Y PPP",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 268,
+       "label": "2Y PPP",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 269,
+       "label": "3Y PPP",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 270,
+       "label": "4Y PPP",
+       "order": 5,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 271,
+       "label": "5Y PPP",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 25,
+     "label": "Escrow Waiver",
+     "order": 38,
+     "type": "boolean",
+     "value": "397",
+     "message": "",
+     "values": [
+      {
+       "id": 397,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 398,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 28,
+     "label": "Admin Fee Buyout",
+     "order": 40,
+     "type": "boolean",
+     "value": "403",
+     "message": "",
+     "values": [
+      {
+       "id": 403,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 404,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 22,
+     "label": "FTHB",
+     "order": 44,
+     "type": "boolean",
+     "value": "391",
+     "message": "",
+     "values": [
+      {
+       "id": 391,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 392,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 37,
+     "label": "Self Employed",
+     "order": 50,
+     "type": "boolean",
+     "value": "428",
+     "message": "",
+     "values": [
+      {
+       "id": 428,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 429,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 34,
+     "label": "Temporary Buydown",
+     "order": 55,
+     "type": "list",
+     "value": "427",
+     "message": "",
+     "values": [
+      {
+       "id": 427,
+       "label": "None",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 424,
+       "label": "3-2-1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 425,
+       "label": "2-1",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 426,
+       "label": "1-0",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    }
+   ]
+  },
+  "33154": {
+   "name": "Conventional",
+   "fields": [
+    {
+     "id": 6,
+     "label": "Occupancy",
+     "order": 1,
+     "type": "list",
+     "value": "175",
+     "message": "",
+     "values": [
+      {
+       "id": 175,
+       "label": "Primary Residence",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 177,
+       "label": "2nd Home",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 176,
+       "label": "Investment",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 8,
+     "label": "Property Type",
+     "order": 2,
+     "type": "list",
+     "value": "183",
+     "message": "",
+     "values": [
+      {
+       "id": 183,
+       "label": "1 Unit SFR",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 185,
+       "label": "PUD",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 453,
+       "label": "Condo Attached",
+       "order": 5,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 454,
+       "label": "Condo Semi-detached",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 452,
+       "label": "Condo Detached",
+       "order": 7,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 187,
+       "label": "2-4 Units",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 455,
+       "label": "Manufactured Single-wide",
+       "order": 11,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 456,
+       "label": "Manufactured Multi-wide",
+       "order": 12,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 13,
+     "label": "Number of Units",
+     "order": 3,
+     "type": "list",
+     "value": "257",
+     "message": "",
+     "values": [
+      {
+       "id": 257,
+       "label": "1 Unit",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 258,
+       "label": "2 Units",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 259,
+       "label": "3 Units",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 260,
+       "label": "4 Units",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 29,
+     "label": "ZIP",
+     "order": 6,
+     "type": "text",
+     "value": "_____",
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 10,
+     "label": "State",
+     "order": 7,
+     "type": "list",
+     "value": "194",
+     "message": "",
+     "values": [
+      {
+       "id": 194,
+       "label": "Alabama [AL]",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 195,
+       "label": "Alaska [AK]",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 196,
+       "label": "Arizona [AZ]",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 197,
+       "label": "Arkansas [AR]",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 198,
+       "label": "California [CA]",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 199,
+       "label": "Colorado [CO]",
+       "order": 5,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 200,
+       "label": "Connecticut [CT]",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 201,
+       "label": "Delaware [DE]",
+       "order": 7,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 202,
+       "label": "District of Columbia [DC]",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 203,
+       "label": "Florida [FL]",
+       "order": 9,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 204,
+       "label": "Georgia [GA]",
+       "order": 10,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 206,
+       "label": "Idaho [ID]",
+       "order": 12,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 207,
+       "label": "Illinois [IL]",
+       "order": 13,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 208,
+       "label": "Indiana [IN]",
+       "order": 14,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 209,
+       "label": "Iowa [IA]",
+       "order": 15,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 210,
+       "label": "Kansas [KS]",
+       "order": 16,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 211,
+       "label": "Kentucky [KY]",
+       "order": 17,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 212,
+       "label": "Louisiana [LA]",
+       "order": 18,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 213,
+       "label": "Maine [ME]",
+       "order": 19,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 214,
+       "label": "Maryland [MD]",
+       "order": 20,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 215,
+       "label": "Massachusetts [MA]",
+       "order": 21,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 216,
+       "label": "Michigan [MI]",
+       "order": 22,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 217,
+       "label": "Minnesota [MN]",
+       "order": 23,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 218,
+       "label": "Mississippi [MS]",
+       "order": 24,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 219,
+       "label": "Missouri [MO]",
+       "order": 25,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 220,
+       "label": "Montana [MT]",
+       "order": 26,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 221,
+       "label": "Nebraska [NE]",
+       "order": 27,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 222,
+       "label": "Nevada [NV]",
+       "order": 28,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 223,
+       "label": "New Hampshire [NH]",
+       "order": 29,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 224,
+       "label": "New Jersey [NJ]",
+       "order": 30,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 225,
+       "label": "New Mexico [NM]",
+       "order": 31,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 226,
+       "label": "New York [NY]",
+       "order": 32,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 227,
+       "label": "North Carolina [NC]",
+       "order": 33,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 228,
+       "label": "North Dakota [ND]",
+       "order": 34,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 229,
+       "label": "Ohio [OH]",
+       "order": 35,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 230,
+       "label": "Oklahoma [OK]",
+       "order": 36,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 231,
+       "label": "Oregon [OR]",
+       "order": 37,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 232,
+       "label": "Pennsylvania [PA]",
+       "order": 38,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 234,
+       "label": "Rhode Island [RI]",
+       "order": 40,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 235,
+       "label": "South Carolina [SC]",
+       "order": 41,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 236,
+       "label": "South Dakota [SD]",
+       "order": 42,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 237,
+       "label": "Tennessee [TN]",
+       "order": 43,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 238,
+       "label": "Texas [TX]",
+       "order": 44,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 239,
+       "label": "Utah [UT]",
+       "order": 45,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 240,
+       "label": "Vermont [VT]",
+       "order": 46,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 241,
+       "label": "Virginia [VA]",
+       "order": 47,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 242,
+       "label": "Washington [WA]",
+       "order": 48,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 243,
+       "label": "West Virginia [WV]",
+       "order": 49,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 244,
+       "label": "Wisconsin [WI]",
+       "order": 50,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 245,
+       "label": "Wyoming [WY]",
+       "order": 51,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 246,
+       "label": "US Virgin Islands [VI]",
+       "order": 52,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 35,
+     "label": "County",
+     "order": 8,
+     "type": "list",
+     "value": "",
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 52,
+     "label": "MI rate type",
+     "order": 11,
+     "type": "list",
+     "value": "446",
+     "message": "",
+     "values": [
+      {
+       "id": 446,
+       "label": "Monthly",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 447,
+       "label": "Single",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 53,
+     "label": "MI coverage",
+     "order": 12,
+     "type": "list",
+     "value": "449",
+     "message": "",
+     "values": [
+      {
+       "id": 449,
+       "label": "Standard",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 450,
+       "label": "Custom",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 38,
+     "label": "Multi Borrower",
+     "order": 13,
+     "type": "boolean",
+     "value": "430",
+     "message": "",
+     "values": [
+      {
+       "id": 430,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 431,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 44,
+     "label": "Channel",
+     "order": 21,
+     "type": "list",
+     "value": "437",
+     "message": "",
+     "values": [
+      {
+       "id": 437,
+       "label": "Wholesale",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 438,
+       "label": "Correspondent Plus",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 439,
+       "label": "Correspondent",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 4,
+     "label": "Citizenship",
+     "order": 22,
+     "type": "list",
+     "value": "155",
+     "message": "",
+     "values": [
+      {
+       "id": 155,
+       "label": "US Citizen / Permanent Resident",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 156,
+       "label": "Non-Permanent Resident",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 7,
+     "label": "Purpose",
+     "order": 23,
+     "type": "list",
+     "value": "178",
+     "message": "",
+     "values": [
+      {
+       "id": 178,
+       "label": "Purchase",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 179,
+       "label": "Rate/Term Refinance",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 180,
+       "label": "Cashout",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 19,
+     "label": "Program Type",
+     "order": 25,
+     "type": "list",
+     "value": "370",
+     "message": "",
+     "values": [
+      {
+       "id": 370,
+       "label": "Standard",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 371,
+       "label": "Home Ready",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 372,
+       "label": "Home Possible",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 373,
+       "label": "Refi Now",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 374,
+       "label": "Refi Possible",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 16,
+     "label": "FICO",
+     "order": 26,
+     "type": "interval",
+     "value": "720",
+     "step": 1,
+     "min": 620,
+     "max": 850,
+     "from": 620,
+     "to": 850,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 2,
+     "label": "Loan Term",
+     "order": 27,
+     "type": "list",
+     "value": "3",
+     "message": "",
+     "values": [
+      {
+       "id": 3,
+       "label": "30 Year Fixed",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 4,
+       "label": "25 Year Fixed",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 5,
+       "label": "20 Year Fixed",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 6,
+       "label": "15 Year Fixed",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 7,
+       "label": "10 Year Fixed",
+       "order": 5,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 8,
+       "label": "5/6 ARM SOFR",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 9,
+       "label": "7/6 ARM SOFR",
+       "order": 7,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 10,
+       "label": "10/6 ARM SOFR",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 12,
+     "label": "DTI",
+     "order": 30,
+     "type": "interval",
+     "value": "1",
+     "step": 1,
+     "min": 1,
+     "max": 65,
+     "from": 1,
+     "to": 65,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 18,
+     "label": "Lock Period",
+     "order": 32,
+     "type": "list",
+     "value": "366",
+     "message": "",
+     "values": [
+      {
+       "id": 366,
+       "label": "30 Days",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 365,
+       "label": "15 Days",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 367,
+       "label": "45 Days",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 368,
+       "label": "60 Days",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 17,
+     "label": "Loan Amount",
+     "order": 33,
+     "type": "interval",
+     "value": "50000",
+     "step": 1,
+     "min": 50000,
+     "max": 2402625,
+     "from": 50000,
+     "to": 2402625,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 45,
+     "label": "Compensation type",
+     "order": 34,
+     "type": "list",
+     "value": "440",
+     "message": "",
+     "values": [
+      {
+       "id": 440,
+       "label": "Borrower Paid",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 441,
+       "label": "Lender Paid",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 15,
+     "label": "CLTV",
+     "order": 35,
+     "type": "interval",
+     "value": "70",
+     "step": 1,
+     "min": 1,
+     "max": 97,
+     "from": 1,
+     "to": 97,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 25,
+     "label": "Escrow Waiver",
+     "order": 38,
+     "type": "boolean",
+     "value": "397",
+     "message": "",
+     "values": [
+      {
+       "id": 397,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 398,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 28,
+     "label": "Admin Fee Buyout",
+     "order": 40,
+     "type": "boolean",
+     "value": "403",
+     "message": "",
+     "values": [
+      {
+       "id": 403,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 404,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 22,
+     "label": "FTHB",
+     "order": 44,
+     "type": "boolean",
+     "value": "391",
+     "message": "",
+     "values": [
+      {
+       "id": 391,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 392,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 59,
+     "label": "LLPA Waiver",
+     "order": 49,
+     "type": "boolean",
+     "value": "499",
+     "message": "",
+     "values": [
+      {
+       "id": 499,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 500,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 27,
+     "label": "High Balance",
+     "order": 52,
+     "type": "boolean",
+     "value": "401",
+     "message": "",
+     "values": [
+      {
+       "id": 401,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 402,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 11,
+     "label": "Sub Financing",
+     "order": 54,
+     "type": "boolean",
+     "value": "248",
+     "message": "",
+     "values": [
+      {
+       "id": 248,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 249,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 34,
+     "label": "Temporary Buydown",
+     "order": 55,
+     "type": "list",
+     "value": "427",
+     "message": "",
+     "values": [
+      {
+       "id": 427,
+       "label": "None",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 424,
+       "label": "3-2-1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 425,
+       "label": "2-1",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 426,
+       "label": "1-0",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    }
+   ]
+  },
+  "33192": {
+   "name": "Government",
+   "fields": [
+    {
+     "id": 6,
+     "label": "Occupancy",
+     "order": 1,
+     "type": "list",
+     "value": "175",
+     "message": "",
+     "values": [
+      {
+       "id": 175,
+       "label": "Primary Residence",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 8,
+     "label": "Property Type",
+     "order": 2,
+     "type": "list",
+     "value": "183",
+     "message": "",
+     "values": [
+      {
+       "id": 183,
+       "label": "1 Unit SFR",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 185,
+       "label": "PUD",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 186,
+       "label": "Condo",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 187,
+       "label": "2-4 Units",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 189,
+       "label": "Manufactured housing",
+       "order": 10,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 456,
+       "label": "Manufactured Multi-wide",
+       "order": 12,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 13,
+     "label": "Number of Units",
+     "order": 3,
+     "type": "list",
+     "value": "257",
+     "message": "",
+     "values": [
+      {
+       "id": 257,
+       "label": "1 Unit",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 258,
+       "label": "2 Units",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 259,
+       "label": "3 Units",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 260,
+       "label": "4 Units",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 29,
+     "label": "ZIP",
+     "order": 6,
+     "type": "text",
+     "value": "_____",
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 10,
+     "label": "State",
+     "order": 7,
+     "type": "list",
+     "value": "194",
+     "message": "",
+     "values": [
+      {
+       "id": 194,
+       "label": "Alabama [AL]",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 195,
+       "label": "Alaska [AK]",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 196,
+       "label": "Arizona [AZ]",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 197,
+       "label": "Arkansas [AR]",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 198,
+       "label": "California [CA]",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 199,
+       "label": "Colorado [CO]",
+       "order": 5,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 200,
+       "label": "Connecticut [CT]",
+       "order": 6,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 201,
+       "label": "Delaware [DE]",
+       "order": 7,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 202,
+       "label": "District of Columbia [DC]",
+       "order": 8,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 203,
+       "label": "Florida [FL]",
+       "order": 9,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 204,
+       "label": "Georgia [GA]",
+       "order": 10,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 206,
+       "label": "Idaho [ID]",
+       "order": 12,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 207,
+       "label": "Illinois [IL]",
+       "order": 13,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 208,
+       "label": "Indiana [IN]",
+       "order": 14,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 209,
+       "label": "Iowa [IA]",
+       "order": 15,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 210,
+       "label": "Kansas [KS]",
+       "order": 16,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 211,
+       "label": "Kentucky [KY]",
+       "order": 17,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 212,
+       "label": "Louisiana [LA]",
+       "order": 18,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 213,
+       "label": "Maine [ME]",
+       "order": 19,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 214,
+       "label": "Maryland [MD]",
+       "order": 20,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 215,
+       "label": "Massachusetts [MA]",
+       "order": 21,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 216,
+       "label": "Michigan [MI]",
+       "order": 22,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 217,
+       "label": "Minnesota [MN]",
+       "order": 23,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 218,
+       "label": "Mississippi [MS]",
+       "order": 24,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 219,
+       "label": "Missouri [MO]",
+       "order": 25,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 220,
+       "label": "Montana [MT]",
+       "order": 26,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 221,
+       "label": "Nebraska [NE]",
+       "order": 27,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 222,
+       "label": "Nevada [NV]",
+       "order": 28,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 223,
+       "label": "New Hampshire [NH]",
+       "order": 29,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 224,
+       "label": "New Jersey [NJ]",
+       "order": 30,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 225,
+       "label": "New Mexico [NM]",
+       "order": 31,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 226,
+       "label": "New York [NY]",
+       "order": 32,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 227,
+       "label": "North Carolina [NC]",
+       "order": 33,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 228,
+       "label": "North Dakota [ND]",
+       "order": 34,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 229,
+       "label": "Ohio [OH]",
+       "order": 35,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 230,
+       "label": "Oklahoma [OK]",
+       "order": 36,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 231,
+       "label": "Oregon [OR]",
+       "order": 37,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 232,
+       "label": "Pennsylvania [PA]",
+       "order": 38,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 234,
+       "label": "Rhode Island [RI]",
+       "order": 40,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 235,
+       "label": "South Carolina [SC]",
+       "order": 41,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 236,
+       "label": "South Dakota [SD]",
+       "order": 42,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 237,
+       "label": "Tennessee [TN]",
+       "order": 43,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 238,
+       "label": "Texas [TX]",
+       "order": 44,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 239,
+       "label": "Utah [UT]",
+       "order": 45,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 240,
+       "label": "Vermont [VT]",
+       "order": 46,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 241,
+       "label": "Virginia [VA]",
+       "order": 47,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 242,
+       "label": "Washington [WA]",
+       "order": 48,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 243,
+       "label": "West Virginia [WV]",
+       "order": 49,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 244,
+       "label": "Wisconsin [WI]",
+       "order": 50,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 245,
+       "label": "Wyoming [WY]",
+       "order": 51,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 35,
+     "label": "County",
+     "order": 8,
+     "type": "list",
+     "value": "",
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 52,
+     "label": "MI rate type",
+     "order": 11,
+     "type": "list",
+     "value": "446",
+     "message": "",
+     "values": [
+      {
+       "id": 446,
+       "label": "Monthly",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 44,
+     "label": "Channel",
+     "order": 21,
+     "type": "list",
+     "value": "437",
+     "message": "",
+     "values": [
+      {
+       "id": 437,
+       "label": "Wholesale",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 438,
+       "label": "Correspondent Plus",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 439,
+       "label": "Correspondent",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 4,
+     "label": "Citizenship",
+     "order": 22,
+     "type": "list",
+     "value": "155",
+     "message": "",
+     "values": [
+      {
+       "id": 155,
+       "label": "US Citizen / Permanent Resident",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 7,
+     "label": "Purpose",
+     "order": 23,
+     "type": "list",
+     "value": "178",
+     "message": "",
+     "values": [
+      {
+       "id": 178,
+       "label": "Purchase",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 179,
+       "label": "Rate/Term Refinance",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 180,
+       "label": "Cashout",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 181,
+       "label": "Streamline Refinance",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 182,
+       "label": "IRRRL",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 58,
+     "label": "Government Program",
+     "order": 24,
+     "type": "list",
+     "value": "462",
+     "message": "",
+     "values": [
+      {
+       "id": 462,
+       "label": "FHA",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 463,
+       "label": "VA",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 19,
+     "label": "Program Type",
+     "order": 25,
+     "type": "list",
+     "value": "370",
+     "message": "",
+     "values": [
+      {
+       "id": 370,
+       "label": "Standard",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 16,
+     "label": "FICO",
+     "order": 26,
+     "type": "interval",
+     "value": "720",
+     "step": 1,
+     "min": 580,
+     "max": 850,
+     "from": 580,
+     "to": 850,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 2,
+     "label": "Loan Term",
+     "order": 27,
+     "type": "list",
+     "value": "3",
+     "message": "",
+     "values": [
+      {
+       "id": 3,
+       "label": "30 Year Fixed",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 5,
+       "label": "20 Year Fixed",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 6,
+       "label": "15 Year Fixed",
+       "order": 4,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 12,
+     "label": "DTI",
+     "order": 30,
+     "type": "interval",
+     "value": "1",
+     "step": 1,
+     "min": 1,
+     "max": 57,
+     "from": 1,
+     "to": 57,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 18,
+     "label": "Lock Period",
+     "order": 32,
+     "type": "list",
+     "value": "366",
+     "message": "",
+     "values": [
+      {
+       "id": 366,
+       "label": "30 Days",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 365,
+       "label": "15 Days",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 367,
+       "label": "45 Days",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 368,
+       "label": "60 Days",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 17,
+     "label": "Loan Amount",
+     "order": 33,
+     "type": "interval",
+     "value": "110001",
+     "step": 1,
+     "min": 50000,
+     "max": 2402625,
+     "from": 50000,
+     "to": 2402625,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 45,
+     "label": "Compensation type",
+     "order": 34,
+     "type": "list",
+     "value": "440",
+     "message": "",
+     "values": [
+      {
+       "id": 440,
+       "label": "Borrower Paid",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 441,
+       "label": "Lender Paid",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 15,
+     "label": "CLTV",
+     "order": 35,
+     "type": "interval",
+     "value": "70",
+     "step": 1,
+     "min": 1,
+     "max": 110,
+     "from": 1,
+     "to": 110,
+     "message": "",
+     "values": []
+    },
+    {
+     "id": 28,
+     "label": "Admin Fee Buyout",
+     "order": 40,
+     "type": "boolean",
+     "value": "403",
+     "message": "",
+     "values": [
+      {
+       "id": 403,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 404,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 27,
+     "label": "High Balance",
+     "order": 52,
+     "type": "boolean",
+     "value": "401",
+     "message": "",
+     "values": [
+      {
+       "id": 401,
+       "label": "0",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 402,
+       "label": "1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 34,
+     "label": "Temporary Buydown",
+     "order": 55,
+     "type": "list",
+     "value": "427",
+     "message": "",
+     "values": [
+      {
+       "id": 427,
+       "label": "None",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 424,
+       "label": "3-2-1",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 425,
+       "label": "2-1",
+       "order": 2,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 426,
+       "label": "1-0",
+       "order": 3,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    },
+    {
+     "id": 30,
+     "label": "UW Type",
+     "order": 56,
+     "type": "list",
+     "value": "405",
+     "message": "",
+     "values": [
+      {
+       "id": 405,
+       "label": "AUS",
+       "order": 0,
+       "disabled": false,
+       "message": ""
+      },
+      {
+       "id": 406,
+       "label": "Manual UW",
+       "order": 1,
+       "disabled": false,
+       "message": ""
+      }
+     ]
+    }
+   ]
+  }
+ }
+}

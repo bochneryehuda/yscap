@@ -118,7 +118,10 @@ console.log('\nF. the waive — cash off the credit, then onto the buydown');
 {
   const c = quoteCharges('lenderPaid', PLAN, 102, LOAN, true);
   eq(lineOf(c, 'buydown').dollars, 2095, 'F5 at par the waive lands whole on the buydown — "it increases his buy-down with this 2095"');
-  eq(lineOf(c, 'buydown').points, 0.599, 'F6 …with CASH-derived points, so points and dollars can never disagree');
+  // The label used to read "so points and dollars can never disagree" — the same
+  // overstatement the module carried until 2026-08-30. This case is exact; section M
+  // holds the general property, which is a BOUND rather than an equality.
+  eq(lineOf(c, 'buydown').points, 0.599, 'F6 …with CASH-derived points — $2,095 of $350,000 is 0.599 points, to the thousandth');
 }
 {
   const c = quoteCharges('lenderPaid', PLAN, 102.3, LOAN, true);
@@ -263,6 +266,63 @@ console.log('\nL. the board never prints a waived fee as a row of $0.00');
     'L3 …and the "none" fallback keys off the drawn list, not the raw one');
   ok(/waivedDollars > 0/.test(body) && /Lender fees waived/.test(body),
     'L4 …with the waive summarised instead, so the saving is still on the screen');
+}
+
+console.log('\nM. the points beside a waive-touched buydown are a ROUNDED restatement of the cash');
+{
+  // ⛔ WHAT THIS BOUNDS, AND WHY IT IS A BOUND RATHER THAN AN EQUALITY. Without a waive the
+  // DOLLARS are derived from the points and the two agree exactly. With one, the cash is the
+  // fact and the points are derived back from it — and a 3-decimal points figure cannot
+  // express an arbitrary cash amount, so they differ by up to one rounding step. The module
+  // claimed they "can never disagree" until 2026-08-30; measured, they do.
+  //
+  // The DOLLARS are the money (every total sums them), so what must never happen is the gap
+  // growing beyond that rounding step — which is exactly what a changed rounding, or points
+  // taken of the wrong basis, would do. One rounding step is half of 0.001 points of the
+  // loan: loan x 0.000005.
+  const PLAN_M = { lenderPaid: 2, borrowerPaid: 2, ysp: 0, applicationFee: 1595, commitmentFee: 500 };
+  let worst = 0; let worstAt = null; let seen = 0;
+  for (const loan of [75000, 375000, 1000000, 5000000, 123456.78]) {
+    const step = loan * 0.000005;
+    for (let price = 88; price <= 101; price = Math.round((price + 0.1) * 1000) / 1000) {
+      const c = quoteCharges('lenderPaid', PLAN_M, price, loan, true);
+      const b = c && c.lines.find((l) => l.key === 'buydown');
+      if (!b || !(b.dollars > 0) || b.points == null) continue;
+      seen += 1;
+      const implied = Math.round((b.points / 100) * loan * 100) / 100;
+      const gap = Math.abs(implied - b.dollars);
+      // The cent-rounding of `implied` itself can add half a cent on top of the step.
+      if (gap > step + 0.01) { worst = gap; worstAt = { price, loan, points: b.points, dollars: b.dollars, implied }; }
+    }
+  }
+  ok(seen > 200, `M0 the battery actually reaches waive-touched buydown lines (${seen}) — a bound nothing exercises proves nothing`);
+  ok(worstAt === null,
+    `M1 the gap between a waive-touched buydown's points and its own dollars never exceeds one rounding step${worstAt ? ` — ${JSON.stringify(worstAt)}` : ''}`);
+  // …and the DOLLARS, which are the money, still reconcile exactly to every total.
+  const c = quoteCharges('lenderPaid', PLAN_M, 100.2, 375000, true);
+  const sum = Math.round(c.lines.reduce((a, l) => a + (l.dollars || 0), 0) * 100) / 100;
+  ok(sum === c.borrowerPaysDollars,
+    'M2 …while the DOLLARS reconcile to the total exactly, which is why they are the authoritative half');
+}
+
+console.log('\nN. the points on a waive-touched buydown STAY — a decision, not an oversight');
+{
+  // ⛔ THIS PINS A DECISION, NOT A CORRECTNESS PROPERTY, which is why it reads oddly next to
+  // the rest of this file. Section M measured that a waive-touched buydown's points and its
+  // own dollars differ by a rounding step ($1.25 on a $375,000 loan). It was put to the owner
+  // with the trade stated — dropping the points removes the gap but takes a figure off the
+  // page — and the owner chose to KEEP them: *"Just leave it like this. It's okay if the
+  // rounding is a little messed up for this one line."*
+  //
+  // Without this, the next person to notice the gap "fixes" it by dropping the points, every
+  // other test still passes, and a decision the owner made is quietly reversed on a document
+  // that goes to a borrower. Reopening it needs the owner's own words.
+  const PLAN_N = { lenderPaid: 2, borrowerPaid: 2, ysp: 0, applicationFee: 1595, commitmentFee: 500 };
+  const c = quoteCharges('lenderPaid', PLAN_N, 100.2, 375000, true);
+  const b = c && c.lines.find((l) => l.key === 'buydown');
+  ok(b && b.dollars === 8845, `N0 the owner's own line is reachable — $8,845 of buydown after the waive (${b && b.dollars})`);
+  ok(b && typeof b.points === 'number' && b.points === 2.359,
+    `N1 …and it still carries its points (${b && b.points}) — owner-directed 2026-08-30 to leave them, gap and all`);
 }
 
 if (bad) { console.error(`\n${bad} FAILED`); process.exit(1); }
