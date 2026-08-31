@@ -41,6 +41,10 @@
  * about who was addressed, which is this repo's standing rule for outbound mail.
  */
 process.env.NODE_ENV = process.env.NODE_ENV || 'test';
+/* THE PER-ORDER REPLY ADDRESS IS DORMANT WITHOUT A REPLY DOMAIN, deliberately —
+   `file-address` refuses to mint one rather than put an address on some other
+   domain into a letter. Section E is about what comes BACK, so it needs one. */
+process.env.CHAT_REPLY_DOMAIN = process.env.CHAT_REPLY_DOMAIN || 'reply.test';
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -59,6 +63,19 @@ const check = (cond, msg) => {
   require.cache[mailPath].exports = {
     ...realMail,
     sendMail: async (m) => { sent.push(m); return { ok: true, id: 'stub', provider: 'stub' }; },
+  };
+
+  /* `handleOne` deliberately does not trust the bytes on the webhook — it
+     re-fetches them from the provider, which is right in production and
+     unreachable here. The stub hands back exactly the attachments the fixture
+     describes, so what runs is the REAL filing path and only the provider round
+     trip is stood in for. */
+  const inboundMail = require('../src/lib/inbound-mail');
+  let inlineAttachments = [];
+  inboundMail.retrieveAttachmentsSafe = async () => {
+    const out = inlineAttachments.slice();
+    out.droppedByCap = 0; out.droppedByError = 0;
+    return out;
   };
 
   const { ensureSchema } = require('../src/migrate-boot.js');
@@ -220,6 +237,60 @@ const check = (cond, msg) => {
     // Nothing is ever HIDDEN: a desk that drops cards reads as one that broke.
     check(deskNarrow.orders.length === kinds.ORDER_KIND_KEYS.length,
       `all ${kinds.ORDER_KIND_KEYS.length} cards are still on the desk`);
+
+    console.log('\nE. THE RETURN LEG — the vendor replies and each document finds its slot');
+    /* The other half of "linked to the correct place": an order that goes out and
+       comes back to a condition that still reads as empty is not linked at all.
+       Driven through the REAL inbound handler, on the REAL title condition, with
+       four documents named the way a title company names them. */
+    const inbox = require('../src/longterm/orders/inbox.js');
+    const replyTo = (await db.query(
+      `SELECT reply_to FROM lt_file_orders WHERE loan_id = $1::uuid AND kind = 'title'`, [wide])).rows[0].reply_to;
+    const refs = inbox.ordersFromEvent({ to: [replyTo] });
+    check(refs.length === 1 && String(refs[0].loanId) === String(wide),
+      'the order\'s own reply address resolves back to that order — the per-order box');
+
+    const files = [
+      ['Title Commitment 2026.pdf', 'commitment'],
+      ['CPL for lender.pdf', 'cpl'],
+      ['Wiring instructions.pdf', 'wire_instructions'],
+      ['Invoice 4471.pdf', 'invoice'],
+      ['scan001.pdf', null],
+    ];
+    inlineAttachments = files.map(([filename], i) => ({
+      filename, contentType: 'application/pdf',
+      content: Buffer.from(`%PDF-1.4 ${filename} ${i}`).toString('base64'),
+    }));
+    const handled = await inbox.handleOne(refs[0], { data: { email_id: `${tag}-reply` } }, {
+      id: `${tag}-reply`, from: `title.${tag}@vendor.test`, to: [replyTo],
+      subject: 'Re: title order', text: 'Attached.',
+      // The delivery carries the attachment METADATA; the bytes come back from the
+      // provider, which is what the stub above stands in for.
+      attachments: inlineAttachments.map((a) => ({ filename: a.filename, contentType: a.contentType })),
+    });
+    check(Number(handled && handled.filed) === files.length,
+      `all ${files.length} documents are filed (${JSON.stringify(handled).slice(0, 160)})`);
+
+    const titleDocsCond = (await db.query(
+      `SELECT ci.id FROM checklist_items ci JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE ci.lt_loan_id = $1::uuid AND t.code = 'lt_title_docs'`, [wide])).rows[0];
+    const filed = (await db.query(
+      `SELECT filename, slot_label, checklist_item_id, review_status, visibility
+         FROM documents WHERE lt_loan_id = $1::uuid`, [wide])).rows;
+    for (const [filename, slot] of files) {
+      const row = filed.find((f) => f.filename === filename);
+      check(!!row && String(row.checklist_item_id) === String(titleDocsCond.id),
+        `"${filename}" lands on the title DOCUMENTS condition, not merely on the loan`);
+      check(!!row && (row.slot_label || null) === slot,
+        slot
+          ? `"${filename}" files itself into the "${slot}" slot (${row && row.slot_label})`
+          : `"${filename}" is filed with NO slot rather than guessed into one — a document in the wrong slot reads as satisfied`);
+    }
+    const one = filed.find((f) => f.filename === 'Invoice 4471.pdf');
+    check(one && one.review_status === 'pending',
+      'a returned document is filed, NOT accepted — nothing un-reviewed leaves the building');
+    check(one && one.visibility === 'staff_only',
+      'and it is staff-only until somebody has looked at it');
 
     const beforeRefusal = sent.length;
     const refused = await deskMod.place(narrow, 'vor', { db, actor: { name: 'Auditor' } });
