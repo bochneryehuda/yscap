@@ -1034,6 +1034,31 @@ import app-v2/src/lib/dialog.js
 #         the Long-Term side would be both a duplicate and a rule violation. It
 #         renders text and resolves a promise; it reads no product's data.)
 # ---------------------------------------------------------------------------
+# WHO ELSE IS ON AN ORDER'S THREAD — under the same 2026-08-31 grant, and found
+# by the two-product parity engine the owner asked for in the same message:
+#
+#   "start a full side-to-side comparison ... to make sure that every single
+#    feature that is available on the short-term side, every single guard, every
+#    single way of operating, is also on the long-term side. A lot of stuff was
+#    invested in the short-term side, and we don't want to reinvent. We just want
+#    to share the code."
+#
+# The engine's first real finding: each loan officer can set whether their title
+# and insurance orders copy the borrower, and a LONG-TERM order never read that
+# setting -- so an officer who had turned it on got it on their short-term orders
+# and silently not on their long-term ones. The rule was written INLINE in
+# src/routes/staff.js where no second caller could reach it (the same shape the
+# entity edit rules were in), so it was EXTRACTED and the short-term route
+# re-pointed at it first.
+#
+import src/lib/order-cc.js
+#        (explicit -> what the order recorded when it was placed -> the officer's
+#         own default for this KIND of order -> the company default. WHICH officer
+#         is deliberately NOT in it: that is a fact about a loan, and the two
+#         products keep loans in their own tables -- each resolves its own officer
+#         and passes the id. The SETTING is per-staffer (db/391) and the staff
+#         roster is the shared identity zone, so both products may read it.)
+# ---------------------------------------------------------------------------
 ```
 
 ## Log of authorizations

@@ -942,7 +942,29 @@ router.post('/documents/:documentId/review', async (req, res) => {
     const out = await condReview.applyVerdict(db, {
       doc, verdict, actorId: staffId(req), hooks: {},
     });
-    return res.json({ ok: true, ...out });
+
+    /* AND THE BORROWER IS TOLD — the parity engine's own finding (2026-08-31).
+       Sending a document back reopened the condition and NOBODY WAS TOLD, so the
+       borrower had no way to learn short of opening the portal and noticing,
+       while the same act on a short-term file has emailed them since it shipped.
+
+       The notice decides for itself whether there is anything to say (a plain
+       accept is an internal step; an internal condition is not the borrower's),
+       throttles on the SHARED claim so a set of exported formats rejected
+       together sends one email, and NEVER THROWS — the verdict is already
+       recorded, so a mail failure must never report a completed review as an
+       error. Its answer rides on the response so the desk can see what happened
+       rather than having to guess. */
+    const told = await guestSend.sendVerdictNotice({
+      loanId: found.scoped.loan.id,
+      checklistItemId: doc.checklist_item_id,
+      filename: doc.filename,
+      action: verdict.status === 'rejected' ? 'reject'
+        : (verdict.requestMore ? 'request_more' : 'accept'),
+      reason: verdict.status === 'rejected' ? (req.body || {}).reason : verdict.moreNote,
+      actorId: staffId(req),
+    }, db);
+    return res.json({ ok: true, ...out, borrowerTold: told.sent === true, borrowerWhy: told.why });
   } catch (e) {
     console.error('[lt] condition document review failed:', (e && e.message) || e);
     return res.status(500).json({ error: 'Could not record that decision just now.' });

@@ -38,6 +38,7 @@ const db = require('../db');
 const cfg = require('../config');
 const email = require('../../lib/email');
 const orderEmail = require('../../lib/order-email');
+const orderCc = require('../../lib/order-cc');   // the SHARED who-else-is-on-the-thread chain
 const { ownerOf, ownerWhere } = require('../../lib/condition-owner');
 const { ltOrderReplyTo } = require('../../lib/file-address');
 const sendAs = require('../../lib/send-as');
@@ -312,9 +313,23 @@ async function place(loanId, kind, opts = {}) {
      one reply while an order that refuses to go out is not. */
   const ownEnclosures = enclosures.forKind(kind);
   const replyTo = ltOrderReplyTo(loanId, kind);
+  /* WHO ELSE IS ON THE THREAD — the SHARED chain (2026-08-31), not just what the
+     person ticked. Passing only `opts.ccBorrower` meant the shared recipient rule
+     fell through to the COMPANY default, so an officer who had turned "copy my
+     borrowers on title orders" on in their own settings got it on their
+     short-term orders and silently not on their long-term ones. Found by the
+     two-product parity engine. WHICH officer is this product's own fact, read
+     off the loan; the SETTING is per-staffer and the roster is shared identity. */
   const recips = orderEmail.recipientsFor(kind, d, {
-    ccBorrower: opts.ccBorrower,
-    ccHelper: opts.ccHelper,
+    ccBorrower: await orderCc.ccBorrowerFor(kind, {
+      explicit: opts.ccBorrower, officerId: (d.officer && d.officer.id) || null,
+    }),
+    /* A long-term file carries no helper login (its order data says so in as many
+       words), so this resolves to nobody either way — asked anyway, so the day a
+       helper exists here the answer comes from the one rule rather than a second. */
+    ccHelper: await orderCc.ccHelperFor(kind, {
+      explicit: opts.ccHelper, officerId: (d.officer && d.officer.id) || null,
+    }),
     extraCc: opts.extraCc || [],
     replyTo,
   });
@@ -417,6 +432,9 @@ async function followUp(loanId, kind, opts = {}) {
   const built = letter.buildLetter(kind, d, { followup: true, note: opts.note || '', template: opts.template || null });
   const replyTo = order.reply_to || ltOrderReplyTo(loanId, kind);
   const recips = orderEmail.recipientsFor(kind, d, {
+    /* THE FOLLOW-UP KEEPS THE ORIGINAL ORDER'S ANSWER, which is the "recorded when
+       it was first placed" rung of the shared chain — the borrower must not join
+       or leave a conversation halfway through it. */
     ccBorrower: order.cc_borrower, ccHelper: order.cc_helper, extraCc: opts.extraCc || [], replyTo,
   });
   const sent = await sendLetter({

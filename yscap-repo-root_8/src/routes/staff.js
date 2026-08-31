@@ -7130,6 +7130,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
    documents for the team to classify. Uses the orders lib for all email building.
    ═══════════════════════════════════════════════════════════════════════════ */
 const orders = require('../lib/orders');
+const orderCc = require('../lib/order-cc');   // who else is on an order's thread — shared with Long-Term
 const orderTracking = require('../lib/order-tracking');
 const orderSla = require('../lib/order-sla');
 const orderSlots = require('../lib/order-slots');
@@ -7201,17 +7202,22 @@ async function deadFileOrderReason(appId) {
  * Never throws: an unreadable LO setting falls through to the type default.
  */
 async function ccBorrowerFor(appId, kind, { explicit = null, storedMeta = null } = {}) {
-  if (explicit != null) return !!explicit;
-  if (storedMeta && typeof storedMeta === 'object' && storedMeta.ccBorrower != null) return !!storedMeta.ccBorrower;
-  let loCcSetting = false;
+  /* THE CHAIN MOVED, THE BEHAVIOUR DID NOT (2026-08-31). Explicit → stored →
+     the officer's own default → the company default is now `lib/order-cc.js`,
+     so the long-term order desk resolves it identically instead of reading only
+     what the person ticked. WHICH officer stays here, because that is a fact
+     about a short-term loan and lives in this product's own table. */
+  return orderCc.ccBorrowerFor(kind, {
+    explicit, storedMeta, officerId: await fileOfficerId(appId),
+  });
+}
+
+/** The loan officer on a short-term file, or null. Never throws. */
+async function fileOfficerId(appId) {
   try {
-    const key = orders.ccBorrowerSettingKey(kind); // TITLE vs INSURANCE — each has its own officer default
     const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
-    if (key && lo.rows[0] && lo.rows[0].loan_officer_id) {
-      loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, key);
-    }
-  } catch (_) { /* the company default stands (off) */ }
-  return orders.ccBorrowerDefault(kind, loCcSetting);
+    return (lo.rows[0] && lo.rows[0].loan_officer_id) || null;
+  } catch (_) { return null; }
 }
 
 /**
@@ -7230,17 +7236,9 @@ async function ccBorrowerFor(appId, kind, { explicit = null, storedMeta = null }
  * Never throws: an unreadable officer setting falls through to the company default (off).
  */
 async function ccHelperFor(appId, kind, { explicit = null, storedMeta = null } = {}) {
-  if (explicit != null) return !!explicit;
-  if (storedMeta && typeof storedMeta === 'object' && storedMeta.ccHelper != null) return !!storedMeta.ccHelper;
-  let loCcSetting = false;
-  try {
-    const key = orders.ccHelperSettingKey(kind); // TITLE vs INSURANCE — each has its own officer default
-    const lo = await db.query(`SELECT loan_officer_id FROM applications WHERE id=$1`, [appId]);
-    if (key && lo.rows[0] && lo.rows[0].loan_officer_id) {
-      loCcSetting = await require('../lib/lo-settings').getSetting(lo.rows[0].loan_officer_id, key);
-    }
-  } catch (_) { /* the company default stands (off) */ }
-  return orders.ccHelperDefault(kind, loCcSetting);
+  return orderCc.ccHelperFor(kind, {
+    explicit, storedMeta, officerId: await fileOfficerId(appId),
+  });
 }
 
 // The whole Orders section for a file: both orders' state, whether each can be
@@ -7293,21 +7291,19 @@ router.get('/applications/:id/orders', async (req, res) => {
       const m = storedMetaOf(k);
       return m && m.ccBorrower != null ? !!m.ccBorrower : null;
     };
-    const ccEffective = (k) => {
-      const stored = storedCc(k);
-      if (stored != null) return stored;
-      const key = orders.ccBorrowerSettingKey(k);
-      return orders.ccBorrowerDefault(k, key ? loSettings[key] === true : false);
-    };
-    /* THE HELPER'S OWN FOOTING (owner-directed 2026-08-28), resolved by the SAME
-       three steps and read from the SAME loSettings bag — so the checkbox the panel
-       paints is the choice the send would actually make. */
-    const ccHelperEffective = (k) => {
-      const m = storedMetaOf(k);
-      if (m && m.ccHelper != null) return !!m.ccHelper;
-      const key = orders.ccHelperSettingKey(k);
-      return orders.ccHelperDefault(k, key ? loSettings[key] === true : false);
-    };
+    /* THE PANEL ASKS THE SAME RULE THE SEND ASKS (2026-08-31). This used to
+       restate the chain inline — a THIRD copy of it — reading the officer's
+       whole settings bag instead of one key, which is exactly how a screen ends
+       up painting a tick the send would not honour. `order-cc` takes the reader
+       as an argument for this case, so the bag is fetched ONCE for the panel and
+       the rule behind it is the one both products use.
+
+       The helper's footing is its OWN question (owner-directed 2026-08-28), so it
+       is asked separately — neither may quietly decide the other. */
+    const ccEffective = (k) => orderCc.ccBorrowerWith(k,
+      { storedMeta: storedMetaOf(k), settings: loSettings });
+    const ccHelperEffective = (k) => orderCc.ccHelperWith(k,
+      { storedMeta: storedMetaOf(k), settings: loSettings });
     // Returned documents per order (unassigned = no slot_label yet).
     const docs = (await db.query(
       `SELECT id, doc_kind, filename, content_type, slot_label, review_status, is_current, size_bytes, created_at
