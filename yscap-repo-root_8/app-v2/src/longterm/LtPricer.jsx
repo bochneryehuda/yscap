@@ -2221,12 +2221,16 @@ export default function LtPricer() {
         // BETTER than it was priced at qualifies with room to spare, and blocking it would
         // offer a "re-price" that could only make the borrower's rate worse. The earlier
         // cut compared the two decimals for EQUALITY, which did exactly that.
+        // ⛔ THE BRACKET DECIDES, IN BOTH DIRECTIONS — the owner's own rule. Inside the same
+        // band nothing is wrong and nobody is sent back. Leaving it either way re-prices:
+        // downward the borrower would get a rate they no longer qualify for, upward the sheet
+        // understates what they DO qualify for.
         const verdict = ratioVerdict(out.dscr, priced);
         return {
-          state: verdict === 'below' ? 'differs' : 'agree',
+          state: verdict === 'ok' ? 'agree' : verdict === 'unknown' ? 'unknown' : 'differs',
           computed,
           priced: priced.toFixed(2),
-          above: verdict === 'ok' && computed !== priced.toFixed(2),
+          direction: verdict === 'below' || verdict === 'above' ? verdict : null,
         };
       },
     }),

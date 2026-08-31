@@ -431,9 +431,27 @@ router.get('/:code/pdf', async (req, res) => {
       // somebody widened the window last week.
       expiryHours: hoursBetween(row.created_at, row.expires_at),
     });
-    const bytes = await pdf.renderTermSheet(lay, { title: `Term Sheet ${row.code}` });
+    /* ⛔ THE DOWNLOAD IS NAMED FOR WHAT THE DOCUMENT IS (owner-reported 2026-08-31: *"the
+       comparison, when you want to export it, is basically issued and downloaded as the term
+       sheet. It needs to be called the comparison sheet."*).
+
+       The PAGE has always carried the right heading — `layout.js` titles it "Comparison Sheet" or
+       "Scenario Comparison" — but the file that landed in the officer's downloads was
+       `term-sheet-TS-XXXXXX.pdf` and its document properties said "Term Sheet", on every kind. So
+       a comparison arrived at a borrower named as a term sheet, which is the one thing it must not
+       be mistaken for: a comparison offers several options and commits to none.
+
+       ⛔ THE WORDS COME FROM `KIND_WORDS`, the same table the refusals quote, so the filename, the
+       PDF's own title and anything a screen says about it can never drift apart. The `TS-` CODE is
+       deliberately left alone: it is the durable identifier people read down a telephone and quote
+       back, and re-prefixing it would break every one already issued. */
+    const kindWords = snapshot.KIND_WORDS[lay.docKind || snapshot.DOC_KINDS.TERM_SHEET]
+      || snapshot.KIND_WORDS[snapshot.DOC_KINDS.TERM_SHEET];
+    const titleWords = kindWords.replace(/(^|\s)\w/g, (c) => c.toUpperCase());
+    const slug = kindWords.replace(/\s+/g, '-');
+    const bytes = await pdf.renderTermSheet(lay, { title: `${titleWords} ${row.code}` });
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="term-sheet-${row.code}.pdf"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${slug}-${row.code}.pdf"`);
     res.setHeader('Content-Length', String(bytes.length));
     // A term sheet is a moment. Caching one would serve a stale copy after a
     // correction supersedes it.

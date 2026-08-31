@@ -149,41 +149,81 @@ export function dscrFrom(input) {
 }
 
 /* ── DOES THIS FILE STILL QUALIFY FOR THE PRICE IT WAS QUOTED? ────────────────
-   Owner-reported 2026-08-30: *"You allow the system to issue the term sheet even if the
-   DSCR disagrees. If the scenario was 1.25 but the details that I'm entering to issue the
-   term sheet are 1.2, it allows the system to issue the term sheet. This means we are
-   giving him better pricing than we should have given him."*
+   Owner-reported 2026-08-30: *"You allow the system to issue the term sheet even if the DSCR
+   disagrees. If the scenario was 1.25 but the details that I'm entering to issue the term sheet
+   are 1.2, it allows the system to issue the term sheet. This means we are giving him better
+   pricing than we should have given him."*
 
-   A DSCR band is a PRICE BRACKET — the vendor prices 1.25+ better than 1.20+ — so a sheet
-   issued at a 1.25 rate on figures that only reach 1.20 hands the borrower a rate this
-   loan does not qualify for.
+   ⛔ THE TEST IS THE BRACKET, NOT THE NUMBER. The owner supplied the ladder himself on
+   2026-08-31: *"So if anything is changing from one bracket to the next one, then it needs a
+   reprice, but make sure it's very easy."* A DSCR bracket is a PRICE BAND, so two ratios inside
+   one band buy the same price and must not send anybody back to re-price — an earlier cut
+   compared the raw numbers and nagged on a 1.45 sheet issued at 1.42, which is the same money.
 
-   ⛔ THE REFUSAL IS THE SERVER'S (`termsheet/snapshot.ratioProblem`), not this. This is
-   the BROWSER'S COPY, and it exists only so the screen can say so before the button is
-   pressed and offer the re-price. Two copies of one money rule is exactly the shape that
-   drifts, so `test-lt-comparison-ux-pure` runs BOTH over the same battery and fails the
-   moment they disagree about any loan.
+   ⛔ THE REFUSAL IS THE SERVER'S (`termsheet/snapshot.ratioProblem`), not this. This is the
+   BROWSER'S COPY, and it exists only so the screen can say so before the button is pressed and
+   offer the re-price. Two copies of one money rule is exactly the shape that drifts, so
+   `test-lt-comparison-ux-pure` runs BOTH over every ratio from 0 to 2.00 in hundredths and fails
+   the moment they disagree about any of them. Change one, change the other.
 
-   ⛔ ONLY A RATIO **BELOW** THE PRICED ONE IS A PROBLEM. A file that comes out BETTER than
-   it was priced at qualifies for that band with room to spare — refusing it would block a
-   perfectly good sheet and offer a "re-price" that could only make the borrower's rate
-   worse for no reason.
+   ⛔ DIRECTION-AGNOSTIC, which is the owner's own rule. Downward is the money case. Upward means
+   the borrower qualifies for BETTER pricing than the paper shows, which is also wrong to issue —
+   so both re-price, and the wording says which way it went. */
+export const DSCR_TIERS = [
+  { tier: 1,  from: null, to: 0.50 },   // < 0.50 — very low
+  { tier: 2,  from: 0.50, to: 0.75 },
+  { tier: 3,  from: 0.75, to: 0.85 },
+  { tier: 4,  from: 0.85, to: 1.00 },
+  { tier: 5,  from: 1.00, to: 1.10 },
+  { tier: 6,  from: 1.10, to: 1.15 },   // owner-added 2026-08-31: *"I missed one band up to 1.1"*
+  { tier: 7,  from: 1.15, to: 1.25 },
+  { tier: 8,  from: 1.25, to: 1.30 },
+  { tier: 9,  from: 1.30, to: 1.40 },
+  { tier: 10, from: 1.40, to: 1.50 },
+  { tier: 11, from: 1.50, to: null },   // >= 1.50 — strongest
+];
 
-   Both sides compare the ratio ROUNDED TO TWO, because that is what a DSCR is here
-   (Round([1005]/[912], 2), owner-confirmed) and what both the paper and the band edge
-   carry. The tolerance absorbs float representation at the boundary, nothing more — it is
-   a hundredth, so a real band step (0.05) can never hide inside it. */
-export const DSCR_BAND_TOLERANCE = 0.005;
+/* ⛔ THE LADDER MUST BE CONTIGUOUS AND MUST NOT OVERLAP, AND THAT IS CHECKED RATHER THAN TRUSTED.
+   `dscrTier` returns the FIRST band a ratio falls in, so two bands that overlap are resolved
+   silently by array order — a real hazard, found when a deliberate mutation of one boundary
+   changed no behaviour at all because its neighbour still claimed the ratio. A ladder with a hole
+   is worse still: a ratio in the gap gets no tier and the rule quietly stands down on a live loan.
+   Verified once at load, so a bad edit fails loudly here instead of mispricing quietly. */
+function assertLadder(tiers) {
+  for (let i = 0; i < tiers.length; i += 1) {
+    const t = tiers[i];
+    const prev = tiers[i - 1];
+    if (i === 0 && t.from !== null) throw new Error('DSCR ladder: the first band must be open below');
+    if (i === tiers.length - 1 && t.to !== null) throw new Error('DSCR ladder: the last band must be open above');
+    if (prev && prev.to !== t.from) {
+      throw new Error(`DSCR ladder: tier ${prev.tier} ends at ${prev.to} but tier ${t.tier} starts at ${t.from}`);
+    }
+  }
+  return tiers;
+}
+assertLadder(DSCR_TIERS);
+
+
+/** Which tier a ratio sits in, or null when it is not a usable ratio. */
+export function dscrTier(ratio) {
+  const n = Number(ratio);
+  if (!nn(n) || n <= 0) return null;
+  const r = Math.round(n * 100) / 100;
+  for (const t of DSCR_TIERS) {
+    if ((t.from == null || r >= t.from) && (t.to == null || r < t.to)) return t.tier;
+  }
+  return null;
+}
 
 /**
- * @returns 'unknown' when either side is unusable, 'below' when the figures no longer
- *          reach the band the price was bought in, 'ok' otherwise.
+ * @returns 'unknown' when either side is unusable, 'below' when the figures have dropped into a
+ *          lower band than the price was bought in, 'above' when they have risen into a higher
+ *          one, and 'ok' when they are still in the same band.
  */
 export function ratioVerdict(computed, priced) {
-  const c = Number(computed);
-  const p = Number(priced);
-  if (!nn(c) || !nn(p) || c <= 0 || p <= 0) return 'unknown';
-  const c2 = Math.round(c * 100) / 100;
-  const p2 = Math.round(p * 100) / 100;
-  return c2 >= p2 - DSCR_BAND_TOLERANCE ? 'ok' : 'below';
+  const c = dscrTier(computed);
+  const p = dscrTier(priced);
+  if (c == null || p == null) return 'unknown';
+  if (c === p) return 'ok';
+  return c < p ? 'below' : 'above';
 }

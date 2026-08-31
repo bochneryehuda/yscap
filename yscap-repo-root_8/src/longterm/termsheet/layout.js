@@ -69,11 +69,18 @@ function propertyLine(m) {
 }
 
 function locationLine(s) {
-  const bits = [];
-  if (s.city) bits.push(s.city);
-  if (s.state) bits.push(s.state);
-  if (s.zip) bits.push(s.zip);
-  return bits.join(' ') || null;
+  /* ⛔ THE COUNTY IS PRINTED WHEN THERE IS NO TOWN (owner-reported 2026-08-31: a sheet with no
+     typed address showed nothing but the ZIP). It is filled from the ZIP upstream in
+     `snapshot.projectScenario`, and only when that ZIP determines it — so a county printed here is
+     one we can stand behind.
+
+     ⛔ THE TOWN WINS WHEN THERE IS ONE. "Lakewood Ocean County NJ 08701" reads as three different
+     places; the county is the FALLBACK for the case the owner reported, not an extra line item.
+     Written "Ocean County" rather than "Ocean", because a bare county name reads as a town. */
+  const where = s.city
+    || (s.county ? (/county|parish|borough/i.test(s.county) ? s.county : `${s.county} County`) : null);
+  const tail = [s.state, s.zip].filter(Boolean).join(' ');
+  return [where, tail].filter(Boolean).join(', ') || null;
 }
 
 /** "$375,000 · 75% LTV · 30-year fixed" */

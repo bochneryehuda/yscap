@@ -204,8 +204,11 @@ console.log('\nC. the ratio check says only what it can prove');
   ok(draw(globalThis.__RatioCheck, { check: null }) === '',
     'C2 …and so does no check at all');
   const agree = draw(globalThis.__RatioCheck, { check: { state: 'agree', computed: '1.24', priced: '1.24' } });
-  ok(agree.includes('1.24') && /priced at/.test(agree),
-    'C3 an agreeing ratio is confirmed against the one this was priced at');
+  // RE-POINTED 2026-08-31, not loosened: the rule became a BAND test at the owner's direction, so
+  // an agreeing ratio is now confirmed as being in the same band rather than as the same number.
+  // The subject is unchanged — a matching ratio is stated back, never left silent.
+  ok(agree.includes('1.24') && /same band this was priced in/.test(agree),
+    'C3 an agreeing ratio is confirmed as being in the band this was priced in');
   const differs = draw(globalThis.__RatioCheck, { check: { state: 'differs', computed: '1.18', priced: '1.24' } });
   ok(differs.includes('1.18') && differs.includes('1.24'),
     'C4 a differing ratio names BOTH figures — the officer needs to see the gap, not be told there is one');

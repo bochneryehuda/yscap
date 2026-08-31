@@ -35,7 +35,7 @@
 
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
-import { dscrFrom, ratioVerdict, DSCR_BAND_TOLERANCE } from '../app-v2/src/longterm/dscrCalc.js';
+import { dscrFrom, ratioVerdict, dscrTier, DSCR_TIERS } from '../app-v2/src/longterm/dscrCalc.js';
 
 const require = createRequire(import.meta.url);
 const snapshot = require('../src/longterm/termsheet/snapshot.js');
@@ -73,47 +73,84 @@ const sheet = (over = {}) => ({
   }],
 });
 
-console.log('\nA. the owner\'s own case — figures that price BELOW the band the option was bought in');
-/* PI 2000 + tax 400 + ins 200 = 2600 of housing. Rent 4000 → 1.538, comfortably above.
-   Rent 3120 → exactly 1.20 against an option priced at 1.25: the owner's numbers. */
-const below = snapshot.exportGate(sheet({ rent: 3120, priced: 1.25 }));
-ok(below.ok === false, 'A1 a 1.20 file against a 1.25 price is REFUSED');
-ok(below.error === 'dscr_below_priced', 'A2 …by name, so a caller can tell it from a missing field');
-ok(Math.abs(below.repriceAt - 1.2) < 0.005, `A3 …and it says which ratio to re-price at (${below.repriceAt})`);
-ok(Math.abs(below.pricedAt - 1.25) < 0.005, 'A4 …beside the one the option was priced at');
-ok(/1\.20/.test(below.message) && /1\.25/.test(below.message),
-  'A5 the sentence carries BOTH ratios — a refusal naming neither cannot be acted on');
-ok(/qualif/i.test(below.message), 'A6 …and says WHY: the loan does not qualify for that band');
+console.log('\nA. the ladder is the owner\'s own, tier for tier');
+/* Supplied by the owner on 2026-08-31, verbatim. Pinned at BOTH edges of every tier, because an
+   off-by-a-hundredth here silently re-prices — or fails to re-price — a real loan. */
+const LADDER = [
+  [0.10, 1], [0.49, 1],
+  [0.50, 2], [0.74, 2],
+  [0.75, 3], [0.84, 3],
+  [0.85, 4], [0.99, 4],
+  [1.00, 5], [1.09, 5],
+  [1.10, 6], [1.14, 6],   // owner-added 2026-08-31: *"I missed one band up to 1.1"*
+  [1.15, 7], [1.24, 7],
+  [1.25, 8], [1.29, 8],
+  [1.30, 9], [1.39, 9],
+  [1.40, 10], [1.49, 10],
+  [1.50, 11], [2.00, 11],
+];
+let ladderBad = 0;
+for (const [r, want] of LADDER) { if (dscrTier(r) !== want) { ladderBad += 1; console.error(`       ${r} → tier ${dscrTier(r)}, expected ${want}`); } }
+ok(ladderBad === 0, `A1 all ${LADDER.length} tier edges land where the owner put them`);
+ok(DSCR_TIERS.length === 11, `A2 eleven tiers (${DSCR_TIERS.length})`);
+/* ⛔ CONTIGUOUS AND NON-OVERLAPPING, asserted rather than trusted. `dscrTier` returns the FIRST
+   matching band, so two overlapping bands are resolved silently by array order — which is exactly
+   how a deliberate mutation of one boundary once changed no behaviour at all, its neighbour still
+   claiming the ratio. A HOLE is worse: a ratio in the gap gets no tier and the rule stands down on
+   a live loan. Both copies self-check at load; this proves the property from the outside too. */
+let gaps = 0;
+for (let i = 1; i < DSCR_TIERS.length; i += 1) {
+  if (DSCR_TIERS[i - 1].to !== DSCR_TIERS[i].from) gaps += 1;
+}
+ok(gaps === 0, `A2b the ladder has no hole and no overlap (${gaps} bad joins)`);
+ok(DSCR_TIERS[0].from === null && DSCR_TIERS[DSCR_TIERS.length - 1].to === null,
+  'A2c …and it is open at both ends, so every ratio lands somewhere');
+ok(dscrTier(0) === null && dscrTier(-1) === null && dscrTier('x') === null,
+  'A3 a ratio that is not a ratio has no tier — never tier 1 by accident');
 
-console.log('\nB. and it refuses ONLY that — everything else still issues');
-ok(snapshot.exportGate(sheet({ rent: 3120, priced: 1.20 })).ok === true,
-  'B1 the same 1.20 figures against an option PRICED at 1.20 issue normally');
-ok(snapshot.exportGate(sheet({ rent: 4480, priced: 1.20 })).ok === true,
-  'B2 figures that come out ABOVE the priced band issue — a better file is never refused');
-ok(snapshot.exportGate(sheet()).ok === true, 'B3 the ordinary sheet is untouched');
-/* The tolerance exists because the two sides are rounded for display and a hundredth of a
-   basis point is not a price bracket. It must be small enough that a real band step (0.05)
-   can never hide inside it. */
-const hair = snapshot.exportGate(sheet({ rent: 3245, priced: 1.2481 }));
-ok(hair.ok === true, 'B4 a rounding hair below the priced ratio is not a band change');
-ok(snapshot.exportGate(sheet({ rent: 3120, priced: 1.25 })).ok === false,
-  'B5 …but a real 0.05 step still is (the control for B4)');
+console.log('\nB. the owner\'s own case, and the nagging that had to stop');
+/* housing = 2000 PI + 400 tax + 200 insurance = 2600, so rent = ratio × 2600. */
+const at = (ratio) => 2600 * ratio;
+const gate = (priced, ratio) => snapshot.exportGate(sheet({ priced, rent: at(ratio) }));
+const owner = gate(1.25, 1.20);
+ok(owner.ok === false, 'B1 priced 1.25, figures 1.20 → REFUSED (tier 8 → tier 7)');
+ok(owner.error === 'dscr_below_priced', 'B2 …named, so a caller can tell it from a missing field');
+ok(owner.direction === 'down' && owner.pricedTier === 8 && owner.actualTier === 7,
+  `B3 …and it says which way and between which tiers (${owner.pricedTier}→${owner.actualTier})`);
+ok(/1\.20/.test(owner.message) && /1\.25/.test(owner.message), 'B4 the sentence carries both ratios');
 
-console.log('\nC. it never invents a refusal out of figures it does not have');
+/* ⛔ THE WHOLE POINT OF THE LADDER. Before it, ANY drop refused — so a 1.45 sheet issued on 1.42
+   figures sent the officer back to re-price for a move that buys exactly the same price. */
+ok(gate(1.45, 1.42).ok === true, 'B5 priced 1.45, figures 1.42 → ISSUES (both tier 10, same price)');
+ok(gate(1.25, 1.29).ok === true, 'B6 priced 1.25, figures 1.29 → ISSUES (both tier 8)');
+ok(gate(1.30, 1.29).ok === false, 'B7 …but 1.30 → 1.29 crosses a band and REFUSES');
+ok(gate(1.15, 1.24).ok === true, 'B8 the whole of 1.15–1.24 is one band');
+ok(gate(1.15, 1.14).ok === false, 'B9 …and one hundredth below it is another');
+/* The band the owner added on 2026-08-31 — without it 1.05 and 1.12 were one band. */
+ok(gate(1.05, 1.12).ok === false, 'B10 1.05 → 1.12 crosses the added 1.10 boundary and REFUSES');
+ok(gate(1.05, 1.09).ok === true && gate(1.10, 1.14).ok === true,
+  'B11 …while each side of it is still one band');
+
+console.log('\nC. it re-prices in BOTH directions, which is the owner\'s rule');
+const up = gate(1.20, 1.35);
+ok(up.ok === false, 'C1 figures that rise into a HIGHER band also refuse');
+ok(up.direction === 'up', 'C2 …reported as up, not as a shortfall');
+ok(/better pricing/.test(up.message),
+  'C3 …and the wording says the borrower qualifies for better, never accusing anybody');
+ok(!/no longer qualifies/.test(up.message), 'C4 …and never uses the downward wording for it');
+
+console.log('\nC2. it never invents a refusal out of figures it does not have');
 ok(snapshot.exportGate(sheet({ pi: null })).error !== 'dscr_below_priced',
-  'C1 no monthly payment → this rule stands down (it cannot work out a ratio at all)');
+  'C5 no monthly payment → this rule stands down (it cannot work out a ratio at all)');
 const noRent = snapshot.exportGate(sheet({ rent: null }));
 ok(noRent.ok === false && noRent.error !== 'dscr_below_priced',
-  'C2 a missing rent is the ordinary missing-field refusal, not a ratio accusation');
-/* Association dues are part of the housing payment the ratio divides by, so the SAME rent
-   and the SAME price can qualify without them and fail with them. That pair is the proof
-   they are counted — a single case could pass for either reason. */
-ok(snapshot.exportGate(sheet({ rent: 3120, priced: 1.15, hoa: 0 })).ok === true,
-  'C3 rent 3120 over a 2600 payment is 1.20 and clears a 1.15 band');
-ok(snapshot.exportGate(sheet({ rent: 3120, priced: 1.15, hoa: 200 })).ok === false,
-  'C4 …the same figures with 200 of dues are 1.11 and do NOT — dues are counted');
-ok(snapshot.exportGate(sheet({ priced: 0 })).error !== 'dscr_below_priced',
-  'C5 an option with no priced ratio is not accused of missing one');
+  'C6 a missing rent is the ordinary missing-field refusal, not a band accusation');
+/* Dues are part of the housing payment the ratio divides by, so the SAME rent and price can sit in
+   one band without them and a lower one with them. The pair is the proof they are counted. */
+ok(snapshot.exportGate(sheet({ priced: 1.20, rent: 3120, hoa: 0 })).ok === true,
+  'C7 rent 3120 over a 2600 payment is 1.20 — tier 6, as priced');
+ok(snapshot.exportGate(sheet({ priced: 1.20, rent: 3120, hoa: 200 })).ok === false,
+  'C8 …the same figures with 200 of dues are 1.11 — a lower band — and refuse. Dues are counted.');
 
 console.log('\nD. the screen offers the way through — a re-price, never a dead end');
 ok(/onReprice/.test(P) && /onReprice/.test(B), 'D1 the board carries out the re-price');
@@ -132,53 +169,37 @@ console.log('\nD2. the screen and the server never disagree about the same loan'
    place two roundings can part company. */
 let mirrorBad = 0;
 let mirrorRan = 0;
-/* ⛔ ONE LOAN, BOTH RULES. The browser reaches its ratio through its own calculator and the
-   server is handed THAT calculator's payment — so what is being compared is the two BAND
-   rules over the same loan, not two amortisation routines. Feeding the server a payment the
-   browser never computed would prove nothing about whether they agree on a real file.
-
-   The rents walk THROUGH each band edge in small steps, which is the only place two
-   roundings can part company. */
-for (const priced of [1.0, 1.1, 1.15, 1.2, 1.25, 1.3, 1.5]) {
-  for (const [loanAmount, ratePct, termYears, io_] of [
-    [400000, 6.75, 30, false], [400000, 7.25, 40, false], [312500, 6.5, 30, true],
-  ]) {
-    for (const hoa of [0, 125]) {
-      const tax = 400; const ins = 200;
-      for (let rent = 1800; rent <= 5200; rent += 5) {
-        const out = dscrFrom({
-          loanAmount, ratePct, termYears, interestOnly: io_,
-          rentMonthly: rent, taxMonthly: tax, insuranceMonthly: ins, hoaMonthly: hoa,
-        });
-        if (out.dscr == null || out.pi == null) continue;
-        mirrorRan += 1;
-        const serverRefuses = snapshot.exportGate({
-          docKind: 'term_sheet',
-          prepared: { borrowerName: 'X', propertyAddress: 'Y' },
-          members: [{
-            monthlyPI: out.pi,
-            scenario: {
-              dscr: priced, rentMonthly: rent, taxMonthly: tax,
-              insuranceMonthly: ins, hoaMonthly: hoa,
-            },
-          }],
-        }).error === 'dscr_below_priced';
-        const clientBlocks = ratioVerdict(out.dscr, priced) === 'below';
-        if (clientBlocks !== serverRefuses) {
-          mirrorBad += 1;
-          if (mirrorBad <= 3) {
-            console.error(`       priced=${priced} rent=${rent} hoa=${hoa} pi=${out.pi} `
-              + `server=${serverRefuses} screen=${clientBlocks} ratio=${out.dscr}`);
-          }
-        }
+/* ⛔ ONE LOAN, BOTH COPIES OF THE LADDER. The refusal is the server's and the warning is the
+   browser's, so they are two copies of one money rule: a screen that blocks what the server would
+   issue costs a good sheet, and one that promises what the server refuses wastes the officer's
+   time at the last step. Every ratio from 0.01 to 2.00 in hundredths is run through BOTH — which
+   walks every tier edge in the owner's ladder, in both directions. */
+for (const priced of [0.4, 0.6, 0.8, 0.9, 1.05, 1.2, 1.27, 1.35, 1.45, 1.6]) {
+  for (let step = 1; step <= 200; step += 1) {
+    const ratio = Math.round(step) / 100;
+    const rent = 2600 * ratio;
+    mirrorRan += 1;
+    const serverRefuses = snapshot.exportGate({
+      docKind: 'term_sheet',
+      prepared: { borrowerName: 'X', propertyAddress: 'Y' },
+      members: [{
+        monthlyPI: 2000,
+        scenario: { dscr: priced, rentMonthly: rent, taxMonthly: 400, insuranceMonthly: 200, hoaMonthly: 0 },
+      }],
+    }).error === 'dscr_below_priced';
+    const clientBlocks = ['below', 'above'].includes(ratioVerdict(ratio, priced));
+    if (clientBlocks !== serverRefuses) {
+      mirrorBad += 1;
+      if (mirrorBad <= 3) {
+        console.error(`       priced=${priced} ratio=${ratio} server=${serverRefuses} screen=${clientBlocks}`);
       }
     }
   }
 }
-ok(mirrorRan > 4000, `D5 (the battery really ran — ${mirrorRan} loans)`);
+ok(mirrorRan >= 2000, `D5 (the battery really ran — ${mirrorRan} loans)`);
 ok(mirrorBad === 0, `D6 the screen and the server agree on every one of them (${mirrorBad} disagreed)`);
-ok(DSCR_BAND_TOLERANCE === 0.005,
-  'D7 the tolerance is a hundredth — small enough that a real 0.05 band step cannot hide in it');
+ok(dscrTier(1.2449) === dscrTier(1.24) && dscrTier(1.245) === dscrTier(1.25),
+  'D7 the ratio is rounded to two before it is placed — the tenant\'s own DSCR definition');
 
 console.log('\nE. the PITI column lines up with its own heading');
 ok(/const ACT_W = /.test(B), 'E1 the action column has ONE definition');

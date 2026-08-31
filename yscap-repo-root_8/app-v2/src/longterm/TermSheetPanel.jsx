@@ -447,23 +447,27 @@ export function RatioCheck({ check, onReprice, busy }) {
       fontSize: 12.5, lineHeight: 1.5, color: agree ? SLATE : CAUTION,
     }}>
       {agree ? (
-        /* ⛔ A RATIO ABOVE THE PRICED ONE IS FINE AND MUST NOT READ AS A DISAGREEMENT.
-           It qualifies for that band with room to spare, so it issues — saying "the
-           ratio this was priced at" over 1.40-against-1.25 would be the screen
-           stating something plainly untrue about the loan in front of it. */
-        check.above
-          ? `These figures work out to a DSCR of ${check.computed} — above the ${check.priced} this was priced at, so it qualifies.`
-          : `These figures work out to a DSCR of ${check.computed} — the ratio this was priced at.`
+        `These figures work out to a DSCR of ${check.computed} — the same band this was priced in, so it issues.`
       ) : (
         <>
+          {/* ⛔ SHORT, AND IT SAYS WHICH WAY IT WENT — owner-directed: *"make sure it's very
+              easy."* Downward is the money case; upward means the borrower qualifies for better
+              pricing than the paper shows. Neither is an accusation and both are one press to fix. */}
           <div style={{ fontWeight: 700 }}>
-            {`This cannot be issued: the figures work out to ${check.computed}, but this option was `
-              + `priced at ${check.priced}.`}
+            {check.direction === 'above'
+              ? `These figures come to ${check.computed} — a higher DSCR band than the ${check.priced} this was priced in.`
+              : `These figures come to ${check.computed} — a lower DSCR band than the ${check.priced} this was priced in.`}
           </div>
+          {/* ⛔ THE REMEDY IS IN THE WORDS, not only on the button. The button is only drawn when
+              a re-price handler is wired, so a surface without one would otherwise state a refusal
+              and offer nothing — a dead end. Caught by the render suite when this sentence was
+              dropped in a rewrite. */}
           <div style={{ marginTop: 3 }}>
-            {`The price on this row was obtained in a DSCR band the loan does not qualify for at `
-              + `${check.computed}, so the borrower would get a rate we would not have quoted. `
-              + 'Re-price the scenario and issue from the new price.'}
+            {check.direction === 'above'
+              ? 'The borrower qualifies for better pricing than this sheet shows, so it cannot be issued '
+                + 'as it stands. Re-price at the true ratio and issue from the new price.'
+              : 'The rate on this row was bought in a band the loan no longer reaches, so it cannot be '
+                + 'issued as it stands. Re-price at the true ratio and issue from the new price.'}
           </div>
           {onReprice ? (
             <button type="button" style={{ ...btn('primary'), marginTop: 7 }}
