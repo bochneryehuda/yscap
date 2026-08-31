@@ -28,6 +28,10 @@ import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, PAPER, CAUTION, segTrack, segBtn } 
 
 const NUM = { fontVariantNumeric: 'tabular-nums' };
 
+/** The owner's own sentence for why the issue button is greyed, in ONE place — the
+ *  hover, and nothing else, so it can never disagree with itself. */
+const RATIO_BLOCK_HINT = 'Because the ratio is low, you need to reprice before you can issue the term sheet.';
+
 const btn = (kind) => ({
   border: kind === 'primary' ? `1px solid ${GOLD}` : '1px solid rgba(20,27,34,.18)',
   background: kind === 'primary' ? GOLD : '#fff',
@@ -38,6 +42,26 @@ const btn = (kind) => ({
   fontWeight: 600,
   cursor: 'pointer',
   minHeight: 30,
+});
+
+/* ⛔ A BUTTON THAT CANNOT BE PRESSED MUST NOT LOOK LIKE ONE THAT CAN (owner-reported
+   2026-08-31: *"it sounds like the Issue Term Sheet button is a real button, but when
+   I try to click it, nothing happens because it's black. This is a real problem with
+   that button."*).
+
+   The button was ALREADY `disabled` for the ratio case — the refusal worked. What was
+   wrong is that it kept `btn('primary')`: full gold, white text, `cursor: pointer`. So
+   it advertised itself as the primary action, swallowed the click, and said nothing.
+   An officer reasonably reads that as the screen being broken.
+
+   Greying is only half: `cursor: not-allowed` is what answers the press itself, at the
+   moment of the press, before any reading. */
+const btnBlocked = () => ({
+  ...btn(),
+  background: 'rgba(20,27,34,.06)',
+  color: '#8A9096',
+  border: '1px solid rgba(20,27,34,.12)',
+  cursor: 'not-allowed',
 });
 
 /**
@@ -377,12 +401,25 @@ export function IssueFields({ issue, gate, onChanged, busy, onIssue, onCancel })
             ratio below the one the price was bought at is not a box anybody can
             fill, it is a re-price, and the button for that is right above. The
             SERVER refuses it either way (`dscr_below_priced`); this only stops
-            an officer pressing something that cannot succeed. */}
-        <button type="button" style={btn('primary')}
-          disabled={busy != null || ratioBlocks}
-          aria-disabled={ratioBlocks} onClick={onIssue}>
-          {busy === 'issue' ? 'Issuing…' : 'Issue the term sheet'}
-        </button>
+            an officer pressing something that cannot succeed.
+
+            ⛔ THE TITLE SITS ON THE WRAPPER, NOT ON THE BUTTON, and that is the
+            whole reason the wrapper exists. A DISABLED control receives no mouse
+            events in several browsers, so a `title` on the button itself is a
+            tooltip that never appears — which would have left the owner's actual
+            request ("hovering on top of it should come up and say...") quietly
+            unimplemented while looking done in the source. The wrapper is not
+            disabled, so it always gets the hover.
+
+            The wording is the owner's own, so the button, the sentence beside it
+            and the panel above cannot drift into three descriptions of one rule. */}
+        <span title={ratioBlocks ? RATIO_BLOCK_HINT : undefined} style={{ display: 'inline-flex' }}>
+          <button type="button" style={ratioBlocks ? btnBlocked() : btn('primary')}
+            disabled={busy != null || ratioBlocks}
+            aria-disabled={ratioBlocks} onClick={onIssue}>
+            {busy === 'issue' ? 'Issuing…' : 'Issue the term sheet'}
+          </button>
+        </span>
         <button type="button" style={btn()} disabled={busy != null} onClick={onCancel}>Not now</button>
         {/* ⛔ THE BUTTON IS NEVER DISABLED ON THE GATE. The server refuses and
             names every missing field at once; a greyed button explains nothing

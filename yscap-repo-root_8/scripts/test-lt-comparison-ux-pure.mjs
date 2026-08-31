@@ -159,6 +159,29 @@ ok(/ratioVerdict/.test(B), 'D3 the screen judges the ratio with the SHARED rule,
 ok(!/const agree = computed === priced\.toFixed\(2\)/.test(B),
   'D4 …and the old equality test is gone — it blocked files that came out BETTER than priced');
 
+/* ⛔ A BUTTON THAT CANNOT BE PRESSED MUST NOT LOOK LIKE ONE THAT CAN (owner-reported
+   2026-08-31: *"it sounds like the Issue Term Sheet button is a real button, but when I
+   try to click it, nothing happens because it's black."*).
+
+   The `disabled` attribute was ALREADY there and the refusal ALREADY worked — so every
+   behaviour test passed while the screen lied to the officer. What was missing is
+   entirely in the PAINT, which is why these read the style and not the logic. */
+ok(/btnBlocked/.test(P), 'DB1 there is a real blocked treatment, distinct from the primary one');
+ok(/cursor: 'not-allowed'/.test(P),
+  'DB2 …answering the press at the moment of the press, before anything is read');
+ok(/ratioBlocks \? btnBlocked\(\) : btn\('primary'\)/.test(P),
+  'DB3 …and the issue button actually WEARS it when the ratio blocks — the defect was that it stayed gold');
+ok(/Because the ratio is low, you need to reprice before you can issue the term sheet\./.test(PANEL),
+  "DB4 the hover says WHY, in the owner's own words");
+/* ⛔ THE TITLE MUST NOT SIT ON THE DISABLED BUTTON. A disabled control receives no mouse
+   events in several browsers, so a `title` there is a tooltip that never fires — the
+   owner's request would read as implemented in the source and do nothing on the screen.
+   This asserts the wrapper carries it, which is the only reason the wrapper exists. */
+ok(/<span title=\{ratioBlocks \? RATIO_BLOCK_HINT : undefined\}/.test(P),
+  'DB5 ⛔ …carried by a WRAPPER, because a disabled button never fires a hover');
+ok(!/<button[^>]*title=\{ratioBlocks/.test(P),
+  'DB6 …and never pinned on the button itself, which is the version that silently does nothing');
+
 console.log('\nD2. the screen and the server never disagree about the same loan');
 /* THE WHOLE REASON THIS SECTION EXISTS: the refusal is the server's and the warning is the
    browser's, so they are two copies of one money rule. A screen that blocks what the server
