@@ -364,6 +364,13 @@ export const ltApi = {
      rules, so the flood-insurance CONDITION appears in the same click — the
      server does both, because doing them in two calls is how a file ends up
      ungreyed with no condition on it. */
+  /* FILE A RETURNED DOCUMENT INTO ITS SLOT. The order desk guesses on arrival
+     from the filename, which is right most of the time and cannot be right
+     always; this is the human's correction. `null` unfiles it — a document put
+     in the wrong slot has to be takeable back out. */
+  conditionDocSlot: (documentId, slot) =>
+    ltPut(lt(`/condition-center/documents/${encodeURIComponent(documentId)}/slot`), { slot }),
+
   orderFloodZone: (loanId, inFloodZone) =>
     ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/flood-zone`), { inFloodZone }),
   orderVendors: (loanId) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors`)),

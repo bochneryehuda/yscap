@@ -621,6 +621,76 @@ router.post('/documents/:documentId/review', async (req, res) => {
   }
 });
 
+/**
+ * PUT …/documents/:documentId/slot — file a returned document into its slot.
+ *
+ * Owner-directed 2026-08-31: *"Each document should be linked to a slot within
+ * the condition … When the documents are coming back from the order, we can
+ * assign each document to each and every slot after previewing it."*
+ *
+ * The order desk already GUESSES on arrival (`orders/kinds.js slotMap` reads the
+ * filename), which is right for the common case and cannot be right for all of
+ * them — a title company that names three attachments "scan001.pdf" defeats any
+ * rule there will ever be. This is the human's correction, and until it existed
+ * `slot_label` was written ONCE at upload and could never be changed.
+ *
+ * THE SLOT MUST BE ONE THE CONDITION ACTUALLY HAS. A free-typed label files a
+ * document into a slot nothing renders — it is then invisible on the screen, and
+ * the condition reads as missing a document that is sitting right there. So the
+ * label is matched against the condition's own `slots`, and anything else is a
+ * refusal rather than a silent write.
+ *
+ * `null` UNFILES it, deliberately: a document put in the wrong slot has to be
+ * takeable back out, and forcing somebody to pick a different wrong slot to undo
+ * a mistake is how wrong data becomes permanent.
+ */
+router.put('/documents/:documentId/slot', async (req, res) => {
+  const found = await scopedDocument(req, res);
+  if (!found) return;
+  const raw = (req.body || {}).slot;
+  const wants = raw == null || raw === '' ? null : String(raw).trim();
+
+  try {
+    // The document's own condition, and that condition's slots. Read together so
+    // the check is against the slot list of the condition the document is
+    // actually on — not the one the caller says it is on.
+    const { rows } = await db.query(
+      `SELECT d.id, d.checklist_item_id, COALESCE(t.slots, ci.slots, '[]'::jsonb) AS slots
+         FROM documents d
+         JOIN checklist_items ci ON ci.id = d.checklist_item_id
+         LEFT JOIN checklist_templates t ON t.id = ci.template_id
+        WHERE d.id = $1::uuid`,
+      [found.documentId]);
+    const row = rows[0];
+    if (!row) return res.status(404).json({ error: 'That document is not on this file.' });
+    if (!row.checklist_item_id) {
+      return res.status(409).json({ error: 'That document is not on a condition, so it has no slot to go in.' });
+    }
+
+    const slots = Array.isArray(row.slots) ? row.slots : [];
+    if (wants !== null) {
+      const hit = slots.find((sl) => String(sl.label) === wants || String(sl.key) === wants);
+      if (!hit) {
+        return res.status(400).json({
+          error: 'That is not one of this condition’s slots.',
+          slots: slots.map((sl) => sl.label),
+        });
+      }
+      // Stored as the LABEL, because that is what every existing reader of
+      // `slot_label` compares against (lib/order-slots.js matches on an exact
+      // label) and what the screen prints.
+      await db.query(`UPDATE documents SET slot_label = $2 WHERE id = $1::uuid`,
+        [found.documentId, String(hit.label)]);
+      return res.json({ ok: true, slot: String(hit.label) });
+    }
+    await db.query(`UPDATE documents SET slot_label = NULL WHERE id = $1::uuid`, [found.documentId]);
+    return res.json({ ok: true, slot: null });
+  } catch (e) {
+    console.error('[lt] condition document slot write failed:', (e && e.message) || e);
+    return res.status(500).json({ error: 'Could not file that document just now.' });
+  }
+});
+
 // DELETE …/documents/:documentId — remove one permanently.
 router.delete('/documents/:documentId', async (req, res) => {
   const found = await scopedDocument(req, res);
