@@ -29,6 +29,29 @@
  * network, no RTL.
  */
 
+/**
+ * WHAT CAME OFF THIS LIST, AND WHAT ANSWERED IT.
+ *
+ * An entry leaves here by being FILLED, and the answer is worth keeping: this
+ * file's value is the record, and a column that quietly stops being listed reads
+ * afterwards as one that was never a question. Kept as data rather than prose so
+ * a screen could show it; nothing reads it today.
+ */
+const RESOLVED = Object.freeze({
+  'lt_properties.in_flood_zone': {
+    on: '2026-08-31',
+    by: 'owner-decision',
+    answer: 'The owner, asked directly, chose: the A and V zones mean a flood zone. Everything else field 541 can carry — X, X500, B, C — means it is not one, and FEMA\'s undetermined D is neither. The single bare "Yes" in the census is DELIBERATELY still unread: the owner picked the option that leaves it alone rather than the one that treats it as a flood zone, and a word is not a zone.',
+    filled_by: 'src/longterm/flood-zone.js (the one definition of what a zone letter means) read into lt_properties by application/sync.js; db/658 records WHO answered so a person\'s tick is never overwritten by the sync.',
+  },
+  'lt_properties.flood_zone': {
+    on: '2026-08-31',
+    by: 'owner-decision',
+    answer: 'The same one answer. The zone letter is now recorded VERBATIM whatever it says — including D and the bare "Yes" — so a screen can show what Encompass actually holds; only the yes-or-no is withheld on a value we do not recognise.',
+    filled_by: 'src/longterm/flood-zone.js, written by application/sync.js.',
+  },
+});
+
 /** A fact Encompass does not record anywhere we can see. */
 const NOT_IN_ENCOMPASS = 'not-in-encompass';
 /** A fact that exists in the payload but whose meaning is the OWNER's to settle. */
@@ -42,28 +65,6 @@ const PILOT_JUDGEMENT = 'pilot-judgement';
  */
 const UNSOURCED = {
   // ── The subject property ──────────────────────────────────────────────────
-  'lt_properties.in_flood_zone': {
-    kind: NOT_IN_ENCOMPASS,
-    show: 'Encompass holds a flood zone letter rather than a yes-or-no — nobody has said yet how PILOT should read it.',
-    corrected: {
-      on: '2026-08-18',
-      was: 'Its six recorded values were withheld from the census by its own PII policy — so reading it as a yes/no would be guessing a vocabulary rather than reading one.',
-      why: 'Wrong, and wrong in the direction that stops somebody looking: the census carries all six, and they are on the field\'s own allowed list.',
-    },
-    why: 'Field 541 (closingDocument.specialFloodHazardAreaIndictor, labelled "Property Info Flood Zone") is a DECLARED enum of 89 allowed values, filled on 40.2% of long-term loans, and every one of the six values it was observed carrying is on that allowed list: X (210), AE (12), X500 (5), A (2), C (1) and the bare word Yes (1), over 231 filled values in the 772-loan census. TQL.X110 answers on the same 197 long-term loans (Regular 229, Non-participating 1), and field 2977 carries a flood certificate number on those same loans. So the vocabulary is READ, not guessed at. What holds this column is not a measurement: turning a zone letter into a yes/no is a rule about what this company will price a loan on, one filled value is an indicator word rather than a zone, and 3 in 5 long-term loans carry nothing at all. A wrong answer here is worse than none — "No" beside a flood question is a claim somebody prices a loan on.',
-    unblock: 'The owner says whether PILOT may read field 541\'s zone letter as the determination — the A and V zones being the special flood hazard area — and what the single bare "Yes" means. One answer, then one entry in the mapper. No further reading of Encompass is needed: the census already did it.',
-  },
-  'lt_properties.flood_zone': {
-    kind: NOT_IN_ENCOMPASS,
-    show: 'Encompass does hold a zone letter on many of these loans — PILOT is not reading it yet.',
-    corrected: {
-      on: '2026-08-18',
-      was: 'Nothing in 3,783 measured fields carries a zone designation (A, AE, X…).',
-      why: 'Field 541, in that same census, carries exactly those — on 40.2% of long-term loans, every value on its own allowed list.',
-    },
-    why: 'Field 541 carries the zone designations (X, AE, X500, A, C) on 40.2% of long-term loans, every one of them on the field\'s own 89-value allowed list. Field 2977 is only the flood certificate IDENTIFIER — the certificate\'s number, not its answer — and the certificate itself is a document in the eFolder. What holds this column is that field 541 is DECLARED an indicator (specialFloodHazardAreaIndictor) and one of its filled values is the bare word Yes, so a straight copy would print Yes in a column a reader reads as a zone.',
-    unblock: 'The same one answer as lt_properties.in_flood_zone — the owner says PILOT may read field 541 as the zone, and what to do with a value that is an indicator word rather than a zone. Then this is one entry in the mapper.',
-  },
   'lt_properties.actual_monthly_rent': {
     kind: OWNER_DECISION,
     show: 'PILOT holds the gross rent Encompass gives us; "actual" is a separate figure nobody has told us where to read.',
@@ -165,6 +166,7 @@ function notSourcedFor(table) {
 
 module.exports = {
   UNSOURCED,
+  RESOLVED,
   unsourced,
   notSourcedFor,
   KINDS: { NOT_IN_ENCOMPASS, OWNER_DECISION, PILOT_JUDGEMENT },

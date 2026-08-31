@@ -419,7 +419,7 @@ function contactTypesFor(r, live) {
       const v = values[t.whenField];
       if (v === true) applies = true;
       else if (v === false) { applies = false; whyNot = FIELD_WHY[t.whenField] || 'This file does not need it.'; }
-      else { applies = null; whyNot = 'Not established on this file yet.'; }
+      else { applies = null; whyNot = FIELD_UNKNOWN[t.whenField] || 'Not established on this file yet.'; }
     }
     return { key: t.key, label: t.label, required: !!t.required, applies, whyNot };
   });
@@ -432,6 +432,20 @@ const FIELD_WHY = Object.freeze({
   in_flood_zone: 'Only where the property is in a flood zone.',
   is_condo: 'Only on a condominium.',
   borrower_rents: 'Only where the borrower rents where they live.',
+});
+
+/* THE THIRD ANSWER, IN WORDS. `applies === null` means nobody has established the
+   fact yet, and the generic "not established on this file yet" is true but tells a
+   reader nothing about what would settle it. Owner-directed 2026-08-31, asked what
+   a flood row should say before Encompass has answered: *"Show it greyed, saying we
+   can't tell yet"* — and it turns on by itself the moment Encompass says so or
+   somebody ticks the switch. Each sentence names BOTH routes, so nobody goes
+   hunting for a control that is not the only way. */
+const FIELD_UNKNOWN = Object.freeze({
+  is_new_york: 'We cannot tell yet where this property is. It turns on by itself once the file says.',
+  in_flood_zone: 'We cannot tell yet whether this is a flood zone. It turns on by itself once Encompass says so, or when somebody ticks the flood-zone switch on this file.',
+  is_condo: 'We cannot tell yet whether this is a condominium. It turns on by itself once the file says.',
+  borrower_rents: 'We cannot tell yet whether the borrower rents where they live. It turns on by itself once the file says.',
 });
 
 module.exports = {

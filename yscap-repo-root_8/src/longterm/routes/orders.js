@@ -174,8 +174,15 @@ router.post('/loans/:loanId/flood-zone', async (req, res) => {
     return res.status(400).json({ error: 'Say whether the property is in a flood zone.' });
   }
   try {
+    // THE STAMP IS WHAT MAKES THE SWITCH STICK (db/658). Encompass carries this
+    // same answer in field 541 and the sync reads it every few minutes, so
+    // without `flood_zone_source = 'manual'` a person's tick would be overwritten
+    // within the hour and the switch would look broken. `application/sync.js`
+    // refuses to write any of the three flood columns once this says 'manual'.
     const { rowCount } = await db.query(
-      `UPDATE lt_properties SET in_flood_zone = $2, updated_at = now() WHERE loan_id = $1::uuid`,
+      `UPDATE lt_properties
+          SET in_flood_zone = $2, flood_zone_source = 'manual', updated_at = now()
+        WHERE loan_id = $1::uuid`,
       [scoped.loan.id, b.inFloodZone]);
     if (!rowCount) {
       return res.status(404).json({ error: 'This loan has no property record to mark.' });

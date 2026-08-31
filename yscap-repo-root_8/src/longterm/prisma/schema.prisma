@@ -974,6 +974,12 @@ model LtProperty {
   /// flood cover is required, which changes the housing expense and so the DSCR.
   inFloodZone Boolean? @map("in_flood_zone")
   floodZone   String?  @map("flood_zone")
+  /// ——— WHO ANSWERED the flood question (db/658): `encompass` (read from field
+  /// 541) or `manual` (a person ticked the switch on the Orders screen). NULL =
+  /// nobody has answered. This is the GUARD, not provenance decoration: the sync
+  /// runs every few minutes, so without it a person's tick would be overwritten
+  /// within the hour. See `src/longterm/flood-zone.js`.
+  floodZoneSource String? @map("flood_zone_source")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
