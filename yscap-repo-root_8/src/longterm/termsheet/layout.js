@@ -553,18 +553,61 @@ function recipientBlock(s) {
     // Only where the band is not drawn, or the same two facts would appear
     // twice on one page.
     propertyFacts: (s.docKind || DOC_KINDS.TERM_SHEET) === DOC_KINDS.TERM_SHEET
-      ? null : propertyFacts(first),
+      ? null : propertyFacts(s.members || []),
     officer,
   };
 }
 
-/** "Single family · 2 units · valued at $500,000" — or null when we know none. */
-function propertyFacts(m) {
-  const sc = (m && m.scenario) || {};
+/**
+ * "Single family · 2 units · valued at $500,000" — the property facts, and ONLY
+ * the ones every option on this document agrees about.
+ *
+ * ⛔ IT TAKES THE WHOLE LIST, NOT THE FIRST MEMBER (owner-reported 2026-08-31,
+ * who named the class before the instance: *"when it's saying that this and this
+ * amount is the same on all scenarios ... when in truth there can be different
+ * scenarios with different amounts."*).
+ *
+ * This line sits in the HEADER, under the address, where it reads as a fact
+ * about the document rather than about one column. It was built from
+ * `members[0]`, so a scenario comparison of the same property at two valuations
+ * printed *"valued at $500,000"* over a table whose second column was priced on
+ * $650,000 — one property stated, two priced. `comparison.buildComparison`
+ * already reports `propertyValue` in its `differs` list, so the document knew;
+ * the header simply never asked.
+ *
+ * ⛔ A FACT THE OPTIONS DISAGREE ABOUT IS DROPPED, NOT AVERAGED AND NOT RANGED.
+ * A range in the header ("valued at $500,000–$650,000") reads as one property
+ * somebody could not price, and the honest home for a figure that differs is the
+ * comparison table, which already carries it per column. Silence here is a
+ * smaller claim than a wrong one.
+ *
+ * Found by `test-lt-sheet-fuzz-pure`, which builds the documents across a
+ * combinatorial space and refuses any single stated fact the options contradict.
+ */
+function propertyFacts(members) {
+  const list = (Array.isArray(members) ? members : [members]).filter(Boolean);
+  if (!list.length) return null;
+
+  /* Unanimous, or nothing. `read` returns the comparable value; a member that
+     cannot answer counts as its own answer, so two options where only one
+     states a type still disagree — which is exactly right, because printing the
+     one we have would attribute it to both. */
+  const agreed = (read) => {
+    const seen = new Set(list.map((m) => JSON.stringify(read(m) === undefined ? null : read(m))));
+    return seen.size === 1 ? read(list[0]) : null;
+  };
+
+  const type = agreed((m) => ((m && m.scenario) || {}).propertyType || null);
+  const units = agreed((m) => {
+    const u = ((m && m.scenario) || {}).units;
+    return nn(u) && u > 1 ? Math.round(u) : null;
+  });
+  const value = agreed((m) => (nn(m && m.propertyValue) ? Math.round(m.propertyValue) : null));
+
   return kept([
-    sc.propertyType || null,
-    nn(sc.units) && sc.units > 1 ? `${Math.round(sc.units)} units` : null,
-    nn(m && m.propertyValue) ? `valued at ${wording.money(m.propertyValue)}` : null,
+    type || null,
+    units ? `${units} units` : null,
+    value != null ? `valued at ${wording.money(value)}` : null,
   ]).join(' · ') || null;
 }
 
