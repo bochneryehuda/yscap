@@ -422,6 +422,52 @@ function prepaySentence(months, structure) {
 const DISCLOSURE = 'Pricing is indicative and subject to change until locked. This is not a commitment to lend.';
 const THIRD_PARTY = 'Third-party costs — title, escrow, recording, appraisal — are not included.';
 
+/**
+ * THE PROPERTY, IN ENGLISH — the vendor's enum is not a word for a client.
+ *
+ * Owner-reported 2026-08-31, off a REAL export: the sheet printed
+ * `Property type  SingleFamily`. That is Lender Price's wire value, carried
+ * verbatim from `lenderprice/field-registry.js` through the scenario onto a
+ * document that goes to a borrower for signature. Every fixture in every suite
+ * had been written with a human spelling ("Single family"), so nothing ever saw
+ * it — the defect lived exactly in the gap between our test data and the real
+ * board's vocabulary.
+ *
+ * ⛔ IT NEVER GUESSES. An enum this table does not carry is passed through
+ * UNCHANGED rather than prettified by a regex: a vendor word a reader can look
+ * up is recoverable, and a wrong one invented by splitting on capitals is not
+ * ("CondoTel" is a condo-hotel, not "Condo Tel"). A value that is already a
+ * human spelling passes through for the same reason.
+ *
+ * The keys are the vendor's `propertyType` OUTPUTS — what actually lands on the
+ * scenario — not the input aliases that resolve to them.
+ */
+const PROPERTY_TYPE_WORDS = {
+  SingleFamily: 'Single family',
+  PlannedUnitDevelopment: 'Planned unit development (PUD)',
+  UnitDwelling_2_4: '2-4 unit',
+  Modular: 'Modular home',
+  Townhouse: 'Townhouse',
+  Condos: 'Condominium',
+  DetachedCondominium: 'Detached condominium',
+  HighRiseCondo: 'High-rise condominium',
+  MidRiseCondo: 'Mid-rise condominium',
+  SiteCondo: 'Site condominium',
+  CondoGarden: 'Garden condominium',
+  CondoTel: 'Condo-hotel',
+  Cooperative: 'Co-op',
+  MultiFamily: 'Multifamily',
+  ManufacturedHousing: 'Manufactured home',
+  ManufacturedHousingSingleWide: 'Manufactured home (single-wide)',
+  ManufacturedHousingDoubleWide: 'Manufactured home (double-wide)',
+};
+
+function propertyTypeWords(raw) {
+  const v = raw == null ? '' : String(raw).trim();
+  if (!v) return null;
+  return PROPERTY_TYPE_WORDS[v] || v;
+}
+
 /** The fee list's labels, borrower-side. The engine's own keys are internal. */
 const CHARGE_LABELS = {
   origination: 'Origination fee',
@@ -474,4 +520,5 @@ module.exports = {
   monthsWords, breakEvenSentence, incrementalSentence,
   prepaySentence, chargeRow, dateLong, dateTimeLong, ZONE,
   DISCLOSURE, THIRD_PARTY, CHARGE_LABELS, LENDER_FEE_KEYS, PREPAY_SENTENCES,
+  propertyTypeWords, PROPERTY_TYPE_WORDS,
 };

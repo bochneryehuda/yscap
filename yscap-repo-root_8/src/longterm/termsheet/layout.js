@@ -68,7 +68,9 @@ const PRODUCT_LINE = 'business-purpose rental financing';
 function propertyLine(m) {
   const s = m.scenario || {};
   const bits = [];
-  if (s.propertyType) bits.push(s.propertyType);
+  // The vendor's enum is not a word for a client (`SingleFamily`).
+  const ptWords = wording.propertyTypeWords(s.propertyType);
+  if (ptWords) bits.push(ptWords);
   if (s.units && s.units > 1) bits.push(`${Math.round(s.units)} units`);
   if (s.purpose) bits.push(s.purpose);
   if (nn(s.propertyValue)) bits.push(`${wording.money(s.propertyValue)} value`);
@@ -506,7 +508,7 @@ function comparisonTable(snapshot) {
      credit score". A document that names a figure as governing and never states
      it leaves the reader unable to tell whether the assumption matches them. */
   push('Credit score used', (m) => (nn(sc(m).fico) ? String(Math.round(sc(m).fico)) : null));
-  push('Property type', (m) => sc(m).propertyType || null);
+  push('Property type', (m) => wording.propertyTypeWords(sc(m).propertyType));
   push('Estimated value', (m) => (nn(m.propertyValue) ? wording.money(m.propertyValue) : null));
   if (cmp.workflow === 'A') {
     push('Break-even', (m, r) => (r && nn(r.breakEvenMonths) ? wording.monthsWords(r.breakEvenMonths) : null), { never: true });
@@ -736,7 +738,7 @@ function propertyFacts(members) {
     return seen.size === 1 ? read(list[0]) : null;
   };
 
-  const type = agreed((m) => ((m && m.scenario) || {}).propertyType || null);
+  const type = agreed((m) => wording.propertyTypeWords(((m && m.scenario) || {}).propertyType));
   const units = agreed((m) => {
     const u = ((m && m.scenario) || {}).units;
     return nn(u) && u > 1 ? Math.round(u) : null;
@@ -841,7 +843,7 @@ function buildLayout(snapshot, opts = {}) {
   if (isTermSheet) {
     blocks.push({ t: 'band', title: 'The property' });
     blocks.push({ t: 'figures', rows: kept([
-      row('Property type', fs0.propertyType),
+      row('Property type', wording.propertyTypeWords(fs0.propertyType)),
       row('Units', nn(fs0.units) && fs0.units > 1 ? String(Math.round(fs0.units)) : null),
       row('Estimated value', nn(first.propertyValue) ? wording.money(first.propertyValue) : null),
     ]) });
