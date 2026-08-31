@@ -31,6 +31,91 @@
 
 const nn = (v) => Number.isFinite(v);
 
+/* ──────────────────────────────────────────────────────────────────────────
+   R6 — A DATE IS WRITTEN THE WAY A PERSON WRITES ONE.
+
+   Owner-reported 2026-08-31: *"all three sheets are very ugly and very abrupt.
+   It needs to be done a lot more cleanly, more user-friendly, and more
+   modern."* The single most machine-like thing on the paper was the date:
+   every page carried `Issued 2026-08-31T14:00:00.000Z` in the header band and
+   again in the footer, and the expiry callout — the one line whose whole job is
+   urgency — read *"Good through 2026-09-01T14:00:00.000Z."* That is a database
+   value printed at a borrower.
+
+   ⛔ THE ZONE IS OURS AND IT IS NAMED. An expiry is an INSTANT, so rendering it
+   without a zone is not a formatting choice: a 24-hour window stamped at 14:00Z
+   reads as 2:00 PM to a borrower whose day ends at 10:00 AM local. It is
+   rendered in the company's own zone — the one the desk works in — and the zone
+   is printed, so the deadline can be acted on rather than interpreted.
+
+   ⛔ NOTHING IS EVER GUESSED. An absent or unreadable value answers `null` and
+   the caller drops the line. It must never fall back to echoing the raw string,
+   which is the bug, nor to "Invalid Date", which is worse.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** The company's own zone. A date on this paper is a New Jersey date. */
+const ZONE = 'America/New_York';
+
+/**
+ * An ISO 8601 timestamp that STATES ITS OFFSET — `…Z` or `…+05:00`.
+ *
+ * ⛔ THAT IS THE ONLY THING WE MAY RE-CLOCK, and the reason is a silent-wrong-
+ * answer, not pedantry. `2026-08-31` and `August 31, 2026 9:14 AM` carry no
+ * zone: JavaScript resolves the first to UTC midnight (which renders as the 30th
+ * in every US zone) and the second to whatever the server's clock happens to be
+ * set to. Re-printing either in New York would move a date somebody wrote by
+ * hours, on a document about a deadline. So a value with no offset is left
+ * EXACTLY as it was given — it is already a human string — and only a real
+ * instant is rendered in words.
+ */
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/;
+
+function parseInstant(v) {
+  if (v == null || v === '') return null;
+  if (v instanceof Date) return Number.isFinite(v.getTime()) ? v : null;
+  const raw = String(v).trim();
+  if (!ISO_INSTANT.test(raw)) return null;
+  const d = new Date(raw);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+/** What to print when the value is not an instant we may re-clock: the value
+ *  itself when there is one to print, else nothing. */
+function asGiven(v) {
+  if (v == null) return null;
+  const raw = String(v).trim();
+  return raw || null;
+}
+
+function fmt(d, opts) {
+  // A build without the zone's data must not lose the date entirely: it falls
+  // back to UTC, still in words, still unambiguous because the zone is printed.
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: ZONE, ...opts }).format(d);
+  } catch {
+    try {
+      return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', ...opts }).format(d);
+    } catch { return null; }
+  }
+}
+
+/** "August 31, 2026" — for a stamp, where the hour says nothing. */
+function dateLong(v) {
+  const d = parseInstant(v);
+  if (!d) return asGiven(v);
+  return fmt(d, { month: 'long', day: 'numeric', year: 'numeric' }) || asGiven(v);
+}
+
+/** "September 1, 2026 at 10:00 AM EDT" — for a DEADLINE, where it says everything. */
+function dateTimeLong(v) {
+  const d = parseInstant(v);
+  if (!d) return asGiven(v);
+  const day = fmt(d, { month: 'long', day: 'numeric', year: 'numeric' });
+  const time = fmt(d, { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
+  if (!day) return asGiven(v);
+  return time ? `${day} at ${time}` : day;
+}
+
 /** Whole dollars, grouped. R4. `null` renders as an em dash, never as $0. */
 function money(v) {
   if (!nn(v)) return '—';
@@ -343,6 +428,6 @@ module.exports = {
   money, moneyExact, points, rate, pct,
   costOrCredit, closingPosition, housingCost,
   monthsWords, breakEvenSentence, incrementalSentence,
-  prepaySentence, chargeRow,
+  prepaySentence, chargeRow, dateLong, dateTimeLong, ZONE,
   DISCLOSURE, THIRD_PARTY, CHARGE_LABELS, LENDER_FEE_KEYS, PREPAY_SENTENCES,
 };

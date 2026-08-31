@@ -499,5 +499,74 @@ console.log('\nrule 10 — the investor name never reaches the paper');
     'the ONE definition still recognises an investor — this suite never re-implements the check, it uses it');
 }
 
+// =============================================================================
+console.log('\nthe paper reads like a document, not like a database');
+// =============================================================================
+// Owner-reported 2026-08-31: all three sheets are *"very ugly and very abrupt.
+// It needs to be done a lot more cleanly, more user-friendly, and more modern."*
+// Two of the things that made them read that way are facts about the RENDER, so
+// they are proven here and not on the source.
+{
+  const PREP = {
+    borrowerName: 'Jonathan Reyes', entityName: 'Maple Holdings LLC',
+    propertyAddress: '128 Maple Avenue, Lakewood, NJ 08701',
+    officerName: 'Chaim Stern', companyName: 'YS Capital Group', companyNmls: '2609746',
+    preparedAt: '2026-08-31T14:00:00.000Z', expiresAt: '2026-09-01T14:00:00.000Z',
+  };
+  const docs = {
+    'term sheet': [quote('The offer', 7.375, 102)],
+    'comparison sheet': [quote('A', 7.375, 102), quote('B', 7.625, 101.25), quote('C', 7.875, 100.5)],
+  };
+
+  /* ⛔ NOT ONE STORED TIMESTAMP REACHES A BORROWER'S PAGE. Every sheet we have
+     ever sent carried `Issued 2026-08-31T14:00:00.000Z` in the brand band AND
+     again in the footer of EVERY page, and the expiry callout — the one line
+     whose whole job is urgency — read *"Good through
+     2026-09-01T14:00:00.000Z."* This sweeps the drawn strings rather than the
+     source, so a producer added later is covered without knowing this exists.
+     The date is still THERE, in words: the control below proves the sweep is
+     looking at a page that really does carry one. */
+  const ISO = /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+  for (const [name, sels] of Object.entries(docs)) {
+    const back = await readBack(await render(sels, PREP));
+    const hits = back.pages.flatMap((items, i) => items.filter((it) => ISO.test(it.s)).map((it) => `p${i + 1} "${it.s}"`));
+    check(hits.length === 0, `${name}: no stored timestamp is printed anywhere${hits.length ? ` — ${hits.slice(0, 3).join(', ')}` : ''}`);
+    check(/August 31, 2026/.test(back.text),
+      `${name}: …and the date is on the page in words, so the sweep is not passing on an empty document`);
+  }
+
+  /* ⛔ THE COMPARISON TABLE STAYS ON ONE PAGE. The whole value of a comparison is
+     the options standing side by side where a reader can run an eye down them; a
+     table split across a page boundary has stopped being one. It is asserted on
+     the DSCR row — the LAST row of the table — landing on the same page as the
+     first, because a split shows up as the tail rows moving. */
+  const cmp = await readBack(await render(docs['comparison sheet'], PREP));
+  const pageOf = (needle) => cmp.pages.findIndex((items) => items.map((i) => i.s).join('').replace(/\s+/g, '').toLowerCase()
+    .includes(needle.replace(/\s+/g, '').toLowerCase()));
+  check(pageOf('Program') === 0 && pageOf('DSCR') === 0,
+    `the comparison table is whole on page one (first row p${pageOf('Program') + 1}, last row p${pageOf('DSCR') + 1})`);
+
+  /* ⛔ A ROW LABEL FITS ITS OWN COLUMN. The column was sized to the widest label
+     plus 8 while the cell gave 12 back to padding, so the longest label in every
+     table this renderer has ever drawn wrapped onto a second line — beside data
+     columns with room to spare. This is asserted on the DRAWN strings, because
+     the arithmetic is exactly what was wrong: a source check would have agreed
+     with the bug. */
+  const drawn = (cmp.pages[0] || []).map((i) => i.s);
+  for (const label of ['Total monthly payment', 'Estimated cash to close']) {
+    check(drawn.includes(label), `"${label}" is drawn on one line, not broken across two`);
+  }
+
+  /* ⛔ THE HEADLINE IS ON THE PAGE, AND IT AGREES WITH THE TABLE UNDER IT. A
+     summary that restates is safe; one that computes is a second opinion on a
+     document somebody signs. */
+  const ts = await readBack(await render(docs['term sheet'], PREP));
+  const p1 = (ts.pages[0] || []).map((i) => i.s).join(' ').replace(/\s+/g, ' ');
+  check(/LOAN AMOUNT/i.test(p1) && /INTEREST RATE/i.test(p1) && /MONTHLY PAYMENT/i.test(p1),
+    'the term sheet opens with the loan, the rate and the payment, before the tables');
+  check(/\$375,000/.test(p1) && /7\.375%/.test(p1),
+    '…stating the same figures the table below states, never a second calculation');
+}
+
 console.log(`\n${failures === 0 ? 'ALL PASSED' : `${failures} FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);
