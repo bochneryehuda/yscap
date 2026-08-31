@@ -215,9 +215,13 @@ first-class on the common shape and Lender Price fills them too.
    we meant to send — a board reporting our intention would still say "CorrNonDel" on the day AHL
    ignored the field.
 
-2. **Do we price against AHL openly, or does this need their sign-off?** The Quick Pricer is a
-   public page with no credentials and no terms accepted. Absent authentication is not granted
-   permission.
+2. ~~**Do we price against AHL openly?**~~ **ANSWERED — owner-directed 2026-08-31: *"yes we can
+   price against them openly."*** The Quick Pricer stays a read-only viewer regardless: the
+   client's allowlist admits two paths and refuses every other URL before the wire, and `Action`
+   is pinned to `Get Pricing` so the form's own write verbs (`Select Rate`, `Lock`) cannot be
+   sent. Volume stays polite — one scenario at a time, two legs in flight, a hard ceiling of
+   eight requests per scenario, because AHL sets no quota and that is exactly why we set our
+   own.
 
 3. **A canary.** No contract means no stability promise. `client.health()` re-reads AHL's form
    and diffs it against the captured registry; it wants scheduling on the existing

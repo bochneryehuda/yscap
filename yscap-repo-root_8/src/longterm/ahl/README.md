@@ -108,7 +108,8 @@ await require('./client').health();   // { ok, registryChanged, registryChanges 
 
 1. ~~**Which channel do we buy through?**~~ **Answered: CorrNonDel** (owner-directed
    2026-08-31). Kept as a setting — three channels, three sets of economics.
-2. **Do we price against AHL openly?** No credentials is not the same as permission.
+2. ~~**Do we price against AHL openly?**~~ **Answered: yes** (owner-directed 2026-08-31). Still a
+   read-only viewer — positive allowlist, `Action` pinned, self-imposed rate limits.
 3. **The canary.** No contract means no stability promise — `health()` wants scheduling on the
    existing `ppe/canary.js` pattern.
 4. **AHL states no rate-sheet date**, so `flags.expired` stays `null` — "we do not know" — and

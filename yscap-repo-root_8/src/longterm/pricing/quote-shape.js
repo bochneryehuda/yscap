@@ -197,6 +197,41 @@ function optionsFromLoanNex(board, opts = {}) {
 }
 
 /**
+ * ONE ADJUSTMENT LINE, from a vendor that states its stack in PRICE.
+ *
+ * ⛔ ONE SIGN CONVENTION, OR THE SAME "+0.25" MEANS OPPOSITE THINGS ON ONE
+ * SCREEN. Lender Price states an adjustment in POINTS (positive COSTS the
+ * borrower); LoanNEX and AHL both state it in PRICE (positive is a BETTER price,
+ * so it costs LESS). `pricing/breakdown.js` renders whatever it is handed and
+ * assumes `value` is already points — so the negation has to happen in each
+ * vendor's mapper, and it has to happen the SAME way in each.
+ *
+ * THIS IS WHY IT IS ONE FUNCTION RATHER THAN TWO. Both price-quoting vendors go
+ * through it. A second copy is how one of them comes to render its stack with
+ * the sign inverted against the total printed underneath it — which is not a
+ * cosmetic defect: it is a screen telling an officer that a 0.25 cost is a 0.25
+ * credit.
+ *
+ * The vendor's own number rides along as `valueAsGiven` + `givenIn`, so an
+ * auditor can check the translation against the rate sheet rather than trust it.
+ */
+function priceLine(a, group, type) {
+  return {
+    group,
+    reason: a.name || a.description || null,
+    // The BUCKET the adjustment came out of — "FICO : 760 - 779, CLTV : 70.01% -
+    // 75.00%", or AHL's whole rule sentence. The name says which grid; only this
+    // says which CELL, and that is the whole of "why is this price this price".
+    detail: a.description || null,
+    type: type || a.type || null,
+    valueType: 'points',
+    value: a.priceAdjustment == null ? null : round3(-Number(a.priceAdjustment)),
+    valueAsGiven: numOrNull(a.priceAdjustment),
+    givenIn: 'price',
+  };
+}
+
+/**
  * AHL's board → the common shape.
  *
  * ── THE ONE THAT NEEDS NO SECOND CALL ──────────────────────────────────────
@@ -261,18 +296,37 @@ function optionsFromAhl(board, opts = {}) {
           baseRate: round3(r.baseRate),
           price,
           basePrice,
-          adjustmentPoints: sum,
+          // ⛔ POINTS, NOT PRICE — converted ONCE from the vendor's own total
+          // rather than by adding up our rounded per-line translations, which
+          // would drift by a thousandth and make the reconciliation underneath
+          // the rows disagree with the rows. `sum` stays in price because that
+          // is what AHL's arithmetic reconciles in.
+          adjustmentPoints: sum == null ? null : round3(-sum),
+          // The base in BOTH units. `breakdown.priceOf` will derive whichever is
+          // missing and stamp `baseDerived` — filling both means an AHL row
+          // never carries a "we worked this out" stamp on a figure the vendor
+          // actually published.
+          basePoints: basePrice == null ? null : round3(100 - basePrice),
           // The vendor's own final price, before our holdback — so the column a
           // reader checks the stack against is present on the row.
           vendorPrice,
           adjustedPoints: price == null ? null : round3(100 - price),
           pointsDerivedFromPrice: price != null,
         },
-        // AHL publishes its stack with the price. `description` carries the
-        // vendor's own rule text ("… Property Type is Condo"), which is the
-        // whole of "why is this price this price", so it is passed through
-        // verbatim and never re-worded.
-        adjustments: stack ? stack.map((a) => ({ type: a.type || null, name: a.name || null, description: a.description || null, priceAdjustment: a.priceAdjustment == null ? null : Number(a.priceAdjustment) })) : null,
+        /**
+         * AHL publishes its stack with the price, and it goes through the SAME
+         * `priceLine` LoanNEX's does — so an AHL row and a LoanNEX row reach the
+         * shared breakdown identically shaped and identically signed.
+         *
+         * ⚠️ AN EARLIER CUT PASSED AHL'S OWN `{name, description, priceAdjustment}`
+         * STRAIGHT THROUGH, and the result was worse than a crash:
+         * `breakdown.normaliseLine` reads `label`/`reason`, `detail` and `value`,
+         * finds none of them, and renders a row with every field blank — while
+         * `available: true` says the breakdown is fine. Five empty rows under a
+         * price, and a total still printed in the vendor's own sign. Measured on
+         * the captured board before this was fixed.
+         */
+        adjustments: stack ? stack.map((a) => priceLine(a, a.type || 'LLPA', a.type || null)) : null,
         /**
          * What WE took, stated on the quote rather than only in the audit trail.
          * `holdback` is a first-class field on the common option shape and
@@ -406,22 +460,8 @@ function attachEvidence(option, ev, opts = {}) {
    * own number is kept beside it as `valueAsGiven` + `givenIn`, so an auditor
    * can check this against the rate sheet without trusting the translation.
    */
-  const toLine = (a, group, type) => ({
-    group,
-    reason: a.name || a.description || null,
-    // The BUCKET the adjustment came out of — "FICO : 760 - 779, CLTV : 70.01% -
-    // 75.00%". The name says which grid; only this says which CELL, and that is
-    // the whole of "why is this price this price".
-    detail: a.description || null,
-    type: type || a.type || null,
-    valueType: 'points',
-    value: a.priceAdjustment == null ? null : round3(-Number(a.priceAdjustment)),
-    valueAsGiven: numOrNull(a.priceAdjustment),
-    givenIn: 'price',
-  });
-
-  const lines = (ev.adjustments || []).map((a) => toLine(a, a.type || 'LLPA', a.type || null));
-  const addOns = (ev.addOns || []).map((a) => toLine(a, 'Add-on', 'AddOn'));
+  const lines = (ev.adjustments || []).map((a) => priceLine(a, a.type || 'LLPA', a.type || null));
+  const addOns = (ev.addOns || []).map((a) => priceLine(a, 'Add-on', 'AddOn'));
   const all = lines.concat(addOns);
   // Summed on the vendor's own numbers, then converted once — never by adding
   // up our own rounded translations, which would drift by a tenth of a point.
@@ -627,7 +667,7 @@ function optionForQuote(quote = {}) {
 }
 
 module.exports = {
-  emptyOption, optionForQuote, optionsFromLoanNex, optionsFromLenderPrice, optionsFromAhl,
+  emptyOption, optionForQuote, optionsFromLoanNex, optionsFromLenderPrice, optionsFromAhl, priceLine,
   programsFromLoanNex, programsForBoard,
   attachEvidence, evidenceCoversRate, splitInterestOnly, filterInterestOnly,
   _internals: { round3, numOrNull, deepMerge },

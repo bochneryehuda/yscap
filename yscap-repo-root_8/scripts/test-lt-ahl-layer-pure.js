@@ -178,8 +178,18 @@ function mergedFixture() {
       "SHAPE-2 the stack is reconciled against the VENDOR's price, not ours — checking it against the held-back price fails by exactly the holdback on a board where nothing is wrong");
     ok(o.evidence.reason === 'inline_with_search',
       'SHAPE-3 the itemization is marked as arriving WITH the search — AHL charges no second call for it, exactly like Lender Price');
-    ok(Array.isArray(o.adjustments) && o.adjustments.every((a) => typeof a.description === 'string' && a.description.length > 10),
-      'SHAPE-4 every adjustment carries AHL\'s own rule text — the grid AND the cell, which is the whole of "why is this price this price"');
+    ok(Array.isArray(o.adjustments) && o.adjustments.every((a) => typeof a.detail === 'string' && a.detail.length > 10 && a.reason),
+      'SHAPE-4 every adjustment carries AHL\'s own rule text in the key the shared breakdown reads (`detail`), which is the whole of "why is this price this price"');
+    // ⛔ THE SIGN. AHL states its stack in PRICE (positive = better price);
+    // Lender Price states POINTS (positive COSTS the borrower). The shared
+    // breakdown renders `value` and assumes points, so the negation must happen
+    // here — and it must be the SAME negation LoanNEX's mapper does.
+    ok(o.adjustments.every((a) => a.givenIn === 'price' && a.valueType === 'points'
+      && a.valueAsGiven != null && Math.abs(a.value + a.valueAsGiven) < 1e-9),
+      'SHAPE-7 every line is converted price → POINTS with the vendor\'s own number kept beside it — one sign convention, or the same "+0.25" means opposite things on one screen');
+    const priceSum = o.adjustments.reduce((n, a) => n + a.valueAsGiven, 0);
+    ok(Math.abs(o.priceBuild.adjustmentPoints + priceSum) < 5e-4,
+      `SHAPE-8 the stated total is in POINTS too (${o.priceBuild.adjustmentPoints}), converted once from the vendor's own total rather than by summing our rounded lines`);
     const empty = quoteShape.emptyOption();
     ok(Object.keys(empty).every((k) => k in o),
       'SHAPE-5 an AHL option fills the SAME field set the screen already reads — the layout cannot tell which vendor it is looking at');
