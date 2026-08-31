@@ -54,6 +54,16 @@
  */
 const MARGIN_HOLDBACK_POINTS = {
   loannex: 0.25,
+  // AMERICAN HERITAGE LENDING — owner-directed 2026-08-30: *"the price should
+  // populate from here and pre-fill a 0.25 margin hold back on top of it."* The
+  // reason is identical to LoanNEX's: AHL's Quick Pricer returns the raw sheet
+  // price with nothing of ours in it, so without this its quotes would read 0.25
+  // better than a Lender Price quote for reasons that have nothing to do with
+  // the investor. Same number, same direction, arrived at the same way — and
+  // settable in exactly the same place, because the owner's *"always in the
+  // settings the possibility to move up the margin hold back, remove the margin
+  // hold back, or move it down"* was not said about one vendor.
+  ahl: 0.25,
   lenderprice: 0,
 };
 

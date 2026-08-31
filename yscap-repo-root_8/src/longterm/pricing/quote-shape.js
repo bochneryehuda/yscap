@@ -196,6 +196,136 @@ function optionsFromLoanNex(board, opts = {}) {
   return out;
 }
 
+/**
+ * AHL's board → the common shape.
+ *
+ * ── THE ONE THAT NEEDS NO SECOND CALL ──────────────────────────────────────
+ * The three-layer rule at the top of this file says a price is a board layer
+ * plus an evidence layer, and that LoanNEX charges a call per quote for the
+ * second one. AHL charges nothing: its page renders the adjustment stack beside
+ * the price, so `ahl/parse.js` reads both out of ONE answer and the itemization
+ * is present here by definition. That is why `adjustments` is filled directly
+ * and `evidence.reason` is `inline_with_search` — the same words Lender Price's
+ * mapper uses, because it is the same fact.
+ *
+ * ⚠️ AND THEREFORE `[]` REALLY DOES MEAN "NO ADJUSTMENTS" ON AN AHL ROW, where
+ * on a LoanNEX row it would mean "nobody has asked yet". That distinction is the
+ * whole reason `emptyOption` starts `adjustments` at null, so it is honoured
+ * rather than flattened: a program AHL returned WITHOUT a stack keeps null.
+ *
+ * ── THE STACK IS THE PROGRAM'S, NOT THE RUNG'S ─────────────────────────────
+ * AHL states one adjustment stack per PROGRAM and one price per rate. Whether
+ * that stack is identical at every rate on the program is NOT proven — the same
+ * open question `evidenceCoversRate` exists for on the LoanNEX side — but here
+ * it is not a question about copying one rate's answer onto another: it is the
+ * only stack AHL published, for the whole program, in the answer that also
+ * carried every rate. It reconciles at the priced rate (`basePrice + Σ
+ * adjustments = price`, checked in the parser), so it is attached with
+ * `appliesToThisRate` set only where that arithmetic actually holds.
+ */
+function optionsFromAhl(board, opts = {}) {
+  const out = [];
+  for (const p of (board && board.programs) || []) {
+    const stack = Array.isArray(p.adjustments) ? p.adjustments : null;
+    for (const r of p.rungs || []) {
+      const price = round3(r.price);
+      const basePrice = round3(r.basePrice);
+      const sum = stack ? round3(stack.reduce((n, a) => n + (Number(a.priceAdjustment) || 0), 0)) : null;
+      /**
+       * ⛔ THE STACK EXPLAINS THE VENDOR'S PRICE, NOT OURS — and getting that
+       * wrong makes an honest board look broken. AHL's arithmetic is
+       * `basePrice + Σ adjustments = the price AHL published`. Our 0.25 margin
+       * holdback is taken AFTER that, so reconciling the stack against the
+       * held-back `price` fails by exactly the holdback, every time, on a board
+       * where nothing is wrong. Measured: base 99.250 + (−0.750) = 98.500,
+       * against a held-back price of 98.250.
+       *
+       * So it reconciles against `vendorPrice` — what AHL actually said — and
+       * the holdback becomes its OWN line below the stack, which is also the
+       * layout a reader needs: base → the investor's adjustments → what we hold
+       * back → the price on the screen. A rung whose trail has already been
+       * stripped for display carries no `vendorPrice`; there the check falls
+       * back to `price` and says which it used, rather than inventing one.
+       */
+      const heldBack = r.marginHoldback == null ? null : round3(r.marginHoldback);
+      const vendorPrice = r.vendorPrice == null ? null : round3(r.vendorPrice);
+      const against = vendorPrice != null ? vendorPrice : price;
+      const reconciles = basePrice != null && sum != null && against != null
+        && Math.abs(round3(basePrice + sum) - against) < 0.0005;
+      out.push(deepMerge(emptyOption(), {
+        source: 'ahl',
+        lender: p.lender, lenderId: p.lenderId, investor: p.investor, whiteLabel: p.whiteLabel || null,
+        program: p.program, programId: p.programId, product: p.programCode || p.product,
+        priceBuild: {
+          noteRate: round3(r.rate),
+          baseRate: round3(r.baseRate),
+          price,
+          basePrice,
+          adjustmentPoints: sum,
+          // The vendor's own final price, before our holdback — so the column a
+          // reader checks the stack against is present on the row.
+          vendorPrice,
+          adjustedPoints: price == null ? null : round3(100 - price),
+          pointsDerivedFromPrice: price != null,
+        },
+        // AHL publishes its stack with the price. `description` carries the
+        // vendor's own rule text ("… Property Type is Condo"), which is the
+        // whole of "why is this price this price", so it is passed through
+        // verbatim and never re-worded.
+        adjustments: stack ? stack.map((a) => ({ type: a.type || null, name: a.name || null, description: a.description || null, priceAdjustment: a.priceAdjustment == null ? null : Number(a.priceAdjustment) })) : null,
+        /**
+         * What WE took, stated on the quote rather than only in the audit trail.
+         * `holdback` is a first-class field on the common option shape and
+         * Lender Price fills it from its own feed, so an AHL row filling it is
+         * the same fact in the same place — which is what stops the two reading
+         * as different systems.
+         */
+        holdback: heldBack == null ? null : {
+          points: heldBack,
+          vendorPrice,
+          appliedBy: 'yscap',
+          note: `${heldBack} in points is held back on this quote. AHL publishes the raw sheet price; Lender Price's feed already carries our holdback, so this brings the two onto the same footing before anything compares them.`,
+        },
+        eligibility: p.eligible === undefined ? null : {
+          status: p.eligible ? 'Pass' : 'Fail',
+          criteria: (p.ineligibleReasons || []).map((x) => ({ name: null, requirement: x.rule, status: 'Fail' })),
+          notices: [],
+        },
+        terms: {
+          loanAmount: numOrNull(opts.loanAmount),
+          dayLock: r.lockDays, cushionedLockDays: null,
+          interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
+          interestOnlyTerm: p.interestOnlyTerm == null ? null : p.interestOnlyTerm,
+          amortizationType: p.amortizationType || null,
+          term: p.termInMonths == null ? null : p.termInMonths, termInMonths: p.termInMonths != null,
+          ...termPair(p.termInMonths, 'months'),
+          dscr: numOrNull(r.dscr != null ? r.dscr : opts.dscr), fico: numOrNull(opts.fico),
+          ltv: numOrNull(opts.ltv), loanPurpose: opts.loanPurpose || null,
+        },
+        monthlyPayment: r.payment == null ? null : { total: numOrNull(r.payment) },
+        flags: {
+          isException: false, softStop: false,
+          // AHL STATES NO SHEET DATE. Its page carries no `rateSheetLastUpdated`
+          // and no expiry, so this stays null — "we do not know" — and never
+          // false, which would be a reassurance nobody gave us.
+          expired: null,
+        },
+        // AHL has no per-quote explain endpoint: the explanation arrived with the
+        // board. What identifies the quote is the program code, the rate and the
+        // lock, so that is what is carried.
+        explain: { vendor: 'ahl', priceHashKey: null, rate: round3(r.rate), price, lockDays: r.lockDays, programCode: p.programCode || null, programId: p.programId },
+        evidence: stack
+          ? { fetched: true, appliesToThisRate: reconciles, reason: reconciles ? 'inline_with_search' : 'program_stack_does_not_reconcile_at_this_rate' }
+          : { fetched: false, appliesToThisRate: false, reason: 'vendor_published_no_stack_for_this_program' },
+        // Which number the arithmetic was checked against, so a screen never has
+        // to guess whether a reconciliation covered the holdback.
+        reconciledAgainst: stack ? (vendorPrice != null ? 'vendorPrice' : 'price') : null,
+      }));
+    }
+  }
+  return out;
+}
+
 /** Lender Price options → the common shape (its own `optionOf`, widened). */
 function optionsFromLenderPrice(options) {
   return ((options) || []).map((o) => deepMerge(emptyOption(), {
@@ -497,7 +627,7 @@ function optionForQuote(quote = {}) {
 }
 
 module.exports = {
-  emptyOption, optionForQuote, optionsFromLoanNex, optionsFromLenderPrice,
+  emptyOption, optionForQuote, optionsFromLoanNex, optionsFromLenderPrice, optionsFromAhl,
   programsFromLoanNex, programsForBoard,
   attachEvidence, evidenceCoversRate, splitInterestOnly, filterInterestOnly,
   _internals: { round3, numOrNull, deepMerge },

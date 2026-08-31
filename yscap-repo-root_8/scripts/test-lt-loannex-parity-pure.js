@@ -49,6 +49,8 @@
  *  16.  stop pre-filling Button Finance off                               → HIDE-2, SET-6
  *  17.  coerce a non-boolean on/off instead of refusing it                → SET-7
  *  18.  make the pre-filled source `both` again                           → ROUTE-1, SET-5
+ *  29.  move an investor the owner did NOT name off Lender Price          → SET-5
+ *  30.  stop pre-filling American Heritage to its own pricer              → SET-4b
  *  19.  drop NQM/Acra/eResi from the owner's standing instruction         → OWNER-1/2/5
  *  20.  keep the vendor on every row of the ordinary board                → ONE-2/3
  *  21.  keep the per-vendor summary counts on the ordinary board          → ONE-4
@@ -602,7 +604,18 @@ console.log('Two programs, one loan — parity');
   const three = ['nqm', 'acra', 'eresi'].map((k) => d.investors.find((r) => r.key === k));
   ok(three.every((r) => r && r.source === 'loannex' && r.sourceOrigin === 'owner_directed'),
     'SET-4 the three the owner named are pre-filled to LoanNEX, and the row says the instruction is where that came from');
-  ok(d.investors.filter((r) => r.key !== 'nqm' && r.key !== 'acra' && r.key !== 'eresi').every((r) => r.source === 'lenderprice'),
+  // AMERICAN HERITAGE JOINED THE NAMED LIST on 2026-08-31 — owner-directed, and
+  // for its own reason rather than LoanNEX's: AHL publishes its own live pricer,
+  // so its sheet is first-hand there. It is spelled out here rather than the
+  // assertion being loosened, because the property this guards is "no investor
+  // moved that the owner did not move" — an exception list is what makes that
+  // checkable, and a `.filter(r => r.source === 'lenderprice')` would guard
+  // nothing at all.
+  const ahlRow = d.investors.find((r) => r.key === 'american_heritage');
+  ok(ahlRow && ahlRow.source === 'ahl' && ahlRow.sourceOrigin === 'owner_directed',
+    'SET-4b American Heritage is pre-filled to its OWN pricer, and the row says the instruction is where that came from');
+  const OWNER_MOVED = ['nqm', 'acra', 'eresi', 'american_heritage'];
+  ok(d.investors.filter((r) => !OWNER_MOVED.includes(r.key)).every((r) => r.source === 'lenderprice'),
     'SET-5 …and every other investor is pre-filled to Lender Price — where the system fetches everything today');
   const btn = d.investors.find((r) => r.key === 'button_finance');
   ok(btn && btn.enabled === false && btn.enabledOrigin === 'owner_directed' && d.summary.off === 1,

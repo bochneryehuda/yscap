@@ -1,0 +1,445 @@
+{
+ "scenario": {
+  "purpose": "cashout",
+  "value": 500000,
+  "loan": 350000,
+  "fico": 760,
+  "dscr": 1.3,
+  "propertyType": "Condo",
+  "units": 4,
+  "state": "CT",
+  "zip": "06105",
+  "city": "Hartford",
+  "prepayMonths": 60,
+  "occupancy": "Investment",
+  "citizenship": "US Citizen"
+ },
+ "channel": "CorrNonDel",
+ "capturedAt": "2026-08-31",
+ "legs": {
+  "t30-fix-l30": {
+   "leg": {
+    "termYears": 30,
+    "interestOnly": false,
+    "lockDays": 30
+   },
+   "body": [
+    [
+     "Action",
+     "Get Pricing"
+    ],
+    [
+     "ConsumerPurpose",
+     "Business"
+    ],
+    [
+     "LoanPurpose",
+     "Refinance"
+    ],
+    [
+     "RefiPurpose",
+     "CashOut"
+    ],
+    [
+     "DocType",
+     "Investor - DSCR"
+    ],
+    [
+     "RentIndicator",
+     "Long Term Rental"
+    ],
+    [
+     "LoanTerm",
+     "30"
+    ],
+    [
+     "FICO",
+     "760"
+    ],
+    [
+     "DSCR",
+     "1.30"
+    ],
+    [
+     "PrepayPenaltyPeriod",
+     "5"
+    ],
+    [
+     "PrepayPenaltyType",
+     "Fixed Percentage"
+    ],
+    [
+     "InterestOnly",
+     "No"
+    ],
+    [
+     "CitizenshipType",
+     "US Citizen"
+    ],
+    [
+     "Channel",
+     "CorrNonDel"
+    ],
+    [
+     "PropertyValue",
+     "500000"
+    ],
+    [
+     "LoanAmount",
+     "350000"
+    ],
+    [
+     "PropState",
+     "CT"
+    ],
+    [
+     "PropertyType",
+     "Condo"
+    ],
+    [
+     "Units",
+     "4"
+    ],
+    [
+     "Occupancy",
+     "Investment"
+    ],
+    [
+     "LockTerm",
+     "30"
+    ],
+    [
+     "PropZip",
+     "06105"
+    ],
+    [
+     "PropCity",
+     "Hartford"
+    ],
+    [
+     "WarrantableCondo",
+     "Yes"
+    ]
+   ],
+   "file": "t30-fix-l30.html"
+  },
+  "t30-fix-l45": {
+   "leg": {
+    "termYears": 30,
+    "interestOnly": false,
+    "lockDays": 45
+   },
+   "body": [
+    [
+     "Action",
+     "Get Pricing"
+    ],
+    [
+     "ConsumerPurpose",
+     "Business"
+    ],
+    [
+     "LoanPurpose",
+     "Refinance"
+    ],
+    [
+     "RefiPurpose",
+     "CashOut"
+    ],
+    [
+     "DocType",
+     "Investor - DSCR"
+    ],
+    [
+     "RentIndicator",
+     "Long Term Rental"
+    ],
+    [
+     "LoanTerm",
+     "30"
+    ],
+    [
+     "FICO",
+     "760"
+    ],
+    [
+     "DSCR",
+     "1.30"
+    ],
+    [
+     "PrepayPenaltyPeriod",
+     "5"
+    ],
+    [
+     "PrepayPenaltyType",
+     "Fixed Percentage"
+    ],
+    [
+     "InterestOnly",
+     "No"
+    ],
+    [
+     "CitizenshipType",
+     "US Citizen"
+    ],
+    [
+     "Channel",
+     "CorrNonDel"
+    ],
+    [
+     "PropertyValue",
+     "500000"
+    ],
+    [
+     "LoanAmount",
+     "350000"
+    ],
+    [
+     "PropState",
+     "CT"
+    ],
+    [
+     "PropertyType",
+     "Condo"
+    ],
+    [
+     "Units",
+     "4"
+    ],
+    [
+     "Occupancy",
+     "Investment"
+    ],
+    [
+     "LockTerm",
+     "45"
+    ],
+    [
+     "PropZip",
+     "06105"
+    ],
+    [
+     "PropCity",
+     "Hartford"
+    ],
+    [
+     "WarrantableCondo",
+     "Yes"
+    ]
+   ],
+   "file": "t30-fix-l45.html"
+  },
+  "t40-io-l30": {
+   "leg": {
+    "termYears": 40,
+    "interestOnly": true,
+    "lockDays": 30
+   },
+   "body": [
+    [
+     "Action",
+     "Get Pricing"
+    ],
+    [
+     "ConsumerPurpose",
+     "Business"
+    ],
+    [
+     "LoanPurpose",
+     "Refinance"
+    ],
+    [
+     "RefiPurpose",
+     "CashOut"
+    ],
+    [
+     "DocType",
+     "Investor - DSCR"
+    ],
+    [
+     "RentIndicator",
+     "Long Term Rental"
+    ],
+    [
+     "LoanTerm",
+     "40"
+    ],
+    [
+     "FICO",
+     "760"
+    ],
+    [
+     "DSCR",
+     "1.30"
+    ],
+    [
+     "PrepayPenaltyPeriod",
+     "5"
+    ],
+    [
+     "PrepayPenaltyType",
+     "Fixed Percentage"
+    ],
+    [
+     "InterestOnly",
+     "Yes"
+    ],
+    [
+     "CitizenshipType",
+     "US Citizen"
+    ],
+    [
+     "Channel",
+     "CorrNonDel"
+    ],
+    [
+     "PropertyValue",
+     "500000"
+    ],
+    [
+     "LoanAmount",
+     "350000"
+    ],
+    [
+     "PropState",
+     "CT"
+    ],
+    [
+     "PropertyType",
+     "Condo"
+    ],
+    [
+     "Units",
+     "4"
+    ],
+    [
+     "Occupancy",
+     "Investment"
+    ],
+    [
+     "LockTerm",
+     "30"
+    ],
+    [
+     "PropZip",
+     "06105"
+    ],
+    [
+     "PropCity",
+     "Hartford"
+    ],
+    [
+     "WarrantableCondo",
+     "Yes"
+    ]
+   ],
+   "file": "t40-io-l30.html"
+  },
+  "t40-io-l45": {
+   "leg": {
+    "termYears": 40,
+    "interestOnly": true,
+    "lockDays": 45
+   },
+   "body": [
+    [
+     "Action",
+     "Get Pricing"
+    ],
+    [
+     "ConsumerPurpose",
+     "Business"
+    ],
+    [
+     "LoanPurpose",
+     "Refinance"
+    ],
+    [
+     "RefiPurpose",
+     "CashOut"
+    ],
+    [
+     "DocType",
+     "Investor - DSCR"
+    ],
+    [
+     "RentIndicator",
+     "Long Term Rental"
+    ],
+    [
+     "LoanTerm",
+     "40"
+    ],
+    [
+     "FICO",
+     "760"
+    ],
+    [
+     "DSCR",
+     "1.30"
+    ],
+    [
+     "PrepayPenaltyPeriod",
+     "5"
+    ],
+    [
+     "PrepayPenaltyType",
+     "Fixed Percentage"
+    ],
+    [
+     "InterestOnly",
+     "Yes"
+    ],
+    [
+     "CitizenshipType",
+     "US Citizen"
+    ],
+    [
+     "Channel",
+     "CorrNonDel"
+    ],
+    [
+     "PropertyValue",
+     "500000"
+    ],
+    [
+     "LoanAmount",
+     "350000"
+    ],
+    [
+     "PropState",
+     "CT"
+    ],
+    [
+     "PropertyType",
+     "Condo"
+    ],
+    [
+     "Units",
+     "4"
+    ],
+    [
+     "Occupancy",
+     "Investment"
+    ],
+    [
+     "LockTerm",
+     "45"
+    ],
+    [
+     "PropZip",
+     "06105"
+    ],
+    [
+     "PropCity",
+     "Hartford"
+    ],
+    [
+     "WarrantableCondo",
+     "Yes"
+    ]
+   ],
+   "file": "t40-io-l45.html"
+  }
+ }
+}
