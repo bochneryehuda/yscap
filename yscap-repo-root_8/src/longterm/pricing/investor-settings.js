@@ -48,7 +48,15 @@ const investors = require('../encompass/investors');
 const whiteLabel = require('../lenderprice/investor-programs');
 
 /** Where an investor's pricing may be fetched. */
-const SOURCES = ['lenderprice', 'loannex', 'both'];
+/**
+ * `both` predates the third source and KEEPS ITS NAME AND ITS MEANING — "do not
+ * restrict this investor to one feed" — because it is stored in the database
+ * against investors somebody already set, and silently re-reading a saved word
+ * as something narrower is how a person's decision gets rewritten under them.
+ * `all` is offered as the clearer synonym for new settings; both resolve the
+ * same way in `sourcesUnder`.
+ */
+const SOURCES = ['lenderprice', 'loannex', 'admortgage', 'both', 'all'];
 /**
  * The most an investor's own extra may be, either way — the same decimal-slip
  * guard the global holdback carries, and deliberately the same number, because

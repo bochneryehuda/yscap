@@ -57,7 +57,17 @@ const investorLinks = require('./investor-links');
 const whiteLabel = require('../lenderprice/investor-programs');
 const { classify } = require('./product-class');
 
-const SOURCES = ['lenderprice', 'loannex'];
+/**
+ * THE SOURCES, in the order a board reads them.
+ *
+ * A&D joined as a THIRD on 2026-08-31. Everything below that used to be written
+ * for two — the comparison, the election, the summary counters — is now written
+ * for N, because a hardcoded pair is exactly what made adding the third a
+ * rewrite rather than a line. `compare` keeps its two-argument form for the
+ * callers and tests that already use it; `compareMany` is the general one.
+ */
+const SOURCES = ['lenderprice', 'loannex', 'admortgage'];
+const SOURCE_LABELS = { lenderprice: 'Lender Price', loannex: 'LoanNEX', admortgage: 'A&D Mortgage' };
 const round3 = (n) => (n == null ? null : Math.round(Number(n) * 1000) / 1000);
 
 /**
@@ -123,39 +133,77 @@ function bestOf(programs) {
 }
 
 /**
- * Compare one investor across the two sources on matched (class, lock, rate)
- * triples. Returns the measurement — never a verdict; `elect` reads it.
+ * Compare one investor across ANY number of sources on matched (class, lock,
+ * rate) triples. Returns the measurement — never a verdict; `elect` reads it.
+ *
+ * A POINT IS COMPARABLE WHEN AT LEAST TWO SOURCES QUOTE IT. Requiring all three
+ * would make the comparison vanish the moment a third source joined and quoted
+ * a narrower ladder — the board would silently stop electing anybody, which is
+ * the failure mode of a pair-shaped function widened carelessly.
+ *
+ * A win is the HIGHEST PRICE at a matched point (better execution). Where two
+ * sources tie at the top, neither is credited a win and the point counts as a
+ * tie, so a source cannot win by being equal.
  */
-function compare(lpPrograms, nxPrograms) {
-  const a = offerIndex(lpPrograms);
-  const b = offerIndex(nxPrograms);
-  const pairs = [];
-  for (const [key, lp] of a) {
-    const nx = b.get(key);
-    if (!nx) continue;
-    pairs.push({
-      productClass: lp.productClass, lockDays: lp.lockDays, rate: lp.rate,
-      lenderpricePrice: lp.price, loannexPrice: nx.price,
-      delta: round3(nx.price - lp.price), // positive = LoanNEX better
+function compareMany(bySource) {
+  const present = Object.keys(bySource || {}).filter((s) => (bySource[s] || []).length > 0);
+  const idx = new Map(present.map((s) => [s, offerIndex(bySource[s])]));
+  const keys = new Set();
+  for (const m of idx.values()) for (const k of m.keys()) keys.add(k);
+
+  const samples = [];
+  const wins = Object.fromEntries(present.map((s) => [s, 0]));
+  let ties = 0;
+  for (const key of keys) {
+    const at = present.filter((s) => idx.get(s).has(key));
+    if (at.length < 2) continue;
+    const first = idx.get(at[0]).get(key);
+    const prices = Object.fromEntries(at.map((s) => [s, round3(idx.get(s).get(key).price)]));
+    const best = Math.max(...at.map((s) => prices[s]));
+    const winners = at.filter((s) => prices[s] === best);
+    if (winners.length === 1) wins[winners[0]] += 1; else ties += 1;
+    samples.push({
+      productClass: first.productClass, lockDays: first.lockDays, rate: first.rate,
+      prices, bestSource: winners.length === 1 ? winners[0] : null,
     });
   }
-  pairs.sort((x, y) => x.productClass.localeCompare(y.productClass) || x.lockDays - y.lockDays || x.rate - y.rate);
-  const n = pairs.length;
-  const loannexWins = pairs.filter((p) => p.delta > 0).length;
-  const lenderpriceWins = pairs.filter((p) => p.delta < 0).length;
-  const ties = n - loannexWins - lenderpriceWins;
-  const meanDelta = n ? round3(pairs.reduce((s, p) => s + p.delta, 0) / n) : null;
-  const sorted = pairs.map((p) => p.delta).sort((x, y) => x - y);
-  const medianDelta = n ? round3(n % 2 ? sorted[(n - 1) / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2) : null;
-  return {
-    comparedPoints: n, loannexWins, lenderpriceWins, ties,
-    meanDeltaPrice: meanDelta, medianDeltaPrice: medianDelta,
-    maxDeltaPrice: n ? round3(Math.max(...pairs.map((p) => p.delta))) : null,
-    minDeltaPrice: n ? round3(Math.min(...pairs.map((p) => p.delta))) : null,
-    // Capped: a board carries this per investor and the full grid is thousands of rows.
-    samples: pairs.slice(0, 40),
+  samples.sort((x, y) => x.productClass.localeCompare(y.productClass) || x.lockDays - y.lockDays || x.rate - y.rate);
+  const n = samples.length;
+
+  const out = {
+    comparedSources: present,
+    comparedPoints: n,
+    wins, ties,
+    samples: samples.slice(0, 40),
     sampleTruncated: n > 40,
   };
+
+  // ── LEGACY TWO-SOURCE FIELDS ────────────────────────────────────────────
+  // Kept verbatim, and only when those two sources are the ones compared, so a
+  // reader of `meanDeltaPrice` is never handed a mean across three feeds under
+  // a name that has always meant "LoanNEX minus Lender Price".
+  if (present.includes('lenderprice') && present.includes('loannex')) {
+    const pairs = samples
+      .filter((sm) => sm.prices.lenderprice != null && sm.prices.loannex != null)
+      .map((sm) => round3(sm.prices.loannex - sm.prices.lenderprice));
+    const m = pairs.length;
+    const sorted = [...pairs].sort((x, y) => x - y);
+    out.loannexWins = pairs.filter((d) => d > 0).length;
+    out.lenderpriceWins = pairs.filter((d) => d < 0).length;
+    out.meanDeltaPrice = m ? round3(pairs.reduce((a, b) => a + b, 0) / m) : null;
+    out.medianDeltaPrice = m ? round3(m % 2 ? sorted[(m - 1) / 2] : (sorted[m / 2 - 1] + sorted[m / 2]) / 2) : null;
+    out.maxDeltaPrice = m ? round3(Math.max(...pairs)) : null;
+    out.minDeltaPrice = m ? round3(Math.min(...pairs)) : null;
+  }
+  return out;
+}
+
+/**
+ * The original two-source form, kept for existing callers and tests.
+ * Delegates, so there is one comparison in this file rather than two that drift.
+ */
+function compare(lpPrograms, nxPrograms) {
+  return compareMany({ lenderprice: lpPrograms || [], loannex: nxPrograms || [] });
 }
 
 /** The verdict, and the sentence that explains it. */
@@ -167,26 +215,38 @@ function elect(presentIn, cmp) {
   if (!cmp || !cmp.comparedPoints) {
     return {
       chosen: null, basis: 'no_comparable_basis',
-      reason: 'Both programs quote this investor, but on no shared product/lock/rate — there is nothing to compare, so neither is elected. Both are shown.',
+      reason: `${presentIn.map(label).join(' and ')} all quote this investor, but on no shared product/lock/rate — there is nothing to compare, so none is elected. All are shown.`,
     };
   }
-  if (cmp.loannexWins === cmp.lenderpriceWins) {
+  const wins = cmp.wins || {};
+  const ranked = [...presentIn].sort((a, b) => (wins[b] || 0) - (wins[a] || 0));
+  const top = wins[ranked[0]] || 0;
+  const atTop = ranked.filter((s) => (wins[s] || 0) === top);
+  if (atTop.length > 1 || top === 0) {
     return {
       chosen: null, basis: 'tie',
-      reason: `Identical execution across all ${cmp.comparedPoints} matched quotes — neither program is better. Both are shown.`,
+      reason: `Identical execution across all ${cmp.comparedPoints} matched quotes — no program prices better. All are shown.`,
     };
   }
-  const winner = cmp.loannexWins > cmp.lenderpriceWins ? 'loannex' : 'lenderprice';
-  const wins = winner === 'loannex' ? cmp.loannexWins : cmp.lenderpriceWins;
-  const margin = Math.abs(cmp.meanDeltaPrice);
+  const winner = ranked[0];
+  // The margin is stated against the RUNNER-UP, per matched point, because "by
+  // 0.25 on average" is only meaningful against something. The two-source
+  // `meanDeltaPrice` is not reused here: it has a fixed direction that stops
+  // meaning anything once a third feed is in the set.
+  const runnerUp = ranked[1];
+  const deltas = (cmp.samples || [])
+    .filter((sm) => sm.prices[winner] != null && sm.prices[runnerUp] != null)
+    .map((sm) => sm.prices[winner] - sm.prices[runnerUp]);
+  const margin = deltas.length ? Math.abs(deltas.reduce((a, b) => a + b, 0) / deltas.length) : null;
   return {
     chosen: winner, basis: 'better_execution',
-    reason: `${label(winner)} prices better on ${wins} of ${cmp.comparedPoints} matched quotes ` +
-            `(same product, same lock, same rate), by ${margin.toFixed(3)} in price on average.`,
+    reason: `${label(winner)} prices better on ${top} of ${cmp.comparedPoints} matched quotes `
+          + `(same product, same lock, same rate)`
+          + (margin == null ? '.' : `, by ${margin.toFixed(3)} in price on average against ${label(runnerUp)}.`),
   };
 }
 
-function label(src) { return src === 'loannex' ? 'LoanNEX' : 'Lender Price'; }
+function label(src) { return SOURCE_LABELS[src] || String(src || 'unknown'); }
 
 /**
  * Merge two normalised boards.
@@ -231,7 +291,7 @@ function merge(boards, opts = {}) {
       if (investorLinks.isGuess(id.match)) matchedByGuess.add(id.key);
       if (id.linked) matchedByLink.add(id.key);
       let e = byInvestor.get(id.key);
-      if (!e) { e = { key: id.key, label: id.label, whiteLabel: whiteLabel.whiteLabelOf(id.key), programs: { lenderprice: [], loannex: [] } }; byInvestor.set(id.key, e); }
+      if (!e) { e = { key: id.key, label: id.label, whiteLabel: whiteLabel.whiteLabelOf(id.key), programs: Object.fromEntries(SOURCES.map((x) => [x, []])) }; byInvestor.set(id.key, e); }
       e.programs[src].push(row);
     }
   }
@@ -239,7 +299,7 @@ function merge(boards, opts = {}) {
   const list = [];
   for (const e of byInvestor.values()) {
     const presentIn = SOURCES.filter((s) => e.programs[s].length > 0);
-    const cmp = presentIn.length === 2 ? compare(e.programs.lenderprice, e.programs.loannex) : null;
+    const cmp = presentIn.length >= 2 ? compareMany(e.programs) : null;
     const verdict = elect(presentIn, cmp);
     list.push({
       key: e.key, investor: e.label, whiteLabel: e.whiteLabel,
@@ -251,8 +311,8 @@ function merge(boards, opts = {}) {
       presentIn,
       chosen: verdict.chosen, electionBasis: verdict.basis, reason: verdict.reason,
       comparison: cmp,
-      best: { lenderprice: bestOf(e.programs.lenderprice), loannex: bestOf(e.programs.loannex) },
-      programCounts: { lenderprice: e.programs.lenderprice.length, loannex: e.programs.loannex.length },
+      best: Object.fromEntries(SOURCES.map((x) => [x, bestOf(e.programs[x])])),
+      programCounts: Object.fromEntries(SOURCES.map((x) => [x, e.programs[x].length])),
       programs: e.programs,
     });
   }
@@ -264,17 +324,16 @@ function merge(boards, opts = {}) {
 
   const counts = (pred) => list.filter(pred).length;
   return {
-    sources: {
-      lenderprice: sourceStatus(input.lenderprice, errors.lenderprice),
-      loannex: sourceStatus(input.loannex, errors.loannex),
-    },
+    sources: Object.fromEntries(SOURCES.map((x) => [x, sourceStatus(input[x], errors[x])])),
     summary: {
       investorCount: list.length,
-      inBoth: counts((x) => x.presentIn.length === 2),
-      lenderpriceOnly: counts((x) => x.presentIn.length === 1 && x.presentIn[0] === 'lenderprice'),
-      loannexOnly: counts((x) => x.presentIn.length === 1 && x.presentIn[0] === 'loannex'),
-      electedLoannex: counts((x) => x.chosen === 'loannex' && x.electionBasis === 'better_execution'),
-      electedLenderprice: counts((x) => x.chosen === 'lenderprice' && x.electionBasis === 'better_execution'),
+      // `inBoth` keeps its name and its meaning — quoted by MORE THAN ONE
+      // source — so nothing reading it changes now that "more than one" can be
+      // three. `inAllSources` is the stricter count, stated separately.
+      inBoth: counts((x) => x.presentIn.length >= 2),
+      inAllSources: counts((x) => x.presentIn.length === SOURCES.length),
+      ...Object.fromEntries(SOURCES.map((x) => [`${x}Only`, counts((y) => y.presentIn.length === 1 && y.presentIn[0] === x)])),
+      ...Object.fromEntries(SOURCES.map((x) => [`elected${x[0].toUpperCase()}${x.slice(1)}`, counts((y) => y.chosen === x && y.electionBasis === 'better_execution')])),
       noComparableBasis: counts((x) => x.electionBasis === 'no_comparable_basis'),
       ties: counts((x) => x.electionBasis === 'tie'),
       unmappedNames: new Set(unmapped.map((u) => u.name)).size,
@@ -338,4 +397,4 @@ function dedupeUnmapped(rows) {
   return [...m.values()];
 }
 
-module.exports = { merge, compare, elect, resolveInvestor, offerIndex, bestOf, SOURCES, _internals: { label, dedupeUnmapped, sourceStatus, round3 } };
+module.exports = { merge, compare, compareMany, elect, resolveInvestor, offerIndex, bestOf, SOURCES, SOURCE_LABELS, _internals: { label, dedupeUnmapped, sourceStatus, round3 } };

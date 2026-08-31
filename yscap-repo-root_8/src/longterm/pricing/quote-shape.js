@@ -444,6 +444,140 @@ function programsFromLoanNex(board, opts = {}) {
 }
 
 /**
+ * A&D MORTGAGE (AIM) options → the common shape.
+ *
+ * ── AIM SITS BETWEEN THE OTHER TWO, AND THAT IS THE POINT ──────────────────
+ * LoanNEX needs a second call per quote before it can show an LLPA. Lender Price
+ * ships them inline. AIM ships them inline TOO — one `adjustments` map per
+ * program — so an AIM row arrives with the same itemization a Lender Price row
+ * has always had, and `evidence.fetched` is true by definition. No explain call
+ * exists for AIM, and none is needed.
+ *
+ * ── THE STACK REALLY IS CONSTANT ACROSS A PROGRAM'S RATES HERE ─────────────
+ * `evidenceCoversRate` exists because no LoanNEX capture ever proved an LLPA
+ * stack is the same at two rates. AIM does not leave that open: it states ONE
+ * adjustments map for the whole program, and the arithmetic was verified across
+ * five scenarios — every unclipped rung of a ladder yields the same base from
+ * `points + totalAdjustments`. So `appliesToThisRate` is true here on structure,
+ * not on assumption.
+ *
+ * ⚠️ EXCEPT ON A CLIPPED RUNG. A&D caps the rebate, and on a rung sitting at the
+ * cap the itemization no longer reconciles to the price. Those rungs carry the
+ * LLPA list (it is still what A&D applied) but `basePoints: null` and
+ * `appliesToThisRate: false`, so a breakdown never shows a build that does not
+ * add up.
+ *
+ * ── SIGNS AGREE, SO NOTHING IS FLIPPED ─────────────────────────────────────
+ * Measured on both vendors: `adjustedPoints = basePoints − Σ adjustment values`.
+ * Lender Price's `adjustmentPoints` is the negated sum; AIM's `totalAdjustments`
+ * is the sum itself. So `adjustmentPoints = −totalAdjustments` puts AIM's build
+ * in Lender Price's own field meaning, and the two LLPA columns can sit beside
+ * each other unaltered.
+ */
+function optionsFromAdMortgage(board, opts = {}) {
+  const out = [];
+  for (const p of (board && board.programs) || []) {
+    const adjustments = Array.isArray(p.adjustments) ? p.adjustments : [];
+    const totalAdj = numOrNull(p.totalAdjustments);
+    for (const r of p.rungs || []) {
+      const points = round3(r.points);
+      out.push(deepMerge(emptyOption(), {
+        source: 'admortgage',
+        lender: p.lender, lenderId: p.lenderId, investor: p.investor, whiteLabel: p.whiteLabel || null,
+        program: p.program, programId: p.programId, product: p.product,
+        priceBuild: {
+          noteRate: round3(r.rate),
+          // AIM STATES THE POINTS; the price is the complement. The opposite of
+          // LoanNEX, and the flag says so.
+          adjustedPoints: points, borrowerPaidPoints: points,
+          price: round3(r.price), priceDerivedFromPoints: r.price != null,
+          basePoints: numOrNull(r.basePoints), basePrice: numOrNull(r.basePrice),
+          adjustmentPoints: totalAdj == null ? null : round3(-totalAdj),
+          // A&D's rebate cap, expressed as the price ceiling it actually is.
+          priceCeiling: numOrNull(p.priceCeiling),
+        },
+        adjustments,
+        rateAdjustments: [],
+        terms: {
+          loanAmount: numOrNull(opts.loanAmount),
+          dayLock: r.lockDays,
+          interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
+          amortizationType: p.amortizationType || null,
+          term: p.termInMonths == null ? null : p.termInMonths, termInMonths: p.termInMonths != null,
+          ...termPair(p.termInMonths, 'months'),
+          dscr: numOrNull(r.dscr), fico: numOrNull(opts.fico),
+          ltv: numOrNull(opts.ltv), cltv: numOrNull(opts.cltv), loanPurpose: opts.loanPurpose || null,
+        },
+        monthlyPayment: r.payment == null ? null : { total: numOrNull(r.payment) },
+        // AIM states its overlays in prose and they are real statements about
+        // the quote, so they are carried as notices rather than dropped.
+        notices: (p.overlays || []).length ? p.overlays.map((t) => ({ text: t, source: 'program' })) : null,
+        flags: {
+          isException: false, softStop: false,
+          // AIM STAMPS ITS SHEET, so unlike LoanNEX we can actually answer this.
+          // `expired` stays null because A&D states the stamp, not an expiry —
+          // the freshness judgement belongs to whoever knows the cadence.
+          expired: null,
+        },
+        rateSheet: { expired: null, validAsOf: p.rateSheetAsOf || null, name: null, id: null },
+        explain: null,
+        evidence: {
+          fetched: true,
+          appliesToThisRate: r.clipped !== true,
+          reason: r.clipped === true ? 'rebate_cap_reached_build_does_not_reconcile' : 'inline_with_search',
+        },
+      }));
+    }
+  }
+  return out;
+}
+
+/** A&D board rows in the general engine's program shape. Mirrors `programsFromLoanNex`. */
+function programsFromAdMortgage(board, opts = {}) {
+  const out = [];
+  for (const p of (board && board.programs) || []) {
+    const adjustments = Array.isArray(p.adjustments) ? p.adjustments : [];
+    const totalAdj = numOrNull(p.totalAdjustments);
+    const options = (p.rungs || []).map((r) => ({
+      priceBuild: {
+        noteRate: round3(r.rate),
+        price: round3(r.price),
+        adjustedPoints: round3(r.points), borrowerPaidPoints: round3(r.points),
+        priceDerivedFromPoints: r.price != null,
+        basePoints: numOrNull(r.basePoints), basePrice: numOrNull(r.basePrice),
+        adjustmentPoints: totalAdj == null ? null : round3(-totalAdj),
+        priceCeiling: numOrNull(p.priceCeiling),
+      },
+      adjustments,
+      monthlyPayment: r.payment == null ? null : { monthlyPI: numOrNull(r.payment) },
+      rateSheet: { expired: null, name: null, validAsOf: p.rateSheetAsOf || null },
+      dayLock: r.lockDays == null ? null : r.lockDays,
+      cushionedLockDays: null,
+      dscr: numOrNull(r.dscr),
+      interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
+      isException: false, softStop: false,
+      clipped: r.clipped === true,
+      explain: null,
+    }));
+    const row = {
+      lender: p.lender || null, investor: p.investor || null,
+      program: p.program || null, product: p.product || null,
+      investorKey: opts.investorKey != null ? opts.investorKey : (p.investorKey || null),
+      whiteLabel: opts.whiteLabel || null,
+      consumerLabel: opts.whiteLabel || null,
+      rateGridId: p.programId == null ? null : String(p.programId),
+      termInMonths: p.termInMonths == null ? null : p.termInMonths,
+      amortizationType: p.amortizationType || null,
+      isInterestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
+      options,
+    };
+    if (opts.reveal) row.source = 'admortgage';
+    out.push(row);
+  }
+  return out;
+}
+
+/**
  * The whole board, in the general engine's shape — both vendors, one list.
  *
  * ⛔ ONE SYSTEM. Without `reveal` no row says which vendor produced it: the
@@ -462,7 +596,14 @@ function programsForBoard(merged, opts = {}) {
       // A LoanNEX program carries `rungs`; a Lender Price one carries `options`.
       // Which it is decides how it is shaped, and NOT the row's `source`, which
       // the one-system view has already stripped by the time this runs.
-      if (Array.isArray(p.rungs) && !Array.isArray(p.options)) {
+      // WHICH VENDOR SHAPE THIS IS, decided STRUCTURALLY and never from
+      // `source` — the one-system view may already have stripped it. A Lender
+      // Price row carries `options`; a rung-carrying row is LoanNEX unless it
+      // also carries A&D's inline `adjustments`, which LoanNEX never has
+      // (LoanNEX's arrive later, from a separate `/evidences` call).
+      if (Array.isArray(p.rungs) && !Array.isArray(p.options) && Array.isArray(p.adjustments)) {
+        rows.push(...programsFromAdMortgage({ programs: [p] }, { investorKey: e.key, whiteLabel: e.whiteLabel || null, reveal }));
+      } else if (Array.isArray(p.rungs) && !Array.isArray(p.options)) {
         rows.push(...programsFromLoanNex({ programs: [p] }, { investorKey: e.key, whiteLabel: e.whiteLabel || null, reveal }));
       } else {
         rows.push(base);
@@ -497,7 +638,8 @@ function optionForQuote(quote = {}) {
 }
 
 module.exports = {
-  emptyOption, optionForQuote, optionsFromLoanNex, optionsFromLenderPrice,
+  emptyOption, optionForQuote, optionsFromLoanNex, optionsFromLenderPrice, optionsFromAdMortgage,
+  programsFromAdMortgage,
   programsFromLoanNex, programsForBoard,
   attachEvidence, evidenceCoversRate, splitInterestOnly, filterInterestOnly,
   _internals: { round3, numOrNull, deepMerge },

@@ -55,6 +55,11 @@
 const MARGIN_HOLDBACK_POINTS = {
   loannex: 0.25,
   lenderprice: 0,
+  // A&D joined 2026-08-31 under the SAME owner rule as LoanNEX, and for the same
+  // measured reason: AIM returns A&D's raw investor price with nothing of ours
+  // baked in. Left alone it would read 0.25 better than a Lender Price quote for
+  // reasons that have nothing to do with the investor.
+  admortgage: 0.25,
 };
 
 const r3 = (n) => Math.round(Number(n) * 1000) / 1000;
@@ -325,10 +330,44 @@ function applyToBoard(board, source, opts) {
       // board somebody will spend an afternoon on. A holdback moves the price
       // down and the points up by exactly the same amount, so shift.
       const points = nn(r.points) ? r3(Number(r.points) + pts) : r3(100 - price);
+      // ⛔ `basePoints` / `basePrice` ARE THE VENDOR'S AND ARE NOT SHIFTED.
+      // A source that states an itemized build (A&D does; see below) has an
+      // arithmetic identity between its base, its adjustments and its final
+      // points. Moving the base by our holdback would keep that identity true
+      // while making `basePrice` a number the vendor never quoted — the base
+      // would silently become "A&D's base, less our margin", which is not a base
+      // anybody could reconcile against a rate sheet. The holdback is carried as
+      // its own adjustment line instead, which is what it actually is.
       return { ...r, vendorPrice: r3(vendorPrice), price, points, marginHoldback: pts };
     }),
     };
   });
+
+  // ── THE HOLDBACK IS SHOWN, NOT JUST TAKEN ─────────────────────────────────
+  // Where a source ships its LLPA itemization INLINE (A&D does; Lender Price
+  // does but holds back nothing here; LoanNEX's arrive later from `/evidences`
+  // and there is no list to append to yet), our holdback is appended as a named
+  // row. Two things follow, both of which matter:
+  //   · the build still reconciles — `adjustedPoints = basePoints − Σ values`
+  //     stays exactly true once our line is in the sum, so a breakdown never
+  //     shows a total that misses a quarter point;
+  //   · a reader can SEE where it went, instead of a price that is 0.25 off the
+  //     vendor's own sheet with nothing on screen to explain it.
+  // The value is NEGATIVE because these values are signed the way both vendors
+  // sign them: positive improves the price. A holdback worsens it.
+  for (const p of programs) {
+    if (!Array.isArray(p.adjustments)) continue;
+    const own = p.marginHoldback;
+    if (!nn(own) || Number(own) === 0) continue;
+    if (p.adjustments.some((a) => a && a.ours === true)) continue;   // never twice
+    p.adjustments = [...p.adjustments, {
+      group: 'Margin holdback',
+      reason: 'YS Capital margin holdback',
+      adjType: null, type: 'LLPA', valueType: 'Points',
+      value: r3(-Number(own)),
+      ours: true,
+    }];
+  }
   // The board's own summary figures are derived from the rungs, so they move too
   // — a `maxPrice` still quoting the raw number would contradict every row.
   for (const p of programs) {

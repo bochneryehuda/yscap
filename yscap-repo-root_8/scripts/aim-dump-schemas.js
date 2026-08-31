@@ -2,7 +2,7 @@
 /**
  * AD MORTGAGE (AIM Quick Pricer) — dump the live form schema for every program group.
  *
- * Writes docs/longterm/ppe-research/admortgage-aim-schemas.json, which
+ * Writes src/longterm/admortgage/capture/schemas.json, which
  * docs/longterm/ppe-research/ADMORTGAGE-AIM-FIELD-MAP.md is generated from. Re-run this rather
  * than hand-editing that table: AD owns these option ids and may change them.
  *
@@ -18,7 +18,7 @@ const fs = require('fs');
 const path = require('path');
 
 const BASE = process.env.AIM_BASE || 'https://aim.admortgage.com';
-const OUT = path.join(__dirname, '..', 'docs', 'longterm', 'ppe-research', 'admortgage-aim-schemas.json');
+const OUT = path.join(__dirname, '..', 'src', 'longterm', 'admortgage', 'capture', 'schemas.json');
 const GROUPS = [
   [33001, 'Non-QM'], [33015, 'Non-QM Second Lien'], [33087, 'Jumbo'],
   [33154, 'Conventional'], [33192, 'Government'],

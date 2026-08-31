@@ -71,6 +71,7 @@ const lp = require('../lenderprice/client');
 const lpPrograms = require('../lenderprice/investor-programs');
 const { validateScenario } = require('../lenderprice/search-model');
 const nex = require('../loannex/client');
+const ad = require('../admortgage/client');
 const mergeMod = require('../pricing/merge');
 const { merge } = mergeMod;
 const routing = require('../pricing/investor-routing');
@@ -101,7 +102,7 @@ const settingsStore = require('../settings/store');
  * not know is DROPPED rather than guessed at, because shaping a LoanNEX row with
  * the Lender Price mapper silently produces an option with no price.
  */
-const EMPTY_SPLIT = { lenderprice: [], loannex: [] };
+const EMPTY_SPLIT = { lenderprice: [], loannex: [], admortgage: [] };
 
 /**
  * WHICH SAVED COPY OF THE INVESTOR SETTINGS IS IN FORCE.
@@ -309,7 +310,7 @@ async function priceBoth(scenario, opts = {}) {
     return row && row.holdbackOrigin === 'setting' ? row.holdback : null;
   };
 
-  const [lpRes, nxRes] = await Promise.allSettled([
+  const [lpRes, nxRes, adRes] = await Promise.allSettled([
     (async () => {
       const r = await lp.price(sc, opts.lenderprice || {});
       if (!r || r.ok === false) {
@@ -338,6 +339,20 @@ async function priceBoth(scenario, opts = {}) {
       return { ...held, searchKey: r.searchKey || null, provenance: r.provenance || null };
     })(),
     nex.price(sc, opts.loannex || {}),
+    /**
+     * A&D (AIM), the third source. It prices A&D's OWN products only, so it
+     * contributes exactly one investor — but it goes through the identical
+     * merge, holdback and quote-shape path as the other two, because an
+     * investor whose price came from a shortcut is an investor nobody can
+     * compare.
+     *
+     * ⛔ IT MUST NOT TAKE THE BOARD DOWN. A&D refuses a scenario it cannot price
+     * with a 400 that NAMES the field (its one genuine advantage over the other
+     * two), and that is a normal answer, not a failure — so it resolves with an
+     * empty board carrying the refusal rather than rejecting. Only a transport
+     * or credential failure rejects.
+     */
+    ad.price(sc, opts.admortgage || {}),
   ]);
 
   const boards = {
@@ -348,11 +363,20 @@ async function priceBoth(scenario, opts = {}) {
     // puts the two on the same footing; applying it any later would have the
     // comparison electing on one set of numbers and the board showing another.
     loannex: nxRes.status === 'fulfilled' ? vendorMargin.applyToBoard(nxRes.value.board, 'loannex', { saved: heldSetting, extraFor }) : null,
+    // SAME PLACE, SAME REASON as LoanNEX: AIM returns A&D's raw investor price
+    // with none of our margin in it, so the 0.25 goes on HERE — before the
+    // merge, the comparison or the quote shape sees a number.
+    admortgage: adRes.status === 'fulfilled' ? vendorMargin.applyToBoard(adRes.value.board, 'admortgage', { saved: heldSetting, extraFor }) : null,
   };
   const errors = {
     lenderprice: lpRes.status === 'rejected' ? reasonOf(lpRes.reason) : null,
     loannex: nxRes.status === 'rejected' ? reasonOf(nxRes.reason) : null,
+    admortgage: adRes.status === 'rejected' ? reasonOf(adRes.reason) : null,
   };
+  // A&D's named refusal, carried through so the board can say WHICH FIELD to
+  // change. Neither other vendor offers this, so it is surfaced rather than
+  // flattened into "no programs".
+  const admortgageRefusal = adRes.status === 'fulfilled' ? (adRes.value.refusal || null) : null;
   // ONE SYSTEM unless an admin asks. Without `revealSource` the board carries no
   // hint of which vendor a row came from — the owner's own rule.
   // THE SAME SAVED COPY THE SETTINGS SCREEN SHOWS. An explicit `routes` in the
@@ -400,12 +424,15 @@ async function priceBoth(scenario, opts = {}) {
       // below instead, and `bySource` is still preferred when it is present so
       // a revealing caller does no extra work.
       const byS = e.bySource || (shaping.get(e.key) || EMPTY_SPLIT);
-      for (const src of ['lenderprice', 'loannex']) {
+      for (const src of mergeMod.SOURCES) {
         const progs = byS[src] || [];
         if (!progs.length) continue;
+        const ctx = { loanAmount: sc.loan, fico: sc.fico, ltv: sc.ltv, cltv: sc.cltv, loanPurpose: sc.purpose };
         const built = src === 'loannex'
-          ? quoteShape.optionsFromLoanNex({ programs: progs }, { loanAmount: sc.loan, fico: sc.fico, ltv: sc.ltv, loanPurpose: sc.purpose })
-          : quoteShape.optionsFromLenderPrice(progs);
+          ? quoteShape.optionsFromLoanNex({ programs: progs }, ctx)
+          : src === 'admortgage'
+            ? quoteShape.optionsFromAdMortgage({ programs: progs }, ctx)
+            : quoteShape.optionsFromLenderPrice(progs);
         for (const o of built) {
           const row = { ...o, investorKey: e.key, whiteLabel: e.whiteLabel };
           if (opts.revealSource !== true) delete row.source;
@@ -441,7 +468,10 @@ async function priceBoth(scenario, opts = {}) {
     investorPairing: investorLinks.pairing({
       lenderprice: namesOf(boards.lenderprice),
       loannex: namesOf(boards.loannex),
+      admortgage: namesOf(boards.admortgage),
     }, linked.raw),
+    // A&D's own words for why a scenario did not price, when it gave them.
+    admortgageRefusal,
     // What is NOT on the board, and why — so a short board can always be
     // accounted for without asking anybody.
     hidden: merged.hidden || [],

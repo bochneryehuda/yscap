@@ -44,10 +44,14 @@ const DEFAULT_ROUTE = settingsOf.DEFAULT_SOURCE;
 
 /** Which sources a setting lets through, given which actually answered. */
 function sourcesUnder(source, presentIn) {
-  const has = (x) => (presentIn || []).includes(x);
-  if (source === 'lenderprice') return has('lenderprice') ? ['lenderprice'] : [];
-  if (source === 'loannex') return has('loannex') ? ['loannex'] : [];
-  return [...(presentIn || [])];
+  const present = presentIn || [];
+  const s = String(source || '').toLowerCase();
+  // `both` and `all` both mean "do not restrict" — see investor-settings.
+  if (s === 'both' || s === 'all' || !s) return [...present];
+  // A NAMED SOURCE IS EXACTLY THAT ONE. An investor pinned to a feed that did
+  // not answer comes back EMPTY, deliberately: somebody who set an investor to
+  // A&D must not be shown Lender Price's number believing it is A&D's.
+  return present.includes(s) ? [s] : [];
 }
 
 /**
