@@ -54,6 +54,13 @@ function row(label, value, opts) {
 }
 const kept = (rows) => rows.filter(Boolean);
 
+/** "A", "A and B", "A, B and C" — a list a person reads, not an array joined. */
+function namesList(names) {
+  const list = (names || []).filter(Boolean).map(String);
+  if (list.length <= 1) return list[0] || '';
+  return `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;
+}
+
 /** The sub-title that rides in the brand band, under the document's name. */
 const PRODUCT_LINE = 'business-purpose rental financing';
 
@@ -174,6 +181,11 @@ function qualifyingRows(m, piti) {
   const out = kept([
     row('Monthly rent', nn(s.rentMonthly) ? wording.moneyExact(s.rentMonthly) : null),
   ]);
+  /* THE CREDIT SCORE THE PRICE WAS BUILT ON (owner-directed 2026-08-31). The
+     disclosures say in terms that the rate moves with "the final verified credit
+     score"; naming a figure as governing and never printing it leaves a reader
+     unable to tell whether the assumption is theirs. */
+  if (nn(s.fico)) out.push(row('Credit score used', String(Math.round(s.fico))));
   const d = shownDscr(m, piti);
   if (nn(d.value)) {
     out.push(['DSCR', d.value.toFixed(2), {
@@ -288,6 +300,17 @@ function optionBlocks(m, { heading } = {}) {
   const charges = chargeRows(m);
   const fees = lenderFeeRows(m);
   const closing = closingRows(m);
+  /* ⛔ THE COST STORY IS ONE STORY AND DOES NOT SPLIT. What the rate costs, the
+     lender's own fees and what lands at the table are one argument that ends in
+     the cash to close — the figure a borrower opens the sheet for. MEASURED on a
+     real render, it split mid-way: page one ended after the application fee and
+     page two carried the commitment fee, the total and the whole closing block,
+     four rows adrift from what they belong to. A SOFT break moves the lot to the
+     next page when there is not enough left of this one to hold it, and does
+     nothing at all when there is — so a sheet that fits is unchanged. */
+  if (charges.length || fees.rows.length || closing.length) {
+    out.push({ t: 'pagebreak', ifLessThan: 200 });
+  }
   if (charges.length) {
     out.push({ t: 'subhead', text: 'What this rate costs' });
     out.push({ t: 'figures', rows: charges });
@@ -310,6 +333,24 @@ function optionBlocks(m, { heading } = {}) {
 }
 
 /** The comparison table: one column per option, the anchor first and marked. */
+/**
+ * ONE member's housing cost — the ONE place a member becomes a PITI.
+ *
+ * The comparison table, the DSCR it prints and the sentence beneath it all divide
+ * by this same total, so they cannot disagree about what the payment is. It was
+ * a closure inside the table until the sentence needed it too, and a second copy
+ * there is exactly how a paragraph comes to quote a ratio the column above it
+ * does not show.
+ */
+function pitiFor(m) {
+  return wording.housingCost({
+    monthlyPI: m && m.monthlyPI,
+    taxMonthly: m && m.scenario && m.scenario.taxMonthly,
+    insuranceMonthly: m && m.scenario && m.scenario.insuranceMonthly,
+    hoaMonthly: m && m.scenario && m.scenario.hoaMonthly,
+  });
+}
+
 function comparisonTable(snapshot) {
   const cmp = snapshot.comparison;
   const members = snapshot.members;
@@ -320,23 +361,63 @@ function comparisonTable(snapshot) {
   })];
   const cell = (i, fn) => fn(members[i], cmp.rows[i]);
   const body = [];
-  const push = (label, fn) => {
+  /* WHAT EVERY OPTION AGREES ABOUT, LIFTED OUT OF THE TABLE AND STATED ONCE.
+     Owner-reported 2026-08-31: *"the same on all three is just a line. It's not
+     laid out nicely."* — and, earlier, the observation that made this necessary
+     at all: a comparison of three prices on ONE loan carried the loan amount,
+     the LTV, the term, the prepayment, the origination and the lender fees in
+     three identical columns. MEASURED on a real render: six of fifteen rows
+     said the same thing three times, which is not a comparison, it is
+     repetition wearing a comparison's clothes — and it buries the two or three
+     rows that actually decide anything.
+
+     ⛔ IT IS COMPUTED FROM THE VALUES, NEVER FROM A LIST OF FIELDS. A hand-kept
+     list of "things that are usually the same" is exactly how a sheet comes to
+     claim a 5-year prepayment across three scenarios that do not share one. A
+     row is lifted only when every column PRINTS the same string. */
+  const shared = [];
+  const push = (label, fn, opts) => {
     const vals = order.map((i) => cell(i, fn));
-    if (vals.some((v) => v != null && v !== '—')) body.push([label, ...vals.map((v) => (v == null ? '—' : v))]);
+    if (!vals.some((v) => v != null && v !== '—')) return;
+    const filled = vals.map((v) => (v == null ? '—' : v));
+    const same = members.length > 1 && filled.every((v) => v === filled[0]);
+    /* ⛔ TWO ROWS ARE NEVER LIFTED, however identical they look.
+       `Program` NAMES each column — fold it and the reader loses what they are
+       choosing between. The per-column comparison rows (break-even, the cost of
+       the extra borrowing) are answers ABOUT a column rather than facts of it,
+       and three equal answers is a coincidence of the arithmetic, not a shared
+       term of the loan. */
+    if (same && !(opts && opts.never)) { shared.push([label, filled[0]]); return; }
+    body.push([label, ...filled]);
   };
-  const pitiOf = (m) => wording.housingCost({
-    monthlyPI: m.monthlyPI,
-    taxMonthly: m.scenario && m.scenario.taxMonthly,
-    insuranceMonthly: m.scenario && m.scenario.insuranceMonthly,
-    hoaMonthly: m.scenario && m.scenario.hoaMonthly,
-  });
-  push('Program', (m) => m.consumerLabel);
+  const pitiOf = pitiFor;
+  const sc = (m) => (m && m.scenario) || {};
+  push('Program', (m) => m.consumerLabel, { never: true });
+  push('Loan purpose', (m) => sc(m).purpose || null);
   push('Rate', (m) => wording.rate(m.ratePct));
   push('Loan amount', (m) => (nn(m.loanAmount) ? wording.money(m.loanAmount) : null));
   push('LTV', (m) => (nn(m.ltv) ? wording.pct(m.ltv) : null));
   push('Term', (m) => (nn(m.termYears) ? `${Math.round(m.termYears)} yr${m.interestOnly ? ' I/O' : ''}` : null));
   push('Prepayment', (m) => m.prepayLabel);
+  push('Escrows', (m) => (sc(m).escrowWaive ? 'Waived — you pay taxes and insurance directly' : null));
   push('Principal & interest', (m) => (nn(m.monthlyPI) ? wording.moneyExact(m.monthlyPI) : null));
+  /* The three parts of the payment, so the total below can be CHECKED. They are
+     properties of the property rather than of the price, so on a same-loan
+     comparison all three fold into the shared block and cost the table nothing —
+     and on a scenario sheet where one option waives escrows they correctly
+     become their own columns. */
+  push('Property taxes', (m) => {
+    const hc = pitiOf(m);
+    return nn(hc.taxMonthly) ? wording.moneyExact(hc.taxMonthly) : null;
+  });
+  push('Insurance', (m) => {
+    const hc = pitiOf(m);
+    return nn(hc.insuranceMonthly) ? wording.moneyExact(hc.insuranceMonthly) : null;
+  });
+  push('Association dues', (m) => {
+    const hc = pitiOf(m);
+    return nn(hc.hoaMonthly) && hc.hoaMonthly > 0 ? wording.moneyExact(hc.hoaMonthly) : null;
+  });
   // ⛔ THE TOTAL PAYMENT COLUMN APPEARS ONLY WHERE IT IS A REAL PITI. A column
   // that carried a total for one option and a dash for the next would invite a
   // comparison between a full payment and a partial one.
@@ -348,33 +429,91 @@ function comparisonTable(snapshot) {
     const l = ((m.charges || {}).lines || []).find((x) => x && x.key === 'origination');
     return l && nn(l.dollars) && l.dollars > 0 ? wording.moneyExact(l.dollars) : 'None';
   });
-  push('Lender fees', (m) => {
+  /* ⛔ THE LENDER'S FEES ARE LISTED ONE BY ONE, NEVER AS A LUMP. Owner-directed:
+     *"you need to list out the lender fees, because the next one, you're waiving
+     the lender fees. You need to be able to see the difference."* A single
+     "Lender fees $2,095" cell answers neither question a reader has — which fees,
+     and which of them this option is actually charging. Each fee gets its own
+     row, so an option that waives ONE of two says exactly that, and a fee that is
+     the same on every option folds into the shared block on its own. A waived fee
+     is LISTED at what it would have been rather than dropped: a fee you are not
+     paying is a thing of value, and a missing row reads as a fee nobody charges. */
+  for (const key of wording.LENDER_FEE_KEYS) {
+    const label = wording.CHARGE_LABELS[key];
+    if (!label) continue;
+    push(label, (m) => {
+      const l = ((m.charges || {}).lines || []).find((x) => x && x.key === key);
+      if (!l) return null;
+      if (l.waived === true) {
+        return nn(l.fullDollars) && l.fullDollars > 0
+          ? `Waived (${wording.moneyExact(l.fullDollars)})` : 'Waived';
+      }
+      return nn(l.dollars) ? wording.moneyExact(l.dollars) : null;
+    });
+  }
+  /* ⛔ WHAT A WAIVE IS WORTH, TOTALLED — the one place a total of two visible
+     rows earns its line. Each fee above already says "Waived ($500)", so the sum
+     is arithmetic; but on the option that waives them it is not a subtotal, it
+     is the reason to choose that option, and it was stated on the per-option
+     page this table replaced. It appears only where a waive exists, so an
+     ordinary comparison never carries a row of dashes. */
+  push('Lender fees you are not paying', (m) => {
     const lines = (m.charges || {}).lines || [];
     const fees = wording.LENDER_FEE_KEYS.map((k) => lines.find((l) => l && l.key === k)).filter(Boolean);
-    if (!fees.length) return null;
-    if (fees.every((l) => l.waived === true)) {
-      const t = fees.reduce((s, l) => s + (nn(l.fullDollars) ? l.fullDollars : 0), 0);
-      return `Waived (${wording.moneyExact(t)})`;
-    }
-    return wording.moneyExact(fees.reduce((s, l) => s + (nn(l.dollars) ? l.dollars : 0), 0));
+    if (!fees.length || !fees.some((l) => l.waived === true)) return null;
+    const t = fees.filter((l) => l.waived === true)
+      .reduce((sum, l) => sum + (nn(l.fullDollars) ? l.fullDollars : 0), 0);
+    return t > 0 ? wording.moneyExact(t) : null;
   });
   push('Cost to get this rate', (m) => {
     const cc = wording.costOrCredit(m.charges);
     return cc.kind === 'none' ? 'None' : cc.text;
   });
+  /* ⛔ THE CREDIT IS ITS OWN ROW, and it was the one genuine loss when the
+     per-option pages went — found by the guard that computes what those pages
+     printed, not by reading the diff. On a lender-paid option, or one whose
+     lender fees are waived, the rebate comes back as a CREDIT toward closing
+     costs, and it is the single line that explains why that option's cash to
+     close is lower than the one beside it. Rolled into the net position it is
+     arithmetic the reader cannot see; on the pages that carried it, it was
+     stated. */
+  push('Credit toward your closing costs', (m) => {
+    const c = (m.charges || {}).credit;
+    return c && nn(c.dollars) && c.dollars > 0 ? `-${wording.moneyExact(c.dollars)}` : null;
+  });
   push('Lender charges, net', (m) => wording.closingPosition(m.charges).text);
+  // The other half of the cash to close, so the total beneath is arithmetic a
+  // reader can follow rather than a figure they have to accept.
+  push('Down payment', (m) => {
+    const c = m.closing || {};
+    if (!nn(c.downPaymentDollars)) return null;
+    return nn(c.downPaymentPct)
+      ? `${wording.moneyExact(c.downPaymentDollars)} (${wording.pct(c.downPaymentPct)})`
+      : wording.moneyExact(c.downPaymentDollars);
+  });
   push('Estimated cash to close', (m) => (m.closing && nn(m.closing.cashToCloseDollars)
     ? wording.moneyExact(m.closing.cashToCloseDollars) : null));
+  // The DSCR's own numerator. Without it the ratio beneath is unverifiable —
+  // and a reader who cannot check a figure has to take it on trust.
+  push('Monthly rent', (m) => (nn(sc(m).rentMonthly) ? wording.moneyExact(sc(m).rentMonthly) : null));
   push('DSCR', (m) => {
     const d = shownDscr(m, pitiOf(m));
     return nn(d.value) ? d.value.toFixed(2) : null;
   });
+  /* THE CREDIT SCORE THE PRICE WAS BUILT ON (owner-directed 2026-08-31). It
+     reached the snapshot and appeared on no sheet — while `Rate and pricing` in
+     the disclosures says in terms that the price moves with "the final verified
+     credit score". A document that names a figure as governing and never states
+     it leaves the reader unable to tell whether the assumption matches them. */
+  push('Credit score used', (m) => (nn(sc(m).fico) ? String(Math.round(sc(m).fico)) : null));
+  push('Property type', (m) => sc(m).propertyType || null);
+  push('Estimated value', (m) => (nn(m.propertyValue) ? wording.money(m.propertyValue) : null));
   if (cmp.workflow === 'A') {
-    push('Break-even', (m, r) => (r && nn(r.breakEvenMonths) ? wording.monthsWords(r.breakEvenMonths) : null));
+    push('Break-even', (m, r) => (r && nn(r.breakEvenMonths) ? wording.monthsWords(r.breakEvenMonths) : null), { never: true });
   } else {
-    push('Cost of the extra borrowing', (m, r) => (r && nn(r.incrementalCostPct) ? `${wording.pct(r.incrementalCostPct)} a year` : null));
+    push('Cost of the extra borrowing', (m, r) => (r && nn(r.incrementalCostPct) ? `${wording.pct(r.incrementalCostPct)} a year` : null), { never: true });
   }
-  return { t: 'table', head, rows: body, anchorColumn: 1 };
+  return { t: 'table', head, rows: body, anchorColumn: 1, shared };
 }
 
 const DIFFER_LABELS = {
@@ -726,28 +865,103 @@ function buildLayout(snapshot, opts = {}) {
       blocks.push({ t: 'para', small: true,
         text: 'These options are the same loan on the same property, priced three ways.' });
     }
-    blocks.push(comparisonTable(s));
+    /* WHAT IS THE SAME GOES ABOVE THE TABLE, ONCE, AND IS STRUCK FROM IT.
+       The table then carries only what the reader is actually choosing between,
+       which is the whole job of the page. `comparisonTable` computes the split
+       from the printed values, so a term that DIFFERS — a 3-year prepayment
+       beside two 5-years — never appears here and always keeps its own row.
+
+       ⛔ IT IS DRAWN AS A FIGURES BLOCK, NOT AS A NEW PRIMITIVE. `pdf.js`
+       already knows how to draw a labelled two-column list and how to break one
+       across a page; a fourth kind of table would be a second thing to keep
+       correct for no gain the reader can see. */
+    const table = comparisonTable(s);
+
+    /* ⛔ THE COMPARISON GOES FIRST, AND THE SHARED FACTS FOLLOW IT. The shared
+       block was above the table when it was written, which reads well and cost
+       the sheet the one thing it exists for: fifteen lifted facts pushed the
+       table's last four rows — the cash to close, the DSCR and the cost of the
+       extra borrowing, which is to say the answer — onto a second page, so the
+       columns a reader is choosing between could not be seen at once. MEASURED:
+       the table broke 9 rows on page one and 4 on page two.
+
+       The table is the argument; what every option agrees about is reference a
+       reader consults second, and a reference list is the one thing here that
+       breaks across a page harmlessly. So the order follows what the reader is
+       doing, not what reads tidily in the source. */
+    blocks.push({ t: 'pagebreak', ifLessThan: 300 });
+    blocks.push(table);
     const anchor = s.members[cmp.anchorIndex];
     blocks.push({ t: 'para', small: true, text: `Every comparison below is against ${anchor.label}.` });
     for (const r of cmp.rows) {
       if (r.isAnchor) continue;
       const m = s.members[r.index];
+      /* THE SENTENCE IS HANDED THE RATIO THE TABLE PRINTS. Both are computed by
+         `shownDscr` from the same members, so the paragraph can never quote a
+         DSCR a reader cannot find in the column above it. */
       const sentence = cmp.workflow === 'A'
         ? wording.breakEvenSentence(r, m, anchor)
-        : wording.incrementalSentence(r, m, anchor);
+        : wording.incrementalSentence(r, m, anchor, {
+          member: shownDscr(m, pitiFor(m)).value,
+          anchor: shownDscr(anchor, pitiFor(anchor)).value,
+        });
       if (sentence) blocks.push({ t: 'para', text: sentence });
+    }
+    /* ⛔ A WAIVE IS EXPLAINED IN WORDS, NOT ONLY PRICED. The table says
+       "Waived ($500)" per fee and totals what it saves, which is the arithmetic;
+       what it does not say is WHO is paying instead, and that is the part a
+       borrower reads a term sheet to learn. The per-option page this table
+       replaced carried that sentence, so it moves here rather than being lost —
+       once for the sheet, naming the options it applies to, because on a
+       comparison the answer differs column by column. */
+    const waivers = s.members.filter((m) => {
+      const lines = (m.charges || {}).lines || [];
+      const fees = wording.LENDER_FEE_KEYS.map((k) => lines.find((l) => l && l.key === k)).filter(Boolean);
+      return fees.length > 0 && fees.some((l) => l.waived === true);
+    });
+    if (waivers.length) {
+      const who = waivers.length === s.members.length
+        ? 'On every option above'
+        : `On ${namesList(waivers.map((m) => m.label))}`;
+      blocks.push({ t: 'para', small: true,
+        text: `${who}, the lender fees are covered by the lender, not paid by you. The cash to close on `
+          + `${waivers.length > 1 ? 'those options' : 'that option'} already reflects that.` });
+    }
+    if (table.shared && table.shared.length) {
+      blocks.push({ t: 'subhead', text: `The same in all ${s.members.length} — stated once` });
+      blocks.push({ t: 'para', small: true,
+        text: 'These are the same on every option above, so they are stated here once rather than repeated in each column.' });
+      // TIGHT: this block carries most of the sheet's facts now, and at the
+      // ordinary rhythm (a divider and 5pt under every row) fifteen of them fill
+      // half a page. They are a reference list, not the argument.
+      blocks.push({ t: 'figures', tight: true, rows: table.shared.map(([k, v]) => [k, v, {}]) });
     }
     if (cmp.spreadMinutes > (opts.pricedApartMinutes || 60)) {
       blocks.push({ t: 'para', small: true,
         text: 'These options were priced at different times, so they reflect the market as it stood at each of '
           + 'those moments.' });
     }
-    for (const m of s.members) {
-      blocks.push({ t: 'pagebreak' });
-      blocks.push({ t: 'band', title: `${m.label} — ${m.consumerLabel}` });
-      blocks.push({ t: 'figures', rows: loanRows(m) });
-      blocks.push(...optionBlocks(m));
-    }
+    /* ⛔ THE PER-OPTION PAGES ARE GONE, AND NOTHING WENT WITH THEM.
+       Owner-reported 2026-08-31: *"everything is way too big … it's not laid
+       out nicely, just thrown on the sheet without an order."* MEASURED on a
+       real render, that was mostly ONE thing: after the comparison table, this
+       sheet restated every option IN FULL, on a page each — programme, purpose,
+       loan amount, LTV, term, rate, prepayment, the payment breakdown, the rent,
+       the DSCR, the charges and the closing totals. Three options, three pages,
+       and every figure on them already sat in the table or in the shared block
+       directly above. A comparison sheet was seven pages of which three were
+       repetition.
+
+       ⛔ THE TABLE HAD TO GROW BEFORE THIS LOOP COULD GO, and it did: loan
+       purpose, the tax / insurance / dues split, the rent, the credit score, the
+       property type and value, each lender fee ON ITS OWN ROW, and the down
+       payment are all rows now. Whatever every option agrees about folds into
+       the shared block and is stated once; whatever they differ on keeps its own
+       column. So a fact is stated once instead of four times, and never zero
+       times — which is the part that needed proving rather than asserting.
+       `test-lt-sheet-nothing-lost-pure.js` computes what these blocks WOULD have
+       printed and fails the build on a label the table and the shared block
+       between them do not carry. */
   }
 
   // ── the disclosures ─────────────────────────────────────────────────────

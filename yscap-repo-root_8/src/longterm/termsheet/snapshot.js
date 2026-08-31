@@ -527,9 +527,90 @@ function ratioProblem(member) {
   };
 }
 
+/**
+ * THE FIRST OPTION ON THIS DOCUMENT WHOSE PRICE NO LONGER MATCHES ITS FIGURES,
+ * as a refusal ready to return — or null when every one of them is sound.
+ *
+ * ⛔ ONE DEFINITION, ASKED PER MEMBER. `ratioProblem` is unchanged and is still
+ * the only place that decides what a bracket change IS; this walks the members
+ * and hands its answer back. A second reading of "has this moved band" is how a
+ * comparison and a term sheet would come to disagree about the same option.
+ *
+ * ⛔ IT NAMES WHICH OPTION. On a three-scenario sheet "re-price at 1.24" is not
+ * actionable — the officer has three ratios in front of them and no idea which
+ * one is being complained about. The label the officer typed is what goes in the
+ * sentence, and the position rides along for a screen that wants to point at a
+ * row.
+ */
+function repriceProblem(members) {
+  const list = Array.isArray(members) ? members : [];
+  for (let i = 0; i < list.length; i += 1) {
+    const r = ratioProblem(list[i]);
+    if (!r) continue;
+    const label = (list[i] && (list[i].label || list[i].consumerLabel)) || null;
+    // On a single-option document naming it reads as clutter; on a comparison it
+    // is the whole point. The one sentence covers both by naming it only when
+    // there is more than one thing it could mean.
+    const which = list.length > 1 ? `${label ? `Option ${label}` : `Option ${i + 1}`} ` : '';
+    const lead = list.length > 1 ? `${which}has moved band. ` : '';
+    return {
+      ok: false,
+      kind: null,               // filled in by the caller, which knows the kind
+      missing: ['dscrMismatch'],
+      error: 'dscr_below_priced',
+      position: i,
+      label,
+      repriceAt: r.actual,
+      pricedAt: r.priced,
+      pricedTier: r.pricedTier,
+      actualTier: r.actualTier,
+      direction: r.direction,
+      message: lead + (r.direction === 'down'
+        ? `These figures come to ${r.actual.toFixed(2)}, which is a lower DSCR band than the `
+          + `${r.priced.toFixed(2)} it was priced in — so the rate on it is one this loan no `
+          + `longer qualifies for. Re-price at ${r.actual.toFixed(2)} and issue from the new price.`
+        : `These figures come to ${r.actual.toFixed(2)}, a higher DSCR band than the `
+          + `${r.priced.toFixed(2)} it was priced in — the borrower qualifies for better pricing `
+          + `than this shows. Re-price at ${r.actual.toFixed(2)} and issue from the new price.`),
+    };
+  }
+  return null;
+}
+
 function exportGate(snapshot) {
   const s = snapshot && typeof snapshot === 'object' ? snapshot : {};
   const kind = s.docKind || documentKind(s.members, s.comparison);
+  const all = Array.isArray(s.members) ? s.members : [];
+
+  /* ⛔ THE RE-PRICE RULE RUNS ON EVERY OPTION OF EVERY DOCUMENT (owner-directed
+     2026-08-31: *"on the scenario sheet, when you're adding a few different
+     scenarios, the reprice rule is the rule. The ratio is changing for different
+     rates, so every scenario is true."*).
+
+     It used to run on a TERM SHEET ONLY, and even there on `members[0]` alone —
+     so a scenario comparison at 1.53, 1.42 and 1.24, which is three different
+     DSCR bands, was never checked at all. Three rates, none of them tested
+     against the band the loan actually reaches. That is the case the rule exists
+     for, and it was the one case it skipped.
+
+     ⛔ AND IT REFUSES RATHER THAN WARNS, which is the owner's own choice when it
+     was put to them. A comparison is not an offer, but a borrower still reads a
+     rate off it, and a rate this loan does not qualify for is wrong on any
+     paper. Blocking is also what the term sheet already did, so there is one
+     behaviour to learn rather than two.
+
+     ⛔ ASKED BEFORE THE COMPLETENESS CHECKS, AND THAT IS SAFE FOR A REASON THAT
+     LIVES IN `ratioProblem`, NOT HERE. The rule it replaced ran only once the
+     rent, taxes and insurance were in, so a half-filled scenario was told what
+     was missing rather than accused of a mismatch it could not yet have. That
+     protection is NOT lost by moving this up: `ratioProblem` itself returns null
+     the moment any of those figures is absent, so an incomplete scenario falls
+     straight through to the completeness message exactly as before. Checked,
+     not assumed — the ordering would be a real regression if that guard were
+     not already inside it. */
+  const priced = repriceProblem(all);
+  if (priced) return Object.assign({}, priced, { kind });
+
   if (kind !== DOC_KINDS.TERM_SHEET) return { ok: true, kind, missing: [], message: null };
 
   const m = (Array.isArray(s.members) && s.members[0]) || {};
@@ -552,39 +633,7 @@ function exportGate(snapshot) {
   // single key `partyName` — the screen points at both boxes and either fills it.
   if (!str(p.borrowerName, 120) && !str(p.entityName, 120)) missing.push('partyName');
   if (!str(p.propertyAddress, 200)) missing.push('propertyAddress');
-  // ⛔ ASKED AFTER THE FIELDS ARE IN, DELIBERATELY. The ratio cannot be worked out
-  // until the rent, taxes and insurance are there, so a half-filled scenario must
-  // be told what is missing rather than accused of a mismatch it cannot yet have.
-  if (!missing.length) {
-    const r = ratioProblem(m);
-    if (r) {
-      return {
-        ok: false,
-        kind,
-        missing: ['dscrMismatch'],
-        // The code still names the money case, because that is the one a caller
-        // may want to treat specially; `direction` says which way it went.
-        error: 'dscr_below_priced',
-        repriceAt: r.actual,
-        pricedAt: r.priced,
-        pricedTier: r.pricedTier,
-        actualTier: r.actualTier,
-        direction: r.direction,
-        // ⛔ ONE SHORT SENTENCE AND A BUTTON — owner-directed: *"make sure it's
-        // very easy."* It states the two ratios, that they are in different
-        // bands, and what pressing the button does. It does not explain DSCR
-        // banding to somebody who prices loans all day.
-        message: r.direction === 'down'
-          ? `These figures come to ${r.actual.toFixed(2)}, which is a lower DSCR band than the `
-            + `${r.priced.toFixed(2)} this was priced in — so the rate on it is one this loan no `
-            + `longer qualifies for. Re-price at ${r.actual.toFixed(2)} and issue from the new price.`
-          : `These figures come to ${r.actual.toFixed(2)}, a higher DSCR band than the `
-            + `${r.priced.toFixed(2)} this was priced in — the borrower qualifies for better pricing `
-            + `than this sheet shows. Re-price at ${r.actual.toFixed(2)} and issue from the new price.`,
-      };
-    }
-    return { ok: true, kind, missing: [], message: null };
-  }
+  if (!missing.length) return { ok: true, kind, missing: [], message: null };
 
   const words = missing.map((k) => GATE_LABELS[k] || k);
   const list = words.length === 1 ? words[0]

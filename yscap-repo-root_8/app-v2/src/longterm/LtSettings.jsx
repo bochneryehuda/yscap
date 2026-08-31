@@ -123,8 +123,14 @@ function SettingRow({ setting, canManage, pending, onChange, onReset }) {
           background: '#FBF6E9', border: '1px solid rgba(174,135,70,.35)',
           color: '#6B5320', fontSize: 12, lineHeight: 1.45,
         }}>
-          <strong style={{ fontWeight: 700 }}>Not in use yet.</strong>{' '}
-          {notWired.replace(/^Not in use yet[.,]?\s*/i, '')}
+          {/* The lead sentence is drawn bold and stripped from the body so it is not
+              said twice — and it has to MATCH the reason it is leading, or the box
+              reads "Not in use yet. No longer in use..." and contradicts itself in
+              its own first line. */}
+          <strong style={{ fontWeight: 700 }}>
+            {setting.retired ? 'No longer in use.' : 'Not in use yet.'}
+          </strong>{' '}
+          {notWired.replace(/^(Not in use yet|No longer in use)[.,—-]?\s*/i, '')}
         </div>
       )}
     </div>
@@ -231,7 +237,15 @@ function SettingRow({ setting, canManage, pending, onChange, onReset }) {
       <div style={{ minWidth: 0, display: 'grid', gap: 6 }}>
         {control}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 12 }}>
-          {notWired && <span style={{ color: '#8A6A22', fontWeight: 600 }}>Nothing reads this yet</span>}
+          {/* A RETIRED knob and an unbuilt one are both un-editable and are NOT the
+              same news. "yet" tells a buyer to wait for a release; on a retired
+              setting no release is coming, and the reason beside this chip names
+              what to change instead. */}
+          {notWired && (
+            <span style={{ color: '#8A6A22', fontWeight: 600 }}>
+              {setting.retired ? 'Retired — nothing reads this' : 'Nothing reads this yet'}
+            </span>
+          )}
           {!notWired && setting.isOverridden
             ? <span style={{ color: '#8A6A22', fontWeight: 600 }}>Changed from ours</span>
             : null}

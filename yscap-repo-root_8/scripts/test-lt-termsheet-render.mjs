@@ -244,13 +244,28 @@ console.log('\nthe page says what the document says');
   // mentions it" would have been satisfied by the table alone and proved nothing
   // about the detail pages existing at all.
   check(where.every((p) => p.includes(0)), 'every option is named in the comparison table on page one');
+  /* ⛔ REVERSED 2026-08-31, ON THE OWNER'S OWN REPORT — and this is the render
+     half of the same reversal `test-lt-termsheet-pure.js` carries. These three
+     asserted a detail page per option, which is what the document did and what
+     the owner then read: *"everything is way too big … just thrown on the sheet
+     without an order."* MEASURED, those pages were three of a seven-page
+     comparison, and every figure on them already sat in the table above. What
+     replaces them is not "less detail" — the table grew to carry it, and
+     `test-lt-sheet-nothing-lost-pure.js` fails the build on a fact that stopped
+     being printed. So the property asserted here inverts: every option is named
+     ON the comparison, and NO option gets a page to itself. */
   const details = where.map((p) => p.filter((i) => i > 0));
-  check(details.every((p) => p.length >= 1), 'and every option has a page of its own beyond that table');
-  const firsts = details.map((p) => p[0]);
-  check(new Set(firsts).size === 3,
-    `each option's detail page is its OWN — the owner's "it's just adding pages to it", literally (pages ${firsts.join(', ')} of ${back.pageCount})`);
-  check(back.pageCount >= 4, `and the document runs to at least one page per option plus the comparison (${back.pageCount})`);
-  const carries = (want) => back.text.includes(want.replace(/ /g, '')) || back.text.includes(want);
+  check(details.every((p) => p.length === 0),
+    'and NO option has a page of its own — the per-option repeat is what made this seven pages');
+  check(back.pageCount <= 4,
+    `and the whole comparison, disclosures included, fits ${back.pageCount} pages (was 7 for three options)`);
+  /* Whitespace-insensitive on BOTH sides, like `squash` above. The extractor
+     reports the advance a viewer uses, so a run drawn inside a table cell can
+     come back as "(1.750pts)" where the same string in a figures row came back
+     spaced — a fact about kerning, not about the paper. Comparing text to a
+     particular extraction's spacing fails on a layout change and proves nothing
+     about what a reader sees. */
+  const carries = (want) => squash(back.text).includes(squash(want));
   for (const want of ['You pay $8,438 (2.250 pts)', 'You receive $6,563 (1.750 pts)',
     '67 months (5 years 7 months)', '51 months (4 years 3 months)', 'TS-4KH92B',
     `Page 1 of ${back.pageCount}`, `Page ${back.pageCount} of ${back.pageCount}`]) {
@@ -301,7 +316,12 @@ console.log('\nthe PILOT design is on every page — the band, the lockup, the f
     if (!squash(inBand.map((it) => it.s).join('')).includes('comparisonsheet')) bandless.push(i + 1);
     if (!squash(inFoot.map((it) => it.s).join('')).includes('notacommitmenttolend')) footerless.push(i + 1);
   });
-  check(back.pageCount >= 6, `a five-option comparison runs to ${back.pageCount} pages — enough for the check to mean something`);
+  /* The band-and-footer sweep below needs SEVERAL pages to be worth running; it
+     used to get them from the per-option repeat, which is gone. Five options
+     still make a multi-page document through the table and the disclosures, and
+     the check is on what it needs (more than one page) rather than on a page
+     count that was really a symptom of the bloat. */
+  check(back.pageCount >= 3, `a five-option comparison runs to ${back.pageCount} pages — enough for the band-and-footer sweep to mean something`);
   check(bandless.length === 0, `the brand band names the document on EVERY page (missing on ${bandless.join(', ') || 'none'})`);
   check(footerless.length === 0, `and the footer disclaims on EVERY page (missing on ${footerless.join(', ') || 'none'})`);
 
@@ -389,8 +409,14 @@ console.log('\nthe owner\'s four items, on the paper');
   const wflat = squash(waived.text);
   check(wflat.includes(squash('Application fee')) && wflat.includes(squash('Commitment fee')),
     'both lender fees are named on the paper');
+  /* The per-fee cells price it ("Waived ($500)") and the table totals what it
+     saves; this sentence is the part that says WHO is paying instead, which is
+     what a borrower reads a term sheet to learn. It moved from the retired
+     per-option page onto the comparison itself. */
   check(wflat.includes(squash('covered by the lender, not paid by you')),
-    '…and the waived one says so, with what it would have been');
+    '…and a sentence on the sheet says the lender is covering them, not the borrower');
+  check(wflat.includes(squash('Waived ($500)')) && wflat.includes(squash('Waived ($1,595)')),
+    '…and each fee is named at what it would have been, beside the option that charges it');
   check(wflat.includes(squash('Lender fees you are not paying')), '…and the saving is totalled');
 
   // (5) THE EXPIRY, in the owner's own unit.
