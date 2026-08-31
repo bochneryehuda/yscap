@@ -74,21 +74,13 @@ const NO_VALUE_OPS = new Set(shared.NO_VALUE_OPS);
    simply never reached. */
 const OPERATORS_BY_TYPE = shared.OPERATORS_BY_TYPE;
 
-const OPERATOR_LABEL = {
-  eq: 'is', neq: 'is not',
-  gt: 'is more than', gte: 'is at least', lt: 'is less than', lte: 'is at most',
-  between: 'is between',
-  in: 'is any of', not_in: 'is none of',
-  contains: 'contains', not_contains: 'does not contain', starts_with: 'starts with',
-  /* Arrives with the shared operator table. Without a label here `describeRule`
-     falls through to the raw key and the settings screen reads "Program
-     ends_with 30yr" — and a rule an administrator cannot READ is a rule they
-     cannot safely change, which is the whole reason that function exists. */
-  ends_with: 'ends with',
-  is_empty: 'is blank', not_empty: 'is filled in',
-  is_true: 'is yes', is_false: 'is no',
-  before: 'is before', after: 'is after',
-};
+/* THE OPERATOR WORDING IS THE SHARED TABLE'S. It was a second copy, and two of
+   its entries had drifted — `is_empty` read "is blank" and `not_empty` read
+   "is filled in" against the shared module's "is empty" / "is not empty" — so a
+   rule read one way on a long-term screen and another wherever the shared
+   summariser rendered it. The `ends_with` patch this table used to carry is no
+   longer needed either: the shared table has it. */
+const OPERATOR_LABEL = shared.OPERATOR_LABEL;
 
 /**
  * WHY A RULE COULD NOT BE READ. Each is a different piece of work: an unknown
@@ -343,18 +335,26 @@ function describeRule(node, fields, depth = 0) {
   if (typeof node !== 'object') return 'An unreadable rule.';
   if (isGroup(node)) {
     if (depth >= MAX_DEPTH) return 'A rule nested too deeply to read.';
-    const join = String(node.combinator || 'and').toLowerCase() === 'or' ? ' OR ' : ' AND ';
-    const parts = node.rules.map((r) => describeRule(r, fields, depth + 1)).filter(Boolean);
-    if (!parts.length) return 'Every long-term file.';
-    return parts.length === 1 ? parts[0] : `(${parts.join(join)})`;
+    // ── THE WORDS ARE THE SHARED MODULE'S, NOT A SECOND COPY ────────────────
+    //
+    // This used to render the sentence itself, and it drifted — silently, for as
+    // long as no shipped rule had more than one row. The first multi-row rule
+    // (the vesting one, 2026-08-31) showed three differences at once: this file
+    // bracketed the outermost group where the shared one does not, joined with
+    // " AND " where it joins with " and ", and called `is_empty` "is blank"
+    // against its "is empty". `test-lt-shared-rule-vocabulary-pure` D3 is what
+    // caught it, and it could only ever have caught it on such a rule.
+    //
+    // So the sentence comes from `shared.summarizeRule` — the module this one is
+    // meant to be replaced by, and already the source of NO_VALUE_OPS,
+    // OPERATORS_BY_TYPE, validateRule and normText here. What stays local is
+    // only the wording for the cases it does not cover: no rule at all, and a
+    // rule that is not readable as one.
+    const said = shared.summarizeRule(node, { fields: fields || {} });
+    return said || 'Every long-term file.';
   }
-  const key = String(node.field || '');
-  const f = fields && fields[key];
-  const label = (f && f.label) || key || 'an unknown field';
-  const op = OPERATOR_LABEL[String(node.operator || '')] || String(node.operator || '');
-  if (NO_VALUE_OPS.has(node.operator)) return `${label} ${op}`;
-  const v = Array.isArray(node.value) ? node.value.join(' and ') : node.value;
-  return `${label} ${op} ${v}`;
+  return shared.summarizeRule({ combinator: 'and', rules: [node] }, { fields: fields || {} })
+    || 'An unreadable rule.';
 }
 
 module.exports = {
