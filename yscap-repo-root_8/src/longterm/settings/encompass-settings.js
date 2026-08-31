@@ -60,6 +60,25 @@ const NW_NOT_BUILT = 'Not in use yet — the part of the system that would read 
 const NW_ENV = 'Not in use yet. The connection is configured where the credentials live (the hosting '
   + 'settings), so it can differ per environment and no secret passes through this screen.';
 
+/**
+ * RETIRED — the fifth answer, and the only one that points BACKWARDS.
+ *
+ * The four reasons above all say "not in use YET": the setting was declared ahead
+ * of the code that will one day read it, so a buyer who changes it is waiting for
+ * a release. A RETIRED setting is the opposite in time — it WAS read, the thing
+ * that read it is gone, and no release is coming. Telling a buyer "yet" about one
+ * of those is a promise nobody intends to keep, which is why this is its own
+ * wording and its own flag rather than a fifth phrasing of the same sentence.
+ *
+ * ⛔ IT MUST NAME WHAT RUNS INSTEAD, which is the entire reason the row is kept
+ * rather than deleted. A buyer who stored a value here is owed an answer to
+ * "then what governs this now?" — a row that only says "retired" sends them
+ * hunting for a setting that no longer exists, which is exactly the silent
+ * disappearance keeping the row was meant to avoid. `test-lt-settings-wired-pure`
+ * fails a retired reason that does not say it.
+ */
+const NW_RETIRED = (insteadSentence) => 'No longer in use. ' + insteadSentence;
+
 const SETTINGS = [
   // ── Product classification ────────────────────────────────────────────────
   { key: 'program.fieldId', group: 'Product', label: 'Loan program field',
@@ -840,12 +859,14 @@ const SETTINGS = [
       + 'and the number the sheet prints on its own face. Nothing is deleted when it does - '
       + 'an expired sheet still replays, and says it is expired.',
     evidence: 'Owner-directed 2026-08-30 - "it should also say that it is expiring in 24 hours."' },
-  { key: 'termSheet.expiryDays', group: 'Term sheets', label: 'A COMPARISON is good for (days) - RETIRED',
-    type: 'number', default: 2,
-    description: 'RETIRED 2026-08-31 and no longer read by anything. Every document now runs '
-      + 'on the single "A TERM SHEET is good for (hours)" clock above. This entry is kept so a '
-      + 'company that stored a value here can see what became of it rather than finding a '
-      + 'setting that silently disappeared; changing it has no effect.',
+  { key: 'termSheet.expiryDays', group: 'Term sheets', label: 'A COMPARISON is good for (days)',
+    type: 'number', default: 2, retired: true,
+    notWired: NW_RETIRED('Every document - a term sheet, a comparison and a scenario sheet alike - '
+      + 'now runs on the single "A TERM SHEET is good for (hours)" clock above, so that is the one '
+      + 'to change. This row is kept, and still shows what was stored here, so a company that set '
+      + 'it sees what became of it rather than finding a setting that silently disappeared.'),
+    description: 'How long a COMPARISON stayed good for, back when a comparison ran on its own '
+      + 'clock. It no longer does.',
     evidence: 'Owner-directed 2026-08-31 - "everything expires in 24 hours." This reverses the '
       + '2026-08-30 decision that a comparison, being a working document rather than an offer, '
       + 'should run on a longer clock. The owner was shown that reasoning and chose 24 anyway.' },
