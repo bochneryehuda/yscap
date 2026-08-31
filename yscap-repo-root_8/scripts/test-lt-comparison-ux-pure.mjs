@@ -301,9 +301,20 @@ console.log('\nJ. a comparison is DOWNLOADED as a comparison, not as a term shee
   ok(words[snapshot.DOC_KINDS.COMPARISON] === 'comparison sheet'
     && words[snapshot.DOC_KINDS.SCENARIO] === 'scenario comparison',
     'J1 the server has one table of what each document is called');
+  /* ⛔ RE-POINTED, NOT LOOSENED (2026-08-31). This used to look for
+     `KIND_WORDS[lay.docKind` inside the ROUTE. The drawing moved into
+     `termsheet/deliver.renderSheet` so that the emailed copy and the downloaded
+     copy cannot be two different documents, and the expression went with it — so
+     the guard started failing on a naming rule that had not changed. Its stated
+     subject is "the download is named from the one table", so it now asserts that
+     in BOTH halves, which is strictly stronger than the line it replaces: the
+     renderer derives the name from KIND_WORDS, and the route sends THAT name. */
   const ROUTE = bare(readFileSync(new URL('../src/longterm/routes/term-sheet.js', import.meta.url), 'utf8'));
-  ok(/KIND_WORDS\[lay\.docKind/.test(ROUTE) && /Content-Disposition/.test(ROUTE),
-    'J2 …and the PDF route names the download from it');
+  const DELIVER = bare(readFileSync(new URL('../src/longterm/termsheet/deliver.js', import.meta.url), 'utf8'));
+  ok(/KIND_WORDS\[/.test(DELIVER) && /filename: `\$\{slug\}-\$\{row\.code\}\.pdf`/.test(DELIVER),
+    'J2 the one renderer names the file from that table');
+  ok(/Content-Disposition[^\n]*doc\.filename/.test(ROUTE),
+    'J2b …and the download door sends THAT name, never one of its own');
 
   const HTTP = readFileSync(new URL('../app-v2/src/longterm/http.js', import.meta.url), 'utf8');
   ok(/filenameFromDisposition\(res\.headers\.get\('Content-Disposition'\)\) \|\| filename/.test(HTTP),

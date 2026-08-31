@@ -26,11 +26,11 @@ const router = express.Router();
 
 const snapshot = require('../termsheet/snapshot');
 const layout = require('../termsheet/layout');
-const pdf = require('../termsheet/pdf');
 const store = require('../termsheet/store');
 const internalRecord = require('../termsheet/internal');
 const code = require('../termsheet/code');
 const comparison = require('../termsheet/comparison');
+const deliver = require('../termsheet/deliver');
 const settingsStore = require('../settings/store');
 const db = require('../db');
 const { resolveCompPlan } = require('../comp-plan');
@@ -39,11 +39,14 @@ router.use(express.json({ limit: '512kb' }));
 
 const staffId = (req) => (req.actor && req.actor.id != null ? String(req.actor.id) : null);
 
-/** A term sheet setting, with our shipped default when nothing is stored. */
-function setting(company, key, fallback) {
-  const v = company && company.settings ? company.settings[key] : undefined;
-  return v === undefined || v === null || v === '' ? fallback : v;
-}
+/* ⛔ ONE READER, NOT TWO. This used to be its own three-line copy of "read a key
+   off the loaded scope, fall back to ours when nothing is stored" — and
+   `termsheet/deliver.js` needs the SAME answer about the SAME keys, because the
+   emailed copy of a sheet and the downloaded copy must be the same document down
+   to the expiry line. Two copies of that reader is how one of them starts treating
+   a stored blank as a value. It lives in the settings store, where it belongs, and
+   the local name is kept so the twelve call sites below are unchanged. */
+const setting = settingsStore.pick;
 
 /**
  * THE OFFICER'S OWN COMPENSATION, resolved by the server.
@@ -157,13 +160,6 @@ function stamp(d) {
  * number is written into the page as a literal that could go on saying 24 after
  * somebody changed it.
  */
-function hoursBetween(from, to) {
-  const a = new Date(from).getTime();
-  const b = new Date(to).getTime();
-  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return null;
-  return Math.round((b - a) / 3600000);
-}
-
 function expiryHoursFor(docKind, company) {
   if (docKind === snapshot.DOC_KINDS.TERM_SHEET) {
     const h = Number(setting(company, 'termSheet.expiryHours', 24));
@@ -494,52 +490,146 @@ router.get('/:code', async (req, res) => {
   }
 });
 
-/** The PDF, rebuilt from the stored snapshot — never re-priced. */
+/**
+ * The PDF, rebuilt from the stored snapshot — never re-priced.
+ *
+ * ⛔ THE DOCUMENT IS DRAWN IN ONE PLACE (`termsheet/deliver.renderSheet`), and this
+ * route and the email door below both go through it. The layout it is built from
+ * takes options — the priced-apart window, and an expiry read off the DOCUMENT
+ * rather than off today's settings — and this route used to assemble those options
+ * itself. Two callers assembling them separately is precisely how the copy a
+ * borrower is emailed comes to state a different expiry from the copy the officer
+ * downloaded and filed, on the same sheet, with nothing anywhere saying why.
+ */
 router.get('/:code/pdf', async (req, res) => {
   try {
     if (!staffId(req)) return res.status(401).json({ ok: false, error: 'Sign in first.' });
     const row = await loadByCode(req, res);
     if (!row) return undefined;
     const company = await settingsStore.load();
-    const lay = layout.buildLayout(row.snapshot, {
-      code: row.code,
-      pricedApartMinutes: Number(setting(company, 'termSheet.pricedApartMinutes', 60)) || 60,
-      // ⛔ THE WINDOW IS READ OFF THE DOCUMENT, NOT OFF TODAY'S SETTINGS. This
-      // sheet was issued on the clock that was in force then; re-reading the
-      // setting would make a replay of a 24-hour sheet announce 48 because
-      // somebody widened the window last week.
-      expiryHours: hoursBetween(row.created_at, row.expires_at),
-    });
-    /* ⛔ THE DOWNLOAD IS NAMED FOR WHAT THE DOCUMENT IS (owner-reported 2026-08-31: *"the
-       comparison, when you want to export it, is basically issued and downloaded as the term
-       sheet. It needs to be called the comparison sheet."*).
-
-       The PAGE has always carried the right heading — `layout.js` titles it "Comparison Sheet" or
-       "Scenario Comparison" — but the file that landed in the officer's downloads was
-       `term-sheet-TS-XXXXXX.pdf` and its document properties said "Term Sheet", on every kind. So
-       a comparison arrived at a borrower named as a term sheet, which is the one thing it must not
-       be mistaken for: a comparison offers several options and commits to none.
-
-       ⛔ THE WORDS COME FROM `KIND_WORDS`, the same table the refusals quote, so the filename, the
-       PDF's own title and anything a screen says about it can never drift apart. The `TS-` CODE is
-       deliberately left alone: it is the durable identifier people read down a telephone and quote
-       back, and re-prefixing it would break every one already issued. */
-    const kindWords = snapshot.KIND_WORDS[lay.docKind || snapshot.DOC_KINDS.TERM_SHEET]
-      || snapshot.KIND_WORDS[snapshot.DOC_KINDS.TERM_SHEET];
-    const titleWords = kindWords.replace(/(^|\s)\w/g, (c) => c.toUpperCase());
-    const slug = kindWords.replace(/\s+/g, '-');
-    const bytes = await pdf.renderTermSheet(lay, { title: `${titleWords} ${row.code}` });
+    const doc = await deliver.renderSheet(row, company);
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${slug}-${row.code}.pdf"`);
-    res.setHeader('Content-Length', String(bytes.length));
+    res.setHeader('Content-Disposition', `attachment; filename="${doc.filename}"`);
+    res.setHeader('Content-Length', String(doc.bytes.length));
     // A term sheet is a moment. Caching one would serve a stale copy after a
     // correction supersedes it.
     res.setHeader('Cache-Control', 'no-store');
-    return res.end(Buffer.from(bytes));
+    return res.end(doc.bytes);
   } catch (e) {
     console.error('[lt] term sheet pdf failed:', (e && e.message) || e);
     if (res.headersSent) return res.end();
     return res.status(500).json({ ok: false, error: 'Could not draw that term sheet.' });
+  }
+});
+
+/**
+ * EMAIL IT TO THE BORROWER — the PDF, the branded letter, from the officer.
+ *
+ * The owner (2026-08-31): *"we should be able to put in an email address from a
+ * borrower, which should deliver them the PDF and the nice email ... It should
+ * deliver it from the loan officer's email address and from the loan officer's
+ * name, and, of course, with the branding, same style emails that we have on the
+ * short-term side."*
+ *
+ * ⛔ THE FROM LINE IS THE ROSTER'S, NEVER THE CLIENT'S. Who this comes from is read
+ * from `staff_users` for the person signed in, the same read that put the officer
+ * on the paper. A screen that could name the sender could send a borrower's pricing
+ * under a colleague's address.
+ *
+ * ⛔ IT IS RECORDED, whatever happens next. The row in `lt_term_sheet_delivery` is
+ * the only answer to "what did we actually send this person, and when" — the email
+ * itself lands in a mailbox we cannot read, and rule 4 keeps a long-term send out
+ * of the short-term Email Center. Recording is best-effort AFTER the send, in that
+ * order and never the reverse: a bookkeeping failure must not turn a delivered
+ * email into an error the officer answers by sending it again.
+ */
+router.post('/:code/email', async (req, res) => {
+  try {
+    const id = staffId(req);
+    if (!id) return res.status(401).json({ ok: false, error: 'Sign in first.' });
+    const row = await loadByCode(req, res);
+    if (!row) return undefined;
+
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const [company, officer] = await Promise.all([settingsStore.load(), loadOfficer(req)]);
+
+    const out = await deliver.sendSheet({
+      row,
+      company,
+      to: body.to,
+      note: body.note,
+      /* The sender is the person signed in, off the roster. `send-as.js` decides
+         whether their address may go in the From line at all — that is a DKIM
+         question, not a preference — and says so in `sentAs.why`. */
+      from: {
+        name: officer.full_name || null,
+        email: officer.email || null,
+      },
+    });
+
+    if (!out.ok) {
+      // A refusal here is something a person fixes and tries again — a mistyped
+      // address, a note naming the investor — so it answers 422 with the sentence,
+      // never a bare 500 that tells them nothing.
+      const status = out.error === 'render_failed' ? 500 : 422;
+      return res.status(status).json({ ok: false, error: out.error, message: out.message, ambiguous: !!out.ambiguous });
+    }
+
+    try {
+      await db.query(
+        `INSERT INTO lt_term_sheet_delivery
+           (sheet_id, code, to_email, to_name, note, doc_kind, filename, doc_sha256,
+            sent_by_staff, from_email, sent_as_mode, message_id)
+         VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::uuid, $10, $11, $12)`,
+        [row.id, row.code, out.to, out.toName, out.note, out.docKind, out.filename, out.sha256,
+          id, (out.sentAs && out.sentAs.from) || null, (out.sentAs && out.sentAs.mode) || null, out.messageId],
+      );
+    } catch (e) {
+      /* ⛔ SAID, NEVER SWALLOWED. The borrower HAS the document — reversing that is
+         not possible and pretending it failed would get it sent twice — so the send
+         stands and the gap in the record is logged loudly for a human to find. */
+      console.error('[lt] term sheet delivery recorded nowhere:', (e && e.message) || e);
+    }
+
+    return res.json({
+      ok: true,
+      sent: {
+        to: out.to,
+        subject: out.subject,
+        filename: out.filename,
+        sentAs: out.sentAs,
+      },
+    });
+  } catch (e) {
+    console.error('[lt] term sheet email failed:', (e && e.message) || e);
+    return res.status(500).json({ ok: false, error: 'Could not send that document.' });
+  }
+});
+
+/**
+ * EVERY SEND OF ONE SHEET, newest first.
+ *
+ * A screen offering "email this to the borrower" has to be able to say whether it
+ * has already been sent, and to whom — otherwise the honest answer to "did she get
+ * it?" is another copy in the borrower's inbox.
+ */
+router.get('/:code/deliveries', async (req, res) => {
+  try {
+    if (!staffId(req)) return res.status(401).json({ ok: false, error: 'Sign in first.' });
+    const row = await loadByCode(req, res);
+    if (!row) return undefined;
+    const { rows } = await db.query(
+      `SELECT to_email, to_name, note, filename, sent_as_mode, from_email, created_at
+         FROM lt_term_sheet_delivery
+        WHERE sheet_id = $1::uuid
+        ORDER BY created_at DESC
+        LIMIT 50`,
+      [row.id],
+    );
+    return res.json({ ok: true, code: row.code, deliveries: rows });
+  } catch (e) {
+    console.error('[lt] term sheet deliveries failed:', (e && e.message) || e);
+    return res.status(500).json({ ok: false, error: 'Could not pull up who this was sent to.' });
   }
 });
 

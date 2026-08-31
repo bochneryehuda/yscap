@@ -78,6 +78,139 @@ const field = () => ({
 const fieldLabel = () => ({ fontSize: 11.5, color: MUTED, fontWeight: 600 });
 
 /**
+ * SEND IT TO THE BORROWER — one control, mounted wherever a sheet has been issued.
+ *
+ * The owner (2026-08-31): *"we should be able to put in an email address from a
+ * borrower, which should deliver them the PDF and the nice email ... It should
+ * deliver it from the loan officer's email address and from the loan officer's
+ * name."*
+ *
+ * ⛔ ONE DEFINITION, THREE MOUNTS. There are three places on this screen where a
+ * sheet reports itself as issued, and each already offers the download. Copying an
+ * address box into all three would be three answers to "may I send this, and to
+ * whom" — and the copy that drifts is the one somebody presses.
+ *
+ * ⛔ IT DECIDES NOTHING. Whether the address is usable, whether the note may go out,
+ * and who it comes from are the SERVER's answers — the refusal it sends back is the
+ * sentence shown here, verbatim. A screen that pre-judged any of them would have to
+ * carry a second copy of a rule (rule 10 among them), and the copy that drifts is
+ * the one that leaks.
+ *
+ * ⛔ IT SAYS WHO IT HAS ALREADY GONE TO, before offering to send it again. "Did she
+ * get it?" answered by sending another copy is the failure this avoids.
+ *
+ * Every colour is an explicit dark on white — an `--ink*` token is a LIGHT paper
+ * colour in this palette and renders white on white.
+ */
+function SendToBorrower({ code }) {
+  const [open, setOpen] = React.useState(false);
+  const [to, setTo] = React.useState('');
+  const [note, setNote] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);      // {tone:'ok'|'bad', text}
+  const [past, setPast] = React.useState(null);    // null = not looked yet
+
+  const load = React.useCallback(async () => {
+    if (!code) return;
+    try {
+      const r = await ltApi.termSheetDeliveries(code);
+      setPast(Array.isArray(r && r.deliveries) ? r.deliveries : []);
+    } catch (_) {
+      // A history we cannot read must never stop somebody sending the document.
+      setPast([]);
+    }
+  }, [code]);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  async function send() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await ltApi.termSheetEmail(code, { to, note: note.trim() || undefined });
+      setMsg({ tone: 'ok', text: `Sent to ${(r && r.sent && r.sent.to) || to}.` });
+      setTo('');
+      setNote('');
+      setOpen(false);
+      await load();
+    } catch (e) {
+      /* THE SERVER'S OWN SENTENCE, verbatim. Every refusal here is something a
+         person fixes and tries again — a mistyped address, a note naming the
+         investor — and replacing it with "could not send" would take away the one
+         thing that says what to do about it. */
+      setMsg({ tone: 'bad', text: (e && (e.message || e.error)) || 'Could not send it.' });
+    } finally { setBusy(false); }
+  }
+
+  const already = Array.isArray(past) && past.length > 0;
+
+  return (
+    <div style={{ marginTop: 10 }}>
+      {already ? (
+        <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5 }}>
+          {past.length === 1 ? 'Already sent to ' : `Already sent ${past.length} times — most recently to `}
+          <strong style={{ color: INK }}>{past[0].to_email}</strong>
+          {past[0].created_at ? ` on ${new Date(past[0].created_at).toLocaleDateString()}` : ''}.
+        </div>
+      ) : null}
+
+      {msg ? (
+        <div style={{
+          marginTop: 6, fontSize: 12, lineHeight: 1.5,
+          color: msg.tone === 'bad' ? '#8A2A2A' : '#1F5E3A',
+        }}>
+          {msg.text}
+        </div>
+      ) : null}
+
+      {!open ? (
+        <button type="button" style={{ ...btn(), marginTop: 7 }} onClick={() => { setOpen(true); setMsg(null); }}>
+          {already ? 'Send it again' : 'Email it to the borrower'}
+        </button>
+      ) : (
+        <div style={{
+          marginTop: 8, padding: 10, borderRadius: 8,
+          background: PAPER, border: '1px solid rgba(20,27,34,.10)',
+        }}>
+          <label style={fieldLabel()} htmlFor={`ts-email-${code}`}>Borrower’s email address</label>
+          <input
+            id={`ts-email-${code}`}
+            type="email"
+            style={field()}
+            value={to}
+            placeholder="name@example.com"
+            onChange={(e) => setTo(e.target.value)}
+          />
+          <div style={{ marginTop: 8 }}>
+            <label style={fieldLabel()} htmlFor={`ts-note-${code}`}>A note to go with it (optional)</label>
+            <textarea
+              id={`ts-note-${code}`}
+              rows={2}
+              style={{ ...field(), resize: 'vertical' }}
+              value={note}
+              placeholder="Here is the pricing we discussed…"
+              onChange={(e) => setNote(e.target.value)}
+            />
+          </div>
+          <div style={{ fontSize: 11.5, color: MUTED, marginTop: 6, lineHeight: 1.5 }}>
+            It goes out from your own name and address, with the PDF attached and the
+            expiry stated. One borrower at a time.
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 9 }}>
+            <button type="button" style={btn('primary')} disabled={busy || !to.trim()} onClick={send}>
+              {busy ? 'Sending…' : 'Send it'}
+            </button>
+            <button type="button" style={btn()} disabled={busy} onClick={() => { setOpen(false); setMsg(null); }}>
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * THE THREE DOCUMENTS, in the officer's words. Owner-directed 2026-08-30:
  * *"A term sheet should only have one option. It should be a comparison sheet,
  * which should be the same scenario, different options. There should be a
@@ -232,6 +365,7 @@ export function QuoteTermSheetActions({ sel, enabled, mode, onAdded, cartCount, 
             Issue another
           </button>
         </div>
+        <SendToBorrower code={issued.code} />
       </div>
     );
   }
@@ -932,6 +1066,7 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
           <button type="button" style={btn()}
             onClick={() => { setIssued(null); if (onIssued) onIssued(null); }}>Start another</button>
         </div>
+        <SendToBorrower code={issued.code} />
       </div>
     );
   }
@@ -1225,6 +1360,7 @@ export function TermSheetLookup() {
             <button type="button" style={btn('primary')} onClick={() => ltApi.termSheetPdf(d.code)}>
               Download the PDF
             </button>
+            <SendToBorrower code={d.code} />
           </div>
         </div>
       )}
