@@ -344,11 +344,22 @@ jobs:
       # refuse, and the one that eventually waves a real failure through.
       #
       # Raising it can never run LESS: nothing is skipped, quarantined, or made
-      # advisory, and the hang protection is intact — 45 minutes still kills a
+      # advisory, and the hang protection is intact — the cap still kills a
       # wedged step, it just no longer kills a working one. Re-measure against
       # the real duration when the suite grows again.
+      #
+      # RE-MEASURED 2026-08-31, on the same symptom the note above describes.
+      # Run 33410034143 was killed at 45 minutes having reached suite 1,382 of
+      # 1,387 — 99.6% of a PASSING chain, with five suites left. The chain has
+      # grown from 1,106 steps when 45 was chosen to 1,388 now, so the cap had
+      # simply been overtaken: nothing had become slow, there was more of it.
+      #
+      # 60, not 46. The measured need is ~45.2 minutes, and a cap set a minute
+      # above the measurement is a cap that fails on the next suite anybody
+      # adds — which is how this note came to be written twice. 60 leaves ~33%
+      # headroom and still kills a genuinely wedged step well inside the hour.
       - name: Run the tests
-        timeout-minutes: 45
+        timeout-minutes: 60
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ] && [ -s /tmp/changed-files.txt ]; then
             npm run test:changed -- --changed-from /tmp/changed-files.txt
