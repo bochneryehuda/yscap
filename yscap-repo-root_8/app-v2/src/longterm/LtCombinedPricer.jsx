@@ -2554,6 +2554,31 @@ export default function LtCombinedPricer() {
                 <Check id="pe-escrow" checked={!!f.escrowWaive} onChange={setBool('escrowWaive')}>Waive escrow</Check>
                 <Check id="pe-fthb" checked={!!f.fthb} onChange={setBool('fthb')}>First-time homebuyer</Check>
               </div>
+              {/* ⛔ THE SEARCH SAYS WHAT IT IS ABOUT TO DO (owner-reported 2026-08-31: *"I'm
+                  selecting interest only, and I don't see this happening in real life. It stays 30,
+                  and it doesn't select 40 as well."*).
+
+                  The owner was right, and about the SCREEN rather than the search. An interest-only
+                  search has asked the vendor for the officer's term AND 40 since §39 shipped -- but
+                  the Term box still read "30", nothing anywhere mentioned 40, and the only trace was
+                  a "40yr" buried in a program NAME further down the results. A feature nobody can
+                  see is one an officer reasonably concludes is broken, which is exactly what
+                  happened.
+
+                  ⛔ THIS IS A LABEL, NOT A SECOND COPY OF THE RULE, and the distinction is
+                  load-bearing. The screen deliberately does NOT send `terms` -- `resolveSearchTerms`
+                  takes an explicit `terms` array VERBATIM and skips its interest-only branch
+                  entirely, so a screen that sent [term, 40] would permanently DISABLE the server's
+                  own rule: change the rule later and nothing would happen, silently, forever. The
+                  server stays the ONE definition of which terms a search covers; this sentence only
+                  reports it. */}
+              {f.io ? (
+                <div style={{ marginTop: 6, fontSize: 12, color: '#4B585C' }}>
+                  Interest-only also searches <strong style={{ color: '#141B22' }}>40-year</strong>
+                  {' '}— several investors offer an interest-only product only at 40 years. Your loan
+                  is still quoted on the {f.termYears || 30}-year term above.
+                </div>
+              ) : null}
             </Field>
           </Group>
 

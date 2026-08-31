@@ -257,6 +257,33 @@ console.log('\nF. a general-engine change that WAS ported stays ported');
     ok(a.length > 0 && h.length > 0 && a.join('|') === h.join('|'),
       `F4 ${label}: every action-column width its heading reserves is one its rows use (heading ${h.join(', ') || 'none'} / rows ${a.join(', ') || 'none'})`);
   }
+
+  /* F5 — THE INTEREST-ONLY SEARCH STILL SAYS WHAT IT COVERS.
+
+     Owner-reported 2026-08-31 on the general engine: *"I'm selecting interest only, and I
+     don't see this happening in real life. It stays 30, and it doesn't select 40 as well."*
+     The search had covered 40 since §39; the SCREEN said nothing, so a working feature read
+     as a broken one. Ported here because the same confusion lands on this board and it
+     carries no business rule — the standard the phone-readability port was held to.
+
+     ⛔ IT IS TRUE OF THIS BOARD FOR TWO REASONS, CHECKED RATHER THAN ASSUMED. The Lender
+     Price half runs the same `buildSearch`, so §39 widens it identically. The LoanNEX half
+     is asked for NO loan term at all (interest-only is a product its answer returns, not a
+     question in its request — see loannex/scenario.js), so its 40-year interest-only
+     products were never being excluded. Both halves surface them, which is what the
+     sentence claims, so it is ported VERBATIM rather than reworded — a second wording
+     would be a ninth divergence and a thing to drift.
+
+     Counted and DERIVED from the general engine, never typed in: a presence test passes on
+     a copy that has kept the comment and lost the line. */
+  const ioNote = (src) => (src.match(/Interest-only also searches/g) || []).length;
+  ok(ioNote(gb) > 0 && ioNote(fb) === ioNote(gb),
+    `F5 both screens tell the officer an interest-only search also covers 40-year (general ${ioNote(gb)}, copy ${ioNote(fb)})`);
+  // …and it is gated on the interest-only box on both, so it never claims a widening on a
+  // search that was not widened.
+  const ioGated = (src) => /f\.io \?[\s\S]{0,400}?Interest-only also searches/.test(src);
+  ok(ioGated(gb) && ioGated(fb),
+    'F5a …and on both it is shown only while interest-only is ticked');
 }
 
 console.log(bad ? `\nFAILURES: ${bad}` : '\nOFFLINE: all passed');

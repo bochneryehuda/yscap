@@ -937,6 +937,128 @@ import app-v2/src/components/LoudHint.jsx
 # the bar is the same bar rather than a second progress mechanism to keep in
 # step with it.
 import app-v2/src/lib/upload-progress.js
+# ---------------------------------------------------------------------------
+# THE CONTACT AND ORDER DESKS ON THE LOAN SCREEN — authorized in writing by the
+# owner, 2026-08-31:
+#
+#   "The intent is that it should follow the same type of idea that we have on
+#    the file contacts on the short term. Which is that we added a section,
+#    especially for file contacts where you can enter random file contacts and
+#    then the required file contact comes up as conditions with a form type of
+#    idea which is directly linked to the file contacts … when you start typing
+#    it it's automatically linked to the vendors that we have in the system."
+#
+#   "You don't need to reinvent stuff. You don't need to look at what we have
+#    over there and reinvent. Just I'm giving you authorization to share it.
+#    Share the features, share enhancements."
+#
+# The BACK END for this already exists on both sides and needed no new grant:
+# `src/lib/vendor-directory.js` and `service_contacts` were authorized
+# 2026-08-30, and Long-Term's own link table is `lt_loan_vendors`. What was
+# missing was the SCREEN — the shared contacts component was given its
+# `adapter`/`types` seam in that same pass and then had no Long-Term caller, so
+# the loan screen showed an upload box where a contact form belongs and the
+# orders had no contacts to send to. This grant is the front-end half.
+#
+import app-v2/src/components/FileContacts.jsx
+#        (the ONE contacts desk. Long-Term passes its own `adapter` over
+#         /api/lt/orders/loans/:id/vendors{,/search,/new} and its own `types`
+#         vocabulary; the component itself branches on neither. NOT a copy —
+#         a second contacts screen is how one product's rules leak into the
+#         other's, which is the exact drift the seam was built to prevent.)
+import app-v2/src/components/FormattedInputs.jsx
+#        (PhoneInput / EmailInput — the same typing behaviour in both products,
+#         so a phone number entered on a long-term file is stored in the shape
+#         every existing reader of `service_contacts` already expects. It is
+#         already a transitive dependency of FileContacts.jsx; this records the
+#         DIRECT use by the Long-Term condition forms.)
+# ---------------------------------------------------------------------------
+# THE ENTITY SECTION — authorized in writing by the owner, 2026-08-31:
+#
+#   "I think you're missing the entire entity section that we were officially
+#    needing to bring in from the RTL side. The logic should work the same: The
+#    exact entity section, same exact form information to type in an entity
+#    section. The exact verification workflow. The entity section should be
+#    directly linked to the profile. The exact document slots and bi-directional.
+#    If the entity on the file is an LLC name or any name that exists already in
+#    the profile, it should automatically come in a pre-filled entity section
+#    with the pre-filled information and pre-filled documents. If it doesn't
+#    exist yet, that entity should be added to the profile... Bi-directional
+#    should share the same exact logic and have the same exact slot and the same
+#    exact box. Don't reinvent, just bring over the same information that you
+#    need to fill. There's a lot of logic behind how to set it up. I think we can
+#    choose corporations and stuff like that. We can set who owns it,
+#    percentages, and layered entities. Bring in the entire logic, just giving
+#    you authorization to share the code. Don't reinvent."
+#
+# WHAT WAS ALREADY SHARED, AND WHY IT WAS NOT ENOUGH. `src/lib/llc.js` was
+# authorized 2026-08-30 and gave Long-Term the READ (which company, which slots,
+# what is on them) and the CREATE (put it on the profile). What it never carried
+# was the EDIT — the details form's rules, the ownership arithmetic, who may
+# verify, and what a revoke does to the companies underneath — because on the
+# short-term side those lived INLINE in three `src/routes/staff.js` handlers,
+# where no second caller could reach them. So they were EXTRACTED into
+# `src/lib/llc-edit.js` first and the short-term routes re-pointed at it (proven
+# behaviour-preserving by its seven existing regression suites), and only then
+# did Long-Term get a caller. Extract-then-share, never copy: a second copy of
+# "does this ownership add up to 100%" is two answers about one company.
+#
+import src/lib/llc-edit.js
+#        (the entity EDIT rules: the verified lock, the EIN normalizer, the
+#         entity-type re-wording of its document slots, the ownership total, the
+#         authority to verify, the required revoke reason, and the bottom-up
+#         chain revoke. Per-product side effects — the audit line, WHICH
+#         condition to re-sync, whether to notify a borrower — come in as HOOKS,
+#         so neither product's notifications can fire on the other's file.)
+#
+# THE VERIFIED DOCUMENT LOCK is part of that same extraction and is the reason it
+# had to be shared rather than re-stated: the ENTITY is shared, so a long-term
+# upload that walked past the lock would replace the very evidence a SHORT-TERM
+# verification of the same company stands on.
+#
+import app-v2/src/components/LlcManager.jsx
+#        (the ONE entity section. Long-Term passes its own `adapter` over
+#         /api/lt/condition-center/loans/:id/entities/* and nothing else changes:
+#         the form, the entity-type picker, the partnership and trust sub-kinds,
+#         the ownership rows with their percentages, the signature titles, a
+#         corporation's shares and certificate numbers, the three document slots
+#         with their drag-and-drop, preview and download, and the LAYERED-ENTITY
+#         recursion are the same code the short-term file screen renders. The
+#         adapter seam is the one `FileContacts.jsx` already has, and the
+#         component branches on neither product.)
+import app-v2/src/lib/dialog.js
+#        (PILOT's own message box — `askConfirm`/`askPrompt`. The whole app is
+#         guarded against raising a browser `alert`/`confirm`/`prompt` (they
+#         stamp the hosting hostname on the message and cannot be styled), and
+#         that guard is enforced by a source sweep, so a second dialog host on
+#         the Long-Term side would be both a duplicate and a rule violation. It
+#         renders text and resolves a promise; it reads no product's data.)
+# ---------------------------------------------------------------------------
+# WHO ELSE IS ON AN ORDER'S THREAD — under the same 2026-08-31 grant, and found
+# by the two-product parity engine the owner asked for in the same message:
+#
+#   "start a full side-to-side comparison ... to make sure that every single
+#    feature that is available on the short-term side, every single guard, every
+#    single way of operating, is also on the long-term side. A lot of stuff was
+#    invested in the short-term side, and we don't want to reinvent. We just want
+#    to share the code."
+#
+# The engine's first real finding: each loan officer can set whether their title
+# and insurance orders copy the borrower, and a LONG-TERM order never read that
+# setting -- so an officer who had turned it on got it on their short-term orders
+# and silently not on their long-term ones. The rule was written INLINE in
+# src/routes/staff.js where no second caller could reach it (the same shape the
+# entity edit rules were in), so it was EXTRACTED and the short-term route
+# re-pointed at it first.
+#
+import src/lib/order-cc.js
+#        (explicit -> what the order recorded when it was placed -> the officer's
+#         own default for this KIND of order -> the company default. WHICH officer
+#         is deliberately NOT in it: that is a fact about a loan, and the two
+#         products keep loans in their own tables -- each resolves its own officer
+#         and passes the id. The SETTING is per-staffer (db/391) and the staff
+#         roster is the shared identity zone, so both products may read it.)
+# ---------------------------------------------------------------------------
 ```
 
 ## Log of authorizations
@@ -967,6 +1089,7 @@ import app-v2/src/lib/upload-progress.js
 | 2026-08-03 | `import app-v2/src/components/BorrowerProfilePanel.jsx` — the ONE shared borrower editor, mounted on a long-term file | RTL → LT | *"officers should be able to change the borrower profile on long term files"* — confirmed in the same breath as *"keep borrower read only"*, so the edit goes through the existing shared editor and the existing borrower endpoint; Long-Term code still never writes `borrowers` | #975 |
 | 2026-08-03 | `sql-ref borrower_officers` + `sql-write borrower_officers` — Long-Term records the officer↔person link | RTL → LT | Required to make the line above actually work: a non-privileged officer may only open a borrower profile they have a recorded relationship to, and today that means an **RTL** file. `borrower_officers` (db/327) is the identity-zone link built for precisely this — *"the client who has only ever done non-RTL business with them, so there is no file to match on"* | #975 |
 | 2026-08-14 | `rtl-import app-v2/src/App.jsx` + `rtl-import app-v2/src/components/StaffLayout.jsx` — the FRONT-END mount seam: the router mounts the Long-Term screens, and the staff shell renders the Short-Term / Long-Term switch | LT → RTL | *"You were authorized to touch that switch of the short-term shell."* Asked directly, because rule 5 forbids touching RTL to make LT work and the switch cannot exist without it. Deliberately as narrow as the back-end seam (`src/server.js`): these two files may reference LT code ONLY to mount it and to render the switch — no RTL screen may import an LT component for its own use, and no LT logic may move into a shared file | this PR |
+| 2026-08-31 | **Not a crossing — recorded for the record.** Loan-officer branding on the Long-Term term sheet and comparison PDFs, and emailing them from the officer's own name and address | neither | *"We need to add loan officer branding on the term sheets. You can take directly the design from there... It should deliver it from the loan officer's email address and from the loan officer's name, and, of course, with the branding, same style emails that we have on the short-term side."* Checked before writing anything, and NO new permission turned out to be needed: the officer's name, title, phone, NMLS and email come from `staff_users`, which Long-Term already reads (`sql-read staff_users`, 2026-08-03), and the branded email is already shared (`import src/lib/email/template.js`, `import src/lib/email/index.js`, `import src/lib/send-as.js`, all 2026-08-30). What is copied is the DESIGN — how the block looks — which is not code, a table or an endpoint. The layout itself is written in `src/longterm/termsheet/**` as Long-Term's own, so no RTL module is imported and no `authorized` line is added. Recorded here because the owner's instruction was "copy it directly from the short-term", and a reader six months from now should be able to see that it was checked rather than assumed | this PR |
 | 2026-08-17 | `rtl-import app-v2/src/screens/Dashboard.jsx` — the borrower's HOME SCREEN renders the Short-Term / Long-Term switch | LT → RTL | *"put the switch on the borrower's home screen"* — answering a direct question that named the cost: the client's long-term page was already built and routed at `/long-term`, and moving its entry point onto the borrower dashboard makes an RTL screen reference LT code, which the 2026-08-14 seam permits only per file, in writing. Scoped exactly as narrowly as the staff shell: this file imports ONE component (`BorrowerLongTermSwitch`) and renders it — no LT logic, no LT data read, no second LT import. Whether there is anything to switch TO is decided on the Long-Term side, so the RTL screen never carries that rule | this PR |
 | 2026-08-16 | `import src/lib/address-canon.js` — ZIP → city/state/county/county-FIPS lookup for the Long-Term DSCR pricer | RTL → LT | *"Yes, you have my written OK to reuse that."* Asked as one specific question: the vendor's own screen turns a ZIP into the full location before pricing, while our connector required the caller to supply the county FIPS and refused an incomplete location. Scoped to this one module used as a READ-ONLY lookup — NOT the RTL address writers, and Long-Term still rewrites no RTL address record. **CORRECTION (2026-08-16, same day): the authorized module was ultimately NOT used.** It returns a county NAME with no FIPS, refuses a bare ZIP (it is built for a full street address), and needs a `DATABASE_URL` — none of which suits a pure pricing path, and the owner separately corrected the premise: the screen is ZIP-driven, no street address is involved. The shipped answer is `src/longterm/lenderprice/zip-county.js` + a committed Census ZCTA table — LT-only, so not a crossing at all. The permission stands and is recorded here as granted, not as a description of the shipment | #1220 |
 | 2026-08-30 | `import src/lib/email/index.js` — the company's one email TRANSPORT, so Long-Term's rate-movement reports send from the same identity as everything else | RTL → LT | *"Yes I'm giving you a written authorization to use the sender credentials from the short-term side. Send it out from lock desk @ YS Capital Whatever. Basically that should be the idea but follow the resend credentials."* Asked as one specific question, naming the cost: Long-Term has no mailer, and a second sender on the company's own domain damages the domain's own deliverability — a sending identity is a fact about the COMPANY, the same reasoning that authorized the ClickUp workspace on 2026-08-23. Scoped to the TRANSPORT only: no `notify.js`, no `catalog.js`, no `template.js`, no digests, no in-app rows, no `notifications` table — Long-Term renders its own bodies and hands over a finished message. **AUTHORIZED, NOT YET USED** — the reports are Phase 2 and are not built; recorded now so the authorization lives in the ledger rather than in a chat message | this PR |

@@ -43,6 +43,26 @@ async function documentForServe(q, id, owner = null) {
 }
 
 /**
+ * AN ENTITY'S OWN DOCUMENT — scoped to the COMPANY, not to a file.
+ *
+ * An entity document deliberately has no file owner (both owner columns null,
+ * `llc_id` carries it), which is what makes ONE operating agreement follow the
+ * company to every loan it vests — so neither the owner-scoped shape above nor
+ * the by-id one fits: the first matches nothing, and the second leaves the
+ * scoping to a check a caller has to remember to write.
+ *
+ * The company is welded into the statement for the same reason the file owner is
+ * above: a document id from another company reaches NO ROW, rather than reaching
+ * one that a later comparison is trusted to refuse. The caller's own job is to
+ * establish that the requester may reach THAT company.
+ */
+async function entityDocumentForServe(q, id, llcId) {
+  const r = await q.query(
+    `SELECT ${SERVE_COLUMNS} FROM documents WHERE id=$1 AND llc_id=$2`, [id, llcId]);
+  return r.rows[0] || null;
+}
+
+/**
  * Hand an ALREADY-AUTHORIZED row to the one streaming implementation. It exists
  * so a second door cannot quietly grow a second set of headers; the caller must
  * have decided the request may have this document.
@@ -51,4 +71,4 @@ function serveConditionDocument(res, doc, { inline = false } = {}) {
   return serveDocument(res, doc, { inline });
 }
 
-module.exports = { SERVE_COLUMNS, documentForServe, serveConditionDocument };
+module.exports = { SERVE_COLUMNS, documentForServe, entityDocumentForServe, serveConditionDocument };

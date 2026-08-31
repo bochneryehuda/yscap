@@ -156,10 +156,72 @@ console.log('\n3. ONE handler behind BOTH doors');
     .map((m) => m[1]);
   ok(handlers.length >= 1, `every upload is a NAMED handler (found ${handlers.join(', ') || 'none'})`);
 
-  const uploads = (src.match(/condUpload\.uploadConditionDocument\(/g) || []).length;
-  ok(uploads === handlers.length,
-    `each named upload handler files exactly once, and no door files on its own `
-    + `(${handlers.length} handler(s), ${uploads} call(s) to the shared upload service)`);
+  /* AND THE COUNT WAS STILL A PROXY — this is the SECOND time it has gone red on
+     correct work, for the same reason its own note above describes.
+
+     Two entity doors (a named slot, and the generic one) now share ONE filer,
+     `fileEntityDocument`, because filing an entity document applies the verified
+     lock, scopes the company and syncs BOTH products' conditions — three answers
+     that must not exist twice. So there are three handlers and two call sites, and
+     an equality reads that as a missing one when it is the opposite: it is one
+     copy fewer than the rule was written expecting.
+
+     So it asserts what the note actually says, in three parts a duplicate cannot
+     satisfy: every handler REACHES the shared upload service (directly, or through
+     one shared filer that calls it); no handler reaches it more than once; and the
+     number of call sites never EXCEEDS the number of handlers, so a door that
+     grows its own inline copy still fails. Sharing a filer is allowed; carrying a
+     second copy of one is not. */
+  const SERVICE = /condUpload\.uploadConditionDocument\(/g;
+
+  /* WHICH FUNCTION EACH CALL SITE SITS IN. Every top-level declaration in this
+     router is found, then a call site is attributed to the nearest one above it.
+     Counting call sites against a ceiling is not enough on its own: a stray
+     second filer that nobody calls slips under any ceiling the handlers set, and
+     it is a second copy of the filing rule sitting in the file waiting to be
+     wired up. Attribution answers the question directly — WHO files. */
+  const decls = [...src.matchAll(/\n(?:const ([A-Za-z0-9_]+) = async \(|(?:async )?function ([A-Za-z0-9_]+)\()/g)]
+    .map((m) => ({ name: m[1] || m[2], at: m.index }))
+    .sort((a, b) => a.at - b.at);
+  const enclosing = (at) => {
+    let name = '(top level)';
+    for (const d of decls) { if (d.at < at) name = d.name; else break; }
+    return name;
+  };
+  const bodyOf = (name) => {
+    const i = decls.findIndex((d) => d.name === name);
+    if (i < 0) return '';
+    return src.slice(decls[i].at, i + 1 < decls.length ? decls[i + 1].at : src.length);
+  };
+
+  const sites = [...src.matchAll(SERVICE)].map((m) => enclosing(m.index));
+  const filesIn = {};
+  for (const n of sites) filesIn[n] = (filesIn[n] || 0) + 1;
+
+  /* A function may file at most ONCE — two calls in one function is the same
+     rule answered twice. */
+  const twice = Object.entries(filesIn).filter(([, n]) => n > 1).map(([n]) => n);
+  ok(twice.length === 0,
+    `no function files a document twice${twice.length ? ` — ${twice.join(', ')}` : ` (${Object.keys(filesIn).join(', ') || 'none'})`}`);
+
+  /* AND NOTHING FILES THAT NOBODY REACHES. Every filing function is either a
+     named upload handler, or a shared filer a handler actually calls. */
+  const isHandler = (n) => handlers.includes(n);
+  const reachedByHandler = (n) => handlers.some((h) => h !== n && new RegExp(`\\b${n}\\(`).test(bodyOf(h)));
+  const stray = Object.keys(filesIn).filter((n) => !isHandler(n) && !reachedByHandler(n));
+  ok(stray.length === 0,
+    `every place that files a document is a door or a filer a door calls — no second copy waiting to be wired up${stray.length ? ` — STRAY: ${stray.join(', ')}` : ''}`);
+
+  /* AND EVERY DOOR FILES — itself, or through exactly one shared filer. */
+  for (const h of handlers) {
+    const body = bodyOf(h);
+    const direct = filesIn[h] || 0;
+    const via = Object.keys(filesIn).filter((n) => n !== h)
+      .flatMap((n) => (body.match(new RegExp(`\\b${n}\\(`, 'g')) || []).map(() => n));
+    ok(direct + via.length === 1,
+      `${h} files exactly once — itself or through one shared filer, never twice and never not at all `
+      + `(direct: ${direct}, via: ${via.join(', ') || 'none'})`);
+  }
 
   /* EVERY UPLOAD HAS BOTH DOORS, AND BOTH RUN THE SAME HANDLER. This is what the
      count was really protecting: a streamed door wired to its own handler would

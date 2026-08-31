@@ -226,10 +226,29 @@ async function describe(scope = DEFAULT_SCOPE) {
   return { scope, groups, degraded };
 }
 
+/**
+ * ONE setting off an ALREADY-LOADED scope, with the caller's fallback when nothing
+ * is stored.
+ *
+ * `load()` returns the whole scope, so most readers want one key off the object
+ * they already have rather than another round trip — and every one of them has to
+ * make the same judgement: a stored empty string means "nothing is set" here, not
+ * "set to blank", because that is what an admin clearing a text box produces.
+ * Written once so the term-sheet route and `termsheet/deliver.js` cannot answer
+ * that question two different ways about the same key: the layout options a PDF is
+ * built from are read here, and the download and the emailed copy must be the same
+ * document down to the expiry line.
+ */
+function pick(loaded, key, fallback) {
+  const v = loaded && loaded.settings ? loaded.settings[key] : undefined;
+  return v === undefined || v === null || v === '' ? fallback : v;
+}
+
 module.exports = {
   DEFAULT_SCOPE,
   isKnown,
   defaults,
+  pick,
   load,
   get,
   validate,

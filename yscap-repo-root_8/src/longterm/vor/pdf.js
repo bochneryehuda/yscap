@@ -261,12 +261,34 @@ async function loadBlank() {
  * @param {object} data   the form's own data — OUR half filled in, the landlord's absent
  * @returns {Promise<Buffer>}
  */
-async function buildVorPdf(data = {}) {
+async function buildVorPdf(data = {}, opts = {}) {
   const doc = await loadBlank();
   const page = doc.getPage(0);
   const font = await doc.embedFont(StandardFonts.Helvetica);
 
   // ── items 1 to 9: our half, above the bar ────────────────────────────────
+  /* THE LANDLORD'S OWN FIELDS, WHERE WE ALREADY HOLD THE ANSWER.
+     Today that is the phone number and only the phone number (owner-directed
+     2026-08-31: *"The phone number should automatically populate the bottom,
+     also where it asks for the Landlord phone number."*). It is drawn exactly
+     like our own text so the paper copy and the DocuSign copy read the same —
+     a landlord who gets both must not see two different forms — and it is a
+     SUGGESTION: they cross it out and write another number if ours is wrong,
+     which on paper is what everybody already does.
+
+     Nothing else in Part II or Part III is ever drawn here. `landlordDefaults`
+     is a small explicit map, not the landlord's half of the form, so a future
+     key can only appear because somebody put it there. */
+  const llDefaults = (opts && opts.landlordDefaults) || {};
+  for (const f of F.landlordFields()) {
+    const value = fmtValue(f, llDefaults[f.key]);
+    if (!value) continue;
+    const size = f.size || F.DEFAULT_SIZE;
+    page.drawText(value.slice(0, 60), {
+      x: f.x, y: f.y, size, font, color: rgb(0, 0, 0),
+    });
+  }
+
   for (const f of F.ourFields()) {
     const value = fmtValue(f, data[f.key]);
     /* A VALUE WE DO NOT HOLD PRINTS NOTHING. The version this replaces printed an
