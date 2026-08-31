@@ -1,0 +1,155 @@
+<title>Long-Term Condition Sets</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Hanken+Grotesk:wght@400;500;600;700&display=swap">
+<style>
+:root {
+  --paper: #F6F3EC;
+  --card: #FFFFFF;
+  --ink: #141B22;
+  --slate: #4B585C;
+  --gold: #8F6D2F;
+  --gold-soft: #F3EADA;
+  --teal: #23636A;
+  --teal-soft: #E3EFEF;
+  --line: #E3DDD0;
+  --line-soft: #EFEAE0;
+  --slate-soft: #ECEAE4;
+  --shadow: 0 1px 2px rgba(20, 27, 34, .05), 0 8px 24px -18px rgba(20, 27, 34, .35);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #101519;
+    --card: #171E24;
+    --ink: #ECE7DC;
+    --slate: #A2AEB3;
+    --gold: #D3AC63;
+    --gold-soft: #2A2318;
+    --teal: #7CC3C8;
+    --teal-soft: #16262A;
+    --line: #28313A;
+    --line-soft: #212931;
+    --slate-soft: #212931;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -18px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #101519;
+  --card: #171E24;
+  --ink: #ECE7DC;
+  --slate: #A2AEB3;
+  --gold: #D3AC63;
+  --gold-soft: #2A2318;
+  --teal: #7CC3C8;
+  --teal-soft: #16262A;
+  --line: #28313A;
+  --line-soft: #212931;
+  --slate-soft: #212931;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -18px rgba(0,0,0,.8);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Hanken Grotesk", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 58rem; margin: 0 auto; padding: 56px 20px 96px; }
+
+/* ---- masthead ---- */
+.mast { border-bottom: 2px solid var(--gold); padding-bottom: 22px; margin-bottom: 34px; }
+.eyebrow {
+  font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--gold); margin: 0 0 10px;
+}
+h1 {
+  font-family: Fraunces, ui-serif, Georgia, serif;
+  font-weight: 600; font-size: clamp(30px, 5vw, 44px); line-height: 1.12;
+  margin: 0 0 12px; letter-spacing: -.015em; text-wrap: balance;
+}
+.lede { margin: 0; max-width: 62ch; color: var(--slate); font-size: 17px; }
+.counts { display: flex; flex-wrap: wrap; gap: 8px 26px; margin: 20px 0 0; padding: 0; list-style: none; }
+.counts li { font-size: 14px; color: var(--slate); }
+.counts b { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* ---- legend ---- */
+.legend {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 18px 20px; margin-bottom: 40px; box-shadow: var(--shadow);
+}
+.legend h2 {
+  font-family: Fraunces, ui-serif, Georgia, serif; font-size: 17px; font-weight: 600;
+  margin: 0 0 4px;
+}
+.legend > p { margin: 0 0 16px; color: var(--slate); font-size: 14px; }
+.legend-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr)); gap: 14px 24px; }
+.legend-grid dl { margin: 0; }
+.legend-grid dt { font-size: 12px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--slate); margin-bottom: 7px; }
+.legend-grid dd { margin: 0 0 6px; font-size: 14px; color: var(--slate); display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.legend-grid dd b { color: var(--ink); font-weight: 500; }
+
+/* ---- gates ---- */
+.gate { margin-bottom: 52px; }
+.gate-h { margin-bottom: 20px; }
+.gate-h h2 {
+  font-family: Fraunces, ui-serif, Georgia, serif; font-weight: 600;
+  font-size: clamp(22px, 3.4vw, 28px); margin: 0 0 6px; letter-spacing: -.01em;
+}
+.gate-h > p { margin: 0 0 14px; color: var(--slate); max-width: 60ch; }
+.tally { display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 0 0 6px; padding: 0; list-style: none; font-size: 14px; color: var(--slate); }
+.tally b { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+.tally.quiet { font-size: 13px; }
+.tally.quiet b { color: var(--slate); }
+
+.conds { display: flex; flex-direction: column; gap: 12px; }
+.cond {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 16px 18px; box-shadow: var(--shadow);
+}
+.cond-h { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: baseline; justify-content: space-between; }
+.cond-h h3 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: -.005em; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+}
+.chip.teal { color: var(--teal); background: var(--teal-soft); }
+.chip.gold { color: var(--gold); background: var(--gold-soft); }
+.chip.slate { color: var(--slate); background: var(--slate-soft); }
+
+.why { margin: 9px 0 0; color: var(--ink); max-width: 68ch; }
+.alias, .when { margin: 7px 0 0; font-size: 14px; color: var(--slate); }
+.alias span, .when span {
+  font-size: 11.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--slate); margin-right: 7px;
+}
+.when { color: var(--ink); }
+.slots { display: flex; flex-wrap: wrap; gap: 6px; margin: 11px 0 0; padding: 0; list-style: none; }
+.slots li {
+  font-size: 13px; color: var(--slate); border: 1px solid var(--line-soft);
+  border-radius: 7px; padding: 2px 9px; background: var(--paper);
+}
+/* The three conditions that are a CHOICE list their WAYS, not their slots. A way
+   is a sentence with a parenthetical, so it stacks instead of sitting in a chip
+   row — chips are for short nouns and these are not. */
+.slots.ways { flex-direction: column; gap: 5px; align-items: flex-start; }
+.slots.ways li { padding: 5px 11px; line-height: 1.5; max-width: 62ch; }
+.slots.ways em { font-style: normal; color: var(--muted); }
+.cond .why + .why { margin-top: 12px; }
+.cond .why strong { color: var(--ink); font-weight: 600; }
+
+/* ---- close ---- */
+.close { border-top: 1px solid var(--line); padding-top: 22px; margin-top: 8px; }
+.close h2 { font-family: Fraunces, ui-serif, Georgia, serif; font-size: 19px; font-weight: 600; margin: 0 0 10px; }
+.close p { margin: 0 0 12px; color: var(--slate); max-width: 66ch; }
+.close b { color: var(--ink); font-weight: 600; }
+
+@media (max-width: 620px) {
+  .wrap { padding: 36px 16px 64px; }
+  .cond-h { flex-direction: column; align-items: flex-start; gap: 8px; }
+}
+</style>

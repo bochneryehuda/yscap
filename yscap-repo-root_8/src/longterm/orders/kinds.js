@@ -49,6 +49,72 @@ const VENDOR_KINDS = Object.freeze({
 });
 
 /**
+ * WHAT A CARD IS, IN THE SHARED DIRECTORY'S OWN VOCABULARY.
+ *
+ * Owner-directed 2026-08-30: *"The contact should save in the future the type of
+ * contact: attorney contact, realtor contact, everything should share the Vendor
+ * FileContacts section that we have already in the RTL side."* The type lives ON
+ * the card (`service_contacts.contact_type`), so a company entered once as an
+ * attorney is an attorney everywhere and forever — which only works if BOTH
+ * products write the same word for the same thing.
+ *
+ * The two vocabularies are genuinely different and both are right for their own
+ * side: this desk asks "what job does this company do on THIS loan" (an attorney
+ * is the buyer's or ours; a servicer is being paid off), while the directory asks
+ * "what kind of company is this" (an attorney is an attorney). So a long-term
+ * kind is MAPPED to a directory type when a card is created, rather than either
+ * list being bent to the other.
+ *
+ * EVERY VALUE ON THE RIGHT IS ONE `lib/vendor-directory`'s SUGGEST_TYPES ALREADY
+ * CARRIES — the type-ahead answers nothing for a type it does not know, so a card
+ * written with a long-term word would be a card nobody could ever find again.
+ * `test-lt-orders-pure.js` reads that set out of the shared module and fails the
+ * build the day this table names something outside it.
+ *
+ * Three kinds fold into `other`, and two of them carry a label of their own: the
+ * directory has no word for an HOA management company or a landlord, so the
+ * long-term LABEL is written to `custom_type` — the field that exists for exactly
+ * that — and the card still reads "HOA management company" wherever it is shown.
+ * The kind literally called `other` carries none, because there the free text is
+ * the PERSON'S ("e.g. Surveyor") and a stored "Other" would overwrite it.
+ */
+const CONTACT_TYPE_FOR_KIND = Object.freeze({
+  title: 'title_company',
+  hazard_insurance: 'insurance_agent',
+  flood_insurance: 'flood_insurance',
+  ny_settlement_agent: 'settlement_agent',
+  buyers_attorney: 'attorney',
+  our_attorney: 'attorney',
+  realtor: 'realtor',
+  appraisal: 'appraiser',
+  // A payoff goes to whoever HOLDS the loan being paid off — a lender or its
+  // servicer. `lender` is the directory's word for that, and it is the one an
+  // RTL payoff contact is already filed under.
+  payoff: 'lender',
+  hoa: 'other',
+  landlord: 'other',
+  other: 'other',
+});
+
+/**
+ * The directory type a card for this job is filed under, and the free-text label
+ * that goes with it when the directory has no word of its own.
+ *
+ * @returns {{contactType: string, customType: string|null}|null} null for a kind
+ *   this desk does not carry — never a default, because a card filed under a
+ *   guessed type is a card found by the wrong search. `customType` is null when
+ *   the directory has its own word for the job, and null again for the kind
+ *   called `other`, where the free text belongs to the person filling the form.
+ */
+function directoryTypeFor(kind) {
+  const k = String(kind || '').trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(CONTACT_TYPE_FOR_KIND, k)) return null;
+  const contactType = CONTACT_TYPE_FOR_KIND[k];
+  const named = contactType === 'other' && k !== 'other';
+  return { contactType, customType: named ? (VENDOR_KINDS[k] || null) : null };
+}
+
+/**
  * THE ORDERS.
  *
  *  · `condition`   the condition this order answers — the row that goes from
@@ -129,7 +195,13 @@ const ORDER_KINDS = Object.freeze({
     docCondition: 'lt_payoff_received',
     letter: 'generic',
     wants: ['Payoff statement good through the estimated closing date', 'Per-diem interest', 'Wire instructions'],
-    slotMap: [[/payoff|demand|statement/i, null]],
+    /* THE STATEMENT LANDS IN THE SLOT THAT IS WAITING FOR IT. Found by the
+       A-to-Z audit: this mapped to `null`, so a payoff statement that arrived by
+       reply filed on the condition with NO slot — while `lt_payoff_received`
+       carries a REQUIRED `payoff` slot, which then still read as missing the
+       document sitting right there. There is exactly one slot on that condition,
+       so there is nothing for a guess to get wrong. */
+    slotMap: [[/payoff|demand|statement/i, 'payoff']],
   },
   condo_questionnaire: {
     label: 'Condo questionnaire',
@@ -137,11 +209,32 @@ const ORDER_KINDS = Object.freeze({
     condition: 'lt_condo_questionnaire_ordered',
     docCondition: 'lt_condo_docs',
     letter: 'generic',
-    wants: ['Completed condominium questionnaire', 'The association’s master insurance certificate', 'The current budget'],
+    /* THE OWNER'S OWN LIST, in the owner's own order (2026-08-31, quoting the
+       original brief back at me: "from the condo order You dropped certain
+       stuff … I think we were also asking for bylaws"):
+         Condo Documents Request - Please provide the following:
+         -Completed condo questionnaire
+         -Current HOA budget
+         -Bylaws
+         -Master insurance policy or insurance agent contact
+       The last one is deliberately an OR: an association that will not release
+       the policy will give you the agent who can, and asking for the policy
+       alone is what makes that request stall. */
+    wants: [
+      'The completed condominium questionnaire (our form is attached)',
+      'The association’s current budget',
+      'The bylaws',
+      'The master insurance policy — or the insurance agent’s contact details, if it is easier for you to point us at them',
+    ],
+    /* The association's own answer to the questionnaire is what the FORM is, so
+       `question|cert` must not also swallow a certificate of insurance — hence
+       the insurance test runs FIRST in `slotFor` order terms and the
+       questionnaire pattern excludes an insurance word. */
     slotMap: [
-      [/question|cert(ification)?\b/i, 'questionnaire'],
-      [/insur|master/i, 'master_insurance'],
+      [/insur|master\s*polic/i, 'master_insurance'],
+      [/bylaw|by-law|by\s+law/i, 'bylaws'],
       [/budget/i, 'budget'],
+      [/question|cert(ification)?\b/i, 'questionnaire'],
     ],
   },
   vor: {
@@ -151,7 +244,17 @@ const ORDER_KINDS = Object.freeze({
     docCondition: 'lt_housing_history',
     letter: 'generic',
     wants: ['The completed verification of rent'],
-    slotMap: [[/vor|verification|rent/i, null]],
+    /* ORDERED, AND THE ORDER IS THE POINT — the same rule as the condo slots
+       above. `lt_housing_history` carries three slots, and a bare
+       `verification` would swallow a VERIFICATION OF MORTGAGE into the rent
+       slot: a document filed in the wrong slot is worse than an unfiled one,
+       because it reads as satisfied. So the two that can be named unambiguously
+       are tested FIRST, and the rent verification is what is left. */
+    slotMap: [
+      [/\bvom\b|verification\s+of\s+mortgage|mortgage\s+verification/i, 'vom_primary'],
+      [/rent[\s-]*free|living\s+rent/i, 'rent_free_letter'],
+      [/\bvor\b|verification\s+of\s+rent|rent\s+verification|verification|rent/i, 'vor'],
+    ],
   },
 });
 
@@ -198,6 +301,6 @@ function vendorKindFor(kind) {
 }
 
 module.exports = {
-  VENDOR_KINDS, ORDER_KINDS, ORDER_KIND_KEYS,
-  orderKind, isEnabled, slotForFilename, vendorKindFor,
+  VENDOR_KINDS, ORDER_KINDS, ORDER_KIND_KEYS, CONTACT_TYPE_FOR_KIND,
+  orderKind, isEnabled, slotForFilename, vendorKindFor, directoryTypeFor,
 };

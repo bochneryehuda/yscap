@@ -54,6 +54,29 @@
  * test suites load with no DATABASE_URL in the environment; a module-level
  * `require('../db')` would drag a database connection into all of them. Only the
  * one function that genuinely needs a database reaches for one.
+ *
+ * ─── THE TWO THINGS `suggest` DOES NOT ASSUME ABOUT ITS CALLER ──────────────
+ *
+ * Owner-directed 2026-08-30 (docs/longterm/SHARE-THE-CODE-DIRECTIVE.md): "it
+ * should be the exact same vendor setup and use the same information". One
+ * directory, one folding definition, one ordering — for both products. Two things
+ * in here used to be short-term facts sitting inside a shared answer:
+ *
+ *   · WHICH POOL. Already injectable (`dbc`) before this, and still defaulted to
+ *     the short-term one.
+ *   · WHAT "USED ON N FILES" COUNTS. The subquery named
+ *     `application_service_contacts` — the per-file link table that is keyed on an
+ *     RTL application and that a long-term loan can never appear in. A second
+ *     product would have read every count as zero and quietly lost the ranking
+ *     that puts the title company you actually use at the top.
+ *
+ * So the counted table is a parameter (`usedCountFrom`), an IDENTIFIER and never
+ * a fragment of caller SQL — see the validation at the call site. Its DEFAULT is
+ * the short-term link table, so every existing caller passes nothing and gets the
+ * same statement it always got; `null` means "do not count", for a caller with no
+ * link table at all. This module names no long-term table and never will: the
+ * separation gate would fail the build for it, correctly, because a shared module
+ * that knows one product's table names is not shared.
  */
 
 /* EVERY TYPE A CONTACT CAN BE — the UNION of the three route-level lists that
@@ -209,9 +232,18 @@ function foldGroups(rows) {
  * @param audience   'staff' → the whole directory; anything else → this
  *                   borrower's own contacts only. Defaults to the SAFE side.
  * @param limit      capped hard; a type-ahead that returns 500 rows is a hang.
+ * @param usedCountFrom the per-file link table "used on N files" counts, by NAME.
+ *                   Defaults to the short-term one, so every existing caller is
+ *                   unchanged; `null` means do not count at all. A caller on
+ *                   another product passes its own link table — the identifier is
+ *                   validated below and is the only part of this statement that is
+ *                   not a bound parameter.
  * @returns Promise<Array> — never throws, answers [] on any failure.
  */
-async function suggest({ type, q = '', borrowerId = null, audience = 'borrower', limit = 12 } = {}, dbc = null) {
+async function suggest({
+  type, q = '', borrowerId = null, audience = 'borrower', limit = 12,
+  usedCountFrom = 'application_service_contacts',
+} = {}, dbc = null) {
   try {
     const database = dbc || require('../db');
     const t = String(type || '').trim();
@@ -224,12 +256,30 @@ async function suggest({ type, q = '', borrowerId = null, audience = 'borrower',
     const like = term ? `%${term.replace(/[%_\\]/g, (c) => `\\${c}`)}%` : null;
     const cap = Math.min(Math.max(Number(limit) || 12, 1), 50);
 
+    /* THE ONLY INTERPOLATED THING IN THIS STATEMENT, and the reason it is safe to
+       interpolate at all: a bare identifier cannot be a bind parameter in
+       Postgres, so a caller's link table has to be spliced. It is therefore held
+       to the shape of an identifier and NOTHING else — no schema prefix, no
+       quotes, no space — which leaves no room for a second clause even if a
+       caller one day builds this string from something it should not have. A name
+       that fails the check throws into this function's own catch, so the
+       type-ahead answers nothing and the log names the cause — the module's
+       standing law (an assist, never a gate) with the reason recorded, rather than
+       a list that quietly counted the wrong table and re-ordered itself. */
+    const linkTable = usedCountFrom == null ? null : String(usedCountFrom);
+    if (linkTable !== null && !/^[a-z_][a-z0-9_]*$/i.test(linkTable)) {
+      throw new Error(`usedCountFrom must be a plain table name, got ${JSON.stringify(usedCountFrom)}`);
+    }
+    const usedCountSql = linkTable === null
+      ? '0'
+      : `(SELECT count(*)::int FROM ${linkTable} x WHERE x.service_contact_id = sc.id)`;
+
     const rows = (await database.query(
       `SELECT sc.id, sc.contact_type, sc.company_name, sc.contact_name,
               sc.email, sc.emails, sc.phone, sc.phones, sc.address,
               sc.last_used_at, sc.updated_at,
               (sc.borrower_id = $2) AS mine,
-              (SELECT count(*)::int FROM application_service_contacts x WHERE x.service_contact_id = sc.id) AS files_used
+              ${usedCountSql} AS files_used
          FROM service_contacts sc
         WHERE sc.contact_type = $1
           AND sc.merged_into_id IS NULL

@@ -33,6 +33,9 @@
 const db = require('../db');
 const orderEmail = require('../../lib/order-email');
 const kinds = require('./kinds');
+// The ONE answer to "does this order belong on this file" — asked here so a card
+// the desk greys is also one the send door refuses.
+const appliesRule = require('./applies');
 const switches = require('./switches');
 
 /** A one-line property address from the long-term property row. */
@@ -109,6 +112,13 @@ async function getOrderData(loanId, client = db) {
   out.loanNumber = loan.loan_number || null;
   out.hasLoanNumber = !!String(loan.loan_number || '').trim();
   out.propertyLine = propertyLine(loan);
+  // The PARTS as well as the joined line. The owner's own drafts address the
+  // property one field at a time («Subject_Property_Address_11», «..._City_12»,
+  // «..._State_14», «..._Zip_15»), so a draft pasted in verbatim needs each part
+  // to resolve on its own — a single joined line cannot answer four tokens.
+  out.propertyStreet = loan.street || null;
+  out.propertyCity = loan.city || null;
+  out.propertyZip = loan.zip || null;
   out.propertyState = loan.state || null;
   out.propertyType = loan.gse_property_type || null;
   out.unitCount = loan.unit_count == null ? null : Number(loan.unit_count);
@@ -149,6 +159,22 @@ async function getOrderData(loanId, client = db) {
   if (!out.borrowerEmail && primary) out.borrowerEmail = primary.email || null;
   out.coBorrowerName = co ? partyName(co) : null;
   out.coBorrowerEmail = co ? (co.email || null) : null;
+  // NAME PARTS, for the same reason as the address parts above: the owner's drafts
+  // print «Borrower_First_And_Middle_Name_36» «Borrower_Last_Name_4002» as two
+  // fields. Built from the SAME columns partyName() joins, so a name can never
+  // read one way in the letter body and another in the parts.
+  out.borrowerFirstMiddle = primary
+    ? [primary.first_name, primary.middle_name].map((x) => String(x || '').trim()).filter(Boolean).join(' ') || null
+    : null;
+  // The suffix rides with the last name (a "Jr." belongs to the surname, and the
+  // owner's draft has no token of its own for it — dropping it would rename a person).
+  out.borrowerLastName = primary
+    ? [primary.last_name, primary.name_suffix].map((x) => String(x || '').trim()).filter(Boolean).join(' ') || null
+    : null;
+  out.coBorrowerFirstName = co ? (String(co.first_name || '').trim() || null) : null;
+  out.coBorrowerLastName = co
+    ? [co.last_name, co.name_suffix].map((x) => String(x || '').trim()).filter(Boolean).join(' ') || null
+    : null;
   out.borrowerPhone = primary ? (primary.mobile_phone || primary.home_phone || null) : null;
   out.dob = primary && primary.date_of_birth ? orderEmail.dayText(primary.date_of_birth) : null;
   if (!out.entityName) {
@@ -169,6 +195,12 @@ async function getOrderData(loanId, client = db) {
       const list = rows || [];
       const current = list.find((r) => String(r.residency_type || '').toLowerCase() === 'current') || list[0] || null;
       out.borrowerMailingAddress = residenceLine(current);
+      // The parts, for «Borrower_Present_Address_FR0104» and its city/state/zip
+      // siblings — same row, so the line and the parts can never disagree.
+      out.borrowerMailingStreet = current ? (current.street || null) : null;
+      out.borrowerMailingCity = current ? (current.city || null) : null;
+      out.borrowerMailingState = current ? (current.state || null) : null;
+      out.borrowerMailingZip = current ? (current.zip || null) : null;
     });
 
   // ── Who signs the order ───────────────────────────────────────────────────
@@ -176,12 +208,19 @@ async function getOrderData(loanId, client = db) {
   // person the vendor can telephone, and — once send-as-user is on — the address
   // the order comes FROM.
   await one('officer',
-    `SELECT su.id, NULLIF(btrim(su.full_name), '') AS name, su.email, su.phone, su.title, su.nmls_id
+    /* `staff_users.nmls` — NOT `nmls_id`, which is what this asked for and which
+       does not exist. Every read here is its own try/catch, so the wrong name did
+       not throw: the officer read simply FAILED, `unreadable` was never empty,
+       and `blockers` then refused EVERY long-term order with the generic "could
+       not read the whole loan". The desk could not place an order at all, and
+       the reason a person saw named nothing they could fix. The short-term side
+       reads `lo.nmls` (notify.js), which is the column that exists. */
+    `SELECT su.id, NULLIF(btrim(su.full_name), '') AS name, su.email, su.phone, su.title, su.nmls
        FROM staff_users su
       WHERE su.id = $1::uuid AND su.is_active = true`,
     [loan.loan_officer_id || null], (rows) => {
       const r = rows && rows[0];
-      out.officer = r ? { id: r.id, name: r.name || null, title: r.title || 'Loan Officer', email: r.email || null, phone: r.phone || null, nmls: r.nmls_id || null } : null;
+      out.officer = r ? { id: r.id, name: r.name || null, title: r.title || 'Loan Officer', email: r.email || null, phone: r.phone || null, nmls: r.nmls || null } : null;
     });
 
   // The processor, off the loan's own Encompass-mirrored contact roles. Their card
@@ -200,6 +239,30 @@ async function getOrderData(loanId, client = db) {
   // one. Stated rather than omitted: the shared recipient rule reads `data.helpers`,
   // and an absent key would read the same as an empty one only by luck.
   out.helpers = [];
+
+  /* ── WHICH OF THIS FILE'S CONDITIONS EXIST ────────────────────────────────
+     THE ONE ANSWER TO "DOES THIS ORDER BELONG ON THIS FILE". The engine already
+     decides that, per condition, from the owner's own rules — a payoff condition
+     on a refinance, a condo questionnaire on a condominium, a settlement agent
+     in New York — and `orders/applies.js` used to answer it a SECOND time from a
+     small table of its own. Two statements of one rule drift, and the A-to-Z
+     audit found exactly where: the table had no entry for the payoff order or the
+     verification of rent, so both showed as belonging on every file including the
+     purchases and the owner-occupied ones their conditions are never attached to.
+
+     `routes/orders.js` re-runs `evaluateLoan` immediately before reading the desk,
+     so this list is the engine's own current answer rather than a stale one.
+
+     NULL, NEVER AN EMPTY LIST, when it cannot be read — "this file has no
+     conditions" and "PILOT could not read them" are different facts, and only the
+     first would justify greying an order out. */
+  out.conditionCodes = null;
+  await one('conditions',
+    `SELECT t.code
+       FROM checklist_items ci
+       JOIN checklist_templates t ON t.id = ci.template_id
+      WHERE ci.lt_loan_id = $1::uuid AND t.code IS NOT NULL`,
+    [id], (rows) => { out.conditionCodes = rows ? rows.map((r) => String(r.code)) : null; });
 
   // ── The vendor cards ──────────────────────────────────────────────────────
   await one('vendors',
@@ -290,6 +353,19 @@ function blockers(kind, data) {
   else if (card.missing) out.push('contact_removed');
   else if (!vendorEmails(def.key, data).length) out.push('contact_email');
   if (!String(data.borrowerName || '').trim()) out.push('borrower');
+
+  /* IS IT EVEN FOR THIS FILE? Found by the A-to-Z audit (2026-08-31): the desk
+     greyed a card that does not apply and `canOrder` was still TRUE, so `place`
+     cheerfully sent a verification of rent on a file with no landlord and a
+     condo questionnaire on a house. The greying was cosmetic — the screen hid
+     the button and the door accepted it anyway, which is the same class as a way
+     hidden from a condition form that its write door still records.
+
+     ONLY A PROVEN NO BLOCKS. `appliesTo` is three-valued and its own header is
+     explicit about the third: showing an order somebody cannot use costs a click,
+     hiding one they need costs a closing. So `null` — the file has not said yet —
+     goes through exactly as it did before. */
+  if (appliesRule.appliesTo(def.key, data).applies === false) out.push('not_for_file');
   return out;
 }
 
@@ -305,9 +381,26 @@ const BLOCKER_TEXT = Object.freeze({
   contact_removed: 'The company on this file is no longer in the vendor directory. Pick another card.',
   contact_email: 'The company on this file has no email address on its card.',
   borrower: 'The borrower’s name is not on the file yet.',
+  not_for_file: 'This order is not for this kind of file.',
 });
 
-function blockerText(code) { return BLOCKER_TEXT[code] || String(code); }
+/**
+ * Why an order cannot go, in words.
+ *
+ * `not_for_file` has no fixed sentence: the reason a card does not belong is the
+ * file's own ("this is a purchase, so there is no existing loan to pay off"), and
+ * it is the SAME sentence the greyed card shows — one wording, from
+ * `applies.js`, so a refusal can never say something different from the card the
+ * person is looking at. Without the kind and the file to ask, it falls back to
+ * the general form rather than pretending to know which.
+ */
+function blockerText(code, kind, data) {
+  if (code === 'not_for_file') {
+    const why = (kind && data) ? appliesRule.appliesTo(kind, data).why : null;
+    return why || 'This order is not for this kind of file.';
+  }
+  return BLOCKER_TEXT[code] || String(code);
+}
 
 module.exports = {
   getOrderData, blockers, blockerText, vendorEmails, BLOCKER_TEXT,

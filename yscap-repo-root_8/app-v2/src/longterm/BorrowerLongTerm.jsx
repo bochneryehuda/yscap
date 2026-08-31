@@ -6,6 +6,7 @@ import { ltApi } from './api.js';
 // screen's `day` carries a calendar-day guard the pipeline's copy had lost, so a
 // DATE column printed the day BEFORE in every US timezone until they were merged.
 import { money, day } from './format.js';
+import BorrowerLtConditions from './BorrowerLtConditions.jsx';
 
 /**
  * THE CLIENT'S OWN LONG-TERM SIDE — and the switch back.
@@ -127,7 +128,7 @@ export function BorrowerLongTermSwitch() {
 }
 
 /** The list itself. */
-export function BorrowerLongTermLoans({ loans }) {
+export function BorrowerLongTermLoans({ loans, onOpen }) {
   const list = Array.isArray(loans) ? loans : [];
   return (
     <div id="loans">
@@ -164,6 +165,17 @@ export function BorrowerLongTermLoans({ loans }) {
                 Updated {day(l.updatedAt)}
               </div>
             )}
+            {/* THE WAY IN. Until this button existed the card was the whole
+                screen: a borrower could read a loan amount and had no way to
+                learn what we were waiting on, or to send it. Rendered only when
+                a handler is passed, so this component stays usable anywhere. */}
+            {onOpen && (
+              <div style={{ marginTop: 12 }}>
+                <button type="button" className="btn" onClick={() => onOpen(l.id)}>
+                  What we still need
+                </button>
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -174,6 +186,14 @@ export function BorrowerLongTermLoans({ loans }) {
 /** The whole page, which is what the router mounts. */
 export default function BorrowerLongTermScreen() {
   const { ready, enabled, loans } = useLongTermSide();
+  const [openLoan, setOpenLoan] = useState(null);
+
+  /* ONE LOAN AT A TIME. The conditions screen replaces the list rather than
+     opening beside it: on a phone a list of loans above a list of conditions is
+     two things to scroll past before reaching the button that matters. */
+  if (openLoan) {
+    return <BorrowerLtConditions loanId={openLoan} onClose={() => setOpenLoan(null)} />;
+  }
 
   return (
     <>
@@ -208,7 +228,9 @@ export default function BorrowerLongTermScreen() {
         </div>
       )}
 
-      {ready && enabled && loans.length > 0 && <BorrowerLongTermLoans loans={loans} />}
+      {ready && enabled && loans.length > 0 && (
+        <BorrowerLongTermLoans loans={loans} onOpen={setOpenLoan} />
+      )}
     </>
   );
 }

@@ -36,6 +36,7 @@
 
 const crypto = require('crypto');
 const audience = require('../audience');
+const priceAdjust = require('./price-adjust');
 const overlay = require('./overlay');
 const wording = require('./wording');
 const comparison = require('./comparison');
@@ -251,7 +252,29 @@ function buildMember(sel, plan, opts = {}) {
   }
 
   const waive = s.waiveLenderFees === true;
-  const charges = overlay.quoteCharges(mode, plan, rawPrice, scenario.loanAmount, waive);
+
+  /* ⛔ THE ADJUSTMENT IS A MOVED PLAN, NOT A SECOND NUMBER (§40, owner-directed
+     2026-08-31: *"you should be able to manually even out the numbers by manually
+     adding a charge or manually giving a concession ... either reducing our
+     compensation or increasing our compensation to even it out."*).
+
+     Everything below — the displayed price, the origination line, the closing
+     sheet, the cash to close — is derived from the plan by `overlay`, through the
+     one function that reads it. So an adjustment expressed as a MOVED PLAN is
+     picked up by every one of them for free and cannot disagree with itself. An
+     adjustment carried as its own figure would have to be added in by hand at each
+     of those places, and the one that was missed would be the one that quietly
+     under-charged.
+
+     ⛔ THE RATE AND THE RAW PRICE ARE UNTOUCHED. Nothing here goes near the vendor:
+     the worst case is that we earn less than we meant to, never that a borrower is
+     quoted a rate the loan did not qualify for. The refusals — the 2-point cap, the
+     never-pay-the-borrower guard — are `price-adjust`'s own and are quoted verbatim,
+     so the officer reads the same sentence wherever they typed it. */
+  const eff = priceAdjust.effectivePlan({ plan, mode, deltaPoints: s.priceAdjustment });
+  if (!eff.ok) return refuse(eff.code, eff.message);
+
+  const charges = overlay.quoteCharges(mode, eff.plan, rawPrice, scenario.loanAmount, waive);
   if (!charges) {
     return refuse('no_comp_plan',
       'Your compensation settings could not be read, so the fees on this quote cannot be worked out. '
@@ -310,6 +333,23 @@ function buildMember(sel, plan, opts = {}) {
       dscr: scenario.dscr,
       prepayLabel: wording.prepaySentence(scenario.prepayMonths, scenario.prepayStructure),
     },
+    /* ⛔ THE MONEY DECISION RIDES BESIDE THE MEMBER, NEVER ON IT. The member IS the
+       borrower's document — a whitelist of what may be printed — and how much of our
+       own compensation we gave away to round a price is a fact about US. It is not
+       an investor's name, so rule 10 does not reach it; it is simply nobody's
+       business but ours, and a field on the document is one careless layout change
+       away from being drawn on it. `buildSnapshot` folds this into the staff-side
+       record (db/651), which is where "why is this price 101.000" is answerable. */
+    adjustment: eff.adjusted
+      ? {
+        points: eff.applied.deltaPoints,
+        compBefore: eff.applied.compBefore,
+        compAfter: eff.applied.compAfter,
+        compDelta: eff.applied.compDelta,
+        priceBefore: overlay.shiftedPrice(rawPrice, overlay.compShiftPoints(mode, plan)),
+        priceAfter: charges.displayPrice,
+      }
+      : null,
   };
 }
 
@@ -582,11 +622,24 @@ function buildSnapshot({ selections, plan, anchorIndex = 0, prepared = {}, maxMe
      `snapshot`. Nothing that renders, hashes or replays the document can reach
      it, because it is not a key on the object those functions are handed. */
   const internal = [];
+  /* ⛔ THE MONEY DECISION IS ITS OWN LIST, and that is not tidiness (§40).
+
+     `internal` is the CLIENT's block, and `store.issueSheet` deliberately projects
+     it a second time on the way to the database — "a caller that assembled its own
+     list must not be able to widen what is recorded". That guard is right, and it
+     means a server-derived key merged into `internal` here is silently STRIPPED at
+     the write (measured: the adjustment reached the priced document and vanished
+     from the record). So how much of our own compensation we gave away travels in
+     its own list, positionally aligned like the other two, and is merged AFTER that
+     projection by the one writer — where a browser can neither forge it nor
+     suppress it, and the client-block guard is left exactly as it was. */
+  const adjustments = [];
   for (let i = 0; i < list.length; i += 1) {
     const r = buildMember(list[i], plan);
     if (!r.ok) return { ...r, memberIndex: i };
     members.push(r.member);
     internal.push(internalRecord.projectInternal(list[i] && list[i].internal));
+    adjustments.push(r.adjustment || null);
   }
   const compare = members.length > 1 ? comparison.buildComparison(members, anchorIndex) : null;
   const docKind = documentKind(members, compare);
@@ -594,6 +647,7 @@ function buildSnapshot({ selections, plan, anchorIndex = 0, prepared = {}, maxMe
   return {
     ok: true,
     internal,
+    adjustments,
     snapshot: {
       version: 1,
       // `kind` is the RENDERING shape the layout has always branched on — one

@@ -326,6 +326,66 @@ console.log('\nG. the comparison strip asks for the same two names');
   ok(html.includes('Either name is enough'), 'G4 …and it says either will do');
 }
 
+console.log('\nH. evening out a price — the control RENDERS on all three documents (§40)');
+{
+  /* ⛔ RENDERED, NOT COUNTED. A source guard can count `<PriceAdjuster` twice and be
+     satisfied by a mount that can never draw — `{null && <PriceAdjuster …>}` leaves
+     the literal in the file and renders nothing. That mutation was run and the
+     count-based guard reported a pass, which is exactly why this section exists:
+     only a render tells a mounted control from a dead one. */
+  const single = draw(globalThis.__IssueFields, {
+    issue: issueObj(), gate: null, onChanged: () => {}, busy: null,
+    onIssue: () => {}, onCancel: () => {},
+    mode: 'borrowerPaid', adjust: null, onAdjust: () => {},
+  });
+  ok(single.includes('Even out the price'),
+    'H1 ⛔ the SINGLE term sheet offers it');
+
+  const members = [{ id: 'm1', position: 0, label: 'Platinum', mode: 'borrowerPaid',
+    program: { ratePct: 7.375, consumerLabel: 'Platinum', rawPrice: 103.1 } }];
+  const strip = draw(globalThis.__ComparisonStrip, {
+    open: true, cart: { anchor_position: 0 }, members, onChange: () => {},
+    onIssued: () => {}, onPlan: () => {},
+  });
+  ok(strip.includes('Even out the price'),
+    'H2 ⛔ …and so does every collected option, which is the other two documents');
+
+  /* ⛔ RAW PRICING OFFERS NOTHING, because there is no compensation of ours to give
+     away — the control returns null rather than a button that would only ever
+     refuse. Asserted here rather than in the source, because "renders nothing" is
+     precisely what a source count cannot see. */
+  const raw = draw(globalThis.__IssueFields, {
+    issue: issueObj(), gate: null, onChanged: () => {}, busy: null,
+    onIssue: () => {}, onCancel: () => {},
+    mode: 'raw', adjust: null, onAdjust: () => {},
+  });
+  ok(!raw.includes('Even out the price'),
+    'H3 ⛔ raw pricing is offered nothing — there is nothing of ours in it to even out');
+
+  /* And a form given no handler is byte-for-byte the form that shipped before §40,
+     so nothing about the existing screens moved. */
+  const before = draw(globalThis.__IssueFields, {
+    issue: issueObj(), gate: null, onChanged: () => {}, busy: null,
+    onIssue: () => {}, onCancel: () => {},
+  });
+  ok(!before.includes('Even out the price'),
+    'H4 …and a caller that does not pass the handler renders exactly what it always did');
+
+  /* An adjustment already made SAYS SO on the closed control. An officer who set one
+     an hour ago and came back must be able to see it at a glance — a price that was
+     evened out and looks exactly like one that was not is how a sheet goes out at a
+     number nobody remembers choosing. (The explanation of whose money it comes out
+     of lives inside the open panel, which `renderToString` cannot reach — it runs no
+     state changes — so it is not asserted here.) */
+  const set = draw(globalThis.__IssueFields, {
+    issue: issueObj(), gate: null, onChanged: () => {}, busy: null,
+    onIssue: () => {}, onCancel: () => {},
+    mode: 'borrowerPaid', adjust: -0.1, onAdjust: () => {},
+  });
+  ok(/Price evened out by -0\.1/.test(set),
+    'H5 an adjustment already made is visible without opening anything');
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n${failures === 0 ? `OFFLINE: all ${n} passed` : `OFFLINE: ${failures} of ${n} FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);

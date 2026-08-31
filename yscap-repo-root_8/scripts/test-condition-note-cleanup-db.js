@@ -24,7 +24,16 @@ let pass = 0, fail = 0;
 const eq = (name, got, exp) => { if (got === exp) pass++; else { fail++; console.log(`FAIL ${name}: got ${JSON.stringify(got)} expected ${JSON.stringify(exp)}`); } };
 
 (async () => {
-  const tmpl = (await db.query(`SELECT id FROM checklist_templates LIMIT 1`)).rows[0].id;
+  // AN APPLICATION-SCOPED TEMPLATE, NOT WHICHEVER ONE COMES BACK FIRST. This
+  // suite is about NOTES and does not care which condition carries them — but
+  // the row it stages is `scope='application'`, and an unordered `LIMIT 1`
+  // returns `gov_id`, which lives on the PERSON (scope 'borrower_profile'). That
+  // put a profile condition's template on a loan file, which db/655 now refuses
+  // outright: a condition set never crosses. The fixture was staging a row the
+  // product should never have allowed, and asking for the right scope is the
+  // repair — never loosening the guard that found it.
+  const tmpl = (await db.query(
+    `SELECT id FROM checklist_templates WHERE scope='application' AND is_active ORDER BY sort_order, code LIMIT 1`)).rows[0].id;
   const stamp = Date.now();
   const LEAK = `credit card link https://pay.example.com/${stamp}`;
   const UNIQUE = `a genuine per-file note ${stamp}`;

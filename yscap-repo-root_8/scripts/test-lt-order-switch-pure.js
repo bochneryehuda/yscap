@@ -25,6 +25,18 @@ const kinds = require('../src/longterm/orders/kinds');
 const switches = require('../src/longterm/orders/switches');
 const data = require('../src/longterm/orders/data');
 
+/* THE ROW SHAPE THESE FIXTURES STAND IN FOR MOVED, and the fixtures moved with it.
+   When the Long-Term conditions became rows in the SHARED checklist_templates
+   (db/652, db/653), the two facts that are Long-Term's alone — whether an order is
+   switched on, and the buyer's own sentence for why not — lost their columns:
+   `is_enabled` and `disabled_reason` do not exist on the shared table. They now
+   ride inside `config`, which is the one place the seed writes them, and
+   switches.resolve reads them from there (src/longterm/orders/switches.js:67-79
+   selects code, is_active, config — nothing else).
+
+   So a fixture handing back `is_enabled` was feeding a column the query no longer
+   asks for: the value was simply ignored and every switch read as ON. The code is
+   right; the stand-in was stale. */
 const clientThat = (rows) => ({ async query() { return { rows }; } });
 const brokenClient = { async query() { throw new Error('the database is unreachable'); } };
 
@@ -33,7 +45,7 @@ console.log('\nLong-Term — the order switch\n');
 (async () => {
   await okAsync('switching a template OFF switches its order off, in the buyer’s own words', async () => {
     const map = await switches.resolve(clientThat([
-      { code: 'lt_order_title', is_enabled: false, is_active: true, disabled_reason: 'We are between title companies.', config: {} },
+      { code: 'lt_order_title', is_active: true, config: { enabled: false, disabledReason: 'We are between title companies.' } },
     ]));
     assert.strictEqual(map.title.enabled, false);
     assert.strictEqual(map.title.reason, 'We are between title companies.', 'their sentence, not one we invented');
@@ -42,14 +54,14 @@ console.log('\nLong-Term — the order switch\n');
 
   await okAsync('switching it back ON switches the order on, with the reason gone', async () => {
     const map = await switches.resolve(clientThat([
-      { code: 'lt_order_title', is_enabled: true, is_active: true, disabled_reason: 'stale', config: {} },
+      { code: 'lt_order_title', is_active: true, config: { enabled: true, disabledReason: 'stale' } },
     ]));
     assert.strictEqual(map.title.enabled, true);
     assert.strictEqual(map.title.reason, null, 'a live order must never carry a reason it is off');
   });
 
   await okAsync('a RETIRED template is off for a DIFFERENT reason, and says so', async () => {
-    const map = await switches.resolve(clientThat([{ code: 'lt_order_title', is_enabled: true, is_active: false, config: {} }]));
+    const map = await switches.resolve(clientThat([{ code: 'lt_order_title', is_active: false, config: { enabled: true } }]));
     assert.strictEqual(map.title.enabled, false);
     assert.ok(/retired/i.test(map.title.reason),
       'retired and switched off send a person to two different screens');
@@ -64,7 +76,7 @@ console.log('\nLong-Term — the order switch\n');
   });
 
   await okAsync('a template for a kind nothing offers is ignored rather than inventing one', async () => {
-    const map = await switches.resolve(clientThat([{ code: 'lt_something_else', is_enabled: false, is_active: true, config: {} }]));
+    const map = await switches.resolve(clientThat([{ code: 'lt_something_else', is_active: true, config: { enabled: false } }]));
     assert.deepStrictEqual(Object.keys(map).sort(), [...kinds.ORDER_KIND_KEYS].sort());
   });
 

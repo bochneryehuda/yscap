@@ -55,6 +55,11 @@
 
 const rules = require('./rules');
 const registry = require('./field-registry');
+// The ONE translation between this file's wording and the shared Condition
+// Center's vocabulary. `seed()` writes through it and `read.js` reads back
+// through it, so a bucket cannot be filed under one heading and shown under
+// another (db/653 states the whole decision and why it is a MAP, not a widen).
+const vocab = require('./vocabulary');
 
 const B = {
   SUBMISSION: 'prior_to_submission',
@@ -284,7 +289,21 @@ const PRIOR_TO_SUBMISSION = [
     kind: 'form',
     autoApply: 'rules',
     rule: when('borrower_rents', 'is_true'),
-    config: { fields: ['landlord_name', 'landlord_email', 'landlord_phone', 'monthly_rent', 'rented_since'] },
+    /* THE LANDLORD IS A CONTACT, not five free-text boxes (owner-directed
+       2026-08-31: "Make sure each and every FileContacts should be linked to the
+       correct order. The landlord contact should be linked to the preview on the
+       VOR form"). Typed into a box, the landlord exists only on this condition
+       and the verification-of-rent order has nobody to send to — which is
+       exactly what "the orders are not linked to the correct FileContacts, so
+       you can't even send it out" describes. As a `contactTypes` row it lands in
+       the shared vendor directory and on `lt_loan_vendors`, which is where the
+       order desk looks.
+       `fields` stays for the two things that are facts about the TENANCY rather
+       than about the landlord, and the VOR needs both. */
+    config: {
+      contactTypes: [{ key: 'landlord', label: 'Landlord / management company', required: true }],
+      fields: ['monthly_rent', 'rented_since'],
+    },
   },
   {
     code: 'lt_vor_sent',
@@ -322,6 +341,40 @@ const PRIOR_TO_SUBMISSION = [
     config: { readsFromBorrowerProfile: true, savesToBorrowerProfile: true },
   },
   {
+    /* WHO THE PAYOFF IS ORDERED FROM — collected, like every other order's
+       contact, on a condition (owner-directed 2026-08-31: *"Make sure each and
+       every FileContacts should be linked to the correct order … Do a lot of A
+       to Z order to make sure everything is linked to the correct place."*).
+
+       FOUND BY THE A-TO-Z AUDIT: `lt_payoff_ordered` addresses the `payoff`
+       card, and NO condition anywhere collected it — so on every refinance the
+       payoff order sat on the desk saying "add them on the file contacts" and
+       the only way in was the file-contacts section, which is not where the
+       condition sends you. Six of the seven orders prompted for their contact;
+       this was the seventh. Same shape as the landlord and the HOA management
+       company above: a `contactTypes` row, so it lands in the shared vendor
+       directory and on `lt_loan_vendors`, which is where the order desk looks.
+
+       BOTH audiences, like the landlord: the borrower knows who services the
+       mortgage being paid off, and asking them is faster than us guessing from a
+       credit report — which carries the SERVICER'S NAME but no email address. */
+    code: 'lt_payoff_contact',
+    bucket: B.SUBMISSION,
+    label: 'Servicer of the loan being paid off',
+    hint: 'Only on a refinance. The payoff request goes to whoever services the loan being paid '
+      + 'off, so their details are collected before it is ordered.',
+    borrowerLabel: 'Who you pay your current mortgage to',
+    borrowerHint: 'The name of the company you send your mortgage payment to, and an email address '
+      + 'or phone number for them if you have one.',
+    audience: 'both',
+    kind: 'form',
+    autoApply: 'rules',
+    rule: when('is_refinance', 'is_true'),
+    config: {
+      contactTypes: [{ key: 'payoff', label: 'Servicer being paid off', required: true }],
+    },
+  },
+  {
     code: 'lt_payoff_ordered',
     bucket: B.SUBMISSION,
     label: 'Payoff ordered',
@@ -344,7 +397,12 @@ const PRIOR_TO_SUBMISSION = [
     kind: 'form',
     autoApply: 'rules',
     rule: when('is_condo', 'is_true'),
-    config: { fields: ['management_company', 'contact_name', 'contact_email', 'contact_phone'] },
+    /* Same as the landlord above: the condo questionnaire order sends to the
+       `hoa` vendor on the loan, so this has to WRITE that row rather than four
+       boxes that only this condition can see. */
+    config: {
+      contactTypes: [{ key: 'hoa', label: 'HOA management company', required: true }],
+    },
   },
   {
     code: 'lt_condo_questionnaire_ordered',
@@ -543,15 +601,21 @@ const PRIOR_TO_CTC = [
     code: 'lt_condo_docs',
     bucket: B.CTC,
     label: 'Condo documents',
-    hint: 'The completed questionnaire, the association’s master insurance, and its budget.',
+    hint: 'The completed questionnaire, the association’s current budget, the bylaws, and its master insurance.',
     audience: 'internal',
     kind: 'document',
     autoApply: 'rules',
     rule: when('is_condo', 'is_true'),
+    /* ONE LIST WITH THE ORDER'S `wants` (orders/kinds.js condo_questionnaire).
+       What we ASK the association for and what we have a place to PUT are the
+       same four things, or a document arrives with nowhere to file it and the
+       condition can never read as complete. The bylaws were asked for in the
+       owner's original brief and were dropped on the first build. */
     slots: [
       { key: 'questionnaire', label: 'Condo questionnaire (completed)', required: true },
+      { key: 'budget', label: 'Association budget', required: true },
+      { key: 'bylaws', label: 'Bylaws', required: true },
       { key: 'master_insurance', label: 'Master insurance policy', required: true },
-      { key: 'budget', label: 'Association budget', required: false },
     ],
   },
 ];
@@ -604,10 +668,20 @@ function library() {
  *
  * @returns {{ok, problems:[{code, problem}]}}
  */
-function verify() {
+function verify(accepted) {
   const fields = registry.fieldMap();
   const problems = [];
   const seen = new Set();
+
+  // EVERY VALUE THIS LIBRARY WILL EMIT, CHECKED AGAINST THE COLUMN THAT HAS TO
+  // TAKE IT. This is the half that makes a mapped value fail the BUILD rather
+  // than a loan file: `seed()` calls this with the sets read live out of
+  // pg_constraint, the pure test calls it with none and gets the declared sets,
+  // and either way a bucket or an audience the database would refuse stops the
+  // seed before a single INSERT is attempted.
+  for (const p of vocab.constraintProblems(accepted || {})) {
+    problems.push({ code: '(vocabulary)', problem: `${p.what} maps to "${p.value}", which ${p.problem}` });
+  }
 
   for (const c of library()) {
     if (seen.has(c.code)) problems.push({ code: c.code, problem: 'two conditions share this code' });
@@ -615,6 +689,17 @@ function verify() {
 
     if (!Object.values(B).includes(c.bucketKey)) {
       problems.push({ code: c.code, problem: `unknown bucket "${c.bucketKey}"` });
+    }
+    // A WORD THE TRANSLATION DOES NOT KNOW IS NOT A TYPO IT CAN ABSORB. Every
+    // mapper in vocabulary.js fails CLOSED — an unknown audience becomes
+    // staff-only, an unknown kind becomes a document — which is the right
+    // posture at RUNTIME and exactly the wrong one HERE: a misspelling would
+    // seed quietly under the safe fallback and nobody would ever be told.
+    if (!Object.prototype.hasOwnProperty.call(vocab.AUDIENCE_TO_SHARED, c.audience)) {
+      problems.push({ code: c.code, problem: `unknown audience "${c.audience}"` });
+    }
+    if (!Object.prototype.hasOwnProperty.call(vocab.KIND_TO_ITEM_KIND, c.kind)) {
+      problems.push({ code: c.code, problem: `unknown kind "${c.kind}"` });
     }
     if (c.autoApply === 'rules' && !c.ruleLogic) {
       problems.push({ code: c.code, problem: 'says it applies by rule and carries no rule' });
@@ -649,36 +734,69 @@ function verify() {
 }
 
 /**
- * Put the library into the database, ONCE.
+ * Put the library into the database, ONCE — as `checklist_templates` rows in the
+ * ONE Condition Center, `scope='lt_loan'`.
+ *
+ * ── THE WORDING IS THIS FILE'S. THE VOCABULARY IS THE SHARED TABLE'S ────────
+ *
+ * Every LABEL, HINT, borrower sentence and RULE below is the owner's own and is
+ * written verbatim. What is TRANSLATED on the way in is only the handful of
+ * enumerated words the shared columns constrain — the audience, the bucket, the
+ * kind — through `vocabulary.js`, which is also what the read inverts. db/653
+ * says why that is a MAP rather than a widening of the CHECKs; the short version
+ * is that two dialects in one column is not one Condition Center.
  *
  * `ON CONFLICT (code) DO NOTHING`, so a buyer's own edit to a row — its wording,
  * its rule, whether it applies at all — survives every redeploy. This function
- * fills the library; it never rewrites it.
+ * fills the library; it never rewrites it. The codes are all `lt_*`, and
+ * `checklist_templates.code` is UNIQUE ACROSS BOTH PRODUCTS, so a collision with
+ * an `rtl_*` template is impossible by naming.
  *
- * NEVER THROWS. It runs at boot, and a boot task may not stop the server coming
- * up. What it could not do is reported.
+ * NEVER THROWS. It runs on first use, and a failed seed must leave the library
+ * exactly as it found it. What it could not do is reported.
  */
 async function seed(client) {
-  const out = { inserted: 0, skipped: 0, failed: [], verified: verify() };
+  // THE LIVE CONSTRAINTS ARE READ FIRST, AND `verify()` IS RUN AGAINST THEM.
+  // The declared sets in vocabulary.js are a copy, and a copy nothing checks is
+  // the copy that drifts: if a migration lands tomorrow that narrows one of
+  // these columns, this is where it is caught — before any INSERT — rather than
+  // as a check-violation on somebody's loan file. An unreadable catalogue falls
+  // back to the declared sets, so a permissions quirk degrades to the pure check
+  // instead of refusing to seed for the wrong reason.
+  const accepted = await vocab.liveAccepted(client);
+  const out = { inserted: 0, skipped: 0, failed: [], verified: verify(accepted) };
   // REFUSE TO SEED A LIBRARY THAT DOES NOT VERIFY. A rule naming a field that
   // does not exist would sit in the database attaching to nothing, which reads
-  // exactly like a condition nobody needs.
+  // exactly like a condition nobody needs — and a value the column will refuse
+  // would fail one INSERT at a time, leaving a HALF-SEEDED library.
   if (!out.verified.ok) return out;
 
   for (const c of library()) {
     try {
+      const { item_kind, tool_key } = vocab.kindToShared(c.kind);
       const { rows } = await client.query(
-        `INSERT INTO lt_condition_templates
-           (code, bucket_key, label, hint, borrower_label, borrower_hint,
-            audience, kind, auto_apply, rule_logic, is_required, slots, config,
-            is_enabled, disabled_reason, sort_order, is_seeded)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::jsonb,$13::jsonb,$14,$15,$16,true)
+        `INSERT INTO checklist_templates
+           (code, scope, label, hint, borrower_label, borrower_hint,
+            audience, item_kind, tool_key, category, auto_apply, rule_logic,
+            is_required, slots, config, sort_order, is_active, origin)
+         VALUES ($1, 'lt_loan', $2, $3, $4, $5,
+                 $6, $7, $8, $9, $10, $11::jsonb,
+                 $12, $13::jsonb, $14::jsonb, $15, true, 'system')
          ON CONFLICT (code) DO NOTHING
          RETURNING code`,
-        [c.code, c.bucketKey, c.label, c.hint, c.borrowerLabel, c.borrowerHint,
-          c.audience, c.kind, c.autoApply, c.ruleLogic ? JSON.stringify(c.ruleLogic) : null,
-          c.isRequired, JSON.stringify(c.slots), JSON.stringify(c.config),
-          c.isEnabled, c.disabledReason, c.sortOrder],
+        [c.code, c.label, c.hint, c.borrowerLabel, c.borrowerHint,
+          vocab.audienceToShared(c.audience), item_kind, tool_key,
+          vocab.categoryOf(c.bucketKey), c.autoApply,
+          c.ruleLogic ? JSON.stringify(c.ruleLogic) : null,
+          c.isRequired, JSON.stringify(c.slots),
+          // `enabled` + `disabledReason` ride INSIDE config rather than taking
+          // `is_active`. They are two different facts: `is_active=false` retires
+          // a template from the library, while `enabled:false` means BUILT BUT
+          // SWITCHED OFF — it still shows on the file, greyed, WITH ITS REASON,
+          // so nobody thinks a feature vanished. Collapsing them would lose the
+          // reason and hide the condition.
+          JSON.stringify({ ...(c.config || {}), enabled: c.isEnabled, disabledReason: c.disabledReason || null }),
+          c.sortOrder],
       );
       if (rows.length) out.inserted += 1; else out.skipped += 1;
     } catch (e) {

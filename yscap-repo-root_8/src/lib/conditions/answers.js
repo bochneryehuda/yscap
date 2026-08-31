@@ -1,6 +1,14 @@
-'use strict';
 /**
- * LONG-TERM — THE WAYS A CONDITION IS ANSWERED WHEN A DOCUMENT IS NOT THE ONLY WAY.
+ * THE CONDITIONS THAT ARE A CHOICE, NOT AN UPLOAD — SHARED.
+ *
+ * MOVED HERE FROM src/longterm/conditions-center/ (2026-08-30) because the ONE
+ * sign-off gate has to read it. While it lived under src/longterm/, the shared
+ * gate could not require it — RTL code may not reach into the side build, and
+ * rightly so — and the result was measurable: the Long-Term door let the owner's
+ * own answer through while the shared gate refused the very same condition for
+ * want of a document. Two gates, two answers, one condition. The rule is the
+ * owner's, it is pure, and both products' gates now read this one copy.
+ * ── THE WAYS A CONDITION IS ANSWERED WHEN A DOCUMENT IS NOT THE ONLY WAY ────
  *
  * Three conditions in this library are not "upload the thing". The owner
  * described each of them as a CHOICE, and the choice is the whole point:
@@ -105,6 +113,36 @@ const WAYS = Object.freeze({
         fields: NOTHING_MORE,
       },
       {
+        /* ── THE MORTGAGE ON THE PROPERTY WE ARE REFINANCING ────────────────
+           Owner-directed 2026-08-31: *"One of the options when you select hey
+           this is a mortgage one of the option should be this is a mortgage
+           related to subject property … do the research for the exact wording.
+           … It should only come up if it's a refinance transaction."*
+
+           THE WORDING. Encompass and the URLA call a lien against the property
+           being financed a SUBJECT PROPERTY LIEN, and mark it "to be paid off at
+           or before closing". "Subject property" is the term every processor,
+           underwriter and closer already uses, so the label uses it and the
+           parenthetical says what it means for anybody who does not.
+
+           NO FIELDS, for the same reason `primary` asks for none: the address is
+           the file's own subject property, which is already on the loan. Asking
+           somebody to type an address PILOT is holding is how two versions of one
+           address end up on a file.
+
+           REFINANCE ONLY. `refinanceOnly` is read by the caller that knows the
+           deal — `conditions-center/workspace.js` — rather than here, because
+           this module is deliberately pure and is shared by both products. On a
+           purchase there IS no subject-property mortgage, so offering it would
+           invite an answer that cannot be true. */
+        key: 'subject_property',
+        label: 'This is the mortgage on the subject property (the loan being refinanced)',
+        why: 'It is secured by the property this loan refinances, so it is paid off at closing — '
+          + 'the statement is collected once, on the subject-property mortgage condition, rather than twice.',
+        refinanceOnly: true,
+        fields: NOTHING_MORE,
+      },
+      {
         key: 'address',
         label: 'Say which property it is secured by',
         // The owner: *"if you're putting in any other property address you need
@@ -136,6 +174,34 @@ function wayFor(condition, key) {
   const p = plan(condition);
   if (!p) return null;
   return p.ways.find((w) => w.key === String(key || '')) || null;
+}
+
+/**
+ * DOES THIS WAY APPLY TO THIS DEAL?
+ *
+ * ONE definition, read by BOTH halves — the screen that offers the ways and the
+ * door that records an answer. Written twice they drift, and the drift here is
+ * the expensive kind: a way hidden from the screen but still accepted by the
+ * door is one somebody can post from a stale tab, an old bundle or a script, and
+ * "this is the mortgage on the subject property" posted on a PURCHASE is a claim
+ * about a loan that does not exist.
+ *
+ * FAILS CLOSED. `refinanceOnly` needs `isRefinance === true` — not merely "not
+ * false". A file whose purpose PILOT cannot read yet is not a refinance as far
+ * as anybody can prove, and offering the option there invites an answer nobody
+ * can stand behind. The option appears the moment the purpose does.
+ */
+function wayApplies(way, deal = {}) {
+  if (!way) return false;
+  if (way.refinanceOnly) return deal.isRefinance === true;
+  return true;
+}
+
+/** The ways this condition offers FOR THIS DEAL, in the table's own order. */
+function waysFor(condition, deal = {}) {
+  const p = plan(condition);
+  if (!p) return [];
+  return p.ways.filter((w) => wayApplies(w, deal));
 }
 
 /** Is a value present? A blank string, null and undefined are all "not answered".
@@ -215,6 +281,7 @@ function answerProblem(condition, answer, opts = {}) {
   if (p.mode === 'choice') {
     const way = wayFor(condition, a.way);
     if (!way) return 'Choose how you want to answer this condition.';
+    if (!wayApplies(way, opts.deal || {})) return notForThisDeal(way);
     return wayProblem(condition, way, a.values, { hasDocument: opts.hasDocument });
   }
 
@@ -224,6 +291,12 @@ function answerProblem(condition, answer, opts = {}) {
       const entry = lines[key] || {};
       const way = wayFor(condition, entry.way);
       if (!way) return 'One of the mortgages has no way chosen.';
+      /* A WAY THE SCREEN WOULD NOT OFFER IS REFUSED HERE TOO. Both halves read
+         `wayApplies`, so a stale tab or an old bundle cannot post "this is the
+         mortgage on the subject property" onto a purchase. */
+      if (!wayApplies(way, opts.deal || {})) {
+        return `${opts.lineLabels && opts.lineLabels[key] ? `${opts.lineLabels[key]}: ` : ''}${notForThisDeal(way)}`;
+      }
       const hasDoc = !!(opts.documentsByLine && opts.documentsByLine[key]);
       const problem = wayProblem(condition, way, entry.values, { hasDocument: hasDoc });
       // NAME THE LINE. "Monthly rent is needed" over a list of eight mortgages
@@ -289,11 +362,97 @@ function satisfies(condition, answer, ctx = {}) {
   return { ok: true };
 }
 
+/** Why a way was refused, in the words of the deal rather than of the code. */
+function notForThisDeal(way) {
+  if (way && way.refinanceOnly) {
+    return 'That answer is only for a refinance — there is no mortgage on the subject property being paid off here.';
+  }
+  return 'That answer does not apply to this loan.';
+}
+
+/* ── THE SUBJECT-PROPERTY MORTGAGE, PRE-FILLED FROM THE CREDIT REPORT ───────
+   Owner-directed 2026-08-31: *"It should have a mark that their information is
+   on the credit report and automatically fill in from the credit report the
+   servicer name, the loan number, and outstanding principal balance. It should
+   satisfy two things at once."*
+
+   ALL THREE OR NOTHING, exactly as a person typing it is held to. A fill short
+   of one field is a partial answer that reads as a complete one to the loan-setup
+   person, which is the whole reason this module refuses those — so a credit
+   report that cannot furnish all three furnishes none, and says which one it was
+   short of.
+
+   THE LOAN NUMBER IS THE HONEST PART. A credit report carries the LAST FOUR
+   digits of an account, not the full number — `lt_liabilities.account_last4` is
+   the only account column there is. So the fill states that on its face
+   (`loanNumberIsLastFour`) and `sourceNote` puts it in words wherever the answer
+   is read. Filling four digits silently, as though they were the number a closer
+   keys into Encompass, is the confident wrong answer this file exists to stop.
+
+   PURE. It is handed a line and answers about that line. */
+const CREDIT_REPORT = 'credit_report';
+
+function creditReportFill(line) {
+  const l = line && typeof line === 'object' ? line : {};
+  const servicer = String(l.creditor == null ? '' : l.creditor).trim();
+  const last4 = String(l.last4 == null ? '' : l.last4).trim();
+  /* ZERO IS AN ANSWER, NULL IS NOT — and `Number(null)` is 0, which is finite,
+     so an absent balance sails through a bare `Number.isFinite` check and fills
+     a mortgage in at nothing owed. `has` is this module's own reading of
+     "answered", so the two can never drift apart. */
+  const balance = has(l.balance) ? Number(l.balance) : NaN;
+
+  if (!servicer) return { ok: false, why: 'the credit report does not name the servicer' };
+  if (!Number.isFinite(balance)) return { ok: false, why: 'the credit report does not carry an outstanding balance' };
+  if (!last4) return { ok: false, why: 'the credit report does not carry an account number' };
+
+  return {
+    ok: true,
+    answer: {
+      way: 'typed',
+      values: {
+        servicer,
+        outstanding_balance: balance,
+        loan_number: last4,
+      },
+      source: CREDIT_REPORT,
+      sourceLine: String(l.key || ''),
+      sourceLabel: String(l.label || servicer),
+      loanNumberIsLastFour: true,
+    },
+  };
+}
+
+/** Was this answer filled in from the credit report, and by which line? */
+function filledFromCreditReport(answer, lineKey) {
+  const a = answer && typeof answer === 'object' ? answer : {};
+  if (a.source !== CREDIT_REPORT) return false;
+  return lineKey === undefined ? true : String(a.sourceLine || '') === String(lineKey);
+}
+
+/**
+ * THE MARK, in plain words — one wording, read by every surface.
+ *
+ * Returns null for an answer a person typed themselves: a note explaining where
+ * a value came from is only worth saying when it did not come from the person
+ * reading it.
+ */
+function sourceNote(answer) {
+  if (!filledFromCreditReport(answer)) return null;
+  const a = answer || {};
+  const from = a.sourceLabel ? ` (${a.sourceLabel})` : '';
+  const number = a.loanNumberIsLastFour
+    ? ' The loan number is the LAST FOUR DIGITS only — that is all a credit report carries — so confirm the full number with the servicer before it is keyed in.'
+    : '';
+  return `Filled in from the mortgage on the credit report${from}, which somebody marked as the mortgage on the subject property.${number}`;
+}
+
 /** Every code this module governs — so a test can assert the library and this
     table describe the same conditions rather than drifting into two lists. */
 const GOVERNED_CODES = Object.freeze(Object.keys(WAYS));
 
 module.exports = {
-  WAYS, GOVERNED_CODES, plan, wayFor, answerProblem, satisfies,
-  _internals: { has, moneyProblem, fieldsFor, wayProblem },
+  WAYS, GOVERNED_CODES, CREDIT_REPORT, plan, wayFor, wayApplies, waysFor,
+  answerProblem, satisfies, creditReportFill, filledFromCreditReport, sourceNote,
+  _internals: { has, moneyProblem, fieldsFor, wayProblem, notForThisDeal },
 };

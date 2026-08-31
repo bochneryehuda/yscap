@@ -44,6 +44,7 @@
  */
 
 const db = require('../db');
+const { ownerOf, ownerWhere } = require('../../lib/condition-owner');
 const storage = require('../../lib/storage');
 const inboundMail = require('../../lib/inbound-mail');
 const { ltOrderRefFromRecipient } = require('../../lib/file-address');
@@ -103,10 +104,21 @@ async function resolveOrder(ref, client = db) {
 async function docConditionFor(loanId, kind, client = db) {
   const def = kinds.orderKind(kind);
   if (!def || !def.docCondition) return null;
+  /* THE SHARED CONDITION CENTER, not `lt_file_conditions`. db/653 moved the
+     long-term conditions into the one `checklist_items` table and this read was
+     left on the old one, which nothing has written since — so it found NOTHING,
+     and a document a vendor sent back could never reach the condition that asked
+     for it. That is the whole point of the per-order reply address, and it was
+     silently doing nothing. The slots live on the TEMPLATE in the shared shape
+     (`checklist_templates.slots`, seeded by the library). */
+  const w = ownerWhere(ownerOf('lt_loan', loanId), 'c', 2);
   const { rows } = await client.query(
-    `SELECT id, code, slots FROM lt_file_conditions
-      WHERE loan_id = $1::uuid AND code = $2 ORDER BY created_at LIMIT 1`,
-    [String(loanId), def.docCondition]);
+    `SELECT c.id, t.code, t.slots
+       FROM checklist_items c
+       JOIN checklist_templates t ON t.id = c.template_id
+      WHERE t.code = $1 AND ${w.sql}
+      ORDER BY c.created_at LIMIT 1`,
+    [def.docCondition, ...w.params]);
   return rows[0] || null;
 }
 
@@ -150,8 +162,8 @@ async function fileAttachment({ loanId, order, condition, att, eventId }, client
     // vendor genuinely re-sending the same bytes under the same name on a later
     // reply is a different event and must not double-file either.
     const dup = await client.query(
-      `SELECT id FROM lt_condition_files
-        WHERE loan_id = $1::uuid AND sha256 = $2 AND is_current LIMIT 1`,
+      `SELECT id FROM documents
+        WHERE lt_loan_id = $1::uuid AND sha256 = $2 AND is_current LIMIT 1`,
       [String(loanId), sha]);
     if (dup.rows.length) {
       return { skipped: { filename, reason: 'already_filed', why: 'The same document is already on this file.' } };
@@ -159,14 +171,34 @@ async function fileAttachment({ loanId, order, condition, att, eventId }, client
 
     const saved = await storage.save(buf, { filename });
     const slot = kinds.slotForFilename(order.kind, filename);
+    /* THE SHARED `documents` TABLE, not `lt_condition_files`. db/653 moved the
+       long-term conditions into `checklist_items`, and `lt_condition_files`
+       carries a FOREIGN KEY to the retired `lt_file_conditions` — so this insert
+       could not succeed at all. Every returned document was reported as a SKIP
+       with a foreign-key error as its reason, on every long-term order, which is
+       the whole purpose of the per-order reply address doing nothing.
+
+       The columns mirror the short-term vendor return (`lib/order-inbox.js`) so
+       one shape files a returned document on both products:
+         · `uploaded_by_kind = 'staff'` with a NULL id — the `documents` CHECK
+           admits borrower|staff, and a vendor is neither; the short-term side
+           already resolves that the same way, and `source_type = 'system'` is
+           what actually records that nobody here typed it.
+         · `visibility = 'staff_only'` — a title commitment is reviewed before
+           anybody outside sees it, exactly as on the short-term side.
+         · `review_status = 'pending'` — it is filed, not accepted; db/424's rule
+           is that nothing un-accepted leaves the building.
+         · the per-order slot travels in `slot_label`, which is the shared
+           table's own per-slot key (the Condition Center reads it that way). */
     const { rows } = await client.query(
-      `INSERT INTO lt_condition_files
-         (condition_id, loan_id, slot_key, filename, content_type, byte_size, sha256,
-          storage_ref, uploaded_by_kind, review_status, order_id, order_event_id)
-       VALUES ($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,'vendor','pending',$9::uuid,$10::uuid)
+      `INSERT INTO documents
+         (checklist_item_id, lt_loan_id, filename, content_type, size_bytes, sha256,
+          storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id,
+          slot_label, review_status, source_type, visibility)
+       VALUES ($1::uuid,$2::uuid,$3,$4,$5,$6,$7,$8,'staff',NULL,$9,'pending','system','staff_only')
        RETURNING id`,
-      [condition.id, String(loanId), slot, filename, att.contentType || null,
-        buf.length, sha, saved.ref, order.id, eventId || null]);
+      [condition.id, String(loanId), filename, att.contentType || null,
+        buf.length, sha, saved.provider, saved.ref, slot || null]);
     return { filed: { id: rows[0].id, filename, slot: slot || null, bytes: buf.length } };
   } catch (e) {
     // TRANSIENT by construction — a storage or database failure, not a fact about

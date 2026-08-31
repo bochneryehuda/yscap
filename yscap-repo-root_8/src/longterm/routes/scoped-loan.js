@@ -32,11 +32,22 @@ const trash = require('../trash');
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
+ * @param {object} req
+ * @param {object} res
+ * @param {string} tag
+ * @param {{loanId?: string}} [opts] — `loanId` names the loan EXPLICITLY, for a
+ *   route whose path carries no `:loanId`. The document doors are the case: they
+ *   take a document id, resolve which long-term loan owns it, and then have to
+ *   put that loan through this same gate. The alternative — writing the id onto
+ *   `req.params` before calling — works and is opaque; saying which loan out loud
+ *   is the same guarantee with none of the surprise, and every existing caller
+ *   passes nothing and behaves exactly as before.
  * @returns {Promise<{loan: object, settings: object, viewer: object}|null>}
  *   null when the response has already been sent (refused or unavailable).
  */
-async function loadScopedLoan(req, res, tag = 'lt') {
-  if (!UUID_RE.test(String(req.params.loanId || ''))) {
+async function loadScopedLoan(req, res, tag = 'lt', opts = {}) {
+  const loanId = String((opts && opts.loanId) || req.params.loanId || '');
+  if (!UUID_RE.test(loanId)) {
     res.status(404).json({ error: 'No such long-term loan.' });
     return null;
   }
@@ -44,7 +55,7 @@ async function loadScopedLoan(req, res, tag = 'lt') {
   try {
     ({ rows } = await db.query(
       `SELECT l.*, ${trash.notTrashSql('l')} AS not_trash FROM lt_loans l WHERE l.id = $1::uuid`,
-      [String(req.params.loanId)],
+      [loanId],
     ));
   } catch (e) {
     console.error(`[${tag}] loan read failed:`, (e && e.message) || e);

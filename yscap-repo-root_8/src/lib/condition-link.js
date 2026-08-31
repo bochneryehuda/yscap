@@ -60,15 +60,52 @@ const LINK_TTL_DAYS = 30;
 // Minting + validation
 // ---------------------------------------------------------------------------
 
+/* A LEFT JOIN, NOT AN INNER ONE — and `app_row` is why the change is safe.
+   The join was inner, which is correct while every link names an application:
+   a link whose file is gone returns no row and reads as dead. A LONG-TERM link
+   names no application at all, so an inner join would drop every one of them
+   and the link would appear revoked the moment it was clicked. Left-joining
+   fixes that and would ALSO quietly resurrect a short-term link whose
+   application row had vanished — so the row's own id is selected and
+   `liveLink` refuses a short-term link that no longer has a file. (The FK is
+   ON DELETE CASCADE, so that row cannot exist today; the check is what keeps
+   the LEFT JOIN from being a behaviour change if it ever could.)
+
+   A LONG-TERM loan's liveness is deliberately NOT checked here. Shared code
+   may not reach into `src/longterm/**`, and it does not need to: every
+   borrower-facing long-term endpoint already scopes itself to
+   `my-scope.ownLoanSql` — the confirmed borrower link plus the trash
+   exclusion — so a guest holding a link to a parked loan authenticates and
+   then finds nothing there, which is the same answer by a safer route. */
+const LINK_SELECT = `
+  SELECT cl.*, a.id AS app_row, a.deleted_at AS app_deleted
+    FROM condition_links cl
+    LEFT JOIN applications a ON a.id = cl.application_id`;
+
+/** The row if the link is still live, else null. */
+function liveLink(row) {
+  if (!row) return null;
+  if (row.application_id && (!row.app_row || row.app_deleted)) return null;
+  return row;
+}
+
 /** Mint a link for one recipient. Returns { link, token } — the clear token
     exists only here and in the email built from it. */
-async function mintLink({ applicationId, borrowerId, email, createdBy }, client = db) {
+async function mintLink({ applicationId, ltLoanId, borrowerId, email, createdBy }, client = db) {
+  /* EXACTLY ONE OWNER, refused here rather than left to the database. The
+     CHECK in db/654 would catch it either way, but a caller that passes both
+     has a bug worth naming — and a 23514 surfacing from three layers down as
+     "server error" is the shape this repo's rules exist to prevent. */
+  if ((applicationId && ltLoanId) || (!applicationId && !ltLoanId)) {
+    throw new Error('mintLink: a link opens exactly one file — pass applicationId OR ltLoanId');
+  }
   const token = C.randomToken(24);
   const r = await client.query(
-    `INSERT INTO condition_links (application_id, borrower_id, sent_to_email, token_hash, created_by, expires_at)
-     VALUES ($1,$2,$3,$4,$5, now() + ($6 || ' days')::interval)
+    `INSERT INTO condition_links (application_id, lt_loan_id, borrower_id, sent_to_email, token_hash, created_by, expires_at)
+     VALUES ($1,$2,$3,$4,$5,$6, now() + ($7 || ' days')::interval)
      RETURNING *`,
-    [applicationId, borrowerId, String(email || '').trim().toLowerCase(), C.sha256(token), createdBy || null, String(LINK_TTL_DAYS)]);
+    [applicationId || null, ltLoanId || null, borrowerId, String(email || '').trim().toLowerCase(),
+      C.sha256(token), createdBy || null, String(LINK_TTL_DAYS)]);
   return { link: r.rows[0], token };
 }
 
@@ -77,13 +114,9 @@ async function linkByToken(token, client = db) {
   try {
     if (!token || !/^[A-Za-z0-9_-]{16,64}$/.test(String(token))) return null;
     const r = await client.query(
-      `SELECT cl.*, a.deleted_at AS app_deleted
-         FROM condition_links cl JOIN applications a ON a.id = cl.application_id
-        WHERE cl.token_hash=$1 AND cl.revoked_at IS NULL AND cl.expires_at > now()`,
+      `${LINK_SELECT} WHERE cl.token_hash=$1 AND cl.revoked_at IS NULL AND cl.expires_at > now()`,
       [C.sha256(String(token))]);
-    const row = r.rows[0];
-    if (!row || row.app_deleted) return null;
-    return row;
+    return liveLink(r.rows[0]);
   } catch (_) { return null; }
 }
 
@@ -91,12 +124,8 @@ async function linkByToken(token, client = db) {
 async function linkById(id, client = db) {
   try {
     const r = await client.query(
-      `SELECT cl.*, a.deleted_at AS app_deleted
-         FROM condition_links cl JOIN applications a ON a.id = cl.application_id
-        WHERE cl.id=$1 AND cl.revoked_at IS NULL AND cl.expires_at > now()`, [id]);
-    const row = r.rows[0];
-    if (!row || row.app_deleted) return null;
-    return row;
+      `${LINK_SELECT} WHERE cl.id=$1 AND cl.revoked_at IS NULL AND cl.expires_at > now()`, [id]);
+    return liveLink(r.rows[0]);
   } catch (_) { return null; }
 }
 
@@ -106,18 +135,37 @@ async function linkById(id, client = db) {
 
 /** A real borrower-kind access token carrying the guest envelope. Sliding like
     any session token; the durable capability is the LINK, not this JWT. */
-function mintGuestToken({ borrowerId, linkId, applicationId }) {
-  return C.signJwt({
+function mintGuestToken({ borrowerId, linkId, applicationId, ltLoanId }) {
+  /* ONE OWNER, NEVER TWO. A link opens a SHORT-TERM file (`gclApp`) or a
+     LONG-TERM loan (`gclLt`) and the path jail below reads exactly one of them
+     to decide which doors exist and which id they must name. A token carrying
+     both would be a session with two jails, and the first rule that matched
+     would decide — so the claim is simply not written unless it is the one this
+     link is for. `readGuest` refuses both-or-neither on the way back in, which
+     is where it actually matters: a forged claim never reaches the jail. */
+  const claims = {
     sub: borrowerId, kind: 'borrower', role: 'borrower', tv: 0,
-    gcl: 1, gclId: linkId, gclApp: applicationId,
-  }, cfg.accessTtlSec);
+    gcl: 1, gclId: linkId,
+  };
+  if (ltLoanId) claims.gclLt = ltLoanId;
+  else claims.gclApp = applicationId;
+  return C.signJwt(claims, cfg.accessTtlSec);
 }
 
 /** The guest envelope off verified claims, or null. */
 function readGuest(claims) {
   if (!claims || claims.gcl !== 1 || claims.kind !== 'borrower') return null;
-  if (!claims.gclId || !claims.gclApp) return null;
-  return { linkId: claims.gclId, applicationId: claims.gclApp };
+  if (!claims.gclId) return null;
+  const app = claims.gclApp || null;
+  const lt = claims.gclLt || null;
+  /* EXACTLY ONE OWNER — fail closed both ways. Neither means the jail has no
+     id to pin a path to and would have nothing to compare against; BOTH means
+     two jails at once, and whichever rule list ran first would win. Either is a
+     token nothing in this system mints, so the honest answer to both is "not a
+     guest session", which costs a forged token everything and a real one
+     nothing. */
+  if ((app && lt) || (!app && !lt)) return null;
+  return { linkId: claims.gclId, applicationId: app, ltLoanId: lt };
 }
 
 // ---------------------------------------------------------------------------
@@ -138,18 +186,117 @@ const RULES = [
   { m: 'POST', re: /^\/api\/borrower\/documents\/binary$/, docMeta: true },
 ];
 
+/* A SECOND PRODUCT'S DOORS ARE REGISTERED, NOT WRITTEN HERE.
+   The obvious shape — a `LT_RULES` list beside the one above — puts the string
+   "/api/lt" into shared back-end code, and `check-product-separation` refuses
+   that for a good reason: only `src/server.js` may name the Long-Term mount
+   path, or the two products start naming each other's routes and the boundary
+   stops meaning anything. So the shared module owns the MECHANISM (one jail per
+   owner kind, default-deny, the id in the path must be this link's) and each
+   product declares its OWN doors in its own code.
+
+   FAIL-CLOSED BY CONSTRUCTION: with nothing registered — Long-Term not mounted,
+   or a boot that never loaded it — a long-term guest matches no rule at all and
+   gets a 403 rather than the short-term doors. */
+const EXTRA_JAILS = new Map();
+
+/**
+ * Declare the doors a guest link on `ownerKind` may reach.
+ * Called once at boot by the product that owns those paths.
+ *
+ * @param {string} ownerKind  today only 'lt_loan'
+ * @param {Array}  rules      [{ m, re, noEntity? }] — `re`'s first capture, when
+ *                            present, must be the id the link was minted for.
+ */
+function registerJail(ownerKind, rules) {
+  if (!ownerKind || !Array.isArray(rules) || !rules.length) return false;
+  EXTRA_JAILS.set(String(ownerKind), rules);
+  return true;
+}
+
+/**
+ * The guest shape a stored link row describes — the owner it was minted for.
+ *
+ * WHY THIS IS A FUNCTION AND NOT TWO LINES AT THE CALL SITE. `authenticate()`
+ * uses the answer THREE times per request: to check the token still describes
+ * the link it was minted from, to build the jail, and to re-mint on a sliding
+ * refresh. Three hand-written readings of "which owner is this?" is three
+ * chances for one of them to look at `application_id` on a long-term link and
+ * silently compare null to null — which would pass. One function, read once.
+ *
+ * PURE, and it never throws: a row with neither owner (or both, which the
+ * database's own CHECK forbids) answers null, and null gets no doors.
+ */
+function guestFromLink(row) {
+  if (!row) return null;
+  const app = row.application_id || null;
+  const lt = row.lt_loan_id || null;
+  if ((app && lt) || (!app && !lt)) return null;
+  return { linkId: row.id, applicationId: app, ltLoanId: lt };
+}
+
+/**
+ * Does the envelope the caller presented still describe this link row?
+ *
+ * NULL-SAFE ON PURPOSE. Comparing `String(row.application_id)` to
+ * `String(claim)` reads `"null" === "null"` as agreement, so one borrower's
+ * long-term token would match a DIFFERENT long-term link — both rows carry a
+ * null application_id. Both sides are resolved to a single owner first and the
+ * OWNER KIND has to agree before the ids are compared at all.
+ */
+function linkMatchesGuest(row, guest) {
+  const a = guestFromLink(row);
+  if (!a || !guest) return false;
+  if (!!a.applicationId !== !!guest.applicationId) return false;
+  if (!!a.ltLoanId !== !!guest.ltLoanId) return false;
+  const mine = a.applicationId || a.ltLoanId;
+  const theirs = guest.applicationId || guest.ltLoanId;
+  return String(mine).toLowerCase() === String(theirs).toLowerCase();
+}
+
+/** Which doors exist for this guest, and which id every path must name.
+    Exactly one owner is guaranteed by `readGuest`; this re-reads it rather
+    than trusting a caller to have gone through that door. */
+function rulesFor(guest) {
+  if (!guest) return null;
+  if (guest.ltLoanId && !guest.applicationId) {
+    const rules = EXTRA_JAILS.get('lt_loan');
+    // Nothing registered means no doors — never a fall-through to RTL's.
+    return rules ? { rules, id: guest.ltLoanId } : null;
+  }
+  if (guest.applicationId && !guest.ltLoanId) return { rules: RULES, id: guest.applicationId };
+  return null;                       // both or neither — no jail, so no doors
+}
+
 /**
  * May THIS request run under THIS guest envelope? Pure over (method, fullPath,
  * body, headers). Returns true/false — the caller answers 403 on false.
  */
 function allowedRequest({ method, fullPath, body, headers }, guest) {
-  if (!guest || !guest.applicationId) return false;
-  for (const rule of RULES) {
+  const jail = rulesFor(guest);
+  if (!jail) return false;
+  for (const rule of jail.rules) {
     if (rule.m !== method) continue;
     const m = rule.re.exec(String(fullPath || ''));
     if (!m) continue;
-    // A path that names an application must name THE application.
-    if (m[1] && m[1].toLowerCase() !== String(guest.applicationId).toLowerCase()) return false;
+    // A path that names a file must name THE file this link was minted for —
+    // the application on a short-term link, the loan on a long-term one.
+    if (m[1] && m[1].toLowerCase() !== String(jail.id).toLowerCase()) return false;
+    if (rule.noEntity) {
+      /* THE LONG-TERM UPLOAD DOORS. The loan and the condition are already
+         pinned by the path above, so all that is left is the entity door: the
+         shared upload module files onto a COMPANY when it is handed an
+         `llcId`, and an emailed link must never be able to put a document on
+         the borrower's company record. Refused from the body and from the
+         streaming door's metadata header alike, mirroring the short-term
+         rules — a guest uploads into a condition on this loan, full stop. */
+      if (body && body.llcId) return false;
+      const raw = (headers || {})['x-upload-meta'];
+      if (raw) {
+        try { if (JSON.parse(String(raw)).llcId) return false; } catch (_) { return false; }
+      }
+      return true;
+    }
     if (rule.docBody) {
       // The JSON upload door: the body must target the linked application (and
       // through it, a condition on that application — the route re-verifies the
@@ -244,6 +391,7 @@ module.exports = {
   LINK_TTL_DAYS,
   mintLink, linkByToken, linkById,
   mintGuestToken, readGuest, allowedRequest,
+  registerJail, rulesFor, guestFromLink, linkMatchesGuest,
   guestUrl, buildOutstandingEmail,
   _internals: { RULES },
 };

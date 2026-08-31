@@ -207,6 +207,40 @@ async function main() {
       // rather than trusted: a wrong column name in any of them answers a
       // confident empty forever and nothing anywhere says so.
       `/api/lt/condition-center/loans/${NO_LOAN}/conditions/${NO_LOAN}/workspace`,
+      // THE EMAILED CONDITION LINK's own read — what the desk sees before it
+      // sends: the borrower it would reach, the property line, the outstanding
+      // list and every reason it is refusing. It joins lt_properties, borrowers
+      // and staff_users and then reads the whole condition view, so it is
+      // exactly the shape this suite exists for: several queries whose failures
+      // are each reported rather than thrown, any one of which could answer a
+      // confident "no blockers" forever on a wrong column name.
+      `/api/lt/condition-center/loans/${NO_LOAN}/outreach`,
+      // The conditions answered from the borrower's PROFILE rather than this
+      // loan (photo ID, credit card) — it reaches across to the shared identity
+      // zone, which is the read most likely to break when a shared table moves.
+      `/api/lt/condition-center/loans/${NO_LOAN}/profile-links`,
+      // The document BYTES door. Opened with an id that cannot exist, so it runs
+      // its authorization join and answers its own 404 without ever reaching
+      // storage — which is the half that can carry a phantom column. A door that
+      // serves bytes is no less able to 500 than one that serves JSON, and this
+      // one decides who may read a borrower's document.
+      `/api/lt/condition-center/documents/${NO_LOAN}/file`,
+      // ── The shared ENTITY section (#38) ──────────────────────────────────
+      // The company bundle the shared section renders, and the bytes of one of
+      // its documents. Both are here for ACCOUNTING and for the no-500 rule, and
+      // what they prove is deliberately narrow: on a no-such-loan id both stop at
+      // the scoped loan loader, so the entity reads BEHIND them — the profile
+      // prefill, the ownership chain, the bundle, the document serve — do not run
+      // on this call. Those are opened for real, against a real loan with a real
+      // company and a real uploaded document (and against a stranger's document
+      // and a loan document, which must both be refused), by
+      // `scripts/test-lt-entity-section-db.js`. Saying that out loud is the point:
+      // an entry here that quietly accounted for a door nothing ever opened would
+      // be the same failure the derivation below was added to catch, one level
+      // down. What this call does prove is that the doors are MOUNTED, that the
+      // module they live in requires cleanly, and that neither answers 500.
+      `/api/lt/condition-center/loans/${NO_LOAN}/entities/${NO_LOAN}`,
+      `/api/lt/condition-center/loans/${NO_LOAN}/entities/documents/${NO_LOAN}/file`,
       // ── The ORDERS desk (#8) ─────────────────────────────────────────────
       // `letters` is the shipped drafts, pure. The rest are per-loan and answer
       // their own 404 on the no-such-loan id, having run their real statements.
@@ -240,6 +274,12 @@ async function main() {
       '/api/lt/dscr/term-sheet/cart',
       '/api/lt/dscr/term-sheet/TS-ZZZZZZ',
       '/api/lt/dscr/term-sheet/TS-ZZZZZZ/pdf',
+      // Who this sheet has been emailed to (db/656). Same replay shape as the two
+      // above: on a code nobody issued the by-code load answers its own 404, which
+      // is what proves the normalizer and that SELECT both ran. The delivery-table
+      // read itself is opened on a REAL issued sheet by
+      // test-lt-term-sheet-deliver-db.js, where there is something to list.
+      '/api/lt/dscr/term-sheet/TS-ZZZZZZ/deliveries',
       // The ClickUp syncing section (#36). On the no-such-loan id the scoped
       // loader answers its own 404 — the route's uuid check + SELECT both run,
       // so a phantom column in either would surface here as a 500.
