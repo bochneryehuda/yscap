@@ -655,6 +655,51 @@ sql-write documents
 # quietly defaulting to a product.
 import src/lib/condition-owner.js
 
+# ---------------------------------------------------------------------------
+# THE LOGIN-FREE GUEST CONDITION LINK — the same Condition Center grant.
+#
+# The owner asked for this surface in their own words on 2026-08-28, and named
+# it as part of the Condition Center while doing so:
+#
+#   "another way for borrowers to manage their conditions if they're not so
+#    technical. A MORE SIMPLE CONDITION CENTER for them, with an email directly
+#    with links to upload and enter the information over there ... without him
+#    being able to set up an account or portal ... when he fills it out and he
+#    click saves it saves directly into the file without him needing to log in."
+#
+# and the 2026-08-30 share-the-code directive then made the Condition Center
+# ONE implementation for both products:
+#
+#   "The point is not to reinvent the wheel over here."
+#   "Every single thing that you're building, you first need to look if you can
+#    share the code somewhere else without rebuilding everything."
+#
+# WHY THE TABLE IS SHARED RATHER THAN TWINNED. `condition_links` carries the
+# expiry, the revocation, the usage stamp, the sha256-only token storage and —
+# through `condition-link.js` — the PATH JAIL that is the only reason it is safe
+# to hand an emailed, forwardable token a real borrower session. A parallel
+# `lt_condition_links` would be a second copy of every one of those safety
+# rules, and the copy is the one that drifts. So the loan joins as a second
+# OWNER on the existing row, exactly as it joined `checklist_items` above:
+# exactly one owner per row, enforced by `condition_links_one_owner` (db/654)
+# in the database AND by `readGuest` in JavaScript.
+#
+# DELIBERATELY NO FK to lt_loans, for db/652's reason: the gate forbids welding
+# an RTL table to the side build, and it is right to. A bare uuid the Long-Term
+# code interprets.
+#
+# THE JAIL IS PER PRODUCT. `LT_RULES` is a separate list from the short-term
+# `RULES`, so a long-term guest can never be judged against the short-term
+# doors or the reverse — structural, not a comparison somebody could get
+# backwards. `GET /api/lt/my/loans` is deliberately absent from it: an emailed
+# link that can be forwarded must never enumerate a borrower's other loans.
+# ---------------------------------------------------------------------------
+
+column condition_links.lt_loan_id
+import src/lib/condition-link.js
+sql-read  condition_links
+sql-write condition_links
+
 # THE GENERIC REQUIRED-SLOTS RULE. Ported OUT of
 # src/longterm/conditions-center/write.js (`missingSlots`) into the shared
 # sign-off gate, which had no generic version and states the same rule three

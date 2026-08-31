@@ -157,29 +157,33 @@ const RULES = [
   { m: 'POST', re: /^\/api\/borrower\/documents\/binary$/, docMeta: true },
 ];
 
-/* THE LONG-TERM JAIL — a SEPARATE list, not extra entries in the one above.
-   Two products, two sets of doors: a long-term guest must not be able to name
-   a short-term application id and reach `/api/borrower/...`, and a short-term
-   guest must not reach `/api/lt/...`. Keeping them apart makes that structural
-   rather than a comparison somebody could get backwards — `rulesFor` picks the
-   list from the owner the envelope carries, so a guest can only ever be judged
-   against its own product's doors.
+/* A SECOND PRODUCT'S DOORS ARE REGISTERED, NOT WRITTEN HERE.
+   The obvious shape — a `LT_RULES` list beside the one above — puts the string
+   "/api/lt" into shared back-end code, and `check-product-separation` refuses
+   that for a good reason: only `src/server.js` may name the Long-Term mount
+   path, or the two products start naming each other's routes and the boundary
+   stops meaning anything. So the shared module owns the MECHANISM (one jail per
+   owner kind, default-deny, the id in the path must be this link's) and each
+   product declares its OWN doors in its own code.
 
-   These three are the whole borrower-facing long-term surface (mounted at
-   `/api/lt/my` behind requireAuth + requireBorrower): read the conditions on
-   ONE loan, and upload a document to a condition on it. `GET /api/lt/my/loans`
-   is DELIBERATELY ABSENT — it lists every loan the person has, and an emailed
-   link that can be forwarded must not enumerate a borrower's other loans.
+   FAIL-CLOSED BY CONSTRUCTION: with nothing registered — Long-Term not mounted,
+   or a boot that never loaded it — a long-term guest matches no rule at all and
+   gets a 403 rather than the short-term doors. */
+const EXTRA_JAILS = new Map();
 
-   The long-term document doors carry the loan AND the condition in the PATH,
-   so unlike the short-term pair they need no body or header inspection to be
-   pinned to the right file: the first capture is the loan and it must be this
-   guest's. That is a smaller attack surface, not a looser one. */
-const LT_RULES = [
-  { m: 'GET',  re: new RegExp(`^/api/lt/my/loans/(${UUID})/conditions$`) },
-  { m: 'POST', re: new RegExp(`^/api/lt/my/loans/(${UUID})/conditions/${UUID}/documents$`), noEntity: true },
-  { m: 'POST', re: new RegExp(`^/api/lt/my/loans/(${UUID})/conditions/${UUID}/documents/binary$`), noEntity: true },
-];
+/**
+ * Declare the doors a guest link on `ownerKind` may reach.
+ * Called once at boot by the product that owns those paths.
+ *
+ * @param {string} ownerKind  today only 'lt_loan'
+ * @param {Array}  rules      [{ m, re, noEntity? }] — `re`'s first capture, when
+ *                            present, must be the id the link was minted for.
+ */
+function registerJail(ownerKind, rules) {
+  if (!ownerKind || !Array.isArray(rules) || !rules.length) return false;
+  EXTRA_JAILS.set(String(ownerKind), rules);
+  return true;
+}
 
 /**
  * The guest shape a stored link row describes — the owner it was minted for.
@@ -206,10 +210,10 @@ function guestFromLink(row) {
  * Does the envelope the caller presented still describe this link row?
  *
  * NULL-SAFE ON PURPOSE. Comparing `String(row.application_id)` to
- * `String(claim)` reads `"null" === "null"` as agreement, so a long-term link
- * and a long-term token would "match" on the short-term column that neither of
- * them uses. Both sides are resolved to a single owner first and the OWNER
- * KIND has to agree before the ids are compared at all.
+ * `String(claim)` reads `"null" === "null"` as agreement, so one borrower's
+ * long-term token would match a DIFFERENT long-term link — both rows carry a
+ * null application_id. Both sides are resolved to a single owner first and the
+ * OWNER KIND has to agree before the ids are compared at all.
  */
 function linkMatchesGuest(row, guest) {
   const a = guestFromLink(row);
@@ -226,7 +230,11 @@ function linkMatchesGuest(row, guest) {
     than trusting a caller to have gone through that door. */
 function rulesFor(guest) {
   if (!guest) return null;
-  if (guest.ltLoanId && !guest.applicationId) return { rules: LT_RULES, id: guest.ltLoanId };
+  if (guest.ltLoanId && !guest.applicationId) {
+    const rules = EXTRA_JAILS.get('lt_loan');
+    // Nothing registered means no doors — never a fall-through to RTL's.
+    return rules ? { rules, id: guest.ltLoanId } : null;
+  }
   if (guest.applicationId && !guest.ltLoanId) return { rules: RULES, id: guest.applicationId };
   return null;                       // both or neither — no jail, so no doors
 }
@@ -354,7 +362,7 @@ module.exports = {
   LINK_TTL_DAYS,
   mintLink, linkByToken, linkById,
   mintGuestToken, readGuest, allowedRequest,
-  LT_RULES, rulesFor, guestFromLink, linkMatchesGuest,
+  registerJail, rulesFor, guestFromLink, linkMatchesGuest,
   guestUrl, buildOutstandingEmail,
   _internals: { RULES },
 };

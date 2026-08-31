@@ -20,6 +20,21 @@
 
 const assert = require('assert');
 const link = require('../src/lib/condition-link');
+// THE LONG-TERM DOORS ARE REGISTERED, NOT BUILT IN — shared back-end code may
+// not name `/api/lt`, so the product declares its own and hands them over. This
+// require is what a boot that mounts Long-Term does; a boot that does not is
+// covered by section H below.
+const ltJail = require('../src/longterm/guest/jail');
+ltJail.register();
+
+/** A pristine copy of a module, with no registration another test performed. */
+function requireFresh(rel) {
+  const key = require.resolve(rel);
+  delete require.cache[key];
+  const m = require(rel);
+  delete require.cache[key];          // leave the cache as we found it
+  return m;
+}
 
 let n = 0;
 const ok = (c, m) => { assert.ok(c, m); n++; };
@@ -185,7 +200,47 @@ eq(link.linkMatchesGuest(rtlRow, ltGuest), false, 'G9 …nor the reverse');
 eq(link.linkMatchesGuest(ltRow, { linkId: LINKID, applicationId: null, ltLoanId: OTHER }), false,
   'G10 THE ONE THAT MATTERS: a token for a DIFFERENT long-term loan is refused — both '
   + 'rows carry a null application_id, and a plain string compare would call that a match');
+/* THE CASE THE OWNER-KIND CHECKS EXIST FOR, found by mutation: removing them
+   left every other assertion here green, because resolving each side to its
+   single owner (`applicationId || ltLoanId`) already makes a short-term id and
+   a long-term id compare unequal. What it does NOT cover is the same id under
+   a DIFFERENT kind — a short-term link and a long-term token both naming X.
+   Absurd in practice (an application id equal to a loan id), and exactly what a
+   uuid collision or a mis-copied claim would look like; the kind check makes it
+   structurally impossible rather than improbable. */
+eq(link.linkMatchesGuest({ id: LINKID, application_id: APP, lt_loan_id: null },
+  { linkId: LINKID, applicationId: null, ltLoanId: APP }), false,
+  'G11a the SAME id under a different owner kind is not a match — the kind agrees before the id is read');
+eq(link.linkMatchesGuest({ id: LINKID, application_id: null, lt_loan_id: LOAN },
+  { linkId: LINKID, applicationId: LOAN, ltLoanId: null }), false,
+  'G11b …in the other direction too');
+
 eq(link.linkMatchesGuest(null, ltGuest), false, 'G11 no row matches nothing');
 eq(link.linkMatchesGuest(ltRow, null), false, 'G12 and no token matches nothing');
+
+// ---------------------------------------------------------------------------
+// H. WITH NOTHING REGISTERED, A LONG-TERM GUEST GETS NOTHING
+// ---------------------------------------------------------------------------
+//
+// The registry is the seam between the two products, so its failure mode has to
+// be the safe one: a boot that never loaded the Long-Term side must leave a
+// long-term guest with NO doors — never falling through to the short-term list,
+// which is the only other thing `rulesFor` could plausibly do.
+{
+  const fresh = requireFresh('../src/lib/condition-link');
+  eq(fresh.rulesFor(ltGuest), null,
+    'H1 with no doors registered a long-term guest gets no jail at all');
+  eq(fresh.allowedRequest({ method: 'GET', fullPath: `/api/lt/my/loans/${LOAN}/conditions` }, ltGuest), false,
+    'H2 …so its own endpoint is refused rather than opened');
+  eq(fresh.allowedRequest({ method: 'GET', fullPath: `/api/borrower/applications/${LOAN}` }, ltGuest), false,
+    'H3 …and it does NOT fall through to the short-term doors');
+  ok(fresh.rulesFor(rtlGuest) !== null,
+    'H4 while the short-term jail is built in and needs no registration');
+
+  // And the registry refuses nonsense rather than storing it.
+  eq(fresh.registerJail('lt_loan', []), false, 'H5 an empty rule list is not a registration');
+  eq(fresh.registerJail('lt_loan', null), false, 'H6 nor a missing one');
+  eq(fresh.registerJail('', [{ m: 'GET', re: /x/ }]), false, 'H7 nor one with no owner kind');
+}
 
 console.log(`test-lt-guest-link-jail-pure: ${n} checks passed`);
