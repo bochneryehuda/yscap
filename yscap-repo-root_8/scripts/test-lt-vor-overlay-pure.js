@@ -362,6 +362,105 @@ ok("…while accepting the owner's own blank — the pin is an identity check, n
   _internals.assertOwnersDigest(fs.readFileSync(BLANK_PATH), "the owner's blank");
 });
 
+
+/* ── THE THREE DEFECTS THE OWNER REPORTED ON 2026-08-31 ─────────────────────
+   Each is measured against the OWNER'S OWN BLANK, not asserted from memory:
+   the printed labels' baselines are read out of the form itself, so the
+   assertions below describe the paper rather than a number somebody typed. */
+
+ok('the lender row clears both printed labels — the "a little too low" fix', () => {
+  const F = require('../src/longterm/vor/fields.js');
+  /* MEASURED off the blank with pypdf: "Signature of Lender" / "Title" / "Date"
+     / "Lender's No. (Optional)" all sit on baseline 530.4, and the next printed
+     label ("Information to be verified") on 503.4. At the old y=512 a 9pt line's
+     descenders reached ~510.0, INSIDE the next label's glyphs. */
+  const LABEL_BASE = 530.4;
+  const NEXT_BASE = 503.4;
+  const ASC = 0.718;   // Helvetica
+  const DESC = 0.207;
+  const row = ['lender_signature', 'lender_title', 'request_date', 'loan_number'].map((k) => F.BY_KEY.get(k));
+
+  assert.ok(row.every(Boolean), 'all four fields on the lender row exist');
+  const ys = [...new Set(row.map((f) => f.y))];
+  assert.deepStrictEqual(ys, [row[0].y],
+    `the four share one baseline — raising only the two the owner named would leave the row crooked (got ${ys.join(', ')})`);
+
+  for (const f of row) {
+    const size = f.size || F.DEFAULT_SIZE;
+    const top = f.y + size * ASC;
+    const bottom = f.y - size * DESC;
+    assert.ok(top < LABEL_BASE - size * DESC - 1.5,
+      `${f.key}: its ascenders (${top.toFixed(1)}) must clear the label above`);
+    assert.ok(bottom > NEXT_BASE + size * ASC + 1.5,
+      `${f.key}: its descenders (${bottom.toFixed(1)}) must clear the next section's label — this is the reported defect`);
+  }
+});
+
+ok('the landlord block carries the contact details, in the band the form leaves', () => {
+  const F = require('../src/longterm/vor/fields.js');
+  const f = F.BY_KEY.get('landlord_block');
+  /* The owner asked for "name of the management, address of the management,
+     contact information for the management" plus an email and a phone. That is
+     four lines, and item 1 is a four-line band — so it fits where the form
+     already leaves room rather than running into item 3 below it. */
+  assert.ok((f.lines || 1) >= 4, `item 1 must be a band of at least four lines (is ${f.lines})`);
+  const lowest = f.y - (f.lines - 1) * (f.lineHeight || 11);
+  assert.ok(lowest > 544.4, `the block must stop above the certification line at 544.4 (reaches ${lowest})`);
+});
+
+ok('a landlord field we already know the answer to is OFFERED, never asserted', () => {
+  const F = require('../src/longterm/vor/fields.js');
+  const bare = F.tabsForLandlord();
+  const filled = F.tabsForLandlord({ ll_phone: '718-555-0101' });
+  const phone = (t) => t.text.find((x) => x.tabLabel === 'll_phone');
+
+  assert.ok(phone(bare) && phone(bare).value === undefined,
+    'with nothing to suggest the tab is the empty box it has always been');
+  assert.strictEqual(phone(filled).value, '718-555-0101',
+    'the phone we already hold starts the landlord off — owner-directed');
+  assert.ok(phone(filled).required === phone(bare).required,
+    'and a suggestion never changes whether the field is required — it is still theirs to answer');
+
+  // Every OTHER landlord tab is untouched: a default map that leaked would be
+  // us answering Part III on the landlord's behalf, on a form they then sign.
+  const others = (t) => t.text.filter((x) => x.tabLabel !== 'll_phone');
+  assert.deepStrictEqual(others(filled), others(bare),
+    'no other landlord field gains a value');
+  assert.deepStrictEqual(filled.sign, bare.sign, 'the signature tab is untouched');
+  assert.deepStrictEqual(filled.date, bare.date, 'the date tab is untouched');
+});
+
+ok('OUR half of the form can never carry a landlord answer', () => {
+  const F = require('../src/longterm/vor/fields.js');
+  /* `cleanOurData` drops every key whose field is not ours — which is exactly
+     why the phone pre-fill travels in its own `landlordDefaults` channel and
+     NOT in `data`. Putting it in `data` was the first cut and it vanished here,
+     silently, which is the failure this pins. */
+  const cleaned = F.cleanOurData({ lender_signature: 'A Officer', ll_phone: '718-555-0101' });
+  assert.strictEqual(cleaned.lender_signature, 'A Officer');
+  assert.ok(!('ll_phone' in cleaned),
+    'a landlord field put into OUR data is dropped — so the pre-fill must not travel there');
+});
+
+ok('the person SENDING it signs it, with the file’s officer as the fallback', () => {
+  const src = fs.readFileSync(require('path').join(__dirname, '..', 'src/longterm/vor/data.js'), 'utf8');
+  /* Owner-directed: "the signature of the lender and the title of the person of
+     the lender should be pre-filled with the user that is sending it out."
+     BOTH shapes have to be read — the screen doors pass `{actor}`, the SEND
+     door passes `staffId` — or the one path the owner actually named falls back
+     to the file's officer, which is the defect. */
+  assert.match(src, /opts\.actor && opts\.actor\.id/, 'the acting user is read');
+  assert.match(src, /opts\.staffId/, "the send door's own shape is read too");
+  assert.match(src, /loan\.loan_officer_id/, 'the file officer remains the fallback');
+  // The fallback must come LAST, or it wins on every send.
+  const iActor = src.indexOf('opts.actor && opts.actor.id');
+  const iStaff = src.indexOf('opts.staffId');
+  const iOfficer = src.indexOf('loan.loan_officer_id || null,\n  ].filter(Boolean)');
+  assert.ok(iActor < iStaff, 'the acting user is asked before the send door shape');
+  assert.ok(iStaff < (iOfficer === -1 ? Infinity : iOfficer),
+    'the file officer is asked LAST — it is the fallback, not the answer');
+});
+
 console.log(`\ntest-lt-vor-overlay-pure: ${checks} checks passed\n`);
 })().catch((e) => {
   console.error('\nFAILED:', e && e.message);
