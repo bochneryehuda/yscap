@@ -122,4 +122,50 @@ function isEmpty(v) {
 const NOT_RECORDED = 'This sheet was issued before PILOT recorded who was behind each price, so the '
   + 'investor is not on the record. Everything the officer typed is still exactly as it was.';
 
-module.exports = { projectInternal, isEmpty, FIELDS, CAPS, NOT_RECORDED, _internals: { str, num } };
+/**
+ * THE OFFICER'S OWN PRICE ADJUSTMENT, folded onto a projected record (§40).
+ *
+ * ⛔ A SEPARATE FUNCTION, AND NOT A FIELD ON THE WHITELIST, DELIBERATELY.
+ * `projectInternal` is a PASS-THROUGH of what the browser sent — vendor facts,
+ * carried through the price response the officer was reading. This is the
+ * SERVER'S OWN ARITHMETIC, worked out by `price-adjust` from the compensation
+ * plan the server itself resolved. Putting it on the whitelist would let a
+ * browser post any adjustment it liked and have it recorded as fact; keeping it
+ * out and merging it here means it can be neither forged nor suppressed.
+ *
+ * ⛔ IT IS RECORDED HERE RATHER THAN ON THE DOCUMENT because "we gave away 0.25
+ * of our compensation to round the price to 101.00" is a fact about US. It is not
+ * an investor's name, so rule 10 does not reach it — it is simply nobody's
+ * business but ours, and it belongs on the staff-side record beside the raw
+ * price, which is the one place "why is this price 101.000?" is answerable.
+ *
+ * No adjustment returns the record UNTOUCHED, by identity, so every option
+ * nobody adjusted records exactly what it always did.
+ */
+function withAdjustment(record, adjustment) {
+  if (!adjustment || typeof adjustment !== 'object') return record;
+  const pts = num(adjustment.points);
+  if (pts == null || pts === 0) return record;
+  const out = { ...(record && typeof record === 'object' ? record : {}) };
+  out.adjustmentPoints = pts;
+  const before = num(adjustment.compBefore);
+  const after = num(adjustment.compAfter);
+  if (before != null) out.compBefore = before;
+  if (after != null) out.compAfter = after;
+  const pb = num(adjustment.priceBefore);
+  const pa = num(adjustment.priceAfter);
+  if (pb != null) out.priceBeforeAdjustment = pb;
+  if (pa != null) out.priceAfterAdjustment = pa;
+  return out;
+}
+
+/** Was this option's price evened out by hand? Answered off the stored record. */
+function wasAdjusted(v) {
+  return !!(v && typeof v === 'object' && num(v.adjustmentPoints) != null && num(v.adjustmentPoints) !== 0);
+}
+
+module.exports = {
+  projectInternal, isEmpty, FIELDS, CAPS, NOT_RECORDED,
+  withAdjustment, wasAdjusted,
+  _internals: { str, num },
+};
