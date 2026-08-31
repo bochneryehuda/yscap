@@ -117,4 +117,28 @@ function classifyVesting(row) {
   return 'unknown';
 }
 
-module.exports = { FIELD_IDS, vestingOf, describeVesting, classifyVesting, _internals: { ENTITY_WORDS, INDIVIDUAL_WORD, text } };
+/**
+ * DID THE VESTING MOVE IN A WAY THE CONDITIONS CARE ABOUT?
+ *
+ * Owner-directed 2026-08-31: "if it was set for officer and it changed to
+ * individual, then the condition should disappear. If it was set for individual
+ * and was changed to officer, then the condition automatically appears."
+ *
+ * It compares the CLASSIFICATION, not the text. Encompass re-sending the same
+ * word, or a difference of casing or spacing, is not a change to act on — and
+ * re-running the rules engine on every sync of every loan is what that would
+ * cost. What counts is a move between "the person takes title", "a company
+ * does", and "we have not been told".
+ *
+ * `unknown` is a real side of the move and not a way of skipping one: a loan
+ * whose 4008 is answered for the first time as Individual goes unknown ->
+ * individual, and under the owner's blank rule ("keep asking") that is exactly
+ * the transition where the company-documents condition should come OFF.
+ *
+ * PURE, so the decision is testable without a database or a sync.
+ */
+function vestingChanged(before, after) {
+  return classifyVesting(before) !== classifyVesting(after);
+}
+
+module.exports = { FIELD_IDS, vestingOf, describeVesting, classifyVesting, vestingChanged, _internals: { ENTITY_WORDS, INDIVIDUAL_WORD, text } };
