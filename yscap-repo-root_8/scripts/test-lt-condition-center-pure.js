@@ -215,6 +215,28 @@ check(asks('Officer') === true && asks('Trustee') === true,
 check(asks(null) === true,
   'and a loan Encompass has not answered for KEEPS being asked (owner-directed 2026-08-31: "keep asking for them") — a blank must never quietly drop the condition');
 
+// ── THE ENTITY NAME (field 1859) NEVER DECIDES — 4008 does ──────────────────
+// Owner, 2026-08-31: "entity name is 1859, but if 4008 Individual then 1859
+// will be empty. But if 4008 is officer, then even if 1859 is empty, it means
+// that it was just not entered yet, but it's going to be an entity."
+//
+// So the name is a CONSEQUENCE of the vesting, never an input to it. Both
+// halves are pinned because both are one careless change away: requiring a name
+// before asking for the documents would silently drop the condition off every
+// Officer loan whose name has not been typed in yet, and consulting a stale
+// name on an Individual loan is the defect this whole change fixed.
+const asksNamed = (vesting_type, vesting_entity_name) => rules.evaluateRule(
+  entityCond.ruleLogic,
+  registry.read({ loan: { vesting_type, vesting_entity_name }, parties: [] }),
+  FIELDS);
+
+check(asksNamed('Officer', '') === true && asksNamed('Officer', null) === true,
+  'THE OWNER\'S OWN CASE: an Officer loan whose entity name has NOT been entered yet is still asked for the company documents — the name is coming, the vesting is already decided');
+check(asksNamed('Officer', 'MW Trading LLC') === true,
+  '...and one that HAS a name is asked for exactly the same thing, so the name changes nothing either way');
+check(asksNamed('Individual', 'Stale Holdings LLC') === false,
+  'while an Individual loan is not asked, even when field 1859 still carries a name from a previous vesting');
+
 console.log('\nB4. the investor is not a rule field, on purpose');
 check(!registry.catalog().some((f) => /investor/i.test(f.key) || /investor/i.test(f.label)),
   'no rule can be keyed on the investor — a rule\'s DESCRIPTION is rendered on screens, and CLAUDE.md rule 10 makes that name internal everywhere');
