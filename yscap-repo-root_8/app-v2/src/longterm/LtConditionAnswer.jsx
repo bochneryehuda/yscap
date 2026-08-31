@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ltApi } from './api.js';
 import { GOLD_TEXT } from './ppeStyles.js';
+import AddressField from './AddressField.jsx';
 
 /**
  * THE THREE CONDITIONS THAT ARE A CHOICE, NOT AN UPLOAD.
@@ -330,6 +331,28 @@ function Field({ field, value, onChange }) {
             <option key={o} value={o}>{o === 'second_home' ? 'Second home' : 'Investment'}</option>
           ))}
         </select>
+      ) : field.type === 'address' ? (
+        /* THE LOOK-UP THE OWNER ASKED FOR, IN THE PLACE THEY ASKED FOR IT.
+           The sharing directive's item 8 is "the address lookup (the existing
+           autocomplete) INSIDE LT conditions", and the box was built and then
+           wired only to the term sheet — so the one condition that asks for an
+           address, "say which property this mortgage is secured by" on the
+           REO/mortgages list, has been a bare text box since it shipped. The
+           server has said `type: 'address'` about that field all along
+           (`src/lib/conditions/answers.js`); this renderer simply had no branch
+           for it and fell through to a plain input, silently, which is why
+           nothing ever errored.
+           `AddressField` emits a one-line string exactly like the plain input
+           it replaces, so nothing downstream changes — the answer is stored,
+           validated and read the same way. It degrades to an ordinary text box
+           on any provider failure, so a rural parcel or a bad minute at the
+           vendor can never stop somebody answering the condition. */
+        <AddressField
+          id={id}
+          style={input}
+          value={value == null ? '' : value}
+          onChange={onChange}
+          ariaLabel={field.label} />
       ) : (
         <input
           id={id} style={input} value={value == null ? '' : value}
