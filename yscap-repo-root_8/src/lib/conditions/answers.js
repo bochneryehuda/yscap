@@ -62,6 +62,12 @@ const NOTHING_MORE = [];
  * the condition sees, and `why` is shown under a refusal so the next step is
  * never a guess.
  */
+/* WHO FCI IS, in the one place. It is written onto the answer rather than asked
+   for, so every reader downstream — the payoff order, the person keying Encompass
+   — sees a servicer on an FCI answer exactly as it sees one on a typed answer,
+   and no screen has to know that this way is special. */
+const FCI_SERVICER = 'FCI Lender Services';
+
 const WAYS = Object.freeze({
   // ── The mortgage on the property being refinanced ──────────────────────────
   lt_subject_mortgage_statement: {
@@ -87,10 +93,24 @@ const WAYS = Object.freeze({
       {
         key: 'fci_serviced',
         label: 'This refinances one of our own short-term loans, serviced by FCI',
-        // Nothing else is asked BECAUSE we already hold everything a statement
-        // would say: we originated the loan and we service it.
-        why: 'We originated this loan and we service it, so we already hold everything a statement would tell us.',
-        fields: NOTHING_MORE,
+        /* THE SERVICER ANSWERS ITSELF; THE TWO NUMBERS DO NOT. Owner-directed
+           2026-08-31: *"if you're putting in that it's FCI then the servicer
+           automatically selects it to be FCI, and our processor needs to go into
+           FCI and look for the FCI loan number and put it in, and outstanding
+           balance."*
+
+           SUPERSEDES the first reading of this way, which asked for nothing at
+           all on the grounds that we service the loan. We do — which is exactly
+           why the numbers are OBTAINABLE, not why they are unnecessary: the
+           loan-setup person still has to key a loan number and a balance into
+           Encompass, and neither of them is in this file. What being the servicer
+           removes is the QUESTION of who it is, and that is what `fixed` says. */
+        why: 'We originated this loan and we service it — look the loan number and the balance up in FCI.',
+        fixed: { servicer: FCI_SERVICER },
+        fields: [
+          { key: 'loan_number', label: 'FCI loan number', type: 'text' },
+          { key: 'outstanding_balance', label: 'Outstanding principal balance', type: 'money' },
+        ],
       },
     ],
   },
@@ -265,6 +285,40 @@ function wayProblem(condition, way, values, opts = {}) {
 }
 
 /**
+ * WRITE IN WHAT THE WAY ITSELF ANSWERS.
+ *
+ * A way may carry `fixed` values — facts that follow from CHOOSING it rather than
+ * from anything a person types. Today that is the servicer on the FCI way: saying
+ * "this is one of ours, serviced by FCI" IS saying who the servicer is, so asking
+ * for it again would be asking a question the answer already contains.
+ *
+ * WRITTEN ONTO THE ANSWER, not resolved at each reader. Every consumer — the
+ * payoff order, the person keying Encompass, the screen showing what was recorded
+ * — then sees a servicer on an FCI answer exactly as it sees one on a typed
+ * answer, and none of them has to know this way is special. A reader that had to
+ * remember is a reader that eventually forgets, and the fact that goes missing is
+ * who to send the payoff request to.
+ *
+ * A TYPED VALUE STILL WINS. `fixed` fills what is blank; it never overwrites what
+ * somebody put in, because a person correcting a servicer name knows something
+ * this table does not.
+ *
+ * Returns a NEW answer object; never mutates the caller's. Never throws.
+ */
+function withFixed(condition, answer) {
+  const a = answer && typeof answer === 'object' ? answer : {};
+  const p = plan(condition);
+  if (!p || p.mode !== 'choice') return a;
+  const way = wayFor(condition, a.way);
+  if (!way || !way.fixed || typeof way.fixed !== 'object') return a;
+  const values = { ...(a.values && typeof a.values === 'object' ? a.values : {}) };
+  for (const [k, v] of Object.entries(way.fixed)) {
+    if (!has(values[k])) values[k] = v;
+  }
+  return { ...a, values };
+}
+
+/**
  * VALIDATE AN INCOMING ANSWER before it is recorded.
  *
  * `answer` is the whole shape the screen posts:
@@ -391,6 +445,11 @@ function notForThisDeal(way) {
 
    PURE. It is handed a line and answers about that line. */
 const CREDIT_REPORT = 'credit_report';
+/* THE OTHER SOURCE THAT IS NOT A PERSON — the statement itself, read by OCR and
+   the AI (owner-directed 2026-08-31). It is a SIBLING of the credit-report fill
+   rather than a second mechanism: same answer shape, same `source` mark, same
+   "a value that did not come from the person reading it says so" rule. */
+const STATEMENT_READ = 'statement_read';
 
 function creditReportFill(line) {
   const l = line && typeof line === 'object' ? line : {};
@@ -431,6 +490,45 @@ function filledFromCreditReport(answer, lineKey) {
 }
 
 /**
+ * THE ANSWER PILOT READ OFF THE STATEMENT ITSELF.
+ *
+ * `documentId` records WHICH document it was read from, which is what lets the
+ * fill follow the paper: a statement replaced by a newer one may be re-read, and
+ * a fill whose document is gone can be cleared, without either of them being able
+ * to touch an answer a PERSON gave.
+ */
+function statementFill({ servicer, loanNumber, balance, documentId, note }) {
+  const s = String(servicer == null ? '' : servicer).trim();
+  const n = String(loanNumber == null ? '' : loanNumber).trim();
+  const b = has(balance) ? Number(balance) : NaN;
+  /* ALL THREE OR NOTHING, the same rule a person typing them is held to. Two
+     thirds of an answer reads as a whole one to the loan-setup person, who then
+     has nothing to key in — which is the entire reason this module refuses a
+     partial typed answer, and there is no reason a machine should be trusted
+     further than a person. */
+  if (!s) return { ok: false, why: 'the statement does not name the servicer' };
+  if (!n) return { ok: false, why: 'the statement does not carry a loan number' };
+  if (!Number.isFinite(b)) return { ok: false, why: 'the statement does not state an outstanding principal balance' };
+  return {
+    ok: true,
+    answer: {
+      way: 'typed',
+      values: { servicer: s, outstanding_balance: b, loan_number: n },
+      source: STATEMENT_READ,
+      sourceDocumentId: documentId ? String(documentId) : null,
+      sourceLabel: note ? String(note) : null,
+    },
+  };
+}
+
+/** Was this answer read off a statement, and off which document? */
+function filledFromStatement(answer, documentId) {
+  const a = answer && typeof answer === 'object' ? answer : {};
+  if (a.source !== STATEMENT_READ) return false;
+  return documentId === undefined ? true : String(a.sourceDocumentId || '') === String(documentId);
+}
+
+/**
  * THE MARK, in plain words — one wording, read by every surface.
  *
  * Returns null for an answer a person typed themselves: a note explaining where
@@ -438,6 +536,14 @@ function filledFromCreditReport(answer, lineKey) {
  * reading it.
  */
 function sourceNote(answer) {
+  if (filledFromStatement(answer)) {
+    /* THE PAYOFF IS THE REASON FOR THE SECOND SENTENCE. This figure is keyed into
+       a payoff, and a machine reading a scanned statement is a good reader, not
+       an authority — so the note asks for the one check that costs ten seconds
+       and prevents wiring against the wrong number. */
+    return 'PILOT read this off the mortgage statement on this condition — the servicer, the loan number '
+      + 'and the outstanding principal balance. Check them against the statement before they are used for a payoff.';
+  }
   if (!filledFromCreditReport(answer)) return null;
   const a = answer || {};
   const from = a.sourceLabel ? ` (${a.sourceLabel})` : '';
@@ -453,6 +559,7 @@ const GOVERNED_CODES = Object.freeze(Object.keys(WAYS));
 
 module.exports = {
   WAYS, GOVERNED_CODES, CREDIT_REPORT, plan, wayFor, wayApplies, waysFor,
-  answerProblem, satisfies, creditReportFill, filledFromCreditReport, sourceNote,
+  answerProblem, satisfies, withFixed, creditReportFill, filledFromCreditReport, sourceNote,
+  statementFill, filledFromStatement, STATEMENT_READ, FCI_SERVICER,
   _internals: { has, moneyProblem, fieldsFor, wayProblem, notForThisDeal },
 };

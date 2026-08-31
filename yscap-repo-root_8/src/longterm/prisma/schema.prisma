@@ -2617,11 +2617,23 @@ model LtLoanVendor {
 /// in SQL, or the two definitions drift and the copy that drifts is the one that
 /// decides.
 model LtBorrowerLandlord {
-  borrowerId String @map("borrower_id") @db.Uuid
+  /// A SURROGATE KEY, and it is here for a reason rather than by habit (db/665):
+  /// the borrower link has to be ON DELETE SET NULL — losing a person must never
+  /// delete long-term records — and a column that has to admit a NULL cannot sit
+  /// in a primary key. The PAIR is still unique, as an index.
+  id String @id @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+
+  /// Whose memory this is. NULL once the person is gone, which matches nothing
+  /// and pre-fills nothing, because every read is keyed BY borrower.
+  borrowerId String? @map("borrower_id") @db.Uuid
 
   /// The normalized home this landlord belongs to.
   addressKey String @map("address_key")
 
+  /// The landlord's card in the shared vendor directory — a plain id and NOT a
+  /// foreign key (db/665), exactly like `LtLoanVendor.serviceContactId`: a
+  /// long-term table may not declare a reference to a table outside `lt_*`.
+  /// A card somebody deletes simply stops matching; every read INNER JOINs it.
   serviceContactId String @map("service_contact_id") @db.Uuid
 
   /// The same address as a person writes it, so a screen can say WHICH home
@@ -2632,7 +2644,7 @@ model LtBorrowerLandlord {
   firstSeenAt DateTime @default(now()) @map("first_seen_at") @db.Timestamptz(6)
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  @@id([borrowerId, addressKey], map: "lt_borrower_landlords_pkey")
+  @@unique([borrowerId, addressKey], map: "lt_borrower_landlords_pair_uk")
   @@index([serviceContactId], map: "lt_borrower_landlords_contact_idx")
   @@map("lt_borrower_landlords")
 }

@@ -256,10 +256,22 @@ const PRIOR_TO_SUBMISSION = [
     code: 'lt_subject_mortgage_statement',
     bucket: B.SUBMISSION,
     label: 'Mortgage statement on the subject property',
-    hint: 'A current statement on the loan being paid off. Three ways to satisfy it: the statement '
-      + 'itself; the payoff figures typed in — outstanding balance, servicer AND loan number, all '
-      + 'three, none of them optional; or a waiver where the loan being refinanced is one of our own '
-      + 'short-term loans serviced by FCI, where we already hold everything a statement would say.',
+    /* THE FCI WAY IS NOT A WAIVER — owner-directed 2026-08-31. It answers the
+       SERVICER by itself and still asks for the two numbers, because being the
+       servicer is what makes them OBTAINABLE, not unnecessary: the loan-setup
+       person still keys a loan number and a balance into Encompass and neither
+       of them is on this file. Wording that promised a waiver told somebody the
+       opposite of what the screen asks them for.
+       PREVIOUS AND FUTURE: this string is COPIED onto each condition when it is
+       created, so changing it here reaches a NEW tenant and db/664 reaches every
+       file that already exists. Editing one without the other leaves the two
+       drifting; section F of the test compares them. */
+    hint: 'A current statement on the loan being paid off. Three ways to satisfy it: upload the '
+      + 'statement — PILOT reads the servicer, the loan number and the outstanding principal balance '
+      + 'off it and fills them in for somebody to check; type those three in yourself — all three, '
+      + 'none of them optional; or say it refinances one of our own short-term loans serviced by FCI, '
+      + 'which answers the servicer itself and still needs the FCI loan number and the outstanding '
+      + 'balance looked up in FCI.',
     borrowerLabel: 'Your current mortgage statement',
     borrowerHint: 'A recent statement for the mortgage on this property.',
     audience: 'both',

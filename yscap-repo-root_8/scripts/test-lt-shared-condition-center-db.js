@@ -551,10 +551,19 @@ const uniq = `ltcc-${process.pid}-${Date.now()}`;
   }
   assert(!!fci, 'I1b the subject-mortgage condition is on the file, so the assertions below really run');
   {
+    /* THE FCI WAY IS NO LONGER A WAIVER (owner-directed 2026-08-31): it answers
+       the SERVICER by itself and still asks for the FCI loan number and the
+       outstanding balance, which our processor looks up in FCI. Re-pointed at
+       that rule, and asserting BOTH halves — a gate that simply stopped honouring
+       the way would satisfy the first line and be just as wrong. */
     await db.query("UPDATE checklist_items SET tool_payload=$2 WHERE id=$1",
       [fci.id, JSON.stringify({ way: 'fci_serviced' })]);
+    assert(await gate(fci.id, ACTOR) !== null,
+      'I2 the FCI answer alone is held until the two numbers our processor looks up are in');
+    await db.query("UPDATE checklist_items SET tool_payload=$2 WHERE id=$1",
+      [fci.id, JSON.stringify({ way: 'fci_serviced', values: { loan_number: 'FCI-4471', outstanding_balance: 388000 } })]);
     assert(await gate(fci.id, ACTOR) === null,
-      'I2 the FCI answer finishes the subject-mortgage condition — no attachment, no form, exactly as the owner said');
+      'I2b and with them it finishes the subject-mortgage condition — no attachment, no form');
   }
   const reo = governedItems.find((r) => r.code === 'lt_reo_liabilities');
   if (reo) {

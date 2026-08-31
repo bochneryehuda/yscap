@@ -71,12 +71,31 @@ for (const [name, list] of [['prior to submission', lib.PRIOR_TO_SUBMISSION], ['
   assert(text.includes(`${g.total} conditions`), `C3 the ${name} gate counts its own (${g.total})`);
 }
 
-/* ═══ D. THE TWO HAND-WRITTEN TABLES CANNOT ROT ═══════════════════════════ */
+/* ═══ D. THE HAND-WRITTEN TABLES CANNOT ROT ═══════════════════════════════ */
 
 const codes = new Set(all.map((c) => c.code));
-const staleWays = Object.keys(gen.WAYS).filter((k) => !codes.has(k));
-assert(staleWays.length === 0,
-  `D1 no "answered another way" blurb names a condition that no longer exists${staleWays.length ? ` — STALE: ${staleWays.join(', ')}` : ''}`);
+/* D1 USED TO GUARD A TYPED LIST OF BLURBS, and that list went stale exactly as
+   this assertion feared — the FCI way stopped being "nothing further" on
+   2026-08-31 and the page went on saying it was. So the blurbs are now DERIVED
+   from `answers.js`, and what is left to guard is that the derivation really
+   reaches the conditions that have ways: a page that silently stopped describing
+   them would read as a product where a document is the only way in. */
+const answered = all.filter((c) => require('../src/lib/conditions/answers.js').plan({ code: c.code }));
+assert(answered.length >= 2,
+  `D1a the conditions that can be answered another way are still found (${answered.length})`);
+for (const c of answered) {
+  const w = gen.waysOf(c.code);
+  assert(w && Array.isArray(w.ways) && w.ways.length >= 2,
+    `D1 ${c.code} still publishes the ways it can be answered`);
+  assert(w.ways.every(([label, asks]) => label && asks),
+    `D1b ${c.code}: every way says what it is and what it asks for`);
+}
+/* AND IT SAYS THE NEW THING. The owner's own change: choosing FCI now asks for
+   the loan number and the balance, and no longer claims to ask for nothing. */
+const fci = (gen.waysOf('lt_subject_mortgage_statement') || { ways: [] }).ways
+  .find(([label]) => /FCI/.test(label));
+assert(fci && /loan number/i.test(fci[1]) && /balance/i.test(fci[1]),
+  `D1c the FCI way publishes the two numbers it now asks for — "${fci && fci[1]}"`);
 const kinds = [...new Set(all.map((c) => c.kind))];
 const unhelped = kinds.filter((k) => !gen.CHIP_HELP[k]);
 assert(unhelped.length === 0,
