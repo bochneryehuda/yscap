@@ -337,6 +337,51 @@ eq(link.linkMatchesGuest(ltRow, null), false, 'G12 and no token matches nothing'
     'I15 …and calls no short-term door');
 }
 
+// ---------------------------------------------------------------------------
+// J. AND THERE IS A BUTTON. The other half of "a back end is not a feature":
+// three routes nobody can reach are three routes nobody uses. This is the same
+// omission the draw-desk work recorded — a rule enforced everywhere and shown
+// nowhere — so the desk's own source is read too.
+// ---------------------------------------------------------------------------
+{
+  const fs = require('fs');
+  const path = require('path');
+  const { stripComments } = require('./lib/strip-comments');
+  const ltDir = path.join(__dirname, '..', 'app-v2', 'src', 'longterm');
+  const rd = (f) => stripComments(fs.readFileSync(path.join(ltDir, f), 'utf8'));
+
+  const api = rd('api.js');
+  const card = rd('LtSendConditions.jsx');
+  const screen = rd('LtFileConditions.jsx');
+
+  // The client calls all three doors, at the paths the router really serves.
+  ok(/conditionsOutreach:/.test(api), 'J1 the long-term client can read the outreach preview');
+  ok(/conditionsOutreachSend:/.test(api), 'J2 …send it');
+  ok(/conditionsOutreachRevoke:/.test(api), 'J3 …and revoke a link');
+  ok(/condition-center\/loans\/\$\{encodeURIComponent\(loanId\)\}\/outreach/.test(api),
+    'J4 …on the /outreach path the router mounts');
+
+  // The card is MOUNTED. A component nobody renders is a file, not a feature.
+  ok(/import LtSendConditions from '\.\/LtSendConditions\.jsx'/.test(screen),
+    'J5 the conditions screen imports the card');
+  ok(/<LtSendConditions\s+loanId=\{loanId\}/.test(screen),
+    'J6 …and actually renders it, with the loan it is looking at');
+
+  // IT RE-DERIVES NOTHING. The blockers, the recipients and the item list are
+  // the server's answers; a screen that made its own judgement would eventually
+  // disagree with the door that re-checks them.
+  ok(/data\.blockers|blockers = data\.blockers/.test(card),
+    'J7 the card shows the SERVER\'s refusals rather than deciding for itself');
+  ok(/blockers\.length === 0/.test(card),
+    'J8 …and offers the send only when the server says nothing is blocking it');
+
+  // COLOURS ARE EXPLICIT DARKS. `--ink*` is a LIGHT paper colour in this
+  // palette, so a token there renders white on white — the bug that made a
+  // whole staff card invisible on 2026-07-26.
+  ok(!/var\(--ink/.test(card), 'J9 the card uses no --ink token for text');
+  ok(/#141B22/.test(card), 'J10 …it names the dark ink explicitly');
+}
+
 if (failed) {
   console.log(`\ntest-lt-guest-link-jail-pure: ${failed} of ${n} checks FAILED`);
   process.exit(1);

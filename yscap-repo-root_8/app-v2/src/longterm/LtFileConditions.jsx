@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ltApi } from './api.js';
+import LtSendConditions from './LtSendConditions.jsx';
 import { stamp } from './format.js';
 import LtConditionAnswer from './LtConditionAnswer.jsx';
 
@@ -426,6 +427,13 @@ export default function LtFileConditions({ loanId }) {
 
   return (
     <>
+      {/* THE LOGIN-FREE LINK. Above the list on purpose: it is about the whole
+          file rather than any one condition, and the moment a person wants it is
+          when they are looking at what is still outstanding. It reads its own
+          state from the server and offers nothing when the loan cannot be sent
+          one. */}
+      <LtSendConditions loanId={loanId} />
+
       {/* A DEGRADED READ IS NOT AN EMPTY FILE. */}
       {data.degraded && (
         <p style={{ margin: '0 0 10px', color: RED, fontSize: 13, lineHeight: 1.55 }}>

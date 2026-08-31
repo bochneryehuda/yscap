@@ -241,6 +241,22 @@ export const ltApi = {
   conditionAdd: (loanId, code, fieldKey) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions`), { code, fieldKey }),
   conditionRemove: (loanId, id) => ltDel(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}`)),
 
+  /* THE LOGIN-FREE LINK — email this loan's borrower everything still needed,
+     with a direct button per condition (owner-directed 2026-08-28: *"an email
+     directly with links to upload and enter the information over there …
+     without him being able to set up an account or portal."*).
+
+     The preview is a READ that changes nothing: it says who it could go to,
+     what would be sent, every link already out, and — the part that matters on
+     screen — every reason it CANNOT be sent, in words a person can act on. The
+     send re-checks all of them, so the screen's answer is never what authorises
+     the email. */
+  conditionsOutreach: (loanId) => ltGet(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/outreach`)),
+  conditionsOutreachSend: (loanId, emails, note) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/outreach`), { emails, note }),
+  conditionsOutreachRevoke: (loanId, linkId) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/outreach/${encodeURIComponent(linkId)}/revoke`), {}),
+
   /* THE DOCUMENTS ON A CONDITION — the owner's own list of verbs, in one place:
      *"the way you preview stuff, the way you preview the PDFs, the way you drag
      and drop, accept, reject, preview, download, and delete."* Each of these is a
