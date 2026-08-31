@@ -78,6 +78,25 @@ function mergedFixture() {
       'HOLDBACK-7 a slipped decimal keeps the standing 0.25 and SAYS it was refused — this setting fails toward the owner\'s number, never toward zero');
   }
 
+  // ── American Heritage's OWN extra, on top of the source's 0.25 ──────────
+  {
+    // The per-investor seam is generic, so AHL participates in it exactly as the
+    // other two sources do. Asserted rather than assumed, because "the feature
+    // exists" and "it reaches this source" are different facts, and the one that
+    // fails silently is the second.
+    const at = (b) => b.programs.find((x) => x.rungCount > 0).rungs[0];
+    const plain = at(margin.applyToBoard(rawBoard(), 'ahl'));
+    const up = at(margin.applyToBoard(rawBoard(), 'ahl', { extraFor: () => 0.125 }));
+    const down = at(margin.applyToBoard(rawBoard(), 'ahl', { extraFor: () => -0.125 }));
+    ok(up.marginHoldback === 0.375 && Math.abs(up.price - (plain.price - 0.125)) < 1e-9,
+      `EXTRA-1 an investor's own extra stacks on the source's 0.25 for AHL too (${plain.marginHoldback} → ${up.marginHoldback})`);
+    ok(down.marginHoldback === 0.125 && Math.abs(down.price - (plain.price + 0.125)) < 1e-9,
+      `EXTRA-2 …and a negative extra reduces it (${down.marginHoldback}), which is what "move the margin holdback down" means`);
+    const typo = margin.applyToBoard(rawBoard(), 'ahl', { extraFor: () => 25 });
+    ok(at(typo).marginHoldback === 0.25,
+      'EXTRA-3 a slipped decimal in an investor\'s extra keeps the standing 0.25 rather than taking a quarter of the loan off every price');
+  }
+
   // ── Isolation: nothing but American Heritage moves ──────────────────────
   {
     const before = mergedFixture();

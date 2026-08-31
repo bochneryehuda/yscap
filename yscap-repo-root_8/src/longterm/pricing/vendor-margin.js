@@ -107,6 +107,47 @@ function holdbackFor(source) {
 }
 
 /**
+ * One investor's EXTRA, read the same way the global figure is read.
+ *
+ * Refuses what it cannot use and SAYS SO rather than applying a guess: a
+ * half-typed value, a slipped decimal, or an extra so negative it would try to
+ * pay the borrower. `base` is passed only so a refusal can say what is still
+ * being held back instead of quoting a number out of context.
+ */
+function readExtra(extra, base) {
+  if (extra === undefined || extra === null || extra === '') return { points: 0, problem: null };
+  const n = Number(extra);
+  if (!Number.isFinite(n)) {
+    return { points: 0, problem: { error: 'extra_not_a_number', value: String(extra), message: `This investor's extra margin holdback (${String(extra)}) is not a number, so only the standing ${base} is being held back on it.` } };
+  }
+  if (Math.abs(n) > MAX_HOLDBACK_POINTS) {
+    return { points: 0, problem: { error: 'extra_too_large', value: n, message: `${n} points looks like a slipped decimal (the most an investor's extra may be, either way, is ${MAX_HOLDBACK_POINTS}). Only the standing ${base} is being held back on it.` } };
+  }
+  return { points: r3(n), problem: null };
+}
+
+/** The base and the extra, added — never below zero, and it says when it floored. */
+function withExtra(res, ex, base) {
+  const problem = res.problem || ex.problem || null;
+  if (!ex.points) return { ...res, problem, base, extra: 0, extraApplied: false, floored: false };
+  const raw = r3(base + ex.points);
+  const floored = raw < 0;
+  const points = floored ? 0 : Math.min(raw, MAX_HOLDBACK_POINTS);
+  return {
+    ...res,
+    points: r3(points),
+    origin: 'setting',
+    base,
+    extra: ex.points,
+    extraApplied: true,
+    floored,
+    problem: floored
+      ? { error: 'extra_below_zero', value: ex.points, message: `An extra of ${ex.points} against a ${base} holdback would come to ${raw}, and a holdback below zero would ADD to the price. Nothing is being held back on this investor.` }
+      : problem,
+  };
+}
+
+/**
  * WHAT THIS SOURCE HOLDS BACK, AND WHERE THAT ANSWER CAME FROM.
  *
  * Owner-directed 2026-08-30: *"there should always be in the settings the
@@ -126,34 +167,65 @@ function holdbackFor(source) {
  * always be told apart from a board where the setting failed to load. That is
  * why 0 is returned with a stamp rather than short-circuiting.
  *
- * Returns `{ points, origin, problem }` — origin is `setting` when a person
- * chose it, `default` when nobody has, and `none` for a source that never holds
- * back at all (Lender Price, whose feed already carries ours).
+ * ── AND THE PER-INVESTOR EXTRA (owner-directed 2026-08-30) ─────────────────
+ * *"We can add extra company margin holdbacks on top of each and every program.
+ * If it's a set on LoanNEX, we should be able to increase or decrease the margin
+ * holdbacks accordingly."*
+ *
+ * ⛔ ONE NUMBER PER INVESTOR ANSWERS BOTH SENTENCES, which is why it is signed
+ * rather than two separate controls. A POSITIVE extra adds on top of whatever
+ * the source holds back; a NEGATIVE one takes it back down, so the standing 0.25
+ * on a LoanNEX investor can be moved to 0.10 (−0.15) or removed outright (−0.25)
+ * without touching what every other investor is priced on. Two fields — "add"
+ * and "reduce" — would be two ways to say one thing, and the file would then
+ * have to decide what they mean together.
+ *
+ * ⛔ THE TOTAL CAN NEVER GO BELOW ZERO. A negative effective holdback is not a
+ * smaller holdback, it is a GIVEAWAY: it would ADD to the vendor's price and
+ * quote the borrower better execution than the investor offered. So the sum is
+ * floored at zero and the floor is REPORTED, never silent — somebody who typed
+ * −0.40 against a 0.25 base asked for something arithmetic cannot do, and being
+ * told beats a board that quietly did something else.
+ *
+ * ⛔ AND AN EXTRA REACHES LENDER PRICE, WHILE THE GLOBAL SAVED NUMBER STILL DOES
+ * NOT. Those are different things and the distinction is load-bearing: the
+ * global figure exists to bring LoanNEX's raw feed onto the same footing as
+ * Lender Price's, which ALREADY carries our standard margin — applying it there
+ * too would take it twice. A per-investor extra is the owner asking for MORE on
+ * one named investor, which is a decision about that investor rather than about
+ * the feed, and the owner asked for it on "each and every program".
+ *
+ * Returns `{ points, origin, problem, base, extra, extraApplied, floored }` —
+ * origin is `setting` when a person chose it, `default` when nobody has, and
+ * `none` for a source that holds back nothing and has no extra set either.
  */
-function resolveHoldback(source, saved) {
+function resolveHoldback(source, saved, extra) {
   const key = String(source || '').toLowerCase();
   const base = holdbackFor(key);
+  const ex = readExtra(extra, base);
   // A source that holds back nothing by design is not configurable into holding
   // something back: Lender Price's feed ALREADY carries our holdback, so a
-  // second one here would take it twice. That is a fact about the feed, not a
-  // preference, so it is not offered as a setting.
+  // second GLOBAL one here would take it twice. That is a fact about the feed,
+  // not a preference, so it is not offered as a setting. A per-investor EXTRA is
+  // a different decision and does apply — see the note above.
   if (!(key in MARGIN_HOLDBACK_POINTS) || base === 0) {
-    return { points: base, origin: 'none', problem: null };
+    if (ex.points) return withExtra({ points: 0, origin: 'none', problem: null }, ex, 0);
+    return { points: base, origin: 'none', problem: ex.problem, base, extra: 0, extraApplied: false, floored: false };
   }
   if (saved === undefined || saved === null || saved === '') {
-    return { points: base, origin: 'default', problem: null };
+    return withExtra({ points: base, origin: 'default', problem: null }, ex, base);
   }
   const n = Number(saved);
   if (!Number.isFinite(n)) {
-    return { points: base, origin: 'default', problem: { error: 'not_a_number', value: String(saved), message: `The saved margin holdback (${String(saved)}) is not a number, so the standing ${base} is still being held back.` } };
+    return withExtra({ points: base, origin: 'default', problem: { error: 'not_a_number', value: String(saved), message: `The saved margin holdback (${String(saved)}) is not a number, so the standing ${base} is still being held back.` } }, ex, base);
   }
   if (n < 0) {
-    return { points: base, origin: 'default', problem: { error: 'negative', value: n, message: `A margin holdback cannot be negative — that would ADD to the price. The standing ${base} is still being held back.` } };
+    return withExtra({ points: base, origin: 'default', problem: { error: 'negative', value: n, message: `A margin holdback cannot be negative — that would ADD to the price. The standing ${base} is still being held back.` } }, ex, base);
   }
   if (n > MAX_HOLDBACK_POINTS) {
-    return { points: base, origin: 'default', problem: { error: 'too_large', value: n, message: `${n} points looks like a slipped decimal (the most that may be set is ${MAX_HOLDBACK_POINTS}). The standing ${base} is still being held back.` } };
+    return withExtra({ points: base, origin: 'default', problem: { error: 'too_large', value: n, message: `${n} points looks like a slipped decimal (the most that may be set is ${MAX_HOLDBACK_POINTS}). The standing ${base} is still being held back.` } }, ex, base);
   }
-  return { points: r3(n), origin: 'setting', problem: null };
+  return withExtra({ points: r3(n), origin: 'setting', problem: null }, ex, r3(n));
 }
 
 /**
@@ -169,12 +241,40 @@ function resolveHoldback(source, saved) {
  * Lender Price path is provably untouched by this module.
  */
 function applyToBoard(board, source, opts) {
-  const resolved = resolveHoldback(source, opts && opts.saved);
+  const o = opts || {};
+  /**
+   * ⛔ THE PER-INVESTOR SEAM IS A FUNCTION THE CALLER SUPPLIES, not an investor
+   * lookup done here (owner-directed 2026-08-30: *"We can add extra company
+   * margin holdbacks on top of each and every program"*).
+   *
+   * Working out which canonical investor a program row belongs to is `merge`'s
+   * job and it is not a simple one — two vendors spell one company several ways
+   * and a person's recorded links outrank every lookup. Doing it here would be a
+   * SECOND resolver, and the day the two disagreed an investor's extra would be
+   * applied to somebody else's rows. So the route hands in the one resolver it
+   * already uses, and this module stays about the arithmetic.
+   *
+   * With no `extraFor` supplied, every line below behaves exactly as it did when
+   * the holdback was one number for the whole board.
+   */
+  const extraFor = typeof o.extraFor === 'function' ? o.extraFor : null;
+  // The board-wide answer — what this source holds back before any investor's
+  // own adjustment. It is what the board is STAMPED with, because that is the
+  // honest description of the feed rather than of one row on it.
+  const resolved = resolveHoldback(source, o.saved);
   const pts = resolved.points;
   if (!board || !Array.isArray(board.programs)) return board;
   // ALREADY DONE IS DONE. Without this, a caller that applied it and then passed
   // the board through a second helper would hold back 0.50.
   if (board.marginHoldback != null) return board;
+
+  /** One program's own answer: the source's base, moved by that investor's extra. */
+  const forProgram = (prog) => {
+    if (!extraFor) return resolved;
+    let extra = null;
+    try { extra = extraFor(prog); } catch (_) { extra = null; }
+    return resolveHoldback(source, o.saved, extra);
+  };
 
   // ⛔ A HOLDBACK OF ZERO IS STILL AN ANSWER, and it is stamped. Returning the
   // board untouched here — which is what this did while 0.25 was a constant —
@@ -184,8 +284,20 @@ function applyToBoard(board, source, opts) {
   // priced the way somebody decided and a board priced by an outage. The
   // `origin:'none'` case (Lender Price, which never holds back) still returns
   // untouched, because there is no decision there to record.
-  if (!pts && resolved.origin === 'none') return board;
-  if (!pts) {
+  // A source that holds back nothing AND has no investor carrying an extra is
+  // returned untouched, byte for byte — which is what keeps the Lender Price
+  // path provably unaffected by this module on every board nobody has set an
+  // extra on.
+  if (!pts && resolved.origin === 'none'
+    && !(extraFor && board.programs.some((prog) => forProgram(prog).points))) return board;
+  // ⛔ THE BOARD-WIDE FIGURE BEING ZERO DOES NOT MEAN NOTHING IS HELD BACK. With
+  // a per-investor extra set, individual programs may still carry one — and the
+  // first cut returned here on Lender Price and on a deliberately-removed
+  // LoanNEX holdback, so an investor's own extra was silently dropped on exactly
+  // the two boards somebody would set one on. Only stamp-and-return when no
+  // program has an answer of its own.
+  const anyOwn = extraFor && board.programs.some((prog) => forProgram(prog).points);
+  if (!pts && !anyOwn) {
     return {
       ...board,
       marginHoldback: 0,
@@ -197,8 +309,22 @@ function applyToBoard(board, source, opts) {
     };
   }
 
-  const programs = board.programs.map((p) => ({
+  const programs = board.programs.map((p) => {
+    // ⛔ EACH PROGRAM IS PRICED ON ITS OWN INVESTOR'S ANSWER. A single board-wide
+    // number here would apply one investor's extra to every other investor's
+    // rows, which is the whole thing the per-investor setting exists to avoid.
+    const own = forProgram(p);
+    const pts = own.points;
+    return {
     ...p,
+    // WHAT WAS ACTUALLY TAKEN FROM THIS INVESTOR'S ROWS, on the row that carries
+    // them. Stamped even when it equals the board's, so a reader never has to
+    // work out whether an extra applied here by comparing two numbers.
+    marginHoldback: pts,
+    marginHoldbackOrigin: own.origin,
+    marginHoldbackBase: own.base,
+    marginHoldbackExtra: own.extraApplied ? own.extra : 0,
+    marginHoldbackProblem: own.problem,
     rungs: (p.rungs || []).map((r) => {
       if (!r || !nn(r.price)) return r;
       const vendorPrice = nn(r.vendorPrice) ? Number(r.vendorPrice) : Number(r.price);
@@ -211,7 +337,8 @@ function applyToBoard(board, source, opts) {
       const points = nn(r.points) ? r3(Number(r.points) + pts) : r3(100 - price);
       return { ...r, vendorPrice: r3(vendorPrice), price, points, marginHoldback: pts };
     }),
-  }));
+    };
+  });
   // The board's own summary figures are derived from the rungs, so they move too
   // — a `maxPrice` still quoting the raw number would contradict every row.
   for (const p of programs) {

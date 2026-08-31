@@ -61,6 +61,14 @@ const whiteLabel = require('../lenderprice/investor-programs');
  * empty row with a plausible-sounding reason. See `SINGLE_INVESTOR_SOURCES`.
  */
 const SOURCES = ['lenderprice', 'loannex', 'both', 'ahl'];
+/**
+ * The most an investor's own extra may be, either way — the same decimal-slip
+ * guard the global holdback carries, and deliberately the same number, because
+ * two different ceilings for one kind of figure is how a screen ends up
+ * accepting what the board then refuses. It is stated here rather than imported
+ * so this module stays free of the pricing side; the pure test runs both.
+ */
+const MAX_INVESTOR_HOLDBACK = 10;
 /** What everything is fetched from today. */
 const DEFAULT_SOURCE = 'lenderprice';
 
@@ -162,6 +170,34 @@ function readSettings(raw) {
       const wl = String(value.whiteLabel == null ? '' : value.whiteLabel).trim();
       if (wl) row.whiteLabel = wl;
     }
+    /**
+     * THIS INVESTOR'S OWN EXTRA MARGIN HOLDBACK (owner-directed 2026-08-30:
+     * *"We can add extra company margin holdbacks on top of each and every
+     * program. If it's a set on LoanNEX, we should be able to increase or
+     * decrease the margin holdbacks accordingly."*).
+     *
+     * SIGNED, and a deliberate 0 is kept: positive adds on top of whatever the
+     * source holds back, negative takes it back down, and zero is a person
+     * saying "nothing extra here" — which must be distinguishable from nobody
+     * having answered, or a screen could never show which rows were decided.
+     *
+     * ⛔ REFUSED VALUES ARE REPORTED BY NAME, never quietly dropped and never
+     * quietly applied. This number moves the price of every quote from one
+     * investor, so a typo that silently became a holdback would be a mis-priced
+     * board nobody could account for. The BOUNDS are the same decimal-slip
+     * guard the global figure carries; what the total may be is settled later,
+     * in `vendor-margin`, which is where the base it is added to lives.
+     */
+    if (value.holdback !== undefined && value.holdback !== null && value.holdback !== '') {
+      const n = Number(value.holdback);
+      if (!Number.isFinite(n)) {
+        out.problems.push({ investor: key, error: 'holdback_not_a_number', value: String(value.holdback), message: 'An investor\'s extra margin holdback must be a number.' });
+      } else if (Math.abs(n) > MAX_INVESTOR_HOLDBACK) {
+        out.problems.push({ investor: key, error: 'holdback_too_large', value: n, message: `${n} points looks like a slipped decimal — an investor's extra may be at most ${MAX_INVESTOR_HOLDBACK} points either way.` });
+      } else {
+        row.holdback = Math.round(n * 1000) / 1000;
+      }
+    }
     if (!investors.byKey || !investors.byKey(key)) out.problems.push({ investor: key, error: 'unknown_investor', message: 'No investor by that key — the setting is kept, but nothing will match it.' });
     if (Object.keys(row).length) out.settings[key] = row;
   }
@@ -219,6 +255,12 @@ function settingFor(key, settings = {}) {
     whiteLabelOrigin: saved.whiteLabel ? 'setting' : (wlSheet ? 'sheet' : 'unset'),
     source, sourceOrigin,
     enabled, enabledOrigin,
+    // WHAT THIS INVESTOR ADDS TO (or takes off) THE HOLDBACK, and whether a
+    // person chose it. Nobody having answered is 0 with origin `default`, and a
+    // deliberate 0 is 0 with origin `setting` — the same distinction the source
+    // and the on/off switch already make, for the same reason.
+    holdback: saved.holdback !== undefined ? saved.holdback : 0,
+    holdbackOrigin: saved.holdback !== undefined ? 'setting' : 'default',
     note: disabledNote,
     // WHAT THIS ROW WOULD ANSWER WITH NO SETTING OF ITS OWN — the standing
     // instruction where there is one, the plain default otherwise. A settings
@@ -229,6 +271,10 @@ function settingFor(key, settings = {}) {
       source: OWNER_SOURCE[key] || DEFAULT_SOURCE,
       enabled: !OWNER_DISABLED[key],
       whiteLabel: wlSheet || null,
+      // No investor carries an extra unless somebody puts one there — the
+      // owner's rule is one standing holdback for the feed, and an extra is a
+      // decision about ONE investor.
+      holdback: 0,
     },
   };
 }
@@ -267,13 +313,16 @@ function describe(raw, opts = {}) {
       fromBoth: rows.filter((r) => r.enabled && r.source === 'both').length,
       fromAhl: rows.filter((r) => r.enabled && r.source === 'ahl').length,
       missingWhiteLabel: rows.filter((r) => r.whiteLabelMissing).length,
+      // How many investors carry an extra of their own, so a screen can say at a
+      // glance whether the board is priced on one number or several.
+      withExtraHoldback: rows.filter((r) => r.holdbackOrigin === 'setting' && r.holdback !== 0).length,
     },
     note: 'One investor, one source — a row on the board comes from one place, so the board reads as one system. `both` is available for comparing, but nothing is on it unless it is set.',
   };
 }
 
 module.exports = {
-  SOURCES, DEFAULT_SOURCE, OWNER_SOURCE, OWNER_DISABLED, SINGLE_INVESTOR_SOURCES,
+  SOURCES, DEFAULT_SOURCE, OWNER_SOURCE, OWNER_DISABLED, SINGLE_INVESTOR_SOURCES, MAX_INVESTOR_HOLDBACK,
   readSettings, resolveRaw, settingFor, roster, needsWhiteLabel, describe,
   _internals: { isSource },
 };

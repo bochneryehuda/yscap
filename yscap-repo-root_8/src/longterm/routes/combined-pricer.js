@@ -71,7 +71,8 @@ const lp = require('../lenderprice/client');
 const lpPrograms = require('../lenderprice/investor-programs');
 const { validateScenario } = require('../lenderprice/search-model');
 const nex = require('../loannex/client');
-const { merge } = require('../pricing/merge');
+const mergeMod = require('../pricing/merge');
+const { merge } = mergeMod;
 const routing = require('../pricing/investor-routing');
 const investorLinks = require('../pricing/investor-links');
 // The canonical investor roster and the client-safe names, both read-only here —
@@ -81,6 +82,7 @@ const investors = require('../encompass/investors');
 const { whiteLabelOf } = require('../lenderprice/investor-programs');
 const quoteShape = require('../pricing/quote-shape');
 const breakdown = require('../pricing/breakdown');
+const nearTier = require('../pricing/near-tier');
 const vendorMargin = require('../pricing/vendor-margin');
 const settingsStore = require('../settings/store');
 
@@ -134,6 +136,32 @@ async function holdbackRaw() {
   } catch (_) {
     return undefined;
   }
+}
+
+/**
+ * Every grid CELL a board already carries, in the shape `near-tier` reads.
+ *
+ * ⛔ IT READS THE MERGED-RAW BOARD, never the routed one: the routed copy strips
+ * provenance for the one-system rule, and a cell is the vendor's own words about
+ * its own sheet. Nothing here is shown — the cells are read for their BAND and
+ * the flag that comes out names a tier, never a vendor.
+ *
+ * Defensive at every hop: this walks two vendors' parsed answers, and a board
+ * that is a shape short must cost the flag, never the board.
+ */
+function cellsOnBoard(board) {
+  const out = [];
+  try {
+    for (const p of (board && board.programs) || []) {
+      for (const r of (p && p.rungs) || []) {
+        for (const a of (r && r.adjustments) || []) {
+          if (!a || typeof a !== 'object') continue;
+          out.push({ label: a.label || a.reason || a.name || null, detail: a.detail || a.description || null });
+        }
+      }
+    }
+  } catch (_) { /* a hint is never worth a board */ }
+  return out;
 }
 
 /** Every investor name a board actually returned, in the order it returned them. */
@@ -259,6 +287,27 @@ async function priceBoth(scenario, opts = {}) {
   // wins so a caller can price a what-if without saving it (the same rule the
   // investor routes follow).
   const heldSetting = opts.marginHoldback !== undefined ? opts.marginHoldback : await holdbackRaw();
+  /**
+   * EACH INVESTOR'S OWN EXTRA, read from the SAME saved settings the routing and
+   * the settings screen read (owner-directed 2026-08-30). Resolved BEFORE the
+   * vendors are called for the same reason the global figure is: the answer has
+   * to be in hand at the moment a board lands.
+   *
+   * ⛔ THE INVESTOR A ROW BELONGS TO IS RESOLVED BY `merge.resolveInvestor`, the
+   * ONE resolver — the same one the merge itself uses, with the same recorded
+   * links. A second lookup here would eventually put one investor's extra on
+   * another investor's rows, and the price on the board is what somebody quotes.
+   */
+  const savedForHoldback = opts.routes !== undefined ? { raw: opts.routes } : await settingsRaw();
+  const linksForHoldback = opts.links !== undefined ? { raw: opts.links } : await linksRaw();
+  const investorRows = routing.readSettings(savedForHoldback.raw).settings;
+  const linkMapForHoldback = investorLinks.readLinks(linksForHoldback.raw).links;
+  const extraFor = (prog) => {
+    const hit = mergeMod.resolveInvestor(prog, linkMapForHoldback);
+    if (!hit || !hit.key) return null;
+    const row = routing.settingFor(hit.key, investorRows);
+    return row && row.holdbackOrigin === 'setting' ? row.holdback : null;
+  };
 
   const [lpRes, nxRes] = await Promise.allSettled([
     (async () => {
@@ -274,7 +323,19 @@ async function priceBoth(scenario, opts = {}) {
       // same way. `decorate` takes the PROGRAMS ARRAY and answers
       // { programs, roster, unmapped }.
       const deco = lpPrograms.decorate(parsed.programs) || {};
-      return { ...parsed, programs: deco.programs || parsed.programs, searchKey: r.searchKey || null, provenance: r.provenance || null };
+      const withPrograms = { ...parsed, programs: deco.programs || parsed.programs };
+      /**
+       * ⛔ AN INVESTOR'S OWN EXTRA REACHES LENDER PRICE; THE GLOBAL FIGURE STILL
+       * DOES NOT. Those are two different decisions. The global holdback exists
+       * to bring LoanNEX's raw feed onto the same footing as this one, which
+       * ALREADY carries our standard margin — applying it here would take it
+       * twice, and `resolveHoldback` refuses it for that reason. An extra is the
+       * owner naming ONE investor they want more held back on, which the owner
+       * asked for on "each and every program". With none set anywhere this
+       * returns the same object it was handed.
+       */
+      const held = vendorMargin.applyToBoard(withPrograms, 'lenderprice', { extraFor });
+      return { ...held, searchKey: r.searchKey || null, provenance: r.provenance || null };
     })(),
     nex.price(sc, opts.loannex || {}),
   ]);
@@ -286,7 +347,7 @@ async function priceBoth(scenario, opts = {}) {
     // Price's feed already carries it and LoanNEX's does not, so this is what
     // puts the two on the same footing; applying it any later would have the
     // comparison electing on one set of numbers and the board showing another.
-    loannex: nxRes.status === 'fulfilled' ? vendorMargin.applyToBoard(nxRes.value.board, 'loannex', { saved: heldSetting }) : null,
+    loannex: nxRes.status === 'fulfilled' ? vendorMargin.applyToBoard(nxRes.value.board, 'loannex', { saved: heldSetting, extraFor }) : null,
   };
   const errors = {
     lenderprice: lpRes.status === 'rejected' ? reasonOf(lpRes.reason) : null,
@@ -387,6 +448,24 @@ async function priceBoth(scenario, opts = {}) {
     settings: merged.settings || null,
     options,
     scenario: { requested: scenario || {}, priced: sc, countyEnrichment: chk.countyEnrichment || null },
+    /**
+     * "YOU ARE ALMOST AT A BETTER TIER" (owner-directed 2026-08-30).
+     *
+     * Computed on the BOARD from the scenario the vendors were actually asked
+     * about, plus whatever grid cells the board itself already carries — a
+     * Lender Price row publishes its itemization with the quote, so its own
+     * bands are often here and the flag can name the investor's real tier
+     * rather than the standing steps. A LoanNEX row explains on demand, so
+     * `POST /explain` recomputes this with that sheet's own cell and the
+     * screen's flag gets sharper the moment somebody opens the price build.
+     *
+     * Never throws and is never a gate: it is a nicety beside a board, and a
+     * board must not be able to fail because a hint could not be worked out.
+     */
+    nearTier: nearTier.nearTier({
+      value: sc.value, loan: sc.loan, ltvPct: sc.ltv != null ? (sc.ltv > 1 ? sc.ltv : sc.ltv * 100) : null,
+      dscr: sc.dscr, lines: cellsOnBoard(mergedRaw),
+    }),
     // How each half was ASKED — a merged number nobody can trace back to a
     // request is not a number anybody should price a loan on.
     provenance: {
@@ -628,7 +707,7 @@ function makeRouter(opts = {}) {
   router.put('/investors', async (req, res) => {
     const body = (req.body && typeof req.body === 'object' && req.body.investors) || req.body || {};
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
-      return res.status(400).json({ ok: false, error: 'not_an_object', message: 'Send an object of investorKey -> {source, enabled, whiteLabel}.' });
+      return res.status(400).json({ ok: false, error: 'not_an_object', message: 'Send an object of investorKey -> {source, enabled, whiteLabel, holdback}.' });
     }
     const check = routing.readSettings(body);
     if (check.problems.length) {
@@ -754,9 +833,19 @@ function makeRouter(opts = {}) {
         const option = quoteShape.attachEvidence(
           quoteShape.optionForQuote(quote), r.evidence, { absence: r.absence },
         );
+        const built = breakdown.breakdown(option, { reveal });
         res.json({
           ok: true,
-          breakdown: breakdown.breakdown(option, { reveal }),
+          breakdown: built,
+          // THE SHARPER FLAG. This sheet has now stated its own bands, so the
+          // hint can name the investor's real tier instead of the standing
+          // steps — same module, same wording, better evidence.
+          nearTier: nearTier.nearTier({
+            value: b.value != null ? b.value : (b.scenario || {}).value,
+            loan: b.loan != null ? b.loan : (b.scenario || {}).loan,
+            dscr: b.dscr != null ? b.dscr : (b.scenario || {}).dscr,
+            lines: (built && built.lines) || [],
+          }),
           transactionId: r.transactionId || null,
         });
       })

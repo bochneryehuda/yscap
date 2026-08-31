@@ -203,7 +203,23 @@ function applyRouting(merged, opts = {}) {
  */
 function stripSource(p) {
   if (!p || typeof p !== 'object') return p;
-  const { source, lenderId, investorOrganizationGuid, ...rest } = p;
+  const {
+    source, lenderId, investorOrganizationGuid,
+    // ⛔ THE PROGRAM'S OWN HOLDBACK STAMPS GO TOO (owner-directed 2026-08-30:
+    // *"The pricing that it should add on top of LoanNEX pricing as a company
+    // margin holdback should be hidden for consumers, it should be baked into
+    // the rate any time when customers and consumers are looking at it."*).
+    //
+    // Since the holdback became per-investor, the PROGRAM carries what was taken
+    // from it as well as the rung — and a program-level field is not touched by
+    // the rung mapping below, so without naming them here our own margin, and
+    // which investors we take more on, would ride out on the ordinary board.
+    // The PRICE is untouched: the deduction is already in it, which is exactly
+    // what "baked into the rate" means.
+    marginHoldback, marginHoldbackOrigin, marginHoldbackBase,
+    marginHoldbackExtra, marginHoldbackProblem,
+    ...rest
+  } = p;
   if (Array.isArray(rest.rungs)) rest.rungs = rest.rungs.map(stripHoldbackTrail);
   return rest;
 }

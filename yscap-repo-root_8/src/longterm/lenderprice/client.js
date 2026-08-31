@@ -36,6 +36,7 @@
 
 const crypto = require('crypto');
 const { buildSearch, validateScenario, smoRegistryFromList, _internals: searchModelInternals } = require('./search-model');
+const tierRounding = require('../pricing/tier-rounding');
 // Durable L2 for the disqualify (ineligible) workflow (db/559) — best-effort; the in-memory Map
 // below stays the L1 cache, this survives a reboot / deploy / instance-move. Every call degrades to
 // in-memory-only on any DB error, so the pricing path never hard-depends on it.
@@ -993,7 +994,13 @@ function hasStoredSearch(searchKey) { pruneDisqStore(); return DISQ_STORE.has(se
 function buildSearchPayload(sc = {}) {
   const value = num(sc.value);
   const loan = num(sc.loan);
-  const ltv = value && loan ? Math.round((loan / value) * 10000) / 10000 : num(sc.ltv);
+  // ⛔ LIFTED, NEVER ROUNDED TO NEAREST — the one rule in `pricing/tier-rounding.js`
+  // (owner-directed 2026-08-30: *"the LTV should always be rounded up, so we should never see
+  // better"*). This builder is the DECODED field mapping and is exercised only by tests today —
+  // `buildSearch` is what puts a body on the wire — but a second copy of the rule that says the
+  // opposite is precisely what the one-definition rule forbids: the day somebody wires this up, it
+  // would quietly price every loan one notch better than it has earned.
+  const ltv = value && loan ? tierRounding.sendAs('ltv', loan / value, 4) : num(sc.ltv);
   const propMap = mapPropertyType(sc.propertyType);
   const pp = mapPrepay(sc.prepayMonths);
   const smo = [pp.ppp, 'Debt Service Coverage Ratio', 'DSCR'];
