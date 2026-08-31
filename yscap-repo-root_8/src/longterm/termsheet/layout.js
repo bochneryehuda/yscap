@@ -407,6 +407,51 @@ function metaBlock(s, opts, code) {
   };
 }
 
+/**
+ * WHO THE DOCUMENT IS ADDRESSED TO, in one line, from two fields.
+ *
+ * ⛔ THE ENTITY IS THE BORROWER AND THE PERSON IS THE GUARANTOR — that is not a
+ * house style, it is what the two words mean on a DSCR loan: the loan is made
+ * to the entity that will hold title, and the individual behind it guarantees
+ * it. So when both are given the entity leads and the person is named as the
+ * guarantor behind it; when only one is given, that one is simply the party.
+ * Getting this backwards would print a person's name where a company must sign.
+ *
+ * Neither → null. The export gate refuses a term sheet with no party at all, so
+ * a null here can only ever reach a COMPARISON, which needs no addressee.
+ */
+function preparedFor(p) {
+  const person = (p && p.borrowerName) || null;
+  const entity = (p && p.entityName) || null;
+  if (entity && person) return `${entity} · ${person}`;
+  return entity || person || null;
+}
+
+/**
+ * The signature lines, with each party under the role it actually signs in.
+ *
+ * ⛔ A ROLE LABEL IS NOT DECORATION ON A PAGE SOMEBODY SIGNS. "Borrower /
+ * guarantor" over a company name reads as the company guaranteeing itself;
+ * "Borrower" over a person's name on an entity deal names the wrong borrower.
+ * So the labels follow `preparedFor`'s reading: both given → two lines, the
+ * entity as borrower and the person as guarantor; one given → the one combined
+ * line this document has always printed.
+ */
+function signatureParties(p) {
+  const person = (p && p.borrowerName) || null;
+  const entity = (p && p.entityName) || null;
+  if (entity && person) {
+    return [
+      { role: 'Borrower — authorized signatory', name: entity },
+      { role: 'Date' },
+      { role: 'Guarantor', name: person },
+      { role: 'Date' },
+    ];
+  }
+  if (entity) return [{ role: 'Borrower — authorized signatory', name: entity }, { role: 'Date' }];
+  return [{ role: 'Borrower / guarantor', name: person }, { role: 'Date' }];
+}
+
 /** The recipient block, and the property it is about. */
 function recipientBlock(s) {
   const p = s.prepared || {};
@@ -420,6 +465,12 @@ function recipientBlock(s) {
   return {
     t: 'recipient',
     borrowerName: p.borrowerName || null,
+    // The vesting entity, when there is one. Carried BESIDE the person rather
+    // than instead of them — `preparedFor` decides how the two read together,
+    // in one place, so the recipient block and the signature lines can never
+    // disagree about who this document is addressed to.
+    entityName: p.entityName || null,
+    preparedFor: preparedFor(p),
     propertyAddress: p.propertyAddress || locationLine(first.scenario || {}),
     officer,
   };
@@ -556,8 +607,7 @@ function buildLayout(snapshot, opts = {}) {
       text: 'Signing below confirms you have read this term sheet, including the disclosures above, and wish to '
         + 'proceed on these terms. It is not a loan commitment.' });
     blocks.push({ t: 'signature', lines: [
-      { role: 'Borrower / guarantor', name: p.borrowerName || null },
-      { role: 'Date' },
+      ...signatureParties(p),
       { role: `${p.companyName || 'YS Capital Group'} — authorized signatory` },
       { role: 'Date' },
     ] });

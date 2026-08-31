@@ -32,6 +32,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const {
   scopeFor, stepRuns, loadDepMap, impactedTests, stepRunsImpacted, isAlwaysFull,
+  mapAgeWarning,
 } = require('./ci-scope');
 
 /** Every step of `npm test`, in order, exactly as package.json declares them. */
@@ -87,6 +88,13 @@ function main() {
   // read the answer, so the verdict is now honoured before anything else.
   const alwaysFull = Array.isArray(changed) ? changed.find(isAlwaysFull) : null;
 
+  // LOADED HERE, NOT INSIDE THE IMPACT BRANCH, so the age warning below reaches
+  // every run. The branch that most needs to see it is the NIGHTLY full run,
+  // which never reaches that branch at all — and that is the run with the time
+  // to act on it. Reading a file the impact branch may not use costs one parse.
+  const map = loadDepMap(fs, path, __dirname);
+  const today = new Date().toISOString().slice(0, 10);
+
   if (alwaysFull) {
     plan = steps;
     how = `everything — ${alwaysFull} always runs the whole suite`;
@@ -95,8 +103,6 @@ function main() {
     how = `long-term only — ${decision.reason}`;
   } else if (Array.isArray(changed) && changed.length) {
     const files = changed.map((s) => String(s).trim()).filter(Boolean);
-    const map = loadDepMap(fs, path, __dirname);
-    const today = new Date().toISOString().slice(0, 10);
     const impact = impactedTests(files, map, today);
     if (impact.ok) {
       plan = steps.filter((s) => stepRunsImpacted(s, impact.tests, impact.measured));
@@ -108,6 +114,16 @@ function main() {
   } else {
     plan = steps;
     how = `everything — ${decision.reason}`;
+  }
+
+  // FOUR DAYS' NOTICE. Never a failure and never a change to the plan — see
+  // `mapAgeWarning` in ci-scope.js for why it is only ever a sentence. The
+  // `::warning::` form is what puts it on the run summary where somebody
+  // actually looks; the plain line is for a local run and the raw log.
+  const ageWarning = mapAgeWarning(map, today);
+  if (ageWarning) {
+    if (process.env.GITHUB_ACTIONS) console.log(`::warning title=CI test map is ageing::${ageWarning}`);
+    console.log(`[ci-plan] WARNING — ${ageWarning}`);
   }
 
   console.log(`[ci-plan] ${how}`);
