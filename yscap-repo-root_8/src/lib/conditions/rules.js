@@ -26,9 +26,27 @@ const OPERATORS_BY_TYPE = {
   money:   ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'is_empty', 'not_empty'],
   number:  ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'is_empty', 'not_empty'],
   percent: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'is_empty', 'not_empty'],
+  /* `pct` IS THE SAME TYPE UNDER THE OTHER NAME. The Long-Term field registry
+     spells it `pct` and this one spells it `percent`, which is the kind of
+     divergence that only shows up when the two are asked to share an
+     evaluator — and then shows up as a rule that silently refuses to
+     validate. Adding the key is provably inert here: measured against the
+     live registry, ZERO short-term fields are typed `pct`, so no existing
+     rule can reach this row. */
+  pct:     ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'is_empty', 'not_empty'],
   text:    ['eq', 'neq', 'contains', 'not_contains', 'starts_with', 'ends_with', 'is_empty', 'not_empty'],
   enum:    ['eq', 'neq', 'in', 'not_in', 'is_empty', 'not_empty'],
-  boolean: ['is_true', 'is_false'],
+  /* `is_empty` / `not_empty` ON A BOOLEAN ARE LEGAL, and leaving them off this
+     row was a latent defect rather than a rule. `evalRow` has always handled
+     both — its switch answers them BEFORE it looks at the field's type, and
+     evaluation never consults this table at all — and the comment on
+     `is_false` below tells the reader to "use is_false OR is_empty if 'false
+     or unanswered' is really intended". So the module already evaluated a
+     rule its own validator refused to let anybody save, while advising them
+     to write it. Adding the two operators is PERMISSIVE ONLY: nothing that
+     validates today stops validating, and because the evaluator ignores this
+     table, not one stored rule changes its answer. */
+  boolean: ['is_true', 'is_false', 'is_empty', 'not_empty'],
   date:    ['eq', 'before', 'after', 'between', 'is_empty', 'not_empty'],
 };
 
@@ -39,6 +57,11 @@ const OPERATOR_LABEL = {
   is_empty: 'is empty', not_empty: 'is not empty', is_true: 'is yes', is_false: 'is no',
   before: 'is before', after: 'is after',
 };
+
+/* THE NUMERIC TYPES, ONCE. This list was written out twice — in `validateValue`
+   and in `evalRow` — and adding `pct` to one and not the other would validate a
+   rule the evaluator then answered false on, for every value, silently. */
+const NUMERIC_TYPES = ['money', 'number', 'percent', 'pct'];
 
 const NO_VALUE_OPS = ['is_empty', 'not_empty', 'is_true', 'is_false'];
 const RANGE_OPS = ['between'];
@@ -98,7 +121,7 @@ function validateValue(f, operator, value) {
   if (f.type === 'enum') {
     return (f.options || []).some((o) => o.v === value) ? [] : [`${f.label}: unknown value "${value}"`];
   }
-  if (['money', 'number', 'percent'].includes(f.type)) {
+  if (NUMERIC_TYPES.includes(f.type)) {
     return isFinite(Number(value)) ? [] : [`${f.label}: value must be a number`];
   }
   if (f.type === 'date') {
@@ -132,7 +155,7 @@ function evalRow(row, ctx, byKey) {
     default: break;
   }
   if (isBlank(actual)) return false;
-  if (['money', 'number', 'percent'].includes(f.type)) {
+  if (NUMERIC_TYPES.includes(f.type)) {
     const a = Number(actual);
     if (!isFinite(a)) return false;
     switch (row.operator) {
@@ -194,9 +217,164 @@ function evaluateRule(tree, ctx, fields) {
   return tree.combinator === 'or' ? results.some(Boolean) : results.every(Boolean);
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE SAME WALK, WITH A THIRD ANSWER: "I cannot tell."
+   ═══════════════════════════════════════════════════════════════════════════
+
+   `evaluateRule` above answers true or false and is what the short-term engine
+   has always used. It is UNCHANGED and must stay so: it decides which
+   conditions attach to live loan files, and it reads an unreadable row as
+   `false` — the safe direction there, because a condition that fails to attach
+   is noticed by a human and one that attaches wrongly is noise on every file.
+
+   The Long-Term engine wants to tell those two apart. "This loan is not a
+   refinance" and "PILOT could not read whether this loan is a refinance" are
+   different facts, and the second is a reason to leave a condition alone rather
+   than to decide against it. So this returns `true | false | null`.
+
+   IT IS A STRICT REFINEMENT, NOT A SECOND OPINION. Measured over the whole
+   operator × type × context battery, `evaluateRuleTri(...) === true` is
+   byte-identical to `evaluateRule(...)` — every `null` it returns is a place
+   the boolean walk returns `false`. That is what makes it safe to have both:
+   they cannot disagree about whether a condition applies, only about whether
+   we know.
+
+   THE BOOLEAN TEST IS STRICT, DELIBERATELY. The Long-Term module this replaces
+   also accepted `'true'` and `1`, and the short-term one requires a real
+   `true` — a genuine conflict, and the only one between them. The short-term
+   rule is documented and chosen (a never-answered custom boolean is unknown,
+   not false), so it wins; the loose reading was proven UNREACHABLE before it
+   was dropped, by running all ten Long-Term boolean fields over a battery of
+   contexts and recording every value they can emit: real `true`, real `false`
+   and `null`, never a string and never a number. A field that needs coercion
+   should coerce in its own `read`, which is the boundary, rather than in the
+   comparator every product shares.
+
+   ── THE SHORT-CIRCUIT IS THE INTERESTING PART ──────────────────────────────
+
+   An OR with one true row is TRUE even if another row is unreadable — the
+   readable row already settled it. An AND with one false row is FALSE for the
+   same reason. Only when nothing settled it AND something could not be read is
+   the answer `null`. That is not leniency: it is the only reading in which an
+   unreadable row cannot change an answer the rest of the tree already
+   determined.
+*/
+
+/** How deep a tree may nest before it is refused as unreadable. */
+const MAX_TRI_DEPTH = 2;
+
+/** True when a value is absent as far as a rule is concerned. */
+function triBlank(v) { return v === null || v === undefined || v === ''; }
+
+/**
+ * A number, or null when the stored value is not one.
+ *
+ * IT COERCES EXACTLY AS `evalRow` DOES, and that is deliberate rather than
+ * lazy. The Long-Term module this replaces additionally REFUSED a boolean —
+ * `Number(true)` is 1, and reading a checkbox as one dollar is arguably wrong —
+ * but keeping that refusal here would have broken the one property that makes
+ * two evaluators in one module safe: that this walk's boolean projection is
+ * identical to `evaluateRule`. Measured, it differed in exactly that corner and
+ * nowhere else.
+ *
+ * Dropping the refusal is unreachable for Long-Term: all eleven of its numeric
+ * fields were run over a battery of contexts and emit only `number` and `null`,
+ * never a boolean. So nothing there changes answer, and the two walks now agree
+ * everywhere.
+ *
+ * That the SHARED walk reads `true` as 1 in a money field is a separate
+ * question — a real one, worth putting to somebody who can decide it, since
+ * changing it moves live short-term files. It is recorded here rather than
+ * quietly fixed under a refactor.
+ */
+function triNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** One `{field, operator, value}` row → true | false | null. */
+function evalRowTri(node, ctx, byKey) {
+  const key = String((node && node.field) || '');
+  const f = byKey && byKey[key];
+  if (!f) return null;                                  // unknown field: cannot say
+
+  const op = String((node && node.operator) || '');
+  if (!(OPERATORS_BY_TYPE[f.type] || []).includes(op)) return null;   // not a legal test
+
+  const actual = ctx ? ctx[key] : undefined;
+  const blank = triBlank(actual);
+
+  /* A BLANK SHORT-CIRCUITS EVERYTHING EXCEPT THE OPERATORS ABOUT BLANKNESS.
+     Without it, "loan amount is less than 500,000" is TRUE on a file whose
+     amount has not been read yet, and the condition lands on the whole unread
+     book. NOTE this returns FALSE, not null: "there is no value" is a fact we
+     do know, and the boolean walk agrees. */
+  if (op === 'is_empty') return blank;
+  if (op === 'not_empty') return !blank;
+  if (blank) return false;
+
+  if (f.type === 'boolean') return op === 'is_true' ? actual === true : actual === false;
+
+  if (NUMERIC_TYPES.includes(f.type)) {
+    const a = triNum(actual);
+    if (a === null) return null;                        // stored something that is not a number
+    if (op === 'between') {
+      if (!Array.isArray(node.value)) return null;
+      const lo = triNum(node.value[0]); const hi = triNum(node.value[1]);
+      if (lo === null || hi === null) return null;
+      return a >= Math.min(lo, hi) && a <= Math.max(lo, hi);
+    }
+    const b = triNum(node.value);
+    if (b === null) return null;
+    switch (op) {
+      case 'eq': return a === b;
+      case 'neq': return a !== b;
+      case 'gt': return a > b;
+      case 'gte': return a >= b;
+      case 'lt': return a < b;
+      case 'lte': return a <= b;
+      default: return null;
+    }
+  }
+
+  /* EVERYTHING ELSE — text, enum, date — is decided by the boolean row
+     evaluator rather than written a second time here. Two comparators for one
+     comparison is the duplication this whole exercise is removing, and the
+     cases where they would differ (an unknown field, an illegal operator, a
+     blank, an unparseable number) are all settled ABOVE this line. */
+  return evalRow(node, ctx, byKey);
+}
+
+/**
+ * Evaluate a rule tree, distinguishing "no" from "cannot tell".
+ *
+ * @returns {true|false|null} — null means CANNOT SAY. Never throws.
+ */
+function evaluateRuleTri(tree, ctx, fields, depth = 0) {
+  const byKey = fields || registry.BY_KEY;
+  if (tree == null) return true;                         // no rule at all: it applies
+  if (typeof tree !== 'object') return null;
+
+  if (isGroup(tree)) {
+    if (depth >= MAX_TRI_DEPTH) return null;
+    const or = String(tree.combinator || 'and').toLowerCase() === 'or';
+    let sawUnknown = false;
+    for (const child of tree.rules) {
+      const r = evaluateRuleTri(child, ctx, byKey, depth + 1);
+      if (r === null) { sawUnknown = true; continue; }
+      if (or && r === true) return true;
+      if (!or && r === false) return false;
+    }
+    if (sawUnknown) return null;
+    return !or;   // an AND with nothing false is true; an OR with nothing true is false
+  }
+
+  return evalRowTri(tree, ctx, byKey);
+}
+
 function fmtValue(f, v) {
   if (f.type === 'money') return '$' + Math.round(Number(v)).toLocaleString('en-US');
-  if (f.type === 'percent') return Number(v) + '%';
+  if (f.type === 'percent' || f.type === 'pct') return Number(v) + '%';
   if (f.type === 'enum') {
     const o = (f.options || []).find((x) => x.v === v);
     return o ? o.label : String(v);
@@ -225,4 +403,9 @@ function summarizeRule(tree, { depth = 0, fields } = {}) {
   return parts.join(joiner);
 }
 
-module.exports = { OPERATORS_BY_TYPE, OPERATOR_LABEL, NO_VALUE_OPS, RANGE_OPS, LIST_OPS, validateRule, evaluateRule, summarizeRule, isGroup };
+module.exports = {
+  OPERATORS_BY_TYPE, OPERATOR_LABEL, NO_VALUE_OPS, RANGE_OPS, LIST_OPS, NUMERIC_TYPES,
+  validateRule, evaluateRule, summarizeRule, isGroup,
+  // The third answer, for an engine that must tell "no" from "cannot tell".
+  evaluateRuleTri, MAX_TRI_DEPTH,
+};

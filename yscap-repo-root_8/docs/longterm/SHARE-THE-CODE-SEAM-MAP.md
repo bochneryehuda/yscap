@@ -69,6 +69,74 @@ it. Likewise `app-v2/src/longterm/LtConditionCenter.jsx` is the read-only Encomp
 mirror screen (its own header, `:6-8`) — **KEEP**. Only `conditions-center/` (with the
 hyphen) is in scope below.
 
+### MEASURED 2026-08-31 — the DELETE table below is partly WRONG. Read this first.
+
+The table was written from reading. Running the two sides against each other
+changed three of its claims, and the corrections matter more than the table does
+— each one is a place somebody would have started a risky refactor on a false
+premise.
+
+**1. `rules.js` is NOT a duplicate "in full".** The Long-Term module has three
+things the shared one lacks, and only one of them was in the table:
+
+| | Long-Term | Shared | Status |
+|---|---|---|---|
+| tri-state `true \| false \| null` | yes | no | **PORTED** — `rules.evaluateRuleTri` |
+| plain-language refusals (`REFUSAL`, `{ok, problems:[{reason, detail, why}]}`) | yes | no — returns `string[]` | **NOT ported.** This is what tells somebody authoring a rule *why* it was refused. Deleting the module loses it. |
+| a null rule is VALID | yes (`{ok:true}`) | no (`['rule must be a group…']`) | **NOT reconciled.** Long-Term seeds `always` templates with a null rule and validates them; the shared validator rejects that. |
+
+**2. `read.js` and `write.js` have NOTHING to be deleted INTO.** The table says
+they duplicate `staff.js:5030-5151` and `:9986-10594` — and that is exactly the
+problem: the short-term implementation is INLINE IN A ROUTE FILE, not a module.
+There is no `src/lib/conditions/read.js` or `write.js`. Deleting the Long-Term
+modules therefore means first EXTRACTING the short-term halves out of a
+20,000-line live route file. That is a bigger, separate job than the word
+"delete" suggests, and it is the reason the Long-Term side wrote its own.
+
+**3. The vocabularies diverged, and two of the three gaps are now closed.**
+Measured field by field rather than assumed:
+
+- `pct` (Long-Term) vs `percent` (shared) — the same type, two spellings.
+  **CLOSED**: the shared table now carries both. Provably inert — ZERO
+  short-term fields are typed `pct`.
+- `is_empty` / `not_empty` on a **boolean** — allowed by Long-Term, refused by
+  the shared *validator* while its *evaluator* has always handled them, and
+  while its own comment advises using `is_empty` on a boolean. That was a latent
+  defect, not a rule. **CLOSED**, validation-only and permissive.
+- `in` / `not_in` on **text** (Long-Term) vs `ends_with` (shared) — **OPEN**.
+  Not closed on purpose: the shared *evaluator* cannot evaluate `in` on a text
+  field (its text branch has no such case and returns false), so permitting it
+  in the validator alone would let somebody save a rule that silently answers
+  false forever. Closing it means changing the shared evaluator, which decides
+  what attaches to live short-term files. **Zero rules on either product use any
+  of these three operators**, so the practical fix is that Long-Term adopts the
+  shared vocabulary when it switches — nothing breaks.
+
+**4. The one genuine semantic conflict is boolean truthiness, and it is
+unreachable.** Long-Term accepted `'true'` and `1` as true; the short-term rule
+requires a real `true` and is documented and deliberate ("a never-answered
+custom boolean is unknown, not false"). The short-term reading wins. Proven safe
+BEFORE it was adopted: all ten Long-Term boolean fields were run over a battery
+of contexts and emit only real `true`, real `false` and `null` — never a string,
+never a number. Likewise all eleven numeric fields emit only `number` and
+`null`, which is what let the tri-state's numeric coercion match the shared one
+exactly.
+
+**What that leaves.** The shared module can now evaluate every rule Long-Term
+ships — proven on all 19 of them, in every context, with identical answers AND
+identical wording, so no screen changes. What still blocks the deletion is the
+API shape: `validateRule`'s richer refusals and its null-is-valid reading. That
+is a contained piece of work on Long-Term call sites (six, across three files),
+not a rewrite — but it must not lose the plain-language refusals, and the
+short-term validator's return shape must not change under it.
+
+**Also recorded, not fixed:** the shared evaluator reads a boolean stored in a
+money field as the number 1 (`Number(true)`). Long-Term's refused it. That is a
+real question about the short-term product, it moves live files, and it is not a
+refactor's to decide — so it is written down here rather than changed quietly.
+
+---
+
 ### DELETE — reinventions, but port the named improvements first
 
 | File | Duplicates | Port before deleting |
