@@ -225,6 +225,22 @@ async function main() {
       // serves bytes is no less able to 500 than one that serves JSON, and this
       // one decides who may read a borrower's document.
       `/api/lt/condition-center/documents/${NO_LOAN}/file`,
+      // ── The shared ENTITY section (#38) ──────────────────────────────────
+      // The company bundle the shared section renders, and the bytes of one of
+      // its documents. Both are here for ACCOUNTING and for the no-500 rule, and
+      // what they prove is deliberately narrow: on a no-such-loan id both stop at
+      // the scoped loan loader, so the entity reads BEHIND them — the profile
+      // prefill, the ownership chain, the bundle, the document serve — do not run
+      // on this call. Those are opened for real, against a real loan with a real
+      // company and a real uploaded document (and against a stranger's document
+      // and a loan document, which must both be refused), by
+      // `scripts/test-lt-entity-section-db.js`. Saying that out loud is the point:
+      // an entry here that quietly accounted for a door nothing ever opened would
+      // be the same failure the derivation below was added to catch, one level
+      // down. What this call does prove is that the doors are MOUNTED, that the
+      // module they live in requires cleanly, and that neither answers 500.
+      `/api/lt/condition-center/loans/${NO_LOAN}/entities/${NO_LOAN}`,
+      `/api/lt/condition-center/loans/${NO_LOAN}/entities/documents/${NO_LOAN}/file`,
       // ── The ORDERS desk (#8) ─────────────────────────────────────────────
       // `letters` is the shipped drafts, pure. The rest are per-loan and answer
       // their own 404 on the no-such-loan id, having run their real statements.

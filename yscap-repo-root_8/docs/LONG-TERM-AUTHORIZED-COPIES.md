@@ -937,6 +937,128 @@ import app-v2/src/components/LoudHint.jsx
 # the bar is the same bar rather than a second progress mechanism to keep in
 # step with it.
 import app-v2/src/lib/upload-progress.js
+# ---------------------------------------------------------------------------
+# THE CONTACT AND ORDER DESKS ON THE LOAN SCREEN — authorized in writing by the
+# owner, 2026-08-31:
+#
+#   "The intent is that it should follow the same type of idea that we have on
+#    the file contacts on the short term. Which is that we added a section,
+#    especially for file contacts where you can enter random file contacts and
+#    then the required file contact comes up as conditions with a form type of
+#    idea which is directly linked to the file contacts … when you start typing
+#    it it's automatically linked to the vendors that we have in the system."
+#
+#   "You don't need to reinvent stuff. You don't need to look at what we have
+#    over there and reinvent. Just I'm giving you authorization to share it.
+#    Share the features, share enhancements."
+#
+# The BACK END for this already exists on both sides and needed no new grant:
+# `src/lib/vendor-directory.js` and `service_contacts` were authorized
+# 2026-08-30, and Long-Term's own link table is `lt_loan_vendors`. What was
+# missing was the SCREEN — the shared contacts component was given its
+# `adapter`/`types` seam in that same pass and then had no Long-Term caller, so
+# the loan screen showed an upload box where a contact form belongs and the
+# orders had no contacts to send to. This grant is the front-end half.
+#
+import app-v2/src/components/FileContacts.jsx
+#        (the ONE contacts desk. Long-Term passes its own `adapter` over
+#         /api/lt/orders/loans/:id/vendors{,/search,/new} and its own `types`
+#         vocabulary; the component itself branches on neither. NOT a copy —
+#         a second contacts screen is how one product's rules leak into the
+#         other's, which is the exact drift the seam was built to prevent.)
+import app-v2/src/components/FormattedInputs.jsx
+#        (PhoneInput / EmailInput — the same typing behaviour in both products,
+#         so a phone number entered on a long-term file is stored in the shape
+#         every existing reader of `service_contacts` already expects. It is
+#         already a transitive dependency of FileContacts.jsx; this records the
+#         DIRECT use by the Long-Term condition forms.)
+# ---------------------------------------------------------------------------
+# THE ENTITY SECTION — authorized in writing by the owner, 2026-08-31:
+#
+#   "I think you're missing the entire entity section that we were officially
+#    needing to bring in from the RTL side. The logic should work the same: The
+#    exact entity section, same exact form information to type in an entity
+#    section. The exact verification workflow. The entity section should be
+#    directly linked to the profile. The exact document slots and bi-directional.
+#    If the entity on the file is an LLC name or any name that exists already in
+#    the profile, it should automatically come in a pre-filled entity section
+#    with the pre-filled information and pre-filled documents. If it doesn't
+#    exist yet, that entity should be added to the profile... Bi-directional
+#    should share the same exact logic and have the same exact slot and the same
+#    exact box. Don't reinvent, just bring over the same information that you
+#    need to fill. There's a lot of logic behind how to set it up. I think we can
+#    choose corporations and stuff like that. We can set who owns it,
+#    percentages, and layered entities. Bring in the entire logic, just giving
+#    you authorization to share the code. Don't reinvent."
+#
+# WHAT WAS ALREADY SHARED, AND WHY IT WAS NOT ENOUGH. `src/lib/llc.js` was
+# authorized 2026-08-30 and gave Long-Term the READ (which company, which slots,
+# what is on them) and the CREATE (put it on the profile). What it never carried
+# was the EDIT — the details form's rules, the ownership arithmetic, who may
+# verify, and what a revoke does to the companies underneath — because on the
+# short-term side those lived INLINE in three `src/routes/staff.js` handlers,
+# where no second caller could reach them. So they were EXTRACTED into
+# `src/lib/llc-edit.js` first and the short-term routes re-pointed at it (proven
+# behaviour-preserving by its seven existing regression suites), and only then
+# did Long-Term get a caller. Extract-then-share, never copy: a second copy of
+# "does this ownership add up to 100%" is two answers about one company.
+#
+import src/lib/llc-edit.js
+#        (the entity EDIT rules: the verified lock, the EIN normalizer, the
+#         entity-type re-wording of its document slots, the ownership total, the
+#         authority to verify, the required revoke reason, and the bottom-up
+#         chain revoke. Per-product side effects — the audit line, WHICH
+#         condition to re-sync, whether to notify a borrower — come in as HOOKS,
+#         so neither product's notifications can fire on the other's file.)
+#
+# THE VERIFIED DOCUMENT LOCK is part of that same extraction and is the reason it
+# had to be shared rather than re-stated: the ENTITY is shared, so a long-term
+# upload that walked past the lock would replace the very evidence a SHORT-TERM
+# verification of the same company stands on.
+#
+import app-v2/src/components/LlcManager.jsx
+#        (the ONE entity section. Long-Term passes its own `adapter` over
+#         /api/lt/condition-center/loans/:id/entities/* and nothing else changes:
+#         the form, the entity-type picker, the partnership and trust sub-kinds,
+#         the ownership rows with their percentages, the signature titles, a
+#         corporation's shares and certificate numbers, the three document slots
+#         with their drag-and-drop, preview and download, and the LAYERED-ENTITY
+#         recursion are the same code the short-term file screen renders. The
+#         adapter seam is the one `FileContacts.jsx` already has, and the
+#         component branches on neither product.)
+import app-v2/src/lib/dialog.js
+#        (PILOT's own message box — `askConfirm`/`askPrompt`. The whole app is
+#         guarded against raising a browser `alert`/`confirm`/`prompt` (they
+#         stamp the hosting hostname on the message and cannot be styled), and
+#         that guard is enforced by a source sweep, so a second dialog host on
+#         the Long-Term side would be both a duplicate and a rule violation. It
+#         renders text and resolves a promise; it reads no product's data.)
+# ---------------------------------------------------------------------------
+# WHO ELSE IS ON AN ORDER'S THREAD — under the same 2026-08-31 grant, and found
+# by the two-product parity engine the owner asked for in the same message:
+#
+#   "start a full side-to-side comparison ... to make sure that every single
+#    feature that is available on the short-term side, every single guard, every
+#    single way of operating, is also on the long-term side. A lot of stuff was
+#    invested in the short-term side, and we don't want to reinvent. We just want
+#    to share the code."
+#
+# The engine's first real finding: each loan officer can set whether their title
+# and insurance orders copy the borrower, and a LONG-TERM order never read that
+# setting -- so an officer who had turned it on got it on their short-term orders
+# and silently not on their long-term ones. The rule was written INLINE in
+# src/routes/staff.js where no second caller could reach it (the same shape the
+# entity edit rules were in), so it was EXTRACTED and the short-term route
+# re-pointed at it first.
+#
+import src/lib/order-cc.js
+#        (explicit -> what the order recorded when it was placed -> the officer's
+#         own default for this KIND of order -> the company default. WHICH officer
+#         is deliberately NOT in it: that is a fact about a loan, and the two
+#         products keep loans in their own tables -- each resolves its own officer
+#         and passes the id. The SETTING is per-staffer (db/391) and the staff
+#         roster is the shared identity zone, so both products may read it.)
+# ---------------------------------------------------------------------------
 ```
 
 ## Log of authorizations
