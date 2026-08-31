@@ -44,6 +44,9 @@ const registry = require('./field-registry');
 const shared = require('../pricing/scenario-defaults');
 const amounts = require('../pricing/amounts');
 
+/** The channel we buy through — owner-directed 2026-08-31: *"we are CorrNonDel."* */
+const OWNER_CHANNEL = 'CorrNonDel';
+
 /** The one income-verification type this adapter may ever price. */
 const DSCR_DOC_TYPE = 'Investor - DSCR';
 /** AHL's Bridge / Rehab / Ground-Up product — RTL's, and named so the guard can say why. */
@@ -335,18 +338,28 @@ function buildLeg(sc, leg, opts = {}) {
  * The CHANNEL — the one input on this form whose right answer is a business
  * decision rather than a mapping.
  *
- * ⚠️ MEASURED 2026-08-30, same scenario, same minute, only `Channel` varying:
+ * ── ANSWERED. Owner-directed 2026-08-31: *"we are CorrNonDel."* ────────────
+ * So `CorrNonDel` is now the channel we BUY THROUGH, not merely the channel the
+ * captured session happened to price on. That distinction is worth keeping in
+ * writing, because it is the difference between a default somebody chose and a
+ * default nobody had got round to choosing yet.
+ *
+ * ⚠️ IT STAYS A SETTING, AND IT STAYS ON EVERY BOARD. Measured 2026-08-30, same
+ * scenario, same minute, only `Channel` varying:
  *     Wholesale      6.375 @ 97.000
  *     Correspondent  6.625 @ 98.000
- *     CorrNonDel     6.750 @ 98.375
- * Three different sets of economics. `CorrNonDel` is the default here ONLY
- * because it is the channel the captured session priced on — it is NOT a
- * judgement that it is the channel we buy through, and it is deliberately a
- * setting so the answer can be changed without a deploy. Until the owner names
- * the channel, every AHL board carries which one it was priced on.
+ *     CorrNonDel     6.750 @ 98.375   ← ours
+ * Three different sets of economics for one loan. A channel that were hard-coded
+ * would make "which economics is this board priced on?" unanswerable from the
+ * board itself, and it is exactly the kind of thing that changes commercially
+ * without changing technically. So the answer is settable without a deploy, and
+ * `parse.js` reads the channel back off AHL's OWN echo rather than from what we
+ * meant to send — a board that reported our intention would still say
+ * "CorrNonDel" on the day AHL ignored the field and priced Wholesale.
  */
 function channelFor(opts = {}) {
-  const raw = opts.channel != null && opts.channel !== '' ? opts.channel : (process.env.AHL_CHANNEL || 'CorrNonDel');
+  // Owner-directed default; `AHL_CHANNEL` or `opts.channel` overrides it.
+  const raw = opts.channel != null && opts.channel !== '' ? opts.channel : (process.env.AHL_CHANNEL || OWNER_CHANNEL);
   const k = aliasKey(raw);
   const table = { wholesale: 'Wholesale', correspondent: 'Correspondent', corrnondel: 'CorrNonDel', correspondentnondelegated: 'CorrNonDel', nondelegated: 'CorrNonDel', nondel: 'CorrNonDel' };
   const hit = table[k];
@@ -373,7 +386,7 @@ function encode(pairs) {
 }
 
 module.exports = {
-  DSCR_DOC_TYPE, RTL_DOC_TYPE, AhlValidationError,
+  DSCR_DOC_TYPE, RTL_DOC_TYPE, OWNER_CHANNEL, AhlValidationError,
   build, buildLeg, legsFor, encode, assertDscrOnly, channelFor, prepayFields, propertyAndUnits,
   _internals: { PURPOSE, PROPERTY, OCCUPANCY, CITIZENSHIP, aliasKey, mapAlias, shared, amounts },
 };

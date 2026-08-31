@@ -158,7 +158,8 @@ function refuses(fn, code) { try { fn(); return false; } catch (e) { return e &&
 
   // ── The channel: a business decision, refused rather than guessed ────────
   {
-    ok(scenario.channelFor({}) === 'CorrNonDel', 'CHANNEL-1 the default is the channel the captured session priced on');
+    ok(scenario.channelFor({}) === 'CorrNonDel' && scenario.OWNER_CHANNEL === 'CorrNonDel',
+      'CHANNEL-1 the default is CorrNonDel — owner-directed 2026-08-31, the channel we buy through');
     ok(scenario.channelFor({ channel: 'wholesale' }) === 'Wholesale', 'CHANNEL-2 it is settable per call');
     ok(refuses(() => scenario.channelFor({ channel: 'retail' }), 'unknown_channel'),
       'CHANNEL-3 a channel AHL does not price is refused — the three that exist price DIFFERENTLY, so a default would be a silent business decision');

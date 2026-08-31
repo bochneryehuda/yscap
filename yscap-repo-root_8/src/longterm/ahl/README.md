@@ -84,7 +84,7 @@ parser did the latter and attached 90 KB of script to a program's **name**; `NAM
 
 | Var | Required | Default | Notes |
 |---|---|---|---|
-| `AHL_CHANNEL` | | `CorrNonDel` | `Wholesale` / `Correspondent` / `CorrNonDel`. **They price differently** — see the mapping doc §7. |
+| `AHL_CHANNEL` | | `CorrNonDel` | Owner-directed 2026-08-31: *"we are CorrNonDel."* `Wholesale` / `Correspondent` / `CorrNonDel` **price differently** — see the mapping doc §7. |
 | `AHL_BASE_URL` | | `https://client.ahlend.com` | |
 | `AHL_TIMEOUT_MS` | | `30000` | |
 | `AHL_MAX_CONCURRENCY` | | `2` | AHL sets no quota, so this client sets its own. |
@@ -106,8 +106,8 @@ await require('./client').health();   // { ok, registryChanged, registryChanges 
 
 ## Still open
 
-1. **Which channel do we buy through?** Three channels, three sets of economics; the default is
-   the captured one, not a judgement.
+1. ~~**Which channel do we buy through?**~~ **Answered: CorrNonDel** (owner-directed
+   2026-08-31). Kept as a setting — three channels, three sets of economics.
 2. **Do we price against AHL openly?** No credentials is not the same as permission.
 3. **The canary.** No contract means no stability promise — `health()` wants scheduling on the
    existing `ppe/canary.js` pattern.

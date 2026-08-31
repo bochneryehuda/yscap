@@ -50,7 +50,7 @@ const DRIVEN_BY = {
 const WHY_PINNED = {
   Action: 'The form\'s verb. Every other value (`Select Rate`, `Lock`) is a WRITE; the client refuses them.',
   ConsumerPurpose: 'A DSCR investment loan is business-purpose. `Personal` would put a TRID consumer loan on the board — a different product with different disclosures. AHL quotes it back in its own refusals.',
-  Channel: 'A BUSINESS DECISION, NOT A MAPPING — see the channel section. It is a setting rather than a scenario field, and every board says which channel it was priced on.',
+  Channel: 'The channel we buy through — **owner-directed 2026-08-31: _"we are CorrNonDel."_** It stays a setting rather than a scenario field (the three channels price differently and this changes commercially, not technically), and every board reads the channel back off AHL\'s own echo.',
   DocType: '**THE PRODUCT WALL.** AHL\'s next option, `Investor - No Ratio`, is its Bridge / Rehab / Ground-Up shelf — the SHORT-TERM product. Pinning this is what keeps a Long-Term module out of RTL\'s product.',
 };
 

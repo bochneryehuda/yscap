@@ -106,7 +106,7 @@ left the price ladder byte-identical.
 ### The 4 always-filled fields, and why each is not a scenario input
 
 - **`Action` = `Get Pricing`** — The form's verb. Every other value (`Select Rate`, `Lock`) is a WRITE; the client refuses them.
-- **`Channel` = `CorrNonDel`** — A BUSINESS DECISION, NOT A MAPPING — see the channel section. It is a setting rather than a scenario field, and every board says which channel it was priced on.
+- **`Channel` = `CorrNonDel`** — The channel we buy through — **owner-directed 2026-08-31: _"we are CorrNonDel."_** It stays a setting rather than a scenario field (the three channels price differently and this changes commercially, not technically), and every board reads the channel back off AHL's own echo.
 - **`ConsumerPurpose` = `Business`** — A DSCR investment loan is business-purpose. `Personal` would put a TRID consumer loan on the board — a different product with different disclosures. AHL quotes it back in its own refusals.
 - **`DocType` = `Investor - DSCR`** — **THE PRODUCT WALL.** AHL's next option, `Investor - No Ratio`, is its Bridge / Rehab / Ground-Up shelf — the SHORT-TERM product. Pinning this is what keeps a Long-Term module out of RTL's product.
 
@@ -119,7 +119,7 @@ left the price ladder byte-identical.
 | `DocType = Investor - DSCR` | **never** | nowhere — it is the product wall |
 | `ConsumerPurpose = Business` | **never** | nowhere — a DSCR investment loan is business-purpose |
 | `Action = Get Pricing` | **never** | nowhere — every other value is a write |
-| `Channel = CorrNonDel` | when the owner names the channel we actually buy through | `AHL_CHANNEL` env, or `opts.channel` per call — **no deploy** |
+| `Channel = CorrNonDel` | **answered** — owner-directed 2026-08-31, *"we are CorrNonDel."* Changes if the commercial relationship does | `AHL_CHANNEL` env, or `opts.channel` per call — **no deploy** |
 | The 0.25 margin holdback | whenever the owner moves it up, down or to zero | the combined-engine settings, exactly like LoanNEX's |
 | `PrepayPenaltyPeriod` / `Type` | with the scenario's `prepayMonths` / `prepayStructure`; **defaults to the shared five-year DSCR profile** | `pricing/scenario-defaults.js` — shared with both other programs |
 | `DSCR` | with the scenario; defaults to the shared profile's **1.5** | `pricing/scenario-defaults.js` |
@@ -200,16 +200,20 @@ first-class on the common shape and Lender Price fills them too.
 
 ## 7. Open — the owner's call, not an engineering one
 
-1. **Which channel do we price on?** Measured, same scenario, same minute, only `Channel` moving:
+1. ~~**Which channel do we price on?**~~ **ANSWERED — owner-directed 2026-08-31: *"we are
+   CorrNonDel."*** Measured, same scenario, same minute, only `Channel` moving:
 
    | Channel | Best rate @ price |
    |---|---|
    | Wholesale | 6.375 @ 97.000 |
    | Correspondent | 6.625 @ 98.000 |
-   | **CorrNonDel** *(current default)* | 6.750 @ 98.375 |
+   | **CorrNonDel** ← **ours** | 6.750 @ 98.375 |
 
-   `CorrNonDel` is the default **only** because it is the channel the captured session priced
-   on. It is not a judgement about how we buy. Every board says which channel it used.
+   It stays a **setting** rather than a hard-coded value: three channels, three sets of
+   economics for one loan, and this is the kind of thing that changes commercially without
+   changing technically. Every board reads the channel back off **AHL's own echo**, not off what
+   we meant to send — a board reporting our intention would still say "CorrNonDel" on the day AHL
+   ignored the field.
 
 2. **Do we price against AHL openly, or does this need their sign-off?** The Quick Pricer is a
    public page with no credentials and no terms accepted. Absent authentication is not granted
