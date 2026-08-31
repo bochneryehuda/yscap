@@ -937,6 +937,42 @@ import app-v2/src/components/LoudHint.jsx
 # the bar is the same bar rather than a second progress mechanism to keep in
 # step with it.
 import app-v2/src/lib/upload-progress.js
+# ---------------------------------------------------------------------------
+# THE CONTACT AND ORDER DESKS ON THE LOAN SCREEN — authorized in writing by the
+# owner, 2026-08-31:
+#
+#   "The intent is that it should follow the same type of idea that we have on
+#    the file contacts on the short term. Which is that we added a section,
+#    especially for file contacts where you can enter random file contacts and
+#    then the required file contact comes up as conditions with a form type of
+#    idea which is directly linked to the file contacts … when you start typing
+#    it it's automatically linked to the vendors that we have in the system."
+#
+#   "You don't need to reinvent stuff. You don't need to look at what we have
+#    over there and reinvent. Just I'm giving you authorization to share it.
+#    Share the features, share enhancements."
+#
+# The BACK END for this already exists on both sides and needed no new grant:
+# `src/lib/vendor-directory.js` and `service_contacts` were authorized
+# 2026-08-30, and Long-Term's own link table is `lt_loan_vendors`. What was
+# missing was the SCREEN — the shared contacts component was given its
+# `adapter`/`types` seam in that same pass and then had no Long-Term caller, so
+# the loan screen showed an upload box where a contact form belongs and the
+# orders had no contacts to send to. This grant is the front-end half.
+#
+import app-v2/src/components/FileContacts.jsx
+#        (the ONE contacts desk. Long-Term passes its own `adapter` over
+#         /api/lt/orders/loans/:id/vendors{,/search,/new} and its own `types`
+#         vocabulary; the component itself branches on neither. NOT a copy —
+#         a second contacts screen is how one product's rules leak into the
+#         other's, which is the exact drift the seam was built to prevent.)
+import app-v2/src/components/FormattedInputs.jsx
+#        (PhoneInput / EmailInput — the same typing behaviour in both products,
+#         so a phone number entered on a long-term file is stored in the shape
+#         every existing reader of `service_contacts` already expects. It is
+#         already a transitive dependency of FileContacts.jsx; this records the
+#         DIRECT use by the Long-Term condition forms.)
+# ---------------------------------------------------------------------------
 ```
 
 ## Log of authorizations

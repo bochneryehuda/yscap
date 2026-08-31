@@ -42,6 +42,7 @@ const { ownerOf, ownerWhere } = require('../../lib/condition-owner');
 const { ltOrderReplyTo } = require('../../lib/file-address');
 const sendAs = require('../../lib/send-as');
 const kinds = require('./kinds');
+const enclosures = require('./enclosures');
 const switches = require('./switches');
 const data = require('./data');
 const letter = require('./letter');
@@ -288,6 +289,10 @@ async function place(loanId, kind, opts = {}) {
 
   const template = opts.template || null;
   const built = letter.buildLetter(kind, d, { note: opts.note || '', template });
+  /* Never blocks the send: a form we cannot read costs the enclosure and is
+     reported, because an order that reaches the vendor a form short is fixed by
+     one reply while an order that refuses to go out is not. */
+  const ownEnclosures = enclosures.forKind(kind);
   const replyTo = ltOrderReplyTo(loanId, kind);
   const recips = orderEmail.recipientsFor(kind, d, {
     ccBorrower: opts.ccBorrower,
@@ -330,10 +335,16 @@ async function place(loanId, kind, opts = {}) {
       from: opts.from || { name: opts.fromName || (d.officer && d.officer.name) || null,
         email: opts.fromEmail || (d.officer && d.officer.email) || null },
       threadState: null,
-      /* An order may carry a document of ours — the verification of rent goes out as
-         a PDF attachment on this same letter. Absent on every other kind, so an
-         ordinary order is byte-for-byte what it always was. */
-      attachments: opts.attachments,
+      /* An order may carry a document of ours. TWO ROUTES, deliberately:
+         a RENDERED one the caller passes in (the verification of rent, drawn per
+         file at the moment of sending), and a FIXED blank this kind always
+         encloses (the Fannie Mae condo questionnaire). The fixed one is resolved
+         HERE rather than at a call site, so an order placed from the orders desk,
+         from its condition, or by a rule all enclose the same paper — a form
+         attached at one door and missing at another is invisible until an
+         association is asked to return a form nobody sent them. Absent on every
+         other kind, so an ordinary order is byte-for-byte what it always was. */
+      attachments: [...ownEnclosures.attachments, ...(opts.attachments || [])],
     });
     if (!sent.ok && !sent.ambiguous) {
       await client.query('ROLLBACK');

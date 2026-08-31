@@ -203,11 +203,32 @@ const ORDER_KINDS = Object.freeze({
     condition: 'lt_condo_questionnaire_ordered',
     docCondition: 'lt_condo_docs',
     letter: 'generic',
-    wants: ['Completed condominium questionnaire', 'The association’s master insurance certificate', 'The current budget'],
+    /* THE OWNER'S OWN LIST, in the owner's own order (2026-08-31, quoting the
+       original brief back at me: "from the condo order You dropped certain
+       stuff … I think we were also asking for bylaws"):
+         Condo Documents Request - Please provide the following:
+         -Completed condo questionnaire
+         -Current HOA budget
+         -Bylaws
+         -Master insurance policy or insurance agent contact
+       The last one is deliberately an OR: an association that will not release
+       the policy will give you the agent who can, and asking for the policy
+       alone is what makes that request stall. */
+    wants: [
+      'The completed condominium questionnaire (our form is attached)',
+      'The association’s current budget',
+      'The bylaws',
+      'The master insurance policy — or the insurance agent’s contact details, if it is easier for you to point us at them',
+    ],
+    /* The association's own answer to the questionnaire is what the FORM is, so
+       `question|cert` must not also swallow a certificate of insurance — hence
+       the insurance test runs FIRST in `slotFor` order terms and the
+       questionnaire pattern excludes an insurance word. */
     slotMap: [
-      [/question|cert(ification)?\b/i, 'questionnaire'],
-      [/insur|master/i, 'master_insurance'],
+      [/insur|master\s*polic/i, 'master_insurance'],
+      [/bylaw|by-law|by\s+law/i, 'bylaws'],
       [/budget/i, 'budget'],
+      [/question|cert(ification)?\b/i, 'questionnaire'],
     ],
   },
   vor: {

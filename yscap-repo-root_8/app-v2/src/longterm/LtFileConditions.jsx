@@ -569,7 +569,13 @@ function ConditionRow({
   useEffect(() => { setAskText(''); }, [docAsk && docAsk.doc && docAsk.doc.id, docAsk && docAsk.action]);
 
   return (
-    <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, background: '#FFFFFF', overflow: 'hidden' }}>
+    /* NO `overflow:hidden` HERE, EVER. The condition's own "More ▾" menu is a
+       `position:absolute` popup (`.cond-more-menu`) rendered INSIDE this card, so
+       a clip on the card cuts its options off at the card's edge — which is
+       exactly what it did (owner-reported 2026-08-31). The card is a plain white
+       rounded box with no child that paints to its corners, so the clip bought
+       nothing; `styles.css` already records the same trap for `.lt-card`. */
+    <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, background: '#FFFFFF' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 10px' }}>
         <div style={{ minWidth: 0, flex: 1 }}>
           <ConditionLine it={it} role={role} docs={docs} open={open}

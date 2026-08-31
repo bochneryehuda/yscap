@@ -289,7 +289,21 @@ const PRIOR_TO_SUBMISSION = [
     kind: 'form',
     autoApply: 'rules',
     rule: when('borrower_rents', 'is_true'),
-    config: { fields: ['landlord_name', 'landlord_email', 'landlord_phone', 'monthly_rent', 'rented_since'] },
+    /* THE LANDLORD IS A CONTACT, not five free-text boxes (owner-directed
+       2026-08-31: "Make sure each and every FileContacts should be linked to the
+       correct order. The landlord contact should be linked to the preview on the
+       VOR form"). Typed into a box, the landlord exists only on this condition
+       and the verification-of-rent order has nobody to send to — which is
+       exactly what "the orders are not linked to the correct FileContacts, so
+       you can't even send it out" describes. As a `contactTypes` row it lands in
+       the shared vendor directory and on `lt_loan_vendors`, which is where the
+       order desk looks.
+       `fields` stays for the two things that are facts about the TENANCY rather
+       than about the landlord, and the VOR needs both. */
+    config: {
+      contactTypes: [{ key: 'landlord', label: 'Landlord / management company', required: true }],
+      fields: ['monthly_rent', 'rented_since'],
+    },
   },
   {
     code: 'lt_vor_sent',
@@ -349,7 +363,12 @@ const PRIOR_TO_SUBMISSION = [
     kind: 'form',
     autoApply: 'rules',
     rule: when('is_condo', 'is_true'),
-    config: { fields: ['management_company', 'contact_name', 'contact_email', 'contact_phone'] },
+    /* Same as the landlord above: the condo questionnaire order sends to the
+       `hoa` vendor on the loan, so this has to WRITE that row rather than four
+       boxes that only this condition can see. */
+    config: {
+      contactTypes: [{ key: 'hoa', label: 'HOA management company', required: true }],
+    },
   },
   {
     code: 'lt_condo_questionnaire_ordered',
@@ -548,15 +567,21 @@ const PRIOR_TO_CTC = [
     code: 'lt_condo_docs',
     bucket: B.CTC,
     label: 'Condo documents',
-    hint: 'The completed questionnaire, the association’s master insurance, and its budget.',
+    hint: 'The completed questionnaire, the association’s current budget, the bylaws, and its master insurance.',
     audience: 'internal',
     kind: 'document',
     autoApply: 'rules',
     rule: when('is_condo', 'is_true'),
+    /* ONE LIST WITH THE ORDER'S `wants` (orders/kinds.js condo_questionnaire).
+       What we ASK the association for and what we have a place to PUT are the
+       same four things, or a document arrives with nowhere to file it and the
+       condition can never read as complete. The bylaws were asked for in the
+       owner's original brief and were dropped on the first build. */
     slots: [
       { key: 'questionnaire', label: 'Condo questionnaire (completed)', required: true },
+      { key: 'budget', label: 'Association budget', required: true },
+      { key: 'bylaws', label: 'Bylaws', required: true },
       { key: 'master_insurance', label: 'Master insurance policy', required: true },
-      { key: 'budget', label: 'Association budget', required: false },
     ],
   },
 ];
