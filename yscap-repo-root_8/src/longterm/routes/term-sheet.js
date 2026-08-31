@@ -32,6 +32,7 @@ const internalRecord = require('../termsheet/internal');
 const code = require('../termsheet/code');
 const comparison = require('../termsheet/comparison');
 const settingsStore = require('../settings/store');
+const db = require('../db');
 const { resolveCompPlan } = require('../comp-plan');
 
 router.use(express.json({ limit: '512kb' }));
@@ -67,8 +68,51 @@ async function officerPlan(req) {
   return { plan, source, company, degraded: !!(company.degraded || user.degraded) };
 }
 
+/* ⛔ THE OFFICER IS READ FROM THE ROSTER, AND UNTIL NOW NOBODY WAS READING IT
+   (owner-directed 2026-08-31: *"We need to add loan officer branding on the term
+   sheets ... their contact information, their name, their phone numbers, their
+   emails, and their own branding on all the term sheets that they issue and all
+   the comparison PDFs that they issue."*).
+
+   THE WHOLE CHAIN WAS ALREADY BUILT and produced nothing. `snapshot.buildSnapshot`
+   has accepted `officerName / officerTitle / officerEmail / officerPhone /
+   officerNmls` since it shipped, `layout.recipientBlock` assembles them into an
+   officer column, and `pdf.js` draws that column. What was missing is at the very
+   start: `preparedFrom` read them off `req.actor`, and `authenticate` puts only
+   `{ id, kind, role, sid }` on the actor. So every field resolved to null, the
+   column filtered to an empty array, and EVERY long-term sheet ever issued carried
+   no officer at all — silently, because an empty column draws nothing and looks
+   like a design choice.
+
+   The line above it already said "read from the roster"; this makes that true.
+
+   ⛔ IT IS THE ROSTER, NEVER THE CLIENT. A term sheet naming somebody else as the
+   officer is a document we cannot stand behind, so the body is not consulted for
+   any of these — that part of the original contract is unchanged and is why the
+   read has to happen server-side rather than being passed in by the screen.
+
+   `staff_users` is the shared identity zone, which Long-Term has been authorized
+   to READ since 2026-08-03 (`sql-read staff_users`); nothing here writes it. */
+async function loadOfficer(req) {
+  const id = staffId(req);
+  if (!id) return {};
+  try {
+    const { rows } = await db.query(
+      'SELECT full_name, title, email, phone, nmls FROM staff_users WHERE id = $1::uuid',
+      [id],
+    );
+    return rows[0] || {};
+  } catch (_) {
+    /* ⛔ A SHEET IS NEVER REFUSED OVER THE LETTERHEAD. The officer block is
+       decoration on a document whose numbers are the point, so an unreadable
+       roster costs the branding and nothing else — exactly what happens today,
+       every time. Never rethrown. */
+    return {};
+  }
+}
+
 /** Who the sheet says it is from. Read from the roster, never from the client. */
-function preparedFrom(req, company, body, expiresAt) {
+function preparedFrom(req, company, body, expiresAt, officer = {}) {
   const a = req.actor || {};
   const b = body && typeof body.prepared === 'object' ? body.prepared : {};
   return {
@@ -78,11 +122,11 @@ function preparedFrom(req, company, body, expiresAt) {
     propertyAddress: b.propertyAddress,
     // OURS are not. A term sheet naming somebody else as the officer, or naming
     // a company we are not, is a document we cannot stand behind.
-    officerName: a.full_name || a.fullName || a.name || null,
-    officerTitle: a.title || a.role_label || null,
-    officerEmail: a.email || null,
-    officerPhone: a.phone || a.cell_phone || null,
-    officerNmls: a.nmls || null,
+    officerName: officer.full_name || a.full_name || a.fullName || a.name || null,
+    officerTitle: officer.title || a.title || a.role_label || null,
+    officerEmail: officer.email || a.email || null,
+    officerPhone: officer.phone || a.phone || a.cell_phone || null,
+    officerNmls: officer.nmls || a.nmls || null,
     companyName: setting(company, 'termSheet.companyName', 'YS Capital Group'),
     companyNmls: setting(company, 'termSheet.companyNmls', '2609746'),
     preparedAt: stamp(new Date()),
@@ -143,13 +187,13 @@ function expiryHoursFor(docKind, company) {
  */
 async function snapshotFor(req, res) {
   const body = req.body || {};
-  const { plan, company } = await officerPlan(req);
+  const [{ plan, company }, officer] = await Promise.all([officerPlan(req), loadOfficer(req)]);
   const maxMembers = Number(setting(company, 'termSheet.cartMax', 8)) || 8;
   const build = (expiresAt) => snapshot.buildSnapshot({
     selections: Array.isArray(body.selections) ? body.selections : [],
     plan,
     anchorIndex: Number.isFinite(Number(body.anchorIndex)) ? Number(body.anchorIndex) : 0,
-    prepared: preparedFrom(req, company, body, expiresAt),
+    prepared: preparedFrom(req, company, body, expiresAt, officer),
     maxMembers,
   });
 
@@ -532,4 +576,10 @@ router.post('/:code/replay', async (req, res) => {
   }
 });
 
+/* Exported for the test that proves the officer actually reaches the paper. The
+   router is still the default export and the only thing `src/longterm/index.js`
+   mounts; these two are the pair the 2026-08-31 defect lived between, and a test
+   that cannot reach them can only assert the layout — which was never the broken
+   half. */
 module.exports = router;
+module.exports._internals = { loadOfficer, preparedFrom };
