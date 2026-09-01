@@ -332,8 +332,21 @@ function applyRegistry(m, sc) {
   // ONLY AN ABSENT FIELD TAKES IT. A blank string still falls through to `bad()` exactly as
   // before, so nothing this connector used to refuse is now quietly priced; and an invalid
   // value still never reaches `setDyn`, leaving the recorded base value untouched.
-  const czEff = sc.citizenship != null ? sc.citizenship : SHARED_PROFILE_DEFAULTS.citizenship;
-  if (czEff != null) { if (CITIZENSHIP.has(czEff)) setDyn(m, 'Citizenship', czEff); else bad('citizenship', czEff, CITIZENSHIP); }
+  // WHOSE MISTAKE IS IT? A citizenship the CALLER stated and this vendor does not know is
+  // the caller's, and is refused by name exactly as before. A shared DEFAULT this vendor
+  // does not know is OURS, and must never be charged to them: this comparison is EXACT
+  // (`CITIZENSHIP.has`, no alias table on this side), so a default written in the OTHER
+  // vendor's spelling — `UsCitizen` instead of `US Citizen`, the most natural edit anyone
+  // could make to that shared line — would have answered `invalid_field_value` naming a
+  // field the caller never sent, on EVERY quote, taking the whole general board down.
+  // Found by audit before it could happen. It now degrades to the recorded base's own
+  // value, which is what this connector sent before the default was wired at all.
+  const czStated = sc.citizenship != null;
+  const czEff = czStated ? sc.citizenship : SHARED_PROFILE_DEFAULTS.citizenship;
+  if (czEff != null) {
+    if (CITIZENSHIP.has(czEff)) setDyn(m, 'Citizenship', czEff);
+    else if (czStated) bad('citizenship', czEff, CITIZENSHIP);
+  }
   if (sc.tradelines != null && sc.tradelines !== '') { if (TRADELINES.has(sc.tradelines)) setDyn(m, 'Tradelines', sc.tradelines); else bad('tradelines', sc.tradelines, TRADELINES); }
   // §31.8 item 7 — OPEN QUESTION FOR THE VENDOR, DELIBERATELY NOT RESOLVED HERE. The audit
   // contradicts ITSELF about how "no mortgage history" travels, and the two halves are different
