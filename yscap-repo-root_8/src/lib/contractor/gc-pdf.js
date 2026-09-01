@@ -159,7 +159,8 @@ function buildGcPdf(rec, app = {}, opts = {}) {
   const asOf = day(today) || today;
   doc.text(pdfSafe(`Recorded in PILOT as of ${asOf}. A field that is blank was not recorded — it is not a statement that none exists.`), M, y);
   y += 11;
-  doc.text(pdfSafe('PILOT by YS Capital  ·  NMLS #2609746'), M, y);
+  // Owner-directed 2026-09-01 — the last line this document draws.
+  doc.text(pdfSafe('PILOT by YS Capital  ·  NMLS #2609746  ·  This is for business-purpose lending only.'), M, y);
 
   return Buffer.from(doc.output('arraybuffer'));
 }

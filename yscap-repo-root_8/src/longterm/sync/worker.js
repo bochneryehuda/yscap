@@ -32,6 +32,7 @@ const loans = require('./loans');
 const conditions = require('../conditions/sync');
 const milestoneCatalog = require('./milestone-catalog');
 const milestoneLadder = require('./milestone-ladder');
+const landlordMemory = require('../landlord-memory');
 const contacts = require('../people/contacts');
 const clickupLink = require('../clickup/link');
 const clickupPush = require('../clickup/push');
@@ -212,6 +213,17 @@ async function tickOnce({ trigger = 'worker' } = {}) {
       out.milestoneLadders = await runLog.record('milestone_ladder', trigger, () => milestoneLadder.backfillLadders({}));
     } catch (e) {
       out.milestoneLadders = { ok: false, reason: (e && e.message) || String(e) };
+    }
+    /* THE LANDLORD ALREADY ON A FILE, remembered against the home that borrower
+       rents, so their NEXT file fills it in by itself (owner-directed
+       2026-08-31). The live path records a landlord the moment it is linked, so
+       this exists only for the book that already has one — it drains on
+       `lt_loan_vendors.remembered_at IS NULL` and a swept book costs one SELECT
+       that finds nothing. */
+    try {
+      out.landlordMemory = await runLog.record('landlord_memory', trigger, () => landlordMemory.backfillOnce({}));
+    } catch (e) {
+      out.landlordMemory = { ok: false, reason: (e && e.message) || String(e) };
     }
     // THE STANDING REALIGN (owner-directed 2026-08-24): move every laddered
     // loan onto its LAST-COMPLETED milestone, from the mirror alone — no

@@ -383,7 +383,7 @@ async function recordAnswer(loanId, conditionId, incoming, staffId, client = db)
   const patch = incoming && typeof incoming === 'object' ? incoming : {};
 
   // Merge one level for `lines`; everything else is replaced as sent.
-  const merged = { ...existing, ...patch };
+  let merged = { ...existing, ...patch };
   if (patch.lines && typeof patch.lines === 'object') {
     const lines = { ...(existing.lines || {}) };
     for (const [k, v] of Object.entries(patch.lines)) {
@@ -411,6 +411,11 @@ async function recordAnswer(loanId, conditionId, incoming, staffId, client = db)
 
   // REFUSE A SHAPE THE GATE WOULD NOT HONOUR. A door that accepts what the gate
   // ignores leaves somebody pressing a button that changes nothing.
+  /* WHAT THE WAY ITSELF ANSWERS, written on before it is judged — so the FCI
+     way's servicer is part of the answer the gate reads and the answer that is
+     stored, rather than something every later reader has to re-derive. */
+  merged = answers.withFixed(condition, merged);
+
   const problem = answers.answerProblem(condition, merged, {
     deal,
     hasDocument: current.some((f) => f.review_status === 'accepted'),

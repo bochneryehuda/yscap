@@ -967,49 +967,45 @@ export function workflowMismatch(chosen, docKind) {
  * options is furniture when there are none.
  */
 export function ComparisonWorkflowPanel({
-  enabled, chosen, onChoose, count, docKind, children, note, offBoard,
+  enabled, chosen, onChoose, count, docKind, children, note, offBoard, initialOpen,
 }) {
   /* ⛔ EVERY HOOK IS ABOVE THE EARLY RETURN. `enabled` flips at runtime (the cart hook
      resolves after the first paint), so a hook below it renders a different number of
      hooks on the second pass and React throws. Guarded by test-react-hook-order. */
-  const railRef = useRef(null);
-
-  /* THE SEARCH STRIP BELOW MOVES DOWN BY EXACTLY WHAT THIS RAIL OCCUPIES — measured from
-     the rail's own box, never a constant. The rail's height genuinely changes as options
-     are ticked in and out and as the issue form opens, so a fixed offset would either
-     overlap the strip or leave a gap under it. Published as `--lt-comp-h`, which
-     `.lt-strip`'s `top` reads. Cleared on unmount, or the strip keeps an offset for a
-     rail that is no longer on the page. */
+  /* ⛔ THE BODY FOLDS AWAY, AND IT OPENS ITSELF WHEN SOMETHING IS COLLECTED.
+     Before anybody has chosen a workflow the body is two option cards explaining a
+     choice — 130 points of it — and the header bar alone already says what this area
+     is and how much is in it. So the bar is always there and the body is not, which
+     is the difference between an entry point and a wall.
+     It OPENS on the first thing collected, which is the owner's 2026-08-30 *"pop up
+     each and every thing that you are adding to the comparisons"*; the toggle then
+     belongs to the person, so a deliberate Hide is not undone by the next tick. */
+  const [open, setOpen] = useState(() => !!initialOpen || !!chosen || (count || 0) > 0);
+  const lastCount = useRef(count || 0);
   useEffect(() => {
-    const root = document.documentElement;
-    const el = railRef.current;
-    if (!enabled || !el || !root) { if (root) root.style.setProperty('--lt-comp-h', '0px'); return undefined; }
-    let stop = false;
-    const publish = () => {
-      if (stop) return;
-      /* getBoundingClientRect, not offsetHeight: the rail is a sticky box whose height we
-         want including its border, and a fractional height must not be rounded down into
-         a one-pixel overlap. */
-      const h = Math.round(el.getBoundingClientRect().height);
-      root.style.setProperty('--lt-comp-h', `${h > 0 ? h : 0}px`);
-    };
-    publish();
-    let ro = null;
-    if (typeof ResizeObserver === 'function') { ro = new ResizeObserver(publish); ro.observe(el); }
-    window.addEventListener('resize', publish);
-    return () => {
-      stop = true;
-      if (ro) ro.disconnect();
-      window.removeEventListener('resize', publish);
-      root.style.setProperty('--lt-comp-h', '0px');
-    };
-  }, [enabled, chosen, count, note && note.text, offBoard]);
+    const n = count || 0;
+    if (n > lastCount.current) setOpen(true);
+    lastCount.current = n;
+  }, [count]);
+
+  /* ⛔ `--lt-comp-h` IS GONE, AND NOTHING REPLACES IT. This rail used to publish its own
+     measured height so the search strip below could be pushed down by exactly that much,
+     because the rail was PINNED above it. The two pins plus the app header held 442
+     points of the viewport at all times (owner-reported 2026-09-01: *"three separate
+     sections stacked on top of each other … you can't even access it to see rates, and
+     you can't scroll"*), so the rail moved below the board and stopped pinning.
+
+     A clearing effect was written and then removed rather than kept as insurance: the
+     stylesheet and this component ship in ONE bundle, so there is no state in which a
+     sheet still reads the variable while this code no longer writes it — and the sheet's
+     own `var(--lt-comp-h, 0px)` fallback is gone with it. A guard that cannot bite is
+     not worth the line that implies it does. */
 
   if (!enabled) return null;
   const warn = workflowMismatch(chosen, docKind);
   const picked = COMPARISON_WORKFLOWS.find((w) => w.key === chosen) || null;
   return (
-    <div ref={railRef} className="lt-comp-rail" style={{
+    <div id="lt-comparison" className="lt-comp-rail" style={{
       border: `1px solid ${GOLD}55`, borderRadius: 12, background: '#fff', marginBottom: 12,
     }}>
       <div style={{
@@ -1024,11 +1020,18 @@ export function ComparisonWorkflowPanel({
         <span style={{ fontSize: 11.5, color: count ? INK : MUTED, fontWeight: count ? 700 : 400 }}>
           {count ? `${count} option${count === 1 ? '' : 's'} collected` : 'Nothing collected yet'}
         </span>
+        <span style={{ flex: 1 }} />
+        <button type="button" className="btn ghost" style={{ fontSize: 12 }}
+          aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+          {open ? 'Hide' : (count ? 'Show what is collected' : 'Start a comparison')}
+        </button>
       </div>
+      {open && (
       <div className="lt-comp-body">
-      {/* ⛔ THE CHOOSER COLLAPSES ONCE IT HAS BEEN ANSWERED. The rail is PINNED, so every
-          pixel it keeps is a pixel of board an officer cannot see — and two paragraphs
-          explaining a choice already made are the first thing that should fold away. */}
+      {/* ⛔ THE CHOOSER COLLAPSES ONCE IT HAS BEEN ANSWERED — two paragraphs explaining a
+          choice already made are the first thing that should fold away. (This used to
+          reason from the rail being PINNED; it no longer is, and the rule stands on its
+          own: nobody re-reads the explanation of a decision they have taken.) */}
       {picked ? (
         <div style={{
           padding: '9px 13px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap',
@@ -1103,6 +1106,7 @@ export function ComparisonWorkflowPanel({
       ) : null}
       {children}
       </div>
+      )}
     </div>
   );
 }

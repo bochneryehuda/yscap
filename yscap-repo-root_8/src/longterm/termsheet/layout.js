@@ -567,6 +567,9 @@ function comparisonTable(snapshot) {
   const staged = [];
   const push = (label, fn, opts) => {
     const vals = order.map((i) => cell(i, fn));
+    // The small line under each option's own figure, computed the same way the
+    // figure is — per option, in the same column order.
+    const subs = opts && opts.cellSub ? order.map((i) => cell(i, opts.cellSub)) : null;
     if (!vals.some((v) => v != null && v !== '—')) return;
     const filled = vals.map((v) => (v == null ? '—' : v));
     const same = members.length > 1 && filled.every((v) => v === filled[0]);
@@ -580,7 +583,13 @@ function comparisonTable(snapshot) {
        with the option's own name over its product, so an identical programme
        folds into the shared box like any other agreed fact and stops being
        printed three times. */
-    if (same && !(opts && opts.never)) { shared.push([label, filled[0]]); return; }
+    if (same && !(opts && opts.never)) {
+      /* Lifted into the shared box, every column said the same thing — so its
+         note is that one column's note, not a joining of three identical ones. */
+      const cellNote = (subs && subs.find((t) => t)) || (opts && opts.sub) || null;
+      shared.push(cellNote ? [label, filled[0], cellNote] : [label, filled[0]]);
+      return;
+    }
     /* ⛔ A ROW MAY SAY THAT IT RESOLVES THE ARITHMETIC, and the renderer bands it
        in ivory. The approved sketch highlights exactly two rows on a comparison
        — the full monthly payment and the cash to close — because those are the
@@ -588,9 +597,13 @@ function comparisonTable(snapshot) {
        working. Striping every other row instead (which is what shipped) makes
        the table read as a spreadsheet and gives the two answers no more weight
        than the rent. */
+    const rowOpts = {};
+    if (opts && opts.accent) rowOpts.accent = true;
+    if (opts && opts.sub) rowOpts.sub = opts.sub;
+    if (subs && subs.some((t) => t)) rowOpts.cellSubs = subs.map((t) => t || null);
     staged.push({
       group: (opts && opts.group) || 'produced',
-      row: opts && opts.accent ? [label, ...filled, { accent: true }] : [label, ...filled],
+      row: Object.keys(rowOpts).length ? [label, ...filled, rowOpts] : [label, ...filled],
     });
   };
   /* ⛔ THE ROWS ARE ORDERED BY WHAT THEY ARE, NOT BY THE ORDER THEY WERE
@@ -650,42 +663,51 @@ function comparisonTable(snapshot) {
     const l = ((m.charges || {}).lines || []).find((x) => x && x.key === 'origination');
     return l && nn(l.dollars) && l.dollars > 0 ? wording.moneyExact(l.dollars) : 'None';
   });
-  /* ⛔ THE LENDER'S FEES ARE LISTED ONE BY ONE, NEVER AS A LUMP. Owner-directed:
-     *"you need to list out the lender fees, because the next one, you're waiving
-     the lender fees. You need to be able to see the difference."* A single
-     "Lender fees $2,095" cell answers neither question a reader has — which fees,
-     and which of them this option is actually charging. Each fee gets its own
-     row, so an option that waives ONE of two says exactly that, and a fee that is
-     the same on every option folds into the shared block on its own. A waived fee
-     is LISTED at what it would have been rather than dropped: a fee you are not
-     paying is a thing of value, and a missing row reads as a fee nobody charges. */
-  for (const key of wording.LENDER_FEE_KEYS) {
-    const label = wording.CHARGE_LABELS[key];
-    if (!label) continue;
-    push(label, (m) => {
-      const l = ((m.charges || {}).lines || []).find((x) => x && x.key === key);
-      if (!l) return null;
-      if (l.waived === true) {
-        return nn(l.fullDollars) && l.fullDollars > 0
-          ? `Waived (${wording.moneyExact(l.fullDollars)})` : 'Waived';
-      }
-      return nn(l.dollars) ? wording.moneyExact(l.dollars) : null;
-    });
-  }
-  /* ⛔ WHAT A WAIVE IS WORTH, TOTALLED — the one place a total of two visible
-     rows earns its line. Each fee above already says "Waived ($500)", so the sum
-     is arithmetic; but on the option that waives them it is not a subtotal, it
-     is the reason to choose that option, and it was stated on the per-option
-     page this table replaced. It appears only where a waive exists, so an
-     ordinary comparison never carries a row of dashes. */
-  push('Lender fees you are not paying', (m) => {
-    const lines = (m.charges || {}).lines || [];
-    const fees = wording.LENDER_FEE_KEYS.map((k) => lines.find((l) => l && l.key === k)).filter(Boolean);
-    if (!fees.length || !fees.some((l) => l.waived === true)) return null;
-    const t = fees.filter((l) => l.waived === true)
-      .reduce((sum, l) => sum + (nn(l.fullDollars) ? l.fullDollars : 0), 0);
-    return t > 0 ? wording.moneyExact(t) : null;
+  /* ⛔ THE LENDER'S FEES ARE ONE BOX, NOT TWO — owner-directed 2026-09-01,
+     REVERSING the 2026-08-30 rule that listed them one by one. That rule was
+     answering *"which of these two is this option charging?"*, and the owner has
+     since stated that the question cannot arise: *"They are identical … it's one
+     package. You waive lender fees, so it's zero lender fee, and they don't
+     charge the $2,095. You have the $2,095, so it can be in one box."* Both are
+     flat company-wide amounts and one switch turns BOTH off, so two rows were
+     two cells saying the same thing on every option, every time — the exact
+     repetition the shared box exists to remove.
+
+     ⛔ THE ROW IS NOT MARKED `never`, AND THAT IS THE WHOLE MECHANISM. Left to
+     the ordinary rule it lands wherever it belongs and the owner's three cases
+     fall out of one push: every option charging it prints one string, so it
+     lifts into the shared box as ONE cell; every option waiving it likewise
+     lifts, reading *Waived ($2,095)* — the owner chose to keep the box in that
+     case rather than drop it, because a fee you are not paying is a thing of
+     value and a missing row reads as a fee nobody charges; and options that
+     DISAGREE keep it in the table as ONE row that states the disagreement
+     ("If both programs disagree, then it's in one box as it disagrees").
+
+     ⛔ AND THE PARTS ARE STILL NAMED, underneath, because a total nobody can
+     check is how this file's own oldest warning starts — an amount folded into
+     a total and named nowhere. The composition rides under the label at face
+     value and says nothing about who pays: the columns beside it already do,
+     and a composition that repeated the waiver would contradict them. */
+  const feePkgOf = (m) => wording.lenderFeePackage(m.charges);
+  push('Lender fees', (m) => {
+    const pkg = feePkgOf(m);
+    return pkg.present ? pkg.text : null;
+  }, {
+    cellSub: (m) => {
+      const pkg = feePkgOf(m);
+      return pkg.present ? pkg.cellNote : null;
+    },
   });
+  /* ⛔ WHAT A WAIVE IS WORTH IS NOW SAID BY THE FEE'S OWN BOX, so the separate
+     total is gone (owner-directed 2026-09-01, as a consequence of combining the
+     two fee rows into one). It existed because each fee used to print "Waived
+     ($500)" on its own row and the sum of two rows was worth stating: on the
+     option that waives them it is not a subtotal, it is the reason to choose
+     that option. The combined row now prints exactly that figure — "Waived
+     ($2,095)" — in that option's own cell, so keeping the total put the same
+     $2,095 twice, adjacent, which is the duplication this change was asked to
+     remove. It is deleted rather than reworded: a sheet that says one number
+     two ways invites the reader to look for the difference. */
   push('Cost to get this rate', (m) => {
     const cc = wording.costOrCredit(m.charges);
     return cc.kind === 'none' ? 'None' : cc.text;
@@ -833,8 +855,15 @@ function metaBlock(s, opts, code) {
     docLabel: title,
     stamp: issuedOn,
     contact: contactBits.length ? `Your ${p.companyName || 'YS Capital'} contact: ${contactBits.join('  ·  ')}` : null,
-    disclaimer: `${s.disclosure || wording.DISCLOSURE} Subject to underwriting, appraisal, title and final `
-      + `credit approval. Not valid until countersigned by ${p.companyName || 'YS Capital Group'}.`,
+    /* ⛔ THE BUSINESS-PURPOSE STAMP IS PREPENDED UNCONDITIONALLY, OUTSIDE the
+       overridable part. `s.disclosure` lets a snapshot carry its own wording,
+       and folding the stamp into that would let a custom disclosure — or a
+       future caller passing one — silently drop the sentence the loan's whole
+       regulatory position rests on. It leads for the truncation reason recorded
+       on `wording.BUSINESS_PURPOSE`. */
+    disclaimer: `${wording.BUSINESS_PURPOSE} ${s.disclosure || wording.DISCLOSURE} Subject to `
+      + `underwriting, appraisal, title and final credit approval. `
+      + `Not valid until countersigned by ${p.companyName || 'YS Capital Group'}.`,
   };
 }
 
@@ -1083,7 +1112,7 @@ function buildLayout(snapshot, opts = {}) {
      it is not the answer to. The shortest-lived fact on the page belongs at the
      end of the argument it qualifies, immediately above the signature it
      governs. */
-  const exp = expiryBlock(s, opts);
+  let exp = expiryBlock(s, opts);
 
   const first = s.members[0];
 
@@ -1133,6 +1162,41 @@ function buildLayout(snapshot, opts = {}) {
       note: `every figure below is compared against ${anchor.label}` });
     blocks.push({ t: 'pagebreak', ifLessThan: SOFT_BREAK.comparison });
     blocks.push(table);
+    /* ⛔ ON A COMPARISON THE CLOCK GOES DIRECTLY UNDER THE TABLE, not at the end
+       of the sheet — and that is a REFINEMENT of the rule recorded above rather
+       than a reversal of it. The rule is that the shortest-lived fact belongs at
+       the end of the argument it qualifies; what it qualifies is the PRICING,
+       and on a comparison the pricing is the table. What follows the table is
+       commentary on choosing BETWEEN the options, which is not a thing that
+       expires.
+       ⛔ AND IT IS THE ONE BLOCK THAT MUST NOT FLOW. Raising the type to a
+       readable size filled page one, so something after the table had to move
+       onto page two; a reader who does not see that the price has a clock on it
+       is the expensive loss, and a paragraph explaining a choice read at the top
+       of the next page is not. On a TERM SHEET nothing changes: it still sits at
+       the end, immediately above the signature it governs. */
+    if (exp) { blocks.push(exp); exp = null; }
+    /* ⛔ WHAT EACH OPTION MEANS IS A STRUCTURED BLOCK, NOT A RUN OF PARAGRAPHS
+       (owner-reported 2026-09-01: *"this bottom part is just thrown text on the
+       comparison sheet and on the scenario sheet. It needs to be better laid
+       out, nicer, more structured."*).
+
+       ⛔ THE WORDS DO NOT CHANGE, AND THAT IS DELIBERATE. These sentences ARE
+       the argument the page exists to make — the owner asked on 2026-08-31 for
+       the break-even to explain itself in both directions, and that explanation
+       only works as prose. What was wrong was that four full-width lines with
+       nothing naming them read as a wall dropped under the table, with no way to
+       tell which option each one was about except by reading it.
+
+       ⛔ SO EACH ONE IS NAMED AND THEY SIT SIDE BY SIDE. A tracked rule-under
+       heading carries the option's own name, and pairs run in the two-column
+       arrangement the disclosures already use — the same visual language twice
+       on one document rather than a third. It is also the shorter shape: two
+       options cost two column-lines instead of four full-width ones, which is
+       what puts the expiry back on page one beside the table it qualifies.
+
+       ⛔ AN ODD ONE OUT RUNS FULL WIDTH rather than half a row of white. */
+    const meanings = [];
     for (const r of cmp.rows) {
       if (r.isAnchor) continue;
       const m = s.members[r.index];
@@ -1145,7 +1209,15 @@ function buildLayout(snapshot, opts = {}) {
           member: shownDscr(m, pitiFor(m)).value,
           anchor: shownDscr(anchor, pitiFor(anchor)).value,
         });
-      if (sentence) blocks.push({ t: 'para', text: sentence });
+      if (sentence) meanings.push({ label: m.label || `Option ${r.index + 1}`, text: sentence });
+    }
+    const meaningSide = (n) => [{ t: 'para', text: n.text }];
+    for (let i = 0; i < meanings.length; i += 2) {
+      if (meanings[i + 1]) {
+        blocks.push({ t: 'columns', left: meaningSide(meanings[i]), right: meaningSide(meanings[i + 1]) });
+      } else {
+        blocks.push(...meaningSide(meanings[i]));
+      }
     }
     /* ⛔ A WAIVE IS EXPLAINED IN WORDS, NOT ONLY PRICED. The table says
        "Waived ($500)" per fee and totals what it saves, which is the arithmetic;

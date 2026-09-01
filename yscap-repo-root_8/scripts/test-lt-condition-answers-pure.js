@@ -86,8 +86,23 @@ check(JSON.stringify(subjectWays) === JSON.stringify(['statement', 'typed', 'fci
 
 check(answers.satisfies(subject, {}, {}).ok === false,
   'answering nothing does not finish it');
-check(answers.satisfies(subject, { way: 'fci_serviced' }, {}).ok === true,
-  'the FCI selection alone finishes it — "you don’t need anything, not an attachment and not a form"');
+/* THE FCI WAY STOPPED BEING A WAIVER — owner-directed 2026-08-31: *"if you're
+   putting in that it's FCI then the servicer automatically selects it to be FCI
+   and our processor needs to go into FCI and look for the FCI loan number and put
+   it in and outstanding balance."* Being the servicer is what makes those two
+   numbers OBTAINABLE, not unnecessary — the loan-setup person still keys them
+   into Encompass and neither is on this file. Re-pointed at that rule rather than
+   loosened: it now asserts BOTH halves, what the way answers by itself and what
+   it still asks for. */
+check(answers.satisfies(subject, { way: 'fci_serviced' }, {}).ok === false,
+  'the FCI selection alone no longer finishes it — the two numbers are still needed');
+const fciFull = { way: 'fci_serviced', values: { loan_number: 'FCI-4471', outstanding_balance: 388000 } };
+check(answers.satisfies(subject, fciFull, {}).ok === true,
+  'and with the FCI loan number and the balance keyed in it does — no attachment, no form');
+check(answers.withFixed(subject, fciFull).values.servicer === answers.FCI_SERVICER,
+  'while the SERVICER answers itself, which is the one thing choosing FCI already says');
+check(answers.withFixed(subject, { way: 'typed', values: { servicer: 'Shellpoint' } }).values.servicer === 'Shellpoint',
+  '…and a servicer a person typed is never overwritten by it');
 check(answers.satisfies(subject, { way: 'statement' }, { hasDocument: true }).ok === true,
   'an accepted statement finishes it');
 check(answers.satisfies(subject, { way: 'statement' }, { hasDocument: false }).ok === false,
@@ -227,11 +242,19 @@ const answeredThrough = signOffProblem(row('lt_reo_liabilities', {
 check(answeredThrough.ok === true,
   'and passes it once answered — with no document anywhere, which an upload-only gate could never do');
 
-const fci = signOffProblem(row('lt_subject_mortgage_statement', {
+/* THE GATE MOVED WITH THE WAY (owner-directed 2026-08-31, above). Both halves
+   are asserted, because a gate that stopped honouring the FCI way at all would
+   pass the first of these and be just as wrong. */
+const fciBare = signOffProblem(row('lt_subject_mortgage_statement', {
   answer: { way: 'fci_serviced' },
   slots: [{ key: 'statement', label: 'Mortgage statement', required: false }],
 }), []);
-check(fci.ok === true, 'THE GATE ITSELF passes the FCI selection with nothing attached');
+check(fciBare.ok === false, 'THE GATE ITSELF now holds the FCI selection until the two numbers are in');
+const fci = signOffProblem(row('lt_subject_mortgage_statement', {
+  answer: { way: 'fci_serviced', values: { loan_number: 'FCI-4471', outstanding_balance: 388000 } },
+  slots: [{ key: 'statement', label: 'Mortgage statement', required: false }],
+}), []);
+check(fci.ok === true, '…and passes it with them, with nothing attached — no statement, no form');
 
 const noWay = signOffProblem(row('lt_subject_mortgage_statement', {}), []);
 check(noWay.ok === false && /Choose how to answer/.test(noWay.why),

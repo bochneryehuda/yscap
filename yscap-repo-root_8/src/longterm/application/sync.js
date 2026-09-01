@@ -27,6 +27,7 @@
 
 const mapper = require('./mapper');
 const investors = require('../encompass/investors');
+const floodZone = require('../flood-zone');
 
 const lazy = {
   get db() { return require('../db'); },
@@ -43,21 +44,47 @@ async function syncSubjectProperty(loanId, loan, opts = {}) {
   const row = mapper.readSubjectProperty(loan, opts.values);
   if (!row) return { ok: false, reason: 'no loan payload to read the property from' };
 
+  // ── IS IT IN A FLOOD ZONE? ────────────────────────────────────────────────
+  //
+  // Owner-directed 2026-08-31: *"This is only if you tick that this is a flood
+  // zone or if it realizes from encompass that this is in a flood zone."* The
+  // tick already existed; this is the other half.
+  //
+  // IT IS READ HERE RATHER THAN IN THE MAPPER, and that placement is the
+  // mapper's own contract: that file is PURE and states it has no requires, so
+  // the one definition of what a FEMA zone letter means (`flood-zone.js`) is
+  // joined to the row at the WRITER instead. The same `values` map the mapper
+  // reads by number, with the same fallback, so the two can never be looking at
+  // different answers.
+  const flood = floodZone.readFloodZone(opts.values || (loan && loan._fieldValues) || null);
+
   // NOTHING FOUND IS NOT A PROPERTY. Writing an all-null row would put a
   // `lt_properties` record on the loan that reads, to every screen and every
   // LEFT JOIN, exactly like a property we read and found empty — and it would
   // then absorb the COALESCE protection above for ever after.
-  if (row._found === 0) {
+  //
+  // A FLOOD ANSWER COUNTS AS HAVING FOUND SOMETHING. It is a real fact about the
+  // property, it decides whether the file asks for flood insurance, and a loan
+  // whose payload carried the zone and nothing else would otherwise be recorded
+  // as "no property figures" and lose it.
+  if (row._found === 0 && !flood.answered) {
     return { ok: true, written: false, found: 0, fields: row._fields, reason: 'the payload carried no property figures' };
   }
+
+  // WHO ANSWERED, and only when Encompass actually DID. An unrecognised value is
+  // recorded as a zone and claims no source, so a person's later tick still
+  // stands and the next read of a real zone letter still lands.
+  const floodSource = flood.inFloodZone === null ? null : floodZone.SOURCE_ENCOMPASS;
 
   const db = opts.db || lazy.db;
   await db.query(
     `INSERT INTO lt_properties
        (loan_id, street, city, county, state, zip, unit_count, gse_property_type,
         occupancy_type, occupancy_rate_pct, appraised_value, estimated_value,
-        purchase_price, original_cost, gross_monthly_rent, ltv_pct, cltv_pct, updated_at)
-     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
+        purchase_price, original_cost, gross_monthly_rent, ltv_pct, cltv_pct,
+        in_flood_zone, flood_zone, flood_zone_source, updated_at)
+     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+             $18, $19, $20, now())
      ON CONFLICT (loan_id) DO UPDATE SET
        street             = COALESCE(EXCLUDED.street, lt_properties.street),
        city               = COALESCE(EXCLUDED.city, lt_properties.city),
@@ -75,14 +102,44 @@ async function syncSubjectProperty(loanId, loan, opts = {}) {
        gross_monthly_rent = COALESCE(EXCLUDED.gross_monthly_rent, lt_properties.gross_monthly_rent),
        ltv_pct            = COALESCE(EXCLUDED.ltv_pct, lt_properties.ltv_pct),
        cltv_pct           = COALESCE(EXCLUDED.cltv_pct, lt_properties.cltv_pct),
+       -- A PERSON'S ANSWER IS NEVER OVERWRITTEN BY A READ (db/658). The switch on
+       -- the Orders screen stamps 'manual'; from that moment Encompass writes
+       -- NOTHING to any of these three. Without this the sync would wipe a tick
+       -- within the hour, on every loan, and the switch would look broken.
+       -- COALESCE on the source because a bare NULL = 'manual' evaluates to NULL,
+       -- not false: the three-valued-logic trap this repo has been bitten by before.
+       in_flood_zone      = CASE WHEN COALESCE(lt_properties.flood_zone_source, '') = 'manual'
+                                 THEN lt_properties.in_flood_zone
+                                 ELSE COALESCE(EXCLUDED.in_flood_zone, lt_properties.in_flood_zone) END,
+       flood_zone         = CASE WHEN COALESCE(lt_properties.flood_zone_source, '') = 'manual'
+                                 THEN lt_properties.flood_zone
+                                 ELSE COALESCE(EXCLUDED.flood_zone, lt_properties.flood_zone) END,
+       flood_zone_source  = CASE WHEN COALESCE(lt_properties.flood_zone_source, '') = 'manual'
+                                 THEN lt_properties.flood_zone_source
+                                 ELSE COALESCE(EXCLUDED.flood_zone_source, lt_properties.flood_zone_source) END,
        updated_at         = now()`,
     [loanId, row.street, row.city, row.county, row.state, row.zip, row.unitCount,
       row.gsePropertyType, row.occupancyType, row.occupancyRatePct, row.appraisedValue,
       row.estimatedValue, row.purchasePrice, row.originalCost, row.grossMonthlyRent,
-      row.ltvPct, row.cltvPct],
+      row.ltvPct, row.cltvPct,
+      // THREE ANSWERS, NEVER TWO. A blank field, FEMA's undetermined `D` and any
+      // value the measured book has never shown all bind NULL here, so the
+      // COALESCE above leaves whatever we hold alone rather than writing a "no"
+      // beside a flood question. The zone is still recorded verbatim so a screen
+      // can show what Encompass actually holds, and the SOURCE is claimed only
+      // when Encompass genuinely determined it.
+      flood.inFloodZone, flood.zone, floodSource],
   );
 
-  return { ok: true, written: true, found: row._found, fields: row._fields };
+  return {
+    ok: true,
+    written: true,
+    found: row._found,
+    fields: row._fields,
+    // What the flood read did, so a sync screen can say so rather than leaving
+    // somebody to guess why a file still shows no flood answer.
+    flood: { answered: flood.answered, zone: flood.zone, inFloodZone: flood.inFloodZone, source: floodSource },
+  };
 }
 
 /**

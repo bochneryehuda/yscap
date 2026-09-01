@@ -33,25 +33,40 @@ const registry = require('../field-registry');
 
 const SHELL = __dirname;
 
-/* ── the alternative-satisfaction blurbs, keyed on the condition ──────────── */
-const WAYS = {
-  lt_reo_liabilities: {
-    lead: 'Each mortgage is answered one of three ways — not a form to fill in:',
-    ways: [
-      ['Upload a statement for this mortgage', 'nothing further'],
-      ['This is the mortgage on the home they live in', 'nothing further'],
-      ['Say which property it is secured by', 'property address, investment or second home, monthly rent, the last only when it applies'],
-    ],
-  },
-  lt_subject_mortgage_statement: {
-    lead: 'Answered one of three ways — a document is only one of them:',
-    ways: [
-      ['Upload the mortgage statement', 'nothing further'],
-      ['Type the loan in instead', 'outstanding principal balance, servicer, loan number'],
-      ['This refinances one of our own short-term loans, serviced by FCI', 'nothing further'],
-    ],
-  },
+/* ── the alternative-satisfaction blurbs, DERIVED ────────────────────────────
+   These used to be typed out here, and the published page went stale the day the
+   FCI way stopped being "nothing further" and started asking for the loan number
+   and the balance (owner-directed 2026-08-31). A page that describes the product
+   as it was is worse than one that says nothing, because somebody reads it and
+   acts on it — so the ways, their labels and what each one asks for are read off
+   `answers.js`, the same table the screen offers and the gate enforces. A way
+   added there appears here with nothing to remember.
+
+   The LEAD sentence stays authored: how many ways there are is derivable, but
+   "not a form to fill in" and "a document is only one of them" are the point of
+   the paragraph and neither is in the table. */
+const answers = require('../../../lib/conditions/answers');
+
+const WAY_LEAD = {
+  lt_reo_liabilities: 'Each mortgage is answered one of these ways — not a form to fill in:',
+  lt_subject_mortgage_statement: 'Answered one of these ways — a document is only one of them:',
 };
+
+/** What a way asks for, in the field labels a person actually sees. */
+function asksFor(way) {
+  const fields = Array.isArray(way.fields) ? way.fields : [];
+  const named = fields.map((f) => String(f.label || f.key).toLowerCase());
+  const fixed = way.fixed && typeof way.fixed === 'object' ? Object.keys(way.fixed) : [];
+  if (!named.length) return fixed.length ? 'nothing further — we already hold it' : 'nothing further';
+  const tail = fixed.length ? ' (the servicer answers itself)' : '';
+  return named.join(', ') + tail;
+}
+
+function waysOf(code) {
+  const plan = answers.plan({ code });
+  if (!plan || !Array.isArray(plan.ways)) return null;
+  return { lead: WAY_LEAD[code] || 'Answered one of these ways:', ways: plan.ways.map((w) => [w.label, asksFor(w)]) };
+}
 
 const CHIP_HELP = {
   borrower: 'The borrower sees this on their own screen, in their own wording. We see it too.',
@@ -99,7 +114,7 @@ function slotsHtml(cond) {
 }
 
 function waysHtml(cond) {
-  const w = WAYS[cond.code];
+  const w = waysOf(cond.code);
   if (!w) return '';
   const li = w.ways.map(([what, note]) => `<li>${esc(what)} <em>(${esc(note)})</em></li>`).join('');
   return `<p class="why"><strong>${esc(w.lead)}</strong></p><ul class="slots ways">${li}</ul>`;
@@ -172,7 +187,7 @@ ${close}</div>
 `;
 }
 
-module.exports = { build, card, WAYS, CHIP_HELP, ruleText, tally };
+module.exports = { build, card, waysOf, CHIP_HELP, ruleText, tally };
 
 if (require.main === module) {
   const out = process.argv[2] || path.join(__dirname, '..', '..', '..', '..', 'docs', 'longterm', 'condition-sets.html');

@@ -351,6 +351,27 @@ async function scopedDocument(req, res) {
  * streamed the bytes into storage the handler below is byte-for-byte the same code
  * on either transport — it never learns which door it was called through. That is
  * why this is one function and not two. */
+/* THE ONE PLACE THE READER'S VERDICT BECOMES SOMETHING A SCREEN SAYS. Kept next
+   to the door rather than in the reader, because the reader answers in facts and
+   this decides which of them are the person's business. Never throws. */
+function statementReadReport(r) {
+  if (!r) return null;
+  if (r.filled) {
+    return {
+      status: 'filled',
+      servicer: r.servicer,
+      loanNumber: r.loanNumber,
+      balance: r.balance,
+      note: r.note || null,
+    };
+  }
+  /* READ, AND CAME UP SHORT. `detail` is the reader's own sentence naming which
+     of the three it could not make out; without it there is nothing useful to
+     say, so nothing is said. */
+  if (r.why === 'unreadable' && r.detail) return { status: 'short', detail: String(r.detail) };
+  return null;
+}
+
 const uploadConditionDoc = async (req, res) => {
   const scoped = await scopedCondition(req, res);
   if (!scoped) return;
@@ -403,12 +424,54 @@ const uploadConditionDoc = async (req, res) => {
         q: db,
       });
     }
+    /* THE MORTGAGE STATEMENT READS ITSELF (owner-directed 2026-08-31: *"bring in
+       … the OCR engine to be able to read the mortgage statement and read who is
+       the servicer name, who is the loan number, and what's the outstanding
+       principal balance, and should automatically fill"*). Only that one
+       condition — the module refuses any other code — and only ever a PRE-FILL:
+       an answer a person gave is left exactly as it is, and a person still
+       confirms this one. Best-effort in both directions: the document is filed
+       whatever the reader does, and what it did is REPORTED so the screen can
+       say it rather than a figure appearing with nothing explaining how. */
+    let statement = null;
+    if (!landed.deduped) {
+      statement = await require('../mortgage-statement-read').fillFromUpload({
+        loanId: scoped.loan.id,
+        conditionId: String(req.params.conditionId),
+        documentId: landed.documentId,
+        code: landed.item && landed.item.code,
+        storageRef: landed.up && landed.up.ref,
+        filename: body.filename,
+      }, {
+        db,
+        storage: require('../../lib/storage'),
+        ocr: require('../../lib/ai/ocr-router'),
+        ai: require('../../lib/ai/azure-openai'),
+        /* NO SPEND METER IS PASSED, and that is a decision rather than an
+           omission. The short-term meter is keyed on an APPLICATION id, so asking
+           it about a long-term loan gets a confident zero — a cap that never
+           caps — and RECORDING against it would write long-term rows into a
+           short-term table, which is a crossing nobody authorized. The real
+           bound is the shape of the work: one read per uploaded statement, on one
+           condition, and the model is only asked at all when the deterministic
+           scanner came up short. */
+      });
+    }
     return res.status(201).json({
       ok: true,
       documentId: landed.documentId,
       deduped: !!landed.deduped,
       visibility: landed.visibility,
       savedToProfile: !!(profile && profile.adopted),
+      /* WHAT THE READER DID, IN BOTH DIRECTIONS. Reporting only the SUCCESS is
+         the half that leaves somebody wondering whether it even tried — and on a
+         statement it could not make out, the honest sentence ("it does not
+         clearly state the servicer") is the one thing that tells them to type it
+         rather than re-scan. Only the two verdicts a person can act on are sent:
+         a fill, or a document that was read and came up short. Everything else
+         (this is not that condition, a duplicate upload, no OCR configured) is
+         about US, not about their document, and says nothing worth printing. */
+      statementRead: statementReadReport(statement),
     });
   } catch (e) {
     // Only a refusal the shared door RAISED carries a status; anything else is a

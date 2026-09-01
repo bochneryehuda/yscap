@@ -273,10 +273,23 @@ console.log('\nE. the two comparison documents, chosen by name');
     'E2 …and they are the two documents the SERVER already produces, not new ones');
   ok(!W.some((w) => w.docKind === 'term_sheet'),
     'E3 …with the term sheet deliberately absent: one option is the row\'s own button, not a comparison');
+  /* ⛔ DRAWN OPEN, BECAUSE THE BODY NOW FOLDS. Owner-reported 2026-09-01: *"three
+     separate sections stacked on top of each other, and you can't see any of the
+     three."* Before anybody has chosen, the body is two option cards explaining a
+     choice — 130 points of it — and it used to sit PINNED at the top of the board.
+     The header bar is what is always there; the options are behind it. So the two
+     documents are asserted on the OPEN panel, and the folded state gets its own
+     assertion below: an entry point that names nothing is not an entry point. */
   const html = draw(globalThis.__ComparisonWorkflowPanel, {
-    enabled: true, chosen: null, onChoose: () => {}, count: 0, docKind: null,
+    enabled: true, chosen: null, onChoose: () => {}, count: 0, docKind: null, initialOpen: true,
   });
   for (const w of W) ok(html.includes(w.title), `E4 the board offers "${w.title}"`);
+  const folded = draw(globalThis.__ComparisonWorkflowPanel, {
+    enabled: true, chosen: null, onChoose: () => {}, count: 0, docKind: null,
+  });
+  ok(folded.includes('Nothing collected yet') && folded.includes('Start a comparison')
+    && !W.some((w) => folded.includes(w.title)),
+    'E4a folded, the bar still says what this is and offers the way in — without the two cards');
   ok(html.includes('Nothing collected yet'),
     'E5 …and it renders with an empty cart — an entry point that appears only once you have started is not an entry point');
   ok(draw(globalThis.__ComparisonWorkflowPanel, { enabled: false, chosen: null, onChoose: () => {}, count: 0 }) === '',

@@ -453,6 +453,8 @@ export const ltApi = {
      being asked. */
   vor: (loanId) => ltGet(lt(`/vor/loans/${encodeURIComponent(loanId)}`)),
   vorSave: (loanId, data) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/form`), { data }),
+  // A DELIBERATE ACT, not a flag on the save — see vor/desk.js confirmForm.
+  vorConfirm: (loanId) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/confirm`), {}),
   vorPreviewUrl: (loanId) => ltBlobUrl(lt(`/vor/loans/${encodeURIComponent(loanId)}/preview.pdf`)),
   vorDownload: (loanId) => ltDownload(lt(`/vor/loans/${encodeURIComponent(loanId)}/preview.pdf`), 'verification-of-rent.pdf'),
   vorSend: (loanId, body) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/send`), body),
