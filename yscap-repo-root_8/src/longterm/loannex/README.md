@@ -28,7 +28,14 @@ Every later call sends `Authorization: Bearer <jwt>` and `Origin: https://webapp
 The JWT's own claims carry the `userGuid` every pricing URL needs, so nothing is
 hardcoded.
 
-### ⚠️ Stage 1 is the one gap
+### Stage 1 — CLOSED (kept for the history)
+
+> **Superseded.** What follows describes the position on the morning of 2026-08-30, before
+> the fifth recording. Stage 1 is now implemented in `portal-login.js` AND has been run
+> against the live portal end to end. `NEX_USERNAME` / `NEX_PASSWORD` are the normal way to
+> configure this — see **Configure** below. The paragraph is left standing because the
+> reasoning (refuse rather than guess a login) is why the client behaves as it does when it
+> is NOT configured.
 
 All three recordings begin **after** the browser was already signed in, so the login
 form's URL, its field names and any second factor are unknown. This client therefore
@@ -91,12 +98,20 @@ as the last endpoint somebody knew about. A priced answer literally carries
 
 | Var | Required | Default | Notes |
 |---|---|---|---|
-| `NEX_TOKEN_KEY` | ✅ *(until stage 1 is recorded)* | — | A live hand-off ticket. Short-lived and single-use. Never commit one. |
-| `NEX_PORTAL` | | `web` | `web`, `acracorrespondent`, `nqmfcorr`, … |
-| `NEX_API_BASE` | | `https://nexapi.loannex.com` | |
-| `NEX_WEBAPP_ORIGIN` | | `https://webapp.loannex.com` | Sent as `Origin`; the API expects it. |
+| `NEX_USERNAME` / `NEX_PASSWORD` | ✅ *(this is the normal way)* | — | The LoanNEX portal sign-in. Stage 1 is implemented in `portal-login.js` and has been **run against the live site**: the three-stage hand-off signed in and priced a real loan on the real account (2026-08-30). Set these two and nothing else is needed. |
+| `NEX_TOKEN_KEY` | *(alternative)* | — | A hand-off ticket pasted out of a live browser session. Only needed if the sign-in is unavailable — short-lived and single-use, so it is a stop-gap, not a configuration. Never commit one. |
+| `NEX_PORTAL` | | `web` | `web` is the AGGREGATOR and prices every investor in one answer — leave it alone unless you specifically want one investor's own portal (`acracorrespondent`, `nqmfcorr`, …), which returns that investor alone. |
+| `NEX_API_BASE` | | `https://nexapi.loannex.com` | Leave unset. |
+| `NEX_WEBAPP_ORIGIN` | | `https://webapp.loannex.com` | Sent as `Origin`; the API expects it. Leave unset. |
 | `NEX_TIMEOUT_MS` | | `30000` | |
-| `NEX_USERNAME` / `NEX_PASSWORD` | | — | Accepted, **not yet usable** — stage 1 is unimplemented. |
+| `NEX_DIAG_TOKEN` | | — | Unset ⇒ the diagnostic seam at `/api/lt/_diag/loannex/*` is 404. Set it to check the two-vendor pipeline from the server without a browser session. |
+| `LT_COMBINED_PRICING` | | on | The kill switch. `off` makes every combined-engine path 404 without touching the General Pricing Engine. |
+
+Either `NEX_USERNAME`+`NEX_PASSWORD` **or** `NEX_TOKEN_KEY` must be set; with neither,
+`/health` reports the engine unconfigured and the combined board says so in words rather
+than showing a short board as though it were the whole market.
+
+**Operator setup guide (plain language): `docs/longterm/COMBINED-ENGINE-SETUP.md`.**
 
 ## The Combined Pricing Engine
 
