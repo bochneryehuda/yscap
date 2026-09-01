@@ -24,6 +24,14 @@ import React from 'react';
 import { ltApi } from './api.js';
 
 /**
+ * The settings group the combined engine's own settings are declared in, named ONCE here and in
+ * `src/longterm/settings/encompass-settings.js`. A group rather than a prefix because the settings
+ * screen groups by it already, and because "which screen shows this" is then a property of the
+ * declaration a person can see rather than a rule hidden in a filter.
+ */
+export const COMBINED_SETTINGS_GROUP = 'Combined Pricing Engine';
+
+/**
  * The general engine — the one the company prices on. Every field here is the behaviour that
  * screen has today; changing one changes the live board, which is exactly why they are written
  * down rather than left implicit.
@@ -55,6 +63,16 @@ export const GENERAL_ENGINE = {
   cart: true,
   /** The counts line ends with a lender count; only a board whose door returns one may say it. */
   lenderCount: true,
+  /** What the SETTINGS screen for this engine is called. */
+  settingsTitle: 'Long-term settings',
+  /* WHICH GROUPS OF THE COMPANY ROSTER THIS ENGINE'S SETTINGS SCREEN LEAVES OUT.
+     The settings screen is drawn from the SERVER's declaration and there is one roster, so a
+     setting declared for the combined engine arrives on both screens unless somebody says
+     otherwise. The general screen has never shown the combined engine's settings — main declares
+     none of them — and it must not start now: this list is what keeps the second engine out of
+     the first one's screen. It names a GROUP rather than the keys, so a fourth combined setting
+     is hidden the day it is declared instead of the day somebody remembers this list. */
+  settingsHideGroups: [COMBINED_SETTINGS_GROUP],
 };
 
 /**
@@ -93,6 +111,12 @@ export const COMBINED_ENGINE = {
   /* The combined door returns `programCount` and the investor roster; it does not return a lender
      count, and inventing a two-vendor meaning of "a lender" is the owner's call, not a screen's. */
   lenderCount: false,
+  settingsTitle: 'Combined Pricing Engine settings',
+  /* THE COMBINED SCREEN HIDES NOTHING. The owner's rule for it is *"separate settings with all the
+     settings we currently have, adding the additional settings to link the investors and choose
+     every investor from where it should price"* — so this screen is the whole roster, its own
+     group included, with the investor panels above it. */
+  settingsHideGroups: [],
 };
 
 const EngineContext = React.createContext(GENERAL_ENGINE);

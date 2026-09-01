@@ -857,7 +857,7 @@ const SETTINGS = [
   // registry and the white-label sheet. Copying them here would be a second copy
   // of a roster that already exists, and the one that drifts is the one somebody
   // prices a loan on. This map holds only what a person has deliberately CHANGED.
-  { key: 'pricing.combinedInvestors', group: 'Pricing', label: 'Combined engine — investor settings',
+  { key: 'pricing.combinedInvestors', group: 'Combined Pricing Engine', label: 'Combined engine — investor settings',
     type: 'map', default: {},
     description: 'Per investor: { source: "lenderprice" | "loannex" | "both", enabled: true|false, '
       + 'whiteLabel: "..." }. Only deliberate changes are stored; everything else falls back to the '
@@ -882,7 +882,7 @@ const SETTINGS = [
   //
   // EMPTY BY DEFAULT, for the same reason as the map above: nothing here is a
   // second copy of the registry, only what a person has deliberately decided.
-  { key: 'pricing.investorLinks', group: 'Pricing', label: 'Combined engine — investor links',
+  { key: 'pricing.investorLinks', group: 'Combined Pricing Engine', label: 'Combined engine — investor links',
     type: 'map', default: {},
     description: 'Per vendor spelling: { key: "<canonical investor key>", source: "lenderprice" | '
       + '"loannex", linkedBy, linkedAt }. A link outranks every registry match, so a person\'s '
@@ -901,7 +901,7 @@ const SETTINGS = [
   // here hands the borrower 0.25 of better execution nobody decided to give
   // them. An unreadable or refused value keeps the standing number and says so
   // on the board; only a deliberate 0 removes it.
-  { key: 'pricing.combinedMarginHoldback', group: 'Pricing', label: 'Combined engine — LoanNEX margin holdback (points)',
+  { key: 'pricing.combinedMarginHoldback', group: 'Combined Pricing Engine', label: 'Combined engine — LoanNEX margin holdback (points)',
     type: 'number', default: null,
     description: 'Points held back on every LoanNEX quote before anything compares the two '
       + 'programs. Blank uses the standing 0.25. Set 0 to remove it entirely — which leaves the '

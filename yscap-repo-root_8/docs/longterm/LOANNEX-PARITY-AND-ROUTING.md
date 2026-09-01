@@ -879,8 +879,9 @@ own assertions on the things a reading must not get wrong.
 | `loannex/scenario.js` | the LoanNEX wire body |
 | `loannex/parse.js` | the LoanNEX answer → the common board |
 | `routes/combined-pricer.js` | `/api/lt/dscr/combined` — the Combined Pricing Engine, super-admin only |
-| `app-v2/.../LtCombinedPricer.jsx` | the engine's screen — a deliberate, watched FORK of `LtPricer.jsx` |
-| `app-v2/.../LtCombinedSettings.jsx` | the investor settings screen |
+| `app-v2/.../pricerEngine.js` | the engine descriptor — the ONE list of what the two boards do differently |
+| `app-v2/.../LtCombinedPricer.jsx` | the engine's screen — a MOUNT of the shared board in `LtPricer.jsx`, plus its own two panels |
+| `app-v2/.../LtCombinedSettings.jsx` | its settings — a MOUNT of the shared screen in `LtSettings.jsx`, with the investor panels above it |
 | `app-v2/.../LtInvestorLinks.jsx` | the side-by-side and the link — one component, both screens |
 
 | `app-v2/src/longterm/compOverlay.js` | the compensation overlay — one plan, both programs, no vendor named |
@@ -890,7 +891,10 @@ overlay parity claim), `test-lt-pricer-shared.mjs` (there is ONE board and it is
 drawn twice: the combined descriptor with every declared difference restored draws the general
 board BYTE FOR BYTE, so no difference between the two can be undeclared — this REPLACED the
 fingerprint guard on 2026-09-01, when the owner ended the copy: *"It will not even be a copy. It
-should just share the code of the general pricing engine"*), `test-lt-routes-smoke-db.js` (the
+should just share the code of the general pricing engine"* — and its section F, that the SETTINGS
+screen is shared the same way: the combined screen is every setting the server declares, its own
+group included, while the general screen hides that group because main declares none of those
+settings and it must not start showing them), `test-lt-routes-smoke-db.js` (the
 super-admin 404, and the general engine still answering that same officer 200),
 `test-lt-loannex-scenario-pure.js`, `test-lt-loannex-merge-pure.js`. **Twenty
 mutations of the production code were each proven to fail them**, with a green control either side —

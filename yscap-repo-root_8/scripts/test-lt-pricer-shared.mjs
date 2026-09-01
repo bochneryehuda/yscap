@@ -48,6 +48,8 @@ const general = read('app-v2/src/longterm/LtPricer.jsx');
 const combined = read('app-v2/src/longterm/LtCombinedPricer.jsx');
 const engine = read('app-v2/src/longterm/pricerEngine.js');
 const settings = read('app-v2/src/longterm/LtCombinedSettings.jsx');
+const general_settings = read('app-v2/src/longterm/LtSettings.jsx');
+const roster = read('src/longterm/settings/encompass-settings.js');
 const api = read('app-v2/src/longterm/api.js');
 const app = read('app-v2/src/App.jsx');
 const nav = read('app-v2/src/components/StaffLayout.jsx');
@@ -113,8 +115,16 @@ console.log('\nC. every difference between the two boards is DECLARED');
     'C5 the vendor\'s own eligibility checks are shown only where a vendor publishes them');
   ok(/sheetLabel: 'Lender Price'/.test(gBlock) && !/Lender Price/.test(cBlock),
     'C6 the combined board names no vendor — one system');
-  ok(/dscrPrice/.test(gBlock) && !/combined/i.test(gBlock),
+  // THE DOOR. The general engine asks Lender Price and nothing else — the whole point of the
+  // descriptor is that the second engine cannot reach the first one's request.
+  ok(/dscrPrice/.test(gBlock) && !/combinedPrice|combinedInvestors/.test(gBlock),
     'C7 the general engine\'s door in the descriptor is its own and only its own');
+  // The general block MAY name the combined engine in exactly one place: the settings group it
+  // refuses to show. Stated as "every mention is that one" rather than "no mention", because a
+  // guard that just banned the word would have to be loosened the first time it was right.
+  const combinedMentions = (gBlock.match(/^.*combined.*$/gim) || []).map((l) => l.trim());
+  ok(combinedMentions.every((l) => /^settingsHideGroups: \[COMBINED_SETTINGS_GROUP\],$/.test(l)),
+    `C7a …and the only thing it says about the combined engine is which of its settings to keep off the general screen (${combinedMentions.length} mention(s))`);
 }
 
 console.log('\nD. both screens are the super admin\'s alone');
@@ -143,6 +153,35 @@ console.log('\nE. the settings screen keeps no roster of its own');
     'E2 …and it names NO investor in its own source — the roster is derived server-side from the one registry');
   ok(/whiteLabelMissing/.test(s) && /never (be )?invented|nothing has been made up/i.test(settings),
     'E3 …and an investor with no client-safe name is shown EMPTY and said out loud, never filled with a guess');
+}
+
+console.log('\nF. ONE settings screen, drawn twice — and the second engine stays out of the first one\'s');
+{
+  const c = codeOf(settings);
+  const g = codeOf(general_settings);
+  ok(/import \{ SettingsScreen \} from '\.\/LtSettings\.jsx'/.test(c) && /<SettingsScreen/.test(c),
+    'F1 the combined settings screen MOUNTS the shared settings screen rather than being half a screen');
+  ok(!/LtLayout/.test(c),
+    'F2 …and declares no page frame of its own — one screen, one frame');
+  // "All the settings we currently have" is the SERVER's roster, so the only honest way to carry
+  // it is to draw the same screen. A list of keys here would be the copy all over again.
+  ok(/data\.groups[\s\S]{0,120}settingsHideGroups[\s\S]{0,40}\.includes\(g\.group\)[\s\S]{0,20}\.map\(/.test(g),
+    'F3 the shared screen draws every group the server declares, less the ones this engine hides');
+  ok(/settingsHideGroups: \[COMBINED_SETTINGS_GROUP\]/.test(engine),
+    'F4 the GENERAL screen hides the combined engine\'s group — main declares none of those settings and that screen must not start showing them');
+  ok(/settingsHideGroups: \[\]/.test(engine),
+    'F5 …and the COMBINED screen hides nothing: it is every setting we have, plus its own');
+  // The two halves of one name. A rename on either side and the general screen silently starts
+  // showing the second engine's settings — the exact leak F4 exists to stop.
+  const declared = (engine.match(/COMBINED_SETTINGS_GROUP = '([^']+)'/) || [])[1];
+  const groups = [...roster.matchAll(/key: 'pricing\.[A-Za-z]+', group: '([^']+)'/g)].map((m) => m[1]);
+  ok(!!declared && groups.length > 0 && groups.every((x) => x === declared),
+    `F6 the group is ONE name on both sides — the screen's '${declared}' and the server's ${groups.length} declaration(s)`);
+  // The slot is the combined engine's own panels, which read their own door. This is the
+  // difference between "the roster is slow" and "the investor list is gone".
+  ok(/const before = \(\) =>/.test(g)
+    && (g.match(/<LtLayout title=\{engine\.settingsTitle\}>\{before\(\)\}/g) || []).length === 2,
+    'F7 …and a caller\'s own panels are drawn while the roster loads AND when it fails, not blanked by either');
 }
 
 console.log('\nG. the two boards, RENDERED — and they differ in exactly the declared ways');

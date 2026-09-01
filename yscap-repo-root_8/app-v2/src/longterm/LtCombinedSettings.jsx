@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import LtLayout from './LtLayout.jsx';
+import { SettingsScreen } from './LtSettings.jsx';
+import { COMBINED_ENGINE } from './pricerEngine.js';
 import { ltApi } from './api.js';
 import LtInvestorLinks from './LtInvestorLinks.jsx';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub, input, label, LINE } from './ppeStyles.js';
@@ -197,16 +198,28 @@ export default function LtCombinedSettings() {
 
   const missing = (data && data.needsWhiteLabel) || [];
 
+  /* THE WHOLE SCREEN IS THE SHARED SETTINGS SCREEN, with these panels passed in above it.
+     Owner-directed: *"It should have separate settings with all the settings we currently have,
+     adding the additional settings to link the investors and choose every investor from where it
+     should price."* "All the settings we currently have" is the roster the shared screen draws
+     from the server, so it is MOUNTED rather than listed here — a setting declared tomorrow is on
+     this screen tomorrow, with nobody porting anything. */
   return (
-    <LtLayout title="Combined Pricing Engine settings">
+    <SettingsScreen engine={COMBINED_ENGINE} slots={{ before: () => (
+      <>
       <div style={{ ...card, borderColor: `${GOLD}55` }}>
         <div style={eyebrow}>What this screen decides</div>
         <div style={{ ...sub, marginBottom: 0, color: SLATE, lineHeight: 1.7 }}>
           Every investor is on this list. For each one you choose the name a client may see, which of
           the two pricing programs their products are fetched from, and whether they show at all.
           <br />
-          <strong style={{ color: INK }}>This is the Combined Pricing Engine only.</strong> The General
-          Pricing Engine is not affected by anything here.
+          <strong style={{ color: INK }}>Everything in this block is the Combined Pricing Engine
+          only</strong> — the General Pricing Engine is not affected by any of it.
+          <br />
+          Below it is the company&#8217;s own configuration, the same settings the General Pricing
+          Engine runs on and the same ones on the Long-term settings screen. It is here because
+          this engine runs on them too and you should be able to see them in one place; a change
+          made there changes both engines.
         </div>
       </div>
 
@@ -443,6 +456,7 @@ export default function LtCombinedSettings() {
       <LtInvestorLinks />
 
       <div style={{ height: 24, borderTop: `1px solid ${LINE}`, marginTop: 8 }} />
-    </LtLayout>
+      </>
+    ) }} />
   );
 }
