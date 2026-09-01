@@ -402,17 +402,51 @@ export function GroupChips({ groups, onApply, onDelete, confirmDeleteId, compact
  */
 export function InvestorPicker({
   roster, rosterStatus, sel, onSel, groups, onApplyGroup, onDeleteGroup, confirmDeleteId,
-  groupName, onGroupName, onSaveGroup, groupBusy, groupNote,
+  groupName, onGroupName, onSaveGroup, groupBusy, groupNote, initialOpen,
 }) {
   const active = selectionActive(sel);
+  /* ⛔ THE LIST FOLDS AWAY, AND A NARROWED BOARD STILL SAYS SO ON THE FOLDED LINE
+     (owner-reported 2026-09-01: *"all the investors are in the middle, squeezed in"*).
+     MEASURED on a real render with the tenant's 17 lenders: the chips wrapped to five
+     rows, ~200 points, sitting between the prepayment terms and the Price it button —
+     so the primary action was pushed off the fold by a control most searches never
+     touch, because the default is EVERY investor.
+     ⛔ THE UN-NARROW IS NEVER BEHIND THE FOLD. A board narrowed to two investors must
+     be returnable to all in one press from whatever is on screen — that is the same
+     rule the results-side overlay follows — so "Show all investors" rides on the
+     summary line, not inside the part that is hidden. */
+  const [open, setOpen] = React.useState(!!initialOpen);
+  const picked = active ? [...(roster || [])].filter((r) => sel.has(r.key)) : [];
+  /* THE SUMMARY IS A LINE, WHATEVER IS TICKED. Naming all of them would rebuild the
+     wall this fold removes the moment somebody ticks most of the roster; three names
+     and a count says the same thing and stays one line. */
+  const namesOf = (rs) => (rs.length <= 3
+    ? rs.map((r) => r.whiteLabel).join(', ')
+    : `${rs.slice(0, 3).map((r) => r.whiteLabel).join(', ')} and ${rs.length - 3} more`);
   return (
     <section style={band}>
       <div style={bandHead}>Investors</div>
       <div style={{ padding: '10px 12px' }}>
+        <div style={{ display: 'flex', gap: '6px 10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: open ? 8 : 0 }}>
+          <span style={{ fontSize: 11.5, color: active ? INK : MUTED, lineHeight: 1.5 }}>
+            {active
+              ? `The board will show ONLY ${picked.length} of ${(roster || []).length} investors${picked.length ? `: ${namesOf(picked)}` : ''}.`
+              : 'Searching every investor — the board shows them all.'}
+          </span>
+          {active && (
+            <button type="button" className="btn ghost" style={{ fontSize: 12 }} onClick={() => onSel(null)}>
+              Show all investors
+            </button>
+          )}
+          <button type="button" className="btn ghost" style={{ fontSize: 12 }}
+            aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+            {open ? 'Done' : (active ? 'Change' : 'Narrow to certain investors')}
+          </button>
+        </div>
+        {open && (
+        <div>
         <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.5, marginBottom: 8 }}>
-          {active
-            ? 'The board will show ONLY the ticked investors. Display only — Lender Price is still asked for every investor, and one press brings the rest back.'
-            : 'Searching every investor. Tick any to narrow what the board shows — display only; Lender Price is always asked for everything.'}
+          Tick any to narrow what the board shows — display only; Lender Price is always asked for everything.
         </div>
         {rosterStatus === 'loading' ? (
           <div style={{ fontSize: 12, color: MUTED }}>Loading the investor list…</div>
@@ -430,11 +464,6 @@ export function InvestorPicker({
           </div>
         )}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
-          {active && (
-            <button type="button" className="btn ghost" style={{ fontSize: 12 }} onClick={() => onSel(null)}>
-              Show all investors
-            </button>
-          )}
           <span style={{ fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
             My groups
           </span>
@@ -461,6 +490,8 @@ export function InvestorPicker({
           </button>
           {groupNote && <span style={{ fontSize: 12, color: groupNote.tone === 'bad' ? DANGER : MUTED }}>{groupNote.text}</span>}
         </div>
+        </div>
+        )}
       </div>
     </section>
   );
@@ -476,11 +507,15 @@ export function InvestorStripRow({ roster, fullRoster, sel, onSel, groups, onApp
   const active = selectionActive(sel);
   const missing = missingFromAnswer(sel, roster, fullRoster);
   const summary = overlaySummary(sel, hidden);
+  /* ⛔ IT IS A GROUP ON THE LENS ROW, NOT A ROW OF ITS OWN (owner-reported 2026-09-01:
+     *"the switch between borrower-paid and lender-paid is in the middle, squeezed in,
+     and all the investors are in the middle, squeezed in"*). Three thin bands each
+     holding one control read as leftovers; one row holding all three, each with its own
+     label, reads as a toolbar — and the strip is PINNED, so a band saved is a band of
+     board an officer gets back on every screen. It still wraps when the answer carries
+     many investors, which is the one case that genuinely needs the room. */
   return (
-    <div style={{
-      marginTop: 8, paddingTop: 8, borderTop: `1px solid ${GOLD}33`,
-      display: 'flex', gap: '6px 8px', alignItems: 'center', flexWrap: 'wrap',
-    }}>
+    <>
       <span style={{ fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
         Investors
       </span>
@@ -498,7 +533,7 @@ export function InvestorStripRow({ roster, fullRoster, sel, onSel, groups, onApp
           their products didn&rsquo;t price here, so they have no rows to show.
         </span>
       )}
-    </div>
+    </>
   );
 }
 
@@ -521,7 +556,7 @@ export function InvestorStripRow({ roster, fullRoster, sel, onSel, groups, onApp
    convention (their results page stamps its time and offers modify-and-update in place). Nothing
    ever re-prices on its own; both doors still cost a vendor call and still fire only from a press.
    ────────────────────────────────────────────────────────────────────────── */
-export function SearchStrip({ chips, pricedAt, stale, busy, onEdit, onReprice, view, onView, dqLabel, compProps, invRow }) {
+export function SearchStrip({ chips, counts, collected, pricedAt, stale, busy, onEdit, onReprice, view, onView, dqLabel, compProps, invRow }) {
   return (
     <div className="lt-strip" style={{ padding: '10px 14px' }}>
       <div style={{ display: 'flex', gap: '6px 14px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -532,6 +567,17 @@ export function SearchStrip({ chips, pricedAt, stale, busy, onEdit, onReprice, v
           <span key={c.k} className="lt-chip"><span className="k">{c.k}</span><b>{c.v}</b></span>
         ))}
         <span style={{ flex: 1 }} />
+        {/* WHAT CAME BACK, ON THE LINE THAT SAYS WHAT WENT OUT. These counts are a
+            fact about the SEARCH — how many rates, quotes, programmes and lenders
+            it returned — so they belong beside it rather than in a card of their
+            own between the search and the answer they count. */}
+        {counts && <span style={{ fontSize: 11.5, color: SLATE, ...NUM }}>{counts}</span>}
+        {/* ⛔ THE COLLECTION IS REACHABLE FROM THE ONE PINNED BAND. This is what the
+            comparison rail's own pin was for — owner-directed 2026-08-30, *"you don't
+            need to scroll back up"* — and it costs one line here instead of 171 points
+            of permanently pinned card. It appears only once something is in, because a
+            counter reading nought is furniture. */}
+        {collected}
         {pricedAt && !stale && (
           <span style={{ fontSize: 11.5, color: MUTED, ...NUM }}>priced {pricedAt}</span>
         )}
@@ -554,12 +600,16 @@ export function SearchStrip({ chips, pricedAt, stale, busy, onEdit, onReprice, v
 
       <div style={{
         marginTop: 8, paddingTop: 8, borderTop: `1px solid ${GOLD}33`,
-        display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap',
+        display: 'flex', gap: '6px 12px', alignItems: 'center', flexWrap: 'wrap',
       }}>
         <span style={{ fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase', color: MUTED, fontWeight: 700 }}>
-          Pricing shown as
+          Shown as
         </span>
         <CompSwitch {...compProps} />
+        {/* THE INVESTOR LENS SITS BESIDE THE COMPENSATION ONE — both narrow what the
+            board shows and neither changes what was asked for, so they read as one
+            toolbar rather than as two thin bands. */}
+        {invRow}
         <span style={{ flex: 1 }} />
         <div style={{ display: 'flex', gap: 6 }}>
           <button type="button" className="btn ghost" onClick={() => onView('priced')}
@@ -573,9 +623,6 @@ export function SearchStrip({ chips, pricedAt, stale, busy, onEdit, onReprice, v
         </div>
       </div>
 
-      {/* THE INVESTOR SWITCHER (owner-directed 2026-08-27) — a lens exactly like the
-          comp switch above it, so it lives on the same pinned strip. */}
-      {invRow}
     </div>
   );
 }
@@ -1413,6 +1460,13 @@ export default function LtPricer() {
   const [openQuote, setOpenQuote] = useState(null);
   const [elapsed, setElapsed] = useState(0);
   const [showScenario, setShowScenario] = useState(false);
+  /* THE ONE PRESS BACK TO THE COLLECTION. `scroll-margin-top` on the rail keeps it clear
+     of the pinned strip, so the area lands fully visible rather than under the band that
+     sent you there. Guarded: a browser without smooth scrolling still jumps. */
+  const jumpToComparison = React.useCallback(() => {
+    const el = typeof document !== 'undefined' && document.getElementById('lt-comparison');
+    if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
   /* THE FORM COLLAPSES WHEN A PRICE LANDS (owner-directed 2026-08-23: "When you click the price
      it button, the details of the pricing that you filled out should collapse. You can always go
      back up and open it up"). While it is collapsed the sticky strip below carries the search's
@@ -2069,36 +2123,6 @@ export default function LtPricer() {
         </form>
 
         )}
-        {/* ── THE COMPARISON AREA ──────────────────────────────────────────────
-            Owner-directed 2026-08-30, and placed where the owner chose when
-            asked: *"a separate area on the pricing board"* rather than a page of
-            its own. It names the two documents an officer can build from several
-            options, and holds what has been collected.
-
-            ⛔ IT SITS ABOVE THE RESULTS, NOT INSIDE THEM, and that is a fix as
-            well as a placement. The cart is the SERVER'S and deliberately spans
-            searches — the whole point of collecting across scenarios — but the
-            strip used to render inside `{res && stack && …}`, so opening the
-            board with nothing priced hid a collection that was still very much
-            there. Above the results it is reachable whenever it exists.
-
-            ⛔ THE STRIP'S OWN MOUNT CONDITION IS UNCHANGED. It appears once
-            something has been collected OR a sheet has just been issued — that
-            second half is what stops the issued sheet's own card being destroyed
-            by the cart it empties. */}
-        <ComparisonWorkflowPanel
-          enabled={ts.enabled}
-          chosen={compWorkflow}
-          onChoose={setCompWorkflow}
-          count={ts.count}
-          docKind={cartDocKind}
-          note={pickNote}
-          offBoard={offBoardCount(ts.members, allQuotes, comp)}>
-          {ts.enabled && (ts.count > 0 || ts.issued) && (
-            <ComparisonStrip open cart={ts.cart} members={ts.members} onChange={ts.reload}
-              onIssued={ts.setIssued} onPlan={setCartDocKind} />
-          )}
-        </ComparisonWorkflowPanel>
 
         {err && (
           <div style={{ ...card, borderColor: `${DANGER}55` }}>
@@ -2141,6 +2165,16 @@ export default function LtPricer() {
                 mode: compMode, onMode: setCompMode,
                 waive: waiveFees, onWaive: setWaiveFees, planProblem: compProblem,
               }}
+              collected={ts.enabled && ts.count > 0 ? (
+                <button type="button" onClick={jumpToComparison} style={{
+                  border: `1px solid ${GOLD}`, background: PAPER, borderRadius: 999,
+                  padding: '3px 10px', cursor: 'pointer', font: 'inherit',
+                  fontSize: 11.5, fontWeight: 700, color: GOLD_TEXT, whiteSpace: 'nowrap',
+                }}>
+                  {`${ts.count} collected · build the sheet`}
+                </button>
+              ) : null}
+              counts={`${stack.rateCount} ${stack.rateCount === 1 ? 'rate' : 'rates'} · ${stack.quoteCount} ${stack.quoteCount === 1 ? 'quote' : 'quotes'} · ${res.programCount != null ? res.programCount : '—'} programmes · ${res.lenderCount != null ? res.lenderCount : '—'} lenders`}
               invRow={(
                 <InvestorStripRow
                   roster={res.investorRoster || []}
@@ -2151,17 +2185,19 @@ export default function LtPricer() {
                 />
               )}
             />
-            <div style={card}>
-              <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'baseline' }}>
-                <div style={{ flex: '1 1 260px' }}>
-                  <div style={eyebrow}>What came back</div>
-                  <div style={{ fontSize: 13, color: SLATE, marginTop: 6, lineHeight: 1.6 }}>
-                    {stack.rateCount} {stack.rateCount === 1 ? 'rate' : 'rates'} ·{' '}
-                    {stack.quoteCount} {stack.quoteCount === 1 ? 'quote' : 'quotes'} ·{' '}
-                    {res.programCount != null ? res.programCount : '—'} programmes ·{' '}
-                    {res.lenderCount != null ? res.lenderCount : '—'} lenders
-                    {res.pricedAt ? ` · priced ${new Date(res.pricedAt).toLocaleTimeString()}` : ''}
-                  </div>
+            {/* ⛔ WHAT NEEDS SAYING BEFORE THE BOARD — AND ONLY THAT. This was a
+                whole "What came back" card (owner-reported 2026-09-01), 172 points
+                of it, carrying one line of counts, one standing disclosure and a
+                debug button, between the strip and the answer. The counts describe
+                the SEARCH, so they moved onto the strip that describes the search;
+                the disclosure and the debug echo are footnotes and moved to the
+                foot. What is left is the only part that is about THIS answer and
+                cannot wait: a rung the vendor priced with no rate, and a lender
+                nobody has named yet. Neither is a card — a warning that fires on
+                most answers must not cost the board a screen when it fires. */}
+            {(stack.unpriced.length > 0
+              || (Array.isArray(res.investorsUnmapped) && res.investorsUnmapped.length > 0)) && (
+              <div style={{ ...card, marginBottom: 0, padding: '9px 14px', borderColor: `${GOLD}55` }}>
                   {/* A rung the vendor sent with no rate is NOT dropped — the count is stated. */}
                   {stack.unpriced.length > 0 && (
                     <div style={{ fontSize: 12, color: CAUTION, marginTop: 4 }}>
@@ -2203,39 +2239,8 @@ export default function LtPricer() {
                       </div>
                     );
                   })()}
-                </div>
-                {/* THE BUSINESS-PURPOSE LINE, WHICH IS WHY THERE IS NO APR ON THIS SCREEN
-                    (owner-directed 2026-08-23: "you can remove all the details from every borrower
-                    about APR because it's business purpose. You can put a business purpose
-                    disclosure, but we should ignore the APR"). An APR is a consumer-credit
-                    disclosure; a DSCR loan is made to an entity for a business purpose and is not
-                    consumer credit, so an APR beside it is a figure that answers a question this
-                    product does not raise — and a figure people then compare across products it
-                    does not apply to. Saying WHY it is absent is worth more than the number was. */}
-                <div style={{ flex: '1 1 100%', order: 3, fontSize: 11.5, color: MUTED, lineHeight: 1.6, marginTop: 8 }}>
-                  Business-purpose loans, made to an entity for an investment property. Not consumer
-                  credit — so no APR is quoted, and none of these figures is a consumer disclosure.
-                </div>
-                {/* The Priced / Ineligible tabs and the compensation switch moved to the STICKY
-                    STRIP above (owner-directed 2026-08-23) — they must stay reachable while the
-                    board scrolls. This card keeps what does not need pinning: the counts, the
-                    unpriced notice, the business-purpose line and the scenario echo. */}
               </div>
-
-              <div style={{ marginTop: 10 }}>
-                <button type="button" className="btn ghost" style={{ fontSize: 12 }}
-                  onClick={() => setShowScenario((v) => !v)}>
-                  {showScenario ? 'Hide' : 'Show'} the scenario Lender Price actually ran
-                </button>
-                {showScenario && (
-                  <pre style={{
-                    marginTop: 8, background: PAPER, borderRadius: 8, padding: 10, overflowX: 'auto',
-                    fontSize: 11.5, color: INK, lineHeight: 1.5,
-                  }}>{JSON.stringify(res.effectiveScenario || res.understood || res.requestedScenario || {}, null, 2)}</pre>
-                )}
-              </div>
-
-            </div>
+            )}
 
             {view === 'priced' ? (
               <div style={card}>
@@ -2299,6 +2304,84 @@ export default function LtPricer() {
               <IneligibleView dq={dq} onAsk={askDisqualified} loanAmount={loanAmount} comp={comp} invSel={invSel} />
             )}
           </>
+        )}
+
+        {/* ── THE COMPARISON AREA ──────────────────────────────────────────────
+            Owner-directed 2026-08-30, and placed where the owner chose when
+            asked: *"a separate area on the pricing board"* rather than a page of
+            its own. It names the two documents an officer can build from several
+            options, and holds what has been collected.
+
+            ⛔ IT SITS BELOW THE BOARD — MOVED THERE 2026-09-01, and the reason it
+            was ABOVE is answered rather than dropped. Owner-reported: *"the
+            comparison window is on top of everything … at the bottom of
+            everything, you can't even access it to see rates."* MEASURED at
+            1440x1000: this card, the pinned strip and a "what came back" card
+            together pushed the first rate row to y=810, so an officer saw ONE rate
+            on the screen whose whole job is the board. Below it the board starts
+            at 269 and every rate is on one screen — and this is the order the work
+            happens in: price, read, then collect.
+
+            ⛔ IT IS STILL OUTSIDE `{res && stack && …}`, WHICH IS THE HALF THAT WAS
+            NEVER ABOUT POSITION. The cart is the SERVER'S and deliberately spans
+            searches, so opening the board with nothing priced must not hide a
+            collection that is still very much there.
+
+            ⛔ AND THE COLLECTION IS STILL ONE PRESS FROM THE PINNED BAND — the
+            `collected` chip on the strip jumps here, which is what the rail's own
+            pin was for (*"you don't need to scroll back up"*).
+
+            ⛔ THE STRIP'S OWN MOUNT CONDITION IS UNCHANGED. It appears once
+            something has been collected OR a sheet has just been issued — that
+            second half is what stops the issued sheet's own card being destroyed
+            by the cart it empties. */}
+        <ComparisonWorkflowPanel
+          enabled={ts.enabled}
+          chosen={compWorkflow}
+          onChoose={setCompWorkflow}
+          count={ts.count}
+          docKind={cartDocKind}
+          note={pickNote}
+          offBoard={offBoardCount(ts.members, allQuotes, comp)}>
+          {ts.enabled && (ts.count > 0 || ts.issued) && (
+            <ComparisonStrip open cart={ts.cart} members={ts.members} onChange={ts.reload}
+              onIssued={ts.setIssued} onPlan={setCartDocKind} />
+          )}
+        </ComparisonWorkflowPanel>
+
+        {/* ── THE FOOTNOTES ────────────────────────────────────────────────
+            Two things that are true of every answer and are nobody's next step: the
+            standing business-purpose disclosure, and the echo of exactly what was
+            put on the wire. Both used to sit in a card between the strip and the
+            board. A standing sentence is a footnote wherever it is printed, so it
+            is printed where footnotes go. */}
+        {res && (
+          <div style={{ ...card, marginBottom: 0, background: 'transparent', border: 0, padding: '4px 2px 0' }}>
+            {/* THE BUSINESS-PURPOSE LINE, WHICH IS WHY THERE IS NO APR ON THIS SCREEN
+                (owner-directed 2026-08-23: "you can remove all the details from every borrower
+                about APR because it's business purpose. You can put a business purpose
+                disclosure, but we should ignore the APR"). An APR is a consumer-credit
+                disclosure; a DSCR loan is made to an entity for a business purpose and is not
+                consumer credit, so an APR beside it is a figure that answers a question this
+                product does not raise — and a figure people then compare across products it
+                does not apply to. Saying WHY it is absent is worth more than the number was. */}
+            <div style={{ fontSize: 11.5, color: MUTED, lineHeight: 1.6 }}>
+              Business-purpose loans, made to an entity for an investment property. Not consumer
+              credit — so no APR is quoted, and none of these figures is a consumer disclosure.
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <button type="button" className="btn ghost" style={{ fontSize: 12 }}
+                onClick={() => setShowScenario((v) => !v)}>
+                {showScenario ? 'Hide' : 'Show'} the scenario Lender Price actually ran
+              </button>
+              {showScenario && (
+                <pre style={{
+                  marginTop: 8, background: PAPER, borderRadius: 8, padding: 10, overflowX: 'auto',
+                  fontSize: 11.5, color: INK, lineHeight: 1.5,
+                }}>{JSON.stringify(res.effectiveScenario || res.understood || res.requestedScenario || {}, null, 2)}</pre>
+              )}
+            </div>
+          </div>
         )}
       </div>
     </LtLayout>
