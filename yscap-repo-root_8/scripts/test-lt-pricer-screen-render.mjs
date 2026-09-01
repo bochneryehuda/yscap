@@ -821,10 +821,34 @@ for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/LtScen
   ];
   const groups = [{ id: 'g1', name: 'My Three', investors: ['verus'] }];
 
-  const picker = attempt(() => render(React.createElement(InvestorPicker, {
+  /* ⛔ RENDERED OPEN, BECAUSE IT NOW FOLDS — and the folded line is asserted on its own
+     at R82a/R82b. Owner-reported 2026-09-01: *"all the investors are in the middle,
+     squeezed in."* MEASURED with the tenant's 17 lenders, the chips wrapped to five rows
+     (~200 points) between the prepayment terms and the Price it button, for a control
+     whose default is EVERY investor. The list is behind a disclosure now; everything
+     below is still true of it, so these are re-pointed at the open state rather than
+     dropped. */
+  const closed = attempt(() => render(React.createElement(InvestorPicker, {
     roster, sel: null, onSel: () => {}, groups, onApplyGroup: () => {}, onDeleteGroup: () => {},
     confirmDeleteId: null, groupName: '', onGroupName: () => {}, onSaveGroup: () => {},
     groupBusy: false, groupNote: null,
+  })));
+  ok(!closed.err && /Narrow to certain investors/.test(closed.html)
+    && /Searching every investor/.test(closed.html) && !/Pearl/.test(closed.html),
+    'R82a folded, it says what it is doing and offers the way in — without the wall of chips');
+  const closedActive = attempt(() => render(React.createElement(InvestorPicker, {
+    roster, sel: new Set(['verus']), onSel: () => {}, groups, onApplyGroup: () => {},
+    onDeleteGroup: () => {}, confirmDeleteId: null, groupName: '', onGroupName: () => {},
+    onSaveGroup: () => {}, groupBusy: false, groupNote: null,
+  })));
+  ok(!closedActive.err && /Show all investors/.test(closedActive.html)
+    && /ONLY 1 of 2 investors/.test(closedActive.html) && /Pearl/.test(closedActive.html),
+    'R82b …and a NARROWED board says so on the folded line, with the un-narrow never behind the fold');
+
+  const picker = attempt(() => render(React.createElement(InvestorPicker, {
+    roster, sel: null, onSel: () => {}, groups, onApplyGroup: () => {}, onDeleteGroup: () => {},
+    confirmDeleteId: null, groupName: '', onGroupName: () => {}, onSaveGroup: () => {},
+    groupBusy: false, groupNote: null, initialOpen: true,
   })));
   ok(!picker.err, `R82 the form picker renders (${picker.err ? picker.err.message : 'ok'})`);
   ok(/Pearl/.test(picker.html) && /Verus Mortgage Capital/.test(picker.html),
@@ -837,7 +861,7 @@ for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/LtScen
   const active = attempt(() => render(React.createElement(InvestorPicker, {
     roster, sel: new Set(['verus']), onSel: () => {}, groups, onApplyGroup: () => {},
     onDeleteGroup: () => {}, confirmDeleteId: null, groupName: '', onGroupName: () => {},
-    onSaveGroup: () => {}, groupBusy: false, groupNote: null,
+    onSaveGroup: () => {}, groupBusy: false, groupNote: null, initialOpen: true,
   })));
   ok(!active.err && /aria-pressed="true"/.test(active.html) && /Show all investors/.test(active.html),
     'R86 a ticked picker presses its chip and offers the one-press way back');
@@ -845,7 +869,7 @@ for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/LtScen
   const empty = attempt(() => render(React.createElement(InvestorPicker, {
     roster: [], sel: null, onSel: () => {}, groups: [], onApplyGroup: () => {}, onDeleteGroup: () => {},
     confirmDeleteId: null, groupName: '', onGroupName: () => {}, onSaveGroup: () => {},
-    groupBusy: false, groupNote: null,
+    groupBusy: false, groupNote: null, initialOpen: true,
   })));
   ok(!empty.err && /could not be loaded/.test(empty.html),
     'R87 a roster that failed to load says so — the board simply shows everybody');
