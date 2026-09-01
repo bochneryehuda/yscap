@@ -21767,12 +21767,14 @@ router.post('/esign/:rowId/resend', async (req, res) => {
     // Resend is a real borrower email — the master kill-switch must gate it too. Read the RUNTIME
     // switch (override ?? env) so flipping DocuSign off on the API Health page stops resends immediately.
     if (!require('../lib/integrations/switches').on('DOCUSIGN_SEND_ENABLED')) return res.status(409).json({ error: 'Sending is paused right now. Turn sending back on before resending.' });
-    // A resend can only re-notify the address DocuSign baked into the envelope at
-    // send time — it cannot re-address. If the file's borrower email changed since,
-    // a resend would nudge the STALE address. Refuse and steer staff to "Change
-    // email & re-send" (which re-addresses the envelope), or void + re-issue.
-    // (Test envelopes are app-less — no file borrower to compare against, so they
-    // skip this check.)
+    /* THE ADDRESS ON FILE MAY HAVE MOVED ON. A resend re-notifies the address DocuSign
+       baked into the envelope; it cannot re-address. This used to REFUSE when the file's
+       borrower email differed — which, together with the silent no-op below, is why the
+       owner experienced "you can only change the email and resend" (2026-09-01). It is now
+       a WARNING carried on the response: the person asked for a reminder to the envelope's
+       address and gets one; the screen tells them the file shows a different email and
+       offers "Change email & re-send" for that. (Test envelopes are app-less — skipped.) */
+    let driftNotice = null;
     if (row.application_id) {
       const cur = (await db.query(
         `SELECT b.email AS file_email, r.email AS env_email
@@ -21784,8 +21786,19 @@ router.post('/esign/:rowId/resend', async (req, res) => {
       const fileEmail = cur && cur.file_email && String(cur.file_email).trim().toLowerCase();
       const envEmail = cur && cur.env_email && String(cur.env_email).trim().toLowerCase();
       if (fileEmail && envEmail && fileEmail !== envEmail) {
-        return res.status(409).json({ error: 'The borrower’s email on file changed since this package was sent. A resend can’t update the address — use “Change email & re-send” on the signer to re-address it (or void and re-issue).' });
+        driftNotice = `Heads up: the borrower’s email on the file (${fileEmail}) differs from the one this package was sent to (${envEmail}). The reminder went to the package’s address — use “Change email & re-send” on the signer if it should go to the file’s.`;
       }
+    }
+    /* ONE SIGNER OR THE CURRENT ONES. `recipientRowId` narrows the resend to one signer
+       (the per-signer "Resend to this address" button); without it every signer whose
+       turn it is gets the reminder. */
+    let onlyRecipientIdDs = null;
+    const recipientRowId = String((req.body && req.body.recipientRowId) || '').trim();
+    if (recipientRowId) {
+      const rr = (await db.query(
+        `SELECT recipient_id_ds, email FROM esign_recipients WHERE id = $1 AND envelope_row_id = $2`, [recipientRowId, row.id])).rows[0];
+      if (!rr) return res.status(404).json({ error: 'That signer is not on this package.' });
+      onlyRecipientIdDs = rr.recipient_id_ds;
     }
     try {
       await docusignLib.resendEnvelope(row.envelope_id);
@@ -21808,10 +21821,28 @@ router.post('/esign/:rowId/resend', async (req, res) => {
       }
       throw e;
     }
-    await audit(req, 'esign_resend', 'application', row.application_id, { purpose: row.purpose });
-    // Advisory only -- the reminder HAS gone out. It explains a nudge that is
-    // likely to produce nothing, so nobody presses it three more times.
-    res.json({ ok: true, notice: resendReadiness.staleNotice(row) || undefined });
+    /* THE EMAIL THAT ACTUALLY REACHES THE SIGNER. Since 2026-08-21 every recipient is a
+       captive (embedded) signer, and DocuSign sends a captive recipient NO email — so
+       `resend_envelope=true` above re-notifies nobody, and this route reported "Reminder
+       resent" while nothing left the building. That is the defect behind the owner's
+       report (2026-09-01: "you can only change the email and resend"): the change-email
+       path was the only one that called PILOT's own invitation. The same call, forced,
+       is the resend. The verdict is REAL: `sent` is how many invitations went out. */
+    const nudged = await require('../lib/esign/notify-signers').notifyReadyToSign(row.id, {
+      db, force: true, ...(onlyRecipientIdDs ? { onlyRecipientIdDs } : {}),
+    });
+    await audit(req, 'esign_resend', 'application', row.application_id,
+      { purpose: row.purpose, envelopeRowId: row.id, recipientRowId: recipientRowId || undefined,
+        sent: nudged.sent, recipients: nudged.recipients });
+    const notices = [resendReadiness.staleNotice(row), driftNotice].filter(Boolean);
+    if (!nudged.sent) {
+      // Honest: nothing went out. Say why it is likely (nobody is at their turn / already
+      // signed) instead of a false "resent".
+      return res.json({ ok: false, sent: 0, recipients: [],
+        error: 'No reminder went out — nobody on this package is waiting to sign right now (already signed, declined, or not their turn yet).',
+        notice: notices.join(' ') || undefined });
+    }
+    res.json({ ok: true, sent: nudged.sent, recipients: nudged.recipients, notice: notices.join(' ') || undefined });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -21834,6 +21865,7 @@ router.post('/esign/:rowId/recipient-email', async (req, res) => {
     });
     await audit(req, 'esign_recipient_email_changed', 'application', row.application_id, {
       purpose: row.purpose, role: out.role, from: out.prevEmail, to: out.email, differsFromFile: out.differsFromFile,
+      envelopeRowId: row.id, recipientRowId,   // so the package's own log can show this line (esign/events)
     });
     res.json({ ok: true, ...out });
   } catch (e) {
@@ -21858,7 +21890,7 @@ router.post('/esign/:rowId/void', async (req, res) => {
     await db.query(
       `UPDATE esign_envelopes SET status='voided', voided_at=now(), void_reason=$2, updated_at=now() WHERE id=$1`,
       [row.id, reason]);
-    await audit(req, 'esign_void', 'application', row.application_id, { purpose: row.purpose, reason });
+    await audit(req, 'esign_void', 'application', row.application_id, { purpose: row.purpose, reason, envelopeRowId: row.id });
     res.json({ ok: true });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
@@ -21876,7 +21908,7 @@ router.post('/esign/:rowId/clear', async (req, res) => {
     const reason = String((req.body && req.body.reason) || '').trim() || undefined;
     const out = await require('../lib/esign/clear').clearPackage({ rowId: row.id, actorId: req.actor.id, reason, db, docusign: docusignLib });
     await audit(req, 'esign_clear', 'application', row.application_id,
-      { purpose: row.purpose, voided: out.voided, docsCleared: out.docsCleared, conditionsReopened: (out.conditionsReopened || []).length });
+      { envelopeRowId: row.id, purpose: row.purpose, voided: out.voided, docsCleared: out.docsCleared, conditionsReopened: (out.conditionsReopened || []).length });
     res.json({ ok: true, ...out });
   } catch (e) {
     if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
@@ -21901,7 +21933,7 @@ router.post('/esign/:rowId/countersign-view', async (req, res) => {
       returnUrl, email: rec.email, userName: rec.name,
       clientUserId: rec.client_user_id, recipientId: rec.recipient_id_ds,
     });
-    await audit(req, 'esign_countersign_view', 'application', row.application_id, { purpose: row.purpose });
+    await audit(req, 'esign_countersign_view', 'application', row.application_id, { purpose: row.purpose, envelopeRowId: row.id });
     res.json({ url });
   } catch (e) { sendEsignError(res, e); }
 });
