@@ -511,7 +511,10 @@ async function waive(loanId, conditionId, staffId, reason, client = db) {
  *
  * EVERY STAMP IS CLEARED. A reopened condition that still reads "waived by
  * Chaya" is a row that contradicts itself, and the next person to look at it
- * would believe the stamp over the status.
+ * would believe the stamp over the status. That now includes the loan officer's
+ * OWN "done" stamp: a condition back on the list is one nobody has finished,
+ * and leaving `reviewed_at` set would tell the officer they had already done
+ * their step on work that has just come back to them.
  */
 async function reopen(loanId, conditionId, client = db) {
   const w = ownerWhere(ownerOf('lt_loan', loanId), null, 2);
@@ -520,12 +523,56 @@ async function reopen(loanId, conditionId, client = db) {
         SET status = 'outstanding',
             signed_off_at = NULL, signed_off_by = NULL,
             waived_at = NULL, waived_by = NULL, waived_reason = NULL,
+            reviewed_at = NULL, reviewed_by = NULL,
             updated_at = now()
       WHERE id = $1::uuid AND ${w.sql} RETURNING id, status, waived_at, is_required`,
     [String(conditionId), ...w.params],
   );
   if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
   return { ok: true, condition: shapeStatus(rows[0]) };
+}
+
+/**
+ * THE LOAN OFFICER'S OWN STEP — "I have done my part", nothing more.
+ *
+ * This is the SAME fact the short-term side records, in the SAME two columns of
+ * the SAME shared table (`checklist_items.reviewed_by` / `reviewed_at`, db/033),
+ * which is why it needed no migration: Long-Term already owns rows in that table
+ * (db/652/653) and the ledger already grants writing them. The shared condition
+ * components have always SENT it (`{reviewed: true}`) and always rendered it
+ * ("Marked done by X"); Long-Term was the only side with no door behind the
+ * button, so the button refused.
+ *
+ * IT IS A STAMP, NOT A STATUS. Marking done deliberately moves NOTHING else —
+ * not the status, not the sign-off, not `is_required`. That is the whole point
+ * of the step: the officer says they are finished, and the back office still
+ * decides whether the condition is met. Collapsing the two would let one person
+ * clear a condition that a second pair of eyes is supposed to clear.
+ *
+ * OWNER-SCOPED like every other door here, so a condition id from another file
+ * (or from a short-term file) matches nothing and answers 404 rather than
+ * stamping somebody else's row.
+ */
+async function markDone(loanId, conditionId, staffId, done, client = db) {
+  const on = done !== false;
+  // A stamp with nobody's name on it is unreadable a year later, which is the
+  // one thing this column exists to prevent — so a nameless mark is refused
+  // rather than written as a bare timestamp.
+  if (on && !staffId) {
+    return { ok: false, status: 400, error: 'A “done” mark records who did it, so it needs a signed-in member of staff.' };
+  }
+  const w = ownerWhere(ownerOf('lt_loan', loanId), null, 2);
+  const { rows } = await client.query(
+    `UPDATE checklist_items
+        SET reviewed_at = ${on ? 'now()' : 'NULL'},
+            reviewed_by = ${on ? '$3::uuid' : 'NULL'},
+            updated_at = now()
+      WHERE id = $1::uuid AND ${w.sql}
+      RETURNING id, status, waived_at, is_required, reviewed_at`,
+    on ? [String(conditionId), ...w.params, staffId] : [String(conditionId), ...w.params],
+  );
+  if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
+  return { ok: true, condition: { ...shapeStatus(rows[0]), reviewedAt: rows[0].reviewed_at || null } };
 }
 
 /** Move a condition to a working state without claiming it is finished. */
@@ -664,6 +711,7 @@ module.exports = {
   satisfy,
   waive,
   reopen,
+  markDone,
   setStatus,
   setNote,
   addFromTemplate,
