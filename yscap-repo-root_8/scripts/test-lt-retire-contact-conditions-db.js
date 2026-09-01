@@ -64,6 +64,42 @@ const RETIRED = ['lt_landlord_contact', 'lt_payoff_contact'];
   try {
     await cx.query('BEGIN');
 
+    // ── THE WORLD THIS FILE IS ABOUT, BUILT RATHER THAN ASSUMED ───────────
+    // EVERY claim below is about a database that CARRIED these two conditions.
+    // An EMPTY one never did, and never will: the library no longer lists them,
+    // so `seed` writes nothing and db/660's UPDATE matches no row. Leaning on
+    // whichever rows an earlier boot happened to leave behind is how this suite
+    // passed on a developer's database, where the two were seeded weeks ago, and
+    // failed on CI's freshly created one, where they have never existed.
+    //
+    // So the pre-retirement world is BUILT here — inside the transaction that
+    // rolls back — and db/660 is then run against it. Written the way `seed`
+    // writes a template, for the same reason `reAttach` below is written the way
+    // the engine writes an item: what is under test is what happens to rows
+    // exactly like the ones on live files today. `DO NOTHING` because a database
+    // that already carries them (every deployed one) must be left exactly as it
+    // stands and tested as it stands.
+    const stageRetired = async (code, label, config) => {
+      const { item_kind, tool_key } = vocab.kindToShared('form');
+      await cx.query(
+        `INSERT INTO checklist_templates
+           (code, scope, label, audience, item_kind, tool_key, category,
+            auto_apply, is_required, slots, config, is_active, origin)
+         VALUES ($1,'lt_loan',$2,$3,$4,$5,$6,'rules',true,'[]'::jsonb,$7::jsonb,true,'system')
+         ON CONFLICT (code) DO NOTHING`,
+        [code, label, vocab.audienceToShared('both'), item_kind, tool_key,
+          vocab.categoryOf('prior_to_submission'), JSON.stringify(config)]);
+    };
+    await stageRetired('lt_landlord_contact', 'Landlord’s contact details',
+      { contactTypes: [{ key: 'landlord', label: 'Landlord / management company', required: true }],
+        fields: ['monthly_rent', 'rented_since'] });
+    await stageRetired('lt_payoff_contact', 'Servicer of the loan being paid off',
+      { contactTypes: [{ key: 'payoff', label: 'Servicer being paid off', required: true }] });
+    ok((await cx.query(
+      `SELECT count(*)::int AS n FROM checklist_templates WHERE code = ANY($1)`, [RETIRED]
+    )).rows[0].n === 2,
+    'the database under test carries both rows, the way every database that ever had these conditions does');
+
     // ── A. THE LIBRARY AND THE TEMPLATES ────────────────────────────────────
     console.log('\nA. THE TWO ARE OUT OF THE LIBRARY AND RETIRED ON DISK');
     {
