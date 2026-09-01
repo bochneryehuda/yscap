@@ -245,7 +245,9 @@ function buildLetter(opts = {}) {
      cell at headline weight, the rest small underneath. `figures` is rendered only
      when its primary carries a value, so a document with no hero simply prints the
      meta rows and the attachment — never an empty band. */
-  const hero = (doc.layout.blocks || []).find((b) => b && b.t === "hero");
+  // Through the shared flattener, not a bare `find`: a block can CONTAIN blocks,
+  // and a walker that does not know it goes silently blind rather than erroring.
+  const hero = layout.flattenBlocks(doc.layout.blocks || []).find((b) => b && b.t === "hero");
   const cells = hero && Array.isArray(hero.cells) ? hero.cells.filter((c) => c && c.value) : [];
   const figures = cells.length
     ? {

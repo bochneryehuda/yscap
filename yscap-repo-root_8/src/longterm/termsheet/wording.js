@@ -295,13 +295,27 @@ function breakEvenSentence(row, member, anchor) {
     }
     return null;
   }
+  /* ⛔ "AHEAD" IS EXPLAINED, IN BOTH DIRECTIONS, BECAUSE IT IS THE WHOLE POINT
+     OF THE SENTENCE (owner-directed 2026-08-31: *"you need to explain a little
+     bit more what your head means, and the same thing for the opposite of your
+     head."*). The old wording named the month and left the reader to work out
+     what happened at it. A break-even is one idea said two ways — money paid
+     today against money saved monthly — and which side of it a borrower lands
+     on is decided by something only they know: how long they intend to hold the
+     loan. So each sentence says what the month MEANS, and then says what happens
+     on the other side of it, in the borrower's own terms (selling, refinancing,
+     holding on). */
   if (dCost > 0) {
     return `${label} costs ${money(dCost)} more at closing${against} and saves ${money(-dMonthly)} a month. `
-      + `You are ahead after ${w}. If you expect to sell or refinance before then, it costs you money.`;
+      + `The monthly saving pays that back after ${w} — from then on you are ahead, `
+      + `and every month after that is ${money(-dMonthly)} you keep. `
+      + 'Sell or refinance before then and you do not get it back: you would have paid the '
+      + `${money(dCost)} and collected only part of the saving.`;
   }
   return `${label} costs ${money(-dCost)} less at closing${against} and ${money(dMonthly)} more a month. `
-    + `You stay ahead until month ${Math.round(row.breakEvenMonths)} — ${w.replace(/^\d+ months? \(/, '').replace(/\)$/, '')}. `
-    + 'Past that, the higher rate has eaten the difference.';
+    + `You keep the ${money(-dCost)} today, and the higher payment eats it back over ${w}. `
+    + 'Pay this loan off before then and you are ahead; hold it longer and the cheaper closing '
+    + 'has cost you more than it saved.';
 }
 
 /**
@@ -309,26 +323,56 @@ function breakEvenSentence(row, member, anchor) {
  * works out to a year on the extra borrowing — the number that makes the choice
  * actionable against the borrower's own next deal.
  */
-function incrementalSentence(row, member, anchor) {
+function incrementalSentence(row, member, anchor, shownDscr) {
   if (!row || row.isAnchor) return null;
   const label = (member && member.label) || 'This option';
   const dLoan = row.deltaLoanDollars;
   const dMonthly = row.deltaMonthlyDollars;
   if (!nn(dLoan) || !nn(dMonthly) || dLoan === 0) return null;
+
+  /* ⛔ THE DSCR THIS SENTENCE QUOTES IS THE ONE THE PAGE PRINTS, AND IT IS
+     HANDED IN RATHER THAN READ OFF THE MEMBER. Found by rendering, not by
+     reading: the table derives the ratio from the total payment it prints
+     beside it (`layout.shownDscr`), while this sentence read `member.dscr` —
+     the single figure the board priced on. MEASURED on a real scenario sheet,
+     the same page said `DSCR 1.09` in the column and *"moves from 1.24 to
+     1.15"* in the sentence directly beneath it. Both were honestly computed and
+     one of them had to go, because a reader can divide the two numbers printed
+     above and only one answer matches.
+
+     A caller that hands in nothing falls back to the member's own figure, which
+     is what a page with no printed total shows anyway — so the two can still
+     never disagree. */
+  const ds = shownDscr || {};
+  const a = nn(ds.anchor) ? ds.anchor : (anchor && anchor.dscr);
+  const b = nn(ds.member) ? ds.member : (member && member.dscr);
+  const dscrBit = (nn(a) && nn(b) && Math.abs(a - b) >= 0.005)
+    ? `Your DSCR moves from ${a.toFixed(2)} to ${b.toFixed(2)}.` : null;
+
   if (dLoan > 0) {
     const bits = [`${label} keeps ${money(dLoan)} in your pocket and costs ${money(dMonthly)} a month more.`];
     if (nn(row.incrementalCostPct)) {
       bits.push(`That extra ${money(dLoan)} of borrowing is costing you about ${pct(row.incrementalCostPct)} a year `
         + '— compare that against what it earns in your next deal.');
     }
-    const a = anchor && anchor.dscr;
-    const b = member && member.dscr;
-    if (nn(a) && nn(b) && Math.abs(a - b) >= 0.005) {
-      bits.push(`Your DSCR moves from ${a.toFixed(2)} to ${b.toFixed(2)}.`);
-    }
+    if (dscrBit) bits.push(dscrBit);
     return bits.join(' ');
   }
-  return `${label} borrows ${money(-dLoan)} less and costs ${money(-dMonthly)} a month less.`;
+
+  /* ⛔ THE SMALLER OPTION GETS THE SAME NUMBER, SAID FROM THE OTHER SIDE. The
+     cost of the extra borrowing is a fact about the GAP between two options, so
+     it is equally true of both of them; it was simply unstated on whichever one
+     happened to borrow less than the officer's chosen anchor, which left the
+     reader with a dash on a row and no way to ask the question the row exists to
+     answer. It is the same arithmetic with the two loans swapped — never a
+     second formula — so the two rows can never disagree about one gap. */
+  const bits = [`${label} borrows ${money(-dLoan)} less and costs ${money(-dMonthly)} a month less.`];
+  if (nn(row.incrementalCostPct)) {
+    bits.push(`Going the other way — taking that extra ${money(-dLoan)} — would cost you about `
+      + `${pct(row.incrementalCostPct)} a year on it.`);
+  }
+  if (dscrBit) bits.push(dscrBit);
+  return bits.join(' ');
 }
 
 /**
@@ -377,6 +421,52 @@ function prepaySentence(months, structure) {
 /** Fixed strings. One place, so every surface says them identically. */
 const DISCLOSURE = 'Pricing is indicative and subject to change until locked. This is not a commitment to lend.';
 const THIRD_PARTY = 'Third-party costs — title, escrow, recording, appraisal — are not included.';
+
+/**
+ * THE PROPERTY, IN ENGLISH — the vendor's enum is not a word for a client.
+ *
+ * Owner-reported 2026-08-31, off a REAL export: the sheet printed
+ * `Property type  SingleFamily`. That is Lender Price's wire value, carried
+ * verbatim from `lenderprice/field-registry.js` through the scenario onto a
+ * document that goes to a borrower for signature. Every fixture in every suite
+ * had been written with a human spelling ("Single family"), so nothing ever saw
+ * it — the defect lived exactly in the gap between our test data and the real
+ * board's vocabulary.
+ *
+ * ⛔ IT NEVER GUESSES. An enum this table does not carry is passed through
+ * UNCHANGED rather than prettified by a regex: a vendor word a reader can look
+ * up is recoverable, and a wrong one invented by splitting on capitals is not
+ * ("CondoTel" is a condo-hotel, not "Condo Tel"). A value that is already a
+ * human spelling passes through for the same reason.
+ *
+ * The keys are the vendor's `propertyType` OUTPUTS — what actually lands on the
+ * scenario — not the input aliases that resolve to them.
+ */
+const PROPERTY_TYPE_WORDS = {
+  SingleFamily: 'Single family',
+  PlannedUnitDevelopment: 'Planned unit development (PUD)',
+  UnitDwelling_2_4: '2-4 unit',
+  Modular: 'Modular home',
+  Townhouse: 'Townhouse',
+  Condos: 'Condominium',
+  DetachedCondominium: 'Detached condominium',
+  HighRiseCondo: 'High-rise condominium',
+  MidRiseCondo: 'Mid-rise condominium',
+  SiteCondo: 'Site condominium',
+  CondoGarden: 'Garden condominium',
+  CondoTel: 'Condo-hotel',
+  Cooperative: 'Co-op',
+  MultiFamily: 'Multifamily',
+  ManufacturedHousing: 'Manufactured home',
+  ManufacturedHousingSingleWide: 'Manufactured home (single-wide)',
+  ManufacturedHousingDoubleWide: 'Manufactured home (double-wide)',
+};
+
+function propertyTypeWords(raw) {
+  const v = raw == null ? '' : String(raw).trim();
+  if (!v) return null;
+  return PROPERTY_TYPE_WORDS[v] || v;
+}
 
 /** The fee list's labels, borrower-side. The engine's own keys are internal. */
 const CHARGE_LABELS = {
@@ -430,4 +520,5 @@ module.exports = {
   monthsWords, breakEvenSentence, incrementalSentence,
   prepaySentence, chargeRow, dateLong, dateTimeLong, ZONE,
   DISCLOSURE, THIRD_PARTY, CHARGE_LABELS, LENDER_FEE_KEYS, PREPAY_SENTENCES,
+  propertyTypeWords, PROPERTY_TYPE_WORDS,
 };

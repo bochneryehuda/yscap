@@ -101,6 +101,7 @@ const entry = `
 import React from 'react';
 import { renderToString } from 'react-dom/server';
 import LtPricer, { PriceBuild, RateRow, IneligibleView, DscrCalc, CompSwitch, ChargeList, buildRateStack, toScenario, ltvOf, InvestorPicker, InvestorStripRow } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtPricer.jsx'))};
+import LtScenarioSave, { boardHeadline } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtScenarioSave.jsx'))};
 globalThis.__React = React;
 globalThis.__renderToString = renderToString;
 globalThis.__LtPricer = LtPricer;
@@ -115,6 +116,8 @@ globalThis.__toScenario = toScenario;
 globalThis.__ltvOf = ltvOf;
 globalThis.__InvestorPicker = InvestorPicker;
 globalThis.__InvestorStripRow = InvestorStripRow;
+globalThis.__LtScenarioSave = LtScenarioSave;
+globalThis.__boardHeadline = boardHeadline;
 `;
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lt-pricer-render-'));
@@ -156,6 +159,8 @@ const CompSwitch = globalThis.__CompSwitch;
 const ChargeList = globalThis.__ChargeList;
 const buildRateStack = globalThis.__buildRateStack;
 const toScenario = globalThis.__toScenario;
+const LtScenarioSave = globalThis.__LtScenarioSave;
+const boardHeadline = globalThis.__boardHeadline;
 
 const render = (el) => renderToString(el);
 const attempt = (fn) => { try { return { html: fn(), err: null }; } catch (e) { return { html: null, err: e }; } };
@@ -268,6 +273,49 @@ const stack = buildRateStack(capture.programs);
     'R17 a quote with no price sorts last, never as though it were zero');
   ok(buildRateStack(null).rates.length === 0 && buildRateStack(undefined).quoteCount === 0,
     'R18 an absent answer builds an empty stack rather than throwing');
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   R18b..R18j — SAVE THIS SCENARIO (db/658). The save half of the saved-scenario
+   feature lives on this screen; the list, the re-run and the create-from-scratch
+   live on the Scenarios page, and a saved scenario never reloads here.
+
+   The BUTTON is proven on the first paint — a save panel nobody can reach is the
+   same silence as a back end nothing calls. The HEADLINE is proven against the
+   real `buildRateStack` output rather than a hand-built object, because the one
+   way this goes wrong quietly is reading the wrong field off the vendor's shape:
+   a rate lives at `options[].priceBuild.noteRate`, and a mirror that read
+   `q.noteRate` would answer "nothing priced" on every real board and look like
+   an honest empty rather than a bug.
+   ────────────────────────────────────────────────────────────────────────── */
+{
+  const { html } = attempt(() => render(React.createElement(LtPricer)));
+  ok(/Save this scenario/.test(html || ''),
+    'R18b the save action is on the first paint, beside the press it belongs to');
+
+  const panel = attempt(() => render(React.createElement(LtScenarioSave,
+    { form: { f: { fico: '760' }, calc: {} }, boardStack: null })));
+  ok(panel.err === null, `R18d the panel renders without throwing${panel.err ? ` — ${panel.err.message}` : ''}`);
+
+  const priced = buildRateStack([
+    { lender: 'A', options: [{ priceBuild: { noteRate: 6.5, price: 99.0 } }] },
+    { lender: 'B', options: [{ priceBuild: { noteRate: 6.25, price: 98.0 } }] },
+    { lender: 'B', options: [{ priceBuild: { noteRate: 6.25, price: 99.75 } }] },
+  ]);
+  const h = boardHeadline(priced);
+  ok(h && h.bestRate === 6.25, 'R18e the headline takes the LOWEST rate on the board');
+  ok(h && h.bestPrice === 99.75,
+    'R18f …with the best price AT that rate — the two belong to one quote, or it describes a product nobody can buy');
+  ok(h && h.programs === 3 && h.lenders === 2,
+    `R18g …and counts what was priced and who priced it (${h && h.programs}/${h && h.lenders})`);
+
+  // NOTHING IS INVENTED. An empty board, an unpriced board and an absent one all
+  // save no headline rather than a zero that would later read as a real rate.
+  ok(boardHeadline(buildRateStack([])) === null, 'R18h an empty board saves no headline');
+  ok(boardHeadline(buildRateStack([{ lender: 'A', options: [{ priceBuild: { price: 99 } }] }])) === null,
+    'R18i …and a board the vendor priced with no rate saves none either');
+  ok(boardHeadline(null) === null && boardHeadline(undefined) === null,
+    'R18j …and an absent board answers null rather than throwing');
 }
 
 // ---------------------------------------------------------------------------
@@ -479,9 +527,53 @@ const stack = buildRateStack(capture.programs);
 // `--ink*` is a LIGHT paper colour in this palette — the names LIE. A text colour taken from one
 // renders white on white, which is how a whole staff card went invisible once already.
 // ---------------------------------------------------------------------------
-for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/ppeStyles.js']) {
+for (const f of ['app-v2/src/longterm/LtPricer.jsx', 'app-v2/src/longterm/LtScenarioFields.jsx', 'app-v2/src/longterm/ppeStyles.js']) {
   const src = fs.readFileSync(path.join(repo, f), 'utf8');
   ok(!/color:\s*['"`]?var\(--ink/.test(src), `R44 ${path.basename(f)} never uses a --ink* token as a text colour`);
+}
+
+// ---------------------------------------------------------------------------
+// 7b) ⛔ THE SCENARIO'S FIELDS ARE ONE COMPONENT, AND EVERY SCREEN MOUNTS IT
+//
+// `docs/longterm/SAVED-SCENARIOS-RESEARCH.md` D1: the owner asked for saved scenarios on BOTH the
+// pricing engine and a scenario page. That research named the one real risk in the shape they chose
+// — *"a second screen means a second copy of twenty-one fields, and the copy which drifts is the one
+// that prices the wrong deal"* — and answered it with a BUILD RULE rather than an argument.
+//
+// So this is the rule, enforced: every pricing field id (`pe-*`) is declared in exactly ONE file.
+// A screen that grows its own copy of the loan amount, the FICO or the prepayment penalty fails
+// here, which is the only place that failure is cheap. It is a SOURCE check because the property is
+// about which FILE a control is written in; a render can only see the one screen it rendered.
+// ---------------------------------------------------------------------------
+{
+  const dir = path.join(repo, 'app-v2/src/longterm');
+  const owners = new Map();          // field id -> [files that declare it]
+  for (const f of fs.readdirSync(dir)) {
+    if (!/\.jsx?$/.test(f)) continue;
+    const src = fs.readFileSync(path.join(dir, f), 'utf8');
+    for (const m of src.matchAll(/\bid="(pe-[a-z0-9-]+)"/g)) {
+      const list = owners.get(m[1]) || [];
+      if (!list.includes(f)) list.push(f);
+      owners.set(m[1], list);
+    }
+  }
+  const shared = [...owners.entries()].filter(([, files]) => files.length > 1);
+  ok(owners.size >= 10, `R44b the sweep can see the scenario's fields at all (${owners.size} of them) — a sweep that found none would pass forever`);
+  ok(shared.length === 0,
+    `R44c every pricing field is declared in ONE file${shared.length ? `: ${shared.map(([k, v]) => `${k} in ${v.join(' + ')}`).join('; ')}` : ''}`);
+  /* ⛔ AND THE SCENARIO'S OWN FIELDS LIVE IN THE SHARED COMPONENT. The `pe-` prefix is the pricing
+     ENGINE's, not the field set's, so one control legitimately sits outside it: `pe-waive-fees`
+     belongs to the COMPENSATION SWITCH, which is a lens on the board (it is never sent to Lender
+     Price and is not part of what a scenario IS). It is named here rather than excluded by a looser
+     pattern, so a second stray cannot slip in behind it. */
+  const OUTSIDE = new Set(['pe-waive-fees']);
+  const strays = [...owners.entries()]
+    .filter(([id, files]) => !OUTSIDE.has(id) && !files.includes('LtScenarioFields.jsx'))
+    .map(([id, files]) => `${id} in ${files.join(' + ')}`);
+  ok(strays.length === 0,
+    `…and every one of them is declared in LtScenarioFields.jsx, which both screens mount${strays.length ? `: ${strays.join('; ')}` : ''}`);
+  ok([...owners.keys()].filter((id) => !OUTSIDE.has(id)).length >= 10,
+    '…with the named exception genuinely being an exception, not most of the list');
 }
 
 // ---------------------------------------------------------------------------

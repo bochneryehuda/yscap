@@ -59,6 +59,39 @@ const path = require("path");
   });
   const PREPARED = { borrowerName: "Miriam Rosenberg", propertyAddress: "14 Oak Street, Lakewood, NJ 08701" };
 
+  /* ⛔ A CLAIMED DSCR IS MEASURED OFF THE OPTION IT BELONGS TO, NEVER COPIED.
+     The re-price rule refuses a document whose stated ratio sits in a different
+     DSCR band from the one its own figures produce — and it now asks that of
+     EVERY option of every document kind, not just the first of a term sheet.
+     This suite's "deals" fixture copied the base scenario and changed the loan
+     from 375,000 to 300,000 while keeping its 1.24: MEASURED, that option's real
+     ratio is 1.4255 (band 1.40-1.50) against a claim of 1.24 (band 1.15-1.25).
+     The fixture had always been wrong; the widened rule is simply the first
+     thing to say so, which is what it is for.
+
+     A hard-coded 1.43 would go stale the day the rate, the loan or the rent
+     moves, so the ratio is worked out from the member the snapshot actually
+     builds — the same figures the sheet prints — and the claim is set from it.
+     A fixture that cannot drift is the only kind worth building a refusal test on. */
+  const snapshotLib = require("../src/longterm/termsheet/snapshot");
+  /* The builder REFUSES without a compensation plan, and this suite deliberately
+     has none of its own — the whole of section A exists to prove the door takes
+     the plan from the SERVER rather than the caller. A plan is therefore passed
+     here purely to satisfy the builder, and it cannot colour the answer: the
+     monthly payment is a function of the loan, the rate and the term, and the
+     plan touches only price and charges. CHECKED, not assumed — measured at
+     1970.79 under three deliberately unlike plans (2/2/2 with fees, 0.25/3.5/1
+     with none, 1/1/0.5 with large ones). */
+  const MEASURE_PLAN = { borrowerPaid: 2, ysp: 2, lenderPaid: 2, applicationFee: 500, commitmentFee: 1595 };
+  const measuredDscr = (sel) => {
+    const built = snapshotLib.buildSnapshot({ selections: [sel], plan: MEASURE_PLAN, prepared: {} });
+    if (!built.ok) throw new Error(`fixture refused: ${built.error}`);
+    const m = built.snapshot.members[0];
+    const sc = m.scenario || {};
+    const piti = m.monthlyPI + (sc.taxMonthly || 0) + (sc.insuranceMonthly || 0) + (sc.hoaMonthly || 0);
+    return Math.round((sc.rentMonthly / piti) * 100) / 100;
+  };
+
   try {
     const row = (await db.query(
       `INSERT INTO staff_users (email, full_name, role, is_active)
@@ -253,7 +286,14 @@ const path = require("path");
       // Same scenario on both = a comparison of PRICES. A different scenario on
       // the second = a comparison of DEALS. Both are issued, because the owner
       // named both and they are separate document kinds in the store.
+      /* The base 1.24 is left alone: MEASURED, option A comes to 1.16 and option B
+         on the SAME scenario comes to 1.21, and 1.24 shares the 1.15-1.25 band
+         with both — so the rule is satisfied and the "prices" case is unchanged.
+         Only the smaller loan crossed a band, and only it is corrected. */
       const otherScenario = Object.assign({}, SCENARIO, { loan: 300000, ltv: 60 });
+      otherScenario.dscr = measuredDscr(
+        Object.assign({}, selection(null), { ratePct: 6.875, rawPrice: 101.4, scenario: otherScenario }),
+      );
       const kinds = [
         { what: "prices", body: { selections: [optA, optB], prepared: PREPARED }, expect: "comparison" },
         {

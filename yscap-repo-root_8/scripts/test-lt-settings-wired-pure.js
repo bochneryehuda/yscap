@@ -83,18 +83,47 @@ check(wired.length > 15,
 
 console.log('\nevery "not in use yet" is a reason, not a shrug');
 
+/* ⛔ A RETIRED SETTING IS NOT AN UNWIRED ONE, AND THE TENSE IS THE WHOLE POINT.
+   The four original reasons all say "not in use YET" — declared ahead of the code
+   that will read them, so a buyer who changes one is waiting for a release. A
+   RETIRED setting was read, the reader is gone, and no release is coming: telling
+   that buyer "yet" is a promise nobody intends to keep. So the two are held to
+   DIFFERENT sentences, and neither may borrow the other's — a genuinely unbuilt
+   setting must not describe itself as retired to look settled, and a retired one
+   must not say "yet" to look temporary.
+
+   ⛔ AND A RETIRED REASON MUST NAME WHAT RUNS INSTEAD. That is the entire reason
+   the row is kept rather than deleted: a buyer who stored a value is owed an
+   answer to "then what governs this now?", and a row that only says "retired"
+   sends them hunting for a setting that no longer exists — the silent
+   disappearance keeping the row was meant to avoid. This is the one assertion
+   here that STRENGTHENS the rule rather than widening it. */
 for (const s of all.filter((x) => x.notWired)) {
   if (typeof s.notWired !== 'string' || s.notWired.length < 60) {
     failures += 1;
     console.error(`  FAIL ${s.key}: "not in use yet" with nothing after it`);
   }
-  if (!/not in use yet/i.test(s.notWired)) {
+  if (s.retired) {
+    if (!/no longer in use/i.test(s.notWired)) {
+      failures += 1;
+      console.error(`  FAIL ${s.key}: retired, but does not SAY it is no longer in use — "not in use yet" promises a wiring that is never coming`);
+    }
+    if (!/\binstead\b|\bnow runs on\b|\bthat is the one to change\b/i.test(s.notWired)) {
+      failures += 1;
+      console.error(`  FAIL ${s.key}: retired without naming what governs this now — the reason the row is kept at all`);
+    }
+  } else if (!/not in use yet/i.test(s.notWired)) {
     failures += 1;
     console.error(`  FAIL ${s.key}: does not SAY it is not in use, in words a person reads`);
   }
 }
 check(true,
-  'each one states plainly that it is not in use and why — "the field is pinned to what we measured", "the rule is settled in code", "that part is not built", "the connection lives with the credentials" are four different answers, and the difference decides whether a buyer waits or asks');
+  'each one states plainly that it is not in use and why — "the field is pinned to what we measured", "the rule is settled in code", "that part is not built", "the connection lives with the credentials" and "retired, here is what runs instead" are five different answers, and the difference decides whether a buyer waits, asks, or changes something else');
+
+// A `retired` flag with no reason behind it would read on the screen as an
+// ordinary unwired knob and lose the one sentence that makes the row worth keeping.
+check(all.filter((x) => x.retired).every((x) => x.notWired),
+  '…and a setting marked retired always carries the reason, so the screen can never show it as a knob that merely has not been wired yet');
 
 // ── The screen has to SAY it ───────────────────────────────────────────────
 console.log('\nand the settings screen never shows a live-looking knob that is not');
@@ -110,6 +139,17 @@ check(/const editable = !notWired &&/.test(ui),
   '…and the control itself is not editable, so nobody types a value that goes nowhere and believes it took');
 check(/Nothing reads this yet/.test(ui),
   '…while the value is still SHOWN — it is what a buyer would be changing once it is wired, so hiding it would answer a different question than the one they asked');
+check(/setting\.retired \? 'Retired/.test(ui),
+  '…and a RETIRED knob says so rather than "yet" — a buyer told "yet" about a setting nothing will ever read again waits for a release that is not coming');
+/* The screen states the lead sentence in TWO places — the chip and the callout's
+   bold opener — and each strips it from the body so it is not said twice. Both
+   have to key on the same flag: the callout was the one that read "Not in use
+   yet. No longer in use…", contradicting itself in its own first line, and no
+   grep for the chip would have found it. */
+check(/setting\.retired \? 'No longer in use\.' : 'Not in use yet\.'/.test(ui),
+  '…and the callout\'s own lead sentence agrees with it, so the reason never opens by contradicting itself');
+check(/\(Not in use yet\|No longer in use\)/.test(ui),
+  '…and both openers are stripped from the body beneath, so neither wording is printed twice');
 
 // ── The one that was WIRED rather than excused ─────────────────────────────
 console.log('\nthe eFolder vocabulary is the tenant\'s, not ours');

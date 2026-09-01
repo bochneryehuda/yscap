@@ -54,7 +54,16 @@ const PLANS = [
   { borrowerPaid: 1.5, ysp: 2.5, lenderPaid: 1, applicationFee: 500, commitmentFee: 1595 },
 ];
 
-const TYPES = ['Single family', '2-4 unit', 'Condo', 'Townhouse'];
+/* ⛔ THE VENDOR'S OWN VOCABULARY, NOT A HUMAN SPELLING. Owner-reported
+   2026-08-31 off a REAL export: the sheet printed `Property type SingleFamily`
+   — Lender Price's wire value, verbatim, on a document going to a borrower for
+   signature. Every fixture in every suite had been written the way a person
+   writes it ("Single family"), so 6,710 documents and 200,000 checks never once
+   saw the string a real board actually sends. The test data was wrong, not only
+   the code, and fixing the code without fixing the data would leave the next
+   enum free to leak the same way. */
+const TYPES = ['SingleFamily', 'UnitDwelling_2_4', 'Condos', 'Townhouse',
+  'HighRiseCondo', 'ManufacturedHousingDoubleWide', 'Single family'];
 const PREPAYS = [
   { prepayMonths: 60, prepayStructure: '5 Year' },
   { prepayMonths: 36, prepayStructure: '3 Year' },
@@ -174,6 +183,17 @@ function runCase(sels, plan, prepared, tag) {
   const junk = strings.find((t) => typeof t === 'string' && JUNK.test(t));
   ok(!junk, 'I2 no machine junk reaches the page', tag + ' :: ' + JSON.stringify(junk));
 
+  /* ── I2b NO VENDOR ENUM REACHES THE PAGE ───────────────────────────────
+     I2 catches a machine's ACCIDENTS — NaN, undefined, [object Object]. This
+     catches a machine's VOCABULARY, which is worse because it looks deliberate:
+     `SingleFamily` reads as a considered label rather than a leak, so nobody
+     queries it and it goes out under a signature. Judged on the wire values
+     themselves, so a new enum this suite has never seen still fails the moment
+     it is printed unconverted. */
+  const enums = strings.filter((t) => typeof t === 'string'
+    && /\b(?:SingleFamily|UnitDwelling_2_4|PlannedUnitDevelopment|HighRiseCondo|MidRiseCondo|SiteCondo|CondoGarden|CondoTel|DetachedCondominium|ManufacturedHousing(?:Single|Double)Wide|ManufacturedHousing|Cooperative|MultiFamily|Condos)\b/.test(t));
+  ok(!enums.length, 'I2b no vendor enum reaches the page', tag + ' :: ' + JSON.stringify(enums[0]));
+
   // ── I3 rule 10, on every document ──────────────────────────────────────
   ok(!audience.mentionsInvestor(page), 'I3 the investor never reaches the page', tag);
 
@@ -190,9 +210,72 @@ function runCase(sels, plan, prepared, tag) {
     }
   }
 
+  /* ── I9 A FIGURE THE PAGE STATES TWICE STATES THE SAME THING ────────────
+     THE INVARIANT THIS SUITE WAS MISSING, AND THE ONE THAT WOULD HAVE FOUND A
+     REAL DEFECT WITHOUT A HUMAN READING A RENDER. Every check above asks whether
+     something BAD is absent — junk, an investor's name, our compensation, a bare
+     points figure — or whether a structure is present. None asked whether the
+     document AGREES WITH ITSELF, and a page can be free of all of those and
+     still print two different answers to one question.
+
+     It did. MEASURED on a real scenario sheet: the table's column read
+     `DSCR 1.09` and the sentence directly beneath it read *"moves from 1.24 to
+     1.15"*. Both were honestly computed — the table divides by the total payment
+     it prints, the sentence read the single figure the board priced on — and a
+     reader dividing the two numbers printed above gets only one of them. It took
+     rendering a PDF and reading it to notice; over 6,710 documents this notices
+     it every time.
+
+     ⛔ IT COMPARES WHAT IS PRINTED, NOT WHAT IS COMPUTED. Re-deriving the ratio
+     here and checking both against it would pass the day both surfaces drift the
+     same way — and the failure being guarded is precisely two honest calculations
+     disagreeing. So the DSCR is read out of the table's own row and out of the
+     sentence's own words, and they are compared to each other. */
+  const cmp = s.comparison;
+  if (cmp && s.members.length > 1) {
+    const table = blocks.find((b) => b.t === 'table');
+    const dscrRow = table && (table.rows || []).find((r) => r[0] === 'DSCR');
+    if (dscrRow && Array.isArray(table.head)) {
+      /* The table's column order is the head's, and each head cell carries the
+         option's own `label` as a FIELD. Read it from there, never out of the
+         head's prose: the approved design heads a column with a tracked eyebrow,
+         an anchor tag and a name over two lines, and a guard that parsed the old
+         single string would simply have stopped matching — which is a guard
+         going quiet, not a guard passing. */
+      const shownFor = new Map();
+      table.head.forEach((h, i) => {
+        if (i === 0 || !h || typeof h !== 'object') return;
+        const label = String(h.label || '').trim();
+        const cell = dscrRow[i];
+        if (label && cell != null && cell !== '—') shownFor.set(label, String(cell));
+      });
+      for (const t of strings) {
+        if (typeof t !== 'string') continue;
+        const m = t.match(/^(.+?) (?:keeps|borrows) .*DSCR moves from (\d+\.\d+) to (\d+\.\d+)/);
+        if (!m) continue;
+        const [, label, from, to] = m;
+        const col = shownFor.get(label.trim());
+        if (col !== undefined) {
+          ok(col === to,
+            'I9 a DSCR the page states twice states the same thing',
+            `${tag} :: ${label} column says ${col}, its own sentence says ${to}`);
+        }
+        // The "from" is always the anchor's, whichever column that is.
+        const anchorHead = table.head.find((h) => h && typeof h === 'object' && h.anchor);
+        const anchorLabel = String((anchorHead || {}).label || '').trim();
+        const anchorCol = shownFor.get(anchorLabel);
+        if (anchorCol !== undefined) {
+          ok(anchorCol === from,
+            'I9 …and the ratio it compares FROM is the anchor\'s own column',
+            `${tag} :: anchor column says ${anchorCol}, the sentence compares from ${from}`);
+        }
+      }
+    }
+  }
+
   // ── I1 THE ONE THE OWNER NAMED ─────────────────────────────────────────
   // Anything the options disagree about may not appear as a single stated fact.
-  const cmpModel = s.comparison;
+  const cmpModel = cmp;
   if (cmpModel && Array.isArray(cmpModel.differs) && s.members.length > 1) {
     const recipient = blocks.find((b) => b.t === 'recipient');
     for (const dim of cmpModel.differs) {
@@ -223,7 +306,17 @@ function runCase(sels, plan, prepared, tag) {
     const recipient = blocks.find((b) => b.t === 'recipient');
     const facts = String((recipient && recipient.propertyFacts) || '');
     const uniqOf = (read) => Array.from(new Set(s.members.map((m) => String(read(m)))));
-    const types = uniqOf((m) => ((m.scenario || {}).propertyType) || '');
+    /* ⛔ TWO SPELLINGS OF ONE TYPE ARE NOT A DISAGREEMENT, and this check has to
+       ask the question the same way the page does. `SingleFamily` (the vendor's
+       wire value) and `Single family` (what a person types) are the same
+       property; the header humanises before deciding whether the options agree,
+       so a reader comparing RAW strings here would accuse a truthful header of
+       stating a contradiction it does not have. It is the same rule the RTL side
+       reached for twice — a free-text field is compared by MEANING, never by
+       spelling (db/288 for the term, db/322 for the property type). What the
+       check still catches is unchanged: a genuine single-family beside a condo
+       humanises to two different words and the header must state neither. */
+    const types = uniqOf((m) => wording.propertyTypeWords((m.scenario || {}).propertyType) || '');
     if (types.length > 1) {
       const named = types.filter((t) => t && facts.includes(t));
       ok(named.length === 0,

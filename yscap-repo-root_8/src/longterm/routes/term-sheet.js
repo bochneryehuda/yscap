@@ -162,12 +162,26 @@ function stamp(d) {
  * somebody changed it.
  */
 function expiryHoursFor(docKind, company) {
-  if (docKind === snapshot.DOC_KINDS.TERM_SHEET) {
-    const h = Number(setting(company, 'termSheet.expiryHours', 24));
-    return Number.isFinite(h) && h > 0 ? h : 24;
-  }
-  const d = Number(setting(company, 'termSheet.expiryDays', 2));
-  return (Number.isFinite(d) && d > 0 ? d : 2) * 24;
+  /* ⛔ ONE CLOCK, EVERY DOCUMENT (owner-directed 2026-08-31: *"It says that the
+     pricing expires in 72 hours on some of the sheets. Everything expires in 24
+     hours."*).
+
+     ⛔ THIS REVERSES A RECORDED DECISION, AND IT WAS PUT BACK TO THE OWNER
+     BEFORE IT WAS CHANGED. On 2026-08-30 a comparison was deliberately given a
+     LONGER window than a term sheet — the reasoning was that a comparison is a
+     working document rather than an offer, so it should not expire under
+     somebody over a weekend. The owner was shown that reasoning, and chose 24
+     everywhere anyway. Their call, recorded here rather than quietly overwritten
+     so the next person finds the argument and not just the number.
+
+     ⛔ AND IT IS ONE SETTING NOW, NOT TWO KEPT IN STEP. Two settings that are
+     supposed to agree are two settings that eventually do not, and the failure
+     is silent: a comparison would go on saying 48 hours after somebody moved the
+     term sheet to 12. `termSheet.expiryDays` is retired rather than read — it
+     stays in the registry, marked retired, so a company that stored a value
+     still sees what happened to it instead of finding a setting that vanished. */
+  const h = Number(setting(company, 'termSheet.expiryHours', 24));
+  return Number.isFinite(h) && h > 0 ? h : 24;
 }
 
 /**

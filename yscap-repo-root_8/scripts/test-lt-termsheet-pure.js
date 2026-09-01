@@ -282,13 +282,34 @@ section('the layout — the block list a renderer walks');
   check(!!meta.title && !!meta.disclaimer, 'the meta block carries the document name and the footer disclaimer');
   check(types.includes('table'), 'a comparison carries a table');
   const table = lay.blocks.find((b) => b.t === 'table');
-  check(/compared against/.test(table.head[1]), 'the anchor column SAYS it is the one everything is compared against');
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. The head used to be one string that
+     ended "(compared against)"; the approved sketch heads a column with a
+     tracked eyebrow, an anchor TAG and the option's own name, and carries the
+     identity as fields. The property is unchanged and is now asserted on the
+     data rather than on the prose — which is what stops it going quiet the next
+     time the wording moves. */
+  check(table.head[1] && table.head[1].anchor === true && /anchor/i.test(table.head[1].tag || ''),
+    'the anchor column SAYS it is the one everything is compared against');
+  check(table.head.slice(2).every((h) => h && h.anchor === false && !h.tag),
+    '…and no other column claims to be');
   const breakEven = table.rows.find((r) => r[0] === 'Break-even');
   check(breakEven && breakEven[2] === '67 months (5 years 7 months)',
     `the break-even row reads in years and months, as the docs print it (got ${breakEven && breakEven[2]})`);
   const paras = lay.blocks.filter((b) => b.t === 'para').map((b) => b.text).join(' ');
-  check(/costs \$8,438 more at closing than No points and saves \$127 a month\. You are ahead after 67 months \(5 years 7 months\)/.test(paras),
-    'the buydown sentence is the documented one, verbatim');
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. This pinned the sentence VERBATIM,
+     and the owner asked for exactly that sentence to say more: *"you need to
+     explain a little bit more what your head means, and the same thing for the
+     opposite of your head."* A verbatim pin on prose somebody has been asked to
+     improve fails on the improvement and then gets deleted, so it now holds the
+     three FACTS it was really about — the closing cost, the monthly saving and
+     the month they meet — plus the explanation that was added, which is the part
+     a reader actually needed. */
+  check(/costs \$8,438 more at closing than No points and saves \$127 a month/.test(paras),
+    'the buydown sentence states what it costs at closing and what it saves a month, against the named option');
+  check(/pays that back after 67 months \(5 years 7 months\)/.test(paras),
+    '…and the month the closing money is paid back, in years and months');
+  check(/from then on you are ahead/.test(paras) && /Sell or refinance before then/.test(paras),
+    'THE ONE THAT MATTERS: it says what "ahead" MEANS and what happens on the other side of that month — a date with no explanation is a number the reader has to interpret');
   check(/costs \$6,563 less at closing than No points and \$129 more a month/.test(paras), 'and so is the credit sentence');
   // ⛔ EVERY FIGURE IN THOSE SENTENCES IS A DIFFERENCE, so each one NAMES what it
   // is a difference from. They used to read "costs $8,438 today" — true, and it
@@ -297,21 +318,48 @@ section('the layout — the block list a renderer walks');
   // lender-paid, the table said "You receive $1,655" one line above while the
   // sentence said "pays you $11,250 today". Both right, different questions,
   // nothing on the page saying which. Found by reading a rendered sample.
-  check(paras.split('No points').length - 1 >= 3,
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. This counted three mentions, and one
+     of the three was a standalone paragraph ("Every comparison below is against
+     No points") that the approved design moves onto the heading itself as its
+     right-hand note. Counting paragraphs would now under-count a page that says
+     the same thing in a better place, so both halves are asserted directly. */
+  const named = lay.blocks.filter((b) => b.t === 'para' && /No points/.test(b.text || '')).length;
+  check(named >= 2,
     'and every comparative sentence names the option it is comparing against, so no figure on the page reads as absolute when it is a difference');
+  const differsBand = lay.blocks.find((b) => b.t === 'band' && b.title === 'What differs');
+  check(!!differsBand && /No points/.test(differsBand.note || ''),
+    '…and the table\'s own heading names the column every figure under it is measured from');
   const hard = lay.blocks.filter((b) => b.t === 'pagebreak' && !Number.isFinite(b.ifLessThan));
   const soft = lay.blocks.filter((b) => b.t === 'pagebreak' && Number.isFinite(b.ifLessThan));
-  check(hard.length === 3, 'one detail page per option — the owner\'s "it\'s just adding pages to it", literally');
+  /* ⛔ REVERSED 2026-08-31, ON THE OWNER'S OWN REPORT. This asserted a page per
+     option, and it was right about the design of the day. Then the owner read
+     one: *"everything is way too big … just thrown on the sheet without an
+     order."* MEASURED, those pages were three of a seven-page comparison and
+     every figure on them already sat in the table or the shared block above —
+     so the sheet said each fact four times and could not be read at a glance.
+     They are gone, the table carries what they carried, and
+     `test-lt-sheet-nothing-lost-pure.js` fails the build on a fact that stopped
+     being printed. A HARD break on a comparison now means somebody re-added the
+     repeat. */
+  check(hard.length === 0,
+    'a comparison forces NO page of its own — the per-option repeat is what made it seven pages');
   // ⛔ THE DISCLOSURES BREAK IS SOFT, AND THAT DISTINCTION IS LOAD-BEARING. A
   // hard break there produced a page carrying five rows and ten inches of
   // nothing on the first sheet rendered; a per-option break stays hard because
   // "one option per page" is a statement about the document, not about the room.
-  check(soft.length === 1 && soft[0].ifLessThan > 0,
-    'and exactly one SOFT break, for the disclosures, which move to their own page only when there is no room left');
+  /* Every break left is SOFT, and each moves something only when there is not
+     enough room to hold it: the comparison table (so the columns a reader is
+     choosing between are never split across a fold) and the disclosures (a hard
+     break there produced a page carrying five rows and ten inches of nothing). */
+  check(soft.length === 2 && soft.every((b) => b.ifLessThan > 0),
+    'and the two breaks left are both SOFT — the table and the disclosures each move only when the room runs out');
 
   const single = layout.buildLayout(snapshot.buildSnapshot({ selections: [quote('The offer', 7.375, 102)], plan: PLAN, prepared: {} }).snapshot, {});
   check(!single.blocks.some((b) => b.t === 'table'), 'a one-option sheet renders NO comparison table — a table with one column is not a comparison');
-  const rowsOf = (blocks) => blocks.filter((b) => b.t === 'figures').flatMap((b) => b.rows);
+  // ⛔ THROUGH THE SHARED FLATTENER, never a bare filter: a `columns` block
+  //    HOLDS blocks, so a plain filter goes silently blind to every row inside
+  //    one and reports a clean page for a fact it has stopped checking.
+  const rowsOf = (blocks) => layout.flattenBlocks(blocks).filter((b) => b.t === 'figures').flatMap((b) => b.rows);
   const singleRows = rowsOf(single.blocks);
   check(singleRows.some((r) => r[0] === 'Monthly rent') && singleRows.some((r) => r[0] === 'DSCR'),
     '…and it does show what the loan qualified on — the rent and the ratio');
@@ -363,8 +411,13 @@ section('the three documents — one option, three options, three scenarios');
     'the comparison says "Comparison Sheet", and how many options');
   check(layS.blocks[0].title === 'Scenario Comparison' && /2 scenarios/.test(layS.blocks[0].subtitle),
     'the scenario comparison says so, and counts scenarios rather than options');
-  const scenParas = layS.blocks.filter((b) => b.t === 'para').map((b) => b.text).join(' ');
-  check(/These scenarios differ in: .*loan amount/.test(scenParas),
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. The sentence moved INTO the shared
+     facts box, which is where the sketch says it: the box states what every
+     scenario agrees about, and its footnote says what is left over. Read every
+     string the page draws rather than only its paragraphs, so the guard holds
+     wherever the sentence lives next. */
+  const scenText = JSON.stringify(layS.blocks);
+  check(/differ in: [^"]*loan amount/.test(scenText),
     'a scenario comparison SAYS what changed between the scenarios — two numbers with no stated difference is not a comparison');
 }
 
@@ -433,7 +486,10 @@ section('a term sheet is only issued complete — the export gate');
     plan: PLAN, prepared: {},
   });
   check(snapshot.exportGate(cmpBare.snapshot).ok, 'a comparison with no taxes or insurance still exports');
-  const cmpRows = layout.buildLayout(cmpBare.snapshot, {}).blocks
+  /* Through the flattener even here, where the comparison uses no container
+     today: this is a NEGATIVE assertion, and a walker that goes blind makes a
+     negative assertion pass for the wrong reason. */
+  const cmpRows = layout.flattenBlocks(layout.buildLayout(cmpBare.snapshot, {}).blocks)
     .filter((b) => b.t === 'figures').flatMap((b) => b.rows);
   check(!cmpRows.some((r) => /Total monthly payment/.test(r[0])),
     '…and carries NO total monthly payment, because there is no real one to carry');
@@ -475,8 +531,12 @@ section('PITI — the total appears only when it is a real one');
   const t = layout.comparisonTable(three.snapshot);
   const dscrRow = t.rows.find((r) => r[0] === 'DSCR');
   const payRow = t.rows.find((r) => r[0] === 'Total monthly payment');
-  check(new Set(payRow.slice(1)).size === 3, 'three options genuinely have three different total payments');
-  check(new Set(dscrRow.slice(1)).size === 3,
+  /* A row may carry a trailing OPTIONS object (the approved design bands the two
+     rows that resolve the arithmetic in ivory), so the values are the string
+     cells — never "everything after the label". */
+  const vals = (r) => r.slice(1).filter((v) => typeof v === 'string');
+  check(new Set(vals(payRow)).size === 3, 'three options genuinely have three different total payments');
+  check(new Set(vals(dscrRow)).size === 3,
     '…so they have three different ratios — the printed DSCR is the division a reader can do off this very page');
   const rentM = SCENARIO.rentMonthly;
   const money = (s) => Number(String(s).replace(/[$,]/g, ''));
@@ -531,9 +591,21 @@ section('the fees are listed out, and broken down');
   'listing a waived fee changes no total — its dollars are the zero the absent line already contributed');
 
   const table = layout.comparisonTable(built.snapshot);
-  const feeRow = table.rows.find((r) => r[0] === 'Lender fees');
-  check(feeRow && feeRow.some((c) => /^Waived \(\$2,095\)$/.test(String(c))) && feeRow.some((c) => c === '$2,095'),
-    'and the comparison table puts the waived column beside the charged one, both naming the same $2,095');
+  /* ⛔ RE-POINTED, AND THE REQUIREMENT IS SERVED BETTER RATHER THAN RELAXED. The
+     table carried one "Lender fees $2,095" cell; the owner asked to *"list out
+     the lender fees, because the next one, you're waiving the lender fees — you
+     need to be able to see the difference."* One cell answers neither question:
+     which fees, and which of them this option charges. Each fee is its own row
+     now, so the waived column names it fee by fee AND the total it saves. */
+  const appRow = table.rows.find((r) => r[0] === 'Application fee');
+  const comRow = table.rows.find((r) => r[0] === 'Commitment fee');
+  check(appRow && appRow.some((c) => /^Waived \(\$500\)$/.test(String(c))) && appRow.some((c) => c === '$500'),
+    'the application fee is its own row, waived beside charged, both naming the same $500');
+  check(comRow && comRow.some((c) => /^Waived \(\$1,595\)$/.test(String(c))) && comRow.some((c) => c === '$1,595'),
+    '…and so is the commitment fee, at its own $1,595');
+  const savedRow = table.rows.find((r) => r[0] === 'Lender fees you are not paying');
+  check(savedRow && savedRow.some((c) => c === '$2,095'),
+    '…and what the waive is WORTH is totalled, because on that option it is the reason to choose it rather than a subtotal');
 }
 
 // =============================================================================
@@ -552,7 +624,7 @@ section('"no points either way" no longer sits over an origination fee');
   });
   const m = built.snapshot.members[0];
   const lay = layout.buildLayout(built.snapshot, { expiryHours: 24 });
-  const rows = lay.blocks.filter((b) => b.t === 'figures').flatMap((b) => b.rows);
+  const rows = layout.flattenBlocks(lay.blocks).filter((b) => b.t === 'figures').flatMap((b) => b.rows);
 
   const parRow = rows.find((r) => /No points either way/.test(String(r[1])));
   check(!parRow, 'the par phrase no longer appears as a figure at all on a sheet that charges an origination fee');
@@ -720,12 +792,18 @@ section('the document opens with what it is about');
   /* ⛔ AND THE PROPERTY IS NOT SAID TWICE ON ONE PAGE. A comparison prints its
      facts under the address (one line, so the table keeps its page); a term
      sheet prints the band, where it has the room. */
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED — AND THE RULE GOT STRICTER. This
+     read "a term sheet prints the band, a comparison prints one line under the
+     address", which was true of the sheet as it stood. Every one of the three
+     approved sketches states the property under the address and NONE of them
+     carries a property section, so the property is now said in ONE place on
+     EVERY document — which is the thing this guard was always really about. */
   const rec = (l) => l.blocks.find((b) => b.t === 'recipient');
-  check(rec(lay).propertyFacts === null && lay.blocks.some((b) => b.t === 'band' && b.title === 'The property'),
-    'a term sheet keeps the property band and adds nothing to the address');
-  check(/Single family/.test(rec(cmpLay).propertyFacts || '')
-    && !cmpLay.blocks.some((b) => b.t === 'band' && b.title === 'The property'),
-    'a comparison states them under the address instead — the same facts, one line');
+  const noBand = (l) => !layout.flattenBlocks(l.blocks).some((b) => b.t === 'band' && b.title === 'The property');
+  check(/Single family/.test(rec(lay).propertyFacts || '') && noBand(lay),
+    'a term sheet states the property under the address, once — never twice on one page');
+  check(/Single family/.test(rec(cmpLay).propertyFacts || '') && noBand(cmpLay),
+    'and a comparison states them the same way — the same facts, one line');
 }
 
 // =============================================================================
@@ -866,6 +944,25 @@ section('the renderer measures the way the page is actually drawn');
     check(broken.length > 1, 'a token wider than its column is HARD-BROKEN — the guarantee that pathological input cannot run off the sheet');
     check(pdf._internals.clip({ widths: new Map() }, 'The property', font, 10, 2) === '',
       'a clip with no room answers nothing, never a bare ellipsis — an ellipsis alone reads as a rendering fault rather than as a shortened label');
+
+    /* ⛔ `wrapAfter` — the wrap whose FIRST line is narrower than the rest,
+       for a paragraph that starts beside a bold opening clause (the expiry).
+       Its awkward case is a first line with no useful room at all: it answers
+       with an EMPTY first line so the body starts underneath, rather than
+       hard-breaking a word into a two-character stub beside the title. The
+       caller must then still ADVANCE on that empty line, or the body's first
+       real line lands on the title's own baseline at the title's own x. */
+    const wa = pdf._internals.wrapAfter;
+    const ctx0 = { widths: new Map() };
+    const wide = wa(ctx0, 'the quick brown fox jumps over the lazy dog', font, 10, 200, 200);
+    check(wide.every((l) => adv(l, 10) <= 200), 'wrapAfter fits every line when both widths are the same');
+    const narrowFirst = wa(ctx0, 'the quick brown fox jumps over the lazy dog', font, 10, 4, 200);
+    check(narrowFirst[0] === '',
+      '…and with no room beside the title it answers an EMPTY first line rather than a stub');
+    check(narrowFirst.slice(1).every((l) => adv(l, 10) <= 200) && narrowFirst.join(' ').trim().split(' ').filter(Boolean).length === 9,
+      '…with every word still there on the lines below');
+    check(wa(ctx0, 'supercalifragilisticexpialidocious', font, 10, 4, 30).every((l) => adv(l, 10) <= 30),
+      '…and a token wider than EITHER width is still hard-broken, so it cannot run off the column');
     finish();
   })().catch((e) => { failures += 1; console.error('  FAIL renderer measurement threw:', e.message); finish(); });
 }
