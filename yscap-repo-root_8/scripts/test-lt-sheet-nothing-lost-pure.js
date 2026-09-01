@@ -291,7 +291,12 @@ console.log('\nand the page never states two different DSCRs');
     });
     if (!sentence || !/DSCR moves from/.test(sentence)) continue;
     const [, from, to] = sentence.match(/DSCR moves from (\d+\.\d+) to (\d+\.\d+)/) || [];
-    const colIndex = (table.head || []).findIndex((h) => String(h).startsWith(m.label));
+    /* THE COLUMN IS FOUND BY THE HEAD'S OWN `label` FIELD, never by reading its
+       prose. The approved sketch heads a column with a tracked eyebrow, a tag
+       and a name over two lines; a guard that matched the old single string
+       would have gone quiet the moment the design changed, which is the failure
+       mode a guard exists to avoid. */
+    const colIndex = (table.head || []).findIndex((h) => h && h.label === m.label);
     check(to === String(drow[colIndex]),
       `THE ONE THAT MATTERS: ${m.label}'s sentence says ${to} and its own column says ${drow[colIndex]} — the same page may not state two`);
     check(from === String(drow[1]),
@@ -307,8 +312,42 @@ const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'sr
   .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 check(!/for \(const m of s\.members\) \{[\s\S]{0,200}optionBlocks\(m\)/.test(src),
   'the per-member page loop is gone from the comparison branch — a guard on the RENDER alone would pass the day somebody re-added it behind a flag');
-check(/blocks\.push\(\.\.\.optionBlocks\(first\)\)/.test(src),
-  '…while a SINGLE term sheet still builds them, which is what they were always for');
+/* ⛔ AND THE TERM SHEET STILL PRINTS EVERY ONE OF THEM — PROVEN ON A BUILT
+   LAYOUT, NOT ON THE SHAPE OF A LINE OF SOURCE.
+   This asserted that layout.js literally contained `blocks.push(...optionBlocks(first))`,
+   which was a PROXY for the property that matters and stopped being true the day
+   the term sheet's body was re-arranged into two columns. A source-shape guard
+   also cannot see whether the rows reach the page — it only sees that a function
+   was called. So the property is asserted directly: build a real term sheet and
+   require every label the shared per-option blocks would print to be on it.
+   `textOf` walks the block tree, so a row nested inside a container is found
+   exactly as a top-level one is — which is what stops this going quiet the next
+   time the page is re-arranged. */
+function textOfBlocks(blocks) {
+  const out = [];
+  const walk = (v) => {
+    if (v == null) return;
+    if (typeof v === 'string') { out.push(v); return; }
+    if (Array.isArray(v)) { v.forEach(walk); return; }
+    if (typeof v === 'object') Object.keys(v).forEach((k) => walk(v[k]));
+  };
+  walk(blocks);
+  return out;
+}
+{
+  const snap = build([q('Only', 7.375, 102, sc({ escrowWaive: true, hoaMonthly: 55 }))]);
+  const m = snap.members[0];
+  const blocks = layout.buildLayout(snap, { code: 'TS-NOTHINGLOST', expiryHours: 24 }).blocks;
+  const drawn = new Set(textOfBlocks(blocks));
+  const want = retiredLabels(m);
+  check(want.length >= 12, `the shared per-option blocks name ${want.length} labels — a fixture producing a handful would prove nothing`);
+  const missing = want.filter((l) => !drawn.has(l));
+  check(missing.length === 0,
+    `…and a SINGLE term sheet prints every one of them (${want.length} labels, ${missing.length} missing${missing.length ? `: ${missing.join(', ')}` : ''})`);
+  // The control: the sweep can tell a missing label from a present one.
+  check(!drawn.has('A label no sheet has ever printed'),
+    '…and the sweep would notice one that was not there — the control');
+}
 
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');
 process.exit(failures ? 1 : 0);

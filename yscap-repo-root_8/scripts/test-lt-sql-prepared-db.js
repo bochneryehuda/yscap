@@ -218,7 +218,7 @@ async function main() {
     'conditions-center/read.js': 'test-lt-shared-condition-center-db.js section H drives read.forLoan for BOTH audiences against the real schema',
     'conditions-center/write.js': 'test-lt-shared-condition-center-db.js sections G and H drive waive, setStatus and loadCondition live; test-lt-condition-answers-db.js sections D and E drive recordAnswer and satisfy',
     'conditions-center/workspace.js': 'test-lt-condition-answers-db.js section E drives workspace.forCondition against the real schema, both the per-line shape and the no-workspace answer',
-    /* THE THREE BELOW WERE MEASURED, NOT ASSUMED. Each was instrumented with a
+    /* THE FOUR BELOW WERE MEASURED, NOT ASSUMED. Each was instrumented with a
        probe at the point the statement is assembled, and the candidate suites
        were run to see which one actually reached it — because an entry here is a
        CLAIM that something runs the statement, and a hopeful one is worse than
@@ -238,6 +238,15 @@ async function main() {
     // once been executed, which is exactly how it survived pointing at a table
     // nothing writes any more.
     'orders/inbox.js': 'test-lt-orders-db.js section G drives docConditionFor live on two different loans — it asserts the condition is FOUND and that each loan resolves to its own, so neither a read that finds nothing nor one that finds everything can pass',
+    // The saved scenarios (db/658). A shared COLS list is interpolated into the
+    // list, the single read and the save's RETURNING; the patch additionally
+    // assembles `SET ${sets}` from whichever fields were SENT, so it is a
+    // DIFFERENT statement per shape and a phantom column in one branch would sit
+    // unexercised behind the others. The probe counted each assembled form as
+    // Postgres received it — and it had to tell the module's UPDATE from the
+    // suite's own fixture UPDATE by the interpolated COLS it returns, because the
+    // first reading counted the fixture's and overstated the coverage.
+    'pricer-scenarios.js': 'test-lt-pricer-scenarios-db.js drives all four live — measured with a probe on the driver: the list SELECT, the single-read SELECT and the save\'s RETURNING each assemble the shared COLS, and the patch assembles TWO different SET shapes (a rename, and a re-save of the deal bag)',
   };
   const byFile = new Map();
   for (const b of built) byFile.set(b.rel, (byFile.get(b.rel) || 0) + 1);
