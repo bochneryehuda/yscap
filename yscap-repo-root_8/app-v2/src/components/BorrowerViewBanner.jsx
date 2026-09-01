@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../lib/auth.jsx';
+import { useAuth, takeReturnTo } from '../lib/auth.jsx';
 
 /* BORROWER VIEW banner (owner-directed 2026-07-26).
    While a staffer is standing inside a borrower's portal, this bar is pinned to
@@ -57,7 +57,9 @@ export default function BorrowerViewBanner() {
     setBusy(true);
     const ok = await exitBorrowerView();
     setBusy(false);
-    nav(ok ? '/internal/borrower-view' : '/internal/login', { replace: true });
+    // BACK TO EXACTLY WHERE THEY WERE (owner-reported 2026-09-01) — the file and tab
+    // they stepped in from; the picker list only when nothing was parked.
+    nav(ok ? (takeReturnTo() || '/internal/borrower-view') : '/internal/login', { replace: true });
   };
 
   return (

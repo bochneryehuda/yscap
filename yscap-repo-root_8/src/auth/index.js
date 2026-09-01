@@ -523,7 +523,9 @@ async function authenticate(req, res, next) {
   // view: a staffer looking at a borrower's screen must not make that borrower
   // appear online to the rest of the team (the presence dot would be a lie, and
   // "they're online, message them" is a decision people make off it).
-  if (!req.impersonation) {
+  // ...and the same for a STAFF view: the super admin looking at a teammate's console
+  // must not stamp that teammate as online (req.staffImpersonation is the staff-view flag).
+  if (!req.impersonation && !req.staffImpersonation) {
     const ptbl = staffBacked ? 'staff_users' : 'borrowers';
     db.query(`UPDATE ${ptbl} SET last_seen_at=now() WHERE id=$1 AND (last_seen_at IS NULL OR last_seen_at < now() - interval '60 seconds')`, [claims.sub]).catch(() => {});
   }

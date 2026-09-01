@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { useAuth } from '../lib/auth.jsx';
+import { useAuth, takeReturnTo } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import { arena as arenaApi } from '../lib/arena.js';
@@ -472,7 +472,10 @@ export default function StaffLayout({ children }) {
      because the token has changed under the running app. */
   const leaveStaffView = async () => {
     const restored = await exitStaffView();
-    window.location.assign(restored ? '/portal/#/internal' : '/');
+    // Back to where the super admin was before they opened the teammate's screen
+    // (owner-reported 2026-09-01), else the console home.
+    const back = restored ? (takeReturnTo() || '/internal') : '';
+    window.location.assign(restored ? `/portal/#${back}` : '/');
     window.location.reload();
   };
 
