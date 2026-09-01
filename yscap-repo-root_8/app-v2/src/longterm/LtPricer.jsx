@@ -6,6 +6,7 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
 import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey, programLine } from './priceBuild.js';
+import LtBracketBoard from './LtBracketBoard.jsx';
 // The compensation OVERLAY (owner-directed 2026-08-23) — display math on top of the numbers
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
@@ -1675,6 +1676,23 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
     hoaMonthly: calc.hoa === '' ? 0 : perMonth(toNumber(calc.hoa), 'monthly'),
   };
 
+  /* WHAT THE BRACKET BOARD IS STILL MISSING, in the words of the boxes it comes from.
+     ⛔ IT IS NOT `dscrFrom`'s LIST, AND THAT IS DELIBERATE. That function answers "can we
+     show a ratio for THIS rate", so with no rate chosen it reports the rate as missing —
+     which is nonsense advice here, because the bracket board's whole job is to find the
+     rates. What it genuinely needs is the property's own figures plus the loan, which is
+     the server's own `readFigures` rule; an amortising deal also needs a term, and an
+     interest-only one does not, because its payment never uses one. */
+  const dscrMissing = (() => {
+    const need = [];
+    if (!(perMonth(toNumber(calc.rent), 'monthly') > 0)) need.push('monthly rent');
+    if (perMonth(toNumber(calc.tax), calc.taxBasis) == null) need.push('property tax');
+    if (perMonth(toNumber(calc.insurance), calc.insBasis) == null) need.push('insurance');
+    if (!(loanAmount > 0)) need.push('loan amount');
+    if (!f.io && !(toNumber(f.termYears) > 0)) need.push('loan term');
+    return need;
+  })();
+
   const timer = useRef(null);
   // The auto-ask loop's own bookkeeping: which search it is chasing, how many asks it has spent, and
   // the pending timer. Refs rather than state — none of it is drawn, and putting it in state would
@@ -2502,6 +2520,42 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
               onIssued={ts.setIssued} onPlan={setCartDocKind} />
           )}
         </ComparisonWorkflowPanel>
+        )}
+
+        {/* ── EVERY RATE IN THE DSCR BAND IT ACTUALLY REACHES ──────────────
+            Owner-directed 2026-09-01, after a live refusal: an 11.125% option was
+            offered priced as though the loan were at 1.25 while its true ratio is
+            0.93, so the term sheet refused to issue it. The refusal was right; the
+            board should not have offered the rate.
+
+            ⛔ IT SITS AFTER THE ORDINARY BOARD AND IS PRESSED, NOT AUTOMATIC. It
+            costs one Lender Price search PER BAND, so firing it with the search
+            would multiply the bill on every press for a question most searches do
+            not need to ask. The button says so before it is pressed.
+
+            ⛔ AND IT DECIDES NOTHING HERE. The bands, the ratio each was searched
+            at, and which quotes belong in which band are all the SERVER's answers,
+            on the SAME eleven-tier ladder the term sheet refuses on. A browser copy
+            of that ladder is exactly how a board would come to offer a rate the
+            export then refuses — the defect this replaces. */}
+        {res && (
+          <LtBracketBoard
+            scenario={toScenario(pricedForm || f)}
+            figures={{
+              loanAmount,
+              termYears: toNumber(f.termYears),
+              interestOnly: !!f.io,
+              rentMonthly: perMonth(toNumber(calc.rent), 'monthly'),
+              taxMonthly: perMonth(toNumber(calc.tax), calc.taxBasis),
+              insuranceMonthly: perMonth(toNumber(calc.insurance), calc.insBasis),
+              hoaMonthly: calc.hoa === '' ? 0 : perMonth(toNumber(calc.hoa), 'monthly'),
+            }}
+            disabled={!!dscrMissing.length}
+            disabledReason={dscrMissing.length
+              ? `A band is worked out from the payment, so this needs the ${dscrMissing.join(', ')}. `
+                + 'Fill those in on the DSCR calculator above and press again.'
+              : null}
+          />
         )}
 
         {/* ── THE FOOTNOTES ────────────────────────────────────────────────

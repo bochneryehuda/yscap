@@ -438,62 +438,19 @@ const GATE_LABELS = {
  * already demands the rent, the taxes, the insurance and a ratio — is what
  * refuses. A refusal invented from half a scenario would be worse than none.
  */
+/* THE LADDER LIVES IN ONE PLACE — `../pricing/dscr-tiers` (owner-directed
+   2026-09-01: *"Don't rebuild that bracket. I want to stay that bracket, just
+   share that bracket, because if the bracket is changing you should
+   automatically change yourself as well."*).
 
-/* THE LADDER, IN THE OWNER'S OWN WORDS AND NUMBERS (2026-08-31). Ten tiers, each
-   stated as [from, to) on the ratio ROUNDED TO TWO — which is what a DSCR is
-   here (Round([1005]/[912], 2), owner-confirmed) and what both the paper and a
-   band edge carry. Rounding first is what makes 1.2449 and 1.24 one claim, and
-   what stops a hair of float landing a loan in the wrong tier.
-
-   `app-v2/src/longterm/dscrCalc.js` carries the browser's copy so the screen can
-   warn before the button is pressed; test-lt-comparison-ux-pure runs BOTH over
-   every ratio from 0 to 2.00 in hundredths and fails on any disagreement. Change
-   one, change the other. */
-const DSCR_TIERS = [
-  { tier: 1,  from: null, to: 0.50 },   // < 0.50 — very low
-  { tier: 2,  from: 0.50, to: 0.75 },
-  { tier: 3,  from: 0.75, to: 0.85 },
-  { tier: 4,  from: 0.85, to: 1.00 },
-  { tier: 5,  from: 1.00, to: 1.10 },
-  { tier: 6,  from: 1.10, to: 1.15 },   // owner-added 2026-08-31: *"I missed one band up to 1.1"*
-  { tier: 7,  from: 1.15, to: 1.25 },
-  { tier: 8,  from: 1.25, to: 1.30 },
-  { tier: 9,  from: 1.30, to: 1.40 },
-  { tier: 10, from: 1.40, to: 1.50 },
-  { tier: 11, from: 1.50, to: null },   // >= 1.50 — strongest
-];
-
-/* ⛔ THE LADDER MUST BE CONTIGUOUS AND MUST NOT OVERLAP, AND THAT IS CHECKED RATHER THAN TRUSTED.
-   `dscrTier` returns the FIRST band a ratio falls in, so two bands that overlap are resolved
-   silently by array order — a real hazard, found when a deliberate mutation of one boundary
-   changed no behaviour at all because its neighbour still claimed the ratio. A ladder with a hole
-   is worse still: a ratio in the gap gets no tier and the rule quietly stands down on a live loan.
-   Verified once at load, so a bad edit fails loudly here instead of mispricing quietly. */
-function assertLadder(tiers) {
-  for (let i = 0; i < tiers.length; i += 1) {
-    const t = tiers[i];
-    const prev = tiers[i - 1];
-    if (i === 0 && t.from !== null) throw new Error('DSCR ladder: the first band must be open below');
-    if (i === tiers.length - 1 && t.to !== null) throw new Error('DSCR ladder: the last band must be open above');
-    if (prev && prev.to !== t.from) {
-      throw new Error(`DSCR ladder: tier ${prev.tier} ends at ${prev.to} but tier ${t.tier} starts at ${t.from}`);
-    }
-  }
-  return tiers;
-}
-assertLadder(DSCR_TIERS);
-
-
-/** Which tier a ratio sits in, or null when it is not a usable ratio. */
-function dscrTier(ratio) {
-  const n = Number(ratio);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  const r = Math.round(n * 100) / 100;
-  for (const t of DSCR_TIERS) {
-    if ((t.from == null || r >= t.from) && (t.to == null || r < t.to)) return t.tier;
-  }
-  return null;
-}
+   It was DEFINED here, because this is where the re-price rule lives and this is
+   still its only judge. The pricing board now groups its rates by the same
+   brackets, so the table was MOVED rather than copied: a board that grouped by
+   one ladder while the export refused by another is exactly the disagreement the
+   owner's instruction exists to prevent. Nothing else about this rule changed —
+   `DSCR_TIERS` and `dscrTier` are re-exported below, so every reader is
+   unaffected. */
+const { DSCR_TIERS, dscrTier } = require('../pricing/dscr-tiers');
 
 function ratioProblem(member) {
   const m = member && typeof member === 'object' ? member : {};
@@ -776,5 +733,10 @@ module.exports = {
   buildMember, buildSnapshot, canonicalize, hashSnapshot, projectScenario,
   documentKind, exportGate, resolveProgramName,
   DOC_KINDS, KIND_WORDS, MANUAL_NAME_WARNING, GATE_LABELS,
+  // Re-exported from `../pricing/dscr-tiers`, which is where the ladder now
+  // lives. Kept on this surface because the re-price rule is what the ladder
+  // is FOR, and because a test can then assert the board and this rule hold
+  // the same object rather than two tables that merely agree today.
+  DSCR_TIERS, dscrTier,
   _internals: { refuse, str, num },
 };
