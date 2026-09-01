@@ -135,6 +135,10 @@ async function forLoan(loanId, opts = {}) {
               c.is_required, c.slots, c.tool_payload AS answer,
               c.status, c.origin_kind, c.sort_order, c.notes,
               c.signed_off_at AS satisfied_at, c.waived_at, c.waived_reason,
+              -- The loan officer's own "done" step. Read here so the shared line
+              -- can say WHO finished their part and WHEN — a bare timestamp with
+              -- no name is the stamp nobody can act on a year later.
+              c.reviewed_at, rev.full_name AS reviewed_by_name,
               sat.full_name AS satisfied_by_name,
               wav.full_name AS waived_by_name,
               t.config,
@@ -170,6 +174,7 @@ async function forLoan(loanId, opts = {}) {
          LEFT JOIN checklist_templates t ON t.id = c.template_id
          LEFT JOIN staff_users sat ON sat.id = c.signed_off_by
          LEFT JOIN staff_users wav ON wav.id = c.waived_by
+         LEFT JOIN staff_users rev ON rev.id = c.reviewed_by
         WHERE ${where.sql}
         ORDER BY c.sort_order, c.label`,
       where.params,
@@ -342,8 +347,9 @@ function shape(r, internal, docs = [], live = null) {
          problem nobody has. */
       rejectionReason: scrubClient(r.rejection_reason),
       // DELIBERATELY ABSENT for a client: the internal note, who signed it off,
-      // why it was waived, the condition's own settings, and whether the
-      // template is switched on. Every one of those is a fact about how WE work.
+      // why it was waived, WHO ON OUR TEAM MARKED THEIR OWN STEP DONE, the
+      // condition's own settings, and whether the template is switched on.
+      // Every one of those is a fact about how WE work.
     };
   }
 
@@ -364,6 +370,8 @@ function shape(r, internal, docs = [], live = null) {
     answer: r.answer || {},
     satisfiedAt: r.satisfied_at,
     satisfiedBy: r.satisfied_by_name || null,
+    reviewedAt: r.reviewed_at || null,
+    reviewedBy: r.reviewed_by_name || null,
     waivedAt: r.waived_at,
     waivedBy: r.waived_by_name || null,
     waivedReason: r.waived_reason || null,

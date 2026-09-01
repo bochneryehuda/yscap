@@ -247,6 +247,8 @@ export const ltApi = {
   conditionSatisfy: (loanId, id) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/satisfy`), {}),
   conditionWaive: (loanId, id, reason) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/waive`), { reason }),
   conditionReopen: (loanId, id) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/reopen`), {}),
+  // The loan officer's own step — a stamp, never a status. `done:false` undoes it.
+  conditionMarkDone: (loanId, id, done) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/done`), { done: done !== false }),
   conditionStatus: (loanId, id, status) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/status`), { status }),
   conditionNote: (loanId, id, note) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/note`), { note }),
   conditionAdd: (loanId, code, fieldKey) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions`), { code, fieldKey }),

@@ -28,6 +28,13 @@ import LtConditionAnswer from './LtConditionAnswer.jsx';
  * Long-Term needs differently is normalized HERE, on the way in and out. */
 import ConditionLine, { ConditionCollapse, ConditionNote } from '../components/ConditionLine.jsx';
 import ConditionActions, { DocActions } from '../components/ConditionActions.jsx';
+/* THE SHOW PICKER — the SAME rule the short-term list runs, not a Long-Term
+   copy of it. Owner-directed 2026-09-01: "add the full sorting features so that
+   you can sort by stuff that is done, by signed off, and by outstanding … that
+   we have on the short-term side. You can share that code as well." It reads
+   the SHARED condition shape, which is exactly what `asSharedCondition` below
+   already produces — so both products filter the same rows the same way. */
+import { CONDITION_FILTER_KEYS, conditionFilterLabel, conditionFilterHint, matchConditionFilter } from '../lib/condition-filter.js';
 import LtConditionContacts from './LtConditionContacts.jsx';
 import LtConditionOrder from './LtConditionOrder.jsx';
 import DocPreview from '../components/DocPreview.jsx';
@@ -141,10 +148,10 @@ const SHARED_STATUS_TO_LT = { outstanding: 'outstanding', requested: 'in_progres
  * One Long-Term condition, in the shape the shared components read.
  *
  * Everything absent here is absent ON PURPOSE, and each one would be a claim we
- * cannot back: `reviewed_at` (Long-Term has no separate loan-officer "done"
- * step), `assignee_staff_id` (no assignment door — and the shared bar hides that
- * control entirely when no team is passed), `note_buyer_mark` / `esign_auto` /
- * `is_gate` / `override_at` (short-term facts, derived server-side over there).
+ * cannot back: `assignee_staff_id` (no assignment door — and the shared bar
+ * hides that control entirely when no team is passed), `note_buyer_mark` /
+ * `esign_auto` / `is_gate` / `override_at` (short-term facts, derived
+ * server-side over there).
  * A field left off simply does not render.
  */
 function asSharedCondition(c) {
@@ -157,6 +164,10 @@ function asSharedCondition(c) {
     is_required: c.isRequired !== false,
     signed_off_at: c.status === 'satisfied' ? (c.satisfiedAt || null) : null,
     signed_off_name: c.satisfiedBy || null,
+    // The loan officer's own step, the same two fields the short-term side
+    // renders — so the audit line reads identically on both products.
+    reviewed_at: c.reviewedAt || null,
+    reviewed_by_name: c.reviewedBy || null,
     waived_at: waived ? (c.waivedAt || null) : null,
     waived_by_name: c.waivedBy || null,
     notes: c.notes || '',
@@ -175,11 +186,11 @@ function asSharedCondition(c) {
 function useLtStickyFilter(key, fallback) {
   const full = `pilot.lt.filter.${key}`;
   const [v, setV] = useState(() => {
-    try { const s = localStorage.getItem(full); return s == null ? fallback : s === '1'; } catch { return fallback; }
+    try { const s = localStorage.getItem(full); return s == null ? fallback : s; } catch { return fallback; }
   });
   const set = useCallback((next) => {
     setV(next);
-    try { localStorage.setItem(full, next ? '1' : '0'); } catch { /* private mode */ }
+    try { localStorage.setItem(full, String(next)); } catch { /* private mode */ }
   }, [full]);
   return [v, set];
 }
@@ -197,8 +208,14 @@ export default function LtFileConditions({ loanId }) {
      succeeded either way, and colouring a successful read like a failure is
      how somebody learns to ignore the box. */
   const [rowRead, setRowRead] = useState({});
-  const [showDone, setShowDone] = useLtStickyFilter('condDone', false);
+  /* WHICH CONDITIONS AM I LOOKING AT. The key is NEW ('condShow') rather than a
+     re-use of the old show-finished tick: that value was a '1'/'0' and reading
+     it as a filter name would leave somebody's saved choice meaning nothing.
+     A stale one falls through to the default anyway, so nobody lands on a blank
+     screen either way. */
+  const [condFilter, setCondFilter] = useLtStickyFilter('condShow', 'mine');
   const [role, setRole] = useState(null);
+  const [roleKnown, setRoleKnown] = useState(false);
   const [preview, setPreview] = useState(null);   // the document being looked at
   const [dlBusy, setDlBusy] = useState(null);     // the document being downloaded
 
@@ -226,7 +243,15 @@ export default function LtFileConditions({ loanId }) {
     let alive = true;
     ltApi.me()
       .then((m) => { if (alive) setRole(m && m.ltRole ? String(m.ltRole) : null); })
-      .catch(() => { /* the ladder degrades to the smaller set of actions */ });
+      .catch(() => { /* the ladder degrades to the smaller set of actions */ })
+      /* WHO IS READING NOW DECIDES WHICH ROWS ARE SHOWN, not only which buttons
+         are on them — so the list waits for the answer rather than drawing the
+         back-office view and then having rows vanish from under a loan officer
+         a moment later. It is a SEPARATE flag from `role` and it is set on the
+         FAILURE path too: gating on `role` itself would leave the whole screen
+         permanently blank for anybody whose role could not be read, which is a
+         far worse failure than the flicker it fixes. */
+      .finally(() => { if (alive) setRoleKnown(true); });
     return () => { alive = false; };
   }, []);
 
@@ -306,9 +331,13 @@ export default function LtFileConditions({ loanId }) {
     // "Not required" — Long-Term always asks WHY, so the box opens instead of the
     // condition being cleared on the spot.
     if (p.waived === true) { setWaiving(id); say(id, null); return false; }
+    /* The loan officer's own step. It is a STAMP and moves no status — the back
+       office still signs the condition off afterwards, which is the whole reason
+       it is separate. Same two columns the short-term side has always used. */
     if (Object.prototype.hasOwnProperty.call(p, 'reviewed')) {
-      say(id, 'Long-Term has no separate loan-officer “done” step — a condition is either being worked, satisfied or waived.');
-      return false;
+      const on = p.reviewed !== false;
+      return act(id, () => ltApi.conditionMarkDone(loanId, id, on),
+        on ? 'Marked done — the back office signs it off after you.' : 'Put back on your list.');
     }
     if (Object.prototype.hasOwnProperty.call(p, 'status')) {
       if (p.status === 'satisfied') return act(id, () => ltApi.conditionSatisfy(loanId, id), 'Marked satisfied.');
@@ -443,20 +472,24 @@ export default function LtFileConditions({ loanId }) {
 
   const summary = (data && data.summary) || null;
 
+  /* THE FILTER RUNS ON THE SHARED SHAPE, which is the whole reason one rule can
+     serve both products: `asSharedCondition` is already the translation every
+     shared component reads, so the predicate never learns that Long-Term stores
+     a waive as its own status or that `in_progress` is what the other side
+     calls `requested`. The default view is still THE WORK — a list of forty
+     rows where thirty are finished is a list nobody reads — but it is now the
+     ROLE-AWARE version of that: a loan officer's own Done stamp clears a row
+     from their list without clearing it for the back office. */
   const groups = useMemo(() => {
     const list = (data && data.buckets) || [];
-    if (showDone) return list;
-    // The default view is THE WORK. A finished condition is still on the file
-    // and one click away — but a list of forty rows where thirty are done is a
-    // list nobody reads.
     return list.map((b) => ({
       ...b,
-      conditions: b.conditions.filter((c) => !DONE_STATUSES.has(c.status)),
+      conditions: (b.conditions || []).filter((c) => matchConditionFilter(asSharedCondition(c), condFilter, role)),
     }));
-  }, [data, showDone]);
+  }, [data, condFilter, role]);
 
   if (err) return <p style={{ margin: 0, color: RED, fontSize: 13 }}>{err}</p>;
-  if (!data) return <p style={{ margin: 0, color: MUTED, fontSize: 13 }}>Reading the conditions…</p>;
+  if (!data || !roleKnown) return <p style={{ margin: 0, color: MUTED, fontSize: 13 }}>Reading the conditions…</p>;
 
   return (
     <>
@@ -485,9 +518,20 @@ export default function LtFileConditions({ loanId }) {
           </div>
         )}
         <div style={{ flex: 1 }} />
+        {/* ONE control, not two. The old "Show finished" tick did half of what
+            this picker does and would have sat beside it disagreeing — a row
+            hidden by one and shown by the other is the state nobody can
+            explain. The options are the MODULE'S, never typed out here, so a
+            view added on one product cannot be missing from the other. */}
         <label style={{ fontSize: 13, color: INK, display: 'flex', gap: 6, alignItems: 'center' }}>
-          <input type="checkbox" checked={showDone} onChange={(e) => setShowDone(e.target.checked)} />
-          Show finished
+          <span style={{ color: MUTED }}>Show</span>
+          <select className="input" style={{ maxWidth: 190 }} value={condFilter}
+            onChange={(e) => setCondFilter(e.target.value)}
+            title={conditionFilterHint(role)}>
+            {CONDITION_FILTER_KEYS.map((k) => (
+              <option key={k} value={k}>{conditionFilterLabel(k, role)}</option>
+            ))}
+          </select>
         </label>
         <button className="btn soft" onClick={evaluate} disabled={busy}
           title="Run the rules against this file again and bring its conditions into line.">
@@ -546,7 +590,7 @@ export default function LtFileConditions({ loanId }) {
             ))}
             {b.conditions.length === 0 && (
               <div style={{ fontSize: 13, color: MUTED }}>
-                {showDone ? 'Nothing here yet.' : 'Nothing outstanding here.'}
+                {condFilter === 'all' ? 'Nothing here yet.' : 'Nothing to show here under this view.'}
               </div>
             )}
           </div>
