@@ -139,6 +139,47 @@ async function holdbackRaw() {
 }
 
 /**
+ * ONE EXPLAINED OPTION WITH OUR OWN MARGIN'S TRAIL REMOVED — never its price.
+ *
+ * The same rule `investor-routing.stripSource` applies to a board row, applied here because this
+ * door builds an option the board never carried. `vendorBasePoints` is the pre-holdback base: left
+ * on, a reader could subtract it from the base beside it and read our margin straight off the panel.
+ */
+function stripExplainedTrail(option) {
+  if (!option || !option.priceBuild) return option;
+  const { vendorPrice, vendorBasePoints, vendorAdjustedPoints, ...pb } = option.priceBuild;
+  return { ...option, priceBuild: pb };
+}
+
+/**
+ * HOW MUCH WE HELD BACK ON ONE ROW — resolved from the SAVED SETTINGS, never from the caller.
+ *
+ * ⛔ WHY THE EXPLAIN DOOR NEEDS THIS AT ALL. LoanNEX explains a price with ITS OWN base and ITS OWN
+ * adjustments, and the row on the board is quoting a price we have already taken our margin out of.
+ * Handed to the panel untouched, the running total it draws would land exactly the holdback away
+ * from the final price printed under it — an unexplained gap on the one screen whose job is to
+ * explain the price, about a figure the owner has directed must stay invisible.
+ *
+ * ⛔ AND WHY THE INVESTOR KEY IS ONLY A POINTER. The caller names WHICH investor's saved setting to
+ * read; it can never state an amount. The number itself comes from `settingsRaw()` and
+ * `holdbackRaw()` — the same two reads `priceBoth` makes, through the same `resolveHoldback` — so
+ * the panel and the board can never disagree about what was taken. A key nobody has saved a setting
+ * for resolves to the board-wide answer, and an unresolvable one to nothing at all, which leaves the
+ * panel exactly as it is today rather than shifting a base by a number nobody chose.
+ */
+async function holdbackOnRow(investorKey, b = {}) {
+  const savedGlobal = b.marginHoldback !== undefined ? b.marginHoldback : await holdbackRaw();
+  let extra = null;
+  const key = investorKey == null ? '' : String(investorKey).trim();
+  if (key) {
+    const saved = b.routes !== undefined ? { raw: b.routes } : await settingsRaw();
+    const row = routing.settingFor(key, routing.readSettings(saved.raw).settings);
+    if (row && row.holdbackOrigin === 'setting') extra = row.holdback;
+  }
+  return vendorMargin.resolveHoldback('loannex', savedGlobal, extra);
+}
+
+/**
  * Every grid CELL a board already carries, in the shape `near-tier` reads.
  *
  * ⛔ IT READS THE MERGED-RAW BOARD, never the routed one: the routed copy strips
@@ -317,7 +358,24 @@ async function priceBoth(scenario, opts = {}) {
         err.code = (r && r.error) || 'lp_error';
         throw err;
       }
-      const parsed = lp.parse(r.raw);
+      /**
+       * ⛔ `withOptions` IS WHAT MAKES THE DETAILS PANEL WORK, and leaving it off is the defect it
+       * was added for. `lp.parse` alone returns the LADDER — rate, price, points per rung — and
+       * nothing else, so every Lender Price row on this board reached the screen with no itemized
+       * LLPAs, no fees, no comp, no terms and no monthly payment, and the breakdown panel drew an
+       * empty table on the vendor that publishes the whole build WITH the search. Worse, a program
+       * carrying `rungs` and no `options` is routed down the LOANNEX branch by
+       * `quote-shape.programsForBoard` — which tells the two apart by shape, not by name, since the
+       * one-system rule has already stripped the source — so those rows were additionally rebuilt
+       * as LoanNEX rows: `basePoints`/`adjustmentPoints` hard-coded null and the monthly payment
+       * read from a key a Lender Price rung does not carry.
+       *
+       * The general engine has always fetched this (its `full:true` path), and the combined screen
+       * has always ASKED for it — `pricerEngine.COMBINED_ENGINE.price` sends `full: true` — but
+       * this route never read the flag. It is not read now either: the itemization is what this
+       * board is FOR, and a flag is one more way for the panel to be empty again.
+       */
+      const parsed = lp.parse(r.raw, { withOptions: true });
       // Stamp canonical identity + white-label on the Lender Price side exactly
       // as the existing pricer does, so both halves reach the merge decorated the
       // same way. `decorate` takes the PROGRAMS ARRAY and answers
@@ -403,9 +461,16 @@ async function priceBoth(scenario, opts = {}) {
       for (const src of ['lenderprice', 'loannex']) {
         const progs = byS[src] || [];
         if (!progs.length) continue;
+        // ⛔ `optionsFromLenderPrice` TAKES OPTIONS, NOT PROGRAMS — its parameter is literally
+        // named `options` and it reads `o.priceBuild` / `o.adjustments` / `o.terms` off each one.
+        // It was being handed the PROGRAM rows, which carry none of those, so `?shape=options`
+        // answered with one hollow shell per Lender Price programme: every price build empty,
+        // every adjustment list empty, and the count wrong (programmes, not quotes). Flattening
+        // the programmes' own options is what it always wanted; they exist here because the parse
+        // above now asks for them.
         const built = src === 'loannex'
           ? quoteShape.optionsFromLoanNex({ programs: progs }, { loanAmount: sc.loan, fico: sc.fico, ltv: sc.ltv, loanPurpose: sc.purpose })
-          : quoteShape.optionsFromLenderPrice(progs);
+          : quoteShape.optionsFromLenderPrice(progs.flatMap((pg) => (pg && Array.isArray(pg.options)) ? pg.options : []));
         for (const o of built) {
           const row = { ...o, investorKey: e.key, whiteLabel: e.whiteLabel };
           if (opts.revealSource !== true) delete row.source;
@@ -824,19 +889,35 @@ function makeRouter(opts = {}) {
         message: 'This rate sheet publishes its itemized adjustments with the quote, so there is nothing further to fetch — the breakdown on this row is complete.',
       });
     }
-    nex.evidence(scenarioOf(req), quote, { portal: b.portal, transactionId: b.transactionId })
-      .then((r) => {
+    Promise.all([
+      nex.evidence(scenarioOf(req), quote, { portal: b.portal, transactionId: b.transactionId }),
+      // Never lets the answer fail: an unreadable settings store costs the base shift, not the
+      // breakdown the caller asked for.
+      holdbackOnRow(b.investorKey, b).catch(() => ({ points: 0 })),
+    ])
+      .then(([r, hb]) => {
         // THE SAME LAYOUT, WHATEVER PRICED IT. The vendor's answer is folded onto
         // an option in the common shape and handed to the ONE breakdown builder,
         // so this door and a Lender Price row produce the same rows, in the same
         // order, with the same keys.
-        const option = quoteShape.attachEvidence(
+        const option = vendorMargin.holdBackExplainedBase(quoteShape.attachEvidence(
           quoteShape.optionForQuote(quote), r.evidence, { absence: r.absence },
-        );
+        ), (hb && hb.points) || 0);
         const built = breakdown.breakdown(option, { reveal });
         res.json({
           ok: true,
           breakdown: built,
+          /**
+           * ⛔ THE OPTION ITSELF, so the screen never re-keys a breakdown into an option shape.
+           *
+           * The panel reads an OPTION (`o.adjustments[].reason`, `o.priceBuild`, `o.terms`); the
+           * breakdown is a different, flatter shape (`lines[].label`). A browser-side translation
+           * between them would be a second copy of a mapping this route already holds in its hand
+           * — and the copy that drifts is the one drawing the price somebody quotes. The reveal is
+           * respected: the vendor's own trail is stripped unless an admin asked where the row came
+           * from.
+           */
+          option: reveal ? option : stripExplainedTrail(option),
           // THE SHARPER FLAG. This sheet has now stated its own bands, so the
           // hint can name the investor's real tier instead of the standing
           // steps — same module, same wording, better evidence.

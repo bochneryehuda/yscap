@@ -166,6 +166,16 @@ export const ltApi = {
   // that key rather than re-searched: 200 once ready, 202 while it is still computing
   // (surfaced as an ordinary body, `ready:false`), 409 once the key has expired.
   dscrPrice: (scenario, opts) => ltPost(lt('/dscr/price'), { scenario, ...(opts || {}) }),
+  /* THE SAME DEAL, PRICED ONCE PER DSCR BRACKET (owner-directed 2026-09-01).
+     ⛔ IT COSTS SEVERAL VENDOR CALLS, NOT ONE — one search per DSCR bracket this
+     loan can reach — so it is even more firmly a deliberate press than `dscrPrice`
+     above. Never from an effect, never on a keystroke.
+     Answers `{ brackets:[{ tier, label, sentRatio, quotes }], empty, failedBrackets }`
+     where every quote is priced in the band its OWN rate reaches. The server
+     decides all of that: the screen renders what it is told, because the bracket
+     ladder is the one the term sheet refuses on and a browser copy of it would
+     drift from the refusal. */
+  dscrPriceBrackets: (scenario, opts) => ltPost(lt('/dscr/price-brackets'), { scenario, ...(opts || {}) }),
   // The ONE door here that costs NOTHING. A ZIP resolves its state, county and county FIPS out of a
   // committed Census table on our own server — no vendor call, no session, no billing — which is
   // why this one MAY be fired as somebody types, unlike the two above.
@@ -208,6 +218,21 @@ export const ltApi = {
   // program its pricing is fetched from, and whether it is on. A free read of our
   // own server — no vendor call — so a screen may fetch it from an effect.
   combinedInvestors: () => ltGet(lt('/dscr/combined/investors')),
+  /**
+   * ASK ONE ROW TO EXPLAIN ITS PRICE.
+   *
+   * COSTS A LIVE VENDOR CALL — for the one rate sheet on this board that explains on demand — so
+   * only ever from a deliberate press on that row's Details. The other sheet publishes its
+   * itemization with the search and answers `alreadyExplained` with nothing to fetch, which is why
+   * the screen may call this on any row without knowing which is which.
+   *
+   * `quote` is the row's own `explain` block. `investorKey` rides with it as a POINTER to whose
+   * saved setting the server should read when it brings the base into step with the price — it can
+   * never state an amount, and the server resolves the figure from its own store.
+   */
+  combinedExplain: (quote, scenario) => ltPost(lt('/dscr/combined/explain'), {
+    quote, scenario, investorKey: (quote && quote.investorKey) || null,
+  }),
   // Saves the WHOLE map, always — see the route's own note. A per-key patch could
   // not express "take this setting back off and return the investor to its
   // pre-fill", which is the thing somebody auditing this will do most often.

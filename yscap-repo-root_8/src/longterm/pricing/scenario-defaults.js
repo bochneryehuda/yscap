@@ -66,6 +66,26 @@ const DSCR_PROFILE = {
   propertyType: 'SingleFamily',
   occupancy: 'Investment',
   incomeDoc: 'DSCR',
+  // US CITIZEN, stated here rather than left implicit in two places (owner-directed
+  // 2026-09-01: *"just put it somewhere in the backend to pre-fill as U.S. citizens…
+  // the same way the other defaults work"* — and, on a control for it, *"we don't need
+  // to add the option for this in the frontend"*).
+  //
+  // THIS MOVES NOTHING. It is what BOTH programs already send for a scenario that does
+  // not state one: Lender Price's recorded base carries `Citizenship: "US Citizen"` and
+  // only overwrites it when a scenario states one, and the LoanNEX connector carried the
+  // same answer as an inline literal. Both now read it from HERE, so the two can no
+  // longer drift — which is the whole reason this file exists. Before it, the answer
+  // lived in a captured JSON blob on one side and a hard-coded string on the other, and
+  // moving one would silently have left the other behind.
+  //
+  // ⛔ IT MUST BE A LENDER PRICE WIRE TOKEN, not merely a canonical word. LoanNEX maps it
+  // through its own alias table (`US Citizen` → `UsCitizen`), but the Lender Price adapter
+  // compares it EXACTLY against its own enum with no alias step — so a value spelled the
+  // LoanNEX way here is not a synonym, it is unknown to that side. That connector now
+  // ignores a default it cannot read rather than refusing the quote, and DEF-6 fails the
+  // build if this value stops being valid for BOTH vendors. Do not "canonicalise" it.
+  citizenship: 'US Citizen',
 };
 
 /**
@@ -209,6 +229,7 @@ function profileFor(sc) {
     lockDays: withDefault(s.lockDays, DSCR_PROFILE.lockDays),
     reservesMonths: withDefault(s.reservesMonths != null ? s.reservesMonths : s.reserves, DSCR_PROFILE.reservesMonths),
     propertyType: withDefault(s.propertyType, DSCR_PROFILE.propertyType),
+    citizenship: withDefault(s.citizenship, DSCR_PROFILE.citizenship),
   };
 }
 

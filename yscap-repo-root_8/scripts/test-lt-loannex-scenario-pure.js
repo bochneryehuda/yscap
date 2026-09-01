@@ -30,6 +30,9 @@ const counties = require('../src/longterm/loannex/counties');
 // The OTHER program's own band rule, so the parity assertion below compares
 // against Lender Price itself rather than against a copy of its band edges.
 const lpModel = require('../src/longterm/lenderprice/search-model');
+// …and its FIELD registry, which is where the vesting-type and citizenship enums live as two
+// separate sets — the fact the citizenship section below rests on, read rather than retyped.
+const lpRegistry = require('../src/longterm/lenderprice/field-registry');
 const captured = require('../src/longterm/loannex/capture/quick-prices.json');
 
 let pass = 0, fail = 0;
@@ -298,6 +301,317 @@ refuses(() => scenario.buildNexApp({ purpose: 'Purchase', loan: 3.75e5, fico: 76
     try { scenario.deriveAmounts({ value: 500000 }); } catch (e) { refused = e.code === 'insufficient_amounts'; }
     ok(refused && scenario.ltvString(null) === null,
       'LTV-6 an LTV nobody stated is never invented — one figure alone is refused, and a null LTV stays null');
+  }
+
+  // ---- citizenship is NOT the vesting type ----------------------------------
+  // THE LIVE DEFECT THIS SECTION EXISTS FOR. `borrowerType` in this scenario
+  // vocabulary is the VESTING (entity) type — LLC, Corporation, Trust — and the
+  // builder USED to fall back to it for CITIZENSHIP. No vesting word is in any
+  // citizenship table, so `mapAlias` refused the request before the wire and
+  // EVERY quote the board asked LoanNEX for came back with nothing at all. The
+  // board offers only vesting types, so this was not an edge: it was every quote.
+  {
+    const fixed = require('fs').readFileSync(require.resolve('../src/longterm/loannex/scenario'), 'utf8');
+    // The OLD rule, reproduced verbatim, so the control below proves what moved
+    // rather than asserting it. If this ever passes 'LLC', the control is broken.
+    const oldRule = (s) => (s.borrowerType == null && s.citizenship == null
+      ? 'UsCitizen'
+      : scenario._internals.mapAlias(scenario._internals.CITIZENSHIP_ALIASES,
+        s.citizenship != null ? s.citizenship : s.borrowerType, 'citizenship', 'unknown_citizenship'));
+
+    // EVERY read below goes through this TOTAL accessor, and that is not tidiness:
+    // a mutation restoring the old fallback makes several of these calls THROW, and
+    // an uncaught throw stops the battery where it stands — which reports a pass
+    // rate that means nothing and looks like proof. It answers the refusal code
+    // instead, so each assertion fails on its own terms.
+    const priceOrCode = (extra) => {
+      try {
+        return scenario.buildNexApp(Object.assign({
+          purpose: 'Purchase', value: 500000, loan: 375000, fico: 760, dscr: 1.30,
+          propertyType: 'SingleFamily', state: 'NJ', prepayMonths: 60, reservesMonths: 24,
+        }, extra), reg, { countyKey: 31001 });
+      } catch (e) { return { citizenship: 'REFUSED:' + (e && e.code), _refused: (e && e.code) || 'throw' }; }
+    };
+    const price = priceOrCode;
+
+    // ── THE PAYLOAD THE BOARD ACTUALLY SENDS ─────────────────────────────────
+    // A synthetic minimum is NOT what the screen posts, and the difference is the
+    // whole severity here: the defect only ever hurt because the BOARD fills in a
+    // vesting type on every quote. A pre-merge audit defeated the first cut of this
+    // section with a fallback gated on `s.zip` — a key the board always sends and
+    // this fixture never did — which reproduced the owner's empty board while every
+    // assertion stayed green. So the fixture is the BOARD'S OWN: its real starting
+    // values (`START`, read out of the screen) put through its REAL `toScenario`.
+    // Neither is retyped, so it cannot drift from what a person actually posts.
+    const boardMod = await import('../app-v2/src/longterm/scenarioFields.js');
+    const boardSrc = require('fs').readFileSync(
+      require('path').join(__dirname, '../app-v2/src/longterm/LtScenarioFields.jsx'), 'utf8');
+    const startBlock = (boardSrc.match(/export const START = \{[\s\S]*?\n\};/) || [null])[0];
+    // A FAILED READ MUST FAIL THE TEST, not quietly leave an empty fixture — that is
+    // exactly how this section became vacuous the first time.
+    const boardStart = startBlock
+      ? new Function('DEFAULT_TERM_YEARS', startBlock.replace('export const START =', 'return') + '\n')(boardMod.DEFAULT_TERM_YEARS)
+      : null;
+    const boardScenario = boardStart ? boardMod.toScenario(boardStart) : null;
+    ok(boardScenario && boardScenario.borrowerType === 'LLC' && boardScenario.zip
+      && boardScenario.propertyType && boardScenario.dscr != null && Object.keys(boardScenario).length >= 10,
+      `CIT-B0 the board's own opening scenario was READ, not retyped (${boardScenario ? Object.keys(boardScenario).length + ' keys, borrowerType=' + boardScenario.borrowerType : 'PARSE FAILED'})`);
+
+    // ⛔ THE SCREEN'S OUTPUT IS NOT THE CONNECTOR'S INPUT, and the gap is where the
+    // second audit found the defect again. `combined-pricer` runs the scenario through
+    // `validateScenario` FIRST, which ENRICHES it — the board posts 13 keys and the
+    // connector is handed 16 (`state`, `countyFps`, `countyName`, resolved from the ZIP).
+    // Pricing the screen's own 13 left a fallback gated on `countyFps` invisible while
+    // reproducing the owner's empty board exactly. So the fixture is what the ROUTE
+    // hands the vendor, produced by the route's own function rather than described here.
+    const routeOf = (sc) => {
+      const chk = lpModel.validateScenario(Object.assign({ loan: 375000, fico: 760 }, sc));
+      return chk && chk.ok !== false && chk.scenario ? chk.scenario : null;
+    };
+    const routeScenario = routeOf(boardScenario);
+    const addedByRoute = routeScenario ? Object.keys(routeScenario).filter((k) => !(k in (boardScenario || {}))) : [];
+    ok(routeScenario && addedByRoute.length > 0,
+      `CIT-B0b …and the fixture is what the ROUTE hands the vendor, not what the screen posts (${routeScenario ? Object.keys(routeScenario).length : '?'} keys, ${addedByRoute.length} added by the route: ${addedByRoute.join(', ') || 'NONE — the enrichment is not being exercised'})`);
+
+    const priceBoard = (extra) => {
+      try {
+        return scenario.buildNexApp(Object.assign({}, routeScenario || boardScenario, { loan: 375000, fico: 760 }, extra),
+          reg, { countyKey: 31001 });
+      } catch (e) { return { citizenship: 'REFUSED:' + (e && e.code), _refused: (e && e.code) || 'throw' }; }
+    };
+
+    // THE OWNER'S OWN CASE, end to end: open the board, press Price, get a quote.
+    const boardPriced = priceBoard({});
+    ok(!boardPriced._refused && boardPriced.citizenship === 'UsCitizen',
+      `CIT-B1 the board's own opening scenario prices instead of being refused (${boardPriced.citizenship})`);
+
+    // NO field may decide the citizenship — swept by REMOVAL over the route's own payload,
+    // enrichment keys included. A removal the builder genuinely cannot survive is skipped
+    // and COUNTED: a silent mass-skip would empty this assertion without failing it.
+    let movedBy = [], skipped = 0;
+    for (const k of Object.keys(routeScenario || boardScenario || {})) {
+      const without = Object.assign({}, routeScenario || boardScenario, { loan: 375000, fico: 760 });
+      delete without[k];
+      let got = null;
+      try { got = scenario.buildNexApp(without, reg, { countyKey: 31001 }).citizenship; }
+      catch (e) { skipped++; }
+      if (got != null && got !== boardPriced.citizenship) movedBy.push(k + '->' + got);
+    }
+    const sweptKeys = Object.keys(routeScenario || boardScenario || {}).length;
+    ok(movedBy.length === 0 && skipped < sweptKeys,
+      `CIT-B2 …and removing any one field the route sends never moves the citizenship (${sweptKeys} swept, ${skipped} unremovable${movedBy.length ? ', moved by ' + movedBy.join(', ') : ''})`);
+
+    // …AND THE SAME BY VARIATION, which is what removal alone cannot see: a gate on a
+    // value rather than a presence (`units > 1`, a particular county) survives a delete
+    // sweep untouched. Every combination is built from the screen's OWN option lists and
+    // run through the route's OWN enrichment, so each ZIP resolves a different county and
+    // a person's real choices are what is exercised — not a shape described here.
+    // ⛔ EVERY VALUE THIS MATRIX HOLDS STILL IS A HIDING PLACE, and that is not a
+    // hypothesis: an audit defeated the previous version twice over by gating the
+    // fallback on `fico` — which was 760 in all 63 assertions in this file — and on
+    // `lockDays`, which nothing varied. A guard is only as wide as the space it moves
+    // through, so every field the screen can change now moves here, including the
+    // numbers. `fico` spans the thin-file band deliberately: a rule keyed on credit
+    // quality is exactly the plausible-looking gate somebody would write.
+    const ZIPS = ['06001', '07036', '33101', '11211'];
+    const FICOS = [660, 690, 760];
+    let matrix = 0, matrixMoved = [];
+    for (const pt of boardMod.PROPERTY_TYPES) for (const pu of boardMod.PURPOSES)
+      for (const bt of boardMod.BORROWER_TYPES) for (const zip of ZIPS)
+        for (const fico of FICOS) for (const lockDays of boardMod.LOCK_DAYS)
+        for (const flags of [{}, { io: true, escrowWaive: true, fthb: true }]) {
+          const sc = Object.assign({}, boardScenario, {
+            propertyType: pt.value, purpose: pu.value, borrowerType: bt.value, zip,
+            fico, lockDays, termYears: boardMod.LOAN_TERMS[matrix % boardMod.LOAN_TERMS.length].value,
+            units: boardMod.unitsFor(pt.value, '1'),
+          }, flags);
+          const routed = routeOf(sc);
+          if (!routed) continue; // a combination the route itself refuses is not this rule's business
+          matrix++;
+          let got;
+          try { got = scenario.buildNexApp(Object.assign({ loan: 375000, fico: 760 }, routed), reg, { countyKey: 31001 }).citizenship; }
+          catch (e) { got = 'REFUSED:' + (e && e.code); }
+          if (got !== 'UsCitizen') matrixMoved.push([pt.value, pu.value, bt.value, zip].join('/') + '=' + got);
+        }
+    // AN EXACT COUNT, not a floor. `> 50` was the first cut and it would have survived an
+    // enrichment regression that silently dropped three quarters of the combinations —
+    // the assertion would still have read as a broad sweep while proving almost nothing.
+    const expectMatrix = boardMod.PROPERTY_TYPES.length * boardMod.PURPOSES.length
+      * boardMod.BORROWER_TYPES.length * ZIPS.length * FICOS.length * boardMod.LOCK_DAYS.length * 2;
+    ok(matrix === expectMatrix && matrixMoved.length === 0,
+      `CIT-B3 …across every combination the screen can produce, routed and enriched (${matrix} priced of ${expectMatrix} expected${matrixMoved.length ? ', moved by ' + matrixMoved.slice(0, 4).join(', ') : ''})`);
+
+    // The parked vesting types too — not on the screen today, one edit from being back.
+    let boardRefused = [];
+    for (const b of boardMod.BORROWER_TYPES.concat(boardMod.BORROWER_TYPES_PARKED)) {
+      const r = priceBoard({ borrowerType: b.value });
+      if (r._refused || r.citizenship !== 'UsCitizen') boardRefused.push(b.value + '=' + r.citizenship);
+    }
+    ok(boardRefused.length === 0,
+      `CIT-B4 …on every vesting type the screen offers, live or parked${boardRefused.length ? ' (' + boardRefused.join(', ') + ')' : ''}`);
+
+
+    // CONTROL — the old rule really did refuse the board's own default, so every
+    // assertion below is measuring a real change and not agreeing with itself.
+    let oldRefused = false;
+    try { oldRule({ borrowerType: 'LLC' }); } catch (e) { oldRefused = e.code === 'unknown_citizenship'; }
+    ok(oldRefused, 'CIT-0 CONTROL: the old rule refused the board\'s default vesting type ("LLC") outright');
+
+    // The two are separate sets in the OTHER program\'s own registry — read from it
+    // rather than retyped here, so this states a fact about the system.
+    const vestingTypes = Array.from(lpRegistry.BORROWER_TYPES);
+    const citizenships = Array.from(lpRegistry._tokens.CITIZENSHIP);
+    const shared = vestingTypes.filter((v) => citizenships.includes(v));
+    ok(shared.length === 0,
+      `CIT-1 a vesting type is never a citizenship — the two enums share no value (${vestingTypes.length} vs ${citizenships.length}, overlap ${shared.length})`);
+    // …and the fact this connector's own refusal actually rested on: not one vesting
+    // word is a key in LoanNEX's OWN alias table, which is WHY reading the vesting
+    // slot refused the request. CIT-1 alone reads two Lender Price sets and could not
+    // fail for any change to this file — this one can.
+    const vestingInNexTable = vestingTypes.filter((v) =>
+      scenario._internals.CITIZENSHIP_ALIASES[scenario._internals.aliasKey(v)] != null);
+    ok(vestingInNexTable.length === 0,
+      `CIT-1b …and none of them is a key in LoanNEX's own citizenship table, which is why reading that slot refused the request${vestingInNexTable.length ? ' (' + vestingInNexTable.join(', ') + ')' : ''}`);
+
+    // EVERY vesting type the system recognises now prices, and takes the unstated
+    // citizenship. Swept from the registry, so a type added later is covered.
+    let refusedTypes = [], wrongCitizenship = [];
+    for (const bt of vestingTypes) {
+      const built = priceOrCode({ borrowerType: bt });
+      if (built._refused) refusedTypes.push(bt + ':' + built._refused);
+      else if (built.citizenship !== 'UsCitizen') wrongCitizenship.push(bt + '=' + built.citizenship);
+    }
+    ok(refusedTypes.length === 0,
+      `CIT-2 every vesting type prices instead of being refused (${vestingTypes.length} swept${refusedTypes.length ? ', refused ' + refusedTypes.join(', ') : ''})`);
+    ok(wrongCitizenship.length === 0,
+      `CIT-2b …and none of them moves the citizenship off the unstated default${wrongCitizenship.length ? ' (' + wrongCitizenship.join(', ') + ')' : ''}`);
+
+    // A vesting slot carrying a word that IS a citizenship must still be ignored.
+    // It cannot be satisfied by accident — but it is NOT, on its own, proof that the
+    // fallback is gone: a pre-merge audit walked straight past it with a fallback
+    // gated on a field this minimal scenario omits. What closes the class is the
+    // BOARD-SHAPED pair above (CIT-B2 sweeps every field the screen sends) plus
+    // CIT-7/7b on the source. Three independent angles, none load-bearing alone.
+    ok(price({ borrowerType: 'Foreign National' }).citizenship === 'UsCitizen',
+      'CIT-3 the vesting slot is never read for citizenship, even spelled exactly like one');
+    ok(price({ borrowerType: 'LLC', citizenship: 'Foreign National' }).citizenship === 'ForeignNational',
+      'CIT-3b …while the citizenship field itself still decides, whatever the vesting is');
+
+    // An explicit citizenship is honoured in every spelling the alias table accepts.
+    const spellings = { 'US Citizen': 'UsCitizen', 'us citizen': 'UsCitizen', 'Perm Resident': 'PermanentResidentAlien',
+      greencard: 'PermanentResidentAlien', 'Non-Perm Resident': 'NonPermanentResidentAlien',
+      'Foreign National': 'ForeignNational', foreign: 'ForeignNational' };
+    let badSpelling = [];
+    for (const [typed, key] of Object.entries(spellings)) {
+      let got = null;
+      try { got = price({ borrowerType: 'LLC', citizenship: typed }).citizenship; } catch (e) { got = 'REFUSED:' + e.code; }
+      if (got !== key) badSpelling.push(typed + '->' + got);
+    }
+    ok(badSpelling.length === 0,
+      `CIT-4 every accepted citizenship spelling still maps to its registry key${badSpelling.length ? ' (' + badSpelling.join(', ') + ')' : ''}`);
+
+    // THE REFUSAL RULE STANDS. A citizenship nobody recognises is still refused by
+    // name — the fix removed a wrong SOURCE, it did not soften the never-default rule.
+    const unknownRefused = priceOrCode({ citizenship: 'Martian' })._refused;
+    ok(unknownRefused === 'unknown_citizenship',
+      'CIT-5 an unrecognised citizenship is still refused rather than defaulted');
+
+    // A control nobody filled in reads as unstated — the same convention condoType
+    // and escrow use — so a blank box can never refuse the loan.
+    ok(price({ citizenship: '' }).citizenship === 'UsCitizen' && price({}).citizenship === 'UsCitizen',
+      'CIT-6 a blank or absent citizenship takes the unstated default IN THE BUILDER (the route refuses a blank earlier, by name)');
+
+    // SOURCE GUARD — comments stripped first, because the fix's own explanation
+    // necessarily names the field it stopped reading.
+    const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').split('\n')
+      .filter((l) => !/^\s*(\/\/|\*)/.test(l)).map((l) => l.replace(/\s\/\/.*$/, '')).join('\n');
+    const code = strip(fixed);
+    // ANCHORED INSIDE `buildNexApp`, not on the first match in the file. A decoy
+    // `const citizenship = s.citizenship` in some helper above it would otherwise BE
+    // what this measures, leaving the real expression unread — found in review.
+    const bodyStart = code.indexOf('function buildNexApp(');
+    const body = bodyStart >= 0 ? code.slice(bodyStart) : code;
+    const expr = (body.match(/const citizenship = [\s\S]*?;\n/) || [''])[0];
+    // CLASS-SPECIFIC, not name-specific: the expression may read the citizenship — from
+    // the scenario or from the shared profile — and NO other scenario property, under any
+    // name. Banning the word `borrowerType` alone was defeated in review by the same
+    // category error spelled `borrowerEntity`, and again by `vesting`.
+    const strayReads = [...new Set((expr.match(/\bs\.([A-Za-z_$][\w$]*)/g) || []).map((m) => m.slice(2)))]
+      .filter((k) => k !== 'citizenship');
+    ok(bodyStart >= 0 && /\b(s|prof)\.citizenship\b/.test(expr) && strayReads.length === 0 && !/\bs\s*\[/.test(expr),
+      `CIT-7 the citizenship expression reads the citizenship and no other scenario field${strayReads.length ? ' (also reads ' + strayReads.join(', ') + ')' : ''}`);
+    // …and a read HOISTED above it, or DESTRUCTURED out of the scenario, cannot slip past
+    // a guard anchored on the expression. LoanNEX's recorded body carries no vesting field
+    // at all, so "this builder reads none anywhere" is both true and stable — and the
+    // citizenship now flows through the shared profile, so that module is scanned too.
+    // HONEST LIMIT: a source guard catches the shapes a person actually writes, never a
+    // determined obfuscation (`s['borrower' + 'Type']` defeats any regex). What closes the
+    // class is CIT-B2/B3 above, which price the real routed payload and cannot be fooled
+    // by how the read is spelled.
+    const sharedCode = strip(require('fs').readFileSync(
+      require.resolve('../src/longterm/pricing/scenario-defaults'), 'utf8'));
+    const vestingReads = [];
+    for (const [label, src] of [['scenario.js', code], ['scenario-defaults.js', sharedCode]]) {
+      for (const m of src.match(/\b[A-Za-z_$][\w$]*\.(borrowerType|borrowerEntity|vesting)\b/g) || []) vestingReads.push(label + ':' + m);
+      for (const m of src.match(/\{[^{}]*\b(?:borrowerType|borrowerEntity|vesting)\b[^{}]*\}\s*=/g) || []) vestingReads.push(label + ':destructured');
+      for (const m of src.match(/\b[A-Za-z_$][\w$]*\s*\[\s*['"](?:borrowerType|borrowerEntity|vesting)['"]\s*\]/g) || []) vestingReads.push(label + ':' + m);
+    }
+    ok(vestingReads.length === 0,
+      `CIT-7b …and neither the builder nor the shared profile reads a vesting field, however it is spelled${vestingReads.length ? ' (' + vestingReads.join(', ') + ')' : ''}`);
+  }
+
+  // ---- one citizenship default, read by both programs ------------------------
+  // Owner-directed 2026-09-01, on a control for this: *"we don't need to add the
+  // option for this in the frontend… just put it somewhere in the backend to
+  // pre-fill as U.S. citizens. The same way the other defaults work."* So it lives
+  // in the shared profile beside the prepay term and the reserves. What these
+  // assertions protect is not the VALUE — it is that ONE value drives BOTH
+  // programs, so the day it moves it cannot move on one side only. That was the
+  // real exposure: the answer used to live in a captured JSON blob on the Lender
+  // Price side and a hard-coded string on the LoanNEX side, agreeing by luck.
+  {
+    const shared = require('../src/longterm/pricing/scenario-defaults');
+    const lpDyn = (m, k) => { const d = (m && m.dynamicPropertiesMap) || {}; const v = d[k]; return v && typeof v === 'object' ? v.value : v; };
+    const baseSc = { purpose: 'Purchase', value: 500000, loan: 375000, fico: 760, dscr: 1.30,
+      propertyType: 'SingleFamily', zip: '07036', state: 'NJ', countyFps: '34039', prepayMonths: 60 };
+
+    ok(shared.DSCR_PROFILE.citizenship === 'US Citizen',
+      `DEF-1 the shared profile states the citizenship default in one place (${JSON.stringify(shared.DSCR_PROFILE.citizenship)})`);
+    ok(shared.profileFor({}).citizenship === 'US Citizen'
+      && shared.profileFor({ citizenship: '' }).citizenship === 'US Citizen'
+      && shared.profileFor({ citizenship: 'Foreign National' }).citizenship === 'Foreign National',
+      'DEF-2 …applied when the caller states none or leaves the box blank, and never over one they did state');
+
+    // BOTH programs must resolve THAT value — asserted by MOVING it and requiring
+    // both wires to follow. Reading the current value on both sides would pass just
+    // as well if each carried its own copy, which is exactly the bug being closed.
+    const nexOf = () => scenario.buildNexApp(baseSc, reg, { countyKey: 31001 }).citizenship;
+    const lpOf = () => lpDyn(lpModel.buildSearch(baseSc), 'Citizenship');
+    const beforeNex = nexOf(), beforeLp = lpOf();
+    ok(beforeNex === 'UsCitizen' && beforeLp === 'US Citizen',
+      `DEF-3 …and each program renders it in its OWN vendor's spelling (LoanNEX ${beforeNex}, Lender Price ${beforeLp})`);
+
+    const restore = shared.DSCR_PROFILE.citizenship;
+    let movedNex, movedLp;
+    try {
+      shared.DSCR_PROFILE.citizenship = 'Foreign National';
+      movedNex = nexOf(); movedLp = lpOf();
+    } finally { shared.DSCR_PROFILE.citizenship = restore; }
+    ok(movedNex === 'ForeignNational' && movedLp === 'Foreign National',
+      `DEF-4 …so moving the ONE default moves BOTH programs together (LoanNEX ${movedNex}, Lender Price ${movedLp}) — neither can be left behind`);
+    ok(nexOf() === beforeNex && lpOf() === beforeLp,
+      'DEF-5 …and the default is put back, so this section leaves nothing behind for the rest of the suite');
+
+    // DEF-6 — THE FOOT-GUN THE AUDIT FOUND. Lender Price compares this value EXACTLY
+    // against its own enum with no alias step, so a default spelled the LoanNEX way
+    // (`UsCitizen`) is not a synonym there — it is unknown. The connector now ignores a
+    // default it cannot read rather than refusing the quote, but the honest place to catch
+    // it is here, at build time: the ONE shared value must be usable by BOTH vendors.
+    const lpTokens = lpRegistry._tokens.CITIZENSHIP;
+    const nexMappable = scenario._internals.CITIZENSHIP_ALIASES[
+      scenario._internals.aliasKey(shared.DSCR_PROFILE.citizenship)] != null;
+    ok(lpTokens.has(shared.DSCR_PROFILE.citizenship) && nexMappable,
+      `DEF-6 …and the shared default is a value BOTH vendors accept (Lender Price token ${lpTokens.has(shared.DSCR_PROFILE.citizenship)}, LoanNEX mappable ${nexMappable})`);
   }
 
   console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);

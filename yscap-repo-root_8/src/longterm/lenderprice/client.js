@@ -1293,7 +1293,22 @@ function rateSheetSummary(raw, options) {
 function programKeyOf(o) {
   return o.lender + '||' + o.program + '||' + (o.rateGridId || '') + '||' + ((o.rateSheet && o.rateSheet.id) || '');
 }
-function parse(raw) {
+/**
+ * parse(raw, { withOptions }) — THE LADDER, and OPTIONALLY THE ITEMIZATION BESIDE IT.
+ *
+ * ⛔ WHY THE FLAG RATHER THAN A THIRD PARSER, and it is a correctness property rather than
+ * tidiness. `parse` and `parseFull` group the SAME options with the SAME `programKeyOf` in the
+ * SAME order, so their program arrays line up by index — today. Any caller that wanted a
+ * program's rungs AND its options would have to rely on that alignment, and the day one of the
+ * two loops gains a filter the alignment breaks SILENTLY: a program's ladder would carry another
+ * program's itemized LLPAs, and an LLPA stack under the wrong price is exactly the kind of wrong
+ * number somebody quotes. One grouping loop makes that impossible to get wrong.
+ *
+ * Without the flag the output is BYTE-IDENTICAL to what it has always been (asserted by test), so
+ * every existing caller — including the general engine's own summary path — is untouched.
+ */
+function parse(raw, opts = {}) {
+  const withOptions = opts.withOptions === true;
   const { options } = collectOptions(raw);
   if (!options.length) return parseFallback(raw); // synthetic / non-grouped shapes
   const seen = new Map();
@@ -1301,7 +1316,15 @@ function parse(raw) {
   for (const o of options) {
     const key = programKeyOf(o);
     let p = seen.get(key);
-    if (!p) { p = { lender: o.lender, investor: o.investor, lenderId: o.lenderId, program: o.program, product: o.product, rateGridId: o.rateGridId || null, rateSheetName: (o.rateSheet && o.rateSheet.name) || null, rungs: [] }; seen.set(key, p); programs.push(p); }
+    if (!p) {
+      p = { lender: o.lender, investor: o.investor, lenderId: o.lenderId, program: o.program, product: o.product, rateGridId: o.rateGridId || null, rateSheetName: (o.rateSheet && o.rateSheet.name) || null, rungs: [] };
+      // `lenderShort` and `options` are `parseFull`'s own fields, added HERE only when asked, in
+      // the same order that parser puts them in, so a program that carries both is a superset of
+      // either — never a third shape a reader has to learn.
+      if (withOptions) { p.lenderShort = o.lenderShort; p.options = []; }
+      seen.set(key, p); programs.push(p);
+    }
+    if (withOptions) p.options.push(o);
     const pb = o.priceBuild;
     p.rungs.push({
       rate: pb.noteRate, price: pb.price, points: pb.adjustedPoints, priceDerivedFromPoints: pb.priceDerivedFromPoints,
@@ -1315,11 +1338,18 @@ function parse(raw) {
     });
   }
   finishPrograms(programs);
+  // The options are sorted by rate EXACTLY as `parseFull` sorts them, so the two parsers can never
+  // present one program's options in two different orders.
+  if (withOptions) for (const p of programs) {
+    p.options.sort((a, b) => ((a.priceBuild.noteRate == null ? 99 : a.priceBuild.noteRate) - (b.priceBuild.noteRate == null ? 99 : b.priceBuild.noteRate)));
+    p.optionCount = p.options.length;
+  }
   const rateSheets = rateSheetSummary(raw, options);
   return {
     programCount: programs.length,
     lenderCount: new Set(programs.map((p) => p.lender)).size,
     rungCount: programs.reduce((n, p) => n + p.rungCount, 0),
+    ...(withOptions ? { optionCount: options.length } : {}),
     disqualifiedCount: disqualifiedCountOf(raw),
     // §37.12 — the board's staleness, stated rather than left to be discovered.
     pricedAt: rateSheets.pricedAt,

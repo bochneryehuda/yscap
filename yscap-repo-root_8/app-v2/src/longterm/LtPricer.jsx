@@ -6,6 +6,7 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
 import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey, programLine } from './priceBuild.js';
+import LtBracketBoard from './LtBracketBoard.jsx';
 // The compensation OVERLAY (owner-directed 2026-08-23) — display math on top of the numbers
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
@@ -41,7 +42,7 @@ import LtScenarioSave from './LtScenarioSave.jsx';
 import {
   Check, ModeTab, DscrCalc, useScenarioForm, ScenarioFields,
 } from './LtScenarioFields.jsx';
-import { useEngine, EngineProvider, GENERAL_ENGINE } from './pricerEngine.js';
+import { useEngine, useExplain, EngineProvider, ExplainProvider, GENERAL_ENGINE } from './pricerEngine.js';
 
 /**
  * THE PRICING ENGINE — every rate Lender Price is quoting, and every investor at each one.
@@ -154,6 +155,53 @@ export function ltvOf(f) {
    price FIRST — a higher price is better for the borrower, and that is arithmetic, not a
    judgement. A quote with no price sorts last rather than being treated as zero.
    ────────────────────────────────────────────────────────────────────────── */
+/**
+ * THE FIGURES A DSCR BAND IS WORKED OUT FROM, and what is still missing.
+ *
+ * ⛔ PURE, AND MODULE-LEVEL ON PURPOSE. The band searches are fired from inside the
+ * Search press, where the component's own derived values are the PREVIOUS render's —
+ * `loanAmount` in particular is partly derived from the last response. Reading them
+ * there would band the new board on the old deal's figures. So everything is passed
+ * in, and the loan amount comes from the answer the vendor just gave (its own echo)
+ * before anything the form holds.
+ *
+ * ⛔ TAX AND INSURANCE GO THROUGH `perMonth`, NEVER RAW. Both boxes carry a
+ * monthly/yearly switch beside them, so the raw number can be a yearly bill — a
+ * payment twelve times too high, and a band wrong on every row.
+ */
+export function bracketFigures({ f, calc, effectiveScenario }) {
+  const eff = effectiveScenario && toNumber(effectiveScenario.loanAmount);
+  const typed = toNumber(f && f.loan);
+  return {
+    loanAmount: eff != null && eff > 0 ? eff : (typed != null && typed > 0 ? typed : null),
+    termYears: toNumber(f && f.termYears),
+    interestOnly: !!(f && f.io),
+    rentMonthly: perMonth(toNumber(calc && calc.rent), 'monthly'),
+    taxMonthly: perMonth(toNumber(calc && calc.tax), calc && calc.taxBasis),
+    insuranceMonthly: perMonth(toNumber(calc && calc.insurance), calc && calc.insBasis),
+    hoaMonthly: calc && calc.hoa === '' ? 0 : perMonth(toNumber(calc && calc.hoa), 'monthly'),
+  };
+}
+
+/**
+ * WHAT THE BAND BOARD IS STILL MISSING, in the words of the boxes it comes from.
+ *
+ * ⛔ NOT `dscrFrom`'s LIST. That answers "can we show a ratio for THIS rate", so with
+ * no rate chosen it reports the RATE as missing — nonsense advice here, because the
+ * band board's whole job is to find the rates. This mirrors the server's own
+ * `readFigures` rule instead: the property's figures plus the loan, and a term only
+ * when the payment amortises (an interest-only payment never uses one).
+ */
+export function bracketMissing(fig) {
+  const need = [];
+  if (!(fig.rentMonthly > 0)) need.push('monthly rent');
+  if (fig.taxMonthly == null) need.push('property tax');
+  if (fig.insuranceMonthly == null) need.push('insurance');
+  if (!(fig.loanAmount > 0)) need.push('loan amount');
+  if (!fig.interestOnly && !(fig.termYears > 0)) need.push('loan term');
+  return need;
+}
+
 export function buildRateStack(programs) {
   const list = Array.isArray(programs) ? programs : [];
   const byRate = new Map();
@@ -750,8 +798,52 @@ export function ChargeList({ charges, sheet }) {
    and it is printed BESIDE the vendor's own total, never instead of it. If the two ever
    disagree the screen says so on its face rather than quietly showing one of them.
    ────────────────────────────────────────────────────────────────────────── */
-export function PriceBuild({ o, comp, ts, quote }) {
+export function PriceBuild({ o: oProp, comp, ts, quote }) {
   const engine = useEngine();
+  /**
+   * ⛔ SOME ROWS ARRIVE EXPLAINED AND SOME HAVE TO BE ASKED, and until this existed the ones that
+   * had to be asked were never asked by anybody. One of the two rate sheets on the combined board
+   * publishes its itemization WITH the search; the other explains a row on demand, one call per
+   * quote. The server has had a door for both since the board shipped — same door, same builder,
+   * so the answer comes back in the option shape this panel already reads — and no screen ever
+   * called it. That is the owner's *"nothing populates at all"* on those rows.
+   *
+   * `useExplain()` is `null` on the general board, so it fetches nothing, renders nothing extra,
+   * and draws exactly what it has always drawn.
+   *
+   * NOTHING IS SILENTLY SWALLOWED: a refusal is said in the panel, in the server's own words,
+   * where the empty table would otherwise be — a blank space reads as "this quote has no
+   * adjustments", which is a claim no rate sheet made.
+   */
+  const explainer = useExplain();
+  const handle = oProp && oProp.explain && oProp.explain.priceHashKey ? oProp.explain : null;
+  const askable = !!(explainer && handle);
+  const [fetched, setFetched] = React.useState(null);
+  const [asking, setAsking] = React.useState(askable);
+  const [askErr, setAskErr] = React.useState(null);
+  const handleKey = handle ? String(handle.priceHashKey) : '';
+  const invKey = (quote && quote.investorKey) || null;
+  React.useEffect(() => {
+    if (!askable) { setAsking(false); return undefined; }
+    let dead = false;
+    setAsking(true); setAskErr(null); setFetched(null);
+    Promise.resolve()
+      .then(() => explainer({ ...handle, investorKey: invKey }))
+      .then((r) => {
+        if (dead) return;
+        // `alreadyExplained` is not a failure and must not read as one: that sheet published its
+        // itemization with the quote, so what is already on the row IS the answer.
+        if (r && r.option) setFetched(r.option);
+        else if (r && r.ok === false) setAskErr(r.message || 'This rate sheet could not be asked to explain this price.');
+      })
+      .catch((e) => { if (!dead) setAskErr((e && e.message) || 'This rate sheet could not be asked to explain this price.'); })
+      .finally(() => { if (!dead) setAsking(false); });
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [askable, handleKey, invKey]);
+  /* The fetched option is the SAME shape the row already carried, so everything below reads one
+     variable and never branches on where the itemization came from. */
+  const o = fetched || oProp;
   /* The vendor's own eligibility answer and anything it said out loud. Both are read straight off
      the option the server built, so a sheet that publishes neither simply has none. */
   const elig = (o && o.eligibility) || null;
@@ -809,6 +901,14 @@ export function PriceBuild({ o, comp, ts, quote }) {
 
   return (
     <div style={{ background: '#fff', borderRadius: 10, padding: 14, marginTop: 10, border: `1px solid ${GOLD}33` }}>
+      {asking && (
+        <div style={{ fontSize: 12.5, color: MUTED, marginBottom: 10 }}>
+          {`Asking ${engine.sheetLabel} to itemise this price…`}
+        </div>
+      )}
+      {askErr && (
+        <div style={{ fontSize: 12.5, color: CAUTION, marginBottom: 10, lineHeight: 1.6 }}>{askErr}</div>
+      )}
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
         <Track title="Price build"
           note={`Price is 100 minus points. Every line came from ${engine.sheetLabel}; the right-hand column is this page adding them up so the build can be followed.`}>
@@ -1569,6 +1669,10 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   const [res, setRes] = useState(null);
+  /* THE BAND BOARD'S OWN STATE. It is fired by the SAME press that runs the search
+     (see `runBrackets` below) and lands a few seconds later, so the ordinary board
+     is on screen at its usual speed and the banding fills in underneath. */
+  const [brk, setBrk] = useState({ busy: false, res: null, err: null });
   const [view, setView] = useState('priced');
   /* WHICH RATE ROWS ARE OPEN — a SET, not a single key (owner-directed 2026-08-27:
      "Expand All, and every section should expand to its max"). One row was all the
@@ -1824,6 +1928,10 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
     return typed != null && typed > 0 ? typed : null;
   })();
 
+  // The same rule the press uses, for the screen's own "what is still needed" line.
+  const dscrMissing = bracketMissing(bracketFigures({ f, calc, effectiveScenario: res && res.effectiveScenario }));
+
+
   /* THE ONE OVERLAY OBJECT every board takes. `compShiftPoints` answers null when the plan is
      missing or unreadable — then the comp positions CANNOT be computed, so the boards get the
      raw identity (shift 0, mode raw) and the switch says why. FAIL TO RAW, NEVER TO A WRONG
@@ -2072,6 +2180,35 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
     // would re-price on every render instead of on the one change that asked for it.
   }, [f.dscr]);
 
+  /* PRICE THE DEAL ONCE PER DSCR BAND, IN THE BACKGROUND, AFTER THE BOARD LANDS
+     (owner-directed 2026-09-01: *"Show the normal board instantly, then let the
+     bands fill in underneath as the other answers arrive… You press Search once,
+     same as today."*).
+
+     ⛔ IT IS FIRED BY THE PRESS, NOT BY AN EFFECT. `run` calls it and deliberately
+     does NOT await it, so the board renders at its usual speed while these searches
+     are still going. An effect would fire on re-renders nobody asked for, which is
+     the standing rule about live vendor calls — "never from an effect, never on a
+     keystroke, only on a deliberate press".
+
+     ⛔ AND IT CAN NEVER TURN A GOOD SEARCH INTO A FAILED ONE. Every path sets its
+     own state and nothing here throws into `run`: the board the officer just priced
+     is theirs whatever happens to the banding. */
+  async function runBrackets(scenario, figures) {
+    if (bracketMissing(figures).length) { setBrk({ busy: false, res: null, err: null }); return; }
+    setBrk({ busy: true, res: null, err: null });
+    try {
+      const r = await ltApi.dscrPriceBrackets(scenario, { figures });
+      if (!r || r.ok !== true) {
+        setBrk({ busy: false, res: null, err: (r && r.message) || 'The band board did not come back.' });
+        return;
+      }
+      setBrk({ busy: false, res: r, err: null });
+    } catch (e2) {
+      setBrk({ busy: false, res: null, err: (e2 && e2.message) || 'Lender Price could not be reached.' });
+    }
+  }
+
   async function run(e) {
     if (e) e.preventDefault();
     /* ⛔ THE PRE-FLIGHT GATE (owner-directed 2026-08-23). A scenario this form can already see
@@ -2083,6 +2220,9 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
     if (problem) { setGateMsg(problem); return; }
     setGateMsg(null);
     setBusy(true); setErr(null); setRes(null); setElapsed(0);
+    // A new scenario means new bands. Leaving the last deal's banding on screen
+    // beside a fresh board is one search's answer under another's question.
+    setBrk({ busy: false, res: null, err: null });
     setOpenRates(new Set()); setOpenQuote(null); setOpenLenders(new Set()); setView('priced');
     // A new scenario means a new searchKey, so the last scenario's refusals go with it. Leaving
     // them beside a fresh price would attribute one search's declines to another.
@@ -2116,6 +2256,9 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
       // selection opens a row that is on the board rather than one it is hiding.
       const s = buildRateStack(filterPrograms(r && r.programs, invSel).programs);
       if (s.rates.length) setOpenRates(new Set([s.rates[0].key]));
+      // …and the band board, on the same press. NOT awaited: the officer already has
+      // their answer, and these searches take a few seconds more.
+      runBrackets(toScenario(f), bracketFigures({ f, calc, effectiveScenario: r && r.effectiveScenario }));
     } catch (e2) {
       setErr((e2 && e2.message) || 'Lender Price could not be reached.');
     } finally {
@@ -2176,8 +2319,24 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
     }
   }
 
+  /**
+   * ASKING A ROW TO EXPLAIN ITSELF, bound to the scenario the BOARD was priced with — never the
+   * form as it stands. An officer who has started editing the form must not be able to make a
+   * panel explain the row in front of them against a different loan; `pricedForm` is the snapshot
+   * the price was pressed with, which is the same source the stale-board strip reads.
+   *
+   * `null` when the engine has nothing to ask (the general board) or nothing has been priced yet,
+   * which is what `useExplain()` reads as "there is nothing to fetch".
+   */
+  const explainRow = React.useMemo(() => {
+    if (!engine.explain || !pricedForm) return null;
+    const sc = toScenario(pricedForm);
+    return (quote) => engine.explain(quote, sc);
+  }, [engine, pricedForm]);
+
   return (
     <EngineProvider value={engine}>
+    <ExplainProvider value={explainRow}>
     <LtLayout title={engine.title}>
       <div style={{ display: 'grid', gap: 14 }}>
         {/* SAY WHAT THIS SCREEN IS, BEFORE ANYTHING ELSE — for a board that is not the one the
@@ -2504,6 +2663,30 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
         </ComparisonWorkflowPanel>
         )}
 
+        {/* ── EVERY RATE IN THE DSCR BAND IT ACTUALLY REACHES ──────────────
+            Owner-directed 2026-09-01, after a live refusal: an 11.125% option was
+            offered priced as though the loan were at 1.25 while its true ratio is
+            0.93, so the term sheet refused to issue it. The refusal was right; the
+            board should not have offered the rate.
+
+            ⛔ ONE PRESS, TWO SPEEDS. The owner's own shape: *"Show the normal board
+            instantly, then let the bands fill in underneath as the other answers
+            arrive."* The band searches are fired by `runBrackets` from inside the
+            Search press and are NOT awaited, so the board above renders at exactly
+            the speed it always did and this fills in a few seconds later. There is
+            no second button and no effect — a live vendor call still happens only
+            because somebody pressed Search.
+
+            ⛔ AND IT DECIDES NOTHING HERE. The bands, the ratio each was searched
+            at, and which quotes belong in which band are all the SERVER's answers,
+            on the SAME eleven-tier ladder the term sheet refuses on — down to the
+            text those ratios are written in. A browser copy of that ladder is
+            exactly how a board would come to offer a rate the export then refuses,
+            which is the defect this replaces. */}
+        {res && (
+          <LtBracketBoard res={brk.res} busy={brk.busy} err={brk.err} missing={dscrMissing} />
+        )}
+
         {/* ── THE FOOTNOTES ────────────────────────────────────────────────
             Two things that are true of every answer and are nobody's next step: the
             standing business-purpose disclosure, and the echo of exactly what was
@@ -2540,6 +2723,7 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
         )}
       </div>
     </LtLayout>
+    </ExplainProvider>
     </EngineProvider>
   );
 }

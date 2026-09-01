@@ -150,6 +150,70 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
    has no consumer-safe name. It is reported as unmapped until the owner names it.
 4. **The refresh-token endpoint** was not captured; the client re-mints from the ticket
    instead, so a session lasts as long as the JWT (1 h).
+5. **Neither board asks for the borrower's CITIZENSHIP, so every quote prices a US citizen.**
+   The scenario vocabulary has a real `citizenship` field and both connectors honour it — but no
+   screen offers a control for it (owner-directed 2026-09-01: *"we don't need to add the option for
+   this in the frontend"*), so on an ordinary quote it is unstated. Both programs then take the ONE
+   shared default in `pricing/scenario-defaults.js` — `US Citizen`, which LoanNEX renders as its own
+   `UsCitizen`. Before that default was stated, they agreed by luck: Lender Price's copy was frozen
+   inside the recorded `search-base.json` and LoanNEX's was a hard-coded string, so moving one would
+   have left the other behind. **That is now true of the citizenship and of `dscr`, and of nothing
+   else — see item 7.** The remaining exposure is not a gap BETWEEN the programs; it is that a foreign-national
+   borrower is priced as a US citizen on BOTH boards until somebody states it. Adding a control
+   would change the GENERAL board, which the owner has fenced off — raised rather than guessed at.
+   · A blank `citizenship` from an API caller is REFUSED by the route (Lender Price's registry
+   answers `invalid_field_value` 422, naming the field, before either vendor is called), even though
+   each BUILDER treats a blank as unstated. The board cannot produce one — its `toScenario` drops
+   empty strings — so this is an API-caller distinction, recorded because an earlier version of this
+   item claimed a blank was simply defaulted, which is true of the builder and false of the product.
+6. **Three citizenship values Lender Price accepts have no LoanNEX equivalent yet**, so stating one
+   empties the LoanNEX half of a combined board — the same failure mode as the vesting-type defect,
+   reported rather than silent. LoanNEX's own registry offers exactly four Citizenship options
+   (`UsCitizen`, `PermanentResidentAlien`, `NonPermanentResidentAlien`, `ForeignNational`), because
+   it models ITIN as a SEPARATE field (`hasIndividualTaxpayerIdNumber`, which nothing currently
+   populates); Lender Price carries three more — `ForeignNationalwithITIN)`, `ForeignNationalnoITIN)`
+   and `ITIN` (the trailing `)` is the vendor's real spelling — do NOT "clean" them). The first two
+   have an obvious reading (`ForeignNational` plus the flag set or cleared) and the bare `ITIN` does
+   NOT — it states how somebody files, not their status, and a non-permanent resident may hold one
+   too. Unreachable from any screen today, since neither board offers the control; wiring the ITIN
+   flag is a change with its own decisions, not a mapping to guess at here.
+
+7. **Sharing the module is not sharing the resolution — three sibling defaults still drift.** The
+   citizenship work claimed the shared profile means "the two programs cannot be asked a different
+   question about one loan". An audit measured it and that was FALSE for most of the profile. Moving
+   a default and reading both wires:
+
+   | moved | Lender Price | LoanNEX |
+   |---|---|---|
+   | `citizenship` | moves ✅ | moves ✅ |
+   | `dscr` | moves ✅ | moves ✅ |
+   | `prepayMonths` → 36 | **stays "60 Months"** ❌ | moves to 36 |
+   | `reservesMonths` → 6 | **stays `Reserves_24`** ❌ | moves to 6 |
+   | `propertyType` → Condo | **stays SingleFamily** ❌ | moves to Condominium |
+
+   Lender Price keeps three private copies: `search-model.js:67`
+   (`const DEFAULT_PREPAY_MONTHS = SHARED_PROFILE.prepayMonths` — a MODULE-LOAD SNAPSHOT, the
+   identical shape DEF-4 was written to catch for the citizenship and which it caught there),
+   `search-model.js:205` (`SFR_PROP` hard-codes the property type) and `search-model.js:861`
+   (`|| 'Reserves_24'`). **The prepay term is the one that matters**: it is a real pricing input, so
+   moving the shared default would silently price a 36-month penalty on one program and a 60-month
+   penalty on the other and present the difference as an execution advantage — precisely the failure
+   `scenario-defaults.js` says in its own header that it exists to prevent. Nothing tests it.
+   Not fixed here because it is a change to the GENERAL engine's own defaults, which is the owner's
+   call, not an audit finding's — recorded rather than quietly widened.
+
+8. **A Lender Price option's FEE and COMP figures are the vendor's, computed before our holdback.**
+   When a per-investor extra is set on a Lender Price investor, `vendor-margin` moves that option's
+   price, points and base so the price build still sums — and deliberately does NOT touch the
+   vendor's own `fees` / `comp` block, because those are figures Lender Price computed at ITS price
+   and re-deriving them here would be inventing numbers under the vendor's own heading. So on such
+   an investor the panel's "Lender Price's own fee fields" (cash to close, total origination) sit a
+   hair away from the price above them — 0.25 points is about $940 on a $375k loan. It is ZERO on
+   an ordinary board (no extra is set by default, and the global holdback is refused on this feed
+   because it already carries our margin), the panel labels that block as the vendor's numbers
+   verbatim, and our own charging story is a separate list built from our plan. Recorded rather
+   than guessed at: whether those figures should be restated, and against which price, is a
+   business question, not an audit finding's to answer.
 
 ---
 
