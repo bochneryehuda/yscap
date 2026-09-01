@@ -194,7 +194,30 @@ const call = (method, path, { token, body } = {}) => new Promise((resolve) => {
     eq((await db.query(
       `SELECT count(*)::int AS n FROM staff_view_sessions WHERE staff_id = $1::uuid AND viewer_staff_id = $2::uuid`,
       [officer.id, owner.id])).rows[0].n, 1, '5b2 exactly one row was written for this view — the register is the door\'s own record');
-    yes(mine.some((r) => r.ended_at), '5c the exit is recorded too, so a session that is still open is distinguishable from one that closed');
+    /* ⛔ THE EXIT STAMP IS WRITTEN FIRE-AND-FORGET, SO IT IS POLLED, NEVER READ ONCE.
+       `staffView.endSession` (src/lib/staff-view.js) deliberately does NOT await its
+       UPDATE — its own comment is "a session register failure must never block a
+       request", which is the right call: an audit write may not hold up a person
+       coming back out of a view. The consequence is that /exit can answer before the
+       stamp has committed, so a single read straight after it is a RACE. It won that
+       race almost every time and lost it on main on 2026-09-01, turning a green tree
+       red for a reason that had nothing to do with the change being merged.
+       This waits for the write instead of assuming it, and it still FAILS if the
+       stamp never lands — the assertion is unchanged, only its patience is. Do NOT
+       "fix" this by awaiting endSession in production: blocking the exit on an audit
+       write is exactly what that function refuses to do. */
+    const endedAt = await (async () => {
+      for (let i = 0; i < 50; i++) {
+        const { rows } = await db.query(
+          `SELECT ended_at FROM staff_view_sessions
+            WHERE staff_id = $1::uuid AND viewer_staff_id = $2::uuid AND ended_at IS NOT NULL`,
+          [officer.id, owner.id]);
+        if (rows.length) return rows[0].ended_at;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return null;
+    })();
+    yes(endedAt, '5c the exit is recorded too, so a session that is still open is distinguishable from one that closed');
     eq((await call('GET', '/api/staff-view/history', { token: staffToken(admin) })).status, 403,
       '5d an ordinary admin cannot read who has been viewing whom');
 
