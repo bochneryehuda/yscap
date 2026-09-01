@@ -242,9 +242,9 @@ const GRID = {
   tickW: 1.5,
   padX: 9,             // a cell's own inset
   // A CELL THAT EXPLAINS ITSELF. A note under a value is optional and costs the
-  // band NOTHING while it fits on one line (see below — there is already room
-  // under the value); only a note that wraps past the first line is paid for.
-  cellNoteTop: 6.6,    // value baseline down to the note's first baseline
+  // band nothing on the cells that carry none; where one IS carried the band
+  // grows by what it needs, because there is no spare room under the value.
+  cellNoteTop: 11,     // value baseline down to the note's first baseline
   cellNotePad: 2.2,    // and the breathing room under the last note line
   noteMin: 4.15,       // how small a note may shrink before it is allowed to wrap
   headH: 21,           // the heading band, down to its hairline
@@ -1154,8 +1154,20 @@ function compileTable(b, ctx) {
     const subLines = o.sub ? wrap(ctx, ctx.text(o.sub), F.reg, SZ.tableSub, cellW(0)) : [];
     const valLines = [];
     for (let i = 1; i < cols; i += 1) valLines.push(wrap(ctx, ctx.text(cells[i]), vfont, vsize, cellW(i)));
+    /* ⛔ A NOTE BELONGS TO ITS OWN COLUMN, not to the row's label (owner-directed
+       2026-09-01): *"it should basically be in the scenario line, not in the line
+       of the base of lender fees."* One line under the label describes the row,
+       which is right for what a row IS and wrong for what each option DID — the
+       charged column's breakdown and the waived column's saving are different
+       sentences about different columns, and neither is a fact about the label. */
+    const cellSubs = [];
+    for (let i = 1; i < cols; i += 1) {
+      const t = o.cellSubs && o.cellSubs[i - 1];
+      cellSubs.push(t ? wrap(ctx, ctx.text(String(t)), F.reg, SZ.tableSub, cellW(i)) : []);
+    }
     const labelH = labelLines.length * lsize * LEAD + subLines.length * SZ.tableSub * LEAD;
-    const valH = Math.max(1, ...valLines.map((v) => v.length)) * vsize * LEAD;
+    const valH = Math.max(1, ...valLines.map((v) => v.length)) * vsize * LEAD
+      + Math.max(0, ...cellSubs.map((v) => v.length)) * SZ.tableSub * LEAD;
     const h = Math.max(labelH, valH) + (accent ? TBL.accentPad : TBL.rowPad);
     const closing = lastOfGroup[ri];
 
@@ -1184,6 +1196,11 @@ function compileTable(b, ctx) {
         for (const l of valLines[i - 1]) {
           put(c, l, xOf(i) + TBL.padX, vy, vfont, vsize, colr, cellW(i));
           vy -= vsize * LEAD;
+        }
+        // and this column's own small line, under its own figure
+        for (const l of cellSubs[i - 1]) {
+          put(c, l, xOf(i) + TBL.padX, vy, F.reg, SZ.tableSub, MUTED, cellW(i));
+          vy -= SZ.tableSub * LEAD;
         }
       }
       line(c, y - h, M.left, RIGHT_X, closing ? INK : HAIR, closing ? TBL.rule : TBL.hair);
@@ -1235,16 +1252,17 @@ function compileFactGrid(b, ctx) {
     const r = Math.floor(i / GRID.cols);
     bandLines[r] = Math.max(bandLines[r] || 0, cellNotes[i].lines.length);
   }
-  /* ⛔ THE FIRST NOTE LINE IS FREE, AND THAT IS MEASURED, NOT ASSUMED. The band
-     is 26.4 and the value sits on a baseline 12.58 down from its top, so there
-     is ~13.8 of empty paper under it — room for one 5.18 line and its descender
-     with about 6 to spare. Growing the band for that first line instead pushed
-     ~10 onto every noted row, which was enough to spill the sentences under the
-     comparison table onto a second page: a cell that explains itself should not
-     cost the sheet a page. Only what a note WRAPS to beyond the first line is
-     paid for. */
+  /* ⛔ EVERY NOTE LINE IS PAID FOR, and the version of this that said the first
+     one was free was WRONG — owner-reported: *"it's a little overlapping, it's
+     pushed in."* That claim reasoned from BASELINES ("the value's baseline is
+     12.58 down, the band is 26.4, so ~13.8 is free") and a baseline is not a
+     box. MEASURED off a real render instead: at this size the value's own box
+     runs from 12.9 to 22.4 below the band top, so what is actually free under it
+     is 4.0 — less than one 5.18 line needs. The note was drawn into the value,
+     and the render passed because overlapping text is still inside its margins.
+     Measure the BOX, never the baseline. */
   const bandH = (r) => GRID.bandH
-    + (bandLines[r] > 1 ? (bandLines[r] - 1) * SZ.gridNote * LEAD + GRID.cellNotePad : 0);
+    + (bandLines[r] ? bandLines[r] * SZ.gridNote * LEAD + GRID.cellNotePad : 0);
   const bandTopOffset = (r) => {
     let off = 0;
     for (let k = 0; k < r; k += 1) off += bandH(k);

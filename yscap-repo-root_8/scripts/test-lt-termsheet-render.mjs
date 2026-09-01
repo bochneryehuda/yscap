@@ -258,9 +258,31 @@ console.log('\nthe page says what the document says');
      `test-lt-sheet-nothing-lost-pure.js` fails the build on a fact that stopped
      being printed. So the property asserted here inverts: every option is named
      ON the comparison, and NO option gets a page to itself. */
-  const details = where.map((p) => p.filter((i) => i > 0));
-  check(details.every((p) => p.length === 0),
-    'and NO option has a page of its own — the per-option repeat is what made this seven pages');
+  /* ⛔ RE-POINTED 2026-09-01, AND THE REASON IS A TRADE THE OWNER SHOULD SEE, not
+     a quiet loosening. This asserted "an option's name never appears after page
+     one", which was an exact proxy for "no option has a detail page" only while
+     the comparative sentences happened to fit on page one. Giving the lender-fee
+     cell the room its breakdown needs — owner-reported: *"it's a little
+     overlapping, it's pushed in"* — costs the shared box about 9 points, and the
+     sentences under the table now begin on page two. They NAME the options, so
+     the old proxy fails for a reason that has nothing to do with detail pages.
+
+     What is asserted instead is the property itself, in two halves: the sentences
+     may flow, but the COMPARISON — its table and the shared box — is whole on
+     page one, and the layout still builds no per-option block (that half is
+     `test-lt-sheet-nothing-lost-pure.js`, which reads the builder rather than the
+     render, so a detail page cannot come back unnoticed).
+
+     ⛔ AND IT IS STRICTER IN ONE RESPECT: the old check said nothing about WHERE
+     the table was, so a comparison whose table split across two pages would have
+     passed it. This one fails on that. */
+  const cmpPages = pagesWith('OPTION A');
+  check(cmpPages.length === 1 && cmpPages[0] === 0,
+    `the comparison's own table is whole on page one (found on ${cmpPages.length} page(s))`);
+  check(pagesWith('Identical in all').every((i) => i === 0),
+    '…and so is the box of what every option agrees about');
+  check(where.every((p) => p[0] === 0),
+    '…and every option is FIRST named there, never on a page of its own');
   check(back.pageCount <= 4,
     `and the whole comparison, disclosures included, fits ${back.pageCount} pages (was 7 for three options)`);
   /* Whitespace-insensitive on BOTH sides, like `squash` above. The extractor
@@ -437,8 +459,12 @@ console.log('\nthe owner\'s four items, on the paper');
      assertion above this one already requires. STRICTER in one respect: it now
      also demands the charged option print $2,095, so a sheet that waived on both
      columns could not satisfy it. */
-  check(wflat.includes(squash('Waived ($2,095)')),
-    '…the waived option prints the full lender fee it is not paying');
+  /* RE-POINTED 2026-09-01 (second correction, same day) — the figure is now a
+     bare "Waived" and the amount rides in the small line under it, because the
+     owner read the parenthetical as unclear. The property is unchanged: the
+     waived column must still state what is not being paid. */
+  check(wflat.includes(squash('Waived')) && wflat.includes(squash('You save $2,095')),
+    '…the waived option reads "Waived", with what it saved stated under it');
   check(wflat.includes(squash('$2,095'))
     && wflat.includes(squash(`Application fee ${money(PLAN.applicationFee)}`))
     && wflat.includes(squash(`Commitment fee ${money(PLAN.commitmentFee)}`)),

@@ -559,8 +559,16 @@ function lenderFeePackage(charges) {
     if (l.waived === true) return `${label} waived (${moneyExact(full(l))})`;
     return `${label} ${moneyExact(nn(l.dollars) ? l.dollars : full(l))}`;
   });
+  /* ⛔ THE CELL SAYS ONE THING AND THE LINE UNDER IT SAYS THE REST (owner-directed
+     2026-09-01): *"it says 'Waived' and is circled around 2,095, which would just
+     say 'Waived' … it should just say, in small on the bottom … you saved on this
+     one 2,095 instead of just circled around, because it's not clear to
+     understand."* A parenthetical inside the figure had to carry two facts at
+     once — that nothing is charged, and what that is worth — and read as neither.
+     So the figure is the figure, and the amount rides underneath in the same
+     small line the charged column uses for its breakdown. */
   let text;
-  if (waived) text = total > 0 ? `Waived (${moneyExact(total)})` : 'Waived';
+  if (waived) text = 'Waived';
   else if (partial) text = moneyExact(charged);
   else text = moneyExact(total);
   // WHAT THE PACKAGE IS MADE OF, at face value and without a word about who is
@@ -570,10 +578,19 @@ function lenderFeePackage(charges) {
   const composition = fees
     .map((l) => `${CHARGE_LABELS[l.key] || l.label || l.key || ''} ${moneyExact(full(l))}`)
     .join('  \u00b7  ');
+  // What rides UNDER this option's own figure. The waived column states what the
+  // waiver is worth — the figure above it no longer can — and every other column
+  // states what its total is made of.
+  const cellNote = waived
+    ? (total > 0 ? `You save ${moneyExact(total)}` : null)
+    // A half-waived package states which half, at face value — the composition
+    // alone would name two amounts while the figure above it charged for one.
+    : (partial ? parts.join('  \u00b7  ') : composition);
   return {
     present: true,
     total,
     charged,
+    cellNote,
     waived,
     partial,
     parts,

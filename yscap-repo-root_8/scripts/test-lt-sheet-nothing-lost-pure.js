@@ -163,7 +163,11 @@ for (const [name, selections] of Object.entries(SHAPES)) {
        the label VERBATIM, so it cannot become a "close enough" escape hatch: a
        genuinely dropped row leaves nothing containing its own name. */
     const o = r[r.length - 1];
-    if (o && typeof o === 'object' && !Array.isArray(o) && o.sub) subs.push(String(o.sub));
+    if (o && typeof o === 'object' && !Array.isArray(o)) {
+      if (o.sub) subs.push(String(o.sub));
+      // …and a note that belongs to ONE column rather than to the row's label.
+      for (const t of o.cellSubs || []) if (t) subs.push(String(t));
+    }
   }
   for (const r of table.shared || []) {
     if (!r || !r[0]) continue;

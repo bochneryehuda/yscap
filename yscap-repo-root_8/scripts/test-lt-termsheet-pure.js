@@ -604,21 +604,35 @@ section('the fees are listed out, and broken down');
      shows the FULL amount the waived option is not paying beside the amount the
      other one is, and it still names the two parts — that was the whole point of
      the 2026-08-30 direction and it survives. Only the row count changed. */
-  const feeRow = table.rows.find((r) => r[0] === 'Lender fee');
+  const feeRow = table.rows.find((r) => r[0] === 'Lender fees');
+  const feeOpts = feeRow && feeRow[feeRow.length - 1];
+  const feeCellSubs = feeOpts && typeof feeOpts === 'object' && !Array.isArray(feeOpts)
+    ? feeOpts.cellSubs : null;
   check(!!feeRow, 'the two lender fees are ONE row, not one row each');
   check(!table.rows.some((r) => r[0] === 'Application fee' || r[0] === 'Commitment fee'),
     '…so neither fee has a row of its own any more');
-  check(feeRow && feeRow.some((c) => c === '$2,095') && feeRow.some((c) => /^Waived \(\$2,095\)$/.test(String(c))),
-    '…and it prices the package both ways: $2,095 charged, and the same $2,095 named as waived');
-  // The parts ride under the label, so the total stays checkable — the guard the
-  // repo's own oldest fee lesson asks for (an amount folded into a total and
-  // named nowhere). It is the row's trailing options object, not a cell.
-  const feeOpts = feeRow && feeRow[feeRow.length - 1];
-  const feeSub = feeOpts && typeof feeOpts === 'object' && !Array.isArray(feeOpts) ? feeOpts.sub : null;
-  check(!!feeSub && /Application fee \$500/.test(feeSub) && /Commitment fee \$1,595/.test(feeSub),
-    '…and the two parts are still named underneath, so the $2,095 can be checked');
+  /* ⛔ RE-POINTED 2026-09-01 (same day, second correction) — owner-reported on a
+     real export: *"it says 'Waived' and is circled around 2,095, which would just
+     say 'Waived' … it should just say, in small on the bottom … you saved on this
+     one 2,095, because it's not clear to understand."* The figure is now just the
+     figure and the amount rides in the small line under it, so the assertion
+     moves with it: what must hold is that the waived column still states the
+     $2,095, not that the FIGURE carries it. */
+  check(feeRow && feeRow.some((c) => c === '$2,095') && feeRow.some((c) => c === 'Waived'),
+    '…and it prices the package both ways: $2,095 charged, and a bare "Waived" beside it');
+  /* ⛔ AND THE NOTE BELONGS TO ITS COLUMN, not to the label — owner-directed:
+     *"it should basically be in the scenario line, not in the line of the base of
+     lender fees."* Asserted per column, so a note that drifted back onto the row
+     label would fail here even though the same words would still be on the page. */
+  check(Array.isArray(feeCellSubs) && feeCellSubs.some((t) => t && /Application fee \$500/.test(t)
+    && /Commitment fee \$1,595/.test(t)),
+  '…the charged column names its two parts underneath its own figure');
+  check(Array.isArray(feeCellSubs) && feeCellSubs.some((t) => t && /You save \$2,095/.test(t)),
+    '…and the waived column says what it saved, in the same small line');
+  check(!feeOpts || !feeOpts.sub,
+    '…and nothing rides under the row LABEL, where it would describe neither column');
   check(!table.rows.some((r) => r[0] === 'Lender fees you are not paying'),
-    '…and the separate saving total is gone, because the row above now prints exactly that figure');
+    '…and the separate saving total is gone, because each column now says its own')
 
   /* ⛔ THE HALF-WAIVED PACKAGE, which the owner says cannot happen and the waive
      switch agrees — one flag moves both fees. It is guarded anyway, because

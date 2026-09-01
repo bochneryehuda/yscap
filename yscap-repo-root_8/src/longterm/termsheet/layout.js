@@ -567,6 +567,9 @@ function comparisonTable(snapshot) {
   const staged = [];
   const push = (label, fn, opts) => {
     const vals = order.map((i) => cell(i, fn));
+    // The small line under each option's own figure, computed the same way the
+    // figure is — per option, in the same column order.
+    const subs = opts && opts.cellSub ? order.map((i) => cell(i, opts.cellSub)) : null;
     if (!vals.some((v) => v != null && v !== '—')) return;
     const filled = vals.map((v) => (v == null ? '—' : v));
     const same = members.length > 1 && filled.every((v) => v === filled[0]);
@@ -581,7 +584,9 @@ function comparisonTable(snapshot) {
        folds into the shared box like any other agreed fact and stops being
        printed three times. */
     if (same && !(opts && opts.never)) {
-      const cellNote = opts && opts.sub;
+      /* Lifted into the shared box, every column said the same thing — so its
+         note is that one column's note, not a joining of three identical ones. */
+      const cellNote = (subs && subs.find((t) => t)) || (opts && opts.sub) || null;
       shared.push(cellNote ? [label, filled[0], cellNote] : [label, filled[0]]);
       return;
     }
@@ -595,6 +600,7 @@ function comparisonTable(snapshot) {
     const rowOpts = {};
     if (opts && opts.accent) rowOpts.accent = true;
     if (opts && opts.sub) rowOpts.sub = opts.sub;
+    if (subs && subs.some((t) => t)) rowOpts.cellSubs = subs.map((t) => t || null);
     staged.push({
       group: (opts && opts.group) || 'produced',
       row: Object.keys(rowOpts).length ? [label, ...filled, rowOpts] : [label, ...filled],
@@ -683,17 +689,15 @@ function comparisonTable(snapshot) {
      value and says nothing about who pays: the columns beside it already do,
      and a composition that repeated the waiver would contradict them. */
   const feePkgOf = (m) => wording.lenderFeePackage(m.charges);
-  const feeComposition = (() => {
-    for (const i of order) {
-      const pkg = feePkgOf(members[i]);
-      if (pkg.present && pkg.composition) return pkg.composition;
-    }
-    return null;
-  })();
-  push('Lender fee', (m) => {
+  push('Lender fees', (m) => {
     const pkg = feePkgOf(m);
     return pkg.present ? pkg.text : null;
-  }, feeComposition ? { sub: feeComposition } : undefined);
+  }, {
+    cellSub: (m) => {
+      const pkg = feePkgOf(m);
+      return pkg.present ? pkg.cellNote : null;
+    },
+  });
   /* ⛔ WHAT A WAIVE IS WORTH IS NOW SAID BY THE FEE'S OWN BOX, so the separate
      total is gone (owner-directed 2026-09-01, as a consequence of combining the
      two fee rows into one). It existed because each fee used to print "Waived
