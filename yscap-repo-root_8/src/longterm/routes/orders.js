@@ -31,6 +31,7 @@ const desk = require('../orders/desk');
 const data = require('../orders/data');
 const letter = require('../orders/letter');
 const kinds = require('../orders/kinds');
+const landlordMemory = require('../landlord-memory');
 const vendorDirectory = require('../../lib/vendor-directory');
 const { loadScopedLoan, UUID_RE } = require('./scoped-loan');
 
@@ -44,6 +45,19 @@ async function isAdmin(req) {
 }
 
 const actorId = (req) => (req.actor && req.actor.id) || null;
+
+/* A LANDLORD PUT ON A FILE IS REMEMBERED FOR NEXT TIME, against the home the
+   borrower rents right now — the owner's *"saved directly to the borrower's
+   profile for next time to pre-fill"*. Called AFTER the commit, so a memory that
+   cannot be written can never cost the person the link they just made; it is
+   already never-throws in the module, and this is the belt to that.
+
+   Only a landlord: every other kind of contact is about the PROPERTY or the
+   deal, and remembering one against a borrower's home would mean nothing. */
+async function rememberLandlord(kind, loanId) {
+  if (kind !== 'landlord') return;
+  try { await landlordMemory.rememberForLoan(loanId, { db }); } catch (_) { /* said in the module */ }
+}
 const actorName = (req) => (req.actor && (req.actor.fullName || req.actor.full_name || req.actor.name)) || null;
 /* THE PERSON THE ORDER COMES FROM. Their own name and their own address, so the
    vendor answers a real person — `lib/send-as.js` decides whether we may put that
@@ -174,8 +188,15 @@ router.post('/loans/:loanId/flood-zone', async (req, res) => {
     return res.status(400).json({ error: 'Say whether the property is in a flood zone.' });
   }
   try {
+    // THE STAMP IS WHAT MAKES THE SWITCH STICK (db/658). Encompass carries this
+    // same answer in field 541 and the sync reads it every few minutes, so
+    // without `flood_zone_source = 'manual'` a person's tick would be overwritten
+    // within the hour and the switch would look broken. `application/sync.js`
+    // refuses to write any of the three flood columns once this says 'manual'.
     const { rowCount } = await db.query(
-      `UPDATE lt_properties SET in_flood_zone = $2, updated_at = now() WHERE loan_id = $1::uuid`,
+      `UPDATE lt_properties
+          SET in_flood_zone = $2, flood_zone_source = 'manual', updated_at = now()
+        WHERE loan_id = $1::uuid`,
       [scoped.loan.id, b.inFloodZone]);
     if (!rowCount) {
       return res.status(404).json({ error: 'This loan has no property record to mark.' });
@@ -231,6 +252,24 @@ router.get('/loans/:loanId/vendors', async (req, res) => {
   const scoped = await loadScopedLoan(req, res, 'lt-orders');
   if (!scoped) return;
   try {
+    /* THE LANDLORD THIS BORROWER ALREADY HAD, filled in before the list is read
+       so the screen shows it rather than an empty slot. Owner-directed
+       2026-08-31: *"the landlord contact information also saved directly to the
+       borrower's profile for next time to pre-fill … as long as he is still
+       living at the same primary address."*
+
+       FILL-ONLY and idempotent: a loan that already carries a landlord is left
+       exactly as it is, so on every read after the first this does nothing. It is
+       safe HERE rather than on a write path because a memory is only ever
+       consulted at the moment somebody looks at the contacts. Best-effort — a
+       memory that cannot be read must never cost the desk its screen. */
+    let landlordFilled = null;
+    try {
+      const out = await landlordMemory.applyForLoan(scoped.loan.id, { db });
+      if (out && out.applied) landlordFilled = { addressText: out.addressText || null, name: out.name || null };
+    } catch (e) {
+      console.error('[lt-orders] landlord pre-fill failed:', (e && e.message) || e);
+    }
     const { rows } = await db.query(
       `SELECT v.id, v.kind, v.is_primary, v.service_contact_id,
               sc.id AS contact_id, sc.company_name, sc.contact_name, sc.email, sc.emails,
@@ -240,8 +279,26 @@ router.get('/loans/:loanId/vendors', async (req, res) => {
         WHERE v.loan_id = $1::uuid
         ORDER BY v.kind, v.is_primary DESC`,
       [scoped.loan.id]);
+    // THE EXPECTED ROWS, and which of them belong on THIS file. Owner-directed
+    // 2026-08-31: *"On the FileContacts, there should be the same logic that we
+    // have by New York settlement agents: it's grayed out."* The screen used to
+    // keep its own flat list of contact kinds, which had drifted from the
+    // condition's — so it is computed HERE, from the one definition, against the
+    // file's own live facts. Best-effort: a desk that cannot draw is worse than
+    // one drawn without its greying.
+    let contactTypes = null;
+    try {
+      contactTypes = await require('../conditions-center/read').fileContactTypes(scoped.loan.id, db);
+    } catch (e) {
+      console.error('[lt-orders] contact types failed:', (e && e.message) || e);
+    }
     res.json({
       kinds: kinds.VENDOR_KINDS,
+      contactTypes,
+      // Said out loud when it happens. A card that appears on its own, with
+      // nothing explaining where it came from, is one nobody trusts and everybody
+      // re-checks — which costs more than typing it would have.
+      landlordFilled,
       vendors: rows.map((r) => ({
         id: r.id, kind: r.kind, isPrimary: r.is_primary,
         serviceContactId: r.service_contact_id,
@@ -341,6 +398,7 @@ router.post('/loans/:loanId/vendors', async (req, res) => {
       try { await client.query('ROLLBACK'); } catch (_) { /* going back either way */ }
       throw e;
     } finally { client.release(); }
+    await rememberLandlord(kind, scoped.loan.id);
     res.json({ ok: true });
   } catch (e) {
     console.error('[lt-orders] vendor link failed:', (e && e.message) || e);
@@ -415,6 +473,9 @@ router.post('/loans/:loanId/vendors/new', async (req, res) => {
     const client = await db.getClient();
     let contactId = null;
     let linkId = null;
+    // Set only once the link is really in — so a throw on the way there can never
+    // leave us remembering a landlord this loan does not carry.
+    let justLinkedKind = null;
     try {
       await client.query('BEGIN');
       /* WHOSE CARD IT IS. `service_contacts.borrower_id` has been nullable since
@@ -451,10 +512,12 @@ router.post('/loans/:loanId/vendors/new', async (req, res) => {
         [scoped.loan.id, kind, contactId, primary, actorId(req)]);
       linkId = String(link.rows[0].id);
       await client.query('COMMIT');
+      justLinkedKind = kind;
     } catch (e) {
       try { await client.query('ROLLBACK'); } catch (_) { /* going back either way */ }
       throw e;
     } finally { client.release(); }
+    await rememberLandlord(justLinkedKind, scoped.loan.id);
     res.status(201).json({ ok: true, linkId, contactId });
   } catch (e) {
     console.error('[lt-orders] vendor create failed:', (e && e.message) || e);

@@ -205,7 +205,11 @@ console.log('\nLong-Term — the verification of rent\n');
   // ────────────────────────────────────────────────────────────────────────
   // D. What stops a send
   // ────────────────────────────────────────────────────────────────────────
-  const goodForm = { data: FULL, landlord: { name: 'Acme Realty', email: 'ap@acme.example' }, unreadable: [] };
+  /* CONFIRMED, because since db/663 that is part of what "good" means: the owner
+     asked for the form to be confirmed before it can go out, so a fixture without
+     it is a form nobody has read through — see test-lt-vor-confirm-db.js. */
+  const goodForm = { data: FULL, landlord: { name: 'Acme Realty', email: 'ap@acme.example' }, unreadable: [],
+    confirmedAt: '2026-08-31T00:00:00.000Z' };
   const B = desk._internals.blockersFor;
 
   ok('a complete form with a landlord on file can go all three ways', () => {
@@ -220,7 +224,12 @@ console.log('\nLong-Term — the verification of rent\n');
     assert.ok(B({ form: { ...goodForm, landlord: { name: 'Acme' } }, method: 'email', envelopes: [] }).includes('landlord_email'));
     assert.ok(B({ form: { ...goodForm, data: { ...FULL, property_address: '' } }, method: 'email', envelopes: [] }).includes('fields'));
     assert.ok(B({ form: { ...goodForm, unreadable: ['parties'] }, method: 'email', envelopes: [] }).includes('unreadable'));
-    for (const code of ['file', 'landlord', 'landlord_email', 'fields', 'unreadable', 'in_flight', 'docusign_off', 'anchors']) {
+    // THE OWNER'S GATE (db/663). A form nobody has confirmed cannot go, and the
+    // refusal asks for the confirmation rather than for the fields, which are in.
+    const unconfirmed = B({ form: { ...goodForm, confirmedAt: null }, method: 'email', envelopes: [] });
+    assert.ok(unconfirmed.includes('not_confirmed'), 'an unconfirmed form is refused');
+    assert.ok(!unconfirmed.includes('fields'), 'and it is the confirmation being asked for, not the answers');
+    for (const code of ['file', 'landlord', 'landlord_email', 'fields', 'unreadable', 'in_flight', 'docusign_off', 'anchors', 'not_confirmed']) {
       assert.ok(typeof desk.BLOCKER_TEXT[code] === 'string' && desk.BLOCKER_TEXT[code].length > 12,
         `${code} needs a sentence a person can act on`);
     }

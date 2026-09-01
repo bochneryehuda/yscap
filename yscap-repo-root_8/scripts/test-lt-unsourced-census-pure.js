@@ -96,7 +96,12 @@ check(FIELDS['541'] && Array.isArray(FIELDS['541'].observedValues) && FIELDS['54
   '…including field 541 and its six recorded values, which is the case this test was written for');
 
 const entries = Object.entries(unsourced.UNSOURCED);
-check(entries.length >= 20, `and the list under test really has its entries (${entries.length})`);
+// A FLOOR, NOT A COUNT. The list SHRINKS when a column gets a writer — the two
+// flood columns left it on 2026-08-31 when the owner answered what a zone letter
+// means — so pinning the exact number would go red on the very work that is
+// supposed to shorten it. What this is guarding is a list that quietly read as
+// empty, which would make every check below pass by finding nothing.
+check(entries.length >= 15, `and the list under test really has its entries (${entries.length})`);
 
 // ── Every field a reason names is a field the census measured ──────────────
 //
@@ -191,9 +196,14 @@ check(contradicted.length === 0,
 // more thing that is declared and never triggered.
 console.log('\na retracted claim is recorded, complete, and really gone');
 
+// A RESOLVED entry is the same class of record as a correction and is read the
+// same way: an entry leaves this list by being FILLED, and the answer that filled
+// it is kept, or a column that quietly stopped being listed reads afterwards as
+// one that was never a question. Both shapes count as "a retraction is recorded".
+const resolved = Object.entries(unsourced.RESOLVED || {});
 const corrections = entries.filter(([, e]) => e.corrected);
-check(corrections.length > 0,
-  `at least one entry records a correction (${corrections.length}) — otherwise the checks below pass by finding nothing`);
+check(corrections.length + resolved.length > 0,
+  `at least one entry records a correction or a resolution (${corrections.length} + ${resolved.length}) — otherwise the checks below pass by finding nothing`);
 
 for (const [key, e] of corrections) {
   const c = e.corrected;
@@ -215,17 +225,38 @@ for (const [key, e] of corrections) {
 // by hand, so a well-meaning rewrite has to argue with the measurement again.
 console.log('\nand the flood reasons say what was measured');
 
+// THE FLOOD COLUMNS ARE THE CASE THIS FILE WAS WRITTEN FOR, AND THEY ARE NOW
+// FILLED. Their reasons said the census was silent about a field it answers in
+// full; the correction made the sentences true, and on 2026-08-31 the owner
+// answered the business question the corrected reason was WAITING for — the A
+// and V zones mean a flood zone — so PILOT reads field 541 and the entries left
+// this list. What is pinned now is the other half of the same discipline: they
+// left it by being ANSWERED, and the answer is on the record rather than the
+// columns quietly ceasing to be a question.
 const floodZone = unsourced.unsourced('lt_properties', 'flood_zone');
 const inFlood = unsourced.unsourced('lt_properties', 'in_flood_zone');
-check(!!floodZone && !!inFlood, 'both flood columns are still explained rather than silently blank');
-check(floodZone && !/Nothing in [\d,]+ measured fields carries a zone designation/i.test(floodZone.why),
-  'the zone reason no longer says nothing in the census carries a zone designation — field 541 carries X, AE, X500, A and C');
-check(inFlood && !/withheld/i.test(`${inFlood.show} ${inFlood.why} ${inFlood.unblock}`),
-  "the flood-determination reason no longer says field 541's values were withheld — the census lists all six");
-check(inFlood && /allowed|declared|enum|its own list/i.test(inFlood.why),
-  '…and it says what the field actually is, so the next reader learns the vocabulary is DECLARED rather than guessed at');
-check(!!(floodZone && floodZone.corrected) && !!(inFlood && inFlood.corrected),
-  '…and both record what they used to say, so the next person can see this was measured and corrected rather than quietly reworded');
+check(!floodZone && !inFlood,
+  'neither flood column still claims to be unread — PILOT reads field 541 now');
+
+const resolvedFlood = (unsourced.RESOLVED || {})['lt_properties.in_flood_zone'];
+const resolvedZone = (unsourced.RESOLVED || {})['lt_properties.flood_zone'];
+check(!!resolvedFlood && !!resolvedZone,
+  '…and both are recorded as RESOLVED, so a reader still learns this was a question somebody answered');
+for (const [key, e] of resolved) {
+  check(e && e.on && e.by && e.answer && e.filled_by,
+    `${key} says when it was answered, by what kind of decision, what the answer was, and what fills it now`);
+  check(!unsourced.unsourced(...key.split('.')),
+    `…and ${key} is genuinely off the unfilled list — a column cannot be both`);
+}
+// PINNED TO THE MEASUREMENT BY HAND, exactly as the reasons used to be: field 541
+// is what carries this, and the A and V zones are what the owner chose. A
+// well-meaning rewrite has to argue with the census again.
+check(/541/.test(resolvedFlood.filled_by + resolvedFlood.answer) || /541/.test(resolvedFlood.answer),
+  'the flood answer still names field 541, the field the census measured');
+check(/\bA and V\b/i.test(resolvedFlood.answer),
+  "…and still names the owner's own rule — the A and V zones");
+check(/Yes/.test(resolvedFlood.answer) && /(deliberately|unread|not read)/i.test(resolvedFlood.answer),
+  '…and still records that the single bare "Yes" is deliberately left unread, which is the one value a reader would otherwise assume we took');
 
 console.log(failures ? `\n${failures} FAILED` : '\nall passed');
 process.exit(failures ? 1 : 0);
