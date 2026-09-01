@@ -217,12 +217,21 @@ console.log('\nprose is set at a measure a person can actually read');
      next line coming back, and re-reads or skips one. The sheet was at about
      three times the upper bound, so SIZE was only half the complaint.
 
-     ⛔ THE PAGE FOOTER IS EXCLUDED, AND DELIBERATELY. It is one line of standing
-     boilerplate at the very bottom of every page, it is COMPLETE at full width
-     today, and the footer draws only its first two wrapped lines — so narrowing
-     it would silently drop the tail of a legal disclaimer ("Not valid until
-     countersigned by …"). Excluded by its own text rather than by position, so
-     the exclusion cannot quietly widen. */
+     ⛔ THE PAGE FOOTER IS EXCLUDED, AND THE EXCLUSION IS NOW BY POSITION. It is
+     standing boilerplate drawn BELOW the content floor, in a band whose height
+     is fixed by the paper — it cannot be given a third line without running
+     through the identity line beneath it, so its measure is decided by the band
+     rather than by anything this guard could ask for. The band is the tightest
+     honest test available: `ZONES.footer` is a structural constant that flowed
+     content can never reach, so this cannot quietly widen to cover the page.
+     It was previously excluded by its own first words — which stopped working
+     the moment the disclaimer was raised to the readable floor and became TWO
+     lines, because only the FIRST carried those words and the second sailed
+     through as compliant prose. A guard that passes the half it can see is
+     worse than one that says plainly what it does not measure.
+     ⛔ SO STATE IT PLAINLY: at 7.5pt the footer's first line runs about 164
+     characters. That is over the band, it is measured, and it is the price of
+     the size — see `fitFooterDisc` in pdf.js. */
   const PREPARED = {
     borrowerName: 'Riverbend Holdings LLC',
     propertyAddress: '218 Forest Avenue, Lakewood, NJ 08701',
@@ -237,7 +246,6 @@ console.log('\nprose is set at a measure a person can actually read');
     [quote('No points', 7.375, 102), quote('Buy the rate down', 6.875, 99.75)], PREPARED,
     { expiryHours: 24 },
   ));
-  const FOOTER = 'Pricing is indicative';
   /* ⛔ WHAT IS MEASURED IS A RUN, NOT A LINE, and that is what makes both halves
      of this block mean something.
      Both rules here are about the RETURN SWEEP — the eye coming back from the
@@ -259,7 +267,7 @@ console.log('\nprose is set at a measure a person can actually read');
     for (const [, group] of bySize) {
       for (const it of group) {
         const t = it.s.trim();
-        if (t.length <= 25 || t.startsWith(FOOTER)) continue;
+        if (t.length <= 25 || it.y + it.h <= pdf.ZONES.footer.top) continue;
         const lead = it.h * pdf._internals.LEAD;
         const wrapped = group.some((o) => o !== it && Math.abs(Math.abs(o.y - it.y) - lead) < 1.5);
         if (wrapped) prose.push({ n: t.length, h: it.h });
@@ -438,6 +446,31 @@ console.log('\nthe PILOT design is on every page — the band, the lockup, the f
   check(back.pageCount >= 2, `a five-option comparison runs to ${back.pageCount} pages — enough for the band-and-footer sweep to mean something`);
   check(bandless.length === 0, `the brand band names the document on EVERY page (missing on ${bandless.join(', ') || 'none'})`);
   check(footerless.length === 0, `and the footer disclaims on EVERY page (missing on ${footerless.join(', ') || 'none'})`);
+
+  /* ⛔ THE FOOTER'S LEGAL LINE IS SET AT THE READABLE FLOOR, AND IT IS COMPLETE.
+     Both halves have to be asserted together, because each alone is satisfiable
+     by the failure the other catches: the size alone passes on a disclaimer
+     whose tail was dropped to make it fit, and the completeness alone passes at
+     the 5.1pt it drew at before. Owner-reported 2026-09-01 ("the font of
+     everything is extremely small"); this was the smallest run on the page and
+     the last one left. The tail is asserted on the LAST WORDS rather than on a
+     length, because what truncation takes is the end. */
+  const footRuns = back.pages[0].filter((it) => it.y + it.h <= Z.footer.top);
+  const footProse = footRuns.filter((it) => it.s.trim().length > 25 && !/·/.test(it.s));
+  const smallestProse = Math.min(...footProse.map((it) => it.h));
+  check(footProse.length > 0, `the footer draws ${footProse.length} run(s) of prose to measure`);
+  /* ⛔ THE THRESHOLD IS A LITERAL, NOT `SZ.footDisc`, and that is the whole
+     difference between a guard and a tautology. Read from the size table, this
+     asserts only that the render agrees with the table — so removing the footer
+     from the readable floor moves BOTH sides and the check passes at 5.1pt,
+     which is the exact defect it exists to catch. PROVEN: with the threshold
+     read from the source the mutation produced zero failures. 7 is the same
+     literal the sibling prose assertion above is held to. */
+  check(smallestProse >= 7,
+    `and the smallest of them is ${smallestProse.toFixed(2)}pt — over the 7pt line, not the 5.1 it drew at`);
+  check(squash(footRuns.map((it) => it.s).join('')).includes('countersignedbyyscapitalgroup'),
+    'and the disclaimer keeps its last sentence — nothing was sliced off to make it fit');
+
 
   // Every page numbers itself, and the count is the real one.
   let misnumbered = [];

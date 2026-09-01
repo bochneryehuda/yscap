@@ -223,14 +223,31 @@ const SZ = scaleMetrics(SZ_SKETCH, []);
  * had to be true, and it is a floor rather than a target so the paragraph type
  * still reads as smaller than the figures it explains.
  *
- * ⛔ THE PAGE FOOTER IS NOT ON THE LIST, DELIBERATELY. It is one standing line
- * of boilerplate the footer draws in at most two wrapped lines, so growing it
- * would silently drop the tail of a legal disclaimer off every page rather than
- * make anything more readable. It is excluded here for the same reason the
- * render guard excludes it from its measure.
+ * ⛔ THE PAGE FOOTER'S DISCLAIMER IS ON THE LIST, AND THE REASON IT WAS LEFT OFF
+ * WAS REASONED RATHER THAN MEASURED — which is exactly the mistake this file
+ * warns about everywhere else. The first pass excluded it on the argument that
+ * "the footer draws at most two wrapped lines, so growing it would silently drop
+ * the tail of a legal disclaimer." MEASURED against the real disclaimer at the
+ * real text width (520pt), that argument is simply false: at 5.1pt it draws as
+ * ONE line — 211 characters long, the single worst-set run on the document — and
+ * at the 7.5 floor it draws as TWO, which is exactly what the band holds. So
+ * raising it drops nothing, and it improves BOTH faults at once: 5.1 → 7.5pt,
+ * and 211 → 164 characters to the line.
+ *
+ * ⛔ AND IT IS NOW FITTED RATHER THAN SLICED, so the truncation the old note was
+ * afraid of cannot happen to a LONGER disclaimer either — `fitFooterDisc` steps
+ * the size down until the text fits the room the band actually has. Shrinking a
+ * legal line is honest; dropping its tail is not.
+ *
+ * ⛔ WHAT IS STILL NOT FIXED, STATED PLAINLY: 164 characters is over the 45–75
+ * band, so the footer is READABLE but not well MEASURED. A third line is what
+ * would fix that, and the band has no room for one — at 7.5pt a third line's ink
+ * runs through the identity line beneath it, and there is nothing under the
+ * identity line but the paper's edge. Shrinking the type to buy that third line
+ * would undo the size fix, which is the half the owner actually reported.
  */
 const READ_FLOOR = 7.5;
-const SENTENCE_SIZES = ['para', 'small', 'discBody', 'gridNote'];
+const SENTENCE_SIZES = ['para', 'small', 'discBody', 'gridNote', 'footDisc'];
 for (const k of SENTENCE_SIZES) SZ[k] = r2(Math.max(SZ[k], READ_FLOOR));
 /* ⛔ AND THE LINES OPEN UP WITH THEM. Leading is a RATIO, so scaling the type
    alone leaves the lines exactly as tight relative to their size as they were —
@@ -1783,24 +1800,62 @@ function drawBands(ctx) {
  * It sits BELOW `BOTTOM_Y`, inside the bottom margin, which is what makes it
  * structurally impossible for flowing content to run through it.
  */
+/**
+ * THE DISCLAIMER IS FITTED TO THE ROOM THE BAND HAS — never sliced to fit it.
+ *
+ * ⛔ THE BUDGET IS A FUNCTION OF THE SIZE, which is the whole reason this is a
+ * ladder and not a constant. A line's ink runs to about `yTop - 1.22 × size`,
+ * and the LAST line must clear the identity line below it — so bigger type buys
+ * fewer lines, and the two have to be decided together. At 7.5pt the band holds
+ * two; at 5.1pt it holds three.
+ *
+ * ⛔ IT ONLY EVER STEPS DOWN, AND ONLY AS FAR AS THE SIZE THIS FOOTER ALREADY
+ * DREW AT. So today's disclaimer sets at the 7.5 floor, and one long enough to
+ * need more room sets smaller rather than losing its tail — a legal line that is
+ * hard to read is a problem; a legal line missing its last sentence is a defect.
+ * The final `slice` is a backstop that today's text is nowhere near: it can only
+ * be reached by a disclaimer that overflows three lines at 5.1pt, which is more
+ * than twice the length of the one this sheet ships.
+ */
+const FOOT_DISC_TOP = 38;   // the first line's yTop, clear of the contact above
+const FOOT_DISC_STOP = 14;  // the identity line's yTop — no line may reach it
+
+function footDiscBudget(size) {
+  return Math.max(1, 1 + Math.floor((FOOT_DISC_TOP - FOOT_DISC_STOP - 1.22 * size) / (size * LEAD)));
+}
+
+function fitFooterDisc(ctx, s, font, width) {
+  const ladder = [...new Set([SZ.footDisc, 7, 6.5, 6, 5.5, SZ_SKETCH.footDisc])]
+    .filter((n) => n <= SZ.footDisc).sort((a, b) => b - a);
+  for (const size of ladder) {
+    const lines = wrap(ctx, s, font, size, width);
+    if (lines.length <= footDiscBudget(size)) return { size, lines };
+  }
+  const size = ladder[ladder.length - 1];
+  return { size, lines: wrap(ctx, s, font, size, width).slice(0, footDiscBudget(size)) };
+}
+
 function drawFooters(ctx) {
   const F = ctx.fonts;
   const meta = ctx.meta || {};
   const n = ctx.pages.length;
   const FOOT = col(brand.RGB.FOOTNOTE);
+  // Fitted ONCE: the disclaimer is the same standing line on every page, so
+  // every page must draw it at the same size or the footer would breathe.
+  const disc = fitFooterDisc(ctx, ctx.text(meta.disclaimer || ''), F.reg, TEXT_W);
   ctx.pages.forEach((page, idx) => {
     const c = { ...ctx, page };
-    // ⛔ THE THREE LINES ARE PLACED SO THEY CANNOT TOUCH. Measured, not eyeballed:
-    // the contact box is [41.4, 49], the two disclaimer lines [31, 38] and
-    // [21.76, 28.76], the identity line [8, 14] — every gap positive, and the
-    // whole band sits under the 52pt hairline, which is itself under the content
-    // floor. `slice(0, 2)` is a real cap and is why the disclaimer's own length
-    // can never push the identity line off the paper.
+    /* ⛔ THE LINES ARE PLACED SO THEY CANNOT TOUCH, and what keeps that true is
+       `footDiscBudget` rather than a hand-checked list of boxes: the disclaimer
+       is only ever given as many lines as clear the identity line at the size it
+       ended up at, so the arithmetic holds at every rung of the ladder instead
+       of at the one size somebody measured. The whole band sits under the 52pt
+       hairline, which is itself under the content floor, so nothing that flows
+       can reach any of it. */
     line(c, 52, M.left, RIGHT_X, HAIR, 0.6);
     if (meta.contact) put(c, meta.contact, M.left, 49, F.bold, SZ.footContact, FOOT, TEXT_W);
-    const disc = wrap(ctx, ctx.text(meta.disclaimer || ''), F.reg, SZ.footDisc, TEXT_W);
-    let dy = 38;
-    for (const l of disc.slice(0, 2)) { put(c, l, M.left, dy, F.reg, SZ.footDisc, FAINT, TEXT_W); dy -= SZ.footDisc * LEAD; }
+    let dy = FOOT_DISC_TOP;
+    for (const l of disc.lines) { put(c, l, M.left, dy, F.reg, disc.size, FAINT, TEXT_W); dy -= disc.size * LEAD; }
     /* ⛔ THE IDENTITY LINE IS MONOSPACED AND SET IN CAPITALS, the way the approved
        sketch sets it: "TERM SHEET · TS-4KQ7WM · PAGE 1 OF 2". It is the one line
        on the page nobody reads as prose — it is a reference somebody types into
