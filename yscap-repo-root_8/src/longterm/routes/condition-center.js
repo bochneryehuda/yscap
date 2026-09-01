@@ -204,6 +204,24 @@ router.post('/loans/:loanId/conditions/:conditionId/reopen', async (req, res) =>
   }
 });
 
+// The loan officer's own step. A STAMP, never a status — the back office still
+// signs the condition off after them, which is the whole reason it is a separate
+// mark. Same two columns the short-term side has always used, so a file reads the
+// same way whichever product it belongs to.
+router.post('/loans/:loanId/conditions/:conditionId/done', async (req, res) => {
+  const scoped = await scopedCondition(req, res);
+  if (!scoped) return;
+  try {
+    // Absent reads as "mark it done" — the button's ordinary press — while an
+    // explicit false is the undo. Anything else is not a third state.
+    const done = (req.body || {}).done !== false;
+    answer(res, await write.markDone(scoped.loan.id, req.params.conditionId, staffId(req), done, db));
+  } catch (e) {
+    console.error('[lt] mark condition done failed:', (e && e.message) || e);
+    res.status(500).json({ error: 'Could not update that condition just now.' });
+  }
+});
+
 router.post('/loans/:loanId/conditions/:conditionId/status', async (req, res) => {
   const scoped = await scopedCondition(req, res);
   if (!scoped) return;
