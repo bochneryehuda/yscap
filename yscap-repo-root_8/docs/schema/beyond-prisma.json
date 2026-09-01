@@ -2509,7 +2509,7 @@
       {
         "name": "reopen_conditions_on_budget_change()",
         "returns": "trigger",
-        "bodyHash": "c0c6500be89c4c2f"
+        "bodyHash": "487812cc912571d0"
       },
       {
         "name": "reopen_contract_on_economics_change()",
