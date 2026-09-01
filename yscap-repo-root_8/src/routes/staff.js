@@ -15911,6 +15911,26 @@ router.get('/applications/:id/note-buyer', async (req, res) => {
   }
 });
 
+// WHAT THE APPRAISER WILL BE TOLD, before the order is placed (owner-directed
+// 2026-09-01). Read-only. Says which capital provider's appraisal requirements
+// this file carries and the exact message that will be posted on the order — or,
+// when nothing on the file decides the provider, that the officer should be asked
+// to pick one (optional; ordering without one is allowed and posts nothing).
+// STAFF-ONLY like the note-buyer slot: this router is staff-gated + file-scoped,
+// and the note-buyer name never reaches a borrower. The choice itself still goes
+// through the ONE write path (`complete-fields` with `lender`).
+router.get('/applications/:id/appraisal-requirements', async (req, res) => {
+  try {
+    const out = await require('../lib/appraisal/order-requirements-post').summaryFor(db, req.params.id);
+    if (!out) return res.status(404).json({ error: 'not found' });
+    res.json(out);
+  } catch (e) {
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] appraisal requirements summary error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 /* THE PAYOFF SECTION (owner-directed 2026-07-31) — everything the file's payoff
    card needs: which kind of refinance this is, what has been entered, what is
    still missing and WHY it matters, what the structure implies the borrower
