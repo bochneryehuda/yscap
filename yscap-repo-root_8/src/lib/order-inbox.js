@@ -43,6 +43,9 @@ const storage = require('./storage');
 const notify = require('./notify');
 const { decodeUploadBase64, sniffKind, expectedKind } = require('./upload-bytes');
 const { classifyReturnAttachment } = require('./order-return-filter');
+
+/** documents.visibility for a returned order document — see the INSERT for why. */
+function returnVisibility(orderType) { return orderType === 'insurance' ? 'borrower' : 'staff_only'; }
 // The slot vocabulary + the condition each order files into live in ONE place,
 // shared with the Orders desk and the condition's own slot picker (order-slots.js).
 const { CONDITION_CODE, RETURN_DOC_KIND } = require('./order-slots');
@@ -260,10 +263,17 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
            (application_id, borrower_id, checklist_item_id, filename, content_type, size_bytes,
             storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, review_status, sha256,
             source_type, visibility, from_email)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',NULL,$9,'pending',$10,'system','staff_only',$11)`,
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',NULL,$9,'pending',$10,'system',$12,$11)`,
         [applicationId, borrowerId, itemId, String(a.filename).slice(0, 300),
          a.contentType || 'application/octet-stream', buf.length, provider, ref, kind, sha256 || null,
-         fromEmail ? String(fromEmail).trim().toLowerCase().slice(0, 320) : null]);
+         fromEmail ? String(fromEmail).trim().toLowerCase().slice(0, 320) : null,
+         /* WHO MAY SEE IT (owner-directed 2026-09-01: "the insurance documents that are coming
+            in, the borrower should be able to see that on their document section, even though
+            it's only an internal condition"). An insurance return — the quote, the binder, the
+            invoice — is the borrower's own policy paperwork, so it is filed borrower-visible.
+            A TITLE return stays staff-only: it carries the wiring instructions the header
+            above exists to keep away from a borrower. One place decides: returnVisibility. */
+         returnVisibility(orderType)]);
       saved += 1;
       /* AND IF THE APPRAISER JUST EMAILED US THE DATA FILE, THE MARKET DATA IN IT GOES
          TO THE RESEARCH WAREHOUSE (db/462). This is the door the report most often
@@ -349,4 +359,5 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
   return { saved, deduped, failed, failedPermanent, failedTransient, suspect, skipped };
 }
 
-module.exports = { saveReturnedDocs, alreadyFiled, conditionItemFor, DOC_KIND, CONDITION_CODE, MAX_RETURN_DOCS };
+module.exports = {
+  returnVisibility, saveReturnedDocs, alreadyFiled, conditionItemFor, DOC_KIND, CONDITION_CODE, MAX_RETURN_DOCS };

@@ -3748,7 +3748,30 @@ const uploadBorrowerDocument = async (req, res) => {
             ? [{ filename: b.filename, contentType: b.contentType || 'application/octet-stream', content: emailCopy.toString('base64') }]
             : undefined,
         };
-        await notify.notifyAppStaff(b.applicationId, opts);   // #113: whole team (primary + assistants)
+        /* THE PROCESSOR WORKING THIS FILE IS EMAILED, WITH THE DOCUMENT (owner-directed
+           2026-09-01: "a file that … was submitted for full processing … the processor
+           should receive notifications when a document is being uploaded, with the document
+           attached"). doc_uploaded is an in-app-only staff type — the whole team, LO
+           included, gets the row and no email (the 2026-07-20 "stop the bombardment" rule).
+           The ONE exception is the processor on a file that has a LIVE processing hand-off
+           in their workflow: that person asked for the file's documents, so the same
+           notification goes to them as an EMAIL too (inAppOnly:false), with the attachment.
+           Being merely ASSIGNED as processor does not count — only the submission does. */
+        let processorToEmail = null;
+        try {
+          const wf = await db.query(
+            `SELECT COALESCE(w.to_staff_id, a.processor_id) AS staff_id
+               FROM workflow_items w JOIN applications a ON a.id = w.application_id
+              WHERE w.application_id = $1 AND w.submission_type = 'processing' AND w.status IN ('open','in_progress')
+              ORDER BY w.received_at DESC LIMIT 1`, [b.applicationId]);
+          processorToEmail = (wf.rows[0] && wf.rows[0].staff_id) || null;
+        } catch (_) { processorToEmail = null; }
+        if (processorToEmail) {
+          await notify.notifyAppStaff(b.applicationId, { ...opts, exceptStaffId: processorToEmail });
+          await notify.notifyStaff(processorToEmail, { ...opts, inAppOnly: false });
+        } else {
+          await notify.notifyAppStaff(b.applicationId, opts);   // #113: whole team (primary + assistants)
+        }
       }
     } catch (_) { /* never fail the upload on a notify hiccup */ }
   }

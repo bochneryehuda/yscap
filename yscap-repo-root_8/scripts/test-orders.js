@@ -35,7 +35,15 @@ ok('the file reply-to and the order reply-to are distinct addresses');
 
 /* ---- order data helpers ---- */
 assert.strictEqual(orders.transactionType('Purchase'), 'Purchase');
-assert.strictEqual(orders.transactionType('rate_term_refi'), 'Refinance');
+assert.strictEqual(orders.transactionType('rate_term_refi'), 'Refinance — Rate & Term');
+assert.strictEqual(orders.transactionType('Refinance — Cash-Out'), 'Refinance — Cash-Out');
+assert.strictEqual(orders.transactionType('cash-out refi'), 'Refinance — Cash-Out');
+assert.strictEqual(orders.transactionType('Refinance'), 'Refinance');
+assert.strictEqual(orders.transactionType('Delayed Purchase Financing'), 'Delayed Purchase Financing');
+// A file that does not say is PRINTED as not saying — never a dropped row (owner-reported 2026-09-01).
+assert.ok(/Not stated/.test(orders.transactionType(null)) && /Not stated/.test(orders.transactionType('')), 'a blank loan type is stated as not stated');
+assert.ok(/Transaction Type/.test(orders.buildOrderEmail('title', { ...({}), appId: APP, loanNumber: 'YSCAP1', hasLoanNumber: true, propertyLine: '1 A St, Brooklyn, NY 11211', transactionType: '', borrowerName: 'B', vendors: { title: { company_name: 'T', email: 't@t.com' }, insurance: null } }, {}).text),
+  'the Transaction Type row is on the order even when the file does not say');
 assert.strictEqual(orders.propertyLine({ street: '123 Main St', city: 'Brooklyn', state: 'NY', zip: '11211' }), '123 Main St, Brooklyn, NY 11211');
 ok('transactionType + propertyLine format correctly');
 

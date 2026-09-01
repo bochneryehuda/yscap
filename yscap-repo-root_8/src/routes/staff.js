@@ -5376,7 +5376,13 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
      VALUES ('application',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'staff',$15,$16,$17)
      RETURNING id`,
     [req.params.id, label.slice(0, 300),
-     scrubText(String(b.borrowerLabel || '').trim().slice(0, 300)) || null,
+     /* THE HEADER THE BORROWER SEES IS NEVER BLANK (owner-reported 2026-09-01: the card said
+        "An item your loan team needs" with the real wording in small text — the borrower
+        payload COALESCEs borrower_label to that phrase). A borrower-facing condition with no
+        borrower-facing name takes the internal name, scrubbed, exactly as the template
+        author (admin-conditions.js) and the document-request route already default it. An
+        internal-only condition keeps NULL — it has no borrower header to show. */
+     scrubText(String(b.borrowerLabel || (audience !== 'staff' ? label : '')).trim().slice(0, 300)) || null,
      String(b.hint || '').trim().slice(0, 2000) || null,
      scrubText(String(b.borrowerHint || '').trim().slice(0, 2000)) || null,
      audience, CONDITION_TYPES[type].itemKind, toolKey || null, fieldKey,

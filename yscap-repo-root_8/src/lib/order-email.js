@@ -194,12 +194,27 @@ function insuranceDetailMeta(data) {
   return out;
 }
 
-/** Purchase vs Refinance, best-effort from the file's loan_type. */
+/**
+ * Purchase vs Refinance, from the file's loan_type (the loan PURPOSE column).
+ *
+ * Owner-reported 2026-09-01: "The title order should say if it's a purchase or a
+ * refinance. Right now, it doesn't mention." The row existed but was dropped
+ * whenever this returned '' (a blank loan_type, or one the sanitizer nulled), and a
+ * cash-out was flattened to the bare word "Refinance". So: the refinance KIND is
+ * kept when the file states it, and a file that does not say is printed as exactly
+ * that — never omitted, because an omitted row reads as "nobody thought of it".
+ */
+const TRANSACTION_UNKNOWN = 'Not stated on the file — please confirm with the loan officer';
 function transactionType(loanType) {
   const s = String(loanType || '').toLowerCase();
-  if (/refi|refinance/.test(s)) return 'Refinance';
+  if (/refi|refinance/.test(s)) {
+    if (/cash/.test(s)) return 'Refinance — Cash-Out';
+    if (/rate/.test(s) && /term/.test(s)) return 'Refinance — Rate & Term';
+    return 'Refinance';
+  }
+  if (/delayed/.test(s) && /purchase|financ/.test(s)) return 'Delayed Purchase Financing';
   if (/purchase|acquisition/.test(s)) return 'Purchase';
-  return loanType ? String(loanType) : '';
+  return loanType ? String(loanType) : TRANSACTION_UNKNOWN;
 }
 
 /** A one-line property address from the applications.property_address jsonb. */
@@ -255,7 +270,9 @@ function buildOrderEmail(kind, data, { followup = false, reply = false, note = '
   // the two can never state different facts. `filter(Boolean)` still runs last so a
   // detail we genuinely do not hold is simply absent rather than printed blank.
   const orderMeta = [
-    data.transactionType ? { label: 'Transaction Type', value: data.transactionType } : null,
+    // ALWAYS printed (owner-reported 2026-09-01): purchase or refinance is the first thing
+    // a title company needs to know, so a file that does not say prints that it does not.
+    { label: 'Transaction Type', value: data.transactionType || TRANSACTION_UNKNOWN },
     { label: 'Property Address', value: data.propertyLine || '—' },
     { label: 'Borrower Name', value: data.borrowerName },
     kind === 'insurance' && data.dob ? { label: 'Borrower DOB', value: data.dob } : null,
@@ -582,6 +599,7 @@ function replyOrderSubject(subject) {
 
 
 module.exports = {
+  TRANSACTION_UNKNOWN,
   // What an order IS
   ORDER_TYPES, VENDOR_TYPE, ORDER_LABEL,
   // The clause (the standard one, and the short-term servicer variant its own
