@@ -21,6 +21,7 @@
  * otherwise CHANGE what the general engine draws is listed.
  */
 import React from 'react';
+import { ltApi } from './api.js';
 
 /**
  * The general engine — the one the company prices on. Every field here is the behaviour that
@@ -29,6 +30,17 @@ import React from 'react';
  */
 export const GENERAL_ENGINE = {
   key: 'general',
+  /** What the page is called. */
+  title: 'Pricing Engine',
+  /** Nothing above the form — this IS the company's pricing engine. */
+  banner: null,
+  /* THE DOOR. The general engine asks Lender Price and nothing else, and it asks EXACTLY what it
+     has always asked: `revealSource` is a combined-engine idea and is deliberately not forwarded,
+     so the request on the wire is unchanged to the byte. */
+  price: (scenario) => ltApi.dscrPrice(scenario, { full: true }),
+  /* THE INVESTOR ROSTER, already in the shape the picker reads. Normalising here rather than in
+     the screen is what lets one picker serve two doors that answer in two shapes. */
+  investors: () => ltApi.dscrInvestors().then((r) => (r && r.investors) || []),
   /* WHAT THE BREAKDOWN CALLS THE THING A PRICED LINE CAME FROM — in the three grammatical
      positions the copy actually uses. Three fields rather than one because English needs them:
      "came from X", "X returned no margin lines", "X's own fee fields". Building those from one
@@ -53,6 +65,21 @@ export const GENERAL_ENGINE = {
 export const COMBINED_ENGINE = {
   ...GENERAL_ENGINE,
   key: 'combined',
+  title: 'Combined Pricing Engine',
+  /* SAY WHAT THIS SCREEN IS, BEFORE ANYTHING ELSE. The owner is auditing a second engine beside
+     the one the company prices on, and a board that looks identical to the live one and is not it
+     is the single most expensive thing this screen could be. */
+  banner: {
+    eyebrow: 'Under audit — not the company\u2019s pricing engine yet',
+    body: 'This is a SECOND engine, beside the General Pricing Engine. It prices the same loan on '
+      + 'both programs and shows one board. The General Pricing Engine is unchanged and is still '
+      + 'the one the company prices on.',
+  },
+  price: (scenario, opts) => ltApi.combinedPrice(scenario, {
+    full: true, revealSource: !!(opts && opts.reveal),
+  }),
+  investors: () => ltApi.combinedInvestors().then((r) => ((r && r.investors) || [])
+    .map((x) => ({ key: x.key, investor: x.label, whiteLabel: x.whiteLabel }))),
   /* ONE SYSTEM, SO NO VENDOR IS NAMED. Two programs quote this board and a line may have come from
      either, so naming one of them on every line would be wrong half the time. */
   sheetLabel: 'the rate sheet that quoted this loan',

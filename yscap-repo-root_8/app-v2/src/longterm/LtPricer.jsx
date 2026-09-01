@@ -41,7 +41,7 @@ import LtScenarioSave from './LtScenarioSave.jsx';
 import {
   Check, ModeTab, DscrCalc, useScenarioForm, ScenarioFields,
 } from './LtScenarioFields.jsx';
-import { useEngine } from './pricerEngine.js';
+import { useEngine, EngineProvider, GENERAL_ENGINE } from './pricerEngine.js';
 
 /**
  * THE PRICING ENGINE — every rate Lender Price is quoting, and every investor at each one.
@@ -1544,7 +1544,22 @@ export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp, invSe
 }
 
 /* ── the screen ───────────────────────────────────────────────────────────── */
-export default function LtPricer() {
+/**
+ * THE PRICING BOARD — ONE screen, drawn for whichever engine it is handed.
+ *
+ * The Combined Pricing Engine used to be a 2,900-line copy of this, watched by a source
+ * fingerprint. The owner ended that: *"It will not even be a copy. It should just share the code
+ * of the general pricing engine. If we enhance the general pricing engine, this should also
+ * enhance it, but it shouldn't touch the general pricing engine."* So every enhancement to this
+ * screen now reaches BOTH boards by existing, and everything the two do differently is named in
+ * `pricerEngine.js` — one list somebody can read, rather than eight divergences spread through a
+ * copy nobody can diff.
+ *
+ * `slots` are the panels only ONE board has, handed in by that board rather than flagged here:
+ * a screen that lists its own exceptions is a copy with extra steps. Each is given what it needs
+ * from this screen's state and nothing else.
+ */
+export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
   /* ⛔ THE FORM IS THE SHARED ONE. Its state, its ZIP lookup, its amount triangle and its derived
      setters all live in `LtScenarioFields.jsx`, because the scenario page mounts the SAME fields —
      and a second copy of any of it is a second answer to what this deal is. This screen destructures
@@ -1563,6 +1578,10 @@ export default function LtPricer() {
   const [openQuote, setOpenQuote] = useState(null);
   const [elapsed, setElapsed] = useState(0);
   const [showScenario, setShowScenario] = useState(false);
+  /* WHERE EACH ROW CAME FROM. Only an engine that prices on more than one program has a source to
+     reveal; on the general board this stays false, is never drawn, and its own door does not
+     forward it — so the request on the wire is unchanged. */
+  const [reveal, setReveal] = useState(false);
   /* THE ONE PRESS BACK TO THE COLLECTION. `scroll-margin-top` on the rail keeps it clear
      of the pinned strip, so the area lands fully visible rather than under the band that
      sent you there. Guarded: a browser without smooth scrolling still jumps. */
@@ -1686,8 +1705,8 @@ export default function LtPricer() {
      empty and the picker says so; the board simply shows everybody. */
   useEffect(() => {
     let live = true;
-    ltApi.dscrInvestors()
-      .then((r) => { if (live) { setInvRoster((r && r.investors) || []); setInvRosterStatus('ok'); } })
+    engine.investors()
+      .then((list) => { if (live) { setInvRoster(list || []); setInvRosterStatus('ok'); } })
       .catch(() => { if (live) { setInvRoster([]); setInvRosterStatus('failed'); } });
     ltApi.dscrInvestorGroups()
       .then((r) => { if (live) setInvGroups((r && r.groups) || []); })
@@ -1850,7 +1869,7 @@ export default function LtPricer() {
     [stack],
   );
 
-  const ts0 = useTermSheetCart();
+  const ts0 = useTermSheetCart(engine.cart);
   const ts = {
     ...ts0,
     selectionFor: (q, o) => ({
@@ -2075,7 +2094,7 @@ export default function LtPricer() {
     const t0 = Date.now();
     timer.current = setInterval(() => setElapsed(Math.round((Date.now() - t0) / 100) / 10), 200);
     try {
-      const r = await ltApi.dscrPrice(toScenario(f), { full: true });
+      const r = await engine.price(toScenario(f), { reveal });
       setRes(r);
       // THE ANSWER IS HERE — the form folds away and the sticky strip takes over, holding the
       // search's facts and the Edit search button. Only a SUCCESS collapses it: a refusal leaves
@@ -2158,8 +2177,20 @@ export default function LtPricer() {
   }
 
   return (
-    <LtLayout title="Pricing Engine">
+    <EngineProvider value={engine}>
+    <LtLayout title={engine.title}>
       <div style={{ display: 'grid', gap: 14 }}>
+        {/* SAY WHAT THIS SCREEN IS, BEFORE ANYTHING ELSE — for a board that is not the one the
+            company prices on. The general engine has no banner, draws nothing here, and its DOM
+            is unchanged. */}
+        {engine.banner && (
+          <div style={{ ...card, borderColor: `${GOLD}66`, background: '#FFFDF7' }}>
+            <div style={eyebrow}>{engine.banner.eyebrow}</div>
+            <div style={{ fontSize: 13, color: SLATE, marginTop: 6, lineHeight: 1.7 }}>
+              {engine.banner.body}
+            </div>
+          </div>
+        )}
         {/* ── the scenario ─────────────────────────────────────────────────
             Collapsed after a successful price (owner-directed 2026-08-23) — the sticky strip
             below carries the search's facts and the way back in. Only a SUCCESS collapses it. */}
@@ -2268,7 +2299,7 @@ export default function LtPricer() {
                 mode: compMode, onMode: setCompMode,
                 waive: waiveFees, onWaive: setWaiveFees, planProblem: compProblem,
               }}
-              collected={ts.enabled && ts.count > 0 ? (
+              collected={engine.cart && ts.enabled && ts.count > 0 ? (
                 <button type="button" onClick={jumpToComparison} style={{
                   border: `1px solid ${GOLD}`, background: PAPER, borderRadius: 999,
                   padding: '3px 10px', cursor: 'pointer', font: 'inherit',
@@ -2277,7 +2308,14 @@ export default function LtPricer() {
                   {`${ts.count} collected · build the sheet`}
                 </button>
               ) : null}
-              counts={`${stack.rateCount} ${stack.rateCount === 1 ? 'rate' : 'rates'} · ${stack.quoteCount} ${stack.quoteCount === 1 ? 'quote' : 'quotes'} · ${res.programCount != null ? res.programCount : '—'} programmes · ${res.lenderCount != null ? res.lenderCount : '—'} lenders`}
+              /* ⛔ A BOARD STATES ONLY THE FIGURES ITS OWN DOOR RETURNS. The combined door
+                 answers with `programCount` and the investor roster and no lender count, so
+                 carrying that clause there would print "— lenders" on every board for ever;
+                 deriving one would mean inventing a two-vendor meaning of "a lender" (the
+                 general rule keys on `p.lender`, which a LoanNEX programme does not carry, so
+                 it would collapse that whole vendor into one bucket and UNDERCOUNT). What to
+                 call such a figure, and whether the board should carry one, is the owner's. */
+              counts={`${stack.rateCount} ${stack.rateCount === 1 ? 'rate' : 'rates'} · ${stack.quoteCount} ${stack.quoteCount === 1 ? 'quote' : 'quotes'} · ${res.programCount != null ? res.programCount : '—'} programmes${engine.lenderCount ? ` · ${res.lenderCount != null ? res.lenderCount : '—'} lenders` : ''}`}
               invRow={(
                 <InvestorStripRow
                   roster={res.investorRoster || []}
@@ -2288,6 +2326,14 @@ export default function LtPricer() {
                 />
               )}
             />
+            {/* WHATEVER THIS BOARD HAS THAT THE OTHER DOES NOT — handed in by the screen that
+                mounts this one rather than listed here, because a shared screen that enumerates
+                its own exceptions is a copy with extra steps. It is given the answer, whether a
+                search is running, the source-reveal pair and a way to re-price, and nothing else:
+                a slot that could reach the whole screen would be a second screen. */}
+            {typeof slots.afterStrip === 'function' && slots.afterStrip({
+              res, busy, reveal, setReveal, reprice: run, setForm: setF,
+            })}
             {/* ⛔ WHAT NEEDS SAYING BEFORE THE BOARD — AND ONLY THAT. This was a
                 whole "What came back" card (owner-reported 2026-09-01), 172 points
                 of it, carrying one line of counts, one standing disclosure and a
@@ -2396,7 +2442,7 @@ export default function LtPricer() {
                       : 'Lender Price returned no priced rungs for this scenario. The Ineligible view says which products it looked at and why each was ruled out.'}
                   </div>
                 ) : stack.rates.map((row) => (
-                  <RateRow key={row.key} row={row} loanAmount={loanAmount} comp={comp} ts={ts}
+                  <RateRow key={row.key} row={row} loanAmount={loanAmount} comp={comp} ts={engine.cart ? ts : null}
                     housing={housing}
                     open={openRates.has(row.key)}
                     onToggle={() => toggleRate(row.key)}
@@ -2438,6 +2484,11 @@ export default function LtPricer() {
             something has been collected OR a sheet has just been issued — that
             second half is what stops the issued sheet's own card being destroyed
             by the cart it empties. */}
+        {/* ⛔ ONLY ON A BOARD WITH A CART. An engine under audit must not issue a document a
+            borrower reads, so it does not collect options and has nothing to build a sheet from.
+            Gated on the ENGINE rather than on `ts.enabled` being incidentally false, so the
+            reason it is absent is the reason, not a side effect. */}
+        {engine.cart && (
         <ComparisonWorkflowPanel
           enabled={ts.enabled}
           chosen={compWorkflow}
@@ -2451,6 +2502,7 @@ export default function LtPricer() {
               onIssued={ts.setIssued} onPlan={setCartDocKind} />
           )}
         </ComparisonWorkflowPanel>
+        )}
 
         {/* ── THE FOOTNOTES ────────────────────────────────────────────────
             Two things that are true of every answer and are nobody's next step: the
@@ -2488,5 +2540,14 @@ export default function LtPricer() {
         )}
       </div>
     </LtLayout>
+    </EngineProvider>
   );
+}
+
+/**
+ * THE GENERAL PRICING ENGINE — the one the company prices on, and the default everywhere.
+ * It is this screen with no engine named, which is the same thing as naming the general one.
+ */
+export default function LtPricer() {
+  return <PricerScreen engine={GENERAL_ENGINE} />;
 }

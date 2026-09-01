@@ -886,9 +886,11 @@ own assertions on the things a reading must not get wrong.
 | `app-v2/src/longterm/compOverlay.js` | the compensation overlay — one plan, both programs, no vendor named |
 
 Tests: `test-lt-loannex-parity-pure.js` (100 assertions), `test-lt-loannex-comp-parity.mjs` (the
-overlay parity claim), `test-lt-combined-pricer-fork.mjs` (the fork is watched: the general
-engine's screen is fingerprinted, and CI fails when it moves so "the general engine changed and the
-copy did not" is caught rather than found on a live board), `test-lt-routes-smoke-db.js` (the
+overlay parity claim), `test-lt-pricer-shared.mjs` (there is ONE board and it is
+drawn twice: the combined descriptor with every declared difference restored draws the general
+board BYTE FOR BYTE, so no difference between the two can be undeclared — this REPLACED the
+fingerprint guard on 2026-09-01, when the owner ended the copy: *"It will not even be a copy. It
+should just share the code of the general pricing engine"*), `test-lt-routes-smoke-db.js` (the
 super-admin 404, and the general engine still answering that same officer 200),
 `test-lt-loannex-scenario-pure.js`, `test-lt-loannex-merge-pure.js`. **Twenty
 mutations of the production code were each proven to fail them**, with a green control either side —
