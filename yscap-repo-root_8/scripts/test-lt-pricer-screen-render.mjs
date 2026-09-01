@@ -101,6 +101,7 @@ const entry = `
 import React from 'react';
 import { renderToString } from 'react-dom/server';
 import LtPricer, { PriceBuild, RateRow, IneligibleView, DscrCalc, CompSwitch, ChargeList, buildRateStack, toScenario, ltvOf, InvestorPicker, InvestorStripRow } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtPricer.jsx'))};
+import LtScenarioSave, { boardHeadline } from ${JSON.stringify(path.join(appv2, 'src/longterm/LtScenarioSave.jsx'))};
 globalThis.__React = React;
 globalThis.__renderToString = renderToString;
 globalThis.__LtPricer = LtPricer;
@@ -115,6 +116,8 @@ globalThis.__toScenario = toScenario;
 globalThis.__ltvOf = ltvOf;
 globalThis.__InvestorPicker = InvestorPicker;
 globalThis.__InvestorStripRow = InvestorStripRow;
+globalThis.__LtScenarioSave = LtScenarioSave;
+globalThis.__boardHeadline = boardHeadline;
 `;
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lt-pricer-render-'));
@@ -156,6 +159,8 @@ const CompSwitch = globalThis.__CompSwitch;
 const ChargeList = globalThis.__ChargeList;
 const buildRateStack = globalThis.__buildRateStack;
 const toScenario = globalThis.__toScenario;
+const LtScenarioSave = globalThis.__LtScenarioSave;
+const boardHeadline = globalThis.__boardHeadline;
 
 const render = (el) => renderToString(el);
 const attempt = (fn) => { try { return { html: fn(), err: null }; } catch (e) { return { html: null, err: e }; } };
@@ -268,6 +273,49 @@ const stack = buildRateStack(capture.programs);
     'R17 a quote with no price sorts last, never as though it were zero');
   ok(buildRateStack(null).rates.length === 0 && buildRateStack(undefined).quoteCount === 0,
     'R18 an absent answer builds an empty stack rather than throwing');
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   R18b..R18j — SAVE THIS SCENARIO (db/658). The save half of the saved-scenario
+   feature lives on this screen; the list, the re-run and the create-from-scratch
+   live on the Scenarios page, and a saved scenario never reloads here.
+
+   The BUTTON is proven on the first paint — a save panel nobody can reach is the
+   same silence as a back end nothing calls. The HEADLINE is proven against the
+   real `buildRateStack` output rather than a hand-built object, because the one
+   way this goes wrong quietly is reading the wrong field off the vendor's shape:
+   a rate lives at `options[].priceBuild.noteRate`, and a mirror that read
+   `q.noteRate` would answer "nothing priced" on every real board and look like
+   an honest empty rather than a bug.
+   ────────────────────────────────────────────────────────────────────────── */
+{
+  const { html } = attempt(() => render(React.createElement(LtPricer)));
+  ok(/Save this scenario/.test(html || ''),
+    'R18b the save action is on the first paint, beside the press it belongs to');
+
+  const panel = attempt(() => render(React.createElement(LtScenarioSave,
+    { form: { f: { fico: '760' }, calc: {} }, boardStack: null })));
+  ok(panel.err === null, `R18d the panel renders without throwing${panel.err ? ` — ${panel.err.message}` : ''}`);
+
+  const priced = buildRateStack([
+    { lender: 'A', options: [{ priceBuild: { noteRate: 6.5, price: 99.0 } }] },
+    { lender: 'B', options: [{ priceBuild: { noteRate: 6.25, price: 98.0 } }] },
+    { lender: 'B', options: [{ priceBuild: { noteRate: 6.25, price: 99.75 } }] },
+  ]);
+  const h = boardHeadline(priced);
+  ok(h && h.bestRate === 6.25, 'R18e the headline takes the LOWEST rate on the board');
+  ok(h && h.bestPrice === 99.75,
+    'R18f …with the best price AT that rate — the two belong to one quote, or it describes a product nobody can buy');
+  ok(h && h.programs === 3 && h.lenders === 2,
+    `R18g …and counts what was priced and who priced it (${h && h.programs}/${h && h.lenders})`);
+
+  // NOTHING IS INVENTED. An empty board, an unpriced board and an absent one all
+  // save no headline rather than a zero that would later read as a real rate.
+  ok(boardHeadline(buildRateStack([])) === null, 'R18h an empty board saves no headline');
+  ok(boardHeadline(buildRateStack([{ lender: 'A', options: [{ priceBuild: { price: 99 } }] }])) === null,
+    'R18i …and a board the vendor priced with no rate saves none either');
+  ok(boardHeadline(null) === null && boardHeadline(undefined) === null,
+    'R18j …and an absent board answers null rather than throwing');
 }
 
 // ---------------------------------------------------------------------------

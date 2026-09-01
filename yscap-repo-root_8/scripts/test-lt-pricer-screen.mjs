@@ -53,6 +53,8 @@ const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const formSrc = read('app-v2/src/longterm/LtScenarioFields.jsx');
 const formCode = formSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const bothCode = `${code}\n${formCode}`;
+const saveCode = read('app-v2/src/longterm/LtScenarioSave.jsx')
+  .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 console.log('LT Pricing Engine — structural guards\n');
 
@@ -519,6 +521,19 @@ console.log('LT Pricing Engine — structural guards\n');
      had quietly stopped rendering the form — the same silence as a back end nothing calls. */
   ok(/from '\.\/LtScenarioFields\.jsx'/.test(code) && /<ScenarioFields\b/.test(code),
     'PE-96b the screen MOUNTS the shared field set — one form, two screens, never a second copy');
+
+  /* ⛔ THE PRICING ENGINE SAVES AND NEVER LOADS (D1 — the owner drew that line themselves when
+     they chose "both"). The Scenarios page owns the list, the re-run and the create-from-scratch;
+     a saved scenario reloading into this screen would put two answers on one page to "which deal
+     am I looking at". Asserted on the DOORS, because that is where it would actually happen —
+     nothing rendered can tell you which endpoint a screen calls. */
+  ok(/ltApi\.dscrSaveScenario\(/.test(saveCode),
+    'PE-96c the save half calls the save door');
+  for (const door of ['dscrScenarios', 'dscrScenario', 'dscrUpdateScenario', 'dscrDeleteScenario']) {
+    ok(!new RegExp(`ltApi\\.${door}\\(`).test(`${code}\n${saveCode}`),
+      `PE-96d …and never ltApi.${door} — reading, renaming and removing belong to the Scenarios page`);
+  }
+
 
   ok(/id="pe-term"/.test(formCode) && /<select[^>]*id="pe-term"/.test(formCode),
     'PE-97 the loan-term box is on the form');

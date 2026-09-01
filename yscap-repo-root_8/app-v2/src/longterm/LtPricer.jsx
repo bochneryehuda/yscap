@@ -31,6 +31,9 @@ import {
   INK, MUTED, SLATE, GOLD, GOLD_TEXT, PAPER, DANGER, CAUTION, card, eyebrow, sub,
   band, bandHead, control, segTrack, LINE, WASH,
 } from './ppeStyles.js';
+/* THE SAVE HALF OF THE SAVED-SCENARIO FEATURE (D1). This screen SAVES and never LOADS — the
+   Scenarios page owns the list, the re-run and the create-from-scratch. */
+import LtScenarioSave from './LtScenarioSave.jsx';
 /* ⛔ THE FORM IS ONE COMPONENT AND THIS SCREEN MOUNTS IT — it does not own it. The scenario page
    mounts the SAME one (SAVED-SCENARIOS-RESEARCH.md D1 and §5): a second copy of twenty-one pricing
    fields is a second answer to what this deal is, and the copy that drifts is the one that prices
@@ -1596,6 +1599,15 @@ export default function LtPricer() {
   const filteredRes = res ? filterPrograms(res.programs, invSel) : null;
   const stack = res ? buildRateStack(filteredRes.programs) : null;
 
+  /* THE SAME FLATTENER OVER THE UNNARROWED ANSWER. The board above is the
+     investor overlay's view; a scenario's saved headline must be a fact about
+     the MARKET, or "the best rate has come down" would be reporting somebody's
+     own filter back to them as though the market had moved. One flattener,
+     asked twice — never a second reading of the vendor payload. */
+  const boardStack = React.useMemo(
+    () => (res ? buildRateStack(res.programs) : null), [res],
+  );
+
   /* EXPAND ALL / COLLAPSE ALL (owner-directed 2026-08-27: "click 'Expand All', and
      every section should expand to its max"). Max = every rate row open AND every
      multi-programme lender opened out; the per-quote Details panels stay a
@@ -2031,6 +2043,10 @@ export default function LtPricer() {
               onClick={() => { form.reset(); setPrepared(PREPARED_START); changeInvSel(null); }}>
               Reset to the starting scenario
             </button>
+            {/* SAVE WHAT WAS TYPED, so tomorrow is one press rather than twenty-one boxes. It
+                sits beside the press it belongs to and takes you nowhere: the board you just
+                paid a vendor call for stays exactly where it is. */}
+            <LtScenarioSave form={form} boardStack={boardStack} disabled={busy} />
             {/* WHAT IS ACTUALLY GOING ON THE WIRE, in one line. The amount triangle means the
                 figure this page shows and the figure it sends are deliberately not always the same
                 one — so the screen says which. */}
