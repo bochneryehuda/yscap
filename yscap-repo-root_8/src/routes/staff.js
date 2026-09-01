@@ -16612,7 +16612,10 @@ async function applicationCompleteness(appId) {
   const missing = need.filter(([v]) => v == null || v === '').map(([, label]) => label);
   return { complete: missing.length === 0, missing };
 }
-const COND_CLEAR_THRESHOLD = 0.80;   // "once 80–90% of conditions are cleared" (owner)
+// Owner-directed 2026-09-01: "We can move down the requirement for condition clearing so
+// that we can submit for condition clearing at 65% of conditions already." (Was 0.80 —
+// "once 80–90% of conditions are cleared", 2026-07-21.)
+const COND_CLEAR_THRESHOLD = 0.65;
 
 // The data behind the file's Submit panel: which people each type routes to (the
 // already-assigned person or the list to pick from), what's already in someone's
@@ -16667,6 +16670,25 @@ router.get('/applications/:id/workflow/options', async (req, res) => {
       live,
       outcomeLabels: workflow.OUTCOME_LABELS,
       expectedClosing: app.expected_closing || null,
+      /* WHERE IN THE QUEUE (owner-directed 2026-09-01: "on the Clear to Close button, the
+         Condition Clearing button, and the Track Record Review button, you should be able to
+         see where in the queue you are … the number should change according to the queue").
+         For a kind this file already has live: its position. Otherwise: the position a
+         submission made now would take — the processor's live queue of that kind + 1. */
+      queue: await (async () => {
+        const out = {};
+        for (const t of workflow.PROCESSOR_QUEUE_TYPES) {
+          const liveItem = (live || []).find((x) => x.submission_type === t);
+          try {
+            if (liveItem) out[t] = { live: true, ...(await workflow.queuePositionOf(liveItem.id) || {}) };
+            else {
+              const length = await workflow.queueLengthFor({ staffId: app.processor_id || null, role: 'processor', type: t });
+              out[t] = { live: false, position: length + 1, length };
+            }
+          } catch (_) { out[t] = null; }
+        }
+        return out;
+      })(),
     });
   } catch (e) { console.warn('[workflow] options error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
@@ -16686,6 +16708,12 @@ router.post('/applications/:id/workflow/submit', async (req, res) => {
   const b = req.body || {};
   const cfg = workflow.typeConfig(b.submissionType);
   if (!cfg) return res.status(400).json({ error: 'unknown submission type' });
+  // AN ESCALATION SAYS WHAT IT WANTS (owner-directed 2026-09-01: "we can click to escalate
+  // the super admin, but it needs to be defined what they want"). A bare escalation is a
+  // question nobody can answer; the note is the ask, and it is required.
+  if (b.submissionType === 'escalation' && !String(b.note || '').trim()) {
+    return res.status(400).json({ error: 'escalation_note_required', message: 'Say what you need from the super admin — the note is required on an escalation.' });
+  }
   try {
     const app = (await db.query(
       `SELECT id, status, processor_id, closer_id, underwriter_id, loan_officer_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
@@ -16941,6 +16969,25 @@ router.post('/workflow/:itemId/pickup', async (req, res) => {
     let item;
     try { await client.query('BEGIN'); item = await workflow.pickItem(client, req.params.itemId, req.actor.id); await client.query('COMMIT'); }
     catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    /* THE OFFICER HEARS IT WAS PICKED UP (owner-directed 2026-09-01: "The pick up button
+       should send a notification to the officer on the file that your file was … picked up
+       and the processor is now going to work on your file"). To the person who submitted
+       it AND the file's loan officer when that is somebody else; never to the picker. */
+    if (item) {
+      try {
+        const label = (workflow.typeConfig(item.submission_type) || {}).label || item.submission_type;
+        const lo = (await db.query(`SELECT loan_officer_id FROM applications WHERE id = $1`, [item.application_id])).rows[0];
+        const targets = [...new Set([item.from_staff_id, lo && lo.loan_officer_id].filter(Boolean).map(String))]
+          .filter((id) => id !== String(req.actor.id));
+        for (const staffId of targets) {
+          await notify.notifyStaff(staffId, {
+            type: 'workflow_picked_up', title: `${req.actor.name || 'The processor'} picked up ${label}`,
+            body: `Your file was picked up — ${req.actor.name || 'the processor'} is now working on ${label} for it.`,
+            applicationId: item.application_id, ctaLabel: 'Open the loan file', link: `/internal/app/${item.application_id}`,
+          }).catch(() => {});
+        }
+      } catch (_) { /* the pickup stands */ }
+    }
     res.json({ ok: true, item });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -16969,6 +17016,37 @@ router.post('/workflow/:itemId/return', async (req, res) => {
     let item;
     try { await client.query('BEGIN'); item = await workflow.returnItem(client, req.params.itemId, req.actor.id, outcomeLabel, note); await client.query('COMMIT'); }
     catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    /* THE DONE NOTE LIVES ON THE FILE (owner-directed 2026-09-01: "when she clicks the done
+       button pops up a column to put in a note … which also goes to the loan officer and
+       saves in her own notes on the file on the task section"). The workflow event already
+       keeps it; this ALSO writes it as a completed task on the file — the Tasks section is
+       where the team reads a processor's notes — attributed to the processor. Best-effort. */
+    if (item && String(note || '').trim()) {
+      try {
+        const label = (workflow.typeConfig(it.submission_type) || {}).label || it.submission_type;
+        await db.query(
+          `INSERT INTO reminders (application_id, kind, title, body, due_at, assignee_staff_id, status, created_by, completed_by, completed_at, meta)
+           VALUES ($1,'task',$2,$3,now(),$4,'done',$4,$4,now(),$5::jsonb)`,
+          [it.application_id, `${label} — ${String(outcomeLabel).slice(0, 80)}`.slice(0, 200), String(note).slice(0, 4000), req.actor.id,
+           JSON.stringify({ source: 'workflow_return', workflowItemId: req.params.itemId, outcomeLabel })]);
+      } catch (_) { /* the send-back stands */ }
+    }
+    /* FINISHING CLEAR TO CLOSE FINISHES FULL PROCESSING (owner-directed 2026-09-01: a file
+       submitted for full processing "doesn't need to have the done button. The done button
+       only comes up once it's clear to close"). The whole-file hand-off has no Done of its
+       own; the CTC hand-off finishing is what ends it. */
+    if (item && it.submission_type === 'clear_to_close') {
+      try {
+        const fullFile = (await db.query(
+          `SELECT id FROM workflow_items WHERE application_id = $1 AND submission_type = 'processing' AND status IN ('open','in_progress')`,
+          [it.application_id])).rows;
+        for (const f of fullFile) {
+          const c2 = await db.getClient();
+          try { await c2.query('BEGIN'); await workflow.returnItem(c2, f.id, req.actor.id, 'Finished processing', '[auto] Finished with the clear-to-close hand-off.'); await c2.query('COMMIT'); }
+          catch (e) { await c2.query('ROLLBACK').catch(() => {}); } finally { c2.release(); }
+        }
+      } catch (_) { /* best-effort */ }
+    }
     // Tell the person who submitted it that it's been finished + sent back.
     if (it.from_staff_id && String(it.from_staff_id) !== String(req.actor.id)) {
       const label = (workflow.typeConfig(it.submission_type) || {}).label || it.submission_type;

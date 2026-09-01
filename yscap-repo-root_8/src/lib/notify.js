@@ -104,7 +104,7 @@ const KICKER_OF = {
   purchase_advice_missing: 'Purchase advice',
   // The Workflow (owner-directed 2026-07-21): a file was submitted to your
   // personal work queue, or a file you submitted was finished + sent back.
-  workflow_submitted: 'Workflow', workflow_returned: 'Workflow', workflow_ready: 'Workflow',
+  workflow_submitted: 'Workflow', workflow_returned: 'Workflow', workflow_ready: 'Workflow', workflow_picked_up: 'Workflow',
   order_docs_in: 'Order documents',
   // An order is past the date we expected an answer (owner-directed 2026-08-03).
   order_overdue: 'Order overdue',
@@ -687,7 +687,7 @@ const CATEGORY_OF = {
   purchase_advice_missing: 'reminders',
   // The Workflow (owner-directed 2026-07-21) — staff hand-off events. Action-
   // bearing, so NOT added to STAFF_INAPP_TYPES: they email the recipient/submitter.
-  workflow_submitted: 'status_updates', workflow_returned: 'status_updates', workflow_ready: 'status_updates',
+  workflow_submitted: 'status_updates', workflow_returned: 'status_updates', workflow_ready: 'status_updates', workflow_picked_up: 'status_updates',
   // Orders desk — a staff-facing "documents came back" nudge.
   order_docs_in: 'documents',
   // An order past the date we expected an answer. Deliberately NOT in

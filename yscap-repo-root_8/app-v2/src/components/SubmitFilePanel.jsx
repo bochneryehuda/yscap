@@ -11,7 +11,11 @@ import { api } from '../lib/api.js';
 
 // The order the buttons appear in. draw_setup / post_closing only show on a
 // funded file; exception + escalation live in a separate "Need help?" group.
-const MAIN = ['loan_setup', 'processing', 'condition_clearing', 'clear_to_close', 'closing'];
+const MAIN = ['loan_setup', 'processing', 'condition_clearing', 'clear_to_close', 'track_record_review', 'closing'];
+// The buttons that SAY where in the processor's queue the file is / would be
+// (owner-directed 2026-09-01) — loan setup and full processing deliberately not.
+const SHOW_QUEUE = ['condition_clearing', 'clear_to_close', 'track_record_review'];
+const ordinal = (n) => { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
 const POST_FUNDING = ['draw_setup', 'post_closing'];
 const HELP = ['exception', 'escalation'];
 
@@ -44,7 +48,7 @@ export default function SubmitFilePanel({ appId, onChange }) {
   let recommended = null;
   if (!opts.funded) {
     if (opts.appStatus === 'processing' && opts.conditionsCleared
-        && opts.conditionsCleared.pct >= (opts.conditionsThreshold || 0.8) && !hasLive('condition_clearing')) {
+        && opts.conditionsCleared.pct >= (opts.conditionsThreshold || 0.65) && !hasLive('condition_clearing')) {
       recommended = 'condition_clearing';
     } else if (opts.ctcReady && opts.appStatus !== 'clear_to_close' && !hasLive('clear_to_close')) {
       recommended = 'clear_to_close';
@@ -73,7 +77,7 @@ export default function SubmitFilePanel({ appId, onChange }) {
       return `Finish the file first — still needs: ${opts.completeness.missing.join(', ')}.`;
     if (type === 'condition_clearing') {
       const pct = Math.round((opts.conditionsCleared.pct || 0) * 100);
-      const need = Math.round((opts.conditionsThreshold || 0.8) * 100);
+      const need = Math.round((opts.conditionsThreshold || 0.65) * 100);
       if (opts.conditionsCleared.pct < opts.conditionsThreshold) return `${pct}% of conditions are cleared — you need at least ${need}%.`;
     }
     if (type === 'clear_to_close' && (opts.ctcHardBlockers || []).length)
@@ -110,6 +114,12 @@ export default function SubmitFilePanel({ appId, onChange }) {
       body.estClosingDate = estDate;
     }
     if (type === 'closing') { body.investorCtc = investorCtc; body.closingDateConfirmed = closingConfirmed; }
+    // AN ESCALATION MUST SAY WHAT IT WANTS (owner-directed 2026-09-01): the form opens
+    // for the note first, and the button will not send without one.
+    if (type === 'escalation') {
+      if (openType !== type) { setOpenType(type); setPick(''); setNote(''); return; }
+      if (!note.trim()) { setErr('Say what you need from the super admin — that note is the escalation.'); return; }
+    }
     if (note) body.note = note;
     setBusy(true); setErr('');
     try {
@@ -122,10 +132,11 @@ export default function SubmitFilePanel({ appId, onChange }) {
       // Map the server's plain reasons to friendly copy.
       const d2 = e.data || {};
       if (d2.error === 'incomplete') setErr(`Finish the file first — still needs: ${(d2.missing || []).join(', ')}.`);
-      else if (d2.error === 'conditions_not_ready') setErr(`Only ${Math.round((d2.pct || 0) * 100)}% of conditions are cleared — you need at least ${Math.round((d2.threshold || 0.8) * 100)}%.`);
+      else if (d2.error === 'conditions_not_ready') setErr(`Only ${Math.round((d2.pct || 0) * 100)}% of conditions are cleared — you need at least ${Math.round((d2.threshold || 0.65) * 100)}%.`);
       else if (d2.error === 'not_funded') setErr('This step is available once the loan is funded.');
       else if (d2.error === 'blocked') setErr('Resolve the outstanding underwriting item(s) first.');
       else if (d2.error === 'pick_recipient') { setErr('Pick who to send it to.'); setOpenType(type); }
+      else if (d2.error === 'escalation_note_required') { setErr(d2.message || 'Say what you need from the super admin.'); setOpenType(type); }
       else setErr(e.message || 'Could not submit.');
     } finally { setBusy(false); }
   }
@@ -145,6 +156,15 @@ export default function SubmitFilePanel({ appId, onChange }) {
           <div className="wf-submit-help muted small">{cfg.helper}</div>
           <div className="wf-submit-goes muted small">{reason ? <span className="wf-blockmsg">{reason}</span> : goesTo(type)}</div>
           {live && <div className="muted small">Already in {live.to_name || 'someone'}’s workflow{live.status === 'in_progress' ? ' (in progress)' : ''}.</div>}
+          {/* WHERE IN THE QUEUE (owner-directed 2026-09-01): the live position, or where a
+              submission made now would land — straight from the processor's queue. */}
+          {SHOW_QUEUE.includes(type) && opts.queue && opts.queue[type] && opts.queue[type].position ? (
+            <div className="small" style={{ color: '#2F7F86', fontWeight: 600, marginTop: 2 }}>
+              {opts.queue[type].live
+                ? (opts.queue[type].position === 1 ? 'Your file is first in the queue.' : `Your file is ${ordinal(opts.queue[type].position)} in the queue.`)
+                : (opts.queue[type].position === 1 ? 'The queue is empty — you’d be first.' : `You’d be ${ordinal(opts.queue[type].position)} in the queue.`)}
+            </div>
+          ) : null}
         </div>
         <div className="wf-submit-act">
           <button className="btn primary small" disabled={busy || !!reason || noTarget} onClick={() => submit(type)}>
@@ -181,8 +201,8 @@ export default function SubmitFilePanel({ appId, onChange }) {
               </div>
             )}
             <label className="field" style={{ margin: 0 }}>
-              <span className="small muted">Note (optional)</span>
-              <input className="input" value={note} placeholder="Anything they should know" onChange={e => setNote(e.target.value)} />
+              <span className="small muted">{type === 'escalation' ? 'What do you need from the super admin? (required)' : 'Note (optional)'}</span>
+              <input className="input" value={note} placeholder={type === 'escalation' ? 'Say exactly what you want decided or reviewed' : 'Anything they should know'} onChange={e => setNote(e.target.value)} />
             </label>
           </div>
         )}
