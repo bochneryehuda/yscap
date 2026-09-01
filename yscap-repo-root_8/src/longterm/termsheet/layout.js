@@ -1105,7 +1105,7 @@ function buildLayout(snapshot, opts = {}) {
      it is not the answer to. The shortest-lived fact on the page belongs at the
      end of the argument it qualifies, immediately above the signature it
      governs. */
-  const exp = expiryBlock(s, opts);
+  let exp = expiryBlock(s, opts);
 
   const first = s.members[0];
 
@@ -1155,6 +1155,41 @@ function buildLayout(snapshot, opts = {}) {
       note: `every figure below is compared against ${anchor.label}` });
     blocks.push({ t: 'pagebreak', ifLessThan: SOFT_BREAK.comparison });
     blocks.push(table);
+    /* ⛔ ON A COMPARISON THE CLOCK GOES DIRECTLY UNDER THE TABLE, not at the end
+       of the sheet — and that is a REFINEMENT of the rule recorded above rather
+       than a reversal of it. The rule is that the shortest-lived fact belongs at
+       the end of the argument it qualifies; what it qualifies is the PRICING,
+       and on a comparison the pricing is the table. What follows the table is
+       commentary on choosing BETWEEN the options, which is not a thing that
+       expires.
+       ⛔ AND IT IS THE ONE BLOCK THAT MUST NOT FLOW. Raising the type to a
+       readable size filled page one, so something after the table had to move
+       onto page two; a reader who does not see that the price has a clock on it
+       is the expensive loss, and a paragraph explaining a choice read at the top
+       of the next page is not. On a TERM SHEET nothing changes: it still sits at
+       the end, immediately above the signature it governs. */
+    if (exp) { blocks.push(exp); exp = null; }
+    /* ⛔ WHAT EACH OPTION MEANS IS A STRUCTURED BLOCK, NOT A RUN OF PARAGRAPHS
+       (owner-reported 2026-09-01: *"this bottom part is just thrown text on the
+       comparison sheet and on the scenario sheet. It needs to be better laid
+       out, nicer, more structured."*).
+
+       ⛔ THE WORDS DO NOT CHANGE, AND THAT IS DELIBERATE. These sentences ARE
+       the argument the page exists to make — the owner asked on 2026-08-31 for
+       the break-even to explain itself in both directions, and that explanation
+       only works as prose. What was wrong was that four full-width lines with
+       nothing naming them read as a wall dropped under the table, with no way to
+       tell which option each one was about except by reading it.
+
+       ⛔ SO EACH ONE IS NAMED AND THEY SIT SIDE BY SIDE. A tracked rule-under
+       heading carries the option's own name, and pairs run in the two-column
+       arrangement the disclosures already use — the same visual language twice
+       on one document rather than a third. It is also the shorter shape: two
+       options cost two column-lines instead of four full-width ones, which is
+       what puts the expiry back on page one beside the table it qualifies.
+
+       ⛔ AN ODD ONE OUT RUNS FULL WIDTH rather than half a row of white. */
+    const meanings = [];
     for (const r of cmp.rows) {
       if (r.isAnchor) continue;
       const m = s.members[r.index];
@@ -1167,7 +1202,15 @@ function buildLayout(snapshot, opts = {}) {
           member: shownDscr(m, pitiFor(m)).value,
           anchor: shownDscr(anchor, pitiFor(anchor)).value,
         });
-      if (sentence) blocks.push({ t: 'para', text: sentence });
+      if (sentence) meanings.push({ label: m.label || `Option ${r.index + 1}`, text: sentence });
+    }
+    const meaningSide = (n) => [{ t: 'para', text: n.text }];
+    for (let i = 0; i < meanings.length; i += 2) {
+      if (meanings[i + 1]) {
+        blocks.push({ t: 'columns', left: meaningSide(meanings[i]), right: meaningSide(meanings[i + 1]) });
+      } else {
+        blocks.push(...meaningSide(meanings[i]));
+      }
     }
     /* ⛔ A WAIVE IS EXPLAINED IN WORDS, NOT ONLY PRICED. The table says
        "Waived ($500)" per fee and totals what it saves, which is the arithmetic;

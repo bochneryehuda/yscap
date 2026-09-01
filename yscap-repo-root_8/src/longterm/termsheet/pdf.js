@@ -147,7 +147,32 @@ const FAINT = col(brand.RGB.FAINT);
  * else sits at one small size. Enlarging any one of these is almost always the
  * wrong move — the design's own instruction is to quieten its neighbours.
  */
-const SZ = {
+/**
+ * ⛔ ONE NUMBER RAISES THE WHOLE PAGE, and it is the only honest way to do it —
+ * owner-reported 2026-09-01: *"the font of everything is extremely small and
+ * extremely unclear … I don't want to risk messing up everything. Maybe we can
+ * just do it a little larger."*
+ *
+ * MEASURED off a real render rather than judged: the sheet's body type ran
+ * 5.1–6.8pt, against the 9–12pt that is ordinary for a printed document, and no
+ * regulator anywhere accepts 5.1pt as readable. So this is not a matter of
+ * taste — it was about HALF the size text is normally set at.
+ *
+ * ⛔ IT SCALES THE WHOLE SET, NEVER ONE ENTRY. The sizes below are the approved
+ * sketch's own proportions, and the design's third rule is that hierarchy is
+ * built from three weights — enlarging one size flattens that hierarchy, which
+ * is why this is a multiplier over the table and not a hand-edit of the lines
+ * that felt small. Move this number and every size, every band and every pad
+ * moves together; the page still reads as the sketch, just larger.
+ */
+const READ_SCALE = 1.0;
+const r2 = (n) => Math.round(n * 100) / 100;
+/** Scale a metrics table, leaving the keys that are horizontal, a ratio, or a
+ *  hairline weight — none of which is a function of how big the type is. */
+const scaleMetrics = (obj, keep) => Object.fromEntries(Object.entries(obj)
+  .map(([k, v]) => [k, (keep.includes(k) || typeof v !== 'number') ? v : r2(v * READ_SCALE)]));
+
+const SZ_SKETCH = {
   // the brand band: the document's name, its programme line, its identity line
   bandTitle: 15, bandSub: 6.45, bandId: 5.4,
   // a section's own label, and the label/value pair of an ordinary row
@@ -170,6 +195,47 @@ const SZ = {
   // a stat card: its tracked label, its figure, its caption
   statLabel: 4.95, statFigure: 11.62, statCaption: 5.1,
 };
+const SZ = scaleMetrics(SZ_SKETCH, []);
+/**
+ * ⛔ AND A FLOOR UNDER THE THINGS A PERSON READS IN SENTENCES, which is a
+ * DIFFERENT instrument from the multiplier above and is the one that actually
+ * answers the complaint.
+ *
+ * MEASURED, not judged: of everything on this sheet, the parts set smallest are
+ * the parts made of sentences — the disclosures at 5.7, the notes at 5.18, the
+ * asides at 5.1 — while the figures a reader is choosing between are already
+ * 6.7 to 11.6. So "everything is extremely small" is really "the paragraphs are
+ * half the size text is set at", and multiplying the WHOLE table to fix them
+ * enlarges the headline figures too, which costs pages for no readability.
+ *
+ * ⛔ IT REACHES SENTENCES ONLY, NEVER A LABEL OR AN EYEBROW. A tracked eyebrow
+ * ("PREPARED FOR") and a column head are SCANNED as one word, not read along;
+ * growing them to a body size flattens exactly the hierarchy the approved
+ * sketch is built from — its three weights are the design. So the floor names
+ * the four keys that set running prose and leaves the other thirty alone.
+ *
+ * ⛔ 7.5 IS THE NUMBER, and it comes from what a document like this is held to
+ * rather than from taste: consumer-lending disclosure statutes in several
+ * states set a minimum of 8pt for legal text, ordinary printed body is 9–12pt,
+ * and no authority anywhere accepts 5pt. This is a business-purpose loan, so
+ * none of those bind — 7.5 is the point at which this page's own measured line
+ * length lands inside the readable 45–75 characters, which is the property that
+ * had to be true, and it is a floor rather than a target so the paragraph type
+ * still reads as smaller than the figures it explains.
+ *
+ * ⛔ THE PAGE FOOTER IS NOT ON THE LIST, DELIBERATELY. It is one standing line
+ * of boilerplate the footer draws in at most two wrapped lines, so growing it
+ * would silently drop the tail of a legal disclaimer off every page rather than
+ * make anything more readable. It is excluded here for the same reason the
+ * render guard excludes it from its measure.
+ */
+const READ_FLOOR = 7.5;
+const SENTENCE_SIZES = ['para', 'small', 'discBody', 'gridNote'];
+for (const k of SENTENCE_SIZES) SZ[k] = r2(Math.max(SZ[k], READ_FLOOR));
+/* ⛔ AND THE LINES OPEN UP WITH THEM. Leading is a RATIO, so scaling the type
+   alone leaves the lines exactly as tight relative to their size as they were —
+   and tight leading is most of what "unclear" means on a long line. 1.32 is
+   book-tight; 1.38 is the low end of what a document set this wide wants. */
 const LEAD = 1.32;   // line height as a multiple of the size
 /* MEASURED OFF THE SKETCH: "PREPARED FOR" draws 47.9 wide at 5.18, and the same
    string set solid in Helvetica-Bold is 38.4 — so 0.86 of tracking per gap.
@@ -211,7 +277,7 @@ const RHYTHM = {
  * it takes whichever is larger and is capped at a third of the page, past which
  * a label that grows has made the table worse rather than better.
  */
-const TBL = {
+const TBL_SKETCH = {
   labelShare: 0.237,   // 123.75 ÷ 522
   labelCap: 0.34,
   padX: 8,             // a figure's inset inside its own column
@@ -230,6 +296,23 @@ const TBL = {
   rule: 0.75,          // the ink rule that opens and closes the table
   hair: 0.75,          // between two rows of one group
 };
+/* ⛔ THE VERTICAL HALF OF A TABLE IS A FUNCTION OF THE TYPE IT HOLDS, so it rides
+   the same scale — scaling the sizes and leaving the bands is how text ends up
+   drawn through its own rules. What is KEPT: `labelShare`/`labelCap` are ratios
+   of the content column, `padX`/`accentInset`/`tickW` are horizontal, and a
+   hairline is a hairline at any size. */
+const TBL = scaleMetrics(TBL_SKETCH,
+  ['labelShare', 'labelCap', 'padX', 'accentInset', 'tickW', 'rule', 'hair']);
+/* ⛔ THE LABEL COLUMN IS A FRACTION OF THE PAGE, SO IT MUST GROW WITH THE TYPE.
+   It is a ratio, which is why it is not in the scale above — but the words in it
+   do not care about ratios: at 1.3× the type, "Total monthly payment" no longer
+   fits 0.237 of the content column and broke onto two lines, which is what the
+   render sweep caught. The share grows with the type and the cap with it, so the
+   sketch's proportion holds at the sketch's size and opens only as far as the
+   words need. */
+TBL.labelShare = r2(Math.min(0.42, TBL_SKETCH.labelShare * READ_SCALE));
+TBL.labelCap = r2(Math.min(0.48, TBL_SKETCH.labelCap * READ_SCALE));
+
 
 /**
  * THE SHARED-FACTS GRID, measured the same way. The sketch draws it as a
@@ -237,7 +320,7 @@ const TBL = {
  * a hairline, then four cells across per band — each a tracked label over a
  * monospaced figure — and a note in italics inside the box at the foot.
  */
-const GRID = {
+const GRID_SKETCH = {
   cols: 4,
   tickW: 1.5,
   padX: 9,             // a cell's own inset
@@ -261,6 +344,10 @@ const GRID = {
      the headline band that read as a page that had lost something. */
   above: 10,
 };
+/* Same rule as the table: everything that places type inside a band scales, and
+   the column count, the cell's own horizontal inset, the tick and the hairline
+   do not. `noteMin` DOES scale — it is a type size, not a rule weight. */
+const GRID = scaleMetrics(GRID_SKETCH, ['cols', 'tickW', 'padX', 'rule']);
 
 /**
  * WinAnsi cannot carry these, and each one has an honest plain-text reading.
@@ -782,17 +869,61 @@ function compileFigures(b, ctx, box) {
   return out;
 }
 
+/**
+ * ⛔ HOW WIDE PROSE MAY BE SET, AND IT IS THE OTHER HALF OF "EXTREMELY UNCLEAR".
+ *
+ * Owner-reported 2026-09-01. MEASURED on a real render, the sheet's paragraphs
+ * ran **206–211 characters to the line**. Every typographic source that has ever
+ * been measured on this puts the readable band at **45–75 characters**, 66 being
+ * the classic single-column ideal, because past roughly 90 the eye loses the
+ * start of the next line on the way back and the reader re-reads a line or skips
+ * one. So the sheet was at about three times the upper bound: SIZE was only half
+ * the complaint, and this is the other half — a 5.7pt line 200 characters long is
+ * unreadable at any size.
+ *
+ * ⛔ IT IS DERIVED FROM THE FONT, NEVER A MAGIC WIDTH. A character count means
+ * nothing in points until you ask the face how wide its characters actually are,
+ * and the answer changes with the size and would change again with the face. The
+ * sample is a pangram-ish mixed-case run rather than "n" or "x": prose is mixed
+ * case with spaces, and measuring a single letter overstates the width by a
+ * third.
+ *
+ * ⛔ AND IT IS A CAP, NOT A WIDTH. A column that is already narrower than this
+ * keeps its own width — the two-column page must never be widened by a rule
+ * about long lines.
+ */
+const PROSE_CH = 72;
+const PROSE_SAMPLE = 'The quick brown fox jumps over the lazy dog, and pays $1,234.56 at closing.';
+function proseWidth(ctx, font, size, boxWidth, text) {
+  /* ⛔ A RUN THAT FITS ON ONE LINE IS NOT CAPPED, because the rule this enforces
+     is about the RETURN SWEEP — the eye coming back from the end of one line to
+     the start of the next — and a single line has no next line. Capping one
+     anyway does not make it more readable; it manufactures a second line and
+     spends the page's height on it. The box's own footnote is the case: 107
+     characters that fit across the box in one italic line, which the cap was
+     breaking into 72 and 35 for no reader's benefit. */
+  if (text) {
+    const whole = advance(ctx, typeof text === 'string' ? ctx.text(text) : text, font, size);
+    if (whole <= boxWidth) return boxWidth;
+  }
+  const per = advance(ctx, ctx.text(PROSE_SAMPLE), font, size) / PROSE_SAMPLE.length;
+  const cap = per * PROSE_CH;
+  return Math.min(boxWidth, cap);
+}
+
 function compilePara(b, ctx, box) {
   const F = ctx.fonts;
   const B = boxOf(box);
   const size = b.small ? SZ.small : SZ.para;
   const font = b.small ? F.italic : F.reg;
   const color = b.small ? MUTED : INK;
-  const lines = wrap(ctx, ctx.text(b.text), font, size, B.textW);
+  // Prose is capped at a readable measure; a column already narrower keeps its own.
+  const w = proseWidth(ctx, font, size, B.textW, b.text);
+  const lines = wrap(ctx, ctx.text(b.text), font, size, w);
   const out = [];
   lines.forEach((l, i) => {
     const gap = i === 0 ? 9 : 0;
-    out.push(item(size * LEAD + gap, (c, y) => put(c, l, B.x, y - gap, font, size, color, B.textW),
+    out.push(item(size * LEAD + gap, (c, y) => put(c, l, B.x, y - gap, font, size, color, w),
       { keepNext: i < lines.length - 1 && i === 0 }));
   });
   return out;
@@ -908,11 +1039,17 @@ function compileCallout(b, ctx) {
   const body = b.text ? ctx.text(b.text) : '';
   const size = SZ.small;
   const titleW = title ? advance(ctx, title, F.bold, size) : 0;
+  /* ⛔ THE MEASURE IS THE WHOLE VISUAL LINE, TITLE INCLUDED. The title and the
+     body's first line share one line, so the run a reader's eye actually
+     traverses is both of them — capping only the body left a 42-character title
+     followed by 102 characters of sentence, which is the longest line on the
+     document by half. Cap the line, then give the body what is left of it. */
+  const capW = proseWidth(ctx, F.reg, size, innerW, body || '');
   // A title that has eaten its own line leaves no room beside it; the body then
   // simply starts underneath, which is the honest fallback rather than a first
   // line squeezed to two words.
-  const firstW = Math.max(0, innerW - titleW - advance(ctx, ' ', F.reg, size));
-  const lines = body ? wrapAfter(ctx, body, F.reg, size, firstW, innerW) : [];
+  const firstW = Math.max(0, capW - titleW - advance(ctx, ' ', F.reg, size));
+  const lines = body ? wrapAfter(ctx, body, F.reg, size, firstW, capW) : [];
   const rows = Math.max(lines.length, title ? 1 : 0);
   const padY = 6;
   const h = padY * 2 + rows * size * LEAD + 12;
@@ -937,7 +1074,7 @@ function compileCallout(b, ctx) {
          happen at today's wording and would the first time a title grew. */
       if (!(first && title && !l)) {
         put(c, l, first ? x : M.left + indent, ty, F.reg, size,
-          col(brand.RGB.FOOTNOTE), first ? Math.max(firstW, 1) : innerW);
+          col(brand.RGB.FOOTNOTE), first ? Math.max(firstW, 1) : capW);
       }
       ty -= size * LEAD;
     });
@@ -951,20 +1088,89 @@ function compileCallout(b, ctx) {
  * sheet's own shape. The heading is bound to its first body line, so a heading
  * can never end a page alone.
  */
+/**
+ * THE DISCLOSURES, SET IN TWO COLUMNS.
+ *
+ * ⛔ BECAUSE A READABLE MEASURE AND A FULL-WIDTH PAGE CANNOT BOTH BE HAD. Capping
+ * prose at 72 characters is what makes it readable, and on a 504pt page that
+ * leaves about 180pt of white down the right of every line — which both looks
+ * like a mistake and costs pages, because the same text now takes twice as many
+ * lines. Two columns spend that white instead: the same readable measure, and
+ * the page carries roughly twice as much of it.
+ *
+ * ⛔ A PAIR IS ONE ATOMIC ITEM, for the reason `compileColumns` gives: a pair
+ * that could break across a page would put a heading on one sheet and its
+ * paragraph on the next, in the wrong column, with nothing saying which belongs
+ * to which.
+ *
+ * ⛔ AND IT FALLS BACK RATHER THAN OVERFLOWING. A single disclosure taller than
+ * the page it would have to sit on cannot be paired — there is nowhere to move
+ * it to — so it is emitted line by line down the full column exactly as this
+ * file drew before, which `flow` can break wherever it needs to. A document that
+ * reads down one column is worse-looking and still correct; one that draws off
+ * the paper is neither.
+ */
+const DISC_GAP = 22;
+
+function discSide(entry, ctx, x, w) {
+  const F = ctx.fonts;
+  const [heading, body] = entry;
+  const lines = wrap(ctx, ctx.text(body), F.reg, SZ.discBody, w);
+  const headH = SZ.discHead * LEAD + 6;
+  const h = headH + lines.length * SZ.discBody * LEAD + 6;
+  const draw = (c, top) => {
+    put(c, heading, x, top - 4, F.bold, SZ.discHead, TEAL, w);
+    let y = top - headH;
+    for (const l of lines) {
+      put(c, l, x, y, F.reg, SZ.discBody, col(brand.RGB.FOOTNOTE), w);
+      y -= SZ.discBody * LEAD;
+    }
+  };
+  return { h, draw };
+}
+
 function compileDisclosures(b, ctx) {
   const F = ctx.fonts;
+  const entries = (b.items || []).filter((e) => Array.isArray(e) && e[0]);
   const out = [];
-  for (const [heading, body] of b.items || []) {
-    const lines = wrap(ctx, ctx.text(body), F.reg, SZ.discBody, TEXT_W);
-    out.push(item(SZ.discHead * LEAD + 6, (c, y) => {
-      put(c, heading, M.left + 3, y - 4, F.bold, SZ.discHead, TEAL, TEXT_W);
-    }, { keepNext: true }));
-    lines.forEach((l, i) => {
-      const lastLine = i === lines.length - 1;
-      out.push(item(SZ.discBody * LEAD + (lastLine ? 6 : 0),
-        (c, y) => put(c, l, M.left + 3, y, F.reg, SZ.discBody, col(brand.RGB.FOOTNOTE), TEXT_W),
-        { keepNext: !lastLine }));
-    });
+  /* ⛔ THE COLUMNS ARE MEASURED FROM THE MARGIN THEY MUST NOT CROSS, not from a
+     width that looks like the right one. Deriving them from TEXT_W while starting
+     3 in from the left put the right column's edge 0.92 past the right margin —
+     invisible by eye, caught by the render sweep, and text off the paper either
+     way. Taking the span from the left inset to RIGHT_X makes the right edge land
+     on the margin by construction, at any type size. */
+  const leftX = M.left + 3;
+  const colW = (RIGHT_X - leftX - DISC_GAP) / 2;
+  const rightX = leftX + colW + DISC_GAP;
+  // The height a pair may not exceed: a whole page of body, less the footer.
+  const roomOnAPage = PAGE.h - M.bottom - 90;
+
+  for (let i = 0; i < entries.length; i += 2) {
+    const l = discSide(entries[i], ctx, leftX, colW);
+    const r = entries[i + 1] ? discSide(entries[i + 1], ctx, rightX, colW) : null;
+    const h = Math.max(l.h, r ? r.h : 0);
+    if (h > roomOnAPage) {
+      // Too tall to pair — emit both sides full width, line by line, so the flow
+      // can break them wherever it must.
+      for (const e of [entries[i], entries[i + 1]].filter(Boolean)) {
+        const w = proseWidth(ctx, F.reg, SZ.discBody, TEXT_W, e[1]);
+        const lines = wrap(ctx, ctx.text(e[1]), F.reg, SZ.discBody, w);
+        out.push(item(SZ.discHead * LEAD + 6, (c, y) => {
+          put(c, e[0], leftX, y - 4, F.bold, SZ.discHead, TEAL, TEXT_W);
+        }, { keepNext: true }));
+        lines.forEach((line, k) => {
+          const last = k === lines.length - 1;
+          out.push(item(SZ.discBody * LEAD + (last ? 6 : 0),
+            (c, y) => put(c, line, leftX, y, F.reg, SZ.discBody, col(brand.RGB.FOOTNOTE), w),
+            { keepNext: !last }));
+        });
+      }
+      continue;
+    }
+    out.push(item(h, (c, y) => {
+      l.draw(c, y);
+      if (r) r.draw(c, y);
+    }));
   }
   return out;
 }
@@ -1269,7 +1475,12 @@ function compileFactGrid(b, ctx) {
     return off;
   };
   const bandsH = bandTopOffset(bands);
-  const note = b.footnote ? wrap(ctx, ctx.text(b.footnote), F.italic, SZ.gridNote, inner.right - inner.x - GRID.padX * 2) : [];
+  /* THE BOX'S FOOTNOTE IS PROSE, so it takes the readable measure rather than
+     the whole width of the box. Left at full width it drew as ONE 107-character
+     line — physically short, because the type is small, and still half again the
+     longest line anybody reads comfortably. */
+  const noteW = proseWidth(ctx, F.italic, SZ.gridNote, inner.right - inner.x - GRID.padX * 2, b.footnote || '');
+  const note = b.footnote ? wrap(ctx, ctx.text(b.footnote), F.italic, SZ.gridNote, noteW) : [];
   const noteH = note.length ? GRID.noteTop + note.length * SZ.gridNote * LEAD + GRID.noteBottom - SZ.gridNote : 0;
   const h = GRID.headH + bandsH + noteH;
 
@@ -1327,7 +1538,7 @@ function compileFactGrid(b, ctx) {
     if (note.length) {
       let ny = bottom + noteH - GRID.noteTop + SZ.gridNote;
       for (const l of note) {
-        put(c, l, inner.x + GRID.padX, ny, F.italic, SZ.gridNote, FAINT, inner.right - inner.x - GRID.padX * 2);
+        put(c, l, inner.x + GRID.padX, ny, F.italic, SZ.gridNote, FAINT, noteW);
         ny -= SZ.gridNote * LEAD;
       }
     }
@@ -1683,6 +1894,6 @@ module.exports = {
   PAGE, M, CONTENT_W, TOP_Y, BOTTOM_Y, USABLE_H, ZONES,
   _internals: {
     advance, charW, wrap, wrapAfter, hardBreak, clip, makeText, compile,
-    GLYPH_MAP, SZ, RHYTHM, COLUMN_TYPES, COLUMN_GAP, compileColumns, boxOf,
+    GLYPH_MAP, SZ, LEAD, RHYTHM, COLUMN_TYPES, COLUMN_GAP, compileColumns, boxOf,
   },
 };

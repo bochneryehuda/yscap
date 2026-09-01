@@ -206,6 +206,86 @@ console.log('\nnothing draws past its own margin — on the paper, at zero toler
   check(total > 500, `${total} drawn strings measured in total — enough for the check to mean something`);
 }
 
+console.log('\nprose is set at a measure a person can actually read');
+{
+  /* ⛔ MEASURED, BECAUSE "UNCLEAR" IS NOT A MATTER OF TASTE. Owner-reported
+     2026-09-01: *"the font of everything is extremely small and extremely
+     unclear."* Read off a real render, the sheet's paragraphs ran 206–211
+     characters to the line. Every typographic authority that has been measured
+     on this puts the readable band at 45–75 characters — 66 is the classic
+     single-column ideal — because past roughly 90 the eye loses the start of the
+     next line coming back, and re-reads or skips one. The sheet was at about
+     three times the upper bound, so SIZE was only half the complaint.
+
+     ⛔ THE PAGE FOOTER IS EXCLUDED, AND DELIBERATELY. It is one line of standing
+     boilerplate at the very bottom of every page, it is COMPLETE at full width
+     today, and the footer draws only its first two wrapped lines — so narrowing
+     it would silently drop the tail of a legal disclaimer ("Not valid until
+     countersigned by …"). Excluded by its own text rather than by position, so
+     the exclusion cannot quietly widen. */
+  const PREPARED = {
+    borrowerName: 'Riverbend Holdings LLC',
+    propertyAddress: '218 Forest Avenue, Lakewood, NJ 08701',
+    officerName: 'Sara Klein', companyName: 'YS Capital Group', companyNmls: '2609746',
+    // The expiry callout is the widest line the flow can produce — a bold title
+    // and a sentence sharing one line — so the fixture carries the stamps that
+    // make it draw. Without them the block is a title alone and the measure
+    // below would be taken on a document that never exercises it.
+    preparedAt: '2026-08-31T14:00:00.000Z', expiresAt: '2026-09-01T14:00:00.000Z',
+  };
+  const back = await readBack(await render(
+    [quote('No points', 7.375, 102), quote('Buy the rate down', 6.875, 99.75)], PREPARED,
+    { expiryHours: 24 },
+  ));
+  const FOOTER = 'Pricing is indicative';
+  /* ⛔ WHAT IS MEASURED IS A RUN, NOT A LINE, and that is what makes both halves
+     of this block mean something.
+     Both rules here are about the RETURN SWEEP — the eye coming back from the
+     end of one line to the start of the next. A caption, an address, a fee
+     breakdown or the identity line has no next line, so neither rule applies to
+     it: measuring them reported a 5.1pt "stated once here rather than repeated
+     in every column" as unreadable body text, which is a fact about the filter.
+     So a line counts only when a SIBLING sits exactly one leading above or below
+     it at the same size — which is precisely what a wrapped paragraph is, and
+     nothing else on this page is. */
+  const prose = [];
+  for (const page of back.pages) {
+    const bySize = new Map();
+    for (const it of page) {
+      const k = Math.round(it.h * 10);
+      if (!bySize.has(k)) bySize.set(k, []);
+      bySize.get(k).push(it);
+    }
+    for (const [, group] of bySize) {
+      for (const it of group) {
+        const t = it.s.trim();
+        if (t.length <= 25 || t.startsWith(FOOTER)) continue;
+        const lead = it.h * pdf._internals.LEAD;
+        const wrapped = group.some((o) => o !== it && Math.abs(Math.abs(o.y - it.y) - lead) < 1.5);
+        if (wrapped) prose.push({ n: t.length, h: it.h });
+      }
+    }
+  }
+  const longest = Math.max(...prose.map((x) => x.n));
+  check(prose.length > 20,
+    `${prose.length} prose lines measured — a sheet producing a handful would prove nothing`);
+  check(longest <= 95,
+    `no line of prose runs past 95 characters (longest is ${longest}) — it was 211`);
+  /* ⛔ AND THE OTHER HALF OF THE COMPLAINT, MEASURED THE SAME WAY. Line length
+     and type size are two different faults and the owner reported both — a
+     document can hold a perfect measure and still be unreadable because it is
+     set at five points. This is asserted on the height the VIEWER will draw,
+     not on the size table, so it is a fact about the paper.
+
+     ⛔ NOT A MEDIAN. A median over drawn lines is dragged down by the short last
+     line of every paragraph — measured, it read 74 on the broken document and 70
+     on the fixed one, so any band that admitted the good number admitted the bad
+     one too. It proved nothing and is not kept for the look of it. */
+  const smallest = Math.min(...prose.map((x) => x.h));
+  check(smallest >= 7,
+    `nothing set in sentences is smaller than 7pt (smallest is ${smallest.toFixed(2)}pt) — the disclosures were 5.7`);
+}
+
 console.log('\na long value is BROKEN onto more lines, never swallowed');
 {
   // The two protections cover each other — a wrap that fails to break a
@@ -801,8 +881,16 @@ console.log('\nthe comparison table is the sketch\'s ledger, not a spreadsheet')
      `SZ` rather than retyped, so the selection follows the scale if it moves. */
   const TSZ = pdf._internals.SZ;
   const isTableSize = (h) => Math.abs(h - TSZ.tableValue) < 0.15 || Math.abs(h - TSZ.tableBig) < 0.15;
+  /* ⛔ AND A SHAPE TEST BESIDE THE SIZE ONE, because the size alone stopped being
+     able to tell them apart. The readable floor sets running prose at 7.5 and the
+     table's resolving row is 7.58, so a paragraph that happens to start at a
+     column's x now falls inside the window — and a sentence measured for its
+     glyph advance reports 0.46em and reads as a proportional FIGURE, which is a
+     fact about the selector rather than about the table. A table figure is a
+     short run; three words is generous for one and far short of a sentence. */
+  const isFigureShaped = (t) => t.trim().split(/\s+/).length <= 3;
   const valueItems = all.filter((i) => colX.includes(Math.round(i.x))
-    && isTableSize(i.h) && /[$%\d]/.test(i.s));
+    && isTableSize(i.h) && /[$%\d]/.test(i.s) && isFigureShaped(i.s));
   const vEms = ems(valueItems);
   check(vEms.length >= 6, `the table draws ${vEms.length} figures to measure — a handful would prove nothing`);
   const off = vEms.filter((r) => Math.abs(r - 0.6) > 0.03);

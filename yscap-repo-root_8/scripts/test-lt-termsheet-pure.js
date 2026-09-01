@@ -295,7 +295,20 @@ section('the layout — the block list a renderer walks');
   const breakEven = table.rows.find((r) => r[0] === 'Break-even');
   check(breakEven && breakEven[2] === '67 months (5 years 7 months)',
     `the break-even row reads in years and months, as the docs print it (got ${breakEven && breakEven[2]})`);
-  const paras = lay.blocks.filter((b) => b.t === 'para').map((b) => b.text).join(' ');
+  /* ⛔ THE PARAGRAPHS ARE COLLECTED THROUGH THE COLUMNS, NOT ONLY OFF THE TOP
+     LEVEL. What each option means is now set two-up (owner-reported 2026-09-01:
+     *"this bottom part is just thrown text … it needs to be better laid out"*),
+     so a `columns` block carries them; a filter over the top level alone reads
+     that as the sentences having disappeared, which is a fact about the
+     extractor. The SUBJECT of every assertion below is what the sentence SAYS,
+     and that is unchanged. */
+  const paraTexts = (list) => (list || []).flatMap((b) => {
+    if (!b || typeof b !== 'object') return [];
+    if (b.t === 'para') return [b.text];
+    if (b.t === 'columns') return [...paraTexts(b.left), ...paraTexts(b.right)];
+    return [];
+  });
+  const paras = paraTexts(lay.blocks).join(' ');
   /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. This pinned the sentence VERBATIM,
      and the owner asked for exactly that sentence to say more: *"you need to
      explain a little bit more what your head means, and the same thing for the
@@ -323,7 +336,7 @@ section('the layout — the block list a renderer walks');
      No points") that the approved design moves onto the heading itself as its
      right-hand note. Counting paragraphs would now under-count a page that says
      the same thing in a better place, so both halves are asserted directly. */
-  const named = lay.blocks.filter((b) => b.t === 'para' && /No points/.test(b.text || '')).length;
+  const named = paraTexts(lay.blocks).filter((t) => /No points/.test(t || '')).length;
   check(named >= 2,
     'and every comparative sentence names the option it is comparing against, so no figure on the page reads as absolute when it is a difference');
   const differsBand = lay.blocks.find((b) => b.t === 'band' && b.title === 'What differs');
