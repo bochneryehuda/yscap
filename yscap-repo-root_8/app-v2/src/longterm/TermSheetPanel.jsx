@@ -1574,7 +1574,13 @@ export function TermSheetLookup() {
  * of that count is how a screen tells somebody they have three when they have
  * four.
  */
-export function useTermSheetCart() {
+/**
+ * `active` defaults to TRUE, so every existing caller behaves exactly as it always has. A board
+ * with no term-sheet cart passes false and this never asks the server for one — which is the
+ * honest thing as well as the cheap one: an engine under audit must not issue a document a
+ * borrower reads, so it has no business holding a cart at all.
+ */
+export function useTermSheetCart(active = true) {
   const [state, setState] = useState({ enabled: false, cart: null, members: [] });
   /* THE SHEET THAT WAS JUST ISSUED, HELD ABOVE THE CART (owner-reported 2026-08-30: *"when you
      add a few things and then you export, it doesn't work. It doesn't download anything, and it
@@ -1588,6 +1594,9 @@ export function useTermSheetCart() {
      empties. Held here, the board can keep the strip up until the person is done with it. */
   const [issued, setIssued] = useState(null);
   const reload = useCallback(async () => {
+    // Not asked for: leave the state exactly as it started. Writing the same shape back would be
+    // a second render for nothing.
+    if (!active) return;
     try {
       const r = await ltApi.termSheetCart();
       setState({
@@ -1604,7 +1613,7 @@ export function useTermSheetCart() {
       // an error over the whole pricing screen, and never an open feature.
       setState({ enabled: false, cart: null, members: [] });
     }
-  }, []);
+  }, [active]);
   useEffect(() => { reload(); }, [reload]);
   return { ...state, reload, count: state.members.length, issued, setIssued };
 }

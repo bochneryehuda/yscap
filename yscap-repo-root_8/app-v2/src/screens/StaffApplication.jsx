@@ -58,6 +58,7 @@ import { readStation, readSection, writeStation, savePlace } from '../lib/file-p
 import BorrowerProfilePanel from '../components/BorrowerProfilePanel.jsx';
 import GcRecordCard from '../components/GcRecordCard.jsx';
 import { CONDITION_TIMINGS, conditionStatusLabel, conditionStatusClass, timingLabel, loanConditionStatusLabel, audienceStamp, audienceLabel } from '../lib/conditions-vocab.js';
+import { roleDone, CONDITION_FILTER_KEYS, conditionFilterLabel, conditionFilterHint, matchConditionFilter } from '../lib/condition-filter.js';
 import { severityCount } from '../lib/findings-vocab.js';
 import { groupBySubject, subjectOf } from '../lib/condition-subjects.js';
 import { isWorkflowStep } from '../lib/condition-workflow-steps.js';
@@ -1198,14 +1199,11 @@ function PilotAdviceNote({ it }) {
    the SERVER (src/lib/conditions/admin-override.js) is the authority on who may
    do it, so a hidden button is a convenience, never the control. */
 
-/* ONE "off my plate" rule for every conditions/checklist surface (owner-directed
-   2026-07-16): the loan officer's terminal action is DONE (reviewed_at); the
-   back office's is SIGN-OFF. Once YOUR role's action is complete, the item
-   leaves your default view and renders collapsed (reopenable). */
-function roleDone(it, role) {
-  return it.status === 'satisfied' || !!it.signed_off_at || !!it.waived_at
-    || (role === 'loan_officer' && !!it.reviewed_at);
-}
+/* The "off my plate" rule and the whole Show picker now live in
+   ../lib/condition-filter.js — ONE definition for this screen, the task queue
+   and the Long-Term conditions list, which is what the owner's share-the-code
+   directive asks for. It was written out twice in this app before that, each
+   copy commenting that it mirrored the other. */
 // Per-user sticky filters (client-side; keyed per filter surface).
 function useStickyFilter(key, fallback) {
   const [v, setV] = useState(() => { try { return localStorage.getItem('pilot.filter.' + key) || fallback; } catch { return fallback; } });
@@ -3816,23 +3814,10 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   // signs off. This is why accept now sets 'received', not 'satisfied'.
   // ONE shared rule for every surface — see roleDone() above.
   const offMyPlate = (it) => roleDone(it, role);
-  const matchFilter = (it) => {
-    switch (condFilter) {
-      case 'awaiting':  return ['outstanding', 'requested'].includes(it.status) && !it.signed_off_at;      // nothing submitted yet
-      case 'review':    return it.status === 'received' && !it.signed_off_at;                              // uploaded/accepted, not signed off
-      case 'attention': return it.status === 'issue';                                                       // needs a fix
-      case 'signed':    return !!it.signed_off_at || it.status === 'satisfied';                             // done
-      // Everything the processor has NOT signed off yet (owner-directed 2026-08-12:
-      // a loan officer wants to see only what is still pending the processor's
-      // sign-off). The complement of "Signed off" — across every sub-status
-      // (outstanding, requested, received, issue) — excluding waived/satisfied,
-      // which are already cleared.
-      case 'unsigned':  return !(it.status === 'satisfied' || !!it.signed_off_at || !!it.waived_at);
-      case 'all':       return true;
-      case 'mine':
-      default:          return !offMyPlate(it);                                                             // role default
-    }
-  };
+  // The whole truth table lives in ../lib/condition-filter.js so this screen,
+  // the task queue and the Long-Term list can never answer the same question
+  // three different ways.
+  const matchFilter = (it) => matchConditionFilter(it, condFilter, role);
   const isInternal = (it) => it.audience === 'staff';
   const matchAudience = (it) => audFilter === 'all' ? true
     : audFilter === 'internal' ? isInternal(it) : !isInternal(it);
@@ -3940,18 +3925,17 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
         </label>
         <label className="cond-filter">
           <span>Show</span>
+        {/* THE OPTIONS ARE THE MODULE'S, NOT THIS SCREEN'S. Typing them out here
+            is how one product quietly gains a view the other never got — the
+            exact shape the owner's share-the-code directive exists to stop. The
+            status words still come from lib/conditions-vocab.js underneath, so
+            a filter can never name a state differently from the row stamp under
+            it; 'awaiting' spans two stored statuses and names the earlier. */}
         <select className="input" value={condFilter} onChange={e => setCondFilter(e.target.value)}
-          title={isLO ? 'Your default shows conditions still needing your review; marking one Done clears it here.' : 'Your default shows conditions still needing your sign-off; accepting a document keeps it here until you sign off.'}>
-          {/* Words come from lib/conditions-vocab.js — the same five a condition
-              is described with everywhere else. 'awaiting' spans two stored
-              statuses, so it names the earlier of the two. */}
-          <option value="mine">{isLO ? 'Needs my review' : 'Needs my sign-off'}</option>
-          <option value="awaiting">{conditionStatusLabel('outstanding')}</option>
-          <option value="review">{conditionStatusLabel('received')}</option>
-          <option value="attention">{conditionStatusLabel('issue')}</option>
-          <option value="unsigned">Not signed off yet</option>
-          <option value="signed">Signed off</option>
-          <option value="all">Everything</option>
+          title={conditionFilterHint(role)}>
+          {CONDITION_FILTER_KEYS.map((k) => (
+            <option key={k} value={k}>{conditionFilterLabel(k, role)}</option>
+          ))}
         </select>
         </label>
       </div>

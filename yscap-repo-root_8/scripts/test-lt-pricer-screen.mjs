@@ -40,6 +40,17 @@ const layout = read('app-v2/src/components/StaffLayout.jsx');
 // Code with the commentary removed. Every guard about BEHAVIOUR runs against this, so a rule
 // described in a comment can never satisfy a guard about the code.
 const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+/* ⛔ THE DOORS MOVED, SO THE GUARDS FOLLOWED THEM (2026-09-01, the un-forking). One screen now
+   serves both engines and calls `engine.price(...)` / `engine.investors()`; WHICH door that is
+   is declared once in `pricerEngine.js`. Every assertion below that used to name `ltApi.dscrPrice`
+   in the screen now names it in the descriptor — the same claim about the same call, read where
+   the call now lives. Nothing was loosened: a general engine that stopped asking for the full
+   capture, or that started forwarding the comp switch, still fails. */
+const engineSrc = read('app-v2/src/longterm/pricerEngine.js');
+const engineCode = engineSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+/* The GENERAL engine's own block, so a combined-engine door can never satisfy a general-engine
+   guard — they sit in one file and a whole-file match would not tell them apart. */
+const generalBlock = (engineCode.match(/export const GENERAL_ENGINE = \{[\s\S]*?\n\};/) || [''])[0];
 
 /* THE FORM IS ITS OWN COMPONENT NOW, AND THIS SCREEN MOUNTS IT (`LtScenarioFields.jsx`). The
    scenario page mounts the SAME one, which is the whole point: a second copy of twenty-one pricing
@@ -72,7 +83,7 @@ console.log('LT Pricing Engine — structural guards\n');
   // Asserted on the ARGUMENT, not on the shape of the call: the scenario is built by a helper, so
   // a regex expecting an inline object literal fails on perfectly correct code — which is a defect
   // the guard invented, and the worst kind, because the fix is to bend the code to suit the test.
-  const priceCall = (code.match(/ltApi\.dscrPrice\([\s\S]{0,160}/) || [''])[0];
+  const priceCall = (generalBlock.match(/ltApi\.dscrPrice\([\s\S]{0,160}/) || [''])[0];
   ok(/full:\s*true/.test(priceCall), 'PE-3 …and it asks for the FULL capture, not the summary');
 }
 
@@ -589,7 +600,7 @@ console.log('LT Pricing Engine — structural guards\n');
   ok(!/comp/i.test(scen.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
       .replace(/complete/gi, '')),
     'PE-110 the scenario builder knows nothing called comp — the wire is untouched');
-  ok(/dscrPrice\(toScenario\(f\)/.test(code) || /dscrPrice\(\s*toScenario\(/.test(code),
+  ok(/dscrPrice\(scenario, \{ full: true \}\)/.test(generalBlock),
     'PE-111 ...and the price call sends the scenario and nothing else about the switch');
 
   // (3) FAIL TO RAW, NEVER TO A WRONG NUMBER — the null-plan path forces the raw identity.
@@ -646,7 +657,14 @@ console.log('LT Pricing Engine — structural guards\n');
     // The vendor's own fee fields render in RAW only — in a comp position our sheet replaces
     // them, because "Total origination fee $0.00" beside our real charge list is the exact
     // confusion the owner reported.
-    ok(/\{!compActive && \(\s*<Track title="Lender Price's own fee fields"/.test(code),
+    /* ⛔ RE-POINTED, NOT LOOSENED (2026-09-01, the un-forking). The title is no longer a literal:
+     one screen now serves both engines, so it reads `engine.sheetPossessive` — "Lender Price's"
+     on the general board, "The rate sheet's" on the combined one, which prices on two programs
+     and may name neither. The SUBJECT of this guard has not moved an inch: the vendor's own fee
+     fields must render in RAW ONLY, and must be labelled as the vendor's rather than as ours.
+     Both halves are still asserted — the `!compActive` gate, and that the label is the engine's
+     own possessive rather than a hard-coded name or nothing at all. */
+  ok(/\{!compActive && \(\s*<Track title=\{`\$\{engine\.sheetPossessive\} own fee fields`\}/.test(code),
       'PE-126 the vendor fee fields show in raw only, labelled as the vendor’s');
     // The charge list carries the closing sheet: totals + down payment + cash to close, all
     // summed from the SAME lines (closingSheet reads the charge list — one source).
@@ -782,7 +800,7 @@ console.log('LT Pricing Engine — structural guards\n');
 
   // (3) THE WHITE-LABEL SHEET LIVES ON THE SERVER. The screen fetches the roster
   //     and carries per-row annotations; a browser copy of the map would drift.
-  ok(/ltApi\.dscrInvestors\(\)/.test(code), 'PE-151 the roster is fetched from the server');
+  ok(/ltApi\.dscrInvestors\(\)/.test(generalBlock), 'PE-151 the roster is fetched from the server');
   ok(!/Platinum|Emerald|Bluewater|Sequoia/.test(code),
     'PE-152 …and no white-label name is typed into the screen — one sheet, server-side');
   ok(/<WhiteLabelTag name=\{g\.best && g\.best\.whiteLabel\}/.test(code),

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
+import { GENERAL_ENGINE } from './pricerEngine.js';
 
 /**
  * The long-term SETTINGS screen — the sellable-LOS rule made usable.
@@ -261,7 +262,13 @@ function SettingRow({ setting, canManage, pending, onChange, onReset }) {
   );
 }
 
-export default function LtSettings() {
+/**
+ * THE SETTINGS SCREEN, DRAWN FOR ONE ENGINE. Shared exactly as the pricer board is shared: the
+ * Combined Pricing Engine's settings screen is this screen with its own title, its own group
+ * showing, and its investor panels passed in — not a copy. A setting added to the server roster
+ * appears on both the day it is declared.
+ */
+export function SettingsScreen({ engine = GENERAL_ENGINE, slots = {} }) {
   const [data, setData] = useState(null);
   const [mine, setMine] = useState(null);
   const [pending, setPending] = useState({});
@@ -327,13 +334,19 @@ export default function LtSettings() {
     } finally { setBusy(false); }
   };
 
-  if (!data) return <LtLayout title="Long-term settings"><div className="lt-card" style={{ color: INK }}>Loading…</div></LtLayout>;
-  if (data.error) return <LtLayout title="Long-term settings"><div className="lt-card" style={{ color: '#8A2D2D' }}>{data.error}</div></LtLayout>;
+  /* THE SLOT IS DRAWN IN EVERY BRANCH, INCLUDING THESE TWO. What a caller passes in is its own
+     screen — the combined engine's investor panels read their OWN door and are ready long before
+     this one answers — so hiding it behind this screen's "Loading…" would blank a working panel
+     on somebody else's latency, and hiding it behind this screen's error would blank it for good. */
+  const before = () => (typeof slots.before === 'function' ? slots.before() : null);
+  if (!data) return <LtLayout title={engine.settingsTitle}>{before()}<div className="lt-card" style={{ color: INK }}>Loading…</div></LtLayout>;
+  if (data.error) return <LtLayout title={engine.settingsTitle}>{before()}<div className="lt-card" style={{ color: '#8A2D2D' }}>{data.error}</div></LtLayout>;
 
   const canManage = data.canManage === true;
 
   return (
-    <LtLayout title="Long-term settings">
+    <LtLayout title={engine.settingsTitle}>
+      {before()}
       {/* The screen SAYS what it is for. A buyer opening a list of 56 fields with no
           explanation cannot tell ours from theirs. */}
       <div className="lt-card" style={{ color: INK, marginBottom: 14 }}>
@@ -420,7 +433,11 @@ export default function LtSettings() {
         </div>
       )}
 
-      {data.groups.map((g) => {
+      {/* THE GROUPS THIS ENGINE'S SCREEN SHOWS — see `settingsHideGroups` in pricerEngine.js.
+          Filtered here rather than at the door, because the door is one door: both screens read
+          the same roster and the same values, and a second endpoint answering a smaller roster
+          would be a second thing to keep in step. */}
+      {data.groups.filter((g) => !(engine.settingsHideGroups || []).includes(g.group)).map((g) => {
         const changed = g.settings.filter((s) => s.isOverridden).length;
         const isOpen = open[g.group] !== false;
         return (
@@ -450,4 +467,13 @@ export default function LtSettings() {
       })}
     </LtLayout>
   );
+}
+
+/**
+ * The General Pricing Engine's settings — the screen the company has always had. It is the shared
+ * screen with the general engine's descriptor, which is what makes "the general screen did not
+ * move" a property of one line rather than of two files staying in step.
+ */
+export default function LtSettings() {
+  return <SettingsScreen engine={GENERAL_ENGINE} />;
 }

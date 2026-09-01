@@ -6,6 +6,7 @@ import { useAuth } from '../lib/auth.jsx';
 // (No overrideLine here: this queue only lists OPEN work — a cleared condition,
 // overridden or not, has already dropped off it. The file's list shows the stamp.)
 import { canOverride, isCompletion, askOverride } from '../lib/condition-override.js';
+import { roleDone } from '../lib/condition-filter.js';
 import { useUrlState } from '../lib/useUrlState.js';
 
 const addrLine = (a) => !a ? '' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '');
@@ -14,12 +15,9 @@ const STATUS_LABEL = { outstanding: 'Outstanding', requested: 'Requested', recei
 // "Intake", never the raw enum). Mirrors StaffQueue's LABEL map.
 const APP_STATUS_LABEL = { file_intake: 'Intake', new: 'Submitted', in_review: 'In review', processing: 'Processing', underwriting: 'Underwriting', approved: 'Approved', clear_to_close: 'Clear to close', funded: 'Funded', on_hold: 'On hold', declined: 'Declined', withdrawn: 'Withdrawn' };
 const initials = (...parts) => parts.filter(Boolean).map(s => String(s).trim()[0] || '').join('').slice(0, 2).toUpperCase() || '—';
-// ONE completion rule, mirroring StaffApplication.roleDone — a task is off your
-// plate once it's signed off / waived / satisfied, or (for an LO) marked done.
-function roleDone(it, role) {
-  return it.status === 'satisfied' || !!it.signed_off_at || !!it.waived_at
-    || (role === 'loan_officer' && !!it.reviewed_at);
-}
+// ONE completion rule for every conditions/checklist surface — no longer a copy
+// that "mirrors" the file screen's, which is how two copies of one rule end up
+// disagreeing about whose plate a condition is on. See ../lib/condition-filter.js.
 // Who may SIGN OFF / waive (mirrors StaffApplication.canComplete) — the loan
 // officer's step is "Done"; the back office signs off (#134). We hide Sign off /
 // Waive for non-completers so the task list doesn't show them a dead button the

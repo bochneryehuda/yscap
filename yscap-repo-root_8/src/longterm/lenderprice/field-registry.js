@@ -78,7 +78,43 @@ const PROPERTY_TYPES = {
   ManufacturedHomeCondominium: { propertyType: 'ManufacturedHomeCondominium', attachmentType: 'Detached', units: 1 },
   ManufacturedHomeCondominiumOrPUDOrCooperative: { propertyType: 'ManufacturedHomeCondominiumOrPUDOrCooperative', attachmentType: 'Attached', units: 1 },
 };
-function resolvePropertyType(t) { return PROPERTY_TYPES[t] || null; }
+// §  — THE SAME WORD MUST MEAN THE SAME THING ON BOTH PRICING PROGRAMS
+// (owner-directed 2026-08-30). The table above is an EXACT-key lookup, so
+// "2-4 units" and "TwoToFourUnits" were refused here while the LoanNEX adapter
+// — which normalizes punctuation and case — accepted both. A caller therefore
+// had to know WHICH vendor would read their scenario, which is precisely the
+// divergence the shared scenario is meant to remove.
+//
+// This ADDS a tolerant second lookup; it does not add a single new property
+// type. Exact spellings still win, so nothing that resolved before can resolve
+// differently now.
+//
+// A COLLISION IS LEFT UNRESOLVED RATHER THAN PICKED. If two distinct table keys
+// ever normalize to the same word while meaning DIFFERENT property types, the
+// tolerant entry is dropped and that word keeps requiring an exact spelling —
+// silently choosing one of two property types is the mis-pricing this whole
+// module exists to prevent. `AMBIGUOUS_PROPERTY_KEYS` names any that occur so a
+// test can see them; today it is empty.
+function propertyKey(t) { return String(t == null ? '' : t).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+const AMBIGUOUS_PROPERTY_KEYS = [];
+const PROPERTY_TYPES_LOOSE = (() => {
+  const m = new Map();
+  for (const [k, v] of Object.entries(PROPERTY_TYPES)) {
+    const key = propertyKey(k);
+    const prev = m.get(key);
+    if (prev === undefined) { m.set(key, v); continue; }
+    if (prev === null) continue;                                   // already known ambiguous
+    if (JSON.stringify(prev) === JSON.stringify(v)) continue;      // same meaning, different spelling
+    m.set(key, null);
+    AMBIGUOUS_PROPERTY_KEYS.push(key);
+  }
+  return m;
+})();
+function resolvePropertyType(t) {
+  if (PROPERTY_TYPES[t]) return PROPERTY_TYPES[t];
+  const loose = PROPERTY_TYPES_LOOSE.get(propertyKey(t));
+  return loose || null;
+}
 
 // §33.2 — INCOME DOCUMENTATION. The complete current-tenant IncomeDocType menu from the confirmed
 // one-field capture: the on-screen LABEL on the left, the EXACT upstream token on the right. They
@@ -364,7 +400,7 @@ const REGISTRY_FIELDS = [
   'dscrAssetDepletion', 'lateInLast12Months',
 ];
 
-module.exports = { applyRegistry, resolvePropertyType, PROPERTY_TYPES, REGISTRY_FIELDS,
+module.exports = { applyRegistry, resolvePropertyType, PROPERTY_TYPES, PROPERTY_TYPES_LOOSE, AMBIGUOUS_PROPERTY_KEYS, propertyKey, REGISTRY_FIELDS,
   mapIncomeDocType, INCOME_DOC_TYPES,
   mapPrepayStructure, PREPAY_STRUCTURES, PREPAY_STRUCTURE_NULL,
   BORROWER_TYPES,

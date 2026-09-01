@@ -937,6 +937,29 @@ import app-v2/src/components/LoudHint.jsx
 # the bar is the same bar rather than a second progress mechanism to keep in
 # step with it.
 import app-v2/src/lib/upload-progress.js
+
+# WHICH CONDITIONS AM I LOOKING AT — authorized in writing by the owner,
+# 2026-09-01: "We also need to add the full sorting features so that you can sort
+# by stuff that is done, by signed off, and by outstanding, to sort the
+# conditions accordingly that we have on the short-term side. You can share that
+# code as well."
+#
+# WHY IT IS AN IMPORT AND NOT A COPY, and it is the same reason `condition-owner`
+# is one: this rule was ALREADY WRITTEN TWICE inside the short-term app before it
+# was extracted — `roleDone` in screens/StaffApplication.jsx and again in
+# screens/StaffTasks.jsx, each commenting that it mirrored the other. A third copy
+# for Long-Term is exactly the drift the share-the-code directive exists to stop,
+# and the thing that drifts here decides which conditions a person is SHOWN, so
+# the copy that goes stale is the one that hides work nobody then does.
+#
+# IT NEVER LEARNS THAT TWO PRODUCTS EXIST. Every predicate reads only `status` /
+# `signed_off_at` / `waived_at` / `reviewed_at` — the SHARED condition shape the
+# components above already render — and Long-Term maps its own rows into that
+# shape with `asSharedCondition` before the filter ever sees them. So neither
+# product's stored statuses reach the other's screen, and the extraction was
+# proven to move NOT ONE verdict on the short-term side over 2,970 comparisons
+# against the original inline switch (scripts/test-condition-filter-pure.mjs).
+import app-v2/src/lib/condition-filter.js
 # ---------------------------------------------------------------------------
 # THE CONTACT AND ORDER DESKS ON THE LOAN SCREEN — authorized in writing by the
 # owner, 2026-08-31:
@@ -1119,6 +1142,8 @@ thing to build that also on the other thing — it's totally separate."*
 | 2026-08-30 | The **PILOT term-sheet DESIGN and the YS Capital lockup**, copied BY VALUE into `src/longterm/termsheet/brand.js` + `src/longterm/termsheet/assets/pilot-lockup-light.png` | RTL → LT | *"Everything should be in our pilot branding the same way our RTL term sheet is. Follow the same kind of design that our RTL term sheet have … Look at the design we have on the RTL. Try to bring in that nice pilot design … Make sure to include our logos and our designs."* **What crossed is the DESIGN**: the palette (`INK` / `TEAL` / `GOLD` / `LINE` / ivory), the header-band geometry (a 76pt full-bleed ink band, a 2.2pt gold rule, the lockup 30pt tall at the left margin), the teal section band with its gold tab, the ivory accent row, the three-line footer, and the SHAPE of a disclosures page — each value read off `web/v2/tools/termsheet.js`'s own `header()` / `band()` / `rowIn` / `footer()` / `disclosuresPage()`. **NOT ONE LINE OF RTL LOGIC CROSSED, and it may not**: that file is a FROZEN RTL pricing engine, so requiring it would put a frozen engine on Long-Term's render path and break rule 4 outright. The lockup is the same PNG the RTL sheet embeds (`web/v2/tools/rb-logo.js`), extracted to its own asset so Long-Term reads no RTL file at runtime. The disclosure TEXT is deliberately NOT copied — the RTL page describes a business-purpose bridge loan (minimum earned interest, a deferred origination fee at exit, construction draws) and a 30-year DSCR rental loan has none of those, so copying it would put terms on the document that are not terms of the loan | this PR |
 
 | 2026-08-30 | **THE SHARE-THE-CODE DIRECTIVE** — the owner ordered the parallel Long-Term build deleted and the RTL implementations SHARED: the Condition Center (conditions UI + document upload / drag-and-drop / preview / accept / reject / download / delete), the Orders center (the Gmail box, drafts, AI, reply routing, CC settings, DocuSign design), FileContacts + the vendor setup, the entity/LLC logic linked to the shared profile, SharePoint syncing, and the Cloudflare/off-site backup. The full quoted authorization + the boundary of what stays split is `docs/longterm/SHARE-THE-CODE-DIRECTIVE.md`; each concrete `import` line is added to the authorized block in the same PR that lands it, under this grant | RTL → LT | *"I gave you written authorization to bring that exact Condition Center over here. Take that exact Condition Center and make your conditions in that Condition Center follow those rules."* … *"The same thing with Order Center: you need to share the code. Same thing is with SharePoint: you need to share the code."* … *"Every single thing that you're building, you first need to look if you can share the code somewhere else without rebuilding everything."* | this PR |
+| 2026-09-01 | **The loan officer's own "done" step** — Long-Term writes `checklist_items.reviewed_by` / `reviewed_at`, the two columns db/033 added for the short-term side, through the LT door `POST /api/lt/condition-center/loans/:loanId/conditions/:conditionId/done` | RTL → LT | *"It's missing this feature for the loan officer to click Done. Research this free feature on the short-term side and share the code to enable this feature in the long-term side."* **NO NEW GRANT WAS NEEDED and that is the point** — `sql-read`/`sql-write checklist_items` is already authorized above (the 2026-08-30 share-the-code directive), the two columns already exist on that shared table, and Long-Term already owns rows in it (db/652/653). So NOTHING was migrated and nothing was copied by value: the same columns, read and written by a Long-Term door, scoped to `lt_loan_id` in the statement itself like every other LT statement against that table. The shared condition components have always SENT `{reviewed}` and always rendered "Marked done by X"; the only missing piece was the LT door, so the button refused. Recorded here because the CROSSING is the FEATURE, even where the table grant already covered the columns | this PR |
+| 2026-09-01 | **The conditions "Show" picker** — `import app-v2/src/lib/condition-filter.js`, the ONE off-my-plate rule and the seven views (needs my review/sign-off · not started · in review · needs attention · not signed off yet · signed off · everything) | RTL → LT | *"We also need to add the full sorting features so that you can sort by stuff that is done, by signed off, and by outstanding, to sort the conditions accordingly that we have on the short-term side. You can share that code as well."* **THE RULE WAS ALREADY WRITTEN TWICE** inside the short-term app — `roleDone` in `screens/StaffApplication.jsx` and again in `screens/StaffTasks.jsx`, each commenting that it mirrored the other — so a Long-Term copy would have been the THIRD. It was extracted instead and all three screens now read it; the thing that drifts here decides which conditions a person is SHOWN, so a stale copy hides work nobody then does. It never learns that two products exist: every predicate reads only the SHARED condition shape (`status` / `signed_off_at` / `waived_at` / `reviewed_at`), which `asSharedCondition` already produces on the Long-Term side. Proven to move NOT ONE verdict on the short-term side over 2,970 comparisons against the original inline switch | this PR |
 
 ## Log of things we ASKED for and were told NO / not yet
 

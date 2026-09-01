@@ -45,7 +45,10 @@ const P = bare(PANEL);
 const B = bare(BOARD);
 
 console.log('\nA. the result is held ABOVE the cart it empties');
-ok(/export function useTermSheetCart\(\)[\s\S]{0,900}?const \[issued, setIssued\] = useState\(null\)/.test(P),
+/* The hook gained an `active` flag (2026-09-01, the un-forking) so a board with no term-sheet
+   cart never asks the server for one. Its subject here has not moved: the issued sheet is held
+   ABOVE the cart, so issuing cannot destroy the card that shows what was issued. */
+ok(/export function useTermSheetCart\([\s\S]{0,40}?\)[\s\S]{0,900}?const \[issued, setIssued\] = useState\(null\)/.test(P),
   'A1 the cart hook holds the issued sheet');
 ok(/return \{ \.\.\.state, reload, count: state\.members\.length, issued, setIssued \}/.test(P),
   'A2 …and hands it out, so the board can keep the strip up');
