@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import { ltApi } from './api.js';
-import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, DANGER, CAUTION, card, eyebrow } from './ppeStyles.js';
+import { INK, MUTED, SLATE, GOLD_TEXT, DANGER, CAUTION, card, eyebrow } from './ppeStyles.js';
 /* ⛔ THE SHARED FORMATTERS, NEVER A LOCAL COPY. `test-lt-pipeline-columns-pure`
    enforces it across every LT screen, and the reason is specific rather than
    tidiness: `pct` takes a WHOLE percent and `rate` takes a FRACTION, so a
@@ -105,57 +104,50 @@ function BracketRow({ b }) {
   );
 }
 
-export default function LtBracketBoard({ scenario, figures, disabled, disabledReason }) {
-  const [busy, setBusy] = useState(false);
-  const [res, setRes] = useState(null);
-  const [err, setErr] = useState(null);
-
-  async function run() {
-    setBusy(true); setErr(null); setRes(null);
-    try {
-      /* ⛔ THE FIGURES ARE SENT EXPLICITLY, NOT LEFT TO BE RE-READ FROM THE SCENARIO.
-         The tax and insurance boxes carry a monthly/yearly switch beside them, and the
-         screen has already applied it; handing the server the scenario alone would make
-         it read a YEARLY tax bill as a monthly one — a payment twelve times too high, and
-         so a ratio in the wrong band on every row. The server still falls back to the
-         scenario when a caller sends none. */
-      const r = await ltApi.dscrPriceBrackets(scenario, { figures });
-      if (!r || r.ok !== true) { setErr((r && r.message) || 'The bracket board did not come back.'); return; }
-      setRes(r);
-    } catch (e) {
-      setErr((e && e.message) || 'Lender Price could not be reached.');
-    } finally { setBusy(false); }
-  }
+/**
+ * ⛔ IT RUNS NOTHING AND FETCHES NOTHING. The searches are fired by the pricing
+ * screen's own Search press (`runBrackets`, right after the board lands), which
+ * keeps the standing rule intact: a live vendor call happens on a deliberate press
+ * and never from an effect. An effect here would fire on re-renders nobody asked
+ * for — the exact "a debounce on a money call is a slow leak" this repo warns
+ * about — so this component only draws.
+ */
+export default function LtBracketBoard({ res, busy, err, missing }) {
+  const waiting = !!busy;
+  const nothingYet = !res && !busy && !err;
+  if (nothingYet && (!missing || !missing.length)) return null;
 
   return (
     <div style={card}>
       <div style={eyebrow}>Every rate, in the DSCR band it actually reaches</div>
       <p style={{ margin: '0 0 10px', fontSize: 13, color: SLATE, lineHeight: 1.55, maxWidth: '62ch' }}>
-        A normal search prices the whole board at one assumed ratio. But the rate sets the payment,
-        and the payment is what the DSCR is measured against — so a dearer rate leaves a weaker
-        ratio. This prices the deal <strong>once per DSCR band</strong> and shows each rate under the
-        band its own ratio reaches, so nothing on the board is a rate this loan has not earned.
+        The rate sets the payment, and the payment is what the DSCR is measured against — so a
+        dearer rate leaves a weaker ratio. Each band below was priced as its own search, and every
+        rate sits under the band its own ratio reaches. Nothing here is a rate this loan has not
+        earned.
       </p>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-        <button type="button" onClick={run} disabled={busy || disabled} style={{
-          background: busy || disabled ? '#C9C2B4' : GOLD, color: '#fff', border: 'none',
-          borderRadius: 8, padding: '9px 14px', fontWeight: 700, fontSize: 13,
-          cursor: busy || disabled ? 'default' : 'pointer', minHeight: 38,
-        }}>
-          {busy ? 'Pricing each band…' : 'Price every DSCR band'}
-        </button>
-        <span style={{ fontSize: 11.5, color: MUTED, maxWidth: '46ch', lineHeight: 1.5 }}>
-          {/* The cost is stated BEFORE the press, not discovered afterwards. */}
-          This runs one Lender Price search per band, so it takes longer than a normal search.
-        </span>
-      </div>
-      {disabled && disabledReason && (
-        <p style={{ margin: '10px 0 0', fontSize: 12.5, color: CAUTION, lineHeight: 1.5 }}>{disabledReason}</p>
+
+      {/* WHY IT IS SHOWING NOTHING, when that is because the deal is not filled in
+          rather than because it is still working. The board above still priced
+          perfectly well; it is only the banding that needs these figures. */}
+      {missing && missing.length > 0 && (
+        <p style={{ margin: 0, fontSize: 12.5, color: CAUTION, lineHeight: 1.55 }}>
+          A band is worked out from the payment, so this needs the {missing.join(', ')}. Fill those
+          in on the DSCR calculator above and search again.
+        </p>
       )}
-      {err && <p style={{ margin: '10px 0 0', fontSize: 12.5, color: DANGER, lineHeight: 1.5 }}>{err}</p>}
+
+      {waiting && (
+        <p style={{ margin: 0, fontSize: 12.5, color: MUTED, lineHeight: 1.55 }}>
+          Grouping by DSCR band — one search per band, so this lands a few seconds after the board
+          above.
+        </p>
+      )}
+
+      {err && <p style={{ margin: 0, fontSize: 12.5, color: DANGER, lineHeight: 1.5 }}>{err}</p>}
 
       {res && (
-        <div style={{ marginTop: 14 }}>
+        <div style={{ marginTop: waiting ? 14 : 0 }}>
           <div style={{ fontSize: 12, color: MUTED, marginBottom: 10 }}>
             {res.bracketCount} {res.bracketCount === 1 ? 'band has' : 'bands have'} rates
             {' · '}{res.quoteCount} quotes{' · '}{res.searchCount} searches

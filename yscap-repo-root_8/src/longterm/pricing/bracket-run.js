@@ -108,28 +108,34 @@ async function priceByBracket(figures, runSearch, opts = {}) {
   const runs = [];
   const failures = [];
   const priced = new Set();
-  let seenQuotes = [];
-  let probe = null;
 
-  // ── Round 0: the deal as the officer asked it, which is the board today. Its
-  // only job here is to show which brackets this loan can reach at all.
-  const first = await runSearch(null);
-  if (!first || first.ok !== true) {
-    return { ok: false, error: 'lt_bracket_probe_failed', probe: first || null,
-      message: (first && first.message) || 'The first pricing search did not come back, so there was nothing to bracket.' };
+  /* ⛔ NO PROBE SEARCH. The officer has ALREADY pressed Search, so pricing the deal
+     again just to find out which bands to ask about would spend a whole vendor call
+     re-asking a question that was answered a moment ago — and on a screen the owner
+     asked to feel as fast as it does now, that call is the one they would feel.
+
+     The seed is the band the officer's OWN scenario sits in, which we already know
+     from the ratio they typed or the calculator worked out. Everything else is found
+     by walking outward from it: the frontier fills the bands between what has been
+     seen and reaches one beyond each end, and it keeps reaching while the edges keep
+     returning rates this loan can use. So the first round asks about the officer's
+     own band and its two neighbours, and the board grows from there.
+
+     A caller with a board already in hand may hand its rates over (`seenQuotes`),
+     which sharpens the first round's search ratios; without them the first bands are
+     searched at their own floors, which is the same figure by construction. */
+  const seedTier = board.dscrTier(opts.seedDscr);
+  let seenQuotes = Array.isArray(opts.seenQuotes) ? opts.seenQuotes : [];
+  if (seedTier == null && !seenQuotes.length) {
+    return {
+      ok: false, error: 'lt_bracket_no_seed',
+      message: 'A bracket board starts from the band this deal is in, so it needs either the '
+        + 'ratio the search was run at or a board to read the rates off.',
+    };
   }
-  probe = first;
-  seenQuotes = quotesFrom(first.parsed);
 
-  /* ⛔ IT WIDENS WHILE THE BOARD REWARDS IT, AND STOPS WHEN IT DOES NOT. Each
-     round prices the observed brackets, the ones between them, and one band
-     beyond each end; if that round found rates, the next round reaches one
-     further out. The moment a round's searches return nothing this loan can use,
-     widening stops — so a deal whose rates genuinely live in three bands costs
-     four or five searches, not eleven, while a deal with an investor parked in a
-     far band is still found. */
   for (let round = 0; round < maxRounds; round += 1) {
-    const frontier = board.bracketFrontier(f, seenQuotes, [...priced], { reach: 1 });
+    const frontier = board.bracketFrontier(f, seenQuotes, [...priced], { reach: 1, seedTier });
     if (!frontier.length) break;
     const plans = frontier
       .map((tier) => ({ tier, sentRatio: board.sendRatioFor(tier, f, seenQuotes) }))
@@ -169,8 +175,8 @@ async function priceByBracket(figures, runSearch, opts = {}) {
     // Named so a reader can tell "we asked and this loan reaches nothing here"
     // from "we could not ask" — never one silence covering both.
     failedBrackets: failures,
-    searchCount: runs.length + 1,
-    probe: probe.meta || null,
+    searchCount: runs.length,
+    seedTier,
   };
 }
 

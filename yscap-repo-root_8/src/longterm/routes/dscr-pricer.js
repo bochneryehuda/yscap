@@ -171,7 +171,12 @@ function rejectInvalidRequest(sc, res) {
     res.status(v.status || 422).json(body);
     return { rejected: true };
   }
-  return { rejected: false, scenario: v.scenario || sc, countyEnrichment: v.countyEnrichment || null };
+  // ⛔ `dscrClamped` RIDES THROUGH HERE OR IT NEVER REACHES ANYBODY. The validator
+  // reports a typed over-ceiling ratio it priced at the ceiling instead; dropping it
+  // at this hop would leave every door reading `undefined` and the officer told
+  // nothing — the number changed behind them, which is the one thing the clamp was
+  // not allowed to do.
+  return { rejected: false, scenario: v.scenario || sc, countyEnrichment: v.countyEnrichment || null, dscrClamped: v.dscrClamped || null };
 }
 
 // Cash-out amount ("cash in hand") transparency — so it is never SILENTLY handled either way. It is
@@ -316,6 +321,8 @@ async function priceBrackets(req, res) {
     termYears: sc.termYears != null ? sc.termYears : sc.term, interestOnly: !!sc.interestOnly,
   }, (body.figures && typeof body.figures === 'object') ? body.figures : {});
 
+  // Filled by whichever band search answers FIRST, which is all these are for:
+  // echoing what the vendor understood and where the pricing config came from.
   let firstRequest = null;
   let provenance = null;
   const runSearch = async (dscr) => {
@@ -335,6 +342,14 @@ async function priceBrackets(req, res) {
 
   const out = await bracketRun.priceByBracket(figures, runSearch, {
     rounds: Number.isInteger(body.rounds) ? body.rounds : undefined,
+    /* THE BAND THIS DEAL IS ALREADY IN — the ratio the officer's own search ran at.
+       It is what the widening grows from, and it is why there is no probe search:
+       the board they are looking at answered that question a moment ago. */
+    seedDscr: sc.dscr,
+    /* AND THE RATES OFF THAT BOARD, when the caller hands them over. They sharpen the
+       first round's search ratios (the lowest ratio a band actually reaches, rather
+       than the band's floor). Optional by design: the loop works without them. */
+    seenQuotes: Array.isArray(body.seenQuotes) ? body.seenQuotes : [],
   });
   if (!out.ok) {
     // A refusal here is about the DEAL (not enough figures to bracket by) or the
@@ -347,6 +362,7 @@ async function priceBrackets(req, res) {
     requestedScenario,
     derivedScenario: derivedOf(sc),
     countyEnrichment: chk.countyEnrichment,
+    dscrClamped: chk.dscrClamped || null,
     effectiveScenario: firstRequest ? effectiveOf(firstRequest) : null,
     provenance,
   }));
@@ -378,13 +394,13 @@ async function price(req, res) {
     // investors PRESENT in this answer and anything that resolved to no name — named,
     // never dropped, so the owner can christen a new investor the day it appears.
     const deco = investorPrograms.decorate(full.programs);
-    const out = { ok: true, ...full, programs: deco.programs, investorRoster: deco.roster, investorsUnmapped: deco.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+    const out = { ok: true, ...full, programs: deco.programs, investorRoster: deco.roster, investorsUnmapped: deco.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), dscrClamped: chk.dscrClamped || null, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
     if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
     return res.json(out);
   }
   const parsed = lp.parse(r.raw);
   const decoSummary = investorPrograms.decorate(parsed.programs);
-  const out = { ok: true, ...trimPrograms({ ...parsed, programs: decoSummary.programs }), investorRoster: decoSummary.roster, investorsUnmapped: decoSummary.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+  const out = { ok: true, ...trimPrograms({ ...parsed, programs: decoSummary.programs }), investorRoster: decoSummary.roster, investorsUnmapped: decoSummary.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), dscrClamped: chk.dscrClamped || null, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
   // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
   // caller asks, include a structural summary of the raw response so we can see whether Lender
   // Price returned programs the parser missed, or truly zero — and any disqualify reasons.

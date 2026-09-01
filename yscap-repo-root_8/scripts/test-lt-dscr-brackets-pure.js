@@ -59,34 +59,88 @@ section('A. the bracket table is SHARED, not rebuilt — the owner\'s own instru
 }
 
 // =============================================================================
-section('A2. the screen sends the figures ITSELF, and it has to');
+section('A2. one press, two speeds — and the figures are the screen\'s to send');
 // =============================================================================
 {
-  /* ⛔ `scenarioFields.toScenario` OMITS THE LOAN AMOUNT IN LTV MODE, ON PURPOSE —
-     its own comment says why: the loan box holds a figure the screen derived, and
-     shipping it beside the LTV would put two views of one fact on the wire. So a
-     bracket board built from the SCENARIO ALONE would refuse every LTV-mode deal
-     for want of a loan amount, which is a payment it cannot work out and therefore
-     a ratio it cannot band.
+  /* ⛔ THE BAND SEARCHES ARE FIRED BY THE SEARCH PRESS, NOT BY AN EFFECT. The owner's
+     shape (2026-09-01): *"You press Search once, same as today… the board appears as
+     fast as it does now… a moment later the rates re-group themselves."* An effect
+     would fire on re-renders nobody asked for, which is the standing rule about live
+     vendor calls — "never from an effect, never on a keystroke, only on a deliberate
+     press". None of that is visible to a unit test of these modules, so it is pinned
+     on the SOURCE.
 
-     The tax and insurance boxes carry a monthly/yearly switch, and the screen has
-     already applied it — reading them raw would put a YEARLY tax bill on the board
-     as a monthly one, a payment twelve times too high and a band wrong on every row.
-
-     Both are why the mount passes `figures` explicitly rather than letting the
-     server re-read the scenario. A refactor that drops that prop would leave the
-     server silently falling back to figures that are missing or twelve times too
-     big, so it is pinned on the SOURCE — no unit test of these modules can see it. */
+     ⛔ AND THE FIGURES CANNOT BE RE-READ FROM THE SCENARIO. `scenarioFields.toScenario`
+     OMITS the loan amount in LTV mode, on purpose — its own comment says why. The tax
+     and insurance boxes carry a monthly/yearly switch the screen has already applied,
+     so reading them raw would put a yearly tax bill on the board as a monthly one: a
+     payment twelve times too high, and a band wrong on every row. */
   const src = (f) => fs.readFileSync(path.join(__dirname, '..', 'app-v2', 'src', 'longterm', f), 'utf8');
   const pricer = src('LtPricer.jsx');
   const bb = src('LtBracketBoard.jsx');
-  ok(/<LtBracketBoard[\s\S]{0,600}?figures=\{/.test(pricer),
-    '⛔ the pricing screen passes `figures` to the bracket board');
-  ok(/figures=\{[\s\S]{0,400}?loanAmount/.test(pricer), '…including the resolved loan amount, which LTV mode does not send');
-  ok(/figures=\{[\s\S]{0,400}?taxMonthly: perMonth\(/.test(pricer), '…and the tax through `perMonth`, never the raw box');
-  ok(/figures=\{[\s\S]{0,400}?insuranceMonthly: perMonth\(/.test(pricer), '…and the insurance the same way');
-  ok(/dscrPriceBrackets\(scenario, \{ figures \}\)/.test(bb),
-    '⛔ …and the board forwards them to the server rather than dropping them');
+
+  ok(/runBrackets\(toScenario\(f\), bracketFigures\(/.test(pricer),
+    '⛔ the Search press fires the band searches itself');
+  ok(!/useEffect\([^)]*runBrackets/.test(pricer), '…and no effect fires them');
+  ok(!/ltApi\./.test(bb),
+    '⛔ …and the band board itself calls no vendor door at all, so a re-render can never spend a search');
+  ok(/effectiveScenario: r && r\.effectiveScenario/.test(pricer),
+    '⛔ the loan amount comes from the answer just received, not the previous render\'s');
+  ok(/taxMonthly: perMonth\(/.test(pricer) && /insuranceMonthly: perMonth\(/.test(pricer),
+    '…and the tax and insurance through `perMonth`, never the raw box');
+  ok(/figures: \{ figures \}|\{ figures \}/.test(pricer),
+    '…and they are forwarded to the server rather than dropped');
+  ok(/setBrk\(\{ busy: false, res: null, err: null \}\);/.test(pricer),
+    'a new search clears the last one\'s bands — one answer never sits under another question');
+}
+
+// =============================================================================
+section('A3. a TYPED ratio above the vendor\'s ceiling is priced, not refused');
+// =============================================================================
+{
+  /* Owner-directed 2026-09-01: *"If somebody types it in without putting in the
+     scenario, types in more than 2.0, it should automatically send it to Lender
+     Price as 2.0, should not be rejected."*
+
+     ⛔ AND IT IS PRICE-NEUTRAL, WHICH IS WHAT MAKES IT SAFE RATHER THAN CONVENIENT.
+     The ladder's top band is "1.50 AND ABOVE" — there is nothing above it — so 2.4
+     and 2.00 are the same band and buy the same price. Lender Price refuses anything
+     over 2.00 outright, so 2.00 is the strongest ratio the vendor can be told at all:
+     clamping to it is the best answer available, not an approximation of one. */
+  const base = {
+    purpose: 'Purchase', propertyType: 'Single family', value: 400000, loan: 300000,
+    termYears: 30, fico: 740, state: 'NJ', zip: '08701',
+  };
+  const at = (d) => searchModel.validateScenario({ ...base, dscr: d });
+
+  const over = at(2.4);
+  ok(over.ok === true, '⛔ a typed 2.4 is ACCEPTED — the whole point of the owner\'s instruction');
+  ok(over.scenario.dscr === searchModel.VENDOR_MAX_DSCR,
+    `…and priced at the ceiling (${over.scenario.dscr}), which is what the vendor will take`);
+  ok(over.dscrClamped && over.dscrClamped.typed === 2.4 && over.dscrClamped.priced === 2,
+    '⛔ …and it SAYS so — a number changed silently behind whoever typed it is the one thing this may not do');
+  ok(tiers.dscrTier(2.4) === tiers.dscrTier(2),
+    '⛔ …and it is price-neutral: 2.4 and 2.00 are the SAME band, so nothing is mispriced');
+  ok(tiers.DSCR_TIERS[tiers.DSCR_TIERS.length - 1].to === null,
+    '…because the top band is open above — there is no band beyond it to fall out of');
+
+  // Nothing else moved.
+  const atCeiling = at(2);
+  ok(atCeiling.ok === true && atCeiling.dscrClamped === null,
+    'a typed 2.00 is untouched and reports no clamp');
+  ok(at(1.25).ok === true && at(1.25).scenario.dscr === 1.25 && at(1.25).dscrClamped === null,
+    'an ordinary ratio is carried through exactly as typed');
+  ok(at(-1).ok === false && at(-1).error === 'out_of_range',
+    '⛔ a NEGATIVE ratio is still refused — this widens one case, not the validator');
+  ok(at('x').ok === false && at('x').error === 'invalid_number', '…and junk is still refused');
+  ok(at(0).ok === true && at(0).scenario.dscr === 0,
+    '…and a deliberate 0 ("No DSCR") still means what it always meant');
+
+  /* ⛔ THE CEILING IS ONE NUMBER, IMPORTED RATHER THAN RESTATED. The validator that
+     REFUSES and the board that CLAMPS TO it must never drift, so the board takes the
+     constant from the module that enforces it. Identity, not equality. */
+  ok(boardMod.VENDOR_MAX_DSCR === searchModel.VENDOR_MAX_DSCR,
+    `⛔ the board and the validator hold ONE ceiling (${boardMod.VENDOR_MAX_DSCR})`);
 }
 
 // =============================================================================
@@ -158,12 +212,19 @@ section('C. the ratio a bracket is searched at always lands in that bracket');
   const strongRatio = boardMod.ratioAtRate(STRONG, 6.5);
   ok(strongRatio > boardMod.VENDOR_MAX_DSCR,
     `CONTROL an ordinary strong deal really does exceed the vendor's ceiling (${strongRatio})`);
-  const vendorSaysNo = searchModel.validateScenario({
+  /* ⛔ AND THE VENDOR ITSELF IS ASKED, not our own constant — otherwise this only
+     proves the module agrees with itself. Since 2026-09-01 the validator CLAMPS a
+     typed over-ceiling ratio rather than refusing it (owner-directed), so what is
+     asserted is that 2.04 CANNOT BE SENT AS TYPED: whatever reaches the wire is the
+     ceiling, and the change is reported rather than made silently. */
+  const vendorSays = searchModel.validateScenario({
     purpose: 'Purchase', propertyType: 'Single family', value: 400000, loan: LOAN,
     termYears: TERM, fico: 740, state: 'NJ', zip: '08701', dscr: strongRatio,
   });
-  ok(!vendorSaysNo || vendorSaysNo.ok !== true,
-    `CONTROL …and Lender Price's own validator refuses that figure (${vendorSaysNo && vendorSaysNo.error})`);
+  ok(vendorSays.ok === true && vendorSays.scenario.dscr === boardMod.VENDOR_MAX_DSCR,
+    `CONTROL …and the vendor's own validator will not carry it as typed — it prices at ${vendorSays.scenario && vendorSays.scenario.dscr}`);
+  ok(vendorSays.dscrClamped && vendorSays.dscrClamped.typed === strongRatio,
+    '…and says so, rather than changing the number behind whoever typed it');
   const topBand = boardMod.tierAtRate(STRONG, 6.5);
   const clamped = boardMod.sendRatioFor(topBand, STRONG, [{ rate: 6.5 }]);
   ok(clamped === boardMod.VENDOR_MAX_DSCR,
@@ -237,14 +298,19 @@ async function main() {
   const prog = (lender, rates) => ({ lender, program: lender + ' DSCR', rungs: rates.map((x) => ({ rate: x, price: 100, monthly: null })) });
   const mkRun = () => async (dscr) => {
     asked.push(dscr);
-    if (dscr == null) return { ok: true, parsed: { programs: [prog('Probe', [6.5, 7.0])] } };
     const programs = [prog('Broad', [6.5, 7.0, 8.5])];
     // "Harbor" prices only for weak ratios — invisible to any search asked high.
     if (dscr < 1.00) programs.push(prog('Harbor', [10.5, 11.125]));
     return { ok: true, parsed: { programs } };
   };
+  /* THE SEED IS THE BAND THE OFFICER'S OWN SCENARIO SITS IN. There is deliberately
+     no probe search any more: the officer has just pressed Search, so pricing the
+     deal again to discover which bands to ask about would spend a vendor call
+     re-asking a question answered a moment ago. */
+  const SEED = boardMod.ratioAtRate(F, 7.0);
+  const run = (extra) => runMod.priceByBracket(FIG, mkRun(), Object.assign({ seedDscr: SEED }, extra || {}));
 
-    const out = await runMod.priceByBracket(FIG, mkRun());
+    const out = await run();
     ok(out.ok === true, 'the run comes back');
     const shownTiers = out.brackets.map((b) => b.tier);
     ok(shownTiers.length > 1, `⛔ the board is split across several brackets (${shownTiers.join(', ')})`);
@@ -258,10 +324,12 @@ async function main() {
     // The discovery loop found the investor no single search could have shown.
     const harbor = out.brackets.some((b) => b.quotes.some((q) => q.lender === 'Harbor'));
     ok(harbor, '⛔ an investor that only prices at a low ratio IS found — the answer to "don\'t go only by the rates that are coming up"');
-    ok(asked.length <= 1 + boardMod.MAX_BRACKETS, `it converges (${asked.length} searches, ceiling ${1 + boardMod.MAX_BRACKETS})`);
+    ok(asked.length <= boardMod.MAX_BRACKETS, `it converges (${asked.length} searches, ceiling ${boardMod.MAX_BRACKETS})`);
+    ok(asked.every((a) => a != null),
+      '⛔ NO PROBE SEARCH — every call carries a real ratio, so nothing re-asks the search the officer just ran');
     const sent = asked.filter((a) => a != null);
     ok(new Set(sent).size === sent.length, '⛔ no bracket is ever priced twice');
-    ok(out.searchCount === sent.length + 1, `the search count is honest (${out.searchCount})`);
+    ok(out.searchCount === sent.length, `the search count is honest (${out.searchCount})`);
 
     // ⛔ EVERY QUOTE IS PRICED IN THE BAND ITS OWN RATE REACHES — the invariant.
     let breaches = 0;
@@ -269,24 +337,21 @@ async function main() {
     ok(breaches === 0, '⛔ THE INVARIANT: every quote on the finished board is priced in the band its own rate reaches');
 
     // ── empties and failures are two different facts ────────────────────────
-    const emptyRun = await runMod.priceByBracket(FIG, async (dscr) => (dscr == null
-      ? { ok: true, parsed: { programs: [prog('Probe', [6.5])] } }
-      : { ok: true, parsed: { programs: [] } }));
+    const emptyRun = await runMod.priceByBracket(FIG, async () => ({ ok: true, parsed: { programs: [] } }), { seedDscr: SEED });
     ok(emptyRun.brackets.length === 0 && emptyRun.empty.length > 0,
       'a bracket that came back with nothing is not drawn as a row…');
     ok(emptyRun.empty.every((b) => b.emptyReason),
       '…and SAYS why it is empty, so silence is never mistaken for "we did not look"');
 
-    const failRun = await runMod.priceByBracket(FIG, async (dscr) => (dscr == null
-      ? { ok: true, parsed: { programs: [prog('Probe', [6.5])] } }
-      : { ok: false, error: 'lp_price_500_after_retry', message: 'upstream' }));
+    const failRun = await runMod.priceByBracket(FIG, async () => ({ ok: false, error: 'lp_price_500_after_retry', message: 'upstream' }), { seedDscr: SEED });
     ok(failRun.ok === true && failRun.failedBrackets.length > 0 && failRun.brackets.length === 0,
       '⛔ a bracket whose search FAILED is reported as a failure, never as a bracket with no rates');
     ok(failRun.failedBrackets[0].error === 'lp_price_500_after_retry', '…carrying the vendor\'s own reason');
 
-    const noProbe = await runMod.priceByBracket(FIG, async () => ({ ok: false, message: 'down' }));
-    ok(noProbe.ok === false && noProbe.error === 'lt_bracket_probe_failed', 'a dead first search fails plainly');
-    const noFigs = await runMod.priceByBracket({ rentMonthly: 3000 }, mkRun());
+    const noSeed = await runMod.priceByBracket(FIG, mkRun(), {});
+    ok(noSeed.ok === false && noSeed.error === 'lt_bracket_no_seed',
+      'with neither a ratio nor a board to start from it refuses plainly, rather than guessing a band');
+    const noFigs = await runMod.priceByBracket({ rentMonthly: 3000 }, mkRun(), { seedDscr: SEED });
     ok(noFigs.ok === false && noFigs.error === 'lt_bracket_figures_incomplete',
       'half a deal is refused with a reason, never bracketed on guesses');
 

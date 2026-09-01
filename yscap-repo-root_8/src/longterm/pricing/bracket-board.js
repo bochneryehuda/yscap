@@ -2,8 +2,10 @@
 /**
  * LONG-TERM — THE DSCR-BRACKET-AWARE PRICING BOARD (owner-directed 2026-09-01).
  *
- * PURE. No database, no vendor, no config. Every rule here is unit-testable and
- * a board can be reasoned about without a network.
+ * PURE. No database, no network, no config — the one require that reaches outside
+ * this folder is the vendor's own DSCR ceiling, taken from the module that
+ * enforces it rather than restated here. Every rule is unit-testable and a board
+ * can be reasoned about without a network.
  *
  * ── THE PROBLEM, IN THE OWNER'S OWN WORDS ────────────────────────────────────
  * *"Option 11.125% — Harbor has moved band. These figures come to 0.93, which is
@@ -67,15 +69,20 @@ const MAX_BRACKETS = DSCR_TIERS.length;
 /** How many discovery rounds the caller may run before it stops widening. */
 const MAX_ROUNDS = 4;
 /**
- * THE HIGHEST RATIO LENDER PRICE WILL ACCEPT, and it is not decoration.
- * `search-model.validateScenario` refuses `criteria.dscr` outside [0, 2] before
- * anything reaches the wire, so a strong deal — rent 5,000 against a 2,400
- * payment reaches 2.08, which is ordinary — would have had its BEST band refused
- * at the door and reported as a failed search. Found by reading the validator
- * rather than by a board coming back short, which is why the strongest band is
- * exactly the one nobody would have noticed missing.
+ * THE HIGHEST RATIO LENDER PRICE WILL ACCEPT — IMPORTED, never restated.
+ *
+ * Their own request validation refuses `criteria.dscr` above it, so a strong deal
+ * (rent 5,000 against a 2,446 payment reaches 2.04, which is ordinary) would have
+ * had its BEST band refused at the door and reported as a failed search. Found by
+ * reading the validator rather than by a board coming back short, which is why the
+ * strongest band is exactly the one nobody would have noticed missing.
+ *
+ * It is taken from `search-model`, which is the module that ENFORCES it, so the
+ * number that is checked and the number that is clamped to cannot drift. That one
+ * require is the only thing in this file that is not self-contained, and it buys
+ * the guarantee.
  */
-const VENDOR_MAX_DSCR = 2;
+const { VENDOR_MAX_DSCR } = require('../lenderprice/search-model');
 
 /**
  * THE FIGURES A RATIO IS WORKED OUT FROM, normalised — or null when the deal
@@ -230,8 +237,14 @@ function tiersFromRates(figures, rates) {
 function bracketFrontier(figures, rates, alreadyPriced, opts = {}) {
   const reach = Number.isInteger(opts.reach) && opts.reach >= 0 ? opts.reach : 1;
   const done = new Set(Array.isArray(alreadyPriced) ? alreadyPriced : []);
+  /* THE ANCHORS ARE WHAT THE WIDENING GROWS FROM, in order of how much they are
+     worth: bands real rates have been seen in, else the SEED — the band the
+     officer's own scenario sits in — else whatever has already been priced. The
+     seed is what lets the very first round happen at all now that there is no
+     probe search to observe rates from. */
   const observed = tiersFromRates(figures, rates);
-  const anchors = observed.length ? observed : [...done];
+  const seed = Number.isInteger(opts.seedTier) ? [opts.seedTier] : [];
+  const anchors = observed.length ? observed : (seed.length ? seed : [...done]);
   if (!anchors.length) return [];
   const lo = Math.min(...anchors) - reach;
   const hi = Math.max(...anchors) + reach;
