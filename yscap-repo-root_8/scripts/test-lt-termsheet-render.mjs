@@ -43,6 +43,10 @@ const check = (cond, msg) => {
 };
 
 const PLAN = { borrowerPaid: 2, ysp: 2, lenderPaid: 2, applicationFee: 500, commitmentFee: 1595 };
+// The fee amounts in the assertions below are READ FROM THE PLAN above, never
+// retyped: this fixture's application/commitment amounts are the reverse of the
+// production defaults, and a hard-coded "$1,595" passed for the wrong reason.
+const money = (n) => `$${Number(n).toLocaleString('en-US')}`;
 const SCENARIO = {
   purpose: 'Purchase', propertyType: 'Single family', value: 500000, loan: 375000,
   ltv: 75, termYears: 30, dscr: 1.24, fico: 740, state: 'NJ', city: 'Lakewood', zip: '08701',
@@ -202,6 +206,94 @@ console.log('\nnothing draws past its own margin — on the paper, at zero toler
   check(total > 500, `${total} drawn strings measured in total — enough for the check to mean something`);
 }
 
+console.log('\nprose is set at a measure a person can actually read');
+{
+  /* ⛔ MEASURED, BECAUSE "UNCLEAR" IS NOT A MATTER OF TASTE. Owner-reported
+     2026-09-01: *"the font of everything is extremely small and extremely
+     unclear."* Read off a real render, the sheet's paragraphs ran 206–211
+     characters to the line. Every typographic authority that has been measured
+     on this puts the readable band at 45–75 characters — 66 is the classic
+     single-column ideal — because past roughly 90 the eye loses the start of the
+     next line coming back, and re-reads or skips one. The sheet was at about
+     three times the upper bound, so SIZE was only half the complaint.
+
+     ⛔ THE PAGE FOOTER IS EXCLUDED, AND THE EXCLUSION IS NOW BY POSITION. It is
+     standing boilerplate drawn BELOW the content floor, in a band whose height
+     is fixed by the paper — it cannot be given a third line without running
+     through the identity line beneath it, so its measure is decided by the band
+     rather than by anything this guard could ask for. The band is the tightest
+     honest test available: `ZONES.footer` is a structural constant that flowed
+     content can never reach, so this cannot quietly widen to cover the page.
+     It was previously excluded by its own first words — which stopped working
+     the moment the disclaimer was raised to the readable floor and became TWO
+     lines, because only the FIRST carried those words and the second sailed
+     through as compliant prose. A guard that passes the half it can see is
+     worse than one that says plainly what it does not measure.
+     ⛔ SO STATE IT PLAINLY: at 7.5pt the footer's first line runs about 164
+     characters. That is over the band, it is measured, and it is the price of
+     the size — see `fitFooterDisc` in pdf.js. */
+  const PREPARED = {
+    borrowerName: 'Riverbend Holdings LLC',
+    propertyAddress: '218 Forest Avenue, Lakewood, NJ 08701',
+    officerName: 'Sara Klein', companyName: 'YS Capital Group', companyNmls: '2609746',
+    // The expiry callout is the widest line the flow can produce — a bold title
+    // and a sentence sharing one line — so the fixture carries the stamps that
+    // make it draw. Without them the block is a title alone and the measure
+    // below would be taken on a document that never exercises it.
+    preparedAt: '2026-08-31T14:00:00.000Z', expiresAt: '2026-09-01T14:00:00.000Z',
+  };
+  const back = await readBack(await render(
+    [quote('No points', 7.375, 102), quote('Buy the rate down', 6.875, 99.75)], PREPARED,
+    { expiryHours: 24 },
+  ));
+  /* ⛔ WHAT IS MEASURED IS A RUN, NOT A LINE, and that is what makes both halves
+     of this block mean something.
+     Both rules here are about the RETURN SWEEP — the eye coming back from the
+     end of one line to the start of the next. A caption, an address, a fee
+     breakdown or the identity line has no next line, so neither rule applies to
+     it: measuring them reported a 5.1pt "stated once here rather than repeated
+     in every column" as unreadable body text, which is a fact about the filter.
+     So a line counts only when a SIBLING sits exactly one leading above or below
+     it at the same size — which is precisely what a wrapped paragraph is, and
+     nothing else on this page is. */
+  const prose = [];
+  for (const page of back.pages) {
+    const bySize = new Map();
+    for (const it of page) {
+      const k = Math.round(it.h * 10);
+      if (!bySize.has(k)) bySize.set(k, []);
+      bySize.get(k).push(it);
+    }
+    for (const [, group] of bySize) {
+      for (const it of group) {
+        const t = it.s.trim();
+        if (t.length <= 25 || it.y + it.h <= pdf.ZONES.footer.top) continue;
+        const lead = it.h * pdf._internals.LEAD;
+        const wrapped = group.some((o) => o !== it && Math.abs(Math.abs(o.y - it.y) - lead) < 1.5);
+        if (wrapped) prose.push({ n: t.length, h: it.h });
+      }
+    }
+  }
+  const longest = Math.max(...prose.map((x) => x.n));
+  check(prose.length > 20,
+    `${prose.length} prose lines measured — a sheet producing a handful would prove nothing`);
+  check(longest <= 95,
+    `no line of prose runs past 95 characters (longest is ${longest}) — it was 211`);
+  /* ⛔ AND THE OTHER HALF OF THE COMPLAINT, MEASURED THE SAME WAY. Line length
+     and type size are two different faults and the owner reported both — a
+     document can hold a perfect measure and still be unreadable because it is
+     set at five points. This is asserted on the height the VIEWER will draw,
+     not on the size table, so it is a fact about the paper.
+
+     ⛔ NOT A MEDIAN. A median over drawn lines is dragged down by the short last
+     line of every paragraph — measured, it read 74 on the broken document and 70
+     on the fixed one, so any band that admitted the good number admitted the bad
+     one too. It proved nothing and is not kept for the look of it. */
+  const smallest = Math.min(...prose.map((x) => x.h));
+  check(smallest >= 7,
+    `nothing set in sentences is smaller than 7pt (smallest is ${smallest.toFixed(2)}pt) — the disclosures were 5.7`);
+}
+
 console.log('\na long value is BROKEN onto more lines, never swallowed');
 {
   // The two protections cover each other — a wrap that fails to break a
@@ -254,9 +346,31 @@ console.log('\nthe page says what the document says');
      `test-lt-sheet-nothing-lost-pure.js` fails the build on a fact that stopped
      being printed. So the property asserted here inverts: every option is named
      ON the comparison, and NO option gets a page to itself. */
-  const details = where.map((p) => p.filter((i) => i > 0));
-  check(details.every((p) => p.length === 0),
-    'and NO option has a page of its own — the per-option repeat is what made this seven pages');
+  /* ⛔ RE-POINTED 2026-09-01, AND THE REASON IS A TRADE THE OWNER SHOULD SEE, not
+     a quiet loosening. This asserted "an option's name never appears after page
+     one", which was an exact proxy for "no option has a detail page" only while
+     the comparative sentences happened to fit on page one. Giving the lender-fee
+     cell the room its breakdown needs — owner-reported: *"it's a little
+     overlapping, it's pushed in"* — costs the shared box about 9 points, and the
+     sentences under the table now begin on page two. They NAME the options, so
+     the old proxy fails for a reason that has nothing to do with detail pages.
+
+     What is asserted instead is the property itself, in two halves: the sentences
+     may flow, but the COMPARISON — its table and the shared box — is whole on
+     page one, and the layout still builds no per-option block (that half is
+     `test-lt-sheet-nothing-lost-pure.js`, which reads the builder rather than the
+     render, so a detail page cannot come back unnoticed).
+
+     ⛔ AND IT IS STRICTER IN ONE RESPECT: the old check said nothing about WHERE
+     the table was, so a comparison whose table split across two pages would have
+     passed it. This one fails on that. */
+  const cmpPages = pagesWith('OPTION A');
+  check(cmpPages.length === 1 && cmpPages[0] === 0,
+    `the comparison's own table is whole on page one (found on ${cmpPages.length} page(s))`);
+  check(pagesWith('Identical in all').every((i) => i === 0),
+    '…and so is the box of what every option agrees about');
+  check(where.every((p) => p[0] === 0),
+    '…and every option is FIRST named there, never on a page of its own');
   check(back.pageCount <= 4,
     `and the whole comparison, disclosures included, fits ${back.pageCount} pages (was 7 for three options)`);
   /* Whitespace-insensitive on BOTH sides, like `squash` above. The extractor
@@ -310,11 +424,22 @@ console.log('\nthe PILOT design is on every page — the band, the lockup, the f
 
   let bandless = [];
   let footerless = [];
+  let unstamped = [];
   back.pages.forEach((items, i) => {
     const inBand = items.filter((it) => it.y >= Z.band.bottom);
     const inFoot = items.filter((it) => it.y + it.h <= Z.footer.top);
     if (!squash(inBand.map((it) => it.s).join('')).includes('comparisonsheet')) bandless.push(i + 1);
     if (!squash(inFoot.map((it) => it.s).join('')).includes('notacommitmenttolend')) footerless.push(i + 1);
+    /* ⛔ THE BUSINESS-PURPOSE STAMP, ON THE PAPER, PAGE BY PAGE — owner-directed
+       2026-09-01. The pure suite proves the layout carries it; ONLY a render
+       proves it survives the wrap, the fit ladder and the footer's own line
+       budget onto every page, including a page the flow invented mid-table,
+       which is exactly the page a block-list test cannot see. */
+    /* The needle is stripped of PUNCTUATION as well as space: `squash` only
+       collapses whitespace, so the hyphen in "business-purpose" survives it —
+       and a renderer is free to draw that hyphen as any of several dashes. */
+    const bare = (t) => squash(t).replace(/[^a-z0-9]/g, '');
+    if (!bare(inFoot.map((it) => it.s).join('')).includes('businesspurposelendingonly')) unstamped.push(i + 1);
   });
   /* The band-and-footer sweep below needs MORE THAN ONE page to be worth
      running: what it proves is that a page produced by a BREAK cannot come out
@@ -332,6 +457,33 @@ console.log('\nthe PILOT design is on every page — the band, the lockup, the f
   check(back.pageCount >= 2, `a five-option comparison runs to ${back.pageCount} pages — enough for the band-and-footer sweep to mean something`);
   check(bandless.length === 0, `the brand band names the document on EVERY page (missing on ${bandless.join(', ') || 'none'})`);
   check(footerless.length === 0, `and the footer disclaims on EVERY page (missing on ${footerless.join(', ') || 'none'})`);
+  check(unstamped.length === 0,
+    `and EVERY page says "This is for business-purpose lending only." (missing on ${unstamped.join(', ') || 'none'})`);
+
+  /* ⛔ THE FOOTER'S LEGAL LINE IS SET AT THE READABLE FLOOR, AND IT IS COMPLETE.
+     Both halves have to be asserted together, because each alone is satisfiable
+     by the failure the other catches: the size alone passes on a disclaimer
+     whose tail was dropped to make it fit, and the completeness alone passes at
+     the 5.1pt it drew at before. Owner-reported 2026-09-01 ("the font of
+     everything is extremely small"); this was the smallest run on the page and
+     the last one left. The tail is asserted on the LAST WORDS rather than on a
+     length, because what truncation takes is the end. */
+  const footRuns = back.pages[0].filter((it) => it.y + it.h <= Z.footer.top);
+  const footProse = footRuns.filter((it) => it.s.trim().length > 25 && !/·/.test(it.s));
+  const smallestProse = Math.min(...footProse.map((it) => it.h));
+  check(footProse.length > 0, `the footer draws ${footProse.length} run(s) of prose to measure`);
+  /* ⛔ THE THRESHOLD IS A LITERAL, NOT `SZ.footDisc`, and that is the whole
+     difference between a guard and a tautology. Read from the size table, this
+     asserts only that the render agrees with the table — so removing the footer
+     from the readable floor moves BOTH sides and the check passes at 5.1pt,
+     which is the exact defect it exists to catch. PROVEN: with the threshold
+     read from the source the mutation produced zero failures. 7 is the same
+     literal the sibling prose assertion above is held to. */
+  check(smallestProse >= 7,
+    `and the smallest of them is ${smallestProse.toFixed(2)}pt — over the 7pt line, not the 5.1 it drew at`);
+  check(squash(footRuns.map((it) => it.s).join('')).includes('countersignedbyyscapitalgroup'),
+    'and the disclaimer keeps its last sentence — nothing was sliced off to make it fit');
+
 
   // Every page numbers itself, and the count is the real one.
   let misnumbered = [];
@@ -423,9 +575,33 @@ console.log('\nthe owner\'s four items, on the paper');
      per-option page onto the comparison itself. */
   check(wflat.includes(squash('covered by the lender, not paid by you')),
     '…and a sentence on the sheet says the lender is covering them, not the borrower');
-  check(wflat.includes(squash('Waived ($500)')) && wflat.includes(squash('Waived ($1,595)')),
-    '…and each fee is named at what it would have been, beside the option that charges it');
-  check(wflat.includes(squash('Lender fees you are not paying')), '…and the saving is totalled');
+  /* RE-POINTED 2026-09-01, NOT LOOSENED — owner-directed: the two fees are ONE
+     package ("You waive lender fees, so it's zero lender fee, and they don't
+     charge the $2,095"), so they are one row now. The property these two
+     asserted still holds and is asserted HERE, on the combined row: the waived
+     option prints the FULL amount it is not paying, so the option beside it can
+     be compared against it. What changed is that the figure is the package's
+     $2,095 rather than each fee's own — and the parts are still named, which the
+     assertion above this one already requires. STRICTER in one respect: it now
+     also demands the charged option print $2,095, so a sheet that waived on both
+     columns could not satisfy it. */
+  /* RE-POINTED 2026-09-01 (second correction, same day) — the figure is now a
+     bare "Waived" and the amount rides in the small line under it, because the
+     owner read the parenthetical as unclear. The property is unchanged: the
+     waived column must still state what is not being paid. */
+  check(wflat.includes(squash('Waived')) && wflat.includes(squash('You save $2,095')),
+    '…the waived option reads "Waived", with what it saved stated under it');
+  check(wflat.includes(squash('$2,095'))
+    && wflat.includes(squash(`Application fee ${money(PLAN.applicationFee)}`))
+    && wflat.includes(squash(`Commitment fee ${money(PLAN.commitmentFee)}`)),
+    '…and the charged option prints the same package, broken into its two named parts');
+  /* The separate "Lender fees you are not paying" total is GONE, and its absence
+     is asserted rather than merely un-checked: the combined row prints exactly
+     that figure in the waived option's own cell, so keeping the total put $2,095
+     twice, adjacent. A guard that simply stopped looking would go quiet if it
+     came back. */
+  check(!wflat.includes(squash('Lender fees you are not paying')),
+    '…and the saving is NOT also totalled in a second row that says the same $2,095');
 
   // (5) THE EXPIRY, in the owner's own unit.
   check(flat.includes(squash('This term sheet expires in 24 hours')),
@@ -802,8 +978,16 @@ console.log('\nthe comparison table is the sketch\'s ledger, not a spreadsheet')
      `SZ` rather than retyped, so the selection follows the scale if it moves. */
   const TSZ = pdf._internals.SZ;
   const isTableSize = (h) => Math.abs(h - TSZ.tableValue) < 0.15 || Math.abs(h - TSZ.tableBig) < 0.15;
+  /* ⛔ AND A SHAPE TEST BESIDE THE SIZE ONE, because the size alone stopped being
+     able to tell them apart. The readable floor sets running prose at 7.5 and the
+     table's resolving row is 7.58, so a paragraph that happens to start at a
+     column's x now falls inside the window — and a sentence measured for its
+     glyph advance reports 0.46em and reads as a proportional FIGURE, which is a
+     fact about the selector rather than about the table. A table figure is a
+     short run; three words is generous for one and far short of a sentence. */
+  const isFigureShaped = (t) => t.trim().split(/\s+/).length <= 3;
   const valueItems = all.filter((i) => colX.includes(Math.round(i.x))
-    && isTableSize(i.h) && /[$%\d]/.test(i.s));
+    && isTableSize(i.h) && /[$%\d]/.test(i.s) && isFigureShaped(i.s));
   const vEms = ems(valueItems);
   check(vEms.length >= 6, `the table draws ${vEms.length} figures to measure — a handful would prove nothing`);
   const off = vEms.filter((r) => Math.abs(r - 0.6) > 0.03);

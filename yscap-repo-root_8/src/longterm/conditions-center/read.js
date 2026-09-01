@@ -249,6 +249,19 @@ async function forLoan(loanId, opts = {}) {
  * property row could not be read.
  */
 async function liveFieldValues(loanId, client) {
+  /* A CALLER'S MISTAKE IS NOT A DEGRADED READ, and the catch below cannot tell
+     them apart — which is what makes this two lines rather than a comment.
+     Passing `{ db: client }` instead of the client is an easy slip (the sibling
+     modules take exactly that shape), and the ONLY symptom is a desk on which
+     every conditional contact reads "not established on this file yet": the
+     landlord, the HOA, the flood agent and the New York settlement agent all
+     quietly greyed, on a file where they apply. That is a wrong answer wearing
+     a safe one's clothes, and nothing anywhere would say so.
+     A real read failure still degrades to null exactly as before — this refuses
+     only something that could never have worked. */
+  if (!client || typeof client.query !== 'function') {
+    throw new TypeError('liveFieldValues needs the database client itself, not an options object');
+  }
   try {
     const engine = require('./engine');
     const registry = require('./field-registry');
@@ -419,7 +432,7 @@ function contactTypesFor(r, live) {
       const v = values[t.whenField];
       if (v === true) applies = true;
       else if (v === false) { applies = false; whyNot = FIELD_WHY[t.whenField] || 'This file does not need it.'; }
-      else { applies = null; whyNot = 'Not established on this file yet.'; }
+      else { applies = null; whyNot = FIELD_UNKNOWN[t.whenField] || 'Not established on this file yet.'; }
     }
     return { key: t.key, label: t.label, required: !!t.required, applies, whyNot };
   });
@@ -432,9 +445,54 @@ const FIELD_WHY = Object.freeze({
   in_flood_zone: 'Only where the property is in a flood zone.',
   is_condo: 'Only on a condominium.',
   borrower_rents: 'Only where the borrower rents where they live.',
+  is_refinance: 'Only on a refinance — a purchase has no loan being paid off.',
 });
 
+/* THE THIRD ANSWER, IN WORDS. `applies === null` means nobody has established the
+   fact yet, and the generic "not established on this file yet" is true but tells a
+   reader nothing about what would settle it. Owner-directed 2026-08-31, asked what
+   a flood row should say before Encompass has answered: *"Show it greyed, saying we
+   can't tell yet"* — and it turns on by itself the moment Encompass says so or
+   somebody ticks the switch. Each sentence names BOTH routes, so nobody goes
+   hunting for a control that is not the only way. */
+const FIELD_UNKNOWN = Object.freeze({
+  is_new_york: 'We cannot tell yet where this property is. It turns on by itself once the file says.',
+  in_flood_zone: 'We cannot tell yet whether this is a flood zone. It turns on by itself once Encompass says so, or when somebody ticks the flood-zone switch on this file.',
+  is_condo: 'We cannot tell yet whether this is a condominium. It turns on by itself once the file says.',
+  borrower_rents: 'We cannot tell yet whether the borrower rents where they live. It turns on by itself once the file says.',
+  is_refinance: 'We cannot tell yet whether this is a refinance. It turns on by itself once the file says.',
+});
+
+/**
+ * THE FILE CONTACTS DESK'S OWN ROWS — every contact this file could carry, each
+ * saying whether it belongs here.
+ *
+ * ONE DEFINITION, TWO SURFACES. The pre-submittal condition asks for two of these
+ * (`FILE_CONTACT_TYPES.preSubmission`) and the File contacts section shows all
+ * eleven; both go through `contactTypesFor`, so a row cannot be greyed on one
+ * screen and offered on the other, and neither can name the same company two
+ * different ways. Before this the screen kept its own flat list and had drifted:
+ * it offered a landlord row the condition had never heard of and called the
+ * settlement agent something else.
+ *
+ * A ROW THAT DOES NOT APPLY IS KEPT AND MARKED, never dropped — and an UNREADABLE
+ * file answers `null` on every conditional row rather than a confident "no",
+ * because "we cannot tell yet" and "this file does not need it" send a reader to
+ * two different places.
+ *
+ * Never throws: a contacts desk that cannot draw is worse than one drawn without
+ * its greying, so an unreadable context falls back to the plain list.
+ */
+async function fileContactTypes(loanId, client) {
+  const { FILE_CONTACT_TYPES } = require('./library');
+  const values = await liveFieldValues(loanId, client);
+  // `preSubmission` is the CONDITION's business and means nothing on the desk, so
+  // it is dropped here rather than shipped to a screen that would have to ignore it.
+  const types = FILE_CONTACT_TYPES.map(({ preSubmission, ...t }) => t);
+  return contactTypesFor({ config: { contactTypes: types }, answer: {} }, values);
+}
+
 module.exports = {
-  buckets, forLoan, documentsByCondition, DONE, CLIENT_VISIBLE,
+  buckets, forLoan, documentsByCondition, fileContactTypes, DONE, CLIENT_VISIBLE,
   _internals: { shape, slotsFor, contactTypesFor, liveFieldValues, count, emptySummary },
 };

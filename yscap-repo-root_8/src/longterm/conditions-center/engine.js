@@ -287,7 +287,8 @@ async function evaluateLoan(loanId, opts = {}) {
 
     const where = ownerWhere(owner);
     const { rows: existing } = await client.query(
-      `SELECT id, template_id, status, origin_kind, notes, field_key
+      `SELECT id, template_id, status, origin_kind, notes, field_key,
+              (tool_payload IS NOT NULL AND tool_payload <> '{}'::jsonb) AS has_answer
          FROM checklist_items WHERE ${where.sql}`,
       where.params,
     );
@@ -346,7 +347,25 @@ async function evaluateLoan(loanId, opts = {}) {
       // verdict.apply === false — the rule says it does not belong here.
       if (!have) continue;
       // Rule 3: only ours, and only untouched.
-      const untouched = have.origin_kind === 'auto' && have.status === UNTOUCHED && !String(have.notes || '').trim();
+      // WORK SOMEBODY DID IS NEVER DESTROYED BY A RULE CHANGING ITS MIND. A
+      // STORED ANSWER counts as work exactly as a note or a document does — the
+      // rent and the date a tenancy started are typed onto a condition and its
+      // status stays `outstanding` until somebody signs it off, so without this
+      // a retracted condition took a person's typing with it, silently. Added
+      // 2026-08-31 while retiring two conditions the owner asked to remove
+      // ("take them off, but keep any work already done"), and it can only ever
+      // KEEP more rows than before, which is the safe direction.
+      //
+      // HONEST NOTE, MEASURED: this half and the identical test inside the DELETE
+      // below are each a COMPLETE guard, so removing either one alone changes no
+      // outcome and the suite stays green — only removing both fails it, which was
+      // proven rather than assumed. They are both kept for the reason the DELETE's
+      // own comment gives: this read is a cheap early exit (and what keeps
+      // `out.unchanged` honest), while the statement is what closes the window
+      // between the read and the write. The one that must never go is the one in
+      // the DELETE.
+      const untouched = have.origin_kind === 'auto' && have.status === UNTOUCHED
+        && !String(have.notes || '').trim() && have.has_answer !== true;
       if (!untouched) { out.unchanged += 1; continue; }
       try {
         // THE WHOLE TEST IS INSIDE THE DELETE, deliberately: the read above is
@@ -358,6 +377,7 @@ async function evaluateLoan(loanId, opts = {}) {
           `DELETE FROM checklist_items
             WHERE id = $1::uuid AND origin_kind = 'auto' AND status = $2
               AND COALESCE(notes,'') = ''
+              AND COALESCE(tool_payload, '{}'::jsonb) = '{}'::jsonb
               AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id = checklist_items.id)
           RETURNING id`,
           [have.id, UNTOUCHED],
@@ -367,6 +387,51 @@ async function evaluateLoan(loanId, opts = {}) {
       } catch (e) {
         out.skipped.push({ code: t.code, why: `Could not remove it: ${String((e && e.message) || e).slice(0, 160)}` });
       }
+    }
+
+    // ── A RETIRED CONDITION COMES OFF THE FILES THAT ALREADY CARRY IT ────────
+    //
+    // THE LOOP ABOVE CANNOT DO THIS, and believing it could was a real defect.
+    // `loadLibrary` selects `is_active = true`, so a RETIRED template is not in
+    // `library` at all — the loop never considers it, and its instances sit on
+    // every file that had one, for ever. db/646's own header states the opposite
+    // ("an untouched row leaves on its own, file by file"), which is how the
+    // retired appraisal-ordering condition stayed on the whole book: retiring a
+    // template took it out of the one list that could have removed it.
+    //
+    // SCOPED TO `is_active = false`, NEVER to "not in the library". Those are
+    // different sets and the difference is the whole safety of this statement: a
+    // template with `auto_apply = 'manual'` is ACTIVE and simply not rule-driven,
+    // and a condition somebody typed by hand carries no template at all — sweeping
+    // "everything the library did not mention" would delete both.
+    //
+    // The untouched test is the SAME one above, word for word, and for the same
+    // reason: work somebody did is never destroyed by a rule changing its mind.
+    try {
+      // `ownerWhere` takes the alias itself, so the owner clause is BUILT for `ci`
+      // rather than string-rewritten into it — one definition of which rows belong
+      // to this file, and no regex standing between a rewrite and a DELETE.
+      // …and from $2, because $1 is the untouched status below it. `ownerWhere`
+      // takes the starting index for exactly this reason; two clauses both
+      // claiming $1 is a bind mismatch that only shows up at run time.
+      const ciWhere = ownerWhere(owner, 'ci', 2);
+      const { rows } = await client.query(
+        `DELETE FROM checklist_items ci
+          USING checklist_templates t
+          WHERE t.id = ci.template_id
+            AND t.is_active = false
+            AND ci.origin_kind = 'auto'
+            AND ci.status = $1
+            AND COALESCE(ci.notes,'') = ''
+            AND COALESCE(ci.tool_payload, '{}'::jsonb) = '{}'::jsonb
+            AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id = ci.id)
+            AND ${ciWhere.sql}
+        RETURNING t.code, ci.label`,
+        [UNTOUCHED, ...ciWhere.params],
+      );
+      for (const r of rows) out.removed.push({ code: r.code, label: r.label, retired: true });
+    } catch (e) {
+      out.skipped.push({ code: '(retired)', why: `Could not remove retired conditions: ${String((e && e.message) || e).slice(0, 160)}` });
     }
   } catch (e) {
     // Rule 6: never throw at the caller.

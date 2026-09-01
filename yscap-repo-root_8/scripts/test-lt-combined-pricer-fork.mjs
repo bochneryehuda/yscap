@@ -332,6 +332,43 @@ console.log('\nF. a general-engine change that WAS ported stays ported');
     `F6 the copy asks for exactly the fields the general engine asks for (${generalAsks.size} fields`
     + `${missing.length ? `; MISSING from the copy: ${missing.join(', ')}` : ''}`
     + `${extra.length ? `; only on the copy: ${extra.join(', ')}` : ''})`);
+
+  /* F7 — THE SEARCH COUNTS STAY IN STEP, MINUS THE ONE FIGURE THIS DOOR CANNOT ANSWER.
+
+     On 2026-09-01 main moved the counts line off the "What came back" card and onto the
+     sticky search strip (#1396), because the counts describe the SEARCH. Ported here.
+
+     ⛔ ONE CLAUSE IS DELIBERATELY DROPPED, AND THAT IS WHAT THIS GUARDS. The general
+     engine's line ends `· ${res.lenderCount} lenders`; the COMBINED door returns no
+     `lenderCount` at all (routes/combined-pricer.js answers with `programCount` and the
+     investor roster), so carrying it verbatim prints “— lenders” on every board for ever,
+     and deriving one would invent a two-vendor meaning of “a lender” nobody has asked for
+     (the general rule keys on `p.lender`, which a LoanNEX programme does not carry, so it
+     would collapse that whole vendor into one bucket and UNDERCOUNT).
+
+     ⛔ DERIVED, NEVER TYPED IN. The expectation is the general engine's own template with
+     every clause that mentions `lenderCount` removed — so main re-wording the counts, or
+     adding a figure, fails here until it is ported, and the day main itself drops the
+     lenders clause this keeps holding with no edit. A presence test would pass on a copy
+     that had quietly fallen a figure behind. */
+  const countsTpl = (src) => {
+    const all = [...src.matchAll(/counts=\{`([^`]*)`\}/g)].map((m) => m[1]);
+    return all.length === 1 ? all[0] : null;
+  };
+  const gCounts = countsTpl(gb);
+  const fCounts = countsTpl(fb);
+  const kept = gCounts == null ? [] : gCounts.split(' · ').filter((c) => !/lenderCount/.test(c));
+  const expected = kept.join(' · ');
+  ok(gCounts != null && fCounts != null && fCounts === expected,
+    `F7 the copy states the same search counts as the general engine, less the lender count its`
+    + ` door cannot answer (general ${gCounts == null ? 'no single counts line' : `${gCounts.split(' · ').length} clauses`}`
+    + `, copy ${fCounts == null ? 'no single counts line' : `${fCounts.split(' · ').length} clauses`})`);
+  // …and the board-level lender count is genuinely absent from the copy, not merely absent
+  // from that one string. `res.lenderCount` is the price answer's figure; the copy's other
+  // lender counts are its own (a rate row counts its quotes' lenders, and the ineligible
+  // view reads the DISQUALIFY answer, which does return one).
+  ok(!/res\.lenderCount/.test(fb) && /res\.lenderCount/.test(gb),
+    'F7a the copy never reads `res.lenderCount`, which the combined door does not return');
 }
 
 console.log(bad ? `\nFAILURES: ${bad}` : '\nOFFLINE: all passed');

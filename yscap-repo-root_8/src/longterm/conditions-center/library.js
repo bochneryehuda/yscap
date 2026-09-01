@@ -60,6 +60,10 @@ const registry = require('./field-registry');
 // through it, so a bucket cannot be filed under one heading and shown under
 // another (db/653 states the whole decision and why it is a MAP, not a widen).
 const vocab = require('./vocabulary');
+// The vendor VOCABULARY — what each contact is called, and the word a card is
+// filed under in the shared directory. PURE, no requires of its own, so this is
+// not a cycle. See FILE_CONTACT_TYPES below.
+const orderKinds = require('../orders/kinds');
 
 const B = {
   SUBMISSION: 'prior_to_submission',
@@ -77,6 +81,70 @@ const when = (field, operator, value) => ({
 
 /** The same, for a condition that applies when ANY one of several rows holds. */
 const whenAny = (rows) => ({ combinator: 'or', rules: rows });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WHO CAN BE ON A LONG-TERM FILE — THE ONE LIST
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * EVERY CONTACT A LONG-TERM FILE CAN CARRY, what each is called, and the ONE fact
+ * that decides whether it belongs on THIS file.
+ *
+ * ── WHY THIS IS ONE LIST AND NOT THREE ──────────────────────────────────────
+ *
+ * These names were written out three times: in the pre-submittal condition's
+ * `contactTypes`, in `orders/kinds.js VENDOR_KINDS`, and again as a flat array in
+ * the File contacts screen. Nothing could see the other two, so a company was
+ * "Settlement agent" on one and "Settlement agent (New York)" on another, and the
+ * screen offered a landlord row the condition had never heard of. The condition
+ * now DERIVES its two rows from here, the screen reads this list from the server,
+ * and `test-lt-orders-pure.js` holds the orders registry to it.
+ *
+ * ── `whenField` IS THE SAME MACHINERY THE CONDITIONS USE ────────────────────
+ *
+ * The rule engine cannot express a per-ROW condition, so `read.contactTypesFor`
+ * answers it from the same field a rule would — and it answers THREE ways, which
+ * is the point: yes, no, and *we cannot tell yet*. Owner-directed 2026-08-31,
+ * asked what an unread file should show: *"Show it greyed, saying we can't tell
+ * yet."* A row that does not apply is KEPT AND MARKED, never dropped — *"The New
+ * York Settlement Agent Order should be grayed out. And collapsed. Be visible
+ * that doesn't belong for this file."*
+ *
+ * `preSubmission` marks the two the file genuinely cannot be submitted without.
+ * Everything else is a slot on the desk, offered when the deal calls for it.
+ *
+ * THE LABEL IS NOT WRITTEN HERE — it is taken from `orders/kinds.js VENDOR_KINDS`,
+ * which is the word already written onto the shared directory card
+ * (`service_contacts.custom_type`) when one is created. So this file decides WHICH
+ * contacts a long-term file can carry and WHEN each is asked for, and that file
+ * decides what each is CALLED, and neither can drift from the other — which they
+ * had: this list first said "HOA / management company" while a card created from
+ * it was filed as "HOA management company", so the same company read two ways on
+ * two screens. A key with no entry there yields `undefined`, which `verify()`
+ * refuses at load, so a typo cannot ship as a blank pill.
+ */
+const FILE_CONTACT_TYPES = Object.freeze([
+  { key: 'title', required: true, preSubmission: true },
+  { key: 'hazard_insurance', required: true, preSubmission: true },
+  // Read from Encompass field 541 or ticked by hand — see src/longterm/flood-zone.js.
+  { key: 'flood_insurance', required: false, whenField: 'in_flood_zone' },
+  // New York closes through a settlement agent rather than the title company.
+  { key: 'ny_settlement_agent', required: false, whenField: 'is_new_york' },
+  // Owner-directed 2026-08-31: *"We should also have the HOA contact. That should
+  // be grayed out, and it should only be available on a condo."*
+  { key: 'hoa', required: false, whenField: 'is_condo' },
+  // …*"We should have the landlord contact information if the person is renting
+  // his primary residence, and if not, it should also be grayed out."* It is the
+  // contact the verification of rent is sent to, so it is a real slot rather than
+  // a note somebody types.
+  { key: 'landlord', required: false, whenField: 'borrower_rents' },
+  // Whoever holds the loan being paid off. Only a refinance has one.
+  { key: 'payoff', required: false, whenField: 'is_refinance' },
+  // The four that can be on any deal and are nobody's requirement.
+  { key: 'buyers_attorney', required: false },
+  { key: 'our_attorney', required: false },
+  { key: 'realtor', required: false },
+  { key: 'appraisal', required: false },
+].map((t) => Object.freeze({ ...t, label: orderKinds.VENDOR_KINDS[t.key] })));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PRIOR TO SUBMISSION — everything the file needs before it goes to underwriting.
@@ -188,10 +256,22 @@ const PRIOR_TO_SUBMISSION = [
     code: 'lt_subject_mortgage_statement',
     bucket: B.SUBMISSION,
     label: 'Mortgage statement on the subject property',
-    hint: 'A current statement on the loan being paid off. Three ways to satisfy it: the statement '
-      + 'itself; the payoff figures typed in — outstanding balance, servicer AND loan number, all '
-      + 'three, none of them optional; or a waiver where the loan being refinanced is one of our own '
-      + 'short-term loans serviced by FCI, where we already hold everything a statement would say.',
+    /* THE FCI WAY IS NOT A WAIVER — owner-directed 2026-08-31. It answers the
+       SERVICER by itself and still asks for the two numbers, because being the
+       servicer is what makes them OBTAINABLE, not unnecessary: the loan-setup
+       person still keys a loan number and a balance into Encompass and neither
+       of them is on this file. Wording that promised a waiver told somebody the
+       opposite of what the screen asks them for.
+       PREVIOUS AND FUTURE: this string is COPIED onto each condition when it is
+       created, so changing it here reaches a NEW tenant and db/664 reaches every
+       file that already exists. Editing one without the other leaves the two
+       drifting; section F of the test compares them. */
+    hint: 'A current statement on the loan being paid off. Three ways to satisfy it: upload the '
+      + 'statement — PILOT reads the servicer, the loan number and the outstanding principal balance '
+      + 'off it and fills them in for somebody to check; type those three in yourself — all three, '
+      + 'none of them optional; or say it refinances one of our own short-term loans serviced by FCI, '
+      + 'which answers the servicer itself and still needs the FCI loan number and the outstanding '
+      + 'balance looked up in FCI.',
     borrowerLabel: 'Your current mortgage statement',
     borrowerHint: 'A recent statement for the mortgage on this property.',
     audience: 'both',
@@ -214,28 +294,38 @@ const PRIOR_TO_SUBMISSION = [
     code: 'lt_file_contacts',
     bucket: B.SUBMISSION,
     label: 'File contacts',
-    hint: 'Who is on this closing: title, hazard insurance, flood insurance, the buyer’s attorney, '
-      + 'the realtor, our attorney, and — in New York — the settlement agent. Picked from the shared '
-      + 'vendor directory rather than typed, so the same company is the same record on every file.',
+    hint: 'The two the file cannot be submitted without: the title company and the hazard insurance '
+      + 'agent. Everyone else on the closing — the attorneys, the realtor, the settlement agent, the '
+      + 'HOA, the landlord — lives in the File contacts section rather than being asked for here. '
+      + 'Picked from the shared vendor directory rather than typed, so the same company is the same '
+      + 'record on every file.',
     borrowerLabel: 'Who is handling your closing',
-    borrowerHint: 'Your title company, your insurance agent, your attorney and your realtor.',
+    borrowerHint: 'Your title company and your insurance agent.',
     audience: 'both',
     kind: 'form',
     autoApply: 'always',
     slots: [],
     config: {
-      // The contact TYPES. The New York one only asks when the property is
-      // there, which the rule engine cannot express per-slot, so the form does
-      // it from the same `is_new_york` field a rule would use.
-      contactTypes: [
-        { key: 'title', label: 'Title company', required: true },
-        { key: 'hazard_insurance', label: 'Hazard insurance agent', required: true },
-        { key: 'flood_insurance', label: 'Flood insurance agent', required: false, whenField: 'in_flood_zone' },
-        { key: 'buyers_attorney', label: 'Buyer’s attorney', required: false },
-        { key: 'realtor', label: 'Realtor', required: false },
-        { key: 'our_attorney', label: 'Our attorney', required: false },
-        { key: 'ny_settlement_agent', label: 'Settlement agent', required: false, whenField: 'is_new_york' },
-      ],
+      // ONLY THE TWO. Owner-directed 2026-08-31: *"Our attorney, Realtor,
+      // Buyer's Attorney — those open slots should be only in the file contacts
+      // and not … a condition before submittal. The only stuff that should be a
+      // condition before submittal is the title company and the hazard insurance
+      // agent."*
+      //
+      // The other nine did not go anywhere: they are the FILE CONTACTS desk
+      // (`FILE_CONTACT_TYPES` below), which is where an open slot belongs. The
+      // difference is what a CONDITION means — a row on the list somebody has to
+      // clear before the file moves — and an attorney who may never be appointed
+      // is not that. Two of the nine are still asked for in their own right when
+      // the deal calls for it, by their own rule-driven ORDER conditions
+      // (`lt_order_flood_insurance`, `lt_order_ny_settlement_agent`), so nothing
+      // that was genuinely required has become optional.
+      //
+      // DERIVED, NEVER RETYPED: these are the two entries of `FILE_CONTACT_TYPES`
+      // marked `preSubmission`, so the desk and the condition can never disagree
+      // about what the title company is called or which fact greys it.
+      contactTypes: FILE_CONTACT_TYPES.filter((t) => t.preSubmission)
+        .map(({ preSubmission, ...t }) => t),
       // USES the short-term side's vendor directory rather than copying it, so a
       // company corrected once is corrected everywhere. The crossing is recorded
       // in docs/LONG-TERM-AUTHORIZED-COPIES.md before a line of it is written.
@@ -304,34 +394,6 @@ const PRIOR_TO_SUBMISSION = [
     config: { savesToBorrowerProfile: true, readsFromBorrowerProfile: true },
   },
   {
-    code: 'lt_landlord_contact',
-    bucket: B.SUBMISSION,
-    label: 'Landlord’s contact details',
-    hint: 'Only where the borrower rents where they live (Encompass field FR0115). This is what the '
-      + 'verification of rent is sent to, so it is collected before the form is built.',
-    borrowerLabel: 'Your landlord’s contact details',
-    borrowerHint: 'Their name, email and phone number. We send them a short form to confirm your rent.',
-    audience: 'both',
-    kind: 'form',
-    autoApply: 'rules',
-    rule: when('borrower_rents', 'is_true'),
-    /* THE LANDLORD IS A CONTACT, not five free-text boxes (owner-directed
-       2026-08-31: "Make sure each and every FileContacts should be linked to the
-       correct order. The landlord contact should be linked to the preview on the
-       VOR form"). Typed into a box, the landlord exists only on this condition
-       and the verification-of-rent order has nobody to send to — which is
-       exactly what "the orders are not linked to the correct FileContacts, so
-       you can't even send it out" describes. As a `contactTypes` row it lands in
-       the shared vendor directory and on `lt_loan_vendors`, which is where the
-       order desk looks.
-       `fields` stays for the two things that are facts about the TENANCY rather
-       than about the landlord, and the VOR needs both. */
-    config: {
-      contactTypes: [{ key: 'landlord', label: 'Landlord / management company', required: true }],
-      fields: ['monthly_rent', 'rented_since'],
-    },
-  },
-  {
     code: 'lt_vor_sent',
     bucket: B.SUBMISSION,
     label: 'Verification of rent sent',
@@ -350,6 +412,17 @@ const PRIOR_TO_SUBMISSION = [
     // a button ends up on a screen with nothing behind it.
     config: {
       form: 'vor', orderType: 'vor', contactType: 'landlord',
+      // THE TWO TENANCY FACTS MOVED HERE (db/660). They were collected on a
+      // separate "Landlord's contact details" condition, which the owner asked to
+      // retire — *"You can technically remove that condition … You should also be
+      // able to fill it directly on the verification of rent condition and the
+      // entire verification of rent sent as well."* They are facts about the
+      // TENANCY rather than about the landlord, the form cannot be built without
+      // them, and this is the step that builds it — so they belong on the step
+      // that uses them rather than on a row somebody clears first. The LANDLORD
+      // themself is a contact and lives where every other contact does: the File
+      // contacts desk, which `contactType` above already addresses.
+      fields: ['monthly_rent', 'rented_since'],
       send: ['docusign', 'email', 'both'], manualReturnVoidsEnvelope: true,
     },
   },
@@ -365,40 +438,6 @@ const PRIOR_TO_SUBMISSION = [
     autoApply: 'always',
     slots: [{ key: 'id', label: 'Photo ID', required: true }],
     config: { readsFromBorrowerProfile: true, savesToBorrowerProfile: true },
-  },
-  {
-    /* WHO THE PAYOFF IS ORDERED FROM — collected, like every other order's
-       contact, on a condition (owner-directed 2026-08-31: *"Make sure each and
-       every FileContacts should be linked to the correct order … Do a lot of A
-       to Z order to make sure everything is linked to the correct place."*).
-
-       FOUND BY THE A-TO-Z AUDIT: `lt_payoff_ordered` addresses the `payoff`
-       card, and NO condition anywhere collected it — so on every refinance the
-       payoff order sat on the desk saying "add them on the file contacts" and
-       the only way in was the file-contacts section, which is not where the
-       condition sends you. Six of the seven orders prompted for their contact;
-       this was the seventh. Same shape as the landlord and the HOA management
-       company above: a `contactTypes` row, so it lands in the shared vendor
-       directory and on `lt_loan_vendors`, which is where the order desk looks.
-
-       BOTH audiences, like the landlord: the borrower knows who services the
-       mortgage being paid off, and asking them is faster than us guessing from a
-       credit report — which carries the SERVICER'S NAME but no email address. */
-    code: 'lt_payoff_contact',
-    bucket: B.SUBMISSION,
-    label: 'Servicer of the loan being paid off',
-    hint: 'Only on a refinance. The payoff request goes to whoever services the loan being paid '
-      + 'off, so their details are collected before it is ordered.',
-    borrowerLabel: 'Who you pay your current mortgage to',
-    borrowerHint: 'The name of the company you send your mortgage payment to, and an email address '
-      + 'or phone number for them if you have one.',
-    audience: 'both',
-    kind: 'form',
-    autoApply: 'rules',
-    rule: when('is_refinance', 'is_true'),
-    config: {
-      contactTypes: [{ key: 'payoff', label: 'Servicer being paid off', required: true }],
-    },
   },
   {
     code: 'lt_payoff_ordered',
@@ -547,17 +586,42 @@ const PRIOR_TO_CTC = [
     code: 'lt_housing_history',
     bucket: B.CTC,
     label: 'Housing history verified',
+    /* THREE WAYS TO ANSWER ONE QUESTION, AND THE FILE PICKS — owner-directed
+       2026-08-31: *"If he is renting, then the housing history verified condition
+       is tied directly to the verification of rent order and gets the documents
+       from there. You can either upload it manually as well, but it's tied
+       directly and populated by himself. If he is owning, then that housing
+       history verified should have a note that it is a verification of mortgage
+       of primary residence. If he is living rent-free, then the housing history
+       verified should be the rent-free letter."*
+
+       The RENT branch is fed by the verification-of-rent order (orders/kinds.js
+       `vor.docCondition` names this condition and its `slotMap` names the slot),
+       so a completed form that comes back by reply files itself. The other two
+       are uploaded, and so is a rent verification that arrives some other way —
+       "tied directly" adds a route, it never closes the manual one. */
     hint: 'One of three, decided by what the borrower said about where they live (FR0115): the rent '
-      + 'verification back from the landlord if they rent, a mortgage verification on their own home '
-      + 'if they own it, or a letter if they live somewhere rent free. They are alternatives, not a '
-      + 'list — asking for all three would be asking for two things that cannot exist.',
+      + 'verification back from the landlord if they rent, a verification of mortgage on the home they '
+      + 'live in if they own it, or a letter if they live somewhere rent free. They are alternatives, not '
+      + 'a list — asking for all three would be asking for two things that cannot exist. The rent one '
+      + 'fills itself in from the verification of rent order; any of the three can also be uploaded here.',
     audience: 'internal',
     kind: 'document',
     autoApply: 'always',
     slots: [
-      { key: 'vor', label: 'Verification of rent (completed)', required: false, whenField: 'borrower_rents' },
-      { key: 'vom_primary', label: 'Verification of mortgage — their own home', required: false, whenField: 'borrower_owns_home' },
-      { key: 'rent_free_letter', label: 'Living rent free letter', required: false, whenField: 'borrower_lives_rent_free' },
+      { key: 'vor', label: 'Verification of rent (completed)', required: false, whenField: 'borrower_rents',
+        hint: 'Comes back on the verification of rent order and files itself here. It can also be uploaded.' },
+      // THE OWNER ASKED FOR THIS TO SAY PRIMARY RESIDENCE, in those words. The
+      // file already carries a `lt_vom_subject` for the SUBJECT property on a
+      // refinance, and two conditions both called "verification of mortgage" with
+      // nothing saying which house is how the wrong one gets uploaded.
+      { key: 'vom_primary', label: 'Verification of mortgage — primary residence', required: false, whenField: 'borrower_owns_home',
+        hint: 'The home the borrower LIVES in, not the subject property — the subject property has its own verification of mortgage on this file.' },
+      // Worded "Written by" rather than "From" on purpose: the separation gate
+      // reads `FROM <word>` in a Long-Term file as a Long-Term module querying
+      // an RTL table, so ordinary prose in that shape fails the build.
+      { key: 'rent_free_letter', label: 'Living rent free letter', required: false, whenField: 'borrower_lives_rent_free',
+        hint: 'Written by whoever they live with, confirming the borrower pays no rent.' },
     ],
     config: { oneOf: true },
   },
@@ -616,12 +680,20 @@ const PRIOR_TO_CTC = [
     code: 'lt_payoff_received',
     bucket: B.CTC,
     label: 'Payoff received',
-    hint: 'The statement back from the servicer, still good on the closing date.',
+    /* FED BY THE PAYOFF ORDER — owner-directed 2026-08-31: *"The payoff received
+       should be tied directly to the payoff order, and you should also be able to
+       upload manually."* `orders/kinds.js payoff.docCondition` names this
+       condition and its `slotMap` names the slot below, so a statement that comes
+       back by reply files itself; the slot stays an ordinary upload for a payoff
+       that arrives any other way. */
+    hint: 'The statement back from the servicer, still good on the closing date. It files itself in from '
+      + 'the payoff order, and can also be uploaded here.',
     audience: 'internal',
     kind: 'document',
     autoApply: 'rules',
     rule: when('is_refinance', 'is_true'),
-    slots: [{ key: 'payoff', label: 'Payoff statement', required: true }],
+    slots: [{ key: 'payoff', label: 'Payoff statement', required: true,
+      hint: 'Comes back on the payoff order and files itself here. It can also be uploaded.' }],
   },
   {
     code: 'lt_condo_docs',
@@ -876,4 +948,4 @@ function ensureSeeded(client) {
 /** For tests: forget that the seed ran, so the next call re-runs it. */
 function _resetSeed() { seedPromise = null; }
 
-module.exports = { BUCKETS: B, PRIOR_TO_SUBMISSION, PRIOR_TO_CTC, library, verify, seed, ensureSeeded, _resetSeed };
+module.exports = { BUCKETS: B, FILE_CONTACT_TYPES, PRIOR_TO_SUBMISSION, PRIOR_TO_CTC, library, verify, seed, ensureSeeded, _resetSeed };

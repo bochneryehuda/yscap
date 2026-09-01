@@ -192,6 +192,11 @@ export default function LtFileConditions({ loanId }) {
   const [note, setNote] = useState('');
   const [open, setOpen] = useState(() => new Set());
   const [rowErr, setRowErr] = useState({});
+  /* WHAT PILOT READ OFF AN UPLOADED MORTGAGE STATEMENT — a NOTE, never an
+     error, and kept apart from `rowErr` for exactly that reason: the upload
+     succeeded either way, and colouring a successful read like a failure is
+     how somebody learns to ignore the box. */
+  const [rowRead, setRowRead] = useState({});
   const [showDone, setShowDone] = useLtStickyFilter('condDone', false);
   const [role, setRole] = useState(null);
   const [preview, setPreview] = useState(null);   // the document being looked at
@@ -400,12 +405,20 @@ export default function LtFileConditions({ loanId }) {
            of actual file. The streamed door takes what the short-term side takes.
            No `await readAsBase64` here is also why a large file no longer freezes
            the tab while the browser encodes it. */
-        await ltApi.conditionDocUpload(loanId, conditionId, {
+        const up = await ltApi.conditionDocUpload(loanId, conditionId, {
           file,
           filename: file.name,
           contentType: file.type || 'application/octet-stream',
           ...(replaceDocumentId ? { replaceDocumentId } : {}),
         });
+        /* THE MORTGAGE STATEMENT READS ITSELF. The server sends this back only
+           for that one condition, and only when it either FILLED the answer in
+           or read the document and came up short — so this box appears where it
+           means something and nowhere else. It is a heads-up, not a result: the
+           figures are in the answer below and a person still confirms them. */
+        if (up && up.statementRead) {
+          setRowRead((prev) => ({ ...prev, [conditionId]: up.statementRead }));
+        }
       } catch (e) {
         failed += 1;
         // The uploading row already carries the reason in place; this puts it on
@@ -511,7 +524,7 @@ export default function LtFileConditions({ loanId }) {
             {b.conditions.map((c) => (
               <ConditionRow key={c.id} c={c} role={role} loanId={loanId}
                 open={open.has(c.id)} onToggle={() => toggle(c.id)}
-                busy={busy} problem={rowErr[c.id] || null}
+                busy={busy} problem={rowErr[c.id] || null} readOff={rowRead[c.id] || null}
                 onChanged={load}
                 onPatch={patchCondition}
                 waiving={waiving === c.id}
@@ -574,7 +587,7 @@ export default function LtFileConditions({ loanId }) {
  * component doing its own job.
  */
 function ConditionRow({
-  c, role, loanId, open, onToggle, busy, problem, onChanged, onPatch,
+  c, role, loanId, open, onToggle, busy, problem, readOff, onChanged, onPatch,
   waiving, onWaiveOpen, onWaiveCancel, onWaive, onRemove,
   onUpload, onPick, onReviewDoc, onDownloadDoc, onPreview, onSetSlot, dlBusy,
   docAsk, onDocAskCancel, onDocAskSubmit,
@@ -781,6 +794,49 @@ function ConditionRow({
             <p style={{ margin: '10px 0 0', padding: '8px 10px', borderRadius: 8,
               background: '#FBF1F1', color: RED, fontSize: 13, lineHeight: 1.5 }}>
               {problem}
+            </p>
+          )}
+
+          {/* WHAT PILOT READ OFF THE STATEMENT. Two shapes, and they are different
+              pieces of work for the person reading them: figures that were filled
+              in and need CHECKING, or a document that was read and came up short,
+              which needs TYPING. Neither is an error — the document is filed
+              either way — so neither is coloured like one. Every colour here is an
+              explicit dark on white: an `--ink*` token is a light paper colour in
+              this palette and would render white on white. */}
+          {readOff && readOff.status === 'filled' && (
+            <div style={{ margin: '10px 0 0', padding: '10px 12px', borderRadius: 8,
+              background: '#F3F7F4', border: `1px solid ${LINE}` }}>
+              <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: GREEN,
+                textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                Read off the statement
+              </p>
+              <dl style={{ margin: '6px 0 0', display: 'grid',
+                gridTemplateColumns: 'auto 1fr', gap: '2px 10px', fontSize: 13 }}>
+                <dt style={{ color: MUTED }}>Servicer</dt>
+                <dd style={{ margin: 0, color: INK }}>{readOff.servicer || '—'}</dd>
+                <dt style={{ color: MUTED }}>Loan number</dt>
+                <dd style={{ margin: 0, color: INK }}>{readOff.loanNumber || '—'}</dd>
+                <dt style={{ color: MUTED }}>Outstanding balance</dt>
+                <dd style={{ margin: 0, color: INK }}>
+                  {typeof readOff.balance === 'number'
+                    ? readOff.balance.toLocaleString(undefined,
+                      { style: 'currency', currency: 'USD' })
+                    : '—'}
+                </dd>
+              </dl>
+              {readOff.note && (
+                <p style={{ margin: '8px 0 0', fontSize: 12, color: MUTED, lineHeight: 1.5 }}>
+                  {readOff.note}
+                </p>
+              )}
+            </div>
+          )}
+          {readOff && readOff.status === 'short' && (
+            <p style={{ margin: '10px 0 0', padding: '8px 10px', borderRadius: 8,
+              background: '#FBF6EA', color: AMBER, fontSize: 13, lineHeight: 1.5 }}>
+              PILOT read the document but could not fill it in — {readOff.detail}.
+              Type what it says into the answer below.
             </p>
           )}
 

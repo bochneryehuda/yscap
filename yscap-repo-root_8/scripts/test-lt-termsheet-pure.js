@@ -295,7 +295,20 @@ section('the layout — the block list a renderer walks');
   const breakEven = table.rows.find((r) => r[0] === 'Break-even');
   check(breakEven && breakEven[2] === '67 months (5 years 7 months)',
     `the break-even row reads in years and months, as the docs print it (got ${breakEven && breakEven[2]})`);
-  const paras = lay.blocks.filter((b) => b.t === 'para').map((b) => b.text).join(' ');
+  /* ⛔ THE PARAGRAPHS ARE COLLECTED THROUGH THE COLUMNS, NOT ONLY OFF THE TOP
+     LEVEL. What each option means is now set two-up (owner-reported 2026-09-01:
+     *"this bottom part is just thrown text … it needs to be better laid out"*),
+     so a `columns` block carries them; a filter over the top level alone reads
+     that as the sentences having disappeared, which is a fact about the
+     extractor. The SUBJECT of every assertion below is what the sentence SAYS,
+     and that is unchanged. */
+  const paraTexts = (list) => (list || []).flatMap((b) => {
+    if (!b || typeof b !== 'object') return [];
+    if (b.t === 'para') return [b.text];
+    if (b.t === 'columns') return [...paraTexts(b.left), ...paraTexts(b.right)];
+    return [];
+  });
+  const paras = paraTexts(lay.blocks).join(' ');
   /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. This pinned the sentence VERBATIM,
      and the owner asked for exactly that sentence to say more: *"you need to
      explain a little bit more what your head means, and the same thing for the
@@ -323,7 +336,7 @@ section('the layout — the block list a renderer walks');
      No points") that the approved design moves onto the heading itself as its
      right-hand note. Counting paragraphs would now under-count a page that says
      the same thing in a better place, so both halves are asserted directly. */
-  const named = lay.blocks.filter((b) => b.t === 'para' && /No points/.test(b.text || '')).length;
+  const named = paraTexts(lay.blocks).filter((t) => /No points/.test(t || '')).length;
   check(named >= 2,
     'and every comparative sentence names the option it is comparing against, so no figure on the page reads as absolute when it is a difference');
   const differsBand = lay.blocks.find((b) => b.t === 'band' && b.title === 'What differs');
@@ -411,6 +424,29 @@ section('the three documents — one option, three options, three scenarios');
     'the comparison says "Comparison Sheet", and how many options');
   check(layS.blocks[0].title === 'Scenario Comparison' && /2 scenarios/.test(layS.blocks[0].subtitle),
     'the scenario comparison says so, and counts scenarios rather than options');
+
+  /* ⛔ THE BUSINESS-PURPOSE STAMP IS ON ALL THREE KINDS — owner-directed
+     2026-09-01: *"every single one of your exports should say at the bottom,
+     'This is for business-purpose lending only.'"* Asserted on every document
+     kind rather than on one, because the three are built by one `metaBlock` and
+     a guard that checked only the term sheet would pass on the day somebody gave
+     a comparison its own meta.
+     ⛔ AND ON THE OVERRIDE, which is the case that can actually take it away: a
+     snapshot may carry its own `disclosure`, so the stamp is prepended OUTSIDE
+     that and a custom wording cannot displace it. Testing only the default
+     proves the happy path and leaves the one real way to lose it unguarded. */
+  const BP = wording.BUSINESS_PURPOSE;
+  check(/business-purpose lending only/i.test(BP), `the stamp says what the owner asked it to say: ${JSON.stringify(BP)}`);
+  for (const [kind, lay] of [['term sheet', lay1], ['comparison', lay3], ['scenario', layS]]) {
+    check(lay.blocks[0].disclaimer.startsWith(BP),
+      `the ${kind}'s footer leads with the business-purpose stamp`);
+  }
+  const custom = layout.buildLayout(
+    Object.assign({}, one.snapshot, { disclosure: 'Some other wording entirely.' }), {},
+  );
+  check(custom.blocks[0].disclaimer.startsWith(BP)
+    && custom.blocks[0].disclaimer.includes('Some other wording entirely.'),
+  'and a snapshot carrying its own disclosure keeps the stamp — it is prepended outside the overridable part');
   /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. The sentence moved INTO the shared
      facts box, which is where the sketch says it: the box states what every
      scenario agrees about, and its footnote says what is left over. Read every
@@ -591,21 +627,68 @@ section('the fees are listed out, and broken down');
   'listing a waived fee changes no total — its dollars are the zero the absent line already contributed');
 
   const table = layout.comparisonTable(built.snapshot);
-  /* ⛔ RE-POINTED, AND THE REQUIREMENT IS SERVED BETTER RATHER THAN RELAXED. The
-     table carried one "Lender fees $2,095" cell; the owner asked to *"list out
-     the lender fees, because the next one, you're waiving the lender fees — you
-     need to be able to see the difference."* One cell answers neither question:
-     which fees, and which of them this option charges. Each fee is its own row
-     now, so the waived column names it fee by fee AND the total it saves. */
-  const appRow = table.rows.find((r) => r[0] === 'Application fee');
-  const comRow = table.rows.find((r) => r[0] === 'Commitment fee');
-  check(appRow && appRow.some((c) => /^Waived \(\$500\)$/.test(String(c))) && appRow.some((c) => c === '$500'),
-    'the application fee is its own row, waived beside charged, both naming the same $500');
-  check(comRow && comRow.some((c) => /^Waived \(\$1,595\)$/.test(String(c))) && comRow.some((c) => c === '$1,595'),
-    '…and so is the commitment fee, at its own $1,595');
-  const savedRow = table.rows.find((r) => r[0] === 'Lender fees you are not paying');
-  check(savedRow && savedRow.some((c) => c === '$2,095'),
-    '…and what the waive is WORTH is totalled, because on that option it is the reason to choose it rather than a subtotal');
+  /* ⛔ RE-POINTED AGAIN 2026-09-01, AND THIS TIME BACK TOWARD ONE ROW — owner-
+     directed, reversing the 2026-08-30 direction the previous re-point served.
+     That one split a single "Lender fees $2,095" cell into a row per fee, to
+     answer *"which of these is this option charging?"*. The owner has since said
+     the question cannot arise: *"They are identical … it's one package. You
+     waive lender fees, so it's zero lender fee, and they don't charge the
+     $2,095."* One switch moves both, so a row each was two rows saying the same
+     thing on every option.
+
+     ⛔ WHAT IS ASSERTED IS THEREFORE THE PROPERTY, NOT THE SHAPE: the sheet still
+     shows the FULL amount the waived option is not paying beside the amount the
+     other one is, and it still names the two parts — that was the whole point of
+     the 2026-08-30 direction and it survives. Only the row count changed. */
+  const feeRow = table.rows.find((r) => r[0] === 'Lender fees');
+  const feeOpts = feeRow && feeRow[feeRow.length - 1];
+  const feeCellSubs = feeOpts && typeof feeOpts === 'object' && !Array.isArray(feeOpts)
+    ? feeOpts.cellSubs : null;
+  check(!!feeRow, 'the two lender fees are ONE row, not one row each');
+  check(!table.rows.some((r) => r[0] === 'Application fee' || r[0] === 'Commitment fee'),
+    '…so neither fee has a row of its own any more');
+  /* ⛔ RE-POINTED 2026-09-01 (same day, second correction) — owner-reported on a
+     real export: *"it says 'Waived' and is circled around 2,095, which would just
+     say 'Waived' … it should just say, in small on the bottom … you saved on this
+     one 2,095, because it's not clear to understand."* The figure is now just the
+     figure and the amount rides in the small line under it, so the assertion
+     moves with it: what must hold is that the waived column still states the
+     $2,095, not that the FIGURE carries it. */
+  check(feeRow && feeRow.some((c) => c === '$2,095') && feeRow.some((c) => c === 'Waived'),
+    '…and it prices the package both ways: $2,095 charged, and a bare "Waived" beside it');
+  /* ⛔ AND THE NOTE BELONGS TO ITS COLUMN, not to the label — owner-directed:
+     *"it should basically be in the scenario line, not in the line of the base of
+     lender fees."* Asserted per column, so a note that drifted back onto the row
+     label would fail here even though the same words would still be on the page. */
+  check(Array.isArray(feeCellSubs) && feeCellSubs.some((t) => t && /Application fee \$500/.test(t)
+    && /Commitment fee \$1,595/.test(t)),
+  '…the charged column names its two parts underneath its own figure');
+  check(Array.isArray(feeCellSubs) && feeCellSubs.some((t) => t && /You save \$2,095/.test(t)),
+    '…and the waived column says what it saved, in the same small line');
+  check(!feeOpts || !feeOpts.sub,
+    '…and nothing rides under the row LABEL, where it would describe neither column');
+  check(!table.rows.some((r) => r[0] === 'Lender fees you are not paying'),
+    '…and the separate saving total is gone, because each column now says its own')
+
+  /* ⛔ THE HALF-WAIVED PACKAGE, which the owner says cannot happen and the waive
+     switch agrees — one flag moves both fees. It is guarded anyway, because
+     "cannot happen" is a statement about today's switch and not a property of
+     the data, and BOTH of the tidy answers would be a lie if it ever did: the
+     total would charge for a fee that was waived, and "Waived ($2,095)" would
+     waive one that is being charged. Asserted on the library rather than
+     through a render, since the snapshot cannot currently produce the state. */
+  {
+    const half = wording.lenderFeePackage({ lines: [
+      { key: 'applicationFee', dollars: 500, fullDollars: 500, waived: false },
+      { key: 'commitmentFee', dollars: 0, fullDollars: 1595, waived: true },
+    ] });
+    check(half.partial === true && half.waived === false,
+      'a package with one fee waived and one charged is reported as PARTIAL, not as either tidy answer');
+    check(half.text === '$500',
+      '…and it prices what is actually being charged, never the $2,095 total');
+    check(/Application fee \$500/.test(half.breakdown) && /Commitment fee waived \(\$1,595\)/.test(half.breakdown),
+      '…and its breakdown says which half was waived, at what it would have been');
+  }
 }
 
 // =============================================================================

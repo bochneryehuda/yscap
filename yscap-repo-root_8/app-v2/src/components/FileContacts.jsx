@@ -102,6 +102,21 @@ const DEFAULT_BLURB = "Realtors, attorneys, title, insurance, flood, contractors
 export default function FileContacts({
   appId, isStaff, heading = 'File contacts',
   adapter = null, types = FILE_CONTACT_TYPES, blurb = DEFAULT_BLURB,
+  /* THE EXPECTED ROWS — OPTIONAL, AND OMITTING IT IS BYTE-IDENTICAL TO BEFORE.
+     `[{ key, label, required, applies, whyNot }]`, computed on the SERVER against
+     the file's own facts. `applies` is THREE-VALUED and the third value is the
+     point: `null` means we could not read the fact yet, which must never render
+     as a confident "this file does not need it".
+
+     Owner-directed 2026-08-31: *"On the FileContacts, there should be the same
+     logic that we have by New York settlement agents: it's grayed out … I'm
+     looking now in a file where a person is renting his primary residence, and I
+     don't see in the FileContacts a slot for landlord contact information."* A
+     dropdown you have to know to open is not a slot; this is. A row that does not
+     apply is KEPT AND GREYED rather than hidden, because seeing that the question
+     was asked and answered "not this file" is the reassurance — an absent row is
+     indistinguishable from one nobody thought of. */
+  slots = null,
 }) {
   const [list, setList] = useState(null);
   const [adding, setAdding] = useState(false);
@@ -113,6 +128,33 @@ export default function FileContacts({
 
   // No adapter = the RTL pair, which is what both existing callers rely on.
   const io = useMemo(() => adapter || apiFileContactsAdapter(appId, isStaff), [adapter, appId, isStaff]);
+
+  /* WHAT IS ON THE FILE, ARRANGED BY THE JOB IT DOES. Only computed when a caller
+     asked for slots; without them `rows` is null and everything below behaves
+     exactly as it did. A contact whose type is not one of the slots is NOT lost —
+     it falls through to the ordinary list under its own heading, which is what
+     keeps "add anyone else" working. */
+  const slotRows = useMemo(() => {
+    if (!Array.isArray(slots) || !slots.length) return null;
+    const byType = new Map();
+    for (const c of (list || [])) {
+      const k = c.contact_type || 'other';
+      if (!byType.has(k)) byType.set(k, []);
+      byType.get(k).push(c);
+    }
+    return slots.map((s) => ({ ...s, cards: byType.get(s.key) || [] }));
+  }, [slots, list]);
+  const extras = useMemo(() => {
+    if (!slotRows) return list;
+    const keys = new Set(slotRows.map((s) => s.key));
+    return (list || []).filter((c) => !keys.has(c.contact_type || 'other'));
+  }, [slotRows, list]);
+
+  /* Open the add form already set to one job, so a slot's own button fills that
+     slot rather than dropping somebody into a dropdown they then have to find. */
+  function addInto(key) {
+    setErr(''); setEditId(null); setF({ ...BLANK, contactType: key }); setAdding(true);
+  }
   const load = () => io.list().then(setList).catch(() => setList([]));
   // Keyed on the FILE, not on the adapter: a caller that builds its adapter inline
   // would otherwise re-fetch on every render. A second product passes its own id
@@ -195,26 +237,99 @@ export default function FileContacts({
         </div>
       )}
 
-      {list == null ? <p className="muted small">Loading…</p>
-        : list.length === 0 ? <p className="muted small">No contacts on this file yet.</p>
-        : (
-          <div style={{ display: 'grid', gap: 6 }}>
-            {list.map(c => (
-              <div key={c.link_id} className="checkitem" style={{ alignItems: 'center' }}>
-                <span className="pill" style={{ marginRight: 8 }}>{contactTypeLabel(c, types)}</span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600 }}>{c.company_name || c.contact_name || c.email || '—'}</div>
-                  <div className="muted small" style={{ wordBreak: 'break-word' }}>
-                    {[c.contact_name && c.company_name ? c.contact_name : '', c.email, c.phone].filter(Boolean).join(' · ') || '—'}
-                    {c.notes ? ` — ${c.notes}` : ''}
+      {list == null ? <p className="muted small">Loading…</p> : (
+        <>
+          {slotRows && (
+            <div style={{ display: 'grid', gap: 6, marginBottom: extras && extras.length ? 14 : 0 }}>
+              {slotRows.map(s => (
+                <ContactSlot key={s.key} slot={s} onAdd={() => addInto(s.key)}
+                  onEdit={startEdit} onRemove={remove} />
+              ))}
+            </div>
+          )}
+
+          {slotRows && extras && extras.length > 0 && (
+            <div className="muted small" style={{ fontWeight: 600, marginBottom: 6 }}>Also on this file</div>
+          )}
+
+          {(slotRows ? extras : list).length === 0
+            ? (slotRows ? null : <p className="muted small">No contacts on this file yet.</p>)
+            : (
+              <div style={{ display: 'grid', gap: 6 }}>
+                {(slotRows ? extras : list).map(c => (
+                  <div key={c.link_id} className="checkitem" style={{ alignItems: 'center' }}>
+                    <span className="pill" style={{ marginRight: 8 }}>{contactTypeLabel(c, types)}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600 }}>{c.company_name || c.contact_name || c.email || '—'}</div>
+                      <div className="muted small" style={{ wordBreak: 'break-word' }}>
+                        {[c.contact_name && c.company_name ? c.contact_name : '', c.email, c.phone].filter(Boolean).join(' · ') || '—'}
+                        {c.notes ? ` — ${c.notes}` : ''}
+                      </div>
+                    </div>
+                    <button className="btn ghost small" title="Edit this contact's details" onClick={() => startEdit(c)}>Edit</button>
+                    <button className="btn ghost small" title="Remove from this file" onClick={() => remove(c.link_id)}>Remove</button>
                   </div>
-                </div>
-                <button className="btn ghost small" title="Edit this contact's details" onClick={() => startEdit(c)}>Edit</button>
-                <button className="btn ghost small" title="Remove from this file" onClick={() => remove(c.link_id)}>Remove</button>
+                ))}
               </div>
-            ))}
+            )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * ONE EXPECTED CONTACT — the card if we have it, the reason if this file does not
+ * want it, and an Add button if it does.
+ *
+ * `applies` is three-valued and each value gets its own treatment, because they
+ * are three different instructions to the reader:
+ *   true  — this file needs it. Add it.
+ *   false — this file does not. Greyed, with the reason, and NOT offered: an Add
+ *           button beside "only on a condominium" invites somebody to file a
+ *           management company on a single-family house.
+ *   null  — we cannot tell yet. Greyed with its own wording, and STILL offered,
+ *           because refusing on a fact we could not read is the expensive
+ *           direction — somebody who knows the answer must be able to act.
+ *
+ * A card that is already on the file always shows in full, whatever the row says:
+ * a landlord recorded before the residence was read is real, and hiding it behind
+ * a grey "we cannot tell" would lose work somebody did.
+ *
+ * Every colour is an explicit dark on the white canvas — `--ink*` is a LIGHT paper
+ * token in this palette and renders white-on-white.
+ */
+function ContactSlot({ slot, onAdd, onEdit, onRemove }) {
+  const has = slot.cards.length > 0;
+  const off = slot.applies === false;
+  const unknown = slot.applies === null || slot.applies === undefined;
+  const dim = !has && (off || unknown);
+  return (
+    <div className="checkitem" style={{ alignItems: 'center', opacity: dim ? 0.72 : 1 }}>
+      <span className="pill" style={{ marginRight: 8 }}>{slot.label}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {has ? slot.cards.map(c => (
+          <div key={c.link_id} style={{ marginBottom: slot.cards.length > 1 ? 4 : 0 }}>
+            <div style={{ fontWeight: 600, color: '#141B22' }}>{c.company_name || c.contact_name || c.email || '—'}</div>
+            <div className="small" style={{ color: '#4B585C', wordBreak: 'break-word' }}>
+              {[c.contact_name && c.company_name ? c.contact_name : '', c.email, c.phone].filter(Boolean).join(' · ') || '—'}
+            </div>
+          </div>
+        )) : (
+          <div className="small" style={{ color: '#4B585C' }}>
+            {off || unknown ? slot.whyNot
+              : (slot.required ? 'Needed on this file — nobody added yet.' : 'Nobody added yet.')}
           </div>
         )}
+      </div>
+      {has
+        ? (
+          <>
+            <button className="btn ghost small" title="Edit this contact's details" onClick={() => onEdit(slot.cards[0])}>Edit</button>
+            <button className="btn ghost small" title="Remove from this file" onClick={() => onRemove(slot.cards[0].link_id)}>Remove</button>
+          </>
+        )
+        : !off && <button className="btn ghost small" onClick={onAdd}>+ Add</button>}
     </div>
   );
 }
