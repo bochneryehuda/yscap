@@ -115,8 +115,21 @@ console.log('\na blank is never a zero — and the screen is told what is missin
   ok(noTax.dscr === null && noTax.missing.includes('property tax'),
     'B2 a missing tax is NOT treated as zero tax, which would flatter the ratio');
 
+  /* ⛔ B3 WAS RE-POINTED, NOT LOOSENED (owner-directed 2026-09-01: *"we shouldn't need to put in a
+     target rate… go by the average"*). It used to assert that no rate meant NO ratio, which was
+     the right assertion under the old rule and is now the defect the owner reported. The rate is
+     the ONE input that became optional, so the assertion moved to what is now true and is
+     STRONGER for it: a blank rate produces a real ratio, at the shared assumed coupon, and SAYS
+     it assumed — the last part being what stops an assumed rate reading as a chosen one. Every
+     other blank on either side of it (B1, B2, B4-B8) is untouched and still refused. */
   const noRate = D.dscrFrom({ loanAmount: 375000, termYears: 30, rentMonthly: 3500, taxMonthly: 500, insuranceMonthly: 150 });
-  ok(noRate.dscr === null && noRate.missing.includes('rate'), 'B3 no rate -> no ratio');
+  ok(noRate.dscr !== null && !noRate.missing.includes('rate'),
+    `B3 no rate -> the ratio is still worked out (${noRate.dscr})`);
+  ok(noRate.rateAssumed === true && noRate.ratePctUsed === D.TYPICAL_RATE_PCT,
+    `B3b …at the assumed ${D.TYPICAL_RATE_PCT}%, and it says so rather than passing it off as chosen`);
+  const badRate = D.dscrFrom({ loanAmount: 375000, ratePct: -2, termYears: 30, rentMonthly: 3500, taxMonthly: 500, insuranceMonthly: 150 });
+  ok(badRate.dscr === null && badRate.missing.includes('rate'),
+    'B3c ⛔ …while a rate that IS typed and is wrong is still refused, never assumed past');
 
   // HOA is the ONE default, and it is the owner's: blank means none.
   const noHoa = D.dscrFrom({ loanAmount: 375000, ratePct: 7.375, termYears: 30, rentMonthly: 3500, taxMonthly: 500, insuranceMonthly: 150 });

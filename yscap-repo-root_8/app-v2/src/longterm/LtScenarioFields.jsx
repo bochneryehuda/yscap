@@ -30,7 +30,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ltApi } from './api.js';
 import { money } from './format.js';
-import { perMonth, dscrFrom } from './dscrCalc.js';
+import { perMonth, dscrFrom, TYPICAL_RATE_PCT } from './dscrCalc.js';
 import {
   PROPERTY_TYPES, PURPOSES, BORROWER_TYPES, PREPAY_TERMS, PREPAY_STRUCTURES, LOAN_TERMS,
   DEFAULT_TERM_YEARS, LOCK_DAYS,
@@ -308,7 +308,12 @@ export function DscrCalc({ c, setC, loanAmount, termYears, interestOnly, onRatio
           <Money id="dc-hoa" value={c.hoa} onChange={(v) => setC((p) => ({ ...p, hoa: v }))} ariaLabel="Monthly HOA" />
         </Field>
 
-        <Field id="dc-rate" label="Target rate" basis="0 1 130px" min={120} hint="The rate to work the payment out at">
+        {/* ⛔ OPTIONAL, AND THE HINT SAYS SO (owner-directed 2026-09-01: *"we shouldn't need to put
+            in a target rate… If you don't have a targeted rate, go by the average"*). Leaving it
+            blank no longer stops the ratio: the payment is worked out at the typical coupon and the
+            answer below states that it was assumed. A rate typed here always wins. */}
+        <Field id="dc-rate" label="Target rate" basis="0 1 170px" min={160}
+          hint={`Optional — blank works it out at ${TYPICAL_RATE_PCT}%`}>
           <input id="dc-rate" style={control} inputMode="decimal" value={c.rate} onChange={setK('rate')} autoComplete="off" />
         </Field>
       </div>
@@ -335,6 +340,15 @@ export function DscrCalc({ c, setC, loanAmount, termYears, interestOnly, onRatio
                 which is invisible unless the panel says so — and a person who cannot see a thing
                 happen assumes it did not. This is what replaced the "Use this ratio" button. */}
             <span style={{ fontSize: 11.5, color: MUTED }}>in the DSCR box above</span>
+            {/* ⛔ AN ASSUMED RATE IS NEVER PRESENTED AS A CHOSEN ONE. This ratio is written into the
+                scenario and priced on, so a reader who cannot see that the rate was assumed would
+                take it for a figure somebody picked. Stated in CAUTION beside the number, not in
+                the small print underneath. */}
+            {out.rateAssumed && (
+              <span style={{ fontSize: 11.5, color: CAUTION, fontWeight: 600 }}>
+                {`at an assumed ${out.ratePctUsed}% — type a rate to use your own`}
+              </span>
+            )}
           </div>
         )}
         {/* WHAT IT IS ASSUMING, SAID OUT LOUD. The payment shape and the term come from the scenario
