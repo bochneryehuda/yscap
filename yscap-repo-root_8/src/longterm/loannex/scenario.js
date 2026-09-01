@@ -275,12 +275,22 @@ function buildNexApp(sc, registry, opts = {}) {
   // loans, made to an entity for an investment property". Routing every investor to
   // LoanNEX therefore produced an empty board rather than a priced one.
   //
-  // An unstated citizenship takes 'UsCitizen', which is what this connector has always
-  // sent for a scenario stating neither field and is the value the recorded live body
-  // carries. A blank string reads as unstated (the same convention `condoType` and
-  // `escrow` use below) — a form control nobody filled in must not refuse the loan.
-  const citizenship = A('Citizenship', s.citizenship == null || s.citizenship === '' ? 'UsCitizen'
-    : mapAlias(CITIZENSHIP_ALIASES, s.citizenship, 'citizenship', 'unknown_citizenship'), 'citizenship');
+  // An unstated citizenship takes the SHARED default — the same module the prepay term,
+  // the DSCR and the reserves come from, so the two programs cannot be asked a different
+  // question about one loan. It resolves to 'US Citizen', which this alias table renders
+  // as the vendor's `UsCitizen`: byte-for-byte what this connector sent when the answer
+  // was an inline literal here, and what the recorded live body carries.
+  //
+  // A blank reads as unstated HERE, through the shared `withDefault` — the convention
+  // `condoType` and `escrow` use below. Stated precisely, because the first version of
+  // this comment overclaimed and an audit caught it: that is true of THIS BUILDER and
+  // not of the combined route, which runs the scenario through Lender Price's registry
+  // first and answers a blank with a 422 naming the field before either vendor is
+  // called. So a blank cannot reach here from the board (its `toScenario` drops empty
+  // strings anyway) — only an API caller can send one, and they are told which field
+  // is wrong rather than having it guessed at.
+  const citizenship = A('Citizenship',
+    mapAlias(CITIZENSHIP_ALIASES, prof.citizenship, 'citizenship', 'unknown_citizenship'), 'citizenship');
   // WAIVE ESCROW. An explicit `escrow` value (Yes / Waived / TaxesOnly /
   // InsuranceOnly) is richer than the button and wins; otherwise the shared
   // `escrowWaive` flag decides, under any spelling.

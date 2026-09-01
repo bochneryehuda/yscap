@@ -200,6 +200,13 @@ function mapPrepayStructure(v) {
 // §33.4 — BORROWER TYPE (dynamicPropertiesMap.GLOBAL_BorrowerType). The exact six-value tenant enum.
 // This was previously passed through UNVALIDATED, so an arbitrary string travelled upstream as a
 // vesting type (audit §34.2 P1). The DSCR profile default is LLC.
+// The shared DSCR profile — READ AT CALL TIME, never captured here. Snapshotting
+// `.citizenship` into a constant at module load was the first cut, and it silently
+// re-armed the very drift this wiring exists to close: moving the shared default moved
+// LoanNEX (which resolves it per build) and left this side on the value it had copied at
+// boot. The guard that caught it is DEF-4, which MOVES the default and requires both
+// programs to follow.
+const SHARED_PROFILE_DEFAULTS = require('../pricing/scenario-defaults').DSCR_PROFILE;
 const BORROWER_TYPES = new Set(['Individual', 'Corporation', 'Partnership', 'Trust', 'Non-Profit', 'LLC']);
 
 // Adverse-credit / borrower dynamic fields — exact upstream keys + tokens from the audit
@@ -315,7 +322,18 @@ function applyRegistry(m, sc) {
   if (sc.lateInLast12Months === true) setDyn(m, 'Lateinlast12months', 'true');
 
   // --- citizenship / tradelines ---
-  if (sc.citizenship != null) { if (CITIZENSHIP.has(sc.citizenship)) setDyn(m, 'Citizenship', sc.citizenship); else bad('citizenship', sc.citizenship, CITIZENSHIP); }
+  // CITIZENSHIP. An omitted one takes the SHARED default (`pricing/scenario-defaults`),
+  // which resolves to the SAME 'US Citizen' the recorded base already carries — so this
+  // writes the value that was going out anyway and moves no number (proven byte-identical
+  // over 1,008 priced scenarios). What it buys is that the default now lives in ONE place
+  // both programs read: previously this side's copy was frozen inside a captured JSON blob,
+  // so moving the shared default would have taken LoanNEX with it and left this one behind.
+  //
+  // ONLY AN ABSENT FIELD TAKES IT. A blank string still falls through to `bad()` exactly as
+  // before, so nothing this connector used to refuse is now quietly priced; and an invalid
+  // value still never reaches `setDyn`, leaving the recorded base value untouched.
+  const czEff = sc.citizenship != null ? sc.citizenship : SHARED_PROFILE_DEFAULTS.citizenship;
+  if (czEff != null) { if (CITIZENSHIP.has(czEff)) setDyn(m, 'Citizenship', czEff); else bad('citizenship', czEff, CITIZENSHIP); }
   if (sc.tradelines != null && sc.tradelines !== '') { if (TRADELINES.has(sc.tradelines)) setDyn(m, 'Tradelines', sc.tradelines); else bad('tradelines', sc.tradelines, TRADELINES); }
   // §31.8 item 7 — OPEN QUESTION FOR THE VENDOR, DELIBERATELY NOT RESOLVED HERE. The audit
   // contradicts ITSELF about how "no mortgage history" travels, and the two halves are different

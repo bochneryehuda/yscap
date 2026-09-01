@@ -66,6 +66,23 @@ const DSCR_PROFILE = {
   propertyType: 'SingleFamily',
   occupancy: 'Investment',
   incomeDoc: 'DSCR',
+  // US CITIZEN, stated here rather than left implicit in two places (owner-directed
+  // 2026-09-01: *"just put it somewhere in the backend to pre-fill as U.S. citizens…
+  // the same way the other defaults work"* — and, on a control for it, *"we don't need
+  // to add the option for this in the frontend"*).
+  //
+  // THIS MOVES NOTHING. It is what BOTH programs already send for a scenario that does
+  // not state one: Lender Price's recorded base carries `Citizenship: "US Citizen"` and
+  // only overwrites it when a scenario states one, and the LoanNEX connector carried the
+  // same answer as an inline literal. Both now read it from HERE, so the two can no
+  // longer drift — which is the whole reason this file exists. Before it, the answer
+  // lived in a captured JSON blob on one side and a hard-coded string on the other, and
+  // moving one would silently have left the other behind.
+  //
+  // Like every word above it this is a CANONICAL scenario value, not a wire token: each
+  // adapter maps it through its own alias table (LoanNEX renders it `UsCitizen`) and
+  // checks it against its own vendor registry.
+  citizenship: 'US Citizen',
 };
 
 /**
@@ -209,6 +226,7 @@ function profileFor(sc) {
     lockDays: withDefault(s.lockDays, DSCR_PROFILE.lockDays),
     reservesMonths: withDefault(s.reservesMonths != null ? s.reservesMonths : s.reserves, DSCR_PROFILE.reservesMonths),
     propertyType: withDefault(s.propertyType, DSCR_PROFILE.propertyType),
+    citizenship: withDefault(s.citizenship, DSCR_PROFILE.citizenship),
   };
 }
 

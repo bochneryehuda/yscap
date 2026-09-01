@@ -152,15 +152,20 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
    instead, so a session lasts as long as the JWT (1 h).
 5. **Neither board asks for the borrower's CITIZENSHIP, so every quote prices a US citizen.**
    The scenario vocabulary has a real `citizenship` field and both connectors honour it — but no
-   screen offers a control for it, so on an ordinary quote it is unstated. The two programs then
-   AGREE, which is the good news and was worth checking rather than assuming: LoanNEX is sent
-   `UsCitizen` (the value the recorded live body carries), and Lender Price sends `US Citizen` too
-   — not by inheriting a vendor default but because its own recorded base (`search-base.json`)
-   hard-carries `Citizenship: "US Citizen"`, which `setDyn` only overwrites when a scenario states
-   one. Verified at runtime on both sides. So the exposure is not a parity gap between the
-   programs; it is that a foreign-national borrower is priced as a US citizen on BOTH boards until
-   somebody states it. Adding the control would change the GENERAL board, which is off limits
-   without the owner's word — raised rather than guessed at.
+   screen offers a control for it (owner-directed 2026-09-01: *"we don't need to add the option for
+   this in the frontend"*), so on an ordinary quote it is unstated. Both programs then take the ONE
+   shared default in `pricing/scenario-defaults.js` — `US Citizen`, which LoanNEX renders as its own
+   `UsCitizen` — so they cannot be asked a different question about one loan. Before that default
+   was stated, they agreed by luck: Lender Price's copy was frozen inside the recorded
+   `search-base.json` and LoanNEX's was a hard-coded string, so moving one would have left the other
+   behind. The remaining exposure is not a gap BETWEEN the programs; it is that a foreign-national
+   borrower is priced as a US citizen on BOTH boards until somebody states it. Adding a control
+   would change the GENERAL board, which the owner has fenced off — raised rather than guessed at.
+   · A blank `citizenship` from an API caller is REFUSED by the route (Lender Price's registry
+   answers `invalid_field_value` 422, naming the field, before either vendor is called), even though
+   each BUILDER treats a blank as unstated. The board cannot produce one — its `toScenario` drops
+   empty strings — so this is an API-caller distinction, recorded because an earlier version of this
+   item claimed a blank was simply defaulted, which is true of the builder and false of the product.
 6. **Three citizenship values Lender Price accepts have no LoanNEX equivalent yet**, so stating one
    empties the LoanNEX half of a combined board — the same failure mode as the vesting-type defect,
    reported rather than silent. LoanNEX's own registry offers exactly four Citizenship options
