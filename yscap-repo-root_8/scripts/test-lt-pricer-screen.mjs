@@ -646,7 +646,14 @@ console.log('LT Pricing Engine — structural guards\n');
     // The vendor's own fee fields render in RAW only — in a comp position our sheet replaces
     // them, because "Total origination fee $0.00" beside our real charge list is the exact
     // confusion the owner reported.
-    ok(/\{!compActive && \(\s*<Track title="Lender Price's own fee fields"/.test(code),
+    /* ⛔ RE-POINTED, NOT LOOSENED (2026-09-01, the un-forking). The title is no longer a literal:
+     one screen now serves both engines, so it reads `engine.sheetPossessive` — "Lender Price's"
+     on the general board, "The rate sheet's" on the combined one, which prices on two programs
+     and may name neither. The SUBJECT of this guard has not moved an inch: the vendor's own fee
+     fields must render in RAW ONLY, and must be labelled as the vendor's rather than as ours.
+     Both halves are still asserted — the `!compActive` gate, and that the label is the engine's
+     own possessive rather than a hard-coded name or nothing at all. */
+  ok(/\{!compActive && \(\s*<Track title=\{`\$\{engine\.sheetPossessive\} own fee fields`\}/.test(code),
       'PE-126 the vendor fee fields show in raw only, labelled as the vendor’s');
     // The charge list carries the closing sheet: totals + down payment + cash to close, all
     // summed from the SAME lines (closingSheet reads the charge list — one source).

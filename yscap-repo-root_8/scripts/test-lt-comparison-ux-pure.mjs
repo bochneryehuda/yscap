@@ -244,11 +244,17 @@ ok(!/flex: '0 0 132px'/.test(B.replace(/const ACT_W[^\n]*\n/, '')),
   'E2 …and no hand-typed copy of it survives anywhere on the board');
 const eligibleHead = (B.match(/className="ltq-head"[\s\S]*?<\/div>/) || [])[0] || '';
 ok(/Monthly P&amp;I/.test(eligibleHead), 'E3 (located the eligible board\'s heading row)');
-ok(/flex: ACT_W \}/.test(eligibleHead),
+/* ⛔ RE-POINTED, AND THE CLAIM GOT STRONGER (2026-09-01, the un-forking). The width is no
+   longer the constant read twice — it is ONE expression, `actW`, derived once per row from the
+   engine (a board with the term-sheet cart reserves the tick-box's width; one without it does
+   not). The bug this guards is the heading and the rows reserving DIFFERENT widths; reading one
+   expression in both places makes that impossible rather than merely currently untrue, which is
+   what the constant did. Both are still checked by name so a hard-coded pixel value fails. */
+ok(/flex: actW \}/.test(eligibleHead),
   'E4 its trailing spacer is the SAME width as the rows\' action cell — the whole bug');
 /* Both row shapes: the lender's front row and its other programmes. If either drifts, the
    figures on that row slide out from under the headings above them. */
-ok((B.match(/className="ltq-act" style=\{\{ flex: ACT_W,/g) || []).length === 2,
+ok((B.match(/className="ltq-act" style=\{\{ flex: actW,/g) || []).length === 2,
   'E5 both eligible row shapes read the same constant');
 ok(/flex: ACT_W_PLAIN \}/.test(B) && (B.match(/ACT_W_PLAIN/g) || []).length >= 3,
   'E6 the ineligible board (no tick-box) has its own narrower column, header and row agreeing');
