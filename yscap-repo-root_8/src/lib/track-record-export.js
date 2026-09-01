@@ -82,7 +82,8 @@ function trackRecordAoa(sections, meta = {}) {
   const aoa = [];
   aoa.push(['YS CAPITAL GROUP — BORROWER TRACK RECORD']);
   aoa.push([(meta.borrowerName ? 'Borrower: ' + meta.borrowerName + '   ·   ' : '')
-    + 'Generated ' + (meta.generatedDate || '') + '   ·   NMLS ID 2609746']);
+    + 'Generated ' + (meta.generatedDate || '') + '   ·   NMLS ID 2609746'
+    + '   ·   This is for business-purpose lending only.']);
   // WHAT THIS REPORT CONTAINS, on its face (owner-directed 2026-08-21). "Why is this list
   // shorter than the one I saw yesterday" has to be answerable from the document itself, so
   // the scope is stated — and when the report carries anything unverified, the banner says so
@@ -327,8 +328,12 @@ async function buildTrackRecordPdf(sections, meta = {}) {
   const legendY = Math.max(y, MB - 8);
   page.drawText('Status key: Verified = confirmed by the loan team · Docs in — review = a document is attached, not yet verified · Pending review = borrower-entered, waiting on the loan team · Not verified = nothing attached, not reviewed.',
     { x: ML, y: legendY, size: 6.5, font, color: muted });
+  // Owner-directed 2026-09-01 — its own line under the identity, so neither
+  // sentence has to share a measure with the other.
   page.drawText('YS Capital Group · NMLS ID 2609746 — experience counted only for a completed exit within the last 3 years.',
     { x: ML, y: legendY - 10, size: 7.5, font, color: muted });
+  page.drawText('This is for business-purpose lending only.',
+    { x: ML, y: legendY - 20, size: 7.5, font, color: muted });
   return Buffer.from(await doc.save());
 }
 
