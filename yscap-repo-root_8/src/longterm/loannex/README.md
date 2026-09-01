@@ -150,6 +150,28 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
    has no consumer-safe name. It is reported as unmapped until the owner names it.
 4. **The refresh-token endpoint** was not captured; the client re-mints from the ticket
    instead, so a session lasts as long as the JWT (1 h).
+5. **Neither board asks for the borrower's CITIZENSHIP, so every quote prices a US citizen.**
+   The scenario vocabulary has a real `citizenship` field and both connectors honour it — but no
+   screen offers a control for it, so on an ordinary quote it is unstated. The two programs then
+   AGREE, which is the good news and was worth checking rather than assuming: LoanNEX is sent
+   `UsCitizen` (the value the recorded live body carries), and Lender Price sends `US Citizen` too
+   — not by inheriting a vendor default but because its own recorded base (`search-base.json`)
+   hard-carries `Citizenship: "US Citizen"`, which `setDyn` only overwrites when a scenario states
+   one. Verified at runtime on both sides. So the exposure is not a parity gap between the
+   programs; it is that a foreign-national borrower is priced as a US citizen on BOTH boards until
+   somebody states it. Adding the control would change the GENERAL board, which is off limits
+   without the owner's word — raised rather than guessed at.
+6. **Three citizenship values Lender Price accepts have no LoanNEX equivalent yet**, so stating one
+   empties the LoanNEX half of a combined board — the same failure mode as the vesting-type defect,
+   reported rather than silent. LoanNEX's own registry offers exactly four Citizenship options
+   (`UsCitizen`, `PermanentResidentAlien`, `NonPermanentResidentAlien`, `ForeignNational`), because
+   it models ITIN as a SEPARATE field (`hasIndividualTaxpayerIdNumber`, which nothing currently
+   populates); Lender Price carries three more — `ForeignNationalwithITIN)`, `ForeignNationalnoITIN)`
+   and `ITIN` (the trailing `)` is the vendor's real spelling — do NOT "clean" them). The first two
+   have an obvious reading (`ForeignNational` plus the flag set or cleared) and the bare `ITIN` does
+   NOT — it states how somebody files, not their status, and a non-permanent resident may hold one
+   too. Unreachable from any screen today, since neither board offers the control; wiring the ITIN
+   flag is a change with its own decisions, not a mapping to guess at here.
 
 ---
 
