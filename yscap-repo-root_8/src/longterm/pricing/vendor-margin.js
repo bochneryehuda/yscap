@@ -327,6 +327,12 @@ function applyToBoard(board, source, opts) {
       const points = nn(r.points) ? r3(Number(r.points) + pts) : r3(100 - price);
       return { ...r, vendorPrice: r3(vendorPrice), price, points, marginHoldback: pts };
     }),
+    // ⛔ AND THE ITEMIZED OPTIONS BESIDE THEM, OR THE BOARD AND ITS OWN DETAILS TABLE QUOTE TWO
+    // DIFFERENT PRICES. A Lender Price program now carries `options` — the same rungs with the
+    // vendor's whole price build attached — and the breakdown screen reads its price from THERE.
+    // Shifting the ladder and not the options would leave the row saying 101.25 and the panel that
+    // explains that row saying 101.5, which is worse than the empty panel it replaced.
+    options: shiftOptions(p.options, pts),
     };
   });
   // The board's own summary figures are derived from the rungs, so they move too
@@ -353,8 +359,68 @@ function applyToBoard(board, source, opts) {
   };
 }
 
+/**
+ * ONE OPTION'S PRICE BUILD, MOVED BY THE HOLDBACK — base AND final together.
+ *
+ * ⛔ WHY THE BASE MOVES TOO, and it is not a rounding nicety. The breakdown screen draws a RUNNING
+ * TOTAL: base points, then every itemized adjustment added onto it, ending at the final. Shift only
+ * the final and that column stops at a number the holdback's own size away from the "Final price"
+ * printed under it — an unexplained gap on the one panel whose entire job is to explain the price,
+ * on a figure the owner has directed must stay invisible ("baked into the rate"). Shifting the base
+ * by the same amount keeps the arithmetic summing with the vendor's own LLPA lines untouched, which
+ * is exactly the mechanic the compensation overlay already uses on this screen (`shiftBuild`) and
+ * exactly what the owner described investors themselves doing: *"they show the base price higher"*.
+ *
+ * `adjustmentPoints` is DELIBERATELY NOT TOUCHED. It is the vendor's own stated LLPA total, and the
+ * breakdown reconciles the itemized lines against it — moving it would report "these lines do not
+ * add up" on every row, turning a hidden margin into a loud accusation against the rate sheet.
+ *
+ * The pre-holdback numbers ride along as `vendorPrice` / `vendorBasePoints` for the reveal, and are
+ * stripped with the rest of the trail on the ordinary board (`investor-routing.stripSource`).
+ */
+function shiftOptions(options, pts) {
+  if (!Array.isArray(options)) return options;
+  return options.map((o) => {
+    const pb = o && o.priceBuild;
+    if (!pb) return o;
+    const vendorPrice = nn(pb.vendorPrice) ? Number(pb.vendorPrice) : (nn(pb.price) ? Number(pb.price) : null);
+    const vendorBasePoints = nn(pb.vendorBasePoints) ? Number(pb.vendorBasePoints)
+      : (nn(pb.basePoints) ? Number(pb.basePoints) : null);
+    // ⛔ EVERY SHIFTED FIGURE NEEDS ITS OWN ANCHOR, OR A SECOND PASS TAKES THE HOLDBACK TWICE.
+    // The price is anchored on `vendorPrice`, so it is idempotent; the POINTS were being read back
+    // off the already-shifted build and shifted again — 2 → 2.25 → 2.5 — while the price beside them
+    // stayed put, so one more pass over the same board would have left the panel's points and price
+    // contradicting each other. They are NOT re-derived from the rounded price (`100 − price` can
+    // land a thousandth off the number the parser derived from the unrounded one — the same reason
+    // the ladder above shifts rather than recomputes), so they get an anchor of their own.
+    //
+    // HONEST NOTE, MEASURED: the LADDER's own `points` has the same shape and no anchor, so a
+    // rung shifted twice would drift the same way. It cannot happen today — `applyToBoard` is
+    // called exactly once per board per vendor — and giving the rung an anchor means a fourth
+    // field for `investor-routing.stripHoldbackTrail` to remove, so it is written down here
+    // rather than quietly widened. If a second pass ever becomes possible, fix the rung too.
+    const vendorAdjPts = nn(pb.vendorAdjustedPoints) ? Number(pb.vendorAdjustedPoints)
+      : (nn(pb.adjustedPoints) ? Number(pb.adjustedPoints) : null);
+    const next = { ...pb };
+    if (vendorPrice != null) {
+      next.vendorPrice = r3(vendorPrice);
+      next.price = r3(vendorPrice - pts);
+      if (vendorAdjPts != null) { next.vendorAdjustedPoints = r3(vendorAdjPts); next.adjustedPoints = r3(vendorAdjPts + pts); }
+      else next.adjustedPoints = r3(100 - next.price);
+    }
+    if (vendorBasePoints != null) {
+      next.vendorBasePoints = r3(vendorBasePoints);
+      next.basePoints = r3(vendorBasePoints + pts);
+      // Only when the vendor STATED one — a base price this module invented would be indistinguishable
+      // from one the sheet published, and `breakdown.priceOf` already derives it when it is absent.
+      if (nn(pb.basePrice)) next.basePrice = r3(100 - next.basePoints);
+    }
+    return { ...o, priceBuild: next, marginHoldback: pts };
+  });
+}
+
 module.exports = {
   MARGIN_HOLDBACK_POINTS, MAX_HOLDBACK_POINTS,
   holdbackFor, resolveHoldback, applyToBoard,
-  _internals: { r3 },
+  _internals: { r3, shiftOptions },
 };

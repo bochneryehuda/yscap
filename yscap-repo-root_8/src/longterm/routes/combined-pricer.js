@@ -317,7 +317,24 @@ async function priceBoth(scenario, opts = {}) {
         err.code = (r && r.error) || 'lp_error';
         throw err;
       }
-      const parsed = lp.parse(r.raw);
+      /**
+       * ⛔ `withOptions` IS WHAT MAKES THE DETAILS PANEL WORK, and leaving it off is the defect it
+       * was added for. `lp.parse` alone returns the LADDER — rate, price, points per rung — and
+       * nothing else, so every Lender Price row on this board reached the screen with no itemized
+       * LLPAs, no fees, no comp, no terms and no monthly payment, and the breakdown panel drew an
+       * empty table on the vendor that publishes the whole build WITH the search. Worse, a program
+       * carrying `rungs` and no `options` is routed down the LOANNEX branch by
+       * `quote-shape.programsForBoard` — which tells the two apart by shape, not by name, since the
+       * one-system rule has already stripped the source — so those rows were additionally rebuilt
+       * as LoanNEX rows: `basePoints`/`adjustmentPoints` hard-coded null and the monthly payment
+       * read from a key a Lender Price rung does not carry.
+       *
+       * The general engine has always fetched this (its `full:true` path), and the combined screen
+       * has always ASKED for it — `pricerEngine.COMBINED_ENGINE.price` sends `full: true` — but
+       * this route never read the flag. It is not read now either: the itemization is what this
+       * board is FOR, and a flag is one more way for the panel to be empty again.
+       */
+      const parsed = lp.parse(r.raw, { withOptions: true });
       // Stamp canonical identity + white-label on the Lender Price side exactly
       // as the existing pricer does, so both halves reach the merge decorated the
       // same way. `decorate` takes the PROGRAMS ARRAY and answers
@@ -403,9 +420,16 @@ async function priceBoth(scenario, opts = {}) {
       for (const src of ['lenderprice', 'loannex']) {
         const progs = byS[src] || [];
         if (!progs.length) continue;
+        // ⛔ `optionsFromLenderPrice` TAKES OPTIONS, NOT PROGRAMS — its parameter is literally
+        // named `options` and it reads `o.priceBuild` / `o.adjustments` / `o.terms` off each one.
+        // It was being handed the PROGRAM rows, which carry none of those, so `?shape=options`
+        // answered with one hollow shell per Lender Price programme: every price build empty,
+        // every adjustment list empty, and the count wrong (programmes, not quotes). Flattening
+        // the programmes' own options is what it always wanted; they exist here because the parse
+        // above now asks for them.
         const built = src === 'loannex'
           ? quoteShape.optionsFromLoanNex({ programs: progs }, { loanAmount: sc.loan, fico: sc.fico, ltv: sc.ltv, loanPurpose: sc.purpose })
-          : quoteShape.optionsFromLenderPrice(progs);
+          : quoteShape.optionsFromLenderPrice(progs.flatMap((pg) => (pg && Array.isArray(pg.options)) ? pg.options : []));
         for (const o of built) {
           const row = { ...o, investorKey: e.key, whiteLabel: e.whiteLabel };
           if (opts.revealSource !== true) delete row.source;
