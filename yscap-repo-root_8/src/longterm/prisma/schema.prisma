@@ -1318,6 +1318,30 @@ model LtPricerInvestorGroup {
 /// column for a future sweep to find. Identity FK ON DELETE SET NULL like every
 /// LT identity link, so `staffId` is nullable and an orphaned scenario simply
 /// stops appearing.
+/// THE DAILY PRICE SNAPSHOT (db/659) — what every programme cost on one day,
+/// on one benchmark scenario, so a movement report has something to compare
+/// against. Milli-integers throughout; the series key is the scenario hash.
+/// Nothing here points at a person or a loan: it is a fact about the market.
+model LtPriceSnapshot {
+  id           String   @id @default(uuid()) @db.Uuid
+  scenarioHash String   @map("scenario_hash")
+  scenario     Json     @default("{}") @db.JsonB
+  takenAt      DateTime @default(now()) @map("taken_at") @db.Timestamptz(6)
+  takenForDay  DateTime @map("taken_for_day") @db.Date
+
+  investorKey String? @map("investor_key")
+  lender      String?
+  program     String
+  rateSheet   String? @map("rate_sheet")
+
+  ladder       Json @default("[]") @db.JsonB
+  parRateMilli Int? @map("par_rate_milli")
+  rungCount    Int  @default(0) @map("rung_count")
+
+  @@index([scenarioHash, takenForDay])
+  @@map("lt_price_snapshot")
+}
+
 model LtPricerScenario {
   id       String  @id @default(uuid()) @db.Uuid
   staffId  String? @map("staff_id") @db.Uuid
