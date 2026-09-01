@@ -207,6 +207,46 @@ async function main() {
     // the no-rows 404 — which is what makes this entry true rather than hopeful.
     'routes/scoped-loan.js': 'GET /api/lt/encompass-file/loans/:loanId and GET /api/lt/clickup/loans/:loanId in the route smoke test both assemble and execute it',
     'routes/clickup.js': 'GET /api/lt/clickup/loans/:loanId in the route smoke test (loadScopedLoan assembles the trash guard), plus test-lt-clickup-section-db.js over the whole section',
+    // THE CONDITION CENTER, SINCE db/653. These four compose the SHARED owner
+    // descriptor's WHERE (`ownerWhere` — lib/condition-owner.js) into statements
+    // against `checklist_items` / `checklist_templates` / `documents`, so the
+    // statement only exists once a caller assembles it. Each entry names a suite
+    // that genuinely RUNS the assembled form against a real Postgres in this job
+    // — the descriptor emits SQL TEXT plus BOUND values, so a phantom column
+    // there is the same silent class this file exists for.
+    'conditions-center/engine.js': 'test-lt-shared-condition-center-db.js sections C and D drive evaluateLoan live — the owner-scoped SELECT, the INSERT and the guarded DELETE all assemble and run',
+    'conditions-center/read.js': 'test-lt-shared-condition-center-db.js section H drives read.forLoan for BOTH audiences against the real schema',
+    'conditions-center/write.js': 'test-lt-shared-condition-center-db.js sections G and H drive waive, setStatus and loadCondition live; test-lt-condition-answers-db.js sections D and E drive recordAnswer and satisfy',
+    'conditions-center/workspace.js': 'test-lt-condition-answers-db.js section E drives workspace.forCondition against the real schema, both the per-line shape and the no-workspace answer',
+    /* THE FOUR BELOW WERE MEASURED, NOT ASSUMED. Each was instrumented with a
+       probe at the point the statement is assembled, and the candidate suites
+       were run to see which one actually reached it — because an entry here is a
+       CLAIM that something runs the statement, and a hopeful one is worse than
+       none: it silences the check while the statement stays unexercised. */
+    // The borrower's own scope. `ownLoanSql` composes the trash guard into a
+    // `FROM lt_loans` that only exists once a door assembles it — the list and
+    // the single-loan lookup both go through it, so an unreadable column here
+    // would answer a confident empty on a borrower's own portal.
+    'my-scope.js': 'test-lt-guest-link-db.js and test-lt-borrower-conditions-db.js both assemble and execute it live — measured with a probe, not assumed',
+    // The desk's own UPDATE that moves the order's condition to "asked for". It
+    // composes the shared owner descriptor's WHERE, and an UPDATE that matches
+    // nothing raises no error — so it went silent once before, on every order
+    // ever placed, and nothing said so.
+    'orders/desk.js': 'test-lt-orders-db.js drives the place-order path live, which assembles and runs the owner-scoped UPDATE',
+    // The read that turns "a vendor replied" into "file it onto THIS condition".
+    // Section G of the orders suite exists specifically to run it: it had never
+    // once been executed, which is exactly how it survived pointing at a table
+    // nothing writes any more.
+    'orders/inbox.js': 'test-lt-orders-db.js section G drives docConditionFor live on two different loans — it asserts the condition is FOUND and that each loan resolves to its own, so neither a read that finds nothing nor one that finds everything can pass',
+    // The saved scenarios (db/658). A shared COLS list is interpolated into the
+    // list, the single read and the save's RETURNING; the patch additionally
+    // assembles `SET ${sets}` from whichever fields were SENT, so it is a
+    // DIFFERENT statement per shape and a phantom column in one branch would sit
+    // unexercised behind the others. The probe counted each assembled form as
+    // Postgres received it — and it had to tell the module's UPDATE from the
+    // suite's own fixture UPDATE by the interpolated COLS it returns, because the
+    // first reading counted the fixture's and overstated the coverage.
+    'pricer-scenarios.js': 'test-lt-pricer-scenarios-db.js drives all four live — measured with a probe on the driver: the list SELECT, the single-read SELECT and the save\'s RETURNING each assemble the shared COLS, and the patch assembles TWO different SET shapes (a rename, and a re-save of the deal bag)',
   };
   const byFile = new Map();
   for (const b of built) byFile.set(b.rel, (byFile.get(b.rel) || 0) + 1);

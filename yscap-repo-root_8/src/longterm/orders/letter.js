@@ -94,6 +94,63 @@ function tokenValues(data) {
     Officer_Phone: d.officer ? d.officer.phone : null,
     Vendor_Company: d.vendorCompany || null,
     Vendor_Contact: d.vendorContact || null,
+
+    /* ── THE OWNER'S OWN ENCOMPASS FIELD IDS ────────────────────────────────
+       The owner wrote their drafts in Encompass's vocabulary, one field at a
+       time (docs/longterm/OWNER-ORDER-DRAFTS.md). Without these aliases a draft
+       pasted in VERBATIM — which is exactly what the owner asked for — resolves
+       nothing: every «Subject_Property_Address_11» survives into the sent email
+       as literal token text, because `merge()` deliberately leaves an unknown
+       token as typed. So the owner's IDs are first-class names for the same
+       values the friendly names above carry; neither form is a translation of
+       the other, and a value can never differ between them.
+
+       ONE ID IS NOT SETTLED: the owner's drafts use «M_1859» for the BORROWING
+       ENTITY NAME, while src/lib/esign/docgen.js:285 fills the same ID with an
+       execution DATE. M_* are custom fields and a workbook may reuse a number,
+       so both can be right in their own template. The order letters follow the
+       owner's drafts, which is what this table serves; docgen keeps its own
+       mapping and is untouched. Worth confirming against the live workbook
+       before anyone treats either as canonical. */
+    Subject_Property_Address_11: d.propertyStreet || null,
+    Subject_Property_City_12: d.propertyCity || null,
+    Subject_Property_State_14: d.propertyState || null,
+    Subject_Property_Zip_15: d.propertyZip || null,
+    Loan_Number_364: d.loanNumber || null,
+    Loan_Amount_1109: d.loanAmount || null,
+    M_19: d.transactionType || null,
+    M_1859: d.entityName || null,
+    M_1402: d.dob || null,
+    M_1553: d.propertyType || null,
+    // The vendor greeting: the title drafts say «M_416», the insurance drafts
+    // «M_venddotx162» (VEND.X162). Both name the person being written to, and
+    // the letter already knows who that is from the vendor it is addressed to.
+    M_416: d.vendorContact || null,
+    M_venddotx162: d.vendorContact || null,
+    Borrower_First_And_Middle_Name_36: d.borrowerFirstMiddle || null,
+    Borrower_Last_Name_4002: d.borrowerLastName || null,
+    // The owner's condo draft writes the same surname with an M_ prefix.
+    M_Borrower_Last_Name_4002: d.borrowerLastName || null,
+    Co_Borrower_First_Name_4004: d.coBorrowerFirstName || null,
+    Co_Borrower_Last_Name_4006: d.coBorrowerLastName || null,
+    Borrower_Present_Address_FR0104: d.borrowerMailingStreet || null,
+    Borrower_Present_Address_City_FR0106: d.borrowerMailingCity || null,
+    Borrower_Present_Address_State_FR0107: d.borrowerMailingState || null,
+    Borrower_Present_Address_Zip_FR0108: d.borrowerMailingZip || null,
+
+    // The friendly names for the same new parts, so a template author may write
+    // either vocabulary without having to know which one the file was built in.
+    Property_Street: d.propertyStreet || null,
+    Property_City: d.propertyCity || null,
+    Property_Zip: d.propertyZip || null,
+    Borrower_First_Middle_Name: d.borrowerFirstMiddle || null,
+    Borrower_Last_Name: d.borrowerLastName || null,
+    Co_Borrower_First_Name: d.coBorrowerFirstName || null,
+    Co_Borrower_Last_Name: d.coBorrowerLastName || null,
+    Borrower_Mailing_Street: d.borrowerMailingStreet || null,
+    Borrower_Mailing_City: d.borrowerMailingCity || null,
+    Borrower_Mailing_State: d.borrowerMailingState || null,
+    Borrower_Mailing_Zip: d.borrowerMailingZip || null,
   };
 }
 
@@ -138,7 +195,13 @@ const DEFAULT_LETTERS = Object.freeze({
     wants: [
       'A landlord / dwelling-fire policy (special form where available) on a tenant-occupied rental.',
       'Dwelling or building limit at no less than the greater of the loan amount or the replacement cost of the structure.',
-      'Loss of rents / rental income cover — this is an income-producing property and the loan is underwritten on that income.',
+      /* THE OWNER'S OWN SENTENCE, and it carries a NUMBER the earlier paraphrase
+         lost: *"The policy must include loss of rents coverage for a minimum of
+         six (6) months in the event of a covered loss."* A letter that asks only
+         for "loss of rents cover" gets a binder with three months on it, which
+         reads as satisfied and is not. The minimum is the whole ask. */
+      'Loss of rents coverage for a minimum of six (6) months in the event of a covered loss — '
+        + 'this is an income-producing property and the loan is underwritten on that income.',
       'Premises liability cover for the owner.',
       'YS Capital Group named as mortgagee and loss payee exactly as the clause below reads, with the loan number shown.',
       'At least 30 days’ written notice of cancellation or non-renewal to the mortgagee.',
@@ -152,7 +215,11 @@ const DEFAULT_LETTERS = Object.freeze({
     wants: [
       'Confirmation of the policy number, the carrier, the effective and expiry dates and the annual premium.',
       'The dwelling or building limit, and confirmation that it is at least the greater of the loan amount or the replacement cost.',
-      'Whether loss of rents / rental income cover is included, and at what limit.',
+      // Same six-month minimum as the purchase letter (the owner's rule is about the
+      // POLICY, not about which letter asked): on a refinance we are verifying cover
+      // that already exists, so we must confirm the limit MEETS it, not just that
+      // some rent-loss line is present.
+      'Loss of rents coverage, and confirmation that it runs for a minimum of six (6) months in the event of a covered loss.',
       'YS Capital Group added as mortgagee and loss payee exactly as the clause below reads, with the loan number shown.',
       'At least 30 days’ written notice of cancellation or non-renewal to the mortgagee.',
     ],
@@ -184,9 +251,13 @@ const DEFAULT_LETTERS = Object.freeze({
   },
   condo_questionnaire: {
     title: 'Condominium Questionnaire',
+    /* The FORM IS ATTACHED (orders/enclosures.js encloses Fannie Mae 1076 on
+       every condo order), so the letter says so — asking an association to
+       complete a questionnaire without enclosing one is the version that was
+       shipped first and it simply produced a reply asking which form we meant. */
     intro: 'We are financing a unit in the association below and need the standard lender questionnaire completed. '
-      + 'Please let us know your fee and how you would like it paid.',
-    closing: 'If you use your own form rather than a lender’s, please send yours — we will work from it.',
+      + 'Our form is attached. Please let us know your fee and how you would like it paid.',
+    closing: 'If you use your own form rather than a lender’s, please send yours instead — we will work from it.',
   },
   vor: {
     title: 'Verification of Rent',

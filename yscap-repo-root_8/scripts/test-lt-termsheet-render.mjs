@@ -14,7 +14,7 @@
  *   ⛔ NO INVESTOR NAME REACHES THE PAGE (CLAUDE.md rule 10, the hard one). The
  *     snapshot's whitelist is defence (a); the renderer's scrub is defence (b),
  *     for a name a HUMAN typed into a label, an address or a programme name. So
- *     EVERY recorded spelling is pushed through the four free-text fields of a
+ *     EVERY recorded spelling is pushed through the five free-text fields of a
  *     real term sheet and the extracted text is swept for it. A rule proven on
  *     the chokepoint is proven about a function; this is proven about the paper.
  *
@@ -43,6 +43,10 @@ const check = (cond, msg) => {
 };
 
 const PLAN = { borrowerPaid: 2, ysp: 2, lenderPaid: 2, applicationFee: 500, commitmentFee: 1595 };
+// The fee amounts in the assertions below are READ FROM THE PLAN above, never
+// retyped: this fixture's application/commitment amounts are the reverse of the
+// production defaults, and a hard-coded "$1,595" passed for the wrong reason.
+const money = (n) => `$${Number(n).toLocaleString('en-US')}`;
 const SCENARIO = {
   purpose: 'Purchase', propertyType: 'Single family', value: 500000, loan: 375000,
   ltv: 75, termYears: 30, dscr: 1.24, fico: 740, state: 'NJ', city: 'Lakewood', zip: '08701',
@@ -202,6 +206,94 @@ console.log('\nnothing draws past its own margin — on the paper, at zero toler
   check(total > 500, `${total} drawn strings measured in total — enough for the check to mean something`);
 }
 
+console.log('\nprose is set at a measure a person can actually read');
+{
+  /* ⛔ MEASURED, BECAUSE "UNCLEAR" IS NOT A MATTER OF TASTE. Owner-reported
+     2026-09-01: *"the font of everything is extremely small and extremely
+     unclear."* Read off a real render, the sheet's paragraphs ran 206–211
+     characters to the line. Every typographic authority that has been measured
+     on this puts the readable band at 45–75 characters — 66 is the classic
+     single-column ideal — because past roughly 90 the eye loses the start of the
+     next line coming back, and re-reads or skips one. The sheet was at about
+     three times the upper bound, so SIZE was only half the complaint.
+
+     ⛔ THE PAGE FOOTER IS EXCLUDED, AND THE EXCLUSION IS NOW BY POSITION. It is
+     standing boilerplate drawn BELOW the content floor, in a band whose height
+     is fixed by the paper — it cannot be given a third line without running
+     through the identity line beneath it, so its measure is decided by the band
+     rather than by anything this guard could ask for. The band is the tightest
+     honest test available: `ZONES.footer` is a structural constant that flowed
+     content can never reach, so this cannot quietly widen to cover the page.
+     It was previously excluded by its own first words — which stopped working
+     the moment the disclaimer was raised to the readable floor and became TWO
+     lines, because only the FIRST carried those words and the second sailed
+     through as compliant prose. A guard that passes the half it can see is
+     worse than one that says plainly what it does not measure.
+     ⛔ SO STATE IT PLAINLY: at 7.5pt the footer's first line runs about 164
+     characters. That is over the band, it is measured, and it is the price of
+     the size — see `fitFooterDisc` in pdf.js. */
+  const PREPARED = {
+    borrowerName: 'Riverbend Holdings LLC',
+    propertyAddress: '218 Forest Avenue, Lakewood, NJ 08701',
+    officerName: 'Sara Klein', companyName: 'YS Capital Group', companyNmls: '2609746',
+    // The expiry callout is the widest line the flow can produce — a bold title
+    // and a sentence sharing one line — so the fixture carries the stamps that
+    // make it draw. Without them the block is a title alone and the measure
+    // below would be taken on a document that never exercises it.
+    preparedAt: '2026-08-31T14:00:00.000Z', expiresAt: '2026-09-01T14:00:00.000Z',
+  };
+  const back = await readBack(await render(
+    [quote('No points', 7.375, 102), quote('Buy the rate down', 6.875, 99.75)], PREPARED,
+    { expiryHours: 24 },
+  ));
+  /* ⛔ WHAT IS MEASURED IS A RUN, NOT A LINE, and that is what makes both halves
+     of this block mean something.
+     Both rules here are about the RETURN SWEEP — the eye coming back from the
+     end of one line to the start of the next. A caption, an address, a fee
+     breakdown or the identity line has no next line, so neither rule applies to
+     it: measuring them reported a 5.1pt "stated once here rather than repeated
+     in every column" as unreadable body text, which is a fact about the filter.
+     So a line counts only when a SIBLING sits exactly one leading above or below
+     it at the same size — which is precisely what a wrapped paragraph is, and
+     nothing else on this page is. */
+  const prose = [];
+  for (const page of back.pages) {
+    const bySize = new Map();
+    for (const it of page) {
+      const k = Math.round(it.h * 10);
+      if (!bySize.has(k)) bySize.set(k, []);
+      bySize.get(k).push(it);
+    }
+    for (const [, group] of bySize) {
+      for (const it of group) {
+        const t = it.s.trim();
+        if (t.length <= 25 || it.y + it.h <= pdf.ZONES.footer.top) continue;
+        const lead = it.h * pdf._internals.LEAD;
+        const wrapped = group.some((o) => o !== it && Math.abs(Math.abs(o.y - it.y) - lead) < 1.5);
+        if (wrapped) prose.push({ n: t.length, h: it.h });
+      }
+    }
+  }
+  const longest = Math.max(...prose.map((x) => x.n));
+  check(prose.length > 20,
+    `${prose.length} prose lines measured — a sheet producing a handful would prove nothing`);
+  check(longest <= 95,
+    `no line of prose runs past 95 characters (longest is ${longest}) — it was 211`);
+  /* ⛔ AND THE OTHER HALF OF THE COMPLAINT, MEASURED THE SAME WAY. Line length
+     and type size are two different faults and the owner reported both — a
+     document can hold a perfect measure and still be unreadable because it is
+     set at five points. This is asserted on the height the VIEWER will draw,
+     not on the size table, so it is a fact about the paper.
+
+     ⛔ NOT A MEDIAN. A median over drawn lines is dragged down by the short last
+     line of every paragraph — measured, it read 74 on the broken document and 70
+     on the fixed one, so any band that admitted the good number admitted the bad
+     one too. It proved nothing and is not kept for the look of it. */
+  const smallest = Math.min(...prose.map((x) => x.h));
+  check(smallest >= 7,
+    `nothing set in sentences is smaller than 7pt (smallest is ${smallest.toFixed(2)}pt) — the disclosures were 5.7`);
+}
+
 console.log('\na long value is BROKEN onto more lines, never swallowed');
 {
   // The two protections cover each other — a wrap that fails to break a
@@ -244,13 +336,50 @@ console.log('\nthe page says what the document says');
   // mentions it" would have been satisfied by the table alone and proved nothing
   // about the detail pages existing at all.
   check(where.every((p) => p.includes(0)), 'every option is named in the comparison table on page one');
-  const details = where.map((p) => p.filter((i) => i > 0));
-  check(details.every((p) => p.length >= 1), 'and every option has a page of its own beyond that table');
-  const firsts = details.map((p) => p[0]);
-  check(new Set(firsts).size === 3,
-    `each option's detail page is its OWN — the owner's "it's just adding pages to it", literally (pages ${firsts.join(', ')} of ${back.pageCount})`);
-  check(back.pageCount >= 4, `and the document runs to at least one page per option plus the comparison (${back.pageCount})`);
-  const carries = (want) => back.text.includes(want.replace(/ /g, '')) || back.text.includes(want);
+  /* ⛔ REVERSED 2026-08-31, ON THE OWNER'S OWN REPORT — and this is the render
+     half of the same reversal `test-lt-termsheet-pure.js` carries. These three
+     asserted a detail page per option, which is what the document did and what
+     the owner then read: *"everything is way too big … just thrown on the sheet
+     without an order."* MEASURED, those pages were three of a seven-page
+     comparison, and every figure on them already sat in the table above. What
+     replaces them is not "less detail" — the table grew to carry it, and
+     `test-lt-sheet-nothing-lost-pure.js` fails the build on a fact that stopped
+     being printed. So the property asserted here inverts: every option is named
+     ON the comparison, and NO option gets a page to itself. */
+  /* ⛔ RE-POINTED 2026-09-01, AND THE REASON IS A TRADE THE OWNER SHOULD SEE, not
+     a quiet loosening. This asserted "an option's name never appears after page
+     one", which was an exact proxy for "no option has a detail page" only while
+     the comparative sentences happened to fit on page one. Giving the lender-fee
+     cell the room its breakdown needs — owner-reported: *"it's a little
+     overlapping, it's pushed in"* — costs the shared box about 9 points, and the
+     sentences under the table now begin on page two. They NAME the options, so
+     the old proxy fails for a reason that has nothing to do with detail pages.
+
+     What is asserted instead is the property itself, in two halves: the sentences
+     may flow, but the COMPARISON — its table and the shared box — is whole on
+     page one, and the layout still builds no per-option block (that half is
+     `test-lt-sheet-nothing-lost-pure.js`, which reads the builder rather than the
+     render, so a detail page cannot come back unnoticed).
+
+     ⛔ AND IT IS STRICTER IN ONE RESPECT: the old check said nothing about WHERE
+     the table was, so a comparison whose table split across two pages would have
+     passed it. This one fails on that. */
+  const cmpPages = pagesWith('OPTION A');
+  check(cmpPages.length === 1 && cmpPages[0] === 0,
+    `the comparison's own table is whole on page one (found on ${cmpPages.length} page(s))`);
+  check(pagesWith('Identical in all').every((i) => i === 0),
+    '…and so is the box of what every option agrees about');
+  check(where.every((p) => p[0] === 0),
+    '…and every option is FIRST named there, never on a page of its own');
+  check(back.pageCount <= 4,
+    `and the whole comparison, disclosures included, fits ${back.pageCount} pages (was 7 for three options)`);
+  /* Whitespace-insensitive on BOTH sides, like `squash` above. The extractor
+     reports the advance a viewer uses, so a run drawn inside a table cell can
+     come back as "(1.750pts)" where the same string in a figures row came back
+     spaced — a fact about kerning, not about the paper. Comparing text to a
+     particular extraction's spacing fails on a layout change and proves nothing
+     about what a reader sees. */
+  const carries = (want) => squash(back.text).includes(squash(want));
   for (const want of ['You pay $8,438 (2.250 pts)', 'You receive $6,563 (1.750 pts)',
     '67 months (5 years 7 months)', '51 months (4 years 3 months)', 'TS-4KH92B',
     `Page 1 of ${back.pageCount}`, `Page ${back.pageCount} of ${back.pageCount}`]) {
@@ -295,15 +424,66 @@ console.log('\nthe PILOT design is on every page — the band, the lockup, the f
 
   let bandless = [];
   let footerless = [];
+  let unstamped = [];
   back.pages.forEach((items, i) => {
     const inBand = items.filter((it) => it.y >= Z.band.bottom);
     const inFoot = items.filter((it) => it.y + it.h <= Z.footer.top);
     if (!squash(inBand.map((it) => it.s).join('')).includes('comparisonsheet')) bandless.push(i + 1);
     if (!squash(inFoot.map((it) => it.s).join('')).includes('notacommitmenttolend')) footerless.push(i + 1);
+    /* ⛔ THE BUSINESS-PURPOSE STAMP, ON THE PAPER, PAGE BY PAGE — owner-directed
+       2026-09-01. The pure suite proves the layout carries it; ONLY a render
+       proves it survives the wrap, the fit ladder and the footer's own line
+       budget onto every page, including a page the flow invented mid-table,
+       which is exactly the page a block-list test cannot see. */
+    /* The needle is stripped of PUNCTUATION as well as space: `squash` only
+       collapses whitespace, so the hyphen in "business-purpose" survives it —
+       and a renderer is free to draw that hyphen as any of several dashes. */
+    const bare = (t) => squash(t).replace(/[^a-z0-9]/g, '');
+    if (!bare(inFoot.map((it) => it.s).join('')).includes('businesspurposelendingonly')) unstamped.push(i + 1);
   });
-  check(back.pageCount >= 6, `a five-option comparison runs to ${back.pageCount} pages — enough for the check to mean something`);
+  /* The band-and-footer sweep below needs MORE THAN ONE page to be worth
+     running: what it proves is that a page produced by a BREAK cannot come out
+     bare. It used to get them from the per-option repeat, which is gone, and
+     then from five options at the old type size.
+
+     ⛔ IT SAYS 2, AND IT SAID 3 UNTIL THE SHEET WAS RE-SET TO THE APPROVED
+     DESIGN. That is the number moving because the DOCUMENT got shorter — the
+     same five options now fit in two pages rather than three — not a guard
+     loosened to let a change through: the sweep still runs over every page of a
+     multi-page document, which is the whole of what it was written to do, and
+     its own comment has always said "more than one page". If it ever falls to
+     1, the sweep has stopped proving anything and the fixture needs more
+     content, not a smaller number. */
+  check(back.pageCount >= 2, `a five-option comparison runs to ${back.pageCount} pages — enough for the band-and-footer sweep to mean something`);
   check(bandless.length === 0, `the brand band names the document on EVERY page (missing on ${bandless.join(', ') || 'none'})`);
   check(footerless.length === 0, `and the footer disclaims on EVERY page (missing on ${footerless.join(', ') || 'none'})`);
+  check(unstamped.length === 0,
+    `and EVERY page says "This is for business-purpose lending only." (missing on ${unstamped.join(', ') || 'none'})`);
+
+  /* ⛔ THE FOOTER'S LEGAL LINE IS SET AT THE READABLE FLOOR, AND IT IS COMPLETE.
+     Both halves have to be asserted together, because each alone is satisfiable
+     by the failure the other catches: the size alone passes on a disclaimer
+     whose tail was dropped to make it fit, and the completeness alone passes at
+     the 5.1pt it drew at before. Owner-reported 2026-09-01 ("the font of
+     everything is extremely small"); this was the smallest run on the page and
+     the last one left. The tail is asserted on the LAST WORDS rather than on a
+     length, because what truncation takes is the end. */
+  const footRuns = back.pages[0].filter((it) => it.y + it.h <= Z.footer.top);
+  const footProse = footRuns.filter((it) => it.s.trim().length > 25 && !/·/.test(it.s));
+  const smallestProse = Math.min(...footProse.map((it) => it.h));
+  check(footProse.length > 0, `the footer draws ${footProse.length} run(s) of prose to measure`);
+  /* ⛔ THE THRESHOLD IS A LITERAL, NOT `SZ.footDisc`, and that is the whole
+     difference between a guard and a tautology. Read from the size table, this
+     asserts only that the render agrees with the table — so removing the footer
+     from the readable floor moves BOTH sides and the check passes at 5.1pt,
+     which is the exact defect it exists to catch. PROVEN: with the threshold
+     read from the source the mutation produced zero failures. 7 is the same
+     literal the sibling prose assertion above is held to. */
+  check(smallestProse >= 7,
+    `and the smallest of them is ${smallestProse.toFixed(2)}pt — over the 7pt line, not the 5.1 it drew at`);
+  check(squash(footRuns.map((it) => it.s).join('')).includes('countersignedbyyscapitalgroup'),
+    'and the disclaimer keeps its last sentence — nothing was sliced off to make it fit');
+
 
   // Every page numbers itself, and the count is the real one.
   let misnumbered = [];
@@ -389,16 +569,50 @@ console.log('\nthe owner\'s four items, on the paper');
   const wflat = squash(waived.text);
   check(wflat.includes(squash('Application fee')) && wflat.includes(squash('Commitment fee')),
     'both lender fees are named on the paper');
+  /* The per-fee cells price it ("Waived ($500)") and the table totals what it
+     saves; this sentence is the part that says WHO is paying instead, which is
+     what a borrower reads a term sheet to learn. It moved from the retired
+     per-option page onto the comparison itself. */
   check(wflat.includes(squash('covered by the lender, not paid by you')),
-    '…and the waived one says so, with what it would have been');
-  check(wflat.includes(squash('Lender fees you are not paying')), '…and the saving is totalled');
+    '…and a sentence on the sheet says the lender is covering them, not the borrower');
+  /* RE-POINTED 2026-09-01, NOT LOOSENED — owner-directed: the two fees are ONE
+     package ("You waive lender fees, so it's zero lender fee, and they don't
+     charge the $2,095"), so they are one row now. The property these two
+     asserted still holds and is asserted HERE, on the combined row: the waived
+     option prints the FULL amount it is not paying, so the option beside it can
+     be compared against it. What changed is that the figure is the package's
+     $2,095 rather than each fee's own — and the parts are still named, which the
+     assertion above this one already requires. STRICTER in one respect: it now
+     also demands the charged option print $2,095, so a sheet that waived on both
+     columns could not satisfy it. */
+  /* RE-POINTED 2026-09-01 (second correction, same day) — the figure is now a
+     bare "Waived" and the amount rides in the small line under it, because the
+     owner read the parenthetical as unclear. The property is unchanged: the
+     waived column must still state what is not being paid. */
+  check(wflat.includes(squash('Waived')) && wflat.includes(squash('You save $2,095')),
+    '…the waived option reads "Waived", with what it saved stated under it');
+  check(wflat.includes(squash('$2,095'))
+    && wflat.includes(squash(`Application fee ${money(PLAN.applicationFee)}`))
+    && wflat.includes(squash(`Commitment fee ${money(PLAN.commitmentFee)}`)),
+    '…and the charged option prints the same package, broken into its two named parts');
+  /* The separate "Lender fees you are not paying" total is GONE, and its absence
+     is asserted rather than merely un-checked: the combined row prints exactly
+     that figure in the waived option's own cell, so keeping the total put $2,095
+     twice, adjacent. A guard that simply stopped looking would go quiet if it
+     came back. */
+  check(!wflat.includes(squash('Lender fees you are not paying')),
+    '…and the saving is NOT also totalled in a second row that says the same $2,095');
 
   // (5) THE EXPIRY, in the owner's own unit.
   check(flat.includes(squash('This term sheet expires in 24 hours')),
     'the term sheet says it expires in 24 HOURS — the unit is the message');
 
   // (6) SIGNABLE, AND ONLY THE TERM SHEET.
-  check(flat.includes(squash('Borrower / guarantor')), 'a term sheet has somewhere to sign');
+  /* RE-POINTED 2026-08-31: the approved sketch sets a signature line as
+     "<name> — <role>", so the combined role reads "borrower and guarantor". The
+     property — a term sheet has a line to sign and nothing else does — is
+     unchanged and is what is asserted. */
+  check(flat.includes(squash('borrower and guarantor')), 'a term sheet has somewhere to sign');
   check(!wflat.includes(squash('Borrower / guarantor')),
     'and a comparison has none — a signature under two columns records agreement to nothing in particular');
 
@@ -433,6 +647,12 @@ console.log('\nrule 10 — the investor name never reaches the paper');
       [quote(`Sold to ${name} today`, 7.375, 102, { product: `${name} 30-Year Fixed` })],
       {
         borrowerName: `${name} Holdings LLC`,
+        // ⛔ THE VESTING ENTITY IS SWEPT TOO, and it is the field most likely to
+        // carry an investor's name by accident: an officer typing who the loan
+        // is going into is one keystroke from typing who is buying it. It rides
+        // `preparedFor` onto the "prepared for" line AND onto its own signature
+        // line, so a leak here would reach the page twice.
+        entityName: `${name} Capital Partners LLC`,
         propertyAddress: `1 ${name} Road, Lakewood, NJ`,
         officerName: 'Sara Klein',
         companyName: `YS Capital (${name})`,
@@ -464,7 +684,7 @@ console.log('\nrule 10 — the investor name never reaches the paper');
   // survive onto the page and be counted.
   check(occurrences(controlText, CONTROL.toLowerCase()) > 0,
     `the sweep can see an injected name at all — the control "${CONTROL}" reaches the page ${occurrences(controlText, CONTROL.toLowerCase())} times`);
-  check(leaked === 0, `all ${spellings.length} spellings swept through four free-text fields of a real term sheet — none survived onto the page${first ? ` (first leak: ${first})` : ''}`);
+  check(leaked === 0, `all ${spellings.length} spellings swept through five free-text fields of a real term sheet — none survived onto the page${first ? ` (first leak: ${first})` : ''}`);
 
   // And the sweep is only worth anything if it CAN see a leak.
   const control = await readBack(await render(
@@ -472,8 +692,369 @@ console.log('\nrule 10 — the investor name never reaches the paper');
   ));
   check(control.text.replace(/\s+/g, '').toLowerCase().includes('controlsentinel'),
     '…and a sentinel word that is NOT an investor does reach the page, so the sweep is looking at real text and not at nothing');
+  // ⛔ AND THE SAME PROOF FOR THE ENTITY, ON ITS OWN. Sweeping a field the page
+  // never draws proves NOTHING — it would report "no leak" for ever while the
+  // field went unscrubbed somewhere else. So the vesting entity is shown to
+  // reach the paper under its own sentinel, separately from the borrower's name.
+  //
+  // ⛔ AND IT IS ASSERTED ON PAGE ONE SPECIFICALLY, not on "somewhere in the document". The entity
+  // reaches the paper TWICE — the "prepared for" block on page 1 and its signature line on the
+  // last — so a check for the word anywhere passes while the recipient block silently drops it.
+  // MEASURED: unmutated it is on pages 1 and 3; with the PDF reverted to printing `borrowerName`
+  // alone, page 1 loses it and the loose check still passed. Page one is the claim.
+  const entityControl = await readBack(await render(
+    [quote('The offer', 7.375, 102)], { entityName: 'ENTITYSENTINEL Capital LLC' },
+  ));
+  const entityOnPage1 = (entityControl.pages[0] || []).map((i) => i.s).join('')
+    .replace(/\s+/g, '').toLowerCase().includes('entitysentinel');
+  check(entityOnPage1,
+    '…and the VESTING ENTITY is printed in the "prepared for" block on page one, so sweeping it sweeps a field the reader actually sees');
   check(audience.mentionsInvestor('Sold to Deephaven today'),
     'the ONE definition still recognises an investor — this suite never re-implements the check, it uses it');
+}
+
+console.log('\nthe compensation never reaches the paper — the OTHER hard invisibility rule');
+{
+  // ⛔ WHY THIS EXISTS. Owner-directed 2026-08-23: *"adding a charge on the fee breakdown
+  // for two points origination only and keeping the YSP invisible. The lender-paid
+  // compensation should always also be kept invisible on both of the sides."* That is as
+  // hard a rule as rule 10 above, on the same document — and until 2026-08-30 it was
+  // enforced by nothing. The behaviour was correct; a comment said so; no test held it.
+  //
+  // ⛔ THE ONE THING THAT IS *NOT* SECRET, and confusing the two is how this guard would be
+  // written wrong: in BORROWER-PAID the comp IS the origination fee, so it MUST be printed.
+  // What must never appear is the YSP, and the lender-paid comp in either position.
+  //
+  // The figures are deliberately odd (2.875 / 1.375 / 3.625) so a hit is unmistakable — a
+  // plan of 2 / 0 / 2 would collide with ordinary prices, rates and term counts all over
+  // the page and could not tell a leak from a coincidence.
+  const SECRET_PLAN = { borrowerPaid: 2.875, ysp: 1.375, lenderPaid: 3.625, applicationFee: 1595, commitmentFee: 500 };
+  const words = ['compensation', 'lender-paid', 'borrower-paid', 'yield spread', 'ysp', 'comp plan'];
+
+  for (const [mode, price, waive] of [['borrowerPaid', 101.5, false], ['lenderPaid', 104, true]]) {
+    const built = snapshot.buildSnapshot({
+      selections: [quote('Lender A', 7.25, price, { mode, waiveLenderFees: waive })],
+      plan: SECRET_PLAN, anchorIndex: 0, prepared: {},
+    });
+    if (!built.ok) { check(false, `a ${mode} sheet could be built (${built.error})`); continue; }
+    const lay = layout.buildLayout(built.snapshot, { code: 'TS-COMP', expiryHours: 24 });
+    const bytes = await pdf.renderTermSheet(lay);
+    const { text } = await readBack(bytes);
+    const low = text.toLowerCase();
+
+    // The sweep is worth nothing if the page is empty or the fixture never priced.
+    check(text.length > 2000 && text.includes('7.25'),
+      `the ${mode} sheet really rendered (${text.length} characters, and it carries its own rate)`);
+    check(!low.includes('1.375'),
+      `the YSP never reaches a ${mode} page — the owner's "keeping the YSP invisible"`);
+    check(!low.includes('3.625'),
+      `and neither does the lender-paid compensation — "invisible on both of the sides"`);
+    for (const w of words) {
+      check(!low.includes(w), `and the page never says "${w}" on a ${mode} sheet`);
+    }
+    // THE OTHER DIRECTION, so this can never pass by rendering nothing: in borrower-paid
+    // the comp IS the origination and MUST be on the page.
+    if (mode === 'borrowerPaid') {
+      check(low.includes('2.875') && /origination/i.test(text),
+        'while the borrower-paid comp IS printed, as the origination fee it actually is — the sweep is reading a real fee list, not an empty page');
+    } else {
+      check(!low.includes('2.875'),
+        'and on a lender-paid sheet there is no origination at all, so that figure is absent too');
+    }
+  }
+}
+
+// =============================================================================
+console.log('\nthe paper reads like a document, not like a database');
+// =============================================================================
+// Owner-reported 2026-08-31: all three sheets are *"very ugly and very abrupt.
+// It needs to be done a lot more cleanly, more user-friendly, and more modern."*
+// Two of the things that made them read that way are facts about the RENDER, so
+// they are proven here and not on the source.
+{
+  const PREP = {
+    borrowerName: 'Jonathan Reyes', entityName: 'Maple Holdings LLC',
+    propertyAddress: '128 Maple Avenue, Lakewood, NJ 08701',
+    officerName: 'Chaim Stern', companyName: 'YS Capital Group', companyNmls: '2609746',
+    preparedAt: '2026-08-31T14:00:00.000Z', expiresAt: '2026-09-01T14:00:00.000Z',
+  };
+  const docs = {
+    'term sheet': [quote('The offer', 7.375, 102)],
+    'comparison sheet': [quote('A', 7.375, 102), quote('B', 7.625, 101.25), quote('C', 7.875, 100.5)],
+  };
+
+  /* ⛔ NOT ONE STORED TIMESTAMP REACHES A BORROWER'S PAGE. Every sheet we have
+     ever sent carried `Issued 2026-08-31T14:00:00.000Z` in the brand band AND
+     again in the footer of EVERY page, and the expiry callout — the one line
+     whose whole job is urgency — read *"Good through
+     2026-09-01T14:00:00.000Z."* This sweeps the drawn strings rather than the
+     source, so a producer added later is covered without knowing this exists.
+     The date is still THERE, in words: the control below proves the sweep is
+     looking at a page that really does carry one. */
+  const ISO = /\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+  for (const [name, sels] of Object.entries(docs)) {
+    const back = await readBack(await render(sels, PREP));
+    const hits = back.pages.flatMap((items, i) => items.filter((it) => ISO.test(it.s)).map((it) => `p${i + 1} "${it.s}"`));
+    check(hits.length === 0, `${name}: no stored timestamp is printed anywhere${hits.length ? ` — ${hits.slice(0, 3).join(', ')}` : ''}`);
+    check(/August 31, 2026/.test(back.text),
+      `${name}: …and the date is on the page in words, so the sweep is not passing on an empty document`);
+  }
+
+  /* ⛔ THE COMPARISON TABLE STAYS ON ONE PAGE. The whole value of a comparison is
+     the options standing side by side where a reader can run an eye down them; a
+     table split across a page boundary has stopped being one. It is asserted on
+     the DSCR row — the LAST row of the table — landing on the same page as the
+     first, because a split shows up as the tail rows moving. */
+  const cmp = await readBack(await render(docs['comparison sheet'], PREP));
+  const pageOf = (needle) => cmp.pages.findIndex((items) => items.map((i) => i.s).join('').replace(/\s+/g, '').toLowerCase()
+    .includes(needle.replace(/\s+/g, '').toLowerCase()));
+  check(pageOf('Program') === 0 && pageOf('DSCR') === 0,
+    `the comparison table is whole on page one (first row p${pageOf('Program') + 1}, last row p${pageOf('DSCR') + 1})`);
+
+  /* ⛔ A ROW LABEL FITS ITS OWN COLUMN. The column was sized to the widest label
+     plus 8 while the cell gave 12 back to padding, so the longest label in every
+     table this renderer has ever drawn wrapped onto a second line — beside data
+     columns with room to spare. This is asserted on the DRAWN strings, because
+     the arithmetic is exactly what was wrong: a source check would have agreed
+     with the bug. */
+  const drawn = (cmp.pages[0] || []).map((i) => i.s);
+  for (const label of ['Total monthly payment', 'Estimated cash to close']) {
+    check(drawn.includes(label), `"${label}" is drawn on one line, not broken across two`);
+  }
+
+  /* THE COMPARISON SAYS WHEN ITS PRICING DIES, AND NAMES ITSELF WHILE DOING IT
+     (owner-directed 2026-08-31). Asserted on the PAPER, and on page ONE with the
+     table intact -- the reason the clock could not be added before was that it
+     pushed the table onto a second page, so "it fits" is half the requirement. */
+  const p1cmp = (cmp.pages[0] || []).map((i) => i.s).join(' ').replace(/\s+/g, ' ');
+  check(/This comparison sheet expires in \d+ hours\./.test(p1cmp),
+    'the comparison sheet states its own expiry, on page one, beside the table');
+  check(!/This term sheet expires/.test(p1cmp),
+    'and never calls itself a term sheet -- the one thing a comparison must not be mistaken for');
+
+  /* ⛔ THE HEADLINE IS ON THE PAGE, AND IT AGREES WITH THE TABLE UNDER IT. A
+     summary that restates is safe; one that computes is a second opinion on a
+     document somebody signs. */
+  const ts = await readBack(await render(docs['term sheet'], PREP));
+  const p1 = (ts.pages[0] || []).map((i) => i.s).join(' ').replace(/\s+/g, ' ');
+  check(/LOAN AMOUNT/i.test(p1) && /INTEREST RATE/i.test(p1) && /MONTHLY PAYMENT/i.test(p1),
+    'the term sheet opens with the loan, the rate and the payment, before the tables');
+  check(/\$375,000/.test(p1) && /7\.375%/.test(p1),
+    '…stating the same figures the table below states, never a second calculation');
+
+  // ── the design, on the paper ──────────────────────────────────────────────
+  console.log('\nthe sheet is set the way the approved design is set');
+
+  /* ⛔ THE LOAN AND ITS MONTHLY PAYMENT ARE SIDE BY SIDE, AND THIS IS THE ONLY
+     WAY TO PROVE IT. `layout.js` can ASK for two columns; `pdf.js` falls back to
+     one whenever the pair could not be drawn safely, and both are valid
+     documents — so a source check on the request proves nothing about the page.
+     In one column the payment rows come strictly BELOW the loan rows; in two,
+     the payment's first row sits HIGHER on the same page than the loan's last.
+     That single comparison cannot be true of a fallback, so it is the assertion.
+     MEASURED: this is what takes the sheet from three sheets to two on a real
+     file, and it is the design's own page one. */
+  const at = (page, label) => (ts.pages[page] || []).find((i) => i.s.trim() === label);
+  const prepay = at(0, 'Prepayment');
+  const pandi = at(0, 'Principal & interest');
+  check(!!prepay && !!pandi, 'the loan and the payment are both on page one');
+  if (prepay && pandi) {
+    check(pandi.y > prepay.y,
+      `the payment column starts ABOVE the loan column's last row (${pandi.y.toFixed(0)} vs ${prepay.y.toFixed(0)}) — two columns, not one`);
+    check(pandi.x > prepay.x + 150,
+      `…and to the right of it (x ${pandi.x.toFixed(0)} vs ${prepay.x.toFixed(0)})`);
+  }
+
+  /* ⛔ NOTHING IN THE CONTENT IS CLIPPED. `clip()` ends a string it could not fit
+     with an ellipsis, which on a label reads as a rendering fault rather than as
+     a shortened word — and it is a SILENT failure, because the page still draws.
+     It went unnoticed for as long as every row had the full content column: the
+     moment a column was half as wide, "Total monthly payment (principal,
+     interest, taxes & insurance)" drew as "Total monthly payment (principal,
+     inter…" on the one row that resolves the arithmetic. The band's own identity
+     lines are excluded because a very long programme name may honestly be
+     shortened there; a figure or a label may not. */
+  const Zc = pdf.ZONES.content;
+  const clipped = [];
+  for (const doc of [ts, cmp]) {
+    doc.pages.forEach((items, pi) => {
+      for (const it of items) {
+        if (!(it.y >= Zc.bottom - 0.5 && it.y + it.h <= Zc.top + 2)) continue;
+        if (/…$/.test(it.s.trim())) clipped.push(`p${pi + 1} "${it.s.trim()}"`);
+      }
+    });
+  }
+  check(clipped.length === 0, `no label or figure is cut short with an ellipsis${clipped.length ? `: ${clipped.join(', ')}` : ''}`);
+  check(ts.pages.some((items) => items.some((i) => /^Total monthly payment/.test(i.s.trim()))),
+    '…and the row that used to be cut short is on the page in full, which is what makes the sweep above mean something');
+
+  /* ⛔ THREE WEIGHTS AND NO MORE — the design's third rule, asserted as the two
+     PROPORTIONS that were actually wrong rather than as a table of absolute
+     sizes nobody may ever change. The headline band was 2.26× the table it
+     summarised (the design's own is 1.73) and a resolving total was 1.5× the
+     ordinary figure beside it, which is the "everything is way too big" the
+     owner read off a real export. A ratio guard leaves the scale free to move as
+     one and still refuses the change that makes one figure shout. */
+  const SZ = pdf._internals.SZ;
+  check(SZ.hero / SZ.tableValue <= 2,
+    `the headline is at most twice the table it summarises (${(SZ.hero / SZ.tableValue).toFixed(2)}×)`);
+  check(SZ.big / SZ.value <= 1.35,
+    `a resolving total is MEDIUM beside its neighbours, never large (${(SZ.big / SZ.value).toFixed(2)}×)`);
+  check(Math.max(SZ.label, SZ.value, SZ.tableLabel, SZ.tableValue, SZ.tableBig, SZ.colTitle,
+    SZ.gridValue, SZ.para, SZ.small, SZ.section, SZ.eyebrow) <= SZ.hero,
+  '…and nothing in the body is larger than the one figure that may be');
+
+  /* ⛔ A SECTION HEADING IS A RULE AND A TICK, NEVER A FILLED BAR — and this one
+     is asserted on the SOURCE, which is a real limitation stated rather than
+     hidden. The property is about a FILLED RECTANGLE, and the text extractor
+     this suite reads the paper with reports strings and their boxes; it cannot
+     see a fill at all. So what is checked is that `compileBand` draws a rule and
+     does not paint a rounded rectangle behind its label — which is exactly the
+     change, and would catch it coming back. Four saturated bars the width of the
+     column were the loudest thing on a page whose entire argument is the
+     figures, on a document the owner read beside the design and called *"way far
+     off from the sketch"*. */
+  const pdfSrc = fs.readFileSync(new URL('../src/longterm/termsheet/pdf.js', import.meta.url), 'utf8');
+  const bandFn = pdfSrc.slice(pdfSrc.indexOf('function compileBand('), pdfSrc.indexOf('function compileRule('));
+  check(bandFn.length > 100, 'compileBand was found in the source to read');
+  check(!/roundedRect\(/.test(bandFn),
+    'a section heading paints no rounded bar behind its label');
+  check(/line\([^)]*INK/.test(bandFn) || /line\(c, base - S\.rulePad, B\.x, B\.right, INK/.test(bandFn),
+    '…it rules under it in ink instead');
+  check(/tickW/.test(bandFn) && /TEAL/.test(bandFn),
+    '…and spends the accent on a tick, so the heading is still marked');
+  check(brand.SECTION && brand.SECTION.h === undefined && brand.SECTION.radius === undefined,
+    '…and the filled bar\'s own geometry is gone from brand.js, not merely unused');
+}
+
+/* ===========================================================================
+   THE COMPARISON TABLE AND ITS SHARED-FACTS BOX, AGAINST THE APPROVED SKETCH.
+
+   ⛔ EACH OF THESE IS SOMETHING THE OWNER READ OFF A REAL EXPORT AND CALLED
+   WRONG (2026-08-31: *"your new design doesn't come close … I expect the sheet
+   to look exactly as the sketch"*). What shipped drew a grey header band,
+   zebra-striped every other row, set every figure in the same sans as its label,
+   and put what every option agrees about below the table as a fifteen-row list.
+
+   ⛔ THE MONOSPACE IS PROVEN FROM THE PAPER, NOT FROM THE SOURCE. Courier
+   advances every glyph by exactly 0.6em, so a column of figures set in it has
+   the SAME width-per-character whatever the digits are; Helvetica does not. So
+   the ratio is measured across several real values and required to be constant
+   — which is a fact about what a viewer will draw, and cannot be satisfied by a
+   comment. The label column is measured beside it as the control: if BOTH were
+   constant the assertion would be about the extractor rather than the font.
+   =========================================================================== */
+console.log('\nthe comparison table is the sketch\'s ledger, not a spreadsheet');
+{
+  const cmpBytes = await render(
+    [quote('Platinum 30-Year Fixed', 7.375, 102), quote('Core 30-Year Fixed', 7.625, 101.25),
+      quote('Core 5/6 ARM', 7.875, 100.5)],
+    {
+      borrowerName: 'Jonathan Reyes', entityName: 'Maple Holdings LLC',
+      propertyAddress: '128 Maple Avenue, Lakewood, NJ 08701',
+      officerName: 'Chaim Stern', companyName: 'YS Capital Group', companyNmls: '2609746',
+      preparedAt: '2026-08-31T14:00:00.000Z', expiresAt: '2026-09-01T14:00:00.000Z',
+    },
+    { expiryHours: 24 },
+  );
+  const cmp = await readBack(cmpBytes);
+  const all = cmp.pages.flat();
+
+  // The three data columns are the x's the option figures are drawn at; the
+  // label column is the left margin. Read off the page rather than retyped.
+  const squash = (t) => String(t).replace(/\s+/g, '');
+  /* A GLYPH'S OWN ADVANCE, in ems — the width the viewer will use, divided by
+     the string's length and by its size. Courier advances EVERY glyph by exactly
+     0.6em, at any size, so this one number tells a monospaced run from a
+     proportional one without the suite having to know which font id the
+     extractor gave it. Dividing by the size is what lets figures set at three
+     different sizes on one page be measured together. */
+  const ems = (items) => items
+    .filter((i) => i.s.trim().length >= 4 && i.w > 0 && i.h > 0)
+    .map((i) => i.w / (i.s.trim().length * i.h));
+  const colX = [...new Set(all.map((i) => Math.round(i.x)))].filter((x) => x > 150 && x < 500);
+  /* THE TABLE'S OWN FIGURES, told from every other figure on the page by the two
+     sizes the table sets — its ordinary value and its resolving one. Taken from
+     `SZ` rather than retyped, so the selection follows the scale if it moves. */
+  const TSZ = pdf._internals.SZ;
+  const isTableSize = (h) => Math.abs(h - TSZ.tableValue) < 0.15 || Math.abs(h - TSZ.tableBig) < 0.15;
+  /* ⛔ AND A SHAPE TEST BESIDE THE SIZE ONE, because the size alone stopped being
+     able to tell them apart. The readable floor sets running prose at 7.5 and the
+     table's resolving row is 7.58, so a paragraph that happens to start at a
+     column's x now falls inside the window — and a sentence measured for its
+     glyph advance reports 0.46em and reads as a proportional FIGURE, which is a
+     fact about the selector rather than about the table. A table figure is a
+     short run; three words is generous for one and far short of a sentence. */
+  const isFigureShaped = (t) => t.trim().split(/\s+/).length <= 3;
+  const valueItems = all.filter((i) => colX.includes(Math.round(i.x))
+    && isTableSize(i.h) && /[$%\d]/.test(i.s) && isFigureShaped(i.s));
+  const vEms = ems(valueItems);
+  check(vEms.length >= 6, `the table draws ${vEms.length} figures to measure — a handful would prove nothing`);
+  const off = vEms.filter((r) => Math.abs(r - 0.6) > 0.03);
+  check(off.length === 0,
+    `every figure in the table is MONOSPACED — 0.6em a glyph, whatever the digits (${off.length} of ${vEms.length} are not)`);
+  const labelItems = all.filter((i) => Math.round(i.x) === 45 && /^[A-Z][a-z]/.test(i.s.trim()) && i.s.trim().length >= 8);
+  const lEms = ems(labelItems);
+  check(lEms.length >= 4 && lEms.every((r) => Math.abs(r - 0.6) > 0.03),
+    '…and the labels beside them are NOT — the control, without which the measurement above is about the extractor');
+
+  // The column heads: a tracked gold eyebrow naming each column, the anchor
+  // tag on exactly one of them, and no "(compared against)" prose left over.
+  const flatCmp = squash(cmp.text);
+  check(flatCmp.includes(squash('OPTION A')) && flatCmp.includes(squash('OPTION B'))
+    && flatCmp.includes(squash('OPTION C')),
+  'every column is headed by its own eyebrow, as the sketch heads them');
+  check((flatCmp.match(new RegExp(squash('THE ANCHOR'), 'g')) || []).length === 1,
+    '…and exactly ONE column is tagged as the one the others are measured against');
+  check(!/\(comparedagainst\)/i.test(flatCmp),
+    '…so the head no longer carries the parenthetical it used to');
+
+  /* THE SHARED FACTS ARE A BOX ABOVE THE TABLE. Proven by ORDER on the page, not
+     by the block list: the box's own heading must be drawn ABOVE the table's
+     first column head, on the same page. */
+  const p1 = cmp.pages[0];
+  /* ⛔ ANCHORED ON STRINGS THAT ARE DRAWN WHOLE. A tracked eyebrow is placed one
+     CHARACTER at a time (pdf-lib has no letter-spacing), so every extracted item
+     of "OPTION A" is a single letter and an anchor on it would match a stray
+     "O" anywhere on the page. The box's own footnote and the table's first row
+     label are both drawn as whole strings. */
+  const yOf = (re) => { const it = p1.find((i) => re.test(i.s.trim())); return it ? it.y : null; };
+  const gridY = yOf(/^Anything that differed/);
+  const headY = yOf(/^Principal & interest$/);
+  check(gridY != null && headY != null && gridY > headY,
+    'what every option agrees about is stated ABOVE the table, in its own box — the sketch\'s own order');
+  check(!squash(cmp.text).includes(squash('The same in all 3 — stated once')),
+    '…and not below it as the list of rows it used to be');
+}
+
+/* ⛔ AND THE THINGS A TEXT EXTRACTOR CANNOT SEE — a fill, a rule and a font
+   CHOICE — are pinned on the source, which is a limitation stated rather than
+   hidden. Every one of them is a change the owner asked for by name. */
+{
+  const src = fs.readFileSync(new URL('../src/longterm/termsheet/pdf.js', import.meta.url), 'utf8');
+  const tableFn = src.slice(src.indexOf('function compileTable('), src.indexOf('function compileFactGrid('));
+  const gridFn = src.slice(src.indexOf('function compileFactGrid('), src.indexOf('const PAGEBREAK'));
+  check(tableFn.length > 500 && gridFn.length > 500, 'both compilers were found in the source to read');
+  // Strip the comments first: they necessarily NAME what was removed, and a
+  // guard that read them would fail on its own explanation.
+  const nc = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const tableCode = nc(tableFn);
+  const gridCode = nc(gridFn);
+  check(!/%\s*2/.test(tableCode) && !/ri\s*%/.test(tableCode),
+    'the table zebra-stripes nothing — the sketch bands the rows that RESOLVE, and no others');
+  check(/rect\([^)]*IVORY\)/.test(tableCode) && /accent/.test(tableCode),
+    '…it bands an accent row in ivory instead');
+  check(!/SOFT/.test(tableCode),
+    '…and paints no grey ground behind its head');
+  check(/F\.monoBold/.test(tableCode) && /F\.mono/.test(tableCode),
+    'its figures are set in the monospace, its labels in the sans');
+  check(/closing \? INK : HAIR/.test(tableCode),
+    'a row closes on an INK rule when it ends the table or its group, and on a hairline otherwise');
+  check(/GOLD/.test(tableCode) && /colEyebrow/.test(tableCode),
+    'the column eyebrow is gold, as the sketch sets it');
+  check(/rect\([^)]*SOFT\)/.test(gridCode) && /rect\([^)]*GOLD\)/.test(gridCode),
+    'the shared-facts box has the sketch\'s ivory ground and its gold tick');
+  check(/F\.monoBold/.test(gridCode), '…and states every agreed figure in the monospace');
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASSED' : `${failures} FAILED`}`);

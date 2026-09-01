@@ -44,6 +44,13 @@ import LtSync from './longterm/LtSync.jsx';
 import LtSettings from './longterm/LtSettings.jsx';
 import LtPpe from './longterm/LtPpe.jsx';
 import LtPricer from './longterm/LtPricer.jsx';
+// The COMBINED PRICING ENGINE — a second engine beside the one above, super-admin only while the
+// owner audits it (2026-08-30). LtCombinedPricer.jsx is a deliberate fork of LtPricer.jsx; see its
+// own header and scripts/test-lt-combined-pricer-fork.mjs.
+import LtCombinedPricer from './longterm/LtCombinedPricer.jsx';
+import LtCombinedSettings from './longterm/LtCombinedSettings.jsx';
+import LtScenarios from './longterm/LtScenarios.jsx';
+import LtSheetLookup from './longterm/LtSheetLookup.jsx';
 import LtReports from './longterm/LtReports.jsx';
 import LtConditionLibrary from './longterm/LtConditionLibrary.jsx';
 import LtLoan from './longterm/LtLoan.jsx';
@@ -284,6 +291,20 @@ export default function App() {
               names a lender and an investor, and an investor name never reaches a borrower
               or a TPO. It is inside StaffPrivate and the API sits behind the staff guard. */}
           <Route path="/internal/lt/pricer" element={<StaffPrivate><LtPricer /></StaffPrivate>} />
+          {/* THE COMBINED PRICING ENGINE and its settings — a SECOND engine beside the one above,
+              never on top of it (owner-directed 2026-08-30). Both are SUPER ADMIN ONLY: the server
+              answers 404 to every other role and the nav entries are hidden, so the route being
+              reachable by URL still lands on a screen that can read nothing. The route is left
+              inside the ordinary StaffPrivate rather than gated again here for exactly that
+              reason — a second gate in the browser would be a second place the rule lives, and the
+              one that drifts is never the server's. */}
+          <Route path="/internal/lt/combined" element={<StaffPrivate><LtCombinedPricer /></StaffPrivate>} />
+          <Route path="/internal/lt/combined-settings" element={<StaffPrivate><LtCombinedSettings /></StaffPrivate>} />
+          <Route path="/internal/lt/scenarios" element={<StaffPrivate><LtScenarios /></StaffPrivate>} />
+          {/* PULL UP A TERM SHEET BY ITS ID. Staff-only for the same reason the
+              pricer is: it shows which investor was really behind each price, and
+              an investor name never reaches a borrower or a TPO. */}
+          <Route path="/internal/lt/sheets" element={<StaffPrivate><LtSheetLookup /></StaffPrivate>} />
           <Route path="/internal/lt/loan/:loanId" element={<StaffPrivate><LtLoan /></StaffPrivate>} />
           <Route path="/internal/new" element={<StaffPrivate><StaffNewFile /></StaffPrivate>} />
           <Route path="/internal/tasks" element={<StaffPrivate><StaffTasks /></StaffPrivate>} />

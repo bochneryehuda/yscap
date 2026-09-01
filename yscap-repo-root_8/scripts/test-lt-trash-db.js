@@ -291,15 +291,46 @@ async function main() {
       ['src/longterm/clickup/link.js', 2],          // selection + retry sweep
       ['src/longterm/borrower-autolink.js', 1],
       ['src/longterm/borrower-links.js', 1],        // the two-names identity guard
-      ['src/longterm/routes/my-loans.js', 1],       // the borrower's own list
       ['src/longterm/routes/borrowers.js', 1],      // the match screen
       ['src/longterm/conditions/sync.js', 1],       // the condition sweep
+      // The borrower's own list USED to name the guard here. It now scopes
+      // through `my-scope.ownLoanSql`, which composes it — see the pair of
+      // checks below, which hold the same property one step further along
+      // rather than loosening it.
+      ['src/longterm/my-scope.js', 1],
     ];
     for (const [file, min] of readsGuard) {
       const src = fs.readFileSync(file, 'utf8');
       const n = (src.match(/notTrashSql\(/g) || []).length;
       ok(n >= min, `${file} composes the trash guard (${n} use${n === 1 ? '' : 's'}, needs ≥${min})`);
     }
+
+    /* THE BORROWER'S OWN LIST — THE GUARD MOVED, IT DID NOT GO.
+       This row used to grep `my-loans.js` for `notTrashSql(`. That route now
+       scopes every read through the shared `my-scope.ownLoanSql`, which is the
+       ONE definition of "a loan this borrower may see" — used by the list AND by
+       the single-loan lookup, so the two can no longer disagree about a trashed
+       loan. The literal moved with it, and a guard that keeps naming the old
+       expression reads as a broken feature and gets "fixed" by deleting the row,
+       which is how a real property quietly stops being checked.
+
+       So it is asserted where the rule now lives, and in BOTH halves — the route
+       really does scope through it, and the fragment really does carry the
+       guard. Either alone would pass while the property was broken: a route
+       could call a fragment that had lost the guard, and a fragment could carry
+       it while the route stopped using it. The second half is checked on the
+       ASSEMBLED SQL rather than on the source text, so it cannot be satisfied by
+       a mention in a comment. */
+    const myLoansSrc = fs.readFileSync('src/longterm/routes/my-loans.js', 'utf8');
+    const loanReads = (myLoansSrc.match(/FROM\s+lt_loans/gi) || []).length;
+    const scoped = (myLoansSrc.match(/ownLoanSql\(|loadOwnLoan\(/g) || []).length;
+    ok(loanReads > 0 && scoped >= loanReads,
+      `the borrower's own list scopes every lt_loans read through my-scope (${scoped} scope use(s) for ${loanReads} read(s))`);
+
+    const myScope = require('../src/longterm/my-scope');
+    const trashLib = require('../src/longterm/trash');
+    ok(myScope.ownLoanSql('l', '$1').includes(trashLib.notTrashSql('l')),
+      '…and the fragment it scopes through carries the trash guard in the SQL it actually assembles');
     const archiveRoute = fs.readFileSync('src/longterm/routes/archive.js', 'utf8');
     ok(/requireSuperAdmin/.test(archiveRoute)
       && /router\.delete\('\/:id', requireArchiveAdmin, requireSuperAdmin/.test(archiveRoute)

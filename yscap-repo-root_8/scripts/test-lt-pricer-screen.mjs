@@ -40,6 +40,32 @@ const layout = read('app-v2/src/components/StaffLayout.jsx');
 // Code with the commentary removed. Every guard about BEHAVIOUR runs against this, so a rule
 // described in a comment can never satisfy a guard about the code.
 const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+/* ⛔ THE DOORS MOVED, SO THE GUARDS FOLLOWED THEM (2026-09-01, the un-forking). One screen now
+   serves both engines and calls `engine.price(...)` / `engine.investors()`; WHICH door that is
+   is declared once in `pricerEngine.js`. Every assertion below that used to name `ltApi.dscrPrice`
+   in the screen now names it in the descriptor — the same claim about the same call, read where
+   the call now lives. Nothing was loosened: a general engine that stopped asking for the full
+   capture, or that started forwarding the comp switch, still fails. */
+const engineSrc = read('app-v2/src/longterm/pricerEngine.js');
+const engineCode = engineSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+/* The GENERAL engine's own block, so a combined-engine door can never satisfy a general-engine
+   guard — they sit in one file and a whole-file match would not tell them apart. */
+const generalBlock = (engineCode.match(/export const GENERAL_ENGINE = \{[\s\S]*?\n\};/) || [''])[0];
+
+/* THE FORM IS ITS OWN COMPONENT NOW, AND THIS SCREEN MOUNTS IT (`LtScenarioFields.jsx`). The
+   scenario page mounts the SAME one, which is the whole point: a second copy of twenty-one pricing
+   fields is a second answer to what a deal is. The field guards below moved house with the code for
+   the reason the `scenarioFields.js` ones did — a guard that keeps naming the old file reads as a
+   broken feature and gets "fixed" by loosening it, which is worse than the drift it was watching.
+
+   ⛔ A NEGATIVE GUARD MUST RUN OVER BOTH FILES. "This expression must never appear" passes for the
+   WRONG reason the moment the code it watches moves house: the guard goes blind and reports a clean
+   screen about a rule it has stopped checking. So `bothCode`, not `code`, for every ban. */
+const formSrc = read('app-v2/src/longterm/LtScenarioFields.jsx');
+const formCode = formSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const bothCode = `${code}\n${formCode}`;
+const saveCode = read('app-v2/src/longterm/LtScenarioSave.jsx')
+  .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
 console.log('LT Pricing Engine — structural guards\n');
 
@@ -57,7 +83,7 @@ console.log('LT Pricing Engine — structural guards\n');
   // Asserted on the ARGUMENT, not on the shape of the call: the scenario is built by a helper, so
   // a regex expecting an inline object literal fails on perfectly correct code — which is a defect
   // the guard invented, and the worst kind, because the fix is to bend the code to suit the test.
-  const priceCall = (code.match(/ltApi\.dscrPrice\([\s\S]{0,160}/) || [''])[0];
+  const priceCall = (generalBlock.match(/ltApi\.dscrPrice\([\s\S]{0,160}/) || [''])[0];
   ok(/full:\s*true/.test(priceCall), 'PE-3 …and it asks for the FULL capture, not the summary');
 }
 
@@ -198,12 +224,12 @@ console.log('LT Pricing Engine — structural guards\n');
 // 8) THE DEFAULTS — set, complete, and visibly defaults
 // ---------------------------------------------------------------------------
 {
-  const start = (code.match(/const START = \{[\s\S]*?\};/) || [''])[0];
+  const start = (formCode.match(/const START = \{[\s\S]*?\};/) || [''])[0];
   ok(start.length > 0, 'PE-35 there is a starting scenario');
   for (const k of ['purpose', 'value', 'loan', 'fico', 'dscr', 'zip', 'propertyType', 'units', 'lockDays']) {
     ok(new RegExp(`${k}:`).test(start), `PE-36 …with ${k} set, so nobody has to type plumbing before pricing`);
   }
-  ok(/starting point you can change/.test(src),
+  ok(/starting point you can change/.test(src) || /starting point you can change/.test(formSrc),
     'PE-37 …and the screen says they are a starting point, never a fact about a loan');
   // NOTHING NARROWS THE ANSWER — *the ask*, that is. The vendor is always asked for
   // every rate and every product. What changed (owner-directed 2026-08-27) is that the
@@ -211,7 +237,7 @@ console.log('LT Pricing Engine — structural guards\n');
   // the rest of the data that you're getting" — so this guard split in two: the
   // request-narrowing knobs stay banned outright, and the investor filter is proven to
   // run on the ANSWER (section 20 below holds the rest of that contract).
-  ok(!/maxRate|minPrice|hideExpired/.test(code),
+  ok(!/maxRate|minPrice|hideExpired/.test(bothCode),
     'PE-38 no request-narrowing knob of ours — every rate and every product still comes back');
   ok(!/invest/i.test(fieldsSrc),
     'PE-38a …and the scenario builder knows nothing about investors, so a selection can never reach the wire');
@@ -501,16 +527,35 @@ console.log('LT Pricing Engine — structural guards\n');
    rather than by a second list somebody typed into the JSX.
    ────────────────────────────────────────────────────────────────────────── */
 {
-  ok(/id="pe-term"/.test(code) && /<select[^>]*id="pe-term"/.test(code),
+  /* ⛔ THE FIELD SET IS PERFECT AND UNREACHABLE UNLESS THIS SCREEN MOUNTS IT. Every guard below
+     reads `LtScenarioFields.jsx`, so without this one they would all stay green on a screen that
+     had quietly stopped rendering the form — the same silence as a back end nothing calls. */
+  ok(/from '\.\/LtScenarioFields\.jsx'/.test(code) && /<ScenarioFields\b/.test(code),
+    'PE-96b the screen MOUNTS the shared field set — one form, two screens, never a second copy');
+
+  /* ⛔ THE PRICING ENGINE SAVES AND NEVER LOADS (D1 — the owner drew that line themselves when
+     they chose "both"). The Scenarios page owns the list, the re-run and the create-from-scratch;
+     a saved scenario reloading into this screen would put two answers on one page to "which deal
+     am I looking at". Asserted on the DOORS, because that is where it would actually happen —
+     nothing rendered can tell you which endpoint a screen calls. */
+  ok(/ltApi\.dscrSaveScenario\(/.test(saveCode),
+    'PE-96c the save half calls the save door');
+  for (const door of ['dscrScenarios', 'dscrScenario', 'dscrUpdateScenario', 'dscrDeleteScenario']) {
+    ok(!new RegExp(`ltApi\\.${door}\\(`).test(`${code}\n${saveCode}`),
+      `PE-96d …and never ltApi.${door} — reading, renaming and removing belong to the Scenarios page`);
+  }
+
+
+  ok(/id="pe-term"/.test(formCode) && /<select[^>]*id="pe-term"/.test(formCode),
     'PE-97 the loan-term box is on the form');
-  ok(/LOAN_TERMS\.map/.test(code),
+  ok(/LOAN_TERMS\.map/.test(formCode),
     'PE-98 ...and its options come from the shared LOAN_TERMS, not a list typed into the screen');
-  ok(/value=\{f\.termYears\}/.test(code) && /termYears: DEFAULT_TERM_YEARS/.test(code),
+  ok(/value=\{f\.termYears\}/.test(formCode) && /termYears: DEFAULT_TERM_YEARS/.test(formCode),
     'PE-99 ...and the value it starts on is the shared default');
-  ok(/<DscrCalc\b/.test(code), 'PE-100 the DSCR calculator is mounted');
-  ok(/termYears=\{toNumber\(f\.termYears\)\}/.test(code) && /interestOnly=\{!!f\.io\}/.test(code),
+  ok(/<DscrCalc\b/.test(formCode), 'PE-100 the DSCR calculator is mounted');
+  ok(/termYears=\{toNumber\(f\.termYears\)\}/.test(formCode) && /interestOnly=\{!!f\.io\}/.test(formCode),
     'PE-101 ...and it is fed the scenario\'s own term and interest-only flag, so the ratio follows them');
-  ok(/\{calcOpen && \(/.test(code) && /useState\(false\)/.test(code),
+  ok(/\{calcOpen && \(/.test(formCode) && /useState\(false\)/.test(formCode),
     'PE-102 ...and it is closed until it is asked for');
 
   /* PE-103..PE-107 — the two owner reports of 2026-08-23, guarded where CI can see them.
@@ -519,19 +564,19 @@ console.log('LT Pricing Engine — structural guards\n');
 
   // (1) A CONTROL IN THE NAME BAND MUST NOT REPLACE THE NAME. `head || name` is the exact
   //     expression that lost the property-tax, insurance and DSCR names; it must never come back.
-  ok(!/\{\s*head\s*\|\|/.test(code),
+  ok(!/\{\s*head\s*\|\|/.test(bothCode),
     'PE-103 a field never renders its control INSTEAD of its name');
-  ok(/\{named\}/.test(code) && /\{head \?/.test(code),
+  ok(/\{named\}/.test(formCode) && /\{head \?/.test(formCode),
     'PE-104 ...it renders both, so a switch and a name can share the band');
 
   // (2) THE RATIO FILLS ITSELF IN — no button. The behaviour is proven by running it
   //     (test-lt-dscr-autofill.mjs, which needs a browser); this pins the wiring.
-  ok(!/Use this ratio/.test(code), 'PE-105 there is no "Use this ratio" button to press');
-  ok(/onRatio\(dscrFigure\)/.test(code) && /\[dscrFigure, onRatio\]/.test(code),
+  ok(!/Use this ratio/.test(bothCode), 'PE-105 there is no "Use this ratio" button to press');
+  ok(/onRatio\(dscrFigure\)/.test(formCode) && /\[dscrFigure, onRatio\]/.test(formCode),
     'PE-106 ...the answer is handed up on every CHANGE of the figure, and only then');
   // A receiver rebuilt each render would make that effect fire on every render instead of on every
   // change — which is how a hand-typed ratio gets stamped over by an unrelated keystroke.
-  ok(/const takeRatio = useCallback\(/.test(code),
+  ok(/const takeRatio = useCallback\(/.test(formCode),
     'PE-107 ...and the receiver is stable, so an unrelated re-render cannot re-write the ratio');
 }
 
@@ -555,7 +600,7 @@ console.log('LT Pricing Engine — structural guards\n');
   ok(!/comp/i.test(scen.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
       .replace(/complete/gi, '')),
     'PE-110 the scenario builder knows nothing called comp — the wire is untouched');
-  ok(/dscrPrice\(toScenario\(f\)/.test(code) || /dscrPrice\(\s*toScenario\(/.test(code),
+  ok(/dscrPrice\(scenario, \{ full: true \}\)/.test(generalBlock),
     'PE-111 ...and the price call sends the scenario and nothing else about the switch');
 
   // (3) FAIL TO RAW, NEVER TO A WRONG NUMBER — the null-plan path forces the raw identity.
@@ -584,10 +629,10 @@ console.log('LT Pricing Engine — structural guards\n');
     const sf = fs.readFileSync(path.join(ROOT, 'app-v2/src/longterm/scenarioFields.js'), 'utf8');
     ok(/export const LOCK_DAYS = \['15', '30', '45', '60'\]/.test(sf),
       'PE-117 the four lock choices are exactly the owner’s — 15, 30, 45, 60');
-    ok(/lockDays: '30'/.test(code), 'PE-118 …and the default stays 30 days (the field state the screen opens on)');
-    ok(/<select id="pe-lock"/.test(code) && !/<input id="pe-lock"/.test(code),
+    ok(/lockDays: '30'/.test(formCode), 'PE-118 …and the default stays 30 days (the field state the screen opens on)');
+    ok(/<select id="pe-lock"/.test(formCode) && !/<input id="pe-lock"/.test(bothCode),
       'PE-119 the lock renders as a SELECT, never a free-typed number');
-    ok(/LOCK_DAYS\.includes\(String\(f\.lockDays\)\) \? LOCK_DAYS : \[String\(f\.lockDays\), \.\.\.LOCK_DAYS\]/.test(code),
+    ok(/LOCK_DAYS\.includes\(String\(f\.lockDays\)\) \? LOCK_DAYS : \[String\(f\.lockDays\), \.\.\.LOCK_DAYS\]/.test(formCode),
       'PE-120 a restored scenario’s non-standard lock joins the list — restoring a quote never changes what was quoted');
   }
 
@@ -612,7 +657,14 @@ console.log('LT Pricing Engine — structural guards\n');
     // The vendor's own fee fields render in RAW only — in a comp position our sheet replaces
     // them, because "Total origination fee $0.00" beside our real charge list is the exact
     // confusion the owner reported.
-    ok(/\{!compActive && \(\s*<Track title="Lender Price's own fee fields"/.test(code),
+    /* ⛔ RE-POINTED, NOT LOOSENED (2026-09-01, the un-forking). The title is no longer a literal:
+     one screen now serves both engines, so it reads `engine.sheetPossessive` — "Lender Price's"
+     on the general board, "The rate sheet's" on the combined one, which prices on two programs
+     and may name neither. The SUBJECT of this guard has not moved an inch: the vendor's own fee
+     fields must render in RAW ONLY, and must be labelled as the vendor's rather than as ours.
+     Both halves are still asserted — the `!compActive` gate, and that the label is the engine's
+     own possessive rather than a hard-coded name or nothing at all. */
+  ok(/\{!compActive && \(\s*<Track title=\{`\$\{engine\.sheetPossessive\} own fee fields`\}/.test(code),
       'PE-126 the vendor fee fields show in raw only, labelled as the vendor’s');
     // The charge list carries the closing sheet: totals + down payment + cash to close, all
     // summed from the SAME lines (closingSheet reads the charge list — one source).
@@ -653,11 +705,54 @@ console.log('LT Pricing Engine — structural guards\n');
       'PE-140 Edit search reopens the collapsed form');
     // The sticky class itself: pinned in the shared stylesheet, with the phone fallback.
     const css = fs.readFileSync(path.join(ROOT, 'app-v2/src/styles.css'), 'utf8');
+    /* RE-POINTED 2026-09-01, and this time the SUBJECT moved with it, so it is stated
+       rather than quietly relaxed. It was re-pointed on 2026-08-30 at the offset
+       `calc(72px + var(--lt-comp-h))`, because the comparison rail was pinned ABOVE this
+       strip. Owner-reported 2026-09-01: *"three separate sections stacked on top of each
+       other, and you can't see any of the three … you can't even access it to see rates,
+       and you can't scroll."* MEASURED at 1440x1000, the two pins plus the app header held
+       442 points of permanently-pinned furniture — nearly half the screen, before one rate
+       row. The rail moved below the board and stopped pinning, so this strip's offset is
+       the app header and only that. What the rail's pin was FOR is asserted at PE-141b. */
     ok(/\.lt-strip\{position:sticky;top:72px/.test(css)
       && /@media\(max-width:900px\)\{\.lt-strip\{position:static/.test(css),
-      'PE-141 .lt-strip is sticky under the app header, and static on a phone — the .file-top offsets');
+      'PE-141 .lt-strip is sticky under the app header alone, static on a phone');
+    ok(!/var\(--lt-comp-h/.test(css),
+      'PE-141a …and nothing is pinned above it any more — the rail\'s offset is gone from the sheet');
+    ok(/id="lt-comparison"/.test(fs.readFileSync(path.join(ROOT, 'app-v2/src/longterm/TermSheetPanel.jsx'), 'utf8'))
+      && /getElementById\('lt-comparison'\)/.test(code) && /collected · build the sheet/.test(code),
+      'PE-141b the collection is still one press away from the pinned band — what the rail\'s own pin was for');
     ok(/\.lt-strip\{[^}]*background:#fff/.test(css),
       'PE-142 …with an explicit opaque background, or the board reads straight through it');
+
+    /* ── PE-142a..PE-142e — THE ANSWER IS THE PAGE (owner-reported 2026-09-01) ────
+       *"The entire pricing screen is extremely, terribly messy. It's three separate
+       sections stacked on top of each other, and you can't see any of the three …
+       the comparison window is on top of everything … at the bottom of everything,
+       you can't even access it to see rates."*
+
+       MEASURED on a real render at 1440x1000 before the change: the comparison card
+       (171), the pinned strip (199) and a "what came back" card (172) sat between the
+       top of the page and the board, so the first rate row landed at y=810 and an
+       officer saw ONE rate on the screen whose whole job is the board. After: the
+       board card starts at 269 and all seven rates are on one screen.
+
+       ⛔ ASSERTED AS THE ORDER, NOT AS A PIXEL. A y-coordinate is a fact about one
+       fixture at one width and would be "fixed" by nudging a number; the ORDER —
+       answer first, then what you do with it, then the footnotes — is the property
+       that was wrong and the one that must hold at every width. */
+    const iBoard = code.indexOf('Every rate, and every investor at it');
+    const iComp = code.indexOf('<ComparisonWorkflowPanel');
+    const iFoot = code.indexOf('Business-purpose loans, made to an entity');
+    ok(iBoard > 0 && iComp > 0 && iFoot > 0, 'PE-142a (located the board, the comparison area and the footnote)');
+    ok(iComp > iBoard,
+      'PE-142b the comparison area comes AFTER the board — price, read, then collect');
+    ok(iFoot > iComp,
+      'PE-142c …and the standing disclosure is last, where a footnote goes');
+    ok(!/What came back/.test(code),
+      'PE-142d the counts no longer cost a card of their own between the strip and the answer');
+    ok(/counts=\{`\$\{stack\.rateCount\}/.test(code),
+      'PE-142e …they ride the strip that describes the search they count');
   }
 }
 
@@ -685,7 +780,7 @@ console.log('LT Pricing Engine — structural guards\n');
     'PE-144 the priced board filters the ANSWER (res.programs) — never the scenario');
   ok(/filterPrograms\(filterPrograms|dscrPrice\([^)]*invSel/.test(code) === false,
     'PE-145 …and the selection is never an argument to the price call');
-  ok(!/invSel/.test(fieldsSrc) && !/investors:/.test((code.match(/const START = \{[\s\S]*?\};/) || [''])[0]),
+  ok(!/invSel/.test(fieldsSrc) && !/investors:/.test((formCode.match(/const START = \{[\s\S]*?\};/) || [''])[0]),
     'PE-146 the selection lives outside the form state, so it cannot mark the board stale or ride toScenario');
 
   // (2) NOTHING IS SILENTLY DROPPED. A narrowed board says so, in words that name
@@ -705,7 +800,7 @@ console.log('LT Pricing Engine — structural guards\n');
 
   // (3) THE WHITE-LABEL SHEET LIVES ON THE SERVER. The screen fetches the roster
   //     and carries per-row annotations; a browser copy of the map would drift.
-  ok(/ltApi\.dscrInvestors\(\)/.test(code), 'PE-151 the roster is fetched from the server');
+  ok(/ltApi\.dscrInvestors\(\)/.test(generalBlock), 'PE-151 the roster is fetched from the server');
   ok(!/Platinum|Emerald|Bluewater|Sequoia/.test(code),
     'PE-152 …and no white-label name is typed into the screen — one sheet, server-side');
   ok(/<WhiteLabelTag name=\{g\.best && g\.best\.whiteLabel\}/.test(code),

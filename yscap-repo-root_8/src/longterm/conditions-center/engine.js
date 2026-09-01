@@ -3,7 +3,7 @@
  * LONG-TERM — THE GENERAL CONDITION CENTER'S ENGINE.
  *
  * Decides which conditions belong on one loan, puts them there, and takes off
- * the ones that no longer apply. It is the ONE writer of `lt_file_conditions`
+ * the ones that no longer apply. It is the ONE writer of `checklist_items`
  * rows whose `origin` is `auto`.
  *
  * ── SIX RULES, EACH OF WHICH COST SOMEBODY SOMETHING TO LEARN ───────────────
@@ -40,13 +40,29 @@
  *    afterwards; a failure here must never turn somebody's successful save into
  *    an error. It reports what it did, including what it could not do.
  *
- * SEPARATION: reads and writes `lt_*` only. No RTL import, no RTL table.
+ * ── WHERE THE ROWS LIVE (db/652 + db/653) ───────────────────────────────────
+ *
+ * The conditions themselves are `checklist_items` in the ONE Condition Center,
+ * owned by `lt_loan_id` with `scope='lt_loan'` — the owner's *"take that exact
+ * Condition Center and make your conditions in that Condition Center follow
+ * those rules"* (2026-08-30 share-the-code directive). The CONTEXT a rule is
+ * evaluated against is still read from `lt_*` and nowhere else: what a rule
+ * knows about a loan is Long-Term's own business.
+ *
  * ENCOMPASS: reads OUR mirror of it; nothing here implies a write to Encompass.
  */
 
 const db = require('../db');
 const rules = require('./rules');
 const registry = require('./field-registry');
+const vocab = require('./vocabulary');
+// WHO OWNS A CONDITION ROW — the one descriptor, shared with the short-term side
+// (db/652 made the Long-Term loan the fourth owner scope; db/653 finished the
+// vocabulary). Every statement below says who it is about through this rather
+// than by hand-writing `lt_loan_id = $1`: the hand-written predicate is the one
+// that drifts, and a drifted owner predicate is a condition from one loan
+// answering for another.
+const { ownerOf, ownerWhere, ownerCols } = require('../../lib/condition-owner');
 
 /** A status past this means a human has been at it. */
 const UNTOUCHED = 'outstanding';
@@ -146,15 +162,29 @@ async function loadLibrary(client = db) {
   // boot, where it would race the migration that creates its table. Never
   // throws; a failed seed leaves whatever is already there.
   await require('./library').ensureSeeded(client);
+  // `scope='lt_loan'` is the product separation here, by the table's own
+  // original design: every RTL selector is already scope-filtered, so an
+  // lt_loan template is invisible to the RTL engine by construction, and the
+  // reverse.
   const { rows } = await client.query(
-    `SELECT id, code, bucket_key, label, hint, borrower_label, borrower_hint,
-            audience, kind, auto_apply, rule_logic, is_required, slots, config,
-            sort_order, is_enabled, disabled_reason
-       FROM lt_condition_templates
-      WHERE is_active = true AND auto_apply IN ('always','rules')
+    `SELECT id, code, label, hint, borrower_label, borrower_hint,
+            audience, item_kind, tool_key, category, auto_apply, rule_logic,
+            is_required, slots, config, sort_order
+       FROM checklist_templates
+      WHERE scope = 'lt_loan' AND is_active = true AND auto_apply IN ('always','rules')
       ORDER BY sort_order, code`,
   );
-  return rows;
+  // Translated back into the wording the rules are written in, so `decide`,
+  // `effectiveAudience` and the library's own vocabulary stay one language.
+  return rows.map((r) => ({
+    ...r,
+    bucket_key: vocab.bucketOf(r.category),
+    audience: vocab.audienceFromShared(r.audience),
+    kind: vocab.kindFromShared(r),
+    config: r.config || {},
+    is_enabled: !(r.config && r.config.enabled === false),
+    disabled_reason: (r.config && r.config.disabledReason) || null,
+  }));
 }
 
 /**
@@ -213,6 +243,18 @@ function effectiveAudience(template) {
 async function evaluateLoan(loanId, opts = {}) {
   const client = opts.db || db;
   const out = { ok: true, added: [], removed: [], unchanged: 0, skipped: [], degraded: null, locked: false };
+  // FAILS CLOSED AND LOUDLY. `ownerOf` throws on a missing id rather than
+  // building a statement around a NULL owner — which on `checklist_items` the
+  // database would refuse, and on `documents` (no owner-count constraint there)
+  // it would not. It is made here, once, and passed down.
+  let owner;
+  try {
+    owner = ownerOf('lt_loan', loanId);
+  } catch (e) {
+    out.ok = false;
+    out.degraded = String((e && e.message) || e).slice(0, 300);
+    return out;
+  }
 
   // THE LOCK IS PER FILE and lives on its own connection, so it is held for the
   // whole pass rather than being handed back to the pool between statements.
@@ -243,10 +285,12 @@ async function evaluateLoan(loanId, opts = {}) {
     const library = await loadLibrary(client);
     const fields = registry.fieldMap();
 
+    const where = ownerWhere(owner);
     const { rows: existing } = await client.query(
-      `SELECT id, template_id, code, status, origin, notes, field_key
-         FROM lt_file_conditions WHERE loan_id = $1::uuid`,
-      [String(loanId)],
+      `SELECT id, template_id, status, origin_kind, notes, field_key,
+              (tool_payload IS NOT NULL AND tool_payload <> '{}'::jsonb) AS has_answer
+         FROM checklist_items WHERE ${where.sql}`,
+      where.params,
     );
     const byTemplate = new Map();
     for (const r of existing) if (r.template_id) byTemplate.set(String(r.template_id), r);
@@ -265,18 +309,30 @@ async function evaluateLoan(loanId, opts = {}) {
         if (have) { out.unchanged += 1; continue; }
         const { audience, downgraded } = effectiveAudience(t);
         try {
+          // ownerCols writes ONE owner column and NULLs every other, so
+          // `chk_one_owner` holds by construction rather than by this call site
+          // remembering which columns exist this month.
+          const cols = ownerCols(owner);
+          const { item_kind, tool_key } = vocab.kindToShared(t.kind);
           const { rows } = await client.query(
-            `INSERT INTO lt_file_conditions
-               (loan_id, template_id, code, bucket_key, label, hint,
-                borrower_label, borrower_hint, audience, kind, is_required,
-                slots, config, origin, sort_order)
-             VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                     $12::jsonb, $13::jsonb, 'auto', $14)
+            `INSERT INTO checklist_items
+               (scope, application_id, lt_loan_id, template_id, category,
+                label, hint, borrower_label, borrower_hint, audience,
+                item_kind, tool_key, is_required, slots, origin_kind, sort_order)
+             VALUES ($1, $2::uuid, $3::uuid, $4::uuid, $5,
+                     $6, $7, $8, $9, $10,
+                     $11, $12, $13, $14::jsonb, 'auto', $15)
              ON CONFLICT DO NOTHING
              RETURNING id`,
-            [String(loanId), t.id, t.code, t.bucket_key, t.label, t.hint,
-              t.borrower_label, t.borrower_hint, audience, t.kind, t.is_required,
-              JSON.stringify(t.slots || []), JSON.stringify(t.config || {}), t.sort_order],
+            [owner.scope, cols.application_id, cols.lt_loan_id, t.id, vocab.categoryOf(t.bucket_key),
+              t.label, t.hint, t.borrower_label, t.borrower_hint, vocab.audienceToShared(audience),
+              item_kind, tool_key, t.is_required,
+              // The per-instance required-slot list — the ONE column the shared
+              // generic sign-off arm reads (db/653). The CONFIG deliberately
+              // stays on the template and is read through the join: one config,
+              // edited once, so a settings change reaches every open file rather
+              // than only the next one.
+              JSON.stringify(t.slots || []), t.sort_order],
           );
           // ON CONFLICT DO NOTHING returns no row when the unique index refused
           // a duplicate — which is the index doing its job, not a failure.
@@ -291,15 +347,39 @@ async function evaluateLoan(loanId, opts = {}) {
       // verdict.apply === false — the rule says it does not belong here.
       if (!have) continue;
       // Rule 3: only ours, and only untouched.
-      const untouched = have.origin === 'auto' && have.status === UNTOUCHED && !String(have.notes || '').trim();
+      // WORK SOMEBODY DID IS NEVER DESTROYED BY A RULE CHANGING ITS MIND. A
+      // STORED ANSWER counts as work exactly as a note or a document does — the
+      // rent and the date a tenancy started are typed onto a condition and its
+      // status stays `outstanding` until somebody signs it off, so without this
+      // a retracted condition took a person's typing with it, silently. Added
+      // 2026-08-31 while retiring two conditions the owner asked to remove
+      // ("take them off, but keep any work already done"), and it can only ever
+      // KEEP more rows than before, which is the safe direction.
+      //
+      // HONEST NOTE, MEASURED: this half and the identical test inside the DELETE
+      // below are each a COMPLETE guard, so removing either one alone changes no
+      // outcome and the suite stays green — only removing both fails it, which was
+      // proven rather than assumed. They are both kept for the reason the DELETE's
+      // own comment gives: this read is a cheap early exit (and what keeps
+      // `out.unchanged` honest), while the statement is what closes the window
+      // between the read and the write. The one that must never go is the one in
+      // the DELETE.
+      const untouched = have.origin_kind === 'auto' && have.status === UNTOUCHED
+        && !String(have.notes || '').trim() && have.has_answer !== true;
       if (!untouched) { out.unchanged += 1; continue; }
       try {
+        // THE WHOLE TEST IS INSIDE THE DELETE, deliberately: the read above is
+        // only a cheap early exit, and a document landing between that read and
+        // this statement must not be able to lose its condition. The short-term
+        // side does this as read-then-write, which is the shape db/401 records
+        // as having produced real duplicates under ordinary traffic.
         const { rows } = await client.query(
-          `DELETE FROM lt_file_conditions
-            WHERE id = $1::uuid AND origin = 'auto' AND status = $2
+          `DELETE FROM checklist_items
+            WHERE id = $1::uuid AND origin_kind = 'auto' AND status = $2
               AND COALESCE(notes,'') = ''
-              AND NOT EXISTS (SELECT 1 FROM lt_condition_files f WHERE f.condition_id = lt_file_conditions.id)
-          RETURNING code`,
+              AND COALESCE(tool_payload, '{}'::jsonb) = '{}'::jsonb
+              AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id = checklist_items.id)
+          RETURNING id`,
           [have.id, UNTOUCHED],
         );
         if (rows.length) out.removed.push({ code: t.code, label: t.label });
@@ -307,6 +387,51 @@ async function evaluateLoan(loanId, opts = {}) {
       } catch (e) {
         out.skipped.push({ code: t.code, why: `Could not remove it: ${String((e && e.message) || e).slice(0, 160)}` });
       }
+    }
+
+    // ── A RETIRED CONDITION COMES OFF THE FILES THAT ALREADY CARRY IT ────────
+    //
+    // THE LOOP ABOVE CANNOT DO THIS, and believing it could was a real defect.
+    // `loadLibrary` selects `is_active = true`, so a RETIRED template is not in
+    // `library` at all — the loop never considers it, and its instances sit on
+    // every file that had one, for ever. db/646's own header states the opposite
+    // ("an untouched row leaves on its own, file by file"), which is how the
+    // retired appraisal-ordering condition stayed on the whole book: retiring a
+    // template took it out of the one list that could have removed it.
+    //
+    // SCOPED TO `is_active = false`, NEVER to "not in the library". Those are
+    // different sets and the difference is the whole safety of this statement: a
+    // template with `auto_apply = 'manual'` is ACTIVE and simply not rule-driven,
+    // and a condition somebody typed by hand carries no template at all — sweeping
+    // "everything the library did not mention" would delete both.
+    //
+    // The untouched test is the SAME one above, word for word, and for the same
+    // reason: work somebody did is never destroyed by a rule changing its mind.
+    try {
+      // `ownerWhere` takes the alias itself, so the owner clause is BUILT for `ci`
+      // rather than string-rewritten into it — one definition of which rows belong
+      // to this file, and no regex standing between a rewrite and a DELETE.
+      // …and from $2, because $1 is the untouched status below it. `ownerWhere`
+      // takes the starting index for exactly this reason; two clauses both
+      // claiming $1 is a bind mismatch that only shows up at run time.
+      const ciWhere = ownerWhere(owner, 'ci', 2);
+      const { rows } = await client.query(
+        `DELETE FROM checklist_items ci
+          USING checklist_templates t
+          WHERE t.id = ci.template_id
+            AND t.is_active = false
+            AND ci.origin_kind = 'auto'
+            AND ci.status = $1
+            AND COALESCE(ci.notes,'') = ''
+            AND COALESCE(ci.tool_payload, '{}'::jsonb) = '{}'::jsonb
+            AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id = ci.id)
+            AND ${ciWhere.sql}
+        RETURNING t.code, ci.label`,
+        [UNTOUCHED, ...ciWhere.params],
+      );
+      for (const r of rows) out.removed.push({ code: r.code, label: r.label, retired: true });
+    } catch (e) {
+      out.skipped.push({ code: '(retired)', why: `Could not remove retired conditions: ${String((e && e.message) || e).slice(0, 160)}` });
     }
   } catch (e) {
     // Rule 6: never throw at the caller.

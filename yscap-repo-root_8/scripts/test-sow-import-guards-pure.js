@@ -65,31 +65,21 @@ ok('the halo class exists in the stylesheet', /body\.rb-dropping/.test(css));
 ok('the page keeps no private copy of the drop handling',
   !/function wireDrop\(/.test(js) && !/\.dataTransfer\b/.test(js));
 
-// 5. cache busters
-// These assets are cached HARD, so an edit that does not bump the ?v= serves the
-// STALE file to every browser that has been here before -- the tool looks unfixed.
-// Pinning the literal buster ("?v=dnd1") could not express that rule: it says "the
-// buster is exactly this", which is FALSE the moment somebody legitimately edits the
-// tool, so it failed on the CORRECT action and passed on the wrong one (edit the JS,
-// leave the buster, and the old assertion was perfectly happy).
-// So the requirement is derived from the asset's OWN CONTENT: change the file and its
-// hash stops matching, which is the one moment the buster has to move. Bump the ?v=
-// in rehab-budget.html and paste the new sha printed below.
-const crypto = require('crypto');
-const sha16 = (t) => crypto.createHash('sha256').update(t).digest('hex').slice(0, 16);
-const ASSETS = [
-  { file: 'rehab-budget.js', body: js, sha: 'd573e52ce7c4afa1', v: 'flow2-shareddrop' },
-  { file: 'rehab-budget.css', body: css, sha: 'af87860acdbf456c', v: 'dnd2' },
-];
-for (const a of ASSETS) {
-  const seen = sha16(a.body);
-  ok(`${a.file} is unchanged, or its cache-buster moved with it`
-    + (seen === a.sha ? '' : ` — it changed (sha ${seen}); bump ?v= in rehab-budget.html and update this line`),
-    seen === a.sha);
-  const m = new RegExp(a.file.replace('.', '\\.') + '\\?v=([A-Za-z0-9_-]+)').exec(html);
-  ok(`${a.file} is loaded with a cache-buster`, !!m);
-  if (m) ok(`${a.file}'s cache-buster is the one this test was pinned against`, m[1] === a.v);
-}
+/* 5. THE CACHE-BUSTER CHECK MOVED OUT OF THIS FILE — owner-directed 2026-09-01.
+   It used to live here and pinned the rehab-budget pair ONLY, which meant it was
+   blind to the other nineteen assets the V2 tools load: editing `termsheet.js` or
+   `track-record.js` and forgetting the `?v=` shipped a stale file to every
+   returning browser in silence, and that nearly happened. It also could not see
+   the worse case — `../suite.js` and four of its siblings are loaded by ALL
+   ELEVEN tool pages, so bumping one and forgetting ten leaves ten tools stale.
+
+   `scripts/test-tool-cache-buster-pure.js` now owns that rule for every asset,
+   with the list DERIVED from the pages so a new tool is covered the moment it
+   exists. It is not repeated here: two copies of one rule drift, and the one that
+   drifts is the one somebody is relying on. The reasoning that was written here —
+   that the requirement has to come from the asset's own CONTENT, because pinning
+   the literal buster fails on the correct action and passes on the wrong one —
+   is carried over there verbatim, because it is the reason the check works. */
 
 console.log(`test-sow-import-guards-pure: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

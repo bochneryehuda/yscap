@@ -15,6 +15,21 @@
 
 const express = require('express');
 
+/* THE PHOTO ID IS SHARED BOTH WAYS, AND THE REGISTRATION HAS TO HAPPEN HERE.
+   Owner-directed 2026-08-31: *"if it's uploaded to the short term, it should
+   share it to the long term."* The rule lives in ONE shared place, but RTL may
+   never name `lt_loans` — so the shared module ASKS each product where its own
+   ID conditions are, and Long-Term answers by registering on require.
+
+   IT IS REQUIRED AT THE TOP OF THE ROUTER, NOT LAZILY INSIDE A HANDLER, AND
+   THAT IS THE WHOLE POINT: the direction that needs it is a SHORT-TERM upload
+   reopening a LONG-TERM condition, which never touches a Long-Term handler. A
+   lazy require would leave the reopener unregistered until somebody happened to
+   upload on this side — so the sharing would work in one direction only, and
+   silently. Mounting the router is what registers it, and `src/server.js`
+   mounting this router is the existing seam, so this adds no new one. */
+require('./conditions-center/photo-id-share');
+
 const router = express.Router();
 
 // Liveness / identity of the LT side (no DB) — lets the front end and ops confirm
@@ -143,6 +158,33 @@ router.use('/settings', require('./routes/settings'));
 // diagnostics seam, where there is no signed-in person to own a group.
 //   /api/lt/dscr/investor-groups
 router.use('/dscr/investor-groups', require('./routes/pricer-groups'));
+
+// THE COMBINED PRICING ENGINE — Lender Price + LoanNEX in one answer, with a
+// per-investor setting for which program each investor is fetched from
+// (owner-directed 2026-08-30). Registered BEFORE the /dscr mount so it wins the
+// match, exactly like /dscr/investor-groups above.
+//
+// A SECOND ENGINE, BESIDE THE FIRST — NEVER ON TOP OF IT. The owner's words:
+// *"Don't touch our current setup that we currently have: our General Pricing
+// Engine. Just make this totally separate… I am going to test the system that
+// works on both together. If it's going to be good, then I am going to merge
+// everything into the General Pricing Engine."* So the general engine below
+// (`/dscr/*`) is byte-for-byte what it was, and this is an additional mount.
+//
+// SUPER ADMIN ONLY, live on the domain. *"Merge this live into domain only for
+// super admin to be able to see it and super admin to be able to test it."* The
+// gate is inside the router (see combined-pricer.js) and is keyed on the REAL
+// staff role, so a long-term role override cannot hand it to anybody. The
+// LT_COMBINED_PRICING switch is a kill switch, default ON.
+//   /api/lt/dscr/combined/{health,price,investors,loannex/price,loannex/login-check,loannex/disqualify/:id}
+router.use('/dscr/combined', require('./routes/combined-pricer').makeRouter());
+// The Pricing Engine's SAVED SCENARIOS (owner-directed 2026-08-31) — a person's
+// own saved sets of pricing INPUTS, re-runnable any time. Registered BEFORE the
+// /dscr mount for the same reason the investor groups are, and deliberately NOT
+// inside makeRouter: a scenario belongs to ONE person, and the diagnostics seam
+// has nobody signed in to own one.
+//   /api/lt/dscr/scenarios
+router.use('/dscr/scenarios', require('./routes/pricer-scenarios'));
 
 // TERM SHEETS (owner-directed 2026-08-30) — issue, replay by ID, and the
 // comparison cart. Registered BEFORE the /dscr mount for the same reason the

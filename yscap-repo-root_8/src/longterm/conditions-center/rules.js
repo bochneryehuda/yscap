@@ -45,35 +45,42 @@
  * produces a refusal, never a throw.
  */
 
+/* THE SHARED CONDITION CENTER'S OWN RULE MODULE — authorized in
+   docs/LONG-TERM-AUTHORIZED-COPIES.md under the 2026-08-30 share-the-code grant.
+   What comes from it is WHAT COUNTS AS A VALID RULE: the operator table and the
+   validator. What stays here is Long-Term's own reading of its own data — see
+   `validateRule` and `evaluateRule` below, each of which says why. */
+const shared = require('../../lib/conditions/rules');
+
 const MAX_DEPTH = 2;
 
 /** Operators that ask about EMPTINESS and are therefore valid on a blank. */
 const EMPTY_OPS = new Set(['is_empty', 'not_empty']);
 
-/** Operators that take no value at all. */
-const NO_VALUE_OPS = new Set(['is_empty', 'not_empty', 'is_true', 'is_false']);
+/* Operators that take no value at all — the SHARED list, in the Set shape this
+   module and its route already use. Built from the shared array rather than
+   retyped, so the two can never disagree about which operators need a value. */
+const NO_VALUE_OPS = new Set(shared.NO_VALUE_OPS);
 
-/** Which operators each field type accepts. Anything else is refused. */
-const OPERATORS_BY_TYPE = {
-  text: ['eq', 'neq', 'contains', 'not_contains', 'starts_with', 'in', 'not_in', 'is_empty', 'not_empty'],
-  enum: ['eq', 'neq', 'in', 'not_in', 'is_empty', 'not_empty'],
-  number: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'is_empty', 'not_empty'],
-  money: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'is_empty', 'not_empty'],
-  pct: ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between', 'is_empty', 'not_empty'],
-  boolean: ['is_true', 'is_false', 'is_empty', 'not_empty'],
-  date: ['eq', 'before', 'after', 'between', 'is_empty', 'not_empty'],
-};
+/* WHICH OPERATORS EACH FIELD TYPE ACCEPTS — THE SHARED TABLE, not a copy.
+   This was a second definition of the same rule, and two tables agreeing today
+   is not one definition; it is two copies that have not drifted yet. Measured
+   before they were joined: on the six types Long-Term uses they were already
+   IDENTICAL except that this side offered `in` / `not_in` on text and the shared
+   side offered `ends_with`. Both now live in the shared table, so this side
+   loses nothing and the builder gains `ends_with` — which `compareText` below
+   answers, so the table and the evaluator agree about every operator offered.
+   A type the shared table carries and Long-Term has no field of (`percent`) is
+   simply never reached. */
+const OPERATORS_BY_TYPE = shared.OPERATORS_BY_TYPE;
 
-const OPERATOR_LABEL = {
-  eq: 'is', neq: 'is not',
-  gt: 'is more than', gte: 'is at least', lt: 'is less than', lte: 'is at most',
-  between: 'is between',
-  in: 'is any of', not_in: 'is none of',
-  contains: 'contains', not_contains: 'does not contain', starts_with: 'starts with',
-  is_empty: 'is blank', not_empty: 'is filled in',
-  is_true: 'is yes', is_false: 'is no',
-  before: 'is before', after: 'is after',
-};
+/* THE OPERATOR WORDING IS THE SHARED TABLE'S. It was a second copy, and two of
+   its entries had drifted — `is_empty` read "is blank" and `not_empty` read
+   "is filled in" against the shared module's "is empty" / "is not empty" — so a
+   rule read one way on a long-term screen and another wherever the shared
+   summariser rendered it. The `ends_with` patch this table used to carry is no
+   longer needed either: the shared table has it. */
+const OPERATOR_LABEL = shared.OPERATOR_LABEL;
 
 /**
  * WHY A RULE COULD NOT BE READ. Each is a different piece of work: an unknown
@@ -93,49 +100,72 @@ const isGroup = (n) => !!n && typeof n === 'object' && Array.isArray(n.rules);
 /**
  * Is this a rule tree the builder could have produced?
  *
- * Answers `{ok, problems:[{reason, detail}]}` — never throws, and NAMES every
- * problem rather than stopping at the first, because a person fixing a rule
- * wants the whole list.
+ * THE ANSWER IS THE SHARED CONDITION CENTER'S. This function used to be a second
+ * implementation of the same question, which is exactly what the share-the-code
+ * directive removed: two validators agreeing today is not one definition, and the
+ * one that drifts is the one that starts accepting a rule the other refuses. It
+ * delegates, and adds only the two things that are genuinely Long-Term's own.
  *
- * `fields` is the registry: `{key: {type, label}}`.
+ * ── ONE: NO RULE AT ALL IS A VALID STATE ────────────────────────────────────
+ * Every one of the 28 conditions in Long-Term's shipped library carries
+ * `ruleLogic: null` — it applies to every file — so this is load-bearing rather
+ * than theoretical. It is a fact about Long-Term's DATA, not about rule grammar,
+ * which is why it lives at this seam and not in the shared validator: the shared
+ * builder never hands its validator a null, so teaching it to accept one would
+ * loosen a check for a caller that does not need it.
+ *
+ * ── TWO: A BARE ROW AT THE ROOT ─────────────────────────────────────────────
+ * The shared validator requires the root to be a GROUP. Long-Term's evaluator has
+ * always also read a single `{field, operator, value}` at the root, so one is
+ * wrapped in a one-row AND group FOR THE PURPOSE OF VALIDATION ONLY. The stored
+ * rule is untouched, and the wrap cannot change the verdict: a one-row AND group
+ * is the same rule.
+ *
+ * The SHAPE stays Long-Term's — `{ok, problems:[{reason, detail, why}]}`, which
+ * its screens and its library check both read. The shared validator answers a
+ * flat `string[]`; each string becomes one problem carrying the shared module's
+ * own sentence, so the two can never describe one refusal two different ways.
+ *
+ * Never throws. `fields` is the registry: `{key: {type, label, options}}`.
  */
-function validateRule(node, fields, depth = 0) {
-  const problems = [];
-  const add = (reason, detail) => problems.push({ reason, detail, why: REFUSAL[reason] });
+function validateRule(node, fields) {
+  // Long-Term's own reading of its own data — see ONE above.
+  if (node == null) return { ok: true, problems: [] };
 
-  if (node == null) return { ok: true, problems };          // no rule is a valid state
-  if (typeof node !== 'object') { add('malformed', typeof node); return { ok: false, problems }; }
-
-  if (isGroup(node)) {
-    if (depth >= MAX_DEPTH) { add('too_deep'); return { ok: false, problems }; }
-    const comb = String(node.combinator || 'and').toLowerCase();
-    if (comb !== 'and' && comb !== 'or') add('malformed', `combinator "${node.combinator}"`);
-    for (const child of node.rules) {
-      const r = validateRule(child, fields, depth + 1);
-      problems.push(...r.problems);
-    }
-    return { ok: problems.length === 0, problems };
+  if (typeof node !== 'object') {
+    return { ok: false, problems: [{ reason: 'malformed', detail: typeof node, why: REFUSAL.malformed }] };
   }
 
-  const key = String(node.field || '');
-  const f = fields && fields[key];
-  if (!f) { add('unknown_field', key); return { ok: false, problems }; }
+  // See TWO above: validate a bare row as the one-row group it means.
+  const tree = isGroup(node) ? node : { combinator: 'and', rules: [node] };
 
-  const op = String(node.operator || '');
-  const allowed = OPERATORS_BY_TYPE[f.type] || [];
-  if (!allowed.includes(op)) { add('bad_operator', `${op} on ${f.label || key}`); return { ok: false, problems }; }
-
-  if (!NO_VALUE_OPS.has(op)) {
-    const v = node.value;
-    if (op === 'between') {
-      if (!Array.isArray(v) || v.length !== 2) add('bad_value', `${f.label || key} needs two values`);
-    } else if (op === 'in' || op === 'not_in') {
-      if (!Array.isArray(v) || v.length === 0) add('bad_value', `${f.label || key} needs a list`);
-    } else if (v == null || v === '') {
-      add('bad_value', `${f.label || key} needs a value`);
-    }
+  let messages;
+  try {
+    messages = shared.validateRule(tree, { fields: fields || {} });
+  } catch (e) {
+    /* The shared validator is total by contract, so this is unreachable — and a
+       rule builder that 500s instead of saying "that rule is not valid" is a
+       worse failure than the one it would be reporting, so it is caught anyway
+       and answers the honest refusal. */
+    return { ok: false, problems: [{ reason: 'malformed', detail: String(e && e.message), why: REFUSAL.malformed }] };
   }
+
+  const problems = (messages || []).map((m) => ({ reason: reasonOf(m), detail: m, why: m }));
   return { ok: problems.length === 0, problems };
+}
+
+/* THE SHARED MESSAGE IS THE WORDING; this only sorts it into one of Long-Term's
+   own reason codes, which its screens colour by. It is a best-effort READING of
+   a sentence, so it falls through to `malformed` — the least specific code —
+   rather than guessing, and nothing downstream depends on the code being right:
+   `detail` and `why` always carry the shared validator's own words. */
+function reasonOf(message) {
+  const m = String(message || '');
+  if (/^unknown field/i.test(m)) return 'unknown_field';
+  if (/^operator /i.test(m)) return 'bad_operator';
+  if (/nested one level deep/i.test(m)) return 'too_deep';
+  if (/: /.test(m)) return 'bad_value';
+  return 'malformed';
 }
 
 /**
@@ -265,7 +295,13 @@ function compareDate(op, actual, value) {
  * could see from the rule. `norm` is the ONE normaliser, so every text operator
  * agrees about what two strings being "the same" means.
  */
-const norm = (v) => String(v == null ? '' : v).toLowerCase().replace(/[^a-z0-9]+/g, '');
+/* THE SHARED NORMALISER, not a copy of it. This rule — that case and the
+   punctuation between words are formatting rather than meaning — is now the
+   owner's answer for BOTH products (2026-08-31), and the short-term evaluator
+   compares the same way. Long-Term had it first; keeping a private copy is how
+   the two would come to disagree about whether "Single Family" is the same
+   value as "single_family", which decides whether a condition lands on a file. */
+const norm = shared.normText;
 
 function compareText(op, actual, value) {
   const a = norm(actual);
@@ -278,6 +314,12 @@ function compareText(op, actual, value) {
     case 'contains': return a.includes(norm(value));
     case 'not_contains': return !a.includes(norm(value));
     case 'starts_with': return a.startsWith(norm(value));
+    /* `ends_with` arrives with the SHARED operator table. Without this row the
+       builder would offer an operator this evaluator answers "cannot say" to —
+       a control that silently does nothing, which is worse than not offering it.
+       Through the same `norm` as every other text test, so it cannot disagree
+       with `starts_with` about what two strings are made of. */
+    case 'ends_with': return a.endsWith(norm(value));
     default: return null;
   }
 }
@@ -293,18 +335,26 @@ function describeRule(node, fields, depth = 0) {
   if (typeof node !== 'object') return 'An unreadable rule.';
   if (isGroup(node)) {
     if (depth >= MAX_DEPTH) return 'A rule nested too deeply to read.';
-    const join = String(node.combinator || 'and').toLowerCase() === 'or' ? ' OR ' : ' AND ';
-    const parts = node.rules.map((r) => describeRule(r, fields, depth + 1)).filter(Boolean);
-    if (!parts.length) return 'Every long-term file.';
-    return parts.length === 1 ? parts[0] : `(${parts.join(join)})`;
+    // ── THE WORDS ARE THE SHARED MODULE'S, NOT A SECOND COPY ────────────────
+    //
+    // This used to render the sentence itself, and it drifted — silently, for as
+    // long as no shipped rule had more than one row. The first multi-row rule
+    // (the vesting one, 2026-08-31) showed three differences at once: this file
+    // bracketed the outermost group where the shared one does not, joined with
+    // " AND " where it joins with " and ", and called `is_empty` "is blank"
+    // against its "is empty". `test-lt-shared-rule-vocabulary-pure` D3 is what
+    // caught it, and it could only ever have caught it on such a rule.
+    //
+    // So the sentence comes from `shared.summarizeRule` — the module this one is
+    // meant to be replaced by, and already the source of NO_VALUE_OPS,
+    // OPERATORS_BY_TYPE, validateRule and normText here. What stays local is
+    // only the wording for the cases it does not cover: no rule at all, and a
+    // rule that is not readable as one.
+    const said = shared.summarizeRule(node, { fields: fields || {} });
+    return said || 'Every long-term file.';
   }
-  const key = String(node.field || '');
-  const f = fields && fields[key];
-  const label = (f && f.label) || key || 'an unknown field';
-  const op = OPERATOR_LABEL[String(node.operator || '')] || String(node.operator || '');
-  if (NO_VALUE_OPS.has(node.operator)) return `${label} ${op}`;
-  const v = Array.isArray(node.value) ? node.value.join(' and ') : node.value;
-  return `${label} ${op} ${v}`;
+  return shared.summarizeRule({ combinator: 'and', rules: [node] }, { fields: fields || {} })
+    || 'An unreadable rule.';
 }
 
 module.exports = {

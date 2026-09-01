@@ -39,7 +39,7 @@ router.get('/loans/:loanId', async (req, res) => {
   const scoped = await loadScopedLoan(req, res, 'lt-vor');
   if (!scoped) return;
   try {
-    const view = await desk.state(scoped.loan.id, db);
+    const view = await desk.state(scoped.loan.id, db, { actor: req.actor });
     if (!view) return res.status(404).json({ error: 'That loan is not here.' });
     res.json(view);
   } catch (e) {
@@ -53,10 +53,32 @@ router.post('/loans/:loanId/form', async (req, res) => {
   if (!scoped) return;
   try {
     const out = await desk.saveForm(scoped.loan.id, (req.body && req.body.data) || {}, actorId(req), db);
-    const view = await desk.state(scoped.loan.id, db);
+    const view = await desk.state(scoped.loan.id, db, { actor: req.actor });
     res.json({ ...out, state: view });
   } catch (e) {
     res.status(500).json({ error: 'That could not be saved.' });
+  }
+});
+
+/**
+ * CONFIRM THE FORM — the owner's gate on the whole thing going out.
+ *
+ * Its own door rather than a flag on the save, because a confirmation is a
+ * DECISION and a save is a keystroke: folding it into the save would make an
+ * autosave count as a person saying the form is right, which is precisely what
+ * the owner asked to stop.
+ */
+router.post('/loans/:loanId/confirm', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-vor');
+  if (!scoped) return;
+  try {
+    const out = await desk.confirmForm(scoped.loan.id, actorId(req), db, { actor: req.actor });
+    const view = await desk.state(scoped.loan.id, db, { actor: req.actor });
+    // A refusal is 409, not 500: the form is readable and the answer is "not yet",
+    // which is something the person reading it can act on.
+    res.status(out.ok ? 200 : 409).json({ ...out, state: view });
+  } catch (e) {
+    res.status(500).json({ error: 'That could not be confirmed.' });
   }
 });
 
@@ -71,7 +93,7 @@ router.get('/loans/:loanId/preview.pdf', async (req, res) => {
   const scoped = await loadScopedLoan(req, res, 'lt-vor');
   if (!scoped) return;
   try {
-    const out = await desk.preview(scoped.loan.id, db);
+    const out = await desk.preview(scoped.loan.id, db, { actor: req.actor });
     if (!out) return res.status(404).json({ error: 'That loan is not here.' });
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${desk.FILENAME}"`);
@@ -121,7 +143,7 @@ router.post('/loans/:loanId/manual-return', async (req, res) => {
       staffId: actorId(req),
     }, db);
     if (!out.ok) return res.status(422).json(out);
-    const view = await desk.state(scoped.loan.id, db);
+    const view = await desk.state(scoped.loan.id, db, { actor: req.actor });
     res.json({ ...out, state: view });
   } catch (e) {
     res.status(500).json({ error: 'That could not be recorded.' });

@@ -53,12 +53,17 @@ const vorData = require('../src/longterm/vor/data');
 const desk = require('../src/longterm/vor/desk');
 const claim = require('../src/longterm/routes/esign-claim');
 
+/* Items 1 to 9 of the OWNER'S form — and nothing else, because there is nothing
+   else for us to fill in. Parts II and III are the landlord's. */
 const FULL = {
-  lender_name: 'YS Capital Group', lender_address: '5 New Montrose Avenue, Brooklyn, NY 11211',
-  lender_nmls: '2609746', loan_number: 'YSCAP258134700', requested_on: '2026-08-30',
-  officer_name: 'Chaya Gruber', officer_email: 'chaya@yscapgroup.com', officer_phone: '(718) 635-0277',
-  borrower_name: 'Leib Lichtman', rental_address: '12 Oak Street, Lakewood, NJ 08701',
-  stated_rent: '2400', stated_since: '2023-04-01', stated_months: '28', landlord_name: 'Acme Realty LLC',
+  landlord_block: 'Rivka Stein\nAcme Realty Management LLC\n88 Clifton Avenue, Lakewood, NJ 08701',
+  lender_block: 'YS Capital Group\n5 New Montrose Avenue, #Bsmt\nBrooklyn, NY 11211',
+  lender_signature: 'Chaya Gruber', lender_title: 'Loan Officer', request_date: '2026-08-30',
+  loan_number: 'YSCAP258134700',
+  property_address: '12 Oak Street, Lakewood, NJ 08701',
+  account_name: 'Leib Lichtman',
+  applicant_block: 'Leib Lichtman\n12 Oak Street, Lakewood, NJ 08701',
+  applicant_signature: 'See attached signature',
 };
 
 console.log('\nLong-Term — the verification of rent\n');
@@ -74,7 +79,7 @@ console.log('\nLong-Term — the verification of rent\n');
   await okAsync('every landlord field’s anchor is DRAWN into the rendered PDF, not merely declared', () => {
     const missing = F.allAnchors().filter((a) => !rendered.includes(a));
     assert.deepStrictEqual(missing, [], `anchors declared but never drawn: ${missing.join(', ')}`);
-    assert.ok(F.allAnchors().length >= 10, 'the form should ask the landlord more than a handful of questions');
+    assert.ok(F.allAnchors().length >= 14, 'the form should ask the landlord more than a handful of questions');
   });
 
   ok('no two fields share an anchor — two tabs on one line leaves the other blank', () => {
@@ -87,14 +92,39 @@ console.log('\nLong-Term — the verification of rent\n');
 
   ok('the tab list is the shared client’s own shape, and the label IS the field key', () => {
     const tabs = F.tabsForLandlord();
-    assert.deepStrictEqual(Object.keys(tabs).sort(), ['date', 'sign', 'text']);
-    assert.strictEqual(tabs.sign.length, 1, 'one signature');
-    assert.strictEqual(tabs.date.length, 1, 'one date-signed, stamped by DocuSign');
+    assert.deepStrictEqual(Object.keys(tabs).sort(), ['date', 'radio', 'sign', 'text']);
+    assert.strictEqual(tabs.sign.length, 1, 'item 12, one signature');
+    assert.strictEqual(tabs.date.length, 1, 'item 14, one date-signed, stamped by DocuSign');
     // The answer comes BACK keyed by tabLabel, so a label that is not the field key
     // is an answer nothing can file.
     for (const t of tabs.text) {
       assert.ok(F.BY_KEY.has(t.tabLabel), `tabLabel ${t.tabLabel} is not a field`);
       assert.strictEqual(F.BY_KEY.get(t.tabLabel).who, 'landlord');
+    }
+    // The form's two either/or questions are RADIO GROUPS, not pairs of boxes: a
+    // landlord who ticks both, or neither, returns a form that answers nothing.
+    assert.strictEqual(tabs.radio.length, 2, 'satisfactory, and arrears');
+    for (const g of tabs.radio) {
+      assert.ok(F.BY_KEY.has(g.group), `radio group ${g.group} is not a field`);
+      assert.strictEqual(F.BY_KEY.get(g.group).who, 'landlord');
+      assert.deepStrictEqual(g.radios.map((r) => r.value), ['Yes', 'No']);
+      assert.strictEqual(g.required, true, 'a yes/no the underwriter needs is not optional');
+    }
+  });
+
+  ok('the ONE bottom-up/top-down flip is done in one place, and every tab carries it', () => {
+    // A DocuSign tab's y is measured DOWN from the top; every coordinate in
+    // fields.js is the PDF one, measured UP from the bottom.
+    assert.strictEqual(F.docusignY(792), 0);
+    assert.strictEqual(F.docusignY(F.LANDLORD_BAND_TOP), 792 - F.LANDLORD_BAND_TOP);
+    const tabs = F.tabsForLandlord();
+    for (const t of tabs.text) {
+      assert.strictEqual(t.yTop, F.docusignY(F.BY_KEY.get(t.tabLabel).y), `${t.tabLabel} did not go through the one conversion`);
+      assert.ok(t.yTop > F.docusignY(F.LANDLORD_BAND_TOP), 'and it lands below the bar, measured from the top');
+    }
+    for (const g of tabs.radio) {
+      const opts = F.BY_KEY.get(g.group).options;
+      assert.deepStrictEqual(g.radios.map((r) => r.yTop), opts.map((o) => F.docusignY(o.y)));
     }
   });
 
@@ -112,11 +142,33 @@ console.log('\nLong-Term — the verification of rent\n');
   // B. We never answer for the landlord
   // ────────────────────────────────────────────────────────────────────────
   ok('a landlord key sent from our side is DROPPED at the door', () => {
-    const cleaned = F.cleanOurData({ borrower_name: 'Jane', ll_rent: '2400', ll_paid_current: 'Yes', nonsense: 'x' });
-    assert.strictEqual(cleaned.borrower_name, 'Jane');
-    assert.ok(!('ll_rent' in cleaned), 'the landlord’s rent must never come from us');
-    assert.ok(!('ll_paid_current' in cleaned), 'nor whether they are paid up');
+    const cleaned = F.cleanOurData({
+      account_name: 'Jane', ll_rent_amount: '2400', ll_satisfactory: 'Yes',
+      ll_rented_from: '2023-04-01', nonsense: 'x',
+    });
+    assert.strictEqual(cleaned.account_name, 'Jane');
+    assert.ok(!('ll_rent_amount' in cleaned), 'the landlord’s rent must never come from us');
+    assert.ok(!('ll_satisfactory' in cleaned), 'nor whether the account is satisfactory');
+    assert.ok(!('ll_rented_from' in cleaned), 'nor when the tenancy began');
     assert.ok(!('nonsense' in cleaned), 'and a key nothing recognises is not stored');
+  });
+
+  ok('OUR half is items 1 to 9 and stops at the bar — Part II and Part III are the landlord’s', () => {
+    /* The defect the owner reported was prefill in PART TWO. This is that rule read
+       off the field table itself, before a single byte is drawn. */
+    for (const f of F.ourFields()) {
+      assert.ok(f.y > F.LANDLORD_BAND_TOP, `${f.key} is ours but sits at y=${f.y}, in the landlord’s half`);
+      assert.strictEqual(f.part, 'request', `${f.key} is ours but claims to be in Part ${f.part}`);
+      assert.ok(Number(f.item) >= 1 && Number(f.item) <= 9, `${f.key} is ours but is item ${f.item}`);
+    }
+    for (const f of F.landlordFields()) {
+      const ys = f.tab === 'radio' ? f.options.map((o) => o.y) : [f.y];
+      for (const y of ys) assert.ok(y <= F.LANDLORD_BAND_TOP, `${f.key} is the landlord’s but sits at y=${y}`);
+      assert.ok(Number(f.item) >= 10, `${f.key} is the landlord’s but is item ${f.item}`);
+    }
+    // Every item 1..9 of the form is accounted for, so none was quietly dropped.
+    const items = new Set(F.ourFields().map((f) => f.item));
+    assert.deepStrictEqual([...items].sort(), ['1', '2', '3', '4', '5', '6', '7', '8', '9']);
   });
 
   ok('the prefill produces no landlord answer of any kind', () => {
@@ -127,10 +179,12 @@ console.log('\nLong-Term — the verification of rent\n');
 
   ok('what is still missing names only OUR half, and never an optional field', () => {
     assert.deepStrictEqual(F.missing(FULL), [], 'a complete form is complete');
-    const missing = F.missing({ ...FULL, rental_address: '' });
-    assert.deepStrictEqual(missing, ['rental_address']);
+    const missing = F.missing({ ...FULL, property_address: '' });
+    assert.deepStrictEqual(missing, ['property_address']);
     // A file with one borrower has no co-applicant; asking for one is nonsense.
-    assert.ok(!F.missing({ ...FULL, coborrower_name: '' }).includes('coborrower_name'));
+    assert.ok(!F.missing({ ...FULL, coapplicant_signature: '' }).includes('coapplicant_signature'));
+    // The form itself prints "(Optional)" against item 6, so we do not demand it.
+    assert.ok(!F.missing({ ...FULL, loan_number: '' }).includes('loan_number'));
     // The landlord's blanks are the POINT of the form, never a blocker.
     for (const f of F.landlordFields()) assert.ok(!F.missing(FULL).includes(f.key));
   });
@@ -140,18 +194,22 @@ console.log('\nLong-Term — the verification of rent\n');
   // ────────────────────────────────────────────────────────────────────────
   ok('a person’s own edit beats the prefill, and an untouched field still learns', () => {
     const merged = vorData.mergeSaved(
-      { rental_address: '12 Oak Street', stated_rent: '2400', landlord_name: 'Acme Realty' },
-      { rental_address: '12 Oak Street, Apt 2, Lakewood, NJ 08701' },
+      { property_address: '12 Oak Street', account_name: 'Leib Lichtman', landlord_block: 'Acme Realty' },
+      { property_address: '12 Oak Street, Apt 2, Lakewood, NJ 08701' },
     );
-    assert.strictEqual(merged.rental_address, '12 Oak Street, Apt 2, Lakewood, NJ 08701', 'their correction stands');
-    assert.strictEqual(merged.stated_rent, '2400', 'and the file still fills in what they never touched');
-    assert.strictEqual(merged.landlord_name, 'Acme Realty');
+    assert.strictEqual(merged.property_address, '12 Oak Street, Apt 2, Lakewood, NJ 08701', 'their correction stands');
+    assert.strictEqual(merged.account_name, 'Leib Lichtman', 'and the file still fills in what they never touched');
+    assert.strictEqual(merged.landlord_block, 'Acme Realty');
   });
 
   // ────────────────────────────────────────────────────────────────────────
   // D. What stops a send
   // ────────────────────────────────────────────────────────────────────────
-  const goodForm = { data: FULL, landlord: { name: 'Acme Realty', email: 'ap@acme.example' }, unreadable: [] };
+  /* CONFIRMED, because since db/663 that is part of what "good" means: the owner
+     asked for the form to be confirmed before it can go out, so a fixture without
+     it is a form nobody has read through — see test-lt-vor-confirm-db.js. */
+  const goodForm = { data: FULL, landlord: { name: 'Acme Realty', email: 'ap@acme.example' }, unreadable: [],
+    confirmedAt: '2026-08-31T00:00:00.000Z' };
   const B = desk._internals.blockersFor;
 
   ok('a complete form with a landlord on file can go all three ways', () => {
@@ -164,9 +222,14 @@ console.log('\nLong-Term — the verification of rent\n');
     assert.deepStrictEqual(B({ form: null, method: 'email', envelopes: [] }), ['file']);
     assert.ok(B({ form: { ...goodForm, landlord: null }, method: 'email', envelopes: [] }).includes('landlord'));
     assert.ok(B({ form: { ...goodForm, landlord: { name: 'Acme' } }, method: 'email', envelopes: [] }).includes('landlord_email'));
-    assert.ok(B({ form: { ...goodForm, data: { ...FULL, rental_address: '' } }, method: 'email', envelopes: [] }).includes('fields'));
+    assert.ok(B({ form: { ...goodForm, data: { ...FULL, property_address: '' } }, method: 'email', envelopes: [] }).includes('fields'));
     assert.ok(B({ form: { ...goodForm, unreadable: ['parties'] }, method: 'email', envelopes: [] }).includes('unreadable'));
-    for (const code of ['file', 'landlord', 'landlord_email', 'fields', 'unreadable', 'in_flight', 'docusign_off', 'anchors']) {
+    // THE OWNER'S GATE (db/663). A form nobody has confirmed cannot go, and the
+    // refusal asks for the confirmation rather than for the fields, which are in.
+    const unconfirmed = B({ form: { ...goodForm, confirmedAt: null }, method: 'email', envelopes: [] });
+    assert.ok(unconfirmed.includes('not_confirmed'), 'an unconfirmed form is refused');
+    assert.ok(!unconfirmed.includes('fields'), 'and it is the confirmation being asked for, not the answers');
+    for (const code of ['file', 'landlord', 'landlord_email', 'fields', 'unreadable', 'in_flight', 'docusign_off', 'anchors', 'not_confirmed']) {
       assert.ok(typeof desk.BLOCKER_TEXT[code] === 'string' && desk.BLOCKER_TEXT[code].length > 12,
         `${code} needs a sentence a person can act on`);
     }
@@ -207,10 +270,18 @@ console.log('\nLong-Term — the verification of rent\n');
   // ────────────────────────────────────────────────────────────────────────
   ok('the landlord’s answers are keyed by our own field keys, and a stray tab is dropped', () => {
     const answers = desk.answersFromEnvelope({
-      _recipients: [{ textValues: { ll_rent: ' 2450 ', ll_to: 'current', not_a_field: 'x', ll_late_12: '' } }],
+      _recipients: [{
+        textValues: {
+          ll_rent_amount: ' 2450 ', ll_rented_to: 'current', ll_satisfactory: 'Yes',
+          not_a_field: 'x', ll_late_12: '',
+        },
+      }],
     });
-    assert.strictEqual(answers.ll_rent, '2450', 'trimmed');
-    assert.strictEqual(answers.ll_to, 'current');
+    assert.strictEqual(answers.ll_rent_amount, '2450', 'trimmed');
+    assert.strictEqual(answers.ll_rented_to, 'current');
+    // A radio group comes back under its GROUP name, which is the field key too —
+    // the shared client folds it into the same map as the typed boxes.
+    assert.strictEqual(answers.ll_satisfactory, 'Yes');
     assert.ok(!('not_a_field' in answers), 'a tab we did not put there is not an answer');
     assert.ok(!('ll_late_12' in answers), 'an empty tab is not an answer either');
   });

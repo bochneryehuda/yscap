@@ -2,10 +2,13 @@
 /**
  * LONG-TERM — THE VERIFICATION OF RENT DESK.
  *
- * Owner-directed 2026-08-30, in their own words: *"prefill part one and part two …
- * leave the landlord's sections blank and required on DocuSign … be able to preview
- * and edit the PDF before sending … send by DocuSign, by email attachment, or both
- * … and if it comes back filled in by hand, void the envelope."*
+ * Owner-directed 2026-08-30, in their own words: *"the VOR needs to be on the exact
+ * blank form that I sent you … leave the landlord's sections blank and required on
+ * DocuSign … be able to preview and edit the PDF before sending … send by DocuSign,
+ * by email attachment, or both … and if it comes back filled in by hand, void the
+ * envelope."* The form is items 1 to 9 of the owner's own blank and nothing below
+ * the "To Be Completed By Landlord" bar — see `vor/fields.js` for the corrected
+ * rule and why the first reading of it was wrong.
  *
  * ── THE PREVIEW IS THE DOCUMENT ─────────────────────────────────────────────
  *
@@ -38,7 +41,7 @@ const db = require('../db');
 const cfg = require('../config');
 const docusign = require('../../lib/integrations/docusign');
 const F = require('./fields');
-const { buildVorPdf } = require('./pdf');
+const { buildVorPdf, measureOverflow } = require('./pdf');
 const vorData = require('./data');
 const orders = require('../orders/desk');
 
@@ -64,29 +67,39 @@ function docusignReady() {
  * The row is created lazily on first SAVE, never on read — a read that writes is a
  * read that cannot be done from a report or a screen refresh.
  */
-async function loadForm(loanId, client = db) {
+async function loadForm(loanId, client = db, opts = {}) {
   const id = String(loanId);
-  const pre = await vorData.prefill(id, client);
+  const pre = await vorData.prefill(id, client, opts);
   if (!pre) return null;
   let row = null;
   try {
     row = (await client.query(
-      `SELECT id, data, reviewed_by, reviewed_at, updated_at FROM lt_vor_forms WHERE loan_id = $1::uuid`,
+      `SELECT id, data, reviewed_by, reviewed_at, confirmed_by, confirmed_at, updated_at
+         FROM lt_vor_forms WHERE loan_id = $1::uuid`,
       [id])).rows[0] || null;
   } catch (e) {
     // An unreadable saved form must never be silently replaced by the prefill —
     // that would show a processor their own corrections gone and invite them to
     // type them again over the top.
-    return { unreadable: [...(pre.unreadable || []), 'saved_form'], data: pre.data, prefill: pre.data, landlord: pre.landlord, borrowerRents: pre.borrowerRents, saved: null };
+    return { unreadable: [...(pre.unreadable || []), 'saved_form'], data: pre.data, prefill: pre.data, landlordDefaults: pre.landlordDefaults || {}, landlord: pre.landlord, borrowerRents: pre.borrowerRents, saved: null, confirmedAt: null, confirmedBy: null };
   }
   const saved = (row && row.data) || {};
   return {
     formId: row ? row.id : null,
     data: vorData.mergeSaved(pre.data, saved),
     prefill: pre.data,
+    /* The landlord's OWN fields, pre-filled with what we already hold. Kept out
+       of `data` on purpose — see the note in data.js — so nothing here becomes
+       an answer WE gave on a form the landlord signs. */
+    landlordDefaults: pre.landlordDefaults || {},
     saved,
     reviewedAt: row ? row.reviewed_at : null,
     reviewedBy: row ? row.reviewed_by : null,
+    /* CONFIRMED IS NOT REVIEWED. `reviewed_at` is stamped by every save; this is
+       a person saying, once and deliberately, that the form as it stands is what
+       should go to the landlord (owner-directed 2026-08-31). */
+    confirmedAt: row ? row.confirmed_at : null,
+    confirmedBy: row ? row.confirmed_by : null,
     landlord: pre.landlord,
     borrowerRents: pre.borrowerRents,
     unreadable: pre.unreadable || [],
@@ -112,17 +125,67 @@ async function saveForm(loanId, raw, staffId, client = db) {
         SET data = lt_vor_forms.data || EXCLUDED.data,
             reviewed_by = EXCLUDED.reviewed_by,
             reviewed_at = now(),
+            /* A CONFIRMATION IS ABOUT THE VERSION IT WAS GIVEN FOR. An edit after
+               a confirmation un-confirms it, or confirm-then-edit sends a form
+               nobody agreed to — and the landlord answers the version we sent.
+               Judged on the MERGED result rather than on "a save happened", so
+               the ordinary autosave echo (the same values again) leaves the
+               confirmation standing instead of un-confirming the desk under
+               somebody who is reading it. */
+            confirmed_by = CASE WHEN lt_vor_forms.data || EXCLUDED.data IS DISTINCT FROM lt_vor_forms.data
+                                THEN NULL ELSE lt_vor_forms.confirmed_by END,
+            confirmed_at = CASE WHEN lt_vor_forms.data || EXCLUDED.data IS DISTINCT FROM lt_vor_forms.data
+                                THEN NULL ELSE lt_vor_forms.confirmed_at END,
             updated_at = now()
-     RETURNING id, data`,
+     RETURNING id, data, confirmed_at`,
     [id, JSON.stringify(data), staffId || null])).rows[0];
-  return { ok: true, formId: row.id, data: row.data };
+  return { ok: true, formId: row.id, data: row.data, confirmedAt: row.confirmed_at || null };
+}
+
+/**
+ * CONFIRM THE FORM — a deliberate act, and the only thing that lets it go out.
+ *
+ * Owner-directed 2026-08-31: *"the verification of rent form fill-out … needs to
+ * be confirmed before you can order the VOR."*
+ *
+ * IT REFUSES AN INCOMPLETE FORM. Confirming a form with our own answers still
+ * blank would record a person agreeing to blanks — and the send would refuse it
+ * anyway a moment later on the same fields, so the refusal belongs here where the
+ * person can act on it. Same wording as the send's, from the one table.
+ *
+ * There is deliberately NO un-confirm door: an edit un-confirms it, which is the
+ * honest way, and a button that un-confirms without changing anything only
+ * invites the question of what it meant.
+ */
+async function confirmForm(loanId, staffId, client = db, opts = {}) {
+  const id = String(loanId);
+  const form = await loadForm(id, client, opts);
+  if (!form) return { ok: false, reason: 'file', message: BLOCKER_TEXT.file };
+  if ((form.unreadable || []).length) return { ok: false, reason: 'unreadable', message: BLOCKER_TEXT.unreadable };
+  const missing = F.missing(form.data);
+  if (missing.length) return { ok: false, reason: 'fields', missing, message: BLOCKER_TEXT.fields };
+
+  /* Confirming stores nothing about WHAT was confirmed beyond the stamp, because
+     the data it is about is already the row's own — and a save that changes that
+     data clears the stamp in the same statement. So the pair can never describe a
+     version that is no longer there. */
+  const row = (await client.query(
+    `INSERT INTO lt_vor_forms (loan_id, data, confirmed_by, confirmed_at)
+     VALUES ($1::uuid, '{}'::jsonb, $2, now())
+     ON CONFLICT (loan_id) DO UPDATE
+        SET confirmed_by = EXCLUDED.confirmed_by,
+            confirmed_at = now(),
+            updated_at = now()
+     RETURNING id, confirmed_at`,
+    [id, staffId || null])).rows[0];
+  return { ok: true, formId: row.id, confirmedAt: row.confirmed_at };
 }
 
 /** Render the form as it stands. Same builder, same data as the send. */
-async function preview(loanId, client = db) {
-  const form = await loadForm(loanId, client);
+async function preview(loanId, client = db, opts = {}) {
+  const form = await loadForm(loanId, client, opts);
   if (!form) return null;
-  const pdf = await buildVorPdf(form.data);
+  const pdf = await buildVorPdf(form.data, { landlordDefaults: form.landlordDefaults });
   return { pdf, filename: FILENAME, data: form.data, missing: F.missing(form.data) };
 }
 
@@ -144,6 +207,7 @@ const BLOCKER_TEXT = {
   docusign_off: 'DocuSign is not connected on this deployment, so the form can only go as an email attachment.',
   anchors: 'The form did not render its signature markers, so DocuSign would ask the landlord for nothing. Nothing was sent.',
   in_flight: 'A form is already out with this landlord. Void it first, or record what came back.',
+  not_confirmed: 'Read the form through and confirm it before it goes to the landlord. Any change after that asks for a fresh confirmation.',
 };
 
 /** What is stopping a send of this method, in order of what a person fixes first. */
@@ -155,6 +219,12 @@ function blockersFor({ form, method, envelopes }) {
   const ll = form.landlord;
   if (!ll) out.push('landlord');
   else if (!ll.email) out.push('landlord_email');
+  /* THE OWNER'S GATE. *"The verification of rent form fill-out — while we fill in
+     — needs to be confirmed before you can order the VOR."* It sits AFTER the
+     blank-fields check on purpose: the order a person fixes things in is fill it
+     in, then confirm it, and a list that led with "confirm it" on a half-empty
+     form would be telling them to agree to blanks. */
+  if (!form.confirmedAt) out.push('not_confirmed');
   if ((method === 'docusign' || method === 'both') && !docusignReady()) out.push('docusign_off');
   if ((envelopes || []).some((e) => LIVE_ENVELOPE.includes(e.status))) out.push('in_flight');
   return out;
@@ -190,14 +260,18 @@ async function send(loanId, opts = {}) {
   const method = ['docusign', 'email', 'both'].includes(opts.method) ? opts.method : null;
   if (!method) return { ok: false, reason: 'method', message: 'Choose DocuSign, email, or both.' };
 
-  const form = await loadForm(id, client);
+  /* THE PERSON SENDING IT SIGNS IT. `opts` already carries `from` (the sender's
+     own name and address for the email) and `staffId`; passing it down is what
+     makes items 3 and 4 say who actually pressed Send rather than whoever the
+     file is assigned to. */
+  const form = await loadForm(id, client, opts);
   const envelopes = await listEnvelopes(id, client);
   const blockers = blockersFor({ form, method, envelopes });
   if (blockers.length) {
     return { ok: false, reason: blockers[0], blockers, message: BLOCKER_TEXT[blockers[0]] || 'This cannot be sent yet.' };
   }
 
-  const pdf = await buildVorPdf(form.data);
+  const pdf = await buildVorPdf(form.data, { landlordDefaults: form.landlordDefaults });
 
   // The anchor proof runs for BOTH docusign and both — and deliberately not for an
   // email-only send, where there are no tabs and the landlord fills the blanks in
@@ -242,7 +316,7 @@ async function sendEnvelope({ loanId, form, pdf, method, staffId, client }) {
     [loanId, form.formId || null, ll.name || null, ll.email || null,
       method === 'both' ? 'both' : 'docusign', staffId || null])).rows[0];
 
-  const tabs = F.tabsForLandlord();
+  const tabs = F.tabsForLandlord(form && form.landlordDefaults);
   let def;
   try {
     def = docusign.buildEnvelopeDefinition({
@@ -258,7 +332,9 @@ async function sendEnvelope({ loanId, form, pdf, method, staffId, client }) {
            clientUserId would leave this landlord with no way in at all. */
         tabsByDoc: { 1: tabs },
       }],
-      subject: `${SUBJECT} — ${form.data.borrower_name || 'loan applicant'}`,
+      // Item 7's "Account in the name of" is the applicant, which is who the
+      // landlord recognises — the subject property never appears on this form.
+      subject: `${SUBJECT} — ${form.data.account_name || 'loan applicant'}`,
       emailBlurb: 'A short form to confirm a tenant’s rent. Every question is required; it takes a minute.',
       customFields: { textCustomFields: [{ name: 'pilot_lt_vor_loan', value: String(loanId), show: 'false' }] },
       status: 'sent',
@@ -496,8 +572,8 @@ function answersFromEnvelope(env) {
 }
 
 /** Everything the desk screen needs, in one read. */
-async function state(loanId, client = db) {
-  const form = await loadForm(loanId, client);
+async function state(loanId, client = db, opts = {}) {
+  const form = await loadForm(loanId, client, opts);
   if (!form) return null;
   const envelopes = await listEnvelopes(loanId, client);
   const returns = await listReturns(loanId, client);
@@ -508,12 +584,21 @@ async function state(loanId, client = db) {
   return {
     data: form.data,
     prefill: form.prefill,
+    landlordDefaults: form.landlordDefaults || {},
     fields: F.FIELDS,
     parts: F.PARTS,
     missing: F.missing(form.data),
+    /* WHICH BLOCK IS LONGER THAN ITS BOX. Measured with the render's own wrap, so
+       the desk warns about the real document rather than guessing from a
+       character count — and it is said BEFORE anybody confirms, because the cut
+       is silent on the paper and the line most likely to fall off a landlord
+       block is their email and phone. */
+    overflow: await measureOverflow(form.data),
     landlord: form.landlord,
     borrowerRents: form.borrowerRents,
     reviewedAt: form.reviewedAt,
+    confirmedAt: form.confirmedAt || null,
+    confirmedBy: form.confirmedBy || null,
     unreadable: form.unreadable,
     docusignReady: docusignReady(),
     envelopes,
@@ -524,7 +609,7 @@ async function state(loanId, client = db) {
 }
 
 module.exports = {
-  state, loadForm, saveForm, preview, send, recordManualReturn, applyEnvelopeStatus,
+  state, loadForm, saveForm, confirmForm, preview, send, recordManualReturn, applyEnvelopeStatus,
   reconcileOpenEnvelopes, answersFromEnvelope,
   listEnvelopes, listReturns,
   BLOCKER_TEXT, LIVE_ENVELOPE, FILENAME,

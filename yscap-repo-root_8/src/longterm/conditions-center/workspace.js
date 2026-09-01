@@ -36,8 +36,11 @@
  */
 
 const db = require('../db');
-const answers = require('./answers');
+const answers = require('../../lib/conditions/answers');
 const entityPrefill = require('./entity-prefill');
+const profileLinks = require('./profile-links');
+const vocab = require('./vocabulary');
+const { ownerOf, ownerWhere } = require('../../lib/condition-owner');
 
 /**
  * IS THIS LIABILITY A MORTGAGE? A PROPOSAL, never a decision.
@@ -123,16 +126,50 @@ async function vestingFor(loanId, client) {
   }
 }
 
+/**
+ * WHAT KIND OF DEAL IS THIS? — for the ways that only apply to one.
+ *
+ * READ THROUGH THE FIELD REGISTRY, never a fresh `/refi/` here. "Is this a
+ * refinance" is already answered in ONE place for this product — the registry's
+ * `is_refinance` field, which is what the condition RULES are written against,
+ * and it is the rule on `lt_subject_mortgage_statement` that decides whether the
+ * subject-property mortgage condition is on the file at all. A second reading
+ * could offer a way to answer a condition that is not there.
+ *
+ * UNREADABLE IS NOT A PURCHASE. `null` travels as null and `answers.wayApplies`
+ * fails closed on it, so a file whose purpose has not arrived yet is simply not
+ * offered the refinance-only way — it appears the moment the purpose does.
+ */
+async function dealFor(loanId, client) {
+  try {
+    const { rows } = await client.query(
+      `SELECT loan_purpose FROM lt_loans WHERE id = $1::uuid`,
+      [String(loanId)],
+    );
+    if (!rows.length) return { isRefinance: null };
+    const registry = require('./field-registry');
+    const field = registry.fieldMap().is_refinance;
+    const isRefinance = field ? field.read({ loan: rows[0] }) : null;
+    return { isRefinance: isRefinance === true ? true : (isRefinance === false ? false : null) };
+  } catch (_) {
+    return { isRefinance: null };
+  }
+}
+
 /** Which line keys already carry an accepted document. */
 async function documentsByLine(conditionId, client) {
   try {
     const { rows } = await client.query(
-      `SELECT slot_key, id, filename FROM lt_condition_files
-        WHERE condition_id = $1::uuid AND is_current AND review_status = 'accepted' AND slot_key IS NOT NULL`,
+      // The per-line key travels in `documents.slot_label` — the ordinary
+      // document plumbing carries it, with no second table (db/653 moved these
+      // rows into the ONE Condition Center).
+      `SELECT slot_label, id, filename FROM documents
+        WHERE checklist_item_id = $1::uuid AND is_current
+          AND review_status = 'accepted' AND slot_label IS NOT NULL`,
       [String(conditionId)],
     );
     const out = {};
-    for (const r of rows) out[String(r.slot_key)] = { id: r.id, filename: r.filename };
+    for (const r of rows) out[String(r.slot_label)] = { id: r.id, filename: r.filename };
     return out;
   } catch (_) {
     return {};
@@ -149,12 +186,20 @@ async function forCondition(loanId, conditionId, opts = {}) {
 
   let condition = null;
   try {
+    const where = ownerWhere(ownerOf('lt_loan', loanId), 'c', 2);
     const { rows } = await client.query(
-      `SELECT id, code, label, kind, config, answer, status
-         FROM lt_file_conditions WHERE id = $1::uuid AND loan_id = $2::uuid`,
-      [String(conditionId), String(loanId)],
+      `SELECT c.id, t.code, c.label, c.item_kind, c.tool_key, t.config,
+              c.tool_payload AS answer, c.status, c.waived_at, c.is_required
+         FROM checklist_items c
+         LEFT JOIN checklist_templates t ON t.id = c.template_id
+        WHERE c.id = $1::uuid AND ${where.sql}`,
+      [String(conditionId), ...where.params],
     );
-    condition = rows[0] || null;
+    // Read back into the owner's own wording, once, so everything below reasons
+    // about `kind` and `status` the way the rules are written.
+    condition = rows[0]
+      ? { ...rows[0], kind: vocab.kindFromShared(rows[0]), status: vocab.statusOf(rows[0]), config: rows[0].config || {} }
+      : null;
   } catch (_) {
     return null;
   }
@@ -179,19 +224,46 @@ async function forCondition(loanId, conditionId, opts = {}) {
     };
   }
 
+  /* ── THE CARD AND THE PHOTO ID: the answer lives on the PERSON ────────────
+     Both conditions declare `readsFromBorrowerProfile` and their hints promise
+     that a card or an ID given before is already here. `profile-links.js` is the
+     one reader; this is only the seam that puts its answer on the screen, so
+     there is no second reading of what the borrower already has. Never throws —
+     an unreadable profile is reported as such rather than as "nothing given". */
+  if (code === 'lt_appraisal_card' || code === 'lt_photo_id') {
+    const links = await profileLinks.forLoan(loanId, { db: client });
+    return {
+      code,
+      shape: code === 'lt_appraisal_card' ? 'card' : 'photo_id',
+      card: links.card,
+      photoId: links.photoId,
+      unreadable: !!links.unreadable,
+      why: links.why || null,
+    };
+  }
+
   if (!plan) return null;
 
   // ── The subject property's mortgage: one choice ───────────────────────────
+  // WHICH WAYS THIS DEAL IS OFFERED. `answers.waysFor` is the one filter, read
+  // by the write door too, so the screen can never show a way the door refuses.
+  const deal = await dealFor(loanId, client);
+  const shapeWay = (w) => ({
+    key: w.key, label: w.label, why: w.why || null,
+    needsDocument: !!w.needsDocument,
+    fields: (w.fields || []).concat(w.conditionalFields || []),
+  });
+
   if (plan.mode === 'choice') {
     return {
       code,
       shape: 'choice',
-      ways: plan.ways.map((w) => ({
-        key: w.key, label: w.label, why: w.why || null,
-        needsDocument: !!w.needsDocument,
-        fields: (w.fields || []).concat(w.conditionalFields || []),
-      })),
+      ways: answers.waysFor(condition, deal).map(shapeWay),
       answer: { way: recorded.way || null, values: recorded.values || {} },
+      // THE MARK. When this answer was filled in from the credit report the
+      // screen says so — including that the loan number is only the last four
+      // digits, which is all a credit report carries.
+      sourceNote: answers.sourceNote(recorded),
     };
   }
 
@@ -204,11 +276,7 @@ async function forCondition(loanId, conditionId, opts = {}) {
   return {
     code,
     shape: 'per_line',
-    ways: plan.ways.map((w) => ({
-      key: w.key, label: w.label, why: w.why || null,
-      needsDocument: !!w.needsDocument,
-      fields: (w.fields || []).concat(w.conditionalFields || []),
-    })),
+    ways: answers.waysFor(condition, deal).map(shapeWay),
     lines: liabilities.rows.map((l) => ({
       ...l,
       // A person's answer always wins over the proposal — including a person
@@ -226,5 +294,5 @@ async function forCondition(loanId, conditionId, opts = {}) {
 
 module.exports = {
   forCondition,
-  _internals: { proposeMortgage, lineKey, lineLabel, liabilitiesFor, vestingFor, documentsByLine },
+  _internals: { proposeMortgage, lineKey, lineLabel, liabilitiesFor, vestingFor, documentsByLine, dealFor },
 };

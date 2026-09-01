@@ -8,7 +8,7 @@
 // The one rule: a path here always starts `/api/lt/`. Anything else belongs to the
 // other product.
 
-import { ltGet, ltPost, ltPut, ltPatch, ltDel, ltDownload, ltBlobUrl } from './http.js';
+import { ltGet, ltPost, ltPut, ltPatch, ltDel, ltDownload, ltBlobUrl, ltUpload, ltBlob } from './http.js';
 
 const lt = (p) => `/api/lt${p}`;
 
@@ -51,6 +51,16 @@ export const ltApi = {
   // It answers 200 with `enabled:false` when the owner has not switched the
   // borrower-facing side on, so the portal can tell "off" from "broken".
   myLoans: () => ltGet(lt('/my/loans')),
+  /* THE BORROWER'S OWN CONDITIONS, on the same borrower-authenticated mount as
+     their loans list. Their file is resolved from the SESSION plus the loan id —
+     never from anything the page passes about who they are. */
+  myConditions: (loanId) => ltGet(lt(`/my/loans/${encodeURIComponent(loanId)}/conditions`)),
+  /* THE STREAMED DOOR, for the same reason the staff side takes it: a borrower
+     photographing a bank statement on a phone is exactly the upload that would
+     hit the base64 ceiling. */
+  myConditionDocUpload: (loanId, conditionId, body) => ltUpload(
+    lt(`/my/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(conditionId)}/documents/binary`),
+    { ...body, checklistItemId: conditionId }),
 
   // The BOOK — the owner's census of every long-term file, with the folder, the
   // status and the milestone each one sits in, plus how much of the borrower and
@@ -156,6 +166,16 @@ export const ltApi = {
   // that key rather than re-searched: 200 once ready, 202 while it is still computing
   // (surfaced as an ordinary body, `ready:false`), 409 once the key has expired.
   dscrPrice: (scenario, opts) => ltPost(lt('/dscr/price'), { scenario, ...(opts || {}) }),
+  /* THE SAME DEAL, PRICED ONCE PER DSCR BRACKET (owner-directed 2026-09-01).
+     ⛔ IT COSTS SEVERAL VENDOR CALLS, NOT ONE — one search per DSCR bracket this
+     loan can reach — so it is even more firmly a deliberate press than `dscrPrice`
+     above. Never from an effect, never on a keystroke.
+     Answers `{ brackets:[{ tier, label, sentRatio, quotes }], empty, failedBrackets }`
+     where every quote is priced in the band its OWN rate reaches. The server
+     decides all of that: the screen renders what it is told, because the bracket
+     ladder is the one the term sheet refuses on and a browser copy of it would
+     drift from the refusal. */
+  dscrPriceBrackets: (scenario, opts) => ltPost(lt('/dscr/price-brackets'), { scenario, ...(opts || {}) }),
   // The ONE door here that costs NOTHING. A ZIP resolves its state, county and county FIPS out of a
   // committed Census table on our own server — no vendor call, no session, no billing — which is
   // why this one MAY be fired as somebody types, unlike the two above.
@@ -174,6 +194,78 @@ export const ltApi = {
   dscrInvestorGroups: () => ltGet(lt('/dscr/investor-groups')),
   dscrSaveInvestorGroup: (name, investors) => ltPost(lt('/dscr/investor-groups'), { name, investors }),
   dscrDeleteInvestorGroup: (id) => ltDel(lt(`/dscr/investor-groups/${encodeURIComponent(id)}`)),
+
+  // ---- THE COMBINED PRICING ENGINE (owner-directed 2026-08-30) ----------------
+  // A SECOND ENGINE BESIDE THE FIRST, never on top of it. The owner's words:
+  // *"Don't touch our current setup that we currently have: our General Pricing
+  // Engine. Just make this totally separate… I am going to test the system that
+  // works on both together."* So the four `/dscr` methods above are UNTOUCHED and
+  // these are additional doors.
+  //
+  // ⛔ SUPER ADMIN ONLY. The server answers 404 to anybody else, which is why the
+  // screens that call these are hidden from every other role — a visible button
+  // that always 404s is worse than no button.
+  //
+  // ⛔ `combinedPrice` COSTS TWO LIVE VENDOR CALLS, one per program. Same rule as
+  // `dscrPrice`, doubled: only ever from a deliberate press.
+  //
+  // `revealSource` is the admin's *"click to see the source of the info"*. It is a
+  // RE-PRICE rather than an unmasking, because the server strips the vendor from
+  // every row before the answer leaves — the owner's one-system rule — so there is
+  // nothing on this side to un-strip.
+  combinedPrice: (scenario, opts) => ltPost(lt('/dscr/combined/price'), { scenario, ...(opts || {}) }),
+  // The investor SETTINGS roster: every investor, its client-safe name, which
+  // program its pricing is fetched from, and whether it is on. A free read of our
+  // own server — no vendor call — so a screen may fetch it from an effect.
+  combinedInvestors: () => ltGet(lt('/dscr/combined/investors')),
+  /**
+   * ASK ONE ROW TO EXPLAIN ITS PRICE.
+   *
+   * COSTS A LIVE VENDOR CALL — for the one rate sheet on this board that explains on demand — so
+   * only ever from a deliberate press on that row's Details. The other sheet publishes its
+   * itemization with the search and answers `alreadyExplained` with nothing to fetch, which is why
+   * the screen may call this on any row without knowing which is which.
+   *
+   * `quote` is the row's own `explain` block. `investorKey` rides with it as a POINTER to whose
+   * saved setting the server should read when it brings the base into step with the price — it can
+   * never state an amount, and the server resolves the figure from its own store.
+   */
+  combinedExplain: (quote, scenario) => ltPost(lt('/dscr/combined/explain'), {
+    quote, scenario, investorKey: (quote && quote.investorKey) || null,
+  }),
+  // Saves the WHOLE map, always — see the route's own note. A per-key patch could
+  // not express "take this setting back off and return the investor to its
+  // pre-fill", which is the thing somebody auditing this will do most often.
+  combinedSaveInvestors: (investors) => ltPut(lt('/dscr/combined/investors'), { investors }),
+  // The margin holdback: read what is in force, and move it up, down, or off.
+  // `points: null` returns it to the standing 0.25; `points: 0` removes it.
+  combinedMarginHoldback: () => ltGet(lt('/dscr/combined/margin-holdback')),
+  combinedSaveMarginHoldback: (points) => ltPut(lt('/dscr/combined/margin-holdback'), { points }),
+  // "THIS INVESTOR AND THIS INVESTOR ARE THE SAME" — the human-recorded links, plus
+  // the pick-list of canonical investors so nobody has to type a key. A free read
+  // of our own server; it prices nothing, so a screen may fetch it from an effect.
+  combinedInvestorLinks: () => ltGet(lt('/dscr/combined/investor-links')),
+  // The WHOLE map, always — a partial write cannot express a link somebody took
+  // away, and a deleted link quietly surviving is the worst outcome here. The
+  // server REFUSES a bad map whole (422 naming each row) rather than storing the
+  // half of it that happened to be readable.
+  combinedSaveInvestorLinks: (links) => ltPut(lt('/dscr/combined/investor-links'), { links }),
+  // What might this spelling be? A PROPOSAL — nothing here writes. An automatic
+  // join would put one investor's pricing under another investor's name, and that
+  // name is the one thing a client may see.
+  combinedLinkSuggest: (name) => ltGet(lt(`/dscr/combined/investor-links/suggest?name=${encodeURIComponent(name)}`)),
+  // Is each program configured? No login attempted, no vendor reached.
+  combinedHealth: () => ltGet(lt('/dscr/combined/health')),
+  // THE SIGNED-IN PERSON'S OWN SAVED SCENARIOS (owner-directed 2026-08-31). A
+  // scenario is INPUTS — never a price — so none of these calls asks Lender Price
+  // anything: re-running a saved scenario goes back through `dscrPrice` like any
+  // other search. `save` always creates; `update` renames or re-saves an existing
+  // one and sends ONLY the keys it means to move.
+  dscrScenarios: () => ltGet(lt('/dscr/scenarios')),
+  dscrScenario: (id) => ltGet(lt(`/dscr/scenarios/${encodeURIComponent(id)}`)),
+  dscrSaveScenario: (body) => ltPost(lt('/dscr/scenarios'), body || {}),
+  dscrUpdateScenario: (id, patch) => ltPatch(lt(`/dscr/scenarios/${encodeURIComponent(id)}`), patch || {}),
+  dscrDeleteScenario: (id) => ltDel(lt(`/dscr/scenarios/${encodeURIComponent(id)}`)),
 
   // THE CLICKUP SYNCING SECTION (#36): everything the writer does automatically,
   // visible + manually drivable per file. Every write goes through the guarded
@@ -226,10 +318,122 @@ export const ltApi = {
   conditionSatisfy: (loanId, id) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/satisfy`), {}),
   conditionWaive: (loanId, id, reason) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/waive`), { reason }),
   conditionReopen: (loanId, id) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/reopen`), {}),
+  // The loan officer's own step — a stamp, never a status. `done:false` undoes it.
+  conditionMarkDone: (loanId, id, done) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/done`), { done: done !== false }),
   conditionStatus: (loanId, id, status) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/status`), { status }),
   conditionNote: (loanId, id, note) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}/note`), { note }),
   conditionAdd: (loanId, code, fieldKey) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions`), { code, fieldKey }),
   conditionRemove: (loanId, id) => ltDel(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(id)}`)),
+
+  /* THE LOGIN-FREE LINK — email this loan's borrower everything still needed,
+     with a direct button per condition (owner-directed 2026-08-28: *"an email
+     directly with links to upload and enter the information over there …
+     without him being able to set up an account or portal."*).
+
+     The preview is a READ that changes nothing: it says who it could go to,
+     what would be sent, every link already out, and — the part that matters on
+     screen — every reason it CANNOT be sent, in words a person can act on. The
+     send re-checks all of them, so the screen's answer is never what authorises
+     the email. */
+  conditionsOutreach: (loanId) => ltGet(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/outreach`)),
+  conditionsOutreachSend: (loanId, emails, note) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/outreach`), { emails, note }),
+  conditionsOutreachRevoke: (loanId, linkId) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/outreach/${encodeURIComponent(linkId)}/revoke`), {}),
+
+  /* THE DOCUMENTS ON A CONDITION — the owner's own list of verbs, in one place:
+     *"the way you preview stuff, the way you preview the PDFs, the way you drag
+     and drop, accept, reject, preview, download, and delete."* Each of these is a
+     thin call to the /api/lt door, which is itself a thin caller of the ONE
+     shared condition-document service. The `checklistItemId` rides in the
+     metadata so the shared upload-progress store files the bar against the right
+     condition without this client passing it twice. */
+  /* THE STREAMED DOOR (`…/documents/binary`), which is the short-term side's own
+     pair: the JSON door caps at 25 MB because a base64 body must be held in memory
+     to decode, and this one writes to storage as the bytes arrive. Same handler
+     behind both — `takeUpload` reads `req.uploaded` first — so nothing but the
+     transport differs. */
+  conditionDocUpload: (loanId, conditionId, body) => ltUpload(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/conditions/${encodeURIComponent(conditionId)}/documents/binary`),
+    { ...body, checklistItemId: conditionId }),
+  /* THE VESTING COMPANY ON THE BORROWER'S PROFILE — the write half of the
+     entity block the condition already reads.
+
+     `vestingEntityToProfile` puts the company on the profile (create-or-REUSE)
+     and gives it its document slots. `vestingEntityDocUpload` then files a
+     document onto one of the COMPANY's own slots — not onto this loan — so the
+     next loan for the same company finds it already there. Nothing is copied
+     anywhere: the shared upload door files it against the company the first
+     time, which is why this takes the slot's own item id rather than a
+     condition's. Streamed door for the same reason every other upload here uses
+     one — an operating agreement is routinely past the JSON ceiling. */
+  /* THE CARD ON THE PERSON. The body carries a card number, so the response
+     deliberately carries back only the brand and the last four — the server
+     never decrypts a number and nothing here could render one. */
+  appraisalCardSave: (loanId, body) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/appraisal-card`), body),
+  vestingEntityToProfile: (loanId) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/vesting-entity`), {}),
+  vestingEntityDocUpload: (loanId, slotItemId, body) => ltUpload(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/vesting-entity/slots/${encodeURIComponent(slotItemId)}/documents/binary`),
+    { ...body, checklistItemId: slotItemId }),
+
+  /* ── THE ENTITY SECTION, THE SHORT-TERM ONE ────────────────────────────────
+     Owner-directed 2026-08-31: *"The exact entity section, same exact form
+     information to type in an entity section. The exact verification workflow …
+     The exact document slots and bi-directional … Don't reinvent, just bring
+     over the same information."*
+
+     So these five are not an entity API — they are the ADAPTER the shared
+     `LlcManager` takes, pointed at `/api/lt/*`. Every rule behind them (what may
+     be edited, whether the ownership adds up, who may verify, what a revoke does
+     to the companies underneath) is `src/lib/llc-edit.js`, which the short-term
+     routes call too, so there is one answer for both products.
+
+     `entityId` is the COMPANY, and the loan is in the path because the loan is
+     what says which companies this desk may reach: its own vesting company and
+     the companies that OWN it (a layered entity verifies bottom-up, so an owner
+     has to be workable from the file that depends on it). Nothing else on the
+     borrower's profile is reachable from a loan file at all. */
+  entityGet: (loanId, entityId) => ltGet(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/entities/${encodeURIComponent(entityId)}`)),
+  entitySave: (loanId, entityId, body) => ltPatch(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/entities/${encodeURIComponent(entityId)}`), body),
+  entityMembers: (loanId, entityId, members) => ltPut(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/entities/${encodeURIComponent(entityId)}/members`),
+    { members }),
+  entityVerify: (loanId, entityId, body) => ltPost(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/entities/${encodeURIComponent(entityId)}/verify`), body),
+  // Streamed, for the reason every other upload here is: an operating agreement
+  // is a multi-page scan and is routinely past the 25 MB JSON ceiling.
+  entityDocUpload: (loanId, entityId, slotItemId, body) => ltUpload(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/entities/${encodeURIComponent(entityId)}/slots/${encodeURIComponent(slotItemId)}/documents/binary`),
+    { ...body, checklistItemId: slotItemId }),
+  /* AN ENTITY DOCUMENT HAS NO FILE OWNER — it belongs to the company, which is
+     what makes ONE operating agreement follow it to every loan it vests — so it
+     is NOT reachable through the condition-document door (whose first statement
+     is `lt_loan_id IS NOT NULL`). Its scope is the company, welded into the
+     read. `?inline=1` asks the shared serving path to render it rather than
+     save it, for the previewer.
+
+     THE COMPANY IS NOT IN THE PATH: the shared section renders a whole ownership
+     CHAIN from ONE adapter, so a nested owner's document has to download through
+     the same call as the vesting company's. The server derives the company from
+     the document and then asks whether THIS loan may reach it. */
+  entityDocBlob: (loanId, documentId) => ltBlob(
+    lt(`/condition-center/loans/${encodeURIComponent(loanId)}/entities/documents/${encodeURIComponent(documentId)}/file?inline=1`)),
+  conditionDocReview: (documentId, body) => ltPost(
+    lt(`/condition-center/documents/${encodeURIComponent(documentId)}/review`), body),
+  conditionDocRemove: (documentId) => ltDel(
+    lt(`/condition-center/documents/${encodeURIComponent(documentId)}`)),
+  // Two ways to reach the same door. A download saves the file; a PREVIEW asks
+  // the shared serving path to render it inline (`?inline=1`) and hands the bytes
+  // to the shared previewer — an `<iframe src>` cannot carry the session token,
+  // which is why a preview fetches rather than pointing a frame at the route.
+  conditionDocDownload: (documentId, filename) => ltDownload(
+    lt(`/condition-center/documents/${encodeURIComponent(documentId)}/file`), filename || 'document'),
+  conditionDocBlob: (documentId) => ltBlob(
+    lt(`/condition-center/documents/${encodeURIComponent(documentId)}/file?inline=1`)),
 
   // The LIBRARY — the settings side. The rule builder draws its whole field
   // picker from this response, so a screen can never offer a field the evaluator
@@ -285,9 +489,31 @@ export const ltApi = {
   orderCancel: (loanId, kind, reason) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/${encodeURIComponent(kind)}/cancel`), { reason }),
 
   // The vendor cards on a loan, and the SHARED directory behind them.
+  /* THE ONE APPLICABILITY FACT A PERSON CAN SET. Writing it also re-runs the
+     rules, so the flood-insurance CONDITION appears in the same click — the
+     server does both, because doing them in two calls is how a file ends up
+     ungreyed with no condition on it. */
+  /* FILE A RETURNED DOCUMENT INTO ITS SLOT. The order desk guesses on arrival
+     from the filename, which is right most of the time and cannot be right
+     always; this is the human's correction. `null` unfiles it — a document put
+     in the wrong slot has to be takeable back out. */
+  conditionDocSlot: (documentId, slot) =>
+    ltPut(lt(`/condition-center/documents/${encodeURIComponent(documentId)}/slot`), { slot }),
+
+  orderFloodZone: (loanId, inFloodZone) =>
+    ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/flood-zone`), { inFloodZone }),
   orderVendors: (loanId) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors`)),
   orderVendorSearch: (loanId, kind, q) => ltGet(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/search?kind=${encodeURIComponent(kind)}&q=${encodeURIComponent(q)}`)),
   orderVendorLink: (loanId, body) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors`), body),
+  /* A contact NOBODY has entered yet: the card is written into the shared
+     directory and linked in one breath. Link (above) needs a card that already
+     exists; this is the other half, and without it the only way a vendor reaches
+     a long-term loan is for somebody to have typed it on a short-term file first
+     — which is how a second contact store gets started. */
+  orderVendorCreate: (loanId, body) => ltPost(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/new`), body),
+  /* Correcting a card corrects it EVERYWHERE — it is the one shared row. That is
+     the owner's "one company, one card, corrected in one place", not a leak. */
+  orderVendorEdit: (loanId, linkId, body) => ltPatch(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/${encodeURIComponent(linkId)}`), body),
   orderVendorUnlink: (loanId, linkId) => ltDel(lt(`/orders/loans/${encodeURIComponent(loanId)}/vendors/${encodeURIComponent(linkId)}`)),
 
   orderLetters: () => ltGet(lt('/orders/letters')),
@@ -300,6 +526,8 @@ export const ltApi = {
      being asked. */
   vor: (loanId) => ltGet(lt(`/vor/loans/${encodeURIComponent(loanId)}`)),
   vorSave: (loanId, data) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/form`), { data }),
+  // A DELIBERATE ACT, not a flag on the save — see vor/desk.js confirmForm.
+  vorConfirm: (loanId) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/confirm`), {}),
   vorPreviewUrl: (loanId) => ltBlobUrl(lt(`/vor/loans/${encodeURIComponent(loanId)}/preview.pdf`)),
   vorDownload: (loanId) => ltDownload(lt(`/vor/loans/${encodeURIComponent(loanId)}/preview.pdf`), 'verification-of-rent.pdf'),
   vorSend: (loanId, body) => ltPost(lt(`/vor/loans/${encodeURIComponent(loanId)}/send`), body),
@@ -325,6 +553,22 @@ export const ltApi = {
   termSheetPdf: (code) => ltDownload(
     lt(`/dscr/term-sheet/${encodeURIComponent(code)}/pdf`), `term-sheet-${code}.pdf`),
   termSheetReplay: (code, body) => ltPost(lt(`/dscr/term-sheet/${encodeURIComponent(code)}/replay`), body),
+
+  // EVENING OUT A PRICE (§40) — what the price reads at, what it could be rounded
+  // to, and what each of those would cost us. READ-ONLY and a round trip on
+  // purpose: the compensation an adjustment comes out of is the server's own
+  // resolution and is never sent to the browser, so this screen cannot work the
+  // suggestions out for itself — which is exactly the point.
+  termSheetPriceAdjust: (body) => ltPost(lt('/dscr/term-sheet/price-adjust'), body),
+
+  // EMAIL IT TO THE BORROWER — the same PDF the download gives, with the branded
+  // letter, from the officer's own name and address. The server decides who it
+  // comes from (off the roster) and refuses a note that names the investor, so
+  // this posts only the address and the note.
+  termSheetEmail: (code, body) => ltPost(lt(`/dscr/term-sheet/${encodeURIComponent(code)}/email`), body),
+  // Who this sheet has already been sent to. A screen offering "send it" has to be
+  // able to answer "did she get it?" without another copy in the borrower's inbox.
+  termSheetDeliveries: (code) => ltGet(lt(`/dscr/term-sheet/${encodeURIComponent(code)}/deliveries`)),
 
   termSheetCart: () => ltGet(lt('/dscr/term-sheet/cart')),
   termSheetCartAdd: (selection) => ltPost(lt('/dscr/term-sheet/cart'), { selection }),

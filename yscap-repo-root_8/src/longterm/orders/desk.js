@@ -38,9 +38,13 @@ const db = require('../db');
 const cfg = require('../config');
 const email = require('../../lib/email');
 const orderEmail = require('../../lib/order-email');
+const orderCc = require('../../lib/order-cc');   // the SHARED who-else-is-on-the-thread chain
+const { ownerOf, ownerWhere } = require('../../lib/condition-owner');
 const { ltOrderReplyTo } = require('../../lib/file-address');
 const sendAs = require('../../lib/send-as');
 const kinds = require('./kinds');
+const enclosures = require('./enclosures');
+const appliesRule = require('./applies');
 const switches = require('./switches');
 const data = require('./data');
 const letter = require('./letter');
@@ -103,6 +107,20 @@ async function desk(loanId, client = db) {
       enabled: switches.stateFor(d.enabled, k).enabled,
       disabledReason: switches.stateFor(d.enabled, k).reason,
       switchedBy: switches.stateFor(d.enabled, k).source,
+      /* WHETHER THIS ORDER IS FOR THIS KIND OF FILE — a third question, kept
+         apart from `enabled` (a company setting) and `blockers` (a to-do). A
+         card that does not apply is GREYED AND COLLAPSED, never dropped: a desk
+         that silently loses three of its seven cards reads as one that broke. */
+      ...(() => {
+        const a = appliesRule.appliesTo(k, d);
+        return {
+          appliesToFile: a.applies,
+          notForThisFile: a.applies === false ? a.why : null,
+          appliesUnknown: a.applies === null ? a.why : null,
+          appliesFact: a.fact,
+          appliesSettable: a.settable,
+        };
+      })(),
       condition: def.condition,
       docCondition: def.docCondition || null,
       letterKind: letter.letterKeyFor(k, d),
@@ -112,7 +130,7 @@ async function desk(loanId, client = db) {
       vendorExtra: (d.vendorsExtra || {})[k] || [],
       to: card && !card.missing ? data.vendorEmails(k, d) : [],
       blockers: blocks,
-      blockerText: blocks.map((b) => data.blockerText(b)),
+      blockerText: blocks.map((b) => data.blockerText(b, k, d)),
       canOrder: blocks.length === 0,
       status: row ? row.status : 'not_ordered',
       orderId: row ? row.id : null,
@@ -282,15 +300,36 @@ async function place(loanId, kind, opts = {}) {
 
   const blocks = data.blockers(kind, d);
   if (blocks.length) {
-    return { ok: false, status: 422, error: data.blockerText(blocks[0]), blockers: blocks, blockerText: blocks.map(data.blockerText) };
+    return {
+      ok: false, status: 422, error: data.blockerText(blocks[0], kind, d),
+      blockers: blocks, blockerText: blocks.map((b) => data.blockerText(b, kind, d)),
+    };
   }
 
   const template = opts.template || null;
   const built = letter.buildLetter(kind, d, { note: opts.note || '', template });
+  /* Never blocks the send: a form we cannot read costs the enclosure and is
+     reported, because an order that reaches the vendor a form short is fixed by
+     one reply while an order that refuses to go out is not. */
+  const ownEnclosures = enclosures.forKind(kind);
   const replyTo = ltOrderReplyTo(loanId, kind);
+  /* WHO ELSE IS ON THE THREAD — the SHARED chain (2026-08-31), not just what the
+     person ticked. Passing only `opts.ccBorrower` meant the shared recipient rule
+     fell through to the COMPANY default, so an officer who had turned "copy my
+     borrowers on title orders" on in their own settings got it on their
+     short-term orders and silently not on their long-term ones. Found by the
+     two-product parity engine. WHICH officer is this product's own fact, read
+     off the loan; the SETTING is per-staffer and the roster is shared identity. */
   const recips = orderEmail.recipientsFor(kind, d, {
-    ccBorrower: opts.ccBorrower,
-    ccHelper: opts.ccHelper,
+    ccBorrower: await orderCc.ccBorrowerFor(kind, {
+      explicit: opts.ccBorrower, officerId: (d.officer && d.officer.id) || null,
+    }),
+    /* A long-term file carries no helper login (its order data says so in as many
+       words), so this resolves to nobody either way — asked anyway, so the day a
+       helper exists here the answer comes from the one rule rather than a second. */
+    ccHelper: await orderCc.ccHelperFor(kind, {
+      explicit: opts.ccHelper, officerId: (d.officer && d.officer.id) || null,
+    }),
     extraCc: opts.extraCc || [],
     replyTo,
   });
@@ -329,10 +368,16 @@ async function place(loanId, kind, opts = {}) {
       from: opts.from || { name: opts.fromName || (d.officer && d.officer.name) || null,
         email: opts.fromEmail || (d.officer && d.officer.email) || null },
       threadState: null,
-      /* An order may carry a document of ours — the verification of rent goes out as
-         a PDF attachment on this same letter. Absent on every other kind, so an
-         ordinary order is byte-for-byte what it always was. */
-      attachments: opts.attachments,
+      /* An order may carry a document of ours. TWO ROUTES, deliberately:
+         a RENDERED one the caller passes in (the verification of rent, drawn per
+         file at the moment of sending), and a FIXED blank this kind always
+         encloses (the Fannie Mae condo questionnaire). The fixed one is resolved
+         HERE rather than at a call site, so an order placed from the orders desk,
+         from its condition, or by a rule all enclose the same paper — a form
+         attached at one door and missing at another is invisible until an
+         association is asked to return a form nobody sent them. Absent on every
+         other kind, so an ordinary order is byte-for-byte what it always was. */
+      attachments: [...ownEnclosures.attachments, ...(opts.attachments || [])],
     });
     if (!sent.ok && !sent.ambiguous) {
       await client.query('ROLLBACK');
@@ -387,6 +432,9 @@ async function followUp(loanId, kind, opts = {}) {
   const built = letter.buildLetter(kind, d, { followup: true, note: opts.note || '', template: opts.template || null });
   const replyTo = order.reply_to || ltOrderReplyTo(loanId, kind);
   const recips = orderEmail.recipientsFor(kind, d, {
+    /* THE FOLLOW-UP KEEPS THE ORIGINAL ORDER'S ANSWER, which is the "recorded when
+       it was first placed" rung of the shared chain — the borrower must not join
+       or leave a conversation halfway through it. */
     ccBorrower: order.cc_borrower, ccHelper: order.cc_helper, extraCc: opts.extraCc || [], replyTo,
   });
   const sent = await sendLetter({
@@ -443,11 +491,20 @@ async function cancel(loanId, kind, opts = {}) {
     engine has run, and refusing on that would be refusing on our own timing. */
 async function markConditionAsked(loanId, code) {
   if (!code) return;
+  /* THE SHARED CONDITION CENTER, not `lt_file_conditions`. db/653 moved the
+     long-term conditions into the one `checklist_items` table (scope 'lt_loan')
+     and this statement was left pointing at the old one — where it matched ZERO
+     rows, silently, on every order ever placed. An UPDATE that changes nothing
+     raises no error, so nothing said the condition had stopped moving. */
+  const w = ownerWhere(ownerOf('lt_loan', loanId), 'c', 2);
   await db.query(
-    `UPDATE lt_file_conditions
+    `UPDATE checklist_items c
         SET status = 'received', updated_at = now()
-      WHERE loan_id = $1::uuid AND code = $2 AND status = 'outstanding'`,
-    [String(loanId), code]);
+       FROM checklist_templates t
+      WHERE t.id = c.template_id AND t.code = $1
+        AND c.status = 'outstanding'
+        AND ${w.sql}`,
+    [code, ...w.params]);
 }
 
 module.exports = {

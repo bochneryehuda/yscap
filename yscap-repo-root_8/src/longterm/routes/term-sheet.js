@@ -26,22 +26,28 @@ const router = express.Router();
 
 const snapshot = require('../termsheet/snapshot');
 const layout = require('../termsheet/layout');
-const pdf = require('../termsheet/pdf');
 const store = require('../termsheet/store');
+const internalRecord = require('../termsheet/internal');
 const code = require('../termsheet/code');
 const comparison = require('../termsheet/comparison');
+const deliver = require('../termsheet/deliver');
+const priceAdjust = require('../termsheet/price-adjust');
 const settingsStore = require('../settings/store');
+const db = require('../db');
 const { resolveCompPlan } = require('../comp-plan');
 
 router.use(express.json({ limit: '512kb' }));
 
 const staffId = (req) => (req.actor && req.actor.id != null ? String(req.actor.id) : null);
 
-/** A term sheet setting, with our shipped default when nothing is stored. */
-function setting(company, key, fallback) {
-  const v = company && company.settings ? company.settings[key] : undefined;
-  return v === undefined || v === null || v === '' ? fallback : v;
-}
+/* ⛔ ONE READER, NOT TWO. This used to be its own three-line copy of "read a key
+   off the loaded scope, fall back to ours when nothing is stored" — and
+   `termsheet/deliver.js` needs the SAME answer about the SAME keys, because the
+   emailed copy of a sheet and the downloaded copy must be the same document down
+   to the expiry line. Two copies of that reader is how one of them starts treating
+   a stored blank as a value. It lives in the settings store, where it belongs, and
+   the local name is kept so the twelve call sites below are unchanged. */
+const setting = settingsStore.pick;
 
 /**
  * THE OFFICER'S OWN COMPENSATION, resolved by the server.
@@ -66,8 +72,51 @@ async function officerPlan(req) {
   return { plan, source, company, degraded: !!(company.degraded || user.degraded) };
 }
 
+/* ⛔ THE OFFICER IS READ FROM THE ROSTER, AND UNTIL NOW NOBODY WAS READING IT
+   (owner-directed 2026-08-31: *"We need to add loan officer branding on the term
+   sheets ... their contact information, their name, their phone numbers, their
+   emails, and their own branding on all the term sheets that they issue and all
+   the comparison PDFs that they issue."*).
+
+   THE WHOLE CHAIN WAS ALREADY BUILT and produced nothing. `snapshot.buildSnapshot`
+   has accepted `officerName / officerTitle / officerEmail / officerPhone /
+   officerNmls` since it shipped, `layout.recipientBlock` assembles them into an
+   officer column, and `pdf.js` draws that column. What was missing is at the very
+   start: `preparedFrom` read them off `req.actor`, and `authenticate` puts only
+   `{ id, kind, role, sid }` on the actor. So every field resolved to null, the
+   column filtered to an empty array, and EVERY long-term sheet ever issued carried
+   no officer at all — silently, because an empty column draws nothing and looks
+   like a design choice.
+
+   The line above it already said "read from the roster"; this makes that true.
+
+   ⛔ IT IS THE ROSTER, NEVER THE CLIENT. A term sheet naming somebody else as the
+   officer is a document we cannot stand behind, so the body is not consulted for
+   any of these — that part of the original contract is unchanged and is why the
+   read has to happen server-side rather than being passed in by the screen.
+
+   `staff_users` is the shared identity zone, which Long-Term has been authorized
+   to READ since 2026-08-03 (`sql-read staff_users`); nothing here writes it. */
+async function loadOfficer(req) {
+  const id = staffId(req);
+  if (!id) return {};
+  try {
+    const { rows } = await db.query(
+      'SELECT full_name, title, email, phone, nmls FROM staff_users WHERE id = $1::uuid',
+      [id],
+    );
+    return rows[0] || {};
+  } catch (_) {
+    /* ⛔ A SHEET IS NEVER REFUSED OVER THE LETTERHEAD. The officer block is
+       decoration on a document whose numbers are the point, so an unreadable
+       roster costs the branding and nothing else — exactly what happens today,
+       every time. Never rethrown. */
+    return {};
+  }
+}
+
 /** Who the sheet says it is from. Read from the roster, never from the client. */
-function preparedFrom(req, company, body, expiresAt) {
+function preparedFrom(req, company, body, expiresAt, officer = {}) {
   const a = req.actor || {};
   const b = body && typeof body.prepared === 'object' ? body.prepared : {};
   return {
@@ -77,11 +126,11 @@ function preparedFrom(req, company, body, expiresAt) {
     propertyAddress: b.propertyAddress,
     // OURS are not. A term sheet naming somebody else as the officer, or naming
     // a company we are not, is a document we cannot stand behind.
-    officerName: a.full_name || a.fullName || a.name || null,
-    officerTitle: a.title || a.role_label || null,
-    officerEmail: a.email || null,
-    officerPhone: a.phone || a.cell_phone || null,
-    officerNmls: a.nmls || null,
+    officerName: officer.full_name || a.full_name || a.fullName || a.name || null,
+    officerTitle: officer.title || a.title || a.role_label || null,
+    officerEmail: officer.email || a.email || null,
+    officerPhone: officer.phone || a.phone || a.cell_phone || null,
+    officerNmls: officer.nmls || a.nmls || null,
     companyName: setting(company, 'termSheet.companyName', 'YS Capital Group'),
     companyNmls: setting(company, 'termSheet.companyNmls', '2609746'),
     preparedAt: stamp(new Date()),
@@ -112,20 +161,27 @@ function stamp(d) {
  * number is written into the page as a literal that could go on saying 24 after
  * somebody changed it.
  */
-function hoursBetween(from, to) {
-  const a = new Date(from).getTime();
-  const b = new Date(to).getTime();
-  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return null;
-  return Math.round((b - a) / 3600000);
-}
-
 function expiryHoursFor(docKind, company) {
-  if (docKind === snapshot.DOC_KINDS.TERM_SHEET) {
-    const h = Number(setting(company, 'termSheet.expiryHours', 24));
-    return Number.isFinite(h) && h > 0 ? h : 24;
-  }
-  const d = Number(setting(company, 'termSheet.expiryDays', 2));
-  return (Number.isFinite(d) && d > 0 ? d : 2) * 24;
+  /* ⛔ ONE CLOCK, EVERY DOCUMENT (owner-directed 2026-08-31: *"It says that the
+     pricing expires in 72 hours on some of the sheets. Everything expires in 24
+     hours."*).
+
+     ⛔ THIS REVERSES A RECORDED DECISION, AND IT WAS PUT BACK TO THE OWNER
+     BEFORE IT WAS CHANGED. On 2026-08-30 a comparison was deliberately given a
+     LONGER window than a term sheet — the reasoning was that a comparison is a
+     working document rather than an offer, so it should not expire under
+     somebody over a weekend. The owner was shown that reasoning, and chose 24
+     everywhere anyway. Their call, recorded here rather than quietly overwritten
+     so the next person finds the argument and not just the number.
+
+     ⛔ AND IT IS ONE SETTING NOW, NOT TWO KEPT IN STEP. Two settings that are
+     supposed to agree are two settings that eventually do not, and the failure
+     is silent: a comparison would go on saying 48 hours after somebody moved the
+     term sheet to 12. `termSheet.expiryDays` is retired rather than read — it
+     stays in the registry, marked retired, so a company that stored a value
+     still sees what happened to it instead of finding a setting that vanished. */
+  const h = Number(setting(company, 'termSheet.expiryHours', 24));
+  return Number.isFinite(h) && h > 0 ? h : 24;
 }
 
 /**
@@ -142,13 +198,13 @@ function expiryHoursFor(docKind, company) {
  */
 async function snapshotFor(req, res) {
   const body = req.body || {};
-  const { plan, company } = await officerPlan(req);
+  const [{ plan, company }, officer] = await Promise.all([officerPlan(req), loadOfficer(req)]);
   const maxMembers = Number(setting(company, 'termSheet.cartMax', 8)) || 8;
   const build = (expiresAt) => snapshot.buildSnapshot({
     selections: Array.isArray(body.selections) ? body.selections : [],
     plan,
     anchorIndex: Number.isFinite(Number(body.anchorIndex)) ? Number(body.anchorIndex) : 0,
-    prepared: preparedFrom(req, company, body, expiresAt),
+    prepared: preparedFrom(req, company, body, expiresAt, officer),
     maxMembers,
   });
 
@@ -170,7 +226,14 @@ async function snapshotFor(req, res) {
     res.status(422).json({ ok: false, error: built.error, message: built.message });
     return null;
   }
-  return { snapshot: built.snapshot, plan, company, expiryHours, expiresAt };
+  // `internal` rides BESIDE the snapshot, never inside it (db/651): it is the
+  // staff-only note about who funds each option, and the snapshot is the
+  // client's own document. Only the ISSUE door passes it on; the preview
+  // deliberately drops it, because a preview is a look at the document.
+  return {
+    snapshot: built.snapshot, internal: built.internal, adjustments: built.adjustments,
+    plan, company, expiryHours, expiresAt,
+  };
 }
 
 // ── PREVIEW ─────────────────────────────────────────────────────────────────
@@ -199,6 +262,65 @@ router.post('/preview', async (req, res) => {
   } catch (e) {
     console.error('[lt] term sheet preview failed:', (e && e.message) || e);
     return res.status(500).json({ ok: false, error: 'Could not build that term sheet.' });
+  }
+});
+
+/**
+ * EVENING OUT A PRICE — the suggestions, and what one would cost us (§40).
+ *
+ * Owner-directed 2026-08-31: *"The system should automatically give suggestions
+ * which should help you even it out to straight numbers ... bring it up to the
+ * nearest 0.00 or to the nearest 0.25 or to the nearest 0.50 or 0.75."*
+ *
+ * ⛔ THIS SCREEN COMPUTES NO MONEY, which is why the suggestions are a round trip
+ * rather than a local calculation. The compensation an adjustment comes out of is
+ * the SERVER's own resolution — person, then company, then the declared default,
+ * with the company figure as a floor — and it is deliberately never sent to the
+ * browser. A board that worked the suggestions out for itself would need that
+ * number, and would then be a second place our compensation is decided.
+ *
+ * READ-ONLY. It stores nothing and issues nothing: it answers "what could you do
+ * to this price, and what would each one cost us". The adjustment itself only
+ * becomes real when a sheet is previewed or issued carrying it.
+ */
+router.post('/price-adjust', async (req, res) => {
+  try {
+    if (!staffId(req)) return res.status(401).json({ ok: false, error: 'Sign in first.' });
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const { plan } = await officerPlan(req);
+    const mode = String(body.mode || '');
+    const rawPrice = Number(body.rawPrice);
+
+    if (!Number.isFinite(rawPrice)) {
+      return res.status(422).json({ ok: false, error: 'no_price', message: 'That option has no price to adjust.' });
+    }
+
+    const suggestions = priceAdjust.roundingSuggestions({ plan, mode, rawPrice });
+
+    /* When the officer has typed one, say what it would do — the same sentence the
+       issue would produce, from the same function, so the preview of a decision and
+       the decision itself can never differ. A refusal is returned as a refusal, with
+       the module's own words: "that is capped at 2 points" is something a person can
+       act on; a bare 422 is not. */
+    let applied = null;
+    if (body.deltaPoints != null && body.deltaPoints !== '') {
+      const r = priceAdjust.applyAdjustment({ plan, mode, rawPrice, deltaPoints: Number(body.deltaPoints) });
+      applied = r.ok ? r : { ok: false, error: r.code, message: r.message };
+    }
+
+    return res.json({
+      ok: true,
+      mode,
+      // What the price reads at right now, so the screen has the number the
+      // suggestions are relative to without deriving it from a plan it cannot see.
+      priceNow: priceAdjust.priceNow({ plan, mode, rawPrice }),
+      maxPoints: priceAdjust.MAX_DELTA_POINTS,
+      suggestions,
+      applied,
+    });
+  } catch (e) {
+    console.error('[lt] price adjust failed:', (e && e.message) || e);
+    return res.status(500).json({ ok: false, error: 'Could not work that adjustment out.' });
   }
 });
 
@@ -237,6 +359,9 @@ router.post('/', async (req, res) => {
       // The instant the DOCUMENT prints, so the column and the page agree.
       expiresAt: built.expiresAt.toISOString(),
       cartId: body.cartId || null,
+      internal: built.internal,
+      // §40 — beside `internal`, never inside it. See `store.issueSheet`.
+      adjustments: built.adjustments,
     });
     return res.json({ ok: true, docKind: built.snapshot.docKind, ...issued });
   } catch (e) {
@@ -306,6 +431,11 @@ router.post('/cart', async (req, res) => {
           ratePct: r.member.ratePct, monthlyPI: r.member.monthlyPI,
           prepayLabel: r.member.prepayLabel, rawPrice: (req.body.selection || {}).rawPrice,
         },
+        // db/651 — the STAFF-ONLY record of who funds this option, kept on the
+        // cart member so it survives to the sheet. `addToCart` projects it
+        // through the same whitelist the issue does, so the two paths can never
+        // record different fields for one quote.
+        internal: (req.body.selection || {}).internal,
       },
       max: Number(setting(company, 'termSheet.cartMax', 8)) || 8,
     });
@@ -393,9 +523,33 @@ router.get('/:code', async (req, res) => {
     const row = await loadByCode(req, res);
     if (!row) return undefined;
     const integrity = store.verifyIntegrity(row);
+    /* ⛔ THE PROVENANCE IS FETCHED SEPARATELY AND RETURNED AS ITS OWN KEY (db/651).
+       The owner's ask was *"see exactly what the input was and what exactly they
+       priced in the real program and the real investors behind everything"*, and
+       the input half already replayed — every figure the officer typed is on each
+       member's `scenario`. The investor half never could, because the snapshot is
+       the borrower's document and an investor's name may never be on one.
+
+       So it is loaded from the STAFF-side member rows and answered as a sibling
+       of `snapshot`, never merged into it: this door is staff-gated, but the
+       snapshot object it returns is the same one the PDF is drawn from, and the
+       moment an investor becomes a key on it, one careless projection puts it on
+       a client's page. A read that fails is REPORTED as unavailable rather than
+       silently returning an empty list, which would read as "nobody funds this". */
+    let internal = null;
+    let internalError = null;
+    try {
+      internal = await store.readInternal(row.id);
+    } catch (e) {
+      internalError = 'Could not read who was behind these prices.';
+      console.error('[lt] term sheet provenance read failed:', (e && e.message) || e);
+    }
     return res.json({
       ok: true,
       code: row.code,
+      internal,
+      internalError,
+      internalNotRecorded: internalRecord.NOT_RECORDED,
       issued: {
         at: row.created_at, pricedAt: row.priced_at, expiresAt: row.expires_at,
         by: row.created_by, borrowerName: row.borrower_name, kind: row.kind,
@@ -415,34 +569,146 @@ router.get('/:code', async (req, res) => {
   }
 });
 
-/** The PDF, rebuilt from the stored snapshot — never re-priced. */
+/**
+ * The PDF, rebuilt from the stored snapshot — never re-priced.
+ *
+ * ⛔ THE DOCUMENT IS DRAWN IN ONE PLACE (`termsheet/deliver.renderSheet`), and this
+ * route and the email door below both go through it. The layout it is built from
+ * takes options — the priced-apart window, and an expiry read off the DOCUMENT
+ * rather than off today's settings — and this route used to assemble those options
+ * itself. Two callers assembling them separately is precisely how the copy a
+ * borrower is emailed comes to state a different expiry from the copy the officer
+ * downloaded and filed, on the same sheet, with nothing anywhere saying why.
+ */
 router.get('/:code/pdf', async (req, res) => {
   try {
     if (!staffId(req)) return res.status(401).json({ ok: false, error: 'Sign in first.' });
     const row = await loadByCode(req, res);
     if (!row) return undefined;
     const company = await settingsStore.load();
-    const lay = layout.buildLayout(row.snapshot, {
-      code: row.code,
-      pricedApartMinutes: Number(setting(company, 'termSheet.pricedApartMinutes', 60)) || 60,
-      // ⛔ THE WINDOW IS READ OFF THE DOCUMENT, NOT OFF TODAY'S SETTINGS. This
-      // sheet was issued on the clock that was in force then; re-reading the
-      // setting would make a replay of a 24-hour sheet announce 48 because
-      // somebody widened the window last week.
-      expiryHours: hoursBetween(row.created_at, row.expires_at),
-    });
-    const bytes = await pdf.renderTermSheet(lay, { title: `Term Sheet ${row.code}` });
+    const doc = await deliver.renderSheet(row, company);
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="term-sheet-${row.code}.pdf"`);
-    res.setHeader('Content-Length', String(bytes.length));
+    res.setHeader('Content-Disposition', `attachment; filename="${doc.filename}"`);
+    res.setHeader('Content-Length', String(doc.bytes.length));
     // A term sheet is a moment. Caching one would serve a stale copy after a
     // correction supersedes it.
     res.setHeader('Cache-Control', 'no-store');
-    return res.end(Buffer.from(bytes));
+    return res.end(doc.bytes);
   } catch (e) {
     console.error('[lt] term sheet pdf failed:', (e && e.message) || e);
     if (res.headersSent) return res.end();
     return res.status(500).json({ ok: false, error: 'Could not draw that term sheet.' });
+  }
+});
+
+/**
+ * EMAIL IT TO THE BORROWER — the PDF, the branded letter, from the officer.
+ *
+ * The owner (2026-08-31): *"we should be able to put in an email address from a
+ * borrower, which should deliver them the PDF and the nice email ... It should
+ * deliver it from the loan officer's email address and from the loan officer's
+ * name, and, of course, with the branding, same style emails that we have on the
+ * short-term side."*
+ *
+ * ⛔ THE FROM LINE IS THE ROSTER'S, NEVER THE CLIENT'S. Who this comes from is read
+ * from `staff_users` for the person signed in, the same read that put the officer
+ * on the paper. A screen that could name the sender could send a borrower's pricing
+ * under a colleague's address.
+ *
+ * ⛔ IT IS RECORDED, whatever happens next. The row in `lt_term_sheet_delivery` is
+ * the only answer to "what did we actually send this person, and when" — the email
+ * itself lands in a mailbox we cannot read, and rule 4 keeps a long-term send out
+ * of the short-term Email Center. Recording is best-effort AFTER the send, in that
+ * order and never the reverse: a bookkeeping failure must not turn a delivered
+ * email into an error the officer answers by sending it again.
+ */
+router.post('/:code/email', async (req, res) => {
+  try {
+    const id = staffId(req);
+    if (!id) return res.status(401).json({ ok: false, error: 'Sign in first.' });
+    const row = await loadByCode(req, res);
+    if (!row) return undefined;
+
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const [company, officer] = await Promise.all([settingsStore.load(), loadOfficer(req)]);
+
+    const out = await deliver.sendSheet({
+      row,
+      company,
+      to: body.to,
+      note: body.note,
+      /* The sender is the person signed in, off the roster. `send-as.js` decides
+         whether their address may go in the From line at all — that is a DKIM
+         question, not a preference — and says so in `sentAs.why`. */
+      from: {
+        name: officer.full_name || null,
+        email: officer.email || null,
+      },
+    });
+
+    if (!out.ok) {
+      // A refusal here is something a person fixes and tries again — a mistyped
+      // address, a note naming the investor — so it answers 422 with the sentence,
+      // never a bare 500 that tells them nothing.
+      const status = out.error === 'render_failed' ? 500 : 422;
+      return res.status(status).json({ ok: false, error: out.error, message: out.message, ambiguous: !!out.ambiguous });
+    }
+
+    try {
+      await db.query(
+        `INSERT INTO lt_term_sheet_delivery
+           (sheet_id, code, to_email, to_name, note, doc_kind, filename, doc_sha256,
+            sent_by_staff, from_email, sent_as_mode, message_id)
+         VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9::uuid, $10, $11, $12)`,
+        [row.id, row.code, out.to, out.toName, out.note, out.docKind, out.filename, out.sha256,
+          id, (out.sentAs && out.sentAs.from) || null, (out.sentAs && out.sentAs.mode) || null, out.messageId],
+      );
+    } catch (e) {
+      /* ⛔ SAID, NEVER SWALLOWED. The borrower HAS the document — reversing that is
+         not possible and pretending it failed would get it sent twice — so the send
+         stands and the gap in the record is logged loudly for a human to find. */
+      console.error('[lt] term sheet delivery recorded nowhere:', (e && e.message) || e);
+    }
+
+    return res.json({
+      ok: true,
+      sent: {
+        to: out.to,
+        subject: out.subject,
+        filename: out.filename,
+        sentAs: out.sentAs,
+      },
+    });
+  } catch (e) {
+    console.error('[lt] term sheet email failed:', (e && e.message) || e);
+    return res.status(500).json({ ok: false, error: 'Could not send that document.' });
+  }
+});
+
+/**
+ * EVERY SEND OF ONE SHEET, newest first.
+ *
+ * A screen offering "email this to the borrower" has to be able to say whether it
+ * has already been sent, and to whom — otherwise the honest answer to "did she get
+ * it?" is another copy in the borrower's inbox.
+ */
+router.get('/:code/deliveries', async (req, res) => {
+  try {
+    if (!staffId(req)) return res.status(401).json({ ok: false, error: 'Sign in first.' });
+    const row = await loadByCode(req, res);
+    if (!row) return undefined;
+    const { rows } = await db.query(
+      `SELECT to_email, to_name, note, filename, sent_as_mode, from_email, created_at
+         FROM lt_term_sheet_delivery
+        WHERE sheet_id = $1::uuid
+        ORDER BY created_at DESC
+        LIMIT 50`,
+      [row.id],
+    );
+    return res.json({ ok: true, code: row.code, deliveries: rows });
+  } catch (e) {
+    console.error('[lt] term sheet deliveries failed:', (e && e.message) || e);
+    return res.status(500).json({ ok: false, error: 'Could not pull up who this was sent to.' });
   }
 });
 
@@ -479,4 +745,10 @@ router.post('/:code/replay', async (req, res) => {
   }
 });
 
+/* Exported for the test that proves the officer actually reaches the paper. The
+   router is still the default export and the only thing `src/longterm/index.js`
+   mounts; these two are the pair the 2026-08-31 defect lived between, and a test
+   that cannot reach them can only assert the layout — which was never the broken
+   half. */
 module.exports = router;
+module.exports._internals = { loadOfficer, preparedFrom };

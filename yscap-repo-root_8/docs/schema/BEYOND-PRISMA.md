@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**940 objects**, and a database rebuilt from the Prisma
+**952 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 646 numbered migrations in `db/` (highest `db/649`) remain the only thing that builds this database.
+rebuild a database from them.** The 664 numbered migrations in `db/` (highest `db/667`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -19,27 +19,28 @@ the live database.
 
 | | |
 |---|---|
-| Tables | 405 |
-| Columns | 6478 |
-| Triggers | 37 |
-| Functions | 140 |
-| CHECK constraints | 346 |
+| Tables | 409 |
+| Columns | 6537 |
+| Triggers | 38 |
+| Functions | 142 |
+| CHECK constraints | 348 |
 | Generated columns | 12 |
-| Partial indexes | 405 |
-| Primary keys | 405 |
-| Foreign keys | 825 |
+| Partial indexes | 412 |
+| Primary keys | 409 |
+| Foreign keys | 828 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1399 |
+| Indexes (all kinds) | 1416 |
 | Enum types | 12 |
 | Views | 0 |
 
-## Triggers (37)
+## Triggers (38)
 
 - **trg_ai_suggestions_updated** on `ai_suggestions`
 - **trg_assignment_condition_is_purchase_only** on `checklist_items`
 - **trg_assignment_is_a_purchase_concept** on `applications`
 - **trg_borrower_auth_one_login_per_email** on `borrower_auth`
 - **trg_class_orders_touch** on `class_orders`
+- **trg_condition_product_guard** on `checklist_items`
 - **trg_default_deal_program** on `applications`
 - **trg_default_property_type** on `applications`
 - **trg_doclab_requests_touch** on `doclab_requests`
@@ -88,7 +89,7 @@ the live database.
 - **track_records.counts_from** — `COALESCE( CASE WHEN (lower(COALESCE(deal_type, ''::text)) ~~ '%flip%'::text) THEN sale_date ELSE COALESCE(rent_date, refi_date) END, CASE WHEN ((lower(COALESCE(deal_type, ''::text)) ~~ '%ground%'::text) OR (lower(COALESCE(deal_type, ''::text)) ~~ '%construction%'::text)) THEN COALESCE(sale_date, rent_date, refi_date) ELSE NULL::date END)`
 - **track_records.hold_days** — `(COALESCE( CASE WHEN (lower(COALESCE(deal_type, ''::text)) ~~ '%flip%'::text) THEN sale_date ELSE COALESCE(rent_date, refi_date) END, CASE WHEN ((lower(COALESCE(deal_type, ''::text)) ~~ '%ground%'::text) OR (lower(COALESCE(deal_type, ''::text)) ~~ '%construction%'::text)) THEN COALESCE(sale_date, rent_date, refi_date) ELSE NULL::date END) - purchase_date)`
 
-## Functions (140)
+## Functions (142)
 
 - **appraisal_review_guard()** → trigger
 - **armor(bytea)** → text
@@ -165,6 +166,8 @@ the live database.
 - **pilot_address_compare_key(v jsonb)** → text
 - **pilot_address_same_place(a jsonb, b jsonb)** → boolean
 - **pilot_appraisal_form_property_key(v text)** → text
+- **pilot_condition_product_guard()** → trigger
+- **pilot_condition_scope_name(s text)** → text
 - **pilot_fmt_money(v numeric)** → text
 - **pilot_fmt_txt(v text)** → text
 - **pilot_is_appraisal_form_code(v text)** → boolean
@@ -231,7 +234,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (405)
+## Partial indexes (412)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -251,6 +254,7 @@ the live database.
 - **closing_handling_buyer_uk** on `closing_handling_settings`
 - **closing_handling_company_uk** on `closing_handling_settings`
 - **closing_thread_msgs_dedupe_uk** on `closing_thread_messages`
+- **condition_links_lt_idx** on `condition_links`
 - **draw_media_display_pending_idx** on `draw_media`
 - **esign_recipients_uninvited_idx** on `esign_recipients`
 - **finding_decisions_live_idx** on `finding_decisions`
@@ -312,6 +316,7 @@ the live database.
 - **idx_checklist_items_tool** on `checklist_items`
 - **idx_checklist_items_track_record** on `checklist_items`
 - **idx_checklist_loan_exc** on `checklist_items`
+- **idx_checklist_lt_loan** on `checklist_items`
 - **idx_checklist_trdoc_key** on `checklist_items`
 - **idx_class_cb_claimable** on `class_callback_events`
 - **idx_class_notes_unread** on `class_notes`
@@ -345,6 +350,7 @@ the live database.
 - **idx_document_pages_phash** on `document_pages`
 - **idx_document_pages_texthash** on `document_pages`
 - **idx_documents_lead** on `documents`
+- **idx_documents_lt_loan** on `documents`
 - **idx_documents_sha256** on `documents`
 - **idx_documents_sharepoint_shelf** on `documents`
 - **idx_documents_source_document** on `documents`
@@ -458,6 +464,7 @@ the live database.
 - **idx_sync_review_source** on `sync_review_queue`
 - **idx_tbrv_open** on `trinity_budget_reviews`
 - **idx_templates_auto_apply** on `checklist_templates`
+- **idx_templates_lt_loan_scope** on `checklist_templates`
 - **idx_tio_open** on `trinity_inspection_orders`
 - **idx_tol_trinity_line** on `trinity_order_lines`
 - **idx_tpl_unlinked** on `trustpoint_project_links`
@@ -532,6 +539,7 @@ the live database.
 - **lt_loan_contacts_override_idx** on `lt_loan_contacts`
 - **lt_loan_contacts_staff_idx** on `lt_loan_contacts`
 - **lt_loan_milestones_done_at_idx** on `lt_loan_milestones`
+- **lt_loan_vendors_landlord_unremembered_idx** on `lt_loan_vendors`
 - **lt_loan_vendors_one_primary_uk** on `lt_loan_vendors`
 - **lt_loans_archived_duplicate_idx** on `lt_loans`
 - **lt_loans_clickup_push_due_idx** on `lt_loans`
@@ -548,6 +556,7 @@ the live database.
 - **lt_pipeline_views_default_uk** on `lt_pipeline_views`
 - **lt_ppe_rule_lookup_idx** on `lt_ppe_rule`
 - **lt_ppe_rule_suggestion_open_idx** on `lt_ppe_rule_suggestion`
+- **lt_pricer_scenarios_mine_idx** on `lt_pricer_scenarios`
 - **lt_reo_properties_enc_uk** on `lt_reo_properties`
 - **lt_report_definitions_shared_idx** on `lt_report_definitions`
 - **lt_residences_enc_uk** on `lt_residences`
@@ -575,6 +584,7 @@ the live database.
 - **uq_asset_ledger_override** on `asset_ledger_entries`
 - **uq_assignee_active** on `application_assignees`
 - **uq_assignee_one_primary** on `application_assignees`
+- **uq_checklist_items_lt_one_per_template** on `checklist_items`
 - **uq_class_attach_name** on `class_attachments`
 - **uq_class_cb_reg** on `class_callback_registrations`
 - **uq_class_form_map_default** on `class_form_map`
@@ -639,7 +649,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (346)
+## CHECK constraints (348)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -753,6 +763,7 @@ the live database.
 - **closing_workflow_stage_check** on `closing_workflow`
 - **condition_clearance_proofs_result_check** on `condition_clearance_proofs`
 - **condition_intents_materiality_check** on `condition_intents`
+- **condition_links_one_owner** on `condition_links`
 - **conditions_audience_check** on `conditions`
 - **conditions_severity_check** on `conditions`
 - **conditions_status_check** on `conditions`
@@ -899,6 +910,7 @@ the live database.
 - **lt_ppe_rule_origin_chk** on `lt_ppe_rule`
 - **lt_ppe_rule_source_chk** on `lt_ppe_rule`
 - **lt_ppe_rule_suggestion_status_chk** on `lt_ppe_rule_suggestion`
+- **lt_properties_flood_zone_source_chk** on `lt_properties`
 - **lt_report_definitions_visibility_check** on `lt_report_definitions`
 - **lt_term_sheet_created_by_chk** on `lt_term_sheet`
 - **lt_term_sheet_kind_chk** on `lt_term_sheet`
@@ -988,7 +1000,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (825)
+## Foreign keys (828)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1506,6 +1518,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **logical_documents** → `documents` — `FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE SET NULL`
 - **logical_documents** → `document_packages` — `FOREIGN KEY (package_id) REFERENCES document_packages(id) ON DELETE CASCADE`
 - **lt_assets** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
+- **lt_borrower_landlords** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
 - **lt_borrower_links** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON DELETE SET NULL`
 - **lt_borrower_pairs** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_condition_comments** → `lt_conditions` — `FOREIGN KEY (condition_id) REFERENCES lt_conditions(id) ON UPDATE CASCADE ON DELETE CASCADE`
@@ -1559,6 +1572,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lt_ppe_rule_suggestion** → `lt_ppe_investor` — `FOREIGN KEY (investor_id) REFERENCES lt_ppe_investor(id) ON DELETE SET NULL`
 - **lt_ppe_shadow_run** → `lt_ppe_program` — `FOREIGN KEY (program_id) REFERENCES lt_ppe_program(id) ON DELETE SET NULL`
 - **lt_pricer_investor_groups** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_pricer_scenarios** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_properties** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_reo_properties** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
 - **lt_residences** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
@@ -1568,6 +1582,7 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lt_staff_links** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_term_sheet** → `borrowers` — `FOREIGN KEY (borrower_id) REFERENCES borrowers(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_term_sheet_cart** → `staff_users` — `FOREIGN KEY (staff_id) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
+- **lt_term_sheet_delivery** → `lt_term_sheet` — `FOREIGN KEY (sheet_id) REFERENCES lt_term_sheet(id) ON DELETE CASCADE`
 - **lt_term_sheet** → `staff_users` — `FOREIGN KEY (created_by_staff) REFERENCES staff_users(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_term_sheet** → `lt_term_sheet` — `FOREIGN KEY (supersedes) REFERENCES lt_term_sheet(id) ON UPDATE CASCADE ON DELETE SET NULL`
 - **lt_vor_envelopes** → `lt_vor_forms` — `FOREIGN KEY (form_id) REFERENCES lt_vor_forms(id) ON DELETE SET NULL`
@@ -1890,7 +1905,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 405 primary keys and 1399 indexes is
+Every one of the 409 primary keys and 1416 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person

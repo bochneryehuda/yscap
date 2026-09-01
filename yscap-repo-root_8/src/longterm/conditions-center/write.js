@@ -2,7 +2,7 @@
 /**
  * LONG-TERM — CHANGING A CONDITION ON A FILE.
  *
- * Every write to `lt_file_conditions` that a person makes goes through here, so
+ * Every write to a Long-Term condition that a person makes goes through here, so
  * the rules below have one home rather than one per route.
  *
  * ── THE GATE IS THE POINT ───────────────────────────────────────────────────
@@ -30,33 +30,48 @@
  * that fails allows the sign-off and SAYS the check could not run, which is a
  * recorded decision rather than a silent one.
  *
- * SEPARATION: `lt_*` only.
+ * ── WHERE IT WRITES (db/652 + db/653) ───────────────────────────────────────
+ *
+ * `checklist_items` in the ONE Condition Center, owned by `lt_loan_id`, through
+ * the shared owner descriptor. Six Long-Term statuses round-trip onto the shared
+ * five plus the two stamps this table has carried for a long time — the mapping
+ * and the reason for it are in `vocabulary.js`; the short version is that this
+ * system already had a way to say "waived" (`waived_at` beside status
+ * 'satisfied') and inventing a second one is not sharing a Condition Center.
  */
 
 const db = require('../db');
-const answers = require('./answers');
+// SHARED (2026-08-30): the owner's one-out-of-three rule now lives in
+// src/lib/conditions/answers.js so the ONE sign-off gate can read it too — while
+// it lived here, this door and the shared gate disagreed about the same condition.
+const answers = require('../../lib/conditions/answers');
 const entityPrefill = require('./entity-prefill');
+const vocab = require('./vocabulary');
+const { ownerOf, ownerWhere, ownerCols } = require('../../lib/condition-owner');
+// The generic required-slots rule, PORTED OUT OF HERE into the shared gate so
+// the sign-off door and this module can never disagree about what a condition is
+// still waiting on. It is imported back rather than kept as a second copy —
+// which is the whole point of the port.
+const requiredSlots = require('../../lib/conditions/required-slots');
+// LAZY on purpose: `workspace.js` requires nothing from here today, but the two
+// are the read and write halves of the same three conditions and a direct
+// require would make a cycle the first time it needs one of these rules.
+const workspace = require('./workspace');
 
 /** How many accepted documents a slot-bearing condition still needs. */
 function missingSlots(condition, files) {
-  const slots = Array.isArray(condition.slots) ? condition.slots : [];
-  const required = slots.filter((s) => s.required !== false);
-  if (!required.length) return [];
-  const filled = new Set(
-    (files || [])
-      .filter((f) => f.is_current && f.review_status === 'accepted' && f.slot_key)
-      .map((f) => String(f.slot_key)),
-  );
-  return required.filter((s) => !filled.has(String(s.key))).map((s) => s.label || s.key);
+  return requiredSlots.missingSlots(condition && condition.slots, files);
 }
 
 /** Which per-line keys have an ACCEPTED document against them. A per-line
-    condition tags each upload with the liability's own key in `slot_key`, so the
-    ordinary document plumbing carries it with no second table. */
+    condition tags each upload with the liability's own key in `slot_label`, so
+    the ordinary document plumbing carries it with no second table. */
 function documentsByLine(files) {
   const out = {};
   for (const f of files || []) {
-    if (f.is_current && f.review_status === 'accepted' && f.slot_key) out[String(f.slot_key)] = true;
+    if (f.is_current !== false && String(f.review_status || 'pending') === 'accepted' && f.slot_label) {
+      out[String(f.slot_label)] = true;
+    }
   }
   return out;
 }
@@ -131,7 +146,7 @@ function signOffProblem(condition, files, opts = {}) {
   if (kind === 'document') {
     const short = missingSlots(condition, current);
     if (short.length) {
-      return { ok: false, why: `Still waiting on: ${short.join(', ')}.` };
+      return { ok: false, why: requiredSlots.missingSlotsMsg(short) };
     }
     const accepted = current.filter((f) => f.review_status === 'accepted');
     // A REQUIRED document condition with NOTHING on it cannot be signed off.
@@ -147,18 +162,34 @@ function signOffProblem(condition, files, opts = {}) {
 
 /** One condition plus its documents, scoped to a loan so an id alone reaches nothing. */
 async function loadCondition(loanId, conditionId, client = db) {
+  const where = ownerWhere(ownerOf('lt_loan', loanId), 'c', 2);
   const { rows } = await client.query(
-    `SELECT * FROM lt_file_conditions WHERE id = $1::uuid AND loan_id = $2::uuid`,
-    [String(conditionId), String(loanId)],
+    `SELECT c.*, t.code, t.config
+       FROM checklist_items c
+       LEFT JOIN checklist_templates t ON t.id = c.template_id
+      WHERE c.id = $1::uuid AND ${where.sql}`,
+    [String(conditionId), ...where.params],
   );
   if (!rows.length) return null;
-  const condition = rows[0];
+  // Read back into this module's own vocabulary, once, at the door — so every
+  // rule below reasons about `kind`/`status`/`answer` the way the owner's rules
+  // are written, and only the statements at the bottom speak the shared column
+  // names.
+  const row = rows[0];
+  const condition = {
+    ...row,
+    kind: vocab.kindFromShared(row),
+    status: vocab.statusOf(row),
+    answer: row.tool_payload || {},
+    config: row.config || {},
+  };
   let files = [];
   let readFailed = false;
   try {
     ({ rows: files } = await client.query(
-      `SELECT id, slot_key, review_status, is_current, filename
-         FROM lt_condition_files WHERE condition_id = $1::uuid`,
+      `SELECT id, slot_label, COALESCE(review_status,'pending') AS review_status,
+              is_current, filename
+         FROM documents WHERE checklist_item_id = $1::uuid`,
       [String(conditionId)],
     ));
   } catch (_) {
@@ -182,6 +213,149 @@ async function loadCondition(loanId, conditionId, client = db) {
   }
 
   return { condition, files, readFailed, entity };
+}
+
+/* ── THE SUBJECT-PROPERTY MORTGAGE, SATISFIED FROM THE CREDIT REPORT ────────
+   Owner-directed 2026-08-31: *"If you click that button then it links to subject
+   property and then the mortgage for subject property condition … It should
+   satisfy two things at once, one line item of the REO … and it satisfies the
+   condition for the mortgage statement for subject property."*
+
+   TWO CONDITIONS, ONE CLICK — and the second one is written HERE rather than by
+   the screen, because a screen that writes a second condition is a second write
+   path with its own idea of what a valid answer looks like. This one goes
+   through `answers.answerProblem` exactly as a typed answer does, so the fill is
+   held to the same standard as a person typing it.
+
+   IT NEVER OVERWRITES A PERSON. A subject-mortgage condition that already
+   carries an answer somebody chose is LEFT ALONE and said so — the credit report
+   is a convenience, not an authority, and quietly replacing a closer's typed
+   loan number with four digits off a credit report is exactly the kind of silent
+   overwrite this repo has been bitten by before. The only answer it will replace
+   is one IT wrote (`filledFromCreditReport`), which is what lets the fill follow
+   the line if somebody changes their mind about which mortgage it is.
+
+   AND IT RETRACTS ITSELF. Un-mark the line and the fill that came from it goes,
+   because an answer sourced from a line that no longer claims to be the subject
+   property is a claim nobody is making any more.
+
+   BEST-EFFORT, ALWAYS. The REO answer has already been recorded by the time this
+   runs; a failure here reports what did not happen and never un-records it. */
+const SUBJECT_CODE = 'lt_subject_mortgage_statement';
+
+/** Which line, if any, an answer says is the mortgage on the subject property. */
+function subjectLineKeys(answer) {
+  const lines = (answer && answer.lines && typeof answer.lines === 'object') ? answer.lines : {};
+  return Object.keys(lines).filter((k) => lines[k] && String(lines[k].way || '') === 'subject_property');
+}
+
+/** The subject-property mortgage condition on this loan, or null. */
+async function subjectCondition(loanId, client) {
+  const where = ownerWhere(ownerOf('lt_loan', loanId), 'c', 1);
+  const { rows } = await client.query(
+    `SELECT c.id, c.tool_payload AS answer, c.notes, c.status, c.signed_off_at, c.waived_at, t.code
+       FROM checklist_items c
+       JOIN checklist_templates t ON t.id = c.template_id
+      WHERE t.code = $${where.params.length + 1} AND ${where.sql}
+      ORDER BY c.created_at
+      LIMIT 1`,
+    [...where.params, SUBJECT_CODE],
+  );
+  return rows[0] || null;
+}
+
+/** The liability row behind one line key, shaped the way `answers` reads it. */
+async function liabilityForKey(loanId, lineKey, client) {
+  const id = String(lineKey || '').replace(/^liab:/, '');
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
+  const { rows } = await client.query(
+    `SELECT l.id, l.creditor_name, l.account_last4, l.unpaid_balance
+       FROM lt_liabilities l
+       JOIN lt_parties p ON p.id = l.party_id
+       JOIN lt_borrower_pairs bp ON bp.id = p.pair_id
+      WHERE bp.loan_id = $1::uuid AND l.id = $2::uuid`,
+    [String(loanId), id],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  const last4 = String(r.account_last4 || '').trim();
+  return {
+    key: `liab:${r.id}`,
+    label: last4 ? `${r.creditor_name || 'Unnamed creditor'} ····${last4}` : (r.creditor_name || 'Unnamed creditor'),
+    creditor: r.creditor_name || null,
+    last4: last4 || null,
+    balance: r.unpaid_balance == null ? null : Number(r.unpaid_balance),
+  };
+}
+
+/**
+ * Carry a `subject_property` answer across onto the subject-mortgage condition.
+ *
+ * @returns {Promise<{filled?:boolean, cleared?:boolean, why?:string, note?:string}>}
+ *   — a report, never a throw.
+ */
+async function crossFillSubjectMortgage(loanId, condition, merged, staffId, client) {
+  const out = {};
+  try {
+    if (String(condition.code || '') !== 'lt_reo_liabilities') return out;
+
+    const keys = subjectLineKeys(merged);
+    const target = await subjectCondition(loanId, client);
+    /* No such condition on the file is not a failure — on a purchase the engine
+       never attached one. It is only worth SAYING when somebody has just claimed
+       a line; otherwise every ordinary save of this condition would carry a
+       sentence about a condition that has nothing to do with it. */
+    if (!target) {
+      return keys.length
+        ? { why: 'There is no subject-property mortgage condition on this file to fill in.' }
+        : out;
+    }
+
+    const existing = target.answer && typeof target.answer === 'object' ? target.answer : {};
+    const ours = answers.filledFromCreditReport(existing);
+
+    if (!keys.length) {
+      // RETRACT — but only our own fill, and never one somebody has signed off.
+      if (!ours) return out;
+      if (target.signed_off_at || target.waived_at) {
+        return { why: 'The subject-property mortgage condition is already signed off, so its answer was left as it is.' };
+      }
+      await client.query(
+        `UPDATE checklist_items
+            SET tool_payload = '{}'::jsonb, notes = $2, updated_at = now()
+          WHERE id = $1::uuid`,
+        [String(target.id), appendNote(target.notes, '[auto] The mortgage on the credit report is no longer marked as the one on the subject property, so the figures filled in from it were removed.')],
+      );
+      return { cleared: true, note: 'The figures that had been filled in from the credit report were removed.' };
+    }
+
+    if (!ours && answers._internals.has(existing.way)) {
+      return { why: 'The subject-property mortgage condition already has an answer somebody chose, so it was left alone.' };
+    }
+
+    const line = await liabilityForKey(loanId, keys[0], client);
+    if (!line) return { why: 'PILOT could not read that mortgage off the credit report to fill the statement condition in.' };
+
+    const fill = answers.creditReportFill(line);
+    if (!fill.ok) return { why: `The statement condition was not filled in because ${fill.why}.` };
+
+    // HELD TO THE SAME STANDARD AS A TYPED ANSWER — through the one validator.
+    const problem = answers.answerProblem({ code: SUBJECT_CODE }, fill.answer, { hasDocument: false });
+    if (problem) return { why: `The statement condition was not filled in: ${problem}` };
+
+    const answer = { ...fill.answer, answeredBy: staffId || null };
+    if (JSON.stringify(existing) === JSON.stringify(answer)) return { filled: true };
+
+    await client.query(
+      `UPDATE checklist_items
+          SET tool_payload = $2::jsonb, notes = $3, updated_at = now()
+        WHERE id = $1::uuid`,
+      [String(target.id), JSON.stringify(answer), appendNote(target.notes, `[auto] ${answers.sourceNote(answer)}`)],
+    );
+    return { filled: true, note: answers.sourceNote(answer) };
+  } catch (_) {
+    return { why: 'PILOT could not fill in the subject-property mortgage condition just now.' };
+  }
 }
 
 /**
@@ -209,7 +383,7 @@ async function recordAnswer(loanId, conditionId, incoming, staffId, client = db)
   const patch = incoming && typeof incoming === 'object' ? incoming : {};
 
   // Merge one level for `lines`; everything else is replaced as sent.
-  const merged = { ...existing, ...patch };
+  let merged = { ...existing, ...patch };
   if (patch.lines && typeof patch.lines === 'object') {
     const lines = { ...(existing.lines || {}) };
     for (const [k, v] of Object.entries(patch.lines)) {
@@ -218,9 +392,32 @@ async function recordAnswer(loanId, conditionId, incoming, staffId, client = db)
     merged.lines = lines;
   }
 
+  /* ONLY ONE MORTGAGE CAN BE THE ONE ON THE SUBJECT PROPERTY. Two lines both
+     claiming it is a contradiction, and the cross-fill below would silently pick
+     whichever came first — so it is refused here, in words, before anything is
+     written. */
+  const subjectKeys = subjectLineKeys(merged);
+  if (subjectKeys.length > 1) {
+    return {
+      ok: false,
+      status: 422,
+      error: 'Only one mortgage can be the one on the subject property — there is one loan being refinanced. Choose a different answer for the others.',
+    };
+  }
+
+  // WHAT KIND OF DEAL THIS IS — read through the SAME `dealFor` the screen uses,
+  // so a way this door refuses is one the screen never offered.
+  const deal = await workspace._internals.dealFor(loanId, client);
+
   // REFUSE A SHAPE THE GATE WOULD NOT HONOUR. A door that accepts what the gate
   // ignores leaves somebody pressing a button that changes nothing.
+  /* WHAT THE WAY ITSELF ANSWERS, written on before it is judged — so the FCI
+     way's servicer is part of the answer the gate reads and the answer that is
+     stored, rather than something every later reader has to re-derive. */
+  merged = answers.withFixed(condition, merged);
+
   const problem = answers.answerProblem(condition, merged, {
+    deal,
     hasDocument: current.some((f) => f.review_status === 'accepted'),
     documentsByLine: documentsByLine(current),
     lineLabels: Object.fromEntries(
@@ -233,15 +430,26 @@ async function recordAnswer(loanId, conditionId, incoming, staffId, client = db)
 
   merged.answeredBy = staffId || null;
 
+  // `tool_payload` IS the shared table's answer column — the place RTL already
+  // keeps a submitted tool answer, which is why undoing a sign-off there reads
+  // it to decide whether a condition goes back to 'received' or 'outstanding'.
+  // Long-Term gets that behaviour for free by using it rather than a new column.
+  const w = ownerWhere(ownerOf('lt_loan', loanId), null, 2);
   const { rows } = await client.query(
-    `UPDATE lt_file_conditions
-        SET answer = $3::jsonb, updated_at = now()
-      WHERE id = $1::uuid AND loan_id = $2::uuid
-      RETURNING id, answer, status`,
-    [String(conditionId), String(loanId), JSON.stringify(merged)],
+    `UPDATE checklist_items
+        SET tool_payload = $3::jsonb, updated_at = now()
+      WHERE id = $1::uuid AND ${w.sql}
+      RETURNING id, tool_payload AS answer, status`,
+    [String(conditionId), ...w.params, JSON.stringify(merged)],
   );
   if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
-  return { ok: true, condition: rows[0] };
+
+  // TWO CONDITIONS, ONE CLICK — best-effort, and only AFTER this answer is safely
+  // recorded. It reports what it did or could not do; it can never undo the write
+  // above, which is the answer the person actually made.
+  const subject = await crossFillSubjectMortgage(loanId, condition, merged, staffId, client);
+
+  return { ok: true, condition: { ...rows[0], status: vocab.statusOf(rows[0]) }, subjectMortgage: subject };
 }
 
 /** Mark a condition satisfied, if the gate allows it. */
@@ -257,14 +465,14 @@ async function satisfy(loanId, conditionId, staffId, client = db) {
     : found.condition.notes;
 
   const { rows } = await client.query(
-    `UPDATE lt_file_conditions
-        SET status = 'satisfied', satisfied_at = now(), satisfied_by = $2::uuid,
+    `UPDATE checklist_items
+        SET status = 'satisfied', signed_off_at = now(), signed_off_by = $2::uuid,
             waived_at = NULL, waived_by = NULL, waived_reason = NULL,
             notes = $3, updated_at = now()
-      WHERE id = $1::uuid RETURNING id, status`,
+      WHERE id = $1::uuid RETURNING id, status, waived_at, is_required`,
     [String(conditionId), staffId || null, note],
   );
-  return { ok: true, condition: rows[0], checkSkipped: gate.checkSkipped || null };
+  return { ok: true, condition: shapeStatus(rows[0]), checkSkipped: gate.checkSkipped || null };
 }
 
 /**
@@ -279,15 +487,23 @@ async function waive(loanId, conditionId, staffId, reason, client = db) {
   const found = await loadCondition(loanId, conditionId, client);
   if (!found) return { ok: false, status: 404, error: 'That condition is not on this file.' };
 
+  // A WAIVE IS `satisfied` PLUS THE STAMP — this system's own way of recording
+  // one, and the reason `vocabulary.js` maps rather than widens the status CHECK
+  // (src/routes/staff.js says it in those words at the RTL waive). The REASON
+  // lands in its own column (db/653) rather than in free-text notes, because a
+  // waiver nobody can explain a year later is the thing the rule exists to stop.
+  // `is_required` is deliberately LEFT ALONE: a waived condition was required
+  // and somebody decided against it, which is a different fact from one that
+  // never applied.
   const { rows } = await client.query(
-    `UPDATE lt_file_conditions
-        SET status = 'waived', waived_at = now(), waived_by = $2::uuid,
+    `UPDATE checklist_items
+        SET status = 'satisfied', waived_at = now(), waived_by = $2::uuid,
             waived_reason = $3,
-            satisfied_at = NULL, satisfied_by = NULL, updated_at = now()
-      WHERE id = $1::uuid RETURNING id, status`,
+            signed_off_at = NULL, signed_off_by = NULL, updated_at = now()
+      WHERE id = $1::uuid RETURNING id, status, waived_at, is_required`,
     [String(conditionId), staffId || null, clean.slice(0, 500)],
   );
-  return { ok: true, condition: rows[0] };
+  return { ok: true, condition: shapeStatus(rows[0]) };
 }
 
 /**
@@ -295,20 +511,68 @@ async function waive(loanId, conditionId, staffId, reason, client = db) {
  *
  * EVERY STAMP IS CLEARED. A reopened condition that still reads "waived by
  * Chaya" is a row that contradicts itself, and the next person to look at it
- * would believe the stamp over the status.
+ * would believe the stamp over the status. That now includes the loan officer's
+ * OWN "done" stamp: a condition back on the list is one nobody has finished,
+ * and leaving `reviewed_at` set would tell the officer they had already done
+ * their step on work that has just come back to them.
  */
 async function reopen(loanId, conditionId, client = db) {
+  const w = ownerWhere(ownerOf('lt_loan', loanId), null, 2);
   const { rows } = await client.query(
-    `UPDATE lt_file_conditions
+    `UPDATE checklist_items
         SET status = 'outstanding',
-            satisfied_at = NULL, satisfied_by = NULL,
+            signed_off_at = NULL, signed_off_by = NULL,
             waived_at = NULL, waived_by = NULL, waived_reason = NULL,
+            reviewed_at = NULL, reviewed_by = NULL,
             updated_at = now()
-      WHERE id = $1::uuid AND loan_id = $2::uuid RETURNING id, status`,
-    [String(conditionId), String(loanId)],
+      WHERE id = $1::uuid AND ${w.sql} RETURNING id, status, waived_at, is_required`,
+    [String(conditionId), ...w.params],
   );
   if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
-  return { ok: true, condition: rows[0] };
+  return { ok: true, condition: shapeStatus(rows[0]) };
+}
+
+/**
+ * THE LOAN OFFICER'S OWN STEP — "I have done my part", nothing more.
+ *
+ * This is the SAME fact the short-term side records, in the SAME two columns of
+ * the SAME shared table (`checklist_items.reviewed_by` / `reviewed_at`, db/033),
+ * which is why it needed no migration: Long-Term already owns rows in that table
+ * (db/652/653) and the ledger already grants writing them. The shared condition
+ * components have always SENT it (`{reviewed: true}`) and always rendered it
+ * ("Marked done by X"); Long-Term was the only side with no door behind the
+ * button, so the button refused.
+ *
+ * IT IS A STAMP, NOT A STATUS. Marking done deliberately moves NOTHING else —
+ * not the status, not the sign-off, not `is_required`. That is the whole point
+ * of the step: the officer says they are finished, and the back office still
+ * decides whether the condition is met. Collapsing the two would let one person
+ * clear a condition that a second pair of eyes is supposed to clear.
+ *
+ * OWNER-SCOPED like every other door here, so a condition id from another file
+ * (or from a short-term file) matches nothing and answers 404 rather than
+ * stamping somebody else's row.
+ */
+async function markDone(loanId, conditionId, staffId, done, client = db) {
+  const on = done !== false;
+  // A stamp with nobody's name on it is unreadable a year later, which is the
+  // one thing this column exists to prevent — so a nameless mark is refused
+  // rather than written as a bare timestamp.
+  if (on && !staffId) {
+    return { ok: false, status: 400, error: 'A “done” mark records who did it, so it needs a signed-in member of staff.' };
+  }
+  const w = ownerWhere(ownerOf('lt_loan', loanId), null, 2);
+  const { rows } = await client.query(
+    `UPDATE checklist_items
+        SET reviewed_at = ${on ? 'now()' : 'NULL'},
+            reviewed_by = ${on ? '$3::uuid' : 'NULL'},
+            updated_at = now()
+      WHERE id = $1::uuid AND ${w.sql}
+      RETURNING id, status, waived_at, is_required, reviewed_at`,
+    on ? [String(conditionId), ...w.params, staffId] : [String(conditionId), ...w.params],
+  );
+  if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
+  return { ok: true, condition: { ...shapeStatus(rows[0]), reviewedAt: rows[0].reviewed_at || null } };
 }
 
 /** Move a condition to a working state without claiming it is finished. */
@@ -317,24 +581,35 @@ async function setStatus(loanId, conditionId, status, client = db) {
   if (!allowed.has(String(status))) {
     return { ok: false, status: 400, error: 'That is not a status a condition can be moved to here. Satisfying or waiving one has its own door.' };
   }
+  // `statusWrite` is the COMPLETE instruction for a status — the column plus
+  // both stamps — so this door cannot move a condition while forgetting one.
+  // "Did not apply" is `satisfied` + the waive stamp + `is_required=false`,
+  // which is exactly how this system already reads a not-applicable condition.
+  const w = vocab.statusWrite(status);
+  const where = ownerWhere(ownerOf('lt_loan', loanId), null, 2);
   const { rows } = await client.query(
-    `UPDATE lt_file_conditions
+    `UPDATE checklist_items
         SET status = $3, updated_at = now(),
-            satisfied_at = NULL, satisfied_by = NULL,
-            waived_at = NULL, waived_by = NULL, waived_reason = NULL
-      WHERE id = $1::uuid AND loan_id = $2::uuid RETURNING id, status`,
-    [String(conditionId), String(loanId), String(status)],
+            signed_off_at = NULL, signed_off_by = NULL,
+            waived_at = CASE WHEN $4 THEN now() ELSE NULL END,
+            waived_by = NULL,
+            waived_reason = CASE WHEN $4 THEN waived_reason ELSE NULL END,
+            is_required = CASE WHEN $5 THEN false ELSE is_required END
+      WHERE id = $1::uuid AND ${where.sql}
+      RETURNING id, status, waived_at, is_required`,
+    [String(conditionId), ...where.params, w.status, w.waived, w.notApplicable],
   );
   if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
-  return { ok: true, condition: rows[0] };
+  return { ok: true, condition: shapeStatus(rows[0]) };
 }
 
 /** The internal note. Staff-only by construction — the client read never selects it. */
 async function setNote(loanId, conditionId, note, client = db) {
+  const w = ownerWhere(ownerOf('lt_loan', loanId), null, 2);
   const { rows } = await client.query(
-    `UPDATE lt_file_conditions SET notes = $3, updated_at = now()
-      WHERE id = $1::uuid AND loan_id = $2::uuid RETURNING id`,
-    [String(conditionId), String(loanId), String(note == null ? '' : note).slice(0, 4000) || null],
+    `UPDATE checklist_items SET notes = $3, updated_at = now()
+      WHERE id = $1::uuid AND ${w.sql} RETURNING id`,
+    [String(conditionId), ...w.params, String(note == null ? '' : note).slice(0, 4000) || null],
   );
   if (!rows.length) return { ok: false, status: 404, error: 'That condition is not on this file.' };
   return { ok: true };
@@ -350,10 +625,11 @@ async function setNote(loanId, conditionId, note, client = db) {
 async function addFromTemplate(loanId, code, opts = {}) {
   const client = opts.db || db;
   const { rows: t } = await client.query(
-    `SELECT * FROM lt_condition_templates WHERE code = $1 AND is_active = true`, [String(code)],
+    `SELECT * FROM checklist_templates
+      WHERE code = $1 AND scope = 'lt_loan' AND is_active = true`, [String(code)],
   );
   if (!t.length) return { ok: false, status: 404, error: 'There is no such condition in the library.' };
-  const tpl = t[0];
+  const tpl = { ...t[0], audience: vocab.audienceFromShared(t[0].audience) };
 
   // The engine's own audience rule, applied here too: a borrower-facing
   // condition with no borrower wording is added STAFF-ONLY rather than shown to
@@ -362,19 +638,22 @@ async function addFromTemplate(loanId, code, opts = {}) {
   const audience = wantsClient && String(tpl.borrower_label || '').trim() ? tpl.audience : 'internal';
 
   try {
+    const owner = ownerOf('lt_loan', loanId);
+    const cols = ownerCols(owner);
     const { rows } = await client.query(
-      `INSERT INTO lt_file_conditions
-         (loan_id, template_id, code, bucket_key, field_key, label, hint,
-          borrower_label, borrower_hint, audience, kind, is_required, slots,
-          config, origin, sort_order)
-       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-               $13::jsonb, $14::jsonb, 'manual', $15)
+      `INSERT INTO checklist_items
+         (scope, application_id, lt_loan_id, template_id, category, field_key,
+          label, hint, borrower_label, borrower_hint, audience,
+          item_kind, tool_key, is_required, slots, origin_kind, sort_order)
+       VALUES ($1, $2::uuid, $3::uuid, $4::uuid, $5, $6,
+               $7, $8, $9, $10, $11,
+               $12, $13, $14, $15::jsonb, $16, $17)
        ON CONFLICT DO NOTHING
        RETURNING id`,
-      [String(loanId), tpl.id, tpl.code, tpl.bucket_key, opts.fieldKey || null,
-        tpl.label, tpl.hint, tpl.borrower_label, tpl.borrower_hint, audience,
-        tpl.kind, tpl.is_required, JSON.stringify(tpl.slots || []),
-        JSON.stringify(tpl.config || {}), tpl.sort_order],
+      [owner.scope, cols.application_id, cols.lt_loan_id, tpl.id, tpl.category, opts.fieldKey || null,
+        tpl.label, tpl.hint, tpl.borrower_label, tpl.borrower_hint, vocab.audienceToShared(audience),
+        tpl.item_kind, tpl.tool_key, tpl.is_required, JSON.stringify(tpl.slots || []),
+        vocab.originToShared('manual'), tpl.sort_order],
     );
     if (!rows.length) {
       return { ok: false, status: 409, error: 'That condition is already on this file.' };
@@ -394,11 +673,12 @@ async function addFromTemplate(loanId, code, opts = {}) {
  * to say "not on this file", and it keeps the reason.
  */
 async function removeManual(loanId, conditionId, client = db) {
+  const w = ownerWhere(ownerOf('lt_loan', loanId), null, 2);
   const { rows } = await client.query(
-    `DELETE FROM lt_file_conditions
-      WHERE id = $1::uuid AND loan_id = $2::uuid AND origin = 'manual'
+    `DELETE FROM checklist_items
+      WHERE id = $1::uuid AND ${w.sql} AND origin_kind = $3
     RETURNING id`,
-    [String(conditionId), String(loanId)],
+    [String(conditionId), ...w.params, vocab.originToShared('manual')],
   );
   if (!rows.length) {
     return {
@@ -410,6 +690,13 @@ async function removeManual(loanId, conditionId, client = db) {
   return { ok: true };
 }
 
+/** A written row, read back in this module's own words — so a caller never has
+    to know that a waive is `satisfied` plus a stamp. */
+function shapeStatus(row) {
+  if (!row) return row;
+  return { id: row.id, status: vocab.statusOf(row) };
+}
+
 function appendNote(existing, line) {
   const base = String(existing == null ? '' : existing).trim();
   return (base ? `${base}\n${line}` : line).slice(0, 4000);
@@ -417,12 +704,14 @@ function appendNote(existing, line) {
 
 module.exports = {
   recordAnswer,
+  crossFillSubjectMortgage,
   missingSlots,
   signOffProblem,
   loadCondition,
   satisfy,
   waive,
   reopen,
+  markDone,
   setStatus,
   setNote,
   addFromTemplate,

@@ -146,7 +146,12 @@ function call(server, method, p, token, body) {
     // never an internal-only condition, never the internal note field
     ok(chk.body.checklist.every((c) => !('notes' in c)), 'the internal note is never returned to a broker');
     // seed a STAFF-only condition on the file and confirm the broker never sees it
-    const tmpl = (await db.query(`SELECT id FROM checklist_templates WHERE audience='staff' AND is_active=true LIMIT 1`)).rows[0];
+    // Scoped to 'application', because the row below is: a template picked only
+    // by audience can be one that belongs to the PERSON, and db/655 refuses that
+    // on a loan file. It happens to pass today; it is one seeded row from not.
+    const tmpl = (await db.query(
+      `SELECT id FROM checklist_templates WHERE audience='staff' AND is_active=true
+         AND scope='application' ORDER BY sort_order, code LIMIT 1`)).rows[0];
     let staffCondId = null;
     if (tmpl) {
       staffCondId = (await db.query(`INSERT INTO checklist_items (application_id, template_id, label, audience, status, item_kind, scope) VALUES ($1,$2,'INTERNAL SECRET','staff','outstanding','document','application') RETURNING id`, [appA, tmpl.id])).rows[0].id;

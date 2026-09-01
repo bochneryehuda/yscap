@@ -974,6 +974,12 @@ model LtProperty {
   /// flood cover is required, which changes the housing expense and so the DSCR.
   inFloodZone Boolean? @map("in_flood_zone")
   floodZone   String?  @map("flood_zone")
+  /// ——— WHO ANSWERED the flood question (db/658): `encompass` (read from field
+  /// 541) or `manual` (a person ticked the switch on the Orders screen). NULL =
+  /// nobody has answered. This is the GUARD, not provenance decoration: the sync
+  /// runs every few minutes, so without it a person's tick would be overwritten
+  /// within the hour. See `src/longterm/flood-zone.js`.
+  floodZoneSource String? @map("flood_zone_source")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -1294,6 +1300,76 @@ model LtPricerInvestorGroup {
   @@unique([staffId, name])
   @@index([staffId, sortOrder, name])
   @@map("lt_pricer_investor_groups")
+}
+
+/// A saved SCENARIO for the Pricing Engine (db/658, owner-directed 2026-08-31;
+/// docs/longterm/SAVED-SCENARIOS-RESEARCH.md).
+///
+/// ⛔ IT IS INPUTS, NEVER A PRICE. Rates move daily and the board is a live
+/// answer, so a scenario re-run tomorrow is a different board — the same
+/// question, a new answer. `savedBoard` is a DATED HEADLINE kept so a re-run can
+/// say what MOVED (D4); every surface that reads it must show it dated and
+/// worded as what it was on that day. The stamped, expiring, coded version of
+/// "what we saw on Tuesday" already exists and is called a term sheet.
+///
+/// ⛔ `form` AND `scenario` ARE BOTH STORED, AND THAT IS NOT REDUNDANT.
+/// `scenarioFields.toScenario` deliberately drops what was not typed — which is
+/// what keeps the server the single authority on the third figure when somebody
+/// types an LTV instead of a loan amount — so a scenario that has been through
+/// it cannot restore the boxes: re-loading one would silently move a person from
+/// LTV mode into loan mode. `form` is what was typed; `scenario` is re-derived
+/// from it by that same one function.
+///
+/// Personal only (D2) and never aged out (D5) — there is deliberately no expiry
+/// column for a future sweep to find. Identity FK ON DELETE SET NULL like every
+/// LT identity link, so `staffId` is nullable and an orphaned scenario simply
+/// stops appearing.
+/// THE DAILY PRICE SNAPSHOT (db/659) — what every programme cost on one day,
+/// on one benchmark scenario, so a movement report has something to compare
+/// against. Milli-integers throughout; the series key is the scenario hash.
+/// Nothing here points at a person or a loan: it is a fact about the market.
+model LtPriceSnapshot {
+  id           String   @id @default(uuid()) @db.Uuid
+  scenarioHash String   @map("scenario_hash")
+  scenario     Json     @default("{}") @db.JsonB
+  takenAt      DateTime @default(now()) @map("taken_at") @db.Timestamptz(6)
+  takenForDay  DateTime @map("taken_for_day") @db.Date
+
+  investorKey String? @map("investor_key")
+  lender      String?
+  program     String
+  rateSheet   String? @map("rate_sheet")
+
+  ladder       Json @default("[]") @db.JsonB
+  parRateMilli Int? @map("par_rate_milli")
+  rungCount    Int  @default(0) @map("rung_count")
+
+  @@index([scenarioHash, takenForDay])
+  @@map("lt_price_snapshot")
+}
+
+model LtPricerScenario {
+  id       String  @id @default(uuid()) @db.Uuid
+  staffId  String? @map("staff_id") @db.Uuid
+  name     String?
+
+  borrowerName    String? @map("borrower_name")
+  entityName      String? @map("entity_name")
+  propertyAddress String? @map("property_address")
+
+  form     Json  @default("{}") @db.JsonB
+  scenario Json  @default("{}") @db.JsonB
+  calc     Json  @default("{}") @db.JsonB
+
+  savedBoard   Json?     @map("saved_board") @db.JsonB
+  savedBoardAt DateTime? @map("saved_board_at") @db.Timestamptz(6)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([staffId, updatedAt])
+  @@map("lt_pricer_scenarios")
 }
 
 /// The current lock posture, mirrored. READ-ONLY from Encompass.
@@ -2583,11 +2659,64 @@ model LtLoanVendor {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  /// When the landlord-memory sweep last CONSIDERED this link (db/662). NULL =
+  /// not yet considered, which is what the sweep drains on. Nothing but that
+  /// sweep reads it, and it is stamped on a real answer only — a read that failed
+  /// leaves it NULL so the link is looked at again rather than declared done.
+  rememberedAt DateTime? @map("remembered_at") @db.Timestamptz(6)
+
   loan LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
 
   @@unique([loanId, kind, serviceContactId], map: "lt_loan_vendors_one_per_kind_uk")
   @@index([serviceContactId], map: "lt_loan_vendors_contact_idx")
   @@map("lt_loan_vendors")
+}
+
+/// THE LANDLORD A BORROWER HAD, AT ONE ADDRESS (db/662).
+///
+/// Owner-directed 2026-08-31: the landlord is filled in on a borrower's next file
+/// *"as long as he is still living at the same primary address — if his primary
+/// address has been updated in Encompass, then you should not automatically
+/// populate his landlord, because probably the landlord changed."*
+///
+/// The rule IS the key. A memory keyed on the person alone would post a
+/// verification of rent to their last landlord about a home that landlord has
+/// never heard of, so the key is the PAIR and a borrower who moved simply matches
+/// nothing — there is no "has the address changed?" test anywhere in the feature.
+/// `addressKey` is written by src/longterm/landlord-memory.js and never re-derived
+/// in SQL, or the two definitions drift and the copy that drifts is the one that
+/// decides.
+model LtBorrowerLandlord {
+  /// A SURROGATE KEY, and it is here for a reason rather than by habit (db/665):
+  /// the borrower link has to be ON DELETE SET NULL — losing a person must never
+  /// delete long-term records — and a column that has to admit a NULL cannot sit
+  /// in a primary key. The PAIR is still unique, as an index.
+  id String @id @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+
+  /// Whose memory this is. NULL once the person is gone, which matches nothing
+  /// and pre-fills nothing, because every read is keyed BY borrower.
+  borrowerId String? @map("borrower_id") @db.Uuid
+
+  /// The normalized home this landlord belongs to.
+  addressKey String @map("address_key")
+
+  /// The landlord's card in the shared vendor directory — a plain id and NOT a
+  /// foreign key (db/665), exactly like `LtLoanVendor.serviceContactId`: a
+  /// long-term table may not declare a reference to a table outside `lt_*`.
+  /// A card somebody deletes simply stops matching; every read INNER JOINs it.
+  serviceContactId String @map("service_contact_id") @db.Uuid
+
+  /// The same address as a person writes it, so a screen can say WHICH home
+  /// rather than show a key.
+  addressText String? @map("address_text")
+
+  lastLoanId  String?  @map("last_loan_id") @db.Uuid
+  firstSeenAt DateTime @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([borrowerId, addressKey], map: "lt_borrower_landlords_pair_uk")
+  @@index([serviceContactId], map: "lt_borrower_landlords_contact_idx")
+  @@map("lt_borrower_landlords")
 }
 
 /// One vendor order on one loan. The row IS the slot: it exists from the first
@@ -2714,6 +2843,18 @@ model LtVorForm {
   /// sendable — the prefill is the whole point — but the desk says which it is.
   reviewedBy String?   @map("reviewed_by") @db.Uuid
   reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
+
+  /// WHO CONFIRMED THIS VERSION, and when (db/663). Owner-directed 2026-08-31:
+  /// the form *"needs to be confirmed before you can order the VOR"*, so NULL
+  /// here blocks both the rent order and the form's own send.
+  ///
+  /// NOT the same thing as `reviewedAt`, which every save stamps — treating a
+  /// keystroke as a person saying "this is right" is exactly what the gate is
+  /// for. Cleared by any save that CHANGES the data, because a confirmation is
+  /// about the version it was given for and the landlord answers the version we
+  /// sent.
+  confirmedBy String?   @map("confirmed_by") @db.Uuid
+  confirmedAt DateTime? @map("confirmed_at") @db.Timestamptz(6)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -2847,6 +2988,44 @@ model LtTermSheet {
   @@map("lt_term_sheet")
 }
 
+/// db/656 — ONE ROW PER SEND of a term sheet to a borrower.
+///
+/// Its own table rather than an `emailed_at` column, because a sheet is re-sent in
+/// the ordinary course (a corrected address, a second borrower) and one column
+/// would record only the last of those and lose the rest. It stores the document's
+/// HASH rather than the document: the bytes are rebuilt from the sheet's own
+/// snapshot and are byte-identical every time, so a second copy would be a second
+/// copy of something already immutable.
+model LtTermSheetDelivery {
+  id      String @id @default(uuid()) @db.Uuid
+  sheetId String @map("sheet_id") @db.Uuid
+  /// Denormalised so "every send of TS-4K7P2M" is one query with no join.
+  code    String
+
+  toEmail String  @map("to_email")
+  toName  String? @map("to_name")
+  /// The officer's own note AS SENT — already through `audience.scrubInvestorNames`.
+  note    String?
+
+  docKind   String? @map("doc_kind")
+  filename  String?
+  docSha256 String? @map("doc_sha256")
+
+  sentByStaff String? @map("sent_by_staff") @db.Uuid
+  fromEmail   String? @map("from_email")
+  /// `send-as.js`'s own verdict: did the From line really carry the officer's
+  /// address, or the company's under their name.
+  sentAsMode  String? @map("sent_as_mode")
+
+  messageId String? @map("message_id")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([sheetId, createdAt(sort: Desc)], map: "lt_term_sheet_delivery_sheet_idx")
+  @@index([toEmail, createdAt(sort: Desc)], map: "lt_term_sheet_delivery_to_idx")
+  @@map("lt_term_sheet_delivery")
+}
+
 /// db/642 — ONE OPEN COMPARISON PER OFFICER.
 ///
 /// The owner: *"you can do one search and click start comparison. You check mark
@@ -2890,6 +3069,14 @@ model LtTermSheetScenario {
   program  Json @default("{}") @db.JsonB
   charges  Json @default("{}") @db.JsonB
   closing  Json @default("{}") @db.JsonB
+
+  /// db/651 — STAFF-ONLY provenance: the investor, the lender, their own
+  /// programme name, the rate sheet and the raw price behind this option. It is
+  /// a SIBLING of `program` rather than a key on it, and it is deliberately NOT
+  /// on the snapshot: the snapshot is the client's document, and an investor's
+  /// name never reaches a client (CLAUDE.md rule 10). Empty on every sheet
+  /// issued before db/651 — no backfill was possible.
+  internal Json @default("{}") @db.JsonB
 
   pricedAt  DateTime @default(now()) @map("priced_at") @db.Timestamptz(6)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)

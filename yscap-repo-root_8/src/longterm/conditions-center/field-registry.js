@@ -41,6 +41,10 @@
  * part of the context yields `null` rather than a throw.
  */
 
+// The ONE definition of what 4008's words mean. PURE (no database, no network),
+// so requiring it keeps this file's own purity claim intact.
+const vesting = require('../vesting');
+
 /** The residency basis Encompass field FR0115 lands in (`lt_residences`). */
 const BASIS_RENT = 'rent';
 const BASIS_OWN = 'own';
@@ -67,7 +71,19 @@ const FIELDS = [
   // ── The deal ──────────────────────────────────────────────────────────────
   {
     key: 'loan_purpose', label: 'Loan purpose', type: 'enum', group: 'The deal',
-    options: ['purchase', 'refinance', 'cash_out_refinance'],
+    /* `{v, label}` IS THE SHARED CONDITION CENTER'S OPTION SHAPE, and matching it
+       is what lets the ONE shared validator check an enum rule's value against
+       the vocabulary that field actually has. While these were bare strings the
+       shared check found no `o.v` on any of them and refused every real value as
+       unknown — and before the validators were joined, nothing checked them at
+       all, so a typo'd enum value saved happily and then silently never matched.
+       Nothing read the old shape: it was served by `catalog()` and consumed by no
+       screen, which is what made this safe to correct rather than adapt. */
+    options: [
+      { v: 'purchase', label: 'Purchase' },
+      { v: 'refinance', label: 'Refinance' },
+      { v: 'cash_out_refinance', label: 'Cash-out refinance' },
+    ],
     read: (c) => text(c.loan && c.loan.loan_purpose),
   },
   {
@@ -93,7 +109,13 @@ const FIELDS = [
   },
   {
     key: 'product_kind', label: 'Product', type: 'enum', group: 'The deal',
-    options: ['dscr', 'full_doc', 'bank_statement', 'other'],
+    // Same shared `{v, label}` shape as `loan_purpose` above, for the same reason.
+    options: [
+      { v: 'dscr', label: 'DSCR' },
+      { v: 'full_doc', label: 'Full doc' },
+      { v: 'bank_statement', label: 'Bank statement' },
+      { v: 'other', label: 'Other' },
+    ],
     read: (c) => text(c.loan && c.loan.product_kind),
   },
   { key: 'program', label: 'Program', type: 'text', group: 'The deal', read: (c) => text(c.loan && c.loan.program_name) },
@@ -187,12 +209,25 @@ const FIELDS = [
     },
   },
   {
+    // ── FIELD 4008 DECIDES, AND NOTHING ELSE (owner-directed 2026-08-23, and
+    // again 2026-08-31: "if 4008 is individual instead of officer, then no
+    // entity condition").
+    //
+    // THIS USED TO READ THE PARTIES — whether any borrower row looked like a
+    // company — which is a SECOND answer to a question `vesting.js` already
+    // owns, and the two can disagree: a re-vested loan keeps a stale company
+    // name on a party row long after 4008 has moved to Individual, and that
+    // file was still being asked for company formation documents it does not
+    // need. The owner's rule is explicit that on Individual the entity name is
+    // never even read, so the parties are not consulted here at all.
     key: 'vests_in_entity', label: 'Title is taken in an entity', type: 'boolean', group: 'The borrower',
     read: (c) => {
-      const parties = (c && c.parties) || [];
-      if (!parties.length) return null;
-      return parties.some((p) => String(p.party_type || '').toLowerCase() === 'entity'
-        || !!text(p.entity_legal_name));
+      const v = vesting.classifyVesting(c && c.loan);
+      // `null`, NOT `false`, when Encompass has not said — the file's own
+      // doctrine above, and the mirror of vesting-view.js's "nothing stated is
+      // not Individual". This field states a FACT ABOUT THE TITLE and may not
+      // claim one nobody has told us.
+      return v === 'unknown' ? null : v === 'entity';
     },
   },
   {

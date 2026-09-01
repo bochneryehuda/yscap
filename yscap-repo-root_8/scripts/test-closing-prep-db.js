@@ -143,12 +143,24 @@ noop.sendMail = async (opts) => { sends.push(opts); return { ok: true, id: `stub
   const itemFor = async (code) => {
     const t = (await db.query(`SELECT id, label, audience, item_kind, scope FROM checklist_templates WHERE code=$1`, [code])).rows[0];
     if (!t) return null;
-    const ex = (await db.query(`SELECT id FROM checklist_items WHERE application_id=$1 AND template_id=$2 LIMIT 1`, [appId, t.id])).rows[0];
+    /* A CONDITION SITS ON WHAT ITS TEMPLATE IS ABOUT. The entity slots
+       (`rtl_llc_ein`, `rtl_llc_opagmt`) are scope 'llc', and this fixture used
+       to put every condition on the APPLICATION — so it staged an entity
+       condition on a loan file with no entity, which db/655 now refuses
+       outright. The real product has never done that (`generateLlcChecklist`
+       creates those with `llc_id` set); the fixture was building a shape the
+       product cannot produce, which is why its documents already carry
+       `llc_id` and no application. Owning by scope is the repair. */
+    const scope = t.scope || 'application';
+    const ownerCol = scope === 'llc' ? 'llc_id' : scope === 'borrower_profile' ? 'borrower_id' : 'application_id';
+    const ownerVal = scope === 'llc' ? llc : scope === 'borrower_profile' ? borrower : appId;
+    const ex = (await db.query(
+      `SELECT id FROM checklist_items WHERE ${ownerCol}=$1 AND template_id=$2 LIMIT 1`, [ownerVal, t.id])).rows[0];
     if (ex) return ex.id;
     return (await db.query(
-      `INSERT INTO checklist_items (application_id, template_id, label, audience, item_kind, scope, status)
+      `INSERT INTO checklist_items (${ownerCol}, template_id, label, audience, item_kind, scope, status)
        VALUES ($1,$2,$3,$4,$5,$6,'outstanding') RETURNING id`,
-      [appId, t.id, t.label, t.audience || 'staff', t.item_kind || 'document', t.scope || 'application'])).rows[0].id;
+      [ownerVal, t.id, t.label, t.audience || 'staff', t.item_kind || 'document', scope])).rows[0].id;
   };
   const addDoc = async ({ code, filename, docKind = null, slot = null, llcId = null, onBorrower = false, bytes = 4096 }) => {
     const itemId = code ? await itemFor(code) : null;

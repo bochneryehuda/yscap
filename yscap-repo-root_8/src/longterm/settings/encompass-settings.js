@@ -60,6 +60,25 @@ const NW_NOT_BUILT = 'Not in use yet — the part of the system that would read 
 const NW_ENV = 'Not in use yet. The connection is configured where the credentials live (the hosting '
   + 'settings), so it can differ per environment and no secret passes through this screen.';
 
+/**
+ * RETIRED — the fifth answer, and the only one that points BACKWARDS.
+ *
+ * The four reasons above all say "not in use YET": the setting was declared ahead
+ * of the code that will one day read it, so a buyer who changes it is waiting for
+ * a release. A RETIRED setting is the opposite in time — it WAS read, the thing
+ * that read it is gone, and no release is coming. Telling a buyer "yet" about one
+ * of those is a promise nobody intends to keep, which is why this is its own
+ * wording and its own flag rather than a fifth phrasing of the same sentence.
+ *
+ * ⛔ IT MUST NAME WHAT RUNS INSTEAD, which is the entire reason the row is kept
+ * rather than deleted. A buyer who stored a value here is owed an answer to
+ * "then what governs this now?" — a row that only says "retired" sends them
+ * hunting for a setting that no longer exists, which is exactly the silent
+ * disappearance keeping the row was meant to avoid. `test-lt-settings-wired-pure`
+ * fails a retired reason that does not say it.
+ */
+const NW_RETIRED = (insteadSentence) => 'No longer in use. ' + insteadSentence;
+
 const SETTINGS = [
   // ── Product classification ────────────────────────────────────────────────
   { key: 'program.fieldId', group: 'Product', label: 'Loan program field',
@@ -545,9 +564,19 @@ const SETTINGS = [
     type: 'number', default: 2.0,
     description: 'On a borrower-paid search this is charged as ORIGINATION on the fee list; the '
       + 'board keeps the raw price (less any YSP). Company default; each loan officer may set '
-      + 'their own, down or up. Super admin only at the company level.',
+      + 'their own AT OR ABOVE it — never below. Super admin only at the company level.',
+    // ⛔ THE HELP TEXT MUST MATCH THE DOOR. This read "down or up" until 2026-08-30, quoting
+    // the owner's first instruction — but the owner's LATER, more specific one is a FLOOR
+    // ("they can only put it higher"), and `comp-plan.personalFloorProblem` enforces it. So an
+    // officer read this field's own description, set 1.5 against a company 2.0, and was
+    // refused by a rule the text said did not exist. Advice a reader cannot act on is a
+    // defect, not cosmetics. Both owner instructions are kept in the evidence below, in the
+    // order they were given, because the second is only intelligible beside the first.
     evidence: 'Owner-directed 2026-08-23: "Borrower-paid compensation should also have a company '
-      + 'default of two points … any loan officer that wants can decrease or increase."' },
+      + 'default of two points … any loan officer that wants can decrease or increase." NARROWED '
+      + 'the same day, and this is what is enforced: "They cannot put it on their profile as a '
+      + 'setting for lower … For now, on both sides, they can only put it higher." Going lower on '
+      + 'one file is the per-file exception the owner described and deferred.' },
   { key: 'comp.ysp', group: 'Compensation', label: 'YSP on borrower-paid searches (points)',
     type: 'number', default: 0,
     description: 'A yield-spread premium a loan officer may take ON TOP of borrower-paid '
@@ -812,17 +841,97 @@ const SETTINGS = [
       + 'investor post-purchase files — 0 on all 136 active-pipeline loans — so nothing in '
       + 'the live book is waiting on this screen.' },
 
+  // ── The COMBINED PRICING ENGINE (owner-directed 2026-08-30) ───────────────
+  // One row per investor: what we call them for a client, which of the two
+  // pricing programs their products are fetched from, and whether they are on.
+  //
+  // A `map`, so the generic settings screen shows it READ-ONLY as JSON — which is
+  // right: this is edited on the Combined Pricing Engine's own settings screen,
+  // where each investor is a row with a picker rather than a brace somebody can
+  // mistype. Declaring it here is what gives it a home in the ONE settings store
+  // and puts it on the "what has this lender changed?" list.
+  //
+  // The DEFAULT IS EMPTY on purpose. The pre-fills — every investor's white-label
+  // name, Lender Price as the source, NQM/Acra/eResi on LoanNEX, Button Finance
+  // off — are DERIVED in `pricing/investor-settings.js` from the investor
+  // registry and the white-label sheet. Copying them here would be a second copy
+  // of a roster that already exists, and the one that drifts is the one somebody
+  // prices a loan on. This map holds only what a person has deliberately CHANGED.
+  { key: 'pricing.combinedInvestors', group: 'Combined Pricing Engine', label: 'Combined engine — investor settings',
+    type: 'map', default: {},
+    description: 'Per investor: { source: "lenderprice" | "loannex" | "both", enabled: true|false, '
+      + 'whiteLabel: "..." }. Only deliberate changes are stored; everything else falls back to the '
+      + 'pre-fill derived from the investor registry.',
+    evidence: 'Owner-directed 2026-08-30: "You should open a settings menu where you have every '
+      + 'single investor listed… For every investor, we can always switch it from where we want to '
+      + 'take the information."' },
+  // "THIS INVESTOR AND THIS INVESTOR ARE THE SAME" — the human-recorded overlay
+  // (owner-directed 2026-08-30: *"we need to be able to link a investor from
+  // lender price and loannex by if the name is a little different the system
+  // should still understand that it's the same investor… Those investors are
+  // spelled differently and have different names, but we need to be able to link
+  // it and say, 'This investor and this investor are the same.'"*).
+  //
+  // WHY THIS EXISTS AND NOT JUST A BIGGER REGISTRY: identity came from the code
+  // registry alone, so a spelling it did not carry resolved to nothing, the merge
+  // dropped that row, and the investor's WHOLE BOARD disappeared with the only fix
+  // being a code change. This is the door a person can open. The map is keyed on
+  // the vendor's spelling and points at a CANONICAL investor key — a link may
+  // never invent an investor or rename one, and a key nobody knows is refused at
+  // the settings door rather than stored as though it had worked.
+  //
+  // EMPTY BY DEFAULT, for the same reason as the map above: nothing here is a
+  // second copy of the registry, only what a person has deliberately decided.
+  { key: 'pricing.investorLinks', group: 'Combined Pricing Engine', label: 'Combined engine — investor links',
+    type: 'map', default: {},
+    description: 'Per vendor spelling: { key: "<canonical investor key>", source: "lenderprice" | '
+      + '"loannex", linkedBy, linkedAt }. A link outranks every registry match, so a person\'s '
+      + 'decision beats a lookup; the label always comes from the canonical investor.',
+    evidence: 'Owner-directed 2026-08-30: "We should be able to link them together side by side '
+      + 'and then select this one. Want to see from this program."' },
+  // THE MARGIN HOLDBACK WE ADD OURSELVES, and it is a SETTING now rather than a
+  // constant (owner-directed 2026-08-30: *"there should always be in the
+  // settings the possibility to move up the margin hold back, remove the margin
+  // hold back, or move it down."*). 0.25 stays the pre-fill — the owner's own
+  // number — so a deployment that has never touched this behaves exactly as it
+  // did before.
+  //
+  // ⛔ NULL MEANS "USE THE 0.25", NOT "HOLD BACK NOTHING". This is the one
+  // setting in the engine that may not fail toward doing nothing: doing nothing
+  // here hands the borrower 0.25 of better execution nobody decided to give
+  // them. An unreadable or refused value keeps the standing number and says so
+  // on the board; only a deliberate 0 removes it.
+  { key: 'pricing.combinedMarginHoldback', group: 'Combined Pricing Engine', label: 'Combined engine — LoanNEX margin holdback (points)',
+    type: 'number', default: null,
+    description: 'Points held back on every LoanNEX quote before anything compares the two '
+      + 'programs. Blank uses the standing 0.25. Set 0 to remove it entirely — which leaves the '
+      + 'two feeds on DIFFERENT footings, since Lender Price still carries its own.',
+    evidence: 'Owner-directed 2026-08-30: "Every investor from LoanNEX needs to get the 0.25 '
+      + 'margin hold back added... On LoanNEX, everybody, you need to add this manually." Then, '
+      + 'the same day: "there should always be in the settings the possibility to move up the '
+      + 'margin hold back, remove the margin hold back, or move it down."' },
   // -- Term sheets ----------------------------------------------------------
   // The officer-side term sheet (owner-directed 2026-08-30: *"we want to be able
   // also on the staff side to enable the term sheet option from today"*). The
   // BORROWER side of the pricing engine is a later phase and nothing here
   // switches it on.
   { key: 'termSheet.officerEnabled', group: 'Term sheets', label: 'Officer term sheets',
-    type: 'boolean', default: false,
+    type: 'boolean', default: true,
     description: 'Off: the Term sheet and Compare controls do not appear on the pricing '
       + 'board. On: an officer can issue a term sheet from a priced quote.',
+    // SWITCHED ON 2026-08-30, owner-directed ("turn it on"), the same day the officer side
+    // merged. It shipped OFF for one deploy so the merge changed nothing anybody could see.
+    // Flipping the DECLARED DEFAULT is what turns it on everywhere, and it is safe precisely
+    // because `store.save` DELETES a value equal to the declared default rather than storing
+    // it: `false` has been the default since this key was written, so no tenant can be
+    // holding a deliberate `false` for it to overrule. An admin turning it off from here on
+    // stores a real deviation, which then wins.
+    // STAFF ONLY, structurally: every route that reads this key sits under /api/lt, which is
+    // mounted requireAuth + requireStaff. The BORROWER side of the pricing engine is a
+    // separate switch and nothing here touches it.
     evidence: 'Owner-directed 2026-08-30 - the officer side may go live now; the borrower '
-      + 'side waits on the prepayment-penalty work.' },
+      + 'side waits on the prepayment-penalty work. Switched on the same day, on the '
+      + 'owner\'s own instruction.' },
   { key: 'termSheet.expiryHours', group: 'Term sheets', label: 'A TERM SHEET is good for (hours)',
     type: 'number', default: 24,
     description: 'Hours from issue until a single-program TERM SHEET says it has expired, '
@@ -830,10 +939,16 @@ const SETTINGS = [
       + 'an expired sheet still replays, and says it is expired.',
     evidence: 'Owner-directed 2026-08-30 - "it should also say that it is expiring in 24 hours."' },
   { key: 'termSheet.expiryDays', group: 'Term sheets', label: 'A COMPARISON is good for (days)',
-    type: 'number', default: 2,
-    description: 'Days from issue until a comparison or scenario comparison says it has '
-      + 'expired. A comparison is a working document rather than an offer, so it runs on a '
-      + 'longer clock than a term sheet.' },
+    type: 'number', default: 2, retired: true,
+    notWired: NW_RETIRED('Every document - a term sheet, a comparison and a scenario sheet alike - '
+      + 'now runs on the single "A TERM SHEET is good for (hours)" clock above, so that is the one '
+      + 'to change. This row is kept, and still shows what was stored here, so a company that set '
+      + 'it sees what became of it rather than finding a setting that silently disappeared.'),
+    description: 'How long a COMPARISON stayed good for, back when a comparison ran on its own '
+      + 'clock. It no longer does.',
+    evidence: 'Owner-directed 2026-08-31 - "everything expires in 24 hours." This reverses the '
+      + '2026-08-30 decision that a comparison, being a working document rather than an offer, '
+      + 'should run on a longer clock. The owner was shown that reasoning and chose 24 anyway.' },
   { key: 'termSheet.cartMax', group: 'Term sheets', label: 'Options in one comparison',
     type: 'number', default: 8,
     description: 'The most options one comparison may hold. Past this it stops being a '

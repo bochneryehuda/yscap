@@ -1,0 +1,608 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Quiet Ledger</title>
+<style>
+@font-face{font-family:PS;src:url(fonts/IBMPlexSerif-Regular.ttf);font-weight:400}
+@font-face{font-family:PS;src:url(fonts/IBMPlexSerif-Bold.ttf);font-weight:700}
+@font-face{font-family:PS;src:url(fonts/IBMPlexSerif-Italic.ttf);font-style:italic}
+@font-face{font-family:IS;src:url(fonts/InstrumentSans-Regular.ttf);font-weight:400}
+@font-face{font-family:IS;src:url(fonts/InstrumentSans-Bold.ttf);font-weight:700}
+@font-face{font-family:IS;src:url(fonts/InstrumentSans-Italic.ttf);font-style:italic}
+@font-face{font-family:PM;src:url(fonts/IBMPlexMono-Regular.ttf);font-weight:400}
+@font-face{font-family:PM;src:url(fonts/IBMPlexMono-Bold.ttf);font-weight:700}
+
+:root{
+  --ink:#141B22; --teal:#2F7F86; --gold:#AE8746; --gray:#4B585C;
+  --line:#DFD8CB; --ivory:#F8F5EE; --faint:#969EA2; --soft:#F4F1EA; --paper:#F4F0E7;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+@page{size:8.5in 11in;margin:0}
+html,body{background:#fff}
+body{font-family:IS,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+.page{width:8.5in;height:11in;position:relative;overflow:hidden;page-break-after:always;background:#fff}
+.page:last-child{page-break-after:auto}
+.pad{position:absolute;left:.62in;right:.62in;}
+.body{position:absolute;left:.62in;right:.62in;top:1.36in;bottom:1.06in;display:flex;flex-direction:column}
+.tail{margin-top:auto}
+
+/* ── band ───────────────────────────────────────────── */
+.band{position:absolute;top:0;left:0;right:0;height:74px;background:var(--ink)}
+.bandrule{position:absolute;top:74px;left:0;right:0;height:2.2px;background:var(--gold)}
+.bandhair{position:absolute;top:77.6px;left:0;right:0;height:.6px;background:var(--line)}
+.lock{position:absolute;left:.62in;top:23px;height:30px}
+.dt{position:absolute;right:.62in;top:20px;text-align:right}
+.dt h1{font-family:PS;font-weight:700;font-size:20px;color:#fff;letter-spacing:.005em;line-height:1}
+.dt .sub{font-family:PS;font-style:italic;font-size:8.6px;color:var(--gold);margin-top:6px;letter-spacing:.01em}
+.dt .id{font-size:7.2px;color:#B0B8BA;margin-top:5px;letter-spacing:.05em}
+
+/* ── parties ────────────────────────────────────────── */
+.eyebrow{font-size:6.9px;font-weight:700;letter-spacing:.155em;color:var(--gold);text-transform:uppercase}
+.eyebrow.t{color:var(--teal)}
+.eyebrow.g{color:var(--gray)}
+.parties{display:flex;gap:26px;align-items:flex-start}
+.parties .l{flex:1.35}.parties .r{flex:1;text-align:right}
+.pname{font-size:12.4px;font-weight:700;letter-spacing:-.005em;margin-top:3px;line-height:1.2}
+.paddr{font-size:9.1px;color:var(--ink);margin-top:2px;line-height:1.35}
+.pfact{font-size:7.7px;color:var(--gray);margin-top:2px}
+.oline{font-size:7.9px;color:var(--gray);line-height:1.45}
+.oline b{color:var(--ink);font-size:8.6px}
+
+/* ── hero strip ─────────────────────────────────────── */
+.hero{display:flex;border-top:1.1px solid var(--gold);border-bottom:.6px solid var(--line);background:var(--ivory)}
+.hero .c{flex:1;padding:11px 0 12px 13px;border-left:.6px solid var(--line)}
+.hero .c:first-child{border-left:0;padding-left:13px}
+.hero .k{font-size:6.6px;font-weight:700;letter-spacing:.15em;color:var(--gray);text-transform:uppercase}
+.hero .v{font-family:PM;font-size:15.5px;font-weight:700;letter-spacing:-.032em;margin-top:5px;line-height:1}
+.hero .n{font-size:6.8px;color:var(--gray);margin-top:4px;font-style:italic}
+
+/* ── section head ───────────────────────────────────── */
+.sec{display:flex;align-items:baseline;gap:8px;border-bottom:1px solid var(--ink);padding-bottom:3.5px}
+.sec .t{font-size:7.6px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--ink)}
+.sec .m{font-size:7px;color:var(--faint);font-style:italic;margin-left:auto}
+.tick{width:2.4px;height:8px;background:var(--teal);display:inline-block}
+
+/* ── rows ───────────────────────────────────────────── */
+.rows{width:100%;border-collapse:collapse}
+.rows td{font-size:8.5px;padding:4.05px 0;border-bottom:.4px solid var(--line);vertical-align:baseline}
+.rows td.k{color:var(--gray)}
+.rows td.v{font-family:PM;text-align:right;font-size:8.4px;letter-spacing:-.01em;color:var(--ink)}
+.rows tr.sum td{background:var(--ivory);font-weight:700;padding:5.6px 0;border-bottom:.6px solid var(--gold)}
+.rows tr.sum td.k{color:var(--ink);padding-left:5px}
+.rows tr.sum td.v{font-size:10.4px;font-weight:700;padding-right:5px}
+.rows tr.last td{border-bottom:0}
+.rows td.note{font-size:6.9px;color:var(--faint);font-style:italic;padding-top:0;padding-bottom:3.4px;border-bottom:.4px solid var(--line)}
+
+/* ── comparison table ───────────────────────────────── */
+.cmp{width:100%;border-collapse:collapse;table-layout:fixed}
+.cmp th{font-size:7.4px;text-align:left;padding:0 0 5px 0;border-bottom:1px solid var(--ink);vertical-align:bottom}
+.cmp th .lab{font-size:6.6px;font-weight:700;letter-spacing:.16em;color:var(--gold);text-transform:uppercase}
+.cmp th .nm{font-size:9.8px;font-weight:700;color:var(--ink);margin-top:3px;line-height:1.2}
+.cmp th.rowhead{border-bottom:1px solid var(--ink)}
+.cmp td{font-size:8.9px;padding:8.4px 0;border-bottom:.4px solid var(--line);vertical-align:baseline}
+.cmp td.k{color:var(--gray);font-size:8.7px;padding-right:10px}
+.cmp td.n{font-family:PM;letter-spacing:-.015em}
+.cmp tr.key td{background:var(--ivory)}
+.cmp tr.key td.k{color:var(--ink);font-weight:700;padding-left:5px}
+.cmp tr.key td.n{font-weight:700;font-size:10.1px}
+.cmp td.lead{color:var(--teal);font-weight:700}
+.cmp .colpad{padding-left:11px}
+.cmp tr.last td{border-bottom:.9px solid var(--ink)}
+
+/* ── shared strip ───────────────────────────────────── */
+.shared{border-left:2.2px solid var(--gold);background:var(--soft);padding:10px 12px 11px 11px}
+.shared .h{font-size:6.7px;font-weight:700;letter-spacing:.15em;color:var(--gray);text-transform:uppercase}
+.shared .b{display:flex;flex-wrap:wrap;gap:5px 22px;margin-top:7px}
+.shared .i{font-size:8.5px;color:var(--ink)}
+.shared .i s{font-family:PM;font-weight:700;text-decoration:none;letter-spacing:-.015em}
+.shared .i em{font-style:normal;color:var(--gray);font-size:7.5px}
+
+/* ── read line ──────────────────────────────────────── */
+.read{display:flex;gap:11px;align-items:baseline;padding:9.6px 0;border-bottom:.4px solid var(--line)}
+.read .tag{font-family:PM;font-size:8.8px;font-weight:700;color:var(--teal);width:13px;flex:none}
+.read .tx{font-size:8.7px;line-height:1.5;color:var(--ink)}
+.read .tx b{font-family:PM;letter-spacing:-.015em}
+
+.note{font-size:7.3px;color:var(--gray);font-style:italic;line-height:1.5}
+.expiry{display:flex;align-items:baseline;gap:7px;border-top:.6px solid var(--line);border-bottom:.6px solid var(--line);padding:7.5px 0}
+.expiry .d{width:3px;height:3px;background:var(--gold);border-radius:50%;flex:none;transform:translateY(-2px)}
+.expiry .x{font-size:8px;color:var(--ink);line-height:1.5}
+.expiry .x b{font-weight:700}
+
+/* ── footer ─────────────────────────────────────────── */
+.foot{position:absolute;left:.62in;right:.62in;bottom:.44in;border-top:.6px solid var(--line);padding-top:6px}
+.foot .c{font-size:7.1px;color:#3C4248}
+.foot .c b{font-weight:700;color:var(--ink)}
+.foot .d{font-size:6.5px;color:var(--faint);margin-top:3px;line-height:1.4}
+.foot .p{font-size:6.3px;color:var(--faint);margin-top:4px;text-align:right;font-family:PM}
+
+/* ── specimen page ──────────────────────────────────── */
+.spec{background:#fff}
+.sw{display:flex;height:46px;border:0}
+.sw div{flex:1;position:relative}
+.sw span{position:absolute;left:0;bottom:-13px;font-family:PM;font-size:6px;color:var(--gray);letter-spacing:.04em}
+.metric{font-family:PM;font-size:26px;font-weight:700;letter-spacing:-.03em;line-height:1}
+.mlab{font-size:6.8px;font-weight:700;letter-spacing:.15em;color:var(--gray);text-transform:uppercase;margin-top:6px}
+.rhy div{background:#CFC7B7;height:.5px}
+.fieldmap td{font-size:7.9px;padding:3.15px 0}
+.fieldmap td.k{font-size:7.9px}
+.fieldmap th{padding-bottom:4px}
+.fieldmap td.colpad{font-size:7.3px !important}
+</style></head><body>
+<!-- ═══════════════ PAGE 1 — THE SYSTEM ═══════════════ -->
+<div class="page spec">
+  <div class="pad" style="top:.62in">
+    <div style="display:flex;align-items:baseline">
+      <div class="eyebrow g" style="letter-spacing:.22em">Y S&nbsp;&nbsp;C A P I T A L&nbsp;&nbsp;·&nbsp;&nbsp;L O N G - T E R M</div>
+      <div style="margin-left:auto;font-family:PM;font-size:6.4px;color:var(--faint);letter-spacing:.1em">QL · 001</div>
+    </div>
+    <div style="height:1.1px;background:var(--gold);margin-top:7px"></div>
+    <h1 style="font-family:PS;font-weight:400;font-size:44px;letter-spacing:-.018em;margin-top:26px;line-height:.98">Quiet&nbsp;Ledger</h1>
+    <div style="font-family:PS;font-style:italic;font-size:12.5px;color:var(--gray);margin-top:9px">Ink recedes. Structure holds. The figure speaks.</div>
+    <div style="font-size:8.6px;color:var(--gray);line-height:1.62;margin-top:16px;max-width:4.4in">
+      A ruling system for the three documents the long-term desk issues. Importance is
+      carried by <b style="color:var(--ink)">position</b>, never by size; contrast is
+      achieved by withdrawal. Groups breathe. Rows inside a group sit close, separated by a
+      hairline so fine it reads as a change of tone. What is identical between things being
+      compared is stated <b style="color:var(--ink)">once</b> and removed from the field.
+    </div>
+  </div>
+
+  <!-- palette -->
+  <div class="pad" style="top:3.24in">
+    <div class="eyebrow g">The palette · one duty each, never two</div>
+    <div class="sw" style="margin-top:9px">
+      <div style="background:#141B22"><span>141B22 &nbsp;band, body ink</span></div>
+      <div style="background:#2F7F86"><span>2F7F86 &nbsp;structure only</span></div>
+      <div style="background:#AE8746"><span>AE8746 &nbsp;the rule, the eyebrow</span></div>
+      <div style="background:#4B585C"><span>4B585C &nbsp;labels, secondary</span></div>
+      <div style="background:#F8F5EE;border:.5px solid #DFD8CB"><span>F8F5EE &nbsp;the row that totals</span></div>
+      <div style="background:#DFD8CB"><span>DFD8CB &nbsp;hairline</span></div>
+    </div>
+  </div>
+
+  <!-- type -->
+  <div class="pad" style="top:4.28in;display:flex;gap:34px">
+    <div style="flex:1">
+      <div class="eyebrow g">Three hands, held to their duties</div>
+      <div style="margin-top:15px;border-bottom:.4px solid var(--line);padding-bottom:15px">
+        <div style="font-family:PS;font-size:19px">Term Sheet</div>
+        <div style="font-family:PM;font-size:6.2px;color:var(--faint);margin-top:4px;letter-spacing:.06em">IBM PLEX SERIF · IDENTITY ONLY · ONE APPEARANCE PER PAGE</div>
+      </div>
+      <div style="margin-top:15px;border-bottom:.4px solid var(--line);padding-bottom:15px">
+        <div style="font-size:13px">Estimated cash to close</div>
+        <div style="font-family:PM;font-size:6.2px;color:var(--faint);margin-top:4px;letter-spacing:.06em">INSTRUMENT SANS · EVERY WORD THAT IS NOT A FIGURE</div>
+      </div>
+      <div style="margin-top:15px">
+        <div style="font-family:PM;font-size:15px;font-weight:700;letter-spacing:-.02em">$134,595 &nbsp;7.375% &nbsp;1.24</div>
+        <div style="font-family:PM;font-size:6.2px;color:var(--faint);margin-top:4px;letter-spacing:.06em">IBM PLEX MONO · EVERY FIGURE · DIGITS STACK ON THEIR OWN COLUMN</div>
+      </div>
+    </div>
+    <div style="flex:.82">
+      <div class="eyebrow g">The rhythm · wide, tight, tight, tight, wide</div>
+      <div class="rhy" style="margin-top:13px">
+        <div style="background:var(--ink);height:1px"></div>
+        <div style="margin-top:7px"></div><div style="margin-top:7px"></div><div style="margin-top:7px"></div><div style="margin-top:7px"></div>
+        <div style="height:0;margin-top:30px"></div>
+        <div style="background:var(--ink);height:1px"></div>
+        <div style="margin-top:7px"></div><div style="margin-top:7px"></div><div style="margin-top:7px"></div>
+        <div style="height:0;margin-top:30px"></div>
+        <div style="background:var(--ink);height:1px"></div>
+        <div style="margin-top:7px"></div><div style="margin-top:7px"></div>
+      </div>
+      <div style="font-size:7.4px;color:var(--gray);font-style:italic;line-height:1.5;margin-top:14px">
+        An airy row repeated fifteen times is not generosity — it is indecision, and it
+        pushes a one-page truth onto three pages.
+      </div>
+    </div>
+  </div>
+
+  <!-- metrics -->
+  <div class="pad" style="top:7.86in">
+    <div class="eyebrow g">Measured against the sheets in production today</div>
+    <div style="height:1px;background:var(--ink);margin-top:7px"></div>
+    <div style="display:flex;margin-top:15px">
+      <div style="flex:1"><div class="metric">3&thinsp;<span style="color:var(--gold);font-size:17px">&rarr;</span>&thinsp;1</div><div class="mlab">Term sheet, pages</div></div>
+      <div style="flex:1"><div class="metric">6&thinsp;<span style="color:var(--gold);font-size:17px">&rarr;</span>&thinsp;1</div><div class="mlab">Comparison, pages</div></div>
+      <div style="flex:1"><div class="metric">15&thinsp;<span style="color:var(--gold);font-size:17px">&rarr;</span>&thinsp;7</div><div class="mlab">Compared rows</div></div>
+      <div style="flex:1"><div class="metric">19&thinsp;<span style="color:var(--gold);font-size:17px">&rarr;</span>&thinsp;15.5</div><div class="mlab">Largest figure, pt</div></div>
+      <div style="flex:1.15"><div class="metric">+1</div><div class="mlab">Field added · credit score</div></div>
+    </div>
+  </div>
+
+  <div class="pad" style="bottom:.62in">
+    <div style="height:.6px;background:var(--line)"></div>
+    <div style="display:flex;margin-top:6px">
+      <div style="font-size:6.8px;color:var(--faint);font-style:italic">Six of fifteen compared rows carried the same value in every column. Repetition wearing comparison&rsquo;s clothes.</div>
+      <div style="margin-left:auto;font-family:PM;font-size:6.2px;color:var(--faint);letter-spacing:.1em">SPECIMEN · 001 / 005</div>
+    </div>
+  </div>
+</div>
+<!-- ═══════════════ PAGE 2 — TERM SHEET ═══════════════ -->
+<div class="page">
+  <div class="band"></div><div class="bandrule"></div><div class="bandhair"></div>
+  <img class="lock" src="pilot-lockup-light.png">
+  <div class="dt"><h1>Term Sheet</h1>
+    <div class="sub">Platinum 30-Year Fixed &middot; business-purpose rental financing</div>
+    <div class="id">YS CAPITAL GROUP &middot; NMLS 2034117 &middot; ISSUED 31 AUGUST 2026</div></div>
+
+  <div class="body">
+    <div class="parties">
+      <div class="l">
+        <div class="eyebrow">Prepared for</div>
+        <div class="pname">Oak Street Holdings LLC</div>
+        <div class="pfact" style="margin-top:1px">Miriam Rosenberg, guarantor</div>
+        <div class="eyebrow" style="margin-top:9px">Property</div>
+        <div class="paddr">14 Oak Street, Lakewood, NJ 08701</div>
+        <div class="pfact">Single family &middot; Ocean County &middot; valued at $500,000</div>
+      </div>
+      <div class="r">
+        <div class="eyebrow">Prepared by</div>
+        <div class="oline" style="margin-top:3px"><b>Sara Klein</b></div>
+        <div class="oline">Senior Loan Officer</div>
+        <div class="oline">(732) 555-0142</div>
+        <div class="oline">sara.klein@yscapgroup.com</div>
+        <div class="oline" style="color:var(--faint)">NMLS #1234567</div>
+      </div>
+    </div>
+
+    <div class="hero" style="margin-top:23px">
+      <div class="c"><div class="k">Loan amount</div><div class="v">$375,000</div><div class="n">75% of value</div></div>
+      <div class="c"><div class="k">Interest rate</div><div class="v">7.375%</div><div class="n">30-year fixed</div></div>
+      <div class="c"><div class="k">Monthly payment</div><div class="v">$3,355.03</div><div class="n">taxes &amp; insurance included</div></div>
+      <div class="c"><div class="k">Cash to close</div><div class="v">$134,595</div><div class="n">estimated</div></div>
+    </div>
+
+    <div style="display:flex;gap:30px;margin-top:30px">
+      <!-- the loan -->
+      <div style="flex:1">
+        <div class="sec"><span class="tick"></span><span class="t">The loan</span></div>
+        <table class="rows" style="margin-top:2px">
+          <tr><td class="k">Program</td><td class="v">Platinum 30-Year Fixed</td></tr>
+          <tr><td class="k">Purpose</td><td class="v">Purchase</td></tr>
+          <tr><td class="k">Loan to value</td><td class="v">75%</td></tr>
+          <tr><td class="k">Term</td><td class="v">30 years, fixed</td></tr>
+          <tr><td class="k">Prepayment</td><td class="v">5-year</td></tr>
+          <tr><td class="k">Credit score used</td><td class="v">740</td></tr>
+          <tr class="last"><td class="k">Escrows</td><td class="v">Impounded monthly</td></tr>
+        </table>
+      </div>
+      <!-- the payment -->
+      <div style="flex:1">
+        <div class="sec"><span class="tick"></span><span class="t">Monthly payment</span></div>
+        <table class="rows" style="margin-top:2px">
+          <tr><td class="k">Principal &amp; interest</td><td class="v">$2,590.03</td></tr>
+          <tr><td class="k">Property taxes</td><td class="v">$620.00</td></tr>
+          <tr><td class="k">Insurance</td><td class="v">$145.00</td></tr>
+          <tr class="sum"><td class="k">Total monthly payment</td><td class="v">$3,355.03</td></tr>
+          <tr><td class="k">Monthly rent</td><td class="v">$4,161.00</td></tr>
+          <tr class="last"><td class="k">Debt-service coverage</td><td class="v">1.24&times;</td></tr>
+        </table>
+        <div class="note" style="margin-top:4px">Rent divided by the total payment above.</div>
+      </div>
+    </div>
+
+    <!-- closing -->
+    <div style="margin-top:34px">
+      <div class="sec"><span class="tick"></span><span class="t">What it costs to close</span><span class="m">third-party costs &mdash; title, escrow, recording, appraisal &mdash; are not included</span></div>
+      <div style="display:flex;gap:30px;margin-top:2px">
+        <div style="flex:1">
+          <table class="rows">
+            <tr><td class="k">Origination fee</td><td class="v">$7,500.00</td></tr>
+            <tr><td class="note" colspan="2">2.000 points of the loan amount</td></tr>
+            <tr><td class="k">Application fee</td><td class="v">$500.00</td></tr>
+            <tr><td class="k">Commitment fee</td><td class="v">$1,595.00</td></tr>
+            <tr class="last"><td class="k">Cost to get this rate</td><td class="v">None</td></tr>
+          </table>
+        </div>
+        <div style="flex:1">
+          <table class="rows">
+            <tr><td class="k">Lender charges at closing, net</td><td class="v">$9,595.00</td></tr>
+            <tr><td class="k">Down payment</td><td class="v">$125,000.00</td></tr>
+            <tr class="sum last"><td class="k">Estimated cash to close</td><td class="v">$134,595.00</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="expiry tail">
+      <span class="d"></span>
+      <div class="x"><b>This term sheet expires in 72 hours</b> &mdash; good through 3 September 2026, 1:30&nbsp;pm ET.
+        Pricing moves with the market, so after that it has to be re-quoted. Nothing here is locked until we lock it in writing.</div>
+    </div>
+
+    <div class="tail">
+      <div class="eyebrow t">Acceptance</div>
+      <div style="font-size:8.1px;color:var(--gray);margin-top:5px;line-height:1.5;max-width:4.35in">Signing below accepts these terms as the basis for proceeding and authorises us to order third-party reports. It is not a commitment to lend.</div>
+      <div style="display:flex;gap:34px;margin-top:46px">
+        <div style="flex:1"><div style="border-bottom:.7px solid var(--ink)"></div><div class="pfact" style="margin-top:4px">Oak Street Holdings LLC &mdash; authorised signer</div></div>
+        <div style="flex:1"><div style="border-bottom:.7px solid var(--ink)"></div><div class="pfact" style="margin-top:4px">Miriam Rosenberg &mdash; guarantor</div></div>
+        <div style="flex:.5"><div style="border-bottom:.7px solid var(--ink)"></div><div class="pfact" style="margin-top:4px">Date</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="c"><b>Your YS Capital Group contact:</b> Sara Klein &middot; Senior Loan Officer &middot; (732) 555-0142 &middot; sara.klein@yscapgroup.com</div>
+    <div class="d">Pricing is indicative and subject to change until locked. This is not a commitment to lend. Subject to underwriting, appraisal, title and final credit approval. Disclosures and conditions continue on page 2.</div>
+    <div class="p">TERM SHEET &nbsp;·&nbsp; TS-4KQ7WM &nbsp;·&nbsp; PAGE 1 OF 2</div>
+  </div>
+</div>
+<!-- ═══════════════ PAGE 3 — COMPARISON ═══════════════ -->
+<div class="page">
+  <div class="band"></div><div class="bandrule"></div><div class="bandhair"></div>
+  <img class="lock" src="pilot-lockup-light.png">
+  <div class="dt"><h1>Comparison Sheet</h1>
+    <div class="sub">One loan, three ways to price it &middot; business-purpose rental financing</div>
+    <div class="id">YS CAPITAL GROUP &middot; NMLS 2034117 &middot; ISSUED 31 AUGUST 2026</div></div>
+
+  <div class="body">
+    <div class="parties">
+      <div class="l">
+        <div class="eyebrow">Prepared for</div>
+        <div class="pname">Oak Street Holdings LLC</div>
+        <div class="eyebrow" style="margin-top:9px">Property</div>
+        <div class="paddr">14 Oak Street, Lakewood, NJ 08701</div>
+        <div class="pfact">Single family &middot; Ocean County &middot; valued at $500,000</div>
+      </div>
+      <div class="r">
+        <div class="eyebrow">Prepared by</div>
+        <div class="oline" style="margin-top:3px"><b>Sara Klein</b></div>
+        <div class="oline">Senior Loan Officer</div>
+        <div class="oline">(732) 555-0142</div>
+        <div class="oline">sara.klein@yscapgroup.com</div>
+        <div class="oline" style="color:var(--faint)">NMLS #1234567</div>
+      </div>
+    </div>
+
+    <!-- what is the same, said once -->
+    <div class="shared" style="margin-top:23px">
+      <div class="h">The same in all three &mdash; stated once, and not repeated below</div>
+      <div class="b">
+        <div class="i"><s>$375,000</s> <em>loan</em></div>
+        <div class="i"><s>75%</s> <em>LTV</em></div>
+        <div class="i"><s>30 years</s> <em>term</em></div>
+        <div class="i"><s>5-year</s> <em>prepayment</em></div>
+        <div class="i"><s>740</s> <em>credit score</em></div>
+        <div class="i"><s>$4,161</s> <em>monthly rent</em></div>
+        <div class="i"><s>$765</s> <em>taxes &amp; insurance</em></div>
+        <div class="i"><s>$7,500</s> <em>origination</em></div>
+        <div class="i"><s>$2,095</s> <em>lender fees</em></div>
+      </div>
+    </div>
+
+    <div class="sec" style="margin-top:32px"><span class="tick"></span><span class="t">What differs</span><span class="m">every figure below is compared against option&nbsp;A</span></div>
+
+    <table class="cmp" style="margin-top:2px">
+      <colgroup><col style="width:1.55in"><col><col><col></colgroup>
+      <tr>
+        <th class="rowhead"></th>
+        <th class="colpad"><div class="lab">Option A &nbsp;<span style="color:var(--gray);letter-spacing:.06em">the anchor</span></div><div class="nm">Platinum<br>30-Year Fixed</div></th>
+        <th class="colpad"><div class="lab">Option B</div><div class="nm">Core<br>30-Year Fixed</div></th>
+        <th class="colpad"><div class="lab">Option C</div><div class="nm">Core<br>5/6 ARM</div></th>
+      </tr>
+      <tr><td class="k">Interest rate</td>
+        <td class="n colpad">7.375%</td><td class="n colpad">6.875%</td><td class="n colpad">6.500%</td></tr>
+      <tr class="key"><td class="k">Monthly payment</td>
+        <td class="n colpad">$3,355.03</td><td class="n colpad">$3,228.48</td><td class="n colpad">$3,135.26</td></tr>
+      <tr><td class="k">&nbsp;&nbsp;&nbsp;compared with A</td>
+        <td class="n colpad" style="color:var(--faint)">&mdash;</td><td class="n colpad">&minus;$126.55 / mo</td><td class="n colpad">&minus;$219.77 / mo</td></tr>
+      <tr><td class="k">Cost to get this rate</td>
+        <td class="n colpad">None</td><td class="n colpad">$8,437.50 <span style="color:var(--gray);font-family:IS;font-size:7.3px">2.250 pts</span></td><td class="n colpad">$13,125.00 <span style="color:var(--gray);font-family:IS;font-size:7.3px">3.500 pts</span></td></tr>
+      <tr class="key"><td class="k">Cash to close</td>
+        <td class="n colpad">$134,595.00</td><td class="n colpad">$143,032.50</td><td class="n colpad">$147,720.00</td></tr>
+      <tr><td class="k">Debt-service coverage</td>
+        <td class="n colpad">1.24&times;</td><td class="n colpad">1.29&times;</td><td class="n colpad">1.33&times;</td></tr>
+      <tr class="last"><td class="k">You are ahead after</td>
+        <td class="n colpad" style="color:var(--faint)">&mdash;</td><td class="n colpad">67 months</td><td class="n colpad">60 months</td></tr>
+    </table>
+
+    <div class="tail">
+      <div class="eyebrow t">How to read this</div>
+      <div style="margin-top:7px">
+        <div class="read"><span class="tag">A</span><span class="tx">Costs the least to close and the most each month. The right choice if you may sell or refinance inside five years.</span></div>
+        <div class="read"><span class="tag">B</span><span class="tx">Costs <b>$8,438</b> more at closing and saves <b>$127</b> a month. You are ahead after <b>67</b> months &mdash; five years and seven months.</span></div>
+        <div class="read" style="border-bottom:0"><span class="tag">C</span><span class="tx">Costs <b>$13,125</b> more at closing and saves <b>$220</b> a month. You are ahead after <b>60</b> months &mdash; five years &mdash; and the rate adjusts after that.</span></div>
+      </div>
+    </div>
+
+    <div class="expiry tail">
+      <span class="d"></span>
+      <div class="x"><b>These prices expire in 72 hours</b> &mdash; good through 3 September 2026, 1:30&nbsp;pm ET. This is a working comparison, not an offer: there is nothing to sign here. Tell us which option you want and we will issue a term sheet for it.</div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="c"><b>Your YS Capital Group contact:</b> Sara Klein &middot; Senior Loan Officer &middot; (732) 555-0142 &middot; sara.klein@yscapgroup.com</div>
+    <div class="d">Pricing is indicative and subject to change until locked. This is not a commitment to lend. Subject to underwriting, appraisal, title and final credit approval. Break-even compares the extra closing cost with the monthly saving and ignores the time value of money. Disclosures and conditions continue on page 2.</div>
+    <div class="p">COMPARISON SHEET &nbsp;·&nbsp; TS-4KQ7WM &nbsp;·&nbsp; PAGE 1 OF 2</div>
+  </div>
+</div>
+<!-- ═══════════════ PAGE 4 — SCENARIO ═══════════════ -->
+<div class="page">
+  <div class="band"></div><div class="bandrule"></div><div class="bandhair"></div>
+  <img class="lock" src="pilot-lockup-light.png">
+  <div class="dt"><h1>Scenario Sheet</h1>
+    <div class="sub">One property, three levels of leverage &middot; business-purpose rental financing</div>
+    <div class="id">YS CAPITAL GROUP &middot; NMLS 2034117 &middot; ISSUED 31 AUGUST 2026</div></div>
+
+  <div class="body">
+    <div class="parties">
+      <div class="l">
+        <div class="eyebrow">Prepared for</div>
+        <div class="pname">Oak Street Holdings LLC</div>
+        <div class="eyebrow" style="margin-top:9px">Property</div>
+        <div class="paddr">14 Oak Street, Lakewood, NJ 08701</div>
+        <div class="pfact">Single family &middot; Ocean County &middot; valued at $500,000</div>
+      </div>
+      <div class="r">
+        <div class="eyebrow">Prepared by</div>
+        <div class="oline" style="margin-top:3px"><b>Sara Klein</b></div>
+        <div class="oline">Senior Loan Officer</div>
+        <div class="oline">(732) 555-0142</div>
+        <div class="oline">sara.klein@yscapgroup.com</div>
+        <div class="oline" style="color:var(--faint)">NMLS #1234567</div>
+      </div>
+    </div>
+
+    <div class="shared" style="margin-top:23px">
+      <div class="h">The same in all three scenarios</div>
+      <div class="b">
+        <div class="i"><s>$500,000</s> <em>property value</em></div>
+        <div class="i"><s>30 years</s> <em>fixed term</em></div>
+        <div class="i"><s>5-year</s> <em>prepayment</em></div>
+        <div class="i"><s>740</s> <em>credit score</em></div>
+        <div class="i"><s>$4,161</s> <em>monthly rent</em></div>
+        <div class="i"><s>$765</s> <em>taxes &amp; insurance</em></div>
+        <div class="i"><s>$2,095</s> <em>lender fees</em></div>
+      </div>
+    </div>
+
+    <div class="sec" style="margin-top:32px"><span class="tick"></span><span class="t">Three scenarios</span><span class="m">what you changed, and what it produced</span></div>
+
+    <table class="cmp" style="margin-top:2px">
+      <colgroup><col style="width:1.55in"><col><col><col></colgroup>
+      <tr>
+        <th class="rowhead"></th>
+        <th class="colpad"><div class="lab">Scenario A</div><div class="nm">Maximum<br>leverage</div></th>
+        <th class="colpad"><div class="lab">Scenario B</div><div class="nm">Middle<br>ground</div></th>
+        <th class="colpad"><div class="lab">Scenario C</div><div class="nm">Lowest<br>leverage</div></th>
+      </tr>
+      <tr><td colspan="4" style="padding:9px 0 4px 0;border-bottom:0">
+        <span style="display:inline-block;width:2.2px;height:7px;background:var(--gold);vertical-align:-1px"></span>
+        <span style="font-size:6.7px;font-weight:700;letter-spacing:.15em;color:var(--gold);text-transform:uppercase;margin-left:6px">What you changed</span></td></tr>
+      <tr><td class="k">Loan amount</td>
+        <td class="n colpad">$375,000</td><td class="n colpad">$325,000</td><td class="n colpad">$300,000</td></tr>
+      <tr class="last"><td class="k">Loan to value</td>
+        <td class="n colpad">75%</td><td class="n colpad">65%</td><td class="n colpad">60%</td></tr>
+      <tr><td colspan="4" style="padding:11px 0 4px 0;border-bottom:0">
+        <span style="display:inline-block;width:2.2px;height:7px;background:var(--teal);vertical-align:-1px"></span>
+        <span style="font-size:6.7px;font-weight:700;letter-spacing:.15em;color:var(--teal);text-transform:uppercase;margin-left:6px">What it produced</span></td></tr>
+      <tr><td class="k">Interest rate</td>
+        <td class="n colpad">7.375%</td><td class="n colpad">6.990%</td><td class="n colpad">6.750%</td></tr>
+      <tr class="key"><td class="k">Monthly payment</td>
+        <td class="n colpad">$3,355.03</td><td class="n colpad">$2,925.05</td><td class="n colpad">$2,710.79</td></tr>
+      <tr><td class="k">Origination fee</td>
+        <td class="n colpad">$7,500.00</td><td class="n colpad">$6,500.00</td><td class="n colpad">$6,000.00</td></tr>
+      <tr><td class="k">Cost to get this rate</td>
+        <td class="n colpad">None</td><td class="n colpad">$5,687.50 <span style="color:var(--gray);font-family:IS;font-size:7.3px">1.750 pts</span></td><td class="n colpad">$7,500.00 <span style="color:var(--gray);font-family:IS;font-size:7.3px">2.500 pts</span></td></tr>
+      <tr class="key"><td class="k">Cash to close</td>
+        <td class="n colpad">$134,595.00</td><td class="n colpad">$189,282.50</td><td class="n colpad">$215,595.00</td></tr>
+      <tr class="last"><td class="k">Debt-service coverage</td>
+        <td class="n colpad">1.24&times;</td><td class="n colpad">1.42&times;</td><td class="n colpad">1.53&times;</td></tr>
+    </table>
+
+    <div class="tail">
+      <div class="eyebrow t">The trade you are making</div>
+      <div style="margin-top:7px">
+        <div class="read"><span class="tag">A</span><span class="tx">Keeps <b>$81,000</b> more of your cash in hand than C, and costs <b>$644</b> more every month.</span></div>
+        <div class="read"><span class="tag">B</span><span class="tx">Borrows <b>$50,000</b> less than A. Payment falls <b>$430</b> a month; you bring <b>$54,688</b> more to the table.</span></div>
+        <div class="read" style="border-bottom:0"><span class="tag">C</span><span class="tx">Borrows <b>$75,000</b> less than A. Payment falls <b>$644</b> a month and coverage reaches <b>1.53&times;</b>, the strongest of the three.</span></div>
+      </div>
+    </div>
+
+    <div class="expiry tail">
+      <span class="d"></span>
+      <div class="x"><b>These prices expire in 72 hours</b> &mdash; good through 3 September 2026, 1:30&nbsp;pm ET. Each scenario is a different loan, so there is nothing to sign here. Choose one and we will issue a term sheet for it.</div>
+    </div>
+  </div>
+
+  <div class="foot">
+    <div class="c"><b>Your YS Capital Group contact:</b> Sara Klein &middot; Senior Loan Officer &middot; (732) 555-0142 &middot; sara.klein@yscapgroup.com</div>
+    <div class="d">Pricing is indicative and subject to change until locked. This is not a commitment to lend. Subject to underwriting, appraisal, title and final credit approval. Rate and leverage move together: lower leverage generally prices better. Disclosures and conditions continue on page 2.</div>
+    <div class="p">SCENARIO SHEET &nbsp;·&nbsp; TS-4KQ7WM &nbsp;·&nbsp; PAGE 1 OF 2</div>
+  </div>
+</div>
+<!-- ═══════════════ PAGE 5 — THE FIELD MAP ═══════════════ -->
+<div class="page spec">
+  <div class="pad" style="top:.62in">
+    <div style="display:flex;align-items:baseline">
+      <div class="eyebrow g" style="letter-spacing:.22em">T H E&nbsp;&nbsp;F I E L D&nbsp;&nbsp;M A P</div>
+      <div style="margin-left:auto;font-family:PM;font-size:6.4px;color:var(--faint);letter-spacing:.1em">QL · 005</div>
+    </div>
+    <div style="height:1.1px;background:var(--gold);margin-top:7px"></div>
+    <div style="display:flex;gap:30px;margin-top:14px;align-items:flex-end">
+      <h1 style="font-family:PS;font-weight:400;font-size:27px;letter-spacing:-.015em;line-height:1">Every field the engine holds,<br>and where each one lands</h1>
+      <div style="font-size:7.6px;color:var(--gray);line-height:1.55;flex:1;padding-bottom:3px">
+        Thirty-six fields reach the export. One &mdash; the credit score the loan was priced on
+        &mdash; has never appeared on any of the three documents. A DSCR loan is priced on
+        leverage, coverage and credit; the sheets showed two of the three.
+      </div>
+    </div>
+  </div>
+
+  <div class="pad" style="top:2.28in">
+    <table class="cmp fieldmap" style="table-layout:fixed">
+      <colgroup><col style="width:1.62in"><col style="width:.62in"><col style="width:.62in"><col style="width:.62in"><col></colgroup>
+      <tr>
+        <th class="rowhead"><div class="lab" style="color:var(--gray)">Field</div></th>
+        <th style="text-align:center"><div class="lab">Term</div></th>
+        <th style="text-align:center"><div class="lab">Comp.</div></th>
+        <th style="text-align:center"><div class="lab">Scen.</div></th>
+        <th class="colpad"><div class="lab" style="color:var(--gray)">Where it sits, and why</div></th>
+      </tr>
+      <tr><td class="k">Borrower / entity</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Header. The entity is the obligor; the person is the guarantor.</td></tr>
+      <tr><td class="k">Property address</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Header, one line. Never repeated lower down.</td></tr>
+      <tr><td class="k">Property type &middot; units</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Header sub-line. Units printed only above one.</td></tr>
+      <tr><td class="k">County &middot; state</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Header sub-line. Fills from the ZIP; blank on a split ZIP.</td></tr>
+      <tr><td class="k">Property value</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Header on a term sheet; shared strip when comparing.</td></tr>
+      <tr><td class="k">Loan purpose</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">L</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">The loan. Identical across options, so shared when comparing.</td></tr>
+      <tr><td class="k">Programme</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">L</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">C</td><td class="n" style="text-align:center;color:#C9CFD2">&mdash;</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Column heading on a comparison &mdash; it IS the thing being compared.</td></tr>
+      <tr><td class="k">Loan amount</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">F</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="n" style="text-align:center;color:var(--gold);font-size:7.2px;font-weight:700;letter-spacing:.06em">D</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Hero. Shared on a comparison; the CHANGED input on a scenario.</td></tr>
+      <tr><td class="k">Loan to value</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">L</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="n" style="text-align:center;color:var(--gold);font-size:7.2px;font-weight:700;letter-spacing:.06em">D</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Same &mdash; cause, not effect, so it sits above the results.</td></tr>
+      <tr><td class="k">Term &middot; interest-only</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">F</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Hero note. Interest-only stated in words, never implied.</td></tr>
+      <tr><td class="k">Interest rate</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">F</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">C</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">C</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Hero. The first compared row.</td></tr>
+      <tr><td class="k">Prepayment</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">L</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">The loan. Shared &mdash; it rarely differs between options.</td></tr>
+      <tr><td class="k">Escrow waiver</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">L</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Printed only when waived. Silence means impounded.</td></tr>
+      <tr style="background:var(--ivory)"><td class="k"><b>Credit score</b></td><td class="n" style="text-align:center;color:var(--gold);font-size:7.2px;font-weight:700;letter-spacing:.06em">L</td><td class="n" style="text-align:center;color:var(--gold);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="n" style="text-align:center;color:var(--gold);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="colpad" style="font-size:7.6px;color:var(--gray)"><b>NEW.</b> Priced on it, never printed. The third leg of the pricing.</td></tr>
+      <tr><td class="k">Principal &amp; interest</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">P</td><td class="n" style="text-align:center;color:#C9CFD2">&mdash;</td><td class="n" style="text-align:center;color:#C9CFD2">&mdash;</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Payment block. Rolled into the total when comparing.</td></tr>
+      <tr><td class="k">Taxes &middot; insurance &middot; dues</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">P</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Payment block. Dues shown only above zero.</td></tr>
+      <tr><td class="k">Total monthly payment</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">P</td><td class="n" style="text-align:center;color:var(--gold);font-size:7.2px;font-weight:700;letter-spacing:.06em">K</td><td class="n" style="text-align:center;color:var(--gold);font-size:7.2px;font-weight:700;letter-spacing:.06em">K</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">The key compared row. Ivory ground, heavier weight.</td></tr>
+      <tr><td class="k">Monthly rent</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">P</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Payment block; shared when comparing.</td></tr>
+      <tr><td class="k">Debt-service coverage</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">P</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">C</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">C</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Derived from the total printed above it, never restated.</td></tr>
+      <tr><td class="k">Origination fee &middot; points</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">X</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">C</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Closing. Shared on a comparison; differs by loan size.</td></tr>
+      <tr><td class="k">Application &middot; commitment fee</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">X</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">S</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Closing. Fixed, so stated once when comparing.</td></tr>
+      <tr><td class="k">Cost to get this rate</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">X</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">C</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">C</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Closing. Points paid or credited &mdash; the real trade.</td></tr>
+      <tr><td class="k">Lender charges, net</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">X</td><td class="n" style="text-align:center;color:#C9CFD2">&mdash;</td><td class="n" style="text-align:center;color:#C9CFD2">&mdash;</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Closing. Folded into cash to close when comparing.</td></tr>
+      <tr><td class="k">Down payment</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">X</td><td class="n" style="text-align:center;color:#C9CFD2">&mdash;</td><td class="n" style="text-align:center;color:#C9CFD2">&mdash;</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Closing. Implied by loan and value when comparing.</td></tr>
+      <tr><td class="k">Cash to close</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">F</td><td class="n" style="text-align:center;color:var(--gold);font-size:7.2px;font-weight:700;letter-spacing:.06em">K</td><td class="n" style="text-align:center;color:var(--gold);font-size:7.2px;font-weight:700;letter-spacing:.06em">K</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Hero, and the second key compared row.</td></tr>
+      <tr><td class="k">Break-even</td><td class="n" style="text-align:center;color:#C9CFD2">&mdash;</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">C</td><td class="n" style="text-align:center;color:#C9CFD2">&mdash;</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Comparison only. Meaningless between different loans.</td></tr>
+      <tr><td class="k">Expiry</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">E</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">E</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">E</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">One line, not a panel. A panel invites skipping.</td></tr>
+      <tr><td class="k">Loan officer block</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">H</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Name, title, phone, email, NMLS. Header and footer.</td></tr>
+      <tr class="last"><td class="k">Company &middot; NMLS &middot; code</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">B</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">B</td><td class="n" style="text-align:center;color:var(--teal);font-size:7.2px;font-weight:700;letter-spacing:.06em">B</td><td class="colpad" style="font-size:7.6px;color:var(--gray)">Band and footer.</td></tr>
+    </table>
+  </div>
+
+  <div class="pad" style="bottom:1.42in">
+    <div class="eyebrow g">The key</div>
+    <div style="height:.6px;background:var(--line);margin-top:6px"></div>
+    <div style="display:flex;flex-wrap:wrap;gap:0 22px;margin-top:8px">
+      <div style="font-size:7.4px;color:var(--gray)"><b style="font-family:PM;color:var(--teal)">H</b> header</div>
+      <div style="font-size:7.4px;color:var(--gray)"><b style="font-family:PM;color:var(--teal)">F</b> hero strip</div>
+      <div style="font-size:7.4px;color:var(--gray)"><b style="font-family:PM;color:var(--teal)">L</b> the loan</div>
+      <div style="font-size:7.4px;color:var(--gray)"><b style="font-family:PM;color:var(--teal)">P</b> monthly payment</div>
+      <div style="font-size:7.4px;color:var(--gray)"><b style="font-family:PM;color:var(--teal)">X</b> what it costs to close</div>
+      <div style="font-size:7.4px;color:var(--gray)"><b style="font-family:PM;color:var(--teal)">S</b> shared strip &mdash; stated once</div>
+      <div style="font-size:7.4px;color:var(--gray)"><b style="font-family:PM;color:var(--teal)">C</b> compared column</div>
+      <div style="font-size:7.4px;color:var(--gray)"><b style="font-family:PM;color:var(--gold)">K</b> key compared row</div>
+      <div style="font-size:7.4px;color:var(--gray)"><b style="font-family:PM;color:var(--gold)">D</b> the changed input</div>
+      <div style="font-size:7.4px;color:var(--gray)"><b style="font-family:PM;color:var(--teal)">E</b> expiry</div>
+      <div style="font-size:7.4px;color:var(--gray)"><b style="font-family:PM;color:var(--teal)">B</b> band &amp; footer</div>
+    </div>
+  </div>
+
+  <div class="pad" style="bottom:.62in">
+    <div style="height:1px;background:var(--ink)"></div>
+    <div style="display:flex;gap:26px;margin-top:9px">
+      <div style="flex:1;font-size:7.5px;color:var(--gray);line-height:1.55"><b style="color:var(--ink)">Considered and left off.</b>
+        Occupancy &mdash; every one of these is non-owner-occupied, so a row saying so is a row saying nothing.
+        Reserves &mdash; a vendor input, not a borrower fact. Debt yield and cash-on-cash &mdash; the engine does not
+        compute them, and a document must never carry a figure the system cannot stand behind.</div>
+      <div style="flex:1;font-size:7.5px;color:var(--gray);line-height:1.55"><b style="color:var(--ink)">Never on any of the three.</b>
+        The investor behind the price. Our compensation, in any form. The raw price before compensation.
+        Points expressed without their dollars. These are facts about us, and they belong on the staff record.</div>
+    </div>
+    <div style="display:flex;margin-top:9px">
+      <div style="font-size:6.8px;color:var(--faint);font-style:italic">Fields verified against <span style="font-family:PM">projectScenario</span> and the layout builder, 31 August 2026.</div>
+      <div style="margin-left:auto;font-family:PM;font-size:6.2px;color:var(--faint);letter-spacing:.1em">SPECIMEN · 005 / 005</div>
+    </div>
+  </div>
+</div>
+</body></html>

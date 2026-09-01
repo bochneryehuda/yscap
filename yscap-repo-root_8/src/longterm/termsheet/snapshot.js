@@ -36,9 +36,16 @@
 
 const crypto = require('crypto');
 const audience = require('../audience');
+const priceAdjust = require('./price-adjust');
 const overlay = require('./overlay');
 const wording = require('./wording');
 const comparison = require('./comparison');
+// The Census ZCTA→county table the pricing search itself uses, so the document and the
+// search can never disagree about which county a property is in.
+const zipCounty = require('../lenderprice/zip-county');
+// db/651 — the STAFF-ONLY note about who is behind a price. Deliberately a
+// separate module: nothing it produces is a key on the snapshot.
+const internalRecord = require('./internal');
 
 const num = (v) => {
   if (v == null || v === '') return null;
@@ -66,13 +73,37 @@ function refuse(code, message) { return { ok: false, error: code, message }; }
 function projectScenario(raw) {
   const s = raw && typeof raw === 'object' ? raw : {};
   const termFromMonths = num(s.term) != null ? num(s.term) / 12 : null;
+  const valueOf = num(s.value != null ? s.value : s.propertyValue);
+  const loanOf = num(s.loan != null ? s.loan : s.loanAmount);
+  /* ⛔ THE LTV FILLS ITSELF IN FROM THE DOLLARS (owner-reported 2026-08-31: *"if you fill in the
+     loan amount and the LTV is auto-calculated technically, it doesn't fill in on the PDF reports
+     that are exported afterwards. It needs to auto-fill based on the dollar amounts."*).
+
+     It was taken verbatim from the scenario, so an officer who typed the loan amount and let the
+     board work the ratio out got a BLANK "Loan to value" row on the document — the one figure an
+     investor and a borrower both look for first.
+
+     ⛔ IT IS DERIVED, NEVER OVERRIDDEN. A stated LTV always wins: the search ran on it, and a deal
+     legitimately sizes on a value the sheet does not carry. This only fills a hole, and only when
+     both dollars are really there — it never invents a ratio out of one of them. Rounded to two,
+     the same precision the sheet prints (75, 87.5), so a derived figure is indistinguishable from
+     a typed one on the page rather than betraying itself with a long decimal. */
+  const zipStr = str(s.zip, 10);
+  const zipFacts = zipStr ? zipCounty.lookupZip(zipStr) : null;
+  const stateStr = str(s.state, 2) || (zipFacts ? str(zipFacts.state, 2) : null);
+  const countyStr = str(s.county, 60)
+    || (zipFacts && zipFacts.split !== true ? str(zipFacts.countyName, 60) : null);
+  const ltvStated = num(s.ltv);
+  const ltvDerived = (ltvStated == null && valueOf != null && loanOf != null && valueOf > 0)
+    ? Math.round((loanOf / valueOf) * 10000) / 100
+    : null;
   return {
     purpose: str(s.purpose, 40),
     propertyType: str(s.propertyType, 40),
     units: num(s.units),
-    propertyValue: num(s.value != null ? s.value : s.propertyValue),
-    loanAmount: num(s.loan != null ? s.loan : s.loanAmount),
-    ltv: num(s.ltv),
+    propertyValue: valueOf,
+    loanAmount: loanOf,
+    ltv: ltvStated != null ? ltvStated : ltvDerived,
     termYears: num(s.termYears) != null ? num(s.termYears) : termFromMonths,
     interestOnly: s.io === true || s.interestOnly === true,
     escrowWaive: s.escrowWaive === true,
@@ -80,9 +111,25 @@ function projectScenario(raw) {
     prepayStructure: str(s.prepayStructure, 40),
     dscr: num(s.dscr),
     fico: num(s.fico),
-    zip: str(s.zip, 10),
-    state: str(s.state, 2),
-    county: str(s.county, 60),
+    zip: zipStr,
+    /* ⛔ THE COUNTY AND THE STATE FILL THEMSELVES IN FROM THE ZIP (owner-reported 2026-08-31:
+       *"even if you didn't put in a full property address, it's only coming up with the zip code.
+       It should also come up with the county and the state of the property."*).
+
+       Both were already fields on this scenario and both were simply left blank whenever the
+       officer had typed only a ZIP — so a sheet went out identifying the property by five digits.
+       The answer was already in the building: `lenderprice/zip-county.js` is the Census ZCTA
+       relationship file the pricing search itself uses to tell the vendor which county it is in.
+
+       ⛔ A STATED VALUE ALWAYS WINS. This only fills a hole.
+
+       ⛔ AND A SPLIT ZIP GETS NO COUNTY. That module is explicit that 28% of ZIPs straddle more
+       than one county and that it resolves the DOMINANT one — fine for choosing a rate sheet,
+       NOT fine for printing "Ocean County" on a client's document as though it were established.
+       The state is still filled (a ZIP does not straddle one), so the sheet reads "NJ 08701"
+       rather than a county it cannot stand behind. Never guess on a document. */
+    state: stateStr,
+    county: countyStr,
     city: str(s.city, 60),
     // The qualifying figures the officer typed into the DSCR calculator. They
     // are facts about the deal, not about the vendor, and a borrower reading the
@@ -205,7 +252,29 @@ function buildMember(sel, plan, opts = {}) {
   }
 
   const waive = s.waiveLenderFees === true;
-  const charges = overlay.quoteCharges(mode, plan, rawPrice, scenario.loanAmount, waive);
+
+  /* ⛔ THE ADJUSTMENT IS A MOVED PLAN, NOT A SECOND NUMBER (§40, owner-directed
+     2026-08-31: *"you should be able to manually even out the numbers by manually
+     adding a charge or manually giving a concession ... either reducing our
+     compensation or increasing our compensation to even it out."*).
+
+     Everything below — the displayed price, the origination line, the closing
+     sheet, the cash to close — is derived from the plan by `overlay`, through the
+     one function that reads it. So an adjustment expressed as a MOVED PLAN is
+     picked up by every one of them for free and cannot disagree with itself. An
+     adjustment carried as its own figure would have to be added in by hand at each
+     of those places, and the one that was missed would be the one that quietly
+     under-charged.
+
+     ⛔ THE RATE AND THE RAW PRICE ARE UNTOUCHED. Nothing here goes near the vendor:
+     the worst case is that we earn less than we meant to, never that a borrower is
+     quoted a rate the loan did not qualify for. The refusals — the 2-point cap, the
+     never-pay-the-borrower guard — are `price-adjust`'s own and are quoted verbatim,
+     so the officer reads the same sentence wherever they typed it. */
+  const eff = priceAdjust.effectivePlan({ plan, mode, deltaPoints: s.priceAdjustment });
+  if (!eff.ok) return refuse(eff.code, eff.message);
+
+  const charges = overlay.quoteCharges(mode, eff.plan, rawPrice, scenario.loanAmount, waive);
   if (!charges) {
     return refuse('no_comp_plan',
       'Your compensation settings could not be read, so the fees on this quote cannot be worked out. '
@@ -264,6 +333,23 @@ function buildMember(sel, plan, opts = {}) {
       dscr: scenario.dscr,
       prepayLabel: wording.prepaySentence(scenario.prepayMonths, scenario.prepayStructure),
     },
+    /* ⛔ THE MONEY DECISION RIDES BESIDE THE MEMBER, NEVER ON IT. The member IS the
+       borrower's document — a whitelist of what may be printed — and how much of our
+       own compensation we gave away to round a price is a fact about US. It is not
+       an investor's name, so rule 10 does not reach it; it is simply nobody's
+       business but ours, and a field on the document is one careless layout change
+       away from being drawn on it. `buildSnapshot` folds this into the staff-side
+       record (db/651), which is where "why is this price 101.000" is answerable. */
+    adjustment: eff.adjusted
+      ? {
+        points: eff.applied.deltaPoints,
+        compBefore: eff.applied.compBefore,
+        compAfter: eff.applied.compAfter,
+        compDelta: eff.applied.compDelta,
+        priceBefore: overlay.shiftedPrice(rawPrice, overlay.compShiftPoints(mode, plan)),
+        priceAfter: charges.displayPrice,
+      }
+      : null,
   };
 }
 
@@ -301,13 +387,187 @@ const GATE_LABELS = {
   taxMonthly: 'the monthly property taxes',
   insuranceMonthly: 'the monthly insurance',
   dscr: 'the calculated DSCR',
-  borrowerName: "the borrower's name",
+  dscrMismatch: 'a price obtained at the ratio these figures actually produce',
+  partyName: "the borrower's name or the vesting entity",
   propertyAddress: 'the full property address',
 };
+
+/**
+ * THE RATIO THE PRICE WAS OBTAINED AT MUST BE ONE THIS DEAL ACTUALLY MEETS.
+ *
+ * ⛔ OWNER-REPORTED 2026-08-30, and it is a MONEY rule, not a tidiness one:
+ * *"you allow the system to issue the term sheet even if the DSCR disagrees …
+ * if the scenario was 1.25 but the details that I'm entering to issue the term
+ * sheet are 1.2, it allows the system to issue the term sheet. This means we are
+ * giving him better pricing than we should have given him."*
+ *
+ * The board prices a SEARCH — the officer types a DSCR and Lender Price answers
+ * at that ratio, applying the investor's own DSCR adjustment. The term sheet
+ * then prints the rent, taxes and insurance actually entered. If those work out
+ * LOWER than the ratio the search ran at, the price on the document was bought
+ * in a band this loan does not qualify for, and the borrower gets a rate we
+ * would not have quoted. That is a loss on every such sheet.
+ *
+ * ⛔ IT REFUSES, IT NO LONGER WARNS. This shipped as a prominent warning that
+ * still let the sheet issue, on the reasoning that a hard stop with no way
+ * through would trap an officer who knew better. That reasoning was wrong: the
+ * way through is to RE-PRICE at the true ratio, which is one press, and the cost
+ * of the warning being ignored is money. Corrected at the owner's direction.
+ *
+ * ⛔ THE TEST IS THE BRACKET, NOT THE NUMBER (owner-directed 2026-08-31, who
+ * supplied the ladder himself: *"So if anything is changing from one bracket to
+ * the next one, then it needs a reprice, but make sure it's very easy."*).
+ *
+ * A DSCR bracket is a PRICE BAND. Two ratios inside one band buy the same price,
+ * so a sheet priced at 1.45 and issued on figures of 1.42 is the same money and
+ * must not nag anybody — the earlier cut compared the raw numbers and refused
+ * exactly that, which is why the officer was being sent back to re-price on
+ * moves that changed nothing. What genuinely invalidates the price is LEAVING
+ * the band the search ran in.
+ *
+ * ⛔ AND IT IS DIRECTION-AGNOSTIC, WHICH IS THE OWNER'S OWN RULE. Downward is
+ * the money case (a rate bought in a band this loan no longer reaches). Upward
+ * is not free either: the borrower now qualifies for BETTER pricing than the
+ * paper shows, and a term sheet that understates what somebody qualifies for is
+ * still wrong — so it is re-priced too, and the wording says which way it went
+ * rather than accusing anybody.
+ *
+ * ⛔ AND IT NEVER GUESSES. The comparison needs the ratio the search was priced
+ * at AND every figure the true ratio is worked out from. Missing any of them,
+ * this rule stands down entirely and the ordinary completeness gate — which
+ * already demands the rent, the taxes, the insurance and a ratio — is what
+ * refuses. A refusal invented from half a scenario would be worse than none.
+ */
+/* THE LADDER LIVES IN ONE PLACE — `../pricing/dscr-tiers` (owner-directed
+   2026-09-01: *"Don't rebuild that bracket. I want to stay that bracket, just
+   share that bracket, because if the bracket is changing you should
+   automatically change yourself as well."*).
+
+   It was DEFINED here, because this is where the re-price rule lives and this is
+   still its only judge. The pricing board now groups its rates by the same
+   brackets, so the table was MOVED rather than copied: a board that grouped by
+   one ladder while the export refused by another is exactly the disagreement the
+   owner's instruction exists to prevent. Nothing else about this rule changed —
+   `DSCR_TIERS` and `dscrTier` are re-exported below, so every reader is
+   unaffected. */
+const { DSCR_TIERS, dscrTier } = require('../pricing/dscr-tiers');
+
+function ratioProblem(member) {
+  const m = member && typeof member === 'object' ? member : {};
+  const sc = m.scenario || {};
+  const priced = num(sc.dscr);
+  if (priced == null || priced <= 0) return null;
+
+  const pi = num(m.monthlyPI);
+  const rent = num(sc.rentMonthly);
+  const tax = num(sc.taxMonthly);
+  const ins = num(sc.insuranceMonthly);
+  if (pi == null || rent == null || tax == null || ins == null) return null;
+  const hoa = num(sc.hoaMonthly) || 0;
+  const housing = pi + tax + ins + hoa;
+  if (!(housing > 0) || !(rent > 0)) return null;
+
+  const actual = Math.round((rent / housing) * 100) / 100;
+  const pricedRounded = Math.round(priced * 100) / 100;
+  const actualTier = dscrTier(actual);
+  const pricedTier = dscrTier(pricedRounded);
+  // A ratio neither side can place is not a bracket change anybody can act on.
+  if (actualTier == null || pricedTier == null) return null;
+  if (actualTier === pricedTier) return null;
+
+  return {
+    priced: pricedRounded,
+    actual,
+    pricedTier,
+    actualTier,
+    direction: actualTier < pricedTier ? 'down' : 'up',
+  };
+}
+
+/**
+ * THE FIRST OPTION ON THIS DOCUMENT WHOSE PRICE NO LONGER MATCHES ITS FIGURES,
+ * as a refusal ready to return — or null when every one of them is sound.
+ *
+ * ⛔ ONE DEFINITION, ASKED PER MEMBER. `ratioProblem` is unchanged and is still
+ * the only place that decides what a bracket change IS; this walks the members
+ * and hands its answer back. A second reading of "has this moved band" is how a
+ * comparison and a term sheet would come to disagree about the same option.
+ *
+ * ⛔ IT NAMES WHICH OPTION. On a three-scenario sheet "re-price at 1.24" is not
+ * actionable — the officer has three ratios in front of them and no idea which
+ * one is being complained about. The label the officer typed is what goes in the
+ * sentence, and the position rides along for a screen that wants to point at a
+ * row.
+ */
+function repriceProblem(members) {
+  const list = Array.isArray(members) ? members : [];
+  for (let i = 0; i < list.length; i += 1) {
+    const r = ratioProblem(list[i]);
+    if (!r) continue;
+    const label = (list[i] && (list[i].label || list[i].consumerLabel)) || null;
+    // On a single-option document naming it reads as clutter; on a comparison it
+    // is the whole point. The one sentence covers both by naming it only when
+    // there is more than one thing it could mean.
+    const which = list.length > 1 ? `${label ? `Option ${label}` : `Option ${i + 1}`} ` : '';
+    const lead = list.length > 1 ? `${which}has moved band. ` : '';
+    return {
+      ok: false,
+      kind: null,               // filled in by the caller, which knows the kind
+      missing: ['dscrMismatch'],
+      error: 'dscr_below_priced',
+      position: i,
+      label,
+      repriceAt: r.actual,
+      pricedAt: r.priced,
+      pricedTier: r.pricedTier,
+      actualTier: r.actualTier,
+      direction: r.direction,
+      message: lead + (r.direction === 'down'
+        ? `These figures come to ${r.actual.toFixed(2)}, which is a lower DSCR band than the `
+          + `${r.priced.toFixed(2)} it was priced in — so the rate on it is one this loan no `
+          + `longer qualifies for. Re-price at ${r.actual.toFixed(2)} and issue from the new price.`
+        : `These figures come to ${r.actual.toFixed(2)}, a higher DSCR band than the `
+          + `${r.priced.toFixed(2)} it was priced in — the borrower qualifies for better pricing `
+          + `than this shows. Re-price at ${r.actual.toFixed(2)} and issue from the new price.`),
+    };
+  }
+  return null;
+}
 
 function exportGate(snapshot) {
   const s = snapshot && typeof snapshot === 'object' ? snapshot : {};
   const kind = s.docKind || documentKind(s.members, s.comparison);
+  const all = Array.isArray(s.members) ? s.members : [];
+
+  /* ⛔ THE RE-PRICE RULE RUNS ON EVERY OPTION OF EVERY DOCUMENT (owner-directed
+     2026-08-31: *"on the scenario sheet, when you're adding a few different
+     scenarios, the reprice rule is the rule. The ratio is changing for different
+     rates, so every scenario is true."*).
+
+     It used to run on a TERM SHEET ONLY, and even there on `members[0]` alone —
+     so a scenario comparison at 1.53, 1.42 and 1.24, which is three different
+     DSCR bands, was never checked at all. Three rates, none of them tested
+     against the band the loan actually reaches. That is the case the rule exists
+     for, and it was the one case it skipped.
+
+     ⛔ AND IT REFUSES RATHER THAN WARNS, which is the owner's own choice when it
+     was put to them. A comparison is not an offer, but a borrower still reads a
+     rate off it, and a rate this loan does not qualify for is wrong on any
+     paper. Blocking is also what the term sheet already did, so there is one
+     behaviour to learn rather than two.
+
+     ⛔ ASKED BEFORE THE COMPLETENESS CHECKS, AND THAT IS SAFE FOR A REASON THAT
+     LIVES IN `ratioProblem`, NOT HERE. The rule it replaced ran only once the
+     rent, taxes and insurance were in, so a half-filled scenario was told what
+     was missing rather than accused of a mismatch it could not yet have. That
+     protection is NOT lost by moving this up: `ratioProblem` itself returns null
+     the moment any of those figures is absent, so an incomplete scenario falls
+     straight through to the completeness message exactly as before. Checked,
+     not assumed — the ordering would be a real regression if that guard were
+     not already inside it. */
+  const priced = repriceProblem(all);
+  if (priced) return Object.assign({}, priced, { kind });
+
   if (kind !== DOC_KINDS.TERM_SHEET) return { ok: true, kind, missing: [], message: null };
 
   const m = (Array.isArray(s.members) && s.members[0]) || {};
@@ -318,7 +578,17 @@ function exportGate(snapshot) {
   if (num(sc.taxMonthly) == null) missing.push('taxMonthly');
   if (num(sc.insuranceMonthly) == null) missing.push('insuranceMonthly');
   if (num(sc.dscr) == null || num(sc.dscr) <= 0) missing.push('dscr');
-  if (!str(p.borrowerName, 120)) missing.push('borrowerName');
+  // ⛔ ONE NAME IS ENOUGH, AND EITHER ONE WILL DO. Owner-directed 2026-08-30:
+  // *"a name of the person and/or a name of the entity."* A DSCR loan is
+  // routinely vested in an LLC with the individual behind it as guarantor, and
+  // it is just as routinely quoted to a person before an entity exists — so
+  // demanding BOTH would refuse two perfectly ordinary deals, and demanding the
+  // individual alone (which is what this used to do) refuses the first of them.
+  // What a term sheet cannot be is addressed to NOBODY: it carries an
+  // acceptance block, and a signature line over a blank "prepared for" is a
+  // defective document. So the requirement is at least one, reported under the
+  // single key `partyName` — the screen points at both boxes and either fills it.
+  if (!str(p.borrowerName, 120) && !str(p.entityName, 120)) missing.push('partyName');
   if (!str(p.propertyAddress, 200)) missing.push('propertyAddress');
   if (!missing.length) return { ok: true, kind, missing: [], message: null };
 
@@ -350,16 +620,40 @@ function buildSnapshot({ selections, plan, anchorIndex = 0, prepared = {}, maxMe
       + 'and becomes a catalogue.');
   }
   const members = [];
+  /* ⛔ THE PROVENANCE TRAVELS BESIDE THE MEMBERS, NEVER INSIDE THEM (db/651).
+     Who really funds an option is what an officer pulling up an ID needs and is
+     the one thing a client's document may never carry, so it is built here — in
+     lock-step with the members, so index i of one is index i of the other and no
+     later code has to re-align two lists — and returned as a SIBLING of
+     `snapshot`. Nothing that renders, hashes or replays the document can reach
+     it, because it is not a key on the object those functions are handed. */
+  const internal = [];
+  /* ⛔ THE MONEY DECISION IS ITS OWN LIST, and that is not tidiness (§40).
+
+     `internal` is the CLIENT's block, and `store.issueSheet` deliberately projects
+     it a second time on the way to the database — "a caller that assembled its own
+     list must not be able to widen what is recorded". That guard is right, and it
+     means a server-derived key merged into `internal` here is silently STRIPPED at
+     the write (measured: the adjustment reached the priced document and vanished
+     from the record). So how much of our own compensation we gave away travels in
+     its own list, positionally aligned like the other two, and is merged AFTER that
+     projection by the one writer — where a browser can neither forge it nor
+     suppress it, and the client-block guard is left exactly as it was. */
+  const adjustments = [];
   for (let i = 0; i < list.length; i += 1) {
     const r = buildMember(list[i], plan);
     if (!r.ok) return { ...r, memberIndex: i };
     members.push(r.member);
+    internal.push(internalRecord.projectInternal(list[i] && list[i].internal));
+    adjustments.push(r.adjustment || null);
   }
   const compare = members.length > 1 ? comparison.buildComparison(members, anchorIndex) : null;
   const docKind = documentKind(members, compare);
 
   return {
     ok: true,
+    internal,
+    adjustments,
     snapshot: {
       version: 1,
       // `kind` is the RENDERING shape the layout has always branched on — one
@@ -374,6 +668,17 @@ function buildSnapshot({ selections, plan, anchorIndex = 0, prepared = {}, maxMe
       comparison: compare,
       prepared: {
         borrowerName: str(prepared.borrowerName, 120),
+        // THE VESTING ENTITY, when the loan is going into one. Owner-directed
+        // 2026-08-30: *"a name of the person and/or a name of the entity."*
+        //
+        // ⛔ IT IS ITS OWN FIELD, NEVER FOLDED INTO THE BORROWER'S NAME. They
+        // are two different parties who sign two different lines: on a DSCR
+        // loan the entity is the BORROWER and the individual behind it is the
+        // GUARANTOR, so a single "prepared for" string carrying both would put
+        // one name on a signature line meant for the other. This projection is
+        // a WHITELIST — a key nobody lists here is silently dropped — so adding
+        // one is a decision about what may appear on a client's document.
+        entityName: str(prepared.entityName, 120),
         propertyAddress: str(prepared.propertyAddress, 200),
         officerName: str(prepared.officerName, 120),
         // The officer's JOB TITLE — business contact information, exactly like
@@ -428,5 +733,10 @@ module.exports = {
   buildMember, buildSnapshot, canonicalize, hashSnapshot, projectScenario,
   documentKind, exportGate, resolveProgramName,
   DOC_KINDS, KIND_WORDS, MANUAL_NAME_WARNING, GATE_LABELS,
+  // Re-exported from `../pricing/dscr-tiers`, which is where the ladder now
+  // lives. Kept on this surface because the re-price rule is what the ladder
+  // is FOR, and because a test can then assert the board and this rule hold
+  // the same object rather than two tables that merely agree today.
+  DSCR_TIERS, dscrTier,
   _internals: { refuse, str, num },
 };

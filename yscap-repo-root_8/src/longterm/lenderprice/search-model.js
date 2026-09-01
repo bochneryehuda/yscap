@@ -19,6 +19,15 @@ const zipCounty = require('./zip-county');
 // (IncomeDocType was always "DSCR", PrePayment_Plan_Type always "Standard"). Bound locally so the
 // builder reads the same way as the other mapX helpers in this file.
 const { mapIncomeDocType, mapPrepayStructure, PREPAY_STRUCTURE_NULL } = registry;
+// The DSCR profile's numbers live in ONE place so the second pricing program is
+// asked about the SAME loan (owner-directed 2026-08-30). These are this file's
+// own long-standing values, moved — not changed; test-lt-lp-dscr-profile-pure.js
+// is what proves they did not move.
+const SHARED_FLAGS = require('../pricing/scenario-defaults');
+// The SAME rule the LoanNEX connector reads — see `pricing/tier-rounding.js`. The direction lives
+// there, never here, so one loan is described the same way to both programs.
+const tierRounding = require('../pricing/tier-rounding');
+const SHARED_PROFILE = SHARED_FLAGS.DSCR_PROFILE;
 
 // Symbol channel for registry validation warnings (invalid enum values). Symbol-keyed properties
 // are skipped by JSON.stringify, so attaching this to the built payload never pollutes the body
@@ -55,7 +64,7 @@ const SMO_PPP = {
 // special-mortgage-option list and the dynamic PrepayTerm/PrePayment_Plan_Type pair must agree about
 // which term is in force — resolving it in two places is how a request comes to carry a 5 Yr PPP
 // option beside a 36-month term.
-const DEFAULT_PREPAY_MONTHS = 60;
+const DEFAULT_PREPAY_MONTHS = SHARED_PROFILE.prepayMonths;
 
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
 function normName(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
@@ -133,7 +142,15 @@ function mapPurpose(p) {
 function deriveAmounts(sc) {
   sc = sc || {}; // a `= {}` default only catches undefined; this module promises never to throw
   const money = (n) => Math.round(n * 100) / 100;
-  const ratio = (n) => Math.round(n * 1e6) / 1e6;
+  /* ⛔ THE LTV IS LIFTED, NEVER ROUNDED TO NEAREST (owner-directed 2026-08-30: *"the LTV should
+     always be rounded up, so we should never see better"*). A higher LTV prices WORSE, so rounding
+     to nearest is what asks this vendor to price a band the loan has not earned.
+
+     THE PRECISION IS UNCHANGED at 6 decimals of the fraction (4 of the percent) — this moves the
+     DIRECTION only, so a supplied 0.75 and a derived 375000/500000 are byte-identical to what they
+     have always been, and the only figures that move are the ones that genuinely fall between two
+     representable LTVs. Named `ratio` still because that is what both call sites mean by it. */
+  const ratio = (n) => tierRounding.sendAs('ltv', n, 6);
   let value = num(sc.value);
   let loan = num(sc.loan);
   const ltvRaw = num(sc.ltv);
@@ -228,6 +245,15 @@ function mapRentalTerm(v) {
   return t;
 }
 
+/**
+ * THE HIGHEST DSCR LENDER PRICE WILL ACCEPT. Their own request validation refuses
+ * anything above it, so this is the vendor's rule rather than ours, and it is
+ * named ONCE here — the validator below enforces it and `pricing/bracket-board`
+ * imports it, so the number that is checked and the number that is clamped to can
+ * never drift.
+ */
+const VENDOR_MAX_DSCR = 2;
+
 // ---- §32.3 DSCR THRESHOLD TABLE -------------------------------------------
 // The entered DSCR ratio (criteria.dscr, always the verbatim numeric value) ALSO drives a coarse
 // `DSCRRATIO` dynamic token AND — above 0.75 — one additional pricing-band special mortgage option,
@@ -254,6 +280,32 @@ function dscrBand(dscr) {
   if (dscr < 1.00) return { ratio: 'DSCR<1',  smo: 'DSCR <1.15' };
   if (dscr < 1.25) return { ratio: 'DSCR>=1', smo: 'DSCR >=1.00' };
   return             { ratio: '1.25',    smo: 'DSCR >=1.25 - J' };
+}
+
+// ---- §39 SEARCH TERMS -----------------------------------------------------
+// Which loan terms one search asks for. PURE and total: it always returns a non-empty array of
+// allowed terms, so the request can never carry an empty `termsCriteria` (which the vendor reads
+// as "no term matches" and answers with nothing at all).
+function resolveSearchTerms(sc, effTermYears) {
+  const clean = (list) => {
+    const out = [];
+    for (const raw of (Array.isArray(list) ? list : [])) {
+      const n = num(raw);
+      // An unusable or unoffered term is DROPPED rather than sent: `validateInputs` refuses one a
+      // caller states outright, so anything reaching here is either already checked or a default
+      // we built, and a bad number in the array would lose the whole search.
+      if (n != null && ALLOWED_TERMS.includes(n) && !out.includes(n)) out.push(n);
+    }
+    return out.sort((a, b) => a - b);
+  };
+  const explicit = clean(sc && sc.terms);
+  if (explicit.length) return explicit;
+  const io = sc && (sc.io === true || sc.interestOnly === true);
+  if (io) {
+    const pair = clean([effTermYears, IO_EXTRA_TERM]);
+    if (pair.length) return pair;
+  }
+  return ALLOWED_TERMS.includes(effTermYears) ? [effTermYears] : [30];
 }
 
 // ---- §32.4 RESERVES SELECTOR TABLE ----------------------------------------
@@ -630,7 +682,7 @@ function buildSearch(sc = {}, opts = {}) {
   // lock (30) and reserves (24). NULLISH, not truthy: an explicitly supplied 0 is a real "No DSCR"
   // value (dscrBand(0) → NoDSCR) and is preserved — only null/undefined/blank falls back to 1.5.
   const dscrVal = num(sc.dscr);
-  const effDscr = dscrVal != null ? dscrVal : 1.5;
+  const effDscr = dscrVal != null ? dscrVal : SHARED_PROFILE.dscr;
   c.dscr = effDscr;
   // §32.3 — DSCR threshold band, derived ONCE from the EFFECTIVE DSCR (after the profile default).
   // Drives both the DSCRRATIO dynamic token (set below) and the derived pricing-band SMO (pushed into
@@ -642,13 +694,34 @@ function buildSearch(sc = {}, opts = {}) {
   // (the "some DSCR defaults are not enforced" finding). loanYear + termsCriteria must agree;
   // termsInMonths=false means the number is years, NOT a day-lock.
   const termYears = num(sc.termYears != null ? sc.termYears : sc.term);
-  const effTermYears = termYears != null ? termYears : 30;
-  c.loanYear = effTermYears; m.termsCriteria = [effTermYears]; m.termsInMonths = false;
+  const effTermYears = termYears != null ? termYears : SHARED_PROFILE.termYears;
+  /* §39 — A SEARCH MAY CARRY MORE THAN ONE TERM, AND INTEREST-ONLY CARRIES TWO BY DEFAULT
+     (owner-directed 2026-08-31): *"anytime somebody is searching for interest-only … you should
+     not only search for 30 years, you should also search for 40 years … lender price has certain
+     programs on interest-only, which are only 40 years and are not populated. Both of them need to
+     be checked by default if it's interest-only. In general, you should allow checking more than
+     one term to populate."*
+
+     `termsCriteria` has always been an ARRAY and the vendor's own result grouping is
+     `LoanTypeAndTerm`, so several terms in one search is the shape it was built for — we were
+     simply only ever putting one in it. The consequence the owner reported is real: an investor
+     whose interest-only product exists ONLY at 40 years could never appear, however the officer
+     searched, and nothing said so.
+
+     ⛔ `loanYear` STAYS SINGULAR AND STAYS THE ONE THE OFFICER ASKED FOR. It is the loan's own
+     term (the figure the payment is worked out from), not a filter; `termsCriteria` is the filter.
+     Sending a different number there would quietly re-quote the deal on a term nobody chose.
+
+     ⛔ AN EXPLICIT CHOICE IS NEVER OVERRIDDEN — a caller passing `terms` gets exactly those. The
+     interest-only pair is a DEFAULT for when nobody chose, and it ADDS 40 to whatever the officer
+     asked for rather than replacing it, so choosing 20-year interest-only still searches 20. */
+  const searchTerms = resolveSearchTerms(sc, effTermYears);
+  c.loanYear = effTermYears; m.termsCriteria = searchTerms; m.termsInMonths = false;
   // Rate-LOCK days. The intentional DSCR profile default is a 30-day lock; forced when omitted so a
   // live default carrying a different lock can never change the profile. This is a LOCK period
   // (days), NOT the loan term (years).
   const lockDays = num(sc.lockDays);
-  const effLockDays = lockDays != null ? lockDays : 30;
+  const effLockDays = lockDays != null ? lockDays : SHARED_PROFILE.lockDays;
   { const bc = m.brokerCriteria || (m.brokerCriteria = {}); bc.dayLocks = effLockDays; m.dayLocksCriteria = [effLockDays]; }
   // §31.5 — BROKER COMP PERCENT, with the vendor's confirmed SIGN INVERSION: a visible 2.5 is
   // transmitted as brokerCriteria.compPlan = -2.5 (captured live). The caller sends what a human
@@ -1061,6 +1134,9 @@ function envRatio(name, dflt) {
 }
 const MIN_LTV = envRatio('LP_MIN_LTV', 0.001);
 const LIVE_TERMS = [5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 40];
+// The term an interest-only search is widened WITH, by owner direction: several investors publish
+// their interest-only product only at 40 years, so a 30-only search silently omits them.
+const IO_EXTRA_TERM = Number(process.env.LP_IO_EXTRA_TERM || 40);
 const ALLOWED_TERMS = (process.env.LP_ALLOWED_TERMS
   ? process.env.LP_ALLOWED_TERMS.split(',').map((x) => Number(x.trim())).filter((n) => isFinite(n))
   : LIVE_TERMS);
@@ -1164,7 +1240,7 @@ function validateInputs(sc = {}) {
   const asIs = numField('asIsValue', { min: 1 }); if (asIs.err) return asIs.err;
   const loan = numField('loan', { min: 1 }); if (loan.err) return loan.err;
   const fico = numField('fico', { min: 300, max: 850, integer: true }); if (fico.err) return fico.err;
-  const dscr = numField('dscr', { min: 0, max: 2 }); if (dscr.err) return dscr.err;
+  const dscr = numField('dscr', { min: 0, max: VENDOR_MAX_DSCR }); if (dscr.err) return dscr.err;
   const units = numField('units', { min: 1, max: 20, integer: true }); if (units.err) return units.err;
   const cashout = numField('cashoutAmount', { min: 0 }); if (cashout.err) return cashout.err; // "cash in hand"; stored, and transmitted as the captured criteria.cashoutAmount
   // Term / lock against the allowed capability sets (a 17-year term / 22-day lock does not exist).
@@ -1173,6 +1249,26 @@ function validateInputs(sc = {}) {
   const termVal = t1.v != null ? t1.v : t2.v;
   if (termVal != null && !ALLOWED_TERMS.includes(termVal)) {
     return bad('unsupported_term', 'termYears', `Loan term ${termVal} years is not offered. Supported: ${ALLOWED_TERMS.join(', ')}.`);
+  }
+  /* §39 — AN EXPLICIT LIST OF TERMS IS CHECKED, NOT QUIETLY TRIMMED. `resolveSearchTerms` drops
+     an unusable entry because it also builds DEFAULTS and one bad number must not lose the whole
+     search — but a term a CALLER stated is a different thing: silently searching something other
+     than what was asked for is the silent-cap failure this codebase refuses everywhere else. So a
+     stated list is validated here and refused by name. */
+  if (sc.terms !== undefined) {
+    if (!Array.isArray(sc.terms)) {
+      return bad('unsupported_term', 'terms', 'Loan terms must be a list, e.g. [30, 40].');
+    }
+    for (const raw of sc.terms) {
+      const n = strictNum(raw);
+      if (n == null || !ALLOWED_TERMS.includes(n)) {
+        return bad('unsupported_term', 'terms',
+          `Loan term ${JSON.stringify(raw)} is not offered. Supported: ${ALLOWED_TERMS.join(', ')}.`);
+      }
+    }
+    if (!sc.terms.length) {
+      return bad('unsupported_term', 'terms', 'Give at least one loan term to search.');
+    }
   }
   const lock = numField('lockDays', {}); if (lock.err) return lock.err;
   if (lock.v != null && !ALLOWED_LOCKS.includes(lock.v)) {
@@ -1331,6 +1427,16 @@ function validateScenario(sc = {}) {
   // offline), so this adds no network call and no database read to the pricing path. Anything the
   // CALLER supplied is an ASSERTION, never overwritten — a supplied value that contradicts the ZIP
   // is a 422, because silently preferring one side is how a loan gets priced in the wrong county.
+  // §  — THE BUTTONS ARE READ UNDER ONE NAME ON BOTH PROGRAMS (owner-directed
+  // 2026-08-30). A scenario may arrive spelling a flag any of the ways a caller
+  // reasonably might (`isSelfEmployed`, `interestOnly`, `waiveEscrow`); this adds
+  // the canonical spelling so the strict boolean validation below actually SEES
+  // the value, and so the second pricing program is asked the same question.
+  // Additive — the caller's own spelling is left in place.
+  try { sc = SHARED_FLAGS.canonicalizeFlags(sc); }
+  catch (e) {
+    return { ok: false, status: 422, error: e.code || 'invalid_flag', field: e.field || null, message: e.message };
+  }
   const enr = zipCounty.enrichLocation(sc);
   if (!enr.ok) return { ok: false, status: 422, error: enr.code, field: enr.field, message: enr.message };
   // Merge the filled fields UNDER the caller's own values, then validate/build from the completed
@@ -1362,6 +1468,33 @@ function validateScenario(sc = {}) {
     }
     : null;
   sc = enriched;
+  /* ⛔ A TYPED RATIO ABOVE THE VENDOR'S CEILING IS PRICED AT THE CEILING, NOT REFUSED
+     (owner-directed 2026-09-01: *"If somebody types it in without putting in the
+     scenario, types in more than 2.0, it should automatically send it to Lender
+     Price as 2.0, should not be rejected."*).
+
+     ⛔ AND IT IS PRICE-NEUTRAL, WHICH IS WHY IT IS SAFE RATHER THAN CONVENIENT. The
+     owner's own ladder tops out at "1.50 AND ABOVE" — there is no band above it — so
+     2.4 and 2.00 are the SAME band and buy the same price. More than that: Lender
+     Price refuses anything above 2.00, so 2.00 is the strongest ratio the vendor can
+     be told at all. Clamping to it is not an approximation of the answer, it is the
+     best answer available.
+
+     ⛔ IT IS REPORTED, NEVER SILENT. `dscrClamped` rides on the result so a screen can
+     say the deal was priced at 2.00 and why. A number quietly changed behind somebody
+     who typed it is how a person stops trusting the board.
+
+     ⛔ ONLY DOWNWARD, AND ONLY FROM ABOVE THE CEILING. A negative, a blank or a
+     non-numeric ratio still goes to `validateInputs` and is still refused there —
+     this widens nothing except the one case the owner named. */
+  let dscrClamped = null;
+  {
+    const typed = strictNum(sc.dscr);
+    if (typed !== undefined && Number.isFinite(typed) && typed > VENDOR_MAX_DSCR) {
+      dscrClamped = { typed, priced: VENDOR_MAX_DSCR };
+      sc = { ...sc, dscr: VENDOR_MAX_DSCR };
+    }
+  }
   const loc = validateLocation(sc);
   if (!loc.ok) return { ok: false, status: 422, error: loc.code, field: loc.field, message: loc.message };
   // A PRICED SCENARIO MUST SAY WHERE THE PROPERTY IS. `validateLocation` deliberately passes a
@@ -1392,8 +1525,8 @@ function validateScenario(sc = {}) {
     return { ok: false, status: 422, error: 'invalid_field_value', warnings: w,
       message: `One or more fields carried a value the pricing engine does not recognize; the value would be silently dropped, so the request is rejected rather than mis-priced: ${w.map((x) => x.field).join(', ')}.` };
   }
-  return { ok: true, request, scenario: sc, countyEnrichment };
+  return { ok: true, request, scenario: sc, countyEnrichment, dscrClamped };
 }
 
-module.exports = { BASE, buildSearch, clearScenarioOwnedFields, mergeKnownRequestDefaults, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };
+module.exports = { VENDOR_MAX_DSCR, BASE, buildSearch, clearScenarioOwnedFields, mergeKnownRequestDefaults, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, resolveSearchTerms, IO_EXTRA_TERM, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };

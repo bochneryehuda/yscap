@@ -55,6 +55,15 @@
 
 const rules = require('./rules');
 const registry = require('./field-registry');
+// The ONE translation between this file's wording and the shared Condition
+// Center's vocabulary. `seed()` writes through it and `read.js` reads back
+// through it, so a bucket cannot be filed under one heading and shown under
+// another (db/653 states the whole decision and why it is a MAP, not a widen).
+const vocab = require('./vocabulary');
+// The vendor VOCABULARY — what each contact is called, and the word a card is
+// filed under in the shared directory. PURE, no requires of its own, so this is
+// not a cycle. See FILE_CONTACT_TYPES below.
+const orderKinds = require('../orders/kinds');
 
 const B = {
   SUBMISSION: 'prior_to_submission',
@@ -69,6 +78,73 @@ const when = (field, operator, value) => ({
   combinator: 'and',
   rules: [value === undefined ? { field, operator } : { field, operator, value }],
 });
+
+/** The same, for a condition that applies when ANY one of several rows holds. */
+const whenAny = (rows) => ({ combinator: 'or', rules: rows });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WHO CAN BE ON A LONG-TERM FILE — THE ONE LIST
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * EVERY CONTACT A LONG-TERM FILE CAN CARRY, what each is called, and the ONE fact
+ * that decides whether it belongs on THIS file.
+ *
+ * ── WHY THIS IS ONE LIST AND NOT THREE ──────────────────────────────────────
+ *
+ * These names were written out three times: in the pre-submittal condition's
+ * `contactTypes`, in `orders/kinds.js VENDOR_KINDS`, and again as a flat array in
+ * the File contacts screen. Nothing could see the other two, so a company was
+ * "Settlement agent" on one and "Settlement agent (New York)" on another, and the
+ * screen offered a landlord row the condition had never heard of. The condition
+ * now DERIVES its two rows from here, the screen reads this list from the server,
+ * and `test-lt-orders-pure.js` holds the orders registry to it.
+ *
+ * ── `whenField` IS THE SAME MACHINERY THE CONDITIONS USE ────────────────────
+ *
+ * The rule engine cannot express a per-ROW condition, so `read.contactTypesFor`
+ * answers it from the same field a rule would — and it answers THREE ways, which
+ * is the point: yes, no, and *we cannot tell yet*. Owner-directed 2026-08-31,
+ * asked what an unread file should show: *"Show it greyed, saying we can't tell
+ * yet."* A row that does not apply is KEPT AND MARKED, never dropped — *"The New
+ * York Settlement Agent Order should be grayed out. And collapsed. Be visible
+ * that doesn't belong for this file."*
+ *
+ * `preSubmission` marks the two the file genuinely cannot be submitted without.
+ * Everything else is a slot on the desk, offered when the deal calls for it.
+ *
+ * THE LABEL IS NOT WRITTEN HERE — it is taken from `orders/kinds.js VENDOR_KINDS`,
+ * which is the word already written onto the shared directory card
+ * (`service_contacts.custom_type`) when one is created. So this file decides WHICH
+ * contacts a long-term file can carry and WHEN each is asked for, and that file
+ * decides what each is CALLED, and neither can drift from the other — which they
+ * had: this list first said "HOA / management company" while a card created from
+ * it was filed as "HOA management company", so the same company read two ways on
+ * two screens. A key with no entry there yields `undefined`, which `verify()`
+ * refuses at load, so a typo cannot ship as a blank pill.
+ */
+const FILE_CONTACT_TYPES = Object.freeze([
+  { key: 'title', required: true, preSubmission: true },
+  { key: 'hazard_insurance', required: true, preSubmission: true },
+  // Read from Encompass field 541 or ticked by hand — see src/longterm/flood-zone.js.
+  { key: 'flood_insurance', required: false, whenField: 'in_flood_zone' },
+  // New York closes through a settlement agent rather than the title company.
+  { key: 'ny_settlement_agent', required: false, whenField: 'is_new_york' },
+  // Owner-directed 2026-08-31: *"We should also have the HOA contact. That should
+  // be grayed out, and it should only be available on a condo."*
+  { key: 'hoa', required: false, whenField: 'is_condo' },
+  // …*"We should have the landlord contact information if the person is renting
+  // his primary residence, and if not, it should also be grayed out."* It is the
+  // contact the verification of rent is sent to, so it is a real slot rather than
+  // a note somebody types.
+  { key: 'landlord', required: false, whenField: 'borrower_rents' },
+  // Whoever holds the loan being paid off. Only a refinance has one.
+  { key: 'payoff', required: false, whenField: 'is_refinance' },
+  // The four that can be on any deal and are nobody's requirement.
+  { key: 'buyers_attorney', required: false },
+  { key: 'our_attorney', required: false },
+  { key: 'realtor', required: false },
+  { key: 'appraisal', required: false },
+].map((t) => Object.freeze({ ...t, label: orderKinds.VENDOR_KINDS[t.key] })));
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PRIOR TO SUBMISSION — everything the file needs before it goes to underwriting.
@@ -130,7 +206,30 @@ const PRIOR_TO_SUBMISSION = [
     audience: 'both',
     kind: 'document',
     autoApply: 'rules',
-    rule: when('vests_in_entity', 'is_true'),
+    // ── "IN AN ENTITY, **OR** WE HAVE NOT BEEN TOLD" ────────────────────────
+    //
+    // Field 4008 decides and nothing else (owner-directed 2026-08-23, restated
+    // 2026-08-31: "if 4008 is individual instead of officer, then no entity
+    // condition"). `vests_in_entity` now reads 4008 rather than the parties, so
+    // an Individual-vested loan carrying a STALE company name on a borrower row
+    // is no longer asked for formation documents it does not need.
+    //
+    // WHY THE SECOND ARM, AND WHY IT IS NOT A FIELD THAT DEFAULTS. That field
+    // answers `null` when Encompass has not said — honestly, because nothing
+    // stated is not "Individual" — and `rules.js` turns a blank into FALSE, so a
+    // single `is_true` arm would take this condition OFF every unanswered loan
+    // (19 of the measured 486, plus every loan not yet read). The owner chose the
+    // other direction: keep asking until 4008 positively says Individual. The
+    // first shape tried was a new field that returned `true` on a blank, and it
+    // was WRONG — it would have had to claim a fact about the title that nobody
+    // has told us, which is the one thing this registry's own header forbids.
+    // `is_empty` says the same thing without inventing anything, and the settings
+    // screen renders it in plain words: "Title is taken in an entity is yes OR
+    // Title is taken in an entity is blank".
+    rule: whenAny([
+      { field: 'vests_in_entity', operator: 'is_true' },
+      { field: 'vests_in_entity', operator: 'is_empty' },
+    ]),
     slots: [
       { key: 'formation', label: 'Articles of formation', required: true },
       { key: 'agreement', label: 'Operating agreement or bylaws', required: true },
@@ -157,10 +256,22 @@ const PRIOR_TO_SUBMISSION = [
     code: 'lt_subject_mortgage_statement',
     bucket: B.SUBMISSION,
     label: 'Mortgage statement on the subject property',
-    hint: 'A current statement on the loan being paid off. Three ways to satisfy it: the statement '
-      + 'itself; the payoff figures typed in — outstanding balance, servicer AND loan number, all '
-      + 'three, none of them optional; or a waiver where the loan being refinanced is one of our own '
-      + 'short-term loans serviced by FCI, where we already hold everything a statement would say.',
+    /* THE FCI WAY IS NOT A WAIVER — owner-directed 2026-08-31. It answers the
+       SERVICER by itself and still asks for the two numbers, because being the
+       servicer is what makes them OBTAINABLE, not unnecessary: the loan-setup
+       person still keys a loan number and a balance into Encompass and neither
+       of them is on this file. Wording that promised a waiver told somebody the
+       opposite of what the screen asks them for.
+       PREVIOUS AND FUTURE: this string is COPIED onto each condition when it is
+       created, so changing it here reaches a NEW tenant and db/664 reaches every
+       file that already exists. Editing one without the other leaves the two
+       drifting; section F of the test compares them. */
+    hint: 'A current statement on the loan being paid off. Three ways to satisfy it: upload the '
+      + 'statement — PILOT reads the servicer, the loan number and the outstanding principal balance '
+      + 'off it and fills them in for somebody to check; type those three in yourself — all three, '
+      + 'none of them optional; or say it refinances one of our own short-term loans serviced by FCI, '
+      + 'which answers the servicer itself and still needs the FCI loan number and the outstanding '
+      + 'balance looked up in FCI.',
     borrowerLabel: 'Your current mortgage statement',
     borrowerHint: 'A recent statement for the mortgage on this property.',
     audience: 'both',
@@ -183,28 +294,38 @@ const PRIOR_TO_SUBMISSION = [
     code: 'lt_file_contacts',
     bucket: B.SUBMISSION,
     label: 'File contacts',
-    hint: 'Who is on this closing: title, hazard insurance, flood insurance, the buyer’s attorney, '
-      + 'the realtor, our attorney, and — in New York — the settlement agent. Picked from the shared '
-      + 'vendor directory rather than typed, so the same company is the same record on every file.',
+    hint: 'The two the file cannot be submitted without: the title company and the hazard insurance '
+      + 'agent. Everyone else on the closing — the attorneys, the realtor, the settlement agent, the '
+      + 'HOA, the landlord — lives in the File contacts section rather than being asked for here. '
+      + 'Picked from the shared vendor directory rather than typed, so the same company is the same '
+      + 'record on every file.',
     borrowerLabel: 'Who is handling your closing',
-    borrowerHint: 'Your title company, your insurance agent, your attorney and your realtor.',
+    borrowerHint: 'Your title company and your insurance agent.',
     audience: 'both',
     kind: 'form',
     autoApply: 'always',
     slots: [],
     config: {
-      // The contact TYPES. The New York one only asks when the property is
-      // there, which the rule engine cannot express per-slot, so the form does
-      // it from the same `is_new_york` field a rule would use.
-      contactTypes: [
-        { key: 'title', label: 'Title company', required: true },
-        { key: 'hazard_insurance', label: 'Hazard insurance agent', required: true },
-        { key: 'flood_insurance', label: 'Flood insurance agent', required: false, whenField: 'in_flood_zone' },
-        { key: 'buyers_attorney', label: 'Buyer’s attorney', required: false },
-        { key: 'realtor', label: 'Realtor', required: false },
-        { key: 'our_attorney', label: 'Our attorney', required: false },
-        { key: 'ny_settlement_agent', label: 'Settlement agent', required: false, whenField: 'is_new_york' },
-      ],
+      // ONLY THE TWO. Owner-directed 2026-08-31: *"Our attorney, Realtor,
+      // Buyer's Attorney — those open slots should be only in the file contacts
+      // and not … a condition before submittal. The only stuff that should be a
+      // condition before submittal is the title company and the hazard insurance
+      // agent."*
+      //
+      // The other nine did not go anywhere: they are the FILE CONTACTS desk
+      // (`FILE_CONTACT_TYPES` below), which is where an open slot belongs. The
+      // difference is what a CONDITION means — a row on the list somebody has to
+      // clear before the file moves — and an attorney who may never be appointed
+      // is not that. Two of the nine are still asked for in their own right when
+      // the deal calls for it, by their own rule-driven ORDER conditions
+      // (`lt_order_flood_insurance`, `lt_order_ny_settlement_agent`), so nothing
+      // that was genuinely required has become optional.
+      //
+      // DERIVED, NEVER RETYPED: these are the two entries of `FILE_CONTACT_TYPES`
+      // marked `preSubmission`, so the desk and the condition can never disagree
+      // about what the title company is called or which fact greys it.
+      contactTypes: FILE_CONTACT_TYPES.filter((t) => t.preSubmission)
+        .map(({ preSubmission, ...t }) => t),
       // USES the short-term side's vendor directory rather than copying it, so a
       // company corrected once is corrected everywhere. The crossing is recorded
       // in docs/LONG-TERM-AUTHORIZED-COPIES.md before a line of it is written.
@@ -273,20 +394,6 @@ const PRIOR_TO_SUBMISSION = [
     config: { savesToBorrowerProfile: true, readsFromBorrowerProfile: true },
   },
   {
-    code: 'lt_landlord_contact',
-    bucket: B.SUBMISSION,
-    label: 'Landlord’s contact details',
-    hint: 'Only where the borrower rents where they live (Encompass field FR0115). This is what the '
-      + 'verification of rent is sent to, so it is collected before the form is built.',
-    borrowerLabel: 'Your landlord’s contact details',
-    borrowerHint: 'Their name, email and phone number. We send them a short form to confirm your rent.',
-    audience: 'both',
-    kind: 'form',
-    autoApply: 'rules',
-    rule: when('borrower_rents', 'is_true'),
-    config: { fields: ['landlord_name', 'landlord_email', 'landlord_phone', 'monthly_rent', 'rented_since'] },
-  },
-  {
     code: 'lt_vor_sent',
     bucket: B.SUBMISSION,
     label: 'Verification of rent sent',
@@ -305,6 +412,17 @@ const PRIOR_TO_SUBMISSION = [
     // a button ends up on a screen with nothing behind it.
     config: {
       form: 'vor', orderType: 'vor', contactType: 'landlord',
+      // THE TWO TENANCY FACTS MOVED HERE (db/660). They were collected on a
+      // separate "Landlord's contact details" condition, which the owner asked to
+      // retire — *"You can technically remove that condition … You should also be
+      // able to fill it directly on the verification of rent condition and the
+      // entire verification of rent sent as well."* They are facts about the
+      // TENANCY rather than about the landlord, the form cannot be built without
+      // them, and this is the step that builds it — so they belong on the step
+      // that uses them rather than on a row somebody clears first. The LANDLORD
+      // themself is a contact and lives where every other contact does: the File
+      // contacts desk, which `contactType` above already addresses.
+      fields: ['monthly_rent', 'rented_since'],
       send: ['docusign', 'email', 'both'], manualReturnVoidsEnvelope: true,
     },
   },
@@ -344,7 +462,12 @@ const PRIOR_TO_SUBMISSION = [
     kind: 'form',
     autoApply: 'rules',
     rule: when('is_condo', 'is_true'),
-    config: { fields: ['management_company', 'contact_name', 'contact_email', 'contact_phone'] },
+    /* Same as the landlord above: the condo questionnaire order sends to the
+       `hoa` vendor on the loan, so this has to WRITE that row rather than four
+       boxes that only this condition can see. */
+    config: {
+      contactTypes: [{ key: 'hoa', label: 'HOA management company', required: true }],
+    },
   },
   {
     code: 'lt_condo_questionnaire_ordered',
@@ -463,17 +586,42 @@ const PRIOR_TO_CTC = [
     code: 'lt_housing_history',
     bucket: B.CTC,
     label: 'Housing history verified',
+    /* THREE WAYS TO ANSWER ONE QUESTION, AND THE FILE PICKS — owner-directed
+       2026-08-31: *"If he is renting, then the housing history verified condition
+       is tied directly to the verification of rent order and gets the documents
+       from there. You can either upload it manually as well, but it's tied
+       directly and populated by himself. If he is owning, then that housing
+       history verified should have a note that it is a verification of mortgage
+       of primary residence. If he is living rent-free, then the housing history
+       verified should be the rent-free letter."*
+
+       The RENT branch is fed by the verification-of-rent order (orders/kinds.js
+       `vor.docCondition` names this condition and its `slotMap` names the slot),
+       so a completed form that comes back by reply files itself. The other two
+       are uploaded, and so is a rent verification that arrives some other way —
+       "tied directly" adds a route, it never closes the manual one. */
     hint: 'One of three, decided by what the borrower said about where they live (FR0115): the rent '
-      + 'verification back from the landlord if they rent, a mortgage verification on their own home '
-      + 'if they own it, or a letter if they live somewhere rent free. They are alternatives, not a '
-      + 'list — asking for all three would be asking for two things that cannot exist.',
+      + 'verification back from the landlord if they rent, a verification of mortgage on the home they '
+      + 'live in if they own it, or a letter if they live somewhere rent free. They are alternatives, not '
+      + 'a list — asking for all three would be asking for two things that cannot exist. The rent one '
+      + 'fills itself in from the verification of rent order; any of the three can also be uploaded here.',
     audience: 'internal',
     kind: 'document',
     autoApply: 'always',
     slots: [
-      { key: 'vor', label: 'Verification of rent (completed)', required: false, whenField: 'borrower_rents' },
-      { key: 'vom_primary', label: 'Verification of mortgage — their own home', required: false, whenField: 'borrower_owns_home' },
-      { key: 'rent_free_letter', label: 'Living rent free letter', required: false, whenField: 'borrower_lives_rent_free' },
+      { key: 'vor', label: 'Verification of rent (completed)', required: false, whenField: 'borrower_rents',
+        hint: 'Comes back on the verification of rent order and files itself here. It can also be uploaded.' },
+      // THE OWNER ASKED FOR THIS TO SAY PRIMARY RESIDENCE, in those words. The
+      // file already carries a `lt_vom_subject` for the SUBJECT property on a
+      // refinance, and two conditions both called "verification of mortgage" with
+      // nothing saying which house is how the wrong one gets uploaded.
+      { key: 'vom_primary', label: 'Verification of mortgage — primary residence', required: false, whenField: 'borrower_owns_home',
+        hint: 'The home the borrower LIVES in, not the subject property — the subject property has its own verification of mortgage on this file.' },
+      // Worded "Written by" rather than "From" on purpose: the separation gate
+      // reads `FROM <word>` in a Long-Term file as a Long-Term module querying
+      // an RTL table, so ordinary prose in that shape fails the build.
+      { key: 'rent_free_letter', label: 'Living rent free letter', required: false, whenField: 'borrower_lives_rent_free',
+        hint: 'Written by whoever they live with, confirming the borrower pays no rent.' },
     ],
     config: { oneOf: true },
   },
@@ -532,26 +680,40 @@ const PRIOR_TO_CTC = [
     code: 'lt_payoff_received',
     bucket: B.CTC,
     label: 'Payoff received',
-    hint: 'The statement back from the servicer, still good on the closing date.',
+    /* FED BY THE PAYOFF ORDER — owner-directed 2026-08-31: *"The payoff received
+       should be tied directly to the payoff order, and you should also be able to
+       upload manually."* `orders/kinds.js payoff.docCondition` names this
+       condition and its `slotMap` names the slot below, so a statement that comes
+       back by reply files itself; the slot stays an ordinary upload for a payoff
+       that arrives any other way. */
+    hint: 'The statement back from the servicer, still good on the closing date. It files itself in from '
+      + 'the payoff order, and can also be uploaded here.',
     audience: 'internal',
     kind: 'document',
     autoApply: 'rules',
     rule: when('is_refinance', 'is_true'),
-    slots: [{ key: 'payoff', label: 'Payoff statement', required: true }],
+    slots: [{ key: 'payoff', label: 'Payoff statement', required: true,
+      hint: 'Comes back on the payoff order and files itself here. It can also be uploaded.' }],
   },
   {
     code: 'lt_condo_docs',
     bucket: B.CTC,
     label: 'Condo documents',
-    hint: 'The completed questionnaire, the association’s master insurance, and its budget.',
+    hint: 'The completed questionnaire, the association’s current budget, the bylaws, and its master insurance.',
     audience: 'internal',
     kind: 'document',
     autoApply: 'rules',
     rule: when('is_condo', 'is_true'),
+    /* ONE LIST WITH THE ORDER'S `wants` (orders/kinds.js condo_questionnaire).
+       What we ASK the association for and what we have a place to PUT are the
+       same four things, or a document arrives with nowhere to file it and the
+       condition can never read as complete. The bylaws were asked for in the
+       owner's original brief and were dropped on the first build. */
     slots: [
       { key: 'questionnaire', label: 'Condo questionnaire (completed)', required: true },
+      { key: 'budget', label: 'Association budget', required: true },
+      { key: 'bylaws', label: 'Bylaws', required: true },
       { key: 'master_insurance', label: 'Master insurance policy', required: true },
-      { key: 'budget', label: 'Association budget', required: false },
     ],
   },
 ];
@@ -604,10 +766,20 @@ function library() {
  *
  * @returns {{ok, problems:[{code, problem}]}}
  */
-function verify() {
+function verify(accepted) {
   const fields = registry.fieldMap();
   const problems = [];
   const seen = new Set();
+
+  // EVERY VALUE THIS LIBRARY WILL EMIT, CHECKED AGAINST THE COLUMN THAT HAS TO
+  // TAKE IT. This is the half that makes a mapped value fail the BUILD rather
+  // than a loan file: `seed()` calls this with the sets read live out of
+  // pg_constraint, the pure test calls it with none and gets the declared sets,
+  // and either way a bucket or an audience the database would refuse stops the
+  // seed before a single INSERT is attempted.
+  for (const p of vocab.constraintProblems(accepted || {})) {
+    problems.push({ code: '(vocabulary)', problem: `${p.what} maps to "${p.value}", which ${p.problem}` });
+  }
 
   for (const c of library()) {
     if (seen.has(c.code)) problems.push({ code: c.code, problem: 'two conditions share this code' });
@@ -615,6 +787,17 @@ function verify() {
 
     if (!Object.values(B).includes(c.bucketKey)) {
       problems.push({ code: c.code, problem: `unknown bucket "${c.bucketKey}"` });
+    }
+    // A WORD THE TRANSLATION DOES NOT KNOW IS NOT A TYPO IT CAN ABSORB. Every
+    // mapper in vocabulary.js fails CLOSED — an unknown audience becomes
+    // staff-only, an unknown kind becomes a document — which is the right
+    // posture at RUNTIME and exactly the wrong one HERE: a misspelling would
+    // seed quietly under the safe fallback and nobody would ever be told.
+    if (!Object.prototype.hasOwnProperty.call(vocab.AUDIENCE_TO_SHARED, c.audience)) {
+      problems.push({ code: c.code, problem: `unknown audience "${c.audience}"` });
+    }
+    if (!Object.prototype.hasOwnProperty.call(vocab.KIND_TO_ITEM_KIND, c.kind)) {
+      problems.push({ code: c.code, problem: `unknown kind "${c.kind}"` });
     }
     if (c.autoApply === 'rules' && !c.ruleLogic) {
       problems.push({ code: c.code, problem: 'says it applies by rule and carries no rule' });
@@ -649,36 +832,69 @@ function verify() {
 }
 
 /**
- * Put the library into the database, ONCE.
+ * Put the library into the database, ONCE — as `checklist_templates` rows in the
+ * ONE Condition Center, `scope='lt_loan'`.
+ *
+ * ── THE WORDING IS THIS FILE'S. THE VOCABULARY IS THE SHARED TABLE'S ────────
+ *
+ * Every LABEL, HINT, borrower sentence and RULE below is the owner's own and is
+ * written verbatim. What is TRANSLATED on the way in is only the handful of
+ * enumerated words the shared columns constrain — the audience, the bucket, the
+ * kind — through `vocabulary.js`, which is also what the read inverts. db/653
+ * says why that is a MAP rather than a widening of the CHECKs; the short version
+ * is that two dialects in one column is not one Condition Center.
  *
  * `ON CONFLICT (code) DO NOTHING`, so a buyer's own edit to a row — its wording,
  * its rule, whether it applies at all — survives every redeploy. This function
- * fills the library; it never rewrites it.
+ * fills the library; it never rewrites it. The codes are all `lt_*`, and
+ * `checklist_templates.code` is UNIQUE ACROSS BOTH PRODUCTS, so a collision with
+ * an `rtl_*` template is impossible by naming.
  *
- * NEVER THROWS. It runs at boot, and a boot task may not stop the server coming
- * up. What it could not do is reported.
+ * NEVER THROWS. It runs on first use, and a failed seed must leave the library
+ * exactly as it found it. What it could not do is reported.
  */
 async function seed(client) {
-  const out = { inserted: 0, skipped: 0, failed: [], verified: verify() };
+  // THE LIVE CONSTRAINTS ARE READ FIRST, AND `verify()` IS RUN AGAINST THEM.
+  // The declared sets in vocabulary.js are a copy, and a copy nothing checks is
+  // the copy that drifts: if a migration lands tomorrow that narrows one of
+  // these columns, this is where it is caught — before any INSERT — rather than
+  // as a check-violation on somebody's loan file. An unreadable catalogue falls
+  // back to the declared sets, so a permissions quirk degrades to the pure check
+  // instead of refusing to seed for the wrong reason.
+  const accepted = await vocab.liveAccepted(client);
+  const out = { inserted: 0, skipped: 0, failed: [], verified: verify(accepted) };
   // REFUSE TO SEED A LIBRARY THAT DOES NOT VERIFY. A rule naming a field that
   // does not exist would sit in the database attaching to nothing, which reads
-  // exactly like a condition nobody needs.
+  // exactly like a condition nobody needs — and a value the column will refuse
+  // would fail one INSERT at a time, leaving a HALF-SEEDED library.
   if (!out.verified.ok) return out;
 
   for (const c of library()) {
     try {
+      const { item_kind, tool_key } = vocab.kindToShared(c.kind);
       const { rows } = await client.query(
-        `INSERT INTO lt_condition_templates
-           (code, bucket_key, label, hint, borrower_label, borrower_hint,
-            audience, kind, auto_apply, rule_logic, is_required, slots, config,
-            is_enabled, disabled_reason, sort_order, is_seeded)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12::jsonb,$13::jsonb,$14,$15,$16,true)
+        `INSERT INTO checklist_templates
+           (code, scope, label, hint, borrower_label, borrower_hint,
+            audience, item_kind, tool_key, category, auto_apply, rule_logic,
+            is_required, slots, config, sort_order, is_active, origin)
+         VALUES ($1, 'lt_loan', $2, $3, $4, $5,
+                 $6, $7, $8, $9, $10, $11::jsonb,
+                 $12, $13::jsonb, $14::jsonb, $15, true, 'system')
          ON CONFLICT (code) DO NOTHING
          RETURNING code`,
-        [c.code, c.bucketKey, c.label, c.hint, c.borrowerLabel, c.borrowerHint,
-          c.audience, c.kind, c.autoApply, c.ruleLogic ? JSON.stringify(c.ruleLogic) : null,
-          c.isRequired, JSON.stringify(c.slots), JSON.stringify(c.config),
-          c.isEnabled, c.disabledReason, c.sortOrder],
+        [c.code, c.label, c.hint, c.borrowerLabel, c.borrowerHint,
+          vocab.audienceToShared(c.audience), item_kind, tool_key,
+          vocab.categoryOf(c.bucketKey), c.autoApply,
+          c.ruleLogic ? JSON.stringify(c.ruleLogic) : null,
+          c.isRequired, JSON.stringify(c.slots),
+          // `enabled` + `disabledReason` ride INSIDE config rather than taking
+          // `is_active`. They are two different facts: `is_active=false` retires
+          // a template from the library, while `enabled:false` means BUILT BUT
+          // SWITCHED OFF — it still shows on the file, greyed, WITH ITS REASON,
+          // so nobody thinks a feature vanished. Collapsing them would lose the
+          // reason and hide the condition.
+          JSON.stringify({ ...(c.config || {}), enabled: c.isEnabled, disabledReason: c.disabledReason || null }),
+          c.sortOrder],
       );
       if (rows.length) out.inserted += 1; else out.skipped += 1;
     } catch (e) {
@@ -732,4 +948,4 @@ function ensureSeeded(client) {
 /** For tests: forget that the seed ran, so the next call re-runs it. */
 function _resetSeed() { seedPromise = null; }
 
-module.exports = { BUCKETS: B, PRIOR_TO_SUBMISSION, PRIOR_TO_CTC, library, verify, seed, ensureSeeded, _resetSeed };
+module.exports = { BUCKETS: B, FILE_CONTACT_TYPES, PRIOR_TO_SUBMISSION, PRIOR_TO_CTC, library, verify, seed, ensureSeeded, _resetSeed };

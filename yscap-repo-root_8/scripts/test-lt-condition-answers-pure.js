@@ -27,7 +27,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const answers = require('../src/longterm/conditions-center/answers.js');
+const answers = require('../src/lib/conditions/answers.js');
 const workspace = require('../src/longterm/conditions-center/workspace.js');
 const library = require('../src/longterm/conditions-center/library.js');
 const { stripComments } = require('./lib/strip-comments.js');
@@ -86,8 +86,23 @@ check(JSON.stringify(subjectWays) === JSON.stringify(['statement', 'typed', 'fci
 
 check(answers.satisfies(subject, {}, {}).ok === false,
   'answering nothing does not finish it');
-check(answers.satisfies(subject, { way: 'fci_serviced' }, {}).ok === true,
-  'the FCI selection alone finishes it — "you don’t need anything, not an attachment and not a form"');
+/* THE FCI WAY STOPPED BEING A WAIVER — owner-directed 2026-08-31: *"if you're
+   putting in that it's FCI then the servicer automatically selects it to be FCI
+   and our processor needs to go into FCI and look for the FCI loan number and put
+   it in and outstanding balance."* Being the servicer is what makes those two
+   numbers OBTAINABLE, not unnecessary — the loan-setup person still keys them
+   into Encompass and neither is on this file. Re-pointed at that rule rather than
+   loosened: it now asserts BOTH halves, what the way answers by itself and what
+   it still asks for. */
+check(answers.satisfies(subject, { way: 'fci_serviced' }, {}).ok === false,
+  'the FCI selection alone no longer finishes it — the two numbers are still needed');
+const fciFull = { way: 'fci_serviced', values: { loan_number: 'FCI-4471', outstanding_balance: 388000 } };
+check(answers.satisfies(subject, fciFull, {}).ok === true,
+  'and with the FCI loan number and the balance keyed in it does — no attachment, no form');
+check(answers.withFixed(subject, fciFull).values.servicer === answers.FCI_SERVICER,
+  'while the SERVICER answers itself, which is the one thing choosing FCI already says');
+check(answers.withFixed(subject, { way: 'typed', values: { servicer: 'Shellpoint' } }).values.servicer === 'Shellpoint',
+  '…and a servicer a person typed is never overwritten by it');
 check(answers.satisfies(subject, { way: 'statement' }, { hasDocument: true }).ok === true,
   'an accepted statement finishes it');
 check(answers.satisfies(subject, { way: 'statement' }, { hasDocument: false }).ok === false,
@@ -117,8 +132,14 @@ console.log('the mortgages on the credit report');
 
 const reo = byCode('lt_reo_liabilities');
 const reoWays = answers.plan(reo).ways.map((w) => w.key);
-check(JSON.stringify(reoWays) === JSON.stringify(['statement', 'primary', 'address']),
-  'a statement, "this is the home they live in", or the property it is secured by');
+/* RE-POINTED 2026-08-31, not loosened. A fourth way — "this is the mortgage on
+   the subject property" — was added by owner direction, so this assertion moved
+   to name all four rather than being relaxed into a length check that would let
+   a fifth appear unnoticed. The new way's OWN rules (refinance only, and what a
+   credit report may fill in from it) are proven in
+   test-lt-reo-subject-property-pure.js; here it is only the table's shape. */
+check(JSON.stringify(reoWays) === JSON.stringify(['statement', 'primary', 'subject_property', 'address']),
+  'a statement, "this is the home they live in", the mortgage on the subject property, or the property it is secured by');
 
 const lines = [{ key: 'liab:1', label: 'Chase ····4417' }, { key: 'liab:2', label: 'Wells ····9002' }];
 check(answers.satisfies(reo, { mortgages: [] }, { lines: [] }).ok === true,
@@ -156,11 +177,52 @@ check(answers.satisfies(reo, addr({ occupancy: 'holiday_let' }), { lines }).ok =
 // ── E. What may be RECORDED is what the gate will HONOUR ────────────────────
 console.log('the door and the gate cannot disagree');
 
-const gateSrc = stripComments(read('src/longterm/conditions-center/write.js'));
-check(/require\('\.\/answers'\)/.test(gateSrc), 'the sign-off gate reads the one definition');
-check(/answers\.satisfies\(/.test(gateSrc), 'and asks it whether the condition is finished');
-check(/answers\.answerProblem\(/.test(gateSrc), 'and the door that records an answer asks the same module');
-check(/entityPrefill\.forEntity\(/.test(gateSrc), 'and the gate asks the borrower’s profile about the company');
+/* ONE DEFINITION, ASSERTED BY RESOLUTION RATHER THAN BY SPELLING.
+   This used to grep write.js for the literal `require('./answers')`, and it broke
+   the moment the module MOVED to src/lib/conditions/ so the shared sign-off gate
+   could read it too — while the rule lived under src/longterm/, RTL code could not
+   require it, and the two gates disagreed about the same condition in production.
+   A path-spelling assertion fails on the move that FIXES that, and would keep
+   passing if a second copy appeared under a different name. So: resolve whatever
+   each reader requires, from that reader's own directory, and assert they land on
+   the SAME FILE — which is the property the rule actually needs. */
+const REPO = path.join(__dirname, '..');
+const CANONICAL = require.resolve(path.join(REPO, 'src/lib/conditions/answers.js'));
+
+const answersSpecifierIn = (rel) => {
+  const src = stripComments(read(rel));
+  const m = src.match(/require\(\s*['"]([^'"]*answers)['"]\s*\)/);
+  return m ? m[1] : null;
+};
+for (const reader of [
+  'src/longterm/conditions-center/write.js',   // the Long-Term door
+  'src/longterm/conditions-center/workspace.js',
+  'src/routes/staff.js',                        // the SHARED sign-off gate
+]) {
+  const spec = answersSpecifierIn(reader);
+  check(!!spec, `${reader} requires an answers module at all`);
+  const resolved = require.resolve(path.resolve(path.dirname(path.join(REPO, reader)), spec));
+  check(resolved === CANONICAL,
+    `${reader} reads THE one definition (src/lib/conditions/answers.js), not a copy — got ${path.relative(REPO, resolved)}`);
+}
+// The Long-Term door's own reads, still asserted (this file was renamed out from
+// under these three when the module moved, so they get their source back).
+const ltDoorSrc = stripComments(read('src/longterm/conditions-center/write.js'));
+check(/answers\.satisfies\(/.test(ltDoorSrc), 'and asks it whether the condition is finished');
+check(/answers\.answerProblem\(/.test(ltDoorSrc), 'and the door that records an answer asks the same module');
+check(/entityPrefill\.forEntity\(/.test(ltDoorSrc), 'and the gate asks the borrower’s profile about the company');
+
+/* AND THE SHARED GATE ASKS IT TOO — the whole reason the module moved. The arm
+   must run BEFORE the document arm, or a condition the owner said needs nothing
+   ("just select that it's FCI … you don't need anything") is refused forever for
+   want of a document. Asserted on ORDER, not merely on presence. */
+const sharedGateSrc = stripComments(read('src/routes/staff.js'));
+const gateFn = sharedGateSrc.slice(sharedGateSrc.indexOf('async function sharedOwnerSignOffGate'));
+const gateBody = gateFn.slice(0, gateFn.indexOf('\nasync function '));
+check(/answers\.plan\(/.test(gateBody) && /answers\.satisfies\(/.test(gateBody),
+  'the SHARED sign-off gate asks the same module whether the condition is answered another way');
+check(gateBody.indexOf('answers.plan(') < gateBody.indexOf("item_kind === 'document'"),
+  'and it asks BEFORE the document arm — a condition answered the owner\'s way must not be refused for want of a document');
 
 // A SOURCE GREP PROVES THE CALL IS WRITTEN, NEVER THAT IT RUNS — so the real
 // gate is CALLED here, with the conditions it governs. `signOffProblem` is pure,
@@ -180,11 +242,19 @@ const answeredThrough = signOffProblem(row('lt_reo_liabilities', {
 check(answeredThrough.ok === true,
   'and passes it once answered — with no document anywhere, which an upload-only gate could never do');
 
-const fci = signOffProblem(row('lt_subject_mortgage_statement', {
+/* THE GATE MOVED WITH THE WAY (owner-directed 2026-08-31, above). Both halves
+   are asserted, because a gate that stopped honouring the FCI way at all would
+   pass the first of these and be just as wrong. */
+const fciBare = signOffProblem(row('lt_subject_mortgage_statement', {
   answer: { way: 'fci_serviced' },
   slots: [{ key: 'statement', label: 'Mortgage statement', required: false }],
 }), []);
-check(fci.ok === true, 'THE GATE ITSELF passes the FCI selection with nothing attached');
+check(fciBare.ok === false, 'THE GATE ITSELF now holds the FCI selection until the two numbers are in');
+const fci = signOffProblem(row('lt_subject_mortgage_statement', {
+  answer: { way: 'fci_serviced', values: { loan_number: 'FCI-4471', outstanding_balance: 388000 } },
+  slots: [{ key: 'statement', label: 'Mortgage statement', required: false }],
+}), []);
+check(fci.ok === true, '…and passes it with them, with nothing attached — no statement, no form');
 
 const noWay = signOffProblem(row('lt_subject_mortgage_statement', {}), []);
 check(noWay.ok === false && /Choose how to answer/.test(noWay.why),

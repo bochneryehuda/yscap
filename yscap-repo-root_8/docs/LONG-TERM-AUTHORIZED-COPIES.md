@@ -28,8 +28,9 @@ A yes for LT→RTL is not a yes for RTL→LT. If the owner's answer was "not for
 | `sql-ref <table>` | An `lt_*` table may carry a foreign key to this RTL table. | `sql-ref borrowers` |
 | `sql-read <table>` | Long-Term code may **read** this table in SQL (`FROM` / `JOIN`). Reading is not writing. | `sql-read borrowers` |
 | `sql-write <table>` | Long-Term code may **change** this table (`INSERT` / `UPDATE` / `DELETE`). Implies read. | `sql-write borrowers` |
+| `column <table>.<column>` | This ONE owner-authorized Long-Term column may exist on this RTL table (the 2026-08-30 share-the-code grant — a fourth owner scope needs its owner column). Any other lt-named column on an RTL table still fails the gate. | `column documents.lt_loan_id` |
 
-Lines starting with `#` are comments. Everything else must match one of the five kinds exactly.
+Lines starting with `#` are comments. Everything else must match one of the six kinds exactly.
 
 **Only the FIRST `authorized` block in this file counts.** An example block written later in the prose can never
 quietly become a real permission.
@@ -128,6 +129,52 @@ import   src/lib/llc.js
 # his profile" — and it happens THROUGH the shared module above, never in raw SQL.
 sql-ref   llcs
 sql-write llcs
+
+# ---------------------------------------------------------------------------
+# THE TWO CONDITIONS WHOSE ANSWER LIVES ON THE PERSON — the same 2026-08-30
+# share-the-code directive, item 7 (docs/longterm/SHARE-THE-CODE-DIRECTIVE.md):
+#
+#   "Profile-linked conditions — photo ID from the shared profile; the
+#    credit-card-for-appraisal card BIDIRECTIONAL with the shared profile; the
+#    REO/mortgage answers saved to the shared profile."
+#
+# WHY IT IS AN IMPORT AND NOT A COPY, and here the reason is unusually sharp: the
+# reusable card ALREADY lives on the person (`borrowers.saved_card_*`, db/043 +
+# db/049), which is the shared identity zone. `application_payment_cards` is only
+# RTL's per-file WORKING COPY, with a NOT NULL foreign key to `applications`.
+# A long-term twin of THAT table would be a second store of a PRIMARY ACCOUNT
+# NUMBER with its own encryption handling to keep in step — so a borrower who
+# gave a card on one product would be asked for it again on the other, which is
+# the exact opposite of the directive.
+#
+# SCOPE, AND IT IS NARROW. Long-Term uses `getSavedCard` (which never decrypts
+# the number — brand, last four, expiry and billing ZIP only), `saveCardForReuse`,
+# and the pure helpers `validateCardInput` / `parseExp` / `isCardExpired`. Both
+# of the first two take a BORROWER id and nothing else; neither touches an RTL
+# table. The per-file half of that module — `saveApplicationCard`,
+# `applySavedCardToApplication`, `autoApplySavedCardIfOptedIn`, `cardStatus` —
+# is OFF LIMITS: every one of them takes an `appId` and writes
+# `application_payment_cards`, which is RTL's own row.
+#
+# THE PHOTO ID IS READ-ONLY FOR NOW, DELIBERATELY. An ID already on the profile
+# answers the long-term condition, which is what that condition's own hint
+# promises. Making a long-term UPLOAD become the profile's ID is not done,
+# because on the short-term side that act additionally REOPENS every
+# government-ID condition across the borrower's files — a rule about RTL
+# conditions on RTL files, which Long-Term writing would be one product reaching
+# into the other's workflow. Doing the stamp without the reopen would make the
+# two products behave differently about one act, which is the drift this
+# directive exists to stop. It is an open question for the owner, recorded in
+# src/longterm/conditions-center/profile-links.js rather than guessed.
+# ---------------------------------------------------------------------------
+
+# The card that lives on the person: read it masked, save one back. The PAN is
+# never decrypted on this path.
+import   src/lib/appraisal-card.js
+
+# The person's own record — already the shared identity zone. The card columns
+# are db/043 + db/049; `photo_id_document_id` is the one photo ID, read only.
+sql-ref   borrowers
 
 # ---------------------------------------------------------------------------
 # CLICKUP FOR LONG-TERM — authorized in writing by the owner, 2026-08-23:
@@ -236,6 +283,44 @@ rtl-import app-v2/src/screens/Dashboard.jsx
 # Long-Term surface genuinely needs the RTL geocoder, this line already covers
 # it. See the log row below.
 import src/lib/address-canon.js
+
+# ---------------------------------------------------------------------------
+# THE ADDRESS LOOK-UP BOX ON A LONG-TERM TERM SHEET — recorded in writing by the
+# owner, 2026-08-30:
+#   "You can put in property addresses. The property address should be linked
+#    with the Find My Property address to autofill the property address from the
+#    short-term site. You can use the same credentials."
+#
+# WHAT SHIPPED IS **NOT A CROSSING**, and this block exists so that the next
+# reader does not have to work that out again.
+#
+# `app-v2/src/longterm/AddressField.jsx` is a brand-new Long-Term component. It
+# imports NO short-term code — it calls `GET /api/address/suggest` and
+# `GET /api/address/details`, which are:
+#
+#   · mounted at the TOP LEVEL of the server, not under /api/staff or any
+#     product namespace;
+#   · described by their own header as serving "the marketing site AND portal",
+#     i.e. every surface this company has;
+#   · a PROXY whose only reason to exist is that the provider's key must not
+#     leave the server. They hold no loan data, read no RTL table, and return
+#     nothing about either product.
+#
+# So this is the same class as the LOGIN TOKEN that `app-v2/src/longterm/http.js`
+# already reads and documents: infrastructure both products stand on, not a
+# short-term feature lifted across. The owner described it as coming "from the
+# short-term site" because that is where they have seen it, which is why it is
+# written down here rather than left to inference.
+#
+# NO `import` LINE IS ADDED, deliberately — the five entry kinds describe module
+# and table crossings, and an HTTP call to a shared door is neither. Adding a
+# line that matches no kind would fail the gate's own parser.
+#
+# WHAT WOULD BE A CROSSING, and is not done: importing RTL's own address input
+# component, or reaching `src/lib/address*` from Long-Term server code. The
+# geocoder crossing directly above (`address-canon.js`) is separate, already
+# authorized, and still unused.
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # THE COMPANY'S SENDING IDENTITY — authorized in writing by the owner,
@@ -469,11 +554,31 @@ import src/lib/integrations/docusign.js
 # receiving the order and nobody knowing. One definition, or the long-term desk
 # rediscovers that column pair the hard way.
 #
-# `suggest()` IS OFF LIMITS and is the reason this entry says "the pure half": it
-# lazily reaches for `src/db` to search the directory, which would run a long-term
-# read on the short-term pool. Long-Term queries `service_contacts` on its OWN pool
-# (authorized `sql-read` below) and folds the result with these pure helpers.
-# Guarded by scripts/test-lt-orders-pure.js.
+# `suggest()` was declared OFF LIMITS here for ONE reason, and it is worth stating
+# what that reason actually was: it lazily reached for `src/db` and its "used on N
+# files" count named `application_service_contacts`, so calling it from Long-Term
+# would have run a long-term read on the short-term pool AND counted a link table a
+# long-term loan can never appear in. UNDER THE 2026-08-30 SHARE-THE-CODE GRANT
+# (*"it should be the exact same vendor setup and use the same information"*) both
+# of those are now PARAMETERS: the pool has always been injectable (`dbc`), and the
+# counted link table is `usedCountFrom` — defaulted to the short-term one, so every
+# short-term caller is byte-identical, and validated as a bare identifier because a
+# table name cannot be a bind parameter. So the suggester CAN be shared; when
+# Long-Term calls it, it MUST hand over its OWN pool and its OWN link table
+# (`lt_loan_vendors`), or it is back to both of the faults above.
+#
+# NOT YET CALLED FROM LONG-TERM, deliberately: the desk's own search is replaced
+# when the shared FileContacts screen lands. `scripts/test-lt-orders-pure.js` still
+# holds every module in `src/longterm/orders/**` and the orders routes to the PURE
+# half — that guard is what stops the shared suggester being reached for with the
+# short-term pool by habit, and it stays until the caller passes both parameters.
+# The seam itself is proven on a real database by
+# scripts/test-lt-vendor-write-db.js, which also proves the short-term type-ahead
+# did not move a byte.
+#
+# NO NEW LEDGER LINE IS NEEDED for the long-term WRITE half (create-and-link + edit
+# a vendor card from the orders desk): this `import` already authorizes the pure
+# helpers it uses, and `sql-write service_contacts` is authorized below.
 import src/lib/vendor-directory.js
 
 # ---------------------------------------------------------------------------
@@ -496,6 +601,489 @@ import src/lib/vendor-directory.js
 sql-ref   service_contacts
 sql-read  service_contacts
 sql-write service_contacts
+
+# ---------------------------------------------------------------------------
+# THE ONE CONDITION CENTER — authorized in writing by the owner, 2026-08-30
+# (the SHARE-THE-CODE directive; full quotes + boundary in
+# docs/longterm/SHARE-THE-CODE-DIRECTIVE.md):
+#
+#   "I gave you written authorization to bring that exact Condition Center
+#    over here. Take that exact Condition Center and make your conditions in
+#    that Condition Center follow those rules."
+#   "If I'm updating something in the logic of the Condition Center ... it
+#    should update them both places. You need to share the code."
+#
+# The Condition Center was multi-owner from day one (scope application /
+# borrower_profile / llc, chk_one_owner = exactly one owner column). The
+# Long-Term loan joins as the FOURTH owner: scope 'lt_loan', owner column
+# lt_loan_id on the two tables below (db/652). Every RTL selector is already
+# scope-filtered, so an lt_loan row is invisible to every RTL pass by
+# construction. DELIBERATELY NO FK to lt_loans — the gate forbids welding an
+# RTL table to the side build, and it is right; the column is a bare uuid the
+# Long-Term code interprets.
+# ---------------------------------------------------------------------------
+
+column checklist_items.lt_loan_id
+column documents.lt_loan_id
+
+# Long-Term code reads and writes its OWN rows in the shared Condition Center
+# tables (scope 'lt_loan' / lt_loan_id) — the same grant, the same directive.
+# Every LT statement against these tables is scoped to lt_loan_id in the
+# statement itself; an RTL-scoped row is unreachable from LT code by
+# construction, and the reverse.
+
+sql-read  checklist_templates
+sql-write checklist_templates
+sql-read  checklist_items
+sql-write checklist_items
+sql-read  documents
+sql-write documents
+
+# WHO OWNS A CONDITION OR A DOCUMENT — one descriptor, both products. The same
+# 2026-08-30 share-the-code grant: "if I'm updating something in the logic of the
+# Condition Center ... it should update them both places. You need to share the
+# code."
+#
+# WHY IT IS AN IMPORT AND NOT A COPY. This module answers three questions —
+# which product owns this row, how do I say so in a WHERE clause, which column do
+# I set on an INSERT — and every one of them was previously written out by hand
+# at each call site as `application_id = $1`. That is exactly the shape that
+# cannot be shared: the second product's copy of a hand-written owner predicate
+# is the copy that drifts, and a drifted owner predicate is a document from one
+# loan answering for another. It is PURE (no database, no config, no requires)
+# and it FAILS CLOSED — an unknown scope or a missing id THROWS rather than
+# quietly defaulting to a product.
+import src/lib/condition-owner.js
+
+# A GOVERNMENT PHOTO ID BELONGS TO THE PERSON — one definition, both products.
+#
+# Owner-directed 2026-08-31, answering in one sentence whether a photo ID given
+# on a long-term loan should reopen the ID condition on that person's short-term
+# files:
+#
+#   "Basically, share the same condition: If he uploads it on the long term, it
+#    should share it to the short term. If it's uploaded to the short term, it
+#    should share it to the long term. It's on the profiles and the borrower
+#    profile."
+#
+# WHY IT IS AN IMPORT AND NOT A COPY. The module answers one question — "a new
+# government ID landed on this person, what follows?" — and the answer is a rule
+# about EVIDENCE, not about a product: record it on the person, and drop every
+# sign-off that attested to the ID it replaced. A second copy of that is a second
+# copy of the reopen rule, and the copy that drifts is the one that leaves a
+# condition signed off against paperwork that is gone. It reads and writes only
+# the shared identity zone (`borrowers.photo_id_document_id`, already authorized
+# above) and the shared Condition Center tables, both already granted.
+#
+# THE DIRECTION THAT CANNOT BE AN IMPORT. RTL is the live product and may never
+# name a `lt_*` table — in an import OR in raw SQL — and the gate rightly offers
+# no ledger escape for that direction. So the shared module cannot go looking for
+# Long-Term's ID conditions: each product REGISTERS its own finder, and
+# `src/longterm/conditions-center/photo-id-share.js` is Long-Term's, where naming
+# `lt_loans` is simply Long-Term code. Neither product's finder can return the
+# other's rows.
+import src/lib/profile-photo-id.js
+
+# ---------------------------------------------------------------------------
+# THE LOGIN-FREE GUEST CONDITION LINK — the same Condition Center grant.
+#
+# The owner asked for this surface in their own words on 2026-08-28, and named
+# it as part of the Condition Center while doing so:
+#
+#   "another way for borrowers to manage their conditions if they're not so
+#    technical. A MORE SIMPLE CONDITION CENTER for them, with an email directly
+#    with links to upload and enter the information over there ... without him
+#    being able to set up an account or portal ... when he fills it out and he
+#    click saves it saves directly into the file without him needing to log in."
+#
+# and the 2026-08-30 share-the-code directive then made the Condition Center
+# ONE implementation for both products:
+#
+#   "The point is not to reinvent the wheel over here."
+#   "Every single thing that you're building, you first need to look if you can
+#    share the code somewhere else without rebuilding everything."
+#
+# WHY THE TABLE IS SHARED RATHER THAN TWINNED. `condition_links` carries the
+# expiry, the revocation, the usage stamp, the sha256-only token storage and —
+# through `condition-link.js` — the PATH JAIL that is the only reason it is safe
+# to hand an emailed, forwardable token a real borrower session. A parallel
+# `lt_condition_links` would be a second copy of every one of those safety
+# rules, and the copy is the one that drifts. So the loan joins as a second
+# OWNER on the existing row, exactly as it joined `checklist_items` above:
+# exactly one owner per row, enforced by `condition_links_one_owner` (db/654)
+# in the database AND by `readGuest` in JavaScript.
+#
+# DELIBERATELY NO FK to lt_loans, for db/652's reason: the gate forbids welding
+# an RTL table to the side build, and it is right to. A bare uuid the Long-Term
+# code interprets.
+#
+# THE JAIL IS PER PRODUCT. `LT_RULES` is a separate list from the short-term
+# `RULES`, so a long-term guest can never be judged against the short-term
+# doors or the reverse — structural, not a comparison somebody could get
+# backwards. `GET /api/lt/my/loans` is deliberately absent from it: an emailed
+# link that can be forwarded must never enumerate a borrower's other loans.
+# ---------------------------------------------------------------------------
+
+column condition_links.lt_loan_id
+import src/lib/condition-link.js
+sql-read  condition_links
+sql-write condition_links
+
+# THE GENERIC REQUIRED-SLOTS RULE. Ported OUT of
+# src/longterm/conditions-center/write.js (`missingSlots`) into the shared
+# sign-off gate, which had no generic version and states the same rule three
+# times by hand. Long-Term imports it BACK rather than keeping the original as a
+# second copy — a second copy is precisely what the port removed, and a condition
+# that reads as "still waiting on the invoice" at the sign-off door and as
+# finished on the Long-Term screen is the drift this ledger exists to prevent.
+# PURE apart from one read of the two shared tables already authorized above.
+import src/lib/conditions/required-slots.js
+
+# WHAT A CHECK CONSTRAINT ACTUALLY ADMITS, read out of Postgres's own catalogue
+# (`pg_constraint`), so the Long-Term library can prove at BUILD time that every
+# value its vocabulary mapping emits is one the shared column will take. A value
+# set written down beside a column is a copy, and a copy nothing checks is the
+# copy that drifts — the first anybody hears of it is a check violation on a
+# loan file.
+#
+# NOT PRODUCT CODE, AND IT TOUCHES NO PRODUCT'S TABLES. `pg_constraint` is
+# Postgres's own catalogue, exactly like `information_schema`, which this repo
+# already reads to enumerate foreign keys (lib/borrower-merge.js) and to keep the
+# numeric-column bounds table honest (scripts/test-column-bounds-doors-db.js).
+# It is shared rather than Long-Term's own because "what does this constraint
+# admit?" is a question either product may need to ask, and two answers to it is
+# the duplication this ledger exists to prevent.
+import src/lib/conditions/live-check-values.js
+
+# THE OWNER'S "ANSWERED ANOTHER WAY" RULE — the one definition, read by BOTH gates.
+#
+# 2026-08-30 share-the-code grant. This module was Long-Term's own
+# (src/longterm/conditions-center/answers.js) and it MOVED to the shared library
+# for a reason that was measured, not anticipated: three conditions are a CHOICE
+# rather than an upload, and the owner said so plainly — *"you can just select
+# that it's FCI, whatever, and then you don't need anything, not an attachment and
+# not a form."* While the rule lived under src/longterm/, the ONE shared sign-off
+# gate could not require it (RTL code may not reach into the side build, and that
+# stays true). The result: the Long-Term product door ALLOWED the owner's own
+# answer while the shared gate REFUSED the very same condition for want of a
+# document — two gates, two answers, one condition, and the refusal was permanent
+# with no way through but a super-admin override.
+#
+# It is PURE (no database, no config, no requires of its own), so moving it costs
+# nothing and buys one definition that the door recording an answer and both gates
+# judging one all read. Long-Term imports it back from the shared library here.
+import src/lib/conditions/answers.js
+
+# WHAT COUNTS AS A VALID RULE, AND WHAT ONE ANSWERS — the last second copy in
+# the Condition Center, removed under the same 2026-08-30 share-the-code grant:
+# *"We don't want to reinvent the code. We want to use the same exact condition
+# center, and when we update something, it should update on both."*
+#
+# src/longterm/conditions-center/rules.js carried its OWN operator table, its own
+# validator and its own evaluator — a literal second definition of which tests a
+# field type accepts. MEASURED before anything was shared: on the six types
+# Long-Term actually uses, the two tables were already IDENTICAL except that
+# Long-Term's text row offered `in` / `not_in` and the shared one offered
+# `ends_with`. Two tables agreeing today is not one definition; it is two copies
+# that have not drifted YET, and the one that drifts is the one that silently
+# stops putting a condition on a file.
+#
+# The shared module now speaks both vocabularies (the `pct` / `boolean` rows, the
+# tri-state evaluator, and now text `in` / `not_in`), each addition PROVEN inert
+# against the live short-term registry before it landed — 54,614 old-vs-new
+# comparisons across all 56 fields, zero drift on any operator the old table
+# already allowed. Long-Term keeps only what is genuinely its own: the plain-
+# English wording of a refusal, and the reading that a condition carrying NO rule
+# applies to every file (true of all 28 in its shipped library, and not a fact
+# about rule grammar at all).
+import src/lib/conditions/rules.js
+
+# THE THREE COLUMNS THE SHARED TABLES GAIN SO A LONG-TERM CONDITION CAN LIVE IN
+# THEM (db/653, the same grant). None is lt_-prefixed, so the gate does not
+# require these lines — they are recorded because the rule is per item and a
+# reader should be able to see the whole crossing in one place:
+#   checklist_templates.config       the Long-Term library's own per-condition
+#                                    settings, which no existing column holds
+#   checklist_items.slots            the PER-ITEM required-slot list the generic
+#                                    sign-off arm reads (RTL writes it nowhere,
+#                                    which is what makes that arm a no-op there)
+#   checklist_items.waived_reason    WHY, beside the waived_by/waived_at this
+#                                    table has carried for a long time
+
+# ---------------------------------------------------------------------------
+# THE ONE SHAREPOINT MIRROR — the same 2026-08-30 share-the-code grant:
+#   "Same thing is with SharePoint: you need to share the code."
+#   "The SharePoint looks for the same exact folder, same exact logic that we
+#    build up on the short-term side."
+#
+# There is ONE mirror (src/lib/sharepoint-backup.js) and it now files an
+# lt_loan-scoped document into the SAME Pipeline Drive tree. The one thing it
+# cannot know by itself is WHERE a long-term loan keeps its officer / borrower /
+# property, because that reads lt_* tables — and RTL code naming a Long-Term
+# table is refused outright, with no ledger override, exactly as it should be.
+# So src/longterm/sharepoint-scope.js states those facts (SQL fragments + one
+# pure predicate, no mirror logic) and the shared mirror requires it, through a
+# try/catch so the live product keeps mirroring if the side build is absent.
+# This is the crossing that authorizes that one require().
+rtl-import src/lib/sharepoint-backup.js
+
+# ---------------------------------------------------------------------------
+# THE CONDITION-DOCUMENT MACHINERY — the 2026-08-30 share-the-code grant, and
+# the owner's own list of verbs:
+#
+#   "If I'm updating something in the logic of the Condition Center (the way you
+#    preview stuff, the way you preview the PDFs, the way you drag and drop,
+#    accept, reject, preview, download, and delete), it should update them both
+#    places. You need to share the code."
+#   "You can't really upload stuff. You can't do anything. Nothing actually
+#    works."
+#
+# The Long-Term Condition Center had eighteen routes and NOT ONE of them
+# accepted a document, so a condition asking for a bank statement had nowhere to
+# put one. These four modules are the ONE implementation of what happens to a
+# document on a condition — the intake contract and the filename sanitiser, the
+# visibility rule, the slot label, the de-duplication, the INSERT through
+# `ownerCols`, the supersede rules, the evidence re-open; then the verdict's
+# stamps and the condition moves it causes; then the permanent delete and the
+# re-open when nothing accepted is left; then the authorized row lookup the one
+# serving path streams from.
+#
+# WHY IMPORTED AND NOT COPIED. Every one of those rules is a rule about
+# DOCUMENTS rather than about a product, and each is a rule a second copy would
+# get subtly wrong in a way nobody would see for months — an accept that marks a
+# condition SATISFIED instead of RECEIVED (#135) flies a multi-document
+# condition away on its first accepted file; a delete that forgets the re-open
+# leaves a condition reading "received" with nothing on it. What each product
+# does ABOUT a document is NOT shared: the ClickUp push, the borrower portal
+# notification and the Sitewire memory are HOOKS, defaulted to the short-term
+# set for `scope='application'` and to NOTHING for any other owner, and the
+# Long-Term door passes an empty set explicitly on top of that.
+#
+# The owner scoping is welded into the STATEMENT (`ownerWhere`), so a document
+# belonging to the other product is not merely refused by the Long-Term door —
+# it is unreachable from it.
+import src/lib/condition-docs/upload.js
+import src/lib/condition-docs/review.js
+import src/lib/condition-docs/remove.js
+import src/lib/condition-docs/serve.js
+
+# ---------------------------------------------------------------------------
+# THE TRANSPORT THAT CARRIES A BIG DOCUMENT — the same grant again, and the half
+# without which the four doors above are capped at a size real loan documents
+# routinely exceed.
+#
+# Every legacy upload door in this repo takes {filename, contentType, dataBase64}
+# as JSON, which express buffers and parses WHOLE — measured at roughly five
+# times the file — so `takeUpload` caps that transport at `maxJsonUploadMb`
+# (25 MB, and base64 inflates by about a third, so nearer 18 MB of real file).
+# The short-term side answered that on 2026-08-21 by registering each document
+# door TWICE: the JSON door, and a `…/binary` sibling behind `binaryIntake`,
+# which streams the bytes to storage as they arrive and is bounded by
+# `maxUploadMb` (1 GB) instead.
+#
+# Long-Term had only the JSON door, so ONE Condition Center gave two different
+# answers about the same appraisal-with-photographs, the same scanned closing
+# package, the same survey — 25 MB on a long-term file, 1 GB on a short-term one.
+#
+# NOTHING IS COPIED. `takeUpload` reads `req.uploaded` FIRST, so the Long-Term
+# handler is byte-for-byte the same function on either transport and never learns
+# which door it was called through; the two registrations share ONE handler
+# exactly as `src/routes/staff.js` does. Re-implementing the streaming door on
+# the Long-Term side would be a second place a document can be truncated, a
+# second temp-file cleanup to get right, and a second answer to "how big may a
+# document be" — which is the shape the owner rejected.
+import src/lib/upload-stream.js
+
+# ---------------------------------------------------------------------------
+# THE CONDITION CENTER'S SCREEN — the same grant, the same sentence, the other
+# half of it: "the same look of the Condition Center."
+#
+# Long-Term had a LOOKALIKE of the Condition Center — its own condition row, its
+# own action buttons, its own document list, no preview and no upload at all —
+# which is precisely what the owner rejected. These are the REAL components the
+# short-term file screen draws, mounted by the Long-Term screen.
+#
+# THEY ARE SHAREABLE AS THEY STAND, and that is why they are the ones listed:
+# each takes its I/O as function props (`onPatch`, `onReviewDoc`,
+# `onDownloadDoc`, `onPreview`, `load`) and NONE of them imports an API client,
+# so the Long-Term screen hands over functions backed by `ltApi` hitting the
+# /api/lt doors and the components cannot tell which product they are drawing.
+# Their own transitive imports are RTL→RTL and need no line here; the gate reads
+# the location of the IMPORTING file.
+#
+# WHAT IS NOT SHARED IS THE PAGE. The owner, in the same conversation: "this is
+# not a redesign … I like the design that we have on the long-term side. Don't
+# change the design. Stick with the design and with the fonts." So the gates,
+# the three-number summary, the white boxes and the fonts stay Long-Term's own,
+# and the shared parts are dropped INTO that page. Nothing in these files was
+# changed to make Long-Term fit: the row-shape translation lives on the
+# Long-Term side, because renaming a field inside one of these would silently
+# change what the live short-term product reads off its own rows.
+import app-v2/src/components/ConditionLine.jsx
+import app-v2/src/components/ConditionActions.jsx
+import app-v2/src/components/DocPreview.jsx
+import app-v2/src/components/DropZone.jsx
+import app-v2/src/components/UploadRows.jsx
+import app-v2/src/components/LoudHint.jsx
+
+# THE ONE RECORD OF WHAT IS UPLOADING RIGHT NOW. `UploadRows` above renders only
+# what this store holds, and until now only the short-term transport published
+# into it — so a Long-Term upload would have rendered NOTHING while it ran and
+# read as "it is not uploading", which is the exact defect the owner already
+# reported once on the short-term side (2026-08-23). The store and its
+# `uploadTarget()` are product-neutral: a row files itself under
+# `condition:<id>` from the upload's own metadata. Long-Term's own transport
+# (app-v2/src/longterm/http.js) publishes the same start/update/finish calls, so
+# the bar is the same bar rather than a second progress mechanism to keep in
+# step with it.
+import app-v2/src/lib/upload-progress.js
+
+# WHICH CONDITIONS AM I LOOKING AT — authorized in writing by the owner,
+# 2026-09-01: "We also need to add the full sorting features so that you can sort
+# by stuff that is done, by signed off, and by outstanding, to sort the
+# conditions accordingly that we have on the short-term side. You can share that
+# code as well."
+#
+# WHY IT IS AN IMPORT AND NOT A COPY, and it is the same reason `condition-owner`
+# is one: this rule was ALREADY WRITTEN TWICE inside the short-term app before it
+# was extracted — `roleDone` in screens/StaffApplication.jsx and again in
+# screens/StaffTasks.jsx, each commenting that it mirrored the other. A third copy
+# for Long-Term is exactly the drift the share-the-code directive exists to stop,
+# and the thing that drifts here decides which conditions a person is SHOWN, so
+# the copy that goes stale is the one that hides work nobody then does.
+#
+# IT NEVER LEARNS THAT TWO PRODUCTS EXIST. Every predicate reads only `status` /
+# `signed_off_at` / `waived_at` / `reviewed_at` — the SHARED condition shape the
+# components above already render — and Long-Term maps its own rows into that
+# shape with `asSharedCondition` before the filter ever sees them. So neither
+# product's stored statuses reach the other's screen, and the extraction was
+# proven to move NOT ONE verdict on the short-term side over 2,970 comparisons
+# against the original inline switch (scripts/test-condition-filter-pure.mjs).
+import app-v2/src/lib/condition-filter.js
+# ---------------------------------------------------------------------------
+# THE CONTACT AND ORDER DESKS ON THE LOAN SCREEN — authorized in writing by the
+# owner, 2026-08-31:
+#
+#   "The intent is that it should follow the same type of idea that we have on
+#    the file contacts on the short term. Which is that we added a section,
+#    especially for file contacts where you can enter random file contacts and
+#    then the required file contact comes up as conditions with a form type of
+#    idea which is directly linked to the file contacts … when you start typing
+#    it it's automatically linked to the vendors that we have in the system."
+#
+#   "You don't need to reinvent stuff. You don't need to look at what we have
+#    over there and reinvent. Just I'm giving you authorization to share it.
+#    Share the features, share enhancements."
+#
+# The BACK END for this already exists on both sides and needed no new grant:
+# `src/lib/vendor-directory.js` and `service_contacts` were authorized
+# 2026-08-30, and Long-Term's own link table is `lt_loan_vendors`. What was
+# missing was the SCREEN — the shared contacts component was given its
+# `adapter`/`types` seam in that same pass and then had no Long-Term caller, so
+# the loan screen showed an upload box where a contact form belongs and the
+# orders had no contacts to send to. This grant is the front-end half.
+#
+import app-v2/src/components/FileContacts.jsx
+#        (the ONE contacts desk. Long-Term passes its own `adapter` over
+#         /api/lt/orders/loans/:id/vendors{,/search,/new} and its own `types`
+#         vocabulary; the component itself branches on neither. NOT a copy —
+#         a second contacts screen is how one product's rules leak into the
+#         other's, which is the exact drift the seam was built to prevent.)
+import app-v2/src/components/FormattedInputs.jsx
+#        (PhoneInput / EmailInput — the same typing behaviour in both products,
+#         so a phone number entered on a long-term file is stored in the shape
+#         every existing reader of `service_contacts` already expects. It is
+#         already a transitive dependency of FileContacts.jsx; this records the
+#         DIRECT use by the Long-Term condition forms.)
+# ---------------------------------------------------------------------------
+# THE ENTITY SECTION — authorized in writing by the owner, 2026-08-31:
+#
+#   "I think you're missing the entire entity section that we were officially
+#    needing to bring in from the RTL side. The logic should work the same: The
+#    exact entity section, same exact form information to type in an entity
+#    section. The exact verification workflow. The entity section should be
+#    directly linked to the profile. The exact document slots and bi-directional.
+#    If the entity on the file is an LLC name or any name that exists already in
+#    the profile, it should automatically come in a pre-filled entity section
+#    with the pre-filled information and pre-filled documents. If it doesn't
+#    exist yet, that entity should be added to the profile... Bi-directional
+#    should share the same exact logic and have the same exact slot and the same
+#    exact box. Don't reinvent, just bring over the same information that you
+#    need to fill. There's a lot of logic behind how to set it up. I think we can
+#    choose corporations and stuff like that. We can set who owns it,
+#    percentages, and layered entities. Bring in the entire logic, just giving
+#    you authorization to share the code. Don't reinvent."
+#
+# WHAT WAS ALREADY SHARED, AND WHY IT WAS NOT ENOUGH. `src/lib/llc.js` was
+# authorized 2026-08-30 and gave Long-Term the READ (which company, which slots,
+# what is on them) and the CREATE (put it on the profile). What it never carried
+# was the EDIT — the details form's rules, the ownership arithmetic, who may
+# verify, and what a revoke does to the companies underneath — because on the
+# short-term side those lived INLINE in three `src/routes/staff.js` handlers,
+# where no second caller could reach them. So they were EXTRACTED into
+# `src/lib/llc-edit.js` first and the short-term routes re-pointed at it (proven
+# behaviour-preserving by its seven existing regression suites), and only then
+# did Long-Term get a caller. Extract-then-share, never copy: a second copy of
+# "does this ownership add up to 100%" is two answers about one company.
+#
+import src/lib/llc-edit.js
+#        (the entity EDIT rules: the verified lock, the EIN normalizer, the
+#         entity-type re-wording of its document slots, the ownership total, the
+#         authority to verify, the required revoke reason, and the bottom-up
+#         chain revoke. Per-product side effects — the audit line, WHICH
+#         condition to re-sync, whether to notify a borrower — come in as HOOKS,
+#         so neither product's notifications can fire on the other's file.)
+#
+# THE VERIFIED DOCUMENT LOCK is part of that same extraction and is the reason it
+# had to be shared rather than re-stated: the ENTITY is shared, so a long-term
+# upload that walked past the lock would replace the very evidence a SHORT-TERM
+# verification of the same company stands on.
+#
+import app-v2/src/components/LlcManager.jsx
+#        (the ONE entity section. Long-Term passes its own `adapter` over
+#         /api/lt/condition-center/loans/:id/entities/* and nothing else changes:
+#         the form, the entity-type picker, the partnership and trust sub-kinds,
+#         the ownership rows with their percentages, the signature titles, a
+#         corporation's shares and certificate numbers, the three document slots
+#         with their drag-and-drop, preview and download, and the LAYERED-ENTITY
+#         recursion are the same code the short-term file screen renders. The
+#         adapter seam is the one `FileContacts.jsx` already has, and the
+#         component branches on neither product.)
+import app-v2/src/lib/dialog.js
+#        (PILOT's own message box — `askConfirm`/`askPrompt`. The whole app is
+#         guarded against raising a browser `alert`/`confirm`/`prompt` (they
+#         stamp the hosting hostname on the message and cannot be styled), and
+#         that guard is enforced by a source sweep, so a second dialog host on
+#         the Long-Term side would be both a duplicate and a rule violation. It
+#         renders text and resolves a promise; it reads no product's data.)
+# ---------------------------------------------------------------------------
+# WHO ELSE IS ON AN ORDER'S THREAD — under the same 2026-08-31 grant, and found
+# by the two-product parity engine the owner asked for in the same message:
+#
+#   "start a full side-to-side comparison ... to make sure that every single
+#    feature that is available on the short-term side, every single guard, every
+#    single way of operating, is also on the long-term side. A lot of stuff was
+#    invested in the short-term side, and we don't want to reinvent. We just want
+#    to share the code."
+#
+# The engine's first real finding: each loan officer can set whether their title
+# and insurance orders copy the borrower, and a LONG-TERM order never read that
+# setting -- so an officer who had turned it on got it on their short-term orders
+# and silently not on their long-term ones. The rule was written INLINE in
+# src/routes/staff.js where no second caller could reach it (the same shape the
+# entity edit rules were in), so it was EXTRACTED and the short-term route
+# re-pointed at it first.
+#
+import src/lib/order-cc.js
+#        (explicit -> what the order recorded when it was placed -> the officer's
+#         own default for this KIND of order -> the company default. WHICH officer
+#         is deliberately NOT in it: that is a fact about a loan, and the two
+#         products keep loans in their own tables -- each resolves its own officer
+#         and passes the id. The SETTING is per-staffer (db/391) and the staff
+#         roster is the shared identity zone, so both products may read it.)
+# ---------------------------------------------------------------------------
+import src/lib/ai/ocr-router.js
+import src/lib/ai/azure-openai.js
 ```
 
 ## Log of authorizations
@@ -503,12 +1091,18 @@ sql-write service_contacts
 | Date | Kind + item | Direction | The owner's words | PR |
 |---|---|---|---|---|
 | 2026-08-03 | `import src/auth/index.js` — one login for both products | RTL → LT | *"same login same borrower record, keep it separate everything else"* | #975 |
+| 2026-08-30 | `import src/lib/condition-docs/{upload,review,remove,serve}.js` — the ONE condition-document service: what happens to a document when it lands on a condition, what a verdict does to that condition, what a delete re-opens, and which row a download is allowed to have | RTL → LT | *"You can't really upload stuff. You can't do anything. Nothing actually works."* … *"if I'm updating something in the logic of the Condition Center (the way you preview stuff, the way you preview the PDFs, the way you drag and drop, accept, reject, preview, download, and delete), it should update them both places. You need to share the code."* The Long-Term Condition Center had eighteen routes and not one accepted a document. The four /api/lt doors are THIN CALLERS of these, exactly as `src/routes/staff.js` is — the same functions with a different owner, the owner welded into the STATEMENT so a document from the other product is unreachable. **No short-term hooks are passed**: the ClickUp push, the borrower portal notification and the Sitewire memory are that product's own and the Long-Term door hands over an empty set | this PR |
+| 2026-08-30 | `import src/lib/upload-stream.js` — the STREAMING upload transport: one shared `binaryIntake` + `takeUpload`, so a `…/binary` sibling of the condition-document door writes bytes to storage as they arrive instead of holding a base64 copy of the whole file in memory | RTL → LT | *"We don't want to reinvent the code. We want to use the same exact condition center, and when we update something, it should update on both… You need to share the code."* The Long-Term Condition Center had only the base64-in-JSON door, capped at 25 MB — nearer 18 MB of real file — while the short-term side has taken 1 GB through its streamed sibling since 2026-08-21. Same Condition Center, two different answers about the same appraisal. `takeUpload` reads `req.uploaded` first, so the ONE handler is identical on either transport and never learns which door it came through | this PR |
+| 2026-08-30 | `import app-v2/src/components/{ConditionLine,ConditionActions,DocPreview,DropZone,UploadRows,LoudHint}.jsx` — the REAL Condition Center components, mounted by the Long-Term screen | RTL → LT | *"the same look of the Condition Center … the way you preview stuff, the way you preview the PDFs, the way you drag and drop, accept, reject, preview, download, and delete"*, and, in the same conversation, *"this is not a redesign … I like the design that we have on the long-term side. Don't change the design. Stick with the design and with the fonts."* So the COMPONENTS are shared and the PAGE is not: the gates, the three-number summary, the white boxes and the fonts stay Long-Term's own. Each of these takes its I/O as function props and imports no API client, which is what makes them mountable as they stand; **not one was changed to make Long-Term fit** — the row-shape translation lives on the Long-Term side, because renaming a field inside a shared component would silently change what the live short-term product reads | this PR |
+| 2026-08-30 | `import app-v2/src/lib/upload-progress.js` — the one record of what is uploading right now | RTL → LT | The same grant. `UploadRows` renders only what this store holds, and only the short-term transport published into it — so a Long-Term upload would have rendered NOTHING while it ran and read as *"it is not uploading"*, the exact defect the owner reported on the short-term side on 2026-08-23. The store and its `uploadTarget()` are product-neutral; Long-Term's own transport publishes the same start/update/finish calls, so it is one bar rather than two mechanisms to keep in step | this PR |
+| 2026-08-30 | `rtl-import src/lib/sharepoint-backup.js` — the ONE SharePoint mirror asks the Long-Term side where an lt_loan keeps its officer / borrower / property (`src/longterm/sharepoint-scope.js`: SQL fragments + one pure predicate, no mirror logic). Required through a try/catch, so RTL keeps mirroring if the side build is absent | LT → RTL | *"Same thing is with SharePoint: you need to share the code."* … *"the SharePoint looks for the same exact folder, same exact logic that we build up on the short-term side"* | this PR |
 | 2026-08-30 | `import src/lib/order-email.js` — the order letter, one definition for both products | RTL → LT | *"Everything should share the code, so we don't need to rewrite the code. We are just sharing the code. If the code is updated, he's also updating it."* | #1376 |
 | 2026-08-30 | `import src/lib/inbound-mail.js` — reading an inbound message (retrieval, attachments, sender authentication, auto-responder detection), extracted from `src/lib/file-inbox.js`, which re-exports it | RTL → LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* The vendor reply that carries a long-term order's documents has to be read the same way the short-term one is | #1376 |
 | 2026-08-30 | `import src/lib/resend-webhook.js` — the inbound webhook signature check | RTL → LT | The same message arrives on the same domain through the same webhook; one signing secret, one verification. A second copy of a signature verifier is the duplication that must never exist | #1376 |
 | 2026-08-30 | `import src/lib/email/index.js` — the mail sender | RTL → LT | *"make sure all the orders are coming from the user that is actually ordering, from his email, from his name"* — sending the order IS the order. One account, one From identity, one deliverability posture. **Recorded explicitly: the shared outbound rate budget reaches the RTL pool (db/619), because there is one Resend ceiling and two budgets would burst it. No loan data crosses, and Long-Term sends with `_skipCapture` so the short-term Email Center is never written** | #1376 |
 | 2026-08-30 | `import src/lib/storage.js` + `import src/lib/upload-bytes.js` + `import src/lib/order-return-filter.js` — where a returned document's bytes go, what the bytes actually are, and the email-signature filter | RTL → LT | *"You need to make sure you're not copying the information. You're just using the information from the short-term side."* A second storage layer is a second place a document is lost; a second sniffer is a second answer to "is this a PDF"; a second signature filter means re-living the months of rejecting company logos by hand | #1376 |
 | 2026-08-30 | `import src/lib/vendor-directory.js` — the PURE half only: how a vendor card's addresses and phones are read | RTL → LT | The same directory is shared, so the same reading of it must be. db/224's `email` scalar + `emails` array pair drops addresses when either is read alone. **`suggest()` is off limits** — it reaches the short-term pool; Long-Term queries `service_contacts` on its own pool and folds with these helpers | #1376 |
+| 2026-08-30 | **Not a crossing — recorded for the record.** The Long-Term term sheet's property-address box calls the shared `/api/address/*` proxy | neither | *"The property address should be linked with the Find My Property address to autofill the property address from the short-term site. You can use the same credentials."* — a top-level, product-neutral vendor-key proxy serving the marketing site and both portals, holding no loan data and reading no RTL table. Same class as the shared login token. **No RTL module is imported**, so no `authorized` line is needed or added | #1383 |
 | 2026-08-30 | `import src/lib/email/reply-cut.js` — where a person's own reply ends and the quoted history begins | RTL → LT | The order letter prints the SHARED reply marker; this is the reader that cuts on it. Two halves of one mechanism — a second copy files the vendor's whole thread on the loan every round |  #1376 |
 | 2026-08-30 | `import src/lib/send-as.js` — who an order comes from | RTL → LT | *"make sure all the orders are coming from the user that is actually ordering, from his email, from his name."* One company identity, one verified sending domain, one answer to whether an address may go in a From line — the rule is DKIM alignment, not a preference. The short-term desk is deliberately NOT switched over; that is the owner's call | #1376 |
 | 2026-08-30 | `import src/lib/integrations/docusign.js` — the DocuSign transport (envelope create, void, status, documents, the Connect HMAC) | RTL → LT | *"it can go by DocuSign, as an email attachment, or both"* on the long-term verification of rent. One DocuSign account, one integration key, one JWT consent, one token cache, one Connect HMAC — a second client would mint a second JWT against the same rate-limited endpoint and be a second copy of a signature verifier. **The transport only: the module's own header says it does not decide when to send, own the send-once claim or clear a condition — Long-Term builds all of that in `src/longterm/vor/**` against its own `lt_vor_*` tables. The shared Connect webhook carries a long-term claim in front of the RTL route, because the RTL drainer answers an envelope it does not own with `skipped: 'untracked'` and would have swallowed the landlord's signature** | #1376 |
@@ -520,6 +1114,7 @@ sql-write service_contacts
 | 2026-08-03 | `import app-v2/src/components/BorrowerProfilePanel.jsx` — the ONE shared borrower editor, mounted on a long-term file | RTL → LT | *"officers should be able to change the borrower profile on long term files"* — confirmed in the same breath as *"keep borrower read only"*, so the edit goes through the existing shared editor and the existing borrower endpoint; Long-Term code still never writes `borrowers` | #975 |
 | 2026-08-03 | `sql-ref borrower_officers` + `sql-write borrower_officers` — Long-Term records the officer↔person link | RTL → LT | Required to make the line above actually work: a non-privileged officer may only open a borrower profile they have a recorded relationship to, and today that means an **RTL** file. `borrower_officers` (db/327) is the identity-zone link built for precisely this — *"the client who has only ever done non-RTL business with them, so there is no file to match on"* | #975 |
 | 2026-08-14 | `rtl-import app-v2/src/App.jsx` + `rtl-import app-v2/src/components/StaffLayout.jsx` — the FRONT-END mount seam: the router mounts the Long-Term screens, and the staff shell renders the Short-Term / Long-Term switch | LT → RTL | *"You were authorized to touch that switch of the short-term shell."* Asked directly, because rule 5 forbids touching RTL to make LT work and the switch cannot exist without it. Deliberately as narrow as the back-end seam (`src/server.js`): these two files may reference LT code ONLY to mount it and to render the switch — no RTL screen may import an LT component for its own use, and no LT logic may move into a shared file | this PR |
+| 2026-08-31 | **Not a crossing — recorded for the record.** Loan-officer branding on the Long-Term term sheet and comparison PDFs, and emailing them from the officer's own name and address | neither | *"We need to add loan officer branding on the term sheets. You can take directly the design from there... It should deliver it from the loan officer's email address and from the loan officer's name, and, of course, with the branding, same style emails that we have on the short-term side."* Checked before writing anything, and NO new permission turned out to be needed: the officer's name, title, phone, NMLS and email come from `staff_users`, which Long-Term already reads (`sql-read staff_users`, 2026-08-03), and the branded email is already shared (`import src/lib/email/template.js`, `import src/lib/email/index.js`, `import src/lib/send-as.js`, all 2026-08-30). What is copied is the DESIGN — how the block looks — which is not code, a table or an endpoint. The layout itself is written in `src/longterm/termsheet/**` as Long-Term's own, so no RTL module is imported and no `authorized` line is added. Recorded here because the owner's instruction was "copy it directly from the short-term", and a reader six months from now should be able to see that it was checked rather than assumed | this PR |
 | 2026-08-17 | `rtl-import app-v2/src/screens/Dashboard.jsx` — the borrower's HOME SCREEN renders the Short-Term / Long-Term switch | LT → RTL | *"put the switch on the borrower's home screen"* — answering a direct question that named the cost: the client's long-term page was already built and routed at `/long-term`, and moving its entry point onto the borrower dashboard makes an RTL screen reference LT code, which the 2026-08-14 seam permits only per file, in writing. Scoped exactly as narrowly as the staff shell: this file imports ONE component (`BorrowerLongTermSwitch`) and renders it — no LT logic, no LT data read, no second LT import. Whether there is anything to switch TO is decided on the Long-Term side, so the RTL screen never carries that rule | this PR |
 | 2026-08-16 | `import src/lib/address-canon.js` — ZIP → city/state/county/county-FIPS lookup for the Long-Term DSCR pricer | RTL → LT | *"Yes, you have my written OK to reuse that."* Asked as one specific question: the vendor's own screen turns a ZIP into the full location before pricing, while our connector required the caller to supply the county FIPS and refused an incomplete location. Scoped to this one module used as a READ-ONLY lookup — NOT the RTL address writers, and Long-Term still rewrites no RTL address record. **CORRECTION (2026-08-16, same day): the authorized module was ultimately NOT used.** It returns a county NAME with no FIPS, refuses a bare ZIP (it is built for a full street address), and needs a `DATABASE_URL` — none of which suits a pure pricing path, and the owner separately corrected the premise: the screen is ZIP-driven, no street address is involved. The shipped answer is `src/longterm/lenderprice/zip-county.js` + a committed Census ZCTA table — LT-only, so not a crossing at all. The permission stands and is recorded here as granted, not as a description of the shipment | #1220 |
 | 2026-08-30 | `import src/lib/email/index.js` — the company's one email TRANSPORT, so Long-Term's rate-movement reports send from the same identity as everything else | RTL → LT | *"Yes I'm giving you a written authorization to use the sender credentials from the short-term side. Send it out from lock desk @ YS Capital Whatever. Basically that should be the idea but follow the resend credentials."* Asked as one specific question, naming the cost: Long-Term has no mailer, and a second sender on the company's own domain damages the domain's own deliverability — a sending identity is a fact about the COMPANY, the same reasoning that authorized the ClickUp workspace on 2026-08-23. Scoped to the TRANSPORT only: no `notify.js`, no `catalog.js`, no `template.js`, no digests, no in-app rows, no `notifications` table — Long-Term renders its own bodies and hands over a finished message. **AUTHORIZED, NOT YET USED** — the reports are Phase 2 and are not built; recorded now so the authorization lives in the ledger rather than in a chat message | this PR |
@@ -546,6 +1141,10 @@ integrations will be different, it will be a brand new build. Don't assume anyth
 thing to build that also on the other thing — it's totally separate."*
 | 2026-08-30 | The **PILOT term-sheet DESIGN and the YS Capital lockup**, copied BY VALUE into `src/longterm/termsheet/brand.js` + `src/longterm/termsheet/assets/pilot-lockup-light.png` | RTL → LT | *"Everything should be in our pilot branding the same way our RTL term sheet is. Follow the same kind of design that our RTL term sheet have … Look at the design we have on the RTL. Try to bring in that nice pilot design … Make sure to include our logos and our designs."* **What crossed is the DESIGN**: the palette (`INK` / `TEAL` / `GOLD` / `LINE` / ivory), the header-band geometry (a 76pt full-bleed ink band, a 2.2pt gold rule, the lockup 30pt tall at the left margin), the teal section band with its gold tab, the ivory accent row, the three-line footer, and the SHAPE of a disclosures page — each value read off `web/v2/tools/termsheet.js`'s own `header()` / `band()` / `rowIn` / `footer()` / `disclosuresPage()`. **NOT ONE LINE OF RTL LOGIC CROSSED, and it may not**: that file is a FROZEN RTL pricing engine, so requiring it would put a frozen engine on Long-Term's render path and break rule 4 outright. The lockup is the same PNG the RTL sheet embeds (`web/v2/tools/rb-logo.js`), extracted to its own asset so Long-Term reads no RTL file at runtime. The disclosure TEXT is deliberately NOT copied — the RTL page describes a business-purpose bridge loan (minimum earned interest, a deferred origination fee at exit, construction draws) and a 30-year DSCR rental loan has none of those, so copying it would put terms on the document that are not terms of the loan | this PR |
 
+| 2026-08-30 | **THE SHARE-THE-CODE DIRECTIVE** — the owner ordered the parallel Long-Term build deleted and the RTL implementations SHARED: the Condition Center (conditions UI + document upload / drag-and-drop / preview / accept / reject / download / delete), the Orders center (the Gmail box, drafts, AI, reply routing, CC settings, DocuSign design), FileContacts + the vendor setup, the entity/LLC logic linked to the shared profile, SharePoint syncing, and the Cloudflare/off-site backup. The full quoted authorization + the boundary of what stays split is `docs/longterm/SHARE-THE-CODE-DIRECTIVE.md`; each concrete `import` line is added to the authorized block in the same PR that lands it, under this grant | RTL → LT | *"I gave you written authorization to bring that exact Condition Center over here. Take that exact Condition Center and make your conditions in that Condition Center follow those rules."* … *"The same thing with Order Center: you need to share the code. Same thing is with SharePoint: you need to share the code."* … *"Every single thing that you're building, you first need to look if you can share the code somewhere else without rebuilding everything."* | this PR |
+| 2026-09-01 | **The loan officer's own "done" step** — Long-Term writes `checklist_items.reviewed_by` / `reviewed_at`, the two columns db/033 added for the short-term side, through the LT door `POST /api/lt/condition-center/loans/:loanId/conditions/:conditionId/done` | RTL → LT | *"It's missing this feature for the loan officer to click Done. Research this free feature on the short-term side and share the code to enable this feature in the long-term side."* **NO NEW GRANT WAS NEEDED and that is the point** — `sql-read`/`sql-write checklist_items` is already authorized above (the 2026-08-30 share-the-code directive), the two columns already exist on that shared table, and Long-Term already owns rows in it (db/652/653). So NOTHING was migrated and nothing was copied by value: the same columns, read and written by a Long-Term door, scoped to `lt_loan_id` in the statement itself like every other LT statement against that table. The shared condition components have always SENT `{reviewed}` and always rendered "Marked done by X"; the only missing piece was the LT door, so the button refused. Recorded here because the CROSSING is the FEATURE, even where the table grant already covered the columns | this PR |
+| 2026-09-01 | **The conditions "Show" picker** — `import app-v2/src/lib/condition-filter.js`, the ONE off-my-plate rule and the seven views (needs my review/sign-off · not started · in review · needs attention · not signed off yet · signed off · everything) | RTL → LT | *"We also need to add the full sorting features so that you can sort by stuff that is done, by signed off, and by outstanding, to sort the conditions accordingly that we have on the short-term side. You can share that code as well."* **THE RULE WAS ALREADY WRITTEN TWICE** inside the short-term app — `roleDone` in `screens/StaffApplication.jsx` and again in `screens/StaffTasks.jsx`, each commenting that it mirrored the other — so a Long-Term copy would have been the THIRD. It was extracted instead and all three screens now read it; the thing that drifts here decides which conditions a person is SHOWN, so a stale copy hides work nobody then does. It never learns that two products exist: every predicate reads only the SHARED condition shape (`status` / `signed_off_at` / `waived_at` / `reviewed_at`), which `asSharedCondition` already produces on the Long-Term side. Proven to move NOT ONE verdict on the short-term side over 2,970 comparisons against the original inline switch | this PR |
+
 ## Log of things we ASKED for and were told NO / not yet
 
 Keeping the refusals is as important as keeping the approvals — it stops the same question being re-asked and
@@ -553,11 +1152,11 @@ stops a "no" quietly turning into a "yes" months later.
 
 | Date | What was asked | Answer |
 |---|---|---|
-| 2026-08-02 | Conditions, document underwriting, and orders for Long-Term | **Not for now** — "we're not going to build conditions we're not going to bring in document underwriting we're not going to bring in orders for now". ⟶ **CONDITIONS were REVERSED by the owner on 2026-08-14** — *"you should set up your DSCR condition center — it should pull the conditions directly from Encompass"* and *"We should build a condition center … with all the documents in there linked"*. See CLAUDE.md rule 6 and the charter §4. **This is a SCOPE change, not a separation change**: the LT condition center is a brand-new build, so re-using ANY of RTL's `checklist_templates` / `checklist_items` / `conditions` / `src/lib/conditions/**` / document + eFolder code still needs its own row in the approvals log above. **Document underwriting and orders remain NO.** |
+| 2026-08-02 | Conditions, document underwriting, and orders for Long-Term | **Not for now** — "we're not going to build conditions we're not going to bring in document underwriting we're not going to bring in orders for now". ⟶ **CONDITIONS were REVERSED by the owner on 2026-08-14** — *"you should set up your DSCR condition center — it should pull the conditions directly from Encompass"* and *"We should build a condition center … with all the documents in there linked"*. See CLAUDE.md rule 6 and the charter §4. **This is a SCOPE change, not a separation change**: the LT condition center is a brand-new build, so re-using ANY of RTL's `checklist_templates` / `checklist_items` / `conditions` / `src/lib/conditions/**` / document + eFolder code still needs its own row in the approvals log above. **Document underwriting remains NO. ORDERS were REVERSED by the owner on 2026-08-30** — the whole Orders directive (title / insurance / flood / settlement agent / VOR / condo questionnaire, with the owner's own drafts) and then, same day, the share-the-code order: *"The same thing with Order Center: you need to share the code."* |
 | 2026-08-02 | New columns / new field mappings anywhere for Long-Term | **No** — "don't add any columns don't add any mapping unless we specifically ask you to" |
 | 2026-08-02 | Sharing the database connection pool (`src/db.js`) with Long-Term | **Not asked yet** — until it is, Long-Term opens its own pool in `src/longterm/db.js`, which needs no authorization (open question 11 in the charter) |
 | 2026-08-03 | **Long-Term WRITING the borrower record** (`sql-write borrowers`) | **No — confirmed by the owner: "keep borrower read only".** An officer CAN change a borrower profile from a long-term file, but through the ONE shared editor and the existing borrower endpoint — not through Long-Term write code. The person record keeps a single owner, which matters because a dozen RTL modules already heal, enrich and de-duplicate it (Encompass enrich, ClickUp sync, credit store, name-heal, merge). |
-| 2026-08-03 | Long-Term re-using RTL's **workflow, statuses, document sets, conditions or integrations** | **No — explicitly.** *"the workflow will be different, the sets will be different, integrations will be different, it will be a brand new build."* **EXCEPTION (2026-08-14): the Encompass integration was later authorized to be brought into Long-Term** (see the log row above). That exception is Encompass-only; every other integration (ClickUp, SharePoint, DocuSign, Sitewire, Trustpoint) still stays separate unless the owner authorizes it by name. |
+| 2026-08-03 | Long-Term re-using RTL's **workflow, statuses, document sets, conditions or integrations** | **No — explicitly.** *"the workflow will be different, the sets will be different, integrations will be different, it will be a brand new build."* **EXCEPTION (2026-08-14): the Encompass integration was later authorized to be brought into Long-Term** (see the log row above). That exception was Encompass-only at the time. **Since then the owner authorized, by name: ClickUp (2026-08-23, the writer's inheritance below), DocuSign + the mail sender (2026-08-30, #1376 rows above), and — 2026-08-30, the share-the-code directive — SharePoint syncing and the Cloudflare/off-site backup: *"Same thing is with SharePoint: you need to share the code."* Sitewire and Trustpoint remain separate (draw management is not an LT feature).** |
 
 # ---------------------------------------------------------------------------
 # THE CLICKUP WRITER'S INHERITANCE — authorized in writing by the owner,
@@ -642,3 +1241,54 @@ stops a "no" quietly turning into a "yes" months later.
 # use of the SAME authorized import for geocoding, so the per-item rule stays
 # honest. No RTL address RECORD is read or written — only the geocode cache.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# THE DOCUMENT READER — OCR AND THE AI, ON THE MORTGAGE STATEMENT.
+#
+# Owner-directed 2026-08-31, in their own words, as the seventh item of a
+# long-term Condition Center batch:
+#
+#   "Now let's add a feature. Let's bring in the logic that we have on the
+#    document review section. Just very carefully bring in only what you need to
+#    be able to share [the AI] and the OCR engine to be able to read the mortgage
+#    statement and read who is the servicer name, who is the loan number, and
+#    what's the outstanding principal balance, and should automatically fill."
+#
+# That sentence is the authorization, and *"only what you need"* is the scope, so
+# it is written down here rather than left to inference.
+#
+# WHAT CROSSES: the two READERS, and nothing else.
+#
+#   · `src/lib/ai/ocr-router.js` — picks the strongest OCR engine available and
+#     falls back between them. It takes bytes and returns text. It reads no
+#     table, holds no loan data, and knows nothing about either product; a second
+#     copy would be a second place the engine order, the rescue rule and the
+#     "this came back suspiciously empty" test could drift, and the copy that
+#     drifts is the one that reads a scanned statement as blank.
+#   · `src/lib/ai/azure-openai.js` — the same, one level up: a transport that
+#     takes a prompt and a schema and answers. `extract` is what the appraisal's
+#     As-Is reader already uses as a LOCATOR held to a grounding gate, and the
+#     mortgage statement is held to the same one.
+# NOT `src/lib/ai/cost-meter.js`, and the reason is worth writing down because
+# sharing a brake looks obviously right: that meter is keyed on an APPLICATION id,
+# so asking it about a long-term loan gets a confident zero — a cap that never
+# caps — and RECORDING against it would write long-term rows into a short-term
+# table, which is a crossing nobody authorized. The bound here is the shape of the
+# work instead: one read per uploaded statement, on one condition, and the model
+# is only asked at all when the deterministic scanner came up short.
+#
+# WHAT DOES NOT CROSS, deliberately, and this is the *"only what you need"* half:
+# the document-review DESK — `src/lib/underwriting/**`, the findings tables, the
+# classifier, the second-look machinery, `ai_suggestions`, the tie-out. None of
+# it is imported and none of it is copied. Long-Term's reader is its own module
+# (`src/longterm/mortgage-statement-read.js`), it writes one condition's answer
+# and nothing else, and it raises no finding on either product.
+#
+# THE RULE THE READING IS HELD TO is the appraisal As-Is reader's, because the
+# failure is the same shape and this one is worse: an outstanding balance read
+# wrong goes into a payoff. So the deterministic scanner decides, the AI may only
+# POINT at a line, and its answer survives only when its quote is genuinely in
+# the document AND our own scanner independently reads the same value out of the
+# text around it. It can never introduce a number the statement does not label.
+# (the two `import` lines for this block are inside the authorized fence above,
+#  where the gate reads them — see `src/lib/ai/ocr-router.js` there.)

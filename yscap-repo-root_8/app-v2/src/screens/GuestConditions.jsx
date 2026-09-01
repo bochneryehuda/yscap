@@ -47,6 +47,97 @@ function makeClient(initialToken) {
   return { call };
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   ONE SCREEN, TWO PRODUCTS — the surface is the only thing that differs.
+
+   The owner's rule since 2026-08-30 is that the Condition Center is ONE
+   implementation for both products, so this page is not forked and there is no
+   second guest screen. What a long-term loan and a short-term file genuinely do
+   not share is the URL of the door and the shape it answers with, and that is
+   all that lives below: two small adapters behind one interface, each normalising
+   into the shape the cards already render.
+
+   THE PRODUCT COMES FROM THE SERVER, NEVER FROM THE URL. `/auth/condition-link`
+   answers `product` off the LINK ROW's own owner column, so a forwarded link
+   cannot be talked into opening the other product's doors by editing the address
+   bar — and the jail behind it would refuse anyway.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/** The short-term file: the borrower endpoints the full portal already uses. */
+function shortTermSurface(client, appId) {
+  return {
+    product: 'short_term',
+    id: appId,
+    loadFile: () => client.call('GET', `/api/borrower/applications/${appId}`).catch(() => null),
+    loadItems: async () => (await client.call('GET', `/api/borrower/applications/${appId}/checklist`)) || [],
+    upload: (itemId, filename, contentType, dataBase64) =>
+      client.call('POST', '/api/borrower/documents',
+        { applicationId: appId, checklistItemId: itemId, filename, contentType, dataBase64 }),
+    // Typing an answer straight onto the file — the short-term door has one.
+    saveInfo: (itemId, value) =>
+      client.call('POST', `/api/borrower/applications/${appId}/checklist/${itemId}/info`, { value }),
+  };
+}
+
+/** The long-term loan: `/api/lt/my`, the only doors the long-term jail admits. */
+function longTermSurface(client, loanId) {
+  /* THE CONDITIONS LIVE INSIDE BUCKETS. `read.forLoan` answers
+     `{ loan, buckets, summary }` and each bucket carries its own `conditions` —
+     there is no flat list. Flattened here, once, and normalised into the same
+     shape the cards below already read, so not one card knows which product it
+     is drawing.
+
+     The long-term client shape is camelCase (`rejectionReason`) where the
+     short-term checklist is snake_case (`rejection_reason`); mapping it here is
+     what keeps that difference out of the rendering. */
+  const normalise = (c) => ({
+    id: c.id,
+    label: c.label,
+    hint: c.hint || null,
+    status: c.status === 'in_progress' ? 'requested'
+      : c.status === 'not_applicable' ? 'satisfied'
+        : c.status === 'waived' ? 'satisfied'
+          : c.status,
+    waived: c.status === 'waived' || c.status === 'not_applicable',
+    signed_off: c.status === 'satisfied',
+    rejection_reason: c.rejectionReason || null,
+    // What else would answer this condition, in the borrower's own words. The
+    // long-term reader calls them slots; the card calls them still-needed.
+    still_needed: (c.slots || []).filter((sl) => sl.required).map((sl) => sl.label).filter(Boolean),
+    /* NO TOOL AND NO TYPED ANSWER, and that is the doors' doing rather than a
+       decision taken here: `/api/lt/my` carries a read and two upload doors and
+       nothing else, so a typed box would render a button that 403s. Every
+       client-facing long-term condition can be answered by sending a document,
+       which is what the card offers. */
+    tool_key: null,
+    field_key: null,
+    field_def: null,
+    field_value: null,
+    external_note: null,
+  });
+
+  return {
+    product: 'long_term',
+    id: loanId,
+    // The loan's own identity rides on the conditions payload, so there is no
+    // second call — and no second door for the jail to have to admit.
+    loadFile: () => Promise.resolve(null),
+    loadItems: async () => {
+      const payload = await client.call('GET', `/api/lt/my/loans/${loanId}/conditions`);
+      const out = [];
+      for (const b of (payload && payload.buckets) || []) {
+        for (const c of (b && b.conditions) || []) out.push(normalise(c));
+      }
+      out._file = (payload && payload.loan) || null;
+      return out;
+    },
+    upload: (itemId, filename, contentType, dataBase64) =>
+      client.call('POST', `/api/lt/my/loans/${loanId}/conditions/${itemId}/documents`,
+        { filename, contentType, dataBase64 }),
+    saveInfo: null,
+  };
+}
+
 const STATUS_WORDS = {
   outstanding: { label: 'Needed', tone: '#8a6d3b' },
   requested: { label: 'Needed', tone: '#8a6d3b' },
@@ -62,8 +153,11 @@ export default function GuestConditions() {
   const [params] = useSearchParams();
   const token = params.get('t') || '';
   const focusItem = params.get('item') || '';
-  const [client, setClient] = useState(null);
-  const [appId, setAppId] = useState('');
+  /* THE SURFACE IS THE STATE. It holds the session client AND which product's
+     doors to knock on, so nothing below has to hold either separately — and no
+     card can be handed a client without also being told which product it is
+     drawing, which is how the two would drift. */
+  const [surface, setSurface] = useState(null);
   const [err, setErr] = useState('');
   const [file, setFile] = useState(null);
   const [items, setItems] = useState(null);
@@ -83,13 +177,17 @@ export default function GuestConditions() {
         if (!r.ok) { if (!dead) setErr(j.error || 'This link is no longer active.'); return; }
         const c = makeClient(j.accessToken);
         if (dead) return;
-        setClient(c); setAppId(j.applicationId);
-        const [f, list] = await Promise.all([
-          c.call('GET', `/api/borrower/applications/${j.applicationId}`).catch(() => null),
-          c.call('GET', `/api/borrower/applications/${j.applicationId}/checklist`),
-        ]);
+        /* WHICH PRODUCT, FROM THE SERVER'S OWN ANSWER. A link minted on a
+           long-term loan reports `long_term` and carries `ltLoanId`; anything
+           else is the short-term file it has always been, so an older server
+           that answers neither behaves exactly as before. */
+        const sf = (j.product === 'long_term' && j.ltLoanId)
+          ? longTermSurface(c, j.ltLoanId)
+          : shortTermSurface(c, j.applicationId);
+        setSurface(sf);
+        const [f, list] = await Promise.all([sf.loadFile(), sf.loadItems()]);
         if (dead) return;
-        setFile(f); setItems(list);
+        setFile(f || (list && list._file) || null); setItems(list);
       } catch (e) {
         if (!dead) setErr(e.message || 'This link could not be opened.');
       }
@@ -98,9 +196,9 @@ export default function GuestConditions() {
   }, [token]);
 
   const reload = async () => {
-    if (!client || !appId) return;
-    try { setItems(await client.call('GET', `/api/borrower/applications/${appId}/checklist`)); }
-    catch (_) { /* keep what we have */ }
+    if (!surface) return;
+    try { setItems(await surface.loadItems()); }
+    catch (_) { /* keep what we have — a failed refresh must never blank the list */ }
   };
 
   // Scroll to the item the email's per-item link named, once the list is in.
@@ -118,8 +216,14 @@ export default function GuestConditions() {
   const inReview = useMemo(() => (items || []).filter((it) => it.status === 'received' && !it.waived), [items]);
   const done = useMemo(() => (items || []).filter((it) => (it.status === 'satisfied' || it.signed_off || it.waived)), [items]);
 
-  const address = file && (file.property_address ? (file.property_address.oneLine
-    || [file.property_address.street, file.property_address.city, file.property_address.state].filter(Boolean).join(', ')) : '');
+  /* WHAT NAMES THE FILE UNDER THE HEADING. A short-term file carries its own
+     property address; the long-term borrower payload carries the loan's number
+     and no address, so it says the loan number rather than nothing at all — a
+     blank line under "Your loan" reads as a page that failed to load. */
+  const address = (file && file.property_address)
+    ? (file.property_address.oneLine
+      || [file.property_address.street, file.property_address.city, file.property_address.state].filter(Boolean).join(', '))
+    : (file && file.file ? `File ${file.file}` : '');
 
   if (err) {
     return (
@@ -160,7 +264,7 @@ export default function GuestConditions() {
         )}
 
         {open.map((it, i) => (
-          <ItemCard key={it.id} it={it} n={i + 1} client={client} appId={appId}
+          <ItemCard key={it.id} it={it} n={i + 1} surface={surface}
             onDone={(t) => { setMsg({ tone: 'ok', text: t }); reload(); }}
             onErr={(t) => setMsg({ tone: 'err', text: t })} />
         ))}
@@ -208,12 +312,16 @@ function Shell({ children }) {
 /* One outstanding item: what it is, why (the hint / sent-back reason), and ONE
    obvious way to answer it — upload for a document, a typed box for an
    information item, the tool link where a tool exists. */
-function ItemCard({ it, n, client, appId, onDone, onErr }) {
+function ItemCard({ it, n, surface, onDone, onErr }) {
   const fileRef = useRef(null);
   const [busy, setBusy] = useState(false);
   const [value, setValue] = useState(it.field_value != null ? String(it.field_value) : '');
 
-  const isInfo = it.tool_key === 'info_field' && it.field_key;
+  /* A TYPED ANSWER IS OFFERED ONLY WHERE THE DOOR EXISTS. The long-term guest
+     surface carries a read and two upload doors and nothing else, so asking
+     the surface rather than the item is what stops a Save button rendering
+     over a 403. On the short-term surface this reads exactly as it did. */
+  const isInfo = !!(surface && surface.saveInfo) && it.tool_key === 'info_field' && it.field_key;
   const isSow = it.tool_key === 'rehab_budget';
   const isTrackRecord = it.tool_key === 'track_record';
   const sentBack = it.status === 'issue';
@@ -229,10 +337,7 @@ function ItemCard({ it, n, client, appId, onDone, onErr }) {
           rd.onerror = () => reject(new Error('Could not read that file.'));
           rd.readAsDataURL(f);
         });
-        await client.call('POST', '/api/borrower/documents', {
-          applicationId: appId, checklistItemId: it.id,
-          filename: f.name, contentType: f.type || 'application/octet-stream', dataBase64,
-        });
+        await surface.upload(it.id, f.name, f.type || 'application/octet-stream', dataBase64);
       }
       onDone(`Uploaded — “${it.label}” is with your loan team for review.`);
     } catch (e) { onErr(e.message || 'The upload did not go through — try again.'); }
@@ -243,7 +348,7 @@ function ItemCard({ it, n, client, appId, onDone, onErr }) {
     if (!String(value).trim()) return;
     setBusy(true);
     try {
-      await client.call('POST', `/api/borrower/applications/${appId}/checklist/${it.id}/info`, { value: value.trim() });
+      await surface.saveInfo(it.id, value.trim());
       onDone(`Saved — “${it.label}” went straight to your file.`);
     } catch (e) { onErr(e.message || 'That could not be saved — try again.'); }
     finally { setBusy(false); }

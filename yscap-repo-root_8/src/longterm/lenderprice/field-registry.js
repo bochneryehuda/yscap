@@ -78,7 +78,43 @@ const PROPERTY_TYPES = {
   ManufacturedHomeCondominium: { propertyType: 'ManufacturedHomeCondominium', attachmentType: 'Detached', units: 1 },
   ManufacturedHomeCondominiumOrPUDOrCooperative: { propertyType: 'ManufacturedHomeCondominiumOrPUDOrCooperative', attachmentType: 'Attached', units: 1 },
 };
-function resolvePropertyType(t) { return PROPERTY_TYPES[t] || null; }
+// §  — THE SAME WORD MUST MEAN THE SAME THING ON BOTH PRICING PROGRAMS
+// (owner-directed 2026-08-30). The table above is an EXACT-key lookup, so
+// "2-4 units" and "TwoToFourUnits" were refused here while the LoanNEX adapter
+// — which normalizes punctuation and case — accepted both. A caller therefore
+// had to know WHICH vendor would read their scenario, which is precisely the
+// divergence the shared scenario is meant to remove.
+//
+// This ADDS a tolerant second lookup; it does not add a single new property
+// type. Exact spellings still win, so nothing that resolved before can resolve
+// differently now.
+//
+// A COLLISION IS LEFT UNRESOLVED RATHER THAN PICKED. If two distinct table keys
+// ever normalize to the same word while meaning DIFFERENT property types, the
+// tolerant entry is dropped and that word keeps requiring an exact spelling —
+// silently choosing one of two property types is the mis-pricing this whole
+// module exists to prevent. `AMBIGUOUS_PROPERTY_KEYS` names any that occur so a
+// test can see them; today it is empty.
+function propertyKey(t) { return String(t == null ? '' : t).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+const AMBIGUOUS_PROPERTY_KEYS = [];
+const PROPERTY_TYPES_LOOSE = (() => {
+  const m = new Map();
+  for (const [k, v] of Object.entries(PROPERTY_TYPES)) {
+    const key = propertyKey(k);
+    const prev = m.get(key);
+    if (prev === undefined) { m.set(key, v); continue; }
+    if (prev === null) continue;                                   // already known ambiguous
+    if (JSON.stringify(prev) === JSON.stringify(v)) continue;      // same meaning, different spelling
+    m.set(key, null);
+    AMBIGUOUS_PROPERTY_KEYS.push(key);
+  }
+  return m;
+})();
+function resolvePropertyType(t) {
+  if (PROPERTY_TYPES[t]) return PROPERTY_TYPES[t];
+  const loose = PROPERTY_TYPES_LOOSE.get(propertyKey(t));
+  return loose || null;
+}
 
 // §33.2 — INCOME DOCUMENTATION. The complete current-tenant IncomeDocType menu from the confirmed
 // one-field capture: the on-screen LABEL on the left, the EXACT upstream token on the right. They
@@ -164,6 +200,13 @@ function mapPrepayStructure(v) {
 // §33.4 — BORROWER TYPE (dynamicPropertiesMap.GLOBAL_BorrowerType). The exact six-value tenant enum.
 // This was previously passed through UNVALIDATED, so an arbitrary string travelled upstream as a
 // vesting type (audit §34.2 P1). The DSCR profile default is LLC.
+// The shared DSCR profile — READ AT CALL TIME, never captured here. Snapshotting
+// `.citizenship` into a constant at module load was the first cut, and it silently
+// re-armed the very drift this wiring exists to close: moving the shared default moved
+// LoanNEX (which resolves it per build) and left this side on the value it had copied at
+// boot. The guard that caught it is DEF-4, which MOVES the default and requires both
+// programs to follow.
+const SHARED_PROFILE_DEFAULTS = require('../pricing/scenario-defaults').DSCR_PROFILE;
 const BORROWER_TYPES = new Set(['Individual', 'Corporation', 'Partnership', 'Trust', 'Non-Profit', 'LLC']);
 
 // Adverse-credit / borrower dynamic fields — exact upstream keys + tokens from the audit
@@ -279,7 +322,31 @@ function applyRegistry(m, sc) {
   if (sc.lateInLast12Months === true) setDyn(m, 'Lateinlast12months', 'true');
 
   // --- citizenship / tradelines ---
-  if (sc.citizenship != null) { if (CITIZENSHIP.has(sc.citizenship)) setDyn(m, 'Citizenship', sc.citizenship); else bad('citizenship', sc.citizenship, CITIZENSHIP); }
+  // CITIZENSHIP. An omitted one takes the SHARED default (`pricing/scenario-defaults`),
+  // which resolves to the SAME 'US Citizen' the recorded base already carries — so this
+  // writes the value that was going out anyway and moves no number (proven byte-identical
+  // over 1,008 priced scenarios). What it buys is that the default now lives in ONE place
+  // both programs read: previously this side's copy was frozen inside a captured JSON blob,
+  // so moving the shared default would have taken LoanNEX with it and left this one behind.
+  //
+  // ONLY AN ABSENT FIELD TAKES IT. A blank string still falls through to `bad()` exactly as
+  // before, so nothing this connector used to refuse is now quietly priced; and an invalid
+  // value still never reaches `setDyn`, leaving the recorded base value untouched.
+  // WHOSE MISTAKE IS IT? A citizenship the CALLER stated and this vendor does not know is
+  // the caller's, and is refused by name exactly as before. A shared DEFAULT this vendor
+  // does not know is OURS, and must never be charged to them: this comparison is EXACT
+  // (`CITIZENSHIP.has`, no alias table on this side), so a default written in the OTHER
+  // vendor's spelling — `UsCitizen` instead of `US Citizen`, the most natural edit anyone
+  // could make to that shared line — would have answered `invalid_field_value` naming a
+  // field the caller never sent, on EVERY quote, taking the whole general board down.
+  // Found by audit before it could happen. It now degrades to the recorded base's own
+  // value, which is what this connector sent before the default was wired at all.
+  const czStated = sc.citizenship != null;
+  const czEff = czStated ? sc.citizenship : SHARED_PROFILE_DEFAULTS.citizenship;
+  if (czEff != null) {
+    if (CITIZENSHIP.has(czEff)) setDyn(m, 'Citizenship', czEff);
+    else if (czStated) bad('citizenship', czEff, CITIZENSHIP);
+  }
   if (sc.tradelines != null && sc.tradelines !== '') { if (TRADELINES.has(sc.tradelines)) setDyn(m, 'Tradelines', sc.tradelines); else bad('tradelines', sc.tradelines, TRADELINES); }
   // §31.8 item 7 — OPEN QUESTION FOR THE VENDOR, DELIBERATELY NOT RESOLVED HERE. The audit
   // contradicts ITSELF about how "no mortgage history" travels, and the two halves are different
@@ -364,7 +431,7 @@ const REGISTRY_FIELDS = [
   'dscrAssetDepletion', 'lateInLast12Months',
 ];
 
-module.exports = { applyRegistry, resolvePropertyType, PROPERTY_TYPES, REGISTRY_FIELDS,
+module.exports = { applyRegistry, resolvePropertyType, PROPERTY_TYPES, PROPERTY_TYPES_LOOSE, AMBIGUOUS_PROPERTY_KEYS, propertyKey, REGISTRY_FIELDS,
   mapIncomeDocType, INCOME_DOC_TYPES,
   mapPrepayStructure, PREPAY_STRUCTURES, PREPAY_STRUCTURE_NULL,
   BORROWER_TYPES,

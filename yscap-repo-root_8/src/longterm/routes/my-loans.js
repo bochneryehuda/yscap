@@ -43,27 +43,30 @@ const express = require('express');
 const router = express.Router();
 
 const db = require('../db');
-const trash = require('../trash');
 const audience = require('../audience');
 const productTerm = require('../product-term');
 const settingsStore = require('../settings/store');
+const myScope = require('../my-scope');
+
+/* THE BORROWER'S CONDITIONS RIDE THIS SAME MOUNT — /api/lt/my, already behind
+   `requireAuth` + `requireBorrower` in server.js. Mounting them here rather than
+   adding a second entry there means there is ONE borrower-authenticated
+   long-term seam, and a door added to it cannot be reachable without the
+   authentication this one already has. */
+router.use(require('./my-conditions'));
 const stages = require('../stages');
 
-/** Is the borrower-facing long-term side switched on? Fails CLOSED. */
-async function longTermVisible() {
-  try {
-    const { settings } = await settingsStore.load();
-    return settings['borrower.longTermVisible'] === true;
-  } catch (e) {
-    // A settings read that fails is not permission to show a client anything. Off
-    // is the safe answer — note it is NO LONGER the shipped default (that is now
-    // on), so this is a genuine fail-closed rather than a coincidence of the two
-    // agreeing. `=== true` above is the other half: a settings object that came
-    // back empty, or a value that is the string "true", reads as OFF.
-    console.error('[lt] borrower long-term visibility check failed:', (e && e.message) || e);
-    return false;
-  }
-}
+/**
+ * Is the borrower-facing long-term side switched on?
+ *
+ * DELEGATES to `my-scope`, which is now the ONE definition — this door is no
+ * longer the only borrower-facing one, and a switch that gated the LIST while
+ * leaving the conditions and their documents reachable would be a switch that
+ * does not mean what it says. The reasoning that lived here (fail closed, `===
+ * true` so an empty settings object and the string "true" both read as OFF) is
+ * unchanged and now lives beside the scope it belongs to.
+ */
+const longTermVisible = myScope.longTermVisible;
 
 /**
  * Everything the client is allowed to know about one of their long-term files.
@@ -201,10 +204,12 @@ router.get('/loans', async (req, res) => {
             ORDER BY m.position ASC, m.milestone_name ASC
             LIMIT 1
          ) w ON true
-        WHERE l.borrower_id = $1::uuid
-          -- A loan deleted in Encompass (its trash folder) is not one of their
-          -- files. The archive is internal; a client never sees a deleted loan.
-          AND ${trash.notTrashSql('l')}
+        -- THE ONE OWN-LOAN SCOPE (my-scope.js): the confirmed borrower link plus
+        -- the trash exclusion. A loan deleted in Encompass is not one of their
+        -- files, and a loan nobody confirmed is theirs belongs to nobody. Read
+        -- from the shared fragment so this list and the borrower's conditions
+        -- doors can never disagree about which loans are theirs.
+        WHERE ${myScope.ownLoanSql('l', '$1')}
         ORDER BY l.encompass_synced_at DESC NULLS LAST, l.loan_number NULLS LAST`,
       [borrowerId],
     );

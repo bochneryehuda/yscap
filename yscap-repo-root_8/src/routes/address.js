@@ -69,12 +69,40 @@ function cleanLabel(addr) {
   return [[addr.line1, addr.unit].filter(Boolean).join(' '), addr.city,
     [addr.state, addr.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
 }
+/* ⛔ THE HOUSE NUMBER THE PERSON TYPED IS NOT OURS TO DROP (owner-reported
+   2026-08-31: *"his address is not populated correctly"*).
+
+   REPRODUCED against the live provider with the reported address before anything
+   was changed. Typing `9 Hurley St, Keyport, NJ 07735-1607` returns TWO rows,
+   both `addresstype: "road"`, both carrying NO `house_number`, identical in every
+   field a person can see and differing only in `place_id` — OSM holds that street
+   as two segments. So the officer was offered "Hurley Street, Keyport, NJ 07735"
+   TWICE, and picking either one silently replaced their property with a STREET.
+
+   This is the same class CLAUDE.md already records for the ClickUp push — "a
+   geocoder answers a house number it cannot place with the ROAD it sits on" —
+   which `geocodeRewriteIsSafe` closed on THAT path and nowhere else. Same root,
+   a second surface.
+
+   ⛔ IT PRESERVES, IT NEVER INVENTS. The number is carried over ONLY from what the
+   person actually typed, and only onto a row whose street/town/state the provider
+   itself returned. We are completing the parts they left off, never asserting a
+   house exists: with no number typed, a road match is still offered exactly as it
+   was, and a row the provider DID place is untouched. */
+const TYPED_HOUSE_RE = /^\s*(\d+[A-Za-z]?(?:\s*-\s*\d+[A-Za-z]?)?)\s+\S/;
+function typedHouseNumber(q) {
+  const m = TYPED_HOUSE_RE.exec(String(q || ''));
+  return m ? m[1].replace(/\s+/g, '') : null;
+}
+
 async function osmSuggest(q) {
   const url = 'https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&countrycodes=us&q=' + encodeURIComponent(q);
   const rows = await osmThrottle(() => fetchJson(url, {
     headers: { 'User-Agent': `YSCapitalPortal/1.0 (${cfg.osmContact})`, 'Accept-Language': 'en-US' },
   }));
-  return (rows || []).map((r) => {
+  const typedHouse = typedHouseNumber(q);
+  const seen = new Set();
+  const mapped = (rows || []).map((r) => {
     const address = osmAddress(r.address);
     // Fallback label is COMPACTED, never the raw display_name — picking a
     // suggestion copies the label into the field, and that is one of the ways
@@ -92,8 +120,33 @@ async function osmSuggest(q) {
     if (house && Number.isFinite(lat) && Number.isFinite(lng)) {
       out.position = { lat, lng, source: 'osm', precision: 'address' };
     }
+    /* The provider placed the street but not the house. Put the typed number back
+       on the line so choosing this suggestion cannot cost the officer their own
+       property, and SAY it is street-level: `position` is deliberately still
+       absent (a road point puts every house on the street in one spot, which is
+       worse than none), and `housePreserved` lets a screen mark the row rather
+       than implying we confirmed the address. */
+    if (!house && typedHouse && out.address && out.address.line1) {
+      out.address = { ...out.address, line1: `${typedHouse} ${out.address.line1}` };
+      out.label = cleanLabel(out.address) || out.label;
+      out.precision = 'street';
+      out.housePreserved = true;
+    }
     return out;
+  }).filter((out) => {
+    /* ⛔ TWO ROWS A PERSON CANNOT TELL APART ARE ONE SUGGESTION. OSM splits a
+       street into segments, so the reported address came back as two rows with
+       the SAME label and different `place_id`s. Keying the de-dupe on the LABEL
+       is the point — the id is exactly the thing that differs and the thing
+       nobody can see. First one wins, so a row the provider genuinely placed
+       (which is emitted with its own richer label) is never dropped for a
+       later duplicate. */
+    const k = String(out.label || '').toLowerCase();
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    return true;
   });
+  return mapped;
 }
 
 // ---- Google Places ----

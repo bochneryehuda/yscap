@@ -9,7 +9,39 @@
  * team can see exactly how today's conditions are built, reword them, attach
  * rule logic, or retire them) plus brand-new definitions with rule-driven
  * auto-application handled by src/lib/conditions/engine.js.
+ *
+ * ── THIS STUDIO AUTHORS THE SHORT-TERM LIBRARY, AND ONLY THAT ───────────────
+ *
+ * `checklist_templates` stopped being one product's table when the Long-Term
+ * loan became the fourth owner scope of the one Condition Center (db/652,
+ * db/653). Every read and write here used to carry NO scope filter, which was
+ * harmless while the only other scopes were the handful of borrower-profile and
+ * LLC rows — and stopped being harmless the moment 28 Long-Term definitions
+ * landed in the same table. Measured on a real database: the list went from 93
+ * rows to 121; the screen rendered every Long-Term condition under a false
+ * description (it calls anything non-application a "per-entity document slot" or
+ * a "borrower-profile item"); a PATCH of `{isActive:false}` switched one off so
+ * it silently stopped attaching to Long-Term loans; and DELETE with
+ * `?removeFromFiles=1` stripped a Long-Term condition off EVERY Long-Term loan
+ * and removed the library row — which `ensureSeeded` memoises, so it did not
+ * come back until a restart.
+ *
+ * So every door here is scoped. Sharing a TABLE is not sharing a SCREEN: the
+ * Long-Term library has its own door, which already gets this right
+ * (`PATCH /api/lt/condition-center/library/:code` ends `WHERE code = $1 AND
+ * scope = 'lt_loan'`). One table, two libraries, each edited where it belongs.
  */
+
+/* THE SCOPES THIS STUDIO OWNS — an ALLOWLIST, not "everything except lt_loan".
+   These three are the population the screen has always shown and knows how to
+   describe (StaffConditionStudio.jsx renders the borrower-profile and per-entity
+   wordings by name), so listing them keeps today's behaviour to the row rather
+   than narrowing it to `application` and quietly dropping the seven others.
+   And an allowlist fails the SAFE way: a FIFTH owner scope added tomorrow is
+   invisible here until somebody decides this screen should edit it, instead of
+   appearing unannounced under a description written for something else — which
+   is exactly how the Long-Term rows arrived. */
+const STUDIO_SCOPES = Object.freeze(['application', 'borrower_profile', 'llc']);
 
 const express = require('express');
 const router = require('../lib/safe-router')();
@@ -269,7 +301,9 @@ router.get('/definitions', async (req, res) => {
        FROM checklist_templates t
        LEFT JOIN staff_users cb ON cb.id = t.created_by
        LEFT JOIN staff_users ub ON ub.id = t.updated_by
-      ORDER BY t.is_active DESC, t.scope, t.phase NULLS LAST, t.sort_order, t.label`);
+      WHERE t.scope = ANY($1)
+      ORDER BY t.is_active DESC, t.scope, t.phase NULLS LAST, t.sort_order, t.label`,
+    [STUDIO_SCOPES]);
   const fields = await registry.fieldMap(db);
   res.json(r.rows.map((t) => defOut(t, fields)));
 });
@@ -314,14 +348,16 @@ router.post('/definitions', async (req, res) => {
 // ---- update a definition (wording, logic, activation) ----
 router.patch('/definitions/:id', async (req, res) => {
   const b = req.body || {};
-  const cur = await db.query(`SELECT * FROM checklist_templates WHERE id=$1`, [req.params.id]);
+  const cur = await db.query(
+    `SELECT * FROM checklist_templates WHERE id=$1 AND scope = ANY($2)`, [req.params.id, STUDIO_SCOPES]);
   if (!cur.rows[0]) return res.status(404).json({ error: 'condition not found' });
   const existing = cur.rows[0];
 
   // Pure activation toggles skip full validation (built-ins may predate rules).
   if (Object.keys(b).length === 1 && 'isActive' in b) {
-    await db.query(`UPDATE checklist_templates SET is_active=$2, updated_by=$3, updated_at=now() WHERE id=$1`,
-      [req.params.id, !!b.isActive, req.actor.id]);
+    await db.query(`UPDATE checklist_templates SET is_active=$2, updated_by=$3, updated_at=now()
+       WHERE id=$1 AND scope = ANY($4)`,
+      [req.params.id, !!b.isActive, req.actor.id, STUDIO_SCOPES]);
     await audit(req, b.isActive ? 'condition_def_activated' : 'condition_def_deactivated', 'checklist_template', req.params.id, { label: existing.label });
     return res.json({ ok: true });
   }
@@ -344,11 +380,11 @@ router.patch('/definitions/:id', async (req, res) => {
          auto_apply=$15, rule_logic=$16,
          is_active=COALESCE($17, is_active),
          version=version + $18, updated_by=$19, updated_at=now()
-       WHERE id=$1 RETURNING *`,
+       WHERE id=$1 AND scope = ANY($20) RETURNING *`,
       [req.params.id, norm.label, norm.borrower_label, norm.hint, norm.borrower_hint, norm.audience,
        norm.item_kind, norm.tool_key || null, norm.field_key, norm.esign_doc, norm.category, norm.phase,
        norm.sort_order, norm.is_required, norm.auto_apply, norm.rule_logic,
-       'isActive' in b ? !!b.isActive : null, contentChanged ? 1 : 0, req.actor.id]);
+       'isActive' in b ? !!b.isActive : null, contentChanged ? 1 : 0, req.actor.id, STUDIO_SCOPES]);
     await audit(req, 'condition_def_updated', 'checklist_template', req.params.id,
       { label: norm.label, autoApply: norm.auto_apply, versionBumped: contentChanged });
     let run = null;
@@ -371,7 +407,7 @@ router.delete('/definitions/:id', async (req, res) => {
     || (req.body && req.body.removeFromFiles === true));
   const cur = await db.query(
     `SELECT t.*, (SELECT count(*) FROM checklist_items ci WHERE ci.template_id=t.id) AS n
-       FROM checklist_templates t WHERE t.id=$1`, [req.params.id]);
+       FROM checklist_templates t WHERE t.id=$1 AND t.scope = ANY($2)`, [req.params.id, STUDIO_SCOPES]);
   if (!cur.rows[0]) return res.status(404).json({ error: 'condition not found' });
   const t = cur.rows[0];
   const n = Number(t.n);
@@ -381,19 +417,20 @@ router.delete('/definitions/:id', async (req, res) => {
     // definition. Documents linked to those items cascade (documents.checklist_item_id
     // is ON DELETE SET NULL, so the bytes stay in the file's history).
     const del = await db.query(`DELETE FROM checklist_items WHERE template_id=$1 RETURNING id`, [req.params.id]);
-    await db.query(`DELETE FROM checklist_templates WHERE id=$1`, [req.params.id]);
+    await db.query(`DELETE FROM checklist_templates WHERE id=$1 AND scope = ANY($2)`, [req.params.id, STUDIO_SCOPES]);
     await audit(req, 'condition_def_deleted', 'checklist_template', req.params.id,
       { label: t.label, removedFromFiles: del.rowCount });
     return res.json({ ok: true, deleted: true, removedFromFiles: del.rowCount });
   }
 
   if (n > 0) {
-    await db.query(`UPDATE checklist_templates SET is_active=false, updated_by=$2, updated_at=now() WHERE id=$1`,
-      [req.params.id, req.actor.id]);
+    await db.query(`UPDATE checklist_templates SET is_active=false, updated_by=$2, updated_at=now()
+       WHERE id=$1 AND scope = ANY($3)`,
+      [req.params.id, req.actor.id, STUDIO_SCOPES]);
     await audit(req, 'condition_def_deactivated', 'checklist_template', req.params.id, { label: t.label, reason: 'delete_with_instances' });
     return res.json({ ok: true, deactivated: true, instanceCount: n });
   }
-  await db.query(`DELETE FROM checklist_templates WHERE id=$1`, [req.params.id]);
+  await db.query(`DELETE FROM checklist_templates WHERE id=$1 AND scope = ANY($2)`, [req.params.id, STUDIO_SCOPES]);
   await audit(req, 'condition_def_deleted', 'checklist_template', req.params.id, { label: t.label });
   res.json({ ok: true, deleted: true });
 });
@@ -441,4 +478,9 @@ router.post('/run-all', async (req, res) => {
   res.json({ ok: true, ...totals });
 });
 
+/* The router is the export. STUDIO_SCOPES rides along ONLY so a test can assert
+   against the value this file actually uses: a suite that re-declares the list is
+   asserting against its own copy and stays green while the real one is widened —
+   which is exactly what happened on the first cut of that assertion. */
 module.exports = router;
+module.exports.STUDIO_SCOPES = STUDIO_SCOPES;

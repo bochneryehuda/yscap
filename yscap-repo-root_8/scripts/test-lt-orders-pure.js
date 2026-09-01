@@ -87,6 +87,39 @@ for (const vk of Object.keys(kinds.VENDOR_KINDS)) {
 }
 ok('every vendor card the registry names is one db/644 will store, and every order is addressed to one of them');
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   THE THIRD VOCABULARY — what the SHARED directory calls the same company.
+
+   Owner-directed 2026-08-30: one vendor card store for both products, and the
+   contact TYPE lives on the card, so a company entered once as an attorney is an
+   attorney everywhere. That only holds if the long-term desk files its cards under
+   a word the short-term directory already knows: `lib/vendor-directory`'s
+   SUGGEST_TYPES is the set its type-ahead will search, and a card filed outside it
+   is a card nobody can ever find again — which is exactly how a second contact
+   store gets started.
+
+   The set is READ OUT OF THE SHARED MODULE (its pure half — the ledger authorizes
+   it), never retyped here: a copy of the list would agree with itself forever.
+   ───────────────────────────────────────────────────────────────────────────── */
+const vendorDirectory = require('../src/lib/vendor-directory');
+for (const vk of Object.keys(kinds.VENDOR_KINDS)) {
+  const dir = kinds.directoryTypeFor(vk);
+  assert.ok(dir, `the registry can say what a "${vk}" card is in the directory's own words`);
+  assert.ok(vendorDirectory.SUGGEST_TYPES.has(dir.contactType),
+    `a "${vk}" card files under "${dir.contactType}", which the shared directory's type-ahead can search`);
+  // Only the kinds the directory has NO word for carry a free-text label, and the
+  // generic 'other' carries none — there the free text is the person's own.
+  if (dir.contactType !== 'other' || vk === 'other') {
+    assert.strictEqual(dir.customType, null, `a "${vk}" card carries no invented free-text label`);
+  } else {
+    assert.strictEqual(dir.customType, kinds.VENDOR_KINDS[vk],
+      `a "${vk}" card says what it is, in this desk's own words`);
+  }
+}
+assert.strictEqual(kinds.directoryTypeFor('not_a_kind'), null,
+  'a kind this desk does not carry maps to NOTHING — a guessed type files a card under the wrong search');
+ok('every long-term vendor kind files under a directory type the shared type-ahead can find');
+
 /* THE CONDITION LIBRARY. Each order condition declares the order it stands for; the
    registry declares the condition it answers. They are two directions of one fact and
    a drift means the desk and the condition centre tell different stories about the

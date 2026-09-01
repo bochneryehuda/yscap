@@ -20,6 +20,16 @@
  * A 401 here surfaces as an ordinary error on a Long-Term screen.
  */
 
+/* THE ONE RECORD OF WHAT IS UPLOADING RIGHT NOW — shared with the short-term
+   side under the 2026-08-30 share-the-code grant (see the crossing ledger).
+   The store and its `uploadTarget()` are product-neutral: a row files itself
+   under `condition:<id>` from the upload's own metadata, so the shared
+   `<UploadRows/>` renders a Long-Term upload without knowing which product it
+   belongs to. Publishing into it is what makes the bar appear at all; a second
+   progress store would be a second answer to "is this uploading?", and the one
+   that drifts is the one the person is looking at. */
+import * as up from '../lib/upload-progress.js';
+
 const TOKEN_KEY = 'ys_portal_token';
 
 const token = () => {
@@ -80,6 +90,57 @@ export async function ltFetch(method, path, body) {
  * A FAILURE IS THROWN, never saved. Without the `res.ok` check the caller would
  * "download" the error JSON as a .csv — a file that opens to a shrug.
  */
+/**
+ * WHAT THE SERVER CALLED THE FILE — its `Content-Disposition`, or null.
+ *
+ * ⛔ THE SERVER IS THE AUTHORITY ON A DOCUMENT'S NAME, AND THE CALLER'S IS ONLY A
+ * FALLBACK (owner-reported 2026-08-31: *"the comparison, when you want to export
+ * it, is basically issued and downloaded as the term sheet. It needs to be called
+ * the comparison sheet."*).
+ *
+ * That was fixed on the SERVER — the term-sheet PDF route names the file from
+ * `snapshot.KIND_WORDS`, so a comparison leaves as `comparison-sheet-TS-XXXXXX.pdf`
+ * — and the fix could not be seen, because `a.download` OVERRIDES the header and
+ * the one caller passed a hard-coded `term-sheet-${code}.pdf`. So a comparison
+ * still landed in the officer's downloads named as a term sheet, which is the one
+ * thing it must not be mistaken for: a comparison offers several options and
+ * commits to none. Reading the header here fixes it for every download through
+ * this function, present and future, and keeps the naming rule in the ONE place
+ * that knows what kind of document it just drew.
+ *
+ * ⛔ IT IS SANITISED EVEN THOUGH WE SEND IT. A filename reaches the file system:
+ * path separators and control characters are stripped and a leading dot is
+ * refused, so a header that is ever wrong cannot become a path.
+ */
+export function filenameFromDisposition(header) {
+  const h = typeof header === 'string' ? header : '';
+  if (!h) return null;
+  // RFC 5987 first — `filename*=UTF-8''name.pdf` wins over the plain form when
+  // both are present, because it is the one that can carry a non-ASCII name.
+  let raw = null;
+  const ext = /filename\*\s*=\s*([^;]+)/i.exec(h);
+  if (ext) {
+    const v = ext[1].trim();
+    const parts = v.split("'");
+    const tail = parts.length >= 3 ? parts.slice(2).join("'") : v;
+    try { raw = decodeURIComponent(tail); } catch { raw = tail; }
+  }
+  if (!raw) {
+    // NOT named `plain`: `format.js` exports a formatter by that name and every
+    // long-term module is swept for a local that shadows one.
+    const quoted = /filename\s*=\s*("([^"]*)"|[^;]+)/i.exec(h);
+    if (quoted) raw = (quoted[2] !== undefined ? quoted[2] : quoted[1]).trim();
+  }
+  if (!raw) return null;
+  const clean = String(raw)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001F\u007F]/g, '')
+    .replace(/[\\/]/g, '')
+    .trim();
+  if (!clean || clean === '.' || clean === '..' || clean.startsWith('.')) return null;
+  return clean.slice(0, 200);
+}
+
 export async function ltDownload(path, filename) {
   const headers = {};
   const t = token();
@@ -99,7 +160,9 @@ export async function ltDownload(path, filename) {
   try {
     const a = document.createElement('a');
     a.href = url;
-    a.download = filename;
+    // The server's own name wins; the caller's is what to fall back to when
+    // there is no header (or it cannot be read).
+    a.download = filenameFromDisposition(res.headers.get('Content-Disposition')) || filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -132,6 +195,150 @@ export async function ltBlobUrl(path) {
   }
   return URL.createObjectURL(await res.blob());
 }
+
+/**
+ * UPLOAD A DOCUMENT, AND SHOW THE BAR WHILE IT GOES.
+ *
+ * THE ASK (owner-reported 2026-08-23 on the short-term side, and now true here):
+ * *"the second you upload a document, while the system is working to upload, it
+ * already has the document over there with a bar and a percentage. You should see
+ * that the system is actually doing work for you."*
+ *
+ * TWO THINGS MAKE THAT POSSIBLE AND NEITHER IS OPTIONAL:
+ *
+ *   · XMLHttpRequest, NOT fetch. `fetch()`'s promise settles when the RESPONSE
+ *     arrives and there is no event in between for "42% of the request body has
+ *     been sent", so a surface that wanted a bar had no number to put in it.
+ *     `xhr.upload.onprogress` is the only browser API that reports bytes sent.
+ *
+ *   · The progress is PUBLISHED into the shared store the shared `<UploadRows/>`
+ *     component reads. That store and its `uploadTarget()` are product-neutral —
+ *     a row files itself under `condition:<id>` from the upload's OWN metadata —
+ *     so Long-Term gets the identical row in the identical place, with no second
+ *     progress mechanism to keep in step. Without it an LT upload would render
+ *     NOTHING while it ran and read as "it is not uploading", which is exactly
+ *     the defect the short-term side already had reported once.
+ *
+ * THE PERCENTAGE IS HONEST: it is the bytes of THIS REQUEST that have left the
+ * machine. The body is JSON carrying base64, so what goes on the wire is about a
+ * third larger than the file — the row therefore reports the REQUEST's own size
+ * rather than the file's, because a percentage of a number we are not sending is
+ * the kind of small lie a progress bar cannot afford.
+ */
+export function ltUpload(path, body) {
+  const { file, ...meta } = body || {};
+  const filename = meta.filename || (file && file.name) || 'file';
+
+  /* THE FILE ITSELF GOES ON THE WIRE, NOT A BASE64 COPY OF IT INSIDE JSON.
+     This used to build `JSON.stringify({…, dataBase64})` and POST it, which put
+     the whole document in the request body as text — and the server caps that
+     door at `maxJsonUploadMb` (25 MB) because a base64 body has to be held in
+     memory to be decoded. The streamed door writes bytes to storage as they
+     arrive and is bounded by `maxUploadMb` instead, which is 1 GB. So a
+     long-term file took a 25 MB document and refused a 26 MB one the short-term
+     side accepts without blinking — an appraisal with photographs, a scanned
+     closing package, a survey. base64 also inflates by about a third, so the
+     real ceiling was nearer 18 MB of actual file.
+
+     The shape is the short-term one exactly (lib/api.js `uploadBinary`): the raw
+     File as the body, `application/octet-stream`, and the metadata in an
+     `x-upload-meta` header as base64 JSON — which is what the server's
+     `metaFromHeaders` reads. XMLHttpRequest is kept, and for the same reason it
+     was chosen there: `fetch()` cannot report how much of the request body has
+     been sent, so nothing could draw a percentage. */
+  const payload = file || new Blob([]);
+  // The FILE's own size now, which is also the number the person is watching.
+  let size = (file && Number.isFinite(file.size)) ? file.size : 0;
+  try { if (!size) size = new Blob([payload]).size; } catch { /* 0 is honest if we cannot tell */ }
+
+  const rowId = up.startUpload({ target: up.uploadTarget(meta), filename, size });
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', path, true);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    /* base64 of UTF-8, not `btoa` of a DOM string: `btoa` throws on any character
+       above U+00FF, so a filename with an accent or a Hebrew letter would fail the
+       upload before it started. */
+    try {
+      const json = JSON.stringify({ ...meta, filename,
+        contentType: meta.contentType || (file && file.type) || 'application/octet-stream' });
+      const bytes = new TextEncoder().encode(json);
+      let bin = '';
+      bytes.forEach((b) => { bin += String.fromCharCode(b); });
+      xhr.setRequestHeader('x-upload-meta', btoa(bin));
+    } catch { /* the server falls back to x-upload-filename and its own defaults */ }
+    const t = token();
+    if (t) xhr.setRequestHeader('Authorization', `Bearer ${t}`);
+    xhr.responseType = 'text';
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) up.updateUpload(rowId, { loaded: e.loaded, total: e.total });
+    };
+    // The body is out; from here the server is storing it and we are waiting.
+    xhr.upload.onload = () => up.finishSending(rowId);
+
+    xhr.onload = () => {
+      let data = null;
+      try { data = JSON.parse(xhr.responseText); } catch { /* an empty or non-JSON body is fine */ }
+      if (xhr.status >= 200 && xhr.status < 300) { up.completeUpload(rowId); resolve(data); return; }
+      const err = new Error(messageFor(xhr.status, data));
+      err.status = xhr.status;
+      err.data = data;
+      up.failUpload(rowId, err.message);
+      reject(err);
+    };
+    /* A dropped connection, a timeout and an abort are three different things to
+       the person watching, and one wording for all three is what makes a system
+       feel broken. Say which it was. */
+    const fail = (message) => { up.failUpload(rowId, message); reject(new Error(message)); };
+    xhr.onerror = () => fail('The connection dropped while uploading. Check your connection and try again.');
+    xhr.ontimeout = () => fail('The upload timed out. Try again, or try a smaller file.');
+    xhr.onabort = () => fail('Upload cancelled.');
+
+    xhr.send(payload);
+  });
+}
+
+/**
+ * Fetch a document as BYTES, for an in-place preview.
+ *
+ * `ltBlobUrl` above hands back an object URL, which is what an `<img src>` wants;
+ * the shared preview wants the blob ITSELF so it can decide by TYPE what to do
+ * with it (render a PDF page by page, show an image, lay out text). It also needs
+ * the server's own filename, which only the response headers carry.
+ */
+export async function ltBlob(path) {
+  const headers = {};
+  const t = token();
+  if (t) headers.Authorization = `Bearer ${t}`;
+  const res = await fetch(path, { method: 'GET', headers, credentials: 'same-origin' });
+  if (!res.ok) {
+    let data = null;
+    try { data = await res.json(); } catch { /* the status is enough */ }
+    const err = new Error(messageFor(res.status, data));
+    err.status = res.status;
+    throw err;
+  }
+  return {
+    blob: await res.blob(),
+    filename: filenameFromDisposition(res.headers.get('content-disposition')),
+  };
+}
+
+/* THE FILENAME READER LIVES ONCE, ABOVE — main's exported version.
+   BOTH SIDES OF THIS MERGE ADDED ONE, and git auto-merged the file without a
+   conflict because the two landed in different places: the result declared the
+   same function twice, which the bundler refuses outright. A clean auto-merge is
+   not a correct merge.
+   Main's is kept because it is strictly the more careful of the two: it is
+   exported, it prefers the RFC 5987 form even when quoted, it falls back to the
+   plain form, and it strips control characters out of the name — which matters,
+   because that name is handed to a download. The only behavioural difference is
+   that it answers `null` rather than `''` when the header names nothing, and
+   NOTHING consumes that value: `ltBlob`'s `filename` is unused (the preview
+   screen takes the name from the document row), and the other caller writes
+   `... || filename`, which reads both the same way. */
 
 export const ltGet = (p) => ltFetch('GET', p);
 export const ltPost = (p, b) => ltFetch('POST', p, b);

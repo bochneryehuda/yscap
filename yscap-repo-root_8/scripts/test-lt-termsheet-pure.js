@@ -33,10 +33,17 @@ const section = (t) => console.log(`\n${t}`);
 // Comp: 2 points of YSP, so a borrower-paid display price is the raw price less
 // 2.000 — which puts 7.375% at exactly par and reproduces the printed table.
 const PLAN = { borrowerPaid: 2, ysp: 2, lenderPaid: 2, applicationFee: 500, commitmentFee: 1595 };
+  // ⛔ THIS SCENARIO IS INTERNALLY CONSISTENT, AND THAT IS NOW LOAD-BEARING. 375,000 at
+  // 7.375% over 30 years is 2,590.03 a month; with 620 of tax and 145 of insurance the
+  // housing payment is 3,355.03, and a 1.24 DSCR needs 4,161 of rent. The fixture used to
+  // say 3,900 — a loan whose own figures only reach 1.16 while claiming a price bought in
+  // the 1.24 band, which is exactly the mis-priced sheet the export gate now refuses
+  // (owner-reported 2026-08-30). A fixture that could not be issued in production must not
+  // be the one every other assertion here is built on.
 const SCENARIO = {
   purpose: 'Purchase', propertyType: 'Single family', value: 500000, loan: 375000,
   ltv: 75, termYears: 30, dscr: 1.24, fico: 740, state: 'NJ', city: 'Lakewood', zip: '08701',
-  rentMonthly: 3900, taxMonthly: 620, insuranceMonthly: 145, hoaMonthly: 0,
+  rentMonthly: 4161, taxMonthly: 620, insuranceMonthly: 145, hoaMonthly: 0,
   prepayMonths: 60, prepayStructure: '5 Year',
 };
 const quote = (label, ratePct, rawPrice, extra) => Object.assign({
@@ -275,13 +282,47 @@ section('the layout — the block list a renderer walks');
   check(!!meta.title && !!meta.disclaimer, 'the meta block carries the document name and the footer disclaimer');
   check(types.includes('table'), 'a comparison carries a table');
   const table = lay.blocks.find((b) => b.t === 'table');
-  check(/compared against/.test(table.head[1]), 'the anchor column SAYS it is the one everything is compared against');
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. The head used to be one string that
+     ended "(compared against)"; the approved sketch heads a column with a
+     tracked eyebrow, an anchor TAG and the option's own name, and carries the
+     identity as fields. The property is unchanged and is now asserted on the
+     data rather than on the prose — which is what stops it going quiet the next
+     time the wording moves. */
+  check(table.head[1] && table.head[1].anchor === true && /anchor/i.test(table.head[1].tag || ''),
+    'the anchor column SAYS it is the one everything is compared against');
+  check(table.head.slice(2).every((h) => h && h.anchor === false && !h.tag),
+    '…and no other column claims to be');
   const breakEven = table.rows.find((r) => r[0] === 'Break-even');
   check(breakEven && breakEven[2] === '67 months (5 years 7 months)',
     `the break-even row reads in years and months, as the docs print it (got ${breakEven && breakEven[2]})`);
-  const paras = lay.blocks.filter((b) => b.t === 'para').map((b) => b.text).join(' ');
-  check(/costs \$8,438 more at closing than No points and saves \$127 a month\. You are ahead after 67 months \(5 years 7 months\)/.test(paras),
-    'the buydown sentence is the documented one, verbatim');
+  /* ⛔ THE PARAGRAPHS ARE COLLECTED THROUGH THE COLUMNS, NOT ONLY OFF THE TOP
+     LEVEL. What each option means is now set two-up (owner-reported 2026-09-01:
+     *"this bottom part is just thrown text … it needs to be better laid out"*),
+     so a `columns` block carries them; a filter over the top level alone reads
+     that as the sentences having disappeared, which is a fact about the
+     extractor. The SUBJECT of every assertion below is what the sentence SAYS,
+     and that is unchanged. */
+  const paraTexts = (list) => (list || []).flatMap((b) => {
+    if (!b || typeof b !== 'object') return [];
+    if (b.t === 'para') return [b.text];
+    if (b.t === 'columns') return [...paraTexts(b.left), ...paraTexts(b.right)];
+    return [];
+  });
+  const paras = paraTexts(lay.blocks).join(' ');
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. This pinned the sentence VERBATIM,
+     and the owner asked for exactly that sentence to say more: *"you need to
+     explain a little bit more what your head means, and the same thing for the
+     opposite of your head."* A verbatim pin on prose somebody has been asked to
+     improve fails on the improvement and then gets deleted, so it now holds the
+     three FACTS it was really about — the closing cost, the monthly saving and
+     the month they meet — plus the explanation that was added, which is the part
+     a reader actually needed. */
+  check(/costs \$8,438 more at closing than No points and saves \$127 a month/.test(paras),
+    'the buydown sentence states what it costs at closing and what it saves a month, against the named option');
+  check(/pays that back after 67 months \(5 years 7 months\)/.test(paras),
+    '…and the month the closing money is paid back, in years and months');
+  check(/from then on you are ahead/.test(paras) && /Sell or refinance before then/.test(paras),
+    'THE ONE THAT MATTERS: it says what "ahead" MEANS and what happens on the other side of that month — a date with no explanation is a number the reader has to interpret');
   check(/costs \$6,563 less at closing than No points and \$129 more a month/.test(paras), 'and so is the credit sentence');
   // ⛔ EVERY FIGURE IN THOSE SENTENCES IS A DIFFERENCE, so each one NAMES what it
   // is a difference from. They used to read "costs $8,438 today" — true, and it
@@ -290,21 +331,48 @@ section('the layout — the block list a renderer walks');
   // lender-paid, the table said "You receive $1,655" one line above while the
   // sentence said "pays you $11,250 today". Both right, different questions,
   // nothing on the page saying which. Found by reading a rendered sample.
-  check(paras.split('No points').length - 1 >= 3,
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. This counted three mentions, and one
+     of the three was a standalone paragraph ("Every comparison below is against
+     No points") that the approved design moves onto the heading itself as its
+     right-hand note. Counting paragraphs would now under-count a page that says
+     the same thing in a better place, so both halves are asserted directly. */
+  const named = paraTexts(lay.blocks).filter((t) => /No points/.test(t || '')).length;
+  check(named >= 2,
     'and every comparative sentence names the option it is comparing against, so no figure on the page reads as absolute when it is a difference');
+  const differsBand = lay.blocks.find((b) => b.t === 'band' && b.title === 'What differs');
+  check(!!differsBand && /No points/.test(differsBand.note || ''),
+    '…and the table\'s own heading names the column every figure under it is measured from');
   const hard = lay.blocks.filter((b) => b.t === 'pagebreak' && !Number.isFinite(b.ifLessThan));
   const soft = lay.blocks.filter((b) => b.t === 'pagebreak' && Number.isFinite(b.ifLessThan));
-  check(hard.length === 3, 'one detail page per option — the owner\'s "it\'s just adding pages to it", literally');
+  /* ⛔ REVERSED 2026-08-31, ON THE OWNER'S OWN REPORT. This asserted a page per
+     option, and it was right about the design of the day. Then the owner read
+     one: *"everything is way too big … just thrown on the sheet without an
+     order."* MEASURED, those pages were three of a seven-page comparison and
+     every figure on them already sat in the table or the shared block above —
+     so the sheet said each fact four times and could not be read at a glance.
+     They are gone, the table carries what they carried, and
+     `test-lt-sheet-nothing-lost-pure.js` fails the build on a fact that stopped
+     being printed. A HARD break on a comparison now means somebody re-added the
+     repeat. */
+  check(hard.length === 0,
+    'a comparison forces NO page of its own — the per-option repeat is what made it seven pages');
   // ⛔ THE DISCLOSURES BREAK IS SOFT, AND THAT DISTINCTION IS LOAD-BEARING. A
   // hard break there produced a page carrying five rows and ten inches of
   // nothing on the first sheet rendered; a per-option break stays hard because
   // "one option per page" is a statement about the document, not about the room.
-  check(soft.length === 1 && soft[0].ifLessThan > 0,
-    'and exactly one SOFT break, for the disclosures, which move to their own page only when there is no room left');
+  /* Every break left is SOFT, and each moves something only when there is not
+     enough room to hold it: the comparison table (so the columns a reader is
+     choosing between are never split across a fold) and the disclosures (a hard
+     break there produced a page carrying five rows and ten inches of nothing). */
+  check(soft.length === 2 && soft.every((b) => b.ifLessThan > 0),
+    'and the two breaks left are both SOFT — the table and the disclosures each move only when the room runs out');
 
   const single = layout.buildLayout(snapshot.buildSnapshot({ selections: [quote('The offer', 7.375, 102)], plan: PLAN, prepared: {} }).snapshot, {});
   check(!single.blocks.some((b) => b.t === 'table'), 'a one-option sheet renders NO comparison table — a table with one column is not a comparison');
-  const rowsOf = (blocks) => blocks.filter((b) => b.t === 'figures').flatMap((b) => b.rows);
+  // ⛔ THROUGH THE SHARED FLATTENER, never a bare filter: a `columns` block
+  //    HOLDS blocks, so a plain filter goes silently blind to every row inside
+  //    one and reports a clean page for a fact it has stopped checking.
+  const rowsOf = (blocks) => layout.flattenBlocks(blocks).filter((b) => b.t === 'figures').flatMap((b) => b.rows);
   const singleRows = rowsOf(single.blocks);
   check(singleRows.some((r) => r[0] === 'Monthly rent') && singleRows.some((r) => r[0] === 'DSCR'),
     '…and it does show what the loan qualified on — the rent and the ratio');
@@ -356,8 +424,36 @@ section('the three documents — one option, three options, three scenarios');
     'the comparison says "Comparison Sheet", and how many options');
   check(layS.blocks[0].title === 'Scenario Comparison' && /2 scenarios/.test(layS.blocks[0].subtitle),
     'the scenario comparison says so, and counts scenarios rather than options');
-  const scenParas = layS.blocks.filter((b) => b.t === 'para').map((b) => b.text).join(' ');
-  check(/These scenarios differ in: .*loan amount/.test(scenParas),
+
+  /* ⛔ THE BUSINESS-PURPOSE STAMP IS ON ALL THREE KINDS — owner-directed
+     2026-09-01: *"every single one of your exports should say at the bottom,
+     'This is for business-purpose lending only.'"* Asserted on every document
+     kind rather than on one, because the three are built by one `metaBlock` and
+     a guard that checked only the term sheet would pass on the day somebody gave
+     a comparison its own meta.
+     ⛔ AND ON THE OVERRIDE, which is the case that can actually take it away: a
+     snapshot may carry its own `disclosure`, so the stamp is prepended OUTSIDE
+     that and a custom wording cannot displace it. Testing only the default
+     proves the happy path and leaves the one real way to lose it unguarded. */
+  const BP = wording.BUSINESS_PURPOSE;
+  check(/business-purpose lending only/i.test(BP), `the stamp says what the owner asked it to say: ${JSON.stringify(BP)}`);
+  for (const [kind, lay] of [['term sheet', lay1], ['comparison', lay3], ['scenario', layS]]) {
+    check(lay.blocks[0].disclaimer.startsWith(BP),
+      `the ${kind}'s footer leads with the business-purpose stamp`);
+  }
+  const custom = layout.buildLayout(
+    Object.assign({}, one.snapshot, { disclosure: 'Some other wording entirely.' }), {},
+  );
+  check(custom.blocks[0].disclaimer.startsWith(BP)
+    && custom.blocks[0].disclaimer.includes('Some other wording entirely.'),
+  'and a snapshot carrying its own disclosure keeps the stamp — it is prepended outside the overridable part');
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. The sentence moved INTO the shared
+     facts box, which is where the sketch says it: the box states what every
+     scenario agrees about, and its footnote says what is left over. Read every
+     string the page draws rather than only its paragraphs, so the guard holds
+     wherever the sentence lives next. */
+  const scenText = JSON.stringify(layS.blocks);
+  check(/differ in: [^"]*loan amount/.test(scenText),
     'a scenario comparison SAYS what changed between the scenarios — two numbers with no stated difference is not a comparison');
 }
 
@@ -406,7 +502,12 @@ section('a term sheet is only issued complete — the export gate');
   // ⛔ IT NAMES EVERY MISSING THING AT ONCE. A gate that reveals its blockers one
   // at a time is four round trips, and each of these is a box on the screen the
   // officer is already looking at.
-  for (const k of ['rentMonthly', 'taxMonthly', 'insuranceMonthly', 'dscr', 'borrowerName', 'propertyAddress']) {
+  // ⛔ `partyName`, NOT `borrowerName` — RE-POINTED, never loosened (2026-08-30). The gate used to
+  // demand the individual's name; the owner then asked for *"a name of the person and/or a name of
+  // the entity"*, so one key now covers both and either one satisfies it. This suite's subject is
+  // that EVERY shortfall is reported at once, which is unchanged; `test-lt-termsheet-party-pure.mjs`
+  // owns the either-name rule itself.
+  for (const k of ['rentMonthly', 'taxMonthly', 'insuranceMonthly', 'dscr', 'partyName', 'propertyAddress']) {
     check(g.missing.includes(k), `…and it names ${k} rather than revealing it on the next attempt`);
   }
   check(/monthly rent/.test(g.message) && /export a comparison/.test(g.message),
@@ -421,7 +522,10 @@ section('a term sheet is only issued complete — the export gate');
     plan: PLAN, prepared: {},
   });
   check(snapshot.exportGate(cmpBare.snapshot).ok, 'a comparison with no taxes or insurance still exports');
-  const cmpRows = layout.buildLayout(cmpBare.snapshot, {}).blocks
+  /* Through the flattener even here, where the comparison uses no container
+     today: this is a NEGATIVE assertion, and a walker that goes blind makes a
+     negative assertion pass for the wrong reason. */
+  const cmpRows = layout.flattenBlocks(layout.buildLayout(cmpBare.snapshot, {}).blocks)
     .filter((b) => b.t === 'figures').flatMap((b) => b.rows);
   check(!cmpRows.some((r) => /Total monthly payment/.test(r[0])),
     '…and carries NO total monthly payment, because there is no real one to carry');
@@ -463,8 +567,12 @@ section('PITI — the total appears only when it is a real one');
   const t = layout.comparisonTable(three.snapshot);
   const dscrRow = t.rows.find((r) => r[0] === 'DSCR');
   const payRow = t.rows.find((r) => r[0] === 'Total monthly payment');
-  check(new Set(payRow.slice(1)).size === 3, 'three options genuinely have three different total payments');
-  check(new Set(dscrRow.slice(1)).size === 3,
+  /* A row may carry a trailing OPTIONS object (the approved design bands the two
+     rows that resolve the arithmetic in ivory), so the values are the string
+     cells — never "everything after the label". */
+  const vals = (r) => r.slice(1).filter((v) => typeof v === 'string');
+  check(new Set(vals(payRow)).size === 3, 'three options genuinely have three different total payments');
+  check(new Set(vals(dscrRow)).size === 3,
     '…so they have three different ratios — the printed DSCR is the division a reader can do off this very page');
   const rentM = SCENARIO.rentMonthly;
   const money = (s) => Number(String(s).replace(/[$,]/g, ''));
@@ -519,9 +627,68 @@ section('the fees are listed out, and broken down');
   'listing a waived fee changes no total — its dollars are the zero the absent line already contributed');
 
   const table = layout.comparisonTable(built.snapshot);
+  /* ⛔ RE-POINTED AGAIN 2026-09-01, AND THIS TIME BACK TOWARD ONE ROW — owner-
+     directed, reversing the 2026-08-30 direction the previous re-point served.
+     That one split a single "Lender fees $2,095" cell into a row per fee, to
+     answer *"which of these is this option charging?"*. The owner has since said
+     the question cannot arise: *"They are identical … it's one package. You
+     waive lender fees, so it's zero lender fee, and they don't charge the
+     $2,095."* One switch moves both, so a row each was two rows saying the same
+     thing on every option.
+
+     ⛔ WHAT IS ASSERTED IS THEREFORE THE PROPERTY, NOT THE SHAPE: the sheet still
+     shows the FULL amount the waived option is not paying beside the amount the
+     other one is, and it still names the two parts — that was the whole point of
+     the 2026-08-30 direction and it survives. Only the row count changed. */
   const feeRow = table.rows.find((r) => r[0] === 'Lender fees');
-  check(feeRow && feeRow.some((c) => /^Waived \(\$2,095\)$/.test(String(c))) && feeRow.some((c) => c === '$2,095'),
-    'and the comparison table puts the waived column beside the charged one, both naming the same $2,095');
+  const feeOpts = feeRow && feeRow[feeRow.length - 1];
+  const feeCellSubs = feeOpts && typeof feeOpts === 'object' && !Array.isArray(feeOpts)
+    ? feeOpts.cellSubs : null;
+  check(!!feeRow, 'the two lender fees are ONE row, not one row each');
+  check(!table.rows.some((r) => r[0] === 'Application fee' || r[0] === 'Commitment fee'),
+    '…so neither fee has a row of its own any more');
+  /* ⛔ RE-POINTED 2026-09-01 (same day, second correction) — owner-reported on a
+     real export: *"it says 'Waived' and is circled around 2,095, which would just
+     say 'Waived' … it should just say, in small on the bottom … you saved on this
+     one 2,095, because it's not clear to understand."* The figure is now just the
+     figure and the amount rides in the small line under it, so the assertion
+     moves with it: what must hold is that the waived column still states the
+     $2,095, not that the FIGURE carries it. */
+  check(feeRow && feeRow.some((c) => c === '$2,095') && feeRow.some((c) => c === 'Waived'),
+    '…and it prices the package both ways: $2,095 charged, and a bare "Waived" beside it');
+  /* ⛔ AND THE NOTE BELONGS TO ITS COLUMN, not to the label — owner-directed:
+     *"it should basically be in the scenario line, not in the line of the base of
+     lender fees."* Asserted per column, so a note that drifted back onto the row
+     label would fail here even though the same words would still be on the page. */
+  check(Array.isArray(feeCellSubs) && feeCellSubs.some((t) => t && /Application fee \$500/.test(t)
+    && /Commitment fee \$1,595/.test(t)),
+  '…the charged column names its two parts underneath its own figure');
+  check(Array.isArray(feeCellSubs) && feeCellSubs.some((t) => t && /You save \$2,095/.test(t)),
+    '…and the waived column says what it saved, in the same small line');
+  check(!feeOpts || !feeOpts.sub,
+    '…and nothing rides under the row LABEL, where it would describe neither column');
+  check(!table.rows.some((r) => r[0] === 'Lender fees you are not paying'),
+    '…and the separate saving total is gone, because each column now says its own')
+
+  /* ⛔ THE HALF-WAIVED PACKAGE, which the owner says cannot happen and the waive
+     switch agrees — one flag moves both fees. It is guarded anyway, because
+     "cannot happen" is a statement about today's switch and not a property of
+     the data, and BOTH of the tidy answers would be a lie if it ever did: the
+     total would charge for a fee that was waived, and "Waived ($2,095)" would
+     waive one that is being charged. Asserted on the library rather than
+     through a render, since the snapshot cannot currently produce the state. */
+  {
+    const half = wording.lenderFeePackage({ lines: [
+      { key: 'applicationFee', dollars: 500, fullDollars: 500, waived: false },
+      { key: 'commitmentFee', dollars: 0, fullDollars: 1595, waived: true },
+    ] });
+    check(half.partial === true && half.waived === false,
+      'a package with one fee waived and one charged is reported as PARTIAL, not as either tidy answer');
+    check(half.text === '$500',
+      '…and it prices what is actually being charged, never the $2,095 total');
+    check(/Application fee \$500/.test(half.breakdown) && /Commitment fee waived \(\$1,595\)/.test(half.breakdown),
+      '…and its breakdown says which half was waived, at what it would have been');
+  }
 }
 
 // =============================================================================
@@ -540,7 +707,7 @@ section('"no points either way" no longer sits over an origination fee');
   });
   const m = built.snapshot.members[0];
   const lay = layout.buildLayout(built.snapshot, { expiryHours: 24 });
-  const rows = lay.blocks.filter((b) => b.t === 'figures').flatMap((b) => b.rows);
+  const rows = layout.flattenBlocks(lay.blocks).filter((b) => b.t === 'figures').flatMap((b) => b.rows);
 
   const parRow = rows.find((r) => /No points either way/.test(String(r[1])));
   check(!parRow, 'the par phrase no longer appears as a figure at all on a sheet that charges an origination fee');
@@ -622,6 +789,107 @@ section('an unnamed program may be named — and never after the investor');
 }
 
 // =============================================================================
+section('a date is written the way a person writes one');
+// =============================================================================
+// Owner-reported 2026-08-31: all three documents read as *"very ugly and very
+// abrupt"*, and the most machine-like thing on the paper was the date — every
+// page carried the stored instant twice, and the expiry callout read *"Good
+// through 2026-09-01T14:00:00.000Z."*
+{
+  check(wording.dateLong('2026-08-31T14:00:00.000Z') === 'August 31, 2026',
+    'a stored instant becomes a date in words');
+  check(wording.dateTimeLong('2026-09-01T14:00:00.000Z') === 'September 1, 2026 at 10:00 AM EDT',
+    '…and a DEADLINE carries its hour and its zone, in ours, because a borrower cannot act on a moment they have to interpret');
+  check(wording.dateTimeLong('2026-01-15T14:00:00.000Z') === 'January 15, 2026 at 9:00 AM EST',
+    '…which follows the clock through the year rather than being a fixed offset');
+  check(wording.dateTimeLong('2026-09-01T10:00:00-04:00') === wording.dateTimeLong('2026-09-01T14:00:00.000Z'),
+    'the same instant written two ways reads the same');
+
+  /* ⛔ ONLY AN INSTANT THAT STATES ITS OFFSET MAY BE RE-CLOCKED, and this is the
+     assertion that matters most. `2026-08-31` resolves to UTC midnight, which
+     renders as the THIRTIETH in every US zone, and a bare "August 31, 2026 9:14
+     AM" resolves to whatever the server's clock happens to be — so re-printing
+     either in New York would silently move a date somebody wrote. A value with
+     no offset is left exactly as it was given. */
+  check(wording.dateLong('2026-08-31') === '2026-08-31',
+    'a bare calendar day is NOT re-clocked — it would render as the day before');
+  check(wording.dateTimeLong('August 31, 2026 9:14 AM') === 'August 31, 2026 9:14 AM',
+    '…and a string a person already wrote is left exactly as it is');
+  for (const v of [null, undefined, '', '   ']) {
+    if (wording.dateLong(v) !== null || wording.dateTimeLong(v) !== null) {
+      check(false, `nothing in yields nothing out (${JSON.stringify(v)})`);
+    }
+  }
+  check(true, 'nothing in yields nothing out — never "Invalid Date"');
+}
+
+// =============================================================================
+section('the document opens with what it is about');
+// =============================================================================
+{
+  const built = snapshot.buildSnapshot({
+    selections: [quote('The offer', 7.375, 102)], plan: PLAN,
+    prepared: { borrowerName: 'Jonathan Reyes', propertyAddress: '218 Forest Ave' },
+  }).snapshot;
+  const lay = layout.buildLayout(built, { code: 'TS-4KH92B', expiryHours: 24 });
+  const hero = lay.blocks.find((b) => b.t === 'hero');
+  check(!!hero, 'a term sheet carries a headline band');
+  const cell = (label) => (hero.cells || []).find((c) => c.label === label);
+  check(hero.cells.length >= 3, `…with the figures a reader looks for first (${hero.cells.map((c) => c.label).join(', ')})`);
+  /* ⛔ IT RESTATES, IT NEVER COMPUTES. Every figure is compared to the value the
+     TABLE below is drawn from, so the headline can never be a second opinion on
+     a document somebody signs. */
+  const m = built.members[0];
+  check(cell('Loan amount').value === wording.money(m.loanAmount), 'the loan amount is the member\'s own');
+  check(cell('Interest rate').value === wording.rate(m.ratePct), 'the rate is the member\'s own');
+  const piti = wording.housingCost(Object.assign({ monthlyPI: m.monthlyPI }, m.scenario));
+  check(cell('Monthly payment').value === wording.moneyExact(piti.total),
+    'the payment is the same total the table prints, not a fresh sum');
+  check(cell('Cash to close').value === wording.money(m.closing.cashToCloseDollars),
+    'and the cash to close is the closing sheet\'s own');
+
+  // ⛔ NEVER AN ORPHAN. Two numbers are a summary; one is a figure sitting where
+  // a summary should be, which is worse than none.
+  // ⛔ THE FIXTURE HAS TO PRODUCE EXACTLY ONE CELL, or the assertion proves the
+  // wrong thing: a member with NOTHING produces zero cells and is refused by any
+  // threshold at all, so it cannot tell "two" from "one". MEASURED — this one
+  // yields the loan amount and nothing else.
+  const cells1 = layout._internals.heroCells({ members: [{ loanAmount: 375000 }] }, 'term_sheet');
+  check(cells1 === null, 'ONE figure is not a summary — the band is dropped rather than left as an orphan');
+  const cells2 = layout._internals.heroCells({ members: [{ loanAmount: 375000, ratePct: 7.375 }] }, 'term_sheet');
+  check(Array.isArray(cells2) && cells2.length === 2,
+    '…and two is, so the threshold is a real one and not "anything at all"');
+  check(layout._internals.heroCells({ members: [{}] }, 'term_sheet') === null,
+    'a member with nothing to state carries no band either');
+
+  // A comparison's headline is about the comparison.
+  const cmpLay = layout.buildLayout(snapshot.buildSnapshot({
+    selections: [quote('A', 7.375, 102), quote('B', 7.625, 101.25)], plan: PLAN, prepared: {},
+  }).snapshot, {});
+  const cHero = cmpLay.blocks.find((b) => b.t === 'hero');
+  check(!!cHero && (cHero.cells.find((c) => c.label === 'Options') || {}).value === '2',
+    'a comparison says how many options it is comparing');
+  check((cHero.cells.find((c) => c.label === 'Interest rate') || {}).value === '7.375%–7.625%',
+    '…and states the rates as a RANGE, because there is no single rate to state');
+
+  /* ⛔ AND THE PROPERTY IS NOT SAID TWICE ON ONE PAGE. A comparison prints its
+     facts under the address (one line, so the table keeps its page); a term
+     sheet prints the band, where it has the room. */
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED — AND THE RULE GOT STRICTER. This
+     read "a term sheet prints the band, a comparison prints one line under the
+     address", which was true of the sheet as it stood. Every one of the three
+     approved sketches states the property under the address and NONE of them
+     carries a property section, so the property is now said in ONE place on
+     EVERY document — which is the thing this guard was always really about. */
+  const rec = (l) => l.blocks.find((b) => b.t === 'recipient');
+  const noBand = (l) => !layout.flattenBlocks(l.blocks).some((b) => b.t === 'band' && b.title === 'The property');
+  check(/Single family/.test(rec(lay).propertyFacts || '') && noBand(lay),
+    'a term sheet states the property under the address, once — never twice on one page');
+  check(/Single family/.test(rec(cmpLay).propertyFacts || '') && noBand(cmpLay),
+    'and a comparison states them the same way — the same facts, one line');
+}
+
+// =============================================================================
 section('the expiry says what the owner said');
 // =============================================================================
 {
@@ -649,12 +917,34 @@ section('the expiry says what the owner said');
   const lay = layout.buildLayout(s, { expiryHours: 24 });
   check(lay.blocks.some((b) => b.t === 'callout' && /24 hours/.test(b.title)),
     'the term sheet carries the expiry as its own panel, where it cannot be skimmed past');
-  const cmp = snapshot.buildSnapshot({
+  /* ⛔ A COMPARISON CARRIES ONE TOO, AND IT NAMES ITSELF (owner-directed
+     2026-08-31). This assertion used to say the opposite, on a recorded reason
+     — "a comparison is a working document, not an offer with a clock on it". It
+     was put to the owner rather than reversed by a tidying pass, because the
+     record has ALWAYS carried an expiry on every kind (the store stamps one and
+     the lookup screen marks a stale sheet) and the paper was the only place that
+     did not say so. They chose to add it.
+
+     ⛔ IT MUST NOT CALL ITSELF A TERM SHEET. That is the half a copy-paste would
+     get wrong, and it is the one thing a comparison must never be mistaken for:
+     a comparison offers several options and commits to none. The words come from
+     `KIND_WORDS`, the same table the filename and the PDF title read. */
+  const cmpSnap = snapshot.buildSnapshot({
     selections: [quote('A', 7.375, 102), quote('B', 6.875, 99.75)], plan: PLAN,
     prepared: { expiresAt: 'September 1, 2026' },
   }).snapshot;
-  check(!layout.buildLayout(cmp, { expiryHours: 48 }).blocks.some((b) => b.t === 'callout'),
-    'a comparison does not — it is a working document, not an offer with a clock on it');
+  const cmpCallout = layout.buildLayout(cmpSnap, { expiryHours: 48 }).blocks.find((b) => b.t === 'callout');
+  check(!!cmpCallout, 'a comparison carries one too — the record has always held an expiry, the paper simply never said so');
+  check(/This comparison sheet expires in 48 hours\./.test(cmpCallout.title),
+    '…naming ITSELF, never "term sheet" — the one thing a comparison must not be mistaken for');
+  const scen = snapshot.buildSnapshot({
+    selections: [quote('A', 7.375, 102), quote('B', 7.125, 101, { scenario: { ...SCENARIO, loan: 300000, ltv: 60 } })],
+    plan: PLAN,
+    prepared: { expiresAt: 'September 1, 2026' },
+  }).snapshot;
+  const scenCallout = layout.buildLayout(scen, { expiryHours: 48 }).blocks.find((b) => b.t === 'callout');
+  check(!!scenCallout && /This scenario comparison expires/.test(scenCallout.title),
+    '…and a scenario comparison names itself too, from the same one table');
 }
 
 // =============================================================================
@@ -737,6 +1027,25 @@ section('the renderer measures the way the page is actually drawn');
     check(broken.length > 1, 'a token wider than its column is HARD-BROKEN — the guarantee that pathological input cannot run off the sheet');
     check(pdf._internals.clip({ widths: new Map() }, 'The property', font, 10, 2) === '',
       'a clip with no room answers nothing, never a bare ellipsis — an ellipsis alone reads as a rendering fault rather than as a shortened label');
+
+    /* ⛔ `wrapAfter` — the wrap whose FIRST line is narrower than the rest,
+       for a paragraph that starts beside a bold opening clause (the expiry).
+       Its awkward case is a first line with no useful room at all: it answers
+       with an EMPTY first line so the body starts underneath, rather than
+       hard-breaking a word into a two-character stub beside the title. The
+       caller must then still ADVANCE on that empty line, or the body's first
+       real line lands on the title's own baseline at the title's own x. */
+    const wa = pdf._internals.wrapAfter;
+    const ctx0 = { widths: new Map() };
+    const wide = wa(ctx0, 'the quick brown fox jumps over the lazy dog', font, 10, 200, 200);
+    check(wide.every((l) => adv(l, 10) <= 200), 'wrapAfter fits every line when both widths are the same');
+    const narrowFirst = wa(ctx0, 'the quick brown fox jumps over the lazy dog', font, 10, 4, 200);
+    check(narrowFirst[0] === '',
+      '…and with no room beside the title it answers an EMPTY first line rather than a stub');
+    check(narrowFirst.slice(1).every((l) => adv(l, 10) <= 200) && narrowFirst.join(' ').trim().split(' ').filter(Boolean).length === 9,
+      '…with every word still there on the lines below');
+    check(wa(ctx0, 'supercalifragilisticexpialidocious', font, 10, 4, 30).every((l) => adv(l, 10) <= 30),
+      '…and a token wider than EITHER width is still hard-broken, so it cannot run off the column');
     finish();
   })().catch((e) => { failures += 1; console.error('  FAIL renderer measurement threw:', e.message); finish(); });
 }

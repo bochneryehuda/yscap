@@ -63,7 +63,10 @@ const col = (t) => rgb(t[0] / 255, t[1] / 255, t[2] / 255);
 
 // ── the paper ───────────────────────────────────────────────────────────────
 const PAGE = { w: 612, h: 792 };                 // US Letter, portrait
-const M = { left: 54, right: 54, bottom: 58 };
+// MEASURED OFF THE SKETCH: every rule on it runs 45 → 567, so the content
+// column is 522 wide and not 504. A margin is not a taste; it is the width every
+// other measurement below was taken against.
+const M = { left: 45, right: 45, bottom: 58 };
 const CONTENT_W = PAGE.w - M.left - M.right;     // 504
 // Content starts UNDER the brand band, on every page — `brand.BAND.contentTop`
 // is the RTL sheet's own `y = 92`, measured down from the top of the paper.
@@ -78,6 +81,28 @@ const GUTTER = 2;
 const TEXT_RIGHT = RIGHT_X - GUTTER;
 const TEXT_W = CONTENT_W - GUTTER;
 
+/**
+ * ⛔ A BLOCK IS DRAWN INTO A BOX, AND THE FULL CONTENT COLUMN IS JUST THE
+ * DEFAULT ONE.
+ *
+ * The approved design puts two groups SIDE BY SIDE on page one — the loan and
+ * its monthly payment, then what the rate costs beside what lands at the table
+ * — which is how the whole story is seen in one view instead of over three
+ * sheets. Every compiler used to read `M.left` / `CONTENT_W` / `RIGHT_X`
+ * straight out of module scope, so a narrower column was not expressible at all.
+ *
+ * ⛔ AND THE ANSWER IS A PARAMETER, NEVER A SECOND SET OF DRAWING CODE. A
+ * column-shaped copy of `compileFigures` would be a second definition of what a
+ * labelled row looks like, and the one that drifts is the one a reader is
+ * looking at. So the geometry is passed in and the SAME compilers draw both.
+ * Omit it and every call is byte-identical to what it was.
+ */
+function boxOf(box) {
+  const x = box && Number.isFinite(box.x) ? box.x : M.left;
+  const w = box && Number.isFinite(box.w) ? box.w : CONTENT_W;
+  return { x, w, right: x + w, textRight: x + w - GUTTER, textW: w - GUTTER };
+}
+
 // ── the ink ─────────────────────────────────────────────────────────────────
 // Every one of them is DARK on white, or LIGHT on the dark band. The V2 tokens
 // named `--ink*` are LIGHT paper colours and would render white on white; these
@@ -89,21 +114,257 @@ const MUTED = col(brand.RGB.GRAY);
 const HAIR = col(brand.RGB.LINE);
 const IVORY = col(brand.RGB.IVORY);
 const SOFT = col(brand.RGB.SOFT);
-const WHITE = col(brand.RGB.WHITE);
 const ONBAND = col(brand.RGB.ONBAND);
 const PAPER = col(brand.RGB.PAPER);
 const FAINT = col(brand.RGB.FAINT);
 
 // ── the type ────────────────────────────────────────────────────────────────
-const SZ = {
-  bandTitle: 18, bandSub: 9.5, bandId: 7.5,
-  section: 8, label: 9.5, value: 10, big: 15, bigLabel: 9.5,
-  eyebrow: 7.4, name: 12.5,
-  para: 9.5, small: 8.3, table: 8.4,
-  discHead: 8.7, discBody: 8,
-  footContact: 7.6, footDisc: 7, footId: 6,
+/**
+ * ⛔ EVERY SIZE HERE IS READ OFF THE APPROVED DESIGN, NOT CHOSEN.
+ *
+ * The owner's report, holding a real export beside the sketch they had signed
+ * off: *"The redesign is way far off from the sketch that you presented. Your
+ * sketch was much nicer."* MEASURED rather than guessed at — the sketch is
+ * `docs/longterm/design/quiet-ledger-v2.pdf`, an 8.5×11in HTML page printed at
+ * the browser's 0.75 CSS-px→point scale, so each of its CSS sizes is 0.75× in
+ * points. Against that, this sheet's body type was **30–50% larger**: its table
+ * rows 8.4pt against 6.7, its labels 9.5 against 6.5, its headline figures 19
+ * against 11.6. That is the whole of *"everything is way too big"*, and it is
+ * arithmetic rather than taste.
+ *
+ * So every size below is `<the sketch's own point size> × 1.10`, rounded to a
+ * tenth. **The 1.10 is a deliberate, stated departure**: the sketch's 6.4pt
+ * body is at the small end of comfortable for a document a borrower reads on
+ * paper and signs, so it is set a shade above rather than matched exactly. It
+ * is one number and it is here — move it and the whole page moves together,
+ * which is the point of deriving a scale instead of picking sizes one at a time.
+ *
+ * ⛔ AND THE PROPORTIONS ARE THE DESIGN, NOT THE ABSOLUTES. Quiet Ledger's
+ * third rule is *"hierarchy is built from three weights and no more — one
+ * figure per view may be large, two or three may be medium, everything else is
+ * small"*. The headline band is the large one; a resolving total is medium
+ * (`big`, at 1.29× the ordinary value, where it used to be 1.5×); everything
+ * else sits at one small size. Enlarging any one of these is almost always the
+ * wrong move — the design's own instruction is to quieten its neighbours.
+ */
+/**
+ * ⛔ ONE NUMBER RAISES THE WHOLE PAGE, and it is the only honest way to do it —
+ * owner-reported 2026-09-01: *"the font of everything is extremely small and
+ * extremely unclear … I don't want to risk messing up everything. Maybe we can
+ * just do it a little larger."*
+ *
+ * MEASURED off a real render rather than judged: the sheet's body type ran
+ * 5.1–6.8pt, against the 9–12pt that is ordinary for a printed document, and no
+ * regulator anywhere accepts 5.1pt as readable. So this is not a matter of
+ * taste — it was about HALF the size text is normally set at.
+ *
+ * ⛔ IT SCALES THE WHOLE SET, NEVER ONE ENTRY. The sizes below are the approved
+ * sketch's own proportions, and the design's third rule is that hierarchy is
+ * built from three weights — enlarging one size flattens that hierarchy, which
+ * is why this is a multiplier over the table and not a hand-edit of the lines
+ * that felt small. Move this number and every size, every band and every pad
+ * moves together; the page still reads as the sketch, just larger.
+ */
+const READ_SCALE = 1.0;
+const r2 = (n) => Math.round(n * 100) / 100;
+/** Scale a metrics table, leaving the keys that are horizontal, a ratio, or a
+ *  hairline weight — none of which is a function of how big the type is. */
+const scaleMetrics = (obj, keep) => Object.fromEntries(Object.entries(obj)
+  .map(([k, v]) => [k, (keep.includes(k) || typeof v !== 'number') ? v : r2(v * READ_SCALE)]));
+
+const SZ_SKETCH = {
+  // the brand band: the document's name, its programme line, its identity line
+  bandTitle: 15, bandSub: 6.45, bandId: 5.4,
+  // a section's own label, and the label/value pair of an ordinary row
+  section: 5.7, label: 6.38, value: 6.29, big: 7.8, bigLabel: 6.38,
+  eyebrow: 5.18, name: 9.3,
+  para: 6.38, small: 5.1, hero: 11.62,
+  /* THE TABLE, read off the approved sketch's own drawing operators: a label in
+     the sans at 6.52, its figures in the mono at 6.67, and a row that RESOLVES
+     the arithmetic at 7.58 in the bold cut — 1.14×, not 1.5×, because the
+     design's own rule is that a resolving total is medium and everything around
+     it is small. A column is headed by a tracked 4.95 eyebrow over a 7.35 name. */
+  tableLabel: 6.52, tableValue: 6.67, tableBig: 7.58, tableSub: 5.55,
+  colEyebrow: 4.95, colTitle: 7.35, groupHead: 5.02,
+  // the shared-facts grid: a tracked label over a monospaced figure
+  gridLabel: 5.02, gridValue: 6.75, gridHead: 5.1, gridNote: 5.18,
+  discHead: 5.7, discBody: 5.7,
+  footContact: 5.4, footDisc: 5.1, footId: 5.1,
+  // the party block under the band, which the sketch sets in its own three sizes
+  partyName: 9.3, partySub: 5.77, address: 6.83, byName: 6.45, byLine: 5.93,
+  // a stat card: its tracked label, its figure, its caption
+  statLabel: 4.95, statFigure: 11.62, statCaption: 5.1,
 };
+const SZ = scaleMetrics(SZ_SKETCH, []);
+/**
+ * ⛔ AND A FLOOR UNDER THE THINGS A PERSON READS IN SENTENCES, which is a
+ * DIFFERENT instrument from the multiplier above and is the one that actually
+ * answers the complaint.
+ *
+ * MEASURED, not judged: of everything on this sheet, the parts set smallest are
+ * the parts made of sentences — the disclosures at 5.7, the notes at 5.18, the
+ * asides at 5.1 — while the figures a reader is choosing between are already
+ * 6.7 to 11.6. So "everything is extremely small" is really "the paragraphs are
+ * half the size text is set at", and multiplying the WHOLE table to fix them
+ * enlarges the headline figures too, which costs pages for no readability.
+ *
+ * ⛔ IT REACHES SENTENCES ONLY, NEVER A LABEL OR AN EYEBROW. A tracked eyebrow
+ * ("PREPARED FOR") and a column head are SCANNED as one word, not read along;
+ * growing them to a body size flattens exactly the hierarchy the approved
+ * sketch is built from — its three weights are the design. So the floor names
+ * the four keys that set running prose and leaves the other thirty alone.
+ *
+ * ⛔ 7.5 IS THE NUMBER, and it comes from what a document like this is held to
+ * rather than from taste: consumer-lending disclosure statutes in several
+ * states set a minimum of 8pt for legal text, ordinary printed body is 9–12pt,
+ * and no authority anywhere accepts 5pt. This is a business-purpose loan, so
+ * none of those bind — 7.5 is the point at which this page's own measured line
+ * length lands inside the readable 45–75 characters, which is the property that
+ * had to be true, and it is a floor rather than a target so the paragraph type
+ * still reads as smaller than the figures it explains.
+ *
+ * ⛔ THE PAGE FOOTER'S DISCLAIMER IS ON THE LIST, AND THE REASON IT WAS LEFT OFF
+ * WAS REASONED RATHER THAN MEASURED — which is exactly the mistake this file
+ * warns about everywhere else. The first pass excluded it on the argument that
+ * "the footer draws at most two wrapped lines, so growing it would silently drop
+ * the tail of a legal disclaimer." MEASURED against the real disclaimer at the
+ * real text width (520pt), that argument is simply false: at 5.1pt it draws as
+ * ONE line — 211 characters long, the single worst-set run on the document — and
+ * at the 7.5 floor it draws as TWO, which is exactly what the band holds. So
+ * raising it drops nothing, and it improves BOTH faults at once: 5.1 → 7.5pt,
+ * and 211 → 164 characters to the line.
+ *
+ * ⛔ AND IT IS NOW FITTED RATHER THAN SLICED, so the truncation the old note was
+ * afraid of cannot happen to a LONGER disclaimer either — `fitFooterDisc` steps
+ * the size down until the text fits the room the band actually has. Shrinking a
+ * legal line is honest; dropping its tail is not.
+ *
+ * ⛔ WHAT IS STILL NOT FIXED, STATED PLAINLY: 164 characters is over the 45–75
+ * band, so the footer is READABLE but not well MEASURED. A third line is what
+ * would fix that, and the band has no room for one — at 7.5pt a third line's ink
+ * runs through the identity line beneath it, and there is nothing under the
+ * identity line but the paper's edge. Shrinking the type to buy that third line
+ * would undo the size fix, which is the half the owner actually reported.
+ */
+const READ_FLOOR = 7.5;
+const SENTENCE_SIZES = ['para', 'small', 'discBody', 'gridNote', 'footDisc'];
+for (const k of SENTENCE_SIZES) SZ[k] = r2(Math.max(SZ[k], READ_FLOOR));
+/* ⛔ AND THE LINES OPEN UP WITH THEM. Leading is a RATIO, so scaling the type
+   alone leaves the lines exactly as tight relative to their size as they were —
+   and tight leading is most of what "unclear" means on a long line. 1.32 is
+   book-tight; 1.38 is the low end of what a document set this wide wants. */
 const LEAD = 1.32;   // line height as a multiple of the size
+/* MEASURED OFF THE SKETCH: "PREPARED FOR" draws 47.9 wide at 5.18, and the same
+   string set solid in Helvetica-Bold is 38.4 — so 0.86 of tracking per gap.
+   Guessing this is how an eyebrow ends up reading as spaced-out capitals
+   ("C A S H  T O  C L O S E") rather than as small caps. */
+const EYEBROW_TRACK = 0.86;
+/**
+ * THE RHYTHM, and it is the design's signature: *"wide, tight, tight, tight,
+ * wide"*. Rows inside a group sit close, ruled by a hairline so fine it reads
+ * as a change of tone; groups are set apart by real air. Both halves are here
+ * so the two can never be tuned against each other by accident.
+ */
+const RHYTHM = {
+  /* MEASURED OFF THE SKETCH. Its row hairlines land at 274.5, 289.5, 304.5,
+     319.5, 334.5, 349.5 — a pitch of exactly 15.0 — and a row's own type is
+     6.38 at LEAD 1.32, which is 8.42. So an ordinary row's padding is 6.58, and
+     that is the number below rather than a round one somebody liked. The
+     resolving row is 20.3 tall on a 7.8 figure (10.3 of type), so 10.0. */
+  rowPad: 6.58,     // inside an ordinary row
+  rowPadTight: 4,   // inside a row in a tight list
+  rowPadBig: 10,    // under a resolving total
+  sectionAbove: 20, // the air BEFORE a section header — the "wide"
+  sectionBelow: 7,  // and the little that follows it, so it binds to its rows
+};
+/**
+ * THE TABLE'S GEOMETRY, MEASURED OFF THE APPROVED SKETCH rather than chosen.
+ *
+ * Every figure here was read off the sketch's own drawing operators (its rules,
+ * its fills and the bounding box of every span), not estimated from a picture:
+ * its label column is 123.75 of a 522-wide content column, its three data
+ * columns 132.75 each, its ordinary row 21.0 tall, its resolving row 23.25 with
+ * an ivory band the full width of the content column, and its values inset 8
+ * from their own column's left edge.
+ *
+ * ⛔ THE LABEL COLUMN HAS A FLOOR AND A CAP, AND THE FLOOR IS THE SKETCH'S OWN
+ * PROPORTION. Sized purely to the widest label it would collapse to nothing on
+ * a table of short ones and the columns would drift off the sketch's rhythm;
+ * sized purely by proportion a long label wraps to two lines for no reason. So
+ * it takes whichever is larger and is capped at a third of the page, past which
+ * a label that grows has made the table worse rather than better.
+ */
+const TBL_SKETCH = {
+  labelShare: 0.237,   // 123.75 ÷ 522
+  labelCap: 0.34,
+  padX: 8,             // a figure's inset inside its own column
+  accentInset: 3.75,   // a resolving row's label, off the ivory band's edge
+  contentTop: 6.1,     // a row's top edge → the top of its type
+  rowPad: 12.4,        // an ordinary row, around its type
+  accentPad: 13.2,     // a resolving row
+  headTop: 1.2,        // the section rule → the column eyebrow
+  headEyebrowStep: 8.17,
+  headTitleStep: 9.0,
+  headBottom: 5.0,
+  tagGap: 5,           // the eyebrow → its "THE ANCHOR" tag
+  groupTop: 10.5,      // the air above a group heading
+  groupBottom: 2.4,
+  tickW: 1.5, tickH: 5.25, tickGap: 5.6,
+  rule: 0.75,          // the ink rule that opens and closes the table
+  hair: 0.75,          // between two rows of one group
+};
+/* ⛔ THE VERTICAL HALF OF A TABLE IS A FUNCTION OF THE TYPE IT HOLDS, so it rides
+   the same scale — scaling the sizes and leaving the bands is how text ends up
+   drawn through its own rules. What is KEPT: `labelShare`/`labelCap` are ratios
+   of the content column, `padX`/`accentInset`/`tickW` are horizontal, and a
+   hairline is a hairline at any size. */
+const TBL = scaleMetrics(TBL_SKETCH,
+  ['labelShare', 'labelCap', 'padX', 'accentInset', 'tickW', 'rule', 'hair']);
+/* ⛔ THE LABEL COLUMN IS A FRACTION OF THE PAGE, SO IT MUST GROW WITH THE TYPE.
+   It is a ratio, which is why it is not in the scale above — but the words in it
+   do not care about ratios: at 1.3× the type, "Total monthly payment" no longer
+   fits 0.237 of the content column and broke onto two lines, which is what the
+   render sweep caught. The share grows with the type and the cap with it, so the
+   sketch's proportion holds at the sketch's size and opens only as far as the
+   words need. */
+TBL.labelShare = r2(Math.min(0.42, TBL_SKETCH.labelShare * READ_SCALE));
+TBL.labelCap = r2(Math.min(0.48, TBL_SKETCH.labelCap * READ_SCALE));
+
+
+/**
+ * THE SHARED-FACTS GRID, measured the same way. The sketch draws it as a
+ * bordered ivory box with a gold tick down its left edge, a tracked heading over
+ * a hairline, then four cells across per band — each a tracked label over a
+ * monospaced figure — and a note in italics inside the box at the foot.
+ */
+const GRID_SKETCH = {
+  cols: 4,
+  tickW: 1.5,
+  padX: 9,             // a cell's own inset
+  // A CELL THAT EXPLAINS ITSELF. A note under a value is optional and costs the
+  // band nothing on the cells that carry none; where one IS carried the band
+  // grows by what it needs, because there is no spare room under the value.
+  cellNoteTop: 11,     // value baseline down to the note's first baseline
+  cellNotePad: 2.2,    // and the breathing room under the last note line
+  noteMin: 4.15,       // how small a note may shrink before it is allowed to wrap
+  headH: 21,           // the heading band, down to its hairline
+  headTop: 8.55,
+  bandH: 26.4,         // one band of cells
+  labelTop: 4.3,
+  valueTop: 12.58,
+  noteTop: 6.23,       // the last band → the footnote
+  noteBottom: 14,
+  rule: 0.75,
+  /* THE AIR ABOVE IT is deliberately less than a section heading's. The box is
+     its own frame — it does not need the "wide" of the rhythm to be seen as
+     separate, and at the full `sectionAbove` it left a measured 67pt hole under
+     the headline band that read as a page that had lost something. */
+  above: 10,
+};
+/* Same rule as the table: everything that places type inside a band scales, and
+   the column count, the cell's own horizontal inset, the tick and the hairline
+   do not. `noteMin` DOES scale — it is a type size, not a rule weight. */
+const GRID = scaleMetrics(GRID_SKETCH, ['cols', 'tickW', 'padX', 'rule']);
 
 /**
  * WinAnsi cannot carry these, and each one has an honest plain-text reading.
@@ -238,6 +499,38 @@ function wrap(ctx, s, font, size, maxW) {
   return out;
 }
 
+/**
+ * Wrap where the FIRST line is narrower than the rest — a paragraph that starts
+ * beside a bold opening clause. Shares `wrap`'s hard-break guarantee, so a word
+ * too long for either width still cannot run off the column.
+ */
+function wrapAfter(ctx, s, font, size, firstW, restW) {
+  const words = String(s || '').split(' ').filter(Boolean);
+  if (!words.length) return [''];
+  const lines = [];
+  let cur = '';
+  const widthFor = () => (lines.length === 0 ? firstW : restW);
+  for (const w of words) {
+    const t = cur ? `${cur} ${w}` : w;
+    if (!cur && advance(ctx, w, font, size) > widthFor()) {
+      // Nothing fits on this line at all — start the next one rather than
+      // hard-breaking a word into a two-character stub beside the title.
+      if (lines.length === 0 && firstW < restW) { lines.push(''); cur = w; continue; }
+    }
+    if (!cur || advance(ctx, t, font, size) <= widthFor()) { cur = t; continue; }
+    lines.push(cur);
+    cur = w;
+  }
+  if (cur) lines.push(cur);
+  const out = [];
+  lines.forEach((l, i) => {
+    const w = i === 0 ? firstW : restW;
+    if (advance(ctx, l, font, size) <= w || !(w > 0)) out.push(l);
+    else out.push(...hardBreak(ctx, l, font, size, restW));
+  });
+  return out;
+}
+
 /** One line, clipped rather than wrapped — for a cell that must stay one line. */
 function clip(ctx, s, font, size, maxW) {
   const str = String(s || '');
@@ -265,53 +558,20 @@ function line(ctx, y, x1, x2, color, thickness) {
   });
 }
 
+/** A vertical hairline — the divider between the headline band's cells. */
+function vline(ctx, x, yTop, h, color) {
+  if (!(h > 0)) return;
+  ctx.page.drawLine({
+    start: { x, y: yTop }, end: { x, y: yTop - h },
+    thickness: 0.5, color: color || HAIR,
+  });
+}
+
 function rect(ctx, x, yTop, w, h, color) {
   if (!(w > 0) || !(h > 0)) return;
   ctx.page.drawRectangle({ x, y: yTop - h, width: w, height: h, color });
 }
 
-/**
- * A rounded rectangle, as EXPLICIT CUBIC BÉZIERS.
- *
- * ⛔ NEVER AN SVG `A` ARC. `drawSvgPath` places a path with SVG's own y-DOWN
- * convention and flips it, and an arc's sweep flag is defined relative to the
- * axis direction — so the same `A` command that draws a rounded corner in a
- * browser can draw its INVERSE here, and the failure is silent: the shape still
- * fills, it just grows four little wings. A cubic is unambiguous under a flip,
- * and 0.5523 is the standard circle approximation, so this reads identically to
- * the RTL sheet's `roundedRect(…, 2.5, 2.5, "F")`.
- */
-const KAPPA = 0.5523;
-function roundedRect(ctx, x, yTop, w, h, r, color) {
-  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
-  if (!(w > 0) || !(h > 0)) return;
-  if (rr <= 0.01) { rect(ctx, x, yTop, w, h, color); return; }
-  const k = rr * KAPPA;
-  const d = [
-    `M ${rr} 0`,
-    `H ${w - rr}`,
-    `C ${w - rr + k} 0 ${w} ${rr - k} ${w} ${rr}`,
-    `V ${h - rr}`,
-    `C ${w} ${h - rr + k} ${w - rr + k} ${h} ${w - rr} ${h}`,
-    `H ${rr}`,
-    `C ${rr - k} ${h} 0 ${h - rr + k} 0 ${h - rr}`,
-    `V ${rr}`,
-    `C 0 ${rr - k} ${rr - k} 0 ${rr} 0`,
-    'Z',
-  ].join(' ');
-  ctx.page.drawSvgPath(d, { x, y: yTop, color, borderWidth: 0 });
-}
-
-/**
- * ⛔ THE BOX IS ENFORCED HERE, NOT BY THE CALLER — and its DEFAULT is the page.
- *
- * A caller that forgets to say how wide its column is gets the widest box that
- * still fits on the sheet, so forgetting produces an ugly clip and never ink off
- * the paper. Every wrapped context passes its real width; a one-line context (a
- * heading, a figure, a code) CLIPS rather than wraps, because wrapping a value
- * that is meant to sit on one line silently changes the row's height and walks
- * the whole page off its own measurement.
- */
 function put(ctx, s, x, yTop, font, size, color, maxW) {
   const t = clip(ctx, ctx.text(s), font, size, maxW == null ? TEXT_RIGHT - x : maxW);
   if (!t) return 0;
@@ -336,6 +596,17 @@ function putRight(ctx, s, xRight, yTop, font, size, color, maxW) {
  * not, so the box would be measured wider than the ink and the title would sit
  * off-centre in its band.
  */
+/** How wide a tracked line will draw. Measured the same way `putTracked` places
+ *  it, character by character, so a right-aligned tracked eyebrow lands exactly
+ *  on the margin rather than near it. */
+function trackedWidth(ctx, s, font, size, tracking) {
+  const t = ctx.text(s);
+  if (!t) return 0;
+  let w = 0;
+  for (const ch of t) w += advance(ctx, ch, font, size) + tracking;
+  return Math.max(0, w - tracking);
+}
+
 function putTracked(ctx, s, x, yTop, font, size, color, tracking, maxW) {
   const t = ctx.text(s);
   if (!t) return 0;
@@ -368,69 +639,128 @@ const item = (h, draw, opts) => ({ h, draw, keepNext: !!(opts && opts.keepNext),
 function compileRecipient(b, ctx) {
   const F = ctx.fonts;
   const leftW = Math.round(CONTENT_W * 0.58) - 10;
-  const rightX = M.left + Math.round(CONTENT_W * 0.58);
-  const rightW = RIGHT_X - rightX;
+  const rightW = Math.round(CONTENT_W * 0.40);
 
-  const name = ctx.text(b.borrowerName || '');
+  // ⛔ `preparedFor` — the ONE reading of the two name fields (layout.js), so the
+  //    "prepared for" line and the signature lines can never name different
+  //    parties. `partyRole` splits the SAME reading onto its own line, because
+  //    that is how the approved sketch sets it: the entity in 9.3 bold, and
+  //    "Miriam Rosenberg, guarantor" in 5.77 muted under it. One line carrying
+  //    "Entity · Person" is a smaller claim badly made — it says nothing about
+  //    which of the two is which, on the document they both sign.
+  const name = ctx.text(b.preparedFor || b.borrowerName || '');
+  const role = ctx.text(b.preparedForRole || '');
   const addr = ctx.text(b.propertyAddress || '');
-  const nameLines = name ? wrap(ctx, name, F.bold, SZ.name, leftW) : [];
-  const addrLines = addr ? wrap(ctx, addr, F.reg, SZ.value, leftW) : [];
+  const nameLines = name ? wrap(ctx, name, F.bold, SZ.partyName, leftW) : [];
+  const roleLines = role ? wrap(ctx, role, F.reg, SZ.partySub, leftW) : [];
+  const addrLines = addr ? wrap(ctx, addr, F.reg, SZ.address, leftW) : [];
+  // The property's own facts, under the address they are about — the sketch's
+  // own home for them, and now the only one (see `layout.termSheetBody`).
+  const facts = ctx.text(b.propertyFacts || '');
+  const factLines = facts ? wrap(ctx, facts, F.reg, SZ.partySub, leftW) : [];
+
+  /* ⛔ THE OFFICER BLOCK IS RIGHT-ALIGNED, hard against the same 567 every rule
+     and every figure on the page ends at. Set left it reads as a second column
+     of body text starting nowhere in particular; set right it closes the line
+     the "PREPARED FOR" eyebrow opens, which is what makes the two read as one
+     header rather than two lists. */
   const officer = (b.officer || []).map((l) => ctx.text(l)).filter(Boolean);
   const officerLines = [];
-  for (const l of officer) officerLines.push(...wrap(ctx, l, F.reg, SZ.small, rightW));
+  officer.forEach((l, i) => {
+    const size = i === 0 ? SZ.byName : SZ.byLine;
+    for (const w of wrap(ctx, l, i === 0 ? F.bold : F.reg, size, rightW)) officerLines.push({ t: w, i });
+  });
 
-  const leftH = (name ? SZ.eyebrow * LEAD + nameLines.length * SZ.name * LEAD + 2 : 0)
-    + (addr ? SZ.eyebrow * LEAD + 2 + addrLines.length * SZ.value * LEAD : 0);
-  const rightH = officerLines.length ? SZ.eyebrow * LEAD + officerLines.length * SZ.small * LEAD : 0;
-  const h = Math.max(leftH, rightH) + 14;
+  const leftH = (name ? SZ.eyebrow * LEAD + nameLines.length * SZ.partyName * LEAD
+      + roleLines.length * SZ.partySub * LEAD + 4 : 0)
+    + (addr ? SZ.eyebrow * LEAD + 3 + addrLines.length * SZ.address * LEAD : 0)
+    + (factLines.length ? factLines.length * SZ.partySub * LEAD + 1 : 0);
+  const rightH = officerLines.length
+    ? SZ.eyebrow * LEAD + officerLines.reduce((n, l) => n + (l.i === 0 ? SZ.byName : SZ.byLine) * LEAD, 0)
+    : 0;
+  /* ⛔ NO TRAILING AIR OF ITS OWN. MEASURED: the sketch leaves 18.6 between the
+     last party line and the top of the stat box, and the stat box already
+     declares that as `brand.STATS.above`. Adding a pad here as well put the
+     headline figures 13.5pt lower than the design and cost the page the room the
+     acceptance needed. Air belongs to ONE of two neighbours, never to both. */
+  const h = Math.max(leftH, rightH);
 
   return [item(h, (c, y) => {
     let ly = y;
     if (name) {
-      putTracked(c, 'PREPARED FOR', M.left, ly, F.bold, SZ.eyebrow, GOLD, 0.7, leftW);
+      putTracked(c, 'PREPARED FOR', M.left, ly, F.bold, SZ.eyebrow, GOLD, EYEBROW_TRACK, leftW);
       ly -= SZ.eyebrow * LEAD;
-      for (const l of nameLines) { put(c, l, M.left, ly, F.bold, SZ.name, INK, leftW); ly -= SZ.name * LEAD; }
-      ly -= 2;
+      for (const l of nameLines) { put(c, l, M.left, ly, F.bold, SZ.partyName, INK, leftW); ly -= SZ.partyName * LEAD; }
+      for (const l of roleLines) { put(c, l, M.left, ly, F.reg, SZ.partySub, MUTED, leftW); ly -= SZ.partySub * LEAD; }
+      ly -= 4;
     }
     if (addr) {
-      putTracked(c, 'PROPERTY', M.left, ly, F.bold, SZ.eyebrow, GOLD, 0.7, leftW);
+      putTracked(c, 'PROPERTY', M.left, ly, F.bold, SZ.eyebrow, GOLD, EYEBROW_TRACK, leftW);
       ly -= SZ.eyebrow * LEAD;
-      for (const l of addrLines) { put(c, l, M.left, ly, F.reg, SZ.value, INK, leftW); ly -= SZ.value * LEAD; }
+      for (const l of addrLines) { put(c, l, M.left, ly, F.reg, SZ.address, INK, leftW); ly -= SZ.address * LEAD; }
+      ly -= 1;
+      for (const l of factLines) { put(c, l, M.left, ly, F.reg, SZ.partySub, MUTED, leftW); ly -= SZ.partySub * LEAD; }
     }
     if (officerLines.length) {
       let ry = y;
-      putTracked(c, 'PREPARED BY', rightX, ry, F.bold, SZ.eyebrow, GOLD, 0.7, rightW);
+      putTracked(c, 'PREPARED BY', TEXT_RIGHT - trackedWidth(ctx, 'PREPARED BY', F.bold, SZ.eyebrow, EYEBROW_TRACK),
+        ry, F.bold, SZ.eyebrow, GOLD, EYEBROW_TRACK, rightW);
       ry -= SZ.eyebrow * LEAD;
-      officerLines.forEach((l, i) => {
-        put(c, l, rightX, ry, i === 0 ? F.bold : F.reg, SZ.small, i === 0 ? INK : MUTED, rightW);
-        ry -= SZ.small * LEAD;
+      officerLines.forEach((l, idx) => {
+        const size = l.i === 0 ? SZ.byName : SZ.byLine;
+        // The LAST line is the officer's own NMLS, which the sketch sets a shade
+        // fainter than the rest: it is a registration number, not a way to reach
+        // anybody, so it should not compete with the telephone above it.
+        const last = idx === officerLines.length - 1;
+        const colour = l.i === 0 ? INK : (last ? FAINT : MUTED);
+        putRight(c, l.t, TEXT_RIGHT, ry, l.i === 0 ? F.bold : F.reg, size, colour, rightW);
+        ry -= size * LEAD;
       });
     }
   })];
 }
 
 /**
- * A SECTION BAND — the RTL sheet's `band()`, to the point: a teal rounded
- * rectangle the width of the content column, a gold tab inset from its left
- * edge, the title in tracked white capitals.
+ * A SECTION HEADING — a teal tick, tracked ink capitals, an ink rule under both.
+ *
+ * See `brand.SECTION` for why this is no longer a filled teal bar. The two
+ * numbers that matter to the page's rhythm are here rather than inline: the
+ * WIDE gap above (this is the "wide" in wide-tight-tight-tight-wide) and the
+ * small one below, which is what binds a heading to the rows it names instead
+ * of letting it float between two groups.
+ *
+ * `keepNext` still holds: a heading may never be the last thing on a page.
  */
-function compileBand(b, ctx) {
+function compileBand(b, ctx, box) {
   const F = ctx.fonts;
   const S = brand.SECTION;
-  const gap = 12;
-  const h = gap + S.advance;
+  const B = boxOf(box);
+  const above = RHYTHM.sectionAbove;
+  const h = above + SZ.section * LEAD + S.rulePad + RHYTHM.sectionBelow;
   return [item(h, (c, y) => {
-    const top = y - gap;
-    roundedRect(c, M.left, top, CONTENT_W, S.h, S.radius, TEAL);
-    rect(c, M.left + S.tabX, top - (S.h - S.tabH) / 2, S.tabW, S.tabH, GOLD);
-    putTracked(c, String(b.title || '').toUpperCase(), M.left + S.textX,
-      top - (S.h - S.textSize) / 2 + 0.5, F.bold, S.textSize, WHITE, S.tracking,
-      CONTENT_W - S.textX - 8);
+    const top = y - above;
+    const base = top - SZ.section;         // where the capitals sit
+    rect(c, B.x, top - (SZ.section - S.tickH) / 2 - 0.5, S.tickW, S.tickH, TEAL);
+    const w = putTracked(c, String(b.title || '').toUpperCase(), B.x + S.tickW + S.gap,
+      top, F.bold, SZ.section, INK, S.tracking,
+      B.w - S.tickW - S.gap);
+    /* THE SKETCH SETS A NOTE IN ITALICS AT THE RIGHT-HAND END OF THE SAME LINE
+       — "every figure below is compared against option A". It rides the heading
+       rather than taking a paragraph of its own, which is what keeps the heading
+       and the table it introduces adjacent. It is DROPPED rather than wrapped
+       when the title leaves it too little room: a note that pushes the heading
+       onto two lines has cost more than it is worth. */
+    if (b.note) {
+      const room = B.right - (B.x + S.tickW + S.gap + w + 14);
+      if (room > 60) putRight(c, b.note, B.textRight, top + 0.4, F.italic, SZ.small, FAINT, room);
+    }
+    line(c, base - S.rulePad, B.x, B.right, INK, S.rule);
   }, { keepNext: true })];
 }
 
-function compileRule() {
-  return [item(14, (c, y) => line(c, y - 8, M.left, RIGHT_X, HAIR, 0.7))];
+function compileRule(b, ctx, box) {
+  const B = boxOf(box);
+  return [item(14, (c, y) => line(c, y - 8, B.x, B.right, HAIR, 0.7))];
 }
 
 /**
@@ -440,14 +770,15 @@ function compileRule() {
  * be visibly THE LENDER'S OWN FEES, which is the pair the waive switch turns
  * off and the pair the owner asked to be able to see the difference on.
  */
-function compileSubhead(b, ctx) {
+function compileSubhead(b, ctx, box) {
   const F = ctx.fonts;
+  const B = boxOf(box);
   const gap = 10;
   const h = gap + SZ.eyebrow * LEAD + 5;
   return [item(h, (c, y) => {
     const top = y - gap;
-    putTracked(c, String(b.text || '').toUpperCase(), M.left, top, F.bold, SZ.eyebrow, GOLD, 0.7, TEXT_W);
-    line(c, top - SZ.eyebrow - 3, M.left, RIGHT_X, HAIR, 0.5);
+    putTracked(c, String(b.text || '').toUpperCase(), B.x, top, F.bold, SZ.eyebrow, GOLD, 0.7, B.textW);
+    line(c, top - SZ.eyebrow - 3, B.x, B.right, HAIR, 0.5);
   }, { keepNext: true })];
 }
 
@@ -465,8 +796,9 @@ function compileSubhead(b, ctx) {
  * last carries the 0.4pt hairline under it that makes a figures list read as a
  * list rather than as a paragraph of numbers.
  */
-function compileFigures(b, ctx) {
+function compileFigures(b, ctx, box) {
   const F = ctx.fonts;
+  const B = boxOf(box);
   const tight = !!b.tight;
   const rows = (b.rows || []).filter(Boolean);
   const out = [];
@@ -477,65 +809,138 @@ function compileFigures(b, ctx) {
     const big = !!o.big;
     const size = big ? SZ.big : SZ.value;
     const lsize = big ? SZ.bigLabel : SZ.label;
-    const pad = tight ? 3 : (big ? 7 : 5);
-    const vf = o.strong || big || o.total ? F.bold : F.reg;
+    const pad = tight ? RHYTHM.rowPadTight : (big ? RHYTHM.rowPadBig : RHYTHM.rowPad);
+    // The FIGURE is monospaced, always — see the font block. A strong figure
+    // takes the bold cut of the same face, never a different family.
+    const vf = o.strong || big || o.total ? F.monoBold : F.mono;
     const vc = o.credit ? GOLD : INK;
     const last = ri === rows.length - 1;
     const divider = !tight && !o.noDivider && !last;
 
-    const labelMax = Math.round(TEXT_W * 0.55);
-    const labelW = label ? Math.min(advance(ctx, label, F.reg, lsize), labelMax) : 0;
-    const roomBeside = TEXT_W - labelW - 14;
+    // ⛔ THE LABEL'S SHARE IS OF ITS OWN BOX, NEVER OF THE PAGE. In a column
+    // half the width, a fraction of the full page would let a label run into
+    // the neighbouring column and a figure be measured against room it does
+    // not have.
+    const labelMax = Math.round(B.textW * 0.55);
+    /* ⛔ A LABEL WRAPS; IT IS NEVER CLIPPED. This file's own rule two paragraphs
+       up is that the label is what makes the figure mean anything and is never
+       the one that gives way — and it was being CLIPPED to one line all the
+       same, which nothing noticed while every label fitted the full content
+       column. MEASURED the moment a column was half as wide: "Total monthly
+       payment (principal, interest, taxes & insurance)" drew as "Total monthly
+       payment (principal, inter…", which reads as a rendering fault on the one
+       row that resolves the arithmetic. */
+    const lfont = o.strong || big ? F.bold : F.reg;
+    const labelLines = label ? wrap(ctx, label, lfont, lsize, labelMax) : [];
+    // The figure sits beside the label's FIRST line, so that is the line the
+    // room beside it is measured against — not the widest one.
+    const firstLabelW = labelLines.length ? advance(ctx, labelLines[0], lfont, lsize) : 0;
+    const roomBeside = B.textW - firstLabelW - 14;
     const valueW = advance(ctx, value, vf, size);
     const inline = !label || valueW <= roomBeside;
-    const valueLines = inline ? null : wrap(ctx, value, vf, size, TEXT_W);
+    const valueLines = inline ? null : wrap(ctx, value, vf, size, B.textW);
 
     const noteLines = o.note ? wrap(ctx, ctx.text(o.note), F.italic, SZ.small, labelMax) : [];
-    const h = Math.max(size, lsize) * LEAD
+    const labelH = Math.max(1, labelLines.length) * lsize * LEAD;
+    const h = Math.max(size * LEAD, labelH)
       + (inline ? 0 : valueLines.length * size * LEAD)
       + pad + noteLines.length * SZ.small * LEAD;
 
     out.push(item(h, (c, y) => {
       // The ivory band is drawn FIRST, behind everything, and it is inset by
-      // nothing — it runs the full content column exactly as the RTL row does.
-      if (o.accent) rect(c, M.left, y + brand.ROW.accentPad, CONTENT_W, h, IVORY);
-      if (o.total) line(c, y + 2, M.left, RIGHT_X, HAIR, 0.7);
+      // nothing — it runs the full width of its own box exactly as the RTL row
+      // runs the full content column.
+      if (o.accent) rect(c, B.x, y + brand.ROW.accentPad, B.w, h, IVORY);
+      if (o.total) line(c, y + 2, B.x, B.right, HAIR, 0.7);
       const baseTop = y - (big ? 1 : 0);
-      let ny = baseTop - Math.max(size, lsize) * LEAD;
+      const lcolor = o.strong || big ? INK : MUTED;
+      // A label that carries weight takes the BOLD SANS, as the sketch sets it —
+      // the emphasis is on the words, and the figure beside it is already bold.
+      const lf = o.strong || big ? F.bold : F.reg;
+      const drawLabel = (top) => {
+        let ly = top;
+        for (const ll of labelLines) { put(c, ll, B.x, ly, lf, lsize, lcolor, labelMax); ly -= lsize * LEAD; }
+        return ly;
+      };
+      let ny = baseTop - Math.max(size * LEAD, labelH);
       if (!label) {
         // A continuation line: no label, so the value reads on the left.
-        put(c, value, M.left, baseTop, F.reg, lsize, MUTED, TEXT_W);
+        put(c, value, B.x, baseTop, F.mono, lsize, MUTED, B.textW);
       } else if (inline) {
-        putRight(c, value, TEXT_RIGHT, baseTop, vf, size, vc, roomBeside);
-        put(c, label, M.left, baseTop - (big ? size - lsize : 0), F.reg, lsize,
-          o.strong || big ? INK : MUTED, labelMax);
+        putRight(c, value, B.textRight, baseTop, vf, size, vc, roomBeside);
+        drawLabel(baseTop - (big ? size - lsize : 0));
       } else {
-        put(c, label, M.left, baseTop, F.reg, lsize, o.strong || big ? INK : MUTED, labelMax);
+        ny = drawLabel(baseTop);
         for (const vl of valueLines) {
-          put(c, vl, M.left, ny, vf, size, vc, TEXT_W);
+          put(c, vl, B.x, ny, vf, size, vc, B.textW);
           ny -= size * LEAD;
         }
       }
       for (const nl of noteLines) {
-        put(c, nl, M.left, ny, F.italic, SZ.small, MUTED, labelMax);
+        put(c, nl, B.x, ny, F.italic, SZ.small, MUTED, labelMax);
         ny -= SZ.small * LEAD;
       }
-      if (divider) line(c, y - h + 3, M.left, RIGHT_X, HAIR, brand.ROW.hair);
+      if (divider) line(c, y - h + 3, B.x, B.right, HAIR, brand.ROW.hair);
     }));
   });
   return out;
 }
 
-function compilePara(b, ctx) {
+/**
+ * ⛔ HOW WIDE PROSE MAY BE SET, AND IT IS THE OTHER HALF OF "EXTREMELY UNCLEAR".
+ *
+ * Owner-reported 2026-09-01. MEASURED on a real render, the sheet's paragraphs
+ * ran **206–211 characters to the line**. Every typographic source that has ever
+ * been measured on this puts the readable band at **45–75 characters**, 66 being
+ * the classic single-column ideal, because past roughly 90 the eye loses the
+ * start of the next line on the way back and the reader re-reads a line or skips
+ * one. So the sheet was at about three times the upper bound: SIZE was only half
+ * the complaint, and this is the other half — a 5.7pt line 200 characters long is
+ * unreadable at any size.
+ *
+ * ⛔ IT IS DERIVED FROM THE FONT, NEVER A MAGIC WIDTH. A character count means
+ * nothing in points until you ask the face how wide its characters actually are,
+ * and the answer changes with the size and would change again with the face. The
+ * sample is a pangram-ish mixed-case run rather than "n" or "x": prose is mixed
+ * case with spaces, and measuring a single letter overstates the width by a
+ * third.
+ *
+ * ⛔ AND IT IS A CAP, NOT A WIDTH. A column that is already narrower than this
+ * keeps its own width — the two-column page must never be widened by a rule
+ * about long lines.
+ */
+const PROSE_CH = 72;
+const PROSE_SAMPLE = 'The quick brown fox jumps over the lazy dog, and pays $1,234.56 at closing.';
+function proseWidth(ctx, font, size, boxWidth, text) {
+  /* ⛔ A RUN THAT FITS ON ONE LINE IS NOT CAPPED, because the rule this enforces
+     is about the RETURN SWEEP — the eye coming back from the end of one line to
+     the start of the next — and a single line has no next line. Capping one
+     anyway does not make it more readable; it manufactures a second line and
+     spends the page's height on it. The box's own footnote is the case: 107
+     characters that fit across the box in one italic line, which the cap was
+     breaking into 72 and 35 for no reader's benefit. */
+  if (text) {
+    const whole = advance(ctx, typeof text === 'string' ? ctx.text(text) : text, font, size);
+    if (whole <= boxWidth) return boxWidth;
+  }
+  const per = advance(ctx, ctx.text(PROSE_SAMPLE), font, size) / PROSE_SAMPLE.length;
+  const cap = per * PROSE_CH;
+  return Math.min(boxWidth, cap);
+}
+
+function compilePara(b, ctx, box) {
   const F = ctx.fonts;
+  const B = boxOf(box);
   const size = b.small ? SZ.small : SZ.para;
   const font = b.small ? F.italic : F.reg;
   const color = b.small ? MUTED : INK;
-  const lines = wrap(ctx, ctx.text(b.text), font, size, TEXT_W);
+  // Prose is capped at a readable measure; a column already narrower keeps its own.
+  const w = proseWidth(ctx, font, size, B.textW, b.text);
+  const lines = wrap(ctx, ctx.text(b.text), font, size, w);
   const out = [];
   lines.forEach((l, i) => {
     const gap = i === 0 ? 9 : 0;
-    out.push(item(size * LEAD + gap, (c, y) => put(c, l, M.left, y - gap, font, size, color),
+    out.push(item(size * LEAD + gap, (c, y) => put(c, l, B.x, y - gap, font, size, color, w),
       { keepNext: i < lines.length - 1 && i === 0 }));
   });
   return out;
@@ -549,28 +954,149 @@ function compilePara(b, ctx) {
  * "This term sheet expires" at the foot of one page and "in 24 hours" at the
  * head of the next.
  */
+/**
+ * THE HEADLINE BAND — two to four figures, large, across the top.
+ *
+ * Owner-reported 2026-08-31: all three documents read as *"very ugly and very
+ * abrupt"*, and part of that is that every one of them opened with the parties
+ * and then a two-column table of nine-point type — the loan amount, the rate and
+ * the payment, which are the whole point, were four inches down and the same
+ * size as the property type.
+ *
+ * ⛔ IT DRAWS WHAT IT IS GIVEN AND WORKS NOTHING OUT. `layout.heroCells` reads
+ * every figure straight off the member the tables below are built from, so the
+ * headline cannot state a number the body contradicts.
+ *
+ * ⛔ IT NEVER SPLITS ACROSS A PAGE. The band is one item — a headline broken in
+ * half across a page boundary is worse than no headline — and its value type is
+ * sized DOWN to fit its own column rather than being allowed to run into the
+ * cell beside it, because a $1,234,567.89 loan amount is a perfectly ordinary
+ * figure on this book.
+ */
+function compileHero(b, ctx) {
+  const F = ctx.fonts;
+  const cells = (b.cells || []).filter((c) => c && c.value);
+  if (cells.length < 2) return [];
+  const n = cells.length;
+  const H = brand.STATS;
+  const colW = CONTENT_W / n;
+  const innerW = colW - H.padX * 2;
+
+  // The value's own size, per cell, so a long figure shrinks rather than
+  // colliding with its neighbour. Never below `SZ.value`, or the "headline" is
+  // smaller than the table it is summarising.
+  const sizeFor = (txt) => {
+    let size = SZ.statFigure;
+    while (size > SZ.value && advance(ctx, txt, F.monoBold, size) > innerW) size -= 0.5;
+    return size;
+  };
+  const drawn = cells.map((c) => {
+    const value = ctx.text(c.value);
+    return {
+      label: ctx.text(c.label || ''),
+      value,
+      size: sizeFor(value),
+      note: c.note ? wrap(ctx, ctx.text(c.note), F.italic || F.reg, SZ.statCaption, innerW) : [],
+    };
+  });
+  const noteLines = Math.max(...drawn.map((d) => d.note.length));
+  // MEASURED: the sketch's box runs 175.5 → 225.0, so 49.5 tall on one line of
+  // caption. A second caption line adds its own leading rather than being
+  // allowed to run out of the box.
+  const boxH = H.h + Math.max(0, noteLines - 1) * SZ.statCaption * LEAD;
+  const h = boxH + H.above + H.below;
+  return [item(h, (c, y) => {
+    const top = y - H.above;
+    rect(c, M.left, top, CONTENT_W, boxH, IVORY);
+    /* ⛔ IT IS A BOX, NOT A BAND — and that is the sketch's own drawing, read out
+       of its geometry rather than remembered: a GOLD rule across the top, a
+       hairline across the bottom, and a hairline between every pair of cells
+       running the full inner height. The band shipped with only the bottom rule,
+       which is why four figures that are meant to read as one statement in four
+       parts read instead as text floating on a tint. */
+    line(c, top, M.left, RIGHT_X, GOLD, H.rule);
+    line(c, top - boxH, M.left, RIGHT_X, HAIR, H.rule);
+    drawn.forEach((d, i) => {
+      const x = M.left + i * colW + H.padX;
+      putTracked(c, d.label.toUpperCase(), x, top - H.labelTop, F.bold, SZ.statLabel, MUTED, H.tracking, innerW);
+      // The figure is monospaced, like every other figure on the document.
+      put(c, d.value, x, top - H.figureTop - (SZ.statFigure - d.size), F.monoBold, d.size, INK, innerW);
+      let ty = top - H.captionTop;
+      for (const l of d.note) {
+        put(c, l, x, ty, F.italic || F.reg, SZ.statCaption, MUTED, innerW);
+        ty -= SZ.statCaption * LEAD;
+      }
+      if (i > 0) vline(c, M.left + i * colW, top - H.rule, boxH - H.rule * 2, HAIR);
+    });
+  })];
+}
+
+/**
+ * A CALLOUT — one ruled statement, led by a gold dot, NOT a filled box.
+ *
+ * ⛔ THE EXPIRY IS A SENTENCE, NOT A PANEL. It was an ivory box with a gold bar
+ * down its side, set near the top of the sheet, which made the shortest-lived
+ * fact on the page the second-loudest thing on it — competing with the headline
+ * figures for the eye it is not the answer to. The approved design states it as
+ * one line between two hairlines with a small gold dot: read on the first pass,
+ * never mistaken for the point of the document.
+ *
+ * ⛔ AND THE TITLE RUNS INTO ITS OWN SENTENCE. "This term sheet expires in 24
+ * hours." set as a heading over a paragraph reads as two facts; set as a bold
+ * opening clause it reads as one, which is what it is. So the first line is
+ * wrapped to the room left BESIDE the title and the rest to the full column —
+ * the only reason this needs its own wrap rather than the shared one.
+ */
 function compileCallout(b, ctx) {
   const F = ctx.fonts;
-  const padX = 12;
-  const innerW = CONTENT_W - padX * 2 - 4;
+  const dot = 2.4;
+  const indent = dot + 6;
+  const innerW = TEXT_W - indent;
   const title = ctx.text(b.title || '');
-  const bodyLines = b.text ? wrap(ctx, ctx.text(b.text), F.reg, SZ.small, innerW) : [];
-  const inner = (title ? SZ.para * LEAD : 0) + bodyLines.length * SZ.small * LEAD;
-  const boxH = inner + 16;
-  const h = boxH + 14;
+  const body = b.text ? ctx.text(b.text) : '';
+  const size = SZ.small;
+  const titleW = title ? advance(ctx, title, F.bold, size) : 0;
+  /* ⛔ THE MEASURE IS THE WHOLE VISUAL LINE, TITLE INCLUDED. The title and the
+     body's first line share one line, so the run a reader's eye actually
+     traverses is both of them — capping only the body left a 42-character title
+     followed by 102 characters of sentence, which is the longest line on the
+     document by half. Cap the line, then give the body what is left of it. */
+  const capW = proseWidth(ctx, F.reg, size, innerW, body || '');
+  // A title that has eaten its own line leaves no room beside it; the body then
+  // simply starts underneath, which is the honest fallback rather than a first
+  // line squeezed to two words.
+  const firstW = Math.max(0, capW - titleW - advance(ctx, ' ', F.reg, size));
+  const lines = body ? wrapAfter(ctx, body, F.reg, size, firstW, capW) : [];
+  const rows = Math.max(lines.length, title ? 1 : 0);
+  const padY = 6;
+  const h = padY * 2 + rows * size * LEAD + 12;
   return [item(h, (c, y) => {
-    const top = y - 7;
-    rect(c, M.left, top, CONTENT_W, boxH, IVORY);
-    rect(c, M.left, top, 3, boxH, GOLD);
-    let ty = top - 8;
+    const top = y - 5;
+    line(c, top, M.left, RIGHT_X, HAIR, 0.6);
+    let ty = top - padY;
+    // The dot sits on the first line's optical centre, never on its baseline.
+    rect(c, M.left, ty - size * 0.34, dot, dot, GOLD);
+    let x = M.left + indent;
     if (title) {
-      put(c, title, M.left + padX + 4, ty, F.bold, SZ.para, INK, innerW);
-      ty -= SZ.para * LEAD;
+      put(c, title, x, ty, F.bold, size, INK, innerW);
+      x += titleW + advance(ctx, ' ', F.reg, size);
     }
-    for (const l of bodyLines) {
-      put(c, l, M.left + padX + 4, ty, F.reg, SZ.small, col(brand.RGB.FOOTNOTE), innerW);
-      ty -= SZ.small * LEAD;
-    }
+    lines.forEach((l, i) => {
+      const first = i === 0;
+      /* ⛔ THE LINE ADVANCES EVEN WHEN IT DREW NOTHING. `wrapAfter` answers with
+         an EMPTY first line when the title has eaten the whole of it — the body
+         then starts underneath, which is the honest fallback. Skipping the
+         advance with the draw would put that body line on the title's own
+         baseline, at the title's own x, one word on top of another. It cannot
+         happen at today's wording and would the first time a title grew. */
+      if (!(first && title && !l)) {
+        put(c, l, first ? x : M.left + indent, ty, F.reg, size,
+          col(brand.RGB.FOOTNOTE), first ? Math.max(firstW, 1) : capW);
+      }
+      ty -= size * LEAD;
+    });
+    if (!lines.length) ty -= size * LEAD;
+    line(c, ty - padY + size * 0.3, M.left, RIGHT_X, HAIR, 0.6);
   })];
 }
 
@@ -579,20 +1105,89 @@ function compileCallout(b, ctx) {
  * sheet's own shape. The heading is bound to its first body line, so a heading
  * can never end a page alone.
  */
+/**
+ * THE DISCLOSURES, SET IN TWO COLUMNS.
+ *
+ * ⛔ BECAUSE A READABLE MEASURE AND A FULL-WIDTH PAGE CANNOT BOTH BE HAD. Capping
+ * prose at 72 characters is what makes it readable, and on a 504pt page that
+ * leaves about 180pt of white down the right of every line — which both looks
+ * like a mistake and costs pages, because the same text now takes twice as many
+ * lines. Two columns spend that white instead: the same readable measure, and
+ * the page carries roughly twice as much of it.
+ *
+ * ⛔ A PAIR IS ONE ATOMIC ITEM, for the reason `compileColumns` gives: a pair
+ * that could break across a page would put a heading on one sheet and its
+ * paragraph on the next, in the wrong column, with nothing saying which belongs
+ * to which.
+ *
+ * ⛔ AND IT FALLS BACK RATHER THAN OVERFLOWING. A single disclosure taller than
+ * the page it would have to sit on cannot be paired — there is nowhere to move
+ * it to — so it is emitted line by line down the full column exactly as this
+ * file drew before, which `flow` can break wherever it needs to. A document that
+ * reads down one column is worse-looking and still correct; one that draws off
+ * the paper is neither.
+ */
+const DISC_GAP = 22;
+
+function discSide(entry, ctx, x, w) {
+  const F = ctx.fonts;
+  const [heading, body] = entry;
+  const lines = wrap(ctx, ctx.text(body), F.reg, SZ.discBody, w);
+  const headH = SZ.discHead * LEAD + 6;
+  const h = headH + lines.length * SZ.discBody * LEAD + 6;
+  const draw = (c, top) => {
+    put(c, heading, x, top - 4, F.bold, SZ.discHead, TEAL, w);
+    let y = top - headH;
+    for (const l of lines) {
+      put(c, l, x, y, F.reg, SZ.discBody, col(brand.RGB.FOOTNOTE), w);
+      y -= SZ.discBody * LEAD;
+    }
+  };
+  return { h, draw };
+}
+
 function compileDisclosures(b, ctx) {
   const F = ctx.fonts;
+  const entries = (b.items || []).filter((e) => Array.isArray(e) && e[0]);
   const out = [];
-  for (const [heading, body] of b.items || []) {
-    const lines = wrap(ctx, ctx.text(body), F.reg, SZ.discBody, TEXT_W);
-    out.push(item(SZ.discHead * LEAD + 6, (c, y) => {
-      put(c, heading, M.left + 3, y - 4, F.bold, SZ.discHead, TEAL, TEXT_W);
-    }, { keepNext: true }));
-    lines.forEach((l, i) => {
-      const lastLine = i === lines.length - 1;
-      out.push(item(SZ.discBody * LEAD + (lastLine ? 6 : 0),
-        (c, y) => put(c, l, M.left + 3, y, F.reg, SZ.discBody, col(brand.RGB.FOOTNOTE), TEXT_W),
-        { keepNext: !lastLine }));
-    });
+  /* ⛔ THE COLUMNS ARE MEASURED FROM THE MARGIN THEY MUST NOT CROSS, not from a
+     width that looks like the right one. Deriving them from TEXT_W while starting
+     3 in from the left put the right column's edge 0.92 past the right margin —
+     invisible by eye, caught by the render sweep, and text off the paper either
+     way. Taking the span from the left inset to RIGHT_X makes the right edge land
+     on the margin by construction, at any type size. */
+  const leftX = M.left + 3;
+  const colW = (RIGHT_X - leftX - DISC_GAP) / 2;
+  const rightX = leftX + colW + DISC_GAP;
+  // The height a pair may not exceed: a whole page of body, less the footer.
+  const roomOnAPage = PAGE.h - M.bottom - 90;
+
+  for (let i = 0; i < entries.length; i += 2) {
+    const l = discSide(entries[i], ctx, leftX, colW);
+    const r = entries[i + 1] ? discSide(entries[i + 1], ctx, rightX, colW) : null;
+    const h = Math.max(l.h, r ? r.h : 0);
+    if (h > roomOnAPage) {
+      // Too tall to pair — emit both sides full width, line by line, so the flow
+      // can break them wherever it must.
+      for (const e of [entries[i], entries[i + 1]].filter(Boolean)) {
+        const w = proseWidth(ctx, F.reg, SZ.discBody, TEXT_W, e[1]);
+        const lines = wrap(ctx, ctx.text(e[1]), F.reg, SZ.discBody, w);
+        out.push(item(SZ.discHead * LEAD + 6, (c, y) => {
+          put(c, e[0], leftX, y - 4, F.bold, SZ.discHead, TEAL, TEXT_W);
+        }, { keepNext: true }));
+        lines.forEach((line, k) => {
+          const last = k === lines.length - 1;
+          out.push(item(SZ.discBody * LEAD + (last ? 6 : 0),
+            (c, y) => put(c, line, leftX, y, F.reg, SZ.discBody, col(brand.RGB.FOOTNOTE), w),
+            { keepNext: !last }));
+        });
+      }
+      continue;
+    }
+    out.push(item(h, (c, y) => {
+      l.draw(c, y);
+      if (r) r.draw(c, y);
+    }));
   }
   return out;
 }
@@ -608,85 +1203,363 @@ function compileSignature(b, ctx) {
   const F = ctx.fonts;
   const lines = (b.lines || []).filter(Boolean);
   if (!lines.length) return [];
-  const colW = (CONTENT_W - 24) / 2;
-  const rowH = 46;
+  /* ⛔ THREE SIGNATURE LINES ACROSS, NOT TWO — the approved design's own row.
+     Two-up left half the width empty and split an entity's signer, its guarantor
+     and the date over two rows, which reads as two separate acts rather than one
+     signing.
+
+     ⛔ AND NOTHING SITS ABOVE THE RULE. The sketch draws a bare line with one
+     line of text UNDER it — "Oak Street Holdings LLC — authorised signer" — and
+     that is not only shorter: a name printed above a signature line reads as a
+     signature already given, on the one part of the document where the whole
+     point is that nobody has signed yet. Every party and every date this sheet
+     has always carried is still here; only where the words sit has moved. */
+  const per = Math.min(3, lines.length);
+  const gap = 20;
+  const colW = (CONTENT_W - gap * (per - 1)) / per;
+  const rowH = 30;
   const out = [];
-  for (let i = 0; i < lines.length; i += 2) {
-    const pair = lines.slice(i, i + 2);
+  for (let i = 0; i < lines.length; i += per) {
+    const group = lines.slice(i, i + per);
     out.push(item(rowH, (c, y) => {
-      pair.forEach((l, j) => {
-        const x = M.left + j * (colW + 24);
-        line(c, y - 26, x, x + colW, HAIR, 0.8);
-        put(c, l.role || '', x, y - 30, F.reg, SZ.small, MUTED, colW);
-        if (l.name) put(c, l.name, x, y - 8, F.bold, SZ.value, INK, colW);
+      group.forEach((l, j) => {
+        const x = M.left + j * (colW + gap);
+        line(c, y - 14, x, x + colW, HAIR, 0.8);
+        const label = l.name ? `${ctx.text(l.name)} — ${ctx.text(l.role || '')}` : ctx.text(l.role || '');
+        put(c, label, x, y - 18, F.reg, SZ.partySub, MUTED, colW);
       });
-    }, { keepNext: i + 2 < lines.length }));
+    }, { keepNext: i + per < lines.length }));
   }
   return out;
 }
 
 /**
- * A comparison table.
+ * THE COMPARISON TABLE, IN THE APPROVED SKETCH'S OWN DESIGN.
  *
- * Columns are MEASURED, not guessed: the label column takes what its longest
- * label needs (capped, so three options still get room) and the option columns
- * share what is left equally — equal so the eye compares like with like.
+ * ⛔ IT IS A LEDGER, NOT A SPREADSHEET, and that is the whole of what changed.
+ * What shipped drew a grey header band, zebra-striped every other row and set
+ * every figure in the same sans as its label — which is what the owner read as
+ * *"the design doesn't come close to the sketch"*. The sketch:
+ *   · heads each column with a small tracked GOLD eyebrow ("OPTION B"), a grey
+ *     tag on the one the others are measured against ("THE ANCHOR"), then the
+ *     option's own name in bold over as many lines as it needs;
+ *   · opens and closes the table with an INK rule and separates ordinary rows
+ *     with a hairline so fine it reads as a change of tone — never a stripe;
+ *   · sets every FIGURE in the monospace, so a column of money aligns on its
+ *     own digits rather than on the accident of Helvetica's widths;
+ *   · bands EXACTLY the rows that resolve the arithmetic in ivory — the full
+ *     monthly payment and the cash to close — and sets those in the bold cut,
+ *     one size up. Striping every other row instead gives the two answers no
+ *     more weight than the rent, which is the reader's whole problem.
+ *
+ * ⛔ A GROUP CLOSES WITH AN INK RULE. The scenario sheet's table is divided
+ * into what the officer moved, what that produced, and what the extra borrowing
+ * costs; the sketch marks each division with a tick and tracked capitals, and
+ * ends the group before it on the same ink rule the table itself opens with. So
+ * the rule under a row is INK when that row is the last of its group and a
+ * hairline otherwise — one test, no second list of which rows are special.
+ *
+ * Columns are MEASURED: the label column takes whichever is larger of what its
+ * longest label needs and the sketch's own proportion, capped at a third of the
+ * page; the data columns share what is left equally, because equal columns are
+ * what let the eye compare like with like.
  */
 function compileTable(b, ctx) {
   const F = ctx.fonts;
   const head = b.head || [];
-  const rows = b.rows || [];
+  const rows = (b.rows || []).filter(Boolean);
   const cols = head.length;
   if (cols < 2) return [];
 
+  /* A head cell is `{eyebrow, tag, title}`; a plain string is still accepted and
+     draws as a title alone, so a caller that has not been updated is never
+     rendered as `[object Object]`. */
+  const headCell = (i) => {
+    const h = head[i];
+    if (h && typeof h === 'object') return h;
+    return { eyebrow: null, tag: null, title: String(h == null ? '' : h) };
+  };
+  const isGroup = (r) => !Array.isArray(r) && !!r && typeof r === 'object' && !!r.group;
+  /* A data row is `[label, ...values]` with an OPTIONAL trailing options object.
+     Detected by its type rather than by its position, because a table with two
+     columns and a trailing option would otherwise read its options as a value. */
+  const hasOpts = (r) => { const l = r[r.length - 1]; return !!l && typeof l === 'object'; };
+  const rowOpts = (r) => (hasOpts(r) ? r[r.length - 1] : {});
+  const rowCells = (r) => (hasOpts(r) ? r.slice(0, -1) : r.slice());
+
+  const dataRows = rows.filter((r) => Array.isArray(r));
+  if (!dataRows.length) return [];
+
   const labelNeed = Math.max(
-    ...rows.map((r) => advance(ctx, ctx.text(r[0]), F.reg, SZ.table)),
-    advance(ctx, ctx.text(head[0] || ''), F.bold, SZ.table),
     0,
-  ) + 8;
-  const labelW = Math.min(Math.max(labelNeed, 92), Math.round(CONTENT_W * 0.34));
+    ...dataRows.map((r) => advance(ctx, ctx.text(r[0]), F.bold, SZ.tableLabel)),
+  ) + TBL.padX;
+  const labelW = Math.min(
+    Math.max(labelNeed, Math.round(CONTENT_W * TBL.labelShare)),
+    Math.round(CONTENT_W * TBL.labelCap),
+  );
   const colW = (CONTENT_W - labelW) / (cols - 1);
   const xOf = (i) => (i === 0 ? M.left : M.left + labelW + (i - 1) * colW);
-  const cellW = (i) => (i === 0 ? labelW : colW) - 12;
+  // The label runs from the margin; a figure is inset from its own column and
+  // stops short of the next one, so two columns can never touch.
+  const cellW = (i) => (i === 0 ? labelW - TBL.padX : colW - TBL.padX * 2);
 
-  const wrapRow = (cells, font) => cells.map((cell, i) => wrap(ctx, ctx.text(cell), font, SZ.table, cellW(i)));
-  const rowHeight = (wrapped) => Math.max(...wrapped.map((w) => w.length)) * SZ.table * LEAD + 7;
-
-  const headWrapped = wrapRow(head, F.bold);
-  const headH = rowHeight(headWrapped) + 4;
-  const drawHead = (c, y) => {
-    rect(c, M.left, y, CONTENT_W, headH - 4, SOFT);
-    headWrapped.forEach((lines, i) => {
-      let yy = y - 4;
-      for (const l of lines) {
-        put(c, l, xOf(i) + 5, yy, F.bold, SZ.table, INK, cellW(i));
-        yy -= SZ.table * LEAD;
-      }
-    });
-    line(c, y - headH + 4, M.left, RIGHT_X, GOLD, 0.9);
-  };
-  const headItem = item(headH, drawHead, { keepNext: true });
-
-  const out = [headItem];
-  rows.forEach((r, ri) => {
-    const w = wrapRow(r, F.reg);
-    const h = rowHeight(w);
-    out.push(item(h, (c, y) => {
-      if (ri % 2 === 1) rect(c, M.left, y + 2, CONTENT_W, h, IVORY);
-      w.forEach((lines, i) => {
-        let yy = y - 2;
-        const f = i === 0 ? F.reg : (i === 1 ? F.bold : F.reg);
-        const cl = i === 0 ? MUTED : INK;
-        for (const l of lines) {
-          put(c, l, xOf(i) + 5, yy, f, SZ.table, cl, cellW(i));
-          yy -= SZ.table * LEAD;
+  // ── the column heads ──────────────────────────────────────────────────────
+  const titles = [];
+  let anyEyebrow = false;
+  for (let i = 1; i < cols; i++) {
+    const hc = headCell(i);
+    if (hc.eyebrow) anyEyebrow = true;
+    const t = wrap(ctx, ctx.text(hc.title || ''), F.bold, SZ.colTitle, cellW(i));
+    if (hc.sub) t.push(...wrap(ctx, ctx.text(hc.sub), F.bold, SZ.colTitle, cellW(i)));
+    titles.push(t);
+  }
+  const titleLines = Math.max(1, ...titles.map((t) => t.length));
+  const headH = TBL.headTop + (anyEyebrow ? TBL.headEyebrowStep : 0)
+    + (titleLines - 1) * TBL.headTitleStep + SZ.colTitle + TBL.headBottom;
+  const headItem = item(headH, (c, y) => {
+    for (let i = 1; i < cols; i++) {
+      const hc = headCell(i);
+      const x = xOf(i) + TBL.padX;
+      let ty = y - TBL.headTop;
+      if (anyEyebrow) {
+        if (hc.eyebrow) {
+          const w = putTracked(c, String(hc.eyebrow).toUpperCase(), x, ty,
+            F.bold, SZ.colEyebrow, GOLD, EYEBROW_TRACK, cellW(i));
+          if (hc.tag) {
+            putTracked(c, String(hc.tag).toUpperCase(), x + w + TBL.tagGap, ty,
+              F.bold, SZ.colEyebrow, MUTED, EYEBROW_TRACK, Math.max(0, cellW(i) - w - TBL.tagGap));
+          }
         }
-      });
-      if (ri < rows.length - 1) line(c, y - h + 3, M.left, RIGHT_X, HAIR, 0.4);
+        ty -= TBL.headEyebrowStep;
+      }
+      for (const l of titles[i - 1]) {
+        put(c, l, x, ty, F.bold, SZ.colTitle, INK, cellW(i));
+        ty -= TBL.headTitleStep;
+      }
+    }
+    line(c, y - headH + TBL.rule / 2, M.left, RIGHT_X, INK, TBL.rule);
+  }, { keepNext: true });
+
+  // ── the rows ──────────────────────────────────────────────────────────────
+  const out = [headItem];
+  // A row closes on the INK rule when nothing but a group heading follows it —
+  // computed once here so the drawing code carries no second reading of it.
+  const lastOfGroup = rows.map((r, i) => {
+    if (isGroup(r)) return false;
+    for (let j = i + 1; j < rows.length; j += 1) {
+      if (isGroup(rows[j])) return true;
+      return false;
+    }
+    return true;    // the last row of the table
+  });
+
+  rows.forEach((r, ri) => {
+    if (isGroup(r)) {
+      const tone = r.tone === 'gold' ? GOLD : TEAL;
+      const h = TBL.groupTop + SZ.groupHead * LEAD + TBL.groupBottom;
+      out.push(item(h, (c, y) => {
+        const top = y - TBL.groupTop;
+        rect(c, M.left, top - (SZ.groupHead - TBL.tickH) / 2 - 0.4, TBL.tickW, TBL.tickH, tone);
+        putTracked(c, String(r.group).toUpperCase(), M.left + TBL.tickW + TBL.tickGap, top,
+          F.bold, SZ.groupHead, tone, EYEBROW_TRACK, TEXT_W - TBL.tickW - TBL.tickGap);
+      }, { keepNext: true, head: headItem }));
+      return;
+    }
+    const o = rowOpts(r);
+    const cells = rowCells(r);
+    const accent = !!o.accent;
+    const lsize = SZ.tableLabel;
+    const vsize = accent ? SZ.tableBig : SZ.tableValue;
+    const lfont = accent ? F.bold : F.reg;
+    const vfont = accent ? F.monoBold : F.mono;
+    const labelLines = wrap(ctx, ctx.text(cells[0]), lfont, lsize, cellW(0));
+    const subLines = o.sub ? wrap(ctx, ctx.text(o.sub), F.reg, SZ.tableSub, cellW(0)) : [];
+    const valLines = [];
+    for (let i = 1; i < cols; i += 1) valLines.push(wrap(ctx, ctx.text(cells[i]), vfont, vsize, cellW(i)));
+    /* ⛔ A NOTE BELONGS TO ITS OWN COLUMN, not to the row's label (owner-directed
+       2026-09-01): *"it should basically be in the scenario line, not in the line
+       of the base of lender fees."* One line under the label describes the row,
+       which is right for what a row IS and wrong for what each option DID — the
+       charged column's breakdown and the waived column's saving are different
+       sentences about different columns, and neither is a fact about the label. */
+    const cellSubs = [];
+    for (let i = 1; i < cols; i += 1) {
+      const t = o.cellSubs && o.cellSubs[i - 1];
+      cellSubs.push(t ? wrap(ctx, ctx.text(String(t)), F.reg, SZ.tableSub, cellW(i)) : []);
+    }
+    const labelH = labelLines.length * lsize * LEAD + subLines.length * SZ.tableSub * LEAD;
+    const valH = Math.max(1, ...valLines.map((v) => v.length)) * vsize * LEAD
+      + Math.max(0, ...cellSubs.map((v) => v.length)) * SZ.tableSub * LEAD;
+    const h = Math.max(labelH, valH) + (accent ? TBL.accentPad : TBL.rowPad);
+    const closing = lastOfGroup[ri];
+
+    out.push(item(h, (c, y) => {
+      // The band is drawn first, behind everything, and runs the full content
+      // column exactly as the RTL sheet's accent row does.
+      if (accent) rect(c, M.left, y, CONTENT_W, h, IVORY);
+      const top = y - TBL.contentTop;
+      let ly = top;
+      const lx = M.left + (accent ? TBL.accentInset : 0);
+      for (const l of labelLines) {
+        put(c, l, lx, ly, lfont, lsize, accent ? INK : MUTED, cellW(0));
+        ly -= lsize * LEAD;
+      }
+      for (const l of subLines) {
+        put(c, l, lx, ly, F.reg, SZ.tableSub, MUTED, cellW(0));
+        ly -= SZ.tableSub * LEAD;
+      }
+      for (let i = 1; i < cols; i += 1) {
+        // A column with nothing to say prints its em dash in the grey the
+        // sketch gives it — a figure and "there is no figure" must not read
+        // with the same weight.
+        const c0 = cells[i] == null ? '' : String(cells[i]);
+        const colr = c0 === '—' ? FAINT : INK;
+        let vy = top;
+        for (const l of valLines[i - 1]) {
+          put(c, l, xOf(i) + TBL.padX, vy, vfont, vsize, colr, cellW(i));
+          vy -= vsize * LEAD;
+        }
+        // and this column's own small line, under its own figure
+        for (const l of cellSubs[i - 1]) {
+          put(c, l, xOf(i) + TBL.padX, vy, F.reg, SZ.tableSub, MUTED, cellW(i));
+          vy -= SZ.tableSub * LEAD;
+        }
+      }
+      line(c, y - h, M.left, RIGHT_X, closing ? INK : HAIR, closing ? TBL.rule : TBL.hair);
     }, { head: headItem }));
   });
   out.push(item(8, () => {}));
   return out;
+}
+
+/**
+ * THE SHARED-FACTS GRID — what every option agrees about, stated once.
+ *
+ * ⛔ THE SHAPE IS WHAT MAKES IT BELONG AT THE TOP. As a list of labelled rows
+ * these same fifteen facts cost ~260pt and pushed the table's answer onto a
+ * second page, which is why they had been moved below it. The approved sketch
+ * draws them four across inside a bordered ivory box — ~150pt for the same
+ * facts — so the reason for moving them does not apply to what the sketch
+ * actually draws, and the reader gets the sketch's own order: what these
+ * options agree about, then what they differ on.
+ *
+ * ⛔ A CELL IS NEVER CLIPPED INTO A LIE. A figure too wide for its cell steps
+ * DOWN in size until it fits, exactly as the headline band does — a money
+ * amount with its last digits cut off is worse than a small one.
+ */
+function compileFactGrid(b, ctx) {
+  const F = ctx.fonts;
+  const cells = (b.cells || []).filter((c) => Array.isArray(c) && c[0] != null);
+  if (!cells.length) return [];
+  const inner = { x: M.left + GRID.tickW, right: RIGHT_X - GRID.rule };
+  const colW = (inner.right - inner.x) / GRID.cols;
+  const bands = Math.ceil(cells.length / GRID.cols);
+  const cellTextW = colW - GRID.padX * 2;
+  /* ⛔ THE NOTE SHRINKS TO ONE LINE BEFORE IT IS ALLOWED TO WRAP, exactly as the
+     value above it does. A four-across cell is about 112 wide and the breakdown
+     is a long string; wrapping it would grow the band for every cell beside it,
+     which measurably spilled the sentences under the comparison onto a second
+     page. Shrinking is the cheaper trade on a line that is already secondary —
+     and it is bounded, so a note that genuinely cannot fit still wraps rather
+     than dwindling to nothing. */
+  const cellNotes = cells.map((c) => {
+    if (!c[2]) return { lines: [], size: SZ.gridNote };
+    const txt = ctx.text(String(c[2]));
+    let size = SZ.gridNote;
+    while (size > GRID.noteMin && advance(ctx, txt, F.reg, size) > cellTextW) size -= 0.1;
+    return { lines: wrap(ctx, txt, F.reg, size, cellTextW), size };
+  });
+  const bandLines = [];
+  for (let i = 0; i < cells.length; i += 1) {
+    const r = Math.floor(i / GRID.cols);
+    bandLines[r] = Math.max(bandLines[r] || 0, cellNotes[i].lines.length);
+  }
+  /* ⛔ EVERY NOTE LINE IS PAID FOR, and the version of this that said the first
+     one was free was WRONG — owner-reported: *"it's a little overlapping, it's
+     pushed in."* That claim reasoned from BASELINES ("the value's baseline is
+     12.58 down, the band is 26.4, so ~13.8 is free") and a baseline is not a
+     box. MEASURED off a real render instead: at this size the value's own box
+     runs from 12.9 to 22.4 below the band top, so what is actually free under it
+     is 4.0 — less than one 5.18 line needs. The note was drawn into the value,
+     and the render passed because overlapping text is still inside its margins.
+     Measure the BOX, never the baseline. */
+  const bandH = (r) => GRID.bandH
+    + (bandLines[r] ? bandLines[r] * SZ.gridNote * LEAD + GRID.cellNotePad : 0);
+  const bandTopOffset = (r) => {
+    let off = 0;
+    for (let k = 0; k < r; k += 1) off += bandH(k);
+    return off;
+  };
+  const bandsH = bandTopOffset(bands);
+  /* THE BOX'S FOOTNOTE IS PROSE, so it takes the readable measure rather than
+     the whole width of the box. Left at full width it drew as ONE 107-character
+     line — physically short, because the type is small, and still half again the
+     longest line anybody reads comfortably. */
+  const noteW = proseWidth(ctx, F.italic, SZ.gridNote, inner.right - inner.x - GRID.padX * 2, b.footnote || '');
+  const note = b.footnote ? wrap(ctx, ctx.text(b.footnote), F.italic, SZ.gridNote, noteW) : [];
+  const noteH = note.length ? GRID.noteTop + note.length * SZ.gridNote * LEAD + GRID.noteBottom - SZ.gridNote : 0;
+  const h = GRID.headH + bandsH + noteH;
+
+  return [item(h + GRID.above, (c, y) => {
+    const top = y - GRID.above;
+    const bottom = top - h;
+    rect(c, M.left, top, CONTENT_W, h, SOFT);
+    // The gold tick down the left edge, and hairlines on the other three sides.
+    rect(c, M.left, top, GRID.tickW, h, GOLD);
+    line(c, top - GRID.rule / 2, M.left, RIGHT_X, HAIR, GRID.rule);
+    line(c, bottom + GRID.rule / 2, M.left, RIGHT_X, HAIR, GRID.rule);
+    vline(c, RIGHT_X - GRID.rule / 2, top, h, HAIR);
+
+    // the heading, its right-hand note, and the hairline under both
+    const headBase = top - GRID.headTop;
+    const title = String(b.title || '').toUpperCase();
+    const titleW = putTracked(c, title, inner.x + GRID.padX, headBase,
+      F.bold, SZ.gridHead, MUTED, EYEBROW_TRACK, inner.right - inner.x - GRID.padX * 2);
+    if (b.note) {
+      const room = inner.right - GRID.padX - (inner.x + GRID.padX + titleW + 12);
+      if (room > 40) {
+        putRight(c, b.note, inner.right - GRID.padX, headBase, F.italic, SZ.gridHead, FAINT, room);
+      }
+    }
+    line(c, top - GRID.headH + GRID.rule / 2, inner.x, inner.right, HAIR, GRID.rule);
+
+    cells.forEach(([label, value], i) => {
+      const r = Math.floor(i / GRID.cols);
+      const cIdx = i % GRID.cols;
+      const x = inner.x + cIdx * colW;
+      const bandTop = top - GRID.headH - bandTopOffset(r);
+      putTracked(c, String(label).toUpperCase(), x + GRID.padX, bandTop - GRID.labelTop,
+        F.reg, SZ.gridLabel, MUTED, 0.35, cellTextW);
+      let size = SZ.gridValue;
+      const txt = ctx.text(value == null ? '—' : String(value));
+      while (size > SZ.small && advance(ctx, txt, F.monoBold, size) > cellTextW) size -= 0.25;
+      // A value that shrank to fit is drawn LOWER, so the note hangs off where the
+      // value actually landed — never off the nominal baseline, or a long value
+      // and its own breakdown would close on each other.
+      const valueBase = bandTop - GRID.valueTop - (SZ.gridValue - size);
+      put(c, txt, x + GRID.padX, valueBase, F.monoBold, size, INK, cellTextW);
+      // The note that breaks the value down, if this cell carries one.
+      let ny = valueBase - GRID.cellNoteTop;
+      for (const l of cellNotes[i].lines) {
+        put(c, l, x + GRID.padX, ny, F.reg, cellNotes[i].size, MUTED, cellTextW);
+        ny -= cellNotes[i].size * LEAD;
+      }
+      // The cell's own rules: a hairline under it, and one down its right edge,
+      // so the grid reads as cells rather than as four columns of loose text.
+      const isLastBand = r === bands - 1;
+      if (!isLastBand) line(c, bandTop - bandH(r) + GRID.rule / 2, x, x + colW, HAIR, GRID.rule);
+      if (cIdx < GRID.cols - 1) vline(c, x + colW - GRID.rule / 2, bandTop, bandH(r), HAIR);
+    });
+
+    if (note.length) {
+      let ny = bottom + noteH - GRID.noteTop + SZ.gridNote;
+      for (const l of note) {
+        put(c, l, inner.x + GRID.padX, ny, F.italic, SZ.gridNote, FAINT, noteW);
+        ny -= SZ.gridNote * LEAD;
+      }
+    }
+  })];
 }
 
 const PAGEBREAK = Symbol('pagebreak');
@@ -708,6 +1581,68 @@ const PAGEBREAK = Symbol('pagebreak');
  */
 const isSoftBreak = (x) => !!x && typeof x === 'object' && x.soft === true;
 
+/**
+ * TWO GROUPS, SIDE BY SIDE — the approved design's page one.
+ *
+ * ⛔ IT IS ONE ATOMIC ITEM, AND THAT IS THE WHOLE SAFETY PROPERTY. A pair of
+ * columns that could break across a page would put a label on one sheet and its
+ * figure on the next, in two different columns, with nothing saying which
+ * belongs to which. So both sides are compiled, the taller decides the height,
+ * and `flow` places or moves the pair as one thing.
+ *
+ * ⛔ AND IT FALLS BACK RATHER THAN OVERFLOWING. Two cases give up and emit the
+ * two sides one after another down the full column, which is exactly the page
+ * this file drew before columns existed: a pair taller than a whole page (the
+ * flow can move it but has nowhere to move it TO), and a side carrying a block
+ * type that has no box — a hero, a table, a signature, all of which are
+ * page-wide by nature. Neither is a defect to be worked around; a document that
+ * reads down one column is worse-looking and still correct, and a document that
+ * draws off the paper is neither.
+ *
+ * `COLUMN_TYPES` is therefore the honest statement of what may go in a column,
+ * and adding to it means giving that compiler a box first.
+ */
+const COLUMN_TYPES = new Set(['band', 'section', 'rule', 'subhead', 'figures', 'para']);
+const COLUMN_GAP = 22;
+
+function compileSide(blocks, ctx, box) {
+  const items = [];
+  for (const b of blocks || []) {
+    if (!b || typeof b !== 'object') continue;
+    switch (b.t) {
+      case 'band': case 'section': items.push(...compileBand(b, ctx, box)); break;
+      case 'rule': items.push(...compileRule(b, ctx, box)); break;
+      case 'subhead': items.push(...compileSubhead(b, ctx, box)); break;
+      case 'figures': items.push(...compileFigures(b, ctx, box)); break;
+      case 'para': items.push(...compilePara(b, ctx, box)); break;
+      default: break;
+    }
+  }
+  return items;
+}
+
+function compileColumns(b, ctx) {
+  const left = (b.left || []).filter((x) => x && typeof x === 'object');
+  const right = (b.right || []).filter((x) => x && typeof x === 'object');
+  const sequential = () => compile([...left, ...right], ctx);
+  if (!left.length || !right.length) return sequential();
+  if (![...left, ...right].every((x) => COLUMN_TYPES.has(x.t))) return sequential();
+
+  const w = (CONTENT_W - COLUMN_GAP) / 2;
+  const boxes = [{ x: M.left, w }, { x: M.left + w + COLUMN_GAP, w }];
+  const sides = [compileSide(left, ctx, boxes[0]), compileSide(right, ctx, boxes[1])];
+  const heights = sides.map((items) => items.reduce((a, it) => a + it.h, 0));
+  const h = Math.max(...heights);
+  if (!(h > 0) || h > USABLE_H) return sequential();
+
+  return [item(h, (c, y) => {
+    for (const items of sides) {
+      let yy = y;
+      for (const it of items) { it.draw(c, yy); yy -= it.h; }
+    }
+  })];
+}
+
 function compile(blocks, ctx) {
   const items = [];
   for (const b of blocks || []) {
@@ -719,14 +1654,17 @@ function compile(blocks, ctx) {
       case 'recipient': items.push(...compileRecipient(b, ctx)); break;
       case 'band': items.push(...compileBand(b, ctx)); break;
       case 'section': items.push(...compileBand(b, ctx)); break;
-      case 'rule': items.push(...compileRule()); break;
+      case 'rule': items.push(...compileRule(b, ctx)); break;
       case 'subhead': items.push(...compileSubhead(b, ctx)); break;
       case 'figures': items.push(...compileFigures(b, ctx)); break;
       case 'para': items.push(...compilePara(b, ctx)); break;
+      case 'hero': items.push(...compileHero(b, ctx)); break;
       case 'callout': items.push(...compileCallout(b, ctx)); break;
       case 'disclosures': items.push(...compileDisclosures(b, ctx)); break;
       case 'signature': items.push(...compileSignature(b, ctx)); break;
       case 'table': items.push(...compileTable(b, ctx)); break;
+      case 'factgrid': items.push(...compileFactGrid(b, ctx)); break;
+      case 'columns': items.push(...compileColumns(b, ctx)); break;
       case 'pagebreak':
         items.push(Number.isFinite(b.ifLessThan) ? { soft: true, room: b.ifLessThan } : PAGEBREAK);
         break;
@@ -862,26 +1800,70 @@ function drawBands(ctx) {
  * It sits BELOW `BOTTOM_Y`, inside the bottom margin, which is what makes it
  * structurally impossible for flowing content to run through it.
  */
+/**
+ * THE DISCLAIMER IS FITTED TO THE ROOM THE BAND HAS — never sliced to fit it.
+ *
+ * ⛔ THE BUDGET IS A FUNCTION OF THE SIZE, which is the whole reason this is a
+ * ladder and not a constant. A line's ink runs to about `yTop - 1.22 × size`,
+ * and the LAST line must clear the identity line below it — so bigger type buys
+ * fewer lines, and the two have to be decided together. At 7.5pt the band holds
+ * two; at 5.1pt it holds three.
+ *
+ * ⛔ IT ONLY EVER STEPS DOWN, AND ONLY AS FAR AS THE SIZE THIS FOOTER ALREADY
+ * DREW AT. So today's disclaimer sets at the 7.5 floor, and one long enough to
+ * need more room sets smaller rather than losing its tail — a legal line that is
+ * hard to read is a problem; a legal line missing its last sentence is a defect.
+ * The final `slice` is a backstop that today's text is nowhere near: it can only
+ * be reached by a disclaimer that overflows three lines at 5.1pt, which is more
+ * than twice the length of the one this sheet ships.
+ */
+const FOOT_DISC_TOP = 38;   // the first line's yTop, clear of the contact above
+const FOOT_DISC_STOP = 14;  // the identity line's yTop — no line may reach it
+
+function footDiscBudget(size) {
+  return Math.max(1, 1 + Math.floor((FOOT_DISC_TOP - FOOT_DISC_STOP - 1.22 * size) / (size * LEAD)));
+}
+
+function fitFooterDisc(ctx, s, font, width) {
+  const ladder = [...new Set([SZ.footDisc, 7, 6.5, 6, 5.5, SZ_SKETCH.footDisc])]
+    .filter((n) => n <= SZ.footDisc).sort((a, b) => b - a);
+  for (const size of ladder) {
+    const lines = wrap(ctx, s, font, size, width);
+    if (lines.length <= footDiscBudget(size)) return { size, lines };
+  }
+  const size = ladder[ladder.length - 1];
+  return { size, lines: wrap(ctx, s, font, size, width).slice(0, footDiscBudget(size)) };
+}
+
 function drawFooters(ctx) {
   const F = ctx.fonts;
   const meta = ctx.meta || {};
   const n = ctx.pages.length;
   const FOOT = col(brand.RGB.FOOTNOTE);
+  // Fitted ONCE: the disclaimer is the same standing line on every page, so
+  // every page must draw it at the same size or the footer would breathe.
+  const disc = fitFooterDisc(ctx, ctx.text(meta.disclaimer || ''), F.reg, TEXT_W);
   ctx.pages.forEach((page, idx) => {
     const c = { ...ctx, page };
-    // ⛔ THE THREE LINES ARE PLACED SO THEY CANNOT TOUCH. Measured, not eyeballed:
-    // the contact box is [41.4, 49], the two disclaimer lines [31, 38] and
-    // [21.76, 28.76], the identity line [8, 14] — every gap positive, and the
-    // whole band sits under the 52pt hairline, which is itself under the content
-    // floor. `slice(0, 2)` is a real cap and is why the disclaimer's own length
-    // can never push the identity line off the paper.
+    /* ⛔ THE LINES ARE PLACED SO THEY CANNOT TOUCH, and what keeps that true is
+       `footDiscBudget` rather than a hand-checked list of boxes: the disclaimer
+       is only ever given as many lines as clear the identity line at the size it
+       ended up at, so the arithmetic holds at every rung of the ladder instead
+       of at the one size somebody measured. The whole band sits under the 52pt
+       hairline, which is itself under the content floor, so nothing that flows
+       can reach any of it. */
     line(c, 52, M.left, RIGHT_X, HAIR, 0.6);
     if (meta.contact) put(c, meta.contact, M.left, 49, F.bold, SZ.footContact, FOOT, TEXT_W);
-    const disc = wrap(ctx, ctx.text(meta.disclaimer || ''), F.reg, SZ.footDisc, TEXT_W);
-    let dy = 38;
-    for (const l of disc.slice(0, 2)) { put(c, l, M.left, dy, F.reg, SZ.footDisc, FAINT, TEXT_W); dy -= SZ.footDisc * LEAD; }
+    let dy = FOOT_DISC_TOP;
+    for (const l of disc.lines) { put(c, l, M.left, dy, F.reg, disc.size, FAINT, TEXT_W); dy -= disc.size * LEAD; }
+    /* ⛔ THE IDENTITY LINE IS MONOSPACED AND SET IN CAPITALS, the way the approved
+       sketch sets it: "TERM SHEET · TS-4KQ7WM · PAGE 1 OF 2". It is the one line
+       on the page nobody reads as prose — it is a reference somebody types into
+       the lookup screen or reads down a phone — so it is set as a reference, in
+       the same face every figure on the document uses. The DATE stays out of the
+       capitals it would be shouted in and rides in the same line's tail. */
     const idBits = [meta.docLabel, meta.code, `Page ${idx + 1} of ${n}`, meta.stamp].filter(Boolean);
-    putRight(c, idBits.join('  ·  '), TEXT_RIGHT, 14, F.reg, SZ.footId, MUTED, TEXT_W);
+    putRight(c, idBits.join(' · ').toUpperCase(), TEXT_RIGHT, 14, F.mono, SZ.footId, MUTED, TEXT_W);
   });
 }
 
@@ -905,6 +1887,19 @@ async function renderTermSheet(layout, opts = {}) {
     // it is the one place the document speaks in the brand's display voice.
     serifBold: await doc.embedFont(StandardFonts.TimesRomanBold),
     serifItalic: await doc.embedFont(StandardFonts.TimesRomanItalic),
+    /* ⛔ EVERY FIGURE ON THIS DOCUMENT IS SET IN A MONOSPACED FACE, because that
+       is what the approved sketch does and it is most of why the sketch reads
+       the way it does: a column of money in a typewriter face is a LEDGER, and
+       the same column in Helvetica is a form.
+       I previously told the owner that no font file was needed because
+       Helvetica's digits are already tabular. That was true and it answered the
+       wrong question — it is about ALIGNMENT, and the sketch's monospace is
+       about TEXTURE. Courier is one of the PDF base-14 faces, so this is still
+       no new dependency and no embedded file: pdf-lib has it built in, and its
+       advance (600/1000) is within a hair of the sketch's IBM Plex Mono, so a
+       column measured against one fits the other. */
+    mono: await doc.embedFont(StandardFonts.Courier),
+    monoBold: await doc.embedFont(StandardFonts.CourierBold),
   };
   const ctx = {
     doc,
@@ -952,5 +1947,8 @@ const ZONES = {
 module.exports = {
   renderTermSheet,
   PAGE, M, CONTENT_W, TOP_Y, BOTTOM_Y, USABLE_H, ZONES,
-  _internals: { advance, charW, wrap, hardBreak, clip, makeText, compile, roundedRect, GLYPH_MAP, SZ },
+  _internals: {
+    advance, charW, wrap, wrapAfter, hardBreak, clip, makeText, compile,
+    GLYPH_MAP, SZ, LEAD, RHYTHM, COLUMN_TYPES, COLUMN_GAP, compileColumns, boxOf,
+  },
 };

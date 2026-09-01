@@ -45,6 +45,9 @@ const book = require('../pipeline-book');
 const borrowerMatch = require('../borrower-match');
 const application = require('../application/sync');
 const vesting = require('../vesting');
+// Field 541 — the one id that carries the flood zone. Spread into the batch below
+// so the subject-property mirror can read it without a second call (db/658).
+const floodZone = require('../flood-zone');
 
 const lazy = {
   get db() { return require('../db'); },
@@ -596,7 +599,7 @@ async function readLoan(loanId, guid, settings) {
   // in OUR OWN code is not that, and must fail loudly the first time it runs.
   const ids = [...new Set([
     ...contacts.fieldIdsFor(settings), ...locks.fieldIdsFor(settings),
-    ...ladderMod.MS_FIELD_IDS, ...vesting.FIELD_IDS,
+    ...ladderMod.MS_FIELD_IDS, ...vesting.FIELD_IDS, ...floodZone.FIELD_IDS,
   ])];
   let values = null;
   try {
@@ -612,6 +615,16 @@ async function readLoan(loanId, guid, settings) {
   // milestone is not what it was is the only history available — and it can only be
   // noticed from here, one statement earlier than the UPDATE.
   const priorMilestone = await milestones.loadPrior(loanId);
+
+  // HOW IT VESTED BEFORE THE WRITE, for the same reason and read at the same
+  // moment: the UPDATE below is what destroys the evidence. This is the ONLY
+  // place `vesting_type` is ever written, so it is the only place a change in it
+  // can be noticed at all.
+  let priorVesting = null;
+  try {
+    const { rows } = await lazy.db.query('SELECT vesting_type FROM lt_loans WHERE id = $1::uuid', [loanId]);
+    priorVesting = rows[0] || null;
+  } catch (_) { priorVesting = null; }
 
   await lazy.db.query(
     `UPDATE lt_loans
@@ -686,6 +699,37 @@ async function readLoan(loanId, guid, settings) {
   // still gets its baseline. An unanswered probe counts as a first read, so it
   // fails toward recording nothing.
   // ═══════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════════════════
+  // THE VESTING MOVED, SO THE CONDITIONS ARE RE-READ (owner-directed 2026-08-31:
+  // "if it was set for officer and it changed to individual, then the condition
+  // should disappear. If it was set for individual and was changed to officer,
+  // then the condition automatically appears").
+  //
+  // WHY IT DID NOT ALREADY HAPPEN. `evaluateLoan` attaches and retracts
+  // correctly, but it had exactly two callers and both are SCREENS — the
+  // Condition Center read and the orders desk read. So a loan re-vested in
+  // Encompass kept the wrong condition until somebody opened it, and anything
+  // that counts or chases outstanding conditions without opening the file
+  // counted the stale one.
+  //
+  // ONLY ON A REAL MOVE. `vestingChanged` compares the CLASSIFICATION, so
+  // Encompass re-sending the same word does not drag the whole rules engine
+  // through every loan on every sync. `vest.answered` gates it because an
+  // unanswered read leaves the column alone, so nothing can have moved.
+  //
+  // BEST-EFFORT, AND DELIBERATELY AFTER THE MIRROR. The loan row is already
+  // written; a rules pass that fails must not cost the sync its own work, so it
+  // is caught here and reported rather than thrown. `evaluateLoan` never throws
+  // at its caller either — this catch is the belt to that brace.
+  let vestingRules = null;
+  if (vest.answered && vesting.vestingChanged(priorVesting, { vesting_type: vest.vestingType })) {
+    try {
+      vestingRules = await require('../conditions-center/engine').evaluateLoan(loanId, { db: lazy.db });
+    } catch (e) {
+      vestingRules = { ok: false, reason: String((e && e.message) || e).slice(0, 200) };
+    }
+  }
+
   const firstLadderRead = !probeAnswered || !laddered;
   const redefinition = ladder.ok && firstLadderRead && priorMilestone.hasRecord;
 
@@ -835,7 +879,12 @@ async function readLoan(loanId, guid, settings) {
     milestoneName, stageKey, team, milestone: milestoneWrite, sale,
     ladder: ladder.ok ? { steps: ladder.rows.length, sitting: ladder.sitting, ...(ladderWrite || {}) } : { ok: false, reason: ladder.reason },
     msStatus: ms.status,
-    lock: { ...lockWrite, posture: lock.posture }, property, terms, pairs, investor };
+    lock: { ...lockWrite, posture: lock.posture }, property, terms, pairs, investor,
+    // NULL means the vesting did not move on this read, which is the ordinary
+    // case. A value means it did and the rules were re-run — reported rather
+    // than swallowed, so a pass that could not re-read the conditions says so
+    // instead of leaving a stale condition on a re-vested loan in silence.
+    vestingRules };
 }
 
 /**
