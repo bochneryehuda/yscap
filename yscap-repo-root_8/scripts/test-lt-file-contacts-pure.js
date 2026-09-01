@@ -243,7 +243,7 @@ console.log('\nE. THE CHANGE REACHES DATABASES THAT ALREADY EXIST');
   const seed = read('src/longterm/conditions-center/library.js');
   ok(/ON CONFLICT \(code\) DO NOTHING/.test(seed),
     'the library still FILLS rather than rewrites — a buyer\'s own edit survives a redeploy');
-  const mig = read('db/659_only_title_and_hazard_are_pre_submittal_contacts.sql');
+  const mig = read('db/667_only_title_and_hazard_are_pre_submittal_contacts.sql');
   ok(/UPDATE checklist_templates/.test(mig) && /lt_file_contacts/.test(mig),
     '…which is exactly why a migration carries this to the databases that already have the row');
   ok(/hazard_insurance/.test(mig) && /'\{contactTypes\}'/.test(mig),

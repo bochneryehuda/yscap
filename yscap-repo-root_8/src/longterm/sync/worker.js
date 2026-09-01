@@ -38,6 +38,7 @@ const clickupLink = require('../clickup/link');
 const clickupPush = require('../clickup/push');
 const borrowerAutolink = require('../borrower-autolink');
 const vorDesk = require('../vor/desk');
+const priceSnapshot = require('../pricing/daily-pass');
 const runLog = require('./run-log');
 
 /**
@@ -286,6 +287,19 @@ async function tickOnce({ trigger = 'worker' } = {}) {
     // pass so a card linked this tick pushes this tick, and a file the link
     // pass could not match is the one the create pass may card. OFF until the
     // owner flips LT_CLICKUP_WRITE_ENABLED (blank = off; DRYRUN logs the plan).
+    /* ONE DAY'S PRICE SNAPSHOT (db/659). The reports the owner asked for —
+       *"how much more expensive every single program is"* — have nothing to
+       compare against unless somebody was recording, and a rate sheet is gone
+       the moment it is replaced. So the collector ships before the reports and
+       starts on day one. It costs ONE INDEXED SELECT on every tick that is not
+       the day's first after 1 PM Eastern, and one vendor call on the tick that
+       is — a single Lender Price search returns the whole book, so this is never
+       a loop over programmes. Off with LT_PRICE_SNAPSHOT_ENABLED=0. */
+    try {
+      out.priceSnapshot = await runLog.record('price_snapshot', trigger, () => priceSnapshot.dailyPass({}));
+    } catch (e) {
+      out.priceSnapshot = { ok: false, reason: (e && e.message) || String(e) };
+    }
     try {
       out.clickupCreate = await runLog.record('clickup_create', trigger, () => clickupPush.createPass({}));
     } catch (e) {
@@ -315,6 +329,15 @@ async function tickOnce({ trigger = 'worker' } = {}) {
   // Said separately, and ONLY when it did something or could not. A pass that filled
   // nothing on a caught-up book is the normal case and needs no line; a company whose
   // setup default names nobody must be able to find that out from the log.
+  // The snapshot says something only on the day it takes one, or when it could
+  // not — a line every five minutes saying "already taken today" is noise.
+  const ps = out.priceSnapshot || {};
+  if (ps.ok === false || Number(ps.stored) > 0) {
+    console.log('[lt-sync] price snapshot: %s',
+      ps.ok === false ? `failed — ${ps.reason}`
+        : `${ps.stored} programme(s) recorded for ${ps.day}${ps.unusable ? `, ${ps.unusable} unreadable` : ''}`);
+  }
+
   const r = out.pilotRoles || {};
   if (r.filled || r.reason) {
     console.log('[lt-sync] file setup: %s%s',

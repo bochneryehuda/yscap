@@ -223,11 +223,59 @@ function normalizeCityName(city) {
 // Brooklyn, Bronx, Staten Island, Queens. The one exception is Manhattan, whose
 // mailing city really is "New York". Narrowly gated on locality === "New York",
 // so no ordinary city is affected. (Shared with the autocomplete route.)
-function preferBorough(locality, borough) {
+/**
+ * ⛔ ONLY A REAL BOROUGH MAY REPLACE THE CITY — the slot is not to be trusted.
+ *
+ * This used to substitute WHATEVER was handed to it as the borough, on any
+ * locality reading "New York". MEASURED against the live geocoder rather than
+ * reasoned about: Nominatim answers a Manhattan address with
+ * `city:"New York"`, `suburb:"Manhattan"` AND `city_district:"New York
+ * County"` — and `city_district` was consulted BEFORE `suburb`, so the county
+ * won and every Manhattan address came out as **"350 5th Ave, New York County,
+ * NY 10118"**. Brooklyn, the Bronx and Staten Island were unaffected only
+ * because OSM leaves their `city_district` empty; the same shape would have
+ * printed "Kings County" the day it did not.
+ *
+ * The five boroughs are a CLOSED SET, so the honest rule is to name them and
+ * substitute nothing else. That also closes the wider class the county was only
+ * one member of — a neighbourhood ("Koreatown") or a quarter ("Lower
+ * Manhattan") sitting in the same slot would have been printed as the mailing
+ * city just as confidently.
+ *
+ * ⛔ AND IT NEVER BLANKS A CITY IT WAS GIVEN. With no locality at all the slot
+ * is still used, exactly as before — minus anything naming a COUNTY, which is
+ * never a mailing address. A missing city is a gap somebody can see; a wrong one
+ * is not.
+ *
+ * Takes any number of candidates so a caller can offer every field the provider
+ * fills and let ONE rule pick, rather than each caller guessing which of them
+ * holds the borough this time.
+ */
+const NYC_BOROUGHS = new Map([
+  ['brooklyn', 'Brooklyn'],
+  ['bronx', 'Bronx'],
+  ['queens', 'Queens'],
+  ['staten island', 'Staten Island'],
+  ['manhattan', 'Manhattan'],
+]);
+/** The borough this string names, or null. "The Bronx" is the Bronx. */
+function boroughName(v) {
+  const s = String(v || '').replace(/^the\s+/i, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return NYC_BOROUGHS.get(s) || null;
+}
+function preferBorough(locality, ...candidates) {
   const city = String(locality || '').trim();
-  const b = String(borough || '').replace(/^the\s+/i, '').trim();
-  if (!city) return b;
-  if (/^(city of )?new york$/i.test(city) && b && !/^manhattan$/i.test(b)) return b;
+  const raws = candidates
+    .map((c) => String(c || '').replace(/^the\s+/i, '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const borough = raws.map(boroughName).find(Boolean) || null;
+  if (!city) {
+    // Manhattan's own mailing city IS New York, so naming the borough here would
+    // be the same mistake in the other direction.
+    if (borough) return borough === 'Manhattan' ? 'New York' : borough;
+    return raws.find((r) => !/\bcounty\b/i.test(r)) || '';
+  }
+  if (borough && borough !== 'Manhattan' && /^(city of )?new york$/i.test(city)) return borough;
   return city;
 }
 
@@ -237,8 +285,12 @@ function osmComponentsToAddress(a = {}) {
   return normalizeAddress({
     line1: line1 || a.neighbourhood || '',
     unit: '',
+    /* Every field the provider might fill, in the order it is most likely to
+       hold a BOROUGH — `suburb` ahead of `city_district`, because OSM puts the
+       borough in the first and (on Manhattan) the COUNTY in the second.
+       `preferBorough` decides; this only offers. */
     city: normalizeCityName(preferBorough(a.city || a.town || a.village || a.hamlet || '',
-      a.borough || a.city_district || a.suburb)),
+      a.borough, a.suburb, a.city_district)),
     state: stateAbbr(a.state || ''),
     zip: a.postcode || '',
     county: (a.county || '').replace(/\s+County$/i, ''),   // backend only — never displayed
@@ -458,9 +510,40 @@ function parseProviderLongForm(text) {
  * already in the mailing form is returned untouched (never re-shortened, never
  * blanked); only a provider long form is rewritten.
  */
+/**
+ * ⛔ THE CACHE IS PERMANENT, SO THE READ PATH HAS TO REPAIR WHAT IT HOLDS.
+ *
+ * `address_canon_cache` stores the FORMATTED STRING, not the components — so
+ * every Manhattan address resolved before `preferBorough` was fixed is cached
+ * as "350 5th Ave, New York County, NY 10118" and would answer that forever,
+ * fix or no fix. There is nothing to re-derive from, so the string itself is
+ * corrected on the way out.
+ *
+ * The five NYC counties and the mailing city each one really is: a closed,
+ * exact table, applied only where a segment is EXACTLY "<county> County" AND
+ * the state beside it is New York. Both halves are load-bearing — Richmond
+ * County is a real county in Virginia and Kings County a real one in
+ * California, and "Kings County Road" is a real street that must not be
+ * touched.
+ */
+const NYC_COUNTY_CITY = new Map([
+  ['new york', 'New York'],
+  ['kings', 'Brooklyn'],
+  ['bronx', 'Bronx'],
+  ['queens', 'Queens'],
+  ['richmond', 'Staten Island'],
+]);
+const NYC_COUNTY_RE = /,\s*(New York|Kings|Bronx|Queens|Richmond)\s+County\s*,\s*(NY|New York)\b/i;
+function repairNycCountyCity(text) {
+  return String(text || '').replace(NYC_COUNTY_RE,
+    (m, county, state) => `, ${NYC_COUNTY_CITY.get(county.toLowerCase())}, ${state}`);
+}
+
 function compactFormattedAddress(text) {
   const s = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!s || !looksLikeProviderLongForm(s)) return s;
+  // A provider LONG form is parsed into components, which already drop a county
+  // outright; rewriting the string first would leave the borough in it twice.
+  if (!s || !looksLikeProviderLongForm(s)) return repairNycCountyCity(s);
   const parsed = parseProviderLongForm(s);
   return canonicalOneLine(parsed) || s;
 }
@@ -866,7 +949,8 @@ function addressCompareKey(v) {
 module.exports = {
   parseAddress, parseToAddressObject, normalizeAddress, splitUnit, stateAbbr, stateCompareKey,
   parseAddressParts, sameAddress, sameProperty, addressCompareKey, addressTextOf,
-  abbreviateStreet, normalizeCityName, preferBorough, osmComponentsToAddress,
+  abbreviateStreet, normalizeCityName, preferBorough, boroughName, repairNycCountyCity,
+  osmComponentsToAddress,
   canonicalOneLine, withoutUnit, withUnit, looksLikeProviderLongForm, parseProviderLongForm,
   compactFormattedAddress, canonicalizeAddressValue,
   geocodeRewriteIsSafe, houseNumberOf, leadingDirectionalOf,

@@ -123,7 +123,7 @@ console.log('\nC. the joins a unit test of the rule cannot see');
 const syncSrc = read('src/longterm/sync/loans.js');
 const writerSrc = read('src/longterm/application/sync.js');
 const routeSrc = read('src/longterm/routes/orders.js');
-const migration = read('db/658_lt_flood_zone_read_from_encompass_541.sql');
+const migration = read('db/666_lt_flood_zone_read_from_encompass_541.sql');
 
 ok(/\.\.\.floodZone\.FIELD_IDS/.test(syncSrc),
   'the sync spreads field 541 into the ONE fieldReader batch — a second call per loan would cost the whole company a pacing gap');

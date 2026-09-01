@@ -195,6 +195,23 @@ export const humanCode = (v) => {
  *  obvious home if a purpose ever needs wording nothing else does. */
 export const purpose = (v) => humanCode(v);
 
+/**
+ * THE LOCAL CALENDAR DAY A TIMESTAMP FELL ON — and it is deliberately NOT `day`.
+ *
+ * `day` exists for a DATE column and reads `YYYY-MM-DD` off the front of the string
+ * without touching `Date`, which is right there and wrong here: a timestamptz is an
+ * INSTANT, so an 8pm New York save carries a UTC date of the following day and `day`
+ * would print tomorrow. `stamp` is the other end — the full date and time, which is
+ * more than "when was this true" needs.
+ *
+ * Nothing to read answers a dash, exactly as `day` does.
+ */
+export const dayOf = (v) => {
+  if (!v) return '—';
+  const d = new Date(v);
+  return Number.isFinite(d.getTime()) ? d.toLocaleDateString('en-US') : '—';
+};
+
 export const stamp = (v) => {
   if (!v) return null;
   const d = new Date(v);

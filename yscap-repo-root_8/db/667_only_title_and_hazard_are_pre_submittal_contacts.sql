@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/659 — the pre-submittal contacts condition asks for TWO, not seven
+-- db/667 — the pre-submittal contacts condition asks for TWO, not seven
 --
 -- WHAT THIS CHANGES, AND WHY. Owner-directed 2026-08-31: *"Our attorney,
 -- Realtor, Buyer's Attorney — those open slots should be only in the file
