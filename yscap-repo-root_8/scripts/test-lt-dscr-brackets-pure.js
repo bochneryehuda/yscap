@@ -28,6 +28,15 @@ const fs = require('fs');
 const path = require('path');
 
 let bad = 0;
+/* ⛔ A CRASHING TEST IS NOT A FAILING TEST, AND IT IS WORSE THAN ONE.
+   A `priceByBracket` that refuses answers `{ok:false}` with no `brackets`, so a bare
+   `res.brackets.length` throws a TypeError, kills the process and stops the battery
+   where it stands — every assertion after it silently never runs. Found by the
+   post-merge audit of #1405: two mutations were genuinely caught by their own
+   assertion and then took the whole suite down with them, which would mask any
+   LATER mutation behind an EARLIER one. `list()` reads a possibly-absent array as
+   empty, so the assertion states a false fact and the run carries on to the end. */
+const list = (v) => (Array.isArray(v) ? v : []);
 const ok = (c, m) => { if (c) console.log('  ok   ' + m); else { bad += 1; console.error('  FAIL ' + m); } };
 const section = (t) => console.log('\n' + t);
 
@@ -252,17 +261,17 @@ section('D. an out-of-band quote is DROPPED, never shown');
   const opt = (rate, price) => ({ priceBuild: { noteRate: rate, price }, monthlyPayment: null });
   const built = boardMod.buildBoard(F, [{ tier: t, sentRatio: boardMod.sendRatioFor(t, F, []),
     programs: [{ lender: 'A', options: [opt(6.5, 101), opt(11.125, 99)] }] }]);
-  const shown = built.brackets.flatMap((b) => b.programs.flatMap((p) => p.options.map((o) => o.priceBuild.noteRate)));
+  const shown = list(built.brackets).flatMap((b) => list(b.programs).flatMap((p) => p.options.map((o) => o.priceBuild.noteRate)));
   ok(shown.includes(6.5) && !shown.includes(11.125),
     '⛔ the rate whose own ratio is in another band is dropped from this band\'s row');
   ok(built.droppedOutOfBand === 1, `…and the drop is COUNTED (${built.droppedOutOfBand}), never silent`);
-  ok(built.brackets[0].programs[0].options[0].dscr === boardMod.ratioAtRate(F, 6.5),
+  ok(built.brackets?.[0]?.programs?.[0]?.options?.[0]?.dscr === boardMod.ratioAtRate(F, 6.5),
     'every shown quote carries the ratio it actually reaches, ON the option the screen draws');
   /* AND THE SUMMARY SHAPE STILL WORKS — the discovery loop may be handed either, and
      one reading of "where does a rate live" serves both. */
   const rungBuilt = boardMod.buildBoard(F, [{ tier: t, sentRatio: boardMod.sendRatioFor(t, F, []),
     programs: [{ lender: 'A', rungs: [{ rate: 6.5, price: 101 }, { rate: 11.125, price: 99 }] }] }]);
-  ok(rungBuilt.brackets[0].quoteCount === 1 && rungBuilt.droppedOutOfBand === 1,
+  ok(rungBuilt.brackets?.[0]?.quoteCount === 1 && rungBuilt.droppedOutOfBand === 1,
     'the summary parse shape bands identically — one reading of where a rate lives, not two');
   /* ⛔ A RATE IS WHATEVER THE VENDOR SAYS IT IS — no eighths assumed anywhere. The
      owner raised this directly: rates usually step by eighths (6.125, 6.25, 6.375)
@@ -276,7 +285,7 @@ section('D. an out-of-band quote is DROPPED, never shown');
     sentRatio: boardMod.sendRatioFor(boardMod.tierAtRate(F, rate), F, [{ rate }]),
     programs: [{ lender: 'X', options: [opt(rate, 100)] }],
   })).filter((r) => r.tier != null));
-  const oddShown = oddBuilt.brackets.flatMap((b) => b.programs.flatMap((p) => p.options.map((o) => o.priceBuild.noteRate)));
+  const oddShown = list(oddBuilt.brackets).flatMap((b) => list(b.programs).flatMap((p) => p.options.map((o) => o.priceBuild.noteRate)));
   ok(ODD.every((r) => oddShown.includes(r)),
     `⛔ every odd rate survives with its exact value (${oddShown.join(', ')})`);
   ok(oddBuilt.droppedOutOfBand === 0, '…and none of them is dropped as out of band');
@@ -315,17 +324,17 @@ async function main() {
 
     const out = await run();
     ok(out.ok === true, 'the run comes back');
-    const shownTiers = out.brackets.map((b) => b.tier);
+    const shownTiers = list(out.brackets).map((b) => b.tier);
     ok(shownTiers.length > 1, `⛔ the board is split across several brackets (${shownTiers.join(', ')})`);
     ok(shownTiers.join(',') === [...shownTiers].sort((a, b) => b - a).join(','),
       '⛔ strongest bracket first — the owner\'s own economics, and it falls out of the arithmetic');
     // The cheapest rate really is in the strongest bracket.
-    const best = out.brackets[0];
-    const worst = out.brackets[out.brackets.length - 1];
+    const best = list(out.brackets)[0] || {};
+    const worst = list(out.brackets)[list(out.brackets).length - 1];
     ok(best.bestRate < worst.bestRate,
       `⛔ the cheapest rate (${best.bestRate}%) sits in the strongest bracket and the dearest (${worst.bestRate}%) in the weakest`);
     // The discovery loop found the investor no single search could have shown.
-    const harbor = out.brackets.some((b) => b.programs.some((p) => p.lender === 'Harbor'));
+    const harbor = list(out.brackets).some((b) => b.programs.some((p) => p.lender === 'Harbor'));
     ok(harbor, '⛔ an investor that only prices at a low ratio IS found — the answer to "don\'t go only by the rates that are coming up"');
     ok(asked.length <= boardMod.MAX_BRACKETS, `it converges (${asked.length} searches, ceiling ${boardMod.MAX_BRACKETS})`);
     ok(asked.every((a) => a != null),
@@ -344,15 +353,15 @@ async function main() {
 
     // ── empties and failures are two different facts ────────────────────────
     const emptyRun = await runMod.priceByBracket(FIG, async () => ({ ok: true, parsed: { programs: [] } }), { seedDscr: SEED });
-    ok(emptyRun.brackets.length === 0 && emptyRun.empty.length > 0,
+    ok(list(emptyRun.brackets).length === 0 && list(emptyRun.empty).length > 0,
       'a bracket that came back with nothing is not drawn as a row…');
     ok(emptyRun.empty.every((b) => b.emptyReason),
       '…and SAYS why it is empty, so silence is never mistaken for "we did not look"');
 
     const failRun = await runMod.priceByBracket(FIG, async () => ({ ok: false, error: 'lp_price_500_after_retry', message: 'upstream' }), { seedDscr: SEED });
-    ok(failRun.ok === true && failRun.failedBrackets.length > 0 && failRun.brackets.length === 0,
+    ok(failRun.ok === true && list(failRun.failedBrackets).length > 0 && list(failRun.brackets).length === 0,
       '⛔ a bracket whose search FAILED is reported as a failure, never as a bracket with no rates');
-    ok(failRun.failedBrackets[0].error === 'lp_price_500_after_retry', '…carrying the vendor\'s own reason');
+    ok((list(failRun.failedBrackets)[0] || {}).error === 'lp_price_500_after_retry', '…carrying the vendor\'s own reason');
 
     /* ⛔ NO RATIO TYPED IS NOT A REFUSAL ANY MORE (owner-directed 2026-09-01: *"we
        don't need a target rate anymore… If you don't have a targeted rate, go by the
@@ -363,8 +372,8 @@ async function main() {
        seed picks the first question, never a price. */
     const noRatio = await runMod.priceByBracket(FIG, mkRun(), {});
     ok(noRatio.ok === true, '⛔ a deal with NO typed ratio still prices — the officer supplies nothing');
-    ok(noRatio.brackets.length > 1,
-      `…and still finds several bands (${noRatio.brackets.map((b) => b.tier).join(', ')})`);
+    ok(list(noRatio.brackets).length > 1,
+      `…and still finds several bands (${list(noRatio.brackets).map((b) => b.tier).join(', ')})`);
     ok(noRatio.seedTier === boardMod.dscrTier(boardMod.seedRatioFrom(F, null)),
       `…starting from the band a typical ${boardMod.TYPICAL_RATE_PCT}% coupon reaches (band ${noRatio.seedTier})`);
     const typedWins = await runMod.priceByBracket(FIG, mkRun(), { seedDscr: 1.45 });
@@ -390,7 +399,7 @@ async function main() {
     });
     let checked = 0, refused = [];
     for (const b of out.brackets) {
-      for (const q of b.programs.flatMap((p) => boardMod.optionsOf(p).map((o) => boardMod.optionRate(o)))) {
+      for (const q of list(b.programs).flatMap((p) => boardMod.optionsOf(p).map((o) => boardMod.optionRate(o)))) {
         const built = snapshot.buildSnapshot({
           selections: [{ label: 'A', consumerLabel: 'Platinum A', product: '30-Year Fixed DSCR', mode: 'borrowerPaid',
             ratePct: q.rate, rawPrice: 100, scenario: scFor(b.sentRatio), pricedAt: '2026-09-01T13:00:00.000Z' }],
@@ -412,7 +421,7 @@ async function main() {
        gate never fires rather than because the board is sound. */
     let oldRefused = 0;
     for (const b of out.brackets) {
-      for (const q of b.programs.flatMap((p) => boardMod.optionsOf(p).map((o) => boardMod.optionRate(o)))) {
+      for (const q of list(b.programs).flatMap((p) => boardMod.optionsOf(p).map((o) => boardMod.optionRate(o)))) {
         const built = snapshot.buildSnapshot({
           selections: [{ label: 'A', consumerLabel: 'Platinum A', product: '30-Year Fixed DSCR', mode: 'borrowerPaid',
             ratePct: q.rate, rawPrice: 100, scenario: scFor(1.25), pricedAt: '2026-09-01T13:00:00.000Z' }],
