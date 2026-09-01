@@ -49,6 +49,11 @@ export const GENERAL_ENGINE = {
   /* THE INVESTOR ROSTER, already in the shape the picker reads. Normalising here rather than in
      the screen is what lets one picker serve two doors that answer in two shapes. */
   investors: () => ltApi.dscrInvestors().then((r) => (r && r.investors) || []),
+  /* FORK 8 — DOES A ROW HAVE TO BE ASKED TO EXPLAIN ITSELF? Lender Price ships the itemization WITH
+     the search, so on this board a price build is already complete the moment it arrives and asking
+     again would be a call that buys nothing. `null` is what the panel reads as "there is nothing to
+     fetch", which is the general engine's behaviour today, unchanged. */
+  explain: null,
   /* WHAT THE BREAKDOWN CALLS THE THING A PRICED LINE CAME FROM — in the three grammatical
      positions the copy actually uses. Three fields rather than one because English needs them:
      "came from X", "X returned no margin lines", "X's own fee fields". Building those from one
@@ -98,6 +103,17 @@ export const COMBINED_ENGINE = {
   }),
   investors: () => ltApi.combinedInvestors().then((r) => ((r && r.investors) || [])
     .map((x) => ({ key: x.key, investor: x.label, whiteLabel: x.whiteLabel }))),
+  /* FORK 8 — THE ONE REAL ASYMMETRY BETWEEN THE TWO PROGRAMS. One of the two rate sheets on this
+     board publishes its itemization with the quote and the other explains a row only when asked —
+     one call per quote, which is how its own screen works too. The server answers BOTH through the
+     same door and the same builder, so the panel never learns which one it is talking to: a row
+     that arrived explained comes back `alreadyExplained` with nothing to merge.
+
+     ⛔ IT RETURNS AN OPTION, NOT A BREAKDOWN. The panel reads an OPTION; the breakdown is a flatter
+     shape with different keys. Translating one into the other in the browser would be a second copy
+     of a mapping the server already holds — and the copy that drifts is the one drawing the price
+     somebody quotes. */
+  explain: (quote, scenario) => ltApi.combinedExplain(quote, scenario),
   /* ONE SYSTEM, SO NO VENDOR IS NAMED. Two programs quote this board and a line may have come from
      either, so naming one of them on every line would be wrong half the time. */
   sheetLabel: 'the rate sheet that quoted this loan',
@@ -127,4 +143,23 @@ export const EngineProvider = EngineContext.Provider;
 /** Read the engine. Outside a provider this is the general engine — see the note above. */
 export function useEngine() {
   return React.useContext(EngineContext) || GENERAL_ENGINE;
+}
+
+/**
+ * ASKING A ROW TO EXPLAIN ITSELF — a SECOND context, deliberately, rather than a field on the
+ * engine.
+ *
+ * The engine descriptors above are module constants: they know their own door but not WHICH LOAN is
+ * on the screen, and an explain call needs the scenario the board was priced with. So the screen
+ * binds `engine.explain` to its own priced scenario and provides the result here.
+ *
+ * ⛔ THE DEFAULT IS `null` AND THAT IS THE SAFETY PROPERTY, exactly as it is for the engine itself.
+ * A panel rendered with no provider above it — which includes every existing test that renders
+ * `PriceBuild` on its own, and the whole general board — asks nobody anything and draws what it
+ * has always drawn.
+ */
+const ExplainContext = React.createContext(null);
+export const ExplainProvider = ExplainContext.Provider;
+export function useExplain() {
+  return React.useContext(ExplainContext) || null;
 }

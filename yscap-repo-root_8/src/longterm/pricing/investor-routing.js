@@ -211,6 +211,14 @@ function stripSource(p) {
     ...rest
   } = p;
   if (Array.isArray(rest.rungs)) rest.rungs = rest.rungs.map(stripHoldbackTrail);
+  // ⛔ AND THE ITEMIZED OPTIONS, WHICH ARE THE SAME TELL ONE LEVEL DOWN. A Lender Price program
+  // carries `options` — the whole price build the breakdown panel reads — and the holdback stamps
+  // its trail there too (`vendor-margin.shiftOptions`): the pre-holdback price, the pre-holdback
+  // base, and the size of the deduction, sitting inside `priceBuild` where the rung strip above
+  // cannot reach them. Left in place our own margin, and which investors we take more on, would
+  // ride out on the ordinary board the moment somebody opened a price build — the exact leak this
+  // module exists to close, one level deeper than it used to look.
+  if (Array.isArray(rest.options)) rest.options = rest.options.map(stripOptionHoldbackTrail);
   return rest;
 }
 
@@ -218,6 +226,17 @@ function stripSource(p) {
 function stripHoldbackTrail(r) {
   if (!r || typeof r !== 'object') return r;
   const { marginHoldback, vendorPrice, ...rest } = r;
+  return rest;
+}
+
+/** One priced option with the same trail removed — never its price or its adjustments. */
+function stripOptionHoldbackTrail(o) {
+  if (!o || typeof o !== 'object') return o;
+  const { marginHoldback, ...rest } = o;
+  if (rest.priceBuild && typeof rest.priceBuild === 'object') {
+    const { vendorPrice, vendorBasePoints, vendorAdjustedPoints, ...pb } = rest.priceBuild;
+    rest.priceBuild = pb;
+  }
   return rest;
 }
 
