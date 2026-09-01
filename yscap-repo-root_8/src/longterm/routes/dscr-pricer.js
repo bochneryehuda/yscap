@@ -22,6 +22,7 @@ const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
 const zipCounty = require('../lenderprice/zip-county');
 const settingsStore = require('../settings/store');
 const { resolveCompPlan } = require('../comp-plan');
+const bracketRun = require('../pricing/bracket-run');
 const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
 
 // A small, fixed verification battery spanning states / property types / FICO / DSCR / prepay.
@@ -170,7 +171,12 @@ function rejectInvalidRequest(sc, res) {
     res.status(v.status || 422).json(body);
     return { rejected: true };
   }
-  return { rejected: false, scenario: v.scenario || sc, countyEnrichment: v.countyEnrichment || null };
+  // ⛔ `dscrClamped` RIDES THROUGH HERE OR IT NEVER REACHES ANYBODY. The validator
+  // reports a typed over-ceiling ratio it priced at the ceiling instead; dropping it
+  // at this hop would leave every door reading `undefined` and the officer told
+  // nothing — the number changed behind them, which is the one thing the clamp was
+  // not allowed to do.
+  return { rejected: false, scenario: v.scenario || sc, countyEnrichment: v.countyEnrichment || null, dscrClamped: v.dscrClamped || null };
 }
 
 // Cash-out amount ("cash in hand") transparency — so it is never SILENTLY handled either way. It is
@@ -273,6 +279,95 @@ function derivedOf(sc) {
 }
 
 // POST /price — body is a scenario (or { scenario }). Returns the parsed program summary.
+/**
+ * POST /price-brackets — THE DSCR-BRACKET-AWARE BOARD (owner-directed 2026-09-01).
+ *
+ * The ordinary `/price` door asks the vendor ONE question, at one assumed ratio,
+ * and every rate it answers with is priced as though the loan achieves that
+ * ratio. It does not: the rate decides the payment and the payment is the DSCR's
+ * denominator, so an expensive rate can leave a ratio in a band the loan never
+ * reaches. That is the owner's own report — a rate offered at 11.125% priced as
+ * though the loan were at 1.25 while its true ratio is 0.93 — and the term sheet
+ * correctly refuses to issue it.
+ *
+ * This door asks the question once per DSCR bracket and returns the rates grouped
+ * by the bracket each rate's own ratio reaches. `pricing/bracket-run` owns the
+ * sequencing and `pricing/bracket-board` owns every rule; this handler only
+ * supplies the vendor and shapes the answer.
+ *
+ * ⛔ IT ADDS NOTHING TO THE SEARCH ITSELF. Each bracket is priced through the
+ * SAME `lp.price` + `lp.parse` + `investorPrograms.decorate` the ordinary board
+ * runs, with one field different: the ratio. A second pricing path here would be
+ * a second answer to what this deal is.
+ */
+async function priceBrackets(req, res) {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  let sc = body.scenario ? body.scenario : body;
+  if (rejectUnsupported(sc, res)) return;
+  const chk = rejectInvalidRequest(sc, res);
+  if (chk.rejected) return;
+  const requestedScenario = requestedOf(sc);
+  sc = chk.scenario;
+
+  /* THE FIGURES A RATIO IS WORKED OUT FROM. They are read from the SCENARIO the
+     officer already filled in — the same boxes the pricing engine's own DSCR
+     calculator uses — so there is no second form to keep in step and no way for
+     the board to bracket by figures the screen is not showing. A caller may
+     override them explicitly (`figures`), which is what the saved-scenario re-run
+     path needs. */
+  const figures = Object.assign({
+    rentMonthly: sc.rentMonthly, taxMonthly: sc.taxMonthly, insuranceMonthly: sc.insuranceMonthly,
+    hoaMonthly: sc.hoaMonthly, loanAmount: sc.loan != null ? sc.loan : sc.loanAmount,
+    termYears: sc.termYears != null ? sc.termYears : sc.term, interestOnly: !!sc.interestOnly,
+  }, (body.figures && typeof body.figures === 'object') ? body.figures : {});
+
+  // Filled by whichever band search answers FIRST, which is all these are for:
+  // echoing what the vendor understood and where the pricing config came from.
+  let firstRequest = null;
+  let provenance = null;
+  const runSearch = async (dscr) => {
+    // A null ratio is the officer's own scenario, untouched — the probe.
+    const one = dscr == null ? sc : Object.assign({}, sc, { dscr });
+    const r = await lp.price(one);
+    if (!r.ok) return { ok: false, error: r.error || 'lp_price_failed', message: r.message || null, http: r.http || null };
+    if (firstRequest == null) { firstRequest = r.request; provenance = r.provenance || null; }
+    const parsed = lp.parse(r.raw);
+    const deco = investorPrograms.decorate(parsed.programs);
+    return {
+      ok: true,
+      parsed: Object.assign({}, parsed, { programs: deco.programs }),
+      meta: { searchKey: r.searchKey, sentDscr: dscr, programCount: parsed.programCount, lenderCount: parsed.lenderCount, pricedAt: parsed.pricedAt || null },
+    };
+  };
+
+  const out = await bracketRun.priceByBracket(figures, runSearch, {
+    rounds: Number.isInteger(body.rounds) ? body.rounds : undefined,
+    /* THE BAND THIS DEAL IS ALREADY IN — the ratio the officer's own search ran at.
+       It is what the widening grows from, and it is why there is no probe search:
+       the board they are looking at answered that question a moment ago. */
+    seedDscr: sc.dscr,
+    /* AND THE RATES OFF THAT BOARD, when the caller hands them over. They sharpen the
+       first round's search ratios (the lowest ratio a band actually reaches, rather
+       than the band's floor). Optional by design: the loop works without them. */
+    seenQuotes: Array.isArray(body.seenQuotes) ? body.seenQuotes : [],
+  });
+  if (!out.ok) {
+    // A refusal here is about the DEAL (not enough figures to bracket by) or the
+    // vendor (the first search did not answer). Those need different actions, so
+    // they carry different codes and neither is dressed up as the other.
+    const status = out.error === 'lt_bracket_figures_incomplete' ? 422 : 502;
+    return res.status(status).json(out);
+  }
+  res.json(Object.assign({ ok: true }, out, {
+    requestedScenario,
+    derivedScenario: derivedOf(sc),
+    countyEnrichment: chk.countyEnrichment,
+    dscrClamped: chk.dscrClamped || null,
+    effectiveScenario: firstRequest ? effectiveOf(firstRequest) : null,
+    provenance,
+  }));
+}
+
 async function price(req, res) {
   let sc = (req.body && req.body.scenario) ? req.body.scenario : (req.body || {});
   if (rejectUnsupported(sc, res)) return; // never silently ignore an unimplemented field
@@ -299,13 +394,13 @@ async function price(req, res) {
     // investors PRESENT in this answer and anything that resolved to no name — named,
     // never dropped, so the owner can christen a new investor the day it appears.
     const deco = investorPrograms.decorate(full.programs);
-    const out = { ok: true, ...full, programs: deco.programs, investorRoster: deco.roster, investorsUnmapped: deco.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+    const out = { ok: true, ...full, programs: deco.programs, investorRoster: deco.roster, investorsUnmapped: deco.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), dscrClamped: chk.dscrClamped || null, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
     if (req.body.debug) out.rawSummary = lp.summarizeRaw(r.raw);
     return res.json(out);
   }
   const parsed = lp.parse(r.raw);
   const decoSummary = investorPrograms.decorate(parsed.programs);
-  const out = { ok: true, ...trimPrograms({ ...parsed, programs: decoSummary.programs }), investorRoster: decoSummary.roster, investorsUnmapped: decoSummary.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
+  const out = { ok: true, ...trimPrograms({ ...parsed, programs: decoSummary.programs }), investorRoster: decoSummary.roster, investorsUnmapped: decoSummary.unmapped, requestedScenario, derivedScenario: derivedOf(sc), countyEnrichment: chk.countyEnrichment, effectiveScenario: effective, cashoutAmount: cashoutNote(sc), dscrClamped: chk.dscrClamped || null, request: r.request, searchKey: r.searchKey, disqualifyStatus: 'computing', provenance: r.provenance || null, recovered: !!r.recovered };
   // Secret-gated diagnostics (the whole router is behind the diag token / staff login): when the
   // caller asks, include a structural summary of the raw response so we can see whether Lender
   // Price returned programs the parser missed, or truly zero — and any disqualify reasons.
@@ -527,6 +622,7 @@ function makeRouter() {
   }));
   router.get('/health', (req, res) => health(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_health_error' })));
   router.get('/login-check', (req, res) => loginCheck(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_login_error' })));
+  router.post('/price-brackets', (req, res) => priceBrackets(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_brackets_error' })));
   router.post('/price', (req, res) => price(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_price_error' })));
   // Poll-only ineligible status by searchKey (kicked off by POST /price) — never restarts the search.
   router.get('/disqualifications/:searchKey', (req, res) => disqualifications(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_disqualifications_error' })));

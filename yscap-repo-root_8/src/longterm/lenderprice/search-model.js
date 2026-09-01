@@ -245,6 +245,15 @@ function mapRentalTerm(v) {
   return t;
 }
 
+/**
+ * THE HIGHEST DSCR LENDER PRICE WILL ACCEPT. Their own request validation refuses
+ * anything above it, so this is the vendor's rule rather than ours, and it is
+ * named ONCE here — the validator below enforces it and `pricing/bracket-board`
+ * imports it, so the number that is checked and the number that is clamped to can
+ * never drift.
+ */
+const VENDOR_MAX_DSCR = 2;
+
 // ---- §32.3 DSCR THRESHOLD TABLE -------------------------------------------
 // The entered DSCR ratio (criteria.dscr, always the verbatim numeric value) ALSO drives a coarse
 // `DSCRRATIO` dynamic token AND — above 0.75 — one additional pricing-band special mortgage option,
@@ -1231,7 +1240,7 @@ function validateInputs(sc = {}) {
   const asIs = numField('asIsValue', { min: 1 }); if (asIs.err) return asIs.err;
   const loan = numField('loan', { min: 1 }); if (loan.err) return loan.err;
   const fico = numField('fico', { min: 300, max: 850, integer: true }); if (fico.err) return fico.err;
-  const dscr = numField('dscr', { min: 0, max: 2 }); if (dscr.err) return dscr.err;
+  const dscr = numField('dscr', { min: 0, max: VENDOR_MAX_DSCR }); if (dscr.err) return dscr.err;
   const units = numField('units', { min: 1, max: 20, integer: true }); if (units.err) return units.err;
   const cashout = numField('cashoutAmount', { min: 0 }); if (cashout.err) return cashout.err; // "cash in hand"; stored, and transmitted as the captured criteria.cashoutAmount
   // Term / lock against the allowed capability sets (a 17-year term / 22-day lock does not exist).
@@ -1459,6 +1468,33 @@ function validateScenario(sc = {}) {
     }
     : null;
   sc = enriched;
+  /* ⛔ A TYPED RATIO ABOVE THE VENDOR'S CEILING IS PRICED AT THE CEILING, NOT REFUSED
+     (owner-directed 2026-09-01: *"If somebody types it in without putting in the
+     scenario, types in more than 2.0, it should automatically send it to Lender
+     Price as 2.0, should not be rejected."*).
+
+     ⛔ AND IT IS PRICE-NEUTRAL, WHICH IS WHY IT IS SAFE RATHER THAN CONVENIENT. The
+     owner's own ladder tops out at "1.50 AND ABOVE" — there is no band above it — so
+     2.4 and 2.00 are the SAME band and buy the same price. More than that: Lender
+     Price refuses anything above 2.00, so 2.00 is the strongest ratio the vendor can
+     be told at all. Clamping to it is not an approximation of the answer, it is the
+     best answer available.
+
+     ⛔ IT IS REPORTED, NEVER SILENT. `dscrClamped` rides on the result so a screen can
+     say the deal was priced at 2.00 and why. A number quietly changed behind somebody
+     who typed it is how a person stops trusting the board.
+
+     ⛔ ONLY DOWNWARD, AND ONLY FROM ABOVE THE CEILING. A negative, a blank or a
+     non-numeric ratio still goes to `validateInputs` and is still refused there —
+     this widens nothing except the one case the owner named. */
+  let dscrClamped = null;
+  {
+    const typed = strictNum(sc.dscr);
+    if (typed !== undefined && Number.isFinite(typed) && typed > VENDOR_MAX_DSCR) {
+      dscrClamped = { typed, priced: VENDOR_MAX_DSCR };
+      sc = { ...sc, dscr: VENDOR_MAX_DSCR };
+    }
+  }
   const loc = validateLocation(sc);
   if (!loc.ok) return { ok: false, status: 422, error: loc.code, field: loc.field, message: loc.message };
   // A PRICED SCENARIO MUST SAY WHERE THE PROPERTY IS. `validateLocation` deliberately passes a
@@ -1489,8 +1525,8 @@ function validateScenario(sc = {}) {
     return { ok: false, status: 422, error: 'invalid_field_value', warnings: w,
       message: `One or more fields carried a value the pricing engine does not recognize; the value would be silently dropped, so the request is rejected rather than mis-priced: ${w.map((x) => x.field).join(', ')}.` };
   }
-  return { ok: true, request, scenario: sc, countyEnrichment };
+  return { ok: true, request, scenario: sc, countyEnrichment, dscrClamped };
 }
 
-module.exports = { BASE, buildSearch, clearScenarioOwnedFields, mergeKnownRequestDefaults, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
+module.exports = { VENDOR_MAX_DSCR, BASE, buildSearch, clearScenarioOwnedFields, mergeKnownRequestDefaults, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
   _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, resolveSearchTerms, IO_EXTRA_TERM, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };

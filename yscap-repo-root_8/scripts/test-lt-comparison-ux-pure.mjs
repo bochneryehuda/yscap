@@ -108,6 +108,39 @@ ok(DSCR_TIERS[0].from === null && DSCR_TIERS[DSCR_TIERS.length - 1].to === null,
 ok(dscrTier(0) === null && dscrTier(-1) === null && dscrTier('x') === null,
   'A3 a ratio that is not a ratio has no tier — never tier 1 by accident');
 
+/* ⛔ A4 — THE BROWSER'S LADDER AND THE SERVER'S ARE COMPARED DIRECTLY, ROW BY ROW AND
+   RATIO BY RATIO. This file has always run the server's `exportGate` beside the browser's
+   `dscrTier`, which proves they agree about the CASES it happens to try; it did not prove
+   the two TABLES are the same. That gap mattered less when the server's copy had one
+   reader. It has three now — the re-price refusal, the pricing board's bracket grouping,
+   and this mirror — and a board that grouped by one ladder while the export refused by
+   another is precisely the disagreement the owner asked to be made impossible
+   (2026-09-01: *"if the bracket is changing you should automatically change yourself as
+   well"*). So: every edge, both directions, and every hundredth from 0 to 2.00. */
+const serverTiers = require('../src/longterm/pricing/dscr-tiers.js');
+let rowBad = 0;
+if (serverTiers.DSCR_TIERS.length !== DSCR_TIERS.length) rowBad += 1;
+else {
+  for (let i = 0; i < DSCR_TIERS.length; i += 1) {
+    const a = DSCR_TIERS[i]; const b = serverTiers.DSCR_TIERS[i];
+    if (a.tier !== b.tier || a.from !== b.from || a.to !== b.to) {
+      rowBad += 1;
+      console.error(`       row ${i}: browser ${JSON.stringify(a)} vs server ${JSON.stringify(b)}`);
+    }
+  }
+}
+ok(rowBad === 0, `A4 the browser ladder and the server ladder are the SAME ${DSCR_TIERS.length} rows`);
+let walkBad = 0; let walked = 0;
+for (let h = 0; h <= 200; h += 1) {
+  const r = Math.round(h) / 100;
+  walked += 1;
+  if (dscrTier(r) !== serverTiers.dscrTier(r)) {
+    walkBad += 1;
+    if (walkBad <= 3) console.error(`       ${r.toFixed(2)} → browser ${dscrTier(r)}, server ${serverTiers.dscrTier(r)}`);
+  }
+}
+ok(walkBad === 0, `A5 …and they answer identically for all ${walked} ratios from 0.00 to 2.00`);
+
 console.log('\nB. the owner\'s own case, and the nagging that had to stop');
 /* housing = 2000 PI + 400 tax + 200 insurance = 2600, so rent = ratio × 2600. */
 const at = (ratio) => 2600 * ratio;

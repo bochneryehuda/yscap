@@ -166,6 +166,16 @@ export const ltApi = {
   // that key rather than re-searched: 200 once ready, 202 while it is still computing
   // (surfaced as an ordinary body, `ready:false`), 409 once the key has expired.
   dscrPrice: (scenario, opts) => ltPost(lt('/dscr/price'), { scenario, ...(opts || {}) }),
+  /* THE SAME DEAL, PRICED ONCE PER DSCR BRACKET (owner-directed 2026-09-01).
+     ⛔ IT COSTS SEVERAL VENDOR CALLS, NOT ONE — one search per DSCR bracket this
+     loan can reach — so it is even more firmly a deliberate press than `dscrPrice`
+     above. Never from an effect, never on a keystroke.
+     Answers `{ brackets:[{ tier, label, sentRatio, quotes }], empty, failedBrackets }`
+     where every quote is priced in the band its OWN rate reaches. The server
+     decides all of that: the screen renders what it is told, because the bracket
+     ladder is the one the term sheet refuses on and a browser copy of it would
+     drift from the refusal. */
+  dscrPriceBrackets: (scenario, opts) => ltPost(lt('/dscr/price-brackets'), { scenario, ...(opts || {}) }),
   // The ONE door here that costs NOTHING. A ZIP resolves its state, county and county FIPS out of a
   // committed Census table on our own server — no vendor call, no session, no billing — which is
   // why this one MAY be fired as somebody types, unlike the two above.
