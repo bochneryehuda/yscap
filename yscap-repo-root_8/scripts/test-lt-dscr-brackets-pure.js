@@ -59,39 +59,45 @@ section('A. the bracket table is SHARED, not rebuilt — the owner\'s own instru
 }
 
 // =============================================================================
-section('A2. one press, two speeds — and the figures are the screen\'s to send');
+section('A2. the bands are IN the board, not a section of their own');
 // =============================================================================
 {
-  /* ⛔ THE BAND SEARCHES ARE FIRED BY THE SEARCH PRESS, NOT BY AN EFFECT. The owner's
-     shape (2026-09-01): *"You press Search once, same as today… the board appears as
-     fast as it does now… a moment later the rates re-group themselves."* An effect
-     would fire on re-renders nobody asked for, which is the standing rule about live
-     vendor calls — "never from an effect, never on a keystroke, only on a deliberate
-     press". None of that is visible to a unit test of these modules, so it is pinned
-     on the SOURCE.
+  /* Owner-directed 2026-09-01, correcting the first cut: *"I don't like it this way.
+     It should not be a separate section… before 5.75 it should say which bracket this
+     is… and after 6.125 it should say here is a break that changed the bracket.
+     Basically the same as it was before. Every rate and every investor added, but that
+     whole section should be divided in brackets, and it should work the same."*
 
-     ⛔ AND THE FIGURES CANNOT BE RE-READ FROM THE SCENARIO. `scenarioFields.toScenario`
-     OMITS the loan amount in LTV mode, on purpose — its own comment says why. The tax
-     and insurance boxes carry a monthly/yearly switch the screen has already applied,
-     so reading them raw would put a yearly tax bill on the board as a monthly one: a
-     payment twelve times too high, and a band wrong on every row. */
+     None of that is visible to a unit test of these modules, so it is pinned on the
+     SOURCE. */
   const src = (f) => fs.readFileSync(path.join(__dirname, '..', 'app-v2', 'src', 'longterm', f), 'utf8');
   const pricer = src('LtPricer.jsx');
-  const bb = src('LtBracketBoard.jsx');
 
+  ok(!fs.existsSync(path.join(__dirname, '..', 'app-v2', 'src', 'longterm', 'LtBracketBoard.jsx')),
+    '⛔ the separate section is GONE — its file no longer exists');
+  ok(!/LtBracketBoard/.test(pricer), '…and nothing mounts it any more');
+
+  ok(/export function bandedStack\(/.test(pricer),
+    '⛔ the board is built banded — headings interleaved with the ordinary rate rows');
+  ok(/kind: 'band'/.test(pricer) && /kind: 'rate'/.test(pricer),
+    '…as one flat list, so the row keys and the expand-all set stay a single sequence');
+  ok(/const st = buildRateStack\(programs \|\| \[\]\);/.test(pricer),
+    '⛔ …and each band goes through the SAME `buildRateStack` the whole board uses, so a row behaves identically');
+  ok(/<BandDivider key=\{it\.key\}/.test(pricer) && /<RateRow key=\{it\.key\} row=\{it\.row\}/.test(pricer),
+    '⛔ the divider and the ordinary row are rendered from ONE walk of that list');
+  ok(/key: `\$\{b\.tier\}:\$\{r\.key\}`/.test(pricer),
+    '⛔ a row key carries its band — one rate can sit in two bands at two prices, and a shared key would collapse them');
+  ok(/banded \|\| \{ items: stack\.rates\.map/.test(pricer),
+    '⛔ until the band searches land it walks the ordinary stack — the board keeps its usual speed');
+
+  // The press still fires them, and still not from an effect.
   ok(/runBrackets\(toScenario\(f\), bracketFigures\(/.test(pricer),
-    '⛔ the Search press fires the band searches itself');
+    'the Search press fires the band searches itself');
   ok(!/useEffect\([^)]*runBrackets/.test(pricer), '…and no effect fires them');
-  ok(!/ltApi\./.test(bb),
-    '⛔ …and the band board itself calls no vendor door at all, so a re-render can never spend a search');
   ok(/effectiveScenario: r && r\.effectiveScenario/.test(pricer),
-    '⛔ the loan amount comes from the answer just received, not the previous render\'s');
+    'the loan amount comes from the answer just received, not the previous render\'s');
   ok(/taxMonthly: perMonth\(/.test(pricer) && /insuranceMonthly: perMonth\(/.test(pricer),
     '…and the tax and insurance through `perMonth`, never the raw box');
-  ok(/figures: \{ figures \}|\{ figures \}/.test(pricer),
-    '…and they are forwarded to the server rather than dropped');
-  ok(/setBrk\(\{ busy: false, res: null, err: null \}\);/.test(pricer),
-    'a new search clears the last one\'s bands — one answer never sits under another question');
 }
 
 // =============================================================================
@@ -238,14 +244,26 @@ section('D. an out-of-band quote is DROPPED, never shown');
 // =============================================================================
 {
   const t = boardMod.tierAtRate(F, 6.5);
+  /* ⛔ THE FIXTURE IS THE **FULL** PARSE SHAPE, because that is what the board is
+     built from now — `priceBuild.noteRate`, `options[]` — so a band renders with the
+     same rows, the same lender grouping and the same details panel as the whole
+     board. A `{rate, price}` fixture would be testing a shape the screen never
+     receives. */
+  const opt = (rate, price) => ({ priceBuild: { noteRate: rate, price }, monthlyPayment: null });
   const built = boardMod.buildBoard(F, [{ tier: t, sentRatio: boardMod.sendRatioFor(t, F, []),
-    quotes: [{ lender: 'A', rate: 6.5, price: 101 }, { lender: 'B', rate: 11.125, price: 99 }] }]);
-  const shown = built.brackets.flatMap((b) => b.quotes.map((q) => q.rate));
+    programs: [{ lender: 'A', options: [opt(6.5, 101), opt(11.125, 99)] }] }]);
+  const shown = built.brackets.flatMap((b) => b.programs.flatMap((p) => p.options.map((o) => o.priceBuild.noteRate)));
   ok(shown.includes(6.5) && !shown.includes(11.125),
     '⛔ the rate whose own ratio is in another band is dropped from this band\'s row');
   ok(built.droppedOutOfBand === 1, `…and the drop is COUNTED (${built.droppedOutOfBand}), never silent`);
-  ok(built.brackets[0].quotes[0].dscr === boardMod.ratioAtRate(F, 6.5),
-    'every shown quote carries the ratio it actually reaches');
+  ok(built.brackets[0].programs[0].options[0].dscr === boardMod.ratioAtRate(F, 6.5),
+    'every shown quote carries the ratio it actually reaches, ON the option the screen draws');
+  /* AND THE SUMMARY SHAPE STILL WORKS — the discovery loop may be handed either, and
+     one reading of "where does a rate live" serves both. */
+  const rungBuilt = boardMod.buildBoard(F, [{ tier: t, sentRatio: boardMod.sendRatioFor(t, F, []),
+    programs: [{ lender: 'A', rungs: [{ rate: 6.5, price: 101 }, { rate: 11.125, price: 99 }] }] }]);
+  ok(rungBuilt.brackets[0].quoteCount === 1 && rungBuilt.droppedOutOfBand === 1,
+    'the summary parse shape bands identically — one reading of where a rate lives, not two');
   /* ⛔ A RATE IS WHATEVER THE VENDOR SAYS IT IS — no eighths assumed anywhere. The
      owner raised this directly: rates usually step by eighths (6.125, 6.25, 6.375)
      but the edges vary (7.499, 6.99, 6.990, 6.999). Nothing here rounds a rate, snaps
@@ -253,34 +271,19 @@ section('D. an out-of-band quote is DROPPED, never shown');
      arithmetic like any other — asserted rather than assumed, because a rate quietly
      snapped to a neighbouring eighth would land in a neighbouring band on the edges. */
   const ODD = [7.499, 6.99, 6.999, 6.125, 6.375];
-  const oddTier = boardMod.tierAtRate(F, 6.99);
   const oddBuilt = boardMod.buildBoard(F, ODD.map((rate) => ({
-    tier: boardMod.tierAtRate(F, rate), sentRatio: boardMod.sendRatioFor(boardMod.tierAtRate(F, rate), F, [{ rate }]),
-    quotes: [{ lender: 'X', rate, price: 100 }],
+    tier: boardMod.tierAtRate(F, rate),
+    sentRatio: boardMod.sendRatioFor(boardMod.tierAtRate(F, rate), F, [{ rate }]),
+    programs: [{ lender: 'X', options: [opt(rate, 100)] }],
   })).filter((r) => r.tier != null));
-  const oddShown = oddBuilt.brackets.flatMap((b) => b.quotes.map((q) => q.rate));
+  const oddShown = oddBuilt.brackets.flatMap((b) => b.programs.flatMap((p) => p.options.map((o) => o.priceBuild.noteRate)));
   ok(ODD.every((r) => oddShown.includes(r)),
     `⛔ every odd rate survives with its exact value (${oddShown.join(', ')})`);
   ok(oddBuilt.droppedOutOfBand === 0, '…and none of them is dropped as out of band');
   ok(boardMod.ratioAtRate(F, 6.99) === boardMod.ratioAtRate(F, 6.990),
     '6.99 and 6.990 are the same rate and reach the same ratio');
-  ok(oddTier != null && boardMod.ratioAtRate(F, 6.999) <= boardMod.ratioAtRate(F, 6.99),
+  ok(boardMod.ratioAtRate(F, 6.999) <= boardMod.ratioAtRate(F, 6.99),
     '…and 6.999 is genuinely dearer than 6.99, never rounded onto it');
-  /* ⛔ THE SERVER WRITES THE RATIO, NOT THE SCREEN. `test-lt-pipeline-columns-pure`
-     forbids an LT screen defining a formatter of its own — because `pct` takes a
-     whole percent and `rate` takes a fraction, and a hand-rolled copy prints
-     0.97% or 7250.0% on a figure somebody quotes out loud. The shared set has no
-     two-place ratio, and the shared `ratio` trims trailing zeros, so "1.2" would
-     sit beside a band labelled "1.20". So the band and the quote carry their own
-     TEXT, from the same place that decided the number — which is the design this
-     whole feature rests on rather than a workaround for the guard. */
-  ok(built.brackets[0].sentRatioText === boardMod.sendRatioFor(t, F, []).toFixed(2)
-    && /^\d+\.\d{2}$/.test(built.brackets[0].sentRatioText),
-    `⛔ the band carries its search ratio as text, two places (${built.brackets[0].sentRatioText})`);
-  ok(/^\d+\.\d{2}$/.test(built.brackets[0].quotes[0].dscrText),
-    `…and every quote carries its own ratio the same way (${built.brackets[0].quotes[0].dscrText})`);
-  ok(boardMod.ratioText(1.2) === '1.20' && boardMod.ratioText(null) === null,
-    '…never trimmed to "1.2", and a figure that is not a ratio has no text at all');
   ok(boardMod.selfConsistent(F, { rate: 6.5 }, t) === true
     && boardMod.selfConsistent(F, { rate: 11.125 }, t) === false,
     'the invariant is askable of one quote on its own');
@@ -322,7 +325,7 @@ async function main() {
     ok(best.bestRate < worst.bestRate,
       `⛔ the cheapest rate (${best.bestRate}%) sits in the strongest bracket and the dearest (${worst.bestRate}%) in the weakest`);
     // The discovery loop found the investor no single search could have shown.
-    const harbor = out.brackets.some((b) => b.quotes.some((q) => q.lender === 'Harbor'));
+    const harbor = out.brackets.some((b) => b.programs.some((p) => p.lender === 'Harbor'));
     ok(harbor, '⛔ an investor that only prices at a low ratio IS found — the answer to "don\'t go only by the rates that are coming up"');
     ok(asked.length <= boardMod.MAX_BRACKETS, `it converges (${asked.length} searches, ceiling ${boardMod.MAX_BRACKETS})`);
     ok(asked.every((a) => a != null),
@@ -333,7 +336,10 @@ async function main() {
 
     // ⛔ EVERY QUOTE IS PRICED IN THE BAND ITS OWN RATE REACHES — the invariant.
     let breaches = 0;
-    for (const b of out.brackets) for (const q of b.quotes) if (!boardMod.selfConsistent(F, q, b.tier)) breaches += 1;
+    for (const b of out.brackets) for (const p of b.programs) for (const o of boardMod.optionsOf(p)) {
+      const { rate, monthlyPi } = boardMod.optionRate(o);
+      if (!boardMod.selfConsistent(F, { rate, monthlyPi }, b.tier)) breaches += 1;
+    }
     ok(breaches === 0, '⛔ THE INVARIANT: every quote on the finished board is priced in the band its own rate reaches');
 
     // ── empties and failures are two different facts ────────────────────────
@@ -348,9 +354,22 @@ async function main() {
       '⛔ a bracket whose search FAILED is reported as a failure, never as a bracket with no rates');
     ok(failRun.failedBrackets[0].error === 'lp_price_500_after_retry', '…carrying the vendor\'s own reason');
 
-    const noSeed = await runMod.priceByBracket(FIG, mkRun(), {});
-    ok(noSeed.ok === false && noSeed.error === 'lt_bracket_no_seed',
-      'with neither a ratio nor a board to start from it refuses plainly, rather than guessing a band');
+    /* ⛔ NO RATIO TYPED IS NOT A REFUSAL ANY MORE (owner-directed 2026-09-01: *"we
+       don't need a target rate anymore… If you don't have a targeted rate, go by the
+       average… do it in your backend."*). Asking an officer for a ratio was the tail
+       wagging the dog: a ratio needs a payment, a payment needs a rate, and the rates
+       are what the search is FOR. The server works a starting band out from a typical
+       coupon and the frontier finds the rest from what actually comes back — so the
+       seed picks the first question, never a price. */
+    const noRatio = await runMod.priceByBracket(FIG, mkRun(), {});
+    ok(noRatio.ok === true, '⛔ a deal with NO typed ratio still prices — the officer supplies nothing');
+    ok(noRatio.brackets.length > 1,
+      `…and still finds several bands (${noRatio.brackets.map((b) => b.tier).join(', ')})`);
+    ok(noRatio.seedTier === boardMod.dscrTier(boardMod.seedRatioFrom(F, null)),
+      `…starting from the band a typical ${boardMod.TYPICAL_RATE_PCT}% coupon reaches (band ${noRatio.seedTier})`);
+    const typedWins = await runMod.priceByBracket(FIG, mkRun(), { seedDscr: 1.45 });
+    ok(typedWins.seedTier === boardMod.dscrTier(1.45),
+      '…and a ratio somebody DID type still wins — they know their deal');
     const noFigs = await runMod.priceByBracket({ rentMonthly: 3000 }, mkRun(), { seedDscr: SEED });
     ok(noFigs.ok === false && noFigs.error === 'lt_bracket_figures_incomplete',
       'half a deal is refused with a reason, never bracketed on guesses');
@@ -371,7 +390,7 @@ async function main() {
     });
     let checked = 0, refused = [];
     for (const b of out.brackets) {
-      for (const q of b.quotes) {
+      for (const q of b.programs.flatMap((p) => boardMod.optionsOf(p).map((o) => boardMod.optionRate(o)))) {
         const built = snapshot.buildSnapshot({
           selections: [{ label: 'A', consumerLabel: 'Platinum A', product: '30-Year Fixed DSCR', mode: 'borrowerPaid',
             ratePct: q.rate, rawPrice: 100, scenario: scFor(b.sentRatio), pricedAt: '2026-09-01T13:00:00.000Z' }],
@@ -393,7 +412,7 @@ async function main() {
        gate never fires rather than because the board is sound. */
     let oldRefused = 0;
     for (const b of out.brackets) {
-      for (const q of b.quotes) {
+      for (const q of b.programs.flatMap((p) => boardMod.optionsOf(p).map((o) => boardMod.optionRate(o)))) {
         const built = snapshot.buildSnapshot({
           selections: [{ label: 'A', consumerLabel: 'Platinum A', product: '30-Year Fixed DSCR', mode: 'borrowerPaid',
             ratePct: q.rate, rawPrice: 100, scenario: scFor(1.25), pricedAt: '2026-09-01T13:00:00.000Z' }],

@@ -195,6 +195,36 @@ function sendRatioFor(tier, figures, rates) {
 }
 
 /**
+ * WHERE TO START WHEN NOBODY TYPED A RATIO (owner-directed 2026-09-01: *"we don't
+ * need a target rate anymore… If you don't have a targeted rate, go by the
+ * average, which is how it's usually coming up. Do it in your backend."*).
+ *
+ * ⛔ THE OFFICER SHOULD NOT HAVE TO SUPPLY A RATIO TO A FEATURE WHOSE WHOLE JOB IS
+ * TO FIND EVERY BAND. Asking for one was the tail wagging the dog: a DSCR cannot be
+ * worked out without a payment, a payment cannot be worked out without a rate, and
+ * the rates are exactly what the search is for.
+ *
+ * ⛔ IT IS A STARTING POINT, NOT AN ANSWER, AND NOTHING IS PRICED ON IT. The seed
+ * only decides which band is asked about FIRST; the frontier then walks outward
+ * over whatever the boards actually return, so a seed a little off costs one extra
+ * round and changes no price. That is what makes a sensible default safe here when
+ * a guessed ratio would not be.
+ *
+ * `TYPICAL_RATE_PCT` is the middle of where this book's DSCR coupons sit. Deliberately
+ * a plain, adjustable number rather than anything derived: derived from WHAT? The
+ * board we have not run yet is the only honest source, and reaching for one just to
+ * pick a starting point would spend the very call this exists to save.
+ */
+const TYPICAL_RATE_PCT = Number(process.env.LP_BRACKET_SEED_RATE_PCT || 7.5) || 7.5;
+
+function seedRatioFrom(figures, typedDscr) {
+  const typed = num(typedDscr);
+  // A ratio somebody actually typed always wins — they know their deal.
+  if (typed != null && typed > 0 && dscrTier(typed) != null) return typed;
+  return ratioAtRate(figures, TYPICAL_RATE_PCT);
+}
+
+/**
  * WHICH BRACKETS A SET OF RATES REACHES — the brackets worth pricing, as a sorted
  * list of tier numbers. A rate whose ratio cannot be worked out contributes
  * nothing rather than a guess.
@@ -287,24 +317,59 @@ function ratioText(v) {
 }
 
 /**
+ * ONE OPTION'S RATE AND THE VENDOR'S OWN MONTHLY P&I, whichever parse shape it
+ * came from. The summary parse calls a rung `{rate, monthly}`; the FULL parse —
+ * the one the board's own details panel is built on — nests them as
+ * `priceBuild.noteRate` and `monthlyPayment.monthlyPI`. Reading both here is what
+ * lets the banded board be the SAME board, with the same click-through, rather
+ * than a thinner second one beside it.
+ */
+function optionRate(o) {
+  if (!o || typeof o !== 'object') return { rate: null, monthlyPi: null };
+  const pb = o.priceBuild || null;
+  const mp = o.monthlyPayment || null;
+  return {
+    rate: num(pb ? pb.noteRate : o.rate),
+    monthlyPi: num(mp ? (mp.monthlyPI != null ? mp.monthlyPI : mp.total) : o.monthly != null ? o.monthly : o.monthlyPi),
+  };
+}
+
+/** Every option a program carries, whichever parse shape it came from. */
+function optionsOf(p) {
+  if (!p || typeof p !== 'object') return [];
+  if (Array.isArray(p.options)) return p.options;
+  if (Array.isArray(p.rungs)) return p.rungs;
+  return [];
+}
+
+/** Put a filtered option list back on a program under the key it arrived on. */
+function withOptions(p, list) {
+  return Array.isArray(p.options)
+    ? Object.assign({}, p, { options: list, optionCount: list.length })
+    : Object.assign({}, p, { rungs: list, rungCount: list.length });
+}
+
+/**
  * THE FINISHED BOARD — every bracket that actually has rates, best bracket first,
- * each carrying only the quotes whose own ratio belongs to it.
+ * each carrying only the options whose own ratio belongs to it.
  *
- * `runs` is `[{ tier, sentRatio, quotes: [{ rate, monthlyPi, ... }] }]` — one per
- * vendor search. Everything else on a quote is carried through untouched, so this
- * module never has to know what a board row looks like.
+ * `runs` is `[{ tier, sentRatio, programs }]` — one per vendor search, `programs`
+ * exactly as the vendor's parse produced them. What comes back is the SAME shape,
+ * filtered, so the screen renders a bracket with the code it already uses for the
+ * whole board: the same rows, the same lender grouping, the same details panel.
+ * That is the owner's own instruction (2026-09-01): *"Every rate and every
+ * investor added, but that whole section should be divided in brackets, and it
+ * should work the same."*
  *
- * ⛔ ONLY BRACKETS THAT ACTUALLY HAVE RATES (the owner: *"you're not going to
- * have empty brackets"*). A bracket that was asked about and came back with
- * nothing this loan reaches is REPORTED as empty — with the reason — rather than
- * drawn as a row nobody can use, and rather than hidden as though it was never
- * asked.
+ * ⛔ ONLY BRACKETS THAT ACTUALLY HAVE RATES (*"you're not going to have empty
+ * brackets"*). A bracket that was asked about and came back with nothing this loan
+ * reaches is REPORTED as empty — with the reason — rather than drawn as a row
+ * nobody can use, and rather than hidden as though it was never asked.
  *
- * ⛔ STRONGEST BRACKET FIRST, which is the owner's own economics: *"the lower
- * rates that he has the opportunity to buy down should obviously be priced with
- * better ratio, because lower rates mean better ratios."* That ordering is not
- * imposed here — it falls out, because the ratio falls as the rate rises, so the
- * cheapest rates are in the highest bracket by arithmetic.
+ * ⛔ STRONGEST BRACKET FIRST, which is the owner's own economics: *"lower rates
+ * mean better ratios."* Not imposed here — it falls out, because the ratio falls
+ * as the rate rises, so the cheapest rates are in the highest bracket by
+ * arithmetic.
  */
 function buildBoard(figures, runs) {
   const f = figures;
@@ -315,22 +380,26 @@ function buildBoard(figures, runs) {
     const tier = run && Number.isInteger(run.tier) ? run.tier : null;
     const row = tierRow(tier);
     if (!row) continue;
-    const quotes = [];
+    const programs = [];
+    let kept = 0;
     let dropped = 0;
-    for (const q of (Array.isArray(run.quotes) ? run.quotes : [])) {
-      const ratio = ratioAtRate(f, q && q.rate, q && q.monthlyPi);
-      if (ratio == null) { dropped += 1; continue; }
-      if (dscrTier(ratio) !== tier) { dropped += 1; continue; }
-      quotes.push(Object.assign({}, q, { dscr: ratio, dscrText: ratioText(ratio), dscrTier: tier }));
+    let bestRate = null;
+    for (const p of (Array.isArray(run.programs) ? run.programs : [])) {
+      const inBand = [];
+      for (const o of optionsOf(p)) {
+        const { rate, monthlyPi } = optionRate(o);
+        const ratio = ratioAtRate(f, rate, monthlyPi);
+        if (ratio == null || dscrTier(ratio) !== tier) { dropped += 1; continue; }
+        // The ratio this rate reaches rides ON the option, so every surface that
+        // draws it — a row, a details panel, a term sheet built from it — states
+        // the same figure without recomputing it.
+        inBand.push(Object.assign({}, o, { dscr: ratio, dscrText: ratioText(ratio), dscrTier: tier }));
+        kept += 1;
+        if (bestRate == null || rate < bestRate) bestRate = rate;
+      }
+      if (inBand.length) programs.push(withOptions(p, inBand));
     }
     droppedTotal += dropped;
-    quotes.sort((a, b) => {
-      const ra = num(a.rate); const rb = num(b.rate);
-      if (ra == null && rb == null) return 0;
-      if (ra == null) return 1;
-      if (rb == null) return -1;
-      return ra - rb;
-    });
     brackets.push({
       tier,
       label: tierLabel(tier),
@@ -338,15 +407,13 @@ function buildBoard(figures, runs) {
       to: row.to,
       sentRatio: num(run.sentRatio),
       sentRatioText: ratioText(num(run.sentRatio)),
-      quotes,
-      quoteCount: quotes.length,
+      programs,
+      quoteCount: kept,
+      bestRate,
       // Why a bracket a search was run for is showing nothing. Silence here is
       // what a reader mistakes for "we did not look".
-      emptyReason: quotes.length ? null
-        : (Array.isArray(run.quotes) && run.quotes.length
-          ? 'no_rate_in_band'
-          : 'no_quotes_returned'),
-      bestRate: quotes.length ? num(quotes[0].rate) : null,
+      emptyReason: kept ? null
+        : ((Array.isArray(run.programs) && run.programs.length) ? 'no_rate_in_band' : 'no_quotes_returned'),
     });
   }
   brackets.sort((a, b) => b.tier - a.tier);   // strongest ratio first
@@ -364,5 +431,6 @@ module.exports = {
   MAX_BRACKETS, MAX_ROUNDS,
   readFigures, ratioAtRate, tierAtRate, sendRatioFor, ratioText,
   tiersFromRates, bracketFrontier, selfConsistent, buildBoard, VENDOR_MAX_DSCR,
+  optionRate, optionsOf, seedRatioFrom, TYPICAL_RATE_PCT,
   DSCR_TIERS, dscrTier, tierLabel,
 };
