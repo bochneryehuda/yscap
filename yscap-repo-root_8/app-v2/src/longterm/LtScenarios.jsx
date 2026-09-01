@@ -10,7 +10,7 @@ import { toScenario, searchProblem } from './scenarioFields.js';
    difference between two readings of the same board as though the market had moved. */
 import { buildRateStack } from './LtPricer.jsx';
 import { boardHeadline } from './LtScenarioSave.jsx';
-import { noteRate, price, day, ago, plain } from './format.js';
+import { noteRate, price, dayOf, ago, plain } from './format.js';
 import {
   INK, MUTED, SLATE, GOLD, GOLD_TEXT, DANGER, CAUTION,
   card, eyebrow, sub, band, bandHead, control, fieldLabel, LINE, WASH,
@@ -58,7 +58,7 @@ function SavedHeadline({ b }) {
   return (
     <span style={{ fontSize: 12, color: MUTED }}>
       best rate <strong style={{ color: SLATE }}>{noteRate(b.bestRate)}</strong>
-      {' '}on {day(b.at)}
+      {' '}on {dayOf(b.at)}
     </span>
   );
 }
@@ -80,12 +80,12 @@ export function movementLine(saved, now) {
   }
   const bps = Math.round((Number(now.bestRate) - Number(saved.bestRate)) * 1000) / 10;
   if (bps === 0) {
-    return { tone: 'flat', text: `The best rate is unchanged at ${noteRate(now.bestRate)} since ${day(saved.at)}.` };
+    return { tone: 'flat', text: `The best rate is unchanged at ${noteRate(now.bestRate)} since ${dayOf(saved.at)}.` };
   }
   const dir = bps < 0 ? 'down' : 'up';
   return {
     tone: bps < 0 ? 'better' : 'worse',
-    text: `The best rate is ${dir} ${Math.abs(bps).toFixed(1)} bps since ${day(saved.at)} — ${noteRate(saved.bestRate)} then, ${noteRate(now.bestRate)} today.`,
+    text: `The best rate is ${dir} ${Math.abs(bps).toFixed(1)} bps since ${dayOf(saved.at)} — ${noteRate(saved.bestRate)} then, ${noteRate(now.bestRate)} today.`,
   };
 }
 
@@ -289,7 +289,7 @@ export default function LtScenarios() {
               <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
                 {row.propertyAddress ? <>{row.propertyAddress} · </> : null}
                 {row.borrowerName || row.entityName ? <>{plain(row.borrowerName || row.entityName)} · </> : null}
-                saved {ago(row.createdAt)}
+                saved {ago(row.createdAt) || `on ${dayOf(row.createdAt)}`}
               </div>
               <div style={{ marginTop: 2 }}><SavedHeadline b={row.savedBoard} /></div>
             </div>
