@@ -20,6 +20,18 @@
 
 
   var LENDER = { name: "YS Capital Group", nmls: "2609746", email: "sales@yscapgroup.com", phone: "718-831-2168" };
+  /* ⛔ THE BUSINESS-PURPOSE STAMP — owner-directed 2026-09-01, their words verbatim:
+     "every single one of your exports should say at the bottom, 'This is for
+     business-purpose lending only.'" ONE constant so every export this file draws
+     says it identically and none can reword it.
+
+     ⛔ IT IS NOT A DECORATION. It is the sentence this loan's whole regulatory
+     position rests on: an RTL loan is secured by non-owner-occupied investment
+     property and made for business purposes, which is what keeps it outside the
+     consumer-mortgage rules (TILA / RESPA). The disclosures page and the acceptance
+     section already carry the full paragraph; what was missing is the short standing
+     stamp AT THE BOTTOM, which is what was asked for. */
+  var BUSINESS_PURPOSE = "This is for business-purpose lending only.";
   var FEES = { lender: 2195, credit: 150, appraisal: 800 };   // flat third-party estimates (origination % comes from the engine / admin field)
   // Company-wide pricing defaults (Pricing Admin Center, owner-directed
   // 2026-07-14): seeded to the historic literals, then overwritten live from
@@ -3142,6 +3154,18 @@
         doc.text(pdfSafe((manualOn() ? "Manually underwritten \u2014 pricing and leverage set by " + LENDER.name + " on a credit-committee basis. " : "") + "Indicative only \u2014 not a commitment or approval to lend. Subject to underwriting, appraisal, title and final credit approval. Not valid until countersigned by " + LENDER.name + "."), M, H - 26, { maxWidth: W - 2 * M });
         // Term-sheet identity line on EVERY page (owner-directed 2026-07-31):
         // Initial/Final + the unique id + the exact export date & time.
+        /* ⛔ THE STAMP SHARES THE BOTTOM LINE WITH THE IDENTITY, LEFT AGAINST RIGHT,
+           and that placement is MEASURED rather than chosen. The footer's three
+           slots are 14pt apart (contact H-40, disclaimer H-26, identity H-14) and
+           the disclaimer already fills its own line: appending the sentence there
+           wraps it to a second line at about H-18, whose descender runs into the
+           identity line's ascender. The bottom line's LEFT half is empty — the
+           identity is right-aligned — so the stamp goes there and nothing has to
+           move, nothing can collide, and it is literally the last line on the page.
+           Proven by render: `render-fee-audit.js` asserts no text overlaps other
+           text and nothing prints past the bottom margin. */
+        doc.setFontSize(7); doc.setTextColor.apply(doc, GRAY); doc.setFont("helvetica", "normal");
+        doc.text(pdfSafe(BUSINESS_PURPOSE), M, H - 14);
         doc.setFontSize(6); doc.setTextColor.apply(doc, GRAY);
         doc.text(pdfSafe((provFinal ? "Final" : "Initial") + " term sheet \u00b7 " + tsId + " \u00b7 Exported " + tsStamp), W - M, H - 14, { align: "right" });
       }
@@ -4269,7 +4293,7 @@
     function footNote() {
       doc.setDrawColor.apply(doc, LINE); doc.setLineWidth(0.8); doc.line(M, H - 46, W - M, H - 46);
       doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); doc.setTextColor(150, 158, 162);
-      doc.text(pdfSafe((minInterestOn(_dpProg) ? MIN_INTEREST_DETAIL + " " : "") + "Figures are indicative, derived from the inputs above, and subject to full underwriting, appraisal/valuation, title and final credit approval. " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + "."), M, H - 34, { maxWidth: W - 2 * M });
+      doc.text(pdfSafe((minInterestOn(_dpProg) ? MIN_INTEREST_DETAIL + " " : "") + BUSINESS_PURPOSE + " Figures are indicative, derived from the inputs above, and subject to full underwriting, appraisal/valuation, title and final credit approval. " + LENDER.name + " \u00b7 NMLS " + LENDER.nmls + "."), M, H - 34, { maxWidth: W - 2 * M });
     }
     pageTop(false);
 

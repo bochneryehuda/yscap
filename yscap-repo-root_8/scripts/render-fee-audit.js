@@ -323,6 +323,21 @@ const FOOTER_RE = /^(Your YS Capital contact:|Indicative only|Initial term sheet
     ok(`${deal.name}: nothing is drawn twice in the same place`, dupes.length === 0,
       dupes.slice(0, 4).map((i) => `p${i.p} y=${i.y.toFixed(0)} "${i.t.slice(0, 44)}"`).join(' | '));
 
+    /* 3c ── THE BUSINESS-PURPOSE STAMP IS ON EVERY PAGE. Owner-directed 2026-09-01:
+       "every single one of your exports should say at the bottom, 'This is for
+       business-purpose lending only.'" ONLY A RENDER PROVES THIS: the footer is
+       drawn per page after the flow, precisely so a page the renderer adds
+       mid-table cannot come out bare — and that invented page is the one at risk
+       and the one no source test can see. Asserted page by page rather than once
+       over the document, or a stamp on page 1 alone would read as compliant.
+       Punctuation is stripped as well as space: the hyphen in "business-purpose"
+       survives a whitespace squash, and a renderer may draw it as any dash. */
+    const bare = (t) => String(t).toLowerCase().replace(/[^a-z0-9]/g, '');
+    const unstamped = pages.filter((pg) => !bare(visible.filter((i) => i.p === pg).map((i) => i.t).join(''))
+      .includes('businesspurposelendingonly'));
+    ok(`${deal.name}: every page says "This is for business-purpose lending only."`, unstamped.length === 0,
+      `missing on page ${unstamped.join(', ') || 'none'}`);
+
     console.log(`   ${r.items.length} strings · ${pages.length} pages · ${r.d.govLines} government charge lines`
       + ` · cash to close ${screen.cash} · liquidity ${screen.liquidity}`);
   }
