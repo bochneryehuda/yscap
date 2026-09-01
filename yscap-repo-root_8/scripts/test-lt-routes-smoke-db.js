@@ -287,6 +287,14 @@ async function main() {
       // read itself is opened on a REAL issued sheet by
       // test-lt-term-sheet-deliver-db.js, where there is something to list.
       '/api/lt/dscr/term-sheet/TS-ZZZZZZ/deliveries',
+      /* THE SAVED SCENARIOS (db/658). The list is scoped to the signed-in
+         officer, so on this session it answers an empty list — which is what
+         proves the scope's WHERE assembled into a real statement rather than
+         swallowing a phantom column into a confident empty. The per-scenario
+         read is opened on an id nobody saved, where the route's own 404 proves
+         the uuid check and the SELECT both ran. */
+      '/api/lt/dscr/scenarios',
+      `/api/lt/dscr/scenarios/${NO_LOAN}`,
       // The ClickUp syncing section (#36). On the no-such-loan id the scoped
       // loader answers its own 404 — the route's uuid check + SELECT both run,
       // so a phantom column in either would surface here as a 500.

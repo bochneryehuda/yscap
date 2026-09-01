@@ -195,6 +195,11 @@ console.log('\nF. a general-engine change that WAS ported stays ported');
   // on real scenarios, and an unreadable board is a defect whatever it is priced on.
   const fb = codeOf(fork);
   const gb = codeOf(general);
+  /* The form the general engine now MOUNTS. Read once and shared by F5 and F6: both ask
+     "what does the general engine show/ask", and since #1395 that answer spans two files.
+     Missing is tolerated as empty so this suite still runs against an older tree. */
+  let sharedFormSrc = '';
+  try { sharedFormSrc = read('app-v2/src/longterm/LtScenarioFields.jsx'); } catch { sharedFormSrc = ''; }
   const CLASSES = ['ltq-row', 'ltq-head', 'ltq-name', 'ltq-act', 'ltq-cell', 'ltq-price', 'ltq-gap', 'ltq-ratehead'];
   const count = (src, k) => (src.match(new RegExp(`ltq-${k.slice(4)}(?=[\"\\s])`, 'g')) || []).length;
   let same = 0;
@@ -276,14 +281,57 @@ console.log('\nF. a general-engine change that WAS ported stays ported');
 
      Counted and DERIVED from the general engine, never typed in: a presence test passes on
      a copy that has kept the comment and lost the line. */
+  /* ⛔ READ THE GENERAL SIDE AS THE SCREEN PLUS THE SHARED FORM IT MOUNTS. On 2026-09-01
+     main moved the twenty scenario fields — this note among them — out of LtPricer.jsx and
+     into LtScenarioFields.jsx (#1395). Keyed on LtPricer.jsx alone this went from "both
+     screens carry it" to "general 0, copy 1", which reads as the GENERAL engine having lost
+     the note when it had simply been rehoused. An assertion about what a screen SHOWS has
+     to follow the fields wherever they live, or every future extraction fails it falsely
+     and gets "fixed" by loosening it. Same union F6 takes, for the same reason. */
+  const genForm = gb + '\n' + codeOf(sharedFormSrc);
   const ioNote = (src) => (src.match(/Interest-only also searches/g) || []).length;
-  ok(ioNote(gb) > 0 && ioNote(fb) === ioNote(gb),
-    `F5 both screens tell the officer an interest-only search also covers 40-year (general ${ioNote(gb)}, copy ${ioNote(fb)})`);
+  ok(ioNote(genForm) > 0 && ioNote(fb) === ioNote(genForm),
+    `F5 both screens tell the officer an interest-only search also covers 40-year (general ${ioNote(genForm)}, copy ${ioNote(fb)})`);
   // …and it is gated on the interest-only box on both, so it never claims a widening on a
   // search that was not widened.
-  const ioGated = (src) => /f\.io \?[\s\S]{0,400}?Interest-only also searches/.test(src);
-  ok(ioGated(gb) && ioGated(fb),
+  const ioGated = (src) => /(f|sc)\.io \?[\s\S]{0,400}?Interest-only also searches/.test(src);
+  ok(ioGated(genForm) && ioGated(fb),
     'F5a …and on both it is shown only while interest-only is ticked');
+
+  /* F6 — THE TWO BOARDS ASK FOR THE SAME LOAN.
+
+     ⛔ WHY THIS IS THE ONE THAT MATTERS MOST. The whole point of the combined engine is
+     that the owner prices a real scenario on it and compares the answer to the general
+     engine's. If the two screens stop asking for the SAME INPUTS, that comparison is
+     between two different loans and every conclusion drawn from it is wrong — and nothing
+     would say so, because both boards would price perfectly happily.
+
+     ⛔ DERIVED FROM THE GENERAL SIDE, NEVER TYPED IN, AND IT FOLLOWS THE FIELDS WHEREVER
+     THEY LIVE. On 2026-09-01 the general engine moved its twenty scenario fields out into
+     the shared `LtScenarioFields.jsx` so the pricer and the new scenarios page mount ONE
+     form (main #1395) — the one-definition rule applied to the form. The fork still keeps
+     its own copy inline. So the expectation is the UNION of what the general screen still
+     holds and what the shared form holds, which is exactly "every field the general engine
+     asks for", however main chooses to arrange them next.
+
+     ⛔ AND THIS IS WHY THAT REFACTOR IS *NOT* PORTED (yet). Measured at the merge: both
+     screens ask for the same 21 fields, so nothing has drifted and the copy is not wrong
+     today — porting is a ~600-line restructure of a 2,900-line screen the owner is
+     auditing, which is a change to make deliberately rather than as a side effect of
+     keeping a branch mergeable. What was missing was any way to NOTICE if the two drifted;
+     that gap is what this closes. When the fork is folded into the general engine, or the
+     shared form is adopted here, this assertion keeps holding with no edit. */
+  const FIELD_RE = /id="(pe-[a-zA-Z0-9_-]+)"/g;
+  const fieldIds = (src) => new Set([...src.matchAll(FIELD_RE)].map((m) => m[1]));
+  const union = (...sets) => new Set(sets.flatMap((x) => [...x]));
+  const generalAsks = union(fieldIds(general), fieldIds(sharedFormSrc));
+  const forkAsks = fieldIds(fork);
+  const missing = [...generalAsks].filter((x) => !forkAsks.has(x)).sort();
+  const extra = [...forkAsks].filter((x) => !generalAsks.has(x)).sort();
+  ok(generalAsks.size > 10 && missing.length === 0 && extra.length === 0,
+    `F6 the copy asks for exactly the fields the general engine asks for (${generalAsks.size} fields`
+    + `${missing.length ? `; MISSING from the copy: ${missing.join(', ')}` : ''}`
+    + `${extra.length ? `; only on the copy: ${extra.join(', ')}` : ''})`);
 }
 
 console.log(bad ? `\nFAILURES: ${bad}` : '\nOFFLINE: all passed');

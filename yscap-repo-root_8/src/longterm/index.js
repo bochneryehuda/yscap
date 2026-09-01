@@ -178,6 +178,13 @@ router.use('/dscr/investor-groups', require('./routes/pricer-groups'));
 // LT_COMBINED_PRICING switch is a kill switch, default ON.
 //   /api/lt/dscr/combined/{health,price,investors,loannex/price,loannex/login-check,loannex/disqualify/:id}
 router.use('/dscr/combined', require('./routes/combined-pricer').makeRouter());
+// The Pricing Engine's SAVED SCENARIOS (owner-directed 2026-08-31) — a person's
+// own saved sets of pricing INPUTS, re-runnable any time. Registered BEFORE the
+// /dscr mount for the same reason the investor groups are, and deliberately NOT
+// inside makeRouter: a scenario belongs to ONE person, and the diagnostics seam
+// has nobody signed in to own one.
+//   /api/lt/dscr/scenarios
+router.use('/dscr/scenarios', require('./routes/pricer-scenarios'));
 
 // TERM SHEETS (owner-directed 2026-08-30) — issue, replay by ID, and the
 // comparison cart. Registered BEFORE the /dscr mount for the same reason the

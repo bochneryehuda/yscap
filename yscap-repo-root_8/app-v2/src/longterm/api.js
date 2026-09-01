@@ -231,6 +231,16 @@ export const ltApi = {
   combinedLinkSuggest: (name) => ltGet(lt(`/dscr/combined/investor-links/suggest?name=${encodeURIComponent(name)}`)),
   // Is each program configured? No login attempted, no vendor reached.
   combinedHealth: () => ltGet(lt('/dscr/combined/health')),
+  // THE SIGNED-IN PERSON'S OWN SAVED SCENARIOS (owner-directed 2026-08-31). A
+  // scenario is INPUTS — never a price — so none of these calls asks Lender Price
+  // anything: re-running a saved scenario goes back through `dscrPrice` like any
+  // other search. `save` always creates; `update` renames or re-saves an existing
+  // one and sends ONLY the keys it means to move.
+  dscrScenarios: () => ltGet(lt('/dscr/scenarios')),
+  dscrScenario: (id) => ltGet(lt(`/dscr/scenarios/${encodeURIComponent(id)}`)),
+  dscrSaveScenario: (body) => ltPost(lt('/dscr/scenarios'), body || {}),
+  dscrUpdateScenario: (id, patch) => ltPatch(lt(`/dscr/scenarios/${encodeURIComponent(id)}`), patch || {}),
+  dscrDeleteScenario: (id) => ltDel(lt(`/dscr/scenarios/${encodeURIComponent(id)}`)),
 
   // THE CLICKUP SYNCING SECTION (#36): everything the writer does automatically,
   // visible + manually drivable per file. Every write goes through the guarded

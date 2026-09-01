@@ -316,12 +316,20 @@ console.log('\nthe PILOT design is on every page — the band, the lockup, the f
     if (!squash(inBand.map((it) => it.s).join('')).includes('comparisonsheet')) bandless.push(i + 1);
     if (!squash(inFoot.map((it) => it.s).join('')).includes('notacommitmenttolend')) footerless.push(i + 1);
   });
-  /* The band-and-footer sweep below needs SEVERAL pages to be worth running; it
-     used to get them from the per-option repeat, which is gone. Five options
-     still make a multi-page document through the table and the disclosures, and
-     the check is on what it needs (more than one page) rather than on a page
-     count that was really a symptom of the bloat. */
-  check(back.pageCount >= 3, `a five-option comparison runs to ${back.pageCount} pages — enough for the band-and-footer sweep to mean something`);
+  /* The band-and-footer sweep below needs MORE THAN ONE page to be worth
+     running: what it proves is that a page produced by a BREAK cannot come out
+     bare. It used to get them from the per-option repeat, which is gone, and
+     then from five options at the old type size.
+
+     ⛔ IT SAYS 2, AND IT SAID 3 UNTIL THE SHEET WAS RE-SET TO THE APPROVED
+     DESIGN. That is the number moving because the DOCUMENT got shorter — the
+     same five options now fit in two pages rather than three — not a guard
+     loosened to let a change through: the sweep still runs over every page of a
+     multi-page document, which is the whole of what it was written to do, and
+     its own comment has always said "more than one page". If it ever falls to
+     1, the sweep has stopped proving anything and the fixture needs more
+     content, not a smaller number. */
+  check(back.pageCount >= 2, `a five-option comparison runs to ${back.pageCount} pages — enough for the band-and-footer sweep to mean something`);
   check(bandless.length === 0, `the brand band names the document on EVERY page (missing on ${bandless.join(', ') || 'none'})`);
   check(footerless.length === 0, `and the footer disclaims on EVERY page (missing on ${footerless.join(', ') || 'none'})`);
 
@@ -424,7 +432,11 @@ console.log('\nthe owner\'s four items, on the paper');
     'the term sheet says it expires in 24 HOURS — the unit is the message');
 
   // (6) SIGNABLE, AND ONLY THE TERM SHEET.
-  check(flat.includes(squash('Borrower / guarantor')), 'a term sheet has somewhere to sign');
+  /* RE-POINTED 2026-08-31: the approved sketch sets a signature line as
+     "<name> — <role>", so the combined role reads "borrower and guarantor". The
+     property — a term sheet has a line to sign and nothing else does — is
+     unchanged and is what is asserted. */
+  check(flat.includes(squash('borrower and guarantor')), 'a term sheet has somewhere to sign');
   check(!wflat.includes(squash('Borrower / guarantor')),
     'and a comparison has none — a signature under two columns records agreement to nothing in particular');
 
@@ -653,6 +665,212 @@ console.log('\nthe paper reads like a document, not like a database');
     'the term sheet opens with the loan, the rate and the payment, before the tables');
   check(/\$375,000/.test(p1) && /7\.375%/.test(p1),
     '…stating the same figures the table below states, never a second calculation');
+
+  // ── the design, on the paper ──────────────────────────────────────────────
+  console.log('\nthe sheet is set the way the approved design is set');
+
+  /* ⛔ THE LOAN AND ITS MONTHLY PAYMENT ARE SIDE BY SIDE, AND THIS IS THE ONLY
+     WAY TO PROVE IT. `layout.js` can ASK for two columns; `pdf.js` falls back to
+     one whenever the pair could not be drawn safely, and both are valid
+     documents — so a source check on the request proves nothing about the page.
+     In one column the payment rows come strictly BELOW the loan rows; in two,
+     the payment's first row sits HIGHER on the same page than the loan's last.
+     That single comparison cannot be true of a fallback, so it is the assertion.
+     MEASURED: this is what takes the sheet from three sheets to two on a real
+     file, and it is the design's own page one. */
+  const at = (page, label) => (ts.pages[page] || []).find((i) => i.s.trim() === label);
+  const prepay = at(0, 'Prepayment');
+  const pandi = at(0, 'Principal & interest');
+  check(!!prepay && !!pandi, 'the loan and the payment are both on page one');
+  if (prepay && pandi) {
+    check(pandi.y > prepay.y,
+      `the payment column starts ABOVE the loan column's last row (${pandi.y.toFixed(0)} vs ${prepay.y.toFixed(0)}) — two columns, not one`);
+    check(pandi.x > prepay.x + 150,
+      `…and to the right of it (x ${pandi.x.toFixed(0)} vs ${prepay.x.toFixed(0)})`);
+  }
+
+  /* ⛔ NOTHING IN THE CONTENT IS CLIPPED. `clip()` ends a string it could not fit
+     with an ellipsis, which on a label reads as a rendering fault rather than as
+     a shortened word — and it is a SILENT failure, because the page still draws.
+     It went unnoticed for as long as every row had the full content column: the
+     moment a column was half as wide, "Total monthly payment (principal,
+     interest, taxes & insurance)" drew as "Total monthly payment (principal,
+     inter…" on the one row that resolves the arithmetic. The band's own identity
+     lines are excluded because a very long programme name may honestly be
+     shortened there; a figure or a label may not. */
+  const Zc = pdf.ZONES.content;
+  const clipped = [];
+  for (const doc of [ts, cmp]) {
+    doc.pages.forEach((items, pi) => {
+      for (const it of items) {
+        if (!(it.y >= Zc.bottom - 0.5 && it.y + it.h <= Zc.top + 2)) continue;
+        if (/…$/.test(it.s.trim())) clipped.push(`p${pi + 1} "${it.s.trim()}"`);
+      }
+    });
+  }
+  check(clipped.length === 0, `no label or figure is cut short with an ellipsis${clipped.length ? `: ${clipped.join(', ')}` : ''}`);
+  check(ts.pages.some((items) => items.some((i) => /^Total monthly payment/.test(i.s.trim()))),
+    '…and the row that used to be cut short is on the page in full, which is what makes the sweep above mean something');
+
+  /* ⛔ THREE WEIGHTS AND NO MORE — the design's third rule, asserted as the two
+     PROPORTIONS that were actually wrong rather than as a table of absolute
+     sizes nobody may ever change. The headline band was 2.26× the table it
+     summarised (the design's own is 1.73) and a resolving total was 1.5× the
+     ordinary figure beside it, which is the "everything is way too big" the
+     owner read off a real export. A ratio guard leaves the scale free to move as
+     one and still refuses the change that makes one figure shout. */
+  const SZ = pdf._internals.SZ;
+  check(SZ.hero / SZ.tableValue <= 2,
+    `the headline is at most twice the table it summarises (${(SZ.hero / SZ.tableValue).toFixed(2)}×)`);
+  check(SZ.big / SZ.value <= 1.35,
+    `a resolving total is MEDIUM beside its neighbours, never large (${(SZ.big / SZ.value).toFixed(2)}×)`);
+  check(Math.max(SZ.label, SZ.value, SZ.tableLabel, SZ.tableValue, SZ.tableBig, SZ.colTitle,
+    SZ.gridValue, SZ.para, SZ.small, SZ.section, SZ.eyebrow) <= SZ.hero,
+  '…and nothing in the body is larger than the one figure that may be');
+
+  /* ⛔ A SECTION HEADING IS A RULE AND A TICK, NEVER A FILLED BAR — and this one
+     is asserted on the SOURCE, which is a real limitation stated rather than
+     hidden. The property is about a FILLED RECTANGLE, and the text extractor
+     this suite reads the paper with reports strings and their boxes; it cannot
+     see a fill at all. So what is checked is that `compileBand` draws a rule and
+     does not paint a rounded rectangle behind its label — which is exactly the
+     change, and would catch it coming back. Four saturated bars the width of the
+     column were the loudest thing on a page whose entire argument is the
+     figures, on a document the owner read beside the design and called *"way far
+     off from the sketch"*. */
+  const pdfSrc = fs.readFileSync(new URL('../src/longterm/termsheet/pdf.js', import.meta.url), 'utf8');
+  const bandFn = pdfSrc.slice(pdfSrc.indexOf('function compileBand('), pdfSrc.indexOf('function compileRule('));
+  check(bandFn.length > 100, 'compileBand was found in the source to read');
+  check(!/roundedRect\(/.test(bandFn),
+    'a section heading paints no rounded bar behind its label');
+  check(/line\([^)]*INK/.test(bandFn) || /line\(c, base - S\.rulePad, B\.x, B\.right, INK/.test(bandFn),
+    '…it rules under it in ink instead');
+  check(/tickW/.test(bandFn) && /TEAL/.test(bandFn),
+    '…and spends the accent on a tick, so the heading is still marked');
+  check(brand.SECTION && brand.SECTION.h === undefined && brand.SECTION.radius === undefined,
+    '…and the filled bar\'s own geometry is gone from brand.js, not merely unused');
+}
+
+/* ===========================================================================
+   THE COMPARISON TABLE AND ITS SHARED-FACTS BOX, AGAINST THE APPROVED SKETCH.
+
+   ⛔ EACH OF THESE IS SOMETHING THE OWNER READ OFF A REAL EXPORT AND CALLED
+   WRONG (2026-08-31: *"your new design doesn't come close … I expect the sheet
+   to look exactly as the sketch"*). What shipped drew a grey header band,
+   zebra-striped every other row, set every figure in the same sans as its label,
+   and put what every option agrees about below the table as a fifteen-row list.
+
+   ⛔ THE MONOSPACE IS PROVEN FROM THE PAPER, NOT FROM THE SOURCE. Courier
+   advances every glyph by exactly 0.6em, so a column of figures set in it has
+   the SAME width-per-character whatever the digits are; Helvetica does not. So
+   the ratio is measured across several real values and required to be constant
+   — which is a fact about what a viewer will draw, and cannot be satisfied by a
+   comment. The label column is measured beside it as the control: if BOTH were
+   constant the assertion would be about the extractor rather than the font.
+   =========================================================================== */
+console.log('\nthe comparison table is the sketch\'s ledger, not a spreadsheet');
+{
+  const cmpBytes = await render(
+    [quote('Platinum 30-Year Fixed', 7.375, 102), quote('Core 30-Year Fixed', 7.625, 101.25),
+      quote('Core 5/6 ARM', 7.875, 100.5)],
+    {
+      borrowerName: 'Jonathan Reyes', entityName: 'Maple Holdings LLC',
+      propertyAddress: '128 Maple Avenue, Lakewood, NJ 08701',
+      officerName: 'Chaim Stern', companyName: 'YS Capital Group', companyNmls: '2609746',
+      preparedAt: '2026-08-31T14:00:00.000Z', expiresAt: '2026-09-01T14:00:00.000Z',
+    },
+    { expiryHours: 24 },
+  );
+  const cmp = await readBack(cmpBytes);
+  const all = cmp.pages.flat();
+
+  // The three data columns are the x's the option figures are drawn at; the
+  // label column is the left margin. Read off the page rather than retyped.
+  const squash = (t) => String(t).replace(/\s+/g, '');
+  /* A GLYPH'S OWN ADVANCE, in ems — the width the viewer will use, divided by
+     the string's length and by its size. Courier advances EVERY glyph by exactly
+     0.6em, at any size, so this one number tells a monospaced run from a
+     proportional one without the suite having to know which font id the
+     extractor gave it. Dividing by the size is what lets figures set at three
+     different sizes on one page be measured together. */
+  const ems = (items) => items
+    .filter((i) => i.s.trim().length >= 4 && i.w > 0 && i.h > 0)
+    .map((i) => i.w / (i.s.trim().length * i.h));
+  const colX = [...new Set(all.map((i) => Math.round(i.x)))].filter((x) => x > 150 && x < 500);
+  /* THE TABLE'S OWN FIGURES, told from every other figure on the page by the two
+     sizes the table sets — its ordinary value and its resolving one. Taken from
+     `SZ` rather than retyped, so the selection follows the scale if it moves. */
+  const TSZ = pdf._internals.SZ;
+  const isTableSize = (h) => Math.abs(h - TSZ.tableValue) < 0.15 || Math.abs(h - TSZ.tableBig) < 0.15;
+  const valueItems = all.filter((i) => colX.includes(Math.round(i.x))
+    && isTableSize(i.h) && /[$%\d]/.test(i.s));
+  const vEms = ems(valueItems);
+  check(vEms.length >= 6, `the table draws ${vEms.length} figures to measure — a handful would prove nothing`);
+  const off = vEms.filter((r) => Math.abs(r - 0.6) > 0.03);
+  check(off.length === 0,
+    `every figure in the table is MONOSPACED — 0.6em a glyph, whatever the digits (${off.length} of ${vEms.length} are not)`);
+  const labelItems = all.filter((i) => Math.round(i.x) === 45 && /^[A-Z][a-z]/.test(i.s.trim()) && i.s.trim().length >= 8);
+  const lEms = ems(labelItems);
+  check(lEms.length >= 4 && lEms.every((r) => Math.abs(r - 0.6) > 0.03),
+    '…and the labels beside them are NOT — the control, without which the measurement above is about the extractor');
+
+  // The column heads: a tracked gold eyebrow naming each column, the anchor
+  // tag on exactly one of them, and no "(compared against)" prose left over.
+  const flatCmp = squash(cmp.text);
+  check(flatCmp.includes(squash('OPTION A')) && flatCmp.includes(squash('OPTION B'))
+    && flatCmp.includes(squash('OPTION C')),
+  'every column is headed by its own eyebrow, as the sketch heads them');
+  check((flatCmp.match(new RegExp(squash('THE ANCHOR'), 'g')) || []).length === 1,
+    '…and exactly ONE column is tagged as the one the others are measured against');
+  check(!/\(comparedagainst\)/i.test(flatCmp),
+    '…so the head no longer carries the parenthetical it used to');
+
+  /* THE SHARED FACTS ARE A BOX ABOVE THE TABLE. Proven by ORDER on the page, not
+     by the block list: the box's own heading must be drawn ABOVE the table's
+     first column head, on the same page. */
+  const p1 = cmp.pages[0];
+  /* ⛔ ANCHORED ON STRINGS THAT ARE DRAWN WHOLE. A tracked eyebrow is placed one
+     CHARACTER at a time (pdf-lib has no letter-spacing), so every extracted item
+     of "OPTION A" is a single letter and an anchor on it would match a stray
+     "O" anywhere on the page. The box's own footnote and the table's first row
+     label are both drawn as whole strings. */
+  const yOf = (re) => { const it = p1.find((i) => re.test(i.s.trim())); return it ? it.y : null; };
+  const gridY = yOf(/^Anything that differed/);
+  const headY = yOf(/^Principal & interest$/);
+  check(gridY != null && headY != null && gridY > headY,
+    'what every option agrees about is stated ABOVE the table, in its own box — the sketch\'s own order');
+  check(!squash(cmp.text).includes(squash('The same in all 3 — stated once')),
+    '…and not below it as the list of rows it used to be');
+}
+
+/* ⛔ AND THE THINGS A TEXT EXTRACTOR CANNOT SEE — a fill, a rule and a font
+   CHOICE — are pinned on the source, which is a limitation stated rather than
+   hidden. Every one of them is a change the owner asked for by name. */
+{
+  const src = fs.readFileSync(new URL('../src/longterm/termsheet/pdf.js', import.meta.url), 'utf8');
+  const tableFn = src.slice(src.indexOf('function compileTable('), src.indexOf('function compileFactGrid('));
+  const gridFn = src.slice(src.indexOf('function compileFactGrid('), src.indexOf('const PAGEBREAK'));
+  check(tableFn.length > 500 && gridFn.length > 500, 'both compilers were found in the source to read');
+  // Strip the comments first: they necessarily NAME what was removed, and a
+  // guard that read them would fail on its own explanation.
+  const nc = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const tableCode = nc(tableFn);
+  const gridCode = nc(gridFn);
+  check(!/%\s*2/.test(tableCode) && !/ri\s*%/.test(tableCode),
+    'the table zebra-stripes nothing — the sketch bands the rows that RESOLVE, and no others');
+  check(/rect\([^)]*IVORY\)/.test(tableCode) && /accent/.test(tableCode),
+    '…it bands an accent row in ivory instead');
+  check(!/SOFT/.test(tableCode),
+    '…and paints no grey ground behind its head');
+  check(/F\.monoBold/.test(tableCode) && /F\.mono/.test(tableCode),
+    'its figures are set in the monospace, its labels in the sans');
+  check(/closing \? INK : HAIR/.test(tableCode),
+    'a row closes on an INK rule when it ends the table or its group, and on a hairline otherwise');
+  check(/GOLD/.test(tableCode) && /colEyebrow/.test(tableCode),
+    'the column eyebrow is gold, as the sketch sets it');
+  check(/rect\([^)]*SOFT\)/.test(gridCode) && /rect\([^)]*GOLD\)/.test(gridCode),
+    'the shared-facts box has the sketch\'s ivory ground and its gold tick');
+  check(/F\.monoBold/.test(gridCode), '…and states every agreed figure in the monospace');
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASSED' : `${failures} FAILED`}`);
