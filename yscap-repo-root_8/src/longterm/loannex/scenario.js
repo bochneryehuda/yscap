@@ -275,9 +275,13 @@ function buildNexApp(sc, registry, opts = {}) {
   // loans, made to an entity for an investment property". Routing every investor to
   // LoanNEX therefore produced an empty board rather than a priced one.
   //
-  // An unstated citizenship takes the SHARED default — the same module the prepay term,
-  // the DSCR and the reserves come from, so the two programs cannot be asked a different
-  // question about one loan. It resolves to 'US Citizen', which this alias table renders
+  // An unstated citizenship takes the SHARED default. STATED PRECISELY, because the first
+  // version of this comment claimed more than was true and an audit measured it: sharing the
+  // MODULE is not the same as sharing the RESOLUTION. Moving `citizenship` moves both
+  // programs (proven by DEF-4); moving `prepayMonths`, `reservesMonths` or `propertyType`
+  // moves THIS one and leaves Lender Price on a private copy — see README item 7. So the
+  // claim holds for this field and for `dscr`, and for nothing else yet. It resolves to
+  // 'US Citizen', which this alias table renders
   // as the vendor's `UsCitizen`: byte-for-byte what this connector sent when the answer
   // was an inline literal here, and what the recorded live body carries.
   //

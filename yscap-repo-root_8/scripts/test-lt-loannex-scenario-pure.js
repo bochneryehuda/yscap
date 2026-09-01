@@ -406,13 +406,23 @@ refuses(() => scenario.buildNexApp({ purpose: 'Purchase', loan: 3.75e5, fico: 76
     // sweep untouched. Every combination is built from the screen's OWN option lists and
     // run through the route's OWN enrichment, so each ZIP resolves a different county and
     // a person's real choices are what is exercised — not a shape described here.
+    // ⛔ EVERY VALUE THIS MATRIX HOLDS STILL IS A HIDING PLACE, and that is not a
+    // hypothesis: an audit defeated the previous version twice over by gating the
+    // fallback on `fico` — which was 760 in all 63 assertions in this file — and on
+    // `lockDays`, which nothing varied. A guard is only as wide as the space it moves
+    // through, so every field the screen can change now moves here, including the
+    // numbers. `fico` spans the thin-file band deliberately: a rule keyed on credit
+    // quality is exactly the plausible-looking gate somebody would write.
     const ZIPS = ['06001', '07036', '33101', '11211'];
+    const FICOS = [660, 690, 760];
     let matrix = 0, matrixMoved = [];
     for (const pt of boardMod.PROPERTY_TYPES) for (const pu of boardMod.PURPOSES)
       for (const bt of boardMod.BORROWER_TYPES) for (const zip of ZIPS)
+        for (const fico of FICOS) for (const lockDays of boardMod.LOCK_DAYS)
         for (const flags of [{}, { io: true, escrowWaive: true, fthb: true }]) {
           const sc = Object.assign({}, boardScenario, {
             propertyType: pt.value, purpose: pu.value, borrowerType: bt.value, zip,
+            fico, lockDays, termYears: boardMod.LOAN_TERMS[matrix % boardMod.LOAN_TERMS.length].value,
             units: boardMod.unitsFor(pt.value, '1'),
           }, flags);
           const routed = routeOf(sc);
@@ -423,8 +433,13 @@ refuses(() => scenario.buildNexApp({ purpose: 'Purchase', loan: 3.75e5, fico: 76
           catch (e) { got = 'REFUSED:' + (e && e.code); }
           if (got !== 'UsCitizen') matrixMoved.push([pt.value, pu.value, bt.value, zip].join('/') + '=' + got);
         }
-    ok(matrix > 50 && matrixMoved.length === 0,
-      `CIT-B3 …across every combination the screen can produce, routed and enriched (${matrix} priced${matrixMoved.length ? ', moved by ' + matrixMoved.slice(0, 4).join(', ') : ''})`);
+    // AN EXACT COUNT, not a floor. `> 50` was the first cut and it would have survived an
+    // enrichment regression that silently dropped three quarters of the combinations —
+    // the assertion would still have read as a broad sweep while proving almost nothing.
+    const expectMatrix = boardMod.PROPERTY_TYPES.length * boardMod.PURPOSES.length
+      * boardMod.BORROWER_TYPES.length * ZIPS.length * FICOS.length * boardMod.LOCK_DAYS.length * 2;
+    ok(matrix === expectMatrix && matrixMoved.length === 0,
+      `CIT-B3 …across every combination the screen can produce, routed and enriched (${matrix} priced of ${expectMatrix} expected${matrixMoved.length ? ', moved by ' + matrixMoved.slice(0, 4).join(', ') : ''})`);
 
     // The parked vesting types too — not on the screen today, one edit from being back.
     let boardRefused = [];
@@ -586,6 +601,17 @@ refuses(() => scenario.buildNexApp({ purpose: 'Purchase', loan: 3.75e5, fico: 76
       `DEF-4 …so moving the ONE default moves BOTH programs together (LoanNEX ${movedNex}, Lender Price ${movedLp}) — neither can be left behind`);
     ok(nexOf() === beforeNex && lpOf() === beforeLp,
       'DEF-5 …and the default is put back, so this section leaves nothing behind for the rest of the suite');
+
+    // DEF-6 — THE FOOT-GUN THE AUDIT FOUND. Lender Price compares this value EXACTLY
+    // against its own enum with no alias step, so a default spelled the LoanNEX way
+    // (`UsCitizen`) is not a synonym there — it is unknown. The connector now ignores a
+    // default it cannot read rather than refusing the quote, but the honest place to catch
+    // it is here, at build time: the ONE shared value must be usable by BOTH vendors.
+    const lpTokens = lpRegistry._tokens.CITIZENSHIP;
+    const nexMappable = scenario._internals.CITIZENSHIP_ALIASES[
+      scenario._internals.aliasKey(shared.DSCR_PROFILE.citizenship)] != null;
+    ok(lpTokens.has(shared.DSCR_PROFILE.citizenship) && nexMappable,
+      `DEF-6 …and the shared default is a value BOTH vendors accept (Lender Price token ${lpTokens.has(shared.DSCR_PROFILE.citizenship)}, LoanNEX mappable ${nexMappable})`);
   }
 
   console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);

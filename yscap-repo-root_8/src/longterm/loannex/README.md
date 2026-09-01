@@ -155,10 +155,10 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
    screen offers a control for it (owner-directed 2026-09-01: *"we don't need to add the option for
    this in the frontend"*), so on an ordinary quote it is unstated. Both programs then take the ONE
    shared default in `pricing/scenario-defaults.js` — `US Citizen`, which LoanNEX renders as its own
-   `UsCitizen` — so they cannot be asked a different question about one loan. Before that default
-   was stated, they agreed by luck: Lender Price's copy was frozen inside the recorded
-   `search-base.json` and LoanNEX's was a hard-coded string, so moving one would have left the other
-   behind. The remaining exposure is not a gap BETWEEN the programs; it is that a foreign-national
+   `UsCitizen`. Before that default was stated, they agreed by luck: Lender Price's copy was frozen
+   inside the recorded `search-base.json` and LoanNEX's was a hard-coded string, so moving one would
+   have left the other behind. **That is now true of the citizenship and of `dscr`, and of nothing
+   else — see item 7.** The remaining exposure is not a gap BETWEEN the programs; it is that a foreign-national
    borrower is priced as a US citizen on BOTH boards until somebody states it. Adding a control
    would change the GENERAL board, which the owner has fenced off — raised rather than guessed at.
    · A blank `citizenship` from an API caller is REFUSED by the route (Lender Price's registry
@@ -177,6 +177,30 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
    NOT — it states how somebody files, not their status, and a non-permanent resident may hold one
    too. Unreachable from any screen today, since neither board offers the control; wiring the ITIN
    flag is a change with its own decisions, not a mapping to guess at here.
+
+7. **Sharing the module is not sharing the resolution — three sibling defaults still drift.** The
+   citizenship work claimed the shared profile means "the two programs cannot be asked a different
+   question about one loan". An audit measured it and that was FALSE for most of the profile. Moving
+   a default and reading both wires:
+
+   | moved | Lender Price | LoanNEX |
+   |---|---|---|
+   | `citizenship` | moves ✅ | moves ✅ |
+   | `dscr` | moves ✅ | moves ✅ |
+   | `prepayMonths` → 36 | **stays "60 Months"** ❌ | moves to 36 |
+   | `reservesMonths` → 6 | **stays `Reserves_24`** ❌ | moves to 6 |
+   | `propertyType` → Condo | **stays SingleFamily** ❌ | moves to Condominium |
+
+   Lender Price keeps three private copies: `search-model.js:67`
+   (`const DEFAULT_PREPAY_MONTHS = SHARED_PROFILE.prepayMonths` — a MODULE-LOAD SNAPSHOT, the
+   identical shape DEF-4 was written to catch for the citizenship and which it caught there),
+   `search-model.js:205` (`SFR_PROP` hard-codes the property type) and `search-model.js:861`
+   (`|| 'Reserves_24'`). **The prepay term is the one that matters**: it is a real pricing input, so
+   moving the shared default would silently price a 36-month penalty on one program and a 60-month
+   penalty on the other and present the difference as an execution advantage — precisely the failure
+   `scenario-defaults.js` says in its own header that it exists to prevent. Nothing tests it.
+   Not fixed here because it is a change to the GENERAL engine's own defaults, which is the owner's
+   call, not an audit finding's — recorded rather than quietly widened.
 
 ---
 

@@ -79,9 +79,12 @@ const DSCR_PROFILE = {
   // lived in a captured JSON blob on one side and a hard-coded string on the other, and
   // moving one would silently have left the other behind.
   //
-  // Like every word above it this is a CANONICAL scenario value, not a wire token: each
-  // adapter maps it through its own alias table (LoanNEX renders it `UsCitizen`) and
-  // checks it against its own vendor registry.
+  // ⛔ IT MUST BE A LENDER PRICE WIRE TOKEN, not merely a canonical word. LoanNEX maps it
+  // through its own alias table (`US Citizen` → `UsCitizen`), but the Lender Price adapter
+  // compares it EXACTLY against its own enum with no alias step — so a value spelled the
+  // LoanNEX way here is not a synonym, it is unknown to that side. That connector now
+  // ignores a default it cannot read rather than refusing the quote, and DEF-6 fails the
+  // build if this value stops being valid for BOTH vendors. Do not "canonicalise" it.
   citizenship: 'US Citizen',
 };
 
