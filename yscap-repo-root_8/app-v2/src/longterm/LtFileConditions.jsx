@@ -141,10 +141,10 @@ const SHARED_STATUS_TO_LT = { outstanding: 'outstanding', requested: 'in_progres
  * One Long-Term condition, in the shape the shared components read.
  *
  * Everything absent here is absent ON PURPOSE, and each one would be a claim we
- * cannot back: `reviewed_at` (Long-Term has no separate loan-officer "done"
- * step), `assignee_staff_id` (no assignment door — and the shared bar hides that
- * control entirely when no team is passed), `note_buyer_mark` / `esign_auto` /
- * `is_gate` / `override_at` (short-term facts, derived server-side over there).
+ * cannot back: `assignee_staff_id` (no assignment door — and the shared bar
+ * hides that control entirely when no team is passed), `note_buyer_mark` /
+ * `esign_auto` / `is_gate` / `override_at` (short-term facts, derived
+ * server-side over there).
  * A field left off simply does not render.
  */
 function asSharedCondition(c) {
@@ -157,6 +157,10 @@ function asSharedCondition(c) {
     is_required: c.isRequired !== false,
     signed_off_at: c.status === 'satisfied' ? (c.satisfiedAt || null) : null,
     signed_off_name: c.satisfiedBy || null,
+    // The loan officer's own step, the same two fields the short-term side
+    // renders — so the audit line reads identically on both products.
+    reviewed_at: c.reviewedAt || null,
+    reviewed_by_name: c.reviewedBy || null,
     waived_at: waived ? (c.waivedAt || null) : null,
     waived_by_name: c.waivedBy || null,
     notes: c.notes || '',
@@ -306,9 +310,13 @@ export default function LtFileConditions({ loanId }) {
     // "Not required" — Long-Term always asks WHY, so the box opens instead of the
     // condition being cleared on the spot.
     if (p.waived === true) { setWaiving(id); say(id, null); return false; }
+    /* The loan officer's own step. It is a STAMP and moves no status — the back
+       office still signs the condition off afterwards, which is the whole reason
+       it is separate. Same two columns the short-term side has always used. */
     if (Object.prototype.hasOwnProperty.call(p, 'reviewed')) {
-      say(id, 'Long-Term has no separate loan-officer “done” step — a condition is either being worked, satisfied or waived.');
-      return false;
+      const on = p.reviewed !== false;
+      return act(id, () => ltApi.conditionMarkDone(loanId, id, on),
+        on ? 'Marked done — the back office signs it off after you.' : 'Put back on your list.');
     }
     if (Object.prototype.hasOwnProperty.call(p, 'status')) {
       if (p.status === 'satisfied') return act(id, () => ltApi.conditionSatisfy(loanId, id), 'Marked satisfied.');
