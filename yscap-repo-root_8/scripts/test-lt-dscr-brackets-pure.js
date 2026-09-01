@@ -185,6 +185,26 @@ section('D. an out-of-band quote is DROPPED, never shown');
   ok(built.droppedOutOfBand === 1, `…and the drop is COUNTED (${built.droppedOutOfBand}), never silent`);
   ok(built.brackets[0].quotes[0].dscr === boardMod.ratioAtRate(F, 6.5),
     'every shown quote carries the ratio it actually reaches');
+  /* ⛔ A RATE IS WHATEVER THE VENDOR SAYS IT IS — no eighths assumed anywhere. The
+     owner raised this directly: rates usually step by eighths (6.125, 6.25, 6.375)
+     but the edges vary (7.499, 6.99, 6.990, 6.999). Nothing here rounds a rate, snaps
+     it to a grid, or keys anything on its text, so an odd rate bands on its own
+     arithmetic like any other — asserted rather than assumed, because a rate quietly
+     snapped to a neighbouring eighth would land in a neighbouring band on the edges. */
+  const ODD = [7.499, 6.99, 6.999, 6.125, 6.375];
+  const oddTier = boardMod.tierAtRate(F, 6.99);
+  const oddBuilt = boardMod.buildBoard(F, ODD.map((rate) => ({
+    tier: boardMod.tierAtRate(F, rate), sentRatio: boardMod.sendRatioFor(boardMod.tierAtRate(F, rate), F, [{ rate }]),
+    quotes: [{ lender: 'X', rate, price: 100 }],
+  })).filter((r) => r.tier != null));
+  const oddShown = oddBuilt.brackets.flatMap((b) => b.quotes.map((q) => q.rate));
+  ok(ODD.every((r) => oddShown.includes(r)),
+    `⛔ every odd rate survives with its exact value (${oddShown.join(', ')})`);
+  ok(oddBuilt.droppedOutOfBand === 0, '…and none of them is dropped as out of band');
+  ok(boardMod.ratioAtRate(F, 6.99) === boardMod.ratioAtRate(F, 6.990),
+    '6.99 and 6.990 are the same rate and reach the same ratio');
+  ok(oddTier != null && boardMod.ratioAtRate(F, 6.999) <= boardMod.ratioAtRate(F, 6.99),
+    '…and 6.999 is genuinely dearer than 6.99, never rounded onto it');
   ok(boardMod.selfConsistent(F, { rate: 6.5 }, t) === true
     && boardMod.selfConsistent(F, { rate: 11.125 }, t) === false,
     'the invariant is askable of one quote on its own');
