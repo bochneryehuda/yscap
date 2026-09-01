@@ -135,10 +135,20 @@ const check = (cond, msg) => {
     for (const c of lib.library()) {
       for (const ct of ((c.config || {}).contactTypes) || []) collected.set(ct.key, c.code);
     }
+    /* AND THE FILE CONTACTS DESK, which is the other place a person adds one —
+       and since db/659 it is where most of them live. Owner-directed 2026-08-31,
+       the pre-submittal CONDITION asks for the two the file cannot be submitted
+       without and every other contact is a slot on the desk, greyed when the deal
+       does not want it. The question this check asks did not move: can the person
+       working the file add the contact this order has to be addressed to? A kind
+       that appears in NEITHER still fails, which is the defect that started this. */
+    for (const t of lib.FILE_CONTACT_TYPES) {
+      if (!collected.has(t.key)) collected.set(t.key, 'the File contacts desk');
+    }
     for (const k of kinds.ORDER_KIND_KEYS) {
       const vk = kinds.vendorKindFor(k);
       check(collected.has(vk),
-        `the ${k} order's ${vk} contact is collected on a condition (${collected.get(vk) || 'NOTHING COLLECTS IT'})`);
+        `the ${k} order's ${vk} contact can be added where the file is worked (${collected.get(vk) || 'NOTHING COLLECTS IT'})`);
     }
 
     console.log('\nB. EVERY REQUIRED SLOT HAS SOMETHING THAT FILES INTO IT');
@@ -167,8 +177,20 @@ const check = (cond, msg) => {
       purpose: 'cash_out_refinance', state: 'NY', propertyType: 'Condominium', flood: true, rents: true,
     });
     const wideCodes = await codesOn(wide);
-    check(wideCodes.includes('lt_payoff_contact'),
-      'the refinance is asked who services the loan being paid off');
+    /* WHO SERVICES THE LOAN BEING PAID OFF IS STILL ASKED FOR — on the File
+       contacts desk since db/660, not as its own condition. Owner-directed
+       2026-08-31: *"Servicer of the loan being paid off — this is now a separate
+       condition. We don't need this to be a separate condition."* The question the
+       original defect asked has not moved: can the person working this refinance
+       add the contact the payoff order is addressed to? */
+    check(!wideCodes.includes('lt_payoff_contact'),
+      'the payoff servicer is no longer its own condition (db/660)');
+    {
+      const desk = await require('../src/longterm/conditions-center/read.js').fileContactTypes(wide, db);
+      const row = (desk || []).find((t) => t.key === 'payoff');
+      check(!!row && row.applies === true,
+        'the refinance is asked who services the loan being paid off — on the File contacts desk');
+    }
 
     // Enter one contact per order, through the vendor link the contact form writes.
     for (const k of kinds.ORDER_KIND_KEYS) {
@@ -181,6 +203,27 @@ const check = (cond, msg) => {
       await db.query(
         `INSERT INTO lt_loan_vendors (loan_id,kind,service_contact_id,is_primary) VALUES ($1::uuid,$2,$3::uuid,true)`,
         [wide, vk, sc]);
+    }
+
+    /* THE RENT ORDER NOW WAITS ON ITS FORM (db/663, owner-directed 2026-08-31:
+       *"the verification of rent form fill-out … needs to be confirmed before you
+       can order the VOR"*). That is a real gate and this suite is about what
+       SENDS, so the fixture does what a processor does — fills the form in and
+       confirms it — rather than the gate being loosened to keep the audit green.
+       `test-lt-vor-confirm-db.js` is where the gate itself is proven. */
+    {
+      const vorDesk = require('../src/longterm/vor/desk.js');
+      const VF = require('../src/longterm/vor/fields.js');
+      const answers = {};
+      for (const f of VF.FIELDS) {
+        if (f.who !== 'us' || f.optional) continue;
+        answers[f.key] = `audit ${f.key}`;
+      }
+      await vorDesk.saveForm(wide, answers, null, db);
+      const confirmed = await vorDesk.confirmForm(wide, null, db);
+      check(confirmed.ok === true,
+        'the rent form is filled in and confirmed, which is what lets its order go '
+        + `(${confirmed.ok ? 'confirmed' : JSON.stringify(confirmed)})`);
     }
 
     const deskWide = await deskMod.desk(wide, db);

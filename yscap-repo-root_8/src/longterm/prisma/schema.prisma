@@ -974,6 +974,12 @@ model LtProperty {
   /// flood cover is required, which changes the housing expense and so the DSCR.
   inFloodZone Boolean? @map("in_flood_zone")
   floodZone   String?  @map("flood_zone")
+  /// ——— WHO ANSWERED the flood question (db/658): `encompass` (read from field
+  /// 541) or `manual` (a person ticked the switch on the Orders screen). NULL =
+  /// nobody has answered. This is the GUARD, not provenance decoration: the sync
+  /// runs every few minutes, so without it a person's tick would be overwritten
+  /// within the hour. See `src/longterm/flood-zone.js`.
+  floodZoneSource String? @map("flood_zone_source")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -2653,11 +2659,64 @@ model LtLoanVendor {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  /// When the landlord-memory sweep last CONSIDERED this link (db/662). NULL =
+  /// not yet considered, which is what the sweep drains on. Nothing but that
+  /// sweep reads it, and it is stamped on a real answer only — a read that failed
+  /// leaves it NULL so the link is looked at again rather than declared done.
+  rememberedAt DateTime? @map("remembered_at") @db.Timestamptz(6)
+
   loan LtLoan @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
 
   @@unique([loanId, kind, serviceContactId], map: "lt_loan_vendors_one_per_kind_uk")
   @@index([serviceContactId], map: "lt_loan_vendors_contact_idx")
   @@map("lt_loan_vendors")
+}
+
+/// THE LANDLORD A BORROWER HAD, AT ONE ADDRESS (db/662).
+///
+/// Owner-directed 2026-08-31: the landlord is filled in on a borrower's next file
+/// *"as long as he is still living at the same primary address — if his primary
+/// address has been updated in Encompass, then you should not automatically
+/// populate his landlord, because probably the landlord changed."*
+///
+/// The rule IS the key. A memory keyed on the person alone would post a
+/// verification of rent to their last landlord about a home that landlord has
+/// never heard of, so the key is the PAIR and a borrower who moved simply matches
+/// nothing — there is no "has the address changed?" test anywhere in the feature.
+/// `addressKey` is written by src/longterm/landlord-memory.js and never re-derived
+/// in SQL, or the two definitions drift and the copy that drifts is the one that
+/// decides.
+model LtBorrowerLandlord {
+  /// A SURROGATE KEY, and it is here for a reason rather than by habit (db/665):
+  /// the borrower link has to be ON DELETE SET NULL — losing a person must never
+  /// delete long-term records — and a column that has to admit a NULL cannot sit
+  /// in a primary key. The PAIR is still unique, as an index.
+  id String @id @default(dbgenerated("gen_random_uuid()")) @map("id") @db.Uuid
+
+  /// Whose memory this is. NULL once the person is gone, which matches nothing
+  /// and pre-fills nothing, because every read is keyed BY borrower.
+  borrowerId String? @map("borrower_id") @db.Uuid
+
+  /// The normalized home this landlord belongs to.
+  addressKey String @map("address_key")
+
+  /// The landlord's card in the shared vendor directory — a plain id and NOT a
+  /// foreign key (db/665), exactly like `LtLoanVendor.serviceContactId`: a
+  /// long-term table may not declare a reference to a table outside `lt_*`.
+  /// A card somebody deletes simply stops matching; every read INNER JOINs it.
+  serviceContactId String @map("service_contact_id") @db.Uuid
+
+  /// The same address as a person writes it, so a screen can say WHICH home
+  /// rather than show a key.
+  addressText String? @map("address_text")
+
+  lastLoanId  String?  @map("last_loan_id") @db.Uuid
+  firstSeenAt DateTime @default(now()) @map("first_seen_at") @db.Timestamptz(6)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([borrowerId, addressKey], map: "lt_borrower_landlords_pair_uk")
+  @@index([serviceContactId], map: "lt_borrower_landlords_contact_idx")
+  @@map("lt_borrower_landlords")
 }
 
 /// One vendor order on one loan. The row IS the slot: it exists from the first
@@ -2784,6 +2843,18 @@ model LtVorForm {
   /// sendable — the prefill is the whole point — but the desk says which it is.
   reviewedBy String?   @map("reviewed_by") @db.Uuid
   reviewedAt DateTime? @map("reviewed_at") @db.Timestamptz(6)
+
+  /// WHO CONFIRMED THIS VERSION, and when (db/663). Owner-directed 2026-08-31:
+  /// the form *"needs to be confirmed before you can order the VOR"*, so NULL
+  /// here blocks both the rent order and the form's own send.
+  ///
+  /// NOT the same thing as `reviewedAt`, which every save stamps — treating a
+  /// keystroke as a person saying "this is right" is exactly what the gate is
+  /// for. Cleared by any save that CHANGES the data, because a confirmation is
+  /// about the version it was given for and the landlord answers the version we
+  /// sent.
+  confirmedBy String?   @map("confirmed_by") @db.Uuid
+  confirmedAt DateTime? @map("confirmed_at") @db.Timestamptz(6)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)

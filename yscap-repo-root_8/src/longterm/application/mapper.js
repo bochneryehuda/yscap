@@ -129,9 +129,17 @@ function fieldOf(loan, spec, values) {
  * rather than an empty row, because an empty row is indistinguishable on a screen
  * from a property we read and found blank.
  *
- * `actualMonthlyRent`, `inFloodZone` and `floodZone` are DELIBERATELY absent:
- * db/549 carries the columns, this tenant has no measured field for them, and a
- * guessed source is worse than an honest blank on a figure a decision is made on.
+ * `actualMonthlyRent` is DELIBERATELY absent: db/549 carries the column, this
+ * tenant has no measured field for it, and a guessed source is worse than an
+ * honest blank on a figure a decision is made on.
+ *
+ * `inFloodZone` / `floodZone` are absent FROM HERE for a different reason, and it
+ * is this file's own contract: the flood answer needs INTERPRETING rather than
+ * copying (`AE` is a flood zone, `X` is not, `D` is FEMA's own word for "nobody
+ * has determined this yet"), and that one definition lives in
+ * `src/longterm/flood-zone.js`. Requiring it here would break the no-requires
+ * rule at the top of this file, so `application/sync.js` — the WRITER — joins the
+ * two, reading the same `values` map by the same rule. See db/658.
  */
 function readSubjectProperty(loan, values) {
   if (!loan || typeof loan !== 'object') return null;

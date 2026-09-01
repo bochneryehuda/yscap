@@ -273,7 +273,6 @@ for (const [codeKey, what] of [
   ['lt_order_flood_insurance', 'the flood insurance order'],
   ['lt_order_ny_settlement_agent', 'the New York settlement agent order'],
   ['lt_appraisal_card', 'the card for the appraisal'],
-  ['lt_landlord_contact', 'the landlord contact'],
   ['lt_vor_sent', 'the verification of rent'],
   ['lt_photo_id', 'the government photo ID'],
   ['lt_payoff_ordered', 'the payoff order'],
@@ -296,11 +295,30 @@ for (const [codeKey, what] of [
   check(byCode.has(codeKey), `${what} is in the library`);
 }
 
+/* THE LANDLORD LEFT THIS LIST ON 2026-08-31, AND DID NOT LEAVE THE PRODUCT.
+   Owner-directed: *"You can technically remove that condition. Landlord contact
+   details: you can just add landlord contact information directly to the file
+   contact condition and the FileContacts section."* So the roster above no longer
+   names it — and the fact it stood for is asserted where it now lives, or
+   retiring a condition would read as quietly dropping a requirement. */
+check(!byCode.has('lt_landlord_contact'),
+  'the landlord is NOT a condition any more (db/660)');
+{
+  const landlord = library.FILE_CONTACT_TYPES.find((t) => t.key === 'landlord');
+  check(!!landlord, '…it is a slot on the File contacts desk instead');
+  check(landlord && landlord.whenField === 'borrower_rents',
+    "…offered only when the borrower RENTS — the owner's \"the field that is telling you if he rents … is FR0115\"");
+}
+
 console.log('\nC2. the rules the owner stated by name');
 const c = (k) => byCode.get(k);
-check(rules.evaluateRule(c('lt_landlord_contact').ruleLogic, { borrower_rents: true }, FIELDS) === true
-   && rules.evaluateRule(c('lt_landlord_contact').ruleLogic, { borrower_rents: false }, FIELDS) === false,
-  'the landlord contact asks only when the borrower RENTS — the owner\'s "the field that is telling you if he rents … is FR0115"');
+// The RENTS rule is unchanged; the condition it hangs off is now the verification
+// of rent itself, which is where the rent and the tenancy date are typed (db/660).
+check(rules.evaluateRule(c('lt_vor_sent').ruleLogic, { borrower_rents: true }, FIELDS) === true
+   && rules.evaluateRule(c('lt_vor_sent').ruleLogic, { borrower_rents: false }, FIELDS) === false,
+  'the verification of rent asks only when the borrower RENTS — the owner\'s "the field that is telling you if he rents … is FR0115"');
+check((c('lt_vor_sent').config.fields || []).join(',') === 'monthly_rent,rented_since',
+  '…and it collects the two tenancy facts the retired landlord condition used to');
 check(rules.evaluateRule(c('lt_hoa_contact').ruleLogic, { is_condo: true }, FIELDS) === true
    && rules.evaluateRule(c('lt_hoa_contact').ruleLogic, { is_condo: false }, FIELDS) === false,
   'the HOA contact and the condo questionnaire only on a condo');

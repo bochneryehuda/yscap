@@ -38,6 +38,7 @@
  */
 
 const unsourced = require('./application/unsourced');
+const floodZone = require('./flood-zone');
 const dscrVerdict = require('./dscr-verdict');
 const vesting = require('./vesting-view');
 const { num, text } = require('./num');
@@ -51,6 +52,35 @@ const lazy = {
 
 /** A date column as the calendar day it is, never an instant in somebody's zone. */
 const day = (v) => (v ? String(v).slice(0, 10) : null);
+
+/**
+ * THE FLOOD ROWS' SENTENCE, WHEN THERE IS NO ANSWER TO SHOW.
+ *
+ * `lt_properties.in_flood_zone` was on the knowingly-unfilled list until db/658;
+ * PILOT reads Encompass field 541 now, so the STATIC "we never read this" would be
+ * a lie. What has not changed is the danger it was there for: a dash beside "In a
+ * flood zone" reads as "No", and "No" beside a flood question is a claim somebody
+ * prices a loan on — while three in five long-term loans carry nothing in that
+ * field at all, and FEMA's zone `D` is its own word for "nobody has determined
+ * this yet".
+ *
+ * So this returns the sentence ONLY where there is genuinely no determination, in
+ * the same shape the unfilled list uses, keyed by column so it merges straight
+ * over it. A real yes or no returns nothing and the row draws the answer.
+ *
+ * The wording is `flood-zone.js`'s, not ours: the file header, the contact row and
+ * the order card must never describe one property's flood status three ways.
+ */
+function floodNote(prop) {
+  if (!prop) return {};
+  const seen = prop.in_flood_zone === true || prop.in_flood_zone === false;
+  if (seen) return {};
+  const said = floodZone.describeFloodZone(prop);
+  // The zone row only needs a sentence when there is no zone letter either — with
+  // one recorded, the row shows what Encompass actually holds, which is the point.
+  const zoneNote = text(prop.flood_zone) ? {} : { flood_zone: said.label };
+  return { in_flood_zone: said.label, ...zoneNote };
+}
 
 /** One person's name, from the four parts db/545 split it into. */
 function personName(p) {
@@ -319,7 +349,14 @@ async function loadFile(loanId, loan = null, opts = {}) {
       // What PILOT knowingly does not hold, so the screen can SAY so rather than
       // draw a dash — a dash beside "In a flood zone" reads as "No", and "No" is an
       // answer somebody prices a loan on.
-      notSourced: unsourced.notSourcedFor('lt_properties'),
+      //
+      // THE FLOOD ROWS CAME OFF THAT LIST ON 2026-08-31 (db/658) — PILOT reads them
+      // now — so their sentence has to come from THIS loan rather than from a
+      // static "we never read this". It is the same danger for the same reason: a
+      // dash on a file whose Encompass field is blank still reads as "No". So the
+      // per-loan wording is merged OVER the static list, from the one definition in
+      // `flood-zone.js`, and it gives way the moment there is a real answer.
+      notSourced: { ...unsourced.notSourcedFor('lt_properties'), ...floodNote(prop) },
       recorded: !!prop,
       address: prop
         ? [text(prop.street), text(prop.city), text(prop.state), text(prop.zip)].filter(Boolean).join(', ') || null

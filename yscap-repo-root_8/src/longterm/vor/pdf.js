@@ -325,8 +325,43 @@ async function buildVorPdf(data = {}, opts = {}) {
   return Buffer.from(bytes);
 }
 
+/**
+ * WHAT WOULD NOT FIT ON THE PAPER.
+ *
+ * Each block on the owner's blank is a box of a fixed height — `lines: 4` on item
+ * 1 is the box, not a preference — so the draw loop above stops at it. That cut
+ * is SILENT on the page: the landlord receives a form whose last line is simply
+ * absent, and the likeliest line to lose is the one at the bottom of a landlord
+ * block, which is their email and phone.
+ *
+ * A silent cap is the one thing this codebase refuses, so the desk asks this
+ * BEFORE anybody confirms and says which block is over and by how much. It
+ * measures with the SAME wrap and the SAME font the render uses, so the answer is
+ * about the real document rather than a guess from a character count.
+ *
+ * NEVER THROWS: a measurement that fails costs the warning, never the screen.
+ */
+async function measureOverflow(data) {
+  try {
+    const doc = await PDFDocument.create();
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    const out = [];
+    for (const f of F.ourFields()) {
+      const value = fmtValue(f, (data || {})[f.key]);
+      if (!value) continue;
+      const maxLines = f.lines || 1;
+      const total = wrapBlock(value, font, f.size || F.DEFAULT_SIZE, f.width || 200).length;
+      if (total > maxLines) out.push({ key: f.key, label: f.label, printed: maxLines, total });
+    }
+    return out;
+  } catch (_) {
+    return [];
+  }
+}
+
 module.exports = {
   buildVorPdf,
+  measureOverflow,
   BLANK_PATH,
   _internals: {
     pdfSafe, wrap, wrapBlock, fmtValue, inflatedStreams,

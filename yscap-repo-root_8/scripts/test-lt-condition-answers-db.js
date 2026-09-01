@@ -191,9 +191,28 @@ async function main() {
     slots: [{ key: 'statement', label: 'Mortgage statement', required: false }],
     fieldKey: 'second-instance',
   });
-  await write.recordAnswer(loanId, fci, { way: 'fci_serviced' }, null, db);
+  /* THE FCI WAY IS NO LONGER A WAIVER — owner-directed 2026-08-31: *"if you're
+     putting in that it's FCI then the servicer automatically selects it to be
+     FCI and our processor needs to go into FCI and look for the FCI loan number
+     and put it in and outstanding balance."* So choosing it alone no longer
+     signs anything off; it answers the SERVICER and still asks for the two
+     numbers. Re-pointed at that rule, not loosened — the assertion below is
+     stricter than the one it replaces, because it now checks what the way
+     answers by itself as well as what it still demands. */
+  out = await write.recordAnswer(loanId, fci, { way: 'fci_serviced' }, null, db);
+  check(out.ok === false && /(loan number|balance)/i.test(out.error || ''),
+    'the FCI way alone is refused, naming the numbers our processor looks up in FCI',
+    out.error || '');
+  out = await write.recordAnswer(loanId, fci, {
+    way: 'fci_serviced', values: { loan_number: 'FCI-4471', outstanding_balance: 388000 },
+  }, null, db);
+  check(out.ok === true, 'and is accepted once they are keyed in', out.error || '');
+  const fciAnswer = (await db.query(
+    'SELECT tool_payload AS a FROM checklist_items WHERE id = $1::uuid', [fci])).rows[0].a;
+  check(fciAnswer && fciAnswer.values && fciAnswer.values.servicer === 'FCI Lender Services',
+    'while the SERVICER answers itself — the one thing choosing FCI already says');
   out = await write.satisfy(loanId, fci, null, db);
-  check(out.ok === true, 'and the FCI selection alone signs one off — no attachment, no form');
+  check(out.ok === true, 'after which it signs off with no attachment and no form');
 
   // ── E. The workspace a screen opens ──────────────────────────────────────
   console.log('what the screen is handed');

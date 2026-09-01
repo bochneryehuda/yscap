@@ -1059,6 +1059,8 @@ import src/lib/order-cc.js
 #         and passes the id. The SETTING is per-staffer (db/391) and the staff
 #         roster is the shared identity zone, so both products may read it.)
 # ---------------------------------------------------------------------------
+import src/lib/ai/ocr-router.js
+import src/lib/ai/azure-openai.js
 ```
 
 ## Log of authorizations
@@ -1214,3 +1216,54 @@ stops a "no" quietly turning into a "yes" months later.
 # use of the SAME authorized import for geocoding, so the per-item rule stays
 # honest. No RTL address RECORD is read or written — only the geocode cache.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# THE DOCUMENT READER — OCR AND THE AI, ON THE MORTGAGE STATEMENT.
+#
+# Owner-directed 2026-08-31, in their own words, as the seventh item of a
+# long-term Condition Center batch:
+#
+#   "Now let's add a feature. Let's bring in the logic that we have on the
+#    document review section. Just very carefully bring in only what you need to
+#    be able to share [the AI] and the OCR engine to be able to read the mortgage
+#    statement and read who is the servicer name, who is the loan number, and
+#    what's the outstanding principal balance, and should automatically fill."
+#
+# That sentence is the authorization, and *"only what you need"* is the scope, so
+# it is written down here rather than left to inference.
+#
+# WHAT CROSSES: the two READERS, and nothing else.
+#
+#   · `src/lib/ai/ocr-router.js` — picks the strongest OCR engine available and
+#     falls back between them. It takes bytes and returns text. It reads no
+#     table, holds no loan data, and knows nothing about either product; a second
+#     copy would be a second place the engine order, the rescue rule and the
+#     "this came back suspiciously empty" test could drift, and the copy that
+#     drifts is the one that reads a scanned statement as blank.
+#   · `src/lib/ai/azure-openai.js` — the same, one level up: a transport that
+#     takes a prompt and a schema and answers. `extract` is what the appraisal's
+#     As-Is reader already uses as a LOCATOR held to a grounding gate, and the
+#     mortgage statement is held to the same one.
+# NOT `src/lib/ai/cost-meter.js`, and the reason is worth writing down because
+# sharing a brake looks obviously right: that meter is keyed on an APPLICATION id,
+# so asking it about a long-term loan gets a confident zero — a cap that never
+# caps — and RECORDING against it would write long-term rows into a short-term
+# table, which is a crossing nobody authorized. The bound here is the shape of the
+# work instead: one read per uploaded statement, on one condition, and the model
+# is only asked at all when the deterministic scanner came up short.
+#
+# WHAT DOES NOT CROSS, deliberately, and this is the *"only what you need"* half:
+# the document-review DESK — `src/lib/underwriting/**`, the findings tables, the
+# classifier, the second-look machinery, `ai_suggestions`, the tie-out. None of
+# it is imported and none of it is copied. Long-Term's reader is its own module
+# (`src/longterm/mortgage-statement-read.js`), it writes one condition's answer
+# and nothing else, and it raises no finding on either product.
+#
+# THE RULE THE READING IS HELD TO is the appraisal As-Is reader's, because the
+# failure is the same shape and this one is worse: an outstanding balance read
+# wrong goes into a payoff. So the deterministic scanner decides, the AI may only
+# POINT at a line, and its answer survives only when its quote is genuinely in
+# the document AND our own scanner independently reads the same value out of the
+# text around it. It can never introduce a number the statement does not label.
+# (the two `import` lines for this block are inside the authorized fence above,
+#  where the gate reads them — see `src/lib/ai/ocr-router.js` there.)

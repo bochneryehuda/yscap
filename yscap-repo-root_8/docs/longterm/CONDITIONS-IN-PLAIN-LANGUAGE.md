@@ -12,7 +12,7 @@ answer it themselves.
 file at all. *Order* sends an email out to a company and waits for what comes back.
 *Signature* goes out to be signed.
 
-**29 conditions in total** — 15 internal only, 14 that the borrower sees too.
+**27 conditions in total** — 15 internal only, 12 that the borrower sees too.
 
 ---
 
@@ -20,7 +20,7 @@ file at all. *Order* sends an email out to a company and waits for what comes ba
 
 Everything the file needs before it goes to underwriting.
 
-17 conditions.
+15 conditions.
 
 ### Mortgages on the credit report — a statement for each
 
@@ -50,7 +50,7 @@ Everything the file needs before it goes to underwriting.
 
 *Internal + external · Upload*
 
-**What it is.** A current statement on the loan being paid off. Three ways to satisfy it: the statement itself; the payoff figures typed in — outstanding balance, servicer AND loan number, all three, none of them optional; or a waiver where the loan being refinanced is one of our own short-term loans serviced by FCI, where we already hold everything a statement would say.
+**What it is.** A current statement on the loan being paid off. Three ways to satisfy it: upload the statement — PILOT reads the servicer, the loan number and the outstanding principal balance off it and fills them in for somebody to check; type those three in yourself — all three, none of them optional; or say it refinances one of our own short-term loans serviced by FCI, which answers the servicer itself and still needs the FCI loan number and the outstanding balance looked up in FCI.
 
 **What the borrower is asked.** “A recent statement for the mortgage on this property.”
 
@@ -62,9 +62,9 @@ Everything the file needs before it goes to underwriting.
 
 *Internal + external · Form*
 
-**What it is.** Who is on this closing: title, hazard insurance, flood insurance, the buyer’s attorney, the realtor, our attorney, and — in New York — the settlement agent. Picked from the shared vendor directory rather than typed, so the same company is the same record on every file.
+**What it is.** The two the file cannot be submitted without: the title company and the hazard insurance agent. Everyone else on the closing — the attorneys, the realtor, the settlement agent, the HOA, the landlord — lives in the File contacts section rather than being asked for here. Picked from the shared vendor directory rather than typed, so the same company is the same record on every file.
 
-**What the borrower is asked.** “Your title company, your insurance agent, your attorney and your realtor.”
+**What the borrower is asked.** “Your title company and your insurance agent.”
 
 **How it behaves.** appears on every file.
 
@@ -122,18 +122,6 @@ Everything the file needs before it goes to underwriting.
 
 <sub>`lt_appraisal_card`</sub>
 
-### Landlord’s contact details
-
-*Internal + external · Form*
-
-**What it is.** Only where the borrower rents where they live (Encompass field FR0115). This is what the verification of rent is sent to, so it is collected before the form is built.
-
-**What the borrower is asked.** “Their name, email and phone number. We send them a short form to confirm your rent.”
-
-**How it behaves.** appears only when the file calls for it.
-
-<sub>`lt_landlord_contact`</sub>
-
 ### Verification of rent sent
 
 *Internal only · Signature*
@@ -155,18 +143,6 @@ Everything the file needs before it goes to underwriting.
 **How it behaves.** appears on every file; 1 named slot (Photo ID); the answer is saved to the shared borrower profile, so the next loan starts from it.
 
 <sub>`lt_photo_id`</sub>
-
-### Servicer of the loan being paid off
-
-*Internal + external · Form*
-
-**What it is.** Only on a refinance. The payoff request goes to whoever services the loan being paid off, so their details are collected before it is ordered.
-
-**What the borrower is asked.** “The name of the company you send your mortgage payment to, and an email address or phone number for them if you have one.”
-
-**How it behaves.** appears only when the file calls for it.
-
-<sub>`lt_payoff_contact`</sub>
 
 ### Payoff ordered
 
@@ -276,9 +252,9 @@ What has to be true before the file can be cleared to close.
 
 *Internal only · Upload*
 
-**What it is.** One of three, decided by what the borrower said about where they live (FR0115): the rent verification back from the landlord if they rent, a mortgage verification on their own home if they own it, or a letter if they live somewhere rent free. They are alternatives, not a list — asking for all three would be asking for two things that cannot exist.
+**What it is.** One of three, decided by what the borrower said about where they live (FR0115): the rent verification back from the landlord if they rent, a verification of mortgage on the home they live in if they own it, or a letter if they live somewhere rent free. They are alternatives, not a list — asking for all three would be asking for two things that cannot exist. The rent one fills itself in from the verification of rent order; any of the three can also be uploaded here.
 
-**How it behaves.** appears on every file; 3 named slots (Verification of rent (completed), Verification of mortgage — their own home, Living rent free letter).
+**How it behaves.** appears on every file; 3 named slots (Verification of rent (completed), Verification of mortgage — primary residence, Living rent free letter).
 
 <sub>`lt_housing_history`</sub>
 
@@ -332,7 +308,7 @@ What has to be true before the file can be cleared to close.
 
 *Internal only · Upload*
 
-**What it is.** The statement back from the servicer, still good on the closing date.
+**What it is.** The statement back from the servicer, still good on the closing date. It files itself in from the payoff order, and can also be uploaded here.
 
 **How it behaves.** appears only when the file calls for it; 1 named slot (Payoff statement).
 

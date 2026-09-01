@@ -108,33 +108,59 @@ const ok = (cond, name, detail) => {
     }
 
     console.log('\nC. A CONTACT THAT DOES NOT APPLY IS MARKED, NEVER DROPPED');
+    //
+    // THE ROWS MOVED, THE RULE DID NOT (db/659). Owner-directed 2026-08-31, the
+    // pre-submittal CONDITION now asks for the two the file cannot be submitted
+    // without, and every other contact — the settlement agent, the flood agent,
+    // the HOA, the landlord — is a slot on the File contacts DESK. So the same
+    // behaviour is proven where it now lives, through `read.fileContactTypes`,
+    // which is the same `contactTypesFor` both surfaces go through.
     const nyContacts = nyRead.byCode.get('lt_file_contacts');
-    const njContacts = njRead.byCode.get('lt_file_contacts');
     ok(!!nyContacts && Array.isArray(nyContacts.contactTypes), 'the contacts condition publishes its contact types');
-    if (nyContacts && njContacts) {
-      const find = (c, k) => (c.contactTypes || []).find((t) => t.key === k);
-      ok(!!find(njContacts, 'ny_settlement_agent'),
+    {
+      const keys = ((nyContacts && nyContacts.contactTypes) || []).map((t) => t.key).sort();
+      ok(JSON.stringify(keys) === JSON.stringify(['hazard_insurance', 'title']),
+        'THE CONDITION ASKS FOR TWO — the title company and the hazard insurance agent, and nobody else', keys.join(', '));
+    }
+
+    const nyDesk = await read.fileContactTypes(ny, cx);
+    const njDesk = await read.fileContactTypes(nj, cx);
+    {
+      const find = (rows, k) => (rows || []).find((t) => t.key === k);
+      ok(!!find(njDesk, 'ny_settlement_agent'),
         'the settlement agent row is STILL THERE on a New Jersey file — visible, not vanished');
-      ok(find(njContacts, 'ny_settlement_agent').applies === false,
+      ok(find(njDesk, 'ny_settlement_agent').applies === false,
         'and it says it does not apply');
-      ok(/new york/i.test(find(njContacts, 'ny_settlement_agent').whyNot || ''),
-        'with a reason in plain words', String(find(njContacts, 'ny_settlement_agent').whyNot));
-      ok(find(nyContacts, 'ny_settlement_agent').applies === true,
+      ok(/new york/i.test(find(njDesk, 'ny_settlement_agent').whyNot || ''),
+        'with a reason in plain words', String(find(njDesk, 'ny_settlement_agent').whyNot));
+      ok(find(nyDesk, 'ny_settlement_agent').applies === true,
         'on a New York file the same row DOES apply');
 
-      ok(find(nyContacts, 'flood_insurance').applies === false,
+      ok(find(nyDesk, 'flood_insurance').applies === false,
         'a file that is not in a flood zone does not need a flood agent');
-      ok(find(nyContacts, 'title').applies === true,
+      ok(find(nyDesk, 'title').applies === true,
         'a contact with no condition on it always applies');
+
+      // The owner's two new slots, on a file that wants neither.
+      ok(find(nyDesk, 'hoa').applies === false && /condominium/i.test(find(nyDesk, 'hoa').whyNot || ''),
+        'the HOA row is greyed on a single-family file, with its reason', String(find(nyDesk, 'hoa') && find(nyDesk, 'hoa').whyNot));
+      ok(!!find(nyDesk, 'landlord'),
+        'THE LANDLORD ROW EXISTS AT ALL — the owner could not find one on a file where the borrower rents');
     }
 
     console.log('\nD. A FLOOD-ZONE FILE ASKS FOR THE FLOOD AGENT');
     const fl = await makeLoan('fl', { state: 'NJ', flood: true, propertyType: 'SFR' });
     await engine.evaluateLoan(fl, { db: cx });
     const flRead = await conditionsOf(fl);
-    const flContacts = flRead.byCode.get('lt_file_contacts');
-    const floodRow = (flContacts.contactTypes || []).find((t) => t.key === 'flood_insurance');
+    const flDesk = await read.fileContactTypes(fl, cx);
+    const floodRow = (flDesk || []).find((t) => t.key === 'flood_insurance');
     ok(!!floodRow && floodRow.applies === true, 'the flood insurance agent applies once the property is in a flood zone');
+    // …and the ORDER that needs that agent is on the file, which is the half that
+    // makes taking the row off the pre-submittal condition safe: what was
+    // genuinely required is still asked for, by its own rule-driven condition.
+    ok(flRead.byCode.has('lt_order_flood_insurance'),
+      'and the flood insurance ORDER condition attaches on the same file — nothing required became optional',
+      [...flRead.byCode.keys()].filter((k) => /flood/.test(k)).join(', '));
 
     console.log('\nE. AN UNREADABLE FILE SAYS SO — it never guesses "does not apply"');
     // A loan id that is not a loan: the context reads nothing, so every

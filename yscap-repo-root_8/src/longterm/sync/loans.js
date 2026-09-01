@@ -45,6 +45,9 @@ const book = require('../pipeline-book');
 const borrowerMatch = require('../borrower-match');
 const application = require('../application/sync');
 const vesting = require('../vesting');
+// Field 541 — the one id that carries the flood zone. Spread into the batch below
+// so the subject-property mirror can read it without a second call (db/658).
+const floodZone = require('../flood-zone');
 
 const lazy = {
   get db() { return require('../db'); },
@@ -596,7 +599,7 @@ async function readLoan(loanId, guid, settings) {
   // in OUR OWN code is not that, and must fail loudly the first time it runs.
   const ids = [...new Set([
     ...contacts.fieldIdsFor(settings), ...locks.fieldIdsFor(settings),
-    ...ladderMod.MS_FIELD_IDS, ...vesting.FIELD_IDS,
+    ...ladderMod.MS_FIELD_IDS, ...vesting.FIELD_IDS, ...floodZone.FIELD_IDS,
   ])];
   let values = null;
   try {
