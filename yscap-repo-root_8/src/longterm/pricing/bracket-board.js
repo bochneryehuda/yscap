@@ -66,6 +66,16 @@ const num = (v) => {
 const MAX_BRACKETS = DSCR_TIERS.length;
 /** How many discovery rounds the caller may run before it stops widening. */
 const MAX_ROUNDS = 4;
+/**
+ * THE HIGHEST RATIO LENDER PRICE WILL ACCEPT, and it is not decoration.
+ * `search-model.validateScenario` refuses `criteria.dscr` outside [0, 2] before
+ * anything reaches the wire, so a strong deal — rent 5,000 against a 2,400
+ * payment reaches 2.08, which is ordinary — would have had its BEST band refused
+ * at the door and reported as a failed search. Found by reading the validator
+ * rather than by a board coming back short, which is why the strongest band is
+ * exactly the one nobody would have noticed missing.
+ */
+const VENDOR_MAX_DSCR = 2;
 
 /**
  * THE FIGURES A RATIO IS WORKED OUT FROM, normalised — or null when the deal
@@ -165,7 +175,15 @@ function sendRatioFor(tier, figures, rates) {
     if (best == null || ratio < best) best = ratio;
   }
   if (best == null) best = row.from != null ? row.from : Math.round((row.to - 0.01) * 100) / 100;
-  const rounded = Math.round(best * 100) / 100;
+  /* ⛔ CLAMPED TO WHAT THE VENDOR ACCEPTS, AND ONLY WHERE THE CLAMP IS HONEST.
+     The top band is open above, so a strong deal's own ratio can exceed the
+     vendor's ceiling; clamping lands on 2.00, which is still inside that band, so
+     the band is still searched at a ratio the loan genuinely reaches. Every
+     bounded band's worst ratio is below its own ceiling of 1.50, so none of them
+     is ever clamped. The band test below is what keeps this honest rather than
+     convenient: a clamp that moved the figure into a neighbouring band would
+     search the wrong scenario, so it yields null and that band is not priced. */
+  const rounded = Math.min(Math.round(best * 100) / 100, VENDOR_MAX_DSCR);
   return dscrTier(rounded) === tier ? rounded : null;
 }
 
@@ -228,11 +246,6 @@ function bracketFrontier(figures, rates, alreadyPriced, opts = {}) {
   const mid = (Math.min(...anchors) + Math.max(...anchors)) / 2;
   out.sort((a, b) => Math.abs(a - mid) - Math.abs(b - mid));
   return out.slice(0, MAX_BRACKETS);
-}
-
-/** Back-compat name for the frontier with no widening. */
-function nextBrackets(figures, rates, alreadyPriced) {
-  return bracketFrontier(figures, rates, alreadyPriced, { reach: 0 });
 }
 
 /**
@@ -323,6 +336,6 @@ function buildBoard(figures, runs) {
 module.exports = {
   MAX_BRACKETS, MAX_ROUNDS,
   readFigures, ratioAtRate, tierAtRate, sendRatioFor,
-  tiersFromRates, nextBrackets, bracketFrontier, selfConsistent, buildBoard,
+  tiersFromRates, bracketFrontier, selfConsistent, buildBoard, VENDOR_MAX_DSCR,
   DSCR_TIERS, dscrTier, tierLabel,
 };

@@ -23,6 +23,7 @@ const boardMod = require('../src/longterm/pricing/bracket-board');
 const runMod = require('../src/longterm/pricing/bracket-run');
 const tiers = require('../src/longterm/pricing/dscr-tiers');
 const snapshot = require('../src/longterm/termsheet/snapshot');
+const searchModel = require('../src/longterm/lenderprice/search-model');
 const fs = require('fs');
 const path = require('path');
 
@@ -55,6 +56,37 @@ section('A. the bracket table is SHARED, not rebuilt — the owner\'s own instru
   ok(!/const\s+DSCR_TIERS\s*=\s*\[/.test(stripped),
     '…and the second copy is GONE from snapshot.js, so there is nothing left to drift');
   ok(tiers.DSCR_TIERS.length === 11, `the ladder is the owner's eleven tiers (${tiers.DSCR_TIERS.length})`);
+}
+
+// =============================================================================
+section('A2. the screen sends the figures ITSELF, and it has to');
+// =============================================================================
+{
+  /* ⛔ `scenarioFields.toScenario` OMITS THE LOAN AMOUNT IN LTV MODE, ON PURPOSE —
+     its own comment says why: the loan box holds a figure the screen derived, and
+     shipping it beside the LTV would put two views of one fact on the wire. So a
+     bracket board built from the SCENARIO ALONE would refuse every LTV-mode deal
+     for want of a loan amount, which is a payment it cannot work out and therefore
+     a ratio it cannot band.
+
+     The tax and insurance boxes carry a monthly/yearly switch, and the screen has
+     already applied it — reading them raw would put a YEARLY tax bill on the board
+     as a monthly one, a payment twelve times too high and a band wrong on every row.
+
+     Both are why the mount passes `figures` explicitly rather than letting the
+     server re-read the scenario. A refactor that drops that prop would leave the
+     server silently falling back to figures that are missing or twelve times too
+     big, so it is pinned on the SOURCE — no unit test of these modules can see it. */
+  const src = (f) => fs.readFileSync(path.join(__dirname, '..', 'app-v2', 'src', 'longterm', f), 'utf8');
+  const pricer = src('LtPricer.jsx');
+  const bb = src('LtBracketBoard.jsx');
+  ok(/<LtBracketBoard[\s\S]{0,600}?figures=\{/.test(pricer),
+    '⛔ the pricing screen passes `figures` to the bracket board');
+  ok(/figures=\{[\s\S]{0,400}?loanAmount/.test(pricer), '…including the resolved loan amount, which LTV mode does not send');
+  ok(/figures=\{[\s\S]{0,400}?taxMonthly: perMonth\(/.test(pricer), '…and the tax through `perMonth`, never the raw box');
+  ok(/figures=\{[\s\S]{0,400}?insuranceMonthly: perMonth\(/.test(pricer), '…and the insurance the same way');
+  ok(/dscrPriceBrackets\(scenario, \{ figures \}\)/.test(bb),
+    '⛔ …and the board forwards them to the server rather than dropping them');
 }
 
 // =============================================================================
@@ -115,6 +147,29 @@ section('C. the ratio a bracket is searched at always lands in that bracket');
   ok(sent === worst, `⛔ it sends the LOWEST ratio any rate in the band reaches (${sent}), never a better one`);
   ok(tiers.dscrTier(sent) === t7, '…and that figure still sits in the band it is for');
   ok(boardMod.sendRatioFor(999, F, []) === null, 'a bracket that does not exist yields no search ratio');
+
+  /* ⛔ THE STRONGEST BAND IS OPEN ABOVE, AND THE VENDOR IS NOT. `validateScenario`
+     refuses a `criteria.dscr` outside [0, 2] before anything reaches the wire, so
+     an ordinary strong deal — this one reaches 2.04 — would have had its BEST band
+     refused at the door and reported as a failed search. The band nobody would
+     have noticed missing. Asserted against the REAL validator, not against our own
+     constant, or this would only prove the module agrees with itself. */
+  const STRONG = boardMod.readFigures({ ...FIG, rentMonthly: 5000 });
+  const strongRatio = boardMod.ratioAtRate(STRONG, 6.5);
+  ok(strongRatio > boardMod.VENDOR_MAX_DSCR,
+    `CONTROL an ordinary strong deal really does exceed the vendor's ceiling (${strongRatio})`);
+  const vendorSaysNo = searchModel.validateScenario({
+    purpose: 'Purchase', propertyType: 'Single family', value: 400000, loan: LOAN,
+    termYears: TERM, fico: 740, state: 'NJ', zip: '08701', dscr: strongRatio,
+  });
+  ok(!vendorSaysNo || vendorSaysNo.ok !== true,
+    `CONTROL …and Lender Price's own validator refuses that figure (${vendorSaysNo && vendorSaysNo.error})`);
+  const topBand = boardMod.tierAtRate(STRONG, 6.5);
+  const clamped = boardMod.sendRatioFor(topBand, STRONG, [{ rate: 6.5 }]);
+  ok(clamped === boardMod.VENDOR_MAX_DSCR,
+    `⛔ so the top band is searched at the ceiling (${clamped}), not at a figure the vendor refuses`);
+  ok(tiers.dscrTier(clamped) === topBand,
+    '…and the clamped figure still sits in the band it is for, so it is honest as well as accepted');
 }
 
 // =============================================================================
