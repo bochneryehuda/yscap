@@ -877,7 +877,7 @@ const RB = (function(){
       totRow("Soft costs",softTotal(),false); totRow("Hard costs",hardTotal(),false); totRow("TOTAL SCOPE OF WORK",grand(),true);
       R++;
       put(R,0,"For estimation & education only — not a quote, approval, or commitment to lend. Final budget and advance rates depend on full underwriting and appraisal.",stDisc); styleSpan(R,0,N-1,stDisc); mergeRow(R,0,N-1); rowH[R]={hpt:30}; R++;
-      put(R,0,"YS Capital Group   ·   NMLS ID 2609746   ·   Equal Housing Lender   ·   sales@yscapgroup.com",stFoot); styleSpan(R,0,N-1,stFoot); mergeRow(R,0,N-1); R++;
+      put(R,0,"YS Capital Group   ·   NMLS ID 2609746   ·   Equal Housing Lender   ·   sales@yscapgroup.com   ·   This is for business-purpose lending only.",stFoot); styleSpan(R,0,N-1,stFoot); mergeRow(R,0,N-1); R++;
 
       const ws=X.utils.aoa_to_sheet(aoa); ws["!merges"]=merges;
       const rowsArr=[]; Object.keys(rowH).forEach(k=>{ rowsArr[+k]=rowH[k]; }); ws["!rows"]=rowsArr;
@@ -1203,7 +1203,7 @@ const RB = (function(){
         alternateRowStyles:{fillColor:ZEBRA},
         footStyles:{lineColor:[227,230,231],lineWidth:0.5},
         columnStyles:colStyles, margin:{left:M,right:M},
-        didDrawPage:()=>{ const ph=doc.internal.pageSize.getHeight(); doc.setDrawColor(HAIR[0],HAIR[1],HAIR[2]); doc.setLineWidth(0.6); doc.line(M,ph-40,W-M,ph-40); doc.setFontSize(7); doc.setTextColor(GRAY[0],GRAY[1],GRAY[2]); doc.setFont("helvetica","normal"); doc.text("For estimation & education only — not a quote, approval, or commitment to lend. Final budget and advance rates depend on full underwriting and appraisal.",M,ph-30,{maxWidth:W-2*M}); doc.text("© "+new Date().getFullYear()+" YS Capital Group · NMLS ID 2609746 · Equal Housing Lender",M,ph-16); }
+        didDrawPage:()=>{ const ph=doc.internal.pageSize.getHeight(); doc.setDrawColor(HAIR[0],HAIR[1],HAIR[2]); doc.setLineWidth(0.6); doc.line(M,ph-40,W-M,ph-40); doc.setFontSize(7); doc.setTextColor(GRAY[0],GRAY[1],GRAY[2]); doc.setFont("helvetica","normal"); doc.text("For estimation & education only — not a quote, approval, or commitment to lend. Final budget and advance rates depend on full underwriting and appraisal.",M,ph-30,{maxWidth:W-2*M}); doc.text("© "+new Date().getFullYear()+" YS Capital Group · NMLS ID 2609746 · Equal Housing Lender · This is for business-purpose lending only.",M,ph-16); }
       });
       const _pfn=fileBase()+".pdf";
       if(opts.returnFile){ if(btn){ btn.textContent=o; btn.disabled=false; } return new File([doc.output("blob")], _pfn, {type:"application/pdf"}); }

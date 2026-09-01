@@ -126,6 +126,9 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
     doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(170, 178, 182);
     doc.text(pdfSafe(LENDER.name + ' · NMLS ' + LENDER.nmls + (loanNo ? ' · Loan #' + clean(loanNo) : '')), W - M, 65, { align: 'right' });
   }
+  /* Owner-directed 2026-09-01, verbatim: "every single one of your exports should
+     say at the bottom, 'This is for business-purpose lending only.'" */
+  const BUSINESS_PURPOSE = 'This is for business-purpose lending only.';
   function footer(pageNum) {
     doc.setFontSize(7); doc.setTextColor(150, 158, 162); doc.setFont('helvetica', 'normal');
     doc.text(pdfSafe(LENDER.name + ' · NMLS ' + LENDER.nmls + ' · ' + LENDER.addr + ' · ' + LENDER.phone), M, H - 34, { maxWidth: W - 2 * M });
@@ -134,6 +137,12 @@ function buildDrawReport({ app = {}, rollup = null, sections = [], scope = 'draw
       : 'Internal draw inspection report. Figures are integer cents rolled up from the Sitewire draw record + the PILOT ledger.';
     doc.text(pdfSafe(note), M, H - 22, { maxWidth: W - 2 * M });
     if (pageNum) doc.text(pdfSafe('Page ' + pageNum), W - M, H - 22, { align: 'right' });
+    /* ⛔ THE BUSINESS-PURPOSE STAMP GETS ITS OWN LINE rather than being appended to
+       the note above it — owner-directed 2026-09-01. That note is drawn with a
+       `maxWidth`, so appending would wrap it onto a second line at about H-14 and
+       run it into the page number. H-10 is empty on every page (the content floor
+       is H-56 and the page is 792 tall), so nothing has to move. */
+    doc.text(pdfSafe(BUSINESS_PURPOSE), M, H - 10);
   }
   let page = 1;
   function brk(need) { if (y + need > H - 56) { footer(page); doc.addPage(); page++; header(); y = 92; } }
