@@ -627,7 +627,7 @@ const TR=(function(){
       const stTotM={font:{name:"Arial",sz:10,bold:true,color:{rgb:TEALD}},alignment:{horizontal:"right",vertical:"center"},numFmt:"$#,##0",fill:{fgColor:{rgb:LIGHT}},border:{top:{style:"medium",color:{rgb:TEAL}}}};
       let R=0;
       put(R,0,"YS CAPITAL GROUP — BORROWER TRACK RECORD",stTitle); span(R,0,N-1,stTitle); merge(R,0,N-1); rowH[R]={hpt:24}; R++;
-      put(R,0,(S.borrower?("Borrower: "+S.borrower+"   ·   "):"")+"Generated "+new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"})+"   ·   NMLS ID 2609746",stTag); span(R,0,N-1,stTag); merge(R,0,N-1); rowH[R]={hpt:15}; R++;
+      put(R,0,(S.borrower?("Borrower: "+S.borrower+"   ·   "):"")+"Generated "+new Date().toLocaleDateString("en-US",{year:"numeric",month:"long",day:"numeric"})+"   ·   NMLS ID 2609746   ·   This is for business-purpose lending only.",stTag); span(R,0,N-1,stTag); merge(R,0,N-1); rowH[R]={hpt:15}; R++;
       // The records stamp headline — "Verified to Elementix" in the owner's own
       // words, counted from the rows so it never claims more than the cells show.
       const stampSum=rstampSummary(S.props);
@@ -751,7 +751,10 @@ const TR=(function(){
         doc.setDrawColor(GOLD[0],GOLD[1],GOLD[2]); doc.setLineWidth(1.4); doc.line(M,fy,M+32,fy);
         doc.setFont("helvetica","normal"); doc.setFontSize(7); doc.setTextColor(120,128,134);
         doc.text("For lender review. Borrower-reported experience; verification status reflects YS Capital Group's review. Not a commitment to lend.", M, H-19);
-        doc.text("© "+new Date().getFullYear()+" YS Capital Group · NMLS ID 2609746 · Equal Housing Lender", M, H-10);
+        // Owner-directed 2026-09-01. Appended to the SHORT bottom line, which is
+        // drawn without a maxWidth and has room — the line above it is the long
+        // one and appending there would wrap it into this one.
+        doc.text("© "+new Date().getFullYear()+" YS Capital Group · NMLS ID 2609746 · Equal Housing Lender · This is for business-purpose lending only.", M, H-10);
       }
       header();
       let y=HH+22;
