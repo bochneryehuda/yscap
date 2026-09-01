@@ -1282,8 +1282,36 @@ function buildCancelEmail(data, { reason = '', address = null, senderName = '' }
 }
 
 /** A follow-up on the closing chain, sent by a human from the desk. */
-function buildFollowupEmail(data, { note = '', address = null, senderName = '' } = {}) {
+function buildFollowupEmail(data, { note = '', address = null, senderName = '', reply = false } = {}) {
   const signOff = senderName ? `Thank you,\n${senderName}\nYS Capital Group` : 'Thank you,\nYS Capital Group';
+  /* A TYPED REPLY on the chain is the person's own words (owner-reported 2026-09-01) —
+     it must not go out under a "Following up on this closing" headline. Same chain, same
+     facts block (so counsel always knows which file), but the heading and preheader are
+     the message itself, and the intro is never the stock follow-up sentence. */
+  const typed = (note && String(note).trim()) || '';
+  const paras = typed.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+  if (reply) {
+    return tpl.render({
+      title: CLOSING_PREP_TITLE,
+      subjectTag: subjectTagFor(data),
+      kicker: 'Closing prep',
+      preheader: paras[0] ? paras[0].slice(0, 120) : `A message about the closing for ${data.propertyLine}`,
+      greeting: 'Hello,',
+      intro: paras[0] || '',
+      lines: paras.slice(1).concat(['', signOff]),
+      meta: [
+        { label: 'Loan number', value: data.loanNumber || '(pending)' },
+        { label: 'Property', value: data.propertyLine || '—' },
+        { label: 'Borrower', value: data.borrowerName },
+      ],
+      callout: chainCallout(address),
+      officer: officerCard(data),
+      note: 'Reply to this email and it reaches the whole loan team.',
+      replyable: true,
+      replyMarker: require('./email/quote').replyMarker('and it reaches the whole loan team'),
+      audience: 'staff',
+    });
+  }
   return tpl.render({
     // Threads on the chain subject; the headline says it is a follow-up, not a repeat of
     // the original "File ready for closing prep".

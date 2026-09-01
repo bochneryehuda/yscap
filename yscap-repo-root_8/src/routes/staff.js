@@ -6887,6 +6887,15 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
   }
   const attach = composed.attachments;
   const attachSkipped = composed.skipped;
+  /* PREVIEW BEFORE IT GOES OUT (owner-directed 2026-09-01: "any email that it's sending,
+     even if it's a follow-up, should preview the text that's going to be sent: insurance
+     and title and all others"). `preview:true` runs EVERY branch below exactly as the send
+     would — same builder, same recipients — and answers with the preview shape instead of
+     sending, with no side effects. An edit made in that preview comes back as `override`
+     and lands through the ONE chokepoint every manual send uses (manual-override). */
+  const previewOnly = !!(req.body && req.body.preview === true);
+  const override = (req.body && req.body.override) || null;
+  const MO = require('../lib/email/manual-override');
   try {
     const ctx = await notify.fileContext(appId).catch(() => null);
     // The acting staffer's own email/name (req.actor carries only id/role/perms).
@@ -6940,14 +6949,25 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
         const data = await closingPrep.getClosingPrepData(appId);
         if (!data) return res.status(404).json({ error: 'not found' });
         const senderName = meRow.full_name || meRow.email || '';
+        // A TYPED REPLY, not the stock follow-up (owner-reported 2026-09-01): the
+        // person's own words under the chain's subject — never the "Following up on
+        // this closing" headline, which belongs to the Follow-up button alone.
+        const buildReply = ({ address }) => MO.applyOverride(
+          closingPrep.buildFollowupEmail(data, { note: bodyText, address, senderName, reply: true }),
+          override, { title: 'Closing prep' });
+        if (previewOnly) {
+          return res.json(MO.previewShape(buildReply({ address: null }), { to: closingParties.to, cc: closingParties.cc, scope: 'closing' }));
+        }
         const sent = await closingThread.sendOnThread({
-          applicationId: appId, eventKind: 'followup', dedupeKey: null,
+          // 'manual' is the chain's own kind for a human-written message (closing-thread
+          // EVENT_KINDS); 'followup' is reserved for the Follow-up button.
+          applicationId: appId, eventKind: 'manual', dedupeKey: null,
           to: closingParties.to, cc: closingParties.cc, fromName: senderName, staffId: req.actor.id,
-          msgType: 'closing_followup', attachments: attach,
-          build: ({ address }) => closingPrep.buildFollowupEmail(data, { note: bodyText, address, senderName }),
+          msgType: 'closing_message', attachments: attach,
+          build: buildReply,
         });
         if (!sent.ok) return res.status(500).json({ error: 'Could not send on the closing chain.', code: sent.reason });
-        await audit(req, 'closing_prep_followup', 'application', appId, { to: sent.to.length, via: 'email_center', attached: attach.length });
+        await audit(req, 'closing_prep_reply', 'application', appId, { to: sent.to.length, via: 'email_center', attached: attach.length });
         return res.json({ ok: true, sent_to: sent.to, cc: sent.cc, attached: attach.length, attachSkipped });
       }
     }
@@ -6987,7 +7007,16 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       if (data.uspsGate && !data.uspsImported) {
         return res.status(422).json({ error: `The property address is no longer USPS-verified. Re-verify and import it in “USPS Address Verification” before writing to the ${kind === 'title' ? 'title company' : 'insurance agent'}, so they never get an unverified address.`, code: 'usps' });
       }
-      const built = orders.buildOrderEmail(kind, data, { followup: true, note: bodyText });
+      /* THE PERSON'S OWN WORDS, NOT A FOLLOW-UP (owner-reported 2026-09-01: "even if they
+         manually reply, it fills out like it's a follow-up email. It pre-fills stuff from
+         the follow-up button … only your text should be sent"). This door used to build
+         through `followup:true` with the typed text as the intro, so every reply carried
+         the deliverables ask, the fact table and a "— Follow-up" headline, and was counted
+         as a chase. The reply mode renders the typed text alone (greeting, paragraphs,
+         sign-off, officer card). The official follow-up stays on the Follow-up button. */
+      const built = MO.applyOverride(
+        orders.buildOrderEmail(kind, data, { reply: true, note: bodyText, senderName: meRow.full_name || '' }),
+        override, { title: `${kind === 'title' ? 'Title' : 'Insurance'} order` });
       const replyCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
       const replyHelperCc = await ccHelperFor(appId, kind, { storedMeta: row.meta });
       const base = orders.recipientsFor(kind, data, { ccBorrower: replyCc, ccHelper: replyHelperCc });
@@ -7002,36 +7031,45 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       const parties = await threadParticipants.replyRecipients({
         applicationId: appId, msgTypes: [`${kind}_message`],
         to: base.to, cc: base.cc,
-        never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data)].filter(Boolean),
+        never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data),
+          ...require('../lib/file-contacts').retiredVendorEmails(row && row.meta)].filter(Boolean),
       });
       const { to, cc } = parties;
       const { replyTo } = base;
       // Reply on the SAME vendor chain the order was placed on (owner-directed
       // 2026-08-04) — same subject + the order's Message-ID, not a new thread.
       const thread = { root: row.meta && row.meta.rootMessageId, last: row.meta && row.meta.lastMessageId, subject: row.subject };
+      if (previewOnly) {
+        // The subject the send will really use: the thread's, with one "Re:" — the
+        // preview must never show a subject the vendor will not see.
+        const shown = { ...built, subject: orders.replyOrderSubject(thread.subject || built.subject) || built.subject };
+        return res.json(MO.previewShape(shown, { to, cc, scope: kind, subjectLocked: true }));
+      }
       const sent = await orders.sendOrderMail({
         appId, kind, data, to, cc, replyTo, built,
         fromName: meRow.full_name || meRow.email,
-        type: `${kind}_followup`, thread, attachments: attach,
+        type: `${kind}_message`, thread, attachments: attach,
       });
       if (!sent.ok && !sent.ambiguous) {
         return res.status(sent.reason === 'contact' ? 400 : 502).json({ error: sent.message, code: sent.reason });
       }
-      // A reply IS a follow-up on this order — record it as one so the aging clock
-      // and the desk's "last chased" both reflect that somebody wrote to the vendor,
-      // and advance the thread (lastMessageId) on a confirmed send.
+      // A typed reply is NOT a chase: it does not touch followup_count / last_followup_at
+      // (those belong to the Follow-up button, and moving them here made the desk say a
+      // vendor had been "chased" when somebody had only answered a question). It DOES
+      // advance the thread (lastMessageId) on a confirmed send, so the next message
+      // still lands in the vendor's conversation.
       await db.query(
-        `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(),
+        `UPDATE file_orders SET
                 meta = CASE WHEN $3::text IS NOT NULL
                          THEN COALESCE(meta,'{}'::jsonb) || jsonb_build_object('lastMessageId', $3::text)
                          ELSE meta END,
                 updated_at=now()
           WHERE application_id=$1 AND order_type=$2`, [appId, kind, sent.messageId || null]);
       await orderTracking.recordEvent({
-        applicationId: appId, orderType: kind, kind: 'followed_up', actorId: req.actor.id,
+        applicationId: appId, orderType: kind, kind: 'message_sent', actorId: req.actor.id,
         detail: { to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous },
       });
-      try { await audit(req, 'order_followup', 'application', appId, { kind, to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous }); } catch (_) { /* sent either way */ }
+      try { await audit(req, 'order_reply', 'application', appId, { kind, to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous }); } catch (_) { /* sent either way */ }
       if (sent.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: sent.message, sent_to: to, cc, attached: attach.length, attachSkipped });
       return res.json({ ok: true, sent_to: to, cc, attached: attach.length, attachSkipped });
     }
@@ -7075,7 +7113,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
     // Split the typed reply into paragraphs: the first is the intro (body), the
     // rest render as additional lines — never both, so the text isn't duplicated.
     const paras = safeBody.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
-    const built = notify.buildEmail({
+    const builtPlain = notify.buildEmail({
       title: subject.replace(/^\s*re:\s*/i, '') || 'A message from your loan team',
       body: paras[0] || safeBody,
       lines: paras.slice(1),
@@ -7085,6 +7123,13 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       ctaLabel: audience === 'borrower' ? 'Open your file' : 'Open the loan file',
       replyable: true,
     }, audience);
+    // An edit made in the preview lands here too — the same chokepoint as every
+    // other manual send. A borrower-bound edit is scrubbed like the typed body was.
+    const safeOverride = override && anyBorrower
+      ? { subject: override.subject ? scrubTextExcept(String(override.subject), protect) : null,
+          text: override.text ? scrubTextExcept(String(override.text), protect) : null }
+      : override;
+    const built = MO.applyOverride(builtPlain, safeOverride, { title: subject.replace(/^\s*re:\s*/i, '') || 'A message from your loan team' });
     // From the officer by name so the reply reads as a person, not a robot.
     const fromName = email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : null;
     // A reply/compose sent FROM the draw email center is tagged 'draw_message' so it
@@ -7106,6 +7151,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       const loopIn = await require('../lib/draw-recipients').drawReplyLoopIn(appId);
       drawCc = require('../lib/draw-recipients').replyCcFrom(loopIn, { toEmails, sender: meEmail });
     } catch (_) { /* best-effort: the reply still sends */ }
+    if (previewOnly) return res.json(MO.previewShape(built, { to: toEmails, cc: drawCc, scope: scopeIn || 'file' }));
     await email.sendMail({
       to: toEmails, subject: built.subject, html: built.html, text: built.text,
       cc: drawCc.length ? drawCc : undefined,
@@ -7612,7 +7658,8 @@ router.get('/applications/:id/orders/:kind/email-preview', async (req, res) => {
       const parties = await threadParticipants.replyRecipients({
         applicationId: appId, msgTypes: [`${kind}_message`],
         to: base.to, cc: base.cc,
-        never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data)].filter(Boolean),
+        never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data),
+          ...require('../lib/file-contacts').retiredVendorEmails(row && row.meta)].filter(Boolean),
       });
       to = parties.to; cc = parties.cc;
     }
@@ -8134,7 +8181,8 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     const fuParties = await threadParticipants.replyRecipients({
       applicationId: appId, msgTypes: [`${kind}_message`],
       to: fuBase.to, cc: fuBase.cc,
-      never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data)].filter(Boolean),
+      never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data),
+          ...require('../lib/file-contacts').retiredVendorEmails(row && row.meta)].filter(Boolean),
     });
     const { to, cc } = fuParties;
     const { replyTo } = fuBase;
@@ -19578,6 +19626,20 @@ router.post('/documents/:id/review', async (req, res) => {
     await condReview.applyVerdict(db, { doc, verdict, actorId: req.actor.id, hooks: condHooks.RTL });
     await audit(req, action === 'accept' ? (requestMore ? 'accept_document_request_more' : 'accept_document') : 'reject_document', 'document', doc.id,
       action === 'reject' ? { reason: b.reason } : requestMore ? { note: moreNote } : null);
+    /* THE ACCEPTED DOCUMENT DECIDES THE VENDOR (owner-directed 2026-09-01: "if you
+       ordered two insurance quotes, based on the document that you accept, the system
+       shall keep the information of the insurance agent … who sent these documents").
+       Acts only on a returned order document with a recorded sender, on a file that
+       has more than one contact of that type; best-effort, the verdict already stands. */
+    if (action === 'accept') {
+      try {
+        const adopted = await require('../lib/file-contacts').adoptVendorFromAcceptedDocument(db, doc.id);
+        if (adopted && adopted.adopted) {
+          await audit(req, 'replace_file_contact', 'application', doc.application_id,
+            { contactType: adopted.type, via: 'accepted_document', documentId: doc.id, removed: adopted.removed.length });
+        }
+      } catch (_) { /* best-effort */ }
+    }
 
     // Tell the borrower another document is needed on this condition — the
     // accepted file is kept; this is an "and also", not a rejection.
@@ -20125,7 +20187,11 @@ router.get('/team', async (req, res) => {
 // Every title company / insurance agent contact entered anywhere on the
 // platform, tagged by type. Admins curate it: enrich, correct, or delete bad
 // entries — borrowers then autocomplete against the cleaned-up records.
-const VENDOR_TYPES = ['title_company', 'insurance_agent', 'attorney', 'contractor', 'other'];
+// EVERY kind of contact the file-contacts section can hold (owner-directed 2026-09-01:
+// the whole directory is visible, so the screen must be able to show, filter and edit
+// every type — a settlement agent or flood insurer was previously unmanageable here).
+// ONE list: FILE_CONTACT_TYPES below is this same array.
+const VENDOR_TYPES = ['realtor', 'attorney', 'title_company', 'settlement_agent', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
 // Normalize an email for dedup / matching — lowercased + whitespace stripped.
 // Returns '' for blank / non-string input. Used by the vendor merge suggester +
 // the mergeArrays helper below (case-only duplicates collapse to one entry).
@@ -20148,7 +20214,11 @@ function dedupBy(arr, norm) {
 }
 
 router.get('/vendors', async (req, res) => {
-  if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
+  /* READ IS FOR EVERY STAFFER (owner-directed 2026-09-01: "All the loan officers should
+     get access to all the company vendors"). This router is already staff-gated; the
+     directory holds vendor business contacts, not borrower PII, and a loan officer
+     could already reach every row of it through the per-file type-ahead. WRITES
+     (add / edit / delete / merge, below) stay on manage_vendors. */
   const type = VENDOR_TYPES.includes(req.query.type) ? req.query.type : null;
   // Merged rows are hidden by default — the merge target absorbs them. Pass
   // ?includeMerged=1 to include them (for an audit view / history panel).
@@ -20380,7 +20450,7 @@ router.post('/vendors/merge', async (req, res) => {
 // contact type that meant it (only the broader `escrow` / `title_company`).
 // Keep this list in step with the copy in routes/borrower.js and the TYPES list in
 // app-v2/src/components/FileContacts.jsx — an unlisted type is coerced to 'other'.
-const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'settlement_agent', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
+const FILE_CONTACT_TYPES = VENDOR_TYPES;   // one definition (see VENDOR_TYPES above)
 
 /* TYPE-AHEAD OVER THE VENDOR DIRECTORY (owner-directed 2026-08-20: "we already
    have a database from all the vendors that we're using across the board. Anywhere
@@ -20483,20 +20553,31 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
      full set the order goes to. The scalar is always the FIRST of the array, so
      the two can never describe different vendors. A form that sends only the old
      `email` field still works untouched. */
-  const VD = require('../lib/vendor-directory');
-  const emails = VD.dedupBy(Array.isArray(b.emails) ? b.emails : (b.email ? [b.email] : []), VD._internals.normEmail);
-  const sc = await db.query(
-    `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,emails,phone,address,notes,added_by_staff_id,last_used_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now()) RETURNING id`,
-    [app.rows[0].borrower_id, type, custom, b.companyName || null, b.contactName || null,
-     emails[0] || null, emails.length ? emails : null,
-     b.phone || null, b.address || null, b.notes || null, req.actor.id]);
-  const link = await db.query(
-    `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type,added_by_kind,added_by_id)
-     VALUES ($1,$2,$3,'staff',$4)
-     ON CONFLICT (application_id,service_contact_id) DO UPDATE SET contact_type=EXCLUDED.contact_type RETURNING id`,
-    [req.params.id, sc.rows[0].id, type, req.actor.id]);
-  await audit(req, 'add_file_contact', 'application', req.params.id, { contactType: type });
+  /* ONE WRITER FOR THE DIRECTORY (lib/file-contacts, owner-reported 2026-09-01). The
+     vendor is FOUND before it is inserted — same type, same email (or same name when
+     there is no email) — and its gaps filled, so changing an agent and changing back
+     can never leave the same company on the file twice. `contactId` links a directory
+     row picked from the type-ahead outright. `replace:true` (the Orders desk's "Use a
+     different one") makes this the ONLY contact of its type on the file: the previous
+     vendor's addresses are retired from the order's thread and its link removed, so
+     the next order email reaches the new agent alone. */
+  const FC = require('../lib/file-contacts');
+  let sc;
+  try {
+    sc = await FC.upsertContact(db, {
+      borrowerId: app.rows[0].borrower_id, type, customType: custom, contactId: b.contactId || null,
+      companyName: b.companyName, contactName: b.contactName, emails: Array.isArray(b.emails) ? b.emails : null, email: b.email,
+      phone: b.phone, address: b.address, notes: b.notes, addedByStaffId: req.actor.id,
+    });
+  } catch (e) { if (e && e.status) return res.status(e.status).json({ error: e.message }); throw e; }
+  const linkId = await FC.linkContact(db, { applicationId: req.params.id, contactId: sc.id, type, addedByKind: 'staff', addedById: req.actor.id });
+  let replaced = null;
+  if (b.replace === true) {
+    replaced = await FC.replaceSameType(db, { applicationId: req.params.id, keepContactId: sc.id, type });
+  }
+  const link = { rows: [{ id: linkId }] };
+  await audit(req, b.replace === true ? 'replace_file_contact' : 'add_file_contact', 'application', req.params.id,
+    { contactType: type, reused: sc.reused, removed: replaced ? replaced.removed.length : undefined });
   // #107: entering the title / insurance contact completes the borrower's contact
   // CONDITION too — the LO / processor / admin can satisfy it on the borrower's
   // behalf, the same 'received' transition the borrower's own form submission makes
@@ -20520,7 +20601,8 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
       for (const row of upd.rows) enqueueChecklistStatusPush(row.id).catch(() => {});
     } catch (_) { /* condition completion is best-effort */ }
   }
-  res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: sc.rows[0].id });
+  res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: sc.id, reused: sc.reused,
+    replaced: replaced ? replaced.removed.length : 0 });
 });
 // Edit a file contact in place (owner-directed 2026-07-16: staff had only a
 // Remove button — a mistyped title/insurance/realtor contact needs an Edit, not

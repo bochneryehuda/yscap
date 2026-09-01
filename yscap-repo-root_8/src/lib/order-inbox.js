@@ -254,13 +254,16 @@ async function saveReturnedDocs({ applicationId, orderType, attachments, fromEma
         // source_type='system', visibility='staff_only' — see the module header. These
         // two columns were omitted, so db/014's borrower-facing defaults applied and a
         // borrower could download the title company's wiring instructions.
+        // from_email (db/669): WHO sent it. The accept path reads it to keep the vendor who
+        // actually delivered — "based on the document that you accept" (owner-directed 2026-09-01).
         `INSERT INTO documents
            (application_id, borrower_id, checklist_item_id, filename, content_type, size_bytes,
             storage_provider, storage_ref, uploaded_by_kind, uploaded_by_id, doc_kind, review_status, sha256,
-            source_type, visibility)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',NULL,$9,'pending',$10,'system','staff_only')`,
+            source_type, visibility, from_email)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'staff',NULL,$9,'pending',$10,'system','staff_only',$11)`,
         [applicationId, borrowerId, itemId, String(a.filename).slice(0, 300),
-         a.contentType || 'application/octet-stream', buf.length, provider, ref, kind, sha256 || null]);
+         a.contentType || 'application/octet-stream', buf.length, provider, ref, kind, sha256 || null,
+         fromEmail ? String(fromEmail).trim().toLowerCase().slice(0, 320) : null]);
       saved += 1;
       /* AND IF THE APPRAISER JUST EMAILED US THE DATA FILE, THE MARKET DATA IN IT GOES
          TO THE RESEARCH WAREHOUSE (db/462). This is the door the report most often

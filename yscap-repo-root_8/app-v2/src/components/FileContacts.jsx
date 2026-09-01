@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { PhoneInput, EmailInput } from './FormattedInputs.jsx';
+import VendorAutocomplete from './VendorAutocomplete.jsx';
 import { api } from '../lib/api.js';
 import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { askConfirm } from '../lib/dialog.js';
@@ -64,6 +65,7 @@ export function contactTypeLabel(c, types = FILE_CONTACT_TYPES) {
 const blankFor = (types) => ({
   contactType: (types && types[0] && types[0][0]) || 'other',
   customType: '', companyName: '', contactName: '', email: '', phone: '', notes: '',
+  contactId: null,   // a directory row picked from the type-ahead — linked, never re-inserted
 });
 
 /**
@@ -223,7 +225,26 @@ export default function FileContacts({
                 <input className="input" placeholder="e.g. Surveyor" value={f.customType} onChange={e => setF({ ...f, customType: e.target.value })} />
               </div>
             )}
-            <div><label className="muted small">Company</label><input className="input" value={f.companyName} onChange={e => setF({ ...f, companyName: e.target.value })} /></div>
+            <div><label className="muted small">Company</label>
+              {/* THE COMPANY VENDOR DIRECTORY, IN THE FORM (owner-directed 2026-09-01: "they can
+                  import the vendor … You don't need to type email. It populates from our vendor
+                  database according to the search"). The adapter's `suggest` verb was threaded
+                  through for exactly this and unused until now. Picking fills every field and
+                  carries the directory row's id, so the server LINKS that row instead of
+                  inserting a look-alike. */}
+              <VendorAutocomplete className="input" value={f.companyName}
+                onChange={(v) => setF((p) => ({ ...p, companyName: v, contactId: null }))}
+                onPick={(v) => setF((p) => ({
+                  ...p, contactId: v.id || null,
+                  companyName: v.companyName || p.companyName || '',
+                  contactName: v.contactName || p.contactName || '',
+                  email: (v.emails && v.emails[0]) || p.email || '',
+                  phone: v.phone || p.phone || '',
+                  notes: p.notes,
+                }))}
+                fetchSuggestions={(q) => io.suggest(f.contactType, q)}
+                placeholder="Company — start typing to pick from the vendor directory"
+                emptyHint="No match in the vendor directory — type the details in." /></div>
             <div><label className="muted small">Contact name</label><input className="input" value={f.contactName} onChange={e => setF({ ...f, contactName: e.target.value })} /></div>
             <div><label className="muted small">Email</label><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></div>
             <div><label className="muted small">Phone</label><PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></div>

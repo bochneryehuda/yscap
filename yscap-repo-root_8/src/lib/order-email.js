@@ -227,7 +227,7 @@ function vendorGreetName(vendor) {
  * Build the branded order email (or its follow-up). Returns { subject, html,
  * text }. `subjectTag` (loan# · borrower · street) rides in the subject.
  */
-function buildOrderEmail(kind, data, { followup = false, note = '', fullOrder = false, mortgageeClause = null } = {}) {
+function buildOrderEmail(kind, data, { followup = false, reply = false, note = '', fullOrder = false, mortgageeClause = null, senderName = '' } = {}) {
   const label = ORDER_LABEL[kind];
   const vendor = data.vendors[kind];
   const subjectTag = [data.loanNumber || null, data.borrowerName, data.propertyLine.split(',')[0]].filter(Boolean).join(' · ');
@@ -279,6 +279,37 @@ function buildOrderEmail(kind, data, { followup = false, note = '', fullOrder = 
            ? `Please make the policy effective on or before the estimated closing date, ${dayText(data.expectedClosing)}. We will confirm the final closing date as soon as it is set.`
            : 'Please advise the earliest effective date available — we will confirm the closing date as soon as it is set.'] }]
     : undefined;
+
+  if (reply) {
+    /* A TYPED REPLY IS THE PERSON'S OWN WORDS AND NOTHING ELSE (owner-reported
+       2026-09-01: "even if they manually reply, it fills out like it's a follow-up
+       email … If you just write your own reply and you just write text, then only
+       your text should be sent"). Until now the Email Center's reply box was built
+       through the FOLLOW-UP branch below with the typed text as its intro — so a
+       one-line "closing moved to Tuesday" went out under a "— Follow-up" headline,
+       followed by the whole deliverables ask and a restated fact table, and was
+       recorded as a chase. This branch renders: the greeting, the typed paragraphs,
+       the sign-off, the officer's card and the reply delimiter. No deliverables
+       list, no fact table, no coverage block, no "Follow-up" title. The official
+       follow-up is still the branch below, reached ONLY by the Follow-up button. */
+    const paras = String(note || '').trim().split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+    const who = senderName && String(senderName).trim() ? String(senderName).trim() : null;
+    const replySignOff = who ? `Thank you,\n${who}\nYS Capital Group` : signOff;
+    return tpl.render({
+      title: `${label} order`,
+      subjectTag,
+      kicker: `${label} order`,
+      preheader: paras[0] ? paras[0].slice(0, 120) : `A message about the ${label.toLowerCase()} order for ${data.propertyLine}`,
+      greeting: `Hi ${vendorGreetName(vendor)},`,
+      intro: paras[0] || '',
+      lines: paras.slice(1).concat(['', replySignOff]),
+      officer: officerCard,
+      note: 'Reply to this email and it reaches the whole loan team.',
+      replyable: true,
+      replyMarker: quote.replyMarker('and it reaches the whole loan team'),
+      audience: 'staff',
+    });
+  }
 
   if (followup) {
     // The follow-up is a SEPARATE, lighter message on the same thread — it is
