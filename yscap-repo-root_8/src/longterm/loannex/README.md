@@ -150,6 +150,15 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
    has no consumer-safe name. It is reported as unmapped until the owner names it.
 4. **The refresh-token endpoint** was not captured; the client re-mints from the ticket
    instead, so a session lasts as long as the JWT (1 h).
+5. **Neither board asks for the borrower's CITIZENSHIP, and the two programs fill the gap
+   differently.** The scenario vocabulary has a real `citizenship` field and both connectors
+   honour it — but no screen offers a control for it, so on an ordinary quote it is unstated.
+   LoanNEX is then sent `UsCitizen` (the value the recorded live body carries, and what this
+   connector has always sent for an unstated scenario); Lender Price OMITS the field entirely
+   and takes the vendor's own default. So a foreign-national borrower is priced as a US citizen
+   on both boards until somebody states it, and the two programs are not being asked exactly
+   the same question. Adding the control would change the GENERAL board, which is off limits
+   without the owner's word — raised rather than guessed at.
 
 ---
 
