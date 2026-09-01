@@ -29,10 +29,11 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ltApi } from './api.js';
+import { useEngine } from './pricerEngine.js';
 import { money } from './format.js';
 import { perMonth, dscrFrom } from './dscrCalc.js';
 import {
-  PROPERTY_TYPES, PURPOSES, BORROWER_TYPES, PREPAY_TERMS, PREPAY_STRUCTURES, LOAN_TERMS,
+  PROPERTY_TYPES, PURPOSES, BORROWER_TYPES, PREPAY_TERMS, PREPAY_STRUCTURES, LOAN_TERMS, AMORTIZATIONS,
   DEFAULT_TERM_YEARS, LOCK_DAYS,
   unitsMode, unitsFor, showsNonWarrantable, deriveAmount,
   formatMoney, digitsOf, toNumber,
@@ -102,6 +103,14 @@ export const START = {
   // when no term is sent, so putting it on screen changes nothing about what today's scenarios
   // ask for; it makes the existing default visible and movable.
   termYears: DEFAULT_TERM_YEARS,
+  /* FIXED OR ARM — BLANK ON PURPOSE, and the blank is what keeps the General Pricing Engine
+     byte-identical. `toScenario` omits an empty value entirely, so a form nobody has touched sends
+     no `amortization` at all and the server's own profile force writes `criteria.loanType = 'Fixed'`
+     exactly as it always has — no new key on the wire, no new chip on that screen, and the control
+     itself only renders where the engine says the officer may choose (`amortizationChoice`).
+     The combined board still narrows LoanNEX to Fixed on a blank, because `product-filter` mirrors
+     what Lender Price was ACTUALLY asked rather than what the form happened to say. */
+  amortization: '',
   // PREPAYMENT PENALTY — TERM and TYPE, as two facts. Five-year Standard is the connector's own
   // profile default, so stating it here changes nothing about what is priced; it makes the default
   // VISIBLE, which is the point. Leaving it blank would price a five-year penalty that nobody on
@@ -483,6 +492,10 @@ export function ScenarioFields({ form }) {
     f, setF, calc, setCalc, calcOpen, setCalcOpen, zip, zipUnresolved,
     amt, formLoanAmount, um, set, setBool, setVal, setUpper, setPropertyType, takeRatio,
   } = form;
+  /* WHICH ENGINE IS DRAWING THIS FORM. Outside a provider this is the general engine — which
+     includes the saved-scenario page, where these fields are also mounted — so a control forked on
+     it is absent by default and that board's form is untouched. */
+  const engine = useEngine();
   return (
     <>
     {/* ── THE DEAL ──────────────────────────────────────────────────── */}
@@ -660,6 +673,25 @@ export function ScenarioFields({ form }) {
           {LOAN_TERMS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
         </select>
       </Field>
+      {/* ⛔ FIXED OR ARM — A REAL CRITERION AT BOTH PROGRAMS, NEVER A WORD IN A PRODUCT NAME
+          (owner-directed 2026-09-01: *"filter this in a legit way, not by looking at the words, but
+          in a real legit way, out of Lender, out of LoanX"*).
+
+          Lender Price takes it as `criteria.loanType` + `loanTypeCriteria`; LoanNEX takes no such
+          input at all, so its board is narrowed afterwards on the `amortizationType` it publishes
+          for each programme. Two different mechanisms, one question, and neither reads a name.
+
+          The box shows Fixed while nothing is stated because that is genuinely what the search
+          asks for — the DSCR profile has forced it since it was written — and it is a HINT, not a
+          value: an untouched form still sends nothing, so the request stays byte-identical. */}
+      {engine.amortizationChoice && (
+        <Field id="pe-amort" label="Rate type" basis="0 0 170px" min={160}
+          hint={f.amortization === 'arm' ? 'Fixed-rate programs are left out' : 'ARM programs are left out'}>
+          <select id="pe-amort" style={selectStyle} value={f.amortization || 'fixed'} onChange={set('amortization')}>
+            {AMORTIZATIONS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+        </Field>
+      )}
       {/* THE LOCK IS A DROP-DOWN (owner-directed 2026-08-23): "defaulted to 30 days, but
           should have the option for 15 days, 45 days, and 60 days." A typed free number was
           a way to ask Lender Price for a lock nobody offers. A SAVED scenario carrying some

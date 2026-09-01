@@ -229,9 +229,17 @@ export const ltApi = {
    * `quote` is the row's own `explain` block. `investorKey` rides with it as a POINTER to whose
    * saved setting the server should read when it brings the base into step with the price — it can
    * never state an amount, and the server resolves the figure from its own store.
+   *
+   * ⛔ `option` IS THE ROW THIS PANEL IS ALREADY DRAWING, and it is sent so the answer comes back
+   * COMPLETE rather than as the four fields the handle carries. The alternative — merging the
+   * answer into the row here — would put a second copy of the server's own merge in a second
+   * language, and the copy that drifts is the one drawing the price somebody quotes. The server
+   * takes it as FACTS ONLY: every figure this call establishes is stripped from it, our own
+   * margin's trail is stripped from it, and the rate, price and lock the vendor's answer is judged
+   * against are re-derived from the handle, so nothing sent here can move them.
    */
-  combinedExplain: (quote, scenario) => ltPost(lt('/dscr/combined/explain'), {
-    quote, scenario, investorKey: (quote && quote.investorKey) || null,
+  combinedExplain: (quote, scenario, option) => ltPost(lt('/dscr/combined/explain'), {
+    quote, scenario, option, investorKey: (quote && quote.investorKey) || null,
   }),
   // Saves the WHOLE map, always — see the route's own note. A per-key patch could
   // not express "take this setting back off and return the investor to its

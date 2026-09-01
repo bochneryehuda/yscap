@@ -62,6 +62,18 @@ export const GENERAL_ENGINE = {
   sheetLabel: 'Lender Price',
   sheetSubject: 'Lender Price',
   sheetPossessive: "Lender Price's",
+  /* A FOURTH POSITION, for the same reason there are three: "the 12 programmes X returned". The
+     subject form reads "the 12 programmes This rate sheet returned" on a board quoted by two
+     programs, which is why the combined engine answers with a clause of its own rather than a name
+     English cannot place there. */
+  sheetReturned: 'Lender Price returned',
+  /* FORK 9 — MAY THE OFFICER CHOOSE FIXED OR ARM? Both programs take the answer (Lender Price as
+     `criteria.loanType`, LoanNEX by narrowing its own board on `amortizationType`), but this
+     engine's search has forced `Fixed` since it was written — a DSCR investor search is a
+     fixed-rate search — and the owner's rule for it is *"don't touch our current setup"*. With the
+     control absent the form states nothing, the request is byte-identical, and this board answers
+     exactly what it always has. */
+  amortizationChoice: false,
   /** FORK 6 — the vendor's own eligibility checks. Lender Price does not publish them. */
   showChecks: false,
   /** FORK 7 — the term-sheet cart: the tick-box, the collected chip and the comparison panel. */
@@ -113,12 +125,17 @@ export const COMBINED_ENGINE = {
      shape with different keys. Translating one into the other in the browser would be a second copy
      of a mapping the server already holds — and the copy that drifts is the one drawing the price
      somebody quotes. */
-  explain: (quote, scenario) => ltApi.combinedExplain(quote, scenario),
+  explain: (quote, scenario, option) => ltApi.combinedExplain(quote, scenario, option),
   /* ONE SYSTEM, SO NO VENDOR IS NAMED. Two programs quote this board and a line may have come from
      either, so naming one of them on every line would be wrong half the time. */
   sheetLabel: 'the rate sheet that quoted this loan',
   sheetSubject: 'This rate sheet',
   sheetPossessive: "The rate sheet's",
+  sheetReturned: 'came back',
+  /* FORK 9 — the officer picks the product, because on THIS board it decides what comes back from
+     both programs at once. Lender Price is asked for it; LoanNEX cannot be asked, so its board is
+     narrowed on the fields it publishes about each programme. */
+  amortizationChoice: true,
   /* FORK 6 — LoanNEX publishes what it checked, so the board shows it; a rate sheet that publishes
      nothing says so in words rather than leaving a silent gap. */
   showChecks: true,

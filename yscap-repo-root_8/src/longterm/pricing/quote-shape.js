@@ -482,9 +482,9 @@ function programsForBoard(merged, opts = {}) {
  * layout actually read are filled; everything else stays `null`, which is what
  * `emptyOption` already means by it.
  */
-function optionForQuote(quote = {}) {
+function handlePatch(quote = {}) {
   const q = quote || {};
-  return deepMerge(emptyOption(), {
+  return {
     source: q.vendor || null,
     priceBuild: {
       noteRate: numOrNull(q.rate),
@@ -493,11 +493,89 @@ function optionForQuote(quote = {}) {
     },
     terms: { dayLock: q.lockDays == null ? null : Number(q.lockDays) },
     explain: q.priceHashKey ? { ...q } : null,
-  });
+  };
+}
+
+function optionForQuote(quote = {}) {
+  return deepMerge(emptyOption(), handlePatch(quote));
+}
+
+/**
+ * THE ROW THE SCREEN ALREADY HOLDS, MADE SAFE TO LAY AN EXPLANATION ONTO.
+ *
+ * â WHY THE BROWSER SENDS ITS ROW UP INSTEAD OF MERGING THE ANSWER DOWN. The explain door used
+ * to answer with `optionForQuote(quote)` alone â an option built from the rung's HANDLE, which
+ * carries a rate, a price and a lock and nothing else. The panel then drew that INSTEAD of the row
+ * it already had, so the moment an explanation landed the loan amount, the term, the monthly
+ * payment, the rate sheet and the DSCR all went blank; on a rate sheet that returned no itemization
+ * the whole panel emptied out and said nothing. Merging in the browser would have fixed the symptom
+ * and put a SECOND copy of `attachEvidence`'s merge rule in a second language â and the copy that
+ * drifts is the one drawing the price somebody quotes. So the row comes here and there is still
+ * exactly ONE merge.
+ *
+ * â WHAT A BROWSER MAY NOT CONTRIBUTE, and every removal has its own reason:
+ *   â¢ `evidence` / `adjustments` / `eligibility` / `notices` and the whole base half of
+ *     `priceBuild` are what this call is about to ESTABLISH. Left in, a stale copy from an earlier
+ *     answer would survive a vendor that has since said nothing â the panel would print last
+ *     week's itemization under today's silence, which is the one lie this door exists to prevent.
+ *   â¢ `holdback` / `marginHoldback` / the `vendor*` anchors are OUR OWN margin's trail. It is
+ *     stripped on the way out (`stripSource`, `stripExplainedTrail`); accepting it back from a
+ *     browser would be a way to put it on the panel by asking for it.
+ *   â¢ `source` / `lenderId` / `investorOrganizationGuid` name a vendor. The one-system rule is the
+ *     RESPONSE's to apply, from the caller's own reveal, never the caller's to assert.
+ *
+ * Everything else â the names, the terms, the payment, the rate sheet, the flags â is the row's
+ * own fact, already drawn on the board a moment ago, and rides through untouched.
+ *
+ * TOTAL: anything that is not a plain object, or is implausibly large for one option, returns null
+ * and the caller falls back to the handle-built option, which is exactly today's behaviour.
+ */
+const ROW_MAX_BYTES = 64 * 1024;
+function optionFromRow(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  let text;
+  try { text = JSON.stringify(raw); } catch (_) { return null; }
+  if (!text || text.length > ROW_MAX_BYTES) return null;
+  const {
+    evidence, adjustments, eligibility, notices,
+    holdback, marginHoldback, source, lenderId, investorOrganizationGuid,
+    priceBuild, rateSheet, ...rest
+  } = raw;
+  const out = { ...rest };
+  if (priceBuild && typeof priceBuild === 'object' && !Array.isArray(priceBuild)) {
+    const {
+      basePrice, baseRate, priceFloor, priceCeiling, basePoints, adjustmentPoints,
+      vendorPrice, vendorBasePoints, vendorAdjustedPoints, ...pb
+    } = priceBuild;
+    out.priceBuild = pb;
+  }
+  if (rateSheet && typeof rateSheet === 'object' && !Array.isArray(rateSheet)) {
+    const { validAsOf, ...rs } = rateSheet;
+    out.rateSheet = rs;
+  }
+  return out;
+}
+
+/**
+ * The option an explain is laid onto: the caller's own row where it sent one, under the values the
+ * HANDLE establishes.
+ *
+ * â THE SERVER'S OWN FIGURES ARE ON TOP, AND THAT ORDER IS THE GUARD. `evidenceCoversRate` judges
+ * the vendor's answer against this option's rate and lock, so a browser able to move either could
+ * make an evidence for one rate attach to another. `optionForQuote` is derived here, from the rung
+ * handle, and wins every field it fills â the row contributes only what the handle does not carry.
+ */
+function optionForExplain(quote = {}, row) {
+  const base = optionFromRow(row);
+  if (!base) return optionForQuote(quote);
+  // The empty shape FIRST, so every key the layout reads exists whatever the row was missing; then
+  // the row's own facts; then the handle's four values, which is the only patch — never the whole
+  // empty option, whose nulls would wipe the row it was just laid on.
+  return deepMerge(deepMerge(emptyOption(), base), handlePatch(quote));
 }
 
 module.exports = {
-  emptyOption, optionForQuote, optionsFromLoanNex, optionsFromLenderPrice,
+  emptyOption, optionForQuote, optionFromRow, optionForExplain, optionsFromLoanNex, optionsFromLenderPrice,
   programsFromLoanNex, programsForBoard,
   attachEvidence, evidenceCoversRate, splitInterestOnly, filterInterestOnly,
   _internals: { round3, numOrNull, deepMerge },
