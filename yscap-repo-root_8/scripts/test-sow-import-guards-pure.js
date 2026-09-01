@@ -78,7 +78,7 @@ ok('the page keeps no private copy of the drop handling',
 const crypto = require('crypto');
 const sha16 = (t) => crypto.createHash('sha256').update(t).digest('hex').slice(0, 16);
 const ASSETS = [
-  { file: 'rehab-budget.js', body: js, sha: 'd573e52ce7c4afa1', v: 'flow2-shareddrop' },
+  { file: 'rehab-budget.js', body: js, sha: 'd829c2fd3bb59abe', v: 'flow2-shareddrop-bizpurpose1' },
   { file: 'rehab-budget.css', body: css, sha: 'af87860acdbf456c', v: 'dnd2' },
 ];
 for (const a of ASSETS) {
