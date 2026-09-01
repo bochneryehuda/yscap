@@ -424,6 +424,29 @@ section('the three documents — one option, three options, three scenarios');
     'the comparison says "Comparison Sheet", and how many options');
   check(layS.blocks[0].title === 'Scenario Comparison' && /2 scenarios/.test(layS.blocks[0].subtitle),
     'the scenario comparison says so, and counts scenarios rather than options');
+
+  /* ⛔ THE BUSINESS-PURPOSE STAMP IS ON ALL THREE KINDS — owner-directed
+     2026-09-01: *"every single one of your exports should say at the bottom,
+     'This is for business-purpose lending only.'"* Asserted on every document
+     kind rather than on one, because the three are built by one `metaBlock` and
+     a guard that checked only the term sheet would pass on the day somebody gave
+     a comparison its own meta.
+     ⛔ AND ON THE OVERRIDE, which is the case that can actually take it away: a
+     snapshot may carry its own `disclosure`, so the stamp is prepended OUTSIDE
+     that and a custom wording cannot displace it. Testing only the default
+     proves the happy path and leaves the one real way to lose it unguarded. */
+  const BP = wording.BUSINESS_PURPOSE;
+  check(/business-purpose lending only/i.test(BP), `the stamp says what the owner asked it to say: ${JSON.stringify(BP)}`);
+  for (const [kind, lay] of [['term sheet', lay1], ['comparison', lay3], ['scenario', layS]]) {
+    check(lay.blocks[0].disclaimer.startsWith(BP),
+      `the ${kind}'s footer leads with the business-purpose stamp`);
+  }
+  const custom = layout.buildLayout(
+    Object.assign({}, one.snapshot, { disclosure: 'Some other wording entirely.' }), {},
+  );
+  check(custom.blocks[0].disclaimer.startsWith(BP)
+    && custom.blocks[0].disclaimer.includes('Some other wording entirely.'),
+  'and a snapshot carrying its own disclosure keeps the stamp — it is prepended outside the overridable part');
   /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. The sentence moved INTO the shared
      facts box, which is where the sketch says it: the box states what every
      scenario agrees about, and its footnote says what is left over. Read every

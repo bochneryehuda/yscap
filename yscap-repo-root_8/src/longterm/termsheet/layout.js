@@ -855,8 +855,15 @@ function metaBlock(s, opts, code) {
     docLabel: title,
     stamp: issuedOn,
     contact: contactBits.length ? `Your ${p.companyName || 'YS Capital'} contact: ${contactBits.join('  ·  ')}` : null,
-    disclaimer: `${s.disclosure || wording.DISCLOSURE} Subject to underwriting, appraisal, title and final `
-      + `credit approval. Not valid until countersigned by ${p.companyName || 'YS Capital Group'}.`,
+    /* ⛔ THE BUSINESS-PURPOSE STAMP IS PREPENDED UNCONDITIONALLY, OUTSIDE the
+       overridable part. `s.disclosure` lets a snapshot carry its own wording,
+       and folding the stamp into that would let a custom disclosure — or a
+       future caller passing one — silently drop the sentence the loan's whole
+       regulatory position rests on. It leads for the truncation reason recorded
+       on `wording.BUSINESS_PURPOSE`. */
+    disclaimer: `${wording.BUSINESS_PURPOSE} ${s.disclosure || wording.DISCLOSURE} Subject to `
+      + `underwriting, appraisal, title and final credit approval. `
+      + `Not valid until countersigned by ${p.companyName || 'YS Capital Group'}.`,
   };
 }
 

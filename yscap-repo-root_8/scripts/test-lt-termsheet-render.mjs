@@ -424,11 +424,22 @@ console.log('\nthe PILOT design is on every page — the band, the lockup, the f
 
   let bandless = [];
   let footerless = [];
+  let unstamped = [];
   back.pages.forEach((items, i) => {
     const inBand = items.filter((it) => it.y >= Z.band.bottom);
     const inFoot = items.filter((it) => it.y + it.h <= Z.footer.top);
     if (!squash(inBand.map((it) => it.s).join('')).includes('comparisonsheet')) bandless.push(i + 1);
     if (!squash(inFoot.map((it) => it.s).join('')).includes('notacommitmenttolend')) footerless.push(i + 1);
+    /* ⛔ THE BUSINESS-PURPOSE STAMP, ON THE PAPER, PAGE BY PAGE — owner-directed
+       2026-09-01. The pure suite proves the layout carries it; ONLY a render
+       proves it survives the wrap, the fit ladder and the footer's own line
+       budget onto every page, including a page the flow invented mid-table,
+       which is exactly the page a block-list test cannot see. */
+    /* The needle is stripped of PUNCTUATION as well as space: `squash` only
+       collapses whitespace, so the hyphen in "business-purpose" survives it —
+       and a renderer is free to draw that hyphen as any of several dashes. */
+    const bare = (t) => squash(t).replace(/[^a-z0-9]/g, '');
+    if (!bare(inFoot.map((it) => it.s).join('')).includes('businesspurposelendingonly')) unstamped.push(i + 1);
   });
   /* The band-and-footer sweep below needs MORE THAN ONE page to be worth
      running: what it proves is that a page produced by a BREAK cannot come out
@@ -446,6 +457,8 @@ console.log('\nthe PILOT design is on every page — the band, the lockup, the f
   check(back.pageCount >= 2, `a five-option comparison runs to ${back.pageCount} pages — enough for the band-and-footer sweep to mean something`);
   check(bandless.length === 0, `the brand band names the document on EVERY page (missing on ${bandless.join(', ') || 'none'})`);
   check(footerless.length === 0, `and the footer disclaims on EVERY page (missing on ${footerless.join(', ') || 'none'})`);
+  check(unstamped.length === 0,
+    `and EVERY page says "This is for business-purpose lending only." (missing on ${unstamped.join(', ') || 'none'})`);
 
   /* ⛔ THE FOOTER'S LEGAL LINE IS SET AT THE READABLE FLOOR, AND IT IS COMPLETE.
      Both halves have to be asserted together, because each alone is satisfiable

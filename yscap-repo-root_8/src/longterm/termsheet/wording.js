@@ -420,6 +420,29 @@ function prepaySentence(months, structure) {
 
 /** Fixed strings. One place, so every surface says them identically. */
 const DISCLOSURE = 'Pricing is indicative and subject to change until locked. This is not a commitment to lend.';
+/**
+ * ⛔ THE BUSINESS-PURPOSE STAMP, ON EVERY PAGE OF EVERY SHEET — owner-directed
+ * 2026-09-01, in their own words: *"every single one of your exports should say
+ * at the bottom, 'This is for business-purpose lending only.'"* The sentence is
+ * theirs, verbatim, and it is one constant so no surface can reword it.
+ *
+ * ⛔ IT IS NOT A DECORATION — it is the sentence a long-term DSCR loan's whole
+ * regulatory position rests on. These loans are secured by non-owner-occupied
+ * investment property and are made for business purposes, which is what keeps
+ * them outside the consumer-mortgage rules (TILA / RESPA). A pricing document
+ * that goes to a borrower and does NOT say so is the one that reads as a
+ * consumer loan offer. The disclosures page already carries the full paragraph;
+ * this is the short standing stamp on every page, which is what was asked for.
+ *
+ * ⛔ AND IT LEADS THE FOOTER RATHER THAN CLOSING IT, WHICH IS A SAFETY PROPERTY
+ * AND NOT A STYLE CHOICE. `pdf.fitFooterDisc` shrinks the type to fit the band
+ * and only slices as a last-resort backstop — and what a slice takes is the END.
+ * Leading with this sentence makes it structurally impossible for the one line
+ * that must never be missing to be the one that goes. Measured: leading with it
+ * still draws in TWO lines at the 7.5pt readable floor (159 characters longest,
+ * against 164 without it), so it costs the footer nothing.
+ */
+const BUSINESS_PURPOSE = 'This is for business-purpose lending only.';
 const THIRD_PARTY = 'Third-party costs — title, escrow, recording, appraisal — are not included.';
 
 /**
@@ -605,6 +628,6 @@ module.exports = {
   costOrCredit, closingPosition, housingCost,
   monthsWords, breakEvenSentence, incrementalSentence,
   prepaySentence, chargeRow, lenderFeePackage, dateLong, dateTimeLong, ZONE,
-  DISCLOSURE, THIRD_PARTY, CHARGE_LABELS, LENDER_FEE_KEYS, PREPAY_SENTENCES,
+  DISCLOSURE, BUSINESS_PURPOSE, THIRD_PARTY, CHARGE_LABELS, LENDER_FEE_KEYS, PREPAY_SENTENCES,
   propertyTypeWords, PROPERTY_TYPE_WORDS,
 };
