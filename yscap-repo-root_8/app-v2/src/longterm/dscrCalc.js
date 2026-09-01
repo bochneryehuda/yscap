@@ -115,14 +115,41 @@ export function housingPayment({ pi, taxMonthly, insuranceMonthly, hoaMonthly })
  * Returns { pi, tax, insurance, hoa, pitia, dscr, missing[] } — `missing` names what is stopping
  * it, so the screen never has to guess why it is empty.
  */
+/**
+ * THE RATE TO WORK A PAYMENT OUT AT WHEN NOBODY HAS NAMED ONE (owner-directed 2026-09-01:
+ * *"we shouldn't need to put in a target rate… If you don't have a targeted rate, go by the
+ * average, which is how it's usually coming up."*).
+ *
+ * ⛔ A MIRROR OF THE SERVER'S OWN SEED, and it must stay one. The server picks the first DSCR
+ * band to search from the same figure (`bracket-board.TYPICAL_RATE_PCT`), and a screen that
+ * assumed a different rate from the one the search starts at would show a ratio the board then
+ * disagreed with. `test-lt-target-rate-optional-pure.mjs` fails the moment the two defaults
+ * differ. HONEST NOTE: the server's copy can be moved by `LP_BRACKET_SEED_RATE_PCT` and this one
+ * cannot — the browser has no env. Setting that variable moves which band is searched FIRST and
+ * not this assumed rate, which is safe (the frontier re-prices every band on its own true ratio)
+ * but is a real asymmetry rather than a claim that the two can never differ.
+ */
+export const TYPICAL_RATE_PCT = 7.5;
+
 export function dscrFrom(input) {
   const i = input || {};
   const hoa = nn(i.hoaMonthly) ? cents(i.hoaMonthly) : 0;   // owner-set default: zero
   const tax = nn(i.taxMonthly) ? cents(i.taxMonthly) : null;
   const insurance = nn(i.insuranceMonthly) ? cents(i.insuranceMonthly) : null;
   const rent = nn(i.rentMonthly) && i.rentMonthly > 0 ? cents(i.rentMonthly) : null;
+  /* ⛔ A BLANK RATE IS ANSWERED, A BAD ONE IS STILL REFUSED, and the difference is the whole
+     rule. NOTHING TYPED (blank, or nothing but spaces) is somebody who has not got a rate in
+     mind — the owner's case — so the payment is worked out at the typical coupon and the answer
+     SAYS it was assumed. A rate that IS typed but is junk or negative is not a missing rate, it
+     is a wrong one: assuming past it would replace what they typed with a number they never
+     chose and hide their mistake behind a confident ratio. So `rateAssumed` is only ever true
+     where the box is genuinely empty. A typed rate ALWAYS wins, including a deliberate 0. */
+  const rateTyped = nn(i.ratePct);
+  const rateBlank = i.ratePct == null || i.ratePct === '' || (typeof i.ratePct === 'string' && i.ratePct.trim() === '');
+  const rateAssumed = !rateTyped && rateBlank;
+  const ratePctUsed = rateTyped ? i.ratePct : (rateAssumed ? TYPICAL_RATE_PCT : i.ratePct);
   const pi = monthlyPI({
-    loanAmount: i.loanAmount, ratePct: i.ratePct,
+    loanAmount: i.loanAmount, ratePct: ratePctUsed,
     termYears: i.termYears, interestOnly: !!i.interestOnly,
   });
 
@@ -133,19 +160,19 @@ export function dscrFrom(input) {
     // "rate" because the loan amount happens to be present would send somebody to a box that is
     // already filled in.
     if (!nn(i.loanAmount) || i.loanAmount <= 0) missing.push('loan amount');
-    else if (!nn(i.ratePct) || i.ratePct < 0) missing.push('rate');
+    else if (!nn(ratePctUsed) || ratePctUsed < 0) missing.push('rate');
     else missing.push('loan term');
   }
   if (tax == null) missing.push('property tax');
   if (insurance == null) missing.push('insurance');
 
-  if (missing.length) return { pi, tax, insurance, hoa, pitia: null, dscr: null, missing };
+  if (missing.length) return { pi, tax, insurance, hoa, pitia: null, dscr: null, missing, rateAssumed: false, ratePctUsed: null };
 
   // The denominator is rounded to cents FIRST, because on the loan file it is a currency field
   // (912) holding a settled amount, and the tenant's formula divides by that stored figure.
   const pitia = housingPayment({ pi, taxMonthly: tax, insuranceMonthly: insurance, hoaMonthly: hoa });
-  if (pitia <= 0) return { pi, tax, insurance, hoa, pitia, dscr: null, missing: ['a payment above zero'] };
-  return { pi, tax, insurance, hoa, pitia, dscr: Math.round((rent / pitia) * 100) / 100, missing: [] };
+  if (pitia <= 0) return { pi, tax, insurance, hoa, pitia, dscr: null, missing: ['a payment above zero'], rateAssumed: false, ratePctUsed: null };
+  return { pi, tax, insurance, hoa, pitia, dscr: Math.round((rent / pitia) * 100) / 100, missing: [], rateAssumed, ratePctUsed };
 }
 
 /* ── DOES THIS FILE STILL QUALIFY FOR THE PRICE IT WAS QUOTED? ────────────────

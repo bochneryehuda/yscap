@@ -258,10 +258,30 @@ globalThis.__x = { React, renderToString, LtPricer, PricerScreen, LtCombinedPric
     ok(/id="pe-fico"/.test(c) && /id="pe-fico"/.test(a),
       'G5 …and both ask for the same loan, from the one shared form');
     /* The board itself is shared, so a field on one is a field on the other BY CONSTRUCTION.
-       Counted rather than sampled: a sampled check passes while a field quietly goes missing. */
-    const ids = (h) => (h.match(/id="pe-[a-z0-9-]+"/g) || []).sort().join(',');
-    ok(ids(a) === ids(b) && ids(a) === ids(c) && ids(a).length > 50,
-      `G6 …exactly the same fields, counted (${(ids(a).match(/pe-/g) || []).length} on each)`);
+       Counted rather than sampled: a sampled check passes while a field quietly goes missing.
+
+       ⛔ RE-POINTED 2026-09-01, NOT LOOSENED. The combined engine now declares one control the
+       general one does not offer — `amortizationChoice`, the fixed/ARM picker, which exists on that
+       board because it decides what comes back from BOTH programs at once and is deliberately kept
+       off the general board ("don't touch our current setup"). So the two field sets are no longer
+       identical, and asserting that they are would read as a broken feature.
+
+       What is still worth proving, and what is asserted instead, is that the difference comes
+       ENTIRELY from that ONE DECLARED FLAG: turn it off on the combined descriptor and the field set
+       must be the general board's again, exactly. The id is never typed here — it is derived by
+       flipping the declared behaviour — so a SECOND undeclared field appearing on one board still
+       fails, and so does a field quietly going missing from either. */
+    const idList = (h) => (h.match(/id="pe-[a-z0-9-]+"/g) || []).sort();
+    const ids = (h) => idList(h).join(',');
+    ok(ids(a) === ids(b) && ids(a).length > 50,
+      `G6 …exactly the same fields once every declared difference is restored, counted (${idList(a).length} on each)`);
+    const d = draw(React.createElement(PricerScreen, { engine: { ...COMBINED_ENGINE, amortizationChoice: false } }));
+    ok(ids(d) === ids(a),
+      'G6a …and turning that ONE declared control off puts the combined board back on the general board\'s exact field set — so nothing else about the form differs, and nothing has quietly gone missing');
+    const extra = idList(c).filter((x) => !idList(a).includes(x));
+    const missing = idList(a).filter((x) => !idList(c).includes(x));
+    ok(missing.length === 0 && extra.length === 1,
+      `G6b …so the live combined board is the general form plus exactly one declared control (adds ${extra.join(', ') || 'nothing'}; missing ${missing.join(', ') || 'nothing'})`);
 
     /* ⛔ THE TWO PANELS THE COMBINED BOARD OWNS, RENDERED WITH DATA. G2 above renders the FIRST
        PAINT, which reaches neither of them — they need an answer, and `renderToString` runs no
