@@ -237,9 +237,34 @@ export function quoteCharges(mode, plan, rawPrice, loanAmount, waiveLenderFees =
     }
   }
 
-  // THE BUYDOWN — what it costs to be under par. When the waive has pushed cash onto it
-  // the honest points figure is the CASH-derived one, so points and dollars on the line
-  // can never disagree with each other.
+  // THE BUYDOWN — what it costs to be under par.
+  //
+  // ⛔ THE DOLLARS ARE THE MONEY; THE POINTS ARE A ROUNDED RESTATEMENT OF THEM, and on a
+  // waive-touched line the two can differ by ONE ROUNDING STEP. This comment used to claim
+  // they "can never disagree", which is not true and was measured: at price 100.2 on a
+  // $375,000 loan with the fees waived the line reads 2.359 points and $8,845, while 2.359%
+  // of that loan is $8,846.25 — a $1.25 gap, and up to loan x 0.000005 (≈$25 on $5M).
+  //
+  // It is inherent, not a bug to route around: without a waive the DOLLARS are derived from
+  // the points (they agree exactly); with one, the cash is the fact and the points are
+  // derived back from it, and a 3-decimal points figure cannot express an arbitrary cash
+  // amount. Deriving the dollars from the rounded points instead would make the POINTS
+  // authoritative and move real money in every total, which is far worse than a rounding
+  // step in a display figure. So the dollars stay authoritative and the gap is BOUNDED —
+  // `test-lt-comp-overlay.mjs` fails if it ever exceeds one rounding step, which is what
+  // would catch a changed rounding or a wrong basis.
+  //
+  // ⛔ DECIDED 2026-08-30 — THE POINTS STAY, AND THIS IS NOT AN OVERSIGHT. The term sheet
+  // prints this line as "You pay $8,845.00 (2.359 pts)", so a reader who multiplies finds the
+  // $1.25. It was put to the owner with the trade stated — drop the points and the gap goes
+  // away, but the line loses a figure they want on the page — and the owner chose to KEEP
+  // them: *"Just leave it like this. It's okay if the rounding is a little messed up for this
+  // one line."*
+  //
+  // So a later sweep that flags this line again has found a DECISION, not a defect. Changing
+  // it needs the owner's own words. What is still guarded is the SIZE of the gap: section M
+  // of test-lt-comp-overlay.mjs fails if it ever exceeds one rounding step, and section N
+  // fails if the points are dropped — so a "tidy-up" cannot quietly reverse the decision.
   if (buydownDollars > 0) {
     lines.push({
       key: 'buydown', label: 'Buydown (discount points)',

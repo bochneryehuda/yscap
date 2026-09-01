@@ -564,9 +564,19 @@ const SETTINGS = [
     type: 'number', default: 2.0,
     description: 'On a borrower-paid search this is charged as ORIGINATION on the fee list; the '
       + 'board keeps the raw price (less any YSP). Company default; each loan officer may set '
-      + 'their own, down or up. Super admin only at the company level.',
+      + 'their own AT OR ABOVE it — never below. Super admin only at the company level.',
+    // ⛔ THE HELP TEXT MUST MATCH THE DOOR. This read "down or up" until 2026-08-30, quoting
+    // the owner's first instruction — but the owner's LATER, more specific one is a FLOOR
+    // ("they can only put it higher"), and `comp-plan.personalFloorProblem` enforces it. So an
+    // officer read this field's own description, set 1.5 against a company 2.0, and was
+    // refused by a rule the text said did not exist. Advice a reader cannot act on is a
+    // defect, not cosmetics. Both owner instructions are kept in the evidence below, in the
+    // order they were given, because the second is only intelligible beside the first.
     evidence: 'Owner-directed 2026-08-23: "Borrower-paid compensation should also have a company '
-      + 'default of two points … any loan officer that wants can decrease or increase."' },
+      + 'default of two points … any loan officer that wants can decrease or increase." NARROWED '
+      + 'the same day, and this is what is enforced: "They cannot put it on their profile as a '
+      + 'setting for lower … For now, on both sides, they can only put it higher." Going lower on '
+      + 'one file is the per-file exception the owner described and deferred.' },
   { key: 'comp.ysp', group: 'Compensation', label: 'YSP on borrower-paid searches (points)',
     type: 'number', default: 0,
     description: 'A yield-spread premium a loan officer may take ON TOP of borrower-paid '
@@ -831,6 +841,75 @@ const SETTINGS = [
       + 'investor post-purchase files — 0 on all 136 active-pipeline loans — so nothing in '
       + 'the live book is waiting on this screen.' },
 
+  // ── The COMBINED PRICING ENGINE (owner-directed 2026-08-30) ───────────────
+  // One row per investor: what we call them for a client, which of the two
+  // pricing programs their products are fetched from, and whether they are on.
+  //
+  // A `map`, so the generic settings screen shows it READ-ONLY as JSON — which is
+  // right: this is edited on the Combined Pricing Engine's own settings screen,
+  // where each investor is a row with a picker rather than a brace somebody can
+  // mistype. Declaring it here is what gives it a home in the ONE settings store
+  // and puts it on the "what has this lender changed?" list.
+  //
+  // The DEFAULT IS EMPTY on purpose. The pre-fills — every investor's white-label
+  // name, Lender Price as the source, NQM/Acra/eResi on LoanNEX, Button Finance
+  // off — are DERIVED in `pricing/investor-settings.js` from the investor
+  // registry and the white-label sheet. Copying them here would be a second copy
+  // of a roster that already exists, and the one that drifts is the one somebody
+  // prices a loan on. This map holds only what a person has deliberately CHANGED.
+  { key: 'pricing.combinedInvestors', group: 'Combined Pricing Engine', label: 'Combined engine — investor settings',
+    type: 'map', default: {},
+    description: 'Per investor: { source: "lenderprice" | "loannex" | "both", enabled: true|false, '
+      + 'whiteLabel: "..." }. Only deliberate changes are stored; everything else falls back to the '
+      + 'pre-fill derived from the investor registry.',
+    evidence: 'Owner-directed 2026-08-30: "You should open a settings menu where you have every '
+      + 'single investor listed… For every investor, we can always switch it from where we want to '
+      + 'take the information."' },
+  // "THIS INVESTOR AND THIS INVESTOR ARE THE SAME" — the human-recorded overlay
+  // (owner-directed 2026-08-30: *"we need to be able to link a investor from
+  // lender price and loannex by if the name is a little different the system
+  // should still understand that it's the same investor… Those investors are
+  // spelled differently and have different names, but we need to be able to link
+  // it and say, 'This investor and this investor are the same.'"*).
+  //
+  // WHY THIS EXISTS AND NOT JUST A BIGGER REGISTRY: identity came from the code
+  // registry alone, so a spelling it did not carry resolved to nothing, the merge
+  // dropped that row, and the investor's WHOLE BOARD disappeared with the only fix
+  // being a code change. This is the door a person can open. The map is keyed on
+  // the vendor's spelling and points at a CANONICAL investor key — a link may
+  // never invent an investor or rename one, and a key nobody knows is refused at
+  // the settings door rather than stored as though it had worked.
+  //
+  // EMPTY BY DEFAULT, for the same reason as the map above: nothing here is a
+  // second copy of the registry, only what a person has deliberately decided.
+  { key: 'pricing.investorLinks', group: 'Combined Pricing Engine', label: 'Combined engine — investor links',
+    type: 'map', default: {},
+    description: 'Per vendor spelling: { key: "<canonical investor key>", source: "lenderprice" | '
+      + '"loannex", linkedBy, linkedAt }. A link outranks every registry match, so a person\'s '
+      + 'decision beats a lookup; the label always comes from the canonical investor.',
+    evidence: 'Owner-directed 2026-08-30: "We should be able to link them together side by side '
+      + 'and then select this one. Want to see from this program."' },
+  // THE MARGIN HOLDBACK WE ADD OURSELVES, and it is a SETTING now rather than a
+  // constant (owner-directed 2026-08-30: *"there should always be in the
+  // settings the possibility to move up the margin hold back, remove the margin
+  // hold back, or move it down."*). 0.25 stays the pre-fill — the owner's own
+  // number — so a deployment that has never touched this behaves exactly as it
+  // did before.
+  //
+  // ⛔ NULL MEANS "USE THE 0.25", NOT "HOLD BACK NOTHING". This is the one
+  // setting in the engine that may not fail toward doing nothing: doing nothing
+  // here hands the borrower 0.25 of better execution nobody decided to give
+  // them. An unreadable or refused value keeps the standing number and says so
+  // on the board; only a deliberate 0 removes it.
+  { key: 'pricing.combinedMarginHoldback', group: 'Combined Pricing Engine', label: 'Combined engine — LoanNEX margin holdback (points)',
+    type: 'number', default: null,
+    description: 'Points held back on every LoanNEX quote before anything compares the two '
+      + 'programs. Blank uses the standing 0.25. Set 0 to remove it entirely — which leaves the '
+      + 'two feeds on DIFFERENT footings, since Lender Price still carries its own.',
+    evidence: 'Owner-directed 2026-08-30: "Every investor from LoanNEX needs to get the 0.25 '
+      + 'margin hold back added... On LoanNEX, everybody, you need to add this manually." Then, '
+      + 'the same day: "there should always be in the settings the possibility to move up the '
+      + 'margin hold back, remove the margin hold back, or move it down."' },
   // -- Term sheets ----------------------------------------------------------
   // The officer-side term sheet (owner-directed 2026-08-30: *"we want to be able
   // also on the staff side to enable the term sheet option from today"*). The

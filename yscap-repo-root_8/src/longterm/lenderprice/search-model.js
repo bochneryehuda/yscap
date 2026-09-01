@@ -19,6 +19,15 @@ const zipCounty = require('./zip-county');
 // (IncomeDocType was always "DSCR", PrePayment_Plan_Type always "Standard"). Bound locally so the
 // builder reads the same way as the other mapX helpers in this file.
 const { mapIncomeDocType, mapPrepayStructure, PREPAY_STRUCTURE_NULL } = registry;
+// The DSCR profile's numbers live in ONE place so the second pricing program is
+// asked about the SAME loan (owner-directed 2026-08-30). These are this file's
+// own long-standing values, moved — not changed; test-lt-lp-dscr-profile-pure.js
+// is what proves they did not move.
+const SHARED_FLAGS = require('../pricing/scenario-defaults');
+// The SAME rule the LoanNEX connector reads — see `pricing/tier-rounding.js`. The direction lives
+// there, never here, so one loan is described the same way to both programs.
+const tierRounding = require('../pricing/tier-rounding');
+const SHARED_PROFILE = SHARED_FLAGS.DSCR_PROFILE;
 
 // Symbol channel for registry validation warnings (invalid enum values). Symbol-keyed properties
 // are skipped by JSON.stringify, so attaching this to the built payload never pollutes the body
@@ -55,7 +64,7 @@ const SMO_PPP = {
 // special-mortgage-option list and the dynamic PrepayTerm/PrePayment_Plan_Type pair must agree about
 // which term is in force — resolving it in two places is how a request comes to carry a 5 Yr PPP
 // option beside a 36-month term.
-const DEFAULT_PREPAY_MONTHS = 60;
+const DEFAULT_PREPAY_MONTHS = SHARED_PROFILE.prepayMonths;
 
 function clone(o) { return JSON.parse(JSON.stringify(o)); }
 function normName(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
@@ -133,7 +142,15 @@ function mapPurpose(p) {
 function deriveAmounts(sc) {
   sc = sc || {}; // a `= {}` default only catches undefined; this module promises never to throw
   const money = (n) => Math.round(n * 100) / 100;
-  const ratio = (n) => Math.round(n * 1e6) / 1e6;
+  /* ⛔ THE LTV IS LIFTED, NEVER ROUNDED TO NEAREST (owner-directed 2026-08-30: *"the LTV should
+     always be rounded up, so we should never see better"*). A higher LTV prices WORSE, so rounding
+     to nearest is what asks this vendor to price a band the loan has not earned.
+
+     THE PRECISION IS UNCHANGED at 6 decimals of the fraction (4 of the percent) — this moves the
+     DIRECTION only, so a supplied 0.75 and a derived 375000/500000 are byte-identical to what they
+     have always been, and the only figures that move are the ones that genuinely fall between two
+     representable LTVs. Named `ratio` still because that is what both call sites mean by it. */
+  const ratio = (n) => tierRounding.sendAs('ltv', n, 6);
   let value = num(sc.value);
   let loan = num(sc.loan);
   const ltvRaw = num(sc.ltv);
@@ -656,7 +673,7 @@ function buildSearch(sc = {}, opts = {}) {
   // lock (30) and reserves (24). NULLISH, not truthy: an explicitly supplied 0 is a real "No DSCR"
   // value (dscrBand(0) → NoDSCR) and is preserved — only null/undefined/blank falls back to 1.5.
   const dscrVal = num(sc.dscr);
-  const effDscr = dscrVal != null ? dscrVal : 1.5;
+  const effDscr = dscrVal != null ? dscrVal : SHARED_PROFILE.dscr;
   c.dscr = effDscr;
   // §32.3 — DSCR threshold band, derived ONCE from the EFFECTIVE DSCR (after the profile default).
   // Drives both the DSCRRATIO dynamic token (set below) and the derived pricing-band SMO (pushed into
@@ -668,7 +685,7 @@ function buildSearch(sc = {}, opts = {}) {
   // (the "some DSCR defaults are not enforced" finding). loanYear + termsCriteria must agree;
   // termsInMonths=false means the number is years, NOT a day-lock.
   const termYears = num(sc.termYears != null ? sc.termYears : sc.term);
-  const effTermYears = termYears != null ? termYears : 30;
+  const effTermYears = termYears != null ? termYears : SHARED_PROFILE.termYears;
   /* §39 — A SEARCH MAY CARRY MORE THAN ONE TERM, AND INTEREST-ONLY CARRIES TWO BY DEFAULT
      (owner-directed 2026-08-31): *"anytime somebody is searching for interest-only … you should
      not only search for 30 years, you should also search for 40 years … lender price has certain
@@ -695,7 +712,7 @@ function buildSearch(sc = {}, opts = {}) {
   // live default carrying a different lock can never change the profile. This is a LOCK period
   // (days), NOT the loan term (years).
   const lockDays = num(sc.lockDays);
-  const effLockDays = lockDays != null ? lockDays : 30;
+  const effLockDays = lockDays != null ? lockDays : SHARED_PROFILE.lockDays;
   { const bc = m.brokerCriteria || (m.brokerCriteria = {}); bc.dayLocks = effLockDays; m.dayLocksCriteria = [effLockDays]; }
   // §31.5 — BROKER COMP PERCENT, with the vendor's confirmed SIGN INVERSION: a visible 2.5 is
   // transmitted as brokerCriteria.compPlan = -2.5 (captured live). The caller sends what a human
@@ -1401,6 +1418,16 @@ function validateScenario(sc = {}) {
   // offline), so this adds no network call and no database read to the pricing path. Anything the
   // CALLER supplied is an ASSERTION, never overwritten — a supplied value that contradicts the ZIP
   // is a 422, because silently preferring one side is how a loan gets priced in the wrong county.
+  // §  — THE BUTTONS ARE READ UNDER ONE NAME ON BOTH PROGRAMS (owner-directed
+  // 2026-08-30). A scenario may arrive spelling a flag any of the ways a caller
+  // reasonably might (`isSelfEmployed`, `interestOnly`, `waiveEscrow`); this adds
+  // the canonical spelling so the strict boolean validation below actually SEES
+  // the value, and so the second pricing program is asked the same question.
+  // Additive — the caller's own spelling is left in place.
+  try { sc = SHARED_FLAGS.canonicalizeFlags(sc); }
+  catch (e) {
+    return { ok: false, status: 422, error: e.code || 'invalid_flag', field: e.field || null, message: e.message };
+  }
   const enr = zipCounty.enrichLocation(sc);
   if (!enr.ok) return { ok: false, status: 422, error: enr.code, field: enr.field, message: enr.message };
   // Merge the filled fields UNDER the caller's own values, then validate/build from the completed

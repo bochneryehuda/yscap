@@ -528,8 +528,21 @@ export default function StaffLayout({ children }) {
                 The route itself stays behind StaffPrivate, so a deliberate URL still opens the
                 console when the parity work resumes; nothing was deleted. Do not re-add a nav
                 link here without the owner asking for the console back. */}
+            {/* THE COMBINED PRICING ENGINE — Lender Price + LoanNEX in one board, and its own
+                settings. SUPER ADMIN ONLY, and hidden from everybody else rather than shown and
+                refused: the server answers 404 to any other role, so a visible link would be a
+                control that always fails. Owner-directed 2026-08-30 — *"only for super admin to
+                be able to see it and super admin to be able to test it… so I can audit everything
+                before I want to go live to the general pricing engine."*
+                It sits BESIDE the Pricing Engine above, which is untouched. */}
+            {role === 'super_admin' && (
+              <NavLink className="sb-link" to="/internal/lt/combined" title="The Combined Pricing Engine — the same board, priced on Lender Price AND LoanNEX together. Under audit; super admin only."><NavIcon name="pricing" />Combined Pricing Engine</NavLink>
+            )}
             <NavLink className="sb-link" to="/internal/lt/sync"><NavIcon name="health" />Sync</NavLink>
             <NavLink className="sb-link" to="/internal/lt/settings"><NavIcon name="settings" />Settings</NavLink>
+            {role === 'super_admin' && (
+              <NavLink className="sb-link" to="/internal/lt/combined-settings" title="Combined Pricing Engine settings — every investor, the name a client may see, and which of the two programs their pricing is fetched from."><NavIcon name="settings" />Combined Pricing Engine settings</NavLink>
+            )}
           </>
         ) : (<>
         <div className="sb-sec">Main</div>

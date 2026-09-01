@@ -23,6 +23,13 @@
 const http = require('http');
 const path = require('path');
 
+// THE MERGED PRICING BOARD IS OFF BY DEFAULT (owner-directed: not live until he
+// says so), so its doors 404 at the gate unless this is set. A 404 is a PASS
+// here, which is exactly the problem: without the flag those doors would be
+// "covered" by a call that never reached a handler. Set for THIS PROCESS ONLY —
+// it changes nothing about any deployment, and no other route reads it.
+process.env.LT_COMBINED_PRICING = 'on';
+
 let failures = 0;
 const check = (cond, msg) => {
   if (cond) console.log(`  ok   ${msg}`);
@@ -305,6 +312,37 @@ async function main() {
       // a scope fragment whose placeholder arithmetic is off (Postgres 42P18),
       // surfaces here rather than on the screen.
       '/api/lt/clickup/status-reviews',
+      // ── the COMBINED PRICING ENGINE (Lender Price + LoanNEX) ───────────────
+      // SUPER-ADMIN ONLY, which the token above is — WITHOUT that the mount
+      // answers 404 at its gate and the handlers never run, which is a hollow
+      // call: this suite exists to execute handlers, not gates. (The gate itself
+      // is asserted separately below, from a loan officer's token.)
+      // Both of these are pure config reads that reach no vendor.
+      '/api/lt/dscr/combined/health',
+      '/api/lt/dscr/combined/loannex/login-check',
+      // The INVESTOR SETTINGS roster — every investor, its white-label name, and
+      // which of the two pricing programs its products are fetched from. Another
+      // pure config read: it answers from the investor registry plus the
+      // environment and reaches nobody, so a wrong shape surfaces here rather
+      // than as an empty settings screen somebody cannot explain.
+      '/api/lt/dscr/combined/investors',
+      // "THIS INVESTOR AND THIS INVESTOR ARE THE SAME" — the recorded links plus
+      // the pick-list of canonical investors. A pure read of the settings store
+      // and the investor registry that reaches no vendor; opening it here is what
+      // proves the stored map is READABLE, because `readLinks` never throws by
+      // design and a shape it cannot read yields an empty map — which on a screen
+      // is indistinguishable from "nobody has linked anything yet".
+      '/api/lt/dscr/combined/investor-links',
+      // …and the SUGGESTER, which is the one door here that computes rather than
+      // reads. It is called WITH a name because it answers 400 without one, and
+      // an assertion satisfied by a 400 would prove only that the door refuses.
+      '/api/lt/dscr/combined/investor-links/suggest?name=A%20%26%20D%20Mortgage%20-%20Delegated',
+      // THE MARGIN HOLDBACK in force — a pure read of the settings store plus the
+      // owner's standing number, reaching no vendor. Opening it here is what
+      // proves a stored value is READABLE: `resolveHoldback` never throws by
+      // design and an unreadable one keeps the standing 0.25, which on a screen
+      // is indistinguishable from "nobody has changed it".
+      '/api/lt/dscr/combined/margin-holdback',
     ];
 
     // ── WHAT THE LIST OMITS, SAID OUT LOUD ──────────────────────────────────
@@ -323,6 +361,11 @@ async function main() {
     // actually opening the door finds it.
     const EXEMPT = {
       '/api/lt/dscr/login-check': 'dials LenderPrice to check a vendor login — a smoke test that reaches an outside company is not a smoke test, and a failure there would report OUR side as broken',
+      // Its SIBLING, /dscr/combined/loannex/login-check, IS called above: that one
+      // reports "we are not set up yet" as a 200, so it exercises its handler
+      // without reaching anybody. This one cannot — with no session it can only
+      // answer 503, and with one it would dial LoanNEX for a real transaction.
+      '/api/lt/dscr/combined/loannex/disqualify/:transactionId': 'reads one LoanNEX transaction\'s ineligibility tree — it needs a live vendor session, so it either reaches an outside company or answers 503; neither is a smoke test',
     };
 
     const declared = deriveGetDoors();
@@ -400,6 +443,50 @@ async function main() {
       const res = await fetch(`${base}/api/lt/borrowers`, { headers: { authorization: `Bearer ${loToken}` } });
       check(res.status === 200,
         `a SCOPED officer's borrower list answers 200 (got ${res.status}) — that caller is what assembles the scope's WHERE into a real statement`);
+
+      // THE COMBINED PRICING ENGINE IS SUPER-ADMIN ONLY, and this is the only
+      // place that proves it: every other call in this file carries a super
+      // admin's token, so the gate would be invisible to all of them. The owner
+      // is auditing that engine privately before it reaches the general one —
+      // *"only for super admin to see it and super admin to be able to test
+      // it"* — so an ordinary officer must get NOTHING, and 404 rather than 403
+      // so its existence is not advertised.
+      for (const door of ['/api/lt/dscr/combined/health', '/api/lt/dscr/combined/investors',
+        '/api/lt/dscr/combined/investor-links', '/api/lt/dscr/combined/margin-holdback']) {
+        const shut = await fetch(base + door, { headers: { authorization: `Bearer ${loToken}` } });
+        check(shut.status === 404,
+          `${door} is 404 for a loan officer (got ${shut.status}) — the combined engine is the super admin's alone while it is under audit`);
+      }
+      // THE EXPLAIN DOOR, exercised for real — and it is the one POST here that
+      // can be, because a row with no vendor explain handle is answered from our
+      // own side with no outside call at all. That branch exists precisely
+      // because the two rate sheets differ: one ships its itemized adjustments
+      // WITH the quote, so asking again buys nothing, and answering that with a
+      // 400 would send somebody hunting for a call that was never needed.
+      {
+        const post = (tok) => fetch(`${base}/api/lt/dscr/combined/explain`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${tok}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ quote: { rate: 6.25, price: 99.5, lockDays: 30 } }),
+        });
+        const shutExplain = await post(loToken);
+        check(shutExplain.status === 404,
+          `/api/lt/dscr/combined/explain is 404 for a loan officer (got ${shutExplain.status}) — the gate covers the POST doors too, not only the reads`);
+        const openExplain = await post(token);
+        const body = await openExplain.json().catch(() => ({}));
+        check(openExplain.status === 200 && body.ok === true && body.alreadyExplained === true && body.breakdown === null,
+          `…while a super admin asking about a row whose sheet already itemized it gets a plain 200 saying so (got ${openExplain.status} ${JSON.stringify(body).slice(0, 90)})`);
+        check(typeof body.message === 'string' && body.message.length > 30,
+          '…in a sentence a person can read, rather than a bare flag a screen has to invent wording for');
+      }
+
+      // …and the GENERAL pricing engine is untouched by that gate. This is the
+      // assertion that would catch the combined engine's role check being
+      // applied one mount too high and quietly taking the live board away from
+      // every officer in the company.
+      const general = await fetch(`${base}/api/lt/dscr/health`, { headers: { authorization: `Bearer ${loToken}` } });
+      check(general.status === 200,
+        `…while the GENERAL pricing engine still answers that same officer 200 (got ${general.status}) — "don't touch our current setup"`);
     }
 
     console.log('\na door nobody may open stays shut');

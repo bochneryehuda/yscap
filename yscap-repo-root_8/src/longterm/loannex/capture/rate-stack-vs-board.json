@@ -1,0 +1,1088 @@
+{
+ "_captured": "2026-08-30 \u2014 ONE transaction (27684de7) from the aggregator recording. The whole point of this fixture is that these two came from the SAME pricing call, so they can be compared.",
+ "_why": "The vendor UI fetches a rate stack per program on click, which reads as a per-program cost. It is not: the ladder it returns is the one already inside quick-prices. Proven here rather than argued.",
+ "priceHashKey": "23170-1124-22542-4087",
+ "program": "BUSINESS PURPOSE / DSCR (5% Fixed)",
+ "product": "30 Yr. Fixed",
+ "investor": "Acra Lending - Corr",
+ "rateStackLastUpdated": "2026-08-28T16:29:52.955+00:00",
+ "rateStackRows": [
+  {
+   "rate": 8.125,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.125,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.125,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.0,
+   "lockDays": 15,
+   "price": 102.848
+  },
+  {
+   "rate": 7.0,
+   "lockDays": 30,
+   "price": 102.698
+  },
+  {
+   "rate": 7.0,
+   "lockDays": 45,
+   "price": 102.548
+  },
+  {
+   "rate": 8.0,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.0,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.0,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.0,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.0,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.0,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 10.0,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 10.0,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 10.0,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 8.625,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.625,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.625,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.75,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.75,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.75,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.125,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.125,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.125,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 8.25,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.25,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.25,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.625,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.625,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.625,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 6.75,
+   "lockDays": 15,
+   "price": 101.598
+  },
+  {
+   "rate": 6.75,
+   "lockDays": 30,
+   "price": 101.448
+  },
+  {
+   "rate": 6.75,
+   "lockDays": 45,
+   "price": 101.298
+  },
+  {
+   "rate": 6.375,
+   "lockDays": 15,
+   "price": 99.6605
+  },
+  {
+   "rate": 6.375,
+   "lockDays": 30,
+   "price": 99.5105
+  },
+  {
+   "rate": 6.375,
+   "lockDays": 45,
+   "price": 99.3605
+  },
+  {
+   "rate": 10.125,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 10.125,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 10.125,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 6.875,
+   "lockDays": 15,
+   "price": 102.223
+  },
+  {
+   "rate": 6.875,
+   "lockDays": 30,
+   "price": 102.073
+  },
+  {
+   "rate": 6.875,
+   "lockDays": 45,
+   "price": 101.923
+  },
+  {
+   "rate": 10.25,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 10.25,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 10.25,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.375,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 7.375,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 7.375,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 6.5,
+   "lockDays": 15,
+   "price": 100.348
+  },
+  {
+   "rate": 6.5,
+   "lockDays": 30,
+   "price": 100.198
+  },
+  {
+   "rate": 6.5,
+   "lockDays": 45,
+   "price": 100.048
+  },
+  {
+   "rate": 8.75,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.75,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.75,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.875,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 7.875,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 7.875,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.5,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 7.5,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 7.5,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 8.375,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.375,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.375,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.25,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 7.25,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 7.25,
+   "lockDays": 45,
+   "price": 103.673
+  },
+  {
+   "rate": 8.5,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.5,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.5,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 8.875,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.875,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.875,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.5,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.5,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.5,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.375,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.375,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.375,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.875,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.875,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.875,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.25,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.25,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.25,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 6.625,
+   "lockDays": 15,
+   "price": 100.973
+  },
+  {
+   "rate": 6.625,
+   "lockDays": 30,
+   "price": 100.823
+  },
+  {
+   "rate": 6.625,
+   "lockDays": 45,
+   "price": 100.673
+  },
+  {
+   "rate": 10.375,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 10.375,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 10.375,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.75,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 7.75,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 7.75,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.125,
+   "lockDays": 15,
+   "price": 103.473
+  },
+  {
+   "rate": 7.125,
+   "lockDays": 30,
+   "price": 103.323
+  },
+  {
+   "rate": 7.125,
+   "lockDays": 45,
+   "price": 103.173
+  },
+  {
+   "rate": 6.25,
+   "lockDays": 15,
+   "price": 99.0355
+  },
+  {
+   "rate": 6.25,
+   "lockDays": 30,
+   "price": 98.8855
+  },
+  {
+   "rate": 6.25,
+   "lockDays": 45,
+   "price": 98.7355
+  },
+  {
+   "rate": 7.625,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 7.625,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 7.625,
+   "lockDays": 45,
+   "price": 103.75
+  }
+ ],
+ "quickPricesRows": [
+  {
+   "rate": 8.125,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.125,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.125,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.0,
+   "lockDays": 15,
+   "price": 102.848
+  },
+  {
+   "rate": 7.0,
+   "lockDays": 30,
+   "price": 102.698
+  },
+  {
+   "rate": 7.0,
+   "lockDays": 45,
+   "price": 102.548
+  },
+  {
+   "rate": 8.0,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.0,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.0,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.0,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.0,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.0,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 10.0,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 10.0,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 10.0,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 8.625,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.625,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.625,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.75,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.75,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.75,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.125,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.125,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.125,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 8.25,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.25,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.25,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.625,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.625,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.625,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 6.75,
+   "lockDays": 15,
+   "price": 101.598
+  },
+  {
+   "rate": 6.75,
+   "lockDays": 30,
+   "price": 101.448
+  },
+  {
+   "rate": 6.75,
+   "lockDays": 45,
+   "price": 101.298
+  },
+  {
+   "rate": 6.375,
+   "lockDays": 15,
+   "price": 99.6605
+  },
+  {
+   "rate": 6.375,
+   "lockDays": 30,
+   "price": 99.5105
+  },
+  {
+   "rate": 6.375,
+   "lockDays": 45,
+   "price": 99.3605
+  },
+  {
+   "rate": 10.125,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 10.125,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 10.125,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 6.875,
+   "lockDays": 15,
+   "price": 102.223
+  },
+  {
+   "rate": 6.875,
+   "lockDays": 30,
+   "price": 102.073
+  },
+  {
+   "rate": 6.875,
+   "lockDays": 45,
+   "price": 101.923
+  },
+  {
+   "rate": 10.25,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 10.25,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 10.25,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.375,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 7.375,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 7.375,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 6.5,
+   "lockDays": 15,
+   "price": 100.348
+  },
+  {
+   "rate": 6.5,
+   "lockDays": 30,
+   "price": 100.198
+  },
+  {
+   "rate": 6.5,
+   "lockDays": 45,
+   "price": 100.048
+  },
+  {
+   "rate": 8.75,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.75,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.75,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.875,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 7.875,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 7.875,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.5,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 7.5,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 7.5,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 8.375,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.375,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.375,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.25,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 7.25,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 7.25,
+   "lockDays": 45,
+   "price": 103.673
+  },
+  {
+   "rate": 8.5,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.5,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.5,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 8.875,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 8.875,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 8.875,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.5,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.5,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.5,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.375,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.375,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.375,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.875,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.875,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.875,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 9.25,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 9.25,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 9.25,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 6.625,
+   "lockDays": 15,
+   "price": 100.973
+  },
+  {
+   "rate": 6.625,
+   "lockDays": 30,
+   "price": 100.823
+  },
+  {
+   "rate": 6.625,
+   "lockDays": 45,
+   "price": 100.673
+  },
+  {
+   "rate": 10.375,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 10.375,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 10.375,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.75,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 7.75,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 7.75,
+   "lockDays": 45,
+   "price": 103.75
+  },
+  {
+   "rate": 7.125,
+   "lockDays": 15,
+   "price": 103.473
+  },
+  {
+   "rate": 7.125,
+   "lockDays": 30,
+   "price": 103.323
+  },
+  {
+   "rate": 7.125,
+   "lockDays": 45,
+   "price": 103.173
+  },
+  {
+   "rate": 6.25,
+   "lockDays": 15,
+   "price": 99.0355
+  },
+  {
+   "rate": 6.25,
+   "lockDays": 30,
+   "price": 98.8855
+  },
+  {
+   "rate": 6.25,
+   "lockDays": 45,
+   "price": 98.7355
+  },
+  {
+   "rate": 7.625,
+   "lockDays": 15,
+   "price": 103.75
+  },
+  {
+   "rate": 7.625,
+   "lockDays": 30,
+   "price": 103.75
+  },
+  {
+   "rate": 7.625,
+   "lockDays": 45,
+   "price": 103.75
+  }
+ ],
+ "evidenceSample": {
+  "_note": "A DIFFERENT program in the same transaction (hash 23163). Kept because it is the only captured evidence whose base price, adjustment lines and final price can be reconciled arithmetically.",
+  "programName": "BUSINESS PURPOSE / DSCR",
+  "mortgageProductDescription": "30 Yr. Fixed",
+  "lockPeriod": 30,
+  "rateSheetLastUpdated": "2026-08-28T09:29:52.955-07:00",
+  "pricingEvidence": {
+   "rate": 6.5,
+   "price": 100.198,
+   "basePrice": 100.948,
+   "baseRate": 6.5,
+   "adjustments": [
+    {
+     "type": "Llpa",
+     "name": "Loan Amount",
+     "description": "Loan Amount : $350,000 - $1,500,000, CLTV : 75.01% - 80.00%",
+     "priceAdjustment": 0.0
+    },
+    {
+     "type": "Llpa",
+     "name": "2-4 Units",
+     "description": "CLTV : 75.01% - 80.00%",
+     "priceAdjustment": -0.5
+    },
+    {
+     "type": "Llpa",
+     "name": "DSCR: FICO/CLTV",
+     "description": "FICO : 760 - 779, CLTV : 75.01% - 80.00%",
+     "priceAdjustment": -1.0
+    },
+    {
+     "type": "Llpa",
+     "name": "DSCR Ratio",
+     "description": "CLTV : 75.01% - 80.00%, Actual DSCR : >= 1.25",
+     "priceAdjustment": 0.5
+    },
+    {
+     "type": "Llpa",
+     "name": "Prepay Penalty",
+     "description": "CLTV : 75.01% - 80.00%",
+     "priceAdjustment": 0.25
+    },
+    {
+     "type": "Llpa",
+     "name": "Purchase",
+     "description": "CLTV : 75.01% - 80.00%",
+     "priceAdjustment": 0.0
+    }
+   ],
+   "addOns": [],
+   "priceFloor": 98.0,
+   "priceCeiling": 103.75,
+   "isPriceRounded": false
+  }
+ }
+}

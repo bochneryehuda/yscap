@@ -41,6 +41,7 @@ import LtScenarioSave from './LtScenarioSave.jsx';
 import {
   Check, ModeTab, DscrCalc, useScenarioForm, ScenarioFields,
 } from './LtScenarioFields.jsx';
+import { useEngine, EngineProvider, GENERAL_ENGINE } from './pricerEngine.js';
 
 /**
  * THE PRICING ENGINE — every rate Lender Price is quoting, and every investor at each one.
@@ -182,6 +183,12 @@ export function buildRateStack(programs) {
         adjustedPoints: nn(b.adjustedPoints) ? b.adjustedPoints : null,
         monthlyPi: o && o.monthlyPayment && nn(o.monthlyPayment.monthlyPI) ? o.monthlyPayment.monthlyPI : null,
         expired: !!(o && o.rateSheet && o.rateSheet.expired),
+        /* STALENESS HAS THREE STATES, NOT TWO, and the third is carried rather than flattened.
+           `!!expired` reads "we do not know" as "not expired" — a reassurance no rate sheet gave
+           us. Lender Price always says, so this is always false on the general board and nothing
+           there draws differently; a sheet that does not say is drawn as an em dash instead of a
+           clean bill of health. Read off the option the server built, so it needs no setting. */
+        stalenessUnknown: !!(o && o.stalenessUnknown),
       };
       quoteCount += 1;
       if (entry.noteRate == null) { unpriced.push(entry); return; }
@@ -744,6 +751,11 @@ export function ChargeList({ charges, sheet }) {
    disagree the screen says so on its face rather than quietly showing one of them.
    ────────────────────────────────────────────────────────────────────────── */
 export function PriceBuild({ o, comp, ts, quote }) {
+  const engine = useEngine();
+  /* The vendor's own eligibility answer and anything it said out loud. Both are read straight off
+     the option the server built, so a sheet that publishes neither simply has none. */
+  const elig = (o && o.eligibility) || null;
+  const notices = Array.isArray(o && o.notices) ? o.notices.filter(Boolean) : [];
   const b0 = (o && o.priceBuild) || {};
   /* THE COMPENSATION OVERLAY ON THE BUILD (owner-directed 2026-08-23). In a comp position the
      BASE moves and the final price moves with it by the same amount — the exact mechanic the
@@ -799,7 +811,7 @@ export function PriceBuild({ o, comp, ts, quote }) {
     <div style={{ background: '#fff', borderRadius: 10, padding: 14, marginTop: 10, border: `1px solid ${GOLD}33` }}>
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
         <Track title="Price build"
-          note="Price is 100 minus points. Every line came from Lender Price; the right-hand column is this page adding them up so the build can be followed.">
+          note={`Price is 100 minus points. Every line came from ${engine.sheetLabel}; the right-hand column is this page adding them up so the build can be followed.`}>
           <Row k="Base price" v={price(nn(b.basePoints) ? 100 - b.basePoints : null)}
             title="100 minus the base points the rate sheet quotes before any adjustment." />
           <Row k="Base points" v={pts(b.basePoints)} />
@@ -814,7 +826,24 @@ export function PriceBuild({ o, comp, ts, quote }) {
                   display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
                   padding: '5px 0 5px 12px', borderBottom: '1px solid rgba(20,27,34,.07)',
                 }}>
-                  <span style={{ fontSize: 12.5, color: SLATE, flex: 1 }}>{a.reason || '(unnamed adjustment)'}</span>
+                  {/* THE GRID CELL, NOT JUST THE GRID. One rate sheet names the row and column an
+                      adjustment was read out of, and showing it is the difference between
+                      "CLTV/FICO adjustment" and knowing WHICH cell produced the number.
+
+                      ⛔ THE ROW WITH NO CELL IS THE ORIGINAL MARKUP, BYTE FOR BYTE, and that is
+                      deliberate rather than tidy. Wrapping every reason in a two-span block
+                      "in case" a cell turns up changes the DOM — and `min-width:0` with a block
+                      child changes how a long reason WRAPS — on every line of a board that
+                      publishes no cells, which is the whole of the general engine's. A sheet that
+                      says nothing extra draws exactly what it always drew. */}
+                  {a.detail ? (
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: 'block', fontSize: 12.5, color: SLATE }}>{a.reason || '(unnamed adjustment)'}</span>
+                      <span style={{ display: 'block', fontSize: 11, color: MUTED, marginTop: 1 }}>{a.detail}</span>
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 12.5, color: SLATE, flex: 1 }}>{a.reason || '(unnamed adjustment)'}</span>
+                  )}
                   <span style={{ fontSize: 12.5, fontWeight: 600, color: nn(a.value) && a.value < 0 ? '#2F6B45' : INK, ...NUM }}>{pts(a.value)}</span>
                   <span style={{ fontSize: 11.5, color: MUTED, minWidth: 56, textAlign: 'right', ...NUM }}>{a.running == null ? '' : a.running.toFixed(3)}</span>
                 </div>
@@ -823,7 +852,7 @@ export function PriceBuild({ o, comp, ts, quote }) {
           ))}
           {adj.length === 0 && <Row k="Adjustments" v="none itemized" indent />}
           <div style={{ height: 8 }} />
-          <Row k="Adjustments total (Lender Price)" v={pts(b.adjustmentPoints)} />
+          <Row k={`Adjustments total (${engine.sheetLabel})`} v={pts(b.adjustmentPoints)} />
           {!totalsAgree && (
             <Row k="…the itemized lines add to" v={pts(summedR)} tone="bad"
               title="The lines shown do not add to the vendor's own total. Nothing is adjusted to hide it — both numbers are shown." />
@@ -849,7 +878,9 @@ export function PriceBuild({ o, comp, ts, quote }) {
         <div style={{ ...eyebrow, marginBottom: 6 }}>Margin &amp; holdback</div>
         {holdbackLines.length === 0 ? (
           <div style={{ fontSize: 12.5, color: MUTED }}>
-            Lender Price returned no margin or holdback lines on this quote.
+            {/* ONE expression, not an expression beside text: React puts a `<!-- -->` marker
+                between the two, which changes the DOM for a sentence that has not changed. */}
+            {`${engine.sheetSubject} returned no margin or holdback lines on this quote.`}
           </div>
         ) : holdbackLines.map(([party, lines]) => (
           <div key={party} style={{ marginBottom: 6 }}>
@@ -895,7 +926,7 @@ export function PriceBuild({ o, comp, ts, quote }) {
             `firstNum`, which answers null for a fee the vendor did not carry, and `String(null)`
             puts the literal text "null" on the screen. */}
         {!compActive && (
-          <Track title="Lender Price's own fee fields"
+          <Track title={`${engine.sheetPossessive} own fee fields`}
             note="The vendor's numbers verbatim — our fee sheet shows in the borrower-paid and lender-paid positions.">
             {feeLines.filter((r) => r.key !== 'pointsFinanced').length === 0
               ? <div style={{ fontSize: 12.5, color: MUTED }}>Lender Price returned no fee lines on this quote.</div>
@@ -950,13 +981,76 @@ export function PriceBuild({ o, comp, ts, quote }) {
         </Track>}
       </div>
 
+      {/* ⛔ DRAWN ONLY WHERE A RATE SHEET PUBLISHES ITS CHECKS. Lender Price does not, so the
+          general engine draws nothing here and its breakdown is unchanged; a board whose
+          vendors DO publish them says so, and says so in the SAME PLACE either way. */}
+      {engine.showChecks && (<>
+      {/* WHAT THE PROGRAM CHECKED, and anything it said out loud.
+
+          One rate sheet publishes every criterion it screened, with its OWN wording of the
+          requirement and a pass/fail on each; the other publishes none. The block renders in
+          the SAME PLACE either way and SAYS SO when there is nothing to list — an eligibility
+          section that silently disappears reads as a clean bill of health nobody gave.
+
+          The requirement text is printed verbatim. It is never re-rendered from a number, so a
+          threshold on this screen is always the threshold the sheet stated.
+
+          NOTICES are the opposite case and are only shown when there are some: a soft stop
+          ("Max Price for this loan is 100.000 if DSCR <.75") is the one thing that can
+          contradict the price above it, and "no notices" is not a fact anyone needs printed. */}
+      <div style={{ marginTop: 16, paddingTop: 12, borderTop: `1px solid ${GOLD}44` }}>
+        <div style={{
+          fontSize: 10.5, letterSpacing: '.07em', textTransform: 'uppercase',
+          color: MUTED, fontWeight: 700, marginBottom: 6,
+        }}>What the program checked</div>
+        {elig && elig.provided && (elig.criteria || []).length ? (
+          <>
+            {(elig.criteria || []).map((c, i) => (
+              <div key={i} style={{
+                display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'baseline',
+                padding: '5px 0', borderBottom: '1px solid rgba(20,27,34,.07)',
+              }}>
+                <span style={{ fontSize: 12.5, color: SLATE, flex: 1, minWidth: 0 }}>{c.name || '(unnamed check)'}</span>
+                <span style={{ fontSize: 12.5, color: INK, ...NUM }}>{c.requirement || '—'}</span>
+                <span style={{
+                  fontSize: 11, fontWeight: 700, minWidth: 52, textAlign: 'right',
+                  color: /fail/i.test(String(c.status || '')) ? '#8A2B2B' : '#2F6B45',
+                }}>{c.status || '—'}</span>
+              </div>
+            ))}
+            {elig.screen && (
+              <div style={{ fontSize: 11, color: MUTED, marginTop: 6 }}>
+                Screened as “{elig.screen}”{elig.status ? ` — ${elig.status}` : ''}
+                {elig.screenedAt ? ` · ${String(elig.screenedAt).slice(0, 10)}` : ''}
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={{ fontSize: 12, color: MUTED }}>
+            This rate sheet does not publish the checks behind its answer, so there is nothing to list here.
+          </div>
+        )}
+        {notices.length > 0 && (
+          <div style={{ marginTop: 10 }}>
+            {notices.map((n, i) => (
+              <div key={i} style={{
+                fontSize: 12, color: INK, background: `${GOLD}18`,
+                border: `1px solid ${GOLD}55`, borderRadius: 8, padding: '7px 10px', marginTop: 6,
+              }}>{n}</div>
+            ))}
+          </div>
+        )}
+      </div>
+      </>)}
       {o && o.rateSheet && (
         <div style={{ marginTop: 14, paddingTop: 10, borderTop: `1px solid ${GOLD}44`, fontSize: 12, color: MUTED, lineHeight: 1.6 }}>
           <strong style={{ color: SLATE }}>Rate sheet:</strong> {o.rateSheet.name || '(unnamed)'}
           {o.rateSheet.effectiveAt ? ` · valid as of ${o.rateSheet.effectiveAt}` : ''}
-          {o.rateSheet.expired
-            ? <span style={{ color: DANGER, fontWeight: 700 }}> · EXPIRED</span>
-            : <span> · not expired</span>}
+          {o.stalenessUnknown
+            ? <span style={{ color: MUTED }}> · staleness — (this program does not say)</span>
+            : o.rateSheet.expired
+              ? <span style={{ color: DANGER, fontWeight: 700 }}> · EXPIRED</span>
+              : <span> · not expired</span>}
         </div>
       )}
 
@@ -983,6 +1077,15 @@ export function PriceBuild({ o, comp, ts, quote }) {
    ONE RATE, AND EVERY INVESTOR AT IT.
    ────────────────────────────────────────────────────────────────────────── */
 export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLenders, onToggleLender, loanAmount, comp, ts, housing }) {
+  const engine = useEngine();
+  /* THE ACTION COLUMN IS AS WIDE AS WHAT IT HOLDS. A board WITH the term-sheet cart reserves
+     ACT_W for the tick-box; a board without one reserves ACT_W_PLAIN. It is keyed on the ENGINE
+     and deliberately NOT on `ts`: this screen reserves the wider cell whenever the cart exists,
+     even while nobody is picking, so keying it on the live `ts` object would make the column
+     jump as somebody starts and stops collecting. The heading and the rows read this SAME
+     expression, which is what makes them unable to disagree — the defect the owner reported on
+     2026-08-30 ("the column that we added for PITI is off, and it's not aligned"). */
+  const actW = engine.cart ? ACT_W : ACT_W_PLAIN;
   /* EVERY DISPLAYED PRICE ON THIS ROW TAKES THE SAME SHIFT (owner-directed 2026-08-23).
      A constant shift never reorders anything — best stays best — so the grouping and the
      sort are untouched; only what the figures READ as changes. Raw shifts by zero. */
@@ -1055,8 +1158,8 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
             <span style={{ flex: '0 0 108px', textAlign: 'right' }}>Cost / credit</span>
             <span style={{ flex: '0 0 104px', textAlign: 'right' }}>Monthly P&amp;I</span>
             {pitiOn && <span style={{ flex: '0 0 104px', textAlign: 'right' }}>{pitiKey}</span>}
-            {/* Matches the rows' action cell EXACTLY (ACT_W) — see the constant. */}
-            <span style={{ flex: ACT_W }} />
+            {/* Matches the rows' action cell EXACTLY (`actW`) — the SAME expression, so the heading and the rows can never disagree. */}
+            <span style={{ flex: actW }} />
           </div>
           {groupByLender(row.quotes).map((g, gi) => {
             const gKey = `${row.key}|${g.key}`;
@@ -1129,7 +1232,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                   {pitiOn && (
                     <span className="ltq-cell" data-k={pitiKey} style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 13, fontWeight: 600, color: INK, ...NUM }}>{money2(pitiOf(g.best))}</span>
                   )}
-                  <span className="ltq-act" style={{ flex: ACT_W, textAlign: 'right', display: 'inline-flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+                  <span className="ltq-act" style={{ flex: actW, textAlign: 'right', display: 'inline-flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
                     {/* ⛔ THE TICK IS ON THE ROW, not two clicks inside it. Owner-directed
                         2026-08-30 — an officer must be able to SEE which programmes are in the
                         comparison without opening anything. It only appears once a comparison is
@@ -1168,7 +1271,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                           {q.investor && q.investor !== q.lender && (
                             <div style={{ fontSize: 11.5, color: MUTED }}>{q.investor}</div>
                           )}
-                          {q.expired && (
+                          {q.expired && !q.stalenessUnknown && (
                             <div style={{ fontSize: 11, color: CAUTION, fontWeight: 700 }}>rate sheet expired</div>
                           )}
                         </span>
@@ -1177,7 +1280,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                         {pitiOn && (
                           <span className="ltq-cell" data-k={pitiKey} style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 12.5, fontWeight: 600, color: INK, ...NUM }}>{money2(pitiOf(q))}</span>
                         )}
-                        <span className="ltq-act" style={{ flex: ACT_W, textAlign: 'right', display: 'inline-flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+                        <span className="ltq-act" style={{ flex: actW, textAlign: 'right', display: 'inline-flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
                           {/* Every programme is tickable, not only the lender's best — the whole
                               point of opening a lender is to compare its other programmes. */}
                           {ts && ts.picking && ts.enabled && (
@@ -1441,7 +1544,22 @@ export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp, invSe
 }
 
 /* ── the screen ───────────────────────────────────────────────────────────── */
-export default function LtPricer() {
+/**
+ * THE PRICING BOARD — ONE screen, drawn for whichever engine it is handed.
+ *
+ * The Combined Pricing Engine used to be a 2,900-line copy of this, watched by a source
+ * fingerprint. The owner ended that: *"It will not even be a copy. It should just share the code
+ * of the general pricing engine. If we enhance the general pricing engine, this should also
+ * enhance it, but it shouldn't touch the general pricing engine."* So every enhancement to this
+ * screen now reaches BOTH boards by existing, and everything the two do differently is named in
+ * `pricerEngine.js` — one list somebody can read, rather than eight divergences spread through a
+ * copy nobody can diff.
+ *
+ * `slots` are the panels only ONE board has, handed in by that board rather than flagged here:
+ * a screen that lists its own exceptions is a copy with extra steps. Each is given what it needs
+ * from this screen's state and nothing else.
+ */
+export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
   /* ⛔ THE FORM IS THE SHARED ONE. Its state, its ZIP lookup, its amount triangle and its derived
      setters all live in `LtScenarioFields.jsx`, because the scenario page mounts the SAME fields —
      and a second copy of any of it is a second answer to what this deal is. This screen destructures
@@ -1460,6 +1578,10 @@ export default function LtPricer() {
   const [openQuote, setOpenQuote] = useState(null);
   const [elapsed, setElapsed] = useState(0);
   const [showScenario, setShowScenario] = useState(false);
+  /* WHERE EACH ROW CAME FROM. Only an engine that prices on more than one program has a source to
+     reveal; on the general board this stays false, is never drawn, and its own door does not
+     forward it — so the request on the wire is unchanged. */
+  const [reveal, setReveal] = useState(false);
   /* THE ONE PRESS BACK TO THE COLLECTION. `scroll-margin-top` on the rail keeps it clear
      of the pinned strip, so the area lands fully visible rather than under the band that
      sent you there. Guarded: a browser without smooth scrolling still jumps. */
@@ -1583,8 +1705,8 @@ export default function LtPricer() {
      empty and the picker says so; the board simply shows everybody. */
   useEffect(() => {
     let live = true;
-    ltApi.dscrInvestors()
-      .then((r) => { if (live) { setInvRoster((r && r.investors) || []); setInvRosterStatus('ok'); } })
+    engine.investors()
+      .then((list) => { if (live) { setInvRoster(list || []); setInvRosterStatus('ok'); } })
       .catch(() => { if (live) { setInvRoster([]); setInvRosterStatus('failed'); } });
     ltApi.dscrInvestorGroups()
       .then((r) => { if (live) setInvGroups((r && r.groups) || []); })
@@ -1747,7 +1869,7 @@ export default function LtPricer() {
     [stack],
   );
 
-  const ts0 = useTermSheetCart();
+  const ts0 = useTermSheetCart(engine.cart);
   const ts = {
     ...ts0,
     selectionFor: (q, o) => ({
@@ -1972,7 +2094,7 @@ export default function LtPricer() {
     const t0 = Date.now();
     timer.current = setInterval(() => setElapsed(Math.round((Date.now() - t0) / 100) / 10), 200);
     try {
-      const r = await ltApi.dscrPrice(toScenario(f), { full: true });
+      const r = await engine.price(toScenario(f), { reveal });
       setRes(r);
       // THE ANSWER IS HERE — the form folds away and the sticky strip takes over, holding the
       // search's facts and the Edit search button. Only a SUCCESS collapses it: a refusal leaves
@@ -2055,8 +2177,20 @@ export default function LtPricer() {
   }
 
   return (
-    <LtLayout title="Pricing Engine">
+    <EngineProvider value={engine}>
+    <LtLayout title={engine.title}>
       <div style={{ display: 'grid', gap: 14 }}>
+        {/* SAY WHAT THIS SCREEN IS, BEFORE ANYTHING ELSE — for a board that is not the one the
+            company prices on. The general engine has no banner, draws nothing here, and its DOM
+            is unchanged. */}
+        {engine.banner && (
+          <div style={{ ...card, borderColor: `${GOLD}66`, background: '#FFFDF7' }}>
+            <div style={eyebrow}>{engine.banner.eyebrow}</div>
+            <div style={{ fontSize: 13, color: SLATE, marginTop: 6, lineHeight: 1.7 }}>
+              {engine.banner.body}
+            </div>
+          </div>
+        )}
         {/* ── the scenario ─────────────────────────────────────────────────
             Collapsed after a successful price (owner-directed 2026-08-23) — the sticky strip
             below carries the search's facts and the way back in. Only a SUCCESS collapses it. */}
@@ -2165,7 +2299,7 @@ export default function LtPricer() {
                 mode: compMode, onMode: setCompMode,
                 waive: waiveFees, onWaive: setWaiveFees, planProblem: compProblem,
               }}
-              collected={ts.enabled && ts.count > 0 ? (
+              collected={engine.cart && ts.enabled && ts.count > 0 ? (
                 <button type="button" onClick={jumpToComparison} style={{
                   border: `1px solid ${GOLD}`, background: PAPER, borderRadius: 999,
                   padding: '3px 10px', cursor: 'pointer', font: 'inherit',
@@ -2174,7 +2308,14 @@ export default function LtPricer() {
                   {`${ts.count} collected · build the sheet`}
                 </button>
               ) : null}
-              counts={`${stack.rateCount} ${stack.rateCount === 1 ? 'rate' : 'rates'} · ${stack.quoteCount} ${stack.quoteCount === 1 ? 'quote' : 'quotes'} · ${res.programCount != null ? res.programCount : '—'} programmes · ${res.lenderCount != null ? res.lenderCount : '—'} lenders`}
+              /* ⛔ A BOARD STATES ONLY THE FIGURES ITS OWN DOOR RETURNS. The combined door
+                 answers with `programCount` and the investor roster and no lender count, so
+                 carrying that clause there would print "— lenders" on every board for ever;
+                 deriving one would mean inventing a two-vendor meaning of "a lender" (the
+                 general rule keys on `p.lender`, which a LoanNEX programme does not carry, so
+                 it would collapse that whole vendor into one bucket and UNDERCOUNT). What to
+                 call such a figure, and whether the board should carry one, is the owner's. */
+              counts={`${stack.rateCount} ${stack.rateCount === 1 ? 'rate' : 'rates'} · ${stack.quoteCount} ${stack.quoteCount === 1 ? 'quote' : 'quotes'} · ${res.programCount != null ? res.programCount : '—'} programmes${engine.lenderCount ? ` · ${res.lenderCount != null ? res.lenderCount : '—'} lenders` : ''}`}
               invRow={(
                 <InvestorStripRow
                   roster={res.investorRoster || []}
@@ -2185,6 +2326,14 @@ export default function LtPricer() {
                 />
               )}
             />
+            {/* WHATEVER THIS BOARD HAS THAT THE OTHER DOES NOT — handed in by the screen that
+                mounts this one rather than listed here, because a shared screen that enumerates
+                its own exceptions is a copy with extra steps. It is given the answer, whether a
+                search is running, the source-reveal pair and a way to re-price, and nothing else:
+                a slot that could reach the whole screen would be a second screen. */}
+            {typeof slots.afterStrip === 'function' && slots.afterStrip({
+              res, busy, reveal, setReveal, reprice: run, setForm: setF,
+            })}
             {/* ⛔ WHAT NEEDS SAYING BEFORE THE BOARD — AND ONLY THAT. This was a
                 whole "What came back" card (owner-reported 2026-09-01), 172 points
                 of it, carrying one line of counts, one standing disclosure and a
@@ -2293,7 +2442,7 @@ export default function LtPricer() {
                       : 'Lender Price returned no priced rungs for this scenario. The Ineligible view says which products it looked at and why each was ruled out.'}
                   </div>
                 ) : stack.rates.map((row) => (
-                  <RateRow key={row.key} row={row} loanAmount={loanAmount} comp={comp} ts={ts}
+                  <RateRow key={row.key} row={row} loanAmount={loanAmount} comp={comp} ts={engine.cart ? ts : null}
                     housing={housing}
                     open={openRates.has(row.key)}
                     onToggle={() => toggleRate(row.key)}
@@ -2335,6 +2484,11 @@ export default function LtPricer() {
             something has been collected OR a sheet has just been issued — that
             second half is what stops the issued sheet's own card being destroyed
             by the cart it empties. */}
+        {/* ⛔ ONLY ON A BOARD WITH A CART. An engine under audit must not issue a document a
+            borrower reads, so it does not collect options and has nothing to build a sheet from.
+            Gated on the ENGINE rather than on `ts.enabled` being incidentally false, so the
+            reason it is absent is the reason, not a side effect. */}
+        {engine.cart && (
         <ComparisonWorkflowPanel
           enabled={ts.enabled}
           chosen={compWorkflow}
@@ -2348,6 +2502,7 @@ export default function LtPricer() {
               onIssued={ts.setIssued} onPlan={setCartDocKind} />
           )}
         </ComparisonWorkflowPanel>
+        )}
 
         {/* ── THE FOOTNOTES ────────────────────────────────────────────────
             Two things that are true of every answer and are nobody's next step: the
@@ -2385,5 +2540,14 @@ export default function LtPricer() {
         )}
       </div>
     </LtLayout>
+    </EngineProvider>
   );
+}
+
+/**
+ * THE GENERAL PRICING ENGINE — the one the company prices on, and the default everywhere.
+ * It is this screen with no engine named, which is the same thing as naming the general one.
+ */
+export default function LtPricer() {
+  return <PricerScreen engine={GENERAL_ENGINE} />;
 }
