@@ -79,7 +79,7 @@ const SOFT_BREAK = {
   costStory: 150,    // origination + lender fees + what lands at the table
   comparison: 225,   // the options table, which must be seen in one view
   disclosures: 180,  // the disclosures block
-  acceptance: 145,   // the acceptance heading, its sentence and one row of signature lines (measured 139)
+  acceptance: 117,   // the acceptance heading, its sentence and its signature rows (RE-MEASURED 116.2 at the sketch's type)
 };
 
 /** A figures row, dropped entirely when the value is unknown — a term sheet that
@@ -430,15 +430,15 @@ function termSheetBody(m) {
   const piti = paymentRows(m);
   const qual = qualifyingRows(m, piti);
 
+  /* ⛔ THERE IS NO "THE PROPERTY" SECTION, AND THE FACTS ARE NOT LOST — they
+     moved to the sub-line under the address, which is where the approved sketch
+     puts them: *"Single family · Ocean County · valued at $500,000"*. That is a
+     better home for them than a section of their own, and the reason is the
+     document's own argument: the property is the SUBJECT, not one of the things
+     being decided, so stating it beside its address says it once in the place a
+     reader is already looking. `propertyFacts` composes exactly those three
+     facts and is now built for a term sheet as well as a comparison. */
   const left = [];
-  const propertyRows = kept([
-    row('Property type', wording.propertyTypeWords(s.propertyType)),
-    row('Units', nn(s.units) && s.units > 1 ? String(Math.round(s.units)) : null),
-    row('Estimated value', nn(m.propertyValue) ? wording.money(m.propertyValue) : null),
-  ]);
-  if (propertyRows.length) {
-    left.push({ t: 'band', title: 'The property' }, { t: 'figures', rows: propertyRows });
-  }
   left.push({ t: 'band', title: 'The loan' }, { t: 'figures', rows: loanRows(m) });
 
   const right = [];
@@ -497,9 +497,41 @@ function comparisonTable(snapshot) {
   const cmp = snapshot.comparison;
   const members = snapshot.members;
   const order = [cmp.anchorIndex, ...members.map((_, i) => i).filter((i) => i !== cmp.anchorIndex)];
+  /* ⛔ A COLUMN IS HEADED THE WAY THE APPROVED SKETCH HEADS IT: a small gold
+     tracked eyebrow naming the column ("OPTION B"), a grey tag on the one every
+     other column is measured against ("THE ANCHOR"), then the option's own name
+     in bold over as many lines as it needs. The grey header BAND it replaces
+     put a programme name and the parenthetical "(compared against)" into one
+     wrapped run of small type, which is the thing the owner read as a
+     spreadsheet rather than a document.
+
+     ⛔ THE LETTER IS THE MEMBER'S OWN INDEX, NEVER ITS POSITION ON THE PAGE.
+     The anchor is drawn first, so a letter taken from the column position would
+     rename every option the moment the anchor changed — and the sentences under
+     the table name options by that letter. Members[0] is always A. */
+  const noun = snapshot.docKind === DOC_KINDS.SCENARIO ? 'SCENARIO' : 'OPTION';
   const head = ['', ...order.map((i) => {
     const m = members[i];
-    return `${m.label}${i === cmp.anchorIndex ? ' (compared against)' : ''}`;
+    /* THE PRODUCT RIDES THE HEAD AS ITS SECOND LINE, exactly as the sketch sets
+       it ("Platinum" over "30-Year Fixed") — and only when the officer's own
+       label does not already say it, so a column headed "Platinum 30-Year
+       Fixed" is never followed by "30-Year Fixed" again. */
+    const label = String(m.label || '');
+    const product = m.product && !label.toLowerCase().includes(String(m.product).toLowerCase())
+      ? m.product : null;
+    return {
+      eyebrow: `${noun} ${String.fromCharCode(65 + i)}`,
+      tag: i === cmp.anchorIndex ? 'THE ANCHOR' : null,
+      title: label,
+      sub: product,
+      /* ⛔ THE COLUMN'S IDENTITY IS A FIELD, NOT ITS PROSE. The head used to be
+         one string ("Platinum (compared against)") and everything that needed to
+         know which column belonged to which option — including the guards that
+         prove the sentences under the table agree with the columns above it —
+         read it back out with a regex. Prose is what a designer changes; an
+         option's identity is not. */
+      label, anchor: i === cmp.anchorIndex, memberIndex: i,
+    };
   })];
   const cell = (i, fn) => fn(members[i], cmp.rows[i]);
   const body = [];
@@ -518,30 +550,77 @@ function comparisonTable(snapshot) {
      claim a 5-year prepayment across three scenarios that do not share one. A
      row is lifted only when every column PRINTS the same string. */
   const shared = [];
+  /* ⛔ THE SCENARIO SHEET GROUPS ITS ROWS, AND THE COMPARISON DELIBERATELY DOES
+     NOT. The approved sketch splits a scenario's table into what the officer
+     MOVED, what that PRODUCED, and what the extra borrowing costs — because on
+     a scenario sheet the reader's question is causal, and a flat list of
+     thirteen rows does not answer it. A comparison sheet's rows are three
+     prices for one loan: there is no cause and effect to separate, and its
+     sketch shows one unbroken table. The grouping is therefore keyed on the
+     document, never on a hand-kept list of which labels look like inputs. */
+  const grouped = snapshot.docKind === DOC_KINDS.SCENARIO;
+  const GROUPS = {
+    input: { title: 'What you changed', tone: 'gold' },
+    produced: { title: 'What it produced', tone: 'teal' },
+    compare: { title: 'What the extra borrowing actually costs you', tone: 'teal' },
+  };
+  const staged = [];
   const push = (label, fn, opts) => {
     const vals = order.map((i) => cell(i, fn));
     if (!vals.some((v) => v != null && v !== '—')) return;
     const filled = vals.map((v) => (v == null ? '—' : v));
     const same = members.length > 1 && filled.every((v) => v === filled[0]);
-    /* ⛔ TWO ROWS ARE NEVER LIFTED, however identical they look.
-       `Program` NAMES each column — fold it and the reader loses what they are
-       choosing between. The per-column comparison rows (break-even, the cost of
-       the extra borrowing) are answers ABOUT a column rather than facts of it,
-       and three equal answers is a coincidence of the arithmetic, not a shared
-       term of the loan. */
+    /* ⛔ THE COMPARISON ROWS ARE NEVER LIFTED, however identical they look.
+       Break-even and the cost of the extra borrowing are answers ABOUT a column
+       rather than facts of it, and three equal answers is a coincidence of the
+       arithmetic, not a shared term of the loan.
+
+       `Program` USED to be on that list, because it was the only thing naming
+       each column. It is not any more: the approved sketch heads every column
+       with the option's own name over its product, so an identical programme
+       folds into the shared box like any other agreed fact and stops being
+       printed three times. */
     if (same && !(opts && opts.never)) { shared.push([label, filled[0]]); return; }
-    body.push([label, ...filled]);
+    /* ⛔ A ROW MAY SAY THAT IT RESOLVES THE ARITHMETIC, and the renderer bands it
+       in ivory. The approved sketch highlights exactly two rows on a comparison
+       — the full monthly payment and the cash to close — because those are the
+       two figures a reader is choosing between; everything above them is the
+       working. Striping every other row instead (which is what shipped) makes
+       the table read as a spreadsheet and gives the two answers no more weight
+       than the rent. */
+    staged.push({
+      group: (opts && opts.group) || 'produced',
+      row: opts && opts.accent ? [label, ...filled, { accent: true }] : [label, ...filled],
+    });
+  };
+  /* ⛔ THE ROWS ARE ORDERED BY WHAT THEY ARE, NOT BY THE ORDER THEY WERE
+     WRITTEN IN. Both approved sketches read inputs first, then what those
+     inputs produced, then the comparison against the anchor — and the pushes
+     below interleave the three (the rate is written before the loan amount, the
+     tax and insurance split sits in the middle of the payment rows, the rent
+     and the credit score at the very end). Sorting here rather than shuffling
+     the pushes keeps each row beside the comment that explains it, and makes
+     the group headers the scenario sheet draws impossible to interleave — a
+     header per flip-flop is worse than no header at all. */
+  const emit = () => {
+    for (const key of ['input', 'produced', 'compare']) {
+      const rows = staged.filter((x) => x.group === key);
+      if (!rows.length) continue;
+      const g = GROUPS[key];
+      if (grouped && g) body.push({ group: g.title, tone: g.tone });
+      for (const r of rows) body.push(r.row);
+    }
   };
   const pitiOf = pitiFor;
   const sc = (m) => (m && m.scenario) || {};
-  push('Program', (m) => m.consumerLabel, { never: true });
-  push('Loan purpose', (m) => sc(m).purpose || null);
+  push('Program', (m) => m.consumerLabel, { group: 'input' });
+  push('Loan purpose', (m) => sc(m).purpose || null, { group: 'input' });
   push('Rate', (m) => wording.rate(m.ratePct));
-  push('Loan amount', (m) => (nn(m.loanAmount) ? wording.money(m.loanAmount) : null));
-  push('LTV', (m) => (nn(m.ltv) ? wording.pct(m.ltv) : null));
-  push('Term', (m) => (nn(m.termYears) ? `${Math.round(m.termYears)} yr${m.interestOnly ? ' I/O' : ''}` : null));
-  push('Prepayment', (m) => m.prepayLabel);
-  push('Escrows', (m) => (sc(m).escrowWaive ? 'Waived — you pay taxes and insurance directly' : null));
+  push('Loan amount', (m) => (nn(m.loanAmount) ? wording.money(m.loanAmount) : null), { group: 'input' });
+  push('LTV', (m) => (nn(m.ltv) ? wording.pct(m.ltv) : null), { group: 'input' });
+  push('Term', (m) => (nn(m.termYears) ? `${Math.round(m.termYears)} yr${m.interestOnly ? ' I/O' : ''}` : null), { group: 'input' });
+  push('Prepayment', (m) => m.prepayLabel, { group: 'input' });
+  push('Escrows', (m) => (sc(m).escrowWaive ? 'Waived — you pay taxes and insurance directly' : null), { group: 'input' });
   push('Principal & interest', (m) => (nn(m.monthlyPI) ? wording.moneyExact(m.monthlyPI) : null));
   /* The three parts of the payment, so the total below can be CHECKED. They are
      properties of the property rather than of the price, so on a same-loan
@@ -551,22 +630,22 @@ function comparisonTable(snapshot) {
   push('Property taxes', (m) => {
     const hc = pitiOf(m);
     return nn(hc.taxMonthly) ? wording.moneyExact(hc.taxMonthly) : null;
-  });
+  }, { group: 'input' });
   push('Insurance', (m) => {
     const hc = pitiOf(m);
     return nn(hc.insuranceMonthly) ? wording.moneyExact(hc.insuranceMonthly) : null;
-  });
+  }, { group: 'input' });
   push('Association dues', (m) => {
     const hc = pitiOf(m);
     return nn(hc.hoaMonthly) && hc.hoaMonthly > 0 ? wording.moneyExact(hc.hoaMonthly) : null;
-  });
+  }, { group: 'input' });
   // ⛔ THE TOTAL PAYMENT COLUMN APPEARS ONLY WHERE IT IS A REAL PITI. A column
   // that carried a total for one option and a dash for the next would invite a
   // comparison between a full payment and a partial one.
   push('Total monthly payment', (m) => {
     const hc = pitiOf(m);
     return hc.complete ? wording.moneyExact(hc.total) : null;
-  });
+  }, { accent: true });
   push('Origination fee', (m) => {
     const l = ((m.charges || {}).lines || []).find((x) => x && x.key === 'origination');
     return l && nn(l.dollars) && l.dollars > 0 ? wording.moneyExact(l.dollars) : 'None';
@@ -634,10 +713,10 @@ function comparisonTable(snapshot) {
       : wording.moneyExact(c.downPaymentDollars);
   });
   push('Estimated cash to close', (m) => (m.closing && nn(m.closing.cashToCloseDollars)
-    ? wording.moneyExact(m.closing.cashToCloseDollars) : null));
+    ? wording.moneyExact(m.closing.cashToCloseDollars) : null), { accent: true });
   // The DSCR's own numerator. Without it the ratio beneath is unverifiable —
   // and a reader who cannot check a figure has to take it on trust.
-  push('Monthly rent', (m) => (nn(sc(m).rentMonthly) ? wording.moneyExact(sc(m).rentMonthly) : null));
+  push('Monthly rent', (m) => (nn(sc(m).rentMonthly) ? wording.moneyExact(sc(m).rentMonthly) : null), { group: 'input' });
   push('DSCR', (m) => {
     const d = shownDscr(m, pitiOf(m));
     return nn(d.value) ? d.value.toFixed(2) : null;
@@ -647,14 +726,15 @@ function comparisonTable(snapshot) {
      the disclosures says in terms that the price moves with "the final verified
      credit score". A document that names a figure as governing and never states
      it leaves the reader unable to tell whether the assumption matches them. */
-  push('Credit score used', (m) => (nn(sc(m).fico) ? String(Math.round(sc(m).fico)) : null));
-  push('Property type', (m) => wording.propertyTypeWords(sc(m).propertyType));
-  push('Estimated value', (m) => (nn(m.propertyValue) ? wording.money(m.propertyValue) : null));
+  push('Credit score used', (m) => (nn(sc(m).fico) ? String(Math.round(sc(m).fico)) : null), { group: 'input' });
+  push('Property type', (m) => wording.propertyTypeWords(sc(m).propertyType), { group: 'input' });
+  push('Estimated value', (m) => (nn(m.propertyValue) ? wording.money(m.propertyValue) : null), { group: 'input' });
   if (cmp.workflow === 'A') {
-    push('Break-even', (m, r) => (r && nn(r.breakEvenMonths) ? wording.monthsWords(r.breakEvenMonths) : null), { never: true });
+    push('Break-even', (m, r) => (r && nn(r.breakEvenMonths) ? wording.monthsWords(r.breakEvenMonths) : null), { never: true, group: 'compare' });
   } else {
-    push('Cost of the extra borrowing', (m, r) => (r && nn(r.incrementalCostPct) ? `${wording.pct(r.incrementalCostPct)} a year` : null), { never: true });
+    push('Cost of the extra borrowing', (m, r) => (r && nn(r.incrementalCostPct) ? `${wording.pct(r.incrementalCostPct)} a year` : null), { never: true, group: 'compare' });
   }
+  emit();
   return { t: 'table', head, rows: body, anchorColumn: 1, shared };
 }
 
@@ -774,8 +854,24 @@ function metaBlock(s, opts, code) {
 function preparedFor(p) {
   const person = (p && p.borrowerName) || null;
   const entity = (p && p.entityName) || null;
-  if (entity && person) return `${entity} · ${person}`;
+  // ⛔ THE ENTITY IS THE ADDRESSEE WHEN THERE IS ONE. It is the party that
+  // borrows and the party that signs on the first line, and the person beside it
+  // is its guarantor — a distinction the approved sketch makes by setting them
+  // on two lines and which "Entity · Person" on one line does not make at all.
+  // `preparedForRole` carries the second half, and the two are read together by
+  // exactly one place (`pdf.compileRecipient`) so they cannot disagree.
   return entity || person || null;
+}
+
+/** The second line of the addressee — who the person beside the entity IS. Null
+ *  when there is no entity, because then the person on the line above is the
+ *  borrower and calling them a guarantor would name the wrong party on a
+ *  document they sign. Kept in step with `signatureParties` by being the same
+ *  two fields read the same way. */
+function preparedForRole(p) {
+  const person = (p && p.borrowerName) || null;
+  const entity = (p && p.entityName) || null;
+  return (entity && person) ? `${person}, guarantor` : null;
 }
 
 /**
@@ -791,16 +887,20 @@ function preparedFor(p) {
 function signatureParties(p) {
   const person = (p && p.borrowerName) || null;
   const entity = (p && p.entityName) || null;
+  /* ⛔ THE ROLE NEVER LEADS WITH AN EM DASH, because the renderer joins the name
+     to it with one — "Oak Street Holdings LLC — borrower and authorized
+     signatory", as the approved sketch sets it. A role that carried its own dash
+     printed "Oak Street Holdings LLC — Borrower — authorized signatory". */
   if (entity && person) {
     return [
-      { role: 'Borrower — authorized signatory', name: entity },
+      { role: 'borrower and authorized signatory', name: entity },
+      { role: 'guarantor', name: person },
       { role: 'Date' },
-      { role: 'Guarantor', name: person },
       { role: 'Date' },
     ];
   }
-  if (entity) return [{ role: 'Borrower — authorized signatory', name: entity }, { role: 'Date' }];
-  return [{ role: 'Borrower / guarantor', name: person }, { role: 'Date' }];
+  if (entity) return [{ role: 'borrower and authorized signatory', name: entity }, { role: 'Date' }];
+  return [{ role: 'borrower and guarantor', name: person }, { role: 'Date' }];
 }
 
 /** The recipient block, and the property it is about. */
@@ -822,6 +922,7 @@ function recipientBlock(s) {
     // disagree about who this document is addressed to.
     entityName: p.entityName || null,
     preparedFor: preparedFor(p),
+    preparedForRole: preparedForRole(p),
     propertyAddress: p.propertyAddress || locationLine(first.scenario || {}),
     /* ⛔ ON A COMPARISON THE PROPERTY FACTS RIDE HERE, NOT IN A BAND OF THEIR OWN.
        Page one of a comparison is the comparison: the whole value of the document
@@ -833,8 +934,11 @@ function recipientBlock(s) {
        the band, where the structure earns its space. */
     // Only where the band is not drawn, or the same two facts would appear
     // twice on one page.
-    propertyFacts: (s.docKind || DOC_KINDS.TERM_SHEET) === DOC_KINDS.TERM_SHEET
-      ? null : propertyFacts(s.members || []),
+    // ON EVERY DOCUMENT NOW, term sheet included. It used to be suppressed here
+    // because the term sheet carried a section of its own for these three facts;
+    // the approved design states them under the address instead, so this is the
+    // one place they are printed and suppressing it would genuinely lose them.
+    propertyFacts: propertyFacts(s.members || []),
     officer,
   };
 }
@@ -973,8 +1077,13 @@ function buildLayout(snapshot, opts = {}) {
 
      The wording names WHICH document it is, from the same `KIND_WORDS` table the
      filename and the title come from, so the three can never disagree. */
+  /* ⛔ IT IS DRAWN AFTER THE BODY, NOT BEFORE IT — the approved sketch's own
+     position, and the reason is the same one that turned it from a panel into a
+     sentence: set at the TOP it competes with the headline figures for the eye
+     it is not the answer to. The shortest-lived fact on the page belongs at the
+     end of the argument it qualifies, immediately above the signature it
+     governs. */
   const exp = expiryBlock(s, opts);
-  if (exp) blocks.push(exp);
 
   const first = s.members[0];
 
@@ -983,46 +1092,47 @@ function buildLayout(snapshot, opts = {}) {
     blocks.push(...termSheetBody(first));
   } else {
     const cmp = s.comparison;
-    blocks.push({ t: 'band', title: kind === DOC_KINDS.SCENARIO ? 'The scenarios' : 'Your options' });
-    if (kind === DOC_KINDS.SCENARIO && cmp.differs && cmp.differs.length) {
-      blocks.push({ t: 'para',
-        text: `These scenarios differ in: ${cmp.differs.map(differLabel).join(', ')}. Everything else about the `
-          + 'property and the program is the same.' });
-    } else if (cmp.differs && cmp.differs.length) {
-      blocks.push({ t: 'para', small: true,
-        text: `These options differ in: ${cmp.differs.map(differLabel).join(', ')}.` });
-    } else {
-      blocks.push({ t: 'para', small: true,
-        text: 'These options are the same loan on the same property, priced three ways.' });
-    }
+    const isScenario = kind === DOC_KINDS.SCENARIO;
+    const word = isScenario ? 'scenarios' : 'options';
     /* WHAT IS THE SAME GOES ABOVE THE TABLE, ONCE, AND IS STRUCK FROM IT.
        The table then carries only what the reader is actually choosing between,
        which is the whole job of the page. `comparisonTable` computes the split
        from the printed values, so a term that DIFFERS — a 3-year prepayment
-       beside two 5-years — never appears here and always keeps its own row.
-
-       ⛔ IT IS DRAWN AS A FIGURES BLOCK, NOT AS A NEW PRIMITIVE. `pdf.js`
-       already knows how to draw a labelled two-column list and how to break one
-       across a page; a fourth kind of table would be a second thing to keep
-       correct for no gain the reader can see. */
+       beside two 5-years — never appears here and always keeps its own row. */
     const table = comparisonTable(s);
 
-    /* ⛔ THE COMPARISON GOES FIRST, AND THE SHARED FACTS FOLLOW IT. The shared
-       block was above the table when it was written, which reads well and cost
-       the sheet the one thing it exists for: fifteen lifted facts pushed the
-       table's last four rows — the cash to close, the DSCR and the cost of the
-       extra borrowing, which is to say the answer — onto a second page, so the
-       columns a reader is choosing between could not be seen at once. MEASURED:
-       the table broke 9 rows on page one and 4 on page two.
-
-       The table is the argument; what every option agrees about is reference a
-       reader consults second, and a reference list is the one thing here that
-       breaks across a page harmlessly. So the order follows what the reader is
-       doing, not what reads tidily in the source. */
+    const anchor = s.members[cmp.anchorIndex];
+    /* ⛔ WHAT THEY AGREE ABOUT COMES FIRST, AS A GRID — and that reverses a
+       decision recorded here, on the strength of the SHAPE rather than the
+       order. The shared facts were moved BELOW the table because as a
+       fifteen-row list they cost ~260pt and pushed the table's last four rows —
+       the cash to close, the DSCR, the answer — onto a second page. The
+       approved sketch does not carry a list: it carries a bordered ivory box of
+       four-across cells, which states the same fifteen facts in ~150pt. So the
+       reason for moving it does not apply to the thing the sketch actually
+       draws, and the sketch's own order (agree, then differ) is the order a
+       reader wants. Never restore this as a `figures` list above the table. */
+    /* ⛔ WHAT THEY DIFFER IN IS SAID INSIDE THE BOX, NOT IN A PARAGRAPH BETWEEN
+       THE HEADING AND THE TABLE. As its own line it sat 8pt above the column
+       heads and read as part of them — and it is the same sentence the box's
+       footnote is already making, from the other side. One place, one reading. */
+    const differs = cmp.differs && cmp.differs.length
+      ? `They differ in: ${cmp.differs.map(differLabel).join(', ')}.` : '';
+    if (table.shared && table.shared.length) {
+      blocks.push({ t: 'factgrid',
+        title: `Identical in all ${s.members.length} ${word}`,
+        note: 'stated once here rather than repeated in every column',
+        cells: table.shared,
+        footnote: `Anything that differed between the ${word} would leave this box and take its own `
+          + `column in the table below.${differs ? ` ${differs}` : ''}` });
+    } else if (differs) {
+      blocks.push({ t: 'para', small: true, text: differs });
+    }
+    blocks.push({ t: 'band',
+      title: isScenario ? `The ${s.members.length} scenarios` : 'What differs',
+      note: `every figure below is compared against ${anchor.label}` });
     blocks.push({ t: 'pagebreak', ifLessThan: SOFT_BREAK.comparison });
     blocks.push(table);
-    const anchor = s.members[cmp.anchorIndex];
-    blocks.push({ t: 'para', small: true, text: `Every comparison below is against ${anchor.label}.` });
     for (const r of cmp.rows) {
       if (r.isAnchor) continue;
       const m = s.members[r.index];
@@ -1057,15 +1167,6 @@ function buildLayout(snapshot, opts = {}) {
         text: `${who}, the lender fees are covered by the lender, not paid by you. The cash to close on `
           + `${waivers.length > 1 ? 'those options' : 'that option'} already reflects that.` });
     }
-    if (table.shared && table.shared.length) {
-      blocks.push({ t: 'subhead', text: `The same in all ${s.members.length} — stated once` });
-      blocks.push({ t: 'para', small: true,
-        text: 'These are the same on every option above, so they are stated here once rather than repeated in each column.' });
-      // TIGHT: this block carries most of the sheet's facts now, and at the
-      // ordinary rhythm (a divider and 5pt under every row) fifteen of them fill
-      // half a page. They are a reference list, not the argument.
-      blocks.push({ t: 'figures', tight: true, rows: table.shared.map(([k, v]) => [k, v, {}]) });
-    }
     if (cmp.spreadMinutes > (opts.pricedApartMinutes || 60)) {
       blocks.push({ t: 'para', small: true,
         text: 'These options were priced at different times, so they reflect the market as it stood at each of '
@@ -1094,6 +1195,50 @@ function buildLayout(snapshot, opts = {}) {
        between them do not carry. */
   }
 
+  if (exp) blocks.push(exp);
+
+  // ── the acceptance block — TERM SHEET ONLY ───────────────────────────────
+  // ⛔ NEVER ON A COMPARISON. A signature under three columns records agreement
+  // to nothing in particular, and the one thing a signed page must be is
+  // unambiguous about what was signed.
+  /* ⛔ THE ACCEPTANCE COMES BEFORE THE DISCLOSURES, which is the approved
+     sketch's own order: its page one ends with the expiry and the signature
+     lines, and its disclosures are page two.
+
+     ⛔ AND EXACTLY ONE WORD OF THE SENTENCE CHANGED WITH IT — "above" became
+     "overleaf" — because moving the block made the old wording FALSE, and a
+     false sentence on the line somebody signs is not a layout detail. What the
+     signer attests to is untouched: they confirm they have read the term sheet
+     INCLUDING the disclosures. The sketch's own acceptance sentence says
+     something different again (it adds an authorisation to order third-party
+     reports), and that is a legal question rather than a design one, so it is
+     NOT adopted here — it is raised with the owner. */
+  if (isTermSheet) {
+    /* ⛔ THE ACCEPTANCE IS ONE ACT AND DOES NOT SPLIT. A heading and "sign below"
+       at the foot of one sheet with the rules on the next is a page nobody can
+       sign from, and `keepNext` binds a heading to its first LINE, not to the
+       block it introduces. A soft break moves the whole thing when there is not
+       enough left of the page and does nothing at all when there is. */
+    blocks.push({ t: 'pagebreak', ifLessThan: SOFT_BREAK.acceptance });
+    blocks.push({ t: 'band', title: 'Acceptance' });
+    blocks.push({ t: 'para',
+      text: 'Signing below confirms you have read this term sheet, including the disclosures overleaf, and wish to '
+        + 'proceed on these terms. It is not a loan commitment.' });
+    /* ⛔ EVERY PARTY KEEPS ITS OWN DATE LINE, and the order is what makes three
+       across readable: the parties fill the row, and their dates sit in the row
+       beneath, each under the name it belongs to. Two signers sharing one date
+       line — which is what a naive "party, date, party" ordering produces once
+       it wraps — is a page that cannot record two people signing on two days. */
+    const parties = signatureParties(p);
+    const signers = parties.filter((l) => l.name);
+    const dates = parties.filter((l) => !l.name);
+    blocks.push({ t: 'signature', lines: [
+      ...signers,
+      { role: 'authorized signatory', name: p.companyName || 'YS Capital Group' },
+      ...dates,
+      { role: 'Date' },
+    ] });
+  }
   // ── the disclosures ─────────────────────────────────────────────────────
   // A SOFT break: they get their own page when there is not enough left of this
   // one to be worth starting on, and simply continue when there is. A hard break
@@ -1104,27 +1249,6 @@ function buildLayout(snapshot, opts = {}) {
     text: 'The following supplements the terms above and forms part of this document.' });
   blocks.push({ t: 'disclosures', items: disclosureItems(s) });
 
-  // ── the acceptance block — TERM SHEET ONLY ───────────────────────────────
-  // ⛔ NEVER ON A COMPARISON. A signature under three columns records agreement
-  // to nothing in particular, and the one thing a signed page must be is
-  // unambiguous about what was signed.
-  if (isTermSheet) {
-    /* ⛔ THE ACCEPTANCE IS ONE ACT AND DOES NOT SPLIT. A heading and "sign below"
-       at the foot of one sheet with the rules on the next is a page nobody can
-       sign from, and `keepNext` binds a heading to its first LINE, not to the
-       block it introduces. A soft break moves the whole thing when there is not
-       enough left of the page and does nothing at all when there is. */
-    blocks.push({ t: 'pagebreak', ifLessThan: SOFT_BREAK.acceptance });
-    blocks.push({ t: 'band', title: 'Acceptance' });
-    blocks.push({ t: 'para',
-      text: 'Signing below confirms you have read this term sheet, including the disclosures above, and wish to '
-        + 'proceed on these terms. It is not a loan commitment.' });
-    blocks.push({ t: 'signature', lines: [
-      ...signatureParties(p),
-      { role: `${p.companyName || 'YS Capital Group'} — authorized signatory` },
-      { role: 'Date' },
-    ] });
-  }
   return { blocks, code, docKind: kind };
 }
 

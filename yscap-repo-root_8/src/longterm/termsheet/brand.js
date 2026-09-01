@@ -68,16 +68,37 @@ const RGB = {
  * Every baseline below is measured DOWN from the top of the paper, and every
  * one of them is inside `h` with its descender to spare.
  */
+/*
+ * ⛔ EVERY NUMBER BELOW IS MEASURED OFF THE APPROVED SKETCH, NOT CHOSEN.
+ * `docs/longterm/design/` — the owner's own words are *"I expect the sheet to
+ * look exactly as the sketch, exactly."* So these are read out of that PDF's own
+ * geometry (`get_drawings` for the rules, span bounding boxes for the
+ * baselines), and a number here that nobody can point at in the sketch is a
+ * number somebody guessed.
+ *
+ * From the sketch, in points on a 612×792 page:
+ *   dark band     0 .. 55.5
+ *   gold rule     55.5 .. 57.0     (1.5 thick)
+ *   hairline      58.5 .. 59.2     (0.7 thick, 1.5 of air above it)
+ *   title top     12.4   serif bold 15.0, right-aligned at 567
+ *   sub top       34.6   serif italic 6.45, gold
+ *   identity top  46.5   sans 5.4, #B0B8BA
+ *   first content 98.5   (the PREPARED FOR eyebrow)
+ */
 const BAND = {
-  h: 56,          // the ink band
-  rule: 1.7,      // the gold rule directly under it
-  hair: 1.1,      // the gap from the gold rule down to the hairline
+  h: 55.5,        // the ink band
+  rule: 1.5,      // the gold rule directly under it
+  hair: 1.5,      // the air between the gold rule and the hairline
+  hairW: 0.7,     // the hairline itself
   logoH: 23,      // the lockup's drawn height
   logoTop: 17,    // its top, measured DOWN from the top of the paper
-  titleBase: 27,  // baselines, measured DOWN from the top of the paper
-  subBase: 40,
-  idBase: 50,
-  contentTop: 96, // where page content starts under the band
+  // BASELINES, measured DOWN from the top of the paper. The sketch gives the
+  // TOP of each line, so each is its top plus its own size — which is why they
+  // move if `SZ.band*` moves and must be read together with it.
+  titleBase: 27.4,   // 12.4 + 15.0
+  subBase: 41.1,     // 34.6 + 6.45
+  idBase: 51.9,      // 46.5 + 5.4
+  contentTop: 98.5,  // where page content starts under the band
 };
 
 // ── a section heading ───────────────────────────────────────────────────────
@@ -101,12 +122,43 @@ const BAND = {
  * per group that RESOLVES the arithmetic — a total, a cash-to-close — which is
  * what teaches a reader, without being told, that a warm row is an answer.
  */
+/*
+ * MEASURED OFF THE SKETCH: the teal tick is (45, 247.5)–(46.5, 253.5), so 1.5
+ * wide by 6 tall; the heading sets at x 52.4, so the gap from the tick is 5.9;
+ * and the rule under it is 0.7 thick IN INK — not a hairline. That last one is
+ * the difference between a heading that reads as a heading and one that reads
+ * as another row: the rule under a section is the darkest line on the page.
+ * The heading's baseline sits 10.0 above the rule (top 248.0, size 5.7, rule
+ * 258.0), so `rulePad` is the gap from the BASELINE down to the rule.
+ */
 const SECTION = {
-  tickW: 1.8, tickH: 6, gap: 6, tracking: 1, rule: 0.9, rulePad: 3.2,
+  tickW: 1.5, tickH: 6, gap: 5.9, tracking: 1, rule: 0.7, rulePad: 4.3,
+};
+
+/*
+ * THE HEADLINE STAT BOX, measured off the sketch (612×792, content 45→567):
+ *   box            175.5 .. 225.0     → 49.5 tall
+ *   gold rule      175.5 .. 176.2     → 0.7 at the TOP
+ *   hairline       224.2 .. 225.0     → 0.7 at the bottom
+ *   dividers       174.8 / 306.0 / 436.5, 0.7, running the inner height
+ *   cell pad-left  9.4
+ *   label top      184.2  → 8.7 below the box top
+ *   figure top     192.1  → 16.6
+ *   caption top    208.8  → 33.3
+ * `above` / `below` are the air the sketch leaves around it: the party block
+ * ends at 156.9 and the first section tick is at 247.5.
+ */
+const STATS = {
+  h: 49.5, rule: 0.7, padX: 9.4, tracking: 0.65,
+  labelTop: 8.7, figureTop: 16.6, captionTop: 33.3,
+  above: 18.6, below: 22.5,
 };
 
 /** The accent row's ivory band, and the hairline under every row. RTL `rowIn`. */
-const ROW = { accentPad: 3, hair: 0.4 };
+// The sketch draws every row hairline at 0.7 in #DED8CB — the same weight as
+// the rule under a section, which is INK. Weight is not what separates them;
+// colour is.
+const ROW = { accentPad: 3, hair: 0.7 };
 
 // ── the lockup ──────────────────────────────────────────────────────────────
 const LOGO_PATH = path.join(__dirname, 'assets', 'pilot-lockup-light.png');
@@ -217,4 +269,4 @@ const DISCLOSURES = [
     + 'to this transaction.'],
 ];
 
-module.exports = { RGB, BAND, SECTION, ROW, LOGO_PATH, LOGO_ASPECT, logoBytes, DISCLOSURES };
+module.exports = { STATS, RGB, BAND, SECTION, ROW, LOGO_PATH, LOGO_ASPECT, logoBytes, DISCLOSURES };

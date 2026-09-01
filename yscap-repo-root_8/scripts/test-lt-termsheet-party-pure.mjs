@@ -107,30 +107,43 @@ console.log('\nB. a name is required on a TERM SHEET and on nothing else');
 console.log('\nC. the entity is the borrower and the person is the guarantor');
 {
   const { signature } = blocksOf({ borrowerName: PERSON, entityName: ENTITY });
-  ok(named(signature).some((x) => x === `Borrower — authorized signatory=${ENTITY}`),
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. The approved sketch sets a signature
+     line as "<name> — <role>", so a role no longer leads with its own dash and
+     no longer opens with a capital; the ROLES are what this suite is about and
+     they are unchanged. Pinned on the role text itself, which is the fact. */
+  ok(named(signature).some((x) => x === `borrower and authorized signatory=${ENTITY}`),
     'C1 the ENTITY signs as the borrower');
-  ok(named(signature).some((x) => x === `Guarantor=${PERSON}`),
+  ok(named(signature).some((x) => x === `guarantor=${PERSON}`),
     'C2 …and the PERSON signs as the guarantor');
-  ok(!roles(signature).includes('Borrower / guarantor'),
+  ok(!roles(signature).some((r) => /borrower and guarantor/i.test(r)),
     'C3 …never the combined role, which over a company reads as it guaranteeing itself');
   ok(roles(signature).filter((r) => r === 'Date').length === 3,
     'C4 every signing party gets its own date line — three parties, three dates');
 }
 {
   const { signature } = blocksOf({ entityName: ENTITY });
-  ok(named(signature).join('|') === `Borrower — authorized signatory=${ENTITY}`,
+  ok(named(signature).join('|') === `borrower and authorized signatory=${ENTITY}|authorized signatory=YS Capital Group`,
     'C5 the entity alone signs as the borrower, and no phantom guarantor line is drawn');
 }
 
 console.log('\nD. the person-only sheet is what it always was');
 {
   const { signature, recipient } = blocksOf({ borrowerName: PERSON });
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. This pinned the block byte for byte,
+     and the approved sketch moved TWO things about it deliberately: a role is
+     written after the name rather than leading with its own dash, and the date
+     lines are grouped UNDER the parties rather than interleaved with them (three
+     signers alternating with three dates wraps into two people sharing one date
+     line, which is a page that cannot record two people signing on two days). So
+     it now pins the SHAPE that was really being guarded — one person signs as
+     both borrower and guarantor, we counter-sign, and each party has its own
+     date line — rather than the arrangement of the day. */
   ok(JSON.stringify(signature.lines) === JSON.stringify([
-    { role: 'Borrower / guarantor', name: PERSON },
+    { role: 'borrower and guarantor', name: PERSON },
+    { role: 'authorized signatory', name: 'YS Capital Group' },
     { role: 'Date' },
-    { role: 'YS Capital Group — authorized signatory' },
     { role: 'Date' },
-  ]), 'D1 the signature block is BYTE-IDENTICAL to the one that shipped before the entity existed');
+  ]), 'D1 one person signs as borrower AND guarantor, we counter-sign, and each party has its own date line');
   ok(recipient.preparedFor === PERSON,
     'D2 …and the "prepared for" line still reads exactly the person\'s name');
   ok(recipient.entityName === null,
@@ -140,8 +153,14 @@ console.log('\nD. the person-only sheet is what it always was');
 console.log('\nE. the top of the page and the bottom name the same parties');
 {
   const both = blocksOf({ borrowerName: PERSON, entityName: ENTITY });
-  ok(both.recipient.preparedFor === `${ENTITY} · ${PERSON}`,
-    'E1 both parties are on the "prepared for" line, entity first');
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. The sketch sets the addressee as the
+     ENTITY on its own line with the person named UNDER it in their role
+     ("Oak Street Holdings LLC" / "Miriam Rosenberg, guarantor") rather than as
+     one middot-joined run. Both parties are still named at the top of the page,
+     which is the property; the guard now reads both fields. */
+  ok(both.recipient.preparedFor === ENTITY
+    && String(both.recipient.preparedForRole || '').includes(PERSON),
+  'E1 both parties are named at the top of the page, the entity as the addressee');
   const onSig = named(both.signature).join(' ');
   ok(onSig.includes(ENTITY) && onSig.includes(PERSON),
     'E2 …and both appear on the signature lines, so the two halves cannot disagree');

@@ -236,11 +236,16 @@ function runCase(sels, plan, prepared, tag) {
     const table = blocks.find((b) => b.t === 'table');
     const dscrRow = table && (table.rows || []).find((r) => r[0] === 'DSCR');
     if (dscrRow && Array.isArray(table.head)) {
-      // The table's column order is the head's, and the head names each option.
+      /* The table's column order is the head's, and each head cell carries the
+         option's own `label` as a FIELD. Read it from there, never out of the
+         head's prose: the approved design heads a column with a tracked eyebrow,
+         an anchor tag and a name over two lines, and a guard that parsed the old
+         single string would simply have stopped matching — which is a guard
+         going quiet, not a guard passing. */
       const shownFor = new Map();
       table.head.forEach((h, i) => {
-        if (i === 0) return;
-        const label = String(h).replace(/\s*\(compared against\)\s*$/, '').trim();
+        if (i === 0 || !h || typeof h !== 'object') return;
+        const label = String(h.label || '').trim();
         const cell = dscrRow[i];
         if (label && cell != null && cell !== '—') shownFor.set(label, String(cell));
       });
@@ -256,7 +261,8 @@ function runCase(sels, plan, prepared, tag) {
             `${tag} :: ${label} column says ${col}, its own sentence says ${to}`);
         }
         // The "from" is always the anchor's, whichever column that is.
-        const anchorLabel = String(table.head[1] || '').replace(/\s*\(compared against\)\s*$/, '').trim();
+        const anchorHead = table.head.find((h) => h && typeof h === 'object' && h.anchor);
+        const anchorLabel = String((anchorHead || {}).label || '').trim();
         const anchorCol = shownFor.get(anchorLabel);
         if (anchorCol !== undefined) {
           ok(anchorCol === from,

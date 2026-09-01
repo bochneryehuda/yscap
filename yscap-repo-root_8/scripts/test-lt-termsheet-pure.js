@@ -282,7 +282,16 @@ section('the layout — the block list a renderer walks');
   check(!!meta.title && !!meta.disclaimer, 'the meta block carries the document name and the footer disclaimer');
   check(types.includes('table'), 'a comparison carries a table');
   const table = lay.blocks.find((b) => b.t === 'table');
-  check(/compared against/.test(table.head[1]), 'the anchor column SAYS it is the one everything is compared against');
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. The head used to be one string that
+     ended "(compared against)"; the approved sketch heads a column with a
+     tracked eyebrow, an anchor TAG and the option's own name, and carries the
+     identity as fields. The property is unchanged and is now asserted on the
+     data rather than on the prose — which is what stops it going quiet the next
+     time the wording moves. */
+  check(table.head[1] && table.head[1].anchor === true && /anchor/i.test(table.head[1].tag || ''),
+    'the anchor column SAYS it is the one everything is compared against');
+  check(table.head.slice(2).every((h) => h && h.anchor === false && !h.tag),
+    '…and no other column claims to be');
   const breakEven = table.rows.find((r) => r[0] === 'Break-even');
   check(breakEven && breakEven[2] === '67 months (5 years 7 months)',
     `the break-even row reads in years and months, as the docs print it (got ${breakEven && breakEven[2]})`);
@@ -309,8 +318,17 @@ section('the layout — the block list a renderer walks');
   // lender-paid, the table said "You receive $1,655" one line above while the
   // sentence said "pays you $11,250 today". Both right, different questions,
   // nothing on the page saying which. Found by reading a rendered sample.
-  check(paras.split('No points').length - 1 >= 3,
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. This counted three mentions, and one
+     of the three was a standalone paragraph ("Every comparison below is against
+     No points") that the approved design moves onto the heading itself as its
+     right-hand note. Counting paragraphs would now under-count a page that says
+     the same thing in a better place, so both halves are asserted directly. */
+  const named = lay.blocks.filter((b) => b.t === 'para' && /No points/.test(b.text || '')).length;
+  check(named >= 2,
     'and every comparative sentence names the option it is comparing against, so no figure on the page reads as absolute when it is a difference');
+  const differsBand = lay.blocks.find((b) => b.t === 'band' && b.title === 'What differs');
+  check(!!differsBand && /No points/.test(differsBand.note || ''),
+    '…and the table\'s own heading names the column every figure under it is measured from');
   const hard = lay.blocks.filter((b) => b.t === 'pagebreak' && !Number.isFinite(b.ifLessThan));
   const soft = lay.blocks.filter((b) => b.t === 'pagebreak' && Number.isFinite(b.ifLessThan));
   /* ⛔ REVERSED 2026-08-31, ON THE OWNER'S OWN REPORT. This asserted a page per
@@ -393,8 +411,13 @@ section('the three documents — one option, three options, three scenarios');
     'the comparison says "Comparison Sheet", and how many options');
   check(layS.blocks[0].title === 'Scenario Comparison' && /2 scenarios/.test(layS.blocks[0].subtitle),
     'the scenario comparison says so, and counts scenarios rather than options');
-  const scenParas = layS.blocks.filter((b) => b.t === 'para').map((b) => b.text).join(' ');
-  check(/These scenarios differ in: .*loan amount/.test(scenParas),
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED. The sentence moved INTO the shared
+     facts box, which is where the sketch says it: the box states what every
+     scenario agrees about, and its footnote says what is left over. Read every
+     string the page draws rather than only its paragraphs, so the guard holds
+     wherever the sentence lives next. */
+  const scenText = JSON.stringify(layS.blocks);
+  check(/differ in: [^"]*loan amount/.test(scenText),
     'a scenario comparison SAYS what changed between the scenarios — two numbers with no stated difference is not a comparison');
 }
 
@@ -508,8 +531,12 @@ section('PITI — the total appears only when it is a real one');
   const t = layout.comparisonTable(three.snapshot);
   const dscrRow = t.rows.find((r) => r[0] === 'DSCR');
   const payRow = t.rows.find((r) => r[0] === 'Total monthly payment');
-  check(new Set(payRow.slice(1)).size === 3, 'three options genuinely have three different total payments');
-  check(new Set(dscrRow.slice(1)).size === 3,
+  /* A row may carry a trailing OPTIONS object (the approved design bands the two
+     rows that resolve the arithmetic in ivory), so the values are the string
+     cells — never "everything after the label". */
+  const vals = (r) => r.slice(1).filter((v) => typeof v === 'string');
+  check(new Set(vals(payRow)).size === 3, 'three options genuinely have three different total payments');
+  check(new Set(vals(dscrRow)).size === 3,
     '…so they have three different ratios — the printed DSCR is the division a reader can do off this very page');
   const rentM = SCENARIO.rentMonthly;
   const money = (s) => Number(String(s).replace(/[$,]/g, ''));
@@ -765,13 +792,18 @@ section('the document opens with what it is about');
   /* ⛔ AND THE PROPERTY IS NOT SAID TWICE ON ONE PAGE. A comparison prints its
      facts under the address (one line, so the table keeps its page); a term
      sheet prints the band, where it has the room. */
+  /* ⛔ RE-POINTED 2026-08-31, NOT LOOSENED — AND THE RULE GOT STRICTER. This
+     read "a term sheet prints the band, a comparison prints one line under the
+     address", which was true of the sheet as it stood. Every one of the three
+     approved sketches states the property under the address and NONE of them
+     carries a property section, so the property is now said in ONE place on
+     EVERY document — which is the thing this guard was always really about. */
   const rec = (l) => l.blocks.find((b) => b.t === 'recipient');
-  check(rec(lay).propertyFacts === null
-    && layout.flattenBlocks(lay.blocks).some((b) => b.t === 'band' && b.title === 'The property'),
-    'a term sheet keeps the property band and adds nothing to the address');
-  check(/Single family/.test(rec(cmpLay).propertyFacts || '')
-    && !cmpLay.blocks.some((b) => b.t === 'band' && b.title === 'The property'),
-    'a comparison states them under the address instead — the same facts, one line');
+  const noBand = (l) => !layout.flattenBlocks(l.blocks).some((b) => b.t === 'band' && b.title === 'The property');
+  check(/Single family/.test(rec(lay).propertyFacts || '') && noBand(lay),
+    'a term sheet states the property under the address, once — never twice on one page');
+  check(/Single family/.test(rec(cmpLay).propertyFacts || '') && noBand(cmpLay),
+    'and a comparison states them the same way — the same facts, one line');
 }
 
 // =============================================================================

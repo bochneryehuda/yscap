@@ -291,7 +291,12 @@ console.log('\nand the page never states two different DSCRs');
     });
     if (!sentence || !/DSCR moves from/.test(sentence)) continue;
     const [, from, to] = sentence.match(/DSCR moves from (\d+\.\d+) to (\d+\.\d+)/) || [];
-    const colIndex = (table.head || []).findIndex((h) => String(h).startsWith(m.label));
+    /* THE COLUMN IS FOUND BY THE HEAD'S OWN `label` FIELD, never by reading its
+       prose. The approved sketch heads a column with a tracked eyebrow, a tag
+       and a name over two lines; a guard that matched the old single string
+       would have gone quiet the moment the design changed, which is the failure
+       mode a guard exists to avoid. */
+    const colIndex = (table.head || []).findIndex((h) => h && h.label === m.label);
     check(to === String(drow[colIndex]),
       `THE ONE THAT MATTERS: ${m.label}'s sentence says ${to} and its own column says ${drow[colIndex]} — the same page may not state two`);
     check(from === String(drow[1]),
