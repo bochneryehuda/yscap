@@ -215,7 +215,7 @@ function sendRatioFor(tier, figures, rates) {
  * board we have not run yet is the only honest source, and reaching for one just to
  * pick a starting point would spend the very call this exists to save.
  */
-const TYPICAL_RATE_PCT = Number(process.env.LP_BRACKET_SEED_RATE_PCT || 7.5) || 7.5;
+const TYPICAL_RATE_PCT = Number(process.env.LP_BRACKET_SEED_RATE_PCT || 7) || 7;
 
 function seedRatioFrom(figures, typedDscr) {
   const typed = num(typedDscr);
