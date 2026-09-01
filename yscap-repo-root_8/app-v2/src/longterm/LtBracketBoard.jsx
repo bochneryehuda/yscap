@@ -1,6 +1,13 @@
 import React, { useState } from 'react';
 import { ltApi } from './api.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, DANGER, CAUTION, card, eyebrow } from './ppeStyles.js';
+/* ⛔ THE SHARED FORMATTERS, NEVER A LOCAL COPY. `test-lt-pipeline-columns-pure`
+   enforces it across every LT screen, and the reason is specific rather than
+   tidiness: `pct` takes a WHOLE percent and `rate` takes a FRACTION, so a
+   hand-rolled one prints 0.97% or 7250.0% on a rate somebody quotes out loud.
+   `noteRate` is the one for a rung — three places, because a ladder steps in
+   eighths and two places would draw 6.125 and 6.250 as the same rate. */
+import { money, noteRate, price } from './format.js';
 
 /**
  * LT — THE BOARD, GROUPED BY THE DSCR BRACKET EACH RATE ACTUALLY REACHES
@@ -25,11 +32,6 @@ import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, DANGER, CAUTION, card, eyebrow } fr
  * the cost before it is pressed.
  */
 
-const money = (n) => (typeof n === 'number' && isFinite(n)
-  ? n.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }) : '—');
-const pct = (n, d = 3) => (typeof n === 'number' && isFinite(n) ? n.toFixed(d) + '%' : '—');
-const price = (n) => (typeof n === 'number' && isFinite(n) ? n.toFixed(3) : '—');
-
 /* WHY A BAND WE ASKED ABOUT IS SHOWING NOTHING. Silence is what a reader
    mistakes for "we did not look", so the two real reasons are worded apart. */
 const EMPTY_WORDS = {
@@ -49,14 +51,14 @@ function BracketRow({ b }) {
         <span style={{ fontSize: 15, fontWeight: 700, color: INK }}>DSCR {b.label}</span>
         <span style={{ fontSize: 12, color: MUTED }}>
           {b.quoteCount} {b.quoteCount === 1 ? 'quote' : 'quotes'}
-          {typeof b.bestRate === 'number' ? ` · from ${pct(b.bestRate)}` : ''}
+          {typeof b.bestRate === 'number' ? ` · from ${noteRate(b.bestRate)}` : ''}
         </span>
         <span style={{ flex: '1 1 auto' }} />
         {/* WHAT THIS BAND WAS ASKED AT, stated rather than implied. An officer
             comparing two bands is entitled to see that they are two different
             questions, not one board split up afterwards. */}
         <span style={{ fontSize: 11.5, color: GOLD_TEXT, fontWeight: 600 }}>
-          priced at {typeof b.sentRatio === 'number' ? b.sentRatio.toFixed(2) : '—'}
+          priced at {b.sentRatioText || '—'}
         </span>
       </div>
       <div style={{ padding: '4px 12px 10px' }}>
@@ -75,12 +77,12 @@ function BracketRow({ b }) {
             display: 'flex', gap: 10, alignItems: 'baseline', fontSize: 12.5, color: SLATE,
             padding: '7px 0', borderBottom: i === shown.length - 1 ? 'none' : '1px solid rgba(20,27,34,.06)',
           }}>
-            <span style={{ flex: '0 0 74px', fontWeight: 700, color: INK, fontVariantNumeric: 'tabular-nums' }}>{pct(q.rate)}</span>
+            <span style={{ flex: '0 0 74px', fontWeight: 700, color: INK, fontVariantNumeric: 'tabular-nums' }}>{noteRate(q.rate)}</span>
             <span style={{ flex: '0 0 70px', fontVariantNumeric: 'tabular-nums' }}>{price(q.price)}</span>
             {/* The ratio THIS rate reaches — the whole reason the row is in this
                 band, so it is on the row rather than left to be inferred. */}
             <span style={{ flex: '0 0 60px', fontVariantNumeric: 'tabular-nums', color: INK, fontWeight: 600 }}>
-              {typeof q.dscr === 'number' ? q.dscr.toFixed(2) : '—'}
+              {q.dscrText || '—'}
             </span>
             <span style={{ flex: '0 0 92px', fontVariantNumeric: 'tabular-nums' }}>{money(q.monthlyPi)}</span>
             <span style={{ flex: '2 1 160px' }}>
@@ -185,7 +187,7 @@ export default function LtBracketBoard({ scenario, figures, disabled, disabledRe
             <p style={{ fontSize: 12.5, color: CAUTION, lineHeight: 1.6, margin: '8px 0 0' }}>
               {res.failedBrackets.length === 1 ? 'One band' : `${res.failedBrackets.length} bands`} could not be
               priced — Lender Price did not answer for{' '}
-              {res.failedBrackets.map((b) => b.sentRatio != null ? b.sentRatio.toFixed(2) : 'a ratio').join(', ')}.
+              {res.failedBrackets.map((b) => b.sentRatioText || 'a ratio').join(', ')}.
               Those bands are missing from this board rather than empty.
             </p>
           )}

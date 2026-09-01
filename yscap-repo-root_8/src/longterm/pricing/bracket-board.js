@@ -261,6 +261,19 @@ function selfConsistent(figures, quote, pricedTier) {
 }
 
 /**
+ * A DSCR AS IT IS WRITTEN — two places, always, because that is what a DSCR IS
+ * here (`Round(rent / PITIA, 2)`) and what every band edge carries. It is
+ * produced HERE rather than on the screen for the reason the whole feature
+ * rests on: the ladder, the band a quote sits in and the ratio it was searched
+ * at are the server's answers, so the TEXT of those figures is too. A browser
+ * that formatted them itself would be one trailing zero away from printing
+ * "1.2" beside a band labelled "1.20".
+ */
+function ratioText(v) {
+  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(2) : null;
+}
+
+/**
  * THE FINISHED BOARD — every bracket that actually has rates, best bracket first,
  * each carrying only the quotes whose own ratio belongs to it.
  *
@@ -295,7 +308,7 @@ function buildBoard(figures, runs) {
       const ratio = ratioAtRate(f, q && q.rate, q && q.monthlyPi);
       if (ratio == null) { dropped += 1; continue; }
       if (dscrTier(ratio) !== tier) { dropped += 1; continue; }
-      quotes.push(Object.assign({}, q, { dscr: ratio, dscrTier: tier }));
+      quotes.push(Object.assign({}, q, { dscr: ratio, dscrText: ratioText(ratio), dscrTier: tier }));
     }
     droppedTotal += dropped;
     quotes.sort((a, b) => {
@@ -311,6 +324,7 @@ function buildBoard(figures, runs) {
       from: row.from,
       to: row.to,
       sentRatio: num(run.sentRatio),
+      sentRatioText: ratioText(num(run.sentRatio)),
       quotes,
       quoteCount: quotes.length,
       // Why a bracket a search was run for is showing nothing. Silence here is
@@ -335,7 +349,7 @@ function buildBoard(figures, runs) {
 
 module.exports = {
   MAX_BRACKETS, MAX_ROUNDS,
-  readFigures, ratioAtRate, tierAtRate, sendRatioFor,
+  readFigures, ratioAtRate, tierAtRate, sendRatioFor, ratioText,
   tiersFromRates, bracketFrontier, selfConsistent, buildBoard, VENDOR_MAX_DSCR,
   DSCR_TIERS, dscrTier, tierLabel,
 };

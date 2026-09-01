@@ -205,6 +205,21 @@ section('D. an out-of-band quote is DROPPED, never shown');
     '6.99 and 6.990 are the same rate and reach the same ratio');
   ok(oddTier != null && boardMod.ratioAtRate(F, 6.999) <= boardMod.ratioAtRate(F, 6.99),
     '…and 6.999 is genuinely dearer than 6.99, never rounded onto it');
+  /* ⛔ THE SERVER WRITES THE RATIO, NOT THE SCREEN. `test-lt-pipeline-columns-pure`
+     forbids an LT screen defining a formatter of its own — because `pct` takes a
+     whole percent and `rate` takes a fraction, and a hand-rolled copy prints
+     0.97% or 7250.0% on a figure somebody quotes out loud. The shared set has no
+     two-place ratio, and the shared `ratio` trims trailing zeros, so "1.2" would
+     sit beside a band labelled "1.20". So the band and the quote carry their own
+     TEXT, from the same place that decided the number — which is the design this
+     whole feature rests on rather than a workaround for the guard. */
+  ok(built.brackets[0].sentRatioText === boardMod.sendRatioFor(t, F, []).toFixed(2)
+    && /^\d+\.\d{2}$/.test(built.brackets[0].sentRatioText),
+    `⛔ the band carries its search ratio as text, two places (${built.brackets[0].sentRatioText})`);
+  ok(/^\d+\.\d{2}$/.test(built.brackets[0].quotes[0].dscrText),
+    `…and every quote carries its own ratio the same way (${built.brackets[0].quotes[0].dscrText})`);
+  ok(boardMod.ratioText(1.2) === '1.20' && boardMod.ratioText(null) === null,
+    '…never trimmed to "1.2", and a figure that is not a ratio has no text at all');
   ok(boardMod.selfConsistent(F, { rate: 6.5 }, t) === true
     && boardMod.selfConsistent(F, { rate: 11.125 }, t) === false,
     'the invariant is askable of one quote on its own');

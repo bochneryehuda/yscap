@@ -1676,23 +1676,6 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
     hoaMonthly: calc.hoa === '' ? 0 : perMonth(toNumber(calc.hoa), 'monthly'),
   };
 
-  /* WHAT THE BRACKET BOARD IS STILL MISSING, in the words of the boxes it comes from.
-     ⛔ IT IS NOT `dscrFrom`'s LIST, AND THAT IS DELIBERATE. That function answers "can we
-     show a ratio for THIS rate", so with no rate chosen it reports the rate as missing —
-     which is nonsense advice here, because the bracket board's whole job is to find the
-     rates. What it genuinely needs is the property's own figures plus the loan, which is
-     the server's own `readFigures` rule; an amortising deal also needs a term, and an
-     interest-only one does not, because its payment never uses one. */
-  const dscrMissing = (() => {
-    const need = [];
-    if (!(perMonth(toNumber(calc.rent), 'monthly') > 0)) need.push('monthly rent');
-    if (perMonth(toNumber(calc.tax), calc.taxBasis) == null) need.push('property tax');
-    if (perMonth(toNumber(calc.insurance), calc.insBasis) == null) need.push('insurance');
-    if (!(loanAmount > 0)) need.push('loan amount');
-    if (!f.io && !(toNumber(f.termYears) > 0)) need.push('loan term');
-    return need;
-  })();
-
   const timer = useRef(null);
   // The auto-ask loop's own bookkeeping: which search it is chasing, how many asks it has spent, and
   // the pending timer. Refs rather than state — none of it is drawn, and putting it in state would
@@ -1841,6 +1824,34 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
     const typed = f.amountMode === 'ltv' ? (amt && amt.loan) : toNumber(f.loan);
     return typed != null && typed > 0 ? typed : null;
   })();
+
+  /* WHAT THE BRACKET BOARD IS STILL MISSING, in the words of the boxes it comes from.
+
+     ⛔ IT SITS HERE, AFTER `loanAmount`, BECAUSE IT READS IT. Placed with the other
+     derived figures further up it compiled perfectly and crashed the WHOLE pricing
+     engine on first paint — "Cannot access 'loanAmount' before initialization", a
+     `const` in its temporal dead zone. Caught by `test-lt-pricer-screen-render`,
+     not by the build and not by eslint: exactly the trap CLAUDE.md records as "a
+     green build does NOT mean the page renders". Anything added here that reads a
+     later `const` belongs below it, never above.
+
+     ⛔ AND IT IS NOT `dscrFrom`'s LIST, WHICH IS DELIBERATE. That function answers
+     "can we show a ratio for THIS rate", so with no rate chosen it reports the RATE
+     as missing — nonsense advice here, because the bracket board's whole job is to
+     find the rates. What it genuinely needs is the property's own figures plus the
+     loan, which is the server's own `readFigures` rule; an amortising deal also
+     needs a term, and an interest-only one does not, because its payment never uses
+     one. */
+  const dscrMissing = (() => {
+    const need = [];
+    if (!(perMonth(toNumber(calc.rent), 'monthly') > 0)) need.push('monthly rent');
+    if (perMonth(toNumber(calc.tax), calc.taxBasis) == null) need.push('property tax');
+    if (perMonth(toNumber(calc.insurance), calc.insBasis) == null) need.push('insurance');
+    if (!(loanAmount > 0)) need.push('loan amount');
+    if (!f.io && !(toNumber(f.termYears) > 0)) need.push('loan term');
+    return need;
+  })();
+
 
   /* THE ONE OVERLAY OBJECT every board takes. `compShiftPoints` answers null when the plan is
      missing or unreadable — then the comp positions CANNOT be computed, so the boards get the
