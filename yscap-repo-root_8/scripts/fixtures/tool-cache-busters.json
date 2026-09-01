@@ -1,0 +1,135 @@
+{
+  "web/v2/brand.js": {
+    "sha": "2d0355206470d775",
+    "v": [
+      "n4",
+      "tsprog1"
+    ]
+  },
+  "web/v2/float-actions.js": {
+    "sha": "aac9b0faedd9d236",
+    "v": [
+      "admin10-applyfix-tsprog1",
+      "applyfix2",
+      "tsprog1"
+    ]
+  },
+  "web/v2/suite.css": {
+    "sha": "d2cda3e8ab3bba7a",
+    "v": [
+      "aa1"
+    ]
+  },
+  "web/v2/suite.js": {
+    "sha": "3c54b5d5e0b5ce88",
+    "v": [
+      "admin8-tsprog1",
+      "n2",
+      "pdf1",
+      "tsprog1"
+    ]
+  },
+  "web/v2/theme.js": {
+    "sha": "37d3922592648fc9",
+    "v": [
+      "n7",
+      "tsprog1"
+    ]
+  },
+  "web/v2/tools/address-autocomplete.js": {
+    "sha": "bca38cb58d4225ac",
+    "v": [
+      "admin9-tsprog1",
+      "tsprog1",
+      "usps1"
+    ]
+  },
+  "web/v2/tools/drop-import.js": {
+    "sha": "61f78d0e82c92519",
+    "v": [
+      "2"
+    ]
+  },
+  "web/v2/tools/gold-standard.js": {
+    "sha": "a05cfa3013ae2e08",
+    "v": [
+      "asgseller19-tiermk1-tsprog1-oopauto1"
+    ]
+  },
+  "web/v2/tools/gov-charges.js": {
+    "sha": "09ced6b12b22933c",
+    "v": [
+      "gov2"
+    ]
+  },
+  "web/v2/tools/rb-logo.js": {
+    "sha": "4f7d933ae6e2e10f",
+    "v": [
+      "admin8-tsprog1",
+      "n2",
+      "tsprog1"
+    ]
+  },
+  "web/v2/tools/rehab-budget-portal.js": {
+    "sha": "25974c5f4ae410c8",
+    "v": [
+      "n6"
+    ]
+  },
+  "web/v2/tools/rehab-budget.css": {
+    "sha": "af87860acdbf456c",
+    "v": [
+      "dnd2"
+    ]
+  },
+  "web/v2/tools/rehab-budget.js": {
+    "sha": "d829c2fd3bb59abe",
+    "v": [
+      "flow2-shareddrop-bizpurpose1"
+    ]
+  },
+  "web/v2/tools/silver-program.js": {
+    "sha": "3c41b644d4cac594",
+    "v": [
+      "silver9-bandeps-tiermk1-tsprog1-oopauto1"
+    ]
+  },
+  "web/v2/tools/standard-program.js": {
+    "sha": "44481a45d0f83fc6",
+    "v": [
+      "asgseller18-asgelig-tiermk1-tsprog1-oopauto1-judsmall1",
+      "tsprog1-oopauto1-judsmall1"
+    ]
+  },
+  "web/v2/tools/termsheet.js": {
+    "sha": "641e7adbdea9f525",
+    "v": [
+      "feerows1-heavyrehab1-cema1-feesplit1-feasline1-gov2-cards9-irtruth1-maxlev1-origfit-manualorig2-badgewrap-ooprehab1-payoff1-tsprov1-slotfit1-vendor1-refidisp1-tiermk1-tpobroker1-tsprog1-propline1-nyoverlay1-payoffgt1-abchip1-progavail2-mkdefault1-oopauto1-derivpage1-bizpurpose1"
+    ]
+  },
+  "web/v2/tools/title-cost.js": {
+    "sha": "91ba4650775a1e2b",
+    "v": [
+      "admin8-tsprog1",
+      "tsprog1"
+    ]
+  },
+  "web/v2/tools/track-record-portal.js": {
+    "sha": "8f99ca5cd62b0424",
+    "v": [
+      "n17-rstamp"
+    ]
+  },
+  "web/v2/tools/track-record.css": {
+    "sha": "11d1f65745e3f547",
+    "v": [
+      "aa2-ground"
+    ]
+  },
+  "web/v2/tools/track-record.js": {
+    "sha": "53420ed540f2886d",
+    "v": [
+      "pilot10-rstamp-bizpurpose1"
+    ]
+  }
+}
