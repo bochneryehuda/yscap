@@ -253,20 +253,46 @@ ok((B.match(/className="ltq-act" style=\{\{ flex: ACT_W,/g) || []).length === 2,
 ok(/flex: ACT_W_PLAIN \}/.test(B) && (B.match(/ACT_W_PLAIN/g) || []).length >= 3,
   'E6 the ineligible board (no tick-box) has its own narrower column, header and row agreeing');
 
-console.log('\nF. the comparison stays on screen the whole time');
-ok(/className="lt-comp-rail"/.test(P), 'F1 the comparison panel is the pinned rail');
-ok(/\.lt-comp-rail\{position:sticky/.test(CSS), 'F2 …and the stylesheet pins it');
-ok(/--lt-comp-h/.test(P), 'F3 the rail publishes its own MEASURED height');
-ok(/getBoundingClientRect/.test(P) && /ResizeObserver/.test(P),
-  'F4 …measured from its own box and re-measured when it changes size');
-ok(/\.lt-strip\{position:sticky;top:calc\(72px \+ var\(--lt-comp-h/.test(CSS),
-  'F5 the search strip below moves down by exactly that, never by a constant');
-ok(/setProperty\('--lt-comp-h', '0px'\)/.test(P),
-  'F6 …and the offset is cleared when the rail leaves the page');
+/* ⛔ RE-POINTED 2026-09-01, AND THE SUBJECT REVERSED — so it is stated here rather than
+   quietly softened. This section asserted that the comparison rail was PINNED and that the
+   search strip was pushed down by the rail's own measured height. Both were built to
+   2026-08-30's *"the entire time when you are scrolling, that section should be visible …
+   you don't need to scroll back up."*
+
+   The owner read the result on 2026-09-01: *"the entire pricing screen is extremely,
+   terribly messy. It's three separate sections stacked on top of each other, and you can't
+   see any of the three … at the bottom of everything, you can't even access it to see
+   rates, and you can't scroll."* MEASURED at 1440x1000: the app header (72), the rail
+   pinned under it (171) and the strip pinned under THAT (199) held 442 points of the
+   viewport at all times, and the first rate row sat at y=810 — one rate visible on the
+   screen whose entire job is the board. F7 already knew the hazard ("a pin that ate the
+   viewport would be worse"); the 46vh cap did not save it, because two capped pins still
+   add up.
+
+   So ONE band is pinned now — the strip, which carries what an officer uses WHILE reading
+   the board — and the rail sits below the board, unpinned and folded until it is wanted.
+   The 2026-08-30 requirement is answered, not dropped: the collected count rides on the
+   pinned strip and jumps here in one press (F5/F6 below). */
+console.log('\nF. one band is pinned, and the collection is one press from it');
+ok(/className="lt-comp-rail"/.test(P), 'F1 the comparison panel is still its own area');
+ok(/\.lt-comp-rail\{position:static/.test(CSS),
+  'F2 …and the stylesheet no longer pins it — two pinned bands cannot both be the top of the page');
+ok(/\.lt-strip\{position:sticky;top:72px/.test(CSS),
+  'F3 the search strip is the ONE pinned band, under the app header alone');
+/* ⛔ COMMENTS STRIPPED FIRST. The change that removed this variable necessarily NAMES it
+   while explaining why it is gone, in both files — so an assertion over the raw text
+   would fail on its own explanation and then be "fixed" by deleting the explanation.
+   What is asserted is that nothing DECLARES, READS or WRITES it any more. */
+const noComments = (t) => t.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+ok(!/--lt-comp-h/.test(noComments(CSS)) && !/--lt-comp-h/.test(noComments(P)),
+  'F4 the rail\'s offset variable is gone from BOTH the sheet and the component — one bundle, no half state');
+ok(/id="lt-comparison"/.test(P), 'F5 the comparison area is addressable');
+ok(/scroll-margin-top/.test(CSS),
+  'F6 …and lands clear of the pinned strip rather than under it');
 ok(/max-height:min\(46vh,420px\);overflow-y:auto/.test(CSS),
-  'F7 the rail is capped and scrolls inside itself — a pin that ate the viewport would be worse');
-ok(/@media\(max-width:900px\)\{\s*\.lt-comp-rail\{position:static/.test(CSS),
-  'F8 …and it goes static on a phone, where a pin has no room to earn');
+  'F7 the collected list is still capped and scrolls inside itself');
+ok(/aria-expanded=\{open\}/.test(P) && /setOpen\(true\)/.test(P),
+  'F8 the body folds away, and opens itself the moment something is collected');
 
 console.log('\nG. everything collected is visible from there, and issuable from there');
 ok(/\{children\}\n\s*<\/div>/.test(P),

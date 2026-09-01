@@ -687,16 +687,54 @@ console.log('LT Pricing Engine — structural guards\n');
       'PE-140 Edit search reopens the collapsed form');
     // The sticky class itself: pinned in the shared stylesheet, with the phone fallback.
     const css = fs.readFileSync(path.join(ROOT, 'app-v2/src/styles.css'), 'utf8');
-    // RE-POINTED 2026-08-30, not loosened. The subject is unchanged — pinned under the app
-    // header, static on a phone — but the comparison rail now sits ABOVE this strip, so the
-    // offset is the 72px header PLUS the rail's own MEASURED height rather than a bare 72px.
-    // Both halves are still asserted, and the variable is asserted too: a hand-typed constant
-    // for a box whose height changes as options are ticked in and out is the bug this guards.
-    ok(/\.lt-strip\{position:sticky;top:calc\(72px \+ var\(--lt-comp-h/.test(css)
+    /* RE-POINTED 2026-09-01, and this time the SUBJECT moved with it, so it is stated
+       rather than quietly relaxed. It was re-pointed on 2026-08-30 at the offset
+       `calc(72px + var(--lt-comp-h))`, because the comparison rail was pinned ABOVE this
+       strip. Owner-reported 2026-09-01: *"three separate sections stacked on top of each
+       other, and you can't see any of the three … you can't even access it to see rates,
+       and you can't scroll."* MEASURED at 1440x1000, the two pins plus the app header held
+       442 points of permanently-pinned furniture — nearly half the screen, before one rate
+       row. The rail moved below the board and stopped pinning, so this strip's offset is
+       the app header and only that. What the rail's pin was FOR is asserted at PE-141b. */
+    ok(/\.lt-strip\{position:sticky;top:72px/.test(css)
       && /@media\(max-width:900px\)\{\.lt-strip\{position:static/.test(css),
-      'PE-141 .lt-strip is sticky under the app header (72px + the measured rail), static on a phone');
+      'PE-141 .lt-strip is sticky under the app header alone, static on a phone');
+    ok(!/var\(--lt-comp-h/.test(css),
+      'PE-141a …and nothing is pinned above it any more — the rail\'s offset is gone from the sheet');
+    ok(/id="lt-comparison"/.test(fs.readFileSync(path.join(ROOT, 'app-v2/src/longterm/TermSheetPanel.jsx'), 'utf8'))
+      && /getElementById\('lt-comparison'\)/.test(code) && /collected · build the sheet/.test(code),
+      'PE-141b the collection is still one press away from the pinned band — what the rail\'s own pin was for');
     ok(/\.lt-strip\{[^}]*background:#fff/.test(css),
       'PE-142 …with an explicit opaque background, or the board reads straight through it');
+
+    /* ── PE-142a..PE-142e — THE ANSWER IS THE PAGE (owner-reported 2026-09-01) ────
+       *"The entire pricing screen is extremely, terribly messy. It's three separate
+       sections stacked on top of each other, and you can't see any of the three …
+       the comparison window is on top of everything … at the bottom of everything,
+       you can't even access it to see rates."*
+
+       MEASURED on a real render at 1440x1000 before the change: the comparison card
+       (171), the pinned strip (199) and a "what came back" card (172) sat between the
+       top of the page and the board, so the first rate row landed at y=810 and an
+       officer saw ONE rate on the screen whose whole job is the board. After: the
+       board card starts at 269 and all seven rates are on one screen.
+
+       ⛔ ASSERTED AS THE ORDER, NOT AS A PIXEL. A y-coordinate is a fact about one
+       fixture at one width and would be "fixed" by nudging a number; the ORDER —
+       answer first, then what you do with it, then the footnotes — is the property
+       that was wrong and the one that must hold at every width. */
+    const iBoard = code.indexOf('Every rate, and every investor at it');
+    const iComp = code.indexOf('<ComparisonWorkflowPanel');
+    const iFoot = code.indexOf('Business-purpose loans, made to an entity');
+    ok(iBoard > 0 && iComp > 0 && iFoot > 0, 'PE-142a (located the board, the comparison area and the footnote)');
+    ok(iComp > iBoard,
+      'PE-142b the comparison area comes AFTER the board — price, read, then collect');
+    ok(iFoot > iComp,
+      'PE-142c …and the standing disclosure is last, where a footnote goes');
+    ok(!/What came back/.test(code),
+      'PE-142d the counts no longer cost a card of their own between the strip and the answer');
+    ok(/counts=\{`\$\{stack\.rateCount\}/.test(code),
+      'PE-142e …they ride the strip that describes the search they count');
   }
 }
 

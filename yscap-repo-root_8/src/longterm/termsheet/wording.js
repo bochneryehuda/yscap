@@ -420,6 +420,29 @@ function prepaySentence(months, structure) {
 
 /** Fixed strings. One place, so every surface says them identically. */
 const DISCLOSURE = 'Pricing is indicative and subject to change until locked. This is not a commitment to lend.';
+/**
+ * ⛔ THE BUSINESS-PURPOSE STAMP, ON EVERY PAGE OF EVERY SHEET — owner-directed
+ * 2026-09-01, in their own words: *"every single one of your exports should say
+ * at the bottom, 'This is for business-purpose lending only.'"* The sentence is
+ * theirs, verbatim, and it is one constant so no surface can reword it.
+ *
+ * ⛔ IT IS NOT A DECORATION — it is the sentence a long-term DSCR loan's whole
+ * regulatory position rests on. These loans are secured by non-owner-occupied
+ * investment property and are made for business purposes, which is what keeps
+ * them outside the consumer-mortgage rules (TILA / RESPA). A pricing document
+ * that goes to a borrower and does NOT say so is the one that reads as a
+ * consumer loan offer. The disclosures page already carries the full paragraph;
+ * this is the short standing stamp on every page, which is what was asked for.
+ *
+ * ⛔ AND IT LEADS THE FOOTER RATHER THAN CLOSING IT, WHICH IS A SAFETY PROPERTY
+ * AND NOT A STYLE CHOICE. `pdf.fitFooterDisc` shrinks the type to fit the band
+ * and only slices as a last-resort backstop — and what a slice takes is the END.
+ * Leading with this sentence makes it structurally impossible for the one line
+ * that must never be missing to be the one that goes. Measured: leading with it
+ * still draws in TWO lines at the 7.5pt readable floor (159 characters longest,
+ * against 164 without it), so it costs the footer nothing.
+ */
+const BUSINESS_PURPOSE = 'This is for business-purpose lending only.';
 const THIRD_PARTY = 'Third-party costs — title, escrow, recording, appraisal — are not included.';
 
 /**
@@ -514,11 +537,97 @@ function chargeRow(line) {
   return [label, moneyExact(line.dollars), { note }];
 }
 
+/**
+ * THE LENDER'S OWN FEES ARE ONE PACKAGE, NOT TWO LINES (owner-directed
+ * 2026-09-01, REVERSING the 2026-08-30 "listed one by one, never as a lump").
+ *
+ * The earlier rule existed to answer *"which of these fees is this option
+ * actually charging?"* — a real question when the two could move independently.
+ * The owner has now stated that they cannot: *"They are identical … it's one
+ * package. You waive lender fees, so it's zero lender fee, and they don't
+ * charge the $2,095. You have the $2,095, so it can be in one box."* Both are
+ * flat company-wide amounts (application $1,595 + commitment $500) and the
+ * waive switch turns BOTH off together, so a per-fee row was answering a
+ * question the data cannot ask: two cells that are the same on every option,
+ * every time, which is the repetition the shared box exists to remove.
+ *
+ * ⛔ SO THE BREAKDOWN IS KEPT, NOT DROPPED. The total is the figure a reader
+ * compares; the two named amounts are what makes it checkable. Combining the
+ * rows without carrying the parts would trade one problem for the older one
+ * this file already warns about — an amount folded into a total and named
+ * nowhere.
+ *
+ * ⛔ AND A HALF-WAIVED PACKAGE IS REPORTED HONESTLY RATHER THAN ASSUMED AWAY.
+ * The owner says it never happens, and the waive switch agrees. But "never
+ * happens" is a statement about today's switch, not a property of the data, and
+ * both of the tidy answers would be WRONG if it ever did: "$2,095" would charge
+ * for a fee that was waived, and "Waived ($2,095)" would waive one that is
+ * being charged. `partial` says so, and the caller prints what is actually
+ * charged with the parts named.
+ */
+function lenderFeePackage(charges) {
+  const lines = (charges && charges.lines) || [];
+  const fees = LENDER_FEE_KEYS.map((k) => lines.find((l) => l && l.key === k)).filter(Boolean);
+  if (!fees.length) return { present: false };
+  const full = (l) => (nn(l.fullDollars) ? l.fullDollars : (nn(l.dollars) ? l.dollars : 0));
+  const total = fees.reduce((s, l) => s + full(l), 0);
+  const charged = fees.reduce((s, l) => s + (l.waived === true ? 0 : (nn(l.dollars) ? l.dollars : 0)), 0);
+  const waivedCount = fees.filter((l) => l.waived === true).length;
+  const waived = waivedCount === fees.length;
+  const partial = waivedCount > 0 && !waived;
+  // Each part, named with its own amount — and a part that is waived says so,
+  // which is the only thing that makes the half-waived case readable.
+  const parts = fees.map((l) => {
+    const label = CHARGE_LABELS[l.key] || l.label || l.key || '';
+    if (l.waived === true) return `${label} waived (${moneyExact(full(l))})`;
+    return `${label} ${moneyExact(nn(l.dollars) ? l.dollars : full(l))}`;
+  });
+  /* ⛔ THE CELL SAYS ONE THING AND THE LINE UNDER IT SAYS THE REST (owner-directed
+     2026-09-01): *"it says 'Waived' and is circled around 2,095, which would just
+     say 'Waived' … it should just say, in small on the bottom … you saved on this
+     one 2,095 instead of just circled around, because it's not clear to
+     understand."* A parenthetical inside the figure had to carry two facts at
+     once — that nothing is charged, and what that is worth — and read as neither.
+     So the figure is the figure, and the amount rides underneath in the same
+     small line the charged column uses for its breakdown. */
+  let text;
+  if (waived) text = 'Waived';
+  else if (partial) text = moneyExact(charged);
+  else text = moneyExact(total);
+  // WHAT THE PACKAGE IS MADE OF, at face value and without a word about who is
+  // paying it. This is the line that rides under the label, where the columns
+  // beside it already say per option whether it is charged or waived — so a
+  // composition that repeated the waiver would contradict the column next to it.
+  const composition = fees
+    .map((l) => `${CHARGE_LABELS[l.key] || l.label || l.key || ''} ${moneyExact(full(l))}`)
+    .join('  \u00b7  ');
+  // What rides UNDER this option's own figure. The waived column states what the
+  // waiver is worth — the figure above it no longer can — and every other column
+  // states what its total is made of.
+  const cellNote = waived
+    ? (total > 0 ? `You save ${moneyExact(total)}` : null)
+    // A half-waived package states which half, at face value — the composition
+    // alone would name two amounts while the figure above it charged for one.
+    : (partial ? parts.join('  \u00b7  ') : composition);
+  return {
+    present: true,
+    total,
+    charged,
+    cellNote,
+    waived,
+    partial,
+    parts,
+    text,
+    composition,
+    breakdown: parts.join('  \u00b7  '),
+  };
+}
+
 module.exports = {
   money, moneyExact, points, rate, pct,
   costOrCredit, closingPosition, housingCost,
   monthsWords, breakEvenSentence, incrementalSentence,
-  prepaySentence, chargeRow, dateLong, dateTimeLong, ZONE,
-  DISCLOSURE, THIRD_PARTY, CHARGE_LABELS, LENDER_FEE_KEYS, PREPAY_SENTENCES,
+  prepaySentence, chargeRow, lenderFeePackage, dateLong, dateTimeLong, ZONE,
+  DISCLOSURE, BUSINESS_PURPOSE, THIRD_PARTY, CHARGE_LABELS, LENDER_FEE_KEYS, PREPAY_SENTENCES,
   propertyTypeWords, PROPERTY_TYPE_WORDS,
 };
