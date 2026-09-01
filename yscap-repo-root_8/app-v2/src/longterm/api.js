@@ -208,6 +208,21 @@ export const ltApi = {
   // program its pricing is fetched from, and whether it is on. A free read of our
   // own server — no vendor call — so a screen may fetch it from an effect.
   combinedInvestors: () => ltGet(lt('/dscr/combined/investors')),
+  /**
+   * ASK ONE ROW TO EXPLAIN ITS PRICE.
+   *
+   * COSTS A LIVE VENDOR CALL — for the one rate sheet on this board that explains on demand — so
+   * only ever from a deliberate press on that row's Details. The other sheet publishes its
+   * itemization with the search and answers `alreadyExplained` with nothing to fetch, which is why
+   * the screen may call this on any row without knowing which is which.
+   *
+   * `quote` is the row's own `explain` block. `investorKey` rides with it as a POINTER to whose
+   * saved setting the server should read when it brings the base into step with the price — it can
+   * never state an amount, and the server resolves the figure from its own store.
+   */
+  combinedExplain: (quote, scenario) => ltPost(lt('/dscr/combined/explain'), {
+    quote, scenario, investorKey: (quote && quote.investorKey) || null,
+  }),
   // Saves the WHOLE map, always — see the route's own note. A per-key patch could
   // not express "take this setting back off and return the investor to its
   // pre-fill", which is the thing somebody auditing this will do most often.

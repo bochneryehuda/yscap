@@ -207,6 +207,101 @@ const nexRowOf = (out) => (out.programs || []).find((p) => p.program === 'DSCR 3
       'SHIFT-5 a holdback of zero moves no number');
   }
 
+  console.log('\n── THE OTHER HALF: a row that has to be ASKED, and the door that answers ──');
+  {
+    // The LoanNEX side explains a row on demand. The door has existed since the board shipped and
+    // no screen ever called it, so those rows drew the same empty panel — the other half of the
+    // owner's report. It must hand back an OPTION (the shape the panel reads), with the base
+    // brought into step with the held-back price the row is quoting.
+    const express = require(path.join(ROOT, 'node_modules/express'));
+    nexClient.evidence = async () => ({
+      evidence: {
+        rate: 7, lockPeriod: 30, basePrice: 101.5, baseRate: 6.75, priceFloor: 96, priceCeiling: 103,
+        adjustments: [
+          { name: 'FICO 760-779', description: 'FICO : 760 - 779', type: 'LLPA', priceAdjustment: -0.75 },
+          { name: 'DSCR >= 1.25', description: 'DSCR : 1.25+', type: 'LLPA', priceAdjustment: 0.25 },
+        ],
+      },
+      transactionId: 't1',
+    });
+    const app = express();
+    app.use(express.json());
+    app.use('/c', require(path.join(ROOT, 'src/longterm/routes/combined-pricer')).makeRouter({ superAdminOnly: false }));
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise((r) => server.once('listening', r));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const post = async (body) => {
+      const r = await fetch(`${base}/c/explain`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      return r.json();
+    };
+    // The vendor's own build: base 101.5 with adjustments netting -0.5 in price = a final of 101.0.
+    // Our 0.25 is taken off that, so the row on the board quotes 100.75 — which is what the panel
+    // has to land on when it adds the base and the lines up.
+    const QUOTE = { vendor: 'loannex', priceHashKey: 'h1', rate: 7, price: 100.75, lockDays: 30 };
+    const RAW_QUOTE = { ...QUOTE, price: 101 };
+    try {
+      const r = await post({ quote: QUOTE, scenario: SCENARIO, investorKey: 'nqm', marginHoldback: 0.25, routes: {} });
+      ok(r.ok === true && !!r.option, 'ASK-1 the door hands back an OPTION as well as the breakdown — so the panel never re-keys one shape into the other in the browser');
+      const o = r.option || {};
+      ok(Array.isArray(o.adjustments) && o.adjustments.length === 2,
+        `ASK-2 …carrying the itemized adjustments (${(o.adjustments || []).length}), which is the empty table the owner reported on these rows`);
+      ok((o.adjustments || []).every((a) => a.reason && a.detail),
+        'ASK-3 …each with the vendor\'s own name AND the grid cell it came out of');
+      const pb = o.priceBuild || {};
+      ok(pb.price === 100.75, 'ASK-4 the price is the BOARD\'s — already held back, and never held back a second time here');
+      ok(pb.basePoints === -1.25,
+        `ASK-5 the base is brought into step with it (${pb.basePoints}) — the vendor\'s own -1.5 plus the 0.25 we took, so the panel\'s running total lands on the price printed under it`);
+      ok(pb.basePoints != null && pb.adjustmentPoints != null && r3(pb.basePoints + pb.adjustmentPoints) === pb.adjustedPoints,
+        `ASK-6 …so base + adjustments = adjusted (${pb.basePoints} + ${pb.adjustmentPoints} = ${pb.adjustedPoints}) on this side too`);
+      ok(!('vendorBasePoints' in pb), 'ASK-7 and the pre-holdback base does NOT ride out — our margin is not readable off the panel by subtraction');
+
+      // ⛔ A TOTAL ACCESSOR, because a mutation that stops the door returning an option at all must
+      // FAIL these rather than throw: a crashing battery stops where it stands and reports a pass
+      // rate that means nothing.
+      const buildOf = (resp) => ((resp || {}).option || {}).priceBuild || {};
+
+      const rev = await post({ quote: QUOTE, scenario: SCENARIO, investorKey: 'nqm', marginHoldback: 0.25, routes: {}, revealSource: true });
+      ok(buildOf(rev).vendorBasePoints === -1.5,
+        'ASK-8 …until an admin asks where the row came from, which is the same rule the board follows');
+
+      const none = await post({ quote: RAW_QUOTE, scenario: SCENARIO, marginHoldback: 0, routes: {} });
+      ok(buildOf(none).basePoints === -1.5,
+        'ASK-9 with nothing held back the base is the vendor\'s own, untouched');
+
+      const already = await post({ quote: { vendor: 'lenderprice', rate: 7, price: 98 }, scenario: SCENARIO });
+      ok(already.ok === true && already.alreadyExplained === true && already.breakdown === null,
+        'ASK-10 a row whose sheet published its build with the search is told so plainly — never refused, which would send somebody hunting for a call that was never needed');
+    } finally { server.close(); }
+  }
+
+  console.log('\n── AND THE SCREEN ACTUALLY ASKS (source, because there is no browser here) ──');
+  {
+    const fs = require('fs');
+    const read = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
+    const eng = read('app-v2/src/longterm/pricerEngine.js');
+    const pricer = read('app-v2/src/longterm/LtPricer.jsx');
+    const api = read('app-v2/src/longterm/api.js');
+    ok(/key: 'general',[\s\S]{0,2000}?explain: null,/.test(eng),
+      'WIRE-1 the GENERAL engine asks nobody — `explain: null`, which is what the panel reads as "there is nothing to fetch", so that board is unchanged');
+    ok(/key: 'combined',[\s\S]{0,3000}?explain: \(quote, scenario\) => ltApi\.combinedExplain\(/.test(eng),
+      'WIRE-2 the COMBINED engine points at the door');
+    ok(/combinedExplain: \(quote, scenario\) => ltPost\(lt\('\/dscr\/combined\/explain'\)/.test(api)
+      && /investorKey: \(quote && quote\.investorKey\) \|\| null/.test(api),
+      'WIRE-3 the call posts to the real door and names WHICH investor\'s saved setting to read — a pointer, never an amount');
+    ok(/const explainer = useExplain\(\);/.test(pricer),
+      'WIRE-4 the panel reads the explain seam');
+    ok(/oProp\.explain && oProp\.explain\.priceHashKey \? oProp\.explain : null/.test(pricer),
+      'WIRE-5 …and only asks a row that carries a handle — a row that arrived explained is never asked');
+    ok(/if \(r && r\.option\) setFetched\(r\.option\);/.test(pricer),
+      'WIRE-6 …and merges the OPTION the door hands back, not a translated breakdown');
+    ok(/\{askErr && \(/.test(pricer) && /setAskErr\(/.test(pricer),
+      'WIRE-7 …and a refusal is SAID where the empty table would be — a blank space reads as "this quote has no adjustments", a claim no rate sheet made');
+    ok(/<ExplainProvider value=\{explainRow\}>/.test(pricer) && /<\/ExplainProvider>/.test(pricer),
+      'WIRE-8 the seam is actually provided — a back end nobody can reach is not a feature');
+    ok(/if \(!engine\.explain \|\| !pricedForm\) return null;\s*\n\s*const sc = toScenario\(pricedForm\);/.test(pricer),
+      'WIRE-9 …bound to the scenario the BOARD was priced with, never the form as it stands — a half-edited form must not make a panel explain the row in front of you against a different loan');
+  }
+
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error('THREW', e); process.exit(1); });

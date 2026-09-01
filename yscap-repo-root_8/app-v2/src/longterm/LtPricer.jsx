@@ -41,7 +41,7 @@ import LtScenarioSave from './LtScenarioSave.jsx';
 import {
   Check, ModeTab, DscrCalc, useScenarioForm, ScenarioFields,
 } from './LtScenarioFields.jsx';
-import { useEngine, EngineProvider, GENERAL_ENGINE } from './pricerEngine.js';
+import { useEngine, useExplain, EngineProvider, ExplainProvider, GENERAL_ENGINE } from './pricerEngine.js';
 
 /**
  * THE PRICING ENGINE — every rate Lender Price is quoting, and every investor at each one.
@@ -750,8 +750,52 @@ export function ChargeList({ charges, sheet }) {
    and it is printed BESIDE the vendor's own total, never instead of it. If the two ever
    disagree the screen says so on its face rather than quietly showing one of them.
    ────────────────────────────────────────────────────────────────────────── */
-export function PriceBuild({ o, comp, ts, quote }) {
+export function PriceBuild({ o: oProp, comp, ts, quote }) {
   const engine = useEngine();
+  /**
+   * ⛔ SOME ROWS ARRIVE EXPLAINED AND SOME HAVE TO BE ASKED, and until this existed the ones that
+   * had to be asked were never asked by anybody. One of the two rate sheets on the combined board
+   * publishes its itemization WITH the search; the other explains a row on demand, one call per
+   * quote. The server has had a door for both since the board shipped — same door, same builder,
+   * so the answer comes back in the option shape this panel already reads — and no screen ever
+   * called it. That is the owner's *"nothing populates at all"* on those rows.
+   *
+   * `useExplain()` is `null` on the general board, so it fetches nothing, renders nothing extra,
+   * and draws exactly what it has always drawn.
+   *
+   * NOTHING IS SILENTLY SWALLOWED: a refusal is said in the panel, in the server's own words,
+   * where the empty table would otherwise be — a blank space reads as "this quote has no
+   * adjustments", which is a claim no rate sheet made.
+   */
+  const explainer = useExplain();
+  const handle = oProp && oProp.explain && oProp.explain.priceHashKey ? oProp.explain : null;
+  const askable = !!(explainer && handle);
+  const [fetched, setFetched] = React.useState(null);
+  const [asking, setAsking] = React.useState(askable);
+  const [askErr, setAskErr] = React.useState(null);
+  const handleKey = handle ? String(handle.priceHashKey) : '';
+  const invKey = (quote && quote.investorKey) || null;
+  React.useEffect(() => {
+    if (!askable) { setAsking(false); return undefined; }
+    let dead = false;
+    setAsking(true); setAskErr(null); setFetched(null);
+    Promise.resolve()
+      .then(() => explainer({ ...handle, investorKey: invKey }))
+      .then((r) => {
+        if (dead) return;
+        // `alreadyExplained` is not a failure and must not read as one: that sheet published its
+        // itemization with the quote, so what is already on the row IS the answer.
+        if (r && r.option) setFetched(r.option);
+        else if (r && r.ok === false) setAskErr(r.message || 'This rate sheet could not be asked to explain this price.');
+      })
+      .catch((e) => { if (!dead) setAskErr((e && e.message) || 'This rate sheet could not be asked to explain this price.'); })
+      .finally(() => { if (!dead) setAsking(false); });
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [askable, handleKey, invKey]);
+  /* The fetched option is the SAME shape the row already carried, so everything below reads one
+     variable and never branches on where the itemization came from. */
+  const o = fetched || oProp;
   /* The vendor's own eligibility answer and anything it said out loud. Both are read straight off
      the option the server built, so a sheet that publishes neither simply has none. */
   const elig = (o && o.eligibility) || null;
@@ -809,6 +853,14 @@ export function PriceBuild({ o, comp, ts, quote }) {
 
   return (
     <div style={{ background: '#fff', borderRadius: 10, padding: 14, marginTop: 10, border: `1px solid ${GOLD}33` }}>
+      {asking && (
+        <div style={{ fontSize: 12.5, color: MUTED, marginBottom: 10 }}>
+          {`Asking ${engine.sheetLabel} to itemise this price…`}
+        </div>
+      )}
+      {askErr && (
+        <div style={{ fontSize: 12.5, color: CAUTION, marginBottom: 10, lineHeight: 1.6 }}>{askErr}</div>
+      )}
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
         <Track title="Price build"
           note={`Price is 100 minus points. Every line came from ${engine.sheetLabel}; the right-hand column is this page adding them up so the build can be followed.`}>
@@ -2176,8 +2228,24 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
     }
   }
 
+  /**
+   * ASKING A ROW TO EXPLAIN ITSELF, bound to the scenario the BOARD was priced with — never the
+   * form as it stands. An officer who has started editing the form must not be able to make a
+   * panel explain the row in front of them against a different loan; `pricedForm` is the snapshot
+   * the price was pressed with, which is the same source the stale-board strip reads.
+   *
+   * `null` when the engine has nothing to ask (the general board) or nothing has been priced yet,
+   * which is what `useExplain()` reads as "there is nothing to fetch".
+   */
+  const explainRow = React.useMemo(() => {
+    if (!engine.explain || !pricedForm) return null;
+    const sc = toScenario(pricedForm);
+    return (quote) => engine.explain(quote, sc);
+  }, [engine, pricedForm]);
+
   return (
     <EngineProvider value={engine}>
+    <ExplainProvider value={explainRow}>
     <LtLayout title={engine.title}>
       <div style={{ display: 'grid', gap: 14 }}>
         {/* SAY WHAT THIS SCREEN IS, BEFORE ANYTHING ELSE — for a board that is not the one the
@@ -2540,6 +2608,7 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
         )}
       </div>
     </LtLayout>
+    </ExplainProvider>
     </EngineProvider>
   );
 }

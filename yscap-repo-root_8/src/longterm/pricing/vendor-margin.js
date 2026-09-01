@@ -378,14 +378,47 @@ function applyToBoard(board, source, opts) {
  * The pre-holdback numbers ride along as `vendorPrice` / `vendorBasePoints` for the reveal, and are
  * stripped with the rest of the trail on the ordinary board (`investor-routing.stripSource`).
  */
+/**
+ * THE BASE HALF, ON ITS OWN, because two paths need it and only one of them needs the other half.
+ *
+ * A LENDER PRICE option arrives from the parser with the vendor's own final price, so `shiftOptions`
+ * moves the base AND the final. A LOANNEX option explained on demand arrives with the BOARD's final
+ * — already held back, since that is the number the row was quoting — and the vendor's own raw base
+ * beside it, so only the base is left to move. Moving the final again there would take the holdback
+ * twice. One definition of the base shift either way, or the two panels would round differently.
+ */
+function shiftBase(pb, pts) {
+  const vendorBasePoints = nn(pb.vendorBasePoints) ? Number(pb.vendorBasePoints)
+    : (nn(pb.basePoints) ? Number(pb.basePoints) : null);
+  if (vendorBasePoints == null) return pb;
+  const next = { ...pb, vendorBasePoints: r3(vendorBasePoints), basePoints: r3(vendorBasePoints + pts) };
+  // Only when the vendor STATED one — a base price this module invented would be indistinguishable
+  // from one the sheet published, and `breakdown.priceOf` already derives it when it is absent.
+  if (nn(pb.basePrice)) next.basePrice = r3(100 - next.basePoints);
+  return next;
+}
+
+/**
+ * ONE EXPLAINED OPTION, whose FINAL price already carries the holdback, with its BASE brought into
+ * step so the panel's running total still lands on that final.
+ *
+ * This is the LoanNEX side of the same defect the Lender Price side has: the vendor explains a
+ * price with ITS OWN base and ITS OWN adjustments, and the row on the board is quoting a price we
+ * have already taken our margin out of. Left alone the panel draws base → adjustments → a final
+ * exactly the holdback away from where the column arrives, on the one screen whose whole job is to
+ * explain the price, about a figure the owner has directed must stay invisible.
+ */
+function holdBackExplainedBase(option, pts) {
+  if (!option || !option.priceBuild || !pts) return option;
+  return { ...option, priceBuild: shiftBase(option.priceBuild, pts) };
+}
+
 function shiftOptions(options, pts) {
   if (!Array.isArray(options)) return options;
   return options.map((o) => {
     const pb = o && o.priceBuild;
     if (!pb) return o;
     const vendorPrice = nn(pb.vendorPrice) ? Number(pb.vendorPrice) : (nn(pb.price) ? Number(pb.price) : null);
-    const vendorBasePoints = nn(pb.vendorBasePoints) ? Number(pb.vendorBasePoints)
-      : (nn(pb.basePoints) ? Number(pb.basePoints) : null);
     // ⛔ EVERY SHIFTED FIGURE NEEDS ITS OWN ANCHOR, OR A SECOND PASS TAKES THE HOLDBACK TWICE.
     // The price is anchored on `vendorPrice`, so it is idempotent; the POINTS were being read back
     // off the already-shifted build and shifted again — 2 → 2.25 → 2.5 — while the price beside them
@@ -401,19 +434,12 @@ function shiftOptions(options, pts) {
     // rather than quietly widened. If a second pass ever becomes possible, fix the rung too.
     const vendorAdjPts = nn(pb.vendorAdjustedPoints) ? Number(pb.vendorAdjustedPoints)
       : (nn(pb.adjustedPoints) ? Number(pb.adjustedPoints) : null);
-    const next = { ...pb };
+    const next = shiftBase({ ...pb }, pts);
     if (vendorPrice != null) {
       next.vendorPrice = r3(vendorPrice);
       next.price = r3(vendorPrice - pts);
       if (vendorAdjPts != null) { next.vendorAdjustedPoints = r3(vendorAdjPts); next.adjustedPoints = r3(vendorAdjPts + pts); }
       else next.adjustedPoints = r3(100 - next.price);
-    }
-    if (vendorBasePoints != null) {
-      next.vendorBasePoints = r3(vendorBasePoints);
-      next.basePoints = r3(vendorBasePoints + pts);
-      // Only when the vendor STATED one — a base price this module invented would be indistinguishable
-      // from one the sheet published, and `breakdown.priceOf` already derives it when it is absent.
-      if (nn(pb.basePrice)) next.basePrice = r3(100 - next.basePoints);
     }
     return { ...o, priceBuild: next, marginHoldback: pts };
   });
@@ -421,6 +447,6 @@ function shiftOptions(options, pts) {
 
 module.exports = {
   MARGIN_HOLDBACK_POINTS, MAX_HOLDBACK_POINTS,
-  holdbackFor, resolveHoldback, applyToBoard,
-  _internals: { r3, shiftOptions },
+  holdbackFor, resolveHoldback, applyToBoard, holdBackExplainedBase,
+  _internals: { r3, shiftOptions, shiftBase },
 };

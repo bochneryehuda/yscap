@@ -139,6 +139,47 @@ async function holdbackRaw() {
 }
 
 /**
+ * ONE EXPLAINED OPTION WITH OUR OWN MARGIN'S TRAIL REMOVED — never its price.
+ *
+ * The same rule `investor-routing.stripSource` applies to a board row, applied here because this
+ * door builds an option the board never carried. `vendorBasePoints` is the pre-holdback base: left
+ * on, a reader could subtract it from the base beside it and read our margin straight off the panel.
+ */
+function stripExplainedTrail(option) {
+  if (!option || !option.priceBuild) return option;
+  const { vendorPrice, vendorBasePoints, vendorAdjustedPoints, ...pb } = option.priceBuild;
+  return { ...option, priceBuild: pb };
+}
+
+/**
+ * HOW MUCH WE HELD BACK ON ONE ROW — resolved from the SAVED SETTINGS, never from the caller.
+ *
+ * ⛔ WHY THE EXPLAIN DOOR NEEDS THIS AT ALL. LoanNEX explains a price with ITS OWN base and ITS OWN
+ * adjustments, and the row on the board is quoting a price we have already taken our margin out of.
+ * Handed to the panel untouched, the running total it draws would land exactly the holdback away
+ * from the final price printed under it — an unexplained gap on the one screen whose job is to
+ * explain the price, about a figure the owner has directed must stay invisible.
+ *
+ * ⛔ AND WHY THE INVESTOR KEY IS ONLY A POINTER. The caller names WHICH investor's saved setting to
+ * read; it can never state an amount. The number itself comes from `settingsRaw()` and
+ * `holdbackRaw()` — the same two reads `priceBoth` makes, through the same `resolveHoldback` — so
+ * the panel and the board can never disagree about what was taken. A key nobody has saved a setting
+ * for resolves to the board-wide answer, and an unresolvable one to nothing at all, which leaves the
+ * panel exactly as it is today rather than shifting a base by a number nobody chose.
+ */
+async function holdbackOnRow(investorKey, b = {}) {
+  const savedGlobal = b.marginHoldback !== undefined ? b.marginHoldback : await holdbackRaw();
+  let extra = null;
+  const key = investorKey == null ? '' : String(investorKey).trim();
+  if (key) {
+    const saved = b.routes !== undefined ? { raw: b.routes } : await settingsRaw();
+    const row = routing.settingFor(key, routing.readSettings(saved.raw).settings);
+    if (row && row.holdbackOrigin === 'setting') extra = row.holdback;
+  }
+  return vendorMargin.resolveHoldback('loannex', savedGlobal, extra);
+}
+
+/**
  * Every grid CELL a board already carries, in the shape `near-tier` reads.
  *
  * ⛔ IT READS THE MERGED-RAW BOARD, never the routed one: the routed copy strips
@@ -848,19 +889,35 @@ function makeRouter(opts = {}) {
         message: 'This rate sheet publishes its itemized adjustments with the quote, so there is nothing further to fetch — the breakdown on this row is complete.',
       });
     }
-    nex.evidence(scenarioOf(req), quote, { portal: b.portal, transactionId: b.transactionId })
-      .then((r) => {
+    Promise.all([
+      nex.evidence(scenarioOf(req), quote, { portal: b.portal, transactionId: b.transactionId }),
+      // Never lets the answer fail: an unreadable settings store costs the base shift, not the
+      // breakdown the caller asked for.
+      holdbackOnRow(b.investorKey, b).catch(() => ({ points: 0 })),
+    ])
+      .then(([r, hb]) => {
         // THE SAME LAYOUT, WHATEVER PRICED IT. The vendor's answer is folded onto
         // an option in the common shape and handed to the ONE breakdown builder,
         // so this door and a Lender Price row produce the same rows, in the same
         // order, with the same keys.
-        const option = quoteShape.attachEvidence(
+        const option = vendorMargin.holdBackExplainedBase(quoteShape.attachEvidence(
           quoteShape.optionForQuote(quote), r.evidence, { absence: r.absence },
-        );
+        ), (hb && hb.points) || 0);
         const built = breakdown.breakdown(option, { reveal });
         res.json({
           ok: true,
           breakdown: built,
+          /**
+           * ⛔ THE OPTION ITSELF, so the screen never re-keys a breakdown into an option shape.
+           *
+           * The panel reads an OPTION (`o.adjustments[].reason`, `o.priceBuild`, `o.terms`); the
+           * breakdown is a different, flatter shape (`lines[].label`). A browser-side translation
+           * between them would be a second copy of a mapping this route already holds in its hand
+           * — and the copy that drifts is the one drawing the price somebody quotes. The reveal is
+           * respected: the vendor's own trail is stripped unless an admin asked where the row came
+           * from.
+           */
+          option: reveal ? option : stripExplainedTrail(option),
           // THE SHARPER FLAG. This sheet has now stated its own bands, so the
           // hint can name the investor's real tier instead of the standing
           // steps — same module, same wording, better evidence.

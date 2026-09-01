@@ -202,6 +202,19 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
    Not fixed here because it is a change to the GENERAL engine's own defaults, which is the owner's
    call, not an audit finding's — recorded rather than quietly widened.
 
+8. **A Lender Price option's FEE and COMP figures are the vendor's, computed before our holdback.**
+   When a per-investor extra is set on a Lender Price investor, `vendor-margin` moves that option's
+   price, points and base so the price build still sums — and deliberately does NOT touch the
+   vendor's own `fees` / `comp` block, because those are figures Lender Price computed at ITS price
+   and re-deriving them here would be inventing numbers under the vendor's own heading. So on such
+   an investor the panel's "Lender Price's own fee fields" (cash to close, total origination) sit a
+   hair away from the price above them — 0.25 points is about $940 on a $375k loan. It is ZERO on
+   an ordinary board (no extra is set by default, and the global holdback is refused on this feed
+   because it already carries our margin), the panel labels that block as the vendor's numbers
+   verbatim, and our own charging story is a separate list built from our plan. Recorded rather
+   than guessed at: whether those figures should be restated, and against which price, is a
+   business question, not an audit finding's to answer.
+
 ---
 
 ## Update, 2026-08-30 (second pass)
