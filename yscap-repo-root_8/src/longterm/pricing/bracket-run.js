@@ -29,28 +29,22 @@ const board = require('./bracket-board');
 const CONCURRENCY = Number(process.env.LP_BRACKET_CONCURRENCY || 3) || 3;
 
 /**
- * Flatten a parsed board into the rows this feature reasons about. Everything
- * needed to classify a rate rides along; everything else is carried untouched so
- * the screen keeps whatever it already renders.
+ * Flatten a parsed board into the rows the DISCOVERY loop reasons about — rate and
+ * the vendor's own monthly P&I, which is all that classifying a rate needs.
+ *
+ * ⛔ IT READS EITHER PARSE SHAPE through `board.optionRate`, so the loop is
+ * identical whether the caller handed over the summary parse or the FULL one. The
+ * screen needs the full one (its details panel is built on it); the loop does not
+ * care, and must not have a second opinion about where a rate lives.
  */
 function quotesFrom(parsed) {
   const programs = (parsed && Array.isArray(parsed.programs)) ? parsed.programs : [];
   const out = [];
   for (const p of programs) {
-    for (const r of (Array.isArray(p.rungs) ? p.rungs : [])) {
-      if (r == null || typeof r !== 'object') continue;
-      out.push({
-        lender: p.lender, investor: p.investor, program: p.program, product: p.product,
-        investorKey: p.investorKey != null ? p.investorKey : null,
-        whiteLabel: p.whiteLabel || null, consumerLabel: p.consumerLabel || null,
-        rateGridId: p.rateGridId || null, sheet: p.rateSheetName || null,
-        rate: r.rate, price: r.price, points: r.points, apr: r.apr,
-        // The vendor's OWN monthly P&I. `ratioAtRate` prefers it, so the ratio a
-        // row states and the payment beside it are one number.
-        monthlyPi: r.monthly != null ? r.monthly : null,
-        term: r.term, lockDays: r.lockDays,
-        expired: !!r.expired, rateSheetValidAsOf: r.rateSheetValidAsOf || null,
-      });
+    for (const o of board.optionsOf(p)) {
+      const { rate, monthlyPi } = board.optionRate(o);
+      if (rate == null) continue;
+      out.push({ rate, monthlyPi });
     }
   }
   return out;
@@ -124,13 +118,24 @@ async function priceByBracket(figures, runSearch, opts = {}) {
      A caller with a board already in hand may hand its rates over (`seenQuotes`),
      which sharpens the first round's search ratios; without them the first bands are
      searched at their own floors, which is the same figure by construction. */
-  const seedTier = board.dscrTier(opts.seedDscr);
+  /* THE BAND TO START FROM. A ratio the officer typed wins; with none, the server
+     works one out from a typical coupon (`seedRatioFrom`) — the owner's *"do it in
+     your backend"*. Either way it only picks the FIRST band; the frontier finds the
+     rest from what the vendor actually returns, so nothing is priced on the seed. */
+  const seedTier = board.dscrTier(board.seedRatioFrom(f, opts.seedDscr));
   let seenQuotes = Array.isArray(opts.seenQuotes) ? opts.seenQuotes : [];
+  /* ⛔ HONEST NOTE: THIS IS A BACKSTOP AND IT IS UNREACHABLE TODAY, which is worth
+     writing down rather than leaving to read as a guard that bites. `readFigures`
+     above has already refused anything that cannot produce a payment, and
+     `seedRatioFrom` falls back to a typical coupon — so with figures in hand there
+     is always a band to start from. It is kept because "no band to start from" is
+     the honest answer if a future change makes the seed derivable-but-absent, and a
+     silent `undefined` band would price the wrong scenario. */
   if (seedTier == null && !seenQuotes.length) {
     return {
       ok: false, error: 'lt_bracket_no_seed',
-      message: 'A bracket board starts from the band this deal is in, so it needs either the '
-        + 'ratio the search was run at or a board to read the rates off.',
+      message: 'A bracket board starts from the band this deal is in, and one could not be '
+        + 'worked out from the figures given.',
     };
   }
 
@@ -156,7 +161,8 @@ async function priceByBracket(figures, runSearch, opts = {}) {
         continue;
       }
       const quotes = quotesFrom(r.parsed);
-      runs.push({ tier: plan.tier, sentRatio: plan.sentRatio, quotes, meta: r.meta || null });
+      runs.push({ tier: plan.tier, sentRatio: plan.sentRatio,
+        programs: (r.parsed && r.parsed.programs) || [], meta: r.meta || null });
       // ⛔ ONLY A QUOTE THIS BAND CAN ACTUALLY USE COUNTS AS PROGRESS. A board
       // that answers every search with the same mid-range rates would otherwise
       // read as "still finding things" and widen to all eleven bands on every
