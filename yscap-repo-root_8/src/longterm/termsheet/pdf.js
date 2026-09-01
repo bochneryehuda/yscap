@@ -241,6 +241,12 @@ const GRID = {
   cols: 4,
   tickW: 1.5,
   padX: 9,             // a cell's own inset
+  // A CELL THAT EXPLAINS ITSELF. A note under a value is optional and costs the
+  // band NOTHING while it fits on one line (see below — there is already room
+  // under the value); only a note that wraps past the first line is paid for.
+  cellNoteTop: 6.6,    // value baseline down to the note's first baseline
+  cellNotePad: 2.2,    // and the breathing room under the last note line
+  noteMin: 4.15,       // how small a note may shrink before it is allowed to wrap
   headH: 21,           // the heading band, down to its hairline
   headTop: 8.55,
   bandH: 26.4,         // one band of cells
@@ -1210,9 +1216,44 @@ function compileFactGrid(b, ctx) {
   const colW = (inner.right - inner.x) / GRID.cols;
   const bands = Math.ceil(cells.length / GRID.cols);
   const cellTextW = colW - GRID.padX * 2;
+  /* ⛔ THE NOTE SHRINKS TO ONE LINE BEFORE IT IS ALLOWED TO WRAP, exactly as the
+     value above it does. A four-across cell is about 112 wide and the breakdown
+     is a long string; wrapping it would grow the band for every cell beside it,
+     which measurably spilled the sentences under the comparison onto a second
+     page. Shrinking is the cheaper trade on a line that is already secondary —
+     and it is bounded, so a note that genuinely cannot fit still wraps rather
+     than dwindling to nothing. */
+  const cellNotes = cells.map((c) => {
+    if (!c[2]) return { lines: [], size: SZ.gridNote };
+    const txt = ctx.text(String(c[2]));
+    let size = SZ.gridNote;
+    while (size > GRID.noteMin && advance(ctx, txt, F.reg, size) > cellTextW) size -= 0.1;
+    return { lines: wrap(ctx, txt, F.reg, size, cellTextW), size };
+  });
+  const bandLines = [];
+  for (let i = 0; i < cells.length; i += 1) {
+    const r = Math.floor(i / GRID.cols);
+    bandLines[r] = Math.max(bandLines[r] || 0, cellNotes[i].lines.length);
+  }
+  /* ⛔ THE FIRST NOTE LINE IS FREE, AND THAT IS MEASURED, NOT ASSUMED. The band
+     is 26.4 and the value sits on a baseline 12.58 down from its top, so there
+     is ~13.8 of empty paper under it — room for one 5.18 line and its descender
+     with about 6 to spare. Growing the band for that first line instead pushed
+     ~10 onto every noted row, which was enough to spill the sentences under the
+     comparison table onto a second page: a cell that explains itself should not
+     cost the sheet a page. Only what a note WRAPS to beyond the first line is
+     paid for. */
+  const bandH = (r) => GRID.bandH
+    + (bandLines[r] > 1 ? (bandLines[r] - 1) * SZ.gridNote * LEAD + GRID.cellNotePad : 0);
+  const bandTopOffset = (r) => {
+    let off = 0;
+    for (let k = 0; k < r; k += 1) off += bandH(k);
+    return off;
+  };
+  const bandsH = bandTopOffset(bands);
   const note = b.footnote ? wrap(ctx, ctx.text(b.footnote), F.italic, SZ.gridNote, inner.right - inner.x - GRID.padX * 2) : [];
   const noteH = note.length ? GRID.noteTop + note.length * SZ.gridNote * LEAD + GRID.noteBottom - SZ.gridNote : 0;
-  const h = GRID.headH + bands * GRID.bandH + noteH;
+  const h = GRID.headH + bandsH + noteH;
 
   return [item(h + GRID.above, (c, y) => {
     const top = y - GRID.above;
@@ -1241,19 +1282,28 @@ function compileFactGrid(b, ctx) {
       const r = Math.floor(i / GRID.cols);
       const cIdx = i % GRID.cols;
       const x = inner.x + cIdx * colW;
-      const bandTop = top - GRID.headH - r * GRID.bandH;
+      const bandTop = top - GRID.headH - bandTopOffset(r);
       putTracked(c, String(label).toUpperCase(), x + GRID.padX, bandTop - GRID.labelTop,
         F.reg, SZ.gridLabel, MUTED, 0.35, cellTextW);
       let size = SZ.gridValue;
       const txt = ctx.text(value == null ? '—' : String(value));
       while (size > SZ.small && advance(ctx, txt, F.monoBold, size) > cellTextW) size -= 0.25;
-      put(c, txt, x + GRID.padX, bandTop - GRID.valueTop - (SZ.gridValue - size),
-        F.monoBold, size, INK, cellTextW);
+      // A value that shrank to fit is drawn LOWER, so the note hangs off where the
+      // value actually landed — never off the nominal baseline, or a long value
+      // and its own breakdown would close on each other.
+      const valueBase = bandTop - GRID.valueTop - (SZ.gridValue - size);
+      put(c, txt, x + GRID.padX, valueBase, F.monoBold, size, INK, cellTextW);
+      // The note that breaks the value down, if this cell carries one.
+      let ny = valueBase - GRID.cellNoteTop;
+      for (const l of cellNotes[i].lines) {
+        put(c, l, x + GRID.padX, ny, F.reg, cellNotes[i].size, MUTED, cellTextW);
+        ny -= cellNotes[i].size * LEAD;
+      }
       // The cell's own rules: a hairline under it, and one down its right edge,
       // so the grid reads as cells rather than as four columns of loose text.
       const isLastBand = r === bands - 1;
-      if (!isLastBand) line(c, bandTop - GRID.bandH + GRID.rule / 2, x, x + colW, HAIR, GRID.rule);
-      if (cIdx < GRID.cols - 1) vline(c, x + colW - GRID.rule / 2, bandTop, GRID.bandH, HAIR);
+      if (!isLastBand) line(c, bandTop - bandH(r) + GRID.rule / 2, x, x + colW, HAIR, GRID.rule);
+      if (cIdx < GRID.cols - 1) vline(c, x + colW - GRID.rule / 2, bandTop, bandH(r), HAIR);
     });
 
     if (note.length) {

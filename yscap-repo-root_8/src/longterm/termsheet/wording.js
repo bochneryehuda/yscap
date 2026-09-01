@@ -514,11 +514,80 @@ function chargeRow(line) {
   return [label, moneyExact(line.dollars), { note }];
 }
 
+/**
+ * THE LENDER'S OWN FEES ARE ONE PACKAGE, NOT TWO LINES (owner-directed
+ * 2026-09-01, REVERSING the 2026-08-30 "listed one by one, never as a lump").
+ *
+ * The earlier rule existed to answer *"which of these fees is this option
+ * actually charging?"* — a real question when the two could move independently.
+ * The owner has now stated that they cannot: *"They are identical … it's one
+ * package. You waive lender fees, so it's zero lender fee, and they don't
+ * charge the $2,095. You have the $2,095, so it can be in one box."* Both are
+ * flat company-wide amounts (application $1,595 + commitment $500) and the
+ * waive switch turns BOTH off together, so a per-fee row was answering a
+ * question the data cannot ask: two cells that are the same on every option,
+ * every time, which is the repetition the shared box exists to remove.
+ *
+ * ⛔ SO THE BREAKDOWN IS KEPT, NOT DROPPED. The total is the figure a reader
+ * compares; the two named amounts are what makes it checkable. Combining the
+ * rows without carrying the parts would trade one problem for the older one
+ * this file already warns about — an amount folded into a total and named
+ * nowhere.
+ *
+ * ⛔ AND A HALF-WAIVED PACKAGE IS REPORTED HONESTLY RATHER THAN ASSUMED AWAY.
+ * The owner says it never happens, and the waive switch agrees. But "never
+ * happens" is a statement about today's switch, not a property of the data, and
+ * both of the tidy answers would be WRONG if it ever did: "$2,095" would charge
+ * for a fee that was waived, and "Waived ($2,095)" would waive one that is
+ * being charged. `partial` says so, and the caller prints what is actually
+ * charged with the parts named.
+ */
+function lenderFeePackage(charges) {
+  const lines = (charges && charges.lines) || [];
+  const fees = LENDER_FEE_KEYS.map((k) => lines.find((l) => l && l.key === k)).filter(Boolean);
+  if (!fees.length) return { present: false };
+  const full = (l) => (nn(l.fullDollars) ? l.fullDollars : (nn(l.dollars) ? l.dollars : 0));
+  const total = fees.reduce((s, l) => s + full(l), 0);
+  const charged = fees.reduce((s, l) => s + (l.waived === true ? 0 : (nn(l.dollars) ? l.dollars : 0)), 0);
+  const waivedCount = fees.filter((l) => l.waived === true).length;
+  const waived = waivedCount === fees.length;
+  const partial = waivedCount > 0 && !waived;
+  // Each part, named with its own amount — and a part that is waived says so,
+  // which is the only thing that makes the half-waived case readable.
+  const parts = fees.map((l) => {
+    const label = CHARGE_LABELS[l.key] || l.label || l.key || '';
+    if (l.waived === true) return `${label} waived (${moneyExact(full(l))})`;
+    return `${label} ${moneyExact(nn(l.dollars) ? l.dollars : full(l))}`;
+  });
+  let text;
+  if (waived) text = total > 0 ? `Waived (${moneyExact(total)})` : 'Waived';
+  else if (partial) text = moneyExact(charged);
+  else text = moneyExact(total);
+  // WHAT THE PACKAGE IS MADE OF, at face value and without a word about who is
+  // paying it. This is the line that rides under the label, where the columns
+  // beside it already say per option whether it is charged or waived — so a
+  // composition that repeated the waiver would contradict the column next to it.
+  const composition = fees
+    .map((l) => `${CHARGE_LABELS[l.key] || l.label || l.key || ''} ${moneyExact(full(l))}`)
+    .join('  \u00b7  ');
+  return {
+    present: true,
+    total,
+    charged,
+    waived,
+    partial,
+    parts,
+    text,
+    composition,
+    breakdown: parts.join('  \u00b7  '),
+  };
+}
+
 module.exports = {
   money, moneyExact, points, rate, pct,
   costOrCredit, closingPosition, housingCost,
   monthsWords, breakEvenSentence, incrementalSentence,
-  prepaySentence, chargeRow, dateLong, dateTimeLong, ZONE,
+  prepaySentence, chargeRow, lenderFeePackage, dateLong, dateTimeLong, ZONE,
   DISCLOSURE, THIRD_PARTY, CHARGE_LABELS, LENDER_FEE_KEYS, PREPAY_SENTENCES,
   propertyTypeWords, PROPERTY_TYPE_WORDS,
 };

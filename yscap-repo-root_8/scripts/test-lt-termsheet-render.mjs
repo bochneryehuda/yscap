@@ -43,6 +43,10 @@ const check = (cond, msg) => {
 };
 
 const PLAN = { borrowerPaid: 2, ysp: 2, lenderPaid: 2, applicationFee: 500, commitmentFee: 1595 };
+// The fee amounts in the assertions below are READ FROM THE PLAN above, never
+// retyped: this fixture's application/commitment amounts are the reverse of the
+// production defaults, and a hard-coded "$1,595" passed for the wrong reason.
+const money = (n) => `$${Number(n).toLocaleString('en-US')}`;
 const SCENARIO = {
   purpose: 'Purchase', propertyType: 'Single family', value: 500000, loan: 375000,
   ltv: 75, termYears: 30, dscr: 1.24, fico: 740, state: 'NJ', city: 'Lakewood', zip: '08701',
@@ -423,9 +427,29 @@ console.log('\nthe owner\'s four items, on the paper');
      per-option page onto the comparison itself. */
   check(wflat.includes(squash('covered by the lender, not paid by you')),
     '…and a sentence on the sheet says the lender is covering them, not the borrower');
-  check(wflat.includes(squash('Waived ($500)')) && wflat.includes(squash('Waived ($1,595)')),
-    '…and each fee is named at what it would have been, beside the option that charges it');
-  check(wflat.includes(squash('Lender fees you are not paying')), '…and the saving is totalled');
+  /* RE-POINTED 2026-09-01, NOT LOOSENED — owner-directed: the two fees are ONE
+     package ("You waive lender fees, so it's zero lender fee, and they don't
+     charge the $2,095"), so they are one row now. The property these two
+     asserted still holds and is asserted HERE, on the combined row: the waived
+     option prints the FULL amount it is not paying, so the option beside it can
+     be compared against it. What changed is that the figure is the package's
+     $2,095 rather than each fee's own — and the parts are still named, which the
+     assertion above this one already requires. STRICTER in one respect: it now
+     also demands the charged option print $2,095, so a sheet that waived on both
+     columns could not satisfy it. */
+  check(wflat.includes(squash('Waived ($2,095)')),
+    '…the waived option prints the full lender fee it is not paying');
+  check(wflat.includes(squash('$2,095'))
+    && wflat.includes(squash(`Application fee ${money(PLAN.applicationFee)}`))
+    && wflat.includes(squash(`Commitment fee ${money(PLAN.commitmentFee)}`)),
+    '…and the charged option prints the same package, broken into its two named parts');
+  /* The separate "Lender fees you are not paying" total is GONE, and its absence
+     is asserted rather than merely un-checked: the combined row prints exactly
+     that figure in the waived option's own cell, so keeping the total put $2,095
+     twice, adjacent. A guard that simply stopped looking would go quiet if it
+     came back. */
+  check(!wflat.includes(squash('Lender fees you are not paying')),
+    '…and the saving is NOT also totalled in a second row that says the same $2,095');
 
   // (5) THE EXPIRY, in the owner's own unit.
   check(flat.includes(squash('This term sheet expires in 24 hours')),

@@ -580,7 +580,11 @@ function comparisonTable(snapshot) {
        with the option's own name over its product, so an identical programme
        folds into the shared box like any other agreed fact and stops being
        printed three times. */
-    if (same && !(opts && opts.never)) { shared.push([label, filled[0]]); return; }
+    if (same && !(opts && opts.never)) {
+      const cellNote = opts && opts.sub;
+      shared.push(cellNote ? [label, filled[0], cellNote] : [label, filled[0]]);
+      return;
+    }
     /* ⛔ A ROW MAY SAY THAT IT RESOLVES THE ARITHMETIC, and the renderer bands it
        in ivory. The approved sketch highlights exactly two rows on a comparison
        — the full monthly payment and the cash to close — because those are the
@@ -588,9 +592,12 @@ function comparisonTable(snapshot) {
        working. Striping every other row instead (which is what shipped) makes
        the table read as a spreadsheet and gives the two answers no more weight
        than the rent. */
+    const rowOpts = {};
+    if (opts && opts.accent) rowOpts.accent = true;
+    if (opts && opts.sub) rowOpts.sub = opts.sub;
     staged.push({
       group: (opts && opts.group) || 'produced',
-      row: opts && opts.accent ? [label, ...filled, { accent: true }] : [label, ...filled],
+      row: Object.keys(rowOpts).length ? [label, ...filled, rowOpts] : [label, ...filled],
     });
   };
   /* ⛔ THE ROWS ARE ORDERED BY WHAT THEY ARE, NOT BY THE ORDER THEY WERE
@@ -650,42 +657,53 @@ function comparisonTable(snapshot) {
     const l = ((m.charges || {}).lines || []).find((x) => x && x.key === 'origination');
     return l && nn(l.dollars) && l.dollars > 0 ? wording.moneyExact(l.dollars) : 'None';
   });
-  /* ⛔ THE LENDER'S FEES ARE LISTED ONE BY ONE, NEVER AS A LUMP. Owner-directed:
-     *"you need to list out the lender fees, because the next one, you're waiving
-     the lender fees. You need to be able to see the difference."* A single
-     "Lender fees $2,095" cell answers neither question a reader has — which fees,
-     and which of them this option is actually charging. Each fee gets its own
-     row, so an option that waives ONE of two says exactly that, and a fee that is
-     the same on every option folds into the shared block on its own. A waived fee
-     is LISTED at what it would have been rather than dropped: a fee you are not
-     paying is a thing of value, and a missing row reads as a fee nobody charges. */
-  for (const key of wording.LENDER_FEE_KEYS) {
-    const label = wording.CHARGE_LABELS[key];
-    if (!label) continue;
-    push(label, (m) => {
-      const l = ((m.charges || {}).lines || []).find((x) => x && x.key === key);
-      if (!l) return null;
-      if (l.waived === true) {
-        return nn(l.fullDollars) && l.fullDollars > 0
-          ? `Waived (${wording.moneyExact(l.fullDollars)})` : 'Waived';
-      }
-      return nn(l.dollars) ? wording.moneyExact(l.dollars) : null;
-    });
-  }
-  /* ⛔ WHAT A WAIVE IS WORTH, TOTALLED — the one place a total of two visible
-     rows earns its line. Each fee above already says "Waived ($500)", so the sum
-     is arithmetic; but on the option that waives them it is not a subtotal, it
-     is the reason to choose that option, and it was stated on the per-option
-     page this table replaced. It appears only where a waive exists, so an
-     ordinary comparison never carries a row of dashes. */
-  push('Lender fees you are not paying', (m) => {
-    const lines = (m.charges || {}).lines || [];
-    const fees = wording.LENDER_FEE_KEYS.map((k) => lines.find((l) => l && l.key === k)).filter(Boolean);
-    if (!fees.length || !fees.some((l) => l.waived === true)) return null;
-    const t = fees.filter((l) => l.waived === true)
-      .reduce((sum, l) => sum + (nn(l.fullDollars) ? l.fullDollars : 0), 0);
-    return t > 0 ? wording.moneyExact(t) : null;
-  });
+  /* ⛔ THE LENDER'S FEES ARE ONE BOX, NOT TWO — owner-directed 2026-09-01,
+     REVERSING the 2026-08-30 rule that listed them one by one. That rule was
+     answering *"which of these two is this option charging?"*, and the owner has
+     since stated that the question cannot arise: *"They are identical … it's one
+     package. You waive lender fees, so it's zero lender fee, and they don't
+     charge the $2,095. You have the $2,095, so it can be in one box."* Both are
+     flat company-wide amounts and one switch turns BOTH off, so two rows were
+     two cells saying the same thing on every option, every time — the exact
+     repetition the shared box exists to remove.
+
+     ⛔ THE ROW IS NOT MARKED `never`, AND THAT IS THE WHOLE MECHANISM. Left to
+     the ordinary rule it lands wherever it belongs and the owner's three cases
+     fall out of one push: every option charging it prints one string, so it
+     lifts into the shared box as ONE cell; every option waiving it likewise
+     lifts, reading *Waived ($2,095)* — the owner chose to keep the box in that
+     case rather than drop it, because a fee you are not paying is a thing of
+     value and a missing row reads as a fee nobody charges; and options that
+     DISAGREE keep it in the table as ONE row that states the disagreement
+     ("If both programs disagree, then it's in one box as it disagrees").
+
+     ⛔ AND THE PARTS ARE STILL NAMED, underneath, because a total nobody can
+     check is how this file's own oldest warning starts — an amount folded into
+     a total and named nowhere. The composition rides under the label at face
+     value and says nothing about who pays: the columns beside it already do,
+     and a composition that repeated the waiver would contradict them. */
+  const feePkgOf = (m) => wording.lenderFeePackage(m.charges);
+  const feeComposition = (() => {
+    for (const i of order) {
+      const pkg = feePkgOf(members[i]);
+      if (pkg.present && pkg.composition) return pkg.composition;
+    }
+    return null;
+  })();
+  push('Lender fee', (m) => {
+    const pkg = feePkgOf(m);
+    return pkg.present ? pkg.text : null;
+  }, feeComposition ? { sub: feeComposition } : undefined);
+  /* ⛔ WHAT A WAIVE IS WORTH IS NOW SAID BY THE FEE'S OWN BOX, so the separate
+     total is gone (owner-directed 2026-09-01, as a consequence of combining the
+     two fee rows into one). It existed because each fee used to print "Waived
+     ($500)" on its own row and the sum of two rows was worth stating: on the
+     option that waives them it is not a subtotal, it is the reason to choose
+     that option. The combined row now prints exactly that figure — "Waived
+     ($2,095)" — in that option's own cell, so keeping the total put the same
+     $2,095 twice, adjacent, which is the duplication this change was asked to
+     remove. It is deleted rather than reworded: a sheet that says one number
+     two ways invites the reader to look for the difference. */
   push('Cost to get this rate', (m) => {
     const cc = wording.costOrCredit(m.charges);
     return cc.kind === 'none' ? 'None' : cc.text;

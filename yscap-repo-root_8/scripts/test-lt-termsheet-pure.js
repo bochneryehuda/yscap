@@ -591,21 +591,54 @@ section('the fees are listed out, and broken down');
   'listing a waived fee changes no total — its dollars are the zero the absent line already contributed');
 
   const table = layout.comparisonTable(built.snapshot);
-  /* ⛔ RE-POINTED, AND THE REQUIREMENT IS SERVED BETTER RATHER THAN RELAXED. The
-     table carried one "Lender fees $2,095" cell; the owner asked to *"list out
-     the lender fees, because the next one, you're waiving the lender fees — you
-     need to be able to see the difference."* One cell answers neither question:
-     which fees, and which of them this option charges. Each fee is its own row
-     now, so the waived column names it fee by fee AND the total it saves. */
-  const appRow = table.rows.find((r) => r[0] === 'Application fee');
-  const comRow = table.rows.find((r) => r[0] === 'Commitment fee');
-  check(appRow && appRow.some((c) => /^Waived \(\$500\)$/.test(String(c))) && appRow.some((c) => c === '$500'),
-    'the application fee is its own row, waived beside charged, both naming the same $500');
-  check(comRow && comRow.some((c) => /^Waived \(\$1,595\)$/.test(String(c))) && comRow.some((c) => c === '$1,595'),
-    '…and so is the commitment fee, at its own $1,595');
-  const savedRow = table.rows.find((r) => r[0] === 'Lender fees you are not paying');
-  check(savedRow && savedRow.some((c) => c === '$2,095'),
-    '…and what the waive is WORTH is totalled, because on that option it is the reason to choose it rather than a subtotal');
+  /* ⛔ RE-POINTED AGAIN 2026-09-01, AND THIS TIME BACK TOWARD ONE ROW — owner-
+     directed, reversing the 2026-08-30 direction the previous re-point served.
+     That one split a single "Lender fees $2,095" cell into a row per fee, to
+     answer *"which of these is this option charging?"*. The owner has since said
+     the question cannot arise: *"They are identical … it's one package. You
+     waive lender fees, so it's zero lender fee, and they don't charge the
+     $2,095."* One switch moves both, so a row each was two rows saying the same
+     thing on every option.
+
+     ⛔ WHAT IS ASSERTED IS THEREFORE THE PROPERTY, NOT THE SHAPE: the sheet still
+     shows the FULL amount the waived option is not paying beside the amount the
+     other one is, and it still names the two parts — that was the whole point of
+     the 2026-08-30 direction and it survives. Only the row count changed. */
+  const feeRow = table.rows.find((r) => r[0] === 'Lender fee');
+  check(!!feeRow, 'the two lender fees are ONE row, not one row each');
+  check(!table.rows.some((r) => r[0] === 'Application fee' || r[0] === 'Commitment fee'),
+    '…so neither fee has a row of its own any more');
+  check(feeRow && feeRow.some((c) => c === '$2,095') && feeRow.some((c) => /^Waived \(\$2,095\)$/.test(String(c))),
+    '…and it prices the package both ways: $2,095 charged, and the same $2,095 named as waived');
+  // The parts ride under the label, so the total stays checkable — the guard the
+  // repo's own oldest fee lesson asks for (an amount folded into a total and
+  // named nowhere). It is the row's trailing options object, not a cell.
+  const feeOpts = feeRow && feeRow[feeRow.length - 1];
+  const feeSub = feeOpts && typeof feeOpts === 'object' && !Array.isArray(feeOpts) ? feeOpts.sub : null;
+  check(!!feeSub && /Application fee \$500/.test(feeSub) && /Commitment fee \$1,595/.test(feeSub),
+    '…and the two parts are still named underneath, so the $2,095 can be checked');
+  check(!table.rows.some((r) => r[0] === 'Lender fees you are not paying'),
+    '…and the separate saving total is gone, because the row above now prints exactly that figure');
+
+  /* ⛔ THE HALF-WAIVED PACKAGE, which the owner says cannot happen and the waive
+     switch agrees — one flag moves both fees. It is guarded anyway, because
+     "cannot happen" is a statement about today's switch and not a property of
+     the data, and BOTH of the tidy answers would be a lie if it ever did: the
+     total would charge for a fee that was waived, and "Waived ($2,095)" would
+     waive one that is being charged. Asserted on the library rather than
+     through a render, since the snapshot cannot currently produce the state. */
+  {
+    const half = wording.lenderFeePackage({ lines: [
+      { key: 'applicationFee', dollars: 500, fullDollars: 500, waived: false },
+      { key: 'commitmentFee', dollars: 0, fullDollars: 1595, waived: true },
+    ] });
+    check(half.partial === true && half.waived === false,
+      'a package with one fee waived and one charged is reported as PARTIAL, not as either tidy answer');
+    check(half.text === '$500',
+      '…and it prices what is actually being charged, never the $2,095 total');
+    check(/Application fee \$500/.test(half.breakdown) && /Commitment fee waived \(\$1,595\)/.test(half.breakdown),
+      '…and its breakdown says which half was waived, at what it would have been');
+  }
 }
 
 // =============================================================================

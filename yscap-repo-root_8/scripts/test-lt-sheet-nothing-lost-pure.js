@@ -123,6 +123,13 @@ const SAME_FACT = {
   // The block totalled two fees it had just listed. The table lists them too,
   // and a total of two visible numbers is not a fact — it is arithmetic.
   'Lender fees, total': null,
+  /* Owner-directed 2026-09-01, the two fees became ONE package row and this
+     total went with them: the combined row prints the very figure this named
+     ("Waived ($2,095)") in the waived option's own cell, so it is arithmetic
+     over a row already shown — the same reason 'Lender fees, total' is null.
+     The two fees THEMSELVES are deliberately NOT listed here: they are still
+     printed, under the combined row, and the sub-line sweep above finds them.
+     Aliasing them away would have let their amounts vanish unnoticed. */
   'Lender fees you are not paying': null,
 };
 
@@ -146,8 +153,24 @@ for (const [name, selections] of Object.entries(SHAPES)) {
   const snap = build(selections);
   const table = layout.comparisonTable(snap);
   const have = new Set();
-  for (const r of table.rows || []) if (r && r[0]) have.add(String(r[0]));
-  for (const r of table.shared || []) if (r && r[0]) have.add(String(r[0]));
+  const subs = [];
+  for (const r of table.rows || []) {
+    if (!r || !r[0]) continue;
+    have.add(String(r[0]));
+    /* ⛔ A FACT MAY RIDE UNDER A LABEL RATHER THAN BEING ONE, and this guard has
+       to follow it there or it reports a fact as LOST the moment two rows are
+       combined into one that names both underneath. The sub-line is matched on
+       the label VERBATIM, so it cannot become a "close enough" escape hatch: a
+       genuinely dropped row leaves nothing containing its own name. */
+    const o = r[r.length - 1];
+    if (o && typeof o === 'object' && !Array.isArray(o) && o.sub) subs.push(String(o.sub));
+  }
+  for (const r of table.shared || []) {
+    if (!r || !r[0]) continue;
+    have.add(String(r[0]));
+    if (r[2]) subs.push(String(r[2]));
+  }
+  const namedInASubLine = (label) => subs.some((t) => t.includes(label));
 
   const missing = [];
   for (const m of snap.members) {
@@ -164,7 +187,7 @@ for (const [name, selections] of Object.entries(SHAPES)) {
         missing.push(`${label} (as "${alias}")`);
         continue;
       }
-      if (!have.has(label)) missing.push(label);
+      if (!have.has(label) && !namedInASubLine(label)) missing.push(label);
     }
   }
   check(missing.length === 0,
