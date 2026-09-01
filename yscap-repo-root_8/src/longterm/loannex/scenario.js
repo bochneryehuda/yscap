@@ -263,8 +263,24 @@ function buildNexApp(sc, registry, opts = {}) {
   // out empty — an empty prepay is a DIFFERENT loan from the one Lender Price
   // was asked about, which is the whole reason the default is shared.
   const prepay = A('PrepaymentPenalty', String(num(prof.prepayMonths)), 'prepay_months');
-  const citizenship = A('Citizenship', s.borrowerType == null && s.citizenship == null ? 'UsCitizen'
-    : mapAlias(CITIZENSHIP_ALIASES, s.citizenship != null ? s.citizenship : s.borrowerType, 'citizenship', 'unknown_citizenship'), 'citizenship');
+  // CITIZENSHIP IS READ FROM `citizenship` AND FROM NOTHING ELSE. It USED to fall
+  // back to `borrowerType`, and that was a category error with a live cost: in this
+  // scenario vocabulary `borrowerType` is the VESTING (entity) type — Lender Price's
+  // own registry keeps BORROWER_TYPES (Individual / Corporation / Partnership / Trust
+  // / Non-Profit / LLC) and CITIZENSHIP as two separate sets, its validator calls the
+  // first one "borrower (vesting) type", and the board DEFAULTS it to 'LLC'. "LLC" is
+  // in no citizenship table, so `mapAlias` refused the request (`unknown_citizenship`)
+  // and EVERY LoanNEX quote on an entity-vested loan was refused before the wire —
+  // which is the normal case here, the board's own footer being "business-purpose
+  // loans, made to an entity for an investment property". Routing every investor to
+  // LoanNEX therefore produced an empty board rather than a priced one.
+  //
+  // An unstated citizenship takes 'UsCitizen', which is what this connector has always
+  // sent for a scenario stating neither field and is the value the recorded live body
+  // carries. A blank string reads as unstated (the same convention `condoType` and
+  // `escrow` use below) — a form control nobody filled in must not refuse the loan.
+  const citizenship = A('Citizenship', s.citizenship == null || s.citizenship === '' ? 'UsCitizen'
+    : mapAlias(CITIZENSHIP_ALIASES, s.citizenship, 'citizenship', 'unknown_citizenship'), 'citizenship');
   // WAIVE ESCROW. An explicit `escrow` value (Yes / Waived / TaxesOnly /
   // InsuranceOnly) is richer than the button and wins; otherwise the shared
   // `escrowWaive` flag decides, under any spelling.
