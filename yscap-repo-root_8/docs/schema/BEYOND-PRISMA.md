@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**952 objects**, and a database rebuilt from the Prisma
+**954 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 669 numbered migrations in `db/` (highest `db/672`) remain the only thing that builds this database.
+rebuild a database from them.** The 678 numbered migrations in `db/` (highest `db/681`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -20,16 +20,16 @@ the live database.
 | | |
 |---|---|
 | Tables | 409 |
-| Columns | 6538 |
+| Columns | 6546 |
 | Triggers | 38 |
 | Functions | 142 |
 | CHECK constraints | 348 |
 | Generated columns | 12 |
-| Partial indexes | 412 |
+| Partial indexes | 414 |
 | Primary keys | 409 |
-| Foreign keys | 828 |
+| Foreign keys | 827 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1416 |
+| Indexes (all kinds) | 1419 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -234,7 +234,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (412)
+## Partial indexes (414)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -548,6 +548,8 @@ the live database.
 - **lt_loans_encompass_nudged_at_idx** on `lt_loans`
 - **lt_loans_ladder_unsynced_idx** on `lt_loans`
 - **lt_loans_purchased_status_idx** on `lt_loans`
+- **lt_loans_submittal_owed_idx** on `lt_loans`
+- **lt_loans_submittal_push_owed_idx** on `lt_loans`
 - **lt_locks_expiration_idx** on `lt_locks`
 - **lt_milestone_events_loan_entered_idx** on `lt_milestone_events`
 - **lt_order_events_inbound_uk** on `lt_order_events`
@@ -1000,7 +1002,7 @@ the live database.
 - **workflow_events_event_type_check** on `workflow_events`
 - **workflow_items_status_check** on `workflow_items`
 
-## Foreign keys (828)
+## Foreign keys (827)
 
 What happens to the child rows on delete is part of each line, because the difference between `ON DELETE CASCADE` and `ON DELETE SET NULL` is the difference between losing a document and keeping it.
 
@@ -1536,7 +1538,6 @@ What happens to the child rows on delete is part of each line, because the diffe
 - **lt_file_conditions** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
 - **lt_file_conditions** → `staff_users` — `FOREIGN KEY (satisfied_by) REFERENCES staff_users(id) ON DELETE SET NULL`
 - **lt_file_conditions** → `staff_users` — `FOREIGN KEY (waived_by) REFERENCES staff_users(id) ON DELETE SET NULL`
-- **lt_file_orders** → `lt_file_conditions` — `FOREIGN KEY (condition_id) REFERENCES lt_file_conditions(id) ON DELETE SET NULL`
 - **lt_file_orders** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
 - **lt_ladder_events** → `lt_loans` — `FOREIGN KEY (loan_id) REFERENCES lt_loans(id) ON DELETE CASCADE`
 - **lt_liabilities** → `lt_parties` — `FOREIGN KEY (party_id) REFERENCES lt_parties(id) ON UPDATE CASCADE ON DELETE CASCADE`
@@ -1905,7 +1906,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 409 primary keys and 1416 indexes is
+Every one of the 409 primary keys and 1419 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
