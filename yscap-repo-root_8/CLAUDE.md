@@ -143,6 +143,34 @@ exercised ON MAIN, holding the gated deploy. The check abstains on a stale map f
 column yet" (a model landing with its migration), but a column the map PHOTOGRAPHS that the model does
 not declare is never excused — so the model edit cannot wait for a later pass.
 
+**`unref`'ing a timer is NOT enough when the work inside it takes a ref'd handle (learned 2026-09-02,
+the red main behind run 4343).** `test-db` ran its step for exactly sixty minutes and was killed by the
+timeout — no failing assertion anywhere, the last suite printed "14 passed, 0 failed" and the log went
+quiet. `npm test` had stopped: requiring the long-term module arms `settings/store.keepWarm()`, a
+carefully-`unref`'d fifteen-second re-read whose own comment says it "must never hold a process open,
+least of all a test runner's". The timer did not. Its QUERY did — every tick borrows a client from
+Long-Term's own pool and restarts that client's thirty-second idle countdown, so the pooled socket is
+never reaped, and a live TCP handle keeps Node's loop alive however many timers are `unref`'d. MOST
+database suites that boot the app hung after their last assertion — measured over five with the fix
+removed, three hung and two survived, and the two that survived end with an unconditional
+`process.exit()`, so what hangs is precisely what relies on a natural exit. THREE THINGS TO KEEP.
+(1) A pool that a script does not explicitly end needs `allowExitOnIdle: true`; it changes nothing on a
+server, which is held open by its listener. (2) When CI hangs, PROBE THE LIVE PROCESS —
+`process._getActiveHandles()` with `net.Socket.prototype.connect` patched to record a stack named the
+owner in one run, after reading the diff had named the wrong suspect twice. (3) A BEHAVIOURAL GUARD IS
+ONLY AS WIDE AS WHAT ITS CHILDREN REQUIRE, and the pre-merge audit proved that on this very commit:
+`test-lt-pool-exit-db` shipped with two children (the pool module and the settings warm-up) and a
+header claiming they made it proof against "a second pool somewhere else". They did not — a second pool
+in `src/longterm/index.js`, the module the server actually mounts, reintroduced the incident in full
+while the suite reported 7 of 7, and so did a plain ref'd `setInterval` there. The fix was a third
+child that requires WHAT THE APPLICATION REQUIRES rather than a model of it. Same pass, same lesson in
+miniature: a marker the child prints after a stubbed call proves nothing, so each marker now carries a
+value only the server could have returned (the backend pid). KNOWN AND DELIBERATELY NOT FIXED HERE:
+`src/db.js` (RTL's pool) and `src/lib/dashboards/run.js` have the identical shape and are unguarded —
+they do not bite today only because nothing re-queries them on an unref'd timer faster than their 30s
+idle window, which is a property no test holds, and RTL's pool costs every RTL-only script a 30-second
+exit tax. Widening the fix there is its own audited change, not a drive-by.
+
 ## Repository layout gotcha
 
 The entire project lives in the **`yscap-repo-root_8/`** subfolder of the git root — `package.json`, `src/`, `db/`, `web/`, `app/` are all there, not at the git top level. Run all `npm` commands from inside `yscap-repo-root_8/`. Render auto-detects this nested `package.json`; deploys run from that folder.
