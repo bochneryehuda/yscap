@@ -57,10 +57,61 @@ const crypto = require('crypto');
 const path = require('path');
 const zlib = require('zlib');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+const fontkit = require('@pdf-lib/fontkit');
 const F = require('./fields');
 
 /** The owner's blank. */
 const BLANK_PATH = path.join(__dirname, '..', 'assets', 'blank-vor.pdf');
+
+/* ── THE SIGNATURE FACE ─────────────────────────────────────────────────────
+   Owner-directed 2026-09-02: *"the place for the signature of the lender,
+   you're typing the name of the user. We need it to be in a more scribbled
+   font so it should look like the signature of the user."*
+
+   Great Vibes (SIL Open Font License 1.1 — the licence text is vendored beside
+   it as GreatVibes-OFL.txt, which the OFL requires of any copy). pdf-lib on its
+   own can embed only the fourteen PDF standard faces, none of them a script,
+   so the file is embedded through @pdf-lib/fontkit.
+
+   WHOLE, NOT SUBSET — MEASURED, NOT PREFERRED. The first cut asked pdf-lib to
+   subset the face to the glyphs drawn. Text EXTRACTION of that form still
+   found "Chaya Gruber" (the ToUnicode map was fine), so every text-based test
+   passed — and a real render in Chromium's pdf.js drew NOTHING in the
+   signature box. The typed fields beside it were there; the signature was
+   blank. With the full file embedded the same render shows the signature.
+   The cost is the whole face on every form (about 170 KB more per PDF; the
+   form goes to DocuSign as base64 and that is well inside its limits), and
+   the test below proves the WHOLE file is in the PDF, byte for byte, because
+   that is the difference between a signature and an empty box.
+
+   PINNED BY DIGEST, exactly like the blank: the font decides where every
+   flourish lands, and `fields.js` reasons about that geometry in numbers
+   measured off THIS file. A different file would silently move the ink, so a
+   replacement has to be a deliberate act — edit the digest in the same commit.
+   The font's own vertical extents are read from the file at load
+   (`SIGNATURE_METRICS`) rather than typed here, so the test that proves the
+   signature clears the printed labels measures the real face. */
+const SIGNATURE_FONT_PATH = path.join(__dirname, '..', 'assets', 'GreatVibes-Regular.ttf');
+const SIGNATURE_FONT_SHA256 = '9d76b8c67f5289c310114c935c5c3831fc3c25bc2bb888a28210c1659d701b9e';
+const SIGNATURE_FONT_BYTES = (() => {
+  const bytes = fs.readFileSync(SIGNATURE_FONT_PATH);
+  const got = crypto.createHash('sha256').update(bytes).digest('hex');
+  if (got !== SIGNATURE_FONT_SHA256) {
+    throw new Error(`vor/pdf: the signature font at ${SIGNATURE_FONT_PATH} is not the pinned file `
+      + `(sha256 ${got.slice(0, 12)}…, expected ${SIGNATURE_FONT_SHA256.slice(0, 12)}…). `
+      + 'Replacing it moves every signature; update the digest in the same commit if that is intended.');
+  }
+  return bytes;
+})();
+/** ascent / descent as a fraction of the em, read from the face itself. */
+const SIGNATURE_METRICS = (() => {
+  const face = fontkit.create(SIGNATURE_FONT_BYTES);
+  return Object.freeze({
+    family: face.familyName,
+    ascent: face.ascent / face.unitsPerEm,
+    descent: Math.abs(face.descent) / face.unitsPerEm,
+  });
+})();
 
 const INK = rgb(0.05, 0.05, 0.05);          // near-black, so it photocopies like the form
 const WHITE = rgb(1, 1, 1);
@@ -112,6 +163,26 @@ function wrapBlock(text, font, size, width) {
     for (const line of wrap(seg, font, size, width)) out.push(line);
   }
   return out;
+}
+
+/**
+ * THE SIGNATURE'S SIZE — one line, shrunk to its box, never wrapped.
+ *
+ * Starts at the field's own size and comes down, a half-point at a time, until
+ * the name fits the field's width; stops at `minSize`. A name that does not fit
+ * even there is drawn at the floor anyway (a clipped signature is still that
+ * person's signature) and REPORTED — `fits:false` is what `measureOverflow`
+ * turns into the preview's warning. Measured in the face that will draw it.
+ */
+function fitSignature(field, value, font) {
+  const text = pdfSafe(value).replace(/\s+/g, ' ').trim();
+  const width = field.width || 200;
+  const max = field.size || F.DEFAULT_SIZE;
+  const min = field.minSize || max;
+  let size = max;
+  while (size > min && font.widthOfTextAtSize(text, size) > width) size = Math.round((size - 0.5) * 2) / 2;
+  const drawn = font.widthOfTextAtSize(text, size);
+  return { text, size, width: drawn, fits: drawn <= width };
 }
 
 /**
@@ -265,6 +336,19 @@ async function buildVorPdf(data = {}, opts = {}) {
   const doc = await loadBlank();
   const page = doc.getPage(0);
   const font = await doc.embedFont(StandardFonts.Helvetica);
+  // The script face is embedded LAZILY — only when a field asks for it — so a
+  // form with no signatory (a preview before anybody is on the file) carries no
+  // subset of a font it never drew.
+  let scriptFont = null;
+  const signatureFont = async () => {
+    if (!scriptFont) {
+      doc.registerFontkit(fontkit);
+      // WHOLE FILE — see the header: a subset of this face extracts as text
+      // and renders as nothing.
+      scriptFont = await doc.embedFont(SIGNATURE_FONT_BYTES, { subset: false });
+    }
+    return scriptFont;
+  };
 
   // ── items 1 to 9: our half, above the bar ────────────────────────────────
   /* THE LANDLORD'S OWN FIELDS, WHERE WE ALREADY HOLD THE ANSWER.
@@ -297,6 +381,18 @@ async function buildVorPdf(data = {}, opts = {}) {
        omission. The owner's blank is left visibly blank instead, which is the one
        thing every reader of this form already knows how to interpret. */
     if (!value) continue;
+
+    /* THE SIGNATURE: one line, in the script face, shrunk to fit its box
+       rather than wrapped — a signature that breaks onto a second line is not
+       a signature. `fitSignature` is the ONE place the size is decided, read
+       here and by `measureOverflow`, so the preview's warning and the drawn
+       form can never disagree about whether a name fits. */
+    if (f.font === 'signature') {
+      const sf = await signatureFont();
+      const fit = fitSignature(f, value, sf);
+      page.drawText(fit.text, { x: f.x, y: f.y, size: fit.size, font: sf, color: INK });
+      continue;
+    }
 
     const size = f.size || F.DEFAULT_SIZE;
     const width = f.width || 200;
@@ -345,10 +441,24 @@ async function measureOverflow(data) {
   try {
     const doc = await PDFDocument.create();
     const font = await doc.embedFont(StandardFonts.Helvetica);
+    let scriptFont = null;
     const out = [];
     for (const f of F.ourFields()) {
       const value = fmtValue(f, (data || {})[f.key]);
       if (!value) continue;
+      if (f.font === 'signature') {
+        // The same decision the renderer makes, in the same face.
+        if (!scriptFont) {
+          doc.registerFontkit(fontkit);
+          scriptFont = await doc.embedFont(SIGNATURE_FONT_BYTES, { subset: false });
+        }
+        const fit = fitSignature(f, value, scriptFont);
+        if (!fit.fits) {
+          out.push({ key: f.key, label: f.label, printed: 1, total: 2,
+            why: `too long for the signature line even at its smallest size (${fit.size}pt) — it will run past the box` });
+        }
+        continue;
+      }
       const maxLines = f.lines || 1;
       const total = wrapBlock(value, font, f.size || F.DEFAULT_SIZE, f.width || 200).length;
       if (total > maxLines) out.push({ key: f.key, label: f.label, printed: maxLines, total });
@@ -363,8 +473,10 @@ module.exports = {
   buildVorPdf,
   measureOverflow,
   BLANK_PATH,
+  SIGNATURE_METRICS,
   _internals: {
-    pdfSafe, wrap, wrapBlock, fmtValue, inflatedStreams,
+    pdfSafe, wrap, wrapBlock, fmtValue, inflatedStreams, fitSignature,
     assertOwnersBytes, assertOwnersPage, assertOwnersDigest, BLANK_SHA256, loadBlank, PAGE: F.PAGE,
+    SIGNATURE_FONT_PATH, SIGNATURE_FONT_SHA256,
   },
 };

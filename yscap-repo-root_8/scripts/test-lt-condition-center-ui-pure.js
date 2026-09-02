@@ -104,7 +104,9 @@ function ok(name, cond, detail) {
 {
   const src = stripComments(read('app-v2/src/longterm/LtConditionOrder.jsx'));
   ok('it imports the desk\'s OrderCard rather than drawing one',
-    /import \{ OrderCard \} from '\.\/LtOrders\.jsx'/.test(src));
+    // `openLoanSection` rides on the same import: the rent order's card sends
+    // people to the Verification of rent section (audit 2026-09-02, B1).
+    /import \{ OrderCard(?:, \w+)* \} from '\.\/LtOrders\.jsx'/.test(src));
   ok('it does not define a card of its own',
     !/function OrderCard/.test(src));
   ok('it self-hides on a condition that is not an order',

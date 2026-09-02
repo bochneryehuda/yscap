@@ -170,6 +170,46 @@ const MOVED = { street: '9 New Rd', city: 'Anytown', state: 'NJ', zip: '07001' }
     ok(again.applied === false && (await landlordOn(second.id)).length === 1,
       'a second pass adds nothing — safe to call on every read of the screen');
 
+    // ── D2. TAKEN OFF, AND IT STAYS OFF ──────────────────────────────────────
+    console.log('\nD2. A LANDLORD TAKEN OFF THE FILE DOES NOT COME BACK ON THE NEXT READ');
+    {
+      /* THE DEFECT (audit 2026-09-02, S3). The contacts screen fills the
+         remembered landlord in on EVERY read, and DELETE /vendors/:linkId removed
+         the link and nothing else — so the very next read put the same card
+         straight back, and a person could never make the removal stick. What the
+         route now does on an unlink of a landlord is `declineForLoan`; this is
+         that story, on the file section B filled in. */
+      ok((await landlordOn(second.id)).join() === String(acme), 'CONTROL: the remembered landlord is on the second file');
+      await cx.query(`DELETE FROM lt_loan_vendors WHERE loan_id = $1::uuid AND kind = 'landlord'`, [second.id]);
+      const declined = await memory.declineForLoan(second.id, { db: cx });
+      ok(declined.declined === 1, 'taking the landlord off marks the memory for that home declined', JSON.stringify(declined));
+      const stamped = (await cx.query(
+        `SELECT declined_at FROM lt_borrower_landlords WHERE borrower_id = $1::uuid AND address_key = $2`,
+        [bob, memory.addressKey(HOME)])).rows[0];
+      ok(!!(stamped && stamped.declined_at), '…as a stamp on the row, which is kept — the memory is a record, not a guess to erase');
+      const reread = await memory.applyForLoan(second.id, { db: cx });
+      ok(reread.applied === false && reread.why === 'declined',
+        'THE ONE THAT MATTERS: the next read of the screen does NOT fill it back in — and says why', JSON.stringify(reread));
+      ok((await landlordOn(second.id)).length === 0, '…and the file really stays empty');
+      // …and it is that HOME, not the person: a memory at another home is untouched.
+      const others = (await cx.query(
+        `SELECT count(*)::int AS n FROM lt_borrower_landlords WHERE borrower_id = $1::uuid AND declined_at IS NOT NULL`, [bob])).rows[0].n;
+      ok(others === 1, 'only the memory for the home this file rents is declined', String(others));
+
+      // Putting a landlord back on for the same home is a new answer, and the
+      // memory is live again for the next file.
+      await linkLandlord(second.id, acme);
+      const re = await memory.rememberForLoan(second.id, { db: cx });
+      ok(re.remembered === 1, 'linking a landlord for the same home again is remembered', JSON.stringify(re));
+      const cleared = (await cx.query(
+        `SELECT declined_at FROM lt_borrower_landlords WHERE borrower_id = $1::uuid AND address_key = $2`,
+        [bob, memory.addressKey(HOME)])).rows[0];
+      ok(cleared && cleared.declined_at === null, '…and that clears the decline — a person answered again');
+      const fifth = await makeLoan('fifth', bob, HOME);
+      const back = await memory.applyForLoan(fifth.id, { db: cx });
+      ok(back.applied === true && String(back.contactId) === String(acme), '…so their next file is filled in as before', JSON.stringify(back));
+    }
+
     // ── E. ONLY A HOME THEY RENT ────────────────────────────────────────────
     console.log('\nE. A LANDLORD IS ONLY EVER REMEMBERED FOR A HOME THEY RENT');
     const owner = await makeBorrower('owner');
@@ -234,6 +274,8 @@ const MOVED = { street: '9 New Rd', city: 'Anytown', state: 'NJ', zip: '07001' }
         String((orders.match(/rememberLandlord\(/g) || []).length));
       ok(/kind !== 'landlord'\) return;/.test(orders),
         '…and only a landlord: the other kinds are about the property, not about a borrower\'s home');
+      ok(/landlordMemory\.declineForLoan\(/.test(orders) && /kind === 'landlord'/.test(orders),
+        'and the UNLINK door declines the memory, so a removal sticks (audit 2026-09-02, S3)');
       const worker = strip(fs.readFileSync(require.resolve('../src/longterm/sync/worker.js'), 'utf8'));
       ok(/landlordMemory\.backfillOnce\(/.test(worker), 'and the sweep really runs on the worker tick');
     }

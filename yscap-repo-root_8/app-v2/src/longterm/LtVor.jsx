@@ -123,7 +123,14 @@ function Field({ field, value, onChange, readOnly, over }) {
         </>
       ) : (
         <input
-          style={input}
+          /* THE SIGNATURE BOX LOOKS LIKE ONE. The form prints this field in a
+             signature script (owner-directed 2026-09-02); the box previews that
+             with the browser's own cursive face rather than shipping the 360 KB
+             font to every screen — the PDF preview beside it is the real thing. */
+          style={field.font === 'signature'
+            ? { ...input, fontFamily: '"Great Vibes", "Brush Script MT", "Segoe Script", cursive', fontSize: 22, fontStyle: 'italic' }
+            : input}
+          title={field.font === 'signature' ? 'Printed on the form in a signature script, so it reads as a signature.' : undefined}
           type={field.type === 'date' ? 'date' : 'text'}
           value={value || ''}
           onChange={(e) => onChange(field.key, e.target.value)}

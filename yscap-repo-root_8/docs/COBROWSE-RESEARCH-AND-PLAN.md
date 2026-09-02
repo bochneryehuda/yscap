@@ -144,10 +144,10 @@ manager copied; (4) retention: store nothing but who/when/what-was-done (recomme
 
 ## 7. Built 2026-09-02 — Phases A, B and C shipped together (owner: "everything in one big ship")
 
-- Phase A (watch): db/674, sessions.js (mayWatch, consent lifecycle), hub.js (/ws/cobrowse), routes, the
+- Phase A (watch): db/682, sessions.js (mayWatch, consent lifecycle), hub.js (/ws/cobrowse), routes, the
   guest recorder + consent prompt + banner, the viewer, Co-browse buttons beside every view-as button,
   the Team screen for every staffer.
-- Phase B (take control): db/675 control state; a SECOND consent; the hub relays sanitised input only
+- Phase B (take control): db/683 control state; a SECOND consent; the hub relays sanitised input only
   while `granted`; the guest's own browser performs it through rrweb mirror ids inside a hard allowlist
   (no blocked element, file picker, download/new-tab link, iframe/e-sign, sign-out; no-drive routes);
   a trusted move/key of the guest's own hand, Take back, Stop or the session's end release it;
