@@ -187,7 +187,9 @@ async function handleSendError(db, row, e, opts) {
       if (opts.onDeadLetter) await opts.onDeadLetter(row, e);
       else console.warn(`[esign] DEAD-LETTER envelope row ${row.id} (app ${row.application_id}, ${row.purpose}): ${msg}`);
     } catch (le) { console.warn(`[esign] dead-letter hook failed for ${row.id}: ${le.message}`); }
-    return { dead: true, error: msg };
+    // `code` rides along so a caller can act on WHY (e.g. the panel regenerates a term
+    // sheet refused for TERM_SHEET_SIGNERS_MISMATCH) instead of pattern-matching prose.
+    return { dead: true, error: msg, ...(e && typeof e.code === 'string' ? { code: e.code } : {}) };
   }
   // Retryable → schedule backoff, RELEASE the claim so it's re-eligible at next_attempt_at.
   await db.query(

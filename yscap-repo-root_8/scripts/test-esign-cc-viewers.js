@@ -114,7 +114,11 @@ async function main() {
     // term_sheet_final=true because a sheet that prints "INITIAL TERM SHEET —
     // NOT FINAL" is refused by the send (owner-directed 2026-08-02) — this suite
     // is about the CC viewers, so it uses the sheet a ready file really carries.
-    const fakeStorage = { async read() { return Buffer.from('%PDF-1.4 term-sheet'); } };
+    // A REAL sheet carrying a signature line for everyone on this roster (borrower,
+    // co-borrower, the LO who signs it, the lender) — the send refuses anything less
+    // (term-sheet-signers.js, 2026-09-02).
+    const tsBytes = await require('./lib/term-sheet-fixture').termSheetForRoles(['borrower', 'co_borrower', 'loan_officer', 'admin']);
+    const fakeStorage = { async read() { return tsBytes; } };
     await db.query(
       `INSERT INTO documents (application_id, filename, storage_provider, storage_ref, doc_kind, is_current, term_sheet_final)
        VALUES ($1,'ts.pdf','local','ref-ts','term_sheet',true,true)`, [appId]);
