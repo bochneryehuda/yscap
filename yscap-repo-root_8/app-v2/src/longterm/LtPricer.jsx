@@ -2478,9 +2478,13 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
          the workflow". A price is ALSO the kickoff for it upstream, so this is a POLL of a search
          that is already running, not a second search. */
       if (dqAuto.current.timer) clearTimeout(dqAuto.current.timer);
-      if (r && r.searchKey) {
-        dqAuto.current = { key: r.searchKey, tries: 0, timer: null };
-        askDisqualified({ auto: true, searchKey: r.searchKey });
+      // ⛔ THE HANDLE COMES FROM THIS ANSWER, never from `res` — the state set a line earlier has
+      // not landed yet — and from the ENGINE, never from `r.searchKey`, which is a Lender Price
+      // idea the combined answer does not carry and which is why this never started there.
+      const dqHandle = engine.disqualifyHandle ? engine.disqualifyHandle(r) : null;
+      if (dqHandle) {
+        dqAuto.current = { key: JSON.stringify(dqHandle), tries: 0, timer: null };
+        askDisqualified({ auto: true, handle: dqHandle });
       } else {
         dqAuto.current = { key: null, tries: 0, timer: null };
       }
@@ -2502,12 +2506,25 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
 
   async function askDisqualified(opts) {
     const auto = !!(opts && opts.auto);
-    const key = (opts && opts.searchKey) || (res && res.searchKey);
-    if (!key || dqBusy.current) return;
+    /**
+     * THE HANDLE COMES FROM THE ENGINE, NOT FROM THE ANSWER'S SHAPE.
+     *
+     * ⛔ This used to read `res.searchKey` directly, which is a LENDER PRICE idea — so on the
+     * Combined Pricing Engine, whose answer has never carried one, it returned early every time and
+     * the whole "not eligible" section was DEAD for both rate sheets. Asking the engine lets the
+     * combined board hand back its own two search identities and the general board keep the exact
+     * call it has always made.
+     *
+     * `key` is only an IDENTITY string, for the "is this still the search on screen?" guard on the
+     * bounded auto-retry — never the thing sent.
+     */
+    const handle = (opts && opts.handle) || (engine.disqualifyHandle ? engine.disqualifyHandle(res) : null);
+    const key = handle ? JSON.stringify(handle) : null;
+    if (!handle || dqBusy.current) return;
     dqBusy.current = true;
     setDq((s) => ({ ...s, status: 'loading', tries: s.tries + 1, message: null, auto }));
     try {
-      const r = await ltApi.dscrDisqualifications(key);
+      const r = await engine.disqualify(handle, { reveal });
       // 202 arrives as an ordinary body (`ready:false`) rather than a throw, so "still computing"
       // is READ from the answer and never inferred from a status code the client already swallowed.
       if (r && r.ready === false) {
@@ -2518,7 +2535,7 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
         if (auto && dqAuto.current.key === key && dqAuto.current.tries < DQ_AUTO_TRIES) {
           dqAuto.current.tries += 1;
           dqAuto.current.timer = setTimeout(() => {
-            if (dqAuto.current.key === key) askDisqualified({ auto: true, searchKey: key });
+            if (dqAuto.current.key === key) askDisqualified({ auto: true, handle });
           }, DQ_AUTO_EVERY_MS);
         } else if (auto) {
           // ⛔ GIVEN UP — AND THE SCREEN MUST STOP SAYING IT IS STILL CHECKING. Leaving `auto` set

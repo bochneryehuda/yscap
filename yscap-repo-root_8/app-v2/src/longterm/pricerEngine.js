@@ -46,6 +46,18 @@ export const GENERAL_ENGINE = {
      has always asked: `revealSource` is a combined-engine idea and is deliberately not forwarded,
      so the request on the wire is unchanged to the byte. */
   price: (scenario) => ltApi.dscrPrice(scenario, { full: true }),
+  /**
+   * WHY EACH INVESTOR SAID NO — the door, and the handle it needs.
+   *
+   * The general engine asks Lender Price exactly as it always has: `disqualifyHandle` reads the
+   * search key off the price answer and `disqualify` polls it. Byte-identical to the call this
+   * screen has made since it shipped; the only change is that the screen now asks the ENGINE for
+   * the handle instead of reaching into the price answer itself, which is what lets a second
+   * engine answer differently without forking the screen.
+   */
+  disqualifyHandle: (res) => ((res && res.searchKey) ? { searchKey: res.searchKey } : null),
+  disqualify: (h) => ltApi.dscrDisqualifications(h.searchKey),
+
   /* THE INVESTOR ROSTER, already in the shape the picker reads. Normalising here rather than in
      the screen is what lets one picker serve two doors that answer in two shapes. */
   investors: () => ltApi.dscrInvestors().then((r) => (r && r.investors) || []),
@@ -139,6 +151,30 @@ export const COMBINED_ENGINE = {
      of a mapping the server already holds — and the copy that drifts is the one drawing the price
      somebody quotes. */
   explain: (quote, scenario, option) => ltApi.combinedExplain(quote, scenario, option),
+  /**
+   * WHY EACH INVESTOR SAID NO — BOTH RATE SHEETS, ONE LIST.
+   *
+   * ⛔ THIS SECTION WAS DEAD ON THIS BOARD, for both rate sheets, and that was MEASURED rather than
+   * inferred: `askDisqualified` reads a search key off the price answer, and the combined answer
+   * has never carried one at the top level (the identities sat inside `provenance`, which is
+   * reveal-gated and which no browser code reads), so it returned early every time and nothing was
+   * ever asked. The server now hands back an `ineligibility` handle naming the two searches — by
+   * MECHANISM, not by vendor — and this asks both through one door.
+   *
+   * ⛔ NO PORTAL IS SENT, AND THAT IS DELIBERATE RATHER THAN AN OMISSION. This screen prices
+   * without naming one (`engine.price` sends only the scenario and `reveal`), so the search this
+   * handle points at was made on the vendor's default aggregator portal and the ineligible tree
+   * must be asked for on the same one — a portal invented here would ask a session that never saw
+   * this search. IF A PORTAL IS EVER ADDED TO THE PRICE CALL IT MUST BE ADDED HERE IN THE SAME
+   * COMMIT, or the two will quietly describe different searches.
+   */
+  disqualifyHandle: (res) => {
+    const h = res && res.ineligibility;
+    if (!h || (!h.pollKey && !h.treeId)) return null;
+    return { pollKey: h.pollKey || null, treeId: h.treeId || null };
+  },
+  disqualify: (h, ctx) => ltApi.combinedDisqualifications({ ...h, revealSource: !!(ctx && ctx.reveal) }),
+
   /* ONE SYSTEM, SO NO VENDOR IS NAMED. Two programs quote this board and a line may have come from
      either, so naming one of them on every line would be wrong half the time. */
   sheetLabel: 'the rate sheet that quoted this loan',

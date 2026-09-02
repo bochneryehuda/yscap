@@ -708,6 +708,28 @@ async function priceBoth(scenario, opts = {}) {
   return {
     merged,
     /**
+     * HOW TO ASK WHY EACH INVESTOR SAID NO — the handle, not the answer.
+     *
+     * ⛔ WITHOUT THIS THE "NOT ELIGIBLE" LIST ON THIS BOARD WAS DEAD, FOR BOTH RATE SHEETS.
+     * `LtPricer.askDisqualified` reads `res.searchKey` and returns early when there is none, and
+     * this response has never carried one at the top level (the search identities were returned
+     * only inside `provenance`, which is reveal-gated and which no browser code reads). MEASURED
+     * before the fix: `priceBoth(...).searchKey` is undefined with reveal on AND off, so the whole
+     * section never loaded on the Combined Pricing Engine — it was not that LoanNEX was missing
+     * from a working list, it was that nothing was ever asked.
+     *
+     * ⛔ AND IT DOES NOT NAME THE VENDOR (the same rule as `explainHandle`, audit F8 — a handle
+     * that named its vendor sat on every ordinary-board row for no reader at all). The two slots
+     * are named for the MECHANISM: one rate sheet computes its ineligible list asynchronously and
+     * must be polled, the other answers a whole tree in one go. The PORTAL is deliberately absent:
+     * the browser already sent it on the price request, so it hands its own copy back rather than
+     * being told a hostname it did not need to learn.
+     */
+    ineligibility: {
+      pollKey: lpRes.status === 'fulfilled' ? (lpRes.value.searchKey || null) : null,
+      treeId: nxRes.status === 'fulfilled' ? (nxRes.value.transactionId || null) : null,
+    },
+    /**
      * WHAT THE BOARD WAS NARROWED TO, AND WHAT THAT COST — never a silent cap.
      *
      * `asked` is the product the search actually stood for; `dropped` is how many LoanNEX
@@ -938,6 +960,110 @@ function makeRouter(opts = {}) {
     } catch (e) {
       res.status(e.status || 400).json({ ok: false, error: e.code || 'loannex_price_error', field: e.field || null, message: reasonOf(e) });
     }
+  });
+
+  /**
+   * WHY EVERY INVESTOR SAID NO — BOTH RATE SHEETS, ONE LIST. "It should sound like one system."
+   *
+   * ⛔ THE DEFECT THIS CLOSES, MEASURED: this board's "not eligible" section was DEAD, for both
+   * rate sheets. `askDisqualified` needs a search identity and `priceBoth` returned none at the
+   * top level, so it returned early every time and nothing was ever asked. Fixing only the LoanNEX
+   * half would have added a vendor to a list that never loaded.
+   *
+   * ⛔ THE TWO ARE FETCHED DIFFERENTLY AND THAT DIFFERENCE IS REPORTED, NEVER HIDDEN. Lender Price
+   * computes its ineligible list asynchronously and is POLLED (202 while it works); LoanNEX answers
+   * a whole tree synchronously. So a caller can legitimately hold LoanNEX's refusals while Lender
+   * Price is still thinking — `ready` is false only while NOTHING has arrived, and `pending` names
+   * what is still coming so a half-filled list can never read as the whole answer.
+   *
+   * ⛔ AND ONE HALF FAILING NEVER TAKES THE OTHER DOWN. Each is settled independently and a refusal
+   * is CARRIED (`failed[]`), because "the other rate sheet could not be reached" and "the other rate
+   * sheet refused nobody" are different facts and a blank space is read as the second.
+   */
+  router.post('/combined/disqualify', async (req, res) => {
+    const b = req.body || {};
+    const reveal = b.revealSource === true;
+    const pollKey = b.pollKey ? String(b.pollKey) : null;
+    const treeId = b.treeId ? String(b.treeId) : null;
+    if (!pollKey && !treeId) {
+      return res.status(400).json({ ok: false, error: 'missing_handle',
+        message: 'Send the ineligibility handle the price answer returned.' });
+    }
+    const pending = []; const failed = []; const lenders = [];
+    // The half is named by its MECHANISM unless an admin asked to see the source — the same rule
+    // the board and the explain handle already apply.
+    const POLLED = reveal ? 'lenderprice' : 'polled';
+    const TREE = reveal ? 'loannex' : 'tree';
+
+    let polledReady = false;
+    if (pollKey) {
+      try {
+        const pr = await lp.pollDisqualifiedByKey(pollKey);
+        if (pr.unknown) {
+          failed.push({ half: POLLED, reason: 'unknown_search_key',
+            message: 'That search has expired — price the loan again to start a fresh ineligible list.' });
+        } else if (!pr.ok) {
+          failed.push({ half: POLLED, reason: pr.error || 'error', message: pr.message || null });
+        } else if (!pr.ready) {
+          pending.push(POLLED);
+        } else {
+          polledReady = true;
+          const parsed = pr.parsed || lp.parseDisqualified(pr.raw);
+          for (const l of lpPrograms.decorateDisqualifiedLenders((parsed && parsed.lenders) || [])) {
+            lenders.push(reveal ? { ...l, source: 'lenderprice' } : l);
+          }
+        }
+      } catch (e) {
+        failed.push({ half: POLLED, reason: e.code || 'error', message: reasonOf(e) });
+      }
+    }
+
+    let treeReady = false;
+    if (treeId) {
+      try {
+        const r = await nex.fails(treeId, { portal: b.portal });
+        treeReady = true;
+        for (const l of lpPrograms.decorateDisqualifiedLenders(((r.disqualified || {}).lenders) || [])) {
+          lenders.push(reveal ? { ...l, source: 'loannex' } : l);
+        }
+      } catch (e) {
+        failed.push({ half: TREE, reason: e.code || 'error', message: reasonOf(e) });
+      }
+    }
+
+    /**
+     * ONE INVESTOR, ONE ENTRY. A refused investor can legitimately appear on BOTH sheets — the
+     * board joins the two by `investorKey` and this list must join them the same way, or the screen
+     * shows one company twice under one white label and reads as a bug. An investor the registry
+     * cannot key is kept under its own name rather than dropped: an unkeyed refusal is still a
+     * refusal, and dropping it would quietly shorten the list.
+     */
+    const byKey = new Map();
+    for (const l of lenders) {
+      const k = l.investorKey || ('name:' + String(l.lender || '').toLowerCase());
+      const prev = byKey.get(k);
+      if (!prev) byKey.set(k, { ...l, items: [...(l.items || [])] });
+      else prev.items.push(...(l.items || []));
+    }
+    const mergedLenders = [...byKey.values()];
+
+    res.json({
+      ok: true,
+      // Ready when ANYTHING arrived — a list that says "still computing" while holding real
+      // refusals would hide the answer it already has.
+      ready: polledReady || treeReady,
+      pending,
+      failed,
+      disqualified: {
+        lenders: mergedLenders,
+        lenderCount: mergedLenders.length,
+        itemCount: mergedLenders.reduce((n, l) => n + ((l.items || []).length), 0),
+      },
+      retryAfterMs: pending.length ? 2000 : null,
+      message: pending.length
+        ? 'One of the two rate sheets is still working out its ineligible list — ask again shortly.'
+        : null,
+    });
   });
 
   /**

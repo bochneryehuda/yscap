@@ -225,9 +225,22 @@ const nexRows = (out) => (out.programs || []).filter((p) => NEX_PROGRAMS.some((n
   console.log('\n── THE SCREEN: the control exists where the officer may choose, and nowhere else ──');
   {
     const eng = read('app-v2/src/longterm/pricerEngine.js');
-    ok(/key: 'general',[\s\S]{0,4000}?amortizationChoice: false,/.test(eng),
+    /**
+     * ⛔ EACH ENGINE'S OWN SECTION, NOT A DISTANCE. These two used to search a fixed 4,000-character
+     * window forward from `key: '<engine>'` — so the day an unrelated field was added to the
+     * combined descriptor the flag fell 4,251 characters away and UI-2 went red while
+     * `amortizationChoice: true` was sitting right there, unchanged. A guard defeated by an
+     * addition it has no opinion about reads as a broken feature and gets "fixed" by loosening it.
+     * The boundary is the file's own structure: the general engine is everything before the
+     * combined one begins, and the combined engine is everything after.
+     */
+    const cut = eng.indexOf("key: 'combined',");
+    ok(cut > 0, 'UI-0 both engine descriptors are found by their own key, so the two sections below cannot overlap');
+    const generalSection = eng.slice(0, cut);
+    const combinedSection = eng.slice(cut);
+    ok(/amortizationChoice: false,/.test(generalSection) && !/amortizationChoice: true,/.test(generalSection),
       'UI-1 the GENERAL engine offers no rate-type control — its search has forced Fixed since it was written, and the owner\'s rule for that board is "don\'t touch it"');
-    ok(/key: 'combined',[\s\S]{0,4000}?amortizationChoice: true,/.test(eng),
+    ok(/amortizationChoice: true,/.test(combinedSection),
       'UI-2 the COMBINED engine offers it, because on that board it decides what comes back from both programs at once');
     const fields = read('app-v2/src/longterm/LtScenarioFields.jsx');
     ok(/engine\.amortizationChoice && \(/.test(fields),
