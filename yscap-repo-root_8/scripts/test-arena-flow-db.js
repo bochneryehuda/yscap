@@ -54,6 +54,28 @@ function call(server, method, p, token, body) {
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* WAIT FOR THE STATE, NOT FOR THE CLOCK.
+ *
+ * The wheel is 1500ms and the reveal timer fires 250ms after it; the "decided"
+ * write and the award insert then follow the reveal in the SAME async chain — a
+ * handful of queries on a runner this suite does not control. A fixed sleep is an
+ * assertion about how fast that runner is, and on 2026-09-02 CI's was slower than
+ * the sleep: both wheels read REVEALED while the spin still read "spinning", and
+ * main went red on a race the code does not have. Polling for the state itself
+ * asserts what the code promises; the bound keeps a genuinely stuck wheel a
+ * FAILURE, not a hang — on timeout the last row seen is handed back so the
+ * assertion below says exactly what was wanted and what was found. */
+async function untilRow(db, sql, params, pred, { timeoutMs = 10000, everyMs = 100 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let row = null;
+  for (;;) {
+    row = (await db.query(sql, params)).rows[0] || null;
+    if (row && pred(row)) return row;
+    if (Date.now() > deadline) return row;
+    await wait(everyMs);
+  }
+}
+
 (async () => {
   if (!process.env.DATABASE_URL) { console.log('  ~~ SKIP Arena flow DB (no DATABASE_URL)'); process.exit(0); }
   const R = require('path').resolve(__dirname, '..');
@@ -245,8 +267,8 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     ok(w1.body.winner === undefined && w1.body.winnerLabel === undefined,
       'and the admin who pressed the button is NOT told the winner - they watch the same wheel as everyone');
 
-    await wait(2200);   // the wheel is 1500ms; the reveal timer fires just after
-    const afterW1 = (await db.query(`SELECT * FROM arena_draws WHERE spin_id = $1 AND seq = 1`, [spinId])).rows[0];
+    // The wheel is 1500ms; the reveal timer fires just after — wait for the REVEAL, not the clock.
+    const afterW1 = await untilRow(db, `SELECT * FROM arena_draws WHERE spin_id = $1 AND seq = 1`, [spinId], (d) => d.state === 'revealed');
     eq(afterW1.state, 'revealed', 'the wheel reveals itself when the animation ends');
     ok(afterW1.winner_staff_id, 'and a real person won');
     ok([String(aliceId), String(bobId)].includes(String(afterW1.winner_staff_id)),
@@ -254,8 +276,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
     const w2 = await call(server, 'POST', `/api/arena/spins/${spinId}/spin`, boss, { seq: 2, clientSeed: 'room-said-7' });
     eq(w2.status, 200, 'wheel two turns for the prize');
-    await wait(2200);
-    const afterW2 = (await db.query(`SELECT * FROM arena_draws WHERE spin_id = $1 AND seq = 2`, [spinId])).rows[0];
+    const afterW2 = await untilRow(db, `SELECT * FROM arena_draws WHERE spin_id = $1 AND seq = 2`, [spinId], (d) => d.state === 'revealed');
     eq(afterW2.state, 'revealed', 'wheel two reveals');
     // THE PRIZE WHEEL LANDS ON SOMETHING THAT WAS ON IT. The pool is the two
     // approved entries PLUS whatever booby prizes were frozen onto the wheel
@@ -274,7 +295,9 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     }
 
     // ---- J. THE RECORD -----------------------------------------------------
-    const decided = (await db.query(`SELECT state, outcome_note FROM arena_spins WHERE id = $1`, [spinId])).rows[0];
+    // The decision and the award are written AFTER the last reveal, in the same
+    // chain — wait for "decided" itself. This is the read CI caught too early.
+    const decided = await untilRow(db, `SELECT state, outcome_note FROM arena_spins WHERE id = $1`, [spinId], (sp) => sp.state === 'decided');
     eq(decided.state, 'decided', 'the spin is decided once every wheel has landed');
     ok(/Who wins/.test(decided.outcome_note || ''), 'and it records WHY, in words, not just an id');
 

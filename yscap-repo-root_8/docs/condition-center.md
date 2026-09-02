@@ -25,8 +25,10 @@ deactivates it (kept for existing rules/answers); an unused one hard-deletes.
 
 ## Roles & permissions (039)
 
-Seven staff roles — `super_admin`, `admin`, `underwriter`, `loan_officer`,
-`loan_coordinator`, `processor`, `software_setup` — plus a per-user
+The staff roles — `super_admin`, `admin`, `underwriter`, `loan_officer`,
+`loan_officer_assistant` (the officer's permissions and screens, in its own slot
+on a file; db/672), `loan_coordinator`, `draw_coordinator`, `processor`,
+`closer`, `software_setup`; the list is `ROLES` in `src/lib/permissions.js` — plus a per-user
 `permissions` jsonb of capability overrides on top of the role's defaults
 (`src/lib/permissions.js`). Capabilities: `see_all_files`,
 `sign_off_conditions`, `manage_conditions`, `waive_conditions`, `delete_files`,

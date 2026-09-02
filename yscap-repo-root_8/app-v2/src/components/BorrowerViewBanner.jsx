@@ -15,13 +15,10 @@ import { useAuth, takeReturnTo } from '../lib/auth.jsx';
    and a bar that silently expires would look like a bug. */
 
 /* "Back to my loan officer view" / "…my processor view" / "…my admin view" —
-   the owner asked for the way back to be named in the staffer's own terms. */
-const ROLE_VIEW = {
-  super_admin: 'admin view', admin: 'admin view', underwriter: 'underwriter view',
-  loan_officer: 'loan officer view', loan_coordinator: 'coordinator view',
-  draw_coordinator: 'draw desk', processor: 'processor view', closer: 'closer view',
-  software_setup: 'setup console',
-};
+   the owner asked for the way back to be named in the staffer's own terms.
+   The per-role wording lives in the ONE front-end role registry (lib/roles.js),
+   where a new role has to name its view or fail the pinning test. */
+import { ROLE_VIEW_NAME as ROLE_VIEW } from '../lib/roles.js';
 
 function remaining(expiresAt) {
   if (!expiresAt) return '';
