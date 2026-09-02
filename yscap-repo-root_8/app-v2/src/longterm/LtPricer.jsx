@@ -5,7 +5,7 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // The pure rules that decide what a fee/comp figure MEANS live in their own plain-JS module
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
-import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey, programLine } from './priceBuild.js';
+import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey, programLine, baseOf, baseNote } from './priceBuild.js';
 // The compensation OVERLAY (owner-directed 2026-08-23) — display math on top of the numbers
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
@@ -986,7 +986,10 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
     ? (ev.message || EXPLAIN_REASON[ev.reason] || EXPLAIN_REASON.unknown)
     : null;
 
-  let run = nn(b.basePoints) ? b.basePoints : null;
+  const base = baseOf(b);
+  // The running total starts from the RESOLVED base points, so a sheet that quotes only a price
+  // still stacks its adjustments from a real starting point instead of showing none.
+  let run = nn(base.basePoints) ? base.basePoints : null;
   const stack = adj.map((a) => {
     if (run != null && nn(a.value)) run = Math.round((run + a.value) * 1000) / 1000;
     return { ...a, running: run };
@@ -1037,9 +1040,12 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
         <Track title="Price build"
           note={`Price is 100 minus points. Every line came from ${engine.sheetLabel}; the right-hand column is this page adding them up so the build can be followed.`}>
-          <Row k="Base price" v={price(nn(b.basePoints) ? 100 - b.basePoints : null)}
-            title="100 minus the base points the rate sheet quotes before any adjustment." />
-          <Row k="Base points" v={pts(b.basePoints)} />
+          {/* The base is read through ONE resolver (`baseOf`), which prefers whichever half the
+              rate sheet actually stated and derives the other — and each row SAYS which it is.
+              Drawing "100 − points" on a sheet that quotes a PRICE presented our own arithmetic as
+              the vendor's figure, on the one panel whose job is to show where a price comes from. */}
+          <Row k="Base price" v={price(base.basePrice)} title={baseNote(base.baseDerived, 'price')} />
+          <Row k="Base points" v={pts(base.basePoints)} title={baseNote(base.baseDerived, 'points')} />
           {groups.map((g) => (
             <div key={g.name} style={{ marginTop: 8 }}>
               <div style={{

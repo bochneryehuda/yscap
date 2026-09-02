@@ -240,6 +240,64 @@ export function programLine(q) {
    for that figure and NO colour — a coloured em dash would be a verdict on a number nobody has. */
 
 /** At or above par is a credit; below par is a cost; unknown is neither. */
+/**
+ * THE BASE OF THE PRICE BUILD, AND WHICH HALF THE RATE SHEET ACTUALLY QUOTED.
+ *
+ * ⛔ THE PANEL WAS TELLING THE READER THE WRONG STORY (owner: *"I understand the base price, the
+ * adjusted total and the final price, but I don't understand the base points and the adjusted
+ * points. Where are you taking this information?"*). It drew "Base price" as `100 − basePoints`
+ * under a tooltip reading "100 minus the base points the rate sheet quotes" — true of Lender
+ * Price, which quotes POINTS, and backwards on LoanNEX, which quotes a PRICE and whose points we
+ * derive. So on half the board the panel presented our own arithmetic as the vendor's figure and
+ * the vendor's own figure as arithmetic.
+ *
+ * HONEST NOTE, MEASURED rather than assumed: on every base price this integration has captured
+ * (101.5, 104.5) the two routes give the SAME number, and they diverge only at the fourth decimal
+ * (worst 0.0005 across a spread of synthetic values). This is not a wrong price on anybody's
+ * screen — it is a wrong ACCOUNT of where the price came from, plus a second copy of a rule the
+ * server already owns.
+ *
+ * ONE RULE: prefer what the vendor STATED, derive the other half, and say which. It mirrors
+ * `src/longterm/pricing/breakdown.js priceOf` — a browser cannot require server code — so
+ * `test-lt-base-price-parity-pure.js` runs BOTH over one battery and fails the moment they
+ * disagree.
+ */
+export function baseOf(priceBuild) {
+  const pb = priceBuild || {};
+  // BYTE-FOR-BYTE the server's `numOrNull` (breakdown.js): a vendor that states "101.5" as a
+  // string must read the same on the panel as it does on the server, or the mirror is the thing
+  // that decides what a price is.
+  const num = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  const r3 = (n) => Math.round(n * 1000) / 1000;
+  const statedPrice = num(pb.basePrice);
+  const statedPoints = num(pb.basePoints);
+  return {
+    basePrice: statedPrice != null ? statedPrice : (statedPoints == null ? null : r3(100 - statedPoints)),
+    basePoints: statedPoints != null ? statedPoints : (statedPrice == null ? null : r3(100 - statedPrice)),
+    baseDerived: statedPrice == null && statedPoints != null ? 'price_from_points'
+      : (statedPoints == null && statedPrice != null ? 'points_from_price' : null),
+  };
+}
+
+/** What the two base rows should say about themselves, in the reader's own words. */
+export const BASE_NOTE = {
+  price_from_points: {
+    price: 'Derived: the rate sheet quotes the base in POINTS, and price is 100 minus points.',
+    points: 'The base points the rate sheet quotes, before any adjustment.',
+  },
+  points_from_price: {
+    price: 'The base price the rate sheet quotes, before any adjustment.',
+    points: 'Derived: the rate sheet quotes the base as a PRICE, and points is 100 minus price.',
+  },
+  both: {
+    price: 'The base price the rate sheet quotes, before any adjustment.',
+    points: 'The base points the rate sheet quotes, before any adjustment.',
+  },
+};
+export function baseNote(baseDerived, which) {
+  return (BASE_NOTE[baseDerived || 'both'] || BASE_NOTE.both)[which];
+}
+
 export const PRICE_TONE = { credit: 'credit', cost: 'cost' };
 
 export function priceMoney(priceValue, loanAmount) {
