@@ -45,11 +45,8 @@ const PROCESSOR_TABS = [
   { key: 'track_record_review', label: 'Track record review' },
 ];
 const FULL_FILE_TYPE = 'processing';
-const ROLE_LABEL = {
-  super_admin: 'Super Admin', admin: 'Admin', underwriter: 'Underwriter', loan_officer: 'Loan Officer',
-  loan_coordinator: 'Loan Coordinator', draw_coordinator: 'Draw Coordinator', processor: 'Processor',
-  closer: 'Closer', software_setup: 'Software Setup',
-};
+// Role labels come from the ONE front-end role registry (lib/roles.js).
+import { ROLE_LABEL } from '../lib/roles.js';
 const addrLine = (a) => !a ? '' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '');
 const initials = (...p) => p.filter(Boolean).map(s => String(s).trim()[0] || '').join('').slice(0, 2).toUpperCase() || '—';
 // Aging, in plain words. Anything sitting a while reads as more urgent.

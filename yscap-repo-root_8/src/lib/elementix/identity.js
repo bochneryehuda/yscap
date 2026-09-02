@@ -208,7 +208,8 @@ async function connections() {
  * attributed to their own Elementix seat, so the CRM screen nudges them.
  *
  * Loan-officer-shaped roles only: nobody is nagged to connect a data vendor they
- * have no reason to use.
+ * have no reason to use. The loan officer assistant is loan-officer-shaped by
+ * definition (it holds the officer's permissions and screens — permissions.js).
  */
 async function officersNotConnected() {
   const { rows } = await db.query(
@@ -216,7 +217,7 @@ async function officersNotConnected() {
        FROM staff_users s
       WHERE s.is_active = true
         AND s.is_external = false
-        AND s.role IN ('loan_officer','admin','super_admin','processor')
+        AND s.role IN ('loan_officer','loan_officer_assistant','admin','super_admin','processor')
         AND NOT EXISTS (SELECT 1 FROM elementix_oauth o WHERE o.staff_id = s.id)
       ORDER BY s.full_name`);
   return rows.map((r) => ({ id: r.id, name: r.full_name, email: r.email, role: r.role }));
