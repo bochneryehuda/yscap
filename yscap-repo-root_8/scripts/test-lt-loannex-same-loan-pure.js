@@ -104,8 +104,8 @@ const reg = registryOf.capturedRegistry();
     // a second run of the same chain, which would agree with itself whatever it did.
     const built = nexScenario.buildNexApp(enriched, reg, { countyKey: 31001 });
     eq(built.state, 'NJ', 'A3  the vendor body the explain builds names the state the board was priced in');
-    ok(Object.keys(built).length === Object.keys(rawApp).length,
-      'A3b …by FILLING the state the raw build left null, not by adding a field the raw build lacked');
+    eq(Object.keys(built), Object.keys(rawApp),
+      'A3b …by FILLING the state the raw build left null — the SAME field list, in the same order, not a field the raw build lacked');
     let refused = null;
     try { explainScenario({ body: { scenario: { ...BROWSER, zip: 'nope' } } }); } catch (e) { refused = e; }
     ok(refused && refused.status === 422 && refused.code === 'invalid_zip', 'A4  a scenario the price door refuses is refused here with the same 422 and code');
@@ -168,7 +168,7 @@ const reg = registryOf.capturedRegistry();
     const crash = fakeRes(); scenarioRefused(crash, new Error('validateScenario blew up'));
     ok(crash.code === 500 && crash.body.error === 'scenario_check_failed' && crash.body.ok === false,
       `B12d an error with NO status is not a refusal: it is a 500 that says the scenario check failed (got ${crash.code} ${crash.body && crash.body.error})`);
-    ok(!('field' in crash.body) || crash.body.field == null, 'B12e …and it names no field, because no field was refused');
+    ok(!('field' in crash.body), 'B12e …and it names no field, because no field was refused');
 
     asked = null;
     const legacy = await post('/loannex/explain', { quote: HANDLE, scenario: BROWSER });

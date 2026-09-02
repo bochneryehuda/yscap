@@ -295,7 +295,7 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     same pure, offline, deterministic enrichment on the same input, so the explain body is
     IDENTICAL to the board's; a scenario the price door refuses is refused with the same 422 and
     never sent as a different loan. And because a screenshot of an empty panel cannot be diagnosed,
-    the answer now carries `asked` (rate, lock, state, county, ZIP, search id — never a vendor
+    the answer now carries `asked` (rate, lock, state, county, ZIP, DSCR, loan, value, search id — never a vendor
     name; the PRICE and the portal only under `revealSource`, because the vendor is asked about
     ITS price, which carries the holdback, and stating it beside a held-back row would let a reader
     subtract the two — the pre-merge audit caught the first cut printing it) on the option's own
@@ -321,8 +321,8 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     showed that is not what goes on the wire**: `mergeKnownRequestDefaults` copies same-typed
     scalars, `criteria.interestOnly` included, from the LIVE defaultSearch, so a tenant default of
     `true` would have narrowed LoanNEX to amortising while Lender Price was asked for interest-only.
-    The static build is now the FALLBACK, used only when Lender Price failed and there is no wire
-    body (test C16/C17). The option-level filter reads the same resolved answer, and now KEEPS a row it
+    The static build is now the FALLBACK, used only when there is no wire body to mirror — Lender
+    Price failed, or its client handed back no `request` (test C16/C17). The option-level filter reads the same resolved answer, and now KEEPS a row it
     cannot classify (the rule its own header always stated). In the same pass the LoanNEX board
     options gained the `terms` block the Details panel reads, so a LoanNEX row states its
     amortization, term and lock instead of drawing an em dash for all three. Vendor fact unchanged:

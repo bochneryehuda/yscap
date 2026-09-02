@@ -867,8 +867,9 @@ const EXPLAIN_REASON = {
  * Owner-reported 2026-09-02, the second time: *"Very important: I still don't see the detailed
  * LLPA and adjustments populate."* An empty panel that says only "the rate sheet returned no
  * breakdown" cannot be diagnosed from a screenshot; one that also says WHICH quote and WHICH loan
- * it asked about can. The server stamps `evidence.asked` (rate, price, lock, the location the
- * board was priced in, the search id) so this reads it back — no vendor is named, and the
+ * it asked about can. The server stamps `evidence.asked` (rate, lock, the location the board
+ * was priced in, the search id; the price and the portal only when the source is revealed) so
+ * this reads it back — no vendor is named, and the
  * vendor's own quote figures are what the board already shows on the row.
  */
 function askedLine(a) {
