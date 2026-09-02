@@ -617,6 +617,17 @@ async function priceBoth(scenario, opts = {}) {
   // The unified option list, on request. Built from the ROUTED board so a
   // suppressed or routed-away investor cannot reappear through a second door.
   let options;
+  /**
+   * THE SEARCH EVERY LOANNEX ROW WAS QUOTED FOR — declared ONCE, read by BOTH builders below.
+   *
+   * A LoanNEX rung carries no loan amount, FICO, LTV or purpose: those are the question we asked,
+   * not part of the vendor's answer, so `quote-shape.loanNexTerms` restates them from here. It is
+   * declared once because the two builders had already drifted on exactly this — the option
+   * builder was handed them and the BOARD builder was not, so the Details panel showed
+   * "Loan amount —" on every LoanNEX row while the same figure sat in the other builder's output.
+   */
+  const nxSearch = { loanAmount: sc.loan, fico: sc.fico, ltv: sc.ltv, loanPurpose: sc.purpose };
+
   if (opts.shape === 'options') {
     // The SAME resolved answer the programme narrowing used — never `sc.io` on its own, which is
     // absent when the switch is off and would leave this second pass un-narrowed too.
@@ -660,7 +671,7 @@ async function priceBoth(scenario, opts = {}) {
         // the programmes' own options is what it always wanted; they exist here because the parse
         // above now asks for them.
         const built = src === 'loannex'
-          ? quoteShape.optionsFromLoanNex({ programs: progs }, { loanAmount: sc.loan, fico: sc.fico, ltv: sc.ltv, loanPurpose: sc.purpose })
+          ? quoteShape.optionsFromLoanNex({ programs: progs }, nxSearch)
           : quoteShape.optionsFromLenderPrice(progs.flatMap((pg) => (pg && Array.isArray(pg.options)) ? pg.options : []));
         for (const o of built) {
           const row = { ...o, investorKey: e.key, whiteLabel: e.whiteLabel };
@@ -691,6 +702,7 @@ async function priceBoth(scenario, opts = {}) {
      */
     transactionId: nxRes.status === 'fulfilled' ? (nxRes.value.transactionId || null) : null,
     portal: nxRes.status === 'fulfilled' ? (nxRes.value.portal || null) : null,
+    ...nxSearch,
   });
 
   return {

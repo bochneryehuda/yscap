@@ -141,6 +141,48 @@ function deepMerge(base, patch) {
 }
 
 /**
+ * THE TERMS BLOCK ON A LOANNEX OPTION — ONE DEFINITION, BOTH BUILDERS.
+ *
+ * ⛔ THIS WAS TWO COPIES AND THEY HAD DRIFTED, AND THE COPY THAT DRIFTED IS THE ONE THE SCREEN
+ * DRAWS (owner-reported: "I realized that, by the loannex, it's missing the loan amount by the
+ * terms"). `optionsFromLoanNex` — the `?shape=options` builder — is handed the SEARCH INPUTS by
+ * its route and filled `loanAmount` / `fico` / `ltv` / `loanPurpose`. `programsFromLoanNex`,
+ * which is what `programsForBoard` calls and therefore what the Details panel reads, was never
+ * given them and filled none of the four. So the panel printed an em dash for the loan amount on
+ * every LoanNEX row while that exact figure sat in the other builder's output. The two also
+ * disagreed on `dayLock`: one wrote `r.lockDays` raw (`undefined` on a rung that omits it, which
+ * JSON DROPS, so the key vanished rather than reading null) and the other guarded it. The guarded
+ * form is the one kept.
+ *
+ * WHY THE FOUR COME FROM THE SEARCH AND NOT FROM THE VENDOR. A LoanNEX board rung is a PRICE for a
+ * scenario; the scenario's own figures are the QUESTION we asked, not part of the answer, so they
+ * appear nowhere on the rung. Lender Price restates them on every option leaf, which is the only
+ * reason its board never needed this. Restating our own inputs is not inventing a fact — it is
+ * saying what this price was quoted FOR, and a panel that cannot say that is a panel nobody can
+ * check a quote against.
+ *
+ * An input we were not handed stays NULL, never 0 — "nobody said" and "zero" are different facts,
+ * and `money(0)` prints "$0" against a loan that plainly has an amount.
+ */
+function loanNexTerms(p, r, opts = {}) {
+  return {
+    loanAmount: numOrNull(opts.loanAmount),
+    fico: numOrNull(opts.fico),
+    ltv: numOrNull(opts.ltv),
+    loanPurpose: opts.loanPurpose || null,
+    dayLock: r.lockDays == null ? null : r.lockDays,
+    cushionedLockDays: r.cushionedLockDays == null ? null : r.cushionedLockDays,
+    interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
+    interestOnlyTerm: p.interestOnlyTerm == null ? null : p.interestOnlyTerm,
+    amortizationType: p.amortizationType || null,
+    term: p.termInMonths == null ? null : p.termInMonths,
+    termInMonths: p.termInMonths != null,
+    ...termPair(p.termInMonths, 'months'),
+    dscr: numOrNull(r.dscr),
+  };
+}
+
+/**
  * LoanNEX board rows → the common option shape.
  *
  * One option per (investor, program, product, rate, LOCK). The lock is part of
@@ -166,17 +208,7 @@ function optionsFromLoanNex(board, opts = {}) {
           adjustedPoints: price == null ? null : round3(100 - price),
           pointsDerivedFromPrice: price != null,
         },
-        terms: {
-          loanAmount: numOrNull(opts.loanAmount),
-          dayLock: r.lockDays, cushionedLockDays: r.cushionedLockDays,
-          interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
-          interestOnlyTerm: p.interestOnlyTerm == null ? null : p.interestOnlyTerm,
-          amortizationType: p.amortizationType || null,
-          term: p.termInMonths == null ? null : p.termInMonths, termInMonths: p.termInMonths != null,
-          ...termPair(p.termInMonths, 'months'),
-          dscr: numOrNull(r.dscr), fico: numOrNull(opts.fico),
-          ltv: numOrNull(opts.ltv), loanPurpose: opts.loanPurpose || null,
-        },
+        terms: loanNexTerms(p, r, opts),
         /**
          * ⛔ `monthlyPI`, NOT `total` (audit F9). The very same `r.payment` is written as
          * `{ monthlyPI }` by `programsFromLoanNex` forty lines down, and `monthlyPI` is the key
@@ -530,16 +562,7 @@ function programsFromLoanNex(board, opts = {}) {
          * published facts, restated where they are read; the top-level copies stay for anything
          * that reads them there.
          */
-        terms: {
-          dayLock: r.lockDays == null ? null : r.lockDays,
-          cushionedLockDays: r.cushionedLockDays == null ? null : r.cushionedLockDays,
-          interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
-          interestOnlyTerm: p.interestOnlyTerm == null ? null : p.interestOnlyTerm,
-          amortizationType: p.amortizationType || null,
-          term: p.termInMonths == null ? null : p.termInMonths, termInMonths: p.termInMonths != null,
-          ...termPair(p.termInMonths, 'months'),
-          dscr: numOrNull(r.dscr),
-        },
+        terms: loanNexTerms(p, r, opts),
         isException: !!r.isException,
         softStop: !!r.hasSoftStopViolation,
         explain: explainHandle(r, p, price, opts),
@@ -589,6 +612,14 @@ function programsForBoard(merged, opts = {}) {
           // re-derived, so every row on one board names the one transaction that produced it.
           transactionId: opts.transactionId != null ? opts.transactionId : null,
           portal: opts.portal != null ? opts.portal : null,
+          /**
+           * THE SEARCH THIS PRICE WAS QUOTED FOR — see `loanNexTerms`. A LoanNEX rung states no
+           * loan amount, FICO, LTV or purpose, because those are the question rather than the
+           * answer; without them forwarded here the Details panel drew an em dash where the loan
+           * amount belongs on every LoanNEX row. Forwarded, never re-derived, so a row and the
+           * board it sits on can never describe two different searches.
+           */
+          loanAmount: opts.loanAmount, fico: opts.fico, ltv: opts.ltv, loanPurpose: opts.loanPurpose,
         }));
       } else {
         rows.push(base);
@@ -702,6 +733,9 @@ function optionForExplain(quote = {}, row) {
 
 module.exports = {
   emptyOption, optionForQuote, optionFromRow, optionForExplain, optionsFromLoanNex, optionsFromLenderPrice,
+  // Exported for the anti-drift guard, which derives its key list from the real builder rather
+  // than keeping a hand-typed copy that goes stale the day a term is added.
+  loanNexTerms,
   programsFromLoanNex, programsForBoard,
   attachEvidence, evidenceCoversRate, splitInterestOnly, filterInterestOnly,
   _internals: { round3, numOrNull, deepMerge },
