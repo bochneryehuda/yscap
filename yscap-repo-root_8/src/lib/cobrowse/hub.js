@@ -1,6 +1,8 @@
 'use strict';
 /**
- * CO-BROWSING HUB — the one two-way channel in PILOT (Phase A: watch-only).
+ * CO-BROWSING HUB — the one two-way channel in PILOT.
+ * Phase A watch · Phase B take control (input relayed ONLY while the register
+ * says 'granted') · Phase C redaction guard, input rate limits, restart recovery.
  *
  * Everything realtime here was one-way (Server-Sent Events, src/lib/events.js).
  * Co-browsing needs the WATCHED browser to push a masked copy of its own page to
@@ -54,6 +56,10 @@ const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;   // one rrweb batch; a full snapshot
 const BUDGET_WINDOW_MS = 10000;
 const BUDGET_BYTES = 24 * 1024 * 1024;       // per guest per window — far above real traffic, catches a runaway
 const BATCH_FLUSH_EVERY = 20;                // bookkeeping writes per N relayed batches
+const MAX_INPUT_BYTES = 16 * 1024;           // one viewer input event (a pasted value at most)
+const INPUT_RATE_PER_SEC = 60;               // per viewer: mouse moves are already sampled client-side
+const INPUT_KINDS = new Set(['click', 'dblclick', 'input', 'change', 'key', 'scroll', 'cursor', 'focus', 'blur', 'submit']);
+const redaction = require('./redaction');
 
 /** sessionId → room */
 const rooms = new Map();
@@ -66,7 +72,8 @@ function room(sessionId) {
   let r = rooms.get(sessionId);
   if (!r) {
     r = { id: sessionId, guest: null, viewers: new Set(), guestTimer: null, viewerTimer: null,
-      pendingBatches: 0, bytesWindow: 0, windowStart: Date.now() };
+      pendingBatches: 0, bytesWindow: 0, windowStart: Date.now(),
+      control: 'none', pendingControl: 0, pendingRedactions: 0 };
     rooms.set(sessionId, r);
   }
   return r;
@@ -140,6 +147,15 @@ function onGuestMessage(r, ws, data, isBinary) {
   try { const m = JSON.parse(text); t = m && m.t; } catch (_) { return; }
   if (t === 'ping') { send(ws, { t: 'pong' }); return; }
   if (t !== 'rrweb' && t !== 'route' && t !== 'notice') return;   // unknown → dropped, never relayed
+  // Phase C belt: a secret-shaped value in the clear never reaches a viewer. The
+  // browser mask is the real protection; this catches the screen nobody marked.
+  const verdict = redaction.judgeBatch(text, { t });
+  if (!verdict.ok) {
+    r.pendingRedactions += 1;
+    S.bumpRedactions(r.id, 1); r.pendingRedactions = 0;
+    broadcastViewers(r, { t: 'notice', kind: 'redacted' });
+    return;
+  }
   // Relay the guest's own bytes untouched; count, never store.
   broadcastViewers(r, text);
   r.pendingBatches += 1;
@@ -147,13 +163,48 @@ function onGuestMessage(r, ws, data, isBinary) {
 }
 
 function onViewerMessage(r, ws, data) {
+  const S = sessions();
   let m = null;
   try { m = JSON.parse(String(data)); } catch (_) { return; }
   if (!m) return;
   if (m.t === 'ping') { send(ws, { t: 'pong' }); return; }
   if (m.t === 'snapshot') { if (r.guest) send(r.guest, { t: 'snapshot' }); else send(ws, { t: 'guest_offline' }); return; }
-  // Everything else is Phase B (take control) — refused, and said so.
-  send(ws, { t: 'error', code: 'not_allowed', message: 'This session is watch-only.' });
+  if (m.t === 'input') {
+    // Phase B: an input event reaches the guest ONLY while the register says
+    // control is granted — the flag is re-read from the row on every attach and
+    // pushed by sessions.js on every change, never inferred from the socket.
+    if (r.control !== 'granted') { send(ws, { t: 'error', code: 'no_control', message: 'You do not have control of this screen.' }); return; }
+    if (Buffer.byteLength(String(data)) > MAX_INPUT_BYTES) { send(ws, { t: 'error', code: 'too_large' }); return; }
+    if (!INPUT_KINDS.has(m.k)) { send(ws, { t: 'error', code: 'bad_input' }); return; }
+    const now = Date.now();
+    if (!ws.inputWindow || now - ws.inputWindow > 1000) { ws.inputWindow = now; ws.inputCount = 0; }
+    if (++ws.inputCount > INPUT_RATE_PER_SEC) return;   // over budget: dropped, the viewer sees the page not move
+    if (!r.guest) { send(ws, { t: 'guest_offline' }); return; }
+    // Re-serialise a SANITISED shape: only the fields the driver reads, sized.
+    const out = { t: 'input', k: m.k, id: Number.isFinite(Number(m.id)) ? Number(m.id) : null };
+    for (const f of ['x', 'y', 'sx', 'sy']) if (Number.isFinite(Number(m[f]))) out[f] = Number(m[f]);
+    if (typeof m.value === 'string') out.value = m.value.slice(0, 4000);
+    if (typeof m.key === 'string') out.key = m.key.slice(0, 32);
+    if (typeof m.code === 'string') out.code = m.code.slice(0, 32);
+    for (const f of ['ctrl', 'shift', 'alt', 'meta', 'checked']) if (typeof m[f] === 'boolean') out[f] = m[f];
+    send(r.guest, out);
+    r.pendingControl += 1;
+    if (r.pendingControl >= BATCH_FLUSH_EVERY) { S.bumpControl(r.id, r.pendingControl); r.pendingControl = 0; }
+    return;
+  }
+  // Everything else is refused, and said so.
+  send(ws, { t: 'error', code: 'not_allowed', message: 'Unknown request.' });
+}
+
+/** sessions.js pushes every control change here; both sides hear it live. */
+function setControl(sessionId, status) {
+  const r = rooms.get(String(sessionId));
+  if (!r) return false;
+  r.control = String(status || 'none');
+  const msg = { t: 'control', status: r.control };
+  if (r.guest) send(r.guest, msg);
+  broadcastViewers(r, msg);
+  return true;
 }
 
 async function onConnection(ws, req) {
@@ -172,6 +223,9 @@ async function onConnection(ws, req) {
   if (role === 'viewer' && !S.isViewer(row, actor)) { closeWs(ws, 4403, 'not the viewer'); return; }
 
   const r = room(sessionId);
+  // The register is the truth about control; a room re-created after a restart
+  // must not remember a grant the row no longer holds, nor forget one it does.
+  r.control = String(row.control_status || 'none');
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
 
@@ -180,7 +234,7 @@ async function onConnection(ws, req) {
     r.guest = ws;
     clearTimer(r, 'guestTimer');
     S.markStarted(sessionId);
-    send(ws, { t: 'hello', role: 'guest', viewers: r.viewers.size });
+    send(ws, { t: 'hello', role: 'guest', viewers: r.viewers.size, control: r.control });
     broadcastViewers(r, { t: 'guest_online' });
     if (r.viewers.size) send(ws, { t: 'snapshot' });
     ws.on('message', (data, isBinary) => onGuestMessage(r, ws, data, isBinary));
@@ -198,7 +252,7 @@ async function onConnection(ws, req) {
   // viewer
   r.viewers.add(ws);
   clearTimer(r, 'viewerTimer');
-  send(ws, { t: 'hello', role: 'viewer', guestOnline: !!r.guest });
+  send(ws, { t: 'hello', role: 'viewer', guestOnline: !!r.guest, control: r.control });
   if (r.guest) send(r.guest, { t: 'snapshot' });
   ws.on('message', (data) => onViewerMessage(r, ws, data));
   ws.on('close', () => {
@@ -217,6 +271,7 @@ function close(sessionId, reason) {
   rooms.delete(String(sessionId));
   clearTimer(r, 'guestTimer'); clearTimer(r, 'viewerTimer');
   if (r.pendingBatches) { try { sessions().bumpBatches(r.id, r.pendingBatches); } catch (_) { /* best-effort */ } }
+  if (r.pendingControl) { try { sessions().bumpControl(r.id, r.pendingControl); } catch (_) { /* best-effort */ } }
   const bye = { t: 'ended', reason: String(reason || 'ended') };
   if (r.guest) { send(r.guest, bye); closeWs(r.guest, 1000, 'session ended'); }
   for (const v of r.viewers) { send(v, bye); closeWs(v, 1000, 'session ended'); }
@@ -247,19 +302,24 @@ function attach(server) {
     wss.handleUpgrade(req, socket, head, (ws) => { onConnection(ws, req).catch(() => closeWs(ws, 1011, 'server error')); });
   });
   const hb = setInterval(heartbeat, HEARTBEAT_MS); if (hb.unref) hb.unref();
-  sweepTimer = setInterval(() => { sessions().sweep().catch(() => {}); }, 30000); if (sweepTimer.unref) sweepTimer.unref();
+  // RESTART RECOVERY (Phase C): a fresh process has no rooms, so every 'active'
+  // row whose guest has gone quiet is an orphan of the previous process. Close
+  // them now rather than in 30 s; a guest still there reconnects and re-creates
+  // its room on its own (the sweep skips a row with a live room).
+  setTimeout(() => { sessions().sweep({ liveIds: new Set(rooms.keys()) }).catch(() => {}); }, 3000).unref();
+  sweepTimer = setInterval(() => { sessions().sweep({ liveIds: new Set(rooms.keys()) }).catch(() => {}); }, 30000); if (sweepTimer.unref) sweepTimer.unref();
   return wss;
 }
 
 /** For /api/health and tests. */
 function stats() {
-  let viewers = 0, guests = 0;
-  for (const r of rooms.values()) { viewers += r.viewers.size; if (r.guest) guests += 1; }
-  return { rooms: rooms.size, guests, viewers, path: PATH };
+  let viewers = 0, guests = 0, controlled = 0;
+  for (const r of rooms.values()) { viewers += r.viewers.size; if (r.guest) guests += 1; if (r.control === 'granted') controlled += 1; }
+  return { rooms: rooms.size, guests, viewers, controlled, path: PATH };
 }
 
 module.exports = {
-  PATH, MAX_MESSAGE_BYTES, GUEST_GRACE_MS, VIEWER_GRACE_MS,
-  attach, close, stats,
+  PATH, MAX_MESSAGE_BYTES, GUEST_GRACE_MS, VIEWER_GRACE_MS, MAX_INPUT_BYTES, INPUT_RATE_PER_SEC, INPUT_KINDS,
+  attach, close, stats, setControl,
   _internals: { rooms, actorFromToken, onConnection, http },
 };

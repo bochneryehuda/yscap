@@ -6,6 +6,7 @@ import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
 import { fullNameOf } from '../lib/personName.js';
 import { useFlash } from '../components/FlashToast.jsx';
 import CobrowseButton from '../components/CobrowseButton.jsx';
+import CobrowseHistory from '../components/CobrowseHistory.jsx';
 
 // Fallback role list (replaced live by GET /permissions-meta).
 const FALLBACK_ROLES = [
@@ -391,6 +392,9 @@ export default function StaffTeam() {
         </form>
         </div>
       </div>
+
+      {/* ---- the co-browse register (Phase C): a super admin sees every session ---- */}
+      {canSeeTheirScreen && <CobrowseHistory />}
 
       {/* ---- roster ---- */}
       {rows == null ? <div className="panel muted pad">Loading…</div> : groups.map(g => {

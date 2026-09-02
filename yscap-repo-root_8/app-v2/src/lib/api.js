@@ -1959,6 +1959,10 @@ export const api = {
   cobrowseMine:    () => req('GET', '/api/cobrowse/mine'),
   cobrowseGet:     (sessionId) => req('GET', `/api/cobrowse/${encodeURIComponent(sessionId)}`),
   cobrowseHistory: (limit) => req('GET', '/api/cobrowse/history' + qs({ limit })),
+  // Phase B — the SECOND consent: ask to drive, answer, take it back.
+  cobrowseControlRequest: (sessionId) => req('POST', `/api/cobrowse/${encodeURIComponent(sessionId)}/control/request`),
+  cobrowseControlRespond: (sessionId, accept) => req('POST', `/api/cobrowse/${encodeURIComponent(sessionId)}/control/respond`, { accept: !!accept }),
+  cobrowseControlRelease: (sessionId, reason) => req('POST', `/api/cobrowse/${encodeURIComponent(sessionId)}/control/release`, { reason: reason || null }),
 
   // ---- Research desk: the property / comparable / appraiser database ----------
   // Built out of every appraisal XML we have ever imported (db/409). Staff-wide —

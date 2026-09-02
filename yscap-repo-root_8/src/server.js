@@ -310,6 +310,8 @@ app.get('/api/health', async (req, res) => {
     ssnKeyStable: !cfg.ssnKeyGenerated,
     storage: cfg.storageProvider,
     storageWritable: storageInfo && storageInfo.ok,
+    // Co-browse hub (Phase C): live rooms / guests / viewers / controlled — null when the hub is not attached.
+    cobrowse: (() => { try { return require('./lib/cobrowse/hub').stats(); } catch (_) { return null; } })(),
     storagePersistent: storageInfo && storageInfo.persistent,
     storageBase: storageInfo && storageInfo.base,
     // The full card (provider, live reachability, dual-read migration state). The four flat

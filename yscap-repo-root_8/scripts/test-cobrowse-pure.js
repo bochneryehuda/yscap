@@ -32,7 +32,7 @@ const hubRaw = read('src/lib/cobrowse/hub.js');
 const hubSrc = strip(hubRaw);
 ok(/const PATH = '\/ws\/cobrowse'/.test(hubRaw), 'the hub answers on exactly /ws/cobrowse');
 ok(/const MAX_MESSAGE_BYTES = 4 \* 1024 \* 1024/.test(hubRaw), 'one message is capped at 4 MB');
-ok(/not_allowed/.test(hubSrc) && /watch-only/i.test(hubSrc), 'a viewer message that is not snapshot/ping is answered not_allowed (Phase A is watch-only)');
+ok(/code: 'not_allowed'/.test(hubSrc) && /code: 'no_control'/.test(hubSrc), 'a viewer message that is not snapshot/ping/input is answered not_allowed; an input without a grant is answered no_control');
 ok(!/r\.guest\s*&&\s*send\(r\.guest,\s*m\)/.test(hubSrc), 'no viewer message is relayed to the guest verbatim');
 ok(/socket\.destroy\(\)/.test(hubSrc), 'an upgrade on any other path is destroyed, not left hanging');
 ok(/impStaff|imp\b|impBy/.test(hubSrc), 'the hub refuses an impersonation (view-as) token by name');
@@ -57,7 +57,8 @@ const schema = read('db/672_cobrowse_sessions_consent_register.sql');
 ok(!/events?\s+(jsonb|bytea|text)/i.test(schema) && /event_batches\s+integer/i.test(schema), 'the register holds a COUNT of batches, never the screen — retention is metadata only');
 
 // ---- client: the guest -------------------------------------------------------------
-const lib = read('app-v2/src/lib/cobrowse.js');
+// The mask is ONE pure definition (cobrowseMask.js); the recorder reads it.
+const lib = read('app-v2/src/lib/cobrowseMask.js');
 const sel = (lib.match(/export const BLOCK_SELECTOR = '([^']+)'/) || [])[1] || '';
 ok(sel.includes('[data-cobrowse-block]'), 'the block selector honours the explicit data-cobrowse-block mark');
 ok(sel.includes('input[type="password"]'), 'every password box is blocked from the mirror');
@@ -68,7 +69,7 @@ const noRec = routesRe ? new Function('return ' + routesRe)() : null;
 ok(!!noRec, 'NO_RECORD_ROUTES is a real regex');
 for (const r of ['/login', '/internal/login', '/tpo/login', '/verify', '/forgot', '/reset', '/accept', '/accept-terms', '/tpo/accept', '/esign/done']) ok(noRec && noRec.test(r), `never recorded: ${r}`);
 for (const r of ['/dashboard', '/internal', '/internal/app/abc', '/application/abc']) ok(noRec && !noRec.test(r), `recorded normally: ${r}`);
-ok(/import \{ record \} from '@rrweb\/record'/.test(lib), 'the guest records with @rrweb/record');
+ok(/import \{ record \} from '@rrweb\/record'/.test(read('app-v2/src/lib/cobrowse.js')), 'the guest records with @rrweb/record');
 const host = strip(read('app-v2/src/components/CobrowseHost.jsx'));
 ok(/wants to see your screen/.test(read('app-v2/src/components/CobrowseHost.jsx')), 'the consent prompt is the owner\'s wording: "X from YS Capital wants to see your screen"');
 ok(/Accept/.test(host) && /Decline/.test(host), 'Accept / Decline, both offered');
@@ -108,6 +109,65 @@ const apkg = JSON.parse(read('app-v2/package.json'));
 ok(/^\d+\.\d+\.\d+$/.test(pkg.dependencies.ws || ''), `ws is pinned exact (${pkg.dependencies.ws})`);
 ok(/^\d+\.\d+\.\d+$/.test(apkg.dependencies['@rrweb/record'] || '') && apkg.dependencies['@rrweb/record'] === apkg.dependencies['@rrweb/replay'], `@rrweb/record and @rrweb/replay are pinned exact and equal (${apkg.dependencies['@rrweb/record']})`);
 ok(pkg.scripts.test.includes('node scripts/test-cobrowse-pure.js') && pkg.scripts.test.includes('node scripts/test-cobrowse-db.js'), 'both co-browse suites are in npm test');
+
+// ---- Phase B: take control ----------------------------------------------------------------
+ok(/const CONTROL_REQUEST_TTL_SEC = 30\b/.test(sessRaw), 'a control request nobody answers cancels itself after 30 s');
+ok(/control_status = 'granted'/.test(sessSrc) && /control_grants = control_grants \+ 1/.test(sessSrc), 'consent to control is a separate grant, counted');
+ok(/isProxyActor/.test(sessSrc) && /actor\.assistant \|\| actor\.guestConditions/.test(sessSrc), "a borrower's helper or a guest link can never be the watched person or the viewer (audit blocker)");
+ok(/pg_advisory_xact_lock/.test(sessSrc), 'the busy check and the insert run under one per-target lock (no two watchers by race)');
+ok(/if \(!r\.rows\[0\]\) return \{ ok: false, code: 'not_open'/.test(sessSrc), 'a consent that lost the race is reported, never audited as given');
+ok(/control_release_reason = CASE WHEN control_status IN \('requested','granted'\) THEN 'session_ended'/.test(sessSrc), 'ending a session releases control in the same write');
+ok(/if \(r\.control !== 'granted'\) \{ send\(ws, \{ t: 'error', code: 'no_control'/.test(hubSrc), 'the hub relays an input event ONLY while control is granted');
+ok(/INPUT_KINDS\.has\(m\.k\)/.test(hubSrc) && /MAX_INPUT_BYTES/.test(hubSrc) && /INPUT_RATE_PER_SEC/.test(hubSrc), 'input events are allowlisted by kind, size-capped and rate-limited');
+ok(/const out = \{ t: 'input', k: m\.k/.test(hubSrc) && !/send\(r\.guest, data\)/.test(hubSrc), 'the hub re-serialises a sanitised input shape — never the viewer\'s bytes verbatim');
+ok(/r\.control = String\(row\.control_status/.test(hubSrc), 'a room re-created after a restart takes control state from the register, not from memory');
+ok(/router\.use\(notAProxy\)/.test(routes), 'every co-browse door refuses a helper / guest-link token');
+ok(/router\.get\('\/mine', notInsideAView/.test(routes) && /router\.get\('\/:id', notInsideAView/.test(routes), '/mine and /:id refuse a view-as token too (no prompt, no banner inside a view)');
+ok(/control\/request'.*requireStaff, notInsideAView/.test(routes) && /control\/respond'.*notInsideAView/.test(routes) && /control\/release'/.test(routes), 'the three control doors exist, ask/answer refused inside a view-as');
+const mask = read('app-v2/src/lib/cobrowseMask.js');
+ok(!/^import /m.test(mask), 'the mask module is pure (no imports) so the harness can load it');
+const nd = (mask.match(/export const NO_DRIVE_SELECTOR = \[([\s\S]*?)\]\.join/) || [])[1] || '';
+for (const must of ["input[type=\"file\"]", 'a[download]', 'a[target="_blank"]', 'iframe', 'BLOCK_SELECTOR']) ok(nd.includes(must), `the controller can never drive: ${must}`);
+const libNow = strip(read('app-v2/src/lib/cobrowse.js'));
+ok(/from '\.\/cobrowseMask\.js'/.test(libNow) && /record\(recordOptions\(/.test(libNow), 'the recorder reads the ONE mask definition');
+ok(/if \(!e\.isTrusted \|\| live !== state \|\| state\.control !== 'granted'\) return;/.test(libNow), 'take-back fires only on a TRUSTED event of the watched person\'s own hand');
+ok(/releaseFromGuest\(state, 'guest_moved'\)/.test(libNow), 'a real mouse move / key / wheel / touch releases control');
+ok(/el\.closest\(NO_DRIVE_SELECTOR\)\) return null/.test(libNow), 'the driver refuses any element inside the no-drive allowlist');
+ok(/if \(!routeAllowsDriving\(\)\) return false;/.test(libNow), 'on a no-drive route every input is ignored');
+ok(/record\.mirror\.getNode\(Number\(id\)\)/.test(libNow), 'targets are resolved through rrweb mirror ids, never a selector the viewer typed');
+ok(/TERMINAL_CLOSE_CODES = \[4400, 4401, 4403, 4404\]/.test(read('app-v2/src/lib/cobrowse.js')) && /TERMINAL_CLOSE_CODES\.includes\(e\.code\)/.test(libNow), 'the guest stops reconnecting on a terminal close code');
+const viewerNow = strip(read('app-v2/src/screens/StaffCobrowse.jsx'));
+ok(/\[4400, 4401, 4403, 4404\]\.includes\(ev\.code\)/.test(viewerNow), 'the viewer stops reconnecting on a terminal close code');
+ok(/Ask to control/.test(read('app-v2/src/screens/StaffCobrowse.jsx')) && /Hand control back/.test(read('app-v2/src/screens/StaffCobrowse.jsx')), 'the viewer offers Ask to control / Hand control back');
+ok(/mirror\.getId\(node\)/.test(viewerNow) && /t: 'input'/.test(viewerNow), 'the viewer captures on the mirror and addresses by mirror id');
+const hostNow = read('app-v2/src/components/CobrowseHost.jsx');
+ok(/asks to control your screen/.test(hostNow) && /Allow control/.test(hostNow) && /keep watching only/.test(hostNow), 'the second consent prompt: allow / keep watching only');
+ok(/Take back/.test(hostNow) && /cobrowse-controlled/.test(hostNow), 'the banner turns to controlling with a Take back button and the red frame');
+ok(/useAuth\(\)/.test(hostNow) && /!!token && !isBorrowerView && !isTpoView && !isAssistant/.test(hostNow), 'the host keys on the live auth token and stands down inside a view-as / for a helper (audit)');
+ok(/PILOT records who watched and when; it never records the screen itself/.test(hostNow), 'the consent prompt states what is kept');
+
+// ---- Phase C: hardening -----------------------------------------------------------------------
+const R = require('../src/lib/cobrowse/redaction.js');
+for (const [name, text, exp] of [
+  ['a dashed SSN', 'ssn 123-45-6789', true], ['a spaced SSN', '123 45 6789', true],
+  ['a bare 9-digit run (phone / loan number)', '2125551234 123456789', false],
+  ['a Luhn-valid card 4-4-4-4', '4111 1111 1111 1111', true], ['a Luhn-valid card bare', '4111111111111111', true],
+  ['16 digits that fail Luhn', '1234567890123456', false], ['the mask marker', 'v ••••••', false],
+  ['a phone', '(212) 555-1234', false], ['money', '$1,250,000.00', false], ['ZIP+4', 'NJ 08701-1234', false],
+]) ok(R.looksLikeSecret(text) === exp, `redaction: ${name} → ${exp ? 'secret' : 'not a secret'}`);
+ok(R.judgeBatch('{"t":"route","path":"/x 123-45-6789"}', { t: 'route' }).ok === true, 'only rrweb batches are judged (a route message is never page text)');
+ok(R.judgeBatch('{"t":"rrweb","events":[{"text":"123-45-6789"}]}', { t: 'rrweb' }).ok === false, 'an rrweb batch carrying an SSN in the clear is refused');
+ok(/redaction\.judgeBatch\(text, \{ t \}\)/.test(hubSrc) && /S\.bumpRedactions\(r\.id, 1\)/.test(hubSrc) && /kind: 'redacted'/.test(hubSrc), 'the hub drops a secret-shaped batch, counts it, and tells the viewer why');
+ok(/STALE_ACTIVE_SEC = 180\b/.test(sessRaw) && /liveIds\.has\(String\(r\.id\)\)\) continue/.test(sessSrc), 'restart recovery closes an orphaned active row but never one with a live room');
+ok(/sessions\(\)\.sweep\(\{ liveIds: new Set\(rooms\.keys\(\)\) \}\)/.test(hubSrc), 'the hub hands the sweep its live rooms');
+ok(/setTimeout\(\(\) => \{ sessions\(\)\.sweep\(\{ liveIds: new Set\(rooms\.keys\(\)\) \}\)/.test(hubSrc), 'a fresh process sweeps orphans right after attaching');
+ok(/state\.backoff = Math\.min\(20000/.test(libNow) && /MAX_RETRY_MS/.test(read('app-v2/src/lib/cobrowse.js')), 'guest reconnect backs off and gives up after five minutes');
+ok(/data-cobrowse-block="ssn"/.test(strip(read('app-v2/src/screens/StaffBorrowerDetail.jsx'))), 'the revealed-SSN button on the borrower profile is blocked (audit note 7a)');
+ok(/cobrowse: \(\(\) => \{ try \{ return require\('\.\/lib\/cobrowse\/hub'\)\.stats\(\)/.test(server), '/api/health carries the hub stats');
+ok(/import CobrowseHistory/.test(team) && /canSeeTheirScreen && <CobrowseHistory \/>/.test(team), 'the register is on the Team screen for super admins');
+const m673 = read('db/673_cobrowse_control_and_hardening_counters.sql');
+ok(/ADD COLUMN IF NOT EXISTS control_status/.test(m673) && /control_events/.test(m673) && /redaction_drops/.test(m673) && !/keystroke|\bkeys\s+text/i.test(m673.replace(/--.*$/gm, '')), 'db/673 adds state and COUNTS, still no column that could hold the screen or a keystroke');
+ok(/scripts\/render-cobrowse-redaction\.js/.test(mask), 'the mask module names the harness that proves it');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

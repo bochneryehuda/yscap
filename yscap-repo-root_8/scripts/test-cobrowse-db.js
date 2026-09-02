@@ -1,6 +1,6 @@
 'use strict';
 /**
- * CO-BROWSING (Phase A) — the consent register, the permission rule, the doors and
+ * CO-BROWSING (Phases A–C) — the consent register, the permission rule, the doors and
  * the WebSocket hub, against a REAL Postgres and REAL HTTP + a REAL `ws` client.
  *
  * Skips (exit 0) without DATABASE_URL. Proves:
@@ -16,6 +16,9 @@
  *      sockets with the reason; a stranger's token is refused; an impersonation
  *      token is refused;
  *   D. sign-out ends the session; the audit rows exist; the screen is never stored.
+ *   E. Phase B — take control: the second consent, sanitised + rate-capped input relay,
+ *      refusals, 30 s expiry, release on end, the redaction drop, a helper token refused;
+ *   F. Phase C — restart recovery (orphaned rows), the view-as wall on /mine.
  */
 const path = require('path');
 if (!process.env.DATABASE_URL) { console.log('SKIP test-cobrowse-db: DATABASE_URL not set'); process.exit(0); }
@@ -259,8 +262,11 @@ async function main() {
   assert(s5row.status === 'ended' && s5row.end_reason === 'signed_out', `the watched person signing out ends the session (got ${s5row.status}/${s5row.end_reason})`);
   const au = await db.query(`SELECT action FROM audit_log WHERE entity_type='cobrowse_session' AND entity_id=$1 ORDER BY id`, [s2]);
   assert(au.rows.map((x) => x.action).join(',') === 'cobrowse_requested,cobrowse_accepted', `the register audits request and consent (got ${au.rows.map((x) => x.action).join(',')})`);
-  const cols = (await db.query(`SELECT column_name FROM information_schema.columns WHERE table_name='cobrowse_sessions'`)).rows.map((x) => x.column_name);
-  assert(!cols.some((cn) => /event|snapshot|dom|screen|payload/.test(cn) && cn !== 'event_batches'), 'the table has no column that could hold the screen — retention is metadata only');
+  // Retention is metadata only: a column whose NAME suggests content (event, snapshot,
+  // dom, screen, payload, key) may exist only as an integer COUNT — never text/jsonb/bytea.
+  const colRows = (await db.query(`SELECT column_name, data_type FROM information_schema.columns WHERE table_name='cobrowse_sessions'`)).rows;
+  const suspect = colRows.filter((c) => /event|snapshot|dom|screen|payload|key/.test(c.column_name));
+  assert(suspect.length >= 2 && suspect.every((c) => c.data_type === 'integer'), `the table has no column that could hold the screen or a keystroke — only counts (${suspect.map((c) => `${c.column_name}:${c.data_type}`).join(', ')})`);
   const hist = await call('GET', '/api/cobrowse/history', null, saTok);
   assert(hist.status === 200 && hist.data.sessions.length >= 5, 'a super admin reads the whole register');
   const hist2 = await call('GET', '/api/cobrowse/history', null, lo2Tok);
@@ -273,6 +279,134 @@ async function main() {
   const sw = await S.sweep();
   const s6row = (await db.query(`SELECT status, end_reason FROM cobrowse_sessions WHERE id=$1`, [s6])).rows[0];
   assert(sw.expiredRequests >= 1 && s6row.status === 'expired' && s6row.end_reason === 'request_expired', 'a request nobody answered expires on its own');
+
+  // ── E. Phase B — take control, a second consent ────────────────────────────
+  console.log('E. take control');
+  r = await call('POST', '/api/cobrowse/request', { kind: 'staff', id: lo2.id }, saTok);
+  assert(r.status === 200, `a fresh request to lo2 (got ${r.status} ${r.data && r.data.error})`);
+  const s7 = r.data.session.id;
+  // A second viewer asking the SAME person while the first is unanswered is told so (atomic busy).
+  r = await call('POST', '/api/cobrowse/request', { kind: 'staff', id: lo2.id }, loTok);
+  assert(r.status === 409 && r.data.code === 'busy', `an unanswered request blocks a second asker (got ${r.status} ${r.data && r.data.code})`);
+  r = await call('POST', `/api/cobrowse/${s7}/respond`, { accept: true }, lo2Tok);
+  assert(r.status === 200 && r.data.session.control.status === 'none' && r.data.session.controlAvailable === true, 'a live session starts with no control, control askable');
+  const v7 = await open(wsUrl(saTok, s7, 'viewer'));
+  const g7 = await open(wsUrl(lo2Tok, s7, 'guest'));
+  assert(!v7.closed && !g7.closed, 'both sides attached');
+  assert(await waitFor(v7.msgs, (m) => m.includes('"t":"hello"') && m.includes('"control":"none"')), 'hello carries the control state');
+  v7.ws.send(JSON.stringify({ t: 'input', k: 'click', id: 5, x: 1, y: 1 }));
+  assert(await waitFor(v7.msgs, (m) => m.includes('"no_control"')), 'an input before control is granted is refused no_control');
+  await new Promise((rr) => setTimeout(rr, 100));
+  assert(!g7.msgs.some((m) => m.includes('"t":"input"')), 'and nothing reached the guest');
+  // Only the viewer may ask; only the watched person may answer.
+  r = await call('POST', `/api/cobrowse/${s7}/control/request`, null, lo2Tok);
+  assert(r.status === 403, 'the watched person cannot ask for control of their own screen');
+  r = await call('POST', `/api/cobrowse/${s7}/control/request`, null, saTok);
+  assert(r.status === 200 && r.data.session.control.status === 'requested' && r.data.session.control.expiresAt, 'the viewer asks; the request carries its own expiry');
+  assert(await waitFor(g7.msgs, (m) => m.includes('"t":"control"') && m.includes('"requested"')), 'the guest socket hears the request');
+  r = await call('POST', `/api/cobrowse/${s7}/control/respond`, { accept: true }, saTok);
+  assert(r.status === 403, 'the viewer cannot answer their own control request');
+  r = await call('POST', `/api/cobrowse/${s7}/control/respond`, { accept: true }, lo2Tok);
+  assert(r.status === 200 && r.data.session.control.status === 'granted' && r.data.session.control.grants === 1, 'the watched person allows control; the grant is counted');
+  assert(await waitFor(v7.msgs, (m) => m.includes('"t":"control"') && m.includes('"granted"')), 'the viewer socket hears the grant');
+  assert(await waitFor(g7.msgs, (m) => m.includes('"t":"control"') && m.includes('"granted"')), 'the guest socket hears the grant');
+  // Now an input flows — sanitised.
+  v7.ws.send(JSON.stringify({ t: 'input', k: 'click', id: 5, x: 10, y: 20, evil: '<script>', value: 'x'.repeat(5000) }));
+  assert(await waitFor(g7.msgs, (m) => m.includes('"t":"input"') && m.includes('"k":"click"') && m.includes('"id":5')), 'a click reaches the guest addressed by mirror id');
+  const relayed = JSON.parse(g7.msgs.find((m) => m.includes('"t":"input"')));
+  assert(relayed.evil === undefined && relayed.value.length === 4000 && relayed.x === 10, 'the hub re-serialises only the known fields, sized (unknown field dropped, value capped)');
+  v7.ws.send(JSON.stringify({ t: 'input', k: 'launch_missiles', id: 5 }));
+  assert(await waitFor(v7.msgs, (m) => m.includes('"bad_input"')), 'an unknown input kind is refused');
+  v7.ws.send(JSON.stringify({ t: 'input', k: 'input', id: 5, value: 'y'.repeat(20000) }));
+  assert(await waitFor(v7.msgs, (m) => m.includes('"too_large"')), 'an oversize input is refused');
+  const beforeBurst = g7.msgs.filter((m) => m.includes('"t":"input"')).length;
+  for (let i = 0; i < 90; i++) v7.ws.send(JSON.stringify({ t: 'input', k: 'cursor', x: i, y: i }));
+  await new Promise((rr) => setTimeout(rr, 300));
+  const burst = g7.msgs.filter((m) => m.includes('"t":"input"')).length - beforeBurst;
+  assert(burst > 0 && burst <= hub.INPUT_RATE_PER_SEC, `a burst of 90 inputs in one second is capped at ${hub.INPUT_RATE_PER_SEC} (relayed ${burst})`);
+  // The guest takes it back by moving.
+  r = await call('POST', `/api/cobrowse/${s7}/control/release`, { reason: 'guest_moved' }, lo2Tok);
+  assert(r.status === 200 && r.data.session.control.status === 'released' && r.data.session.control.releaseReason === 'guest_moved', 'the watched person takes control back; the reason is recorded');
+  assert(await waitFor(v7.msgs, (m) => m.includes('"t":"control"') && m.includes('"released"')), 'the viewer hears the release');
+  v7.ws.send(JSON.stringify({ t: 'input', k: 'click', id: 5 }));
+  assert(await waitFor(v7.msgs, (m, i) => i > 3 && m.includes('"no_control"')), 'an input after release is refused again');
+  // Refused, then asked again.
+  r = await call('POST', `/api/cobrowse/${s7}/control/request`, null, saTok);
+  r = await call('POST', `/api/cobrowse/${s7}/control/respond`, { accept: false }, lo2Tok);
+  assert(r.status === 200 && r.data.session.control.status === 'refused', 'the watched person may say no');
+  r = await call('POST', `/api/cobrowse/${s7}/control/request`, null, saTok);
+  assert(r.status === 200 && r.data.session.control.status === 'requested', 'a refusal does not stop a later ask');
+  // A control request nobody answers cancels itself.
+  await db.query(`UPDATE cobrowse_sessions SET control_requested_at = now() - interval '2 minutes' WHERE id=$1`, [s7]);
+  const swC = await S.sweep({ liveIds: new Set(hub._internals.rooms.keys()) });
+  const s7c = (await db.query(`SELECT control_status, control_release_reason FROM cobrowse_sessions WHERE id=$1`, [s7])).rows[0];
+  assert(swC.expiredControlRequests >= 1 && s7c.control_status === 'released' && s7c.control_release_reason === 'request_expired', 'an unanswered control request expires on its own (30 s)');
+  // Granted, then the session ends: control ends with it.
+  await call('POST', `/api/cobrowse/${s7}/control/request`, null, saTok);
+  await call('POST', `/api/cobrowse/${s7}/control/respond`, { accept: true }, lo2Tok);
+  // Redaction (Phase C): a batch with an SSN in the clear is dropped, counted, and the viewer told.
+  const vBefore = v7.msgs.length;
+  g7.ws.send(JSON.stringify({ t: 'rrweb', events: [{ type: 3, data: { source: 0, texts: [{ id: 9, value: 'SSN 123-45-6789' }] }, timestamp: Date.now() }] }));
+  assert(await waitFor(v7.msgs, (m) => m.includes('"kind":"redacted"')), 'a secret-shaped batch is held back and the viewer told why');
+  assert(!v7.msgs.slice(vBefore).some((m) => m.includes('123-45-6789')), 'the SSN never reached the viewer');
+  g7.ws.send(JSON.stringify({ t: 'rrweb', events: [{ type: 3, data: { source: 0, texts: [{ id: 9, value: 'Loan 2125551234 at 10.25%' }] }, timestamp: Date.now() }] }));
+  assert(await waitFor(v7.msgs, (m) => m.includes('2125551234')), 'an ordinary batch (phone, rate) is relayed untouched');
+  r = await call('POST', `/api/cobrowse/${s7}/end`, null, lo2Tok);
+  assert(r.status === 200, 'the watched person ends the session');
+  await new Promise((rr) => setTimeout(rr, 250));
+  const s7row = (await db.query(`SELECT status, control_status, control_release_reason, control_grants, control_events, redaction_drops FROM cobrowse_sessions WHERE id=$1`, [s7])).rows[0];
+  assert(s7row.status === 'ended' && s7row.control_status === 'released' && s7row.control_release_reason === 'session_ended', 'ending the session releases control in the same write');
+  assert(Number(s7row.control_grants) === 2 && Number(s7row.control_events) >= 1 && Number(s7row.redaction_drops) === 1, `the register holds the counts: grants=${s7row.control_grants} events=${s7row.control_events} redactions=${s7row.redaction_drops}`);
+  const auC = await db.query(`SELECT action FROM audit_log WHERE entity_type='cobrowse_session' AND entity_id=$1 AND action LIKE 'cobrowse_control%' ORDER BY id`, [s7]);
+  assert(auC.rows.length >= 6 && auC.rows.some((x) => x.action === 'cobrowse_control_granted') && auC.rows.some((x) => x.action === 'cobrowse_control_released'), `every control step is audited (${auC.rows.length} rows)`);
+
+
+  // A borrower's HELPER (a real assistant row + the real envelope) is not the borrower:
+  // it may not see, answer, or end a co-browse aimed at the borrower (audit blocker).
+  const asstRow = (await db.query(`INSERT INTO borrower_assistants (borrower_id, email, name, token_version) VALUES ($1, $2, 'Helper', 0) RETURNING id`, [bo.id, `cb-${tag}-helper@b.test`])).rows[0];
+  const asstTok = require('../src/lib/borrower-assistant').mintToken({ borrowerId: bo.id, borrowerTv: 5, assistantId: asstRow.id, assistantTv: 0 });
+  await db.query(`UPDATE cobrowse_sessions SET status='ended', ended_at=now(), end_reason='revoked' WHERE watched_borrower_id=$1 AND status IN ('requested','active')`, [bo.id]);
+  r = await call('POST', '/api/cobrowse/request', { kind: 'borrower', id: bo.id }, saTok);
+  assert(r.status === 200, `a fresh request to the borrower (got ${r.status} ${r.data && r.data.error})`);
+  const s9 = r.data.session.id;
+  r = await call('GET', '/api/cobrowse/mine', null, asstTok);
+  assert(r.status === 403 && r.data.code === 'proxy_actor', `the helper is refused at /mine (got ${r.status} ${r.data && r.data.code})`);
+  r = await call('POST', `/api/cobrowse/${s9}/respond`, { accept: true }, asstTok);
+  assert(r.status === 403 && r.data.code === 'proxy_actor', 'the helper cannot consent for the borrower');
+  const s9row = (await db.query(`SELECT status FROM cobrowse_sessions WHERE id=$1`, [s9])).rows[0];
+  assert(s9row.status === 'requested', 'and the request is still unanswered');
+  // The library rule is a second layer under the route wall, and is proven on its own.
+  const s9raw = await S.loadRaw(s9);
+  assert(S.isWatched(s9raw, { kind: 'borrower', id: bo.id }) === true && S.isWatched(s9raw, { kind: 'borrower', id: bo.id, assistant: true }) === false
+    && S.isWatched(s9raw, { kind: 'borrower', id: bo.id, guestConditions: true }) === false, 'isWatched: the borrower yes, their helper no, a guest link no');
+  r = await call('POST', `/api/cobrowse/${s9}/respond`, { accept: true }, boTok);
+  assert(r.status === 200 && r.data.session.status === 'active', 'the borrower themselves still can');
+  const hc = await open(wsUrl(asstTok, s9, 'guest'));
+  const hcode = hc.closed ? hc.closed.code : await closeCode(hc.ws);
+  assert(hcode === 4401, `the helper token is refused by the hub too (got ${hcode})`);
+  await call('POST', `/api/cobrowse/${s9}/end`, null, saTok);
+  await db.query(`DELETE FROM borrower_assistants WHERE id=$1`, [asstRow.id]);
+
+  // ── F. Phase C — restart recovery, the view-as wall on every door ─────────
+  console.log('F. hardening');
+  r = await call('POST', '/api/cobrowse/request', { kind: 'staff', id: lo2.id }, loTok);
+  assert(r.status === 200, `a request to lo2 for the restart test (got ${r.status} ${r.data && r.data.error})`);
+  const s8 = r.data.session.id;
+  r = await call('POST', `/api/cobrowse/${s8}/respond`, { accept: true }, lo2Tok);
+  assert(r.status === 200, 'lo2 accepts (the processor signed out in D, so their token is gone — by design)');
+  await db.query(`UPDATE cobrowse_sessions SET started_at = now() - interval '20 minutes', last_seen_at = now() - interval '10 minutes' WHERE id=$1`, [s8]);
+  let swO = await S.sweep({ liveIds: new Set([String(s8)]) });
+  let s8row = (await db.query(`SELECT status FROM cobrowse_sessions WHERE id=$1`, [s8])).rows[0];
+  assert(swO.orphanedSessions === 0 && s8row.status === 'active', 'a quiet session with a LIVE room is never treated as an orphan');
+  swO = await S.sweep({ liveIds: new Set() });
+  s8row = (await db.query(`SELECT status, end_reason FROM cobrowse_sessions WHERE id=$1`, [s8])).rows[0];
+  assert(swO.orphanedSessions >= 1 && s8row.status === 'ended' && s8row.end_reason === 'expired', 'after a restart an orphaned active row is closed by the sweep');
+  swO = await S.sweep();
+  assert(swO.orphanedSessions === 0, 'a sweep with no room set (a test, a hub-less process) never guesses about orphans');
+  r = await call('GET', '/api/cobrowse/mine', null, impTok);
+  assert(r.status === 403 && r.data.code === 'inside_view', `inside a view-as, /mine is refused too (got ${r.status} ${r.data && r.data.code})`);
+  const hs = hub.stats();
+  assert('controlled' in hs, 'stats report how many rooms are under control');
 
   // cleanup
   await db.query(`DELETE FROM cobrowse_sessions WHERE viewer_staff_id IN ($1,$2,$3,$4)`, [superAdmin.id, lo.id, lo2.id, proc.id]);

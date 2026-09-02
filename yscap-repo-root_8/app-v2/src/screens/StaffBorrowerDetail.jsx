@@ -222,7 +222,8 @@ function Header({ b, name, onChanged }) {
             ? <button className="btn ghost small" disabled={busy === 'reset' || !b.email} onClick={() => act('reset')}>Reset password</button>
             : <button className="btn primary small" disabled={busy === 'invite' || !b.email} onClick={() => act('invite')}>Invite to PILOT</button>}
           <button className="btn ghost small" onClick={() => setPw(pw == null ? '' : null)}>{pw == null ? 'Set password' : 'Cancel'}</button>
-          <button className="btn ghost small" disabled={busy === 'ssn'} onClick={() => act('ssn')} title="Revealing the SSN is audited">
+          {/* data-cobrowse-block: once revealed the Social is this button's text — never mirrored to a co-browse viewer. */}
+          <button className="btn ghost small" disabled={busy === 'ssn'} onClick={() => act('ssn')} title="Revealing the SSN is audited" data-cobrowse-block="ssn">
             {ssn ? `SSN ${ssn}` : 'Reveal SSN'}</button>
           {b.photo_id_document_id &&
             <button className="btn ghost small" disabled={busy === 'photo'} onClick={() => act('photo')}>Government ID</button>}

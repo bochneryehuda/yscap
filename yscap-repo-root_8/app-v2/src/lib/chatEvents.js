@@ -18,7 +18,7 @@ const EVENT_NAMES = [
   'receipt:read', 'receipt:delivered', 'typing', 'presence:diff',
   'unread:update', 'conversation:updated', 'track_record:updated', 'notify',
   // Co-browsing (2026-09-02): the consent prompt and every status change ride the same bus.
-  'cobrowse:request', 'cobrowse:update',
+  'cobrowse:request', 'cobrowse:update', 'cobrowse:control',
   ...ARENA_EVENTS,
 ];
 

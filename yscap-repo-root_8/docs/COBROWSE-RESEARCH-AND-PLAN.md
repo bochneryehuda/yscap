@@ -141,3 +141,23 @@ manager copied; (4) retention: store nothing but who/when/what-was-done (recomme
   Guard: refuse to start co-browse rooms and log loudly if RENDER_INSTANCE_COUNT/scaling
   ever changes (defensive check at boot reading render env if available); document the
   disk-attached invariant in CLAUDE.md so a future "remove the disk" decision re-opens it.
+
+## 7. Built 2026-09-02 — Phases A, B and C shipped together (owner: "everything in one big ship")
+
+- Phase A (watch): db/672, sessions.js (mayWatch, consent lifecycle), hub.js (/ws/cobrowse), routes, the
+  guest recorder + consent prompt + banner, the viewer, Co-browse buttons beside every view-as button,
+  the Team screen for every staffer.
+- Phase B (take control): db/673 control state; a SECOND consent; the hub relays sanitised input only
+  while `granted`; the guest's own browser performs it through rrweb mirror ids inside a hard allowlist
+  (no blocked element, file picker, download/new-tab link, iframe/e-sign, sign-out; no-drive routes);
+  a trusted move/key of the guest's own hand, Take back, Stop or the session's end release it;
+  30 s request expiry; red frame + controller pointer on the guest.
+- Phase C (hardening): server-side redaction guard (dashed SSN / Luhn card → frame dropped, counted,
+  viewer told); Playwright harness proving the mask against the real rrweb build (SKIPs without
+  Chromium); restart recovery (orphaned `active` rows closed 3 s after boot and every 30 s); terminal
+  close codes stop reconnects, backoff + 5-minute give-up; per-viewer input rate cap; atomic request
+  under an advisory lock (an unanswered request counts as busy); helper / guest-link tokens refused at
+  every door; notices for file picker / download / new tab; `/api/health` hub stats; the co-browse
+  register on the Team screen for super admins.
+- Owner sign-off still wanted on WORDING: the consent prompt's retention sentence ("PILOT records who
+  watched and when; it never records the screen itself") and the control prompt.
