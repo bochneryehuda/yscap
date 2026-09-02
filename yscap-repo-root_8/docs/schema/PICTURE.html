@@ -111,13 +111,13 @@ footer p{max-width:74ch;margin:0 0 9px}
   This is a picture of a copy — nothing here can change anything.</p>
   <div class="figs">
     <div class="fig"><b>410</b><span>tables</span></div>
-    <div class="fig"><b>6,571</b><span>fields</span></div>
+    <div class="fig"><b>6,572</b><span>fields</span></div>
     <div class="fig"><b>831</b><span>connections</span></div>
     <div class="fig"><b>38</b><span>automatic rules</span></div>
     <div class="fig"><b>353</b><span>value guards</span></div>
-    <div class="fig"><b>1,424</b><span>lookups</span></div>
+    <div class="fig"><b>1,425</b><span>lookups</span></div>
   </div>
-  <p class="stamp">Generated from the committed schema map — built from 680 migration files, up to db/683. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
+  <p class="stamp">Generated from the committed schema map — built from 682 migration files, up to db/685. Regenerate with <code>npm run schema:picture</code>; it needs no database.</p>
 </div></header>
 
 <section><div class="wrap">
@@ -318,10 +318,10 @@ footer p{max-width:74ch;margin:0 0 9px}
   </div>
 </div></details><details class="tbl" data-name="lt_vor_envelopes" data-note="">
 <summary><span class="tn">lt_vor_envelopes</span>
-<span class="tm">16 fields · 3 links</span>
+<span class="tm">17 fields · 3 links</span>
 </summary>
 <div class="detail">
-  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">completed_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">envelope_id</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">form_id</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t">gen_random_uuid()</td></tr><tr><td class="c">last_error</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">loan_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">recipient_email</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">recipient_name</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">send_method <span class="req">required</span></td><td class="t">text</td><td class="t">'docusign'::text</td></tr><tr><td class="c">sent_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">sent_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">status <span class="req">required</span></td><td class="t">text</td><td class="t">'created'::text</td></tr><tr><td class="c">updated_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">void_reason</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">voided_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr></tbody></table></div>
+  <div class="scroll"><table class="cols"><thead><tr><th>Field</th><th>Kind</th><th>Default</th></tr></thead><tbody><tr><td class="c">completed_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">created_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">docusign_checked_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">envelope_id</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">form_id</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">id <span class="req">required</span></td><td class="t">uuid</td><td class="t">gen_random_uuid()</td></tr><tr><td class="c">last_error</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">loan_id <span class="req">required</span></td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">recipient_email</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">recipient_name</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">send_method <span class="req">required</span></td><td class="t">text</td><td class="t">'docusign'::text</td></tr><tr><td class="c">sent_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr><tr><td class="c">sent_by</td><td class="t">uuid</td><td class="t"></td></tr><tr><td class="c">status <span class="req">required</span></td><td class="t">text</td><td class="t">'created'::text</td></tr><tr><td class="c">updated_at <span class="req">required</span></td><td class="t">timestamp with time zone</td><td class="t">now()</td></tr><tr><td class="c">void_reason</td><td class="t">text</td><td class="t"></td></tr><tr><td class="c">voided_at</td><td class="t">timestamp with time zone</td><td class="t"></td></tr></tbody></table></div>
   <div class="links">
     <div><h4>Depends on</h4><ul><li><span class="a">form_id</span> → <span class="a">lt_vor_forms</span><span class="tag">on delete set null</span></li><li><span class="a">loan_id</span> → <span class="a">lt_loans</span><span class="tag cascade">on delete cascade</span></li></ul></div>
     <div><h4>Depended on by</h4><ul><li><span class="a">lt_vor_returns</span></li></ul></div>
