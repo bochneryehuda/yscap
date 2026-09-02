@@ -331,20 +331,30 @@ async function priceBrackets(req, res) {
     const r = await lp.price(one);
     if (!r.ok) return { ok: false, error: r.error || 'lp_price_failed', message: r.message || null, http: r.http || null };
     if (firstRequest == null) { firstRequest = r.request; provenance = r.provenance || null; }
-    const parsed = lp.parse(r.raw);
+    /* ⛔ THE FULL PARSE, NOT THE SUMMARY. A band has to render with the SAME code the
+       whole board renders with — the same rows, the same lender grouping, the same
+       details panel behind each quote (the owner: *"Every rate and every investor
+       added, but that whole section should be divided in brackets, and it should work
+       the same"*). The details panel is built on `priceBuild` / the itemised LLPAs,
+       which only `parseFull` carries; the summary parse would give a thinner second
+       board beside the real one, which is exactly what was rejected. */
+    const parsed = lp.parseFull(r.raw);
     const deco = investorPrograms.decorate(parsed.programs);
     return {
       ok: true,
       parsed: Object.assign({}, parsed, { programs: deco.programs }),
-      meta: { searchKey: r.searchKey, sentDscr: dscr, programCount: parsed.programCount, lenderCount: parsed.lenderCount, pricedAt: parsed.pricedAt || null },
+      meta: { searchKey: r.searchKey, sentDscr: dscr, pricedAt: parsed.pricedAt || null },
     };
   };
 
   const out = await bracketRun.priceByBracket(figures, runSearch, {
     rounds: Number.isInteger(body.rounds) ? body.rounds : undefined,
-    /* THE BAND THIS DEAL IS ALREADY IN — the ratio the officer's own search ran at.
-       It is what the widening grows from, and it is why there is no probe search:
-       the board they are looking at answered that question a moment ago. */
+    /* WHERE TO START. A ratio the officer typed wins; with none, `seedRatioFrom`
+       works one out from a typical coupon — the owner's *"we don't need a target rate
+       anymore… do it in your backend"*. Either way it only picks the FIRST band: the
+       frontier finds the rest from what the vendor actually returns, so nothing is
+       priced on the seed and a seed a little off costs one extra round, not a wrong
+       price. */
     seedDscr: sc.dscr,
     /* AND THE RATES OFF THAT BOARD, when the caller hands them over. They sharpen the
        first round's search ratios (the lowest ratio a band actually reaches, rather

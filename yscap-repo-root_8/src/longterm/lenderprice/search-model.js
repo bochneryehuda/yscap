@@ -286,6 +286,36 @@ function dscrBand(dscr) {
 // Which loan terms one search asks for. PURE and total: it always returns a non-empty array of
 // allowed terms, so the request can never carry an empty `termsCriteria` (which the vendor reads
 // as "no term matches" and answers with nothing at all).
+/**
+ * FIXED OR ARM — the vendor's OWN criterion, not a word in a product name.
+ *
+ * ⛔ THIS IS A REAL SEARCH FIELD AND ALWAYS WAS. `criteria.loanType` + `loanTypeCriteria` are the
+ * two halves of the vendor's fixed/adjustable filter (Â§37.8 records them being MEASURED moving
+ * together against a live-model stub), and the DSCR profile has forced them to `Fixed` since it was
+ * written — correctly, because a DSCR investor search is a fixed-rate search unless somebody says
+ * otherwise. What did not exist was a way for a caller to say otherwise.
+ *
+ * ⛔ SO THE PROFILE FORCE STAYS A FORCE. It is not relaxed into an inherited default: a saved
+ * company preference still cannot move it (that is the whole point of `PROFILE_FORCED`), and with
+ * NOTHING stated the answer is `Fixed`, byte for byte what every search has always sent. Only a
+ * caller naming the product explicitly moves it.
+ *
+ * Three answers, and the third is what keeps it honest:
+ *   a recognised value  → 'Fixed' | 'ARM'
+ *   nothing stated      → null       (the profile default applies)
+ *   stated, unreadable  → undefined  (REFUSED by validateInputs — never priced as Fixed, which
+ *                                      would answer an ARM search with a fixed-rate board and look
+ *                                      exactly like a successful quote)
+ */
+const AMORTIZATION_TYPES = { fixed: 'Fixed', arm: 'ARM' };
+function mapAmortization(v) {
+  if (v == null || String(v).trim() === '') return null;
+  const k = String(v).trim().toLowerCase().replace(/[^a-z]/g, '');
+  if (k === 'fixed' || k === 'fixedrate') return AMORTIZATION_TYPES.fixed;
+  if (k === 'arm' || k === 'adjustable' || k === 'adjustablerate') return AMORTIZATION_TYPES.arm;
+  return undefined;
+}
+
 function resolveSearchTerms(sc, effTermYears) {
   const clean = (list) => {
     const out = [];
@@ -969,7 +999,7 @@ function buildSearch(sc = {}, opts = {}) {
   const reg = registry.applyRegistry(m, sc);
   if (reg && reg.warnings && reg.warnings.length) m[REGISTRY_WARNINGS] = reg.warnings;
 
-  return wireDiscipline(m);
+  return wireDiscipline(m, sc);
 }
 
 // §37.8 — WHAT LEAVES THIS FUNCTION IS DISCIPLINED, AT ONE PLACE, AFTER EVERYTHING ELSE HAS RUN.
@@ -1023,11 +1053,14 @@ const PROFILE_FORCED = {
   compensationType: 'BorrowerCompPlan',
   lienPriorityType: 'FirstLien',
 };
-function wireDiscipline(m) {
+function wireDiscipline(m, sc = {}) {
   const c = m.criteria || (m.criteria = {});
 
   // (1) profile identity — forced last, so nothing downstream can have moved it.
   for (const [k, v] of Object.entries(PROFILE_FORCED)) c[k] = Array.isArray(v) ? v.slice() : v;
+  // …and the ONE identity field a caller may name, forced with the same authority. Absent, the
+  // line above has already written the profile's `Fixed`, so an ordinary search is unchanged.
+  { const amort = mapAmortization(sc && sc.amortization); if (amort) c.loanType = amort; }
   // An empty array is not a null and survived the merge; on the one leaf whose null is a proven 500
   // it is the obvious sibling, so it is repaired rather than sent.
   if (!Array.isArray(c.mortgageTypes) || c.mortgageTypes.length === 0) c.mortgageTypes = ['Conventional'];
@@ -1216,6 +1249,10 @@ function validateInputs(sc = {}) {
   if (sc.incomeDocType != null && sc.incomeDocType !== '' && mapIncomeDocType(sc.incomeDocType) == null) {
     return bad('invalid_income_doc_type', 'incomeDocType',
       `Unknown income documentation type ${JSON.stringify(String(sc.incomeDocType))}. Supported: ${Object.keys(registry.INCOME_DOC_TYPES).join(', ')}.`);
+  }
+  if (mapAmortization(sc.amortization) === undefined) {
+    return bad('invalid_amortization', 'amortization',
+      `Unknown amortization ${JSON.stringify(String(sc.amortization))}. Supported: fixed, arm.`);
   }
   if (sc.prepayStructure != null && sc.prepayStructure !== '' && mapPrepayStructure(sc.prepayStructure) == null) {
     return bad('invalid_prepay_structure', 'prepayStructure',
@@ -1529,4 +1566,4 @@ function validateScenario(sc = {}) {
 }
 
 module.exports = { VENDOR_MAX_DSCR, BASE, buildSearch, clearScenarioOwnedFields, mergeKnownRequestDefaults, smoRegistryFromList, REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, validateLocation, validateInputs, LpValidationError,
-  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, resolveSearchTerms, IO_EXTRA_TERM, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };
+  _internals: { SMO_DSCR, SMO_PPP, resolveSmo, mapPurpose, mapProp, mapRentalTerm, RENTAL_TERM_ALIASES, dscrBand, mapReserves, RESERVES_TOKENS, PURPOSE_ALIASES, purposeKey, STATE_FIPS, strictNum, ALLOWED_LOCKS, ALLOWED_TERMS, LIVE_LOCKS, LIVE_TERMS, ATTACHMENT_TYPES, BOOLEAN_FIELDS, resolveSearchTerms, IO_EXTRA_TERM, mapAmortization, AMORTIZATION_TYPES, mortgageHistoryConflict, NONZERO_LATE_COUNTS, SCENARIO_OWNED, clearScenarioOwnedFields, mergeKnownRequestDefaults, SCENARIO_OWNED_DELETE: DELETE, deriveAmounts, compPlanValue } };

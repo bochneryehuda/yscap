@@ -6,7 +6,6 @@ import { money, money2, noteRate as rate, price, points as pts } from './format.
 // so CI can test them: a .jsx module can only be loaded by bundling it, and no CI job
 // installs the front end's build tools. See priceBuild.js.
 import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, priceMoney, toneColor, ambiguousProgramLabels, programLabelKey, programLine } from './priceBuild.js';
-import LtBracketBoard from './LtBracketBoard.jsx';
 // The compensation OVERLAY (owner-directed 2026-08-23) — display math on top of the numbers
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
@@ -200,6 +199,51 @@ export function bracketMissing(fig) {
   if (!(fig.loanAmount > 0)) need.push('loan amount');
   if (!fig.interestOnly && !(fig.termYears > 0)) need.push('loan term');
   return need;
+}
+
+/**
+ * THE BOARD, WITH A BRACKET DIVIDER WHERE THE BAND CHANGES.
+ *
+ * Owner-directed 2026-09-01, correcting the first cut: *"It should not be a separate
+ * section… before 5.75 it should say which bracket this is, and then we have 5.875,
+ * 5.996, 6.125, and after 6.125 it should say here is a break that changed the
+ * bracket. Basically the same as it was before. Every rate and every investor added,
+ * but that whole section should be divided in brackets, and it should work the
+ * same."*
+ *
+ * ⛔ SO IT IS THE SAME BOARD, NOT A SECOND ONE. Each band's own priced programmes go
+ * through the SAME `buildRateStack` the whole board has always used, so every row
+ * behaves identically — open it, see the lenders, click through to the details. The
+ * only new thing on screen is a heading between the groups.
+ *
+ * ⛔ AND EACH BAND CARRIES ITS OWN SEARCH'S PRICES, which is the entire point: the
+ * server priced every band as its own scenario, so the same coupon can legitimately
+ * cost different money in two bands. Rebuilding one stack from all the bands pooled
+ * together would put two prices on one rate and lose exactly what this was for.
+ *
+ * Returns a flat list the render walks once: `{kind:'band'}` headings interleaved
+ * with `{kind:'rate'}` rows. Flat rather than nested so the keyboard order, the
+ * expand-all set and the row keys stay one sequence.
+ */
+export function bandedStack(brackets, filter) {
+  const out = [];
+  let rateCount = 0;
+  for (const b of (Array.isArray(brackets) ? brackets : [])) {
+    const programs = filter ? filter(b.programs) : b.programs;
+    const st = buildRateStack(programs || []);
+    // A band the investor filter has emptied is not drawn — a heading over nothing
+    // reads as a band that priced nothing, which is a different and untrue fact.
+    if (!st.rates.length) continue;
+    out.push({ kind: 'band', key: `band:${b.tier}`, band: b, rateCount: st.rates.length });
+    for (const r of st.rates) {
+      // The row key carries the band, because ONE rate can appear in two bands with
+      // two prices — and two rows sharing a key would collapse into one on screen
+      // and open each other when either is clicked.
+      out.push({ kind: 'rate', key: `${b.tier}:${r.key}`, row: { ...r, key: `${b.tier}:${r.key}` }, tier: b.tier });
+      rateCount += 1;
+    }
+  }
+  return { items: out, rateCount, bandCount: out.filter((x) => x.kind === 'band').length };
 }
 
 export function buildRateStack(programs) {
@@ -798,6 +842,21 @@ export function ChargeList({ charges, sheet }) {
    and it is printed BESIDE the vendor's own total, never instead of it. If the two ever
    disagree the screen says so on its face rather than quietly showing one of them.
    ────────────────────────────────────────────────────────────────────────── */
+/**
+ * WHY THERE IS NO ITEMIZATION, in plain words â a FALLBACK, never a second copy of the rule.
+ *
+ * The vendor's own sentence (`evidence.message`) is preferred wherever the server has one; these
+ * cover the two states that have a reason and no message, and the last resort. Keyed on the codes
+ * `quote-shape.attachEvidence` and `loannex/parse.explainAbsence` actually emit.
+ */
+const EXPLAIN_REASON = {
+  not_requested: 'This rate sheet has not been asked to itemise this price.',
+  no_answer: 'The rate sheet was asked and nothing came back, so there is no breakdown to show.',
+  evidence_is_for_a_different_rate_or_lock:
+    'The breakdown that came back is for a different rate or lock, so it is not shown against this one.',
+  unknown: 'No breakdown could be read from the rate sheet’s answer.',
+};
+
 export function PriceBuild({ o: oProp, comp, ts, quote }) {
   const engine = useEngine();
   /**
@@ -828,7 +887,7 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
     let dead = false;
     setAsking(true); setAskErr(null); setFetched(null);
     Promise.resolve()
-      .then(() => explainer({ ...handle, investorKey: invKey }))
+      .then(() => explainer({ ...handle, investorKey: invKey }, oProp))
       .then((r) => {
         if (dead) return;
         // `alreadyExplained` is not a failure and must not read as one: that sheet published its
@@ -872,6 +931,24 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
     })
     : null;
   const adj = Array.isArray(o && o.adjustments) ? o.adjustments : [];
+  /**
+   * ⛔ AN EMPTY TABLE IS A CLAIM, SO THE PANEL SAYS WHOSE SILENCE IT IS.
+   *
+   * The owner's *"nothing populates at all"* had a second half the first fix did not reach: when a
+   * rate sheet is asked to itemise a price and answers with nothing, the panel drew "none itemized"
+   * over an empty build and offered no reason — indistinguishable from a quote that genuinely
+   * carries no adjustments, which is a statement no rate sheet made. The server already records
+   * WHICH silence it was (`evidence.reason`, and the vendor's own words in `evidence.message`);
+   * this puts it where the table would have been.
+   *
+   * ⛔ IT IS SHOWN ONLY WHERE IT IS TRUE: a row that arrived explained with the search reads
+   * `inline_with_search` and `appliesToThisRate: true`, so it never appears there, and the general
+   * board — which asks nobody — never reaches this at all.
+   */
+  const ev = (o && o.evidence) || null;
+  const explainNote = (!asking && !askErr && askable && ev && ev.appliesToThisRate === false && adj.length === 0)
+    ? (ev.message || EXPLAIN_REASON[ev.reason] || EXPLAIN_REASON.unknown)
+    : null;
 
   let run = nn(b.basePoints) ? b.basePoints : null;
   const stack = adj.map((a) => {
@@ -908,6 +985,12 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
       )}
       {askErr && (
         <div style={{ fontSize: 12.5, color: CAUTION, marginBottom: 10, lineHeight: 1.6 }}>{askErr}</div>
+      )}
+      {explainNote && (
+        <div style={{
+          fontSize: 12.5, color: SLATE, lineHeight: 1.6, marginBottom: 10,
+          padding: '8px 10px', borderRadius: 8, background: `${GOLD}14`, border: `1px solid ${GOLD}44`,
+        }}>{explainNote}</div>
       )}
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
         <Track title="Price build"
@@ -1003,7 +1086,12 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
           <Row k="Loan amount" v={money(o && o.terms && o.terms.loanAmount)} />
           <Row k="Term" v={o && o.terms && nn(o.terms.term)
             ? `${o.terms.term} ${o.terms.termInMonths ? 'months' : 'years'}` : '—'} />
-          <Row k="Amortization" v={o && o.terms
+          {/* ⛔ AN UNSTATED INTEREST-ONLY FLAG IS AN EM DASH, NEVER "FULLY AMORTISING". `null` on this
+              key means the rate sheet did not say, and printing the amortising answer turns a
+              silence into a claim about the loan. Lender Price fills it with `!!leaf.isInterestOnly`
+              on every option, so it is never null there and the general board draws exactly what it
+              always drew; the sheet that explains on demand is the one that can leave it unsaid. */}
+          <Row k="Amortization" v={o && o.terms && o.terms.interestOnly != null
             ? (o.terms.interestOnly ? 'Interest-only' : 'Fully amortising') : '—'} />
           <Row k="Lock" v={o && o.terms && nn(o.terms.dayLock) ? `${o.terms.dayLock} days` : '—'} />
           <Row k="Monthly P&amp;I" v={money2(o && o.monthlyPayment && o.monthlyPayment.monthlyPI)} />
@@ -1029,7 +1117,7 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
           <Track title={`${engine.sheetPossessive} own fee fields`}
             note="The vendor's numbers verbatim — our fee sheet shows in the borrower-paid and lender-paid positions.">
             {feeLines.filter((r) => r.key !== 'pointsFinanced').length === 0
-              ? <div style={{ fontSize: 12.5, color: MUTED }}>Lender Price returned no fee lines on this quote.</div>
+              ? <div style={{ fontSize: 12.5, color: MUTED }}>{`${engine.sheetSubject} returned no fee lines on this quote.`}</div>
               : feeLines.filter((r) => r.key !== 'pointsFinanced')
                 .map((r) => <Row key={r.key} k={labelize(r.key)} v={r.text} title={r.key} />)}
           </Track>
@@ -1060,7 +1148,7 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
             own block is read verbatim, one click away. */}
         {!compActive && <Track title="Comp">
           {compRows.length === 0
-            ? <div style={{ fontSize: 12.5, color: MUTED }}>Lender Price returned no comp lines on this quote.</div>
+            ? <div style={{ fontSize: 12.5, color: MUTED }}>{`${engine.sheetSubject} returned no comp lines on this quote.`}</div>
             : compRows.map((r) => (
               <div key={r.key}>
                 <Row k={labelize(r.key)} v={r.text} title={r.key} />
@@ -1176,6 +1264,37 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    ONE RATE, AND EVERY INVESTOR AT IT.
    ────────────────────────────────────────────────────────────────────────── */
+/**
+ * THE LINE BETWEEN TWO BANDS — the owner's *"here is a break that changed the
+ * bracket"*.
+ *
+ * It states the band, the ratio that band was actually SEARCHED at, and how many
+ * rates are in it. The search ratio matters and is not decoration: two bands are two
+ * different questions put to Lender Price, which is why the same coupon can cost
+ * different money on either side of one of these lines.
+ *
+ * Every colour is an explicit dark on the white canvas — never an `--ink*` token,
+ * which is a LIGHT paper colour in this palette.
+ */
+export function BandDivider({ band, rateCount }) {
+  return (
+    <div style={{
+      display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap',
+      margin: '14px 0 6px', padding: '7px 10px', borderRadius: 8,
+      background: '#FAF8F3', borderLeft: `3px solid ${GOLD}`,
+    }}>
+      <span style={{ fontSize: 13.5, fontWeight: 700, color: INK }}>DSCR {band.label}</span>
+      <span style={{ fontSize: 11.5, color: MUTED }}>
+        {rateCount} {rateCount === 1 ? 'rate' : 'rates'}
+      </span>
+      <span style={{ flex: 1 }} />
+      <span style={{ fontSize: 11.5, color: GOLD_TEXT, fontWeight: 600 }}>
+        priced at {band.sentRatioText || '—'}
+      </span>
+    </div>
+  );
+}
+
 export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLenders, onToggleLender, loanAmount, comp, ts, housing }) {
   const engine = useEngine();
   /* THE ACTION COLUMN IS AS WIDE AS WHAT IT HOLDS. A board WITH the term-sheet cart reserves
@@ -1659,6 +1778,33 @@ export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp, invSe
  * a screen that lists its own exceptions is a copy with extra steps. Each is given what it needs
  * from this screen's state and nothing else.
  */
+/**
+ * WHAT THE PRODUCT ANSWERS TOOK OFF THE BOARD, in one plain sentence — or nothing at all.
+ *
+ * Reads the server's own `productFilter` report (`asked` + `dropped`), never a second count of its
+ * own: the board and this sentence must be describing the same narrowing. Returns '' whenever
+ * nothing was dropped, so an ordinary empty board reads exactly as it always did.
+ */
+export function narrowedAway(res) {
+  const pf = res && res.productFilter;
+  const d = (pf && pf.dropped) || null;
+  if (!pf || !pf.applied || !d) return '';
+  const parts = [];
+  if (d.amortization > 0) {
+    const want = pf.asked && pf.asked.amortization === 'arm' ? 'ARM' : 'fixed-rate';
+    parts.push(`${d.amortization} that are not ${want}`);
+  }
+  if (d.interestOnly > 0) {
+    const want = pf.asked && pf.asked.io ? 'interest-only' : 'fully amortising';
+    parts.push(`${d.interestOnly} that are not ${want}`);
+  }
+  if (d.term > 0) parts.push(`${d.term} on a different term`);
+  if (!parts.length) return '';
+  const list = parts.length === 1 ? parts[0]
+    : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+  return ` Your rate-type, interest-only and term answers also left out ${list} — change one of those above to widen the search.`;
+}
+
 export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
   /* ⛔ THE FORM IS THE SHARED ONE. Its state, its ZIP lookup, its amount triangle and its derived
      setters all live in `LtScenarioFields.jsx`, because the scenario page mounts the SAME fields —
@@ -1930,6 +2076,12 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
 
   // The same rule the press uses, for the screen's own "what is still needed" line.
   const dscrMissing = bracketMissing(bracketFigures({ f, calc, effectiveScenario: res && res.effectiveScenario }));
+  /* THE BANDED VIEW, once the per-band searches have landed. Until then this is null
+     and the board renders exactly as it always has — which is what keeps the answer
+     on screen at its usual speed while the banding is still being priced. */
+  const banded = brk.res && Array.isArray(brk.res.brackets) && brk.res.brackets.length
+    ? bandedStack(brk.res.brackets, (programs) => filterPrograms(programs, invSel).programs)
+    : null;
 
 
   /* THE ONE OVERLAY OBJECT every board takes. `compShiftPoints` answers null when the plan is
@@ -2331,7 +2483,7 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
   const explainRow = React.useMemo(() => {
     if (!engine.explain || !pricedForm) return null;
     const sc = toScenario(pricedForm);
-    return (quote) => engine.explain(quote, sc);
+    return (quote, option) => engine.explain(quote, sc, option);
   }, [engine, pricedForm]);
 
   return (
@@ -2567,6 +2719,42 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
                     Collapse all
                   </button>
                 </div>
+                {/* ── WHERE THE BANDING STANDS ────────────────────────────────
+                    It belongs HERE, on the board it is about, rather than in a
+                    section of its own (owner-directed 2026-09-01: *"I don't like
+                    it this way. It should not be a separate section."*). Three
+                    honest states, never one silence covering all of them. */}
+                <div>
+                  {brk.busy && (
+                    <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>
+                      Splitting this board into DSCR bands — one search per band, so the
+                      groups appear in a moment.
+                    </div>
+                  )}
+                  {brk.err && (
+                    <div style={{ fontSize: 12, color: CAUTION, marginTop: 2 }}>
+                      {brk.err} The rates below are the single-ratio board, so a dear rate
+                      here may be one this loan does not reach.
+                    </div>
+                  )}
+                  {!brk.busy && !brk.err && dscrMissing.length > 0 && (
+                    <div style={{ fontSize: 12, color: CAUTION, marginTop: 2 }}>
+                      Not split into DSCR bands — that needs the {dscrMissing.join(', ')}.
+                      Fill those in on the DSCR calculator and search again.
+                    </div>
+                  )}
+                  {banded && (
+                    <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>
+                      {banded.bandCount} DSCR {banded.bandCount === 1 ? 'band' : 'bands'} · every rate
+                      priced in the band its own ratio reaches
+                      {brk.res.failedBrackets && brk.res.failedBrackets.length > 0
+                        /* A band whose search FAILED is a fact about the vendor, not about
+                           the loan, and must never read as "this loan reaches nothing there". */
+                        ? ` · ${brk.res.failedBrackets.length} ${brk.res.failedBrackets.length === 1 ? 'band' : 'bands'} could not be priced and ${brk.res.failedBrackets.length === 1 ? 'is' : 'are'} missing rather than empty`
+                        : ''}
+                    </div>
+                  )}
+                </div>
                 <div style={{ ...sub, marginTop: 6 }}>
                   Lowest rate first. Within a rate, the best price first — a higher price is worth
                   more to the borrower. Open a line to see the whole build behind that price.
@@ -2597,15 +2785,31 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
                     {filteredRes && filteredRes.hidden > 0
                       ? `Your investor filter is hiding ${filteredRes.hidden === filteredRes.total
                         ? `every one of the ${filteredRes.total}`
-                        : `${filteredRes.hidden} of the ${filteredRes.total}`} programmes Lender Price returned — none of the ticked investors priced this scenario. Press Show all investors above to see the whole board.`
-                      : 'Lender Price returned no priced rungs for this scenario. The Ineligible view says which products it looked at and why each was ruled out.'}
+                        : `${filteredRes.hidden} of the ${filteredRes.total}`} programmes ${engine.sheetReturned} — none of the ticked investors priced this scenario. Press Show all investors above to see the whole board.`
+                      /* ⛔ AN EMPTY BOARD NAMES WHAT NARROWED IT. The rate-type / interest-only /
+                         term answers are real search criteria at one program and a narrowing of the
+                         other's own board, so a board they emptied must say so — otherwise the one
+                         screen that could explain the emptiness reads as "nothing prices this loan",
+                         which is a claim neither rate sheet made. Only ever ADDED to the vendor's
+                         own sentence, never in place of it. */
+                      : `${engine.sheetSubject} returned no priced rungs for this scenario. The Ineligible view says which products it looked at and why each was ruled out.${narrowedAway(res)}`}
                   </div>
-                ) : stack.rates.map((row) => (
-                  <RateRow key={row.key} row={row} loanAmount={loanAmount} comp={comp} ts={engine.cart ? ts : null}
-                    housing={housing}
-                    open={openRates.has(row.key)}
-                    onToggle={() => toggleRate(row.key)}
-                    openQuote={openQuote} onOpenQuote={setOpenQuote} openLenders={openLenders} onToggleLender={toggleLender} />
+                ) : (banded || { items: stack.rates.map((row) => ({ kind: 'rate', key: row.key, row })) }).items.map((it) => (
+                  /* ⛔ ONE LIST, TWO KINDS OF ROW. The board is the SAME board — the
+                     same `RateRow`, opening to the same lenders and the same details
+                     panel — with a heading dropped in where the band changes. Until
+                     the per-band searches land, `banded` is null and this walks the
+                     ordinary stack, so the answer is on screen at its usual speed and
+                     the dividers appear underneath it a few seconds later. */
+                  it.kind === 'band'
+                    ? <BandDivider key={it.key} band={it.band} rateCount={it.rateCount} />
+                    : (
+                      <RateRow key={it.key} row={it.row} loanAmount={loanAmount} comp={comp} ts={engine.cart ? ts : null}
+                        housing={housing}
+                        open={openRates.has(it.key)}
+                        onToggle={() => toggleRate(it.key)}
+                        openQuote={openQuote} onOpenQuote={setOpenQuote} openLenders={openLenders} onToggleLender={toggleLender} />
+                    )
                 ))}
               </div>
             ) : (
@@ -2661,30 +2865,6 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
               onIssued={ts.setIssued} onPlan={setCartDocKind} />
           )}
         </ComparisonWorkflowPanel>
-        )}
-
-        {/* ── EVERY RATE IN THE DSCR BAND IT ACTUALLY REACHES ──────────────
-            Owner-directed 2026-09-01, after a live refusal: an 11.125% option was
-            offered priced as though the loan were at 1.25 while its true ratio is
-            0.93, so the term sheet refused to issue it. The refusal was right; the
-            board should not have offered the rate.
-
-            ⛔ ONE PRESS, TWO SPEEDS. The owner's own shape: *"Show the normal board
-            instantly, then let the bands fill in underneath as the other answers
-            arrive."* The band searches are fired by `runBrackets` from inside the
-            Search press and are NOT awaited, so the board above renders at exactly
-            the speed it always did and this fills in a few seconds later. There is
-            no second button and no effect — a live vendor call still happens only
-            because somebody pressed Search.
-
-            ⛔ AND IT DECIDES NOTHING HERE. The bands, the ratio each was searched
-            at, and which quotes belong in which band are all the SERVER's answers,
-            on the SAME eleven-tier ladder the term sheet refuses on — down to the
-            text those ratios are written in. A browser copy of that ladder is
-            exactly how a board would come to offer a rate the export then refuses,
-            which is the defect this replaces. */}
-        {res && (
-          <LtBracketBoard res={brk.res} busy={brk.busy} err={brk.err} missing={dscrMissing} />
         )}
 
         {/* ── THE FOOTNOTES ────────────────────────────────────────────────
