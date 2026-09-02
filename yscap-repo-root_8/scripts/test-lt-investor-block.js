@@ -290,6 +290,87 @@ check(!/require\(['"]\.\/encompass\/investors['"]\)/.test(src),
     'with none stored the block is the registry alone — the behaviour before they existed');
   A.useCustomInvestors(CUSTOM_FIXTURE);
 }
+
+/* ── THE THIRD PLACE A SPELLING IS RECORDED: THE HUMAN LINKS MAP (audit F1, rule 10) ────────
+   `pricing.investorLinks` is keyed by FREE TEXT — a person types a spelling a vendor used and
+   points it at a canonical investor. `validateLinks` checks that the TARGET exists and never
+   looked at the spelling, so a name recorded there resolved as a real investor for pricing,
+   routing, the white label and the holdback, and walked straight past this scrubber to a borrower
+   while the REGISTRY'S own name for that same investor was redacted.
+
+   The CONTROL matters as much as the assertion: the same sentence is scrubbed BEFORE the map is
+   read and must come back untouched. Without it this block would pass just as well against a name
+   the registry already blocked — the vacuous shape this codebase has been finding all day. */
+{
+  const LINKED = 'Zephyr Capital Partners';
+  A.useInvestorLinks(null);
+  const plain = `Payoff from ${LINKED} is required before closing.`;
+  check(A.scrubInvestorNames(plain, 'borrower') === plain,
+    `CONTROL: with no links recorded, "${LINKED}" is NOT blocked — so what follows is about the link, not about a name the registry already knew`);
+
+  A.useInvestorLinks({ [LINKED]: { key: 'acra', source: 'loannex', linkedBy: 'test' } });
+  const linkLeaks = [];
+  for (const ctx of CONTEXTS) {
+    const text = ctx(LINKED);
+    if (A.scrubInvestorNames(text, 'borrower') === text) linkLeaks.push(JSON.stringify(text));
+  }
+  check(linkLeaks.length === 0,
+    `THE ONE THAT MATTERS: a spelling recorded BY HAND in the links map is scrubbed in every one of the five shapes (${linkLeaks.length} leaked)`);
+  if (linkLeaks.length) linkLeaks.slice(0, 4).forEach((m) => console.error(`         · ${m}`));
+
+  check(!A.scrubInvestorNames(`send to ${LINKED.toUpperCase()} today`, 'borrower').includes('ZEPHYR')
+    && !A.scrubInvestorNames(`send to ${LINKED.toLowerCase()} today`, 'borrower').includes('zephyr'),
+    'and it is caught in any casing — a multi-word name matches however it was typed');
+
+  /* THE MEMO. The spelling list is memoised per roster map; a link saved AFTER a scrub has already
+     warmed that memo must still be blocked, or the block is exactly as stale as the defect. */
+  A.useInvestorLinks(null);
+  const warm = `Ask ${LINKED} for the letter.`;
+  A.scrubInvestorNames(warm, 'borrower');
+  A.useInvestorLinks({ [LINKED]: { key: 'acra' } });
+  check(!A.scrubInvestorNames(warm, 'borrower').includes('Zephyr'),
+    'a link saved AFTER the block was last built is blocked on the very next scrub — the memo notices');
+
+  A.useInvestorLinks({ 'Made Up Holdings': { key: 'not_an_investor' } });
+  check(A.scrubInvestorNames('Ask Made Up Holdings for it.', 'borrower') === 'Ask Made Up Holdings for it.',
+    'a link whose target is not a real investor blocks nothing — `readLinks` drops it, so the block and the resolver agree about which entries count');
+
+  /* AN OUTAGE MAY NEVER SHRINK THIS HALF EITHER — the same rule the custom map carries, for the
+     same reason: an empty links map means "block fewer investor names". */
+  A.useInvestorLinks({ [LINKED]: { key: 'acra' } });
+  A.markInvestorLinksUnread('the settings store could not be read');
+  check(!A.scrubInvestorNames(`Approval from ${LINKED} received.`, 'borrower').includes('Zephyr'),
+    'a settings store that cannot be read KEEPS the link spellings already known');
+  A.useInvestorLinks(null);
+
+  /* ⛔ AND THE WIRING IS ASSERTED THROUGH THE DECLARATION ITSELF, NOT BY CALLING THE HOOK BY HAND.
+     Everything above calls `useInvestorLinks` directly, so it would all stay green while the
+     settings declaration lost its `applyOnLoad` and the block silently stopped being fed in
+     production. Caught by mutation: deleting that one line left this suite passing.
+     So the hooks are taken OFF the declaration and INVOKED — a grep for their names would be
+     satisfied by the comment that explains them, which is the other trap this codebase keeps
+     finding. */
+  const decl = require(path.join(ROOT, 'src/longterm/settings/encompass-settings'))
+    .SETTINGS.find((d) => d && d.key === 'pricing.investorLinks');
+  check(!!decl && typeof decl.validate === 'function' && typeof decl.applyOnLoad === 'function'
+    && typeof decl.applyOnUnreadable === 'function',
+    'the links setting declares all three doors — a write check, a load hook and what to do when the store cannot be read');
+
+  A.useInvestorLinks(null);
+  const viaDecl = `Payoff from ${LINKED} is due.`;
+  check(A.scrubInvestorNames(viaDecl, 'borrower') === viaDecl, 'CONTROL: still unblocked before the declaration\'s own hook runs');
+  decl.applyOnLoad({ [LINKED]: { key: 'acra' } });
+  check(!A.scrubInvestorNames(viaDecl, 'borrower').includes('Zephyr'),
+    'THE WIRING: running the DECLARATION\'s own load hook is what blocks the spelling — so removing it from the settings file reddens this line');
+
+  const bad = decl.validate({ 'Someone': { key: 'not_an_investor' } });
+  check(bad.ok === false && (bad.problems || []).length > 0,
+    'and the declaration\'s write door refuses a link pointing at an investor that does not exist');
+  const good = decl.validate({ [LINKED]: { key: 'acra' } });
+  check(good.ok === true, '…while a link at a real investor is accepted, so the door is not simply refusing everything');
+  A.useInvestorLinks(null);
+}
+
 check(A.summary().spellingsBlocked >= 80,
   `${A.summary().spellingsBlocked} spellings are actively blocked`);
 

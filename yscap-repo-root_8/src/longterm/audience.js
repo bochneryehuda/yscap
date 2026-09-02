@@ -235,10 +235,35 @@ let CUSTOM_IDENTITY = 'null';
 let CUSTOM_LOADED = false;
 let CUSTOM_DEGRADED = null;
 
+/**
+ * THE SECOND PLACE A SPELLING IS RECORDED — the human links map (audit F1, rule 10).
+ *
+ * `pricing.investorLinks` is keyed by FREE TEXT: a person types a spelling a vendor used and points
+ * it at a canonical investor. `validateLinks` checks that the TARGET exists; it never looks at the
+ * spelling. So since 2026-08-30 a name like "Zephyr Capital Partners" could be recorded, resolve as
+ * a real investor for pricing, routing, the white label and the holdback — and walk straight past
+ * this scrubber to a borrower, while the registry's own name for the same investor was redacted.
+ * Reproduced before fixing, in exactly those two sentences side by side.
+ *
+ * `AUDIENCE-RULES.md` promised *"add a new investor there and it is blocked everywhere,
+ * automatically"*. That was true of the registry, and the links map did not exist when it was
+ * written. It is true of every recorded spelling now, and the doc says which places those are.
+ *
+ * The same three states as `CUSTOM`, for the same reason: "no links", "nothing has read them yet"
+ * and "they could not be read" are three different facts and must not read alike.
+ */
+let LINKS = [];
+let LINKS_IDENTITY = 'null';
+let LINKS_LOADED = false;
+let LINKS_DEGRADED = null;
+
 function spellings(custom) {
   const map = custom === undefined ? CUSTOM : roster.asCustom(custom);
   const hit = SPELLINGS_BY_MAP.get(map);
-  if (hit) return hit;
+  /* ⛔ THE MEMO IS KEYED ON THE MAP, SO IT MUST ALSO NOTICE A LINKS CHANGE. Without the identity
+     check a link saved after the first scrub would be memoised away and never blocked — the block
+     would be exactly as stale as the defect it closes. */
+  if (hit && hit.links === LINKS_IDENTITY) return hit.list;
   const out = [];
   for (const inv of roster.effectiveList(map)) {
     for (const raw of [inv.label].concat(inv.aliases || [])) {
@@ -246,6 +271,11 @@ function spellings(custom) {
       if (c) out.push(c);
     }
   }
+  /* THE SPELLINGS SOMEBODY RECORDED BY HAND, through the SAME `classify` the registry's own go
+     through — a link that happens to be a short code or an ambiguous English word gets exactly the
+     treatment a registry alias would, because those rules are about the WORD, not about where it
+     was written down. */
+  for (const c of LINKS) out.push(c);
   // De-duplicate per mode, then sort longest-first.
   const seen = new Set();
   const list = out
@@ -256,7 +286,7 @@ function spellings(custom) {
       return true;
     })
     .sort((a, b) => b.text.length - a.text.length);
-  SPELLINGS_BY_MAP.set(map, list);
+  SPELLINGS_BY_MAP.set(map, { links: LINKS_IDENTITY, list });
   return list;
 }
 
@@ -310,6 +340,72 @@ function useCustomInvestors(raw) {
 function markCustomInvestorsUnread(reason = 'the settings store could not be read') {
   CUSTOM_DEGRADED = String(reason || 'unreadable');
   return { customInvestors: CUSTOM.size, loaded: CUSTOM_LOADED, degraded: CUSTOM_DEGRADED };
+}
+
+/**
+ * Tell the block which spellings a person has recorded by hand in the links map.
+ *
+ * Called by the settings store's `applyOnLoad` for `pricing.investorLinks`, with the COMPANY's
+ * stored map and only ever the company's — the same rule, and for the same reason, as
+ * `useCustomInvestors`: `lt_settings` is keyed on (scope, key), so a PER-USER read answers the
+ * declared default (an empty map) for a key that person has never set, and handing that here would
+ * empty this half of the block for the whole process.
+ *
+ * ⛔ IT READS THROUGH `investor-links.readLinks`, NOT BY WALKING THE OBJECT. That function already
+ * owns which entries are usable — it drops a name that cannot be normalised and a link whose target
+ * is not a real investor — so a spelling gets blocked here exactly when it would resolve to an
+ * investor there. Two readers of one map is how they come to disagree.
+ *
+ * NEVER THROWS: a map that cannot be read at all leaves the block exactly as it was.
+ */
+function useInvestorLinks(raw) {
+  let identity;
+  try { identity = JSON.stringify(raw === undefined ? null : raw); } catch { identity = null; }
+  // A READ IS A READ even when the value has not changed — see `useCustomInvestors`.
+  LINKS_LOADED = true;
+  LINKS_DEGRADED = null;
+  if (identity === LINKS_IDENTITY) return { changed: false, linkSpellings: LINKS.length };
+  let next = [];
+  try {
+    // Required HERE rather than at the top: this module is required by the settings store, which
+    // `investor-links` sits beside, and a lazy require keeps that graph acyclic no matter which
+    // way a future edit points it. It is called on a settings read, not per request.
+    const { links } = require('./pricing/investor-links').readLinks(raw);
+    const seen = new Set();
+    for (const entry of links.values()) {
+      // The spelling a PERSON TYPED, not the normalized key — the key is lower-cased and stripped,
+      // and a borrower reads the words as they were written.
+      const c = classify(entry && entry.name);
+      if (!c) continue;
+      const k = `${c.mode}:${c.text.toLowerCase()}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      next.push(c);
+    }
+  } catch { next = []; }
+  LINKS = next;
+  LINKS_IDENTITY = identity;
+  return { changed: true, linkSpellings: LINKS.length };
+}
+
+/**
+ * The hand-added investors currently in force, for a caller that must resolve an investor exactly
+ * as this block does.
+ *
+ * ⛔ READ-ONLY BY CONTRACT, and public so that the settings declarations do not have to reach into
+ * `_internals` to agree with each other. The links write door needs it: a link may point at an
+ * investor somebody ADDED, and a validator that only knows the code registry would refuse a
+ * perfectly good link — which is exactly what happened when this door was first declared, and what
+ * `test-lt-custom-investors-pure` caught.
+ */
+function customInvestorsInForce() {
+  return CUSTOM;
+}
+
+/** The links map could not be read — KEEP what we already knew, and say it may be stale. */
+function markInvestorLinksUnread(reason = 'the settings store could not be read') {
+  LINKS_DEGRADED = String(reason || 'unreadable');
+  return { linkSpellings: LINKS.length, loaded: LINKS_LOADED, degraded: LINKS_DEGRADED };
 }
 
 /**
@@ -443,6 +539,9 @@ module.exports = {
   stripInternalOnly,
   useCustomInvestors,
   markCustomInvestorsUnread,
+  useInvestorLinks,
+  markInvestorLinksUnread,
+  customInvestorsInForce,
   summary,
   _internals: {
     spellings,

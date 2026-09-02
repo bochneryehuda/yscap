@@ -888,7 +888,38 @@ const SETTINGS = [
       + '"loannex", linkedBy, linkedAt }. A link outranks every registry match, so a person\'s '
       + 'decision beats a lookup; the label always comes from the canonical investor.',
     evidence: 'Owner-directed 2026-08-30: "We should be able to link them together side by side '
-      + 'and then select this one. Want to see from this program."' },
+      + 'and then select this one. Want to see from this program."',
+    /**
+     * ⛔ THE KEY OF THIS MAP IS A RECORDED SPELLING OF AN INVESTOR, so it is a rule-10 fact and
+     * gets the same two hooks the hand-added investors get (audit F1).
+     *
+     * `validateLinks` was already the write door's check; declaring it HERE means a caller cannot
+     * save this map down some other path and skip it. `applyOnLoad` publishes the spellings to the
+     * block: before this, a link keyed "Zephyr Capital Partners" was accepted, resolved as a real
+     * investor for pricing, routing, the white label and the holdback — and walked straight past
+     * `scrubInvestorNames` to a borrower, while the registry's own name for that same investor was
+     * redacted. Reproduced in exactly those two sentences side by side before it was fixed.
+     *
+     * And, as for the custom map, an UNREADABLE store must not fall back to the default: an empty
+     * links map means "block fewer investor names", so a database blip would take a rule-10
+     * protection away. The block keeps what it had and records that it may be stale.
+     */
+    validate: (v) => {
+      // `validateLinks` already decides `ok` — and decides it ALL-OR-NOTHING, returning
+      // `links: null` when anything is wrong, which is the right shape for a settings door: a map
+      // half-saved is a map nobody can reason about. Read its answer rather than re-deriving one
+      // from `problems`, or the door and the write path could one day disagree about the same map.
+      // ⛔ WITH THE HAND-ADDED INVESTORS IN FORCE. A link may point at an investor somebody ADDED,
+      // and a validator that knows only the code registry refuses a perfectly good link — which is
+      // exactly what the first cut of this door did, caught by `test-lt-custom-investors-pure`'s
+      // "PUT /investor-links accepts a link to a hand-added investor". The route resolves the same
+      // map before it saves; this reads the one already in force so the two cannot disagree.
+      const aud = require('../audience');
+      const r = require('../pricing/investor-links').validateLinks(v, aud.customInvestorsInForce());
+      return { ok: r.ok, value: r.links, problems: r.problems };
+    },
+    applyOnLoad: (v) => require('../audience').useInvestorLinks(v),
+    applyOnUnreadable: () => require('../audience').markInvestorLinksUnread() },
   // INVESTORS WE ADD BY HAND — the door for an investor the code registry has
   // never heard of (owner-directed 2026-09-02: *"I want to be able to add a new
   // investor myself — one came up on a vendor board and there was nowhere to put

@@ -52,6 +52,24 @@ investor there and it is blocked everywhere, automatically. The test proves that
 sweeping **every one of the 150 recorded spellings** through five sentence shapes and
 failing if a single one survives.
 
+> ⛔ **"Add it there" now means THREE places, and that sentence used to name only one.**
+> When this was written the registry was the only place a spelling could be recorded. It is
+> not any more, and an audit found the gap the hard way: a name recorded in the **links map**
+> resolved as a real investor for pricing, routing, the white label and the holdback, and
+> walked straight past the scrubber to a borrower, while the registry's own name for that
+> same investor was redacted. The three places are now named here so this promise stays true:
+>
+> 1. `encompass/investors.js` — the code registry.
+> 2. `pricing.customInvestors` — the investors somebody added by hand (section below).
+> 3. `pricing.investorLinks` — the human links map, whose **key is free text**: a person
+>    types a spelling a vendor used and points it at a canonical investor. `validateLinks`
+>    checks the TARGET exists; it never looked at the spelling.
+>
+> All three reach the block through the settings declaration's `applyOnLoad` hook, so a
+> spelling is blocked from the moment it is saved rather than from the next deploy — and all
+> three refuse to fall back to their default when the store cannot be read, because an empty
+> map means *block fewer investor names*.
+
 ---
 
 ## The two defences, in order

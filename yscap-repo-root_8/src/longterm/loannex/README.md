@@ -607,6 +607,54 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
 
 ---
 
+
+19. **A NAME RECORDED BY HAND AS A *LINK* WAS NOT BLOCKED FROM CLIENTS (2026-09-02, audit F1,
+    rule 10).** The block list was built from the code registry and — since item 18 — the investors
+    added by hand. It was never built from the **third** place a spelling is recorded: the human
+    links map. `pricing.investorLinks` is keyed by FREE TEXT — a person types a spelling a vendor
+    used and points it at a canonical investor — and `validateLinks` checks that the TARGET exists
+    without ever looking at the spelling.
+
+    **Reproduced before fixing,** in two sentences side by side:
+
+    ```
+    Please provide the payoff letter for Zephyr Capital Partners before closing.   <- reached the borrower
+    Please provide the payoff letter for our capital partner before closing.       <- the registry's own name, redacted
+    ```
+
+    The linked name resolved as a real investor for pricing, routing, the white label and the
+    holdback — and walked straight past `scrubInvestorNames`.
+
+    **The fix travels the channel item 18 built.** `audience.useInvestorLinks` publishes the link
+    spellings through the SAME `classify` the registry's own go through (so a link that happens to
+    be a short code or an ambiguous English word gets exactly the treatment a registry alias would),
+    and the settings declaration gained all three doors: `validate`, `applyOnLoad` and
+    `applyOnUnreadable`. The spelling list is memoised per roster map, so the memo now also keys on
+    the links identity — without that, a link saved after the first scrub would be memoised away and
+    the block would be exactly as stale as the defect it closes.
+
+    **A link pointing at nothing real blocks nothing.** `readLinks` drops it, so the block and the
+    resolver agree about which entries count — the alternative is a scrubber that redacts words no
+    investor answers to.
+
+    **`AUDIENCE-RULES.md` promised more than it delivered, and now says which three places count.**
+    Its *"add a new investor there and it is blocked everywhere, automatically"* was written when the
+    registry was the only place. Corrected.
+
+    **Proven by mutation, five ways:** dropping the link spellings from the block, letting the memo
+    ignore a links change, emptying the block on an unreadable store, and removing either the load
+    hook or the write door from the declaration each redden a *named* assertion.
+
+    **The wiring is asserted through the DECLARATION, not by calling the hook.** Everything else in
+    that battery calls `useInvestorLinks` directly, so it all stayed green while the settings
+    declaration lost its `applyOnLoad` and the block silently stopped being fed in production —
+    caught by mutation. The suite now takes the hooks off the declaration and INVOKES them, because
+    a grep for their names would be satisfied by the comment that explains them.
+
+    **And the first cut of the write door was too strict:** it validated without the hand-added
+    investors, so a link pointing at one somebody had ADDED was refused. `test-lt-custom-investors-pure`
+    caught it. The door now reads the roster already in force, so it and the route cannot disagree.
+
 ---
 
 ## Update, 2026-08-30 (second pass)
