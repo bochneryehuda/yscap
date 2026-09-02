@@ -22,6 +22,7 @@
 const db = require('../../db');
 const compile = require('./compile');
 const registry = require('./registry');
+const { personaOf } = require('../permissions');
 
 const VIZ = ['number', 'trend', 'breakdown', 'table', 'compare', 'list'];
 const BANDS = ['hero', 'body'];
@@ -164,7 +165,10 @@ async function get(id) {
   return { ...d.rows[0], cards: c.rows };
 }
 
-/** The dashboard this person lands on: their own home, else their role's default. */
+/** The dashboard this person lands on: their own home, else their PERSONA's
+ *  default (permissions.personaOf — a role declared to behave as another lands
+ *  on that role's dashboard: the loan officer assistant opens "My dashboard",
+ *  not the generic staff fallback), else the generic staff dashboard. */
 async function homeFor(actor) {
   const own = await db.query(
     `SELECT id FROM dashboards
@@ -173,7 +177,7 @@ async function homeFor(actor) {
   if (own.rows[0]) return get(own.rows[0].id);
   const role = await db.query(
     `SELECT id FROM dashboards WHERE is_system AND role_default=$1 AND archived_at IS NULL LIMIT 1`,
-    [actor.role]);
+    [personaOf(actor.role)]);
   if (role.rows[0]) return get(role.rows[0].id);
   const any = await db.query(
     `SELECT id FROM dashboards WHERE is_system AND slug='default_staff' AND archived_at IS NULL LIMIT 1`);

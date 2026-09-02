@@ -34,8 +34,12 @@
  * condition renders in.
  */
 
+import { isLoanOfficerPersona } from './roles.js';
+
 /* Who may complete a condition — accept a document, sign off, waive.
-   Lives here rather than in the screen so the ladder owns its own role rules. */
+   Lives here rather than in the screen so the ladder owns its own role rules.
+   "The loan officer" below is the PERSONA (lib/roles.js): the loan officer
+   assistant holds the officer's permissions and gets the officer's buttons. */
 export const canComplete = (role) =>
   ['processor', 'admin', 'super_admin', 'underwriter', 'loan_coordinator'].includes(role);
 
@@ -47,7 +51,7 @@ export const canComplete = (role) =>
    which rows render the button. NEVER reuse this for sign-off/waive — an LO
    must not complete conditions. */
 export const canDeleteDoc = (role) =>
-  canComplete(role) || role === 'loan_officer' || role === 'closer';
+  canComplete(role) || isLoanOfficerPersona(role) || role === 'closer';
 
 /* A document still waiting on somebody. Anything not accepted and not rejected
    is pending — matching how the rows themselves read `review_status`, where an
@@ -75,7 +79,7 @@ export function pendingDocs(docs) {
  */
 export function nextStep(it, { role, docs } = {}) {
   const completer = canComplete(role);
-  const isLO = role === 'loan_officer';
+  const isLO = isLoanOfficerPersona(role);
   const signed = !!it.signed_off_at;
   const waived = !!it.waived_at;
 
