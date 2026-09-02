@@ -150,15 +150,26 @@ quiet. `npm test` had stopped: requiring the long-term module arms `settings/sto
 carefully-`unref`'d fifteen-second re-read whose own comment says it "must never hold a process open,
 least of all a test runner's". The timer did not. Its QUERY did — every tick borrows a client from
 Long-Term's own pool and restarts that client's thirty-second idle countdown, so the pooled socket is
-never reaped, and a live TCP handle keeps Node's loop alive however many timers are `unref`'d. Every
-database suite that boots the app hung after its last assertion. TWO THINGS TO KEEP: a pool that a
-script does not explicitly end needs `allowExitOnIdle: true` (it changes nothing on a server, which is
-held open by its listener); and when CI hangs, PROBE THE LIVE PROCESS —
+never reaped, and a live TCP handle keeps Node's loop alive however many timers are `unref`'d. MOST
+database suites that boot the app hung after their last assertion — measured over five with the fix
+removed, three hung and two survived, and the two that survived end with an unconditional
+`process.exit()`, so what hangs is precisely what relies on a natural exit. THREE THINGS TO KEEP.
+(1) A pool that a script does not explicitly end needs `allowExitOnIdle: true`; it changes nothing on a
+server, which is held open by its listener. (2) When CI hangs, PROBE THE LIVE PROCESS —
 `process._getActiveHandles()` with `net.Socket.prototype.connect` patched to record a stack named the
-owner in one run, after reading the diff had named the wrong suspect twice. `test-lt-pool-exit-db`
-holds it, and holds it BEHAVIOURALLY: it starts a real child the way the app does and requires it to
-EXIT, because a grep for the option name passes for an option renamed, mis-spelled, set to `false`, or
-overridden by a second pool.
+owner in one run, after reading the diff had named the wrong suspect twice. (3) A BEHAVIOURAL GUARD IS
+ONLY AS WIDE AS WHAT ITS CHILDREN REQUIRE, and the pre-merge audit proved that on this very commit:
+`test-lt-pool-exit-db` shipped with two children (the pool module and the settings warm-up) and a
+header claiming they made it proof against "a second pool somewhere else". They did not — a second pool
+in `src/longterm/index.js`, the module the server actually mounts, reintroduced the incident in full
+while the suite reported 7 of 7, and so did a plain ref'd `setInterval` there. The fix was a third
+child that requires WHAT THE APPLICATION REQUIRES rather than a model of it. Same pass, same lesson in
+miniature: a marker the child prints after a stubbed call proves nothing, so each marker now carries a
+value only the server could have returned (the backend pid). KNOWN AND DELIBERATELY NOT FIXED HERE:
+`src/db.js` (RTL's pool) and `src/lib/dashboards/run.js` have the identical shape and are unguarded —
+they do not bite today only because nothing re-queries them on an unref'd timer faster than their 30s
+idle window, which is a property no test holds, and RTL's pool costs every RTL-only script a 30-second
+exit tax. Widening the fix there is its own audited change, not a drive-by.
 
 ## Repository layout gotcha
 

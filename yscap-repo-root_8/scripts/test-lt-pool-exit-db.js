@@ -24,6 +24,12 @@
  * many timers are `unref`'d. The suite had closed its HTTP server and ended
  * RTL's pool, and one Postgres socket nobody owned held it open forever.
  *
+ * NOT EVERY app-booting suite hung, and the exceptions are the tell. Measured
+ * over five of them with the fix removed: three hung, two exited cleanly — and
+ * the two that survived end with an unconditional `process.exit()`. So the
+ * ones that hung are exactly the ones that rely on a NATURAL exit, which is
+ * most of them, and which is the correct behaviour to protect.
+ *
  * `allowExitOnIdle` on Long-Term's pool is the fix: "when every client is idle,
  * do not hold the process open".
  *
@@ -34,20 +40,42 @@
  * The tempting guard is one line — read `src/longterm/db.js` and assert the
  * string `allowExitOnIdle` appears in it. That guard cannot fail for the right
  * reason: it passes for a pool option that has been renamed, mis-spelled, set
- * to `false`, moved into a branch that does not run, or overridden by a second
- * pool somewhere else. It also says nothing about the only thing anybody cares
- * about, which is whether a process that has finished its work can finish.
+ * to `false`, or moved into a branch that does not run. It also says nothing
+ * about the only thing anybody cares about, which is whether a process that has
+ * finished its work can finish.
  *
  * So this suite ASKS THE QUESTION DIRECTLY: it starts a real child process the
  * way the application starts one, gives it nothing else to keep it alive, and
  * requires it to EXIT. A child still running at the deadline is killed and the
  * suite fails with the elapsed time.
  *
+ * A BEHAVIOURAL SUITE STILL ONLY COVERS WHAT ITS CHILDREN REQUIRE, and the
+ * pre-merge audit proved that the hard way. The first version of this file had
+ * two children — one requiring `src/longterm/db.js`, one requiring
+ * `settings/store.js` — and CLAIMED that made it proof against "a second pool
+ * somewhere else". It was not: a second pool added to `src/longterm/index.js`,
+ * with no `allowExitOnIdle`, reintroduced the incident EXACTLY (the real db
+ * suite hung and was killed at 45 seconds) while this file reported 7 of 7. A
+ * plain ref'd `setInterval` in the same file did the same. Neither module was
+ * inside either child's require graph — and `src/longterm/index.js` is
+ * precisely the module the server mounts.
+ *
+ * Hence case 3, which requires WHAT THE APPLICATION REQUIRES rather than a
+ * model of it. It is the case that actually holds the claim in this header, and
+ * it is why the claim now names what the children reach instead of promising
+ * something no child could see.
+ *
  * Each case checks THREE things, because "the child exited" on its own is a
  * result a crash produces too:
- *   · it printed the marker that says its database work really happened,
+ *   · it printed a marker carrying a VALUE ONLY THE DATABASE COULD HAVE
+ *     RETURNED, so the child is known to have made a real round trip,
  *   · it exited with status 0,
  *   · it exited inside the budget.
+ *
+ * The marker carries a value on purpose. The first version printed a bare word
+ * after the module's `query` export resolved, and the audit showed that a
+ * stubbed `query` — a pool that never opens a socket at all — satisfied it. A
+ * marker that a no-op can print proves nothing about the thing being guarded.
  *
  * DB-gated: without a database this skips, like every other *-db suite.
  */
@@ -70,7 +98,15 @@ const ROOT = path.join(__dirname, '..');
  * interval doubled, so a child that is genuinely held open cannot slip through
  * by getting lucky with timer alignment.
  */
-const BUDGET_MS = Number(process.env.LT_POOL_EXIT_BUDGET_MS || 20000);
+const BUDGET_MS = (() => {
+  const raw = Number(process.env.LT_POOL_EXIT_BUDGET_MS || 20000);
+  // CLAMPED, because an override is the one way this guard could be turned off
+  // without anybody editing it: a budget of an hour turns "the child never
+  // exited" back into the sixty-minute hang this suite exists to catch, with a
+  // green step until the job itself dies. The floor stops the opposite mistake.
+  if (!Number.isFinite(raw)) return 20000;
+  return Math.min(120000, Math.max(2000, Math.trunc(raw)));
+})();
 
 let PASS = 0;
 let FAIL = 0;
@@ -117,14 +153,18 @@ function runChild(body, budgetMs) {
     // pool's idle socket keeps a process alive, this child never exits.
     const minimal = `
       const db = require('./src/longterm/db');
-      db.query('SELECT 1').then(() => {
-        console.log('QUERIED');
+      // The marker carries the SERVER's own answer, not a word this child chose:
+      // a stubbed \`query\` that never opens a socket cannot produce it.
+      db.query("SELECT 'lt-pool-live' AS proof, pg_backend_pid() AS pid").then((r) => {
+        const row = (r && r.rows && r.rows[0]) || {};
+        console.log('QUERIED ' + row.proof + ' pid=' + row.pid);
         const t = setInterval(() => { db.query('SELECT 1').catch(() => {}); }, 200);
         if (t.unref) t.unref();
       }).catch((e) => { console.log('QUERY-FAILED ' + (e && e.message)); process.exit(3); });
     `;
     const a = await runChild(minimal, BUDGET_MS);
-    ok(/QUERIED/.test(a.out), 'the pool really answered a query in the child (not a crash before the work)');
+    ok(/QUERIED lt-pool-live pid=\d+/.test(a.out),
+      'the pool made a REAL round trip in the child — the marker carries the server\'s own backend pid');
     ok(!a.timedOut, `a child holding only an idle long-term pool EXITS (took ${a.ms}ms, budget ${BUDGET_MS}ms)`);
     ok(a.code === 0, `it exits cleanly (code ${a.code}${a.signal ? ', signal ' + a.signal : ''})`
       + (a.err ? ` — stderr: ${a.err.trim().slice(0, 200)}` : ''));
@@ -136,16 +176,46 @@ function runChild(body, budgetMs) {
     // warm-up must keep working AND the process must still be able to end.
     const warm = `
       const store = require('./src/longterm/settings/store');
-      store.keepWarm();
-      console.log('WARMING');
+      const warmth = store.keepWarm();
+      // WAIT FOR THE READ, and print something the database returned. A
+      // \`keepWarm\` that never queries — or one whose read is stubbed — cannot
+      // get here, so this marker says the warm-up really touched the pool.
+      Promise.resolve(warmth && warmth.ready).then(() => store.load('company')).then((c) => {
+        console.log('WARMED keys=' + Object.keys(c || {}).length);
+      }).catch((e) => { console.log('WARM-FAILED ' + (e && e.message)); process.exit(4); });
     `;
     const b = await runChild(warm, BUDGET_MS);
-    ok(/WARMING/.test(b.out), 'the settings warm-up really started in the child');
+    ok(/WARMED keys=\d+/.test(b.out), 'the settings warm-up really read from the database in the child');
     ok(!b.timedOut, `a child running the long-term settings warm-up EXITS (took ${b.ms}ms, budget ${BUDGET_MS}ms)`);
     ok(b.code === 0, `it exits cleanly (code ${b.code}${b.signal ? ', signal ' + b.signal : ''})`
       + (b.err ? ` — stderr: ${b.err.trim().slice(0, 200)}` : ''));
 
-    // ---- 3. THE BUDGET IS A REAL DEADLINE, NOT A FORMALITY ------------------
+    // ---- 3. WHAT THE APPLICATION ACTUALLY REQUIRES --------------------------
+    // `src/server.js` mounts `src/longterm/index.js`, so THAT is the module a
+    // real process loads — and the two children above never reach it. The
+    // pre-merge audit put a second pool with no `allowExitOnIdle` in exactly
+    // this file and reintroduced the incident in full (the real database suite
+    // hung and was killed at 45 seconds) while this suite reported 7 of 7; a
+    // plain ref'd `setInterval` here did the same. This case is what closes
+    // that: it loads the long-term module whole, so a handle taken ANYWHERE in
+    // it — a second pool, a ref'd timer, an open socket in a router — is caught.
+    //
+    // The marker is the module itself: `index.js` exports an Express router, so
+    // requiring it and finding a mountable router proves the module really
+    // loaded rather than throwing early.
+    const mounted = `
+      const lt = require('./src/longterm');
+      const router = (lt && lt.router) || lt;
+      console.log('MOUNTED router=' + (typeof router === 'function' ? 'yes' : 'no'));
+    `;
+    const c = await runChild(mounted, BUDGET_MS);
+    ok(/MOUNTED router=yes/.test(c.out),
+      'the long-term module the server mounts really loaded in the child'
+      + (c.err ? ` — stderr: ${c.err.trim().slice(0, 200)}` : ''));
+    ok(!c.timedOut, `a child that requires the whole long-term module EXITS (took ${c.ms}ms, budget ${BUDGET_MS}ms)`);
+    ok(c.code === 0, `it exits cleanly (code ${c.code}${c.signal ? ', signal ' + c.signal : ''})`);
+
+    // ---- 4. THE BUDGET IS A REAL DEADLINE, NOT A FORMALITY ------------------
     // A `runChild` that never timed anything out would make both cases above
     // pass by construction. This proves the harness kills a child that genuinely
     // will not end, so "it exited" above is a fact about the pool and not about
