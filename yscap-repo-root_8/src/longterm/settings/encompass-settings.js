@@ -885,7 +885,6 @@ const SETTINGS = [
      * hook that did nothing would be one more thing to keep in step.
      */
     validate: (v) => {
-      const roster = require('../pricing/investor-roster');
       const custom = require('../audience').customInvestorsInForce();
       const r = require('../pricing/investor-settings').readSettings(v, custom);
       return { ok: r.problems.length === 0, value: v, problems: r.problems };
