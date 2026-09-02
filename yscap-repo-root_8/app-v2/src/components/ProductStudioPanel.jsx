@@ -1431,7 +1431,11 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
      a line the send would not ask to be signed. The screen is the fallback only
      while the server has not answered. Memoised on the three fields, so the
      studio's re-publish effect fires on a real change, not on every render. */
-  const partiesLo = data && data.parties ? (data.parties.loanOfficer || null) : undefined;
+  /* `undefined` = the server did not answer about the officer at all (no parties, or
+     an older server whose parties carry no `loanOfficer` KEY) → fall back to the
+     screen; an explicit null = the server answered "nobody signs as officer". */
+  const partiesLo = data && data.parties && Object.prototype.hasOwnProperty.call(data.parties, 'loanOfficer')
+    ? (data.parties.loanOfficer || null) : undefined;
   const loName = partiesLo !== undefined ? (partiesLo ? partiesLo.name : '') : ((app && app.loan_officer_name) || '');
   const loEmail = partiesLo !== undefined ? (partiesLo ? partiesLo.email : '') : ((app && app.loan_officer_email) || '');
   const loNmls = partiesLo !== undefined ? (partiesLo ? partiesLo.nmls : '') : ((app && app.loan_officer_nmls) || '');

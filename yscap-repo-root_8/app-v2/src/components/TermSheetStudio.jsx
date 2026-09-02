@@ -494,6 +494,12 @@ function loadPdfEngine(doc) {
 const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds = [], onState, showAdmin = false, adminCapable = true, officer = null, issueHold = null, provenance = null, pricingDefaults = null }, ref) {
   const frameRef = useRef(null);
   const winRef = useRef(null);
+  /* The LATEST officer prop, for the mount-once boot below: a prop that changes
+     between mount and the frame coming up would otherwise be published by neither
+     the boot (which captured the mount-time value) nor the re-publish effect (which
+     fires while the frame is still null). */
+  const officerRef = useRef(officer);
+  officerRef.current = officer;
   const adminStyleRef = useRef(null);   // the injected style hiding the admin zone
   const onStateRef = useRef(onState);
   onStateRef.current = onState;
@@ -750,10 +756,11 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
         // the tool's window.YSBRAND so the exported term-sheet PDF renders the LO
         // signature block with the /ts_lo_sig/ + /ts_lo_dt/ anchors DocuSign uses
         // to place the LO signer's tabs. No-op when no officer prop is given.
+        const bootOfficer = officerRef.current;
         try {
-          if (officer && officer.name) {
-            win.YSBRAND = Object.assign({}, officer, {
-              code: officer.code || String(officer.email || officer.name || '').split('@')[0].toLowerCase(),
+          if (bootOfficer && bootOfficer.name) {
+            win.YSBRAND = Object.assign({}, bootOfficer, {
+              code: bootOfficer.code || String(bootOfficer.email || bootOfficer.name || '').split('@')[0].toLowerCase(),
             });
           }
         } catch (_) { /* cosmetic — falls back to no LO block */ }
@@ -767,7 +774,7 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
            staff-portal origin unconditionally, which is what keeps the rotation out
            of the way even when the identity cannot be resolved (lib/toolOfficer.js).
            Fire-and-forget: it must never delay or block the studio. */
-        stampToolOfficer(win, { keepExisting: !!(officer && officer.name) });
+        stampToolOfficer(win, { keepExisting: !!(bootOfficer && bootOfficer.name) });
         // Term-sheet hold (owner-directed 2026-07-31): open fatal appraisal
         // findings hold generation — the tool's Download-PDF button refuses
         // with this reason (termsheet.js reads window.TS_ISSUE_HOLD). The
