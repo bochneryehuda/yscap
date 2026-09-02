@@ -140,5 +140,27 @@ const SOLO_ROSTER = FULL_ROSTER.filter((r) => r.role !== 'co_borrower');
   ok(/TERM_SHEET_SIGNERS_MISMATCH/.test(src) && /checkTermSheetSigners\(/.test(src), 'D3 buildDefinition runs the check and refuses with TERM_SHEET_SIGNERS_MISMATCH');
   ok(/err\.retryable = false; err\.code = 'TERM_SHEET_SIGNERS_MISMATCH'/.test(src), 'D4 the refusal is PERMANENT (the same bytes can never pass on retry)');
 
+  // ---- E. the OFFICER line is drawn by the send's own rule, from a fresh read ----
+  // (owner-directed 2026-09-02, the officer half of the stale-parties gap)
+  const fs = require('fs');
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const orch = strip(src);
+  ok(/function loanOfficerSigner\(/.test(orch) && /loanOfficerSigner,/.test(orch), 'E1 orchestrate exports loanOfficerSigner — the one definition of who signs as officer');
+  ok(/const loSigner = [^;]*loanOfficerSigner\(app\)/.test(orch) && !/app\.loan_officer_id && app\.officer_email\) \{\s*roster\.push/.test(orch),
+    'E2 the roster seats the officer THROUGH the helper, not an inline re-statement of the rule');
+  eq(orchestrate.loanOfficerSigner({ loan_officer_id: 'x', officer_email: 'lo@ys.com', officer_name: 'Lee', officer_nmls: '123' }).nmls, '123', 'E3 the helper carries the NMLS the sheet prints');
+  eq(orchestrate.loanOfficerSigner({ loan_officer_id: null, loan_officer_name: 'Typed Only', officer_email: null }), null, 'E4 a typed name with no staff record signs nothing');
+  eq(orchestrate.loanOfficerSigner({ loan_officer_id: 'x', officer_email: '   ' }), null, 'E5 a blank email is no officer');
+  const staffSrc = strip(fs.readFileSync(R + '/src/routes/staff.js', 'utf8'));
+  ok(/loanOfficer: require\('\.\.\/lib\/esign\/orchestrate'\)\.loanOfficerSigner\(pr\)/.test(staffSrc), 'E6 the pricing read names the officer through the SAME helper');
+  ok(/lo\.nmls AS officer_nmls[\s\S]{0,600}LEFT JOIN staff_users lo ON lo\.id = a\.loan_officer_id/.test(staffSrc), 'E7 …joined to the staff record the send joins to');
+  const panel = strip(fs.readFileSync(R + '/app-v2/src/components/ProductStudioPanel.jsx', 'utf8'));
+  ok(/data\.parties\.loanOfficer/.test(panel) && /officer=\{studioOfficer\}/.test(panel), 'E8 the studio draws the officer from the server\'s parties read');
+  ok(!/app\.loan_officer_email \|\| ''/.test(panel.replace(/\(\(app && app\.loan_officer_email\) \|\| ''\)/g, '')) , 'E9 the screen\'s officer fields are a FALLBACK only, never the primary source');
+  const studio = strip(fs.readFileSync(R + '/app-v2/src/components/TermSheetStudio.jsx', 'utf8'));
+  ok(/\}, \[officerName, officerEmail, officerNmls\]/.test(studio) && /w\.YSBRAND = Object\.assign\(\{\}, officer/.test(studio), 'E10 the studio re-publishes a changed officer to the tool without a remount');
+  const pkg = JSON.parse(fs.readFileSync(R + '/package.json', 'utf8'));
+  ok(/test-esign-term-sheet-parties-db\.js/.test(pkg.scripts.test), 'E11 the real-HTTP parties suite is in the npm test chain');
+
   console.log(`esign-term-sheet-signers-pure: ${n} assertions passed`);
 })().catch((e) => { console.error(e); process.exit(1); });
