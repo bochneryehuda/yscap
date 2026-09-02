@@ -214,7 +214,14 @@ const nexRowOf = (out) => (out.programs || []).find((p) => p.program === 'DSCR 3
     // owner's report. It must hand back an OPTION (the shape the panel reads), with the base
     // brought into step with the held-back price the row is quoting.
     const express = require(path.join(ROOT, 'node_modules/express'));
-    nexClient.evidence = async () => ({
+    /* WHAT THE VENDOR WAS ASKED is captured, because the price on the handle is OURS (the holdback
+       is applied to the LoanNEX board before the merge) and the door has to put the vendor's own
+       figure back for the one call addressed to them. `answer` lets a case make the sheet SILENT. */
+    let asked = null;
+    let answer = 'evidence';
+    nexClient.evidence = async (sc, quote) => { asked = quote; return answer === 'silent'
+      ? { evidence: null, absence: { reason: 'vendor_returned_no_evidence', message: 'The rate sheet accepted the question and returned no breakdown for this quote.' }, transactionId: 't1' }
+      : ({
       evidence: {
         rate: 7, lockPeriod: 30, basePrice: 101.5, baseRate: 6.75, priceFloor: 96, priceCeiling: 103,
         adjustments: [
@@ -223,7 +230,7 @@ const nexRowOf = (out) => (out.programs || []).find((p) => p.program === 'DSCR 3
         ],
       },
       transactionId: 't1',
-    });
+    }); };
     const app = express();
     app.use(express.json());
     app.use('/c', require(path.join(ROOT, 'src/longterm/routes/combined-pricer')).makeRouter({ superAdminOnly: false }));
@@ -271,6 +278,78 @@ const nexRowOf = (out) => (out.programs || []).find((p) => p.program === 'DSCR 3
       const already = await post({ quote: { vendor: 'lenderprice', rate: 7, price: 98 }, scenario: SCENARIO });
       ok(already.ok === true && already.alreadyExplained === true && already.breakdown === null,
         'ASK-10 a row whose sheet published its build with the search is told so plainly — never refused, which would send somebody hunting for a call that was never needed');
+
+      console.log('\n── THE VENDOR IS ASKED ABOUT ITS OWN PRICE, NOT OURS ──');
+      answer = 'evidence';
+      await post({ quote: QUOTE, scenario: SCENARIO, investorKey: 'nqm', marginHoldback: 0.25, routes: {} });
+      ok(asked && asked.price === 101,
+        `PRICE-1 the rate sheet is asked to itemise 101 — its OWN price — not the 100.75 the board is quoting after our margin (asked ${asked && asked.price})`);
+      ok(asked && asked.priceHashKey === 'h1' && asked.rate === 7 && asked.lockDays === 30,
+        'PRICE-2 …and nothing else on the question moves: the key that identifies the quote, the rate and the lock ride through untouched');
+      await post({ quote: RAW_QUOTE, scenario: SCENARIO, marginHoldback: 0, routes: {} });
+      ok(asked && asked.price === 101,
+        'PRICE-3 with nothing held back the question is the quote itself — a board with no margin on it asks exactly what it always asked');
+
+      console.log('\n── THE ROW SURVIVES THE EXPLANATION (the blank loan amount, term and payment) ──');
+      /* The row as the board handed it to the panel: everything the handle does NOT carry, plus a
+         STALE itemization and our own margin's trail, which a browser must not be able to assert. */
+      const ROW = {
+        lender: 'NQM Funding', program: 'DSCR 30 Yr', product: '30 Yr Fixed',
+        terms: { loanAmount: 375000, term: 360, termInMonths: true, interestOnly: false, dayLock: 999 },
+        monthlyPayment: { monthlyPI: 2400, mi: 0 },
+        dscr: 1.3, stalenessUnknown: true,
+        rateSheet: { expired: null, name: 'NQM 8/29', validAsOf: 'STALE' },
+        adjustments: [{ reason: 'A LINE FROM AN EARLIER ANSWER', value: -9 }],
+        eligibility: { provided: true, screen: 'STALE' },
+        evidence: { fetched: true, appliesToThisRate: true, reason: 'inline_with_search' },
+        priceBuild: { price: 999, noteRate: 999, basePoints: 999, adjustmentPoints: 999, vendorPrice: 101, vendorBasePoints: 42, vendorAdjustedPoints: 42, pointsDerivedFromPrice: true },
+      };
+      answer = 'evidence';
+      const withRow = await post({ quote: QUOTE, scenario: SCENARIO, option: ROW, investorKey: 'nqm', marginHoldback: 0.25, routes: {} });
+      const w = withRow.option || {};
+      ok(w.terms && w.terms.loanAmount === 375000 && w.terms.term === 360 && w.terms.termInMonths === true,
+        'ROW-1 the loan amount and the term are still there after the explanation — they were going blank the moment a row was explained, which is the owner\'s emptied panel');
+      ok(w.monthlyPayment && w.monthlyPayment.monthlyPI === 2400 && w.dscr === 1.3 && w.stalenessUnknown === true,
+        'ROW-2 …and the monthly payment, the ratio and the staleness verdict with them');
+      ok(w.rateSheet && w.rateSheet.name === 'NQM 8/29',
+        'ROW-3 …and the rate sheet\'s own name');
+      ok(w.priceBuild.price === 100.75 && w.priceBuild.noteRate === 7 && w.terms.dayLock === 30,
+        `ROW-4 the HANDLE still wins the rate, the price and the lock (${w.priceBuild.price} / ${w.priceBuild.noteRate} / ${w.terms.dayLock}) — the vendor's answer is judged against those, so a browser must not be able to move them`);
+      ok((w.adjustments || []).length === 2 && !(w.adjustments || []).some((a) => /EARLIER ANSWER/.test(a.reason || '')),
+        'ROW-5 a stale itemization sent up is REPLACED by this call\'s, never merged with it');
+      ok(w.priceBuild.basePoints === -1.25 && !('vendorPrice' in w.priceBuild) && !('vendorBasePoints' in w.priceBuild),
+        'ROW-6 …and our own margin\'s trail cannot be put back on the panel by asking for it');
+      ok(w.eligibility === null || (w.eligibility && w.eligibility.screen !== 'STALE'),
+        'ROW-7 …nor a stale eligibility answer');
+      ok(w.priceBuild.pointsDerivedFromPrice === true,
+        'ROW-8 but an ordinary fact of the row — how its points were arrived at — is kept, which is the whole point of sending it');
+      /* ⛔ THIS IS WHAT THE `vendor*` STRIP IS ACTUALLY FOR. On the way OUT those three are removed
+         anyway, so a test that only looked for them in the answer proves nothing. `vendorBasePoints`
+         is the ANCHOR `holdBackExplainedBase` shifts the base FROM — so a browser able to assert one
+         would decide where the panel's base sits. ROW carries a fabricated 42; the base must still
+         be the vendor's own -1.5 moved by our 0.25. */
+      ok(w.priceBuild.basePoints === -1.25,
+        `ROW-9 a base anchor fabricated by the caller cannot move where the holdback shifts from (${w.priceBuild.basePoints}, not 42.25)`);
+
+      console.log('\n── AND A SHEET THAT SAYS NOTHING IS QUOTED SAYING NOTHING ──');
+      answer = 'silent';
+      const quiet = await post({ quote: QUOTE, scenario: SCENARIO, option: ROW, investorKey: 'nqm', marginHoldback: 0.25, routes: {} });
+      const q = quiet.option || {};
+      ok(quiet.ok === true, 'WHY-1 a rate sheet that returns no breakdown is not an error — the call worked, the answer was empty');
+      ok(q.evidence && q.evidence.appliesToThisRate === false && q.evidence.reason === 'vendor_returned_no_evidence',
+        `WHY-2 …and the option says WHICH silence it was (${q.evidence && q.evidence.reason}) rather than an empty table that reads as "this quote has no adjustments"`);
+      ok(q.evidence && /returned no breakdown/.test(q.evidence.message || ''),
+        'WHY-3 …in the vendor\'s own words, which is what the panel prints where the table would have been');
+      ok(q.terms && q.terms.loanAmount === 375000 && q.monthlyPayment && q.monthlyPayment.monthlyPI === 2400,
+        'WHY-4 and the row is STILL whole — an unanswered question must not empty the panel it was asked from');
+      /* ⛔ THIS IS THE CASE THE `adjustments` STRIP EXISTS FOR, and the only one. On a sheet that
+         ANSWERS, `attachEvidence` overwrites the list wholesale, so the strip cannot bite there.
+         On a sheet that says NOTHING it never touches the list — so without the strip the panel
+         would print an earlier answer's itemization underneath today's silence, which is the exact
+         lie the reason line is there to prevent. */
+      ok(!Array.isArray(q.adjustments) || !q.adjustments.some((a) => /EARLIER ANSWER/.test(a.reason || '')),
+        'WHY-5 …and an itemization from an earlier answer, sent up with the row, does NOT survive that silence');
+      answer = 'evidence';
     } finally { server.close(); }
   }
 
@@ -283,10 +362,10 @@ const nexRowOf = (out) => (out.programs || []).find((p) => p.program === 'DSCR 3
     const api = read('app-v2/src/longterm/api.js');
     ok(/key: 'general',[\s\S]{0,2000}?explain: null,/.test(eng),
       'WIRE-1 the GENERAL engine asks nobody — `explain: null`, which is what the panel reads as "there is nothing to fetch", so that board is unchanged');
-    ok(/key: 'combined',[\s\S]{0,3000}?explain: \(quote, scenario\) => ltApi\.combinedExplain\(/.test(eng),
-      'WIRE-2 the COMBINED engine points at the door');
-    ok(/combinedExplain: \(quote, scenario\) => ltPost\(lt\('\/dscr\/combined\/explain'\)/.test(api)
-      && /investorKey: \(quote && quote\.investorKey\) \|\| null/.test(api),
+    ok(/key: 'combined',[\s\S]{0,3000}?explain: \(quote, scenario, option\) => ltApi\.combinedExplain\(quote, scenario, option\)/.test(eng),
+      'WIRE-2 the COMBINED engine points at the door, carrying the row the panel is drawing');
+    ok(/combinedExplain: \(quote, scenario, option\) => ltPost\(lt\('\/dscr\/combined\/explain'\)/.test(api)
+      && /quote, scenario, option, investorKey: \(quote && quote\.investorKey\) \|\| null/.test(api),
       'WIRE-3 the call posts to the real door and names WHICH investor\'s saved setting to read — a pointer, never an amount');
     ok(/const explainer = useExplain\(\);/.test(pricer),
       'WIRE-4 the panel reads the explain seam');
@@ -300,6 +379,16 @@ const nexRowOf = (out) => (out.programs || []).find((p) => p.program === 'DSCR 3
       'WIRE-8 the seam is actually provided — a back end nobody can reach is not a feature');
     ok(/if \(!engine\.explain \|\| !pricedForm\) return null;\s*\n\s*const sc = toScenario\(pricedForm\);/.test(pricer),
       'WIRE-9 …bound to the scenario the BOARD was priced with, never the form as it stands — a half-edited form must not make a panel explain the row in front of you against a different loan');
+    ok(/explainer\(\{ \.\.\.handle, investorKey: invKey \}, oProp\)/.test(pricer),
+      'WIRE-10 …and it SENDS the row it is drawing, which is what makes the answer come back whole instead of as the four fields the handle carries');
+    ok(/const explainNote = \(!asking && !askErr && askable && ev && ev\.appliesToThisRate === false && adj\.length === 0\)/.test(pricer)
+      && /\{explainNote && \(/.test(pricer),
+      'WIRE-11 an unexplained build SAYS SO on the panel — computed from the server\'s own verdict and actually rendered, because a back end nobody can see is not a feature');
+    ok(/o\.terms\.interestOnly != null/.test(pricer),
+      'WIRE-12 an unstated interest-only flag draws an em dash, never a confident "Fully amortising" — Lender Price fills it on every option, so the general board is unchanged');
+    ok(/\$\{engine\.sheetSubject\} returned no fee lines/.test(pricer)
+      && /\$\{engine\.sheetSubject\} returned no comp lines/.test(pricer),
+      'WIRE-13 the two empty states no longer name one vendor on a board quoted by two');
   }
 
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);

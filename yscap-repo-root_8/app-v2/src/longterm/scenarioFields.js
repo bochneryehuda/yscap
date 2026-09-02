@@ -101,6 +101,19 @@ export const BORROWER_TYPES_PARKED = [
    so every one of these three is a term Lender Price will price; what this menu does is offer the
    three anybody actually asks for instead of twenty-five. Adding one back is one line here, and it
    cannot be refused downstream as long as it stays inside that list. */
+/**
+ * FIXED OR ARM — the vendor's own criterion, spelled the way the server's mapper reads it.
+ *
+ * ⛔ THESE TWO VALUES ARE A CONTRACT WITH `search-model.mapAmortization`, which REFUSES anything
+ * it does not recognise rather than falling back to Fixed — a pricing search that quietly answered
+ * an ARM question with a fixed-rate board would look exactly like a successful quote. So a value
+ * added here must be added there in the same commit.
+ */
+export const AMORTIZATIONS = [
+  { value: 'fixed', label: 'Fixed rate' },
+  { value: 'arm', label: 'ARM (adjustable)' },
+];
+
 export const LOAN_TERMS = [
   { value: '15', label: '15-year' },
   { value: '30', label: '30-year' },
@@ -413,6 +426,9 @@ export function searchChips(f, zipInfo) {
       + (um2.mode !== 'fixed' && Number(src.units) > 1 ? ` · ${src.units} units` : ''),
   });
   if (String(src.termYears || '').trim() !== '') chips.push({ k: 'Term', v: `${src.termYears} yr` });
+  if (String(src.amortization || '').trim() !== '') {
+    chips.push({ k: 'Rate type', v: labelOf(AMORTIZATIONS, src.amortization) });
+  }
   if (String(src.lockDays || '').trim() !== '') chips.push({ k: 'Lock', v: `${src.lockDays} d` });
   if (src.prepayMonths === '0') chips.push({ k: 'Prepay', v: 'None' });
   else if (String(src.prepayMonths || '').trim() !== '') {

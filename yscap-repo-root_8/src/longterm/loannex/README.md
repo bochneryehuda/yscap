@@ -215,6 +215,49 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
    than guessed at: whether those figures should be restated, and against which price, is a
    business question, not an audit finding's to answer.
 
+9. **Fixed vs ARM is a REAL criterion at both programs — it just could not be ASKED (2026-09-01).**
+   The board came back with ARMs and interest-only products on a search nobody had narrowed, and the
+   owner's condition on fixing it was explicit: *"not by looking at the words, but in a real legit
+   way, out of Lender, out of LoanX."* Measured, both halves are structural:
+   - **Lender Price takes all three as SEARCH CRITERIA** — `criteria.loanType` + `loanTypeCriteria`
+     (`Fixed`|`ARM`), `criteria.interestOnly`, and `termsCriteria` + `criteria.loanYear`. The DSCR
+     profile has HARD-FORCED `loanType: 'Fixed'` since it was written (`PROFILE_FORCED`), correctly
+     — a DSCR investor search is a fixed-rate search — but a caller had no way to say otherwise.
+     `search-model.mapAmortization` is that way, forced with the same authority so a saved company
+     preference still cannot move it, and REFUSING an unreadable value rather than falling back to
+     Fixed (which would answer an ARM question with a fixed-rate board and look like a good quote).
+     An unstated search builds a BYTE-IDENTICAL request, which is what leaves the General Pricing
+     Engine untouched.
+   - **LoanNEX takes NONE of them**, and states all three per programme instead:
+     `amortizationType` "ARM"(13) / "Fixed"(6), `isInterestOnly` true(11) / false(8),
+     `termInMonths` 360(13) / 480(5) / 180(1) — counted over the 19 programmes of
+     `capture/quick-prices.json`. `pricing/product-filter.js` narrows its board on exactly those,
+     reading no name, no label and no description, and it does so BEFORE the holdback, the merge,
+     the routing, the counts and the option shape, so every one of those describes the same board.
+   The narrowing MIRRORS what Lender Price was actually asked (an unstated search resolves to Fixed
+   on both sides through the same mapper), so the two boards answer one question by construction. A
+   programme the vendor left unlabelled is KEPT and COUNTED as `unclassified` — dropping on an
+   unknown hides real pricing with nothing on the screen to say so — and the answer reports what
+   each dimension removed (`productFilter.dropped`), because a board that goes from 209 programmes
+   to 41 with no reason is the same silence as an empty price build.
+   **The control is on the Combined screen only** (`pricerEngine.amortizationChoice`), by the
+   owner's *"don't touch our current setup"*.
+
+10. **An explanation is laid ON the row, never in place of it (2026-09-01).** `POST /combined/explain`
+    answered with an option built from the rung HANDLE alone — a rate, a price and a lock — and the
+    panel drew that instead of the row it already had, so the loan amount, the term, the monthly
+    payment, the rate sheet and the DSCR went blank the moment a row was explained, and on a sheet
+    that returned nothing the panel emptied out and said nothing at all. The browser now sends the
+    row it is drawing and the server folds the evidence onto it through the SAME `attachEvidence` —
+    a browser-side merge would have been a second copy of that rule in a second language. What a
+    caller may NOT contribute is stripped (`quote-shape.optionFromRow`): everything this call
+    establishes, our own margin's trail, and any vendor name; and the handle's own rate, price and
+    lock are re-derived on top, because the vendor's answer is judged against them.
+    Two further defects in the same pass: the vendor was being asked to itemise the HELD-BACK price
+    it never quoted (`applyToBoard` runs before the merge, so the handle's price is ours) — the
+    holdback is now resolved first and added back for the question only; and a sheet that returns no
+    breakdown now has its reason PRINTED where the empty table was, in the vendor's own words.
+
 ---
 
 ## Update, 2026-08-30 (second pass)
