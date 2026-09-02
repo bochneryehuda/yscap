@@ -860,5 +860,25 @@ console.log('Two programs, one loan — parity');
     'BOARD-10 every row carries the canonical investor key and the client-safe name the server resolved — never re-derived in a browser');
 }
 
+/* ── ONE VALUE, ONE NAME: the monthly payment (audit F9) ─────────────────────────────────────
+   `optionsFromLoanNex` wrote `{ total }` while `programsFromLoanNex` wrote `{ monthlyPI }` for the
+   very same `r.payment`, and `monthlyPI` is the key EVERY reader uses — LtPricer twice,
+   bracket-board, and lenderprice/client which reads it first and falls back to `total`. So the flat
+   option list answered `undefined` to the only question anybody asks it.
+
+   Asserted as an INVARIANT across the two builders rather than about one key name, so a third
+   builder cannot quietly introduce a third spelling. */
+{
+  const oneBoard = { programs: [{ lender: 'L', investor: 'Acra Lending', program: 'P', product: '30 Yr Fixed',
+    rungs: [{ rate: 7, price: 101, points: -1, lockDays: 30, payment: 2500, priceHashKey: 'h1' }] }] };
+  const fromOptions = quoteShape.optionsFromLoanNex(oneBoard, {})[0];
+  const fromRow = quoteShape.programsFromLoanNex(oneBoard, {})[0].options[0];
+  const keysOf = (o) => Object.keys((o && o.monthlyPayment) || {}).sort();
+  ok(JSON.stringify(keysOf(fromOptions)) === JSON.stringify(keysOf(fromRow)),
+    `PAY-1 both builders name the monthly payment the SAME way (${keysOf(fromOptions).join('|') || 'none'} vs ${keysOf(fromRow).join('|') || 'none'}) — one value under two names is how a reader gets undefined from one door and a number from the other`);
+  ok(fromOptions.monthlyPayment.monthlyPI === 2500 && fromRow.monthlyPayment.monthlyPI === 2500,
+    'PAY-2 …and it is `monthlyPI`, the key every reader actually uses — the screen labels this figure "Monthly P&I", so `total` also invited it to be read as PITI');
+}
+
 console.log(fail ? `\nFAILURES: ${fail} (${pass} passed, ${fail} failed)` : `\nOFFLINE: all passed (${pass} passed, 0 failed)`);
 process.exit(fail ? 1 : 0);

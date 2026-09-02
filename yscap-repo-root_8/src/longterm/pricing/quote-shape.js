@@ -177,7 +177,24 @@ function optionsFromLoanNex(board, opts = {}) {
           dscr: numOrNull(r.dscr), fico: numOrNull(opts.fico),
           ltv: numOrNull(opts.ltv), loanPurpose: opts.loanPurpose || null,
         },
-        monthlyPayment: r.payment == null ? null : { total: numOrNull(r.payment) },
+        /**
+         * ⛔ `monthlyPI`, NOT `total` (audit F9). The very same `r.payment` is written as
+         * `{ monthlyPI }` by `programsFromLoanNex` forty lines down, and `monthlyPI` is the key
+         * EVERY reader uses — `LtPricer` twice, `bracket-board`, and `lenderprice/client` which
+         * reads it first and only falls back to `total`. So one value carried two names, and the
+         * one written here was the name nothing reads: `monthlyPayment.monthlyPI` came back
+         * `undefined` off this list while the row beside it answered 2500.
+         *
+         * `total` was also the wrong WORD. The figure is the vendor's `payment` on the rung, the
+         * screen labels it "Monthly P&I", and a key called `total` invites a reader to take it for
+         * PITI — a bigger number than this is. Renamed rather than duplicated: writing both would
+         * keep two names alive, which is the drift itself.
+         *
+         * Latent rather than live: no browser code reads this flat option list today (it is the
+         * `shape=options` answer), so nothing on a screen was blank. An API caller asking for that
+         * shape did get the wrong key.
+         */
+        monthlyPayment: r.payment == null ? null : { monthlyPI: numOrNull(r.payment) },
         flags: {
           isException: !!r.isException,
           softStop: !!r.hasSoftStopViolation,
