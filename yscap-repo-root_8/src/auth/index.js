@@ -1604,6 +1604,10 @@ router.post('/assistant/logout', requireAuth, async (req, res) => {
  * it falls back to the global bump (it has nothing finer to revoke).
  */
 router.post('/logout', requireAuth, async (req, res) => {
+  // CO-BROWSING (2026-09-02): signing out ends any live or pending co-browse this
+  // person is party to — a watched screen must not keep streaming after its owner
+  // left, and a viewer who signed out is not watching. Best-effort, never blocks.
+  try { require('../lib/cobrowse/sessions').endAllFor(req.actor.kind, req.actor.id, 'signed_out').catch(() => {}); } catch (_) { /* best-effort */ }
   // staff AND tpo both revoke against staff_users (a tpo user is a staff_users
   // row, db/472); only a borrower uses borrower_auth.
   const tbl = req.actor.kind === 'borrower' ? 'borrower_auth' : 'staff_users';

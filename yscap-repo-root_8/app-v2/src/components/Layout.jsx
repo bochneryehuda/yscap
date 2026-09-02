@@ -110,8 +110,8 @@ export default function Layout({ children }) {
                 their own phone mid-upload). The server refuses that call
                 outright; here the button simply becomes the way back. */}
             {isBorrowerView
-              ? <button className="btn ghost small" onClick={async () => { const ok = await exitBorrowerView(); nav(ok ? (takeReturnTo() || '/internal/borrower-view') : '/internal/login'); }}>Leave borrower view</button>
-              : <button className="btn ghost small" onClick={() => { signOut(); nav('/login'); }}>Sign out</button>}
+              ? <button className="btn ghost small" data-cobrowse-nodrive="view-as" onClick={async () => { const ok = await exitBorrowerView(); nav(ok ? (takeReturnTo() || '/internal/borrower-view') : '/internal/login'); }}>Leave borrower view</button>
+              : <button className="btn ghost small" data-cobrowse-nodrive="sign-out" onClick={() => { signOut(); nav('/login'); }}>Sign out</button>}
           </nav>
         </div>
       </header>
