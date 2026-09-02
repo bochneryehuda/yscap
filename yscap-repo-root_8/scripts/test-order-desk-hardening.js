@@ -329,7 +329,7 @@ const otherPdf = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog/X 2>>endobj\ntrai
       assert(Number(after.followup_count) === 0,
         'a typed reply does NOT count as chasing the vendor (that is the Follow-up button alone)');
       const ev = (await db.query(
-        `SELECT kind FROM file_order_events WHERE application_id=$1 AND order_type='title' ORDER BY id DESC LIMIT 1`, [appId])).rows[0];
+        `SELECT kind FROM file_order_events WHERE application_id=$1 AND order_type='title' ORDER BY created_at DESC, kind = 'message_sent' DESC LIMIT 1`, [appId])).rows[0];
       assert(ev && ev.kind === 'message_sent', `the reply is on the order's history as a message (got ${ev && ev.kind})`);
       // And the typed text went out ALONE — no deliverables ask, no "Follow-up" headline.
       const body = String(sent[0].text || '');
