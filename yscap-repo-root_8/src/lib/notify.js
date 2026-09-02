@@ -772,6 +772,10 @@ const categoryOf = (type) => CATEGORY_OF[type] || 'other';
  */
 const STAFF_ROLE_CATEGORIES = {
   loan_officer: '*',        // "on top of the entire file" — sees everything
+  // The loan officer ASSISTANT (db/672, owner-directed 2026-09-02) works the file as the
+  // officer's persona — "the same personas … as a loan officer" — so their slot sees the
+  // whole file too. Whole-file, not "the officer's part": an assistant is not a desk.
+  loan_officer_assistant: '*',
   processor: '*',           // the original whole-file team (db/103) — sees everything
   closer: ['closing'],
   draw_coordinator: ['draws'],

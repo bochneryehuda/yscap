@@ -32,6 +32,7 @@
  */
 
 import { conditionStatusLabel } from './conditions-vocab.js';
+import { isLoanOfficerPersona } from './roles.js';
 
 /**
  * ONE "off my plate" rule for every conditions/checklist surface
@@ -46,11 +47,15 @@ import { conditionStatusLabel } from './conditions-vocab.js';
  * An unknown role reads as the back office, deliberately: showing a condition
  * that is already handled costs a glance, and hiding one that is not costs the
  * work. Fail toward SHOWING.
+ *
+ * "The loan officer" is the PERSONA (lib/roles.js): a role registered to behave
+ * as the officer — the loan officer assistant — has the same Done step and the
+ * same view, declared once in the registry rather than re-listed here.
  */
 export function roleDone(it, role) {
   if (!it) return false;
   return it.status === 'satisfied' || !!it.signed_off_at || !!it.waived_at
-    || (role === 'loan_officer' && !!it.reviewed_at);
+    || (isLoanOfficerPersona(role) && !!it.reviewed_at);
 }
 
 /**
@@ -76,7 +81,7 @@ export const CONDITION_FILTER_KEYS = Object.freeze([
  */
 export function conditionFilterLabel(key, role) {
   switch (key) {
-    case 'mine':      return role === 'loan_officer' ? 'Needs my review' : 'Needs my sign-off';
+    case 'mine':      return isLoanOfficerPersona(role) ? 'Needs my review' : 'Needs my sign-off';
     case 'awaiting':  return conditionStatusLabel('outstanding');
     case 'review':    return conditionStatusLabel('received');
     case 'attention': return conditionStatusLabel('issue');
@@ -84,13 +89,13 @@ export function conditionFilterLabel(key, role) {
     case 'signed':    return 'Signed off';
     case 'all':       return 'Everything';
     // Same fallback as the predicate, for the same reason.
-    default:          return role === 'loan_officer' ? 'Needs my review' : 'Needs my sign-off';
+    default:          return isLoanOfficerPersona(role) ? 'Needs my review' : 'Needs my sign-off';
   }
 }
 
 /** The one-line explanation the picker carries as its tooltip. */
 export function conditionFilterHint(role) {
-  return role === 'loan_officer'
+  return isLoanOfficerPersona(role)
     ? 'Your default shows conditions still needing your review; marking one Done clears it here.'
     : 'Your default shows conditions still needing your sign-off; accepting a document keeps it here until you sign off.';
 }
