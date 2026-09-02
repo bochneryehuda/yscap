@@ -174,9 +174,20 @@ const ok = (cond, name, detail) => {
          those open slots should be only in the file context and not… a condition
          before submittal. The only stuff that should be a condition before
          submittal is the title company and the hazard insurance agent."* */
-      ok(JSON.stringify(keys) === JSON.stringify(['hazard_insurance', 'title']),
-        'and it asks for the title company and the hazard insurance agent — those two and nothing else',
+      /* …and, since 2026-09-02 (db/670), the three that follow the deal — the
+         landlord, the HOA and the settlement agent — each on the same
+         condition, each greyed by its own fact on a file that does not need it. */
+      ok(JSON.stringify(keys) === JSON.stringify(['hazard_insurance', 'hoa', 'landlord', 'ny_settlement_agent', 'title']),
+        'and it asks for the title company and the hazard insurance agent on every file, plus the landlord, the HOA and the settlement agent when the deal calls for them',
         keys.join(','));
+      const byKey = Object.fromEntries(ct.map((t) => [t.key, t]));
+      ok(byKey.title.applies === true && byKey.hazard_insurance.applies === true,
+        '…the two apply to this file outright');
+      ok(['landlord', 'hoa', 'ny_settlement_agent'].every((k) => byKey[k]
+        && [true, false, null].includes(byKey[k].applies)
+        && (byKey[k].applies === true || typeof byKey[k].whyNot === 'string')),
+        '…and each of the three is answered from the file\'s own facts — on, off with a reason, or "cannot tell yet" with a reason — never assumed on',
+        JSON.stringify(['landlord', 'hoa', 'ny_settlement_agent'].map((k) => [k, byKey[k] && byKey[k].applies])));
       for (const gone of ['our_attorney', 'realtor', 'buyers_attorney']) {
         ok(!keys.includes(gone), `…the ${gone} is not a condition before submittal`);
       }

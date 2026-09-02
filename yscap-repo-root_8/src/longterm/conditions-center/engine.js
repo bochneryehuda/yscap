@@ -273,6 +273,22 @@ async function evaluateLoan(loanId, opts = {}) {
     }
   }
 
+  // THE START of the pass is what gets stamped (db/668), not the end: a mirror
+  // write that lands while this pass is running is newer than the stamp and
+  // the sweep runs the loan again. Stamping the end would swallow it.
+  //
+  // READ FROM THE DATABASE'S CLOCK, not this process's. The stamp is compared
+  // against `encompass_synced_at`, which the loan sync writes with the
+  // database's now(); the web process and the database are different machines
+  // and a few seconds of skew between them would make a loan read "current"
+  // that the sync had in fact moved. `clock_timestamp()` rather than now() so
+  // a caller inside a transaction (the tests) gets the real moment, not the
+  // transaction's start. Falls back to this clock only if the read fails.
+  let startedAt = new Date();
+  try {
+    const { rows } = await client.query('SELECT clock_timestamp() AS t');
+    if (rows[0] && rows[0].t) startedAt = rows[0].t;
+  } catch (_) { /* the fallback above stands */ }
   try {
     const ctx = await loadContext(loanId, client);
     if (!ctx.loan) {
@@ -432,6 +448,35 @@ async function evaluateLoan(loanId, opts = {}) {
       for (const r of rows) out.removed.push({ code: r.code, label: r.label, retired: true });
     } catch (e) {
       out.skipped.push({ code: '(retired)', why: `Could not remove retired conditions: ${String((e && e.message) || e).slice(0, 160)}` });
+    }
+
+    // ── THE STAMP (db/668) — so the sweep and the file's screen know this ran ──
+    // CLEAN means every table was read and every decision was written. A rule
+    // the engine could not decide because a FIELD is blank (4008 unanswered,
+    // property type unread) is NOT unclean: the fact is stable until the mirror
+    // moves, and the mirror moving is what makes the loan due again. A table it
+    // could not READ, or an insert/delete it could not make, IS unclean: the
+    // loan is left due — tried again on the next pass — rather than believed.
+    //
+    // `tried_at` moves either way, so a loan that fails every time goes to the
+    // back of the sweep's queue instead of holding its front. Best-effort: a
+    // stamp that cannot be written costs the next pass one needless run, never
+    // this pass its result.
+    out.clean = out.ok && !out.degraded && !out.skipped.some((s) => /^Could not /.test(String(s.why || '')));
+    if (opts.stamp !== false) {
+      try {
+        await client.query(
+          `UPDATE lt_loans
+              SET conditions_evaluate_tried_at = clock_timestamp(),
+                  conditions_evaluated_at = CASE WHEN $2::boolean THEN $3::timestamptz ELSE conditions_evaluated_at END
+            WHERE id = $1::uuid`,
+          [String(loanId), out.clean === true, startedAt],
+        );
+        out.stamped = out.clean === true;
+      } catch (e) {
+        out.stamped = false;
+        out.stampError = String((e && e.message) || e).slice(0, 160);
+      }
     }
   } catch (e) {
     // Rule 6: never throw at the caller.

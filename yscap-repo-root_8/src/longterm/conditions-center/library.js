@@ -127,16 +127,32 @@ const FILE_CONTACT_TYPES = Object.freeze([
   { key: 'hazard_insurance', required: true, preSubmission: true },
   // Read from Encompass field 541 or ticked by hand — see src/longterm/flood-zone.js.
   { key: 'flood_insurance', required: false, whenField: 'in_flood_zone' },
+  /* ── THE THREE THAT FOLLOW THE DEAL, ON THE CONDITION TOO ────────────────
+     Owner-directed 2026-09-02, on the pre-submittal file-contacts CONDITION
+     (not the desk): *"prior to submittal, we only have hazard insurance and
+     title insurance. This file is actually his primary, and we don't have the
+     slot over there for landlord contact information … if he's a renter, it
+     should also populate landlord contact … If it's a condo, populate the
+     condo. If it's a New York file, populate the settlement agent."*
+
+     So these three are `preSubmission` like the two above — but each carries a
+     `whenField`, and `contactTypesFor` answers `applies: true / false / null`
+     from the file's own live facts: a row for a deal that does not need it is
+     kept and greyed with the reason, never dropped; a fact PILOT cannot read
+     yet is "we cannot tell yet", never a confident no. `required: true` means
+     required WHEN IT APPLIES — the sign-off gate and the screen's "still
+     needed" line both read `applies !== false && required`. On a purchase in
+     New Jersey by a homeowner, none of the three is asked for. */
   // New York closes through a settlement agent rather than the title company.
-  { key: 'ny_settlement_agent', required: false, whenField: 'is_new_york' },
+  { key: 'ny_settlement_agent', required: true, preSubmission: true, whenField: 'is_new_york' },
   // Owner-directed 2026-08-31: *"We should also have the HOA contact. That should
   // be grayed out, and it should only be available on a condo."*
-  { key: 'hoa', required: false, whenField: 'is_condo' },
+  { key: 'hoa', required: true, preSubmission: true, whenField: 'is_condo' },
   // …*"We should have the landlord contact information if the person is renting
   // his primary residence, and if not, it should also be grayed out."* It is the
   // contact the verification of rent is sent to, so it is a real slot rather than
   // a note somebody types.
-  { key: 'landlord', required: false, whenField: 'borrower_rents' },
+  { key: 'landlord', required: true, preSubmission: true, whenField: 'borrower_rents' },
   // Whoever holds the loan being paid off. Only a refinance has one.
   { key: 'payoff', required: false, whenField: 'is_refinance' },
   // The four that can be on any deal and are nobody's requirement.
@@ -294,36 +310,38 @@ const PRIOR_TO_SUBMISSION = [
     code: 'lt_file_contacts',
     bucket: B.SUBMISSION,
     label: 'File contacts',
-    hint: 'The two the file cannot be submitted without: the title company and the hazard insurance '
-      + 'agent. Everyone else on the closing — the attorneys, the realtor, the settlement agent, the '
-      + 'HOA, the landlord — lives in the File contacts section rather than being asked for here. '
-      + 'Picked from the shared vendor directory rather than typed, so the same company is the same '
-      + 'record on every file.',
+    hint: 'The title company and the hazard insurance agent on every file — and, when the deal calls '
+      + 'for them, the landlord (the borrower rents where they live), the HOA management company (a '
+      + 'condominium) and the settlement agent (a New York file); each of those three is greyed with '
+      + 'the reason on a file that does not need it. The attorneys and the realtor live in the File '
+      + 'contacts section rather than being asked for here. Picked from the shared vendor directory '
+      + 'rather than typed, so the same company is the same record on every file.',
     borrowerLabel: 'Who is handling your closing',
-    borrowerHint: 'Your title company and your insurance agent.',
+    borrowerHint: 'Your title company and your insurance agent — and your landlord, your condo’s '
+      + 'management company or your settlement agent where they apply.',
     audience: 'both',
     kind: 'form',
     autoApply: 'always',
     slots: [],
     config: {
-      // ONLY THE TWO. Owner-directed 2026-08-31: *"Our attorney, Realtor,
-      // Buyer's Attorney — those open slots should be only in the file contacts
-      // and not … a condition before submittal. The only stuff that should be a
-      // condition before submittal is the title company and the hazard insurance
-      // agent."*
+      // THE TWO, AND THE THREE THAT FOLLOW THE DEAL. Owner-directed 2026-08-31:
+      // *"The only stuff that should be a condition before submittal is the
+      // title company and the hazard insurance agent."* — and 2026-09-02, on
+      // this very condition: *"if he's a renter, it should also populate
+      // landlord contact … If it's a condo, populate the condo. If it's a New
+      // York file, populate the settlement agent."* The three are rule-driven
+      // rows on the SAME condition (each carries a `whenField`), so on a deal
+      // that needs none of them the condition still asks for exactly the two.
       //
-      // The other nine did not go anywhere: they are the FILE CONTACTS desk
-      // (`FILE_CONTACT_TYPES` below), which is where an open slot belongs. The
-      // difference is what a CONDITION means — a row on the list somebody has to
-      // clear before the file moves — and an attorney who may never be appointed
-      // is not that. Two of the nine are still asked for in their own right when
-      // the deal calls for it, by their own rule-driven ORDER conditions
-      // (`lt_order_flood_insurance`, `lt_order_ny_settlement_agent`), so nothing
-      // that was genuinely required has become optional.
+      // The attorneys and the realtor did not go anywhere: they are the FILE
+      // CONTACTS desk (`FILE_CONTACT_TYPES` above), which is where an open slot
+      // belongs. The difference is what a CONDITION means — a row on the list
+      // somebody has to clear before the file moves — and an attorney who may
+      // never be appointed is not that.
       //
-      // DERIVED, NEVER RETYPED: these are the two entries of `FILE_CONTACT_TYPES`
+      // DERIVED, NEVER RETYPED: these are the entries of `FILE_CONTACT_TYPES`
       // marked `preSubmission`, so the desk and the condition can never disagree
-      // about what the title company is called or which fact greys it.
+      // about what the title company is called or which fact greys a row.
       contactTypes: FILE_CONTACT_TYPES.filter((t) => t.preSubmission)
         .map(({ preSubmission, ...t }) => t),
       // USES the short-term side's vendor directory rather than copying it, so a
@@ -450,25 +468,14 @@ const PRIOR_TO_SUBMISSION = [
     rule: when('is_refinance', 'is_true'),
     config: { orderType: 'payoff' },
   },
-  {
-    code: 'lt_hoa_contact',
-    bucket: B.SUBMISSION,
-    label: 'HOA management company',
-    hint: 'Only on a condo. The questionnaire goes to whoever manages the association, so their '
-      + 'details are collected first.',
-    borrowerLabel: 'Who manages the condo association',
-    borrowerHint: 'The management company’s name, email and phone number.',
-    audience: 'both',
-    kind: 'form',
-    autoApply: 'rules',
-    rule: when('is_condo', 'is_true'),
-    /* Same as the landlord above: the condo questionnaire order sends to the
-       `hoa` vendor on the loan, so this has to WRITE that row rather than four
-       boxes that only this condition can see. */
-    config: {
-      contactTypes: [{ key: 'hoa', label: 'HOA management company', required: true }],
-    },
-  },
+  /* `lt_hoa_contact` — the stand-alone "HOA management company" condition —
+     was RETIRED by db/670 (owner-directed 2026-09-02: the HOA is asked for on
+     the file-contacts condition itself, greyed unless the property is a condo).
+     It was the same `hoa` vendor row asked for twice; the row lives on, on the
+     File contacts desk and on `lt_file_contacts`. Retired the way db/660
+     retired the landlord and payoff-servicer conditions: out of this library,
+     inactive on disk, and the engine takes an untouched instance off each file
+     while a worked one stays. */
   {
     code: 'lt_condo_questionnaire_ordered',
     bucket: B.SUBMISSION,

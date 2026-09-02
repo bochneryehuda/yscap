@@ -30,12 +30,14 @@
 
 const loans = require('./loans');
 const conditions = require('../conditions/sync');
+const conditionRules = require('../conditions-center/sweep');
 const milestoneCatalog = require('./milestone-catalog');
 const milestoneLadder = require('./milestone-ladder');
 const landlordMemory = require('../landlord-memory');
 const contacts = require('../people/contacts');
 const clickupLink = require('../clickup/link');
 const clickupPush = require('../clickup/push');
+const clickupSubmittal = require('../clickup/submittal');
 const borrowerAutolink = require('../borrower-autolink');
 const vorDesk = require('../vor/desk');
 const priceSnapshot = require('../pricing/daily-pass');
@@ -194,6 +196,21 @@ async function tickOnce({ trigger = 'worker' } = {}) {
     } catch (e) {
       out.conditions = { ok: false, reason: (e && e.message) || String(e) };
     }
+    // THE CONDITION RULES RUN BY THEMSELVES (owner-directed 2026-09-02: *"You
+    // don't need to click this button; that populates automatically on all the
+    // files and always re-checks if stuff and rules were updated"*). OUR OWN
+    // rules engine over OUR OWN conditions — not the Encompass mirror above —
+    // for every loan that is DUE: never evaluated, its mirror moved since, or
+    // the library moved since. A bounded batch per tick, oldest attempt first;
+    // a caught-up book costs one SELECT that finds nothing. Runs AFTER the loan
+    // drain so a file read this tick is evaluated this tick, and LOCAL work, so
+    // it runs whether or not Encompass is reachable. Its own off switch:
+    // LT_CONDITION_RULES_ENABLED=0.
+    try {
+      out.conditionRules = await runLog.record('condition_rules', trigger, () => conditionRules.sweepOnce({}));
+    } catch (e) {
+      out.conditionRules = { ok: false, reason: (e && e.message) || String(e) };
+    }
     // The tenant's own milestone catalog. It skips itself unless a day has passed,
     // so this costs nothing on all but one pass — and when it does run it is what
     // stops a step a buyer added from blanking the progress bar on every file
@@ -310,6 +327,17 @@ async function tickOnce({ trigger = 'worker' } = {}) {
     } catch (e) {
       out.clickupPush = { ok: false, reason: (e && e.message) || String(e) };
     }
+    // "PRIOR TO SUBMITTAL CONDITIONS → COMPLETED" ON THE CARD (db/669,
+    // owner-directed 2026-09-02). The click pushes it on the spot; this is the
+    // retry for a loan whose card was linked AFTER the click, or whose push met
+    // an outage — declared complete and not yet on the card, oldest first.
+    // Runs AFTER the link and push passes so a card linked this tick is told
+    // this tick. Behind the writer's own switch; a caught-up book costs one SELECT.
+    try {
+      out.submittalPush = await runLog.record('submittal_clickup', trigger, () => clickupSubmittal.pushPass({}));
+    } catch (e) {
+      out.submittalPush = { ok: false, reason: (e && e.message) || String(e) };
+    }
   } finally {
     running = false;
   }
@@ -336,6 +364,16 @@ async function tickOnce({ trigger = 'worker' } = {}) {
     console.log('[lt-sync] price snapshot: %s',
       ps.ok === false ? `failed — ${ps.reason}`
         : `${ps.stored} programme(s) recorded for ${ps.day}${ps.unusable ? `, ${ps.unusable} unreadable` : ''}`);
+  }
+
+  // The rules pass speaks only when it evaluated something or could not: a
+  // caught-up book says nothing, every five minutes, on purpose.
+  const cr = out.conditionRules || {};
+  if (cr.ok === false || Number(cr.evaluated) > 0) {
+    console.log('[lt-sync] condition rules: %s',
+      cr.ok === false ? `skipped — ${cr.reason}`
+        : `${cr.evaluated} loan(s) evaluated (${cr.added} condition(s) added, ${cr.removed} taken off`
+          + `${cr.failed ? `, ${cr.failed} failed` : ''})${cr.more ? ', more to go' : ''}`);
   }
 
   const r = out.pilotRoles || {};

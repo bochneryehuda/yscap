@@ -148,9 +148,27 @@ const FIELDS = [
      the label above) and descenders to ~517.1 (7pt clear of the label below).
      All FOUR move together: they share one printed rule, and raising only the
      two the owner named would leave the row visibly crooked. */
+  /* ── THE SIGNATURE IS DRAWN IN A SIGNATURE SCRIPT, NOT TYPED ─────────────
+     Owner-directed 2026-09-02: *"the place for the signature of the lender,
+     you're typing the name of the user. We need it to be in a more scribbled
+     font so it should look like the signature of the user."*
+
+     `font: 'signature'` sends this one field through the script face
+     (`pdf.js` — Great Vibes, embedded from src/longterm/assets, pinned by
+     digest like the blank). Its OWN baseline and size, because a script face
+     has different extents from Helvetica and the same band has to hold it:
+     the printed labels on this row sit on baseline 530.4 (glyphs down to
+     ~528.5) and the next section's label on 503.4 (glyphs up to ~509.9), so
+     the clean band is ~511.4–527.0. The script's ascent is 0.851em and its
+     descent 0.401em (measured from the font, not typed), so at 12pt it spans
+     10.2pt above and 4.8pt below its baseline: y=516.5 puts its tallest
+     flourish at ~526.7 and its lowest tail at ~511.7, inside the band on both
+     sides. It SHRINKS to fit the 115pt width rather than wrapping — a
+     signature is one line — down to a floor of 9pt; beyond that the preview
+     reports it as overflowing rather than the form silently clipping it. */
   { key: 'lender_signature', part: 'request', who: 'us', item: '3',
     label: 'Signature of Lender',
-    x: 60, y: 519, width: 115, size: 9 },
+    x: 60, y: 516.5, width: 115, size: 12, minSize: 9, font: 'signature' },
 
   { key: 'lender_title', part: 'request', who: 'us', item: '4',
     label: 'Title',

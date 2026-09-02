@@ -67,6 +67,13 @@ const condReview = require('../../lib/condition-docs/review');
 const condRemove = require('../../lib/condition-docs/remove');
 const condServe = require('../../lib/condition-docs/serve');
 const { ownerOf } = require('../../lib/condition-owner');
+// The rules run by themselves (db/668): the file's own door runs the engine
+// when the loan is DUE, before its conditions are read.
+const sweep = require('../conditions-center/sweep');
+// Prior to submittal — completed (db/669): the officer's list and the button,
+// and the one ClickUp write it makes.
+const submittal = require('../conditions-center/submittal');
+const clickupSubmittal = require('../clickup/submittal');
 
 const staffId = (req) => (req.actor && req.actor.id ? String(req.actor.id) : null);
 
@@ -95,8 +102,15 @@ router.get('/loans/:loanId', async (req, res) => {
   const scoped = await loadScopedLoan(req, res, 'lt-cond');
   if (!scoped) return;
   try {
+    /* THE RULES RUN BEFORE THE LIST IS READ, when the file is DUE a pass
+       (owner-directed 2026-09-02: *"you don't need to click this button"*).
+       The background sweep covers the book on its own tick; this is the same
+       predicate at the moment a person is actually looking, so what they open
+       is current now rather than five minutes from now. Best-effort — a pass
+       that fails is reported in `rules` and the list is read regardless. */
+    const rules = await sweep.evaluateIfStale(scoped.loan.id, { db });
     const out = await read.forLoan(scoped.loan.id, { audience: 'internal', db });
-    res.json({ loanId: scoped.loan.id, ...out });
+    res.json({ loanId: scoped.loan.id, rules, ...out });
   } catch (e) {
     console.error('[lt] condition centre read failed:', (e && e.message) || e);
     res.status(500).json({ error: 'Could not read this file’s conditions just now.' });
@@ -113,6 +127,41 @@ router.post('/loans/:loanId/evaluate', async (req, res) => {
   if (!scoped) return;
   const out = await engine.evaluateLoan(scoped.loan.id, { db });
   res.json(out);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PRIOR TO SUBMITTAL — COMPLETED (owner-directed 2026-09-02)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET …/loans/:loanId/submittal — what the officer still has to do, and the
+// completion stamp / ClickUp state once it is done. The list is derived from
+// the same sign-off rules the back office uses; see conditions-center/submittal.js.
+router.get('/loans/:loanId/submittal', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-cond');
+  if (!scoped) return;
+  const out = await submittal.readiness(scoped.loan.id, { db });
+  if (!out.ok) return res.status(503).json({ error: out.degraded || 'Could not read this file just now.' });
+  return res.json(out);
+});
+
+// POST …/loans/:loanId/submittal/complete — the button. Refuses (422, with the
+// list) while anything is outstanding; stamps once; tells ClickUp best-effort.
+router.post('/loans/:loanId/submittal/complete', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-cond');
+  if (!scoped) return;
+  const out = await submittal.complete(scoped.loan.id, staffId(req), { db });
+  if (!out.ok) return res.status(out.status || 400).json({ error: out.error, outstanding: out.outstanding || [] });
+  return res.json(out);
+});
+
+// POST …/loans/:loanId/submittal/push-clickup — try the card again by hand
+// (the worker retries on its own; this is for the person watching the screen).
+router.post('/loans/:loanId/submittal/push-clickup', async (req, res) => {
+  const scoped = await loadScopedLoan(req, res, 'lt-cond');
+  if (!scoped) return;
+  const push = await clickupSubmittal.pushForLoan(scoped.loan.id, { db });
+  const state = await submittal.stateOf(scoped.loan.id, db);
+  return res.json({ ok: !!push.ok, push, completed: state && state.completed, clickup: state && state.clickup });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

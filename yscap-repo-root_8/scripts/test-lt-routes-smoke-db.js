@@ -207,6 +207,8 @@ async function main() {
       '/api/lt/condition-center/buckets',
       '/api/lt/condition-center/library',
       `/api/lt/condition-center/loans/${NO_LOAN}`,
+      // Prior to submittal — completed (db/669): the officer's list.
+      `/api/lt/condition-center/loans/${NO_LOAN}/submittal`,
       // The workspace behind the three conditions that are a CHOICE rather than
       // an upload. It reads the liabilities, the vesting entity on the shared
       // profile and the documents per line — three queries whose failures are

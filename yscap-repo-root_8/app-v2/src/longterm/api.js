@@ -313,6 +313,13 @@ export const ltApi = {
   // conditions. Two centres, two names.
   fileConditions: (loanId) => ltGet(lt(`/condition-center/loans/${encodeURIComponent(loanId)}`)),
   fileConditionsEvaluate: (loanId) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/evaluate`), {}),
+  // PRIOR TO SUBMITTAL — COMPLETED (owner-directed 2026-09-02): what the
+  // officer still has to do, the button, and a by-hand retry of the ClickUp
+  // card. The list is the server's — the same sign-off rules the back office
+  // uses — never re-derived on the screen.
+  submittalReadiness: (loanId) => ltGet(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/submittal`)),
+  submittalComplete: (loanId) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/submittal/complete`), {}),
+  submittalPushClickup: (loanId) => ltPost(lt(`/condition-center/loans/${encodeURIComponent(loanId)}/submittal/push-clickup`), {}),
   // THE THREE CONDITIONS THAT ARE A CHOICE, not an upload — the mortgages on
   // the credit report, the mortgage on the property being refinanced, and the
   // vesting entity. Their working data has its own door because the conditions

@@ -173,8 +173,17 @@ export default function LtEntity({ loanId, entityName, profile, note, onChanged,
           {/* THE SHARED SECTION. Same component, same form, same slots, same
               layered-entity recursion as the short-term file screen — pointed at
               this product's doors by the adapter, and nothing else changed. */}
+          {/* KEYED ON THE LOCK STATE TOO (owner-reported 2026-09-02: *"I clicked
+              on revoke verification. I tried editing, and it didn't work."*).
+              The shared section reads `is_verified` off its own load and its
+              reload effect is keyed on the company id alone — so a revoke made
+              from THIS control lifted the lock on the server and left the form
+              greyed until the page was reloaded. Remounting it when the lock
+              flips is the honest fix: the form re-reads the company and unlocks
+              on the spot. Nothing is in flight to lose — the verify/revoke
+              buttons sit outside the form, and a revoke asks for a reason first. */}
           <LlcManager
-            key={llcId}
+            key={`${llcId}:${profile.verified ? 'locked' : 'open'}`}
             llcId={llcId}
             staff
             compactHeader
@@ -182,26 +191,49 @@ export default function LtEntity({ loanId, entityName, profile, note, onChanged,
             coBorrower={coBorrower}
             onChanged={onChanged} />
 
+          {/* UNLOCK → EDIT → LOCK (owner-directed 2026-09-02: *"Everything was
+              locked. It needs to have an option to unlock, make the edits, and
+              then lock again."*). The two acts are the short-term ones — a
+              revoke and a verify — under the names that say what they do to
+              the form: while the company is verified its type, its details,
+              its owners and its documents are all locked; unlocking is a revoke
+              (with a reason, because the borrower is told), and locking again is
+              marking it verified, which satisfies the condition on every file. */}
           <div className="row" style={{ gap: 8, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
             {profile.verified
               ? (
                 <button type="button" disabled={busy} style={{ ...btn(false), opacity: busy ? 0.5 : 1 }}
+                  title="Revokes the verification so the entity type, details, owners and documents can be changed. A reason is asked for — the borrower is told why."
                   onClick={() => setVerified(false)}>
-                  {busy ? 'Working…' : 'Revoke verification'}
+                  {busy ? 'Working…' : '🔓 Unlock to edit (revoke verification)'}
                 </button>
               )
               : (
                 <button type="button" disabled={busy} style={{ ...btn(true), opacity: busy ? 0.5 : 1 }}
+                  title="Marks the company verified: the section locks again and the entity condition is satisfied on every open file vesting in it."
                   onClick={() => setVerified(true)}>
-                  {busy ? 'Working…' : 'Mark this company verified'}
+                  {busy ? 'Working…' : '🔒 Lock & mark verified'}
                 </button>
               )}
             <span style={{ fontSize: 12, color: MUTED, lineHeight: 1.5 }}>
               {profile.verified
-                ? 'Its documents are locked while it is verified — revoke first to replace one.'
-                : 'Verifying satisfies the entity condition on every open file vesting in this company.'}
+                ? 'Verified, so its entity type, details, owners and documents are locked. Unlock to edit, make the change, then lock it again.'
+                : 'Unlocked — the entity type, details, owners and documents above can be edited. Locking (verifying) satisfies the entity condition on every open file vesting in this company.'}
             </span>
           </div>
+
+          {/* THE SAME COMPANY, ON THE BORROWER'S OWN PAGE. It is one `llcs` row
+              wherever it is edited — here, on a short-term file, or on the
+              profile — so this is a door to the same record, not a copy of it. */}
+          {profile.borrowerId && (
+            <p style={{ margin: '8px 0 0', fontSize: 12, color: MUTED, lineHeight: 1.5 }}>
+              This is the borrower’s own record. It can also be edited on their profile:{' '}
+              <a href={`/internal/borrowers/${encodeURIComponent(profile.borrowerId)}`} target="_blank" rel="noreferrer"
+                style={{ color: GOLD_TEXT, fontWeight: 600 }}>
+                open the borrower’s profile ↗
+              </a>
+            </p>
+          )}
 
           {note && (
             <p style={{ margin: '8px 0 0', fontSize: 12, color: MUTED, lineHeight: 1.5 }}>{note}</p>

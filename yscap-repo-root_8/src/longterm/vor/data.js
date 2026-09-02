@@ -55,9 +55,14 @@ const LENDER_BLOCK = [LENDER.name, LENDER.address, LENDER.cityStateZip].join('\n
     where it is rather than collecting a second one. */
 const APPLICANT_SIGNATURE = 'See attached signature';
 
-/** Item 4, "Title". `staff_users.role` is the only title we hold, and a form that
-    says "Loan Officer" is a form a landlord can place. An unknown role falls back to
-    nothing rather than printing a database token at a stranger. */
+/** Item 4, "Title" — the FALLBACK. The roster carries a real title for every
+    person (`staff_users.title`, db/007: "Loan Coordinator", "Senior Loan
+    Processor", "MLO & Operations Manager"…, edited on the Team screen), and
+    that is what the form prints (owner-directed 2026-09-02: *"the title needs
+    to have the title of the user, let's say loan officer, processor, and so
+    forth"*). This table answers only for a person whose roster title is blank:
+    a role word a landlord can place, and for an unknown role nothing rather
+    than a database token printed at a stranger. */
 const TITLE_BY_ROLE = {
   loan_officer: 'Loan Officer',
   processor: 'Loan Processor',
@@ -267,14 +272,17 @@ async function prefill(loanId, client = db, opts = {}) {
     if (data.lender_signature) break;
     // eslint-disable-next-line no-await-in-loop
     await one('signatory',
-      `SELECT NULLIF(btrim(su.full_name), '') AS name, su.role, su.email, su.phone
+      `SELECT NULLIF(btrim(su.full_name), '') AS name, su.role, su.email, su.phone,
+              NULLIF(btrim(su.title), '') AS title
          FROM staff_users su
         WHERE su.id = $1::uuid AND su.is_active = true`,
       [staffId], (rows) => {
         const r = rows && rows[0];
         if (!r) return;
         if (r.name) data.lender_signature = String(r.name);
-        const title = TITLE_BY_ROLE[String(r.role || '').toLowerCase()];
+        // THE PERSON'S OWN TITLE FIRST — the roster's, the one the Team screen
+        // edits — and the role word only when the roster has none for them.
+        const title = r.title ? String(r.title) : TITLE_BY_ROLE[String(r.role || '').toLowerCase()];
         if (title) data.lender_title = title;
       });
   }

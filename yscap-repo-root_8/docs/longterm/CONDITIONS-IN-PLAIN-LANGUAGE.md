@@ -12,7 +12,7 @@ answer it themselves.
 file at all. *Order* sends an email out to a company and waits for what comes back.
 *Signature* goes out to be signed.
 
-**27 conditions in total** — 15 internal only, 12 that the borrower sees too.
+**26 conditions in total** — 15 internal only, 11 that the borrower sees too.
 
 ---
 
@@ -20,7 +20,7 @@ file at all. *Order* sends an email out to a company and waits for what comes ba
 
 Everything the file needs before it goes to underwriting.
 
-15 conditions.
+14 conditions.
 
 ### Mortgages on the credit report — a statement for each
 
@@ -62,9 +62,9 @@ Everything the file needs before it goes to underwriting.
 
 *Internal + external · Form*
 
-**What it is.** The two the file cannot be submitted without: the title company and the hazard insurance agent. Everyone else on the closing — the attorneys, the realtor, the settlement agent, the HOA, the landlord — lives in the File contacts section rather than being asked for here. Picked from the shared vendor directory rather than typed, so the same company is the same record on every file.
+**What it is.** The title company and the hazard insurance agent on every file — and, when the deal calls for them, the landlord (the borrower rents where they live), the HOA management company (a condominium) and the settlement agent (a New York file); each of those three is greyed with the reason on a file that does not need it. The attorneys and the realtor live in the File contacts section rather than being asked for here. Picked from the shared vendor directory rather than typed, so the same company is the same record on every file.
 
-**What the borrower is asked.** “Your title company and your insurance agent.”
+**What the borrower is asked.** “Your title company and your insurance agent — and your landlord, your condo’s management company or your settlement agent where they apply.”
 
 **How it behaves.** appears on every file.
 
@@ -153,18 +153,6 @@ Everything the file needs before it goes to underwriting.
 **How it behaves.** appears only when the file calls for it; sends the payoff order.
 
 <sub>`lt_payoff_ordered`</sub>
-
-### HOA management company
-
-*Internal + external · Form*
-
-**What it is.** Only on a condo. The questionnaire goes to whoever manages the association, so their details are collected first.
-
-**What the borrower is asked.** “The management company’s name, email and phone number.”
-
-**How it behaves.** appears only when the file calls for it.
-
-<sub>`lt_hoa_contact`</sub>
 
 ### Condo questionnaire ordered
 
