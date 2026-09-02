@@ -231,9 +231,9 @@ async function ingestForOrderLocked(dbc, order, deps = {}) {
     // callback that names it.
     if (!a.name) continue;
     await q.query(
-      `INSERT INTO class_attachments (class_order_row, application_id, name, content_type, class_attachment_id)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (class_order_row, name) WHERE name IS NOT NULL
+      `INSERT INTO class_attachments (class_order_row, application_id, name, content_type, class_attachment_id, direction)
+       VALUES ($1,$2,$3,$4,$5,'inbound')
+       ON CONFLICT (class_order_row, name) WHERE name IS NOT NULL AND direction = 'inbound'
        DO UPDATE SET class_attachment_id = COALESCE(class_attachments.class_attachment_id, EXCLUDED.class_attachment_id),
                      content_type        = COALESCE(class_attachments.content_type, EXCLUDED.content_type)`,
       [order.id, order.application_id, a.name, a.contentType, a.id]);
@@ -242,7 +242,7 @@ async function ingestForOrderLocked(dbc, order, deps = {}) {
   // 2. FETCH every announced-but-unfetched attachment (bounded — see RETRY_DAYS).
   const rows = (await q.query(
     `SELECT * FROM class_attachments
-      WHERE class_order_row = $1 AND document_id IS NULL
+      WHERE class_order_row = $1 AND document_id IS NULL AND direction = 'inbound'
         AND (fetch_error IS NULL OR announced_at > now() - ($2 || ' days')::interval)
       ORDER BY announced_at ASC`,
     [order.id, String(RETRY_DAYS)])).rows;
@@ -330,7 +330,7 @@ async function ingestForOrderLocked(dbc, order, deps = {}) {
     if (!pdfDocId) {
       const pdf = (await q.query(
         `SELECT d.id FROM class_attachments ca JOIN documents d ON d.id = ca.document_id
-          WHERE ca.class_order_row=$1
+          WHERE ca.class_order_row=$1 AND ca.direction = 'inbound'
             AND (lower(COALESCE(ca.content_type,'')) LIKE '%pdf%' OR lower(COALESCE(ca.name,'')) LIKE '%.pdf')
           ORDER BY ca.fetched_at DESC NULLS LAST LIMIT 1`, [order.id])).rows[0];
       if (pdf) pdfDocId = pdf.id;
@@ -364,7 +364,7 @@ async function sweepPendingOnce(dbc = db) {
   const orders = (await q.query(
     `SELECT DISTINCT o.* FROM class_orders o
        JOIN class_attachments a ON a.class_order_row = o.id
-      WHERE a.document_id IS NULL
+      WHERE a.document_id IS NULL AND a.direction = 'inbound'
         AND o.class_order_id IS NOT NULL
         AND a.announced_at > now() - ($1 || ' days')::interval
       ORDER BY o.id
@@ -377,9 +377,217 @@ async function sweepPendingOnce(dbc = db) {
   return { swept };
 }
 
+// ===========================================================================
+// THE OTHER DIRECTION — documents going OUT to the appraiser (owner-directed
+// 2026-09-02: "Very important that we should be able to upload documents").
+//
+// The mirror of src/amc/documents.js `listUploadable` / `uploadToOrder` /
+// `autoUploadForOrder`, on Class's `POST /{orderId}/attachments/{category}`. Same
+// three rules as the AMC side, because they are rules about OUR files, not theirs:
+//   • the picker lists the file's current Document Center documents with the shared
+//     categorizer's category and whether each is already on the order;
+//   • the scope of work and the purchase contract go up AUTOMATICALLY on every poll
+//     when they are not there yet (the corrected SOW when it changes, the contract
+//     when it arrives) — nobody has to remember;
+//   • an HTML export is never sent (the branded PDF is what the appraiser wants).
+//
+// What differs is Class's vocabulary. Their upload takes a CATEGORY in the path and
+// an `AttachmentType` ∈ HyperLink / PDF / XML / Image in the body — there is no
+// "Word" or "Excel" type, so a document whose bytes are neither a PDF, an XML nor an
+// image is SKIPPED with a reason rather than sent under a false label. Their
+// category list has exact slots for the two documents that matter most —
+// `SalesContract` for the contract, `PlansAndSpecs` for the scope of work — and
+// `Miscellaneous` for everything else.
+// ===========================================================================
+const tpr = require('../lib/tpr-export');
+
+const CAT_SOW = 'Scope of Work';
+const CAT_CONTRACT = 'Contract & Assignment';
+
+// Class's own attachment categories we send under (their guide p.18, verbatim).
+const CLASS_CATEGORIES = [
+  'InvisionLink', 'PDCReport', 'PDRReport', 'PFRReport', 'QRRReport', 'AppraisalXml', 'Appraisal',
+  'Invoice', 'AppraiserLicense', 'ComplianceCertificate', 'SalesContract', 'PurchaseAgreement',
+  'Miscellaneous', 'Other', 'FannieMaeSsr', 'FreddieMacSsr', 'Eadssr', 'PDAPIData', 'FreddieData',
+  'PCRReport', 'PropertyPhoto', 'AltValReport', 'ConditionReport', 'PDAReport', 'ClientEngagementLetter',
+  'PlansAndSpecs', 'Title', 'ROVDocument', 'BorrowerIntentToProceed', 'ARAReport', 'APPZIP',
+];
+
+/** Our document category (the shared categorizer's label) → the Class category to file it under. */
+function classCategoryFor(category) {
+  if (category === CAT_CONTRACT) return 'SalesContract';
+  if (category === CAT_SOW) return 'PlansAndSpecs';
+  return 'Miscellaneous';
+}
+
+/** A caller-named Class category, in their casing, or null when it is not one of theirs. */
+function classCategory(name) {
+  const wanted = String(name == null ? '' : name).trim().toLowerCase();
+  if (!wanted) return null;
+  return CLASS_CATEGORIES.find((c) => c.toLowerCase() === wanted) || null;
+}
+
+/**
+ * Class's `AttachmentType` for a document, from its content type and name — PDF, XML
+ * or Image — or null when the file is none of those (a Word or Excel export), which
+ * the caller reports as "unsupported" rather than mislabelling.
+ */
+function attachmentTypeFor(contentType, filename) {
+  const ct = String(contentType || '').toLowerCase().split(';')[0].trim();
+  const fn = String(filename || '').toLowerCase();
+  if (ct.includes('pdf') || fn.endsWith('.pdf')) return 'PDF';
+  // An XML document, not an Office file: Word and Excel content types are
+  // `application/vnd.openxmlformats-…`, which CONTAINS "xml" and is not one.
+  if (ct === 'text/xml' || ct === 'application/xml' || ct.endsWith('+xml') || fn.endsWith('.xml')) return 'XML';
+  if (ct.startsWith('image/') || /\.(jpe?g|png|gif|tiff?|bmp|webp|heic)$/.test(fn)) return 'Image';
+  return null;
+}
+
+function categoryOf(row) {
+  try { return tpr.categoryFor(row); } catch (_) { return 'Other Documents'; }
+}
+
+function isHtmlExport(d) {
+  return /html/i.test(String(d.contentType || d.content_type || '')) || /\.html?$/i.test(String(d.filename || ''));
+}
+
+/**
+ * The file's current Document Center documents, each with a category, the Class
+ * category it would be filed under, whether Class can take it at all, and whether it
+ * is already on `orderRowId`. Read-only.
+ */
+async function listUploadable(dbh, appId, orderRowId = null) {
+  const q = dbh || db;
+  const r = await q.query(
+    `SELECT d.id, d.filename, d.content_type, d.size_bytes, d.doc_kind, d.review_status,
+            d.llc_id, d.created_at, ci.label AS item_label, ct.code AS template_code
+       FROM documents d
+       LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+       LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+      WHERE d.application_id = $1 AND d.is_current = true
+      ORDER BY d.created_at DESC`, [appId]);
+  let sent = new Map();
+  if (orderRowId) {
+    const s = await q.query(
+      `SELECT document_id, category, uploaded_at FROM class_attachments
+        WHERE class_order_row = $1 AND direction = 'outbound' AND document_id IS NOT NULL`, [orderRowId]);
+    sent = new Map(s.rows.map((x) => [String(x.document_id), x]));
+  }
+  return r.rows.map((d) => {
+    const category = categoryOf(d);
+    const attachmentType = attachmentTypeFor(d.content_type, d.filename);
+    const was = sent.get(String(d.id));
+    return {
+      id: d.id, filename: d.filename, contentType: d.content_type, sizeBytes: d.size_bytes,
+      docKind: d.doc_kind, reviewStatus: d.review_status,
+      category,
+      classCategory: classCategoryFor(category),
+      attachmentType,
+      sendable: !!attachmentType && !isHtmlExport({ contentType: d.content_type, filename: d.filename }),
+      alreadyUploaded: !!was,
+      uploadedAt: was ? was.uploaded_at : null,
+    };
+  });
+}
+
+/**
+ * Upload the picked documents to a Class order. `category` (optional) forces one Class
+ * category for the whole pick — the picker's "send as the purchase contract"; otherwise
+ * each document goes under the category its own kind maps to. Returns
+ * { ok, uploaded:[{documentId, filename, category}], skipped:[{documentId, reason}] }.
+ * Never throws for a refusal: a write-gate refusal comes back as `outbound_disabled`.
+ */
+async function uploadToOrder(dbh, order, { staffId = null, documentIds, category } = {}, deps = {}) {
+  const q = dbh || db;
+  const transport = deps.transport || client;
+  const readStorage = deps.readStorage || ((ref) => storage.read(ref));
+  const ids = (documentIds || []).filter(Boolean);
+  if (!ids.length) return { ok: false, error: 'no_documents' };
+  if (!order || !order.class_order_id) return { ok: false, error: 'not_numbered', message: 'Class has not numbered this order yet — nothing can be attached to it.' };
+  let forced = null;
+  if (category != null && category !== '') {
+    forced = classCategory(category);
+    if (!forced) {
+      return { ok: false, error: 'unknown_category',
+        message: `Class has no "${String(category)}" attachment category — it is one of ${CLASS_CATEGORIES.join(', ')}.` };
+    }
+  }
+
+  const rows = (await q.query(
+    `SELECT d.id, d.filename, d.content_type, d.storage_ref, d.doc_kind, d.llc_id,
+            ci.label AS item_label, ct.code AS template_code
+       FROM documents d
+       LEFT JOIN checklist_items ci ON ci.id = d.checklist_item_id
+       LEFT JOIN checklist_templates ct ON ct.id = ci.template_id
+      WHERE d.application_id = $1 AND d.id = ANY($2::uuid[])`, [order.application_id, ids])).rows;
+  const already = new Set((await q.query(
+    `SELECT document_id FROM class_attachments
+      WHERE class_order_row=$1 AND direction='outbound' AND document_id = ANY($2::uuid[])`,
+    [order.id, ids])).rows.map((x) => String(x.document_id)));
+
+  const uploaded = [];
+  const skipped = [];
+  for (const d of rows) {
+    if (already.has(String(d.id))) { skipped.push({ documentId: d.id, reason: 'already_uploaded' }); continue; }
+    if (isHtmlExport({ contentType: d.content_type, filename: d.filename })) { skipped.push({ documentId: d.id, reason: 'html_export' }); continue; }
+    const attachmentType = attachmentTypeFor(d.content_type, d.filename);
+    if (!attachmentType) { skipped.push({ documentId: d.id, reason: 'unsupported_type', detail: 'Class takes PDF, XML and image files only' }); continue; }
+    let bytes;
+    try { bytes = await readStorage(d.storage_ref); }
+    catch (_) { skipped.push({ documentId: d.id, reason: 'read_failed' }); continue; }
+    if (!bytes || !bytes.length) { skipped.push({ documentId: d.id, reason: 'empty' }); continue; }
+
+    const cat = forced || classCategoryFor(categoryOf(d));
+    let resp;
+    try {
+      resp = await transport.uploadAttachment(order.class_order_id, cat,
+        { fileName: d.filename || 'document', contentType: d.content_type || 'application/octet-stream', bytes, attachmentType });
+    } catch (e) {
+      if (e && e.code === 'CLASS_OUTBOUND_DISABLED') return { ok: false, error: 'outbound_disabled', message: String(e.message || e), uploaded, skipped };
+      const reason = String((e && e.message) || e);
+      await q.query(
+        `INSERT INTO class_attachments (class_order_row, application_id, name, content_type, document_id, direction, category, uploaded_by, upload_error)
+         VALUES ($1,$2,$3,$4,$5,'outbound',$6,$7,$8)
+         ON CONFLICT (class_order_row, document_id) WHERE direction = 'outbound' AND document_id IS NOT NULL
+         DO UPDATE SET upload_error = EXCLUDED.upload_error`,
+        [order.id, order.application_id, d.filename, d.content_type, d.id, cat, staffId, reason.slice(0, 500)]).catch(() => {});
+      skipped.push({ documentId: d.id, reason: 'send_failed', detail: reason });
+      continue;
+    }
+    const dry = !!(resp && resp.__dryrun);
+    await q.query(
+      `INSERT INTO class_attachments (class_order_row, application_id, name, content_type, document_id, direction, category, uploaded_by, uploaded_at, upload_error)
+       VALUES ($1,$2,$3,$4,$5,'outbound',$6,$7,$8,NULL)
+       ON CONFLICT (class_order_row, document_id) WHERE direction = 'outbound' AND document_id IS NOT NULL
+       DO UPDATE SET uploaded_at = EXCLUDED.uploaded_at, category = EXCLUDED.category, upload_error = NULL`,
+      [order.id, order.application_id, d.filename, d.content_type, d.id, cat, staffId, dry ? null : new Date()]);
+    uploaded.push({ documentId: d.id, filename: d.filename, category: cat, dryrun: dry || undefined });
+  }
+  if (!uploaded.length) return { ok: false, error: 'nothing_to_upload', skipped };
+  return { ok: true, uploaded, skipped };
+}
+
+/**
+ * The auto-upload rule: the current scope of work and the purchase contract go to the
+ * order when they are not there yet. Best-effort — returns { ok, uploaded } and never
+ * throws; with writes gated off it simply reports so.
+ */
+async function autoUploadForOrder(dbh, order, deps = {}) {
+  if (!order || !order.class_order_id) return { ok: true, uploaded: 0 };
+  const docs = await listUploadable(dbh, order.application_id, order.id);
+  const pick = docs.filter((d) => !d.alreadyUploaded && d.sendable
+    && (d.category === CAT_SOW || d.category === CAT_CONTRACT));
+  if (!pick.length) return { ok: true, uploaded: 0 };
+  const out = await uploadToOrder(dbh, order, { staffId: null, documentIds: pick.map((d) => d.id) }, deps);
+  return { ok: out.ok, uploaded: out.uploaded ? out.uploaded.length : 0, error: out.error, skipped: out.skipped };
+}
+
 module.exports = {
   ingestForOrder, sweepPendingOnce,
+  // outbound
+  listUploadable, uploadToOrder, autoUploadForOrder,
   // pure — exported for the unit tests
   parseAttachmentList, resolveAttachmentBytes, looksXml, looksPdf,
+  classCategoryFor, classCategory, attachmentTypeFor, CLASS_CATEGORIES, CAT_SOW, CAT_CONTRACT,
   _internals: { pick, looksBase64, firstArray, RETRY_DAYS },
 };

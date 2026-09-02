@@ -26,6 +26,8 @@ const orderBuild = require('../class/order-build');
 const callbacks = require('../class/callbacks');
 const messages = require('../class/messages');
 const revisionReasons = require('../class/revision-reasons');
+const classDocuments = require('../class/documents');
+const classPayment = require('../class/payment');
 
 router.use(requireAuth, requireStaff);
 
@@ -54,6 +56,10 @@ const OVERRIDE_KEYS = new Set([
   'apiVersion',
   'productId', 'propertyTypeEnum', 'purpose', 'loanType', 'occupancy',
   'referenceNumber', 'street', 'city', 'state', 'zip', 'county', 'dueDate', 'instructions',
+  // How the order is paid (Invoice / PaymentLink / Prepay) and, for a payment link,
+  // who Class emails it to — chosen on the order screen, sent at order time (the
+  // only moment Class's API lets it be chosen; see src/class/payment.js).
+  'paymentMethod', 'paymentEmail',
 ]);
 // Their registration reply is documented as a list of event names, but the shape is
 // not guaranteed. Concatenating an OBJECT would append it as one element and write
@@ -112,7 +118,17 @@ router.get('/products', async (req, res) => {
   if (!client.configured().enabled) return res.json({ available: false, products: [] });
   try {
     const products = await classProducts.fetchAll(client, { title: req.query.title });
-    res.json({ available: true, products });
+    // THE FEE BEFORE ORDERING, as far as Class's API allows: their API has no fee
+    // quote, so each product carries what Class LAST charged this account for it
+    // (from payment-details / ClientFeeChanged on earlier orders). Best-effort — a
+    // product with no history simply has no fee line, and the screen says so.
+    let fees = {};
+    try { fees = await classPayment.recentFees(db); } catch (_) { fees = {}; }
+    for (const p of products) {
+      const f = p && p.id != null ? fees[String(p.id)] : null;
+      if (f) p.recentFee = f;
+    }
+    res.json({ available: true, products, feeSource: 'history' });
   } catch (e) {
     // Never relay the vendor's status — a 401 from Class would sign the STAFFER
     // out of PILOT (the repo's session chokepoint documents this class).
@@ -242,7 +258,20 @@ router.post('/files/:id/order', async (req, res) => {
       class_order_id: out && out.orderId != null ? String(out.orderId) : null,
       transaction_id: out && out.transactionId != null ? String(out.transactionId) : null,
       request_body: require('../lib/fields').jsonbText(sentBody),
+      // How it is paid, as sent — so the desk can say "Class emails the borrower a
+      // link" or "billed to our account" without re-reading the body.
+      payment_method: (sentBody.paymentDetails && sentBody.paymentDetails.paymentMethod) || null,
+      payment_recipient_email: (sentBody.paymentDetails && sentBody.paymentDetails.recipientEmail) || null,
     });
+    // THE SCOPE OF WORK AND THE CONTRACT GO UP RIGHT AWAY when the file already has
+    // them (the poller repeats this every five minutes for anything that arrives
+    // later). Best-effort: the order stands whatever happens here.
+    if (orderRowId && out && out.orderId != null) {
+      try {
+        const row = (await db.query('SELECT * FROM class_orders WHERE id = $1', [orderRowId])).rows[0];
+        if (row) await classDocuments.autoUploadForOrder(db, row);
+      } catch (_) { /* the poller will retry */ }
+    }
     // THE INVESTOR'S APPRAISAL REQUIREMENTS GO ON THE ORDER, right after it is
     // placed (owner-directed 2026-08-16) — the same message NAN gets, from the
     // same single definition. It runs AFTER `finish` because a note can only be
@@ -293,6 +322,8 @@ router.get('/files/:id/orders', async (req, res) => {
     `SELECT id, class_order_id, transaction_id, reference_number, api_version, uad, order_path,
             product_id, product_title, status, status_reason, invision_url, due_date,
             appointment_date, inspected_at, assigned_vendor, client_fee_cents, paid_at,
+            payment_method, payment_recipient_email, payment_link_sent_at,
+            total_cents, paid_cents, outstanding_cents, additional_fees, payment_checked_at, payment_recorded_at,
             dryrun, last_event_at, last_error, request_body, placed_at, created_at
        FROM class_orders WHERE application_id = $1
       ORDER BY created_at DESC`, [appId]);
@@ -301,7 +332,7 @@ router.get('/files/:id/orders', async (req, res) => {
   const orders = r.rows.map((o) => {
     const summary = orderBuild.orderSummary(o);
     const { request_body, ...rest } = o;   // eslint-disable-line no-unused-vars
-    return { ...rest, summary };
+    return { ...rest, summary, balance: classPayment.describeBalance(o) };
   });
   const ids = r.rows.map((o) => o.id);
   // Unread counts per order, so the file screen can badge a waiting reply without
@@ -319,10 +350,82 @@ router.get('/files/:id/orders', async (req, res) => {
        FROM class_callback_events WHERE class_order_row = ANY($1::bigint[])
       ORDER BY received_at DESC LIMIT 200`, [ids])).rows : [];
   const attachments = ids.length ? (await db.query(
-    `SELECT id, class_order_row, name, content_type, document_id, announced_at, fetched_at
+    `SELECT id, class_order_row, name, content_type, document_id, announced_at, fetched_at,
+            direction, category, uploaded_at, upload_error
        FROM class_attachments WHERE class_order_row = ANY($1::bigint[])
-      ORDER BY announced_at DESC`, [ids])).rows : [];
+      ORDER BY COALESCE(uploaded_at, announced_at) DESC`, [ids])).rows : [];
   res.json({ orders, events, attachments, unread, openAsks });
+});
+
+// ---------------------------------------------------------------------------
+// OUR DOCUMENTS, UP TO THEM (owner-directed 2026-09-02). The mirror of the AMC
+// document picker: what the file has, what is already on the order, and a send.
+// ---------------------------------------------------------------------------
+router.get('/files/:id/documents', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  const orderRowId = bigintId(req.query.orderRowId);
+  if (orderRowId && !(await orderOnFile(appId, orderRowId))) return res.status(404).json({ error: 'no such order on this file' });
+  res.json({ documents: await classDocuments.listUploadable(db, appId, orderRowId || null),
+    categories: classDocuments.CLASS_CATEGORIES });
+});
+
+// body: { documentIds:[uuid], category? } — `category` forces one Class category for the
+// whole pick (the picker's "send as the purchase contract" → SalesContract).
+router.post('/files/:id/orders/:orderRowId/documents', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!(await orderOnFile(appId, req.params.orderRowId))) return res.status(404).json({ error: 'no such order on this file' });
+  const order = (await db.query('SELECT * FROM class_orders WHERE id = $1', [bigintId(req.params.orderRowId)])).rows[0];
+  const ids = Array.isArray(req.body && req.body.documentIds) ? req.body.documentIds.filter(isUuid) : [];
+  if (!ids.length) return res.status(400).json({ error: 'pick at least one document' });
+  const out = await classDocuments.uploadToOrder(db, order,
+    { staffId: req.actor.id, documentIds: ids, category: req.body.category }, {});
+  if (!out.ok) {
+    if (out.error === 'outbound_disabled') return res.status(409).json({ ...out, message: 'Writing to Class Valuation is switched off, so nothing can be sent yet.' });
+    return res.status(400).json(out);
+  }
+  res.json(out);
+});
+
+// ---------------------------------------------------------------------------
+// THE MONEY PICTURE — what Class says this order costs and what is still owed. A
+// staffer opening it wants the live number, so the hourly throttle is skipped here.
+// ---------------------------------------------------------------------------
+router.get('/files/:id/orders/:orderRowId/payment', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!(await orderOnFile(appId, req.params.orderRowId))) return res.status(404).json({ error: 'no such order on this file' });
+  const order = (await db.query('SELECT * FROM class_orders WHERE id = $1', [bigintId(req.params.orderRowId)])).rows[0];
+  const r = await classPayment.refreshOrder(db, order, { force: true });
+  const o = r.ok ? r.order : order;
+  res.json({
+    ok: true, live: !!(r.ok && r.fresh), error: r.ok ? undefined : r.error, detail: r.ok ? undefined : r.message,
+    paymentMethod: o.payment_method, recipientEmail: o.payment_recipient_email,
+    linkSentAt: o.payment_link_sent_at, paidAt: o.paid_at, recordedAt: o.payment_recorded_at,
+    clientFeeCents: o.client_fee_cents, totalCents: o.total_cents, paidCents: o.paid_cents,
+    outstandingCents: o.outstanding_cents, additionalFees: o.additional_fees || [],
+    checkedAt: o.payment_checked_at, balance: classPayment.describeBalance(o),
+    // What this screen can and cannot do, said plainly (src/class/payment.js header).
+    canCharge: false,
+    canRecord: true,
+    note: 'Class Valuation has no card charge in its API. A payment link is chosen when the order is placed; a card charged by the back office is RECORDED here so Class stops chasing the borrower.',
+  });
+});
+
+// body: { nameCardHolder, amount (dollars), last4, authorizationCode } — tell Class a card
+// payment was taken elsewhere. Records only; nothing is charged by this call.
+router.post('/files/:id/orders/:orderRowId/payment/record', async (req, res) => {
+  const appId = req.params.id;
+  if (!(await canSeeFile(req, appId))) return res.status(403).json({ error: 'forbidden' });
+  if (!(await orderOnFile(appId, req.params.orderRowId))) return res.status(404).json({ error: 'no such order on this file' });
+  const order = (await db.query('SELECT * FROM class_orders WHERE id = $1', [bigintId(req.params.orderRowId)])).rows[0];
+  const out = await classPayment.recordCardPayment(db, order, req.body || {});
+  if (!out.ok) {
+    if (out.error === 'outbound_disabled') return res.status(409).json({ ...out, message: 'Writing to Class Valuation is switched off, so the payment cannot be recorded yet.' });
+    return res.status(400).json(out);
+  }
+  res.json({ ok: true, dryrun: out.dryrun, balance: out.order ? classPayment.describeBalance(out.order) : null });
 });
 
 // ---------------------------------------------------------------------------

@@ -131,6 +131,13 @@ async function loadContext(db, appId) {
     propertyContact: null,
     lender: { clientName: 'YS Capital Group' },
     notifyEmails,
+    // HOW IT IS PAID. Class's API offers three ways at order time (src/class/payment.js):
+    // Invoice (billed to our account), PaymentLink (Class emails the borrower their
+    // hosted payment page) and Prepay. Invoice is their default and ours; a staffer
+    // switches to the payment link on the order screen, and the link goes to the
+    // borrower's own address unless they name another.
+    paymentMethod: 'Invoice',
+    paymentEmail: a.b_email || null,
   };
 }
 
@@ -170,6 +177,8 @@ const LABELS = {
   lpaKey: 'Freddie Mac LPA key',
   propertyTypeEnum: 'Their property type',
   instructions: 'Instructions to the appraiser',
+  'paymentDetails.paymentMethod': 'How the appraisal is paid',
+  'paymentDetails.recipientEmail': 'Who Class emails the payment link to',
   contractPrice: 'Contract price',
   dateOfContract: 'Contract date',
 };
@@ -183,6 +192,8 @@ const LABELS = {
 const OVERRIDE_KEY_FOR_PATH = {
   propertyType: 'propertyTypeEnum',
   propertyTypeEnum: 'propertyTypeEnum',
+  'paymentDetails.paymentMethod': 'paymentMethod',
+  'paymentDetails.recipientEmail': 'paymentEmail',
 };
 
 function fieldRows(built) {

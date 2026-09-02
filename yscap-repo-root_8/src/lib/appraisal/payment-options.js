@@ -199,21 +199,24 @@ const CAPABILITY = {
     },
   },
 
+  // CLASS VALUATION'S API HAS NO CARD CHARGE (their guide, read 2026-09-02; the
+  // whole position is written up in src/class/payment.js). What it has: a payment
+  // method chosen WHEN THE ORDER IS PLACED — `PaymentLink` makes Class email the
+  // borrower their hosted payment page — plus a balance read and a way to RECORD a
+  // card charge taken elsewhere. So on an existing order these three stay
+  // back-office instructions, and the sentences say exactly what happens next.
   class: {
     PAYMENT_LINK: {
       does: DOES.BACK_OFFICE,
-      // Class genuinely sends borrower payment links — their
-      // `PaymentLinkSentToBorrower` callback is in our subscribed list, so this one
-      // is a stated fact rather than an assumption. What we cannot do is TRIGGER it.
-      says: 'Recorded as the way this one is being paid. Class Valuation sends the borrower their link.',
+      says: 'Recorded as the way this one is being paid. Class only emails the borrower a payment link when the order is placed with "payment link" chosen on the order screen — on an order already placed, ask Class to send one.',
     },
     CARD_ON_FILE: {
       does: DOES.BACK_OFFICE,
-      says: 'Recorded as the way this one is being paid. The back office charges the card on this file by hand.',
+      says: 'Recorded as the way this one is being paid. The back office charges the card on this file by hand, then records the charge on the order card so Class marks it paid.',
     },
     NEW_CARD: {
       does: DOES.BACK_OFFICE,
-      says: 'The card is saved onto the file, and recorded as the one to charge. The back office charges it by hand.',
+      says: 'The card is saved onto the file, and recorded as the one to charge. The back office charges it by hand, then records the charge on the order card.',
     },
   },
 };
