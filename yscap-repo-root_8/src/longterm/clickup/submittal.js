@@ -153,11 +153,13 @@ async function pushForLoan(loanId, opts = {}) {
   try {
     if (r.ok && !r.dryRun) {
       await client.query(
-        `UPDATE lt_loans SET submittal_clickup_pushed_at = now(), submittal_clickup_error = NULL, updated_at = now()
+        `UPDATE lt_loans SET submittal_clickup_pushed_at = now(), submittal_clickup_error = NULL,
+                submittal_clickup_tried_at = now(), updated_at = now()
           WHERE id = $1::uuid`, [row.id]);
     } else {
       await client.query(
-        `UPDATE lt_loans SET submittal_clickup_error = $2, updated_at = now() WHERE id = $1::uuid`,
+        `UPDATE lt_loans SET submittal_clickup_error = $2, submittal_clickup_tried_at = now(), updated_at = now()
+          WHERE id = $1::uuid`,
         [row.id, String(r.reason || (r.dryRun ? 'dry run — nothing was sent' : 'not sent')).slice(0, 500)]);
     }
   } catch (e) {
@@ -167,6 +169,15 @@ async function pushForLoan(loanId, opts = {}) {
 }
 
 /** Loans per pass; the owed set is small by nature (one per hand-over). */
+/* HOW LONG A LOAN THAT COULD NOT BE PUSHED IS LEFT ALONE (db/678). Long enough
+   that a card nobody can fix is asked about a handful of times a day rather
+   than every tick; short enough that a card somebody DID fix pushes within the
+   hour. Never a retirement — see the migration's header. */
+function backoffMinutes() {
+  const raw = Number(process.env.LT_SUBMITTAL_PUSH_RETRY_MINUTES);
+  return Number.isFinite(raw) && raw >= 0 ? Math.trunc(raw) : 30;
+}
+
 function perPass() {
   const raw = Number(process.env.LT_SUBMITTAL_PUSH_PER_PASS);
   return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : 25;
@@ -189,8 +200,14 @@ async function pushPass(opts = {}) {
           AND l.submittal_clickup_pushed_at IS NULL
           AND l.clickup_task_id IS NOT NULL
           AND ${trash.notTrashSql('l')}
-        ORDER BY l.submittal_completed_at ASC
-        LIMIT $1`, [opts.limit || perPass()]));
+          -- BACKED OFF, NEVER RETIRED (db/678): a loan tried inside the window
+          -- is skipped this pass, so a permanently unpushable card cannot hold
+          -- the front of a bounded queue and starve a loan completed a minute
+          -- ago. NULLS FIRST — a loan nobody has tried yet always goes first.
+          AND (l.submittal_clickup_tried_at IS NULL
+               OR l.submittal_clickup_tried_at < now() - ($2 || ' minutes')::interval)
+        ORDER BY l.submittal_clickup_tried_at ASC NULLS FIRST, l.submittal_completed_at ASC
+        LIMIT $1`, [opts.limit || perPass(), String(opts.backoffMinutes == null ? backoffMinutes() : opts.backoffMinutes)]));
   } catch (e) {
     return { ...out, ok: false, reason: `could not read which loans are owed: ${String((e && e.message) || e).slice(0, 160)}` };
   }

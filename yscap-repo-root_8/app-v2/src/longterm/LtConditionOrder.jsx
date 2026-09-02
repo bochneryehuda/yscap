@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { ltApi } from './api.js';
-import { OrderCard } from './LtOrders.jsx';
+import { OrderCard, openLoanSection } from './LtOrders.jsx';
 
 /**
  * AN ORDER CONDITION IS THE ORDER, not a box to upload the answer into.
@@ -89,6 +89,19 @@ export default function LtConditionOrder({ loanId, condition, onChanged }) {
       <p style={{ margin: '8px 2px 0', fontSize: 12.5, color: MUTED, lineHeight: 1.5 }}>
         This is the same order that appears on the Orders desk — one order, shown in both places.
         {order.docCondition ? ' What comes back is filed on the matching documents condition.' : ''}
+        {kind === 'vor' ? (
+          /* The rent verification carries OUR completed form out with it, so the
+             card above routes the send to the section that draws the form (B1).
+             Said here too, on the condition, so nobody looks for a button that is
+             deliberately not on this card. */
+          <>
+            {' '}The verification of rent is sent from its own section, with the form attached and the
+            DocuSign option —{' '}
+            <button type="button" className="btn ghost small" onClick={() => openLoanSection('vor')}>
+              open it
+            </button>.
+          </>
+        ) : null}
       </p>
       <div style={{ borderTop: `1px solid ${LINE}`, marginTop: 12 }} />
     </div>

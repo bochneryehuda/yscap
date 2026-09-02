@@ -207,6 +207,9 @@ console.log('\nD. THE CLICKUP WRITE');
       const w = strip(fs.readFileSync(path.join(__dirname, '..', 'src/longterm/conditions-center/write.js'), 'utf8'));
       ok(w.indexOf('if (opts.readFailed)') > w.indexOf('if (opts.contacts)') && w.indexOf('if (opts.readFailed)') > w.indexOf('if (opts.card)'),
         'a documents-read failure is answered AFTER the contacts, credit and card gates, so it can never sign those off');
+      const retract = strip(fs.readFileSync(path.join(__dirname, '..', 'src/longterm/conditions-center/engine.js'), 'utf8'));
+      ok((retract.match(/reviewed_at IS NULL/g) || []).length === 2 && /&& !have\.reviewed_at/.test(retract),
+        'ALL THREE places the engine can retract a condition treat the officer’s Done stamp as work — the read, the delete, and the retired-template sweep (the third runs only on a deactivated template, which no suite on a shared database may create)');
       const entity = strip(fs.readFileSync(path.join(__dirname, '..', 'app-v2/src/longterm/LtEntity.jsx'), 'utf8'));
       ok(/href=\{`#\/internal\/borrowers\//.test(entity), 'the profile link stays inside the portal (a HashRouter route), never a bare /internal path');
     }

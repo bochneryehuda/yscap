@@ -200,7 +200,7 @@ What has to be true before the file can be cleared to close.
 
 *Internal only · Upload*
 
-**What it is.** The title package. New York asks for less of it — there is no closing protection letter and no preliminary settlement statement there, because the settlement agent handles both — so a New York file is not left holding two slots nobody can ever fill.
+**What it is.** The title package. New York asks for less of it — there is no closing protection letter, no preliminary settlement statement and no wiring instructions there, because the settlement agent handles all three — so a New York file is not left holding slots nobody can ever fill.
 
 **How it behaves.** appears on every file; 5 named slots (Title commitment, Closing protection letter, Preliminary settlement statement, Wire instructions, Title invoice).
 
@@ -212,7 +212,7 @@ What has to be true before the file can be cleared to close.
 
 **What it is.** New York only — what the settlement agent provides in place of the title company’s own closing package.
 
-**How it behaves.** appears only when the file calls for it; 3 named slots (Engagement letter, Wire instructions, Settlement statement).
+**How it behaves.** appears only when the file calls for it; 5 named slots (Engagement letter, Wire instructions, Closing protection letter, Settlement agent E&O insurance, Settlement statement).
 
 <sub>`lt_ny_settlement_docs`</sub>
 

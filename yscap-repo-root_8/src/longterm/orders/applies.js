@@ -35,8 +35,9 @@
  *
  * So the FACT now comes from the engine: an order belongs on this file when the
  * CONDITION IT ANSWERS is on this file. The engine attached it from the owner's
- * own rule, `routes/orders.js` re-runs `evaluateLoan` immediately before the desk
- * is read, and there is no longer any second statement of the rule to drift. What
+ * own rule, `routes/orders.js` runs `sweep.evaluateIfStale` before the desk is
+ * read (the engine when the file is due a pass; nothing when it is current), and
+ * there is no longer any second statement of the rule to drift. What
  * stays here is only the WORDING — the sentence a person reads on a greyed card —
  * and which fact the card's own switch writes.
  *

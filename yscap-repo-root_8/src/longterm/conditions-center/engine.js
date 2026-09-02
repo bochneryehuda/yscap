@@ -311,7 +311,7 @@ async function evaluateLoan(loanId, opts = {}) {
 
     const where = ownerWhere(owner);
     const { rows: existing } = await cx.query(
-      `SELECT id, template_id, status, origin_kind, notes, field_key,
+      `SELECT id, template_id, status, origin_kind, notes, field_key, reviewed_at,
               (tool_payload IS NOT NULL AND tool_payload <> '{}'::jsonb) AS has_answer
          FROM checklist_items WHERE ${where.sql}`,
       where.params,
@@ -388,8 +388,14 @@ async function evaluateLoan(loanId, opts = {}) {
       // `out.unchanged` honest), while the statement is what closes the window
       // between the read and the write. The one that must never go is the one in
       // the DELETE.
+      // A DONE STAMP IS WORK SOMEBODY DID, exactly as a note or a stored answer
+      // is (audit 2026-09-02). `reviewed_at` is the loan officer's "I have done
+      // my part" on the prior-to-submittal list, so a rule changing its mind
+      // would otherwise delete their declaration without a word. Like the
+      // answer clause above it, this can only ever KEEP more rows.
       const untouched = have.origin_kind === 'auto' && have.status === UNTOUCHED
-        && !String(have.notes || '').trim() && have.has_answer !== true;
+        && !String(have.notes || '').trim() && have.has_answer !== true
+        && !have.reviewed_at;
       if (!untouched) { out.unchanged += 1; continue; }
       try {
         // THE WHOLE TEST IS INSIDE THE DELETE, deliberately: the read above is
@@ -400,6 +406,7 @@ async function evaluateLoan(loanId, opts = {}) {
         const { rows } = await cx.query(
           `DELETE FROM checklist_items
             WHERE id = $1::uuid AND origin_kind = 'auto' AND status = $2
+              AND reviewed_at IS NULL
               AND COALESCE(notes,'') = ''
               AND COALESCE(tool_payload, '{}'::jsonb) = '{}'::jsonb
               AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id = checklist_items.id)
@@ -446,6 +453,7 @@ async function evaluateLoan(loanId, opts = {}) {
             AND t.is_active = false
             AND ci.origin_kind = 'auto'
             AND ci.status = $1
+            AND ci.reviewed_at IS NULL
             AND COALESCE(ci.notes,'') = ''
             AND COALESCE(ci.tool_payload, '{}'::jsonb) = '{}'::jsonb
             AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id = ci.id)

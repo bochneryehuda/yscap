@@ -57,6 +57,12 @@ function newMessageId(loanId, kind) {
   return `<ltorder.${kind}.${String(loanId).replace(/[^a-z0-9-]/gi, '')}.${crypto.randomBytes(8).toString('hex')}@${domain}>`;
 }
 
+/** The statuses a NEW order may be placed over without `force` — the two that
+    mean nothing is out with the vendor. `ordered`, `documents_in` and `completed`
+    all mean the vendor has been asked, and a second full letter over any of them
+    is a deliberate act. */
+const RE_ORDERABLE = new Set(['not_ordered', 'cancelled']);
+
 /** The order row for a loan+kind, or null. */
 async function findOrder(loanId, kind, client = db) {
   const { rows } = await client.query(
@@ -294,8 +300,20 @@ async function place(loanId, kind, opts = {}) {
   if (!d) return { ok: false, status: 404, error: 'That loan is not here.' };
 
   const existing = await findOrder(loanId, kind);
-  if (existing && existing.status === 'ordered' && !opts.force) {
-    return { ok: false, status: 409, error: 'This has already been ordered. Use Follow up, or re-send deliberately.' };
+  /* ONLY A FRESH DESK TAKES A FRESH ORDER. The guard used to read `status ===
+     'ordered'` alone, so an order whose documents had already come back
+     (`documents_in`) — or one a person had marked complete — took a second full
+     letter without `force`, and the vendor was asked again for what they had
+     already sent. The 2026-09-02 audit found it (S7). The two states a new order
+     may go over without ceremony are the two that mean "nothing is out there":
+     never ordered, and stood down. Everything else needs the deliberate re-send. */
+  if (existing && !RE_ORDERABLE.has(existing.status) && !opts.force) {
+    return {
+      ok: false, status: 409,
+      error: existing.status === 'ordered'
+        ? 'This has already been ordered. Use Follow up, or re-send deliberately.'
+        : 'Documents have already come back on this order. Use Follow up, or re-send deliberately.',
+    };
   }
 
   const blocks = data.blockers(kind, d);
@@ -306,8 +324,24 @@ async function place(loanId, kind, opts = {}) {
     };
   }
 
+  /* THE RENT VERIFICATION NEVER LEAVES WITHOUT THE FORM (audit 2026-09-02, B1).
+     `enclosures.forKind('vor')` deliberately carries nothing — the form is drawn
+     per file, at the moment of sending, by `vor/desk.js`, which passes the PDF
+     in `opts.attachments`. Any other caller reaching this door for `vor` has no
+     form to enclose, and the letter it would send reads "complete the short
+     verification attached" over an empty attachment list. That is refused HERE,
+     at the door, rather than left to the screens to remember: the orders desk
+     and the condition card both called this with `{note}` alone. */
+  if (def.key === 'vor' && !(Array.isArray(opts.attachments) && opts.attachments.length)) {
+    return {
+      ok: false, status: 422, reason: 'vor_form_required',
+      error: 'The verification of rent goes out with the completed form attached, and nothing was attached. '
+        + 'Send it from the Verification of rent section, which draws the form and encloses it.',
+    };
+  }
+
   const template = opts.template || null;
-  const built = letter.buildLetter(kind, d, { note: opts.note || '', template });
+  const built = letter.buildLetter(kind, d, { note: opts.note || '', template, closing: opts.closing });
   /* Never blocks the send: a form we cannot read costs the enclosure and is
      reported, because an order that reaches the vendor a form short is fixed by
      one reply while an order that refuses to go out is not. */
@@ -476,14 +510,84 @@ async function cancel(loanId, kind, opts = {}) {
   if (reason.length < 4) {
     return { ok: false, status: 400, error: 'Say why this is being stood down — a few words is enough, and it is what somebody reads a year from now.' };
   }
+  /* `fromStatuses` narrows WHICH orders may be stood down by this call. The desk's
+     own button passes nothing and stands down whatever is there; a caller acting
+     on a fact ("the form came back another way") names the states that fact
+     answers, so it can never stand down an order a person already completed. */
+  const from = Array.isArray(opts.fromStatuses) && opts.fromStatuses.length ? opts.fromStatuses : null;
   const { rows } = await db.query(
     `UPDATE lt_file_orders
         SET status = 'cancelled', cancelled_at = now(), cancelled_by = $3::uuid,
             cancel_reason = $4, updated_at = now()
-      WHERE loan_id = $1::uuid AND kind = $2 RETURNING id, status`,
-    [String(loanId), String(kind), opts.staffId || null, reason.slice(0, 500)]);
+      WHERE loan_id = $1::uuid AND kind = $2
+        AND ($5::text[] IS NULL OR status = ANY($5::text[]))
+      RETURNING id, status`,
+    [String(loanId), String(kind), opts.staffId || null, reason.slice(0, 500), from]);
   if (!rows.length) return { ok: false, status: 404, error: 'There is no such order on this loan.' };
   return { ok: true, order: rows[0] };
+}
+
+/**
+ * RECORD AN ORDER THAT WENT OUT BY ANOTHER CHANNEL — today, the verification of
+ * rent sent for e-signature on DocuSign (audit 2026-09-02, S1).
+ *
+ * `place` is the only thing that ever wrote the order row and moved the
+ * condition, so a rent form sent by DocuSign ALONE left `lt_vor_sent` outstanding
+ * and the orders desk reading "Not ordered" while the landlord had the form in
+ * their inbox — two surfaces telling two different stories about one file.
+ *
+ * NOTHING IS SENT FROM HERE. The provider has already accepted the envelope by
+ * the time this runs, so this is a RECORD of what happened, in the same row and
+ * on the same thread the email order uses: the row goes to 'ordered' (kept as it
+ * was when it already is, so the original ordered_at survives a second channel),
+ * an outbound 'order' event names the channel and the envelope, and the
+ * condition moves to "asked for". NEVER THROWS — a record that could not be
+ * written must not read as a send that failed, because the landlord has it.
+ *
+ * @returns {{ok:true, orderId, event}|{ok:false, reason}}
+ */
+async function recordExternalSend(loanId, kind, info = {}) {
+  const def = kinds.orderKind(kind);
+  if (!def) return { ok: false, reason: 'unknown_kind' };
+  const channel = String(info.channel || 'external');
+  try {
+    const d = await data.getOrderData(loanId).catch(() => null);
+    const card = d && d.vendors ? d.vendors[def.key] : null;
+    const replyTo = ltOrderReplyTo(loanId, def.key);
+    const subject = String(info.subject || `${def.label} — sent by ${channel}`).slice(0, 300);
+    const { rows } = await db.query(
+      `INSERT INTO lt_file_orders
+         (loan_id, kind, status, vendor_contact_id, subject, reply_to, ordered_at, ordered_by, meta)
+       VALUES ($1::uuid,$2,'ordered',$3::uuid,$4,$5,now(),$6::uuid,$7::jsonb)
+       ON CONFLICT (loan_id, kind) DO UPDATE
+         SET status = 'ordered',
+             vendor_contact_id = COALESCE(EXCLUDED.vendor_contact_id, lt_file_orders.vendor_contact_id),
+             subject = COALESCE(lt_file_orders.subject, EXCLUDED.subject),
+             reply_to = COALESCE(lt_file_orders.reply_to, EXCLUDED.reply_to),
+             ordered_at = CASE WHEN lt_file_orders.status = 'ordered' THEN lt_file_orders.ordered_at ELSE now() END,
+             ordered_by = COALESCE(EXCLUDED.ordered_by, lt_file_orders.ordered_by),
+             cancelled_at = NULL, cancelled_by = NULL, cancel_reason = NULL,
+             meta = lt_file_orders.meta || EXCLUDED.meta,
+             updated_at = now()
+       RETURNING *`,
+      [String(loanId), def.key, (card && card.id) || null, subject, replyTo, info.staffId || null,
+        JSON.stringify({ lastChannel: channel, ...(info.externalRef ? { lastExternalRef: String(info.externalRef) } : {}) })]);
+    const order = rows[0];
+    const eventId = await recordEvent(db, order, {
+      direction: 'outbound', msgType: 'order', subject,
+      to: [].concat(info.to || []).filter(Boolean), cc: [],
+      text: String(info.text || `Sent by ${channel}.`),
+      status: 'sent', staffId: info.staffId || null,
+      attachments: info.externalRef
+        ? [{ filename: info.filename || null, channel, externalRef: String(info.externalRef) }]
+        : [],
+    });
+    await markConditionAsked(loanId, def.condition).catch(() => {});
+    return { ok: true, orderId: order.id, eventId };
+  } catch (e) {
+    console.error(`[lt-orders] could not record the ${kind} order sent by ${channel}:`, (e && e.message) || e);
+    return { ok: false, reason: 'record_failed', message: String((e && e.message) || e).slice(0, 200) };
+  }
 }
 
 /** Move an order's condition to 'received' — asked for, not satisfied. Silent when
@@ -508,6 +612,6 @@ async function markConditionAsked(loanId, code) {
 }
 
 module.exports = {
-  desk, thread, place, followUp, cancel, findOrder, sendLetter, recordEvent,
-  markConditionAsked, newMessageId,
+  desk, thread, place, followUp, cancel, recordExternalSend, findOrder, sendLetter, recordEvent,
+  markConditionAsked, newMessageId, RE_ORDERABLE,
 };

@@ -343,12 +343,16 @@ check(rules.evaluateRule(c('lt_cash_out_letter').ruleLogic, { is_cash_out: true 
 console.log('\nC3. New York genuinely asks for less title paperwork');
 const titleSlots = c('lt_title_docs').slots;
 const nyDropped = titleSlots.filter((s) => s.notWhenField === 'is_new_york').map((s) => s.key);
-check(nyDropped.includes('cpl') && nyDropped.includes('prelim_settlement'),
-  `New York drops the closing protection letter and the preliminary settlement statement (${nyDropped.join(', ')}) — the settlement agent handles both, and leaving slots nobody can fill makes a file look permanently incomplete`);
+/* THREE, since 2026-09-02 (audit S4): the wiring instructions leave the New York
+   title ask with the CPL and the preliminary statement — the shared title letter
+   (`lib/order-email.js` NY_TITLE_CUT) never asked New York title for them, and
+   the slot stayed required here. The settlement agent is asked for all of it. */
+check(nyDropped.includes('cpl') && nyDropped.includes('prelim_settlement') && nyDropped.includes('wire_instructions'),
+  `New York drops the closing protection letter, the preliminary settlement statement and the wiring instructions (${nyDropped.join(', ')}) — the settlement agent handles all three, and leaving slots nobody can fill makes a file look permanently incomplete`);
 const nySlots = read._internals.slotsFor(
   { slots: titleSlots, answer: { fields: { is_new_york: true } } }, true,
 );
-check(nySlots.length === titleSlots.length - 2 && !nySlots.some((s) => s.key === 'cpl'),
+check(nySlots.length === titleSlots.length - 3 && !nySlots.some((s) => s.key === 'cpl' || s.key === 'wire_instructions'),
   `...and a New York file really is shown fewer slots (${nySlots.length} of ${titleSlots.length})`);
 const otherSlots = read._internals.slotsFor(
   { slots: titleSlots, answer: { fields: { is_new_york: false } } }, true,

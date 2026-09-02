@@ -250,8 +250,11 @@ async function getOrderData(loanId, client = db) {
      verification of rent, so both showed as belonging on every file including the
      purchases and the owner-occupied ones their conditions are never attached to.
 
-     `routes/orders.js` re-runs `evaluateLoan` immediately before reading the desk,
-     so this list is the engine's own current answer rather than a stale one.
+     `routes/orders.js` runs `sweep.evaluateIfStale` before it reads the desk or
+     the contacts — the engine when the file is DUE a pass, nothing when it is
+     current — so this list is the engine's own current answer rather than a
+     stale one. (Until 2026-09-02 this comment claimed a re-run the route did not
+     make; audit S9.)
 
      NULL, NEVER AN EMPTY LIST, when it cannot be read — "this file has no
      conditions" and "PILOT could not read them" are different facts, and only the

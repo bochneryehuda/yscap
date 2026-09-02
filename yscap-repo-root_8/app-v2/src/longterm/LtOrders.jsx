@@ -79,6 +79,18 @@ const input = {
   fontSize: 16, color: INK, background: '#FFFFFF', boxSizing: 'border-box',
 };
 
+/* JUMP TO ANOTHER SECTION OF THE SAME FILE. The file screen (`LtLoan`) owns which
+   sections are open; a card deep inside one section has no prop path to it, so
+   it asks by event and the file answers (`lt:open-section`). Where nobody is
+   listening — a card mounted on its own — the section's own anchor still scrolls
+   into view, so the button never does nothing. */
+export function openLoanSection(key) {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('lt:open-section', { detail: key }));
+  const el = document.getElementById(`lt-sec-${key}`);
+  if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
 function Pill({ status }) {
   const s = STATUS[status] || STATUS.not_ordered;
   return (
@@ -316,7 +328,24 @@ export function OrderCard({ loanId, order, onChanged }) {
 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
             {order.status === 'not_ordered' || order.status === 'cancelled' ? (
-              confirming === 'place' ? (
+              order.kind === 'vor' ? (
+                /* THE RENT VERIFICATION IS NEVER SENT FROM HERE. This card sends
+                   the letter alone, and the letter says "complete the short
+                   verification attached" — with nothing attached (audit
+                   2026-09-02, B1). The form is drawn per file by the Verification
+                   of rent section, which encloses it and offers DocuSign; the
+                   server refuses a rent order with no form regardless, so this is
+                   the honest door rather than the only guard. */
+                <div style={{ fontSize: 13, color: INK, lineHeight: 1.5, flex: '1 1 100%' }}>
+                  This letter goes out <strong>with the completed form attached</strong>, from the
+                  Verification of rent section — it is not sent from here.
+                  <div style={{ marginTop: 6 }}>
+                    <button type="button" style={btnPrimary} onClick={() => openLoanSection('vor')}>
+                      Open the verification of rent
+                    </button>
+                  </div>
+                </div>
+              ) : confirming === 'place' ? (
                 <>
                   <span style={{ fontSize: 13, color: INK, alignSelf: 'center' }}>Send this to the vendor now?</span>
                   <button

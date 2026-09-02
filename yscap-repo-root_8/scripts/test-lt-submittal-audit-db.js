@@ -276,6 +276,95 @@ const ok = (cond, name, detail) => {
       const stamped = (await db.query(`SELECT conditions_evaluated_at FROM lt_loans WHERE id = $1::uuid`, [loanG.id])).rows[0];
       ok(stamped && stamped.conditions_evaluated_at !== null, '…and the stamp landed');
     }
+
+    console.log('\nH. A RULE CHANGING ITS MIND NEVER DELETES THE OFFICER’S DONE');
+    {
+      const loanH = await makeLoan('done-kept', { purpose: 'purchase' });
+      const it = await itemOf(loanH.id, 'lt_purchase_contract');
+      ok(!!it, 'a purchase file carries the executed-contract condition');
+      await write.markDone(loanH.id, it.id, staff.id, true, db);
+      // The deal turns out to be a refinance, so the rule no longer wants it.
+      await db.query(`UPDATE lt_loans SET loan_purpose = 'cash_out_refinance'::lt_loan_purpose WHERE id = $1::uuid`, [loanH.id]);
+      const r = await engine.evaluateLoan(loanH.id, { db });
+      ok(r.ok === true, 'the rules run again', JSON.stringify({ ok: r.ok, degraded: r.degraded }));
+      const still = await itemOf(loanH.id, 'lt_purchase_contract');
+      ok(!!still && still.reviewed_at !== null,
+        'THE ONE THAT MATTERS: the condition the officer pressed Done on is KEPT — work somebody did is never destroyed by a rule changing its mind');
+      ok(!r.removed.some((x) => x.code === 'lt_purchase_contract'), '…and the pass does not claim to have removed it', JSON.stringify(r.removed));
+
+      // THE CONTROL, or the assertion above proves only that the rule flipped:
+      // the SAME condition with no Done on it does leave, so the retraction
+      // itself still works and it is the stamp that is doing the keeping.
+      const loanH2 = await makeLoan('done-absent', { purpose: 'purchase' });
+      ok(!!(await itemOf(loanH2.id, 'lt_purchase_contract')), 'a second purchase file carries it too');
+      await db.query(`UPDATE lt_loans SET loan_purpose = 'cash_out_refinance'::lt_loan_purpose WHERE id = $1::uuid`, [loanH2.id]);
+      await engine.evaluateLoan(loanH2.id, { db });
+      ok(!(await itemOf(loanH2.id, 'lt_purchase_contract')), '…and with nothing done on it, it leaves — so it is the Done stamp doing the keeping');
+
+      /* HONEST NOTE, MEASURED. The read-side test and the identical one inside
+         the DELETE are each a COMPLETE guard — the engine's own header records
+         this — so removing either ALONE changes no outcome here and only
+         removing BOTH turns this section red. That was proven by mutation
+         rather than assumed. The one that must never go is the DELETE's, which
+         is what closes the window between the read and the write; the pure
+         suite additionally guards that all three retraction statements carry
+         it, including the retired-template sweep, which no file on a shared
+         database can exercise without deactivating a live template. */
+    }
+
+    console.log('\nI. THE CLICKUP RETRY BACKS OFF, AND NEVER RETIRES A LOAN (db/678)');
+    {
+      const cu = require('../src/longterm/clickup/submittal.js');
+      const saved = process.env.LT_CLICKUP_WRITE_ENABLED;
+      process.env.LT_CLICKUP_WRITE_ENABLED = '1';
+      try {
+        const loanI = await makeLoan('backoff');
+        await db.query(
+          `UPDATE lt_loans SET submittal_completed_at = now(), submittal_completed_by = $2::uuid,
+                  clickup_task_id = 'task-backoff' WHERE id = $1::uuid`, [loanI.id, staff.id]);
+        const triedAt = async () => (await db.query(
+          `SELECT submittal_clickup_tried_at AS t, submittal_clickup_error AS e FROM lt_loans WHERE id = $1::uuid`,
+          [loanI.id])).rows[0];
+        ok((await triedAt()).t === null, 'a loan nobody has tried carries no attempt stamp');
+
+        const broken = { getTask: async () => { throw new Error('ClickUp 503'); } };
+        const p1 = await cu.pushPass({ db, deps: broken, limit: 50 });
+        ok(p1.owed >= 1 && p1.failed >= 1, 'the pass picks it up and reports the failure', JSON.stringify(p1));
+        const after = await triedAt();
+        ok(after.t !== null && /503/.test(after.e || ''), 'THE ONE THAT MATTERS: a failed attempt is STAMPED, so the next pass can back off', JSON.stringify(after));
+
+        let asked = 0;
+        const p2 = await cu.pushPass({ db, limit: 50, deps: { getTask: async () => { asked += 1; throw new Error('ClickUp 503'); } } });
+        ok(!p2.owed || asked === 0, 'the very next pass does not ask ClickUp about it again', JSON.stringify({ owed: p2.owed, asked }));
+
+        // …and it is BACKED OFF, never retired: with the window elapsed it is
+        // tried again, so a card somebody fixes tomorrow still gets its push.
+        /* THE DEFAULT WINDOW IS FINITE, and that is the half that says "backed
+           off" rather than "retired": back-date the attempt past the default and
+           run the pass with NO override, the way the worker runs it. */
+        await db.query(
+          `UPDATE lt_loans SET submittal_clickup_tried_at = now() - interval '31 minutes' WHERE id = $1::uuid`,
+          [loanI.id]);
+        const option = { id: 'opt-live', name: 'Completed', orderindex: 0 };
+        const writes = [];
+        const p3 = await cu.pushPass({
+          db, limit: 50,
+          deps: {
+            getTask: async () => ({ id: 'task-backoff', custom_fields: [{ id: cu.FIELD.id, name: cu.FIELD.name, type: 'drop_down', type_config: { options: [option] }, value: null }] }),
+            setField: async (t, f, v) => { writes.push({ t, f, v }); },
+            journal: async () => {},
+          },
+        });
+        ok(p3.pushed >= 1 && writes.some((w) => w.v === option.id),
+          'once the window has elapsed it is tried again and lands — backed off, never retired', JSON.stringify({ p3, writes }));
+        const done = await triedAt();
+        ok(done.e === null, '…and the old error is cleared', JSON.stringify(done));
+      } finally {
+        if (saved === undefined) delete process.env.LT_CLICKUP_WRITE_ENABLED;
+        else process.env.LT_CLICKUP_WRITE_ENABLED = saved;
+      }
+    }
+
   } catch (e) {
     failed = true;
     console.error('\nUNEXPECTED:', e && e.stack ? e.stack : e);

@@ -401,6 +401,9 @@ model LtLoan {
   /// and the last reason it could not be.
   submittalClickupPushedAt DateTime? @map("submittal_clickup_pushed_at") @db.Timestamptz(6)
   submittalClickupError String? @map("submittal_clickup_error")
+  /// When that push was last ATTEMPTED, landed or not (db/678). The retry pass
+  /// orders on it and backs off, so a card nobody can fix cannot starve the queue.
+  submittalClickupTriedAt DateTime? @map("submittal_clickup_tried_at") @db.Timestamptz(6)
 
   /// Why the last read failed, if it did. Kept so a file that stops refreshing is
   /// visible rather than silently stale.
@@ -2589,8 +2592,6 @@ model LtFileCondition {
 
   loan  LtLoan              @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   files LtConditionFile[]
-  orders LtFileOrder[]
-
   @@index([loanId, bucketKey, sortOrder], map: "lt_file_conditions_loan_idx")
   @@index([templateId], map: "lt_file_conditions_template_idx")
   @@map("lt_file_conditions")
@@ -2727,6 +2728,11 @@ model LtBorrowerLandlord {
   addressText String? @map("address_text")
 
   lastLoanId  String?  @map("last_loan_id") @db.Uuid
+
+  /// When a person took this landlord OFF a file for this home (db/676). A
+  /// declined memory is never filled in again; linking a landlord for the same
+  /// home clears it. NULL = nobody has declined it.
+  declinedAt  DateTime? @map("declined_at") @db.Timestamptz(6)
   firstSeenAt DateTime @default(now()) @map("first_seen_at") @db.Timestamptz(6)
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -2773,7 +2779,11 @@ model LtFileOrder {
   cancelledBy    String?   @map("cancelled_by") @db.Uuid
   cancelReason   String?   @map("cancel_reason")
 
-  /// Where a returned document is filed: the condition this order answers.
+  /// The `checklist_items` row (scope lt_loan) this order answers — the shared
+  /// Condition Center since db/653. A plain id and NOT a relation: a long-term
+  /// table may not declare a reference to a table outside lt_* (CLAUDE.md rule 4),
+  /// so it joins when it reads and a retired condition simply matches nothing.
+  /// db/644's key to the retired `lt_file_conditions` was dropped by db/675.
   conditionId String? @map("condition_id") @db.Uuid
 
   notes     String?
@@ -2782,7 +2792,6 @@ model LtFileOrder {
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   loan      LtLoan           @relation(fields: [loanId], references: [id], onDelete: Cascade, onUpdate: Cascade)
-  condition LtFileCondition? @relation(fields: [conditionId], references: [id], onDelete: SetNull, onUpdate: Cascade)
   events    LtOrderEvent[]
 
   @@unique([loanId, kind], map: "lt_file_orders_one_per_kind_uk")

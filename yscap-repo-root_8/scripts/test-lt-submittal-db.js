@@ -278,7 +278,14 @@ const ok = (cond, name, detail) => {
       ok(row.submittal_clickup_pushed_at === null && /503/.test(row.submittal_clickup_error || ''),
         '…and the reason is written on the loan, in words, still owed', String(row.submittal_clickup_error));
 
-      // The retry pass finds it and lands it.
+      /* THE RETRY PASS FINDS IT AND LANDS IT — on a LATER tick. db/678 backs a
+         failed attempt off, so the worker asks about this loan again on one of
+         its next passes rather than on the very next one; back-dating the
+         attempt stamp is what "a later tick" means here, and the back-off
+         itself is proven in test-lt-submittal-audit-db.js. */
+      await cx.query(
+        `UPDATE lt_loans SET submittal_clickup_tried_at = now() - interval '2 hours' WHERE id = $1::uuid`,
+        [loan.id]);
       const writes = [];
       const pass1 = await cuSubmittal.pushPass({
         db: cx,

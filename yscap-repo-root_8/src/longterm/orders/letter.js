@@ -321,6 +321,12 @@ function dealMeta(data) {
  * @param {boolean} opts.followup   the lighter chase, on the same thread
  * @param {string}  opts.note       a note the sender typed, used as the intro
  * @param {object}  opts.template   this buyer's own wording, overriding ours
+ * @param {string}  [opts.closing]  the closing line for THIS send, when the way it
+ *                                  went decides what is true — the rent form sent as
+ *                                  an attachment alone has no e-signature link, so
+ *                                  the letter must not promise one (audit 2026-09-02,
+ *                                  S11). Wins over the template's closing; an empty
+ *                                  string drops the line.
  * @returns {{subject:string, html:string, text:string}}
  */
 function buildLetter(kind, data, opts = {}) {
@@ -383,7 +389,8 @@ function buildLetter(kind, data, opts = {}) {
   if (wants) sections.push({ title: opts.followup ? 'Still outstanding' : 'What we need', body: wants });
 
   const lines = [];
-  if (t.closing && !opts.followup) lines.push(t.closing);
+  const closing = opts.closing != null ? String(opts.closing) : t.closing;
+  if (closing && !opts.followup) lines.push(closing);
   lines.push('', signOff);
 
   return tpl.render({

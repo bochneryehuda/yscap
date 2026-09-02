@@ -530,17 +530,23 @@ const PRIOR_TO_CTC = [
     code: 'lt_title_docs',
     bucket: B.CTC,
     label: 'Title documents',
-    hint: 'The title package. New York asks for less of it — there is no closing protection letter '
-      + 'and no preliminary settlement statement there, because the settlement agent handles both — '
-      + 'so a New York file is not left holding two slots nobody can ever fill.',
+    hint: 'The title package. New York asks for less of it — there is no closing protection letter, '
+      + 'no preliminary settlement statement and no wiring instructions there, because the settlement '
+      + 'agent handles all three — so a New York file is not left holding slots nobody can ever fill.',
     audience: 'internal',
     kind: 'document',
     autoApply: 'always',
+    /* THE NEW YORK CUT IS THE SHARED TITLE LETTER'S (`lib/order-email.js`
+       NY_TITLE_CUT): the CPL, the wiring instructions, the preliminary statement
+       and the settlement agent's E&O all leave a New York title ask. The wiring
+       instructions stayed REQUIRED here on New York until 2026-09-02 (audit S4),
+       so a New York file held a required slot the title company was never asked
+       to fill. The settlement agent is asked instead (`lt_ny_settlement_docs`). */
     slots: [
       { key: 'commitment', label: 'Title commitment', required: true },
       { key: 'cpl', label: 'Closing protection letter', required: true, notWhenField: 'is_new_york' },
       { key: 'prelim_settlement', label: 'Preliminary settlement statement', required: true, notWhenField: 'is_new_york' },
-      { key: 'wire_instructions', label: 'Wire instructions', required: true },
+      { key: 'wire_instructions', label: 'Wire instructions', required: true, notWhenField: 'is_new_york' },
       { key: 'invoice', label: 'Title invoice', required: false },
     ],
   },
@@ -554,9 +560,17 @@ const PRIOR_TO_CTC = [
     kind: 'document',
     autoApply: 'rules',
     rule: when('is_new_york', 'is_true'),
+    /* THE OWNER'S NEW YORK RULE (docs/longterm/OWNER-ORDER-DRAFTS.md): the CPL
+       and the settlement agent's own errors-and-omissions insurance come from
+       the settlement agent, not from title. Both slots were missing until
+       2026-09-02, so on a New York file nobody was asked for either and there
+       was nowhere to file them (audit S4). `orders/kinds.js` asks for the same
+       list; db/677 carries the two slots onto templates and items already seeded. */
     slots: [
       { key: 'engagement', label: 'Engagement letter', required: true },
       { key: 'wire_instructions', label: 'Wire instructions', required: true },
+      { key: 'cpl', label: 'Closing protection letter', required: true },
+      { key: 'eo', label: 'Settlement agent E&O insurance', required: true },
       { key: 'settlement_statement', label: 'Settlement statement', required: true },
     ],
   },
