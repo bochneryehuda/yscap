@@ -305,11 +305,20 @@ const nexRows = (out) => (out.programs || []).filter((p) => NEX_PROGRAMS.some((n
       'LOCK-6 a caller with no Lender Price request to mirror falls back to the scenario\'s own lock');
 
     // ── THE DEFECT, AND THAT IT IS CLOSED ────────────────────────────────────────────────────
-    const at = (d) => pf.narrowBoard(REAL, { lockDays: d });
+    /* ⛔ THE FULL `want` THE SCREEN ACTUALLY PRODUCES — fixed, 360 months, plus the lock — and the
+       SAME want with the lock alone removed as the control. A first cut of this battery compared a
+       lock-only want against a fixed+term one and reported the two boards as before-and-after; they
+       were two different questions, and the "after" board came out LARGER than the "before". Both
+       sides of a comparison have to be narrowed the same way or the numbers mean nothing. */
+    const FULL = { amortization: 'fixed', io: null, termMonths: [360] };
+    const at = (d) => pf.narrowBoard(REAL, { ...FULL, lockDays: d });
+    const before = pf.narrowBoard(REAL, { ...FULL, lockDays: null });
     const shape = (n) => `${n.kept}/${n.board.rungCount}`;
     const shapes = [15, 30, 45, 60].map((d) => shape(at(d)));
-    ok(new Set(shapes).size === 4,
-      `LOCK-7 asking 15 / 30 / 45 / 60 now gives FOUR different boards (${shapes.join('  ')}) — before this, all four were byte-identical at 26 programmes and 1553 rungs, which is the whole defect`);
+    ok(shape(before) === '26/1553' && new Set(shapes).size === 4,
+      `LOCK-7 one search, four locks: the board WAS ${shape(before)} whichever lock was asked, and is now ${shapes.join('  ')} — four different boards where there had been one, which is the whole defect`);
+    ok(shapes.every((x) => Number(x.split('/')[1]) < 1553),
+      `LOCK-7b …and every one of them is SMALLER than the board that ignored the lock — the rungs removed are the ones priced at a lock nobody asked for, never a shortening of the answer`);
     for (const d of [15, 30, 45, 60]) {
       const n = at(d);
       const strays = [];

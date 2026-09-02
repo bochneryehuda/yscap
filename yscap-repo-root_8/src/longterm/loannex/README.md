@@ -361,8 +361,16 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     lock on **every** search (the field defaults to 30 days), so it answers at the asked lock and at
     no other. LoanNEX accepts no lock in its search and answers at **all** of them at once.
 
-    **Measured on the recorded board:** asking 15 / 30 / 45 / 60 left the LoanNEX list byte-identical
-    every time — 26 programmes, 1553 rungs, whatever was asked. And the prices are not the same
+    **Measured on the recorded board,** on one search (fixed, 30-year) asked at four locks:
+
+    | asked | the board before | the board now |
+    |---|---|---|
+    | 15 days | 26 programmes / 1553 rungs | 16 / 336 |
+    | 30 days | 26 / 1553 | 26 / 494 |
+    | 45 days | 26 / 1553 | 26 / 498 |
+    | 60 days | 26 / 1553 | 12 / 225 |
+
+    Byte-identical every time, whatever was asked. And the prices are not the same
     across locks: **1661 rate-points carry more than one lock, mean spread 0.206 points, maximum
     0.500** — twice the whole margin holdback. Acra's 30-year fixed at 6.25 is 101.036 at 15 days,
     100.886 at 30 and 100.736 at 45. So a 15-day LoanNEX rung sat beside a 30-day Lender Price quote
@@ -394,6 +402,14 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     **Proven by mutation, eight ways:** removing the mirror, removing the rung pass, leaving one
     aggregate behind, dropping the route's wire read, flipping either engine's flag, and removing
     either row line each redden a *named* assertion with the rest of the suite green.
+
+    **One correction worth keeping.** The first cut of the LOCK-7 guard — and of the table above —
+    compared a lock-only narrowing against a fixed-plus-term one and called the two boards
+    before-and-after. They were answers to two different questions, and the "after" board came out
+    LARGER than the "before", which is the tell. Both sides of a before/after are now narrowed the
+    same way, and LOCK-7b asserts the direction explicitly: every locked board is SMALLER than the
+    one that ignored the lock. A number that moves the wrong way is worth chasing down even when
+    the change under it is right.
 
 ---
 
