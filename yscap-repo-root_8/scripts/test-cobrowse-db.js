@@ -352,19 +352,30 @@ async function main() {
   // Granted, then the session ends: control ends with it.
   await call('POST', `/api/cobrowse/${s7}/control/request`, null, saTok);
   await call('POST', `/api/cobrowse/${s7}/control/respond`, { accept: true }, lo2Tok);
-  // Redaction (Phase C): a batch with an SSN in the clear is dropped, counted, and the viewer told.
-  const vBefore = v7.msgs.length;
+  // THE GUEST'S BYTES ARE RELAYED UNCONDITIONALLY, and that is the fix for the blank mirror
+  // (owner-reported 2026-09-02). An rrweb stream is stateful, so a server that DROPS a batch
+  // desynchronises the mirror for good — and the batch a content check most wants to refuse
+  // is the FULL SNAPSHOT, which is where a printed Social Security number actually lives. The
+  // MASK (proven in a real browser by render-cobrowse-mask.js) is what keeps a secret out.
+  // This asserts the DECISION: re-add a drop and it fails.
   g7.ws.send(JSON.stringify({ t: 'rrweb', events: [{ type: 3, data: { source: 0, texts: [{ id: 9, value: 'SSN 123-45-6789' }] }, timestamp: Date.now() }] }));
-  assert(await waitFor(v7.msgs, (m) => m.includes('"kind":"redacted"')), 'a secret-shaped batch is held back and the viewer told why');
-  assert(!v7.msgs.slice(vBefore).some((m) => m.includes('123-45-6789')), 'the SSN never reached the viewer');
+  assert(await waitFor(v7.msgs, (m) => m.includes('123-45-6789')), 'a batch is relayed whatever it carries — nothing is held back');
+  assert(!v7.msgs.some((m) => m.includes('"kind":"redacted"')), 'no viewer is ever told a frame was held back');
   g7.ws.send(JSON.stringify({ t: 'rrweb', events: [{ type: 3, data: { source: 0, texts: [{ id: 9, value: 'Loan 2125551234 at 10.25%' }] }, timestamp: Date.now() }] }));
   assert(await waitFor(v7.msgs, (m) => m.includes('2125551234')), 'an ordinary batch (phone, rate) is relayed untouched');
+  // A FULL SNAPSHOT is the one batch that must never be refused: every later mutation is
+  // expressed against the node ids it establishes, so losing it blanks the mirror forever.
+  g7.ws.send(JSON.stringify({ t: 'rrweb', events: [{ type: 2, data: { node: { id: 1, type: 0 }, initialOffset: { top: 0, left: 0 } }, timestamp: Date.now() }] }));
+  assert(await waitFor(v7.msgs, (m) => m.includes('"type":2')), 'a FULL SNAPSHOT always reaches the viewer');
   r = await call('POST', `/api/cobrowse/${s7}/end`, null, lo2Tok);
   assert(r.status === 200, 'the watched person ends the session');
   await new Promise((rr) => setTimeout(rr, 250));
   const s7row = (await db.query(`SELECT status, control_status, control_release_reason, control_grants, control_events, redaction_drops FROM cobrowse_sessions WHERE id=$1`, [s7])).rows[0];
   assert(s7row.status === 'ended' && s7row.control_status === 'released' && s7row.control_release_reason === 'session_ended', 'ending the session releases control in the same write');
-  assert(Number(s7row.control_grants) === 2 && Number(s7row.control_events) >= 1 && Number(s7row.redaction_drops) === 1, `the register holds the counts: grants=${s7row.control_grants} events=${s7row.control_events} redactions=${s7row.redaction_drops}`);
+  assert(Number(s7row.control_grants) === 2 && Number(s7row.control_events) >= 1, `the register holds the counts: grants=${s7row.control_grants} events=${s7row.control_events}`);
+  // db/683's counter column is left in place (this repo never drops a column) and is written
+  // by nothing now that the content guard is gone.
+  assert(Number(s7row.redaction_drops) === 0, 'nothing writes the retired redaction counter');
   const auC = await db.query(`SELECT action FROM audit_log WHERE entity_type='cobrowse_session' AND entity_id=$1 AND action LIKE 'cobrowse_control%' ORDER BY id`, [s7]);
   assert(auC.rows.length >= 6 && auC.rows.some((x) => x.action === 'cobrowse_control_granted') && auC.rows.some((x) => x.action === 'cobrowse_control_released'), `every control step is audited (${auC.rows.length} rows)`);
 

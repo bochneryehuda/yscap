@@ -2,7 +2,21 @@
 /**
  * CO-BROWSING HUB — the one two-way channel in PILOT.
  * Phase A watch · Phase B take control (input relayed ONLY while the register
- * says 'granted') · Phase C redaction guard, input rate limits, restart recovery.
+ * says 'granted') · Phase C input rate limits and restart recovery.
+ *
+ * AN rrweb STREAM IS STATEFUL, SO A FRAME MAY NEVER BE DROPPED (owner-reported
+ * 2026-09-02: "it doesn't see their screen"). A full snapshot establishes every
+ * node id and each later mutation is expressed against those ids, so a batch this
+ * hub declines to relay does not cost the viewer one frame — it desynchronises the
+ * mirror for the rest of the session, and the drop of a FULL SNAPSHOT (which is
+ * where a printed secret would live, so exactly the batch a content guard fires
+ * on) leaves the viewer with a blank page and a cursor moving over it, for ever,
+ * with 'Refresh picture' dropping the replacement in turn. A server-side content
+ * guard that DROPS is therefore not a belt on the browser's braces; it is an
+ * outage with a reassuring notice attached. Masking is the guest browser's job
+ * and happens before a byte leaves it (app-v2/src/lib/cobrowseMask.js). If a
+ * server-side guard is ever wanted again it must SCRUB WITHIN the event and relay
+ * it — never refuse the batch.
  *
  * Everything realtime here was one-way (Server-Sent Events, src/lib/events.js).
  * Co-browsing needs the WATCHED browser to push a masked copy of its own page to
@@ -55,11 +69,15 @@ const VIEWER_GRACE_MS = 60000;   // last viewer dropped: same
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;   // one rrweb batch; a full snapshot of a huge page is ~1 MB
 const BUDGET_WINDOW_MS = 10000;
 const BUDGET_BYTES = 24 * 1024 * 1024;       // per guest per window — far above real traffic, catches a runaway
-const BATCH_FLUSH_EVERY = 20;                // bookkeeping writes per N relayed batches
+// Bookkeeping writes per N relayed batches. It is 40 rather than 20 because the guest's
+// flush window was halved to 40 ms (the mirror was 'extremely slow'), which DOUBLES the
+// batch rate: at 20 that would have doubled this table's write rate too, for counters
+// nobody reads in real time. Keep the product of the two roughly constant — raising the
+// flush rate again means raising this with it.
+const BATCH_FLUSH_EVERY = 40;
 const MAX_INPUT_BYTES = 16 * 1024;           // one viewer input event (a pasted value at most)
 const INPUT_RATE_PER_SEC = 60;               // per viewer: mouse moves are already sampled client-side
 const INPUT_KINDS = new Set(['click', 'dblclick', 'input', 'change', 'key', 'paste', 'scroll', 'cursor', 'focus', 'blur', 'submit']);
-const redaction = require('./redaction');
 
 /** sessionId → room */
 const rooms = new Map();
@@ -73,7 +91,7 @@ function room(sessionId) {
   if (!r) {
     r = { id: sessionId, guest: null, viewers: new Set(), guestTimer: null, viewerTimer: null,
       pendingBatches: 0, bytesWindow: 0, windowStart: Date.now(),
-      control: 'none', pendingControl: 0, pendingRedactions: 0 };
+      control: 'none', pendingControl: 0 };
     rooms.set(sessionId, r);
   }
   return r;
@@ -147,16 +165,9 @@ function onGuestMessage(r, ws, data, isBinary) {
   try { const m = JSON.parse(text); t = m && m.t; } catch (_) { return; }
   if (t === 'ping') { send(ws, { t: 'pong' }); return; }
   if (t !== 'rrweb' && t !== 'route' && t !== 'notice') return;   // unknown → dropped, never relayed
-  // Phase C belt: a secret-shaped value in the clear never reaches a viewer. The
-  // browser mask is the real protection; this catches the screen nobody marked.
-  const verdict = redaction.judgeBatch(text, { t });
-  if (!verdict.ok) {
-    r.pendingRedactions += 1;
-    S.bumpRedactions(r.id, 1); r.pendingRedactions = 0;
-    broadcastViewers(r, { t: 'notice', kind: 'redacted' });
-    return;
-  }
-  // Relay the guest's own bytes untouched; count, never store.
+  // Relay the guest's own bytes UNTOUCHED and UNCONDITIONALLY; count, never store.
+  // Never re-introduce a content check that returns without relaying — see the
+  // stateful-stream note at the top of this file.
   broadcastViewers(r, text);
   r.pendingBatches += 1;
   if (r.pendingBatches >= BATCH_FLUSH_EVERY) { S.bumpBatches(r.id, r.pendingBatches); r.pendingBatches = 0; }
@@ -186,6 +197,13 @@ function onViewerMessage(r, ws, data) {
     if (typeof m.value === 'string') out.value = m.value.slice(0, 4000);
     if (typeof m.key === 'string') out.key = m.key.slice(0, 32);
     if (typeof m.code === 'string') out.code = m.code.slice(0, 32);
+    // THE TARGET FINGERPRINT (see drivable() in app-v2/src/lib/cobrowse.js). An rrweb
+    // mirror id is re-minted by every full snapshot, so an id the viewer read a moment
+    // ago can resolve on the guest to a DIFFERENT live element — measured by the
+    // pre-merge audit as a relayed click pressing the guest's own "Stop" button. The
+    // viewer sends what it MEANT to act on and the guest refuses a mismatch. Relayed
+    // as an opaque, capped string; the hub never interprets it.
+    if (typeof m.fp === 'string') out.fp = m.fp.slice(0, 120);
     for (const f of ['ctrl', 'shift', 'alt', 'meta', 'checked']) if (typeof m[f] === 'boolean') out[f] = m[f];
     send(r.guest, out);
     r.pendingControl += 1;
