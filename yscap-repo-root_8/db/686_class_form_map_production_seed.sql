@@ -1,4 +1,4 @@
--- 684 — Class Valuation product (form) defaults for the PRODUCTION organisation.
+-- 686 — Class Valuation product (form) defaults for the PRODUCTION organisation.
 --
 -- The Class mirror of db/481's AMC form defaults. `class_form_map` shipped EMPTY in
 -- db/537 because nobody had the production product catalog; the catalog was read off
