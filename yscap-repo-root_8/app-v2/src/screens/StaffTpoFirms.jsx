@@ -360,7 +360,7 @@ function CreditAccountCard({ firmId, firmName, canSet }) {
               <label className="small" style={{ color: INK }}>Username
                 <input className="input" autoComplete="off" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
               </label>
-              <label className="small" style={{ color: INK }}>Password
+              <label className="small" style={{ color: INK }} data-cobrowse-block="credential">Password
                 <input className="input" type="password" autoComplete="new-password" placeholder={configured ? 'enter a new password' : ''} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
               </label>
             </div>

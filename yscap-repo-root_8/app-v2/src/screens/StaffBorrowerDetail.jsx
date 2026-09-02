@@ -7,6 +7,7 @@ import { useSubmitGate } from '../lib/useSubmitGate.js';
 import { fmtDay } from '../lib/dates.js';
 import LlcManager from '../components/LlcManager.jsx';
 import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
+import CobrowseButton from '../components/CobrowseButton.jsx';
 import { passwordProblem } from '../lib/password.js';
 import { BorrowerProfileForm, BorrowerSsnRow, NameSplitPrompt, PortalAccessRow } from '../components/BorrowerProfilePanel.jsx';
 import ElementixProfile from '../components/ElementixProfile.jsx';
@@ -216,11 +217,13 @@ function Header({ b, name, onChanged }) {
           {/* Step into this borrower's portal from their profile (owner-directed
               2026-07-26). Only offered once they actually have a login. */}
           {b.has_account && <BorrowerViewButton borrowerId={b.id} borrowerName={name} />}
+          {b.has_account && <CobrowseButton kind="borrower" id={b.id} name={name} />}
           {b.has_account
             ? <button className="btn ghost small" disabled={busy === 'reset' || !b.email} onClick={() => act('reset')}>Reset password</button>
             : <button className="btn primary small" disabled={busy === 'invite' || !b.email} onClick={() => act('invite')}>Invite to PILOT</button>}
           <button className="btn ghost small" onClick={() => setPw(pw == null ? '' : null)}>{pw == null ? 'Set password' : 'Cancel'}</button>
-          <button className="btn ghost small" disabled={busy === 'ssn'} onClick={() => act('ssn')} title="Revealing the SSN is audited">
+          {/* data-cobrowse-block: once revealed the Social is this button's text — never mirrored to a co-browse viewer. */}
+          <button className="btn ghost small" disabled={busy === 'ssn'} onClick={() => act('ssn')} title="Revealing the SSN is audited" data-cobrowse-block="ssn">
             {ssn ? `SSN ${ssn}` : 'Reveal SSN'}</button>
           {b.photo_id_document_id &&
             <button className="btn ghost small" disabled={busy === 'photo'} onClick={() => act('photo')}>Government ID</button>}

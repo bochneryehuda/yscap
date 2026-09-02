@@ -480,7 +480,7 @@ export default function StaffLayout({ children }) {
   return (
     <div className="app">
       {staffViewOf && (
-        <div role="alert" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1001,
+        <div role="alert" style={{ position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1001,
           background: '#1F3864', color: '#fff', padding: '8px 14px', display: 'flex',
           alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14 }}>
           <span>You are seeing <strong>{staffViewOf.name || 'a team member'}</strong>’s screen — read-only.
@@ -490,7 +490,7 @@ export default function StaffLayout({ children }) {
         </div>
       )}
       {staleBuild && (
-        <div role="alert" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1000,
+        <div role="alert" style={{ position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1000,
           background: '#AE8746', color: '#fff', padding: '8px 14px', display: 'flex',
           alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14 }}>
           <span>PILOT was updated — refresh to get the latest screens and fixes.</span>
@@ -609,6 +609,9 @@ export default function StaffLayout({ children }) {
             style={{ paddingLeft: 41, fontSize: 13 }}>{p.label}</NavLink>
         ))}
 
+        {/* TEAM FOR EVERYBODY (owner-directed 2026-09-02). Admins reach it under
+            Admin below; everyone else gets the read-only roster with Co-browse. */}
+        {!canManageTeam && <NavLink className="sb-link" to="/internal/team" title="Team — everybody on the YS Capital desk, and Co-browse to see a teammate's screen with their permission"><NavIcon name="team" />Team</NavLink>}
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>
         <NavLink className="sb-link" to="/internal/borrower-view" title="Borrower view — step into a borrower's portal and see PILOT exactly as they see it, so you can walk them through a screen live. One click brings you back."><NavIcon name="borrowerView" />Borrower view</NavLink>
@@ -658,7 +661,7 @@ export default function StaffLayout({ children }) {
         <div className="sb-spacer" />
         <div className="sb-foot">
           <span className="pill" title="Your role">{roleLabel}</span>
-          <button className="btn ghost small" onClick={() => { signOut(); nav('/internal/login'); }}>Sign out</button>
+          <button className="btn ghost small" data-cobrowse-nodrive="sign-out" onClick={() => { signOut(); nav('/internal/login'); }}>Sign out</button>
         </div>
       </aside>
       {menuOpen && <div className="app-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}

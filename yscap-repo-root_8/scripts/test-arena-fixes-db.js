@@ -107,8 +107,14 @@ const eq = (a, b, m) => ok(String(a) === String(b), `${m} (got ${JSON.stringify(
       const draws = await runner.getDraws(spin.id);
       const w1 = draws.find((d) => d.seq === 1);
       const w3 = draws.find((d) => d.seq === 3);
-      const award = (await db.query(
-        `SELECT * FROM arena_awards WHERE spin_id = $1`, [spin.id])).rows[0];
+      // The award is written by the settle that FOLLOWS the last reveal, on the wheel's own
+      // timer when the timer got there first — wait for the row rather than reading the instant
+      // the wheel landed (the fixed-sleep-then-read race that held main red on 2026-09-02).
+      let award = null;
+      for (const t0 = Date.now(); !award && Date.now() - t0 < 8000; ) {
+        award = (await db.query(`SELECT * FROM arena_awards WHERE spin_id = $1`, [spin.id])).rows[0] || null;
+        if (!award) await wait(100);
+      }
       const distinct = String(w1.winner_staff_id) !== String(w3.winner_staff_id);
       if (!distinct && attempt < 4) continue;   // roll again for the sharp case
       ok(!!award, 'an award was written');

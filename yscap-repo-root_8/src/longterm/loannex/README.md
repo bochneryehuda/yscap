@@ -280,6 +280,80 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     empty panel has a second cause; one live call settles it. What is certain is that we were not
     behaving the way the vendor's own client does, and now we are.
 
+12. **THE EXPLAIN CALL DESCRIBED A DIFFERENT LOAN FROM THE ONE THE BOARD PRICED (2026-09-02, the
+    owner's second "I still don't see the LLPAs" — "Very important").** Item 11 was real and was not
+    the whole of it: the 30-Aug live recording (`capture/evidence-live.json`) shows LoanNEX itemised
+    three of four quotes WITHOUT any transaction id (the samples record only the quote), so the
+    search identity cannot have been the only thing standing between the panel and a breakdown.
+    MEASURED, field by field, on the real body builder: `priceBoth` runs every scenario through
+    `validateScenario` before either vendor is asked — the browser sends a ZIP and nothing else about
+    the location, and that step turns it into state + county (+ FIPS) — while BOTH explain doors
+    handed the RAW browser scenario to `buildNexApp`. The vendor was asked to itemise a quote for a
+    loan in **no state** (`nexApp.state: null` against the board's `"NJ"`), and the eligibility
+    screen that `/evidences` re-runs had nothing to screen. The 30-Aug script had supplied the
+    state by hand, which is why it worked there and not on the board. `explainScenario` now runs the
+    same pure, offline, deterministic enrichment on the same input, so the explain body is
+    IDENTICAL to the board's; a scenario the price door refuses is refused with the same 422 and
+    never sent as a different loan. And because a screenshot of an empty panel cannot be diagnosed,
+    the answer now carries `asked` (rate, lock, state, county, ZIP, DSCR, loan, value, search id — never a vendor
+    name; the PRICE and the portal only under `revealSource`, because the vendor is asked about
+    ITS price, which carries the holdback, and stating it beside a held-back row would let a reader
+    subtract the two — the pre-merge audit caught the first cut printing it) on the option's own
+    evidence block, and the panel prints it under the "returned no breakdown" note. A refused
+    scenario is the price door's 422; an internal failure of the check itself is a 500 that says so,
+    proven by mutation (test B12b–e, and E4b pins that both doors answer through the one function),
+    never a 422 blaming the caller. **Still not confirmed against the live API from here** — no
+    credentials in this environment; `asked` is what makes the owner's next screenshot decisive.
+
+13. **THE INTEREST-ONLY SWITCH OFF NARROWED NOTHING (2026-09-02, owner: "Interest-only program still
+    comes up even when I'm not searching for interest-only").** The programme narrowing (item 9)
+    worked exactly as measured — on the recorded board `io:false` drops all 46 interest-only
+    programmes — but the screen never sends `io:false`: `toScenario` sends a yes/no button ONLY when
+    it is on (deliberate on the Lender Price side, where an omitted flag inherits the tenant's own
+    default, and the DSCR base carries `interestOnly: false`). So Lender Price was asked for an
+    amortising board while `wantFrom` read `io: null` and left LoanNEX's interest-only programmes
+    on — the two boards answering two different questions, which is the drift the filter exists to
+    prevent. `wantFrom` now resolves a silent scenario from the request Lender Price was ACTUALLY
+    sent — `priceBoth` hands it the criteria of the WIRE body the client returns, the one built on
+    the tenant's live foundation — the same mirror rule amortization already follows; a stated
+    answer still wins, and with no request to mirror the dimension stays un-narrowed. **The first
+    cut mirrored the STATIC build (`chk.request`, from `search-base.json`), and the pre-merge audit
+    showed that is not what goes on the wire**: `mergeKnownRequestDefaults` copies same-typed
+    scalars, `criteria.interestOnly` included, from the LIVE defaultSearch, so a tenant default of
+    `true` would have narrowed LoanNEX to amortising while Lender Price was asked for interest-only.
+    The static build is now the FALLBACK, used only when there is no wire body to mirror — Lender
+    Price failed, or its client handed back no `request` (test C16/C17). The option-level filter reads the same resolved answer, and now KEEPS a row it
+    cannot classify (the rule its own header always stated). In the same pass the LoanNEX board
+    options gained the `terms` block the Details panel reads, so a LoanNEX row states its
+    amortization, term and lock instead of drawing an em dash for all three. Vendor fact unchanged:
+    LoanNEX takes no interest-only input; `isInterestOnly` is a real boolean on every one of the 19
+    recorded mortgage products, and "IO" in a product's name agrees with it on all 19.
+
+14. **THE ORDINARY BOARD ASKED FOR AN ITEMISATION WITHOUT NAMING THE INVESTOR (2026-09-02, the
+    A-to-Z audit; the SECOND half of "I still don't see the detailed LLPA and adjustments
+    populate").** Item 12 fixed the loan the vendor was asked about; this is the QUOTE it was asked
+    about. `loannex/client.evidence` addresses a quote by BOTH ids — `{ productId, investorId }`,
+    exactly as the vendor's own recorded request does (`capture/evidence.json`) — and
+    `explainHandle` reads them off the programme row. But the handle is built AFTER
+    `investor-routing.stripSource` has removed the vendor ids for the one-system view, and the
+    screen asks for the ORDINARY board (it sends `revealSource` only when an admin ticks "show
+    where each row came from"). MEASURED on the recorded board before anything was changed: **735
+    of 735 handles carried the investor id with the source revealed, 0 of 735 without** — so every
+    Details panel opened from the board asked LoanNEX to itemise a quote without telling it whose
+    it was. `productId` was never stripped, for the same reason; this is the other half of the same
+    address and is now kept the same way. It travels as a NON-ENUMERABLE property (`EXPLAIN_LENDER_ID`,
+    named once in `investor-routing` so its one reader asks for it by name), so it reaches
+    `explainHandle` and **cannot serialise onto the row** — proven both ways, and both proven by
+    mutation: dropping the carry leaves 809 handles unaddressable (D9), making it an ordinary
+    property puts it on the wire (D10), and the strip still bites on the row itself (D11).
+    In the same pass `BOARD-8` in the parity suite was re-pointed: it greps three key names under
+    wording claiming no row "names a vendor", and it has always passed while the same handle carries
+    `vendor: 'loannex'` in plain text — it now judges the row BODY and the ADDRESS separately, and
+    pins the address to an allowlist so nothing can ride out inside it. **Still open, recorded not
+    papered over:** the address block exists only on LoanNEX rows and says so, so the board is
+    tellable through it; closing that means an opaque handle the browser cannot read, which changes
+    the wire contract and is its own change.
+
 ---
 
 ## Update, 2026-08-30 (second pass)

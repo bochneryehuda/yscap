@@ -51,7 +51,7 @@ export default function TpoLayout({ children }) {
             {isFirmAdmin && <NavLink to="/tpo/team" title="Your firm's users — invite your processors">Team</NavLink>}
             {isTpoView
               ? <button className="btn ghost small" onClick={leaveView}>← Back to my console</button>
-              : <button className="btn ghost small" onClick={() => { signOut(); nav('/tpo/login'); }}>Sign out</button>}
+              : <button className="btn ghost small" data-cobrowse-nodrive="sign-out" onClick={() => { signOut(); nav('/tpo/login'); }}>Sign out</button>}
           </nav>
         </div>
       </header>
