@@ -663,7 +663,7 @@ export default function StaffLayout({ children }) {
         <div className="sb-spacer" />
         <div className="sb-foot">
           <span className="pill" title="Your role">{roleLabel}</span>
-          <button className="btn ghost small" onClick={() => { signOut(); nav('/internal/login'); }}>Sign out</button>
+          <button className="btn ghost small" data-cobrowse-nodrive="sign-out" onClick={() => { signOut(); nav('/internal/login'); }}>Sign out</button>
         </div>
       </aside>
       {menuOpen && <div className="app-scrim" onClick={() => setMenuOpen(false)} aria-hidden="true" />}

@@ -441,7 +441,7 @@ export default function StaffTeam() {
                       your screen) and a deactivated person (there is no session to
                       see). Everything else the server decides and reports honestly. */}
                   {canSeeTheirScreen && s.id !== myId && !!s.is_active && (
-                    <button className="btn link" disabled={mailBusy === `v${s.id}`}
+                    <button className="btn link" disabled={mailBusy === `v${s.id}`} data-cobrowse-nodrive="view-as"
                       title="Open their console exactly as they see it — read-only, and recorded"
                       onClick={async () => {
                         if (mailBusy) return;

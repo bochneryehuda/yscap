@@ -161,3 +161,14 @@ manager copied; (4) retention: store nothing but who/when/what-was-done (recomme
   register on the Team screen for super admins.
 - Owner sign-off still wanted on WORDING: the consent prompt's retention sentence ("PILOT records who
   watched and when; it never records the screen itself") and the control prompt.
+
+### 7.x Typing through the mirror (found by the end-to-end drive)
+
+The viewer's replay is masked, so the viewer cannot know the real value or caret of a
+box it types into. A whole-value echo from the viewer side sent `'' + key` on every
+press and nothing ever accumulated. The rule now: every keystroke travels as a **key**
+(a paste as its own text), and the **guest's own browser** inserts it at the real
+selection through the native setter (`applyTextKey` / `insertText` in
+`app-v2/src/lib/cobrowse.js`); a `<select>` is driven by option index. Proven by
+`scripts/render-cobrowse-e2e.js`, which drives two real browsers through the whole
+lifecycle and asserts the guest's real search box reads what the viewer typed.

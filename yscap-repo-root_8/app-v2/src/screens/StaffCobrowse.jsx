@@ -137,26 +137,16 @@ export default function StaffCobrowse() {
     const onKey = (e) => {
       e.preventDefault(); e.stopPropagation();
       const id = idOf(doc.activeElement || e.target); if (id == null || id < 0) return;
-      const el = doc.activeElement;
-      const editable = el && ('value' in el) && !el.disabled && !el.readOnly;
-      if (editable && e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
-        // Typing: send the resulting whole value (last-value-wins, like rrweb's own input sampling).
-        const v = String(el.value || '');
-        const start = el.selectionStart == null ? v.length : el.selectionStart, end = el.selectionEnd == null ? v.length : el.selectionEnd;
-        const next = v.slice(0, start) + e.key + v.slice(end);
-        sendInput({ k: 'input', id, value: next });
-      } else if (editable && e.key === 'Backspace') {
-        const v = String(el.value || '');
-        const start = el.selectionStart == null ? v.length : el.selectionStart, end = el.selectionEnd == null ? v.length : el.selectionEnd;
-        const next = start === end ? v.slice(0, Math.max(0, start - 1)) + v.slice(end) : v.slice(0, start) + v.slice(end);
-        sendInput({ k: 'input', id, value: next });
-      } else {
-        sendInput({ k: 'key', id, key: e.key, code: e.code, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
-      }
+      // Every keystroke is relayed AS A KEY. The mirror is masked (a typed value
+      // shows as the fixed-length marker), so this side cannot know the real
+      // value or the caret — the guest's own browser inserts the character into
+      // its real box (applyInput → applyTextKey). Deriving a whole value from the
+      // mirror here sent `'' + key` on every press and nothing ever accumulated.
+      sendInput({ k: 'key', id, key: e.key, code: e.code, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
     };
-    const onChange = (e) => { const id = idOf(e.target); if (id == null || id < 0) return; const t = e.target; if (t.type === 'checkbox' || t.type === 'radio') sendInput({ k: 'change', id, checked: !!t.checked }); else sendInput({ k: 'change', id, value: String(t.value || '') }); };
+    const onChange = (e) => { const id = idOf(e.target); if (id == null || id < 0) return; const t = e.target; if (t.type === 'checkbox' || t.type === 'radio') sendInput({ k: 'change', id, checked: !!t.checked }); else sendInput({ k: 'change', id, value: String(t.value || ''), idx: t.tagName === 'SELECT' ? t.selectedIndex : undefined }); };
     const onScroll = (e) => { const t = e.target; if (t === doc || t === doc.documentElement || t === doc.body) { const w = doc.defaultView; sendInput({ k: 'scroll', id: 1, sx: w ? w.scrollX : 0, sy: w ? w.scrollY : 0 }); return; } const id = idOf(t); if (id == null || id < 0) return; sendInput({ k: 'scroll', id, sx: t.scrollLeft, sy: t.scrollTop }); };
-    const onPaste = (e) => { e.preventDefault(); const id = idOf(doc.activeElement); if (id == null || id < 0) return; const text = (e.clipboardData && e.clipboardData.getData('text')) || ''; if (text) sendInput({ k: 'input', id, value: String((doc.activeElement && doc.activeElement.value) || '') + text }); };
+    const onPaste = (e) => { e.preventDefault(); const id = idOf(doc.activeElement); if (id == null || id < 0) return; const text = (e.clipboardData && e.clipboardData.getData('text')) || ''; if (text) sendInput({ k: 'paste', id, value: text }); };
     doc.addEventListener('mousemove', onMove, true);
     doc.addEventListener('click', onClick, true);
     doc.addEventListener('keydown', onKey, true);

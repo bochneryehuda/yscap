@@ -58,7 +58,7 @@ const BUDGET_BYTES = 24 * 1024 * 1024;       // per guest per window — far abo
 const BATCH_FLUSH_EVERY = 20;                // bookkeeping writes per N relayed batches
 const MAX_INPUT_BYTES = 16 * 1024;           // one viewer input event (a pasted value at most)
 const INPUT_RATE_PER_SEC = 60;               // per viewer: mouse moves are already sampled client-side
-const INPUT_KINDS = new Set(['click', 'dblclick', 'input', 'change', 'key', 'scroll', 'cursor', 'focus', 'blur', 'submit']);
+const INPUT_KINDS = new Set(['click', 'dblclick', 'input', 'change', 'key', 'paste', 'scroll', 'cursor', 'focus', 'blur', 'submit']);
 const redaction = require('./redaction');
 
 /** sessionId → room */
@@ -182,7 +182,7 @@ function onViewerMessage(r, ws, data) {
     if (!r.guest) { send(ws, { t: 'guest_offline' }); return; }
     // Re-serialise a SANITISED shape: only the fields the driver reads, sized.
     const out = { t: 'input', k: m.k, id: Number.isFinite(Number(m.id)) ? Number(m.id) : null };
-    for (const f of ['x', 'y', 'sx', 'sy']) if (Number.isFinite(Number(m[f]))) out[f] = Number(m[f]);
+    for (const f of ['x', 'y', 'sx', 'sy', 'idx']) if (m[f] != null && Number.isFinite(Number(m[f]))) out[f] = Number(m[f]);
     if (typeof m.value === 'string') out.value = m.value.slice(0, 4000);
     if (typeof m.key === 'string') out.key = m.key.slice(0, 32);
     if (typeof m.code === 'string') out.code = m.code.slice(0, 32);

@@ -140,6 +140,15 @@ const viewerNow = strip(read('app-v2/src/screens/StaffCobrowse.jsx'));
 ok(/\[4400, 4401, 4403, 4404\]\.includes\(ev\.code\)/.test(viewerNow), 'the viewer stops reconnecting on a terminal close code');
 ok(/Ask to control/.test(read('app-v2/src/screens/StaffCobrowse.jsx')) && /Hand control back/.test(read('app-v2/src/screens/StaffCobrowse.jsx')), 'the viewer offers Ask to control / Hand control back');
 ok(/mirror\.getId\(node\)/.test(viewerNow) && /t: 'input'/.test(viewerNow), 'the viewer captures on the mirror and addresses by mirror id');
+// Typing travels as KEYS and the guest's own browser edits the real value: the mirror is
+// masked, so a whole-value echo from the viewer sent `'' + key` on every press and nothing
+// ever accumulated (the e2e drive caught it — 6 input events, the box still empty).
+ok(!/k: 'input', id, value: next/.test(viewerNow) && /sendInput\(\{ k: 'key', id, key: e\.key/.test(viewerNow), 'the viewer relays a keystroke as a key, never a value derived from the masked mirror');
+ok(/k: 'paste', id, value: text/.test(viewerNow), 'a paste travels as its own text, never appended to a mirror value');
+ok(/if \(notCancelled\) applyTextKey\(el, key, init\)/.test(libNow) && /function insertText\(el, text\)/.test(libNow) && /el\.setSelectionRange\(caret, caret\)/.test(libNow), "the guest inserts each relayed character at its REAL selection through the native setter");
+ok(/m\.k === 'paste'/.test(libNow) && /insertText\(el, String\(m\.value/.test(libNow), 'the guest inserts pasted text at the real selection');
+ok(/INPUT_KINDS = new Set\(\[[^\]]*'paste'/.test(hubSrc), "the hub admits 'paste' as an input kind");
+ok(/el\.tagName === 'SELECT' && Number\.isFinite\(Number\(m\.idx\)\)/.test(libNow) && /'idx'\]/.test(hubSrc), 'a <select> is driven by option index (its mirror value is masked)');
 const hostNow = read('app-v2/src/components/CobrowseHost.jsx');
 ok(/asks to control your screen/.test(hostNow) && /Allow control/.test(hostNow) && /keep watching only/.test(hostNow), 'the second consent prompt: allow / keep watching only');
 ok(/Take back/.test(hostNow) && /cobrowse-controlled/.test(hostNow), 'the banner turns to controlling with a Take back button and the red frame');

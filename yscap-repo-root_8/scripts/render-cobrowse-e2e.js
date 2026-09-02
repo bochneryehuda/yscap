@@ -1,0 +1,200 @@
+'use strict';
+/**
+ * CO-BROWSING — THE TWO-BROWSER PROOF ("test like you fly"). Boots the REAL server
+ * (Express + the ws hub) against the REAL local Postgres, serves the REAL built
+ * bundle, and drives two Chromium contexts through the whole thing exactly as two
+ * people would:
+ *
+ *   GUEST  (a loan officer)   signs in, is asked, presses Accept, later Allow control,
+ *                             then takes control back by moving their own mouse.
+ *   VIEWER (a super admin)    asks, watches the mirror fill with the guest's page,
+ *                             asks to control, types into the guest's real page
+ *                             through the mirror, and is refused once control is
+ *                             taken back.
+ *
+ * Every assertion is about what the OTHER browser shows — never about a return
+ * value the same side produced. SKIPs (exit 0) without Playwright or DATABASE_URL.
+ */
+const path = require('path');
+const fs = require('fs');
+if (!process.env.DATABASE_URL) { console.log('SKIP render-cobrowse-e2e: DATABASE_URL not set'); process.exit(0); }
+let pw = null;
+try { pw = require('/opt/node22/lib/node_modules/playwright'); } catch (_) { try { pw = require('playwright'); } catch (_2) { pw = null; } }
+if (!pw) { console.log('SKIP render-cobrowse-e2e: playwright not available'); process.exit(0); }
+process.env.NODE_ENV = process.env.NODE_ENV || 'test';
+process.env.EMAIL_PROVIDER = 'none';
+
+const http = require('http');
+const crypto = require('crypto');
+const db = require('../src/db');
+const C = require('../src/lib/crypto');
+const app = require('../src/server');
+const hub = require('../src/lib/cobrowse/hub');
+
+let pass = 0, fail = 0;
+const ok = (c, m) => { if (c) { pass++; console.log('PASS', m); } else { fail++; console.log('FAIL', m); } };
+const tag = Date.now().toString(36);
+const uid = () => crypto.randomUUID();
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function main() {
+  await require('../src/migrate-boot').ensureSchema();
+  const bundle = fs.readdirSync(path.join(__dirname, '../web/v2/portal/assets')).filter((f) => /^index-.*\.js$/.test(f));
+  ok(bundle.length === 1, `one built bundle is present (${bundle.join(', ')})`);
+
+  await db.query(`DELETE FROM staff_users WHERE email LIKE 'e2e-%@example.test'`).catch(() => {});
+  const server = http.createServer(app);
+  hub.attach(server);
+  await new Promise((r) => server.listen(0, r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  const mk = async (role, name) => (await db.query(
+    `INSERT INTO staff_users (email, full_name, role, password_hash, is_active, is_external, token_version)
+     VALUES ($1,$2,$3,'x',true,false,3) RETURNING id, role, token_version, full_name`,
+    [`e2e-${tag}-${name}@example.test`, `${name} ${tag}`, role])).rows[0];
+  const sa = await mk('super_admin', 'Viewer');
+  const lo = await mk('loan_officer', 'Guest');
+  const tok = (u) => C.signJwt({ sub: String(u.id), kind: 'staff', role: u.role, tv: u.token_version || 0, sid: uid() }, 3600);
+  const saTok = tok(sa), loTok = tok(lo);
+  const api = async (method, p, body, token) => {
+    const res = await fetch(base + p, { method, headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: body ? JSON.stringify(body) : undefined });
+    let data = null; try { data = await res.json(); } catch (_) { /* empty */ }
+    return { status: res.status, data };
+  };
+
+  const browser = await pw.chromium.launch({ headless: true });
+  const errors = { guest: [], viewer: [] };
+  const open = async (label, token, hash) => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' });
+    await ctx.addInitScript((t) => { try { localStorage.setItem('ys_portal_token', t); } catch (_) { /* fine */ } }, token);
+    const page = await ctx.newPage();
+    page.on('pageerror', (e) => errors[label].push(String(e && e.message)));
+    page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors[label].push(m.text()); });
+    // A resource that failed to load is judged by its URL: the live streams (SSE, ws)
+    // are reset by every navigation and by the test's own teardown — not a defect.
+    // Only a failure on the app's OWN origin is the app's: this sandbox has no route
+    // to fonts.googleapis.com, and a blocked third-party font is a fact about the
+    // network, not about the page.
+    page.on('requestfailed', (rq) => { const u = rq.url(); if (u.startsWith(base) && !/\/api\/events|\/ws\/cobrowse|favicon|manifest/.test(u)) errors[label].push(`${u} → ${(rq.failure() || {}).errorText}`); });
+    await page.goto(`${base}/portal/#${hash}`);
+    return { ctx, page };
+  };
+
+  let guest, viewer;
+  try {
+    // ── the guest is on the Team screen (a non-admin: the read-only roster) ──
+    guest = await open('guest', loTok, '/internal/team');
+    await guest.page.waitForSelector('text=Everybody on the YS Capital desk', { timeout: 20000 });
+    ok(true, 'the guest (a loan officer) is signed in and on the Team screen');
+
+    // ── the viewer asks ──
+    let r = await api('POST', '/api/cobrowse/request', { kind: 'staff', id: lo.id }, saTok);
+    ok(r.status === 200, `the viewer asks to co-browse (got ${r.status})`);
+    const sid = r.data.session.id;
+
+    // ── the consent prompt appears LIVE on the guest, with the viewer's name; they accept ──
+    await guest.page.waitForSelector('text=wants to see your screen', { timeout: 15000 });
+    ok(await guest.page.locator('text=wants to see your screen').count() > 0, 'the guest sees "X from YS Capital wants to see your screen" live (SSE)');
+    ok(await guest.page.locator(`text=${sa.full_name}`).count() > 0, 'the prompt names the viewer');
+    ok(await guest.page.locator('text=it never records the screen itself').count() > 0, 'the prompt states what is kept');
+    await guest.page.click('button:has-text("Accept")');
+    await guest.page.waitForSelector('text=is watching your screen', { timeout: 10000 });
+    ok(true, 'after Accept the red banner says who is watching');
+    r = await api('GET', `/api/cobrowse/${sid}`, null, saTok);
+    ok(r.data.session.status === 'active', 'the register reads active');
+
+    // ── the viewer opens the mirror and sees the guest's page ──
+    viewer = await open('viewer', saTok, `/internal/cobrowse/${sid}`);
+    await viewer.page.waitForSelector('text=Watching', { timeout: 20000 });
+    const mirrorHas = async (text, ms = 20000) => viewer.page.waitForFunction((t) => {
+      const f = document.querySelector('.cobrowse-stage iframe'); const d = f && f.contentDocument;
+      return !!(d && d.body && d.body.innerText.includes(t));
+    }, text, { timeout: ms }).then(() => true).catch(() => false);
+    ok(await mirrorHas('Everybody on the YS Capital desk'), 'the mirror shows the guest\'s Team screen (rrweb snapshot relayed and replayed)');
+    ok(await viewer.page.locator('text=Watch-only').count() > 0, 'the viewer is told it is watch-only');
+
+    // ── the guest navigates; the mirror follows ──
+    await guest.page.goto(`${base}/portal/#/internal`);
+    await guest.page.waitForTimeout(1500);
+    const guestText = await guest.page.evaluate(() => document.body.innerText.slice(0, 4000));
+    const probe = (guestText.match(/Pipeline|Files|Dashboard/) || [])[0];
+    ok(!!probe && await mirrorHas(probe), `after the guest navigates the mirror follows (saw "${probe}")`);
+
+    // ── the viewer asks for control; the guest sees the second prompt and allows ──
+    await viewer.page.click('button:has-text("Ask to control")');
+    await guest.page.waitForSelector('text=asks to control your screen', { timeout: 15000 });
+    ok(true, 'the guest sees the second consent prompt');
+    ok(await guest.page.locator('text=Move your mouse or press Stop').count() > 0, 'it says how to take control back');
+    await guest.page.click('button:has-text("Allow control")');
+    await viewer.page.waitForSelector('text=You are in control', { timeout: 15000 });
+    ok(true, 'the viewer is told they are in control');
+    await guest.page.waitForSelector('text=is controlling your screen', { timeout: 10000 });
+    ok(await guest.page.evaluate(() => document.documentElement.classList.contains('cobrowse-controlled')), 'the guest page carries the red controlled frame');
+
+    // ── the viewer types into the guest's REAL page through the mirror ──
+    const target = await guest.page.evaluate(() => {
+      const el = Array.from(document.querySelectorAll('input[type="text"], input[type="search"], input:not([type])')).find((i) => i.offsetParent && !i.disabled && !i.readOnly);
+      if (!el) return null;
+      el.setAttribute('data-e2e-target', '1');
+      return { placeholder: el.placeholder || '', id: el.id || '' };
+    });
+    ok(!!target, `the guest's page has a drivable text box (${target && (target.placeholder || target.id || 'unnamed')})`);
+    // Wait for the attribute to reach the mirror, then find the same element there.
+    ok(await viewer.page.waitForFunction(() => {
+      const f = document.querySelector('.cobrowse-stage iframe'); const d = f && f.contentDocument;
+      return !!(d && d.querySelector('[data-e2e-target="1"]'));
+    }, null, { timeout: 15000 }).then(() => true).catch(() => false), 'the mirror carries the same box');
+    const typed = await viewer.page.evaluate(() => {
+      const f = document.querySelector('.cobrowse-stage iframe'); const d = f.contentDocument;
+      const el = d.querySelector('[data-e2e-target="1"]');
+      el.dispatchEvent(new d.defaultView.MouseEvent('click', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }));
+      el.focus();
+      for (const ch of 'hello') el.dispatchEvent(new d.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: ch, code: `Key${ch.toUpperCase()}` }));
+      return true;
+    });
+    ok(typed, 'the viewer clicked and typed on the mirror');
+    const landed = await guest.page.waitForFunction(() => { const el = document.querySelector('[data-e2e-target="1"]'); return el && el.value === 'hello'; }, null, { timeout: 10000 }).then(() => true).catch(() => false);
+    ok(landed, 'the guest\'s REAL box now reads "hello" — typed by the viewer through the mirror');
+    ok(await guest.page.evaluate(() => !!document.querySelector('[data-cobrowse-block="pointer"]')), 'the controller\'s pointer is drawn on the guest\'s page');
+
+    // ── the guest moves their own mouse: control is taken back ──
+    await guest.page.mouse.move(300, 300); await guest.page.mouse.move(320, 330);
+    await guest.page.waitForSelector('text=is watching your screen', { timeout: 10000 });
+    ok(await guest.page.evaluate(() => !document.documentElement.classList.contains('cobrowse-controlled')), 'a real mouse move on the guest takes control back (frame gone)');
+    await viewer.page.waitForSelector('text=Watch-only', { timeout: 10000 });
+    ok(true, 'the viewer is back to watch-only');
+    r = await api('GET', `/api/cobrowse/${sid}`, null, saTok);
+    ok(r.data.session.control.status === 'released' && r.data.session.control.releaseReason === 'guest_moved', `the register says released by guest_moved (got ${r.data.session.control.status}/${r.data.session.control.releaseReason})`);
+    // typing again changes nothing
+    await viewer.page.evaluate(() => {
+      const f = document.querySelector('.cobrowse-stage iframe'); const d = f.contentDocument;
+      const el = d.querySelector('[data-e2e-target="1"]');
+      if (el) for (const ch of 'XYZ') el.dispatchEvent(new d.defaultView.KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: ch }));
+    });
+    await sleep(800);
+    ok(await guest.page.evaluate(() => document.querySelector('[data-e2e-target="1"]').value) === 'hello', 'after take-back the viewer\'s typing no longer reaches the guest');
+
+    // ── the guest presses Stop: both sides end ──
+    await guest.page.click('button:has-text("Stop")');
+    await viewer.page.waitForSelector('text=stopped sharing', { timeout: 10000 });
+    ok(true, 'the viewer is told the guest stopped sharing');
+    ok(await guest.page.locator('text=is watching your screen').count() === 0, 'the guest\'s banner is gone');
+    r = await api('GET', `/api/cobrowse/${sid}`, null, saTok);
+    ok(r.data.session.status === 'ended' && r.data.session.endReason === 'stopped_by_guest' && r.data.session.control.grants === 1 && r.data.session.control.events >= 1,
+      `the register: ended by the guest, control given once, ${r.data.session.control.events} input event(s) counted`);
+
+    const bad = (l) => errors[l].filter((e) => !/favicon|manifest|ResizeObserver|net::ERR_ABORTED|events\?token|EventSource/.test(e));
+    ok(bad('guest').length === 0, `no page errors on the guest (${bad('guest').slice(0, 2).join(' | ')})`);
+    ok(bad('viewer').length === 0, `no page errors on the viewer (${bad('viewer').slice(0, 2).join(' | ')})`);
+  } finally {
+    try { guest && await guest.ctx.close(); } catch (_) { /* fine */ }
+    try { viewer && await viewer.ctx.close(); } catch (_) { /* fine */ }
+    await browser.close();
+    await db.query(`DELETE FROM cobrowse_sessions WHERE viewer_staff_id=$1 OR watched_staff_id=$2`, [sa.id, lo.id]).catch(() => {});
+    await db.query(`DELETE FROM staff_users WHERE email LIKE $1`, [`e2e-${tag}-%`]).catch(() => {});
+    server.close();
+  }
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+}
+main().catch((e) => { console.error(e); process.exit(1); });

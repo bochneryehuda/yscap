@@ -52,6 +52,11 @@ async function main() {
   };
 
   // ── fixtures ──────────────────────────────────────────────────────────────
+  // A run that died mid-way (a crash, a mutation proof) leaves its rows; clear them
+  // so an old 'cb-…' staffer can never make a busy check answer for a fresh one.
+  await db.query(`DELETE FROM staff_users WHERE email LIKE 'cb-%@example.test'`).catch(() => {});
+  await db.query(`DELETE FROM borrowers WHERE email LIKE 'cb-%@b.test'`).catch(() => {});
+  await db.query(`DELETE FROM tpo_firms WHERE name LIKE 'Firm %' AND NOT EXISTS (SELECT 1 FROM staff_users su WHERE su.tpo_firm_id = tpo_firms.id)`).catch(() => {});
   const firmId = (await db.query(`INSERT INTO tpo_firms (name) VALUES ($1) RETURNING id`, [`Firm ${tag}`])).rows[0].id;
   const mk = async (role, name, extra = {}) => {
     const r = await db.query(

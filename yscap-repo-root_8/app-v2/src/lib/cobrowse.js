@@ -270,6 +270,44 @@ function setNativeValue(el, value) {
   if (desc && desc.set) desc.set.call(el, value); else el.value = value;
 }
 
+const TEXT_INPUT_TYPES = new Set(['text', 'search', 'url', 'tel', 'email', 'password', 'number', '']);
+/** A real, editable text control (input of a text kind, or a textarea). */
+function editableText(el) {
+  if (!el || el.disabled || el.readOnly) return false;
+  if (el.tagName === 'TEXTAREA') return true;
+  if (el.tagName !== 'INPUT') return false;
+  return TEXT_INPUT_TYPES.has(String(el.getAttribute('type') || '').toLowerCase());
+}
+/** Replace the current selection with `text` and tell React. */
+function insertText(el, text) {
+  const v = String(el.value || '');
+  let start = el.selectionStart, end = el.selectionEnd;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) { start = v.length; end = v.length; }
+  const next = v.slice(0, start) + text + v.slice(end);
+  setNativeValue(el, next);
+  const caret = start + text.length;
+  try { el.setSelectionRange(caret, caret); } catch { /* number inputs refuse; fine */ }
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+/** Apply one keystroke's EDIT to a text control: printable → insert, Backspace/Delete → remove. */
+function applyTextKey(el, key, init) {
+  if (!editableText(el)) return false;
+  if (init.ctrlKey || init.metaKey || init.altKey) return false;
+  if (key.length === 1) { insertText(el, key); return true; }
+  if (key === 'Backspace' || key === 'Delete') {
+    const v = String(el.value || '');
+    let start = el.selectionStart, end = el.selectionEnd;
+    if (!Number.isFinite(start) || !Number.isFinite(end)) { start = v.length; end = v.length; }
+    if (start === end) { if (key === 'Backspace') start = Math.max(0, start - 1); else end = Math.min(v.length, end + 1); }
+    if (start === end) return false;
+    setNativeValue(el, v.slice(0, start) + v.slice(end));
+    try { el.setSelectionRange(start, start); } catch { /* fine */ }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  }
+  return false;
+}
+
 function mouseAt(el, type, x, y) {
   const r = el.getBoundingClientRect();
   const cx = Number.isFinite(x) ? x - window.scrollX : r.left + r.width / 2;
@@ -306,7 +344,10 @@ export function applyInput(state, m) {
       const isCheck = el.matches && el.matches('input[type="checkbox"], input[type="radio"]');
       if (isCheck) { if (typeof m.checked === 'boolean' && el.checked !== m.checked) el.click(); return true; }
       if (!('value' in el)) return false;
-      setNativeValue(el, String(m.value == null ? '' : m.value));
+      // A <select> on the mirror is MASKED like every other input, so its value is
+      // meaningless here — the option INDEX the viewer picked is what travels.
+      if (el.tagName === 'SELECT' && Number.isFinite(Number(m.idx)) && Number(m.idx) >= 0 && Number(m.idx) < el.options.length) el.selectedIndex = Number(m.idx);
+      else setNativeValue(el, String(m.value == null ? '' : m.value));
       el.dispatchEvent(new Event('input', { bubbles: true }));
       if (m.k === 'change' || el.tagName === 'SELECT') el.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
@@ -316,10 +357,24 @@ export function applyInput(state, m) {
       if (!key) return false;
       const init = { bubbles: true, cancelable: true, key, code: String(m.code || ''), keyCode: KEY_CODES[key] || 0, which: KEY_CODES[key] || 0,
         ctrlKey: !!m.ctrl, shiftKey: !!m.shift, altKey: !!m.alt, metaKey: !!m.meta };
-      el.dispatchEvent(new KeyboardEvent('keydown', init));
+      const notCancelled = el.dispatchEvent(new KeyboardEvent('keydown', init));
+      // THE GUEST'S OWN BROWSER EDITS THE TEXT. The viewer only ever sees a MASKED
+      // mirror (every typed value is the fixed-length marker), so it cannot know
+      // the real value or the caret — a whole-value echo from that side wipes what
+      // the person had typed. A synthetic KeyboardEvent inserts nothing on its own
+      // either, so the edit is applied here, against the real value, at the real
+      // selection, through the native setter React reads (setNativeValue).
+      if (notCancelled) applyTextKey(el, key, init);
       el.dispatchEvent(new KeyboardEvent('keyup', init));
       // Enter on a form control submits the way this person's own Enter would.
       if (key === 'Enter' && el.form && el.tagName !== 'TEXTAREA') { try { el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit(); } catch { /* fine */ } }
+      return true;
+    }
+    if (m.k === 'paste') {
+      // Pasted text is inserted at the real selection too, never appended to a value
+      // the viewer guessed at.
+      if (!editableText(el)) return false;
+      insertText(el, String(m.value == null ? '' : m.value));
       return true;
     }
     if (m.k === 'submit') { if (el.form) { try { el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit(); } catch { /* fine */ } return true; } return false; }
