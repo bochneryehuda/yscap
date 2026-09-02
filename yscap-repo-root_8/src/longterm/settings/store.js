@@ -94,7 +94,7 @@ async function load(scope = DEFAULT_SCOPE, { fresh = false } = {}) {
     // company reads then stayed narrowed until the entry expired. Re-asserting
     // is a JSON identity check against a map of a handful of entries; being
     // told once is not enough if something else can untell it.
-    if (hit.degraded) applyUnreadable(key);
+    if (hit.degraded) applyUnreadable(hit.settings, key);
     else applyHooks(hit.settings, null, key);
     return { settings: hit.settings, degraded: hit.degraded, stored: hit.stored, source: 'cache' };
   }
@@ -136,7 +136,12 @@ async function load(scope = DEFAULT_SCOPE, { fresh = false } = {}) {
   // which for a value like the investors added by hand means "block fewer
   // names". So an outage says "I could not read" and whatever was already in
   // force stands.
-  const hooksFailed = degraded ? applyUnreadable(key) : applyHooks(base, null, key);
+  const hooksFailed = degraded ? applyUnreadable(base, key) : applyHooks(base, null, key);
+
+  // "HAS THIS PROCESS EVER HAD A GOOD LOOK AT THE COMPANY'S SETTINGS?" — the
+  // question `ensureWarm` asks, and a different one from "is there a cache
+  // entry": a degraded read fills the cache with the declared defaults.
+  if (!degraded && String(key) === DEFAULT_SCOPE) EVER_LOADED = true;
 
   cache.set(key, { at: Date.now(), settings: base, degraded, stored });
   return { settings: base, degraded, stored, source: 'db', hooksFailed };
@@ -241,20 +246,44 @@ function applyHooks(settings, onlyKeys = null, scope = DEFAULT_SCOPE) {
  * declaration that owns such a value says so with `applyOnUnreadable`, and
  * keeps whatever it already had.
  */
-function applyUnreadable(scope = DEFAULT_SCOPE) {
+function applyUnreadable(base, scope = DEFAULT_SCOPE) {
   if (String(scope) !== DEFAULT_SCOPE) return [];
   const failed = [];
   for (const s of decl.SETTINGS) {
-    if (!s || typeof s.applyOnUnreadable !== 'function') continue;
+    if (!s) continue;
+    if (typeof s.applyOnUnreadable === 'function') {
+      try {
+        s.applyOnUnreadable();
+      } catch (e) {
+        failed.push(s.key);
+        console.error(`[lt-settings] applyOnUnreadable failed for ${s.key}:`, (e && e.message) || e);
+      }
+      continue;
+    }
+    // ⛔ A DECLARATION THAT ONLY SAYS `applyOnLoad` IS STILL APPLIED, with the
+    // declared default, exactly as it was before an outage path existed — and it
+    // SAYS SO. The alternative is the trap this branch was written to avoid: the
+    // next declaration to add a load hook without an outage hook would silently
+    // stop being applied during an outage, and nothing anywhere would mention it.
+    // Whether the default is the right answer during an outage is a decision only
+    // the declaration can make; not making it is not the same as choosing.
+    if (typeof s.applyOnLoad !== 'function') continue;
+    if (!WARNED_NO_UNREADABLE.has(s.key)) {
+      WARNED_NO_UNREADABLE.add(s.key);
+      console.warn(`[lt-settings] ${s.key} has applyOnLoad but no applyOnUnreadable — `
+        + 'applying the DECLARED DEFAULT while the store is unreadable. If that is wrong for this '
+        + 'setting (it is for anything whose empty state means "protect less"), declare applyOnUnreadable.');
+    }
     try {
-      s.applyOnUnreadable();
+      s.applyOnLoad(base[s.key]);
     } catch (e) {
       failed.push(s.key);
-      console.error(`[lt-settings] applyOnUnreadable failed for ${s.key}:`, (e && e.message) || e);
+      console.error(`[lt-settings] applyOnLoad (degraded) failed for ${s.key}:`, (e && e.message) || e);
     }
   }
   return failed;
 }
+const WARNED_NO_UNREADABLE = new Set();
 
 /**
  * Save a patch. Refuses the whole patch if ANY key is unknown — a partial save
@@ -334,26 +363,124 @@ async function save(patch, { scope = DEFAULT_SCOPE, staffId = null, keepDefault 
   return { written, cleared, hooksFailed };
 }
 
+/** Has a company read ever SUCCEEDED in this process? */
+let EVER_LOADED = false;
+function loadedOnce() { return EVER_LOADED; }
+
 /**
- * Read the company settings once, so whatever the declarations push is in force
- * before the first request that depends on it.
+ * Read the company settings once, so whatever the declarations push is in force.
  *
  * ⛔ WHY THIS EXISTS. The investor-name block is fed by `applyOnLoad`, and the
  * surfaces that most need it — a borrower's conditions, the term-sheet snapshot
  * and the PDF — never read settings at all. Nothing warmed the map, so the FIRST
  * borrower to open their conditions after a deploy was read to from a block that
- * had never been told about the investors somebody added by hand. Called when
- * the Long-Term router is built, which is the one moment that happens exactly
- * once per process and before any request.
+ * had never been told about the investors somebody added by hand.
  *
- * Fire-and-forget and never throws: a warm that fails leaves the process exactly
- * as it was — cold, and honest about it in `audience.summary()`.
+ * Never throws. Answers whether the read was CLEAN, which is what the retry
+ * loop needs: a degraded read is not a warm, it is a cache entry full of
+ * declared defaults with a flag on it.
  */
-function warm(scope = DEFAULT_SCOPE) {
-  return load(scope, { fresh: true }).catch((e) => {
+async function warm(scope = DEFAULT_SCOPE) {
+  try {
+    const r = await load(scope, { fresh: true });
+    return { ok: !r.degraded, degraded: !!r.degraded };
+  } catch (e) {
     console.error('[lt-settings] warm failed:', (e && e.message) || e);
-    return null;
-  });
+    return { ok: false, degraded: true };
+  }
+}
+
+let KEEP = null;
+
+/**
+ * KEEP the company settings warm: retry until the first clean read, then re-read
+ * on an interval.
+ *
+ * ⛔ THE TWO THINGS THIS FIXES, both measured on the previous cut.
+ *
+ * ONE — a single fire-and-forget warm at boot is a RACE and a DEAD END. The
+ * require returned and the read landed ~28ms later, with `app.listen()` in
+ * between, so a request in that window was served by a cold block; and if that
+ * one read came back degraded it gave up, the degraded entry was cached for the
+ * full TTL, and — because the borrower-facing surfaces never read settings —
+ * the block could stay cold indefinitely on borrower-only traffic. Retrying
+ * with backoff until a CLEAN read bounds that to the retry interval instead of
+ * "forever", and `ensureWarm` closes the race for anything served through a
+ * Long-Term router.
+ *
+ * TWO — it bounds the CROSS-PROCESS window. A save applies at once in the
+ * process that made it; every other process learns on its next company read.
+ * Left to the cache TTL that was up to `LT_SETTINGS_TTL_MS` (60s), and it is a
+ * real rule-10 exposure for that whole time: a process whose cache predates the
+ * save does not recognise the new investor's name, so a staff-typed condition
+ * naming it is served to a borrower unredacted. The steady interval here is the
+ * bound, and it is deliberately shorter than the TTL. It costs one small query
+ * per process per interval.
+ *
+ * The timer is `unref`'d: it must never hold a process open, least of all a test
+ * runner's.
+ */
+function keepWarm(opts = {}) {
+  if (KEEP) return KEEP;
+  const steady = Number(opts.intervalMs || process.env.LT_SETTINGS_REFRESH_MS || 15000);
+  const first = Number(opts.retryMs || 250);
+  const maxRetry = Number(opts.maxRetryMs || 10000);
+  let retry = first;
+  let timer = null;
+  let stopped = false;
+  let settle;
+  const ready = new Promise((r) => { settle = r; });
+
+  const arm = (ms) => {
+    if (stopped) return;
+    timer = setTimeout(tick, ms);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+  };
+
+  async function tick() {
+    if (stopped) return;
+    const r = await warm();
+    if (r.ok) {
+      retry = first;
+      settle(true);
+      arm(steady);
+      return;
+    }
+    // Backoff, capped: a store that is down should not be asked ten times a
+    // second, and must still be asked again.
+    retry = Math.min(retry * 2, maxRetry);
+    arm(retry);
+  }
+
+  tick();
+  KEEP = {
+    ready,
+    stop() { stopped = true; if (timer) clearTimeout(timer); KEEP = null; },
+  };
+  return KEEP;
+}
+
+/**
+ * Express middleware: if this process has never had a clean company read, TAKE
+ * ONE before serving the request.
+ *
+ * This is what makes "before any request" true rather than aspirational. It is a
+ * no-op after the first success — one boolean — so it costs nothing on the
+ * millionth request, and it never fails a request: a read that will not work
+ * leaves the handler to run exactly as it would have.
+ */
+function ensureWarm() {
+  return (req, res, next) => {
+    // ⛔ IT ASKS ABOUT THE STATE, NOT THE HISTORY. The first version skipped the
+    // read once any company read had ever succeeded — "somebody was told once",
+    // which is a fact about the past and not about what is in force now. `load`
+    // on a warm cache is a Date.now comparison and a JSON identity check, and it
+    // RE-ASSERTS the declarations' hooks, so this middleware guarantees the
+    // thing it is named for on every request rather than on the first one.
+    // A read that will not work never fails the request: the handler runs
+    // exactly as it would have.
+    load(DEFAULT_SCOPE).then(() => next(), () => next());
+  };
 }
 
 /** Drop the cache. Exposed for tests and for an admin "reload settings" action. */
@@ -420,4 +547,7 @@ module.exports = {
   applyHooks,
   applyUnreadable,
   warm,
+  keepWarm,
+  ensureWarm,
+  loadedOnce,
 };

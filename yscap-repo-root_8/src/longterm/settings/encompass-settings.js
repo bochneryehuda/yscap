@@ -1012,7 +1012,16 @@ function definition(key) { return BY_KEY.get(String(key)) || null; }
 /** Our shipped defaults, as a flat { key: value } map. */
 function defaults() {
   const out = {};
-  for (const s of SETTINGS) out[s.key] = s.default;
+  // ⛔ A FRESH COPY OF EVERY OBJECT AND ARRAY DEFAULT. Handing out the
+  // declaration's OWN `{}` meant every caller shared one object with the
+  // declaration itself: one in-place write anywhere — a reader "tidying" a map,
+  // a test mutating what it was given — would change what this file declares,
+  // for every scope, for the life of the process. Nothing does that today, which
+  // is exactly why it would be found late. Primitives need no copy.
+  for (const s of SETTINGS) {
+    const v = s.default;
+    out[s.key] = (v !== null && typeof v === 'object') ? JSON.parse(JSON.stringify(v)) : v;
+  }
   return out;
 }
 

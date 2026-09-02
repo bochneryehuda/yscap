@@ -346,14 +346,22 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     "degraded", and one shared routine (`whiteLabelProblem`) is run by both the door and the read —
     the door refusing, the read dropping the name and saying so. The reasoning is recorded in
     `docs/longterm/AUDIENCE-RULES.md`, which rule 10 names as the reasoning of record.
-    **THE STALENESS WINDOW, STATED RATHER THAN CLOSED.** A save applies immediately in the process
-    that made it; another process picks it up on its next company read, so it can be up to
-    `LT_SETTINGS_TTL_MS` (default 60s) behind. That is not a leak in either direction: a process
-    that has not yet heard of an investor has no white label for it either, so its rows resolve to
-    nobody and stay off the board rather than being quoted under a name; and an investor removed
-    lingers in the block, which blocks more, not less. Closing it properly needs a notification
-    channel between processes, which this deployment does not have.
-    Guarded by `scripts/test-lt-custom-investors-pure.js` (twenty-two mutations proven across two batteries,
+    **THE STALENESS WINDOW IS A REAL EXPOSURE, BOUNDED RATHER THAN CLOSED — and the first version
+    of this paragraph got it wrong.** It said the window "is not a leak in either direction",
+    reasoning about the BOARD (rule 10's payload defence) and never about the free-text SCRUB (its
+    other defence). A re-audit reproduced the miss across two processes: a process whose cache
+    predates the save answers `mentionsInvestor(...) = false` for the new investor's real name,
+    `resolveProgramName` then accepts that name as a manual program name, and a staff-typed
+    condition body reaches a borrower unredacted. The board half of the old claim does hold — an
+    investor a process has not heard of has no white label there either, so its rows stay off the
+    board; and a removed investor lingers in the block, which blocks more, not less. Now:
+    `keepWarm()` re-reads the company settings every `LT_SETTINGS_REFRESH_MS` (default 15s),
+    independently of traffic and deliberately shorter than the 60s read cache, and that interval is
+    the bound; `ensureWarm()` on both the Long-Term router and the borrower mount closes the
+    first-request case outright. Closing the rest needs processes to be told when a write happens,
+    and this deployment has no such channel — so it is stated here rather than dressed up. The
+    reasoning of record is `docs/longterm/AUDIENCE-RULES.md`.
+    Guarded by `scripts/test-lt-custom-investors-pure.js` (thirty-four mutations proven across three batteries,
     with green controls either side) and by re-pointed assertions in the investor-block, link, programs,
     holdback, dscr-routes, pricer-shared, settings-screen and combined-audit suites.
 

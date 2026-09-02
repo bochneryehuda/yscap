@@ -78,15 +78,23 @@ const MIN_ALIAS = 2;
 
 /** A shared, frozen "no custom investors" — so callers may compare identity. */
 /**
- * The shared "no custom investors" map. Handed out by every path that has none,
- * so it is REALLY read-only rather than described as such: `Object.freeze` does
- * nothing to a Map, and one caller doing `EMPTY.set(...)` would give every other
- * caller an investor nobody added.
+ * The shared "no custom investors" map, handed out by every path that has none.
+ *
+ * ⛔ WHAT THIS GUARD IS, EXACTLY — the honest version, after a previous comment
+ * here claimed more than the code did. A Map's contents live in an internal slot
+ * that no JavaScript can seal: `Object.freeze` does not touch them, and
+ * `Map.prototype.set.call(EMPTY, …)` reaches them whatever this file does. What
+ * IS prevented is every way a caller would actually do it by accident —
+ * `EMPTY.set(…)` throws, and the freeze stops the throwing methods being quietly
+ * replaced. It is a guard against a mistake, not a boundary against a determined
+ * caller, and `test-lt-custom-investors-pure.js` asserts precisely that much
+ * rather than a stronger claim that would rot into a lie.
  */
 const EMPTY = new Map();
 for (const m of ['set', 'delete', 'clear']) {
   EMPTY[m] = () => { throw new Error(`investor-roster: the shared EMPTY roster is read-only (${m})`); };
 }
+Object.freeze(EMPTY);
 
 // ── The registry's own spellings, indexed once ───────────────────────────────
 // Lower-cased exact spellings (labels + aliases) and their normalized forms. A
@@ -195,12 +203,22 @@ function readCustom(raw) {
   // place if it happens per reader per request: the settings store hands out the
   // same object for the life of its cache entry, so one read serves them all and
   // a save — which produces a new object — is read afresh.
-  if (raw !== null && raw !== undefined && typeof raw === 'object') {
+  const cacheable = raw !== null && raw !== undefined && typeof raw === 'object';
+  // ⛔ THE MEMO AND THE BLOCK NOW AGREE ABOUT WHAT "THE SAME MAP" MEANS.
+  // This was keyed on the object REFERENCE while `audience.useCustomInvestors`
+  // re-checked by `JSON.stringify`: mutate a stored object in place and the
+  // block would report `changed: true` while still holding the old roster,
+  // because the memo answered from the reference. Two notions of identity that
+  // disagree is a bug waiting for its first in-place write. The reference is
+  // still the fast path — it is what makes this a memo — but the JSON decides.
+  let json = null;
+  if (cacheable) {
     const seen = READ_CACHE.get(raw);
-    if (seen) return seen;
+    try { json = JSON.stringify(raw); } catch { json = null; }
+    if (seen && json !== null && seen.json === json) return seen.out;
   }
   const out = readCustomUncached(raw);
-  if (raw !== null && raw !== undefined && typeof raw === 'object') READ_CACHE.set(raw, out);
+  if (cacheable && json !== null) READ_CACHE.set(raw, { json, out });
   return out;
 }
 
@@ -212,8 +230,21 @@ function readCustomUncached(raw) {
     problems.push({ problem: 'not_a_map', message: 'The custom investors must be one entry per investor, keyed by the investor key.' });
     return { custom, problems };
   }
-  const exact = registrySpellings();
   const normals = registryNormals();
+  /**
+   * ⛔ THE SAME `taken` MAP THE DOOR USES, seeded the same way and grown the same
+   * way as the entries are walked.
+   *
+   * It used to be the registry's spellings alone here, and everything (registry
+   * spellings, the white-label SHEET's names, then each custom entry's own
+   * spellings) at the door. Two consequences, both real: an alias equal to
+   * another investor's client-safe name was refused on the way IN and kept on the
+   * way OUT — where it then caused that OTHER investor's legitimate name to be
+   * redacted for every borrower — and the same input produced a different problem
+   * code on each side, so the "one shared routine" was shared for the scrub half
+   * only. A rule enforced on one side of a store is not a rule.
+   */
+  const taken = takenNames();
   // Normalized forms already claimed by an earlier custom entry, so two custom
   // investors cannot both answer to one spelling.
   const claimed = new Map();
@@ -224,7 +255,7 @@ function readCustomUncached(raw) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) { problems.push({ key, problem: 'not_an_object', message: `The entry for "${key}" must be an object.` }); continue; }
     const label = cleanText(value.label, MAX_LABEL);
     if (!label) { problems.push({ key, problem: 'no_label', message: `The investor "${key}" has no name.` }); continue; }
-    if (exact.has(label.toLowerCase()) || normals.has(investors.normalize(label))) {
+    if (taken.has(label.toLowerCase()) || normals.has(investors.normalize(label))) {
       problems.push({ key, problem: 'label_is_registry_spelling', message: `"${label}" is already a recorded spelling of a registry investor, so "${key}" was left out.` });
       continue;
     }
@@ -233,9 +264,13 @@ function readCustomUncached(raw) {
       if (aliases.some((x) => x.toLowerCase() === a.toLowerCase())) continue;
       const n = investors.normalize(a);
       if (a.length < MIN_ALIAS || !n) { problems.push({ key, alias: a, problem: 'alias_unusable', message: `"${a}" is too short to be a spelling of "${label}".` }); continue; }
-      if (exact.has(a.toLowerCase()) || normals.has(n)) { problems.push({ key, alias: a, problem: 'alias_is_registry_spelling', message: `"${a}" is a recorded spelling of a registry investor and was left off "${label}".` }); continue; }
-      if (claimed.has(n) && claimed.get(n) !== key) { problems.push({ key, alias: a, problem: 'alias_claimed', message: `"${a}" already belongs to "${claimed.get(n)}" and was left off "${label}".` }); continue; }
+      // Same three checks, in the same order, answering the same problem codes as
+      // the write door — see `validateCustom`.
+      if (taken.has(a.toLowerCase())) { problems.push({ key, alias: a, problem: 'alias_taken', dropped: true, message: `"${a}" is ${taken.get(a.toLowerCase())} — it cannot also mean "${label}", so it was left off.` }); continue; }
+      if (normals.has(n)) { problems.push({ key, alias: a, problem: 'alias_is_registry_spelling', dropped: true, message: `"${a}" reads as a registry investor once the company words are set aside, so it was left off "${label}".` }); continue; }
+      if (claimed.has(n) && claimed.get(n) !== key) { problems.push({ key, alias: a, problem: 'alias_claimed', dropped: true, message: `"${a}" already belongs to "${claimed.get(n)}" and was left off "${label}".` }); continue; }
       claimed.set(n, key);
+      taken.set(a.toLowerCase(), `a spelling of ${key}`);
       aliases.push(a);
     }
     if (!aliases.length) { problems.push({ key, problem: 'no_usable_alias', message: `"${label}" has no spelling left that can be matched.` }); continue; }
@@ -254,7 +289,6 @@ function readCustomUncached(raw) {
      This runs after the loop because the scrub has to be asked about the roster
      AS IT WILL BE — an investor's own spellings are in force when the block reads
      a sentence about it. */
-  const taken = takenNames();
   for (const e of custom.values()) {
     if (!e.whiteLabel) continue;
     const bad = whiteLabelProblem(e.key, e.label, e.whiteLabel, taken, custom);

@@ -53,6 +53,15 @@ const myScope = require('../my-scope');
    adding a second entry there means there is ONE borrower-authenticated
    long-term seam, and a door added to it cannot be reachable without the
    authentication this one already has. */
+/* ⛔ AND THIS MOUNT IS NOT BEHIND THE LONG-TERM ROUTER, which is exactly why
+   the guard is repeated here. `/api/lt/my` is mounted directly in server.js, so
+   nothing in `longterm/index.js` runs for a borrower request — including the
+   read that puts the investor-name block in force. This is the only surface in
+   the product where a client reads free text we typed, so it is the last place
+   that may be served by a block nobody has told anything. No-op once a clean
+   company read has landed in this process. */
+router.use(settingsStore.ensureWarm());
+
 router.use(require('./my-conditions'));
 const stages = require('../stages');
 

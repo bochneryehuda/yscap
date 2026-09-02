@@ -203,11 +203,38 @@ client may see. Running the rule on only one side of a store is not a rule: a wh
 "⟨a registry investor⟩ Group" was once refused at the door, kept on read, and reached a
 borrower as "our capital partner Group".
 
-### The staleness window, stated
+### The staleness window — a real exposure, bounded, not eliminated
 
-A save applies immediately **in the process that made it**. Other processes pick it up on
-their next company read, so they can be up to `LT_SETTINGS_TTL_MS` (default 60s) behind.
-This is not a leak in either direction, and the reason is worth keeping: a process that has
-not yet heard of an investor has no white label for it either, so its rows resolve to nobody
-and are kept off the board rather than quoted under a name — and an investor *removed*
-lingers in the block, which blocks more, not less.
+A save applies immediately **in the process that made it**. Every other process learns on
+its next company read.
+
+An earlier version of this section said that window "is not a leak in either direction".
+**That was wrong, and only half-checked.** It reasoned about the *board* — rule 10's second
+defence, the payload — and never about the *first* defence, the free-text scrub. A re-audit
+reproduced the miss across two processes:
+
+- the **board** half does hold: a process that has not heard of an investor has no white
+  label for it either, so its rows resolve to nobody and stay off the board rather than
+  being quoted under a name; and an investor *removed* lingers in the block, which blocks
+  more, not less;
+- the **free-text** half does not. A process whose cache predates the save answers
+  `mentionsInvestor(...) = false` for the new investor's real name, `resolveProgramName`
+  accepts that name as a manual program name, and **a staff-typed condition body is served
+  to a borrower unredacted** — for the whole window.
+
+So it is a genuine rule-10 exposure, for one class of text, for a bounded time after an
+admin adds an investor. What has been done about it:
+
+- `settingsStore.keepWarm()` re-reads the company settings on its own interval —
+  `LT_SETTINGS_REFRESH_MS`, **default 15s** — independently of request traffic and
+  deliberately shorter than the read cache's `LT_SETTINGS_TTL_MS` (60s). That interval,
+  not the TTL, is the bound.
+- `settingsStore.ensureWarm()` is mounted on the Long-Term router *and* on the borrower
+  mount (which `server.js` mounts directly and which therefore runs nothing else here), so
+  the *first-request* case — a process that has never read the settings at all — is closed
+  outright rather than merely shortened.
+
+Closing the remaining window properly needs processes to be told when a write happens.
+There is no such channel in this deployment: a shorter interval trades database reads for
+exposure, and the honest statement is the one above rather than a number chosen to sound
+small. **If you add a notification channel, this is the first thing to hang off it.**

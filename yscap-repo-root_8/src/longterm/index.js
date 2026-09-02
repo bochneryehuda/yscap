@@ -32,21 +32,33 @@ require('./conditions-center/photo-id-share');
 
 const router = express.Router();
 
-/* ⛔ WARM THE INVESTOR-NAME BLOCK BEFORE THE FIRST REQUEST.
+/* ⛔ THE INVESTOR-NAME BLOCK MUST BE IN FORCE BEFORE THE FIRST REQUEST, and
+   "before" is a claim about time that has to be true.
 
    The block in `audience.js` is fed by the settings store's `applyOnLoad` hook,
    which fires on a company-scope READ. The surfaces that most need it never take
    one: a borrower's own conditions (`routes/my-conditions.js`,
    `conditions/read.js`), the term-sheet snapshot and the PDF all scrub without
-   ever asking for a setting. So nothing told the block about the investors
-   somebody added by hand, and the FIRST borrower to open their conditions after
-   a deploy was read to from a block that had never heard of them.
+   ever asking for a setting. Nothing told the block about the investors somebody
+   added by hand, so the FIRST borrower to open their conditions after a deploy
+   was read to by a block that had never heard of them.
 
-   Building this router is the one moment that happens exactly once per process
-   and before any request, so the read is made here. It is fire-and-forget and
-   cannot throw: a warm that fails leaves the block cold, and `audience.summary()`
-   says so rather than reporting a confident zero. */
-require('./settings/store').warm();
+   A single fire-and-forget read here was not enough, and an audit measured why:
+   the require returned and the read landed ~28ms later with `app.listen()` in
+   between, so a request in that window was still served cold — and a read that
+   came back DEGRADED gave up for good, leaving the block cold indefinitely on
+   borrower-only traffic. So there are two mechanisms, and they are different:
+
+     · `keepWarm()` RETRIES until a clean read lands, then re-reads on an
+       interval — which also bounds how far behind this process can be after an
+       admin adds an investor somewhere else (see AUDIENCE-RULES.md).
+     · `ensureWarm()` makes the first request WAIT for a read if none has ever
+       succeeded, which is what closes the race rather than narrowing it.
+
+   Both are no-ops once a clean read has landed. */
+const settingsStore = require('./settings/store');
+const warmth = settingsStore.keepWarm();
+router.use(settingsStore.ensureWarm());
 
 // Liveness / identity of the LT side (no DB) — lets the front end and ops confirm
 // the Long-Term module is mounted.
@@ -234,4 +246,9 @@ router.use('/ppe', require('./routes/ppe'));
 // a script may do — starts no timers and reads nothing.
 require('./sync/worker').start();
 
-module.exports = { router };
+/* `warmth.ready` resolves on the first CLEAN company read. Exported so a caller
+   that wants to hold traffic until the block is in force can await it — nothing
+   does today, because `ensureWarm` already makes every request that could reach
+   a scrub wait for it, and holding a boot on a database read would trade a
+   bounded cold window for an unbounded one. */
+module.exports = { router, ready: warmth.ready };

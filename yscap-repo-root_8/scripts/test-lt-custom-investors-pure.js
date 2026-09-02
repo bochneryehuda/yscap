@@ -25,7 +25,7 @@
  * proven is that a row somebody SAVED reaches the board, not that a function is
  * called.
  *
- * MUTATION-PROVEN — TWENTY-TWO of them, in two batteries. Each was applied to the
+ * MUTATION-PROVEN — THIRTY-FOUR of them, in three batteries. Each was applied to the
  * production code, the named suite went RED, and a green control run either side
  * confirmed it was the mutation and not the weather.
  *
@@ -57,6 +57,23 @@
  *   R8. the board not threading the map into its holdback resolver → test-lt-investor-holdback-pure
  *   R9. the roster door serving one investor twice                 → test-lt-dscr-routes
  *  R10. a screen hard-coding an investor name                      → test-lt-pricer-shared
+ *
+ * A THIRD ROUND, after a re-audit beat two of the guards above WITHOUT touching
+ * the text their regexes looked for — it left `warm()`'s call site in place and
+ * made the function inert, and it made the route call `extraResolver` without
+ * the map. Both are now asserted by RUNNING the thing (§K):
+ *   B1. `warm()` inert while its call site stands                             → §K1
+ *   B2. the route resolving the extra WITHOUT the hand-added investors         → §K3
+ *   B3. `ensureWarm` asking about the past ("ever loaded") not the state       → §K1
+ *   B4. `keepWarm` giving up after one failed read                            → §K2
+ *   B5. the BORROWER mount losing its guard (it bypasses the LT router)       → §K
+ *   B6. the read no longer checking aliases against the sheet's names         → §L
+ *   B7. the read memo trusting the object reference again                     → §L
+ *   B8. `defaults()` handing out the declaration's OWN object                 → §L
+ *   B9. `EMPTY` no longer frozen                                              → §L
+ *  B10. a declaration with only `applyOnLoad` silently skipped in an outage   → §L
+ *  B11. the load hooks running for every scope (the original breach)          → §J
+ *  B12. a new GET door added and never opened   → test-lt-routes-smoke-db
  *
  * FOUR ASSERTIONS ONLY BIT AFTER THEY WERE FIXED, and they are the same lesson in
  * four shapes — an assertion with two independent reasons to pass proves NEITHER.
@@ -120,8 +137,54 @@ const fakeDb = {
 };
 require.cache[DB_PATH] = { id: DB_PATH, filename: DB_PATH, loaded: true, exports: fakeDb };
 
+/**
+ * THE TWO VENDOR CLIENTS, STUBBED BEFORE THE ROUTE IS REQUIRED.
+ *
+ * §K3 prices a real board through the real door, so the door has to be able to
+ * ask two vendors and get an answer without anything leaving this machine. The
+ * LoanNEX board carries ONE row, quoted under a spelling only a hand-added
+ * investor can answer to — so a board that has forgotten about them drops it.
+ */
+const VENDOR_PRICE = 101.5;
+const nexClient = require(path.join(ROOT, 'src/longterm/loannex/client'));
+const lpClient = require(path.join(ROOT, 'src/longterm/lenderprice/client'));
+nexClient.price = async () => ({
+  board: {
+    source: 'loannex',
+    programs: [{
+      lender: 'Sweptside Cap',
+      investor: 'Sweptside Cap',
+      program: 'DSCR 30 Year Fixed',
+      product: '30 Yr Fixed',
+      amortizationType: 'Fixed',
+      termInMonths: 360,
+      isInterestOnly: false,
+      rungs: [{ rate: 7, price: VENDOR_PRICE, points: -1.5, lockDays: 30 }],
+    }],
+  },
+});
+lpClient.price = async () => ({ source: 'lenderprice', programs: [] });
+
+/** The least a scenario needs to be priced at all. */
+const SCENARIO = {
+  purpose: 'Purchase', value: 500000, loan: 375000, fico: 760, dscr: 1.25,
+  propertyType: 'SingleFamily', zip: '07036', state: 'NJ', county: 'Union',
+  countyFps: '34039', prepayMonths: 60,
+};
+
 const roster = require(path.join(ROOT, 'src/longterm/pricing/investor-roster'));
-const investors = require(path.join(ROOT, 'src/longterm/encompass/investors'));
+/**
+ * ⛔ THE REGISTRY IS REACHED THROUGH THE ROSTER, never directly.
+ *
+ * `effectiveList(null)` — the effective roster with no hand-added investors — IS
+ * the code registry, and asking for it this way is the same one-door rule
+ * `test-lt-investor-block.js` asserts about the block itself: a suite with its
+ * own import of `encompass/investors` is a second door, and it also makes this
+ * file "Encompass-concerning" to `check-encompass-readonly.js`, which then reads
+ * the ordinary POST §K3 makes to OUR OWN pricing route as a write against
+ * Encompass. That gate is right to ask; the answer is not to reach past it.
+ */
+const REGISTRY = roster.effectiveList(null);
 const audience = require(path.join(ROOT, 'src/longterm/audience'));
 const settingsStore = require(path.join(ROOT, 'src/longterm/settings/store'));
 const investorSettings = require(path.join(ROOT, 'src/longterm/pricing/investor-settings'));
@@ -180,7 +243,7 @@ head('B. reading the stored map — tolerant, and never silent about what it dro
     'and every entry it could not use is NAMED — never dropped in silence');
   ok(roster.readCustom(null).custom.size === 0 && roster.readCustom('nonsense').problems.length > 0,
     'a missing or unusable map reads as no investors, said out loud');
-  const registryKey = investors.INVESTORS[0].key;
+  const registryKey = REGISTRY[0].key;
   const clash = roster.readCustom({ [registryKey]: { label: 'Something Else' } });
   ok(clash.custom.size === 0 && clash.problems.some((p) => p.key === registryKey),
     'an entry standing on a key the registry already uses is REFUSED on the read as well as the write');
@@ -197,7 +260,7 @@ head('B. reading the stored map — tolerant, and never silent about what it dro
      The read DROPS the name rather than the investor: it still prices, is still
      blocked by its real name, and simply has no name a client may see. */
   {
-    const wouldBeScrubbed = `${investors.INVESTORS[0].label} Group`;
+    const wouldBeScrubbed = `${REGISTRY[0].label} Group`;
     const kept = roster.readCustom({ x: { label: 'Fine Name Capital', whiteLabel: wouldBeScrubbed } });
     ok(kept.custom.get('x') && kept.custom.get('x').whiteLabel === null,
       'THE ONE THAT MATTERS: a stored client-safe name the block would blank out is DROPPED on the read, not served to a client surface');
@@ -238,12 +301,12 @@ head('C. the door that adds one — what it refuses, and why');
     return v;
   };
   refuse({ 'Not A Key': { label: 'X Capital' } }, 'a key with capitals or spaces is refused');
-  refuse({ [investors.INVESTORS[0].key]: { label: 'X Capital' } }, 'a key the registry already uses is refused — one key can only mean one investor');
+  refuse({ [REGISTRY[0].key]: { label: 'X Capital' } }, 'a key the registry already uses is refused — one key can only mean one investor');
   refuse({ x: {} }, 'an investor with no real name is refused');
-  refuse({ x: { label: investors.INVESTORS[0].label } },
+  refuse({ x: { label: REGISTRY[0].label } },
     'a name that IS a recorded spelling of a registry investor is refused — two investors reading as one is the failure this prevents');
   {
-    const spelling = (investors.INVESTORS.find((i) => (i.aliases || []).length) || {}).aliases[0];
+    const spelling = (REGISTRY.find((i) => (i.aliases || []).length) || {}).aliases[0];
     refuse({ x: { label: 'Fine Name Capital', aliases: [spelling] } },
       'a SPELLING already recorded for a registry investor is refused — a link that means two investors is worse than no link');
   }
@@ -256,7 +319,7 @@ head('C. the door that adds one — what it refuses, and why');
   // be added, priced, and then quoted as "our capital partner" with nobody able
   // to tell why.
   {
-    const wl = investors.INVESTORS[0].label;
+    const wl = REGISTRY[0].label;
     const v = roster.validateCustom({ x: { label: 'Fine Name Capital', whiteLabel: wl } });
     ok(!v.ok, 'a client-safe name that collides with a recorded investor spelling is refused');
   }
@@ -275,7 +338,7 @@ head('C. the door that adds one — what it refuses, and why');
     // on the way to a borrower, because it CONTAINS a recorded investor name. The
     // door catches it only by running the scrub, which is why the scrub is run
     // rather than a list consulted.
-    const wl = `${investors.INVESTORS[0].label} Group`;
+    const wl = `${REGISTRY[0].label} Group`;
     const v = roster.validateCustom({ x: { label: 'Fine Name Capital', whiteLabel: wl } });
     ok(!v.ok && v.problems.some((p) => p.problem === 'white_label_would_be_redacted'),
       'THE ONE THAT MATTERS: a client-safe name the block would blank out is refused — proven by running the scrub, not by checking a list');
@@ -295,11 +358,11 @@ head('D. the one effective roster — registry plus what somebody added');
 {
   const custom = customOf(ONE);
   const list = roster.effectiveList(custom);
-  ok(list.length === investors.list().length + 1, 'the list is the registry with the hand-added investors laid over it');
+  ok(list.length === REGISTRY.length + 1, 'the list is the registry with the hand-added investors laid over it');
   ok(list.some((i) => i.key === CE.key && i.custom === true),
     'and a hand-added one is marked as such, so no client surface can mistake it for a sheet investor');
   ok(roster.effectiveByKey(CE.key, custom).label === CE.label
-    && roster.effectiveByKey(investors.INVESTORS[0].key, custom).label === investors.INVESTORS[0].label,
+    && roster.effectiveByKey(REGISTRY[0].key, custom).label === REGISTRY[0].label,
   'both kinds answer to their key through the one lookup');
   ok(roster.effectiveByKey(CE.key, roster.EMPTY) === null,
     'with none in force the roster is the registry alone — the behaviour before this existed');
@@ -319,9 +382,9 @@ head('D. the one effective roster — registry plus what somebody added');
   // and it is safe to ask the custom map first only because the write door
   // refuses a spelling the registry already carries.
   {
-    const reg = investors.INVESTORS.find((i) => i.label.length > 6);
+    const reg = REGISTRY.find((i) => i.label.length > 6);
     const stem = reg.label.slice(0, 6);
-    ok(investors.resolve(`${stem} Holdings Ltd`).key === reg.key,
+    ok(roster.effectiveResolve(`${stem} Holdings Ltd`, null).key === reg.key,
       `the registry answers a name it has never seen by its beginning ("${stem}…" → ${reg.key})`);
     const withCustom = customOf({ prefix_case: { label: `${stem} Holdings Ltd` } });
     ok(roster.effectiveResolve(`${stem} Holdings Ltd`, withCustom).key === 'prefix_case',
@@ -567,7 +630,7 @@ head('G. the doors — over real HTTP, against the real settings store');
     const degraded = await call('GET', '/investor-links');
     state.failReads = false;
     settingsStore.bust();
-    ok(degraded.status === 200 && degraded.body.investors.length === investors.list().length,
+    ok(degraded.status === 200 && degraded.body.investors.length === REGISTRY.length,
       'an unreadable store answers the registry alone — never an empty list, never a 500');
     ok(degraded.body.customInvestors && degraded.body.customInvestors.problem,
       '…and says so, so a short list is never presented as the whole truth');
@@ -609,7 +672,7 @@ head('H. the screens — the two defects the owner reported, guarded at the sour
   // NO INVESTOR IS NAMED IN A SCREEN. A name typed into a screen is a second
   // roster, and the one that drifts is the one somebody prices a loan on.
   const named = [];
-  for (const inv of investors.INVESTORS) {
+  for (const inv of REGISTRY) {
     for (const spelling of [inv.label].concat(inv.aliases || [])) {
       if (String(spelling).length < 5) continue;
       if (linksCode.includes(spelling) || settingsCode.includes(spelling)) named.push(spelling);
@@ -726,16 +789,289 @@ head('J. rule 10 — no read by any other scope, and no outage, may switch the b
   ok(cold.loaded === false && cold.count === 0,
     'NOT LOADED YET is a different answer from none stored — a process that has not read cannot claim there are none');
 
+  /* NOTHING IS BLOCKED UNTIL SOMETHING WARMS IT, and that is asserted in §K by
+     RUNNING it rather than here by grepping for a call. The distinction cost a
+     round: an auditor left the call site in place, made the warm itself inert,
+     and every suite stayed green while the borrower-facing scrub never learned
+     the investor at all. */
+}
+
+
+// ── K. THE TWO MUTATIONS THAT BEAT THE LAST CUT ────────────────────────────
+head('K. proven by BEHAVIOUR, because a grep over the source proved neither of these');
+{
   /**
-   * NOTHING IS BLOCKED UNTIL SOMETHING WARMS IT, so the LT router warms it once
-   * when it is built. The borrower-facing scrub sites — a borrower's conditions,
-   * the term-sheet snapshot, the PDF — never read settings at all, so without
-   * this the FIRST borrower to open their conditions after a deploy reads the
-   * real name.
+   * ⛔ WHY THIS SECTION EXISTS. The previous cut asserted both of these with a
+   * REGEX over the source, and an auditor beat both without touching the text
+   * the regex looked for:
+   *
+   *   · it left `settingsStore.warm()` at the call site and made `warm()`
+   *     itself inert — every suite stayed green, and the borrower-facing scrub
+   *     never learned about the investor at all;
+   *   · it made the route call `extraResolver(rows, links)` without `custom` —
+   *     the real-world shape of dropping the map — and all seven relevant
+   *     suites stayed green.
+   *
+   * A guard that reads the source proves the source READS a certain way. These
+   * run the thing instead.
    */
+
+  // ── K1. A REQUEST IS NEVER SERVED BY A COLD BLOCK ────────────────────────
+  {
+    state.rows = { company: [{ key: roster.SETTING_KEY, value: roster.validateCustom(ONE).custom }] };
+    state.failReads = false;
+    settingsStore.bust();
+    // As cold as a process that has just booted: nothing has told the block
+    // anything, and the borrower-facing surfaces never read settings themselves.
+    audience._internals.forgetCustomInvestors();
+    ok(audience.summary().customInvestors.loaded === false,
+      'CONTROL: the block starts cold, exactly as it does in a process that has just come up');
+
+    const express2 = require('express');
+    const app2 = express2();
+    let seenByHandler = null;
+    let loadedInHandler = null;
+    // THE REAL MIDDLEWARE, the one both mounts use — not a copy of its idea.
+    app2.use(settingsStore.ensureWarm());
+    app2.get('/a-borrowers-condition', (req, res) => {
+      // Read the way a borrower's condition is read: a scrub, no settings call.
+      seenByHandler = audience.scrubInvestorNames(`Sent to ${CE.label} for review`, 'borrower');
+      loadedInHandler = audience.summary().customInvestors.loaded;
+      res.json({ ok: true });
+    });
+    const server2 = http.createServer(app2);
+    await new Promise((r) => server2.listen(0, '127.0.0.1', r));
+    await fetch(`http://127.0.0.1:${server2.address().port}/a-borrowers-condition`);
+    server2.close();
+
+    ok(loadedInHandler === true,
+      'THE ONE THAT MATTERS: the first request WAITS for a company read, so the handler runs with the block in force');
+    ok(seenByHandler !== null && !seenByHandler.includes(CE.label),
+      '…and the investor name a borrower would have read is blocked — asserted by scrubbing, not by grepping for a call');
+  }
+
+  // ── K2. A WARM THAT FAILS KEEPS TRYING ───────────────────────────────────
+  {
+    settingsStore.bust();
+    audience._internals.forgetCustomInvestors();
+    state.failReads = true;
+    const keeper = settingsStore.keepWarm({ intervalMs: 40, retryMs: 10, maxRetryMs: 40 });
+    await new Promise((r) => setTimeout(r, 60));
+    ok(audience.summary().customInvestors.loaded === false,
+      'CONTROL: while the store is down the block stays cold — and, crucially, keeps being retried');
+    state.failReads = false;
+    const won = await Promise.race([
+      keeper.ready.then(() => true),
+      new Promise((r) => setTimeout(() => r(false), 4000)),
+    ]);
+    keeper.stop();
+    ok(won === true,
+      'THE ONE THAT MATTERS: once the store answers again the block is loaded WITHOUT any request — a degraded boot no longer leaves it cold for good');
+    ok(!audience.scrubInvestorNames(`Sent to ${CE.label} for review`, 'borrower').includes(CE.label),
+      '…and the investor added by hand is blocked from that moment on');
+  }
+
+  // The wiring itself: both mounts, because the borrower's own mount does NOT
+  // go through the Long-Term router and is the one surface where a client reads
+  // free text we typed. Behaviour above proves the mechanism; this proves it is
+  // actually attached to the two doors that need it.
   const ltSrc = fs.readFileSync(path.join(ROOT, 'src/longterm/index.js'), 'utf8');
-  ok(/settings\/store'\)\.warm\(\)|settingsStore\.warm\(\)/.test(ltSrc),
-    'the Long-Term router warms the block when it is built — nothing else on the borrower’s path reads settings');
+  const borrowerSrc = fs.readFileSync(path.join(ROOT, 'src/longterm/routes/my-loans.js'), 'utf8');
+  ok(/ensureWarm\(\)/.test(ltSrc) && /keepWarm\(/.test(ltSrc),
+    'the Long-Term router both keeps the settings warm and makes a request wait if they never were');
+  ok(/ensureWarm\(\)/.test(borrowerSrc),
+    '…and so does the borrower mount, which server.js mounts DIRECTLY and which therefore runs none of the above');
+
+  // ── K3. THE BOARD ITSELF, over HTTP ──────────────────────────────────────
+  /**
+   * The holdback was proven by calling `routing.extraResolver` directly and by
+   * grepping the route for its name — so a route that called it without the
+   * custom map passed both. This prices a real board through the real door.
+   */
+  {
+    state.rows = {
+      company: [
+        { key: roster.SETTING_KEY, value: roster.validateCustom(ONE).custom },
+        { key: 'pricing.combinedInvestors', value: { [CE.key]: { source: 'loannex', enabled: true, holdback: 0.25 } } },
+      ],
+    };
+    settingsStore.bust();
+
+    const express3 = require('express');
+    const app3 = express3();
+    app3.use(express3.json());
+    app3.use('/', combined.makeRouter({ superAdminOnly: false }));
+    const server3 = http.createServer(app3);
+    await new Promise((r) => server3.listen(0, '127.0.0.1', r));
+    const price = async () => {
+      const r = await fetch(`http://127.0.0.1:${server3.address().port}/price`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scenario: SCENARIO, revealSource: true }),
+      });
+      return r.json();
+    };
+
+    const priced = await price();
+    const rows = (priced && priced.investorRoster) || [];
+    ok(priced && priced.ok !== false && rows.length === 1,
+      `the board priced through the real door (${rows.length} investor(s))`);
+    ok(rows[0] && rows[0].key === CE.key && rows[0].whiteLabel === CE.whiteLabel,
+      'THE ONE THAT MATTERS: the hand-added investor is ON the priced board, under the name a client may see');
+    ok((priced.investorsUnmapped || []).length === 0,
+      '…and nothing was left unmapped');
+
+    /**
+     * ⛔ THE PRICE ITSELF, which is the assertion a grep could not make. The
+     * vendor quoted 101.5. The standing holdback takes 0.25 off every LoanNEX
+     * quote, and this investor carries an extra 0.25 of its own — which it can
+     * only carry if the map reached `extraResolver`. 101.0 is that whole chain
+     * working; 101.25 is the route having dropped the hand-added investors and
+     * silently applied the board-wide figure alone, which is exactly the shape
+     * an auditor used to beat the previous cut.
+     */
+    const prog = (priced.programs || []).find((x) => x.investorKey === CE.key);
+    const build = prog && prog.options && prog.options[0] && prog.options[0].priceBuild;
+    ok(build && build.price === VENDOR_PRICE - 0.5,
+      `THE ONE THAT MATTERS: its own extra reached the PRICE through the route — ${VENDOR_PRICE} less the standing 0.25 and its own 0.25 (got ${build && build.price})`);
+    ok(prog && prog.consumerLabel === CE.whiteLabel && prog.whiteLabel === CE.whiteLabel,
+      '…and the row a client could be shown carries the client-safe name, never the investor’s own');
+
+    /* CONTROL, over the same door: take the hand-added investors away and the
+       identical vendor row is nobody — kept OFF the board and reported, which is
+       what this whole feature exists to change. */
+    state.rows = { company: [] };
+    settingsStore.bust();
+    const cold = await price();
+    ok((cold.investorRoster || []).length === 0 && (cold.investorsUnmapped || []).length === 1,
+      'CONTROL: with none in force that same vendor row is unmapped and off the board');
+    ok((cold.investorsUnmapped || [])[0] && cold.investorsUnmapped[0].name === 'Sweptside Cap',
+      '…named, with what the vendor called it, so a person can go and add it');
+
+    server3.close();
+  }
+}
+
+
+// ── L. THE DOOR AND THE READ ARE ONE RULE, AND THE MACHINERY IS HONEST ─────
+head('L. what the two sides agree about, and what the machinery actually promises');
+{
+  const sheetName = programs.fullRoster()[0].whiteLabel;
+
+  /**
+   * ⛔ AN ALIAS IS HELD TO THE SAME RULE AS A WHITE LABEL, on both sides.
+   *
+   * The read checked aliases against the registry's spellings only; the door
+   * checked them against the sheet's client-safe names too. So an alias equal to
+   * ANOTHER investor's client-safe name was refused on the way in and kept on the
+   * way out — and the consequence is worse than it sounds: that other investor's
+   * legitimate name then reads as an investor spelling, and is redacted for every
+   * borrower. Fail-closed, and still wrong.
+   */
+  {
+    const raw = { x: { label: 'Fine Name Capital', aliases: [sheetName] } };
+    const read = roster.readCustom(raw);
+    const door = roster.validateCustom(raw);
+    ok(!read.custom.get('x').aliases.includes(sheetName),
+      'THE ONE THAT MATTERS: a stored alias that is another investor’s client-safe name is DROPPED on the read, not honoured');
+    ok(read.problems.some((p) => p.problem === 'alias_taken' && p.dropped === true),
+      '…and the drop is named, so the map is not quietly different from what somebody typed');
+    ok(!door.ok && door.problems[0].problem === 'alias_taken',
+      '…while the door refuses the same input');
+    ok(read.problems[0].problem === door.problems[0].problem,
+      'THE ONE THAT MATTERS: the two sides answer the SAME problem code for the same input — one rule, not two that agree by luck');
+    ok(roster.readCustom({ x: { label: 'Fine Name Capital', whiteLabel: sheetName } }).problems[0].problem
+      === roster.validateCustom({ x: { label: 'Fine Name Capital', whiteLabel: sheetName } }).problems[0].problem,
+    '…and so do the client-safe-name checks, which used to differ because the two were handed different lists');
+  }
+
+  /**
+   * TWO NOTIONS OF IDENTITY THAT DISAGREE. The block re-checks a map by its
+   * JSON; the read memoised by object reference. Mutate a stored object in place
+   * and the block reported "changed" while the memo kept answering with the old
+   * roster. Nothing mutates one today — which is precisely why it would be found
+   * late, and by then through a wrong answer rather than a crash.
+   */
+  {
+    const raw = { one: { label: 'Alpha Ridge Capital' } };
+    const first = roster.readCustom(raw);
+    ok(first.custom.size === 1, 'CONTROL: the map reads as one investor');
+    raw.two = { label: 'Beta Hollow Funding' };
+    ok(roster.readCustom(raw).custom.size === 2,
+      'THE ONE THAT MATTERS: a stored map changed IN PLACE is re-read — the memo and the block cannot hold different rosters');
+    ok(roster.readCustom(raw) === roster.readCustom(raw),
+      '…while an unchanged map is still answered from the memo, which is what it is for');
+  }
+
+  // The declared defaults are handed out FRESH, so one in-place write cannot
+  // rewrite what this system declares for every scope for the rest of the process.
+  {
+    const decl = require(path.join(ROOT, 'src/longterm/settings/encompass-settings'));
+    const a = decl.defaults();
+    const b = decl.defaults();
+    ok(a[roster.SETTING_KEY] !== b[roster.SETTING_KEY]
+      && a[roster.SETTING_KEY] !== decl.definition(roster.SETTING_KEY).default,
+    'each call gets its OWN copy of an object default — never the declaration’s own, which every scope would then share');
+    a[roster.SETTING_KEY].scribble = true;
+    ok(!decl.defaults()[roster.SETTING_KEY].scribble && !decl.definition(roster.SETTING_KEY).default.scribble,
+      '…so writing into what you were handed changes nothing but your copy');
+  }
+
+  /**
+   * WHAT `EMPTY` ACTUALLY PROMISES. A previous commit said it "genuinely refuses
+   * writes"; it does not, and cannot — a Map's contents live in an internal slot
+   * no JavaScript can seal. This asserts the real guarantee (every way a caller
+   * would do it by accident) and, deliberately, does NOT assert the stronger one,
+   * so the comment beside it stays true.
+   */
+  {
+    let threw = false;
+    try { roster.EMPTY.set('x', 1); } catch { threw = true; }
+    ok(threw && roster.EMPTY.size === 0,
+      'the shared empty roster refuses the ordinary way of writing to it');
+    ok(Object.isFrozen(roster.EMPTY),
+      '…and is frozen, so the refusing methods cannot be quietly replaced');
+    const before = roster.EMPTY.size;
+    Map.prototype.set.call(roster.EMPTY, 'y', 1);
+    const reached = roster.EMPTY.size !== before;
+    Map.prototype.delete.call(roster.EMPTY, 'y');
+    ok(reached,
+      'HONEST LIMIT: a caller reaching past it with Map.prototype.set STILL gets through — this is a guard against a mistake, not a boundary, and the comment says so');
+  }
+
+  /**
+   * A DECLARATION WITH `applyOnLoad` AND NO `applyOnUnreadable` IS NOT SILENTLY
+   * SKIPPED. The outage path was written for the one setting that owns it, and
+   * the next declaration to add a load hook without an outage hook would have
+   * stopped being applied during an outage with nothing said anywhere.
+   */
+  {
+    const decl = require(path.join(ROOT, 'src/longterm/settings/encompass-settings'));
+    let got;
+    const probe = {
+      key: 'test.only.probe',
+      group: 'Combined Pricing Engine',
+      label: 'probe',
+      type: 'boolean',
+      default: true,
+      description: 'probe',
+      applyOnLoad: (v) => { got = v; },
+    };
+    decl.SETTINGS.push(probe);
+    try {
+      const warned = [];
+      const realWarn = console.warn;
+      console.warn = (...a) => warned.push(a.join(' '));
+      settingsStore.applyUnreadable(settingsStore.defaults(), 'company');
+      console.warn = realWarn;
+      ok(got === true,
+        'a declaration with only a load hook is still applied during an outage — the behaviour it had before an outage path existed');
+      ok(warned.some((w) => w.includes('test.only.probe') && /applyOnUnreadable/.test(w)),
+        '…and it SAYS so, naming the setting, so the next person is told rather than finding out from a wrong answer');
+    } finally {
+      decl.SETTINGS.splice(decl.SETTINGS.indexOf(probe), 1);
+    }
+  }
 }
 
 console.log(`\n${failures ? `FAILED — ${failures} check(s).` : 'OK — an investor added by hand behaves like a recorded one, and is blocked from every client surface.'}`);
