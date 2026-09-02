@@ -154,6 +154,28 @@ function stripExplainedTrail(option) {
 }
 
 /**
+ * WHICH SEARCH THIS QUOTE BELONGS TO — the ROW's own answer first, the request body second.
+ *
+ * The row is stamped by `priceBoth` from the very result its rungs were read out of, so it can
+ * never name a different search than the one that priced it. The body remains a fallback ONLY for
+ * a caller that predates the stamp; when neither says, the client mints one and the vendor is
+ * being asked about a search it has never seen — which is exactly the silence this exists to end.
+ *
+ * Returns `{}` rather than `{ transactionId: undefined }` so the client's own
+ * `opts.transactionId || newTransactionId()` fallback is reached the same way it always was.
+ */
+function searchIdentity(quote, body) {
+  const q = quote || {};
+  const b = body || {};
+  const out = {};
+  const txn = q.transactionId != null ? q.transactionId : b.transactionId;
+  const portal = q.portal != null ? q.portal : b.portal;
+  if (txn != null && txn !== '') out.transactionId = txn;
+  if (portal != null && portal !== '') out.portal = portal;
+  return out;
+}
+
+/**
  * THE QUOTE AS THE RATE SHEET ITSELF WROTE IT — our margin added back on, for the QUESTION only.
  *
  * A LoanNEX rung reaches the browser with the holdback already in its price (`applyToBoard` runs
@@ -530,7 +552,19 @@ async function priceBoth(scenario, opts = {}) {
   // Combined Pricing Engine's screen a COPY of the general one rather than a
   // second design: it reads `programs[].options[].priceBuild` exactly as that
   // screen already does, whichever vendor produced the row.
-  const programs = quoteShape.programsForBoard(merged, { reveal: opts.revealSource === true });
+  const programs = quoteShape.programsForBoard(merged, {
+    reveal: opts.revealSource === true,
+    /**
+     * THE SEARCH EVERY LOANNEX ROW CAME OUT OF, stamped onto each row's explain handle.
+     *
+     * LoanNEX scopes a quote to its search (see `quote-shape.explainHandle`), so without this
+     * the browser has nothing to hand back and `/explain` mints a transaction the vendor has
+     * never seen. Read off the SAME result the board was built from, so the id on a row and
+     * the rows themselves can never describe two different searches.
+     */
+    transactionId: nxRes.status === 'fulfilled' ? (nxRes.value.transactionId || null) : null,
+    portal: nxRes.status === 'fulfilled' ? (nxRes.value.portal || null) : null,
+  });
 
   return {
     merged,
@@ -966,7 +1000,7 @@ function makeRouter(opts = {}) {
       // breakdown the caller asked for.
       .catch(() => ({ points: 0 }))
       .then((hb) => nex
-        .evidence(scenarioOf(req), vendorQuote(quote, (hb && hb.points) || 0), { portal: b.portal, transactionId: b.transactionId })
+        .evidence(scenarioOf(req), vendorQuote(quote, (hb && hb.points) || 0), searchIdentity(quote, b))
         .then((r) => [r, hb]))
       .then(([r, hb]) => {
         // THE SAME LAYOUT, WHATEVER PRICED IT. The vendor's answer is folded onto
@@ -1020,7 +1054,7 @@ function makeRouter(opts = {}) {
     if (!quote || !quote.priceHashKey) {
       return res.status(400).json({ ok: false, error: 'missing_quote', message: 'Send the quote to explain, including its priceHashKey (the `explain` block on any LoanNEX option row).' });
     }
-    nex.evidence(scenarioOf(req), quote, { portal: b.portal, transactionId: b.transactionId })
+    nex.evidence(scenarioOf(req), quote, searchIdentity(quote, b))
       .then((r) => res.json({ ok: true, ...r }))
       .catch((e) => res.status(isNotConfigured(e) ? 503 : 502)
         .json({ ok: false, error: e.code || 'loannex_evidence_error', message: reasonOf(e) }));
@@ -1029,4 +1063,4 @@ function makeRouter(opts = {}) {
   return router;
 }
 
-module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, reasonOf, vendorQuote, routing, quoteShape, breakdown } };
+module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, reasonOf, vendorQuote, searchIdentity, routing, quoteShape, breakdown } };
