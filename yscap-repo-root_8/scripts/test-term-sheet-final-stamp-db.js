@@ -175,8 +175,10 @@ const TAG = 'tsf-' + Date.now().toString(36);
     // Term Sheet Studio draws all six pages of it in the browser and the sender
     // attaches that copy. The application/disclosure ARE generated; fakeStorage
     // stands in for the stored bytes.
-    const STORED_BYTES = '%PDF-1.4 stored';
-    const fakeStorage = { async read() { return Buffer.from(STORED_BYTES); } };
+    // A REAL sheet with a signature line for this roster (borrower + lender) — the
+    // send refuses anything less (term-sheet-signers.js, 2026-09-02).
+    const STORED_BYTES = await require('./lib/term-sheet-fixture').termSheetForRoles(['borrower', 'admin']);
+    const fakeStorage = { async read() { return STORED_BYTES; } };
     const envRow = (await db.query(
       `INSERT INTO esign_envelopes (application_id, purpose, status, countersign_required)
        VALUES ($1,'term_sheet_package','not_sent',true) RETURNING *`, [appId])).rows[0];
@@ -240,7 +242,7 @@ const TAG = 'tsf-' + Date.now().toString(36);
       ok(err === null, 'a stored sheet recorded FINAL sends');
       const ts = tsDocOf(def);
       ok(!!ts && ts.fileExtension === 'pdf', 'the package carries the term sheet as a PDF');
-      ok(ts && Buffer.from(ts.base64, 'base64').toString('latin1') === STORED_BYTES,
+      ok(ts && Buffer.from(ts.base64, 'base64').equals(STORED_BYTES),
         'and it is the STORED studio sheet byte-for-byte — the sender never renders one');
     }
 

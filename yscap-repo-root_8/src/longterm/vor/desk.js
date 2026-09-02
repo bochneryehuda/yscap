@@ -66,6 +66,23 @@ const CLOSING_BY_METHOD = Object.freeze({
 /** The envelope states that are still OUT — the ones a manual return must stop. */
 const LIVE_ENVELOPE = ['created', 'sent', 'delivered'];
 
+/**
+ * HOW OFTEN ONE ENVELOPE MAY BE ASKED ABOUT. DocuSign's polling policy allows one
+ * status request per envelope per 15 minutes; the sync tick runs every five, so the
+ * pass must pace ITSELF rather than ask about everything every tick (owner-directed
+ * 2026-09-02). The stamp `docusign_checked_at` is written BEFORE the call, so a read
+ * that fails is paced exactly like one that succeeds — a DocuSign outage must never
+ * turn into a request storm. 15 is the floor; `LT_VOR_DOCUSIGN_POLL_MIN` may only
+ * RAISE it. A test bench that needs it lower sets `LT_VOR_DOCUSIGN_POLL_MIN_UNSAFE`.
+ */
+const POLL_EVERY_MIN = (() => {
+  const raw = Number(process.env.LT_VOR_DOCUSIGN_POLL_MIN);
+  const asked = Number.isFinite(raw) && raw > 0 ? raw : 15;
+  const unsafe = Number(process.env.LT_VOR_DOCUSIGN_POLL_MIN_UNSAFE);
+  if (Number.isFinite(unsafe) && unsafe > 0) return unsafe;
+  return Math.max(15, asked);
+})();
+
 /** Is DocuSign wired up at all? A desk that offers a button nothing can answer is
     worse than one that says the feature is not configured. */
 function docusignReady() {
@@ -642,27 +659,41 @@ async function fileSignedDocument(envRow, envelopeId, client) {
  * with a form somebody thinks is still out. This closes that.
  *
  * Bounded per pass, oldest first, and it never throws — a reconcile is a background
- * pass and one unreachable envelope must not stop the rest.
+ * pass and one unreachable envelope must not stop the rest. PACED: an envelope is
+ * asked about at most once per POLL_EVERY_MIN minutes (DocuSign's polling policy),
+ * whatever the tick cadence is.
  */
 async function reconcileOpenEnvelopes(opts = {}) {
   const client = opts.db || db;
   const limit = Number(opts.limit) > 0 ? Math.min(200, Number(opts.limit)) : 25;
-  if (!docusignReady()) return { ok: true, skipped: 'docusign_off', checked: 0 };
+  if (!docusignReady()) return { ok: true, skipped: 'docusign_off', checked: 0, everyMin: POLL_EVERY_MIN };
 
   let rows = [];
   try {
+    // Only an envelope not asked about in the last POLL_EVERY_MIN minutes is DUE;
+    // never-asked first, then the one asked about longest ago.
     rows = (await client.query(
       `SELECT id, envelope_id, status FROM lt_vor_envelopes
         WHERE envelope_id IS NOT NULL AND status = ANY($2)
-        ORDER BY COALESCE(sent_at, created_at) ASC
+          AND (docusign_checked_at IS NULL
+               OR docusign_checked_at < now() - ($3 || ' minutes')::interval)
+        ORDER BY docusign_checked_at ASC NULLS FIRST, COALESCE(sent_at, created_at) ASC
         LIMIT $1`,
-      [limit, LIVE_ENVELOPE])).rows;
+      [limit, LIVE_ENVELOPE, String(POLL_EVERY_MIN)])).rows;
   } catch (e) {
     return { ok: false, reason: 'unreadable', message: String((e && e.message) || e).slice(0, 200) };
   }
 
-  const out = { ok: true, checked: rows.length, moved: 0, failed: 0, reasons: [] };
+  const out = { ok: true, checked: rows.length, moved: 0, failed: 0, reasons: [], everyMin: POLL_EVERY_MIN };
   for (const r of rows) {
+    // Stamp BEFORE asking: a failing read is paced like a successful one.
+    try {
+      await client.query(`UPDATE lt_vor_envelopes SET docusign_checked_at = now() WHERE id = $1`, [r.id]);
+    } catch (e) {
+      out.failed += 1;
+      out.reasons.push('could not record the check: ' + String((e && e.message) || e).slice(0, 100));
+      continue;   // never ask DocuSign about a row the pass cannot pace
+    }
     try {
       const env = await docusign.getEnvelope(r.envelope_id, { include: 'recipients,tabs' });
       const status = String((env && env.status) || '').toLowerCase();
@@ -736,6 +767,6 @@ module.exports = {
   state, loadForm, saveForm, confirmForm, preview, send, recordManualReturn, applyEnvelopeStatus,
   reconcileOpenEnvelopes, answersFromEnvelope,
   listEnvelopes, listReturns,
-  BLOCKER_TEXT, LIVE_ENVELOPE, FILENAME, SIGNED_FILENAME, CLOSING_BY_METHOD,
+  BLOCKER_TEXT, LIVE_ENVELOPE, FILENAME, SIGNED_FILENAME, CLOSING_BY_METHOD, POLL_EVERY_MIN,
   _internals: { blockersFor, anchorsPresent, docusignReady, sendEnvelope, sendAttachment, fileSignedDocument },
 };

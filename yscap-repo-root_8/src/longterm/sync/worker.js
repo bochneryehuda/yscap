@@ -291,7 +291,9 @@ async function tickOnce({ trigger = 'worker' } = {}) {
        mid-request, or refused while an HMAC key is rotated — and the failure is
        SILENT, so the landlord signs and the condition sits open with a form somebody
        believes is still out. This asks DocuSign about the envelopes still out, a
-       bounded handful per pass. It skips itself entirely when DocuSign is not
+       bounded handful per pass. The DESK paces itself — one question per envelope
+       per 15 minutes (DocuSign's polling policy), whatever POLL_MIN is — so calling
+       it every tick is safe. It skips itself entirely when DocuSign is not
        configured, so it costs nothing on a deployment that does not use it. */
     try {
       out.vorEnvelopes = await runLog.record('vor_envelopes', trigger, () => vorDesk.reconcileOpenEnvelopes({}));

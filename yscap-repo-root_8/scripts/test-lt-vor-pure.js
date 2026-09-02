@@ -455,6 +455,27 @@ console.log('\nLong-Term — the verification of rent\n');
     assert.ok(/require\('\.\.\/vor\/desk'\)/.test(worker), 'and the desk is actually imported');
   });
 
+  ok('the reconcile pass PACES itself to DocuSign\'s polling policy — one question per envelope per 15 minutes', () => {
+    const src = strip(read('src/longterm/vor/desk.js'));
+    const fn = src.slice(src.indexOf('async function reconcileOpenEnvelopes'), src.indexOf('function answersFromEnvelope'));
+    assert.ok(/docusign_checked_at IS NULL/.test(fn) && /docusign_checked_at < now\(\) - \(\$3 \|\| ' minutes'\)::interval/.test(fn),
+      'the SELECT skips an envelope asked about inside the window — the tick is every 5 minutes, the policy is 15');
+    assert.ok(/String\(POLL_EVERY_MIN\)/.test(fn), 'and the window is the ONE constant, bound as a parameter');
+    const stampAt = fn.indexOf('SET docusign_checked_at = now()');
+    const askAt = fn.indexOf('docusign.getEnvelope(');
+    assert.ok(stampAt > 0 && askAt > 0 && stampAt < askAt,
+      'the stamp is written BEFORE DocuSign is asked, so a failing read is paced like a successful one');
+    assert.ok(/continue;\s*\/\/ never ask DocuSign about a row the pass cannot pace/.test(fn) || /continue;/.test(fn.slice(stampAt, askAt)),
+      'and a row whose stamp could not be written is not asked about at all');
+    const desk = require('../src/longterm/vor/desk');
+    assert.ok(desk.POLL_EVERY_MIN >= 15, `the window is never below 15 minutes (got ${desk.POLL_EVERY_MIN})`);
+    assert.ok(/Math\.max\(15, asked\)/.test(src), 'LT_VOR_DOCUSIGN_POLL_MIN may only RAISE the window, never lower it');
+    const mig = read('db/684_lt_vor_envelope_poll_cadence.sql');
+    assert.ok(/ADD COLUMN IF NOT EXISTS docusign_checked_at timestamptz/.test(mig), 'the stamp column ships in its own lt_ migration');
+    const prisma = read('src/longterm/prisma/schema.prisma');
+    assert.ok(/docusignCheckedAt DateTime\? @map\("docusign_checked_at"\)/.test(prisma), 'and the Long-Term model declares it in the same commit');
+  });
+
   console.log(`\ntest-lt-vor-pure: ${checks} checks passed\n`);
 })().catch((e) => {
   console.error('\nFAILED:', e && e.message);
