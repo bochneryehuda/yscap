@@ -179,6 +179,65 @@ const TO_LP = { acra: { source: 'lenderprice' } };
   const api = fs.readFileSync(path.join(ROOT, 'app-v2/src/longterm/api.js'), 'utf8');
   ok(/combinedExplain:\s*\(quote, scenario, option\)/.test(api), 'E6  the api layer still sends the quote through untouched');
 
+  // ── F. IF THE VENDOR ANSWERS, THE ROWS RENDER — over the REAL recorded answers ──────────
+  /**
+   * ⛔ THIS IS WHAT ISOLATES THE DEFECT TO THE FETCH.
+   *
+   * Every one of the four live answers recorded on the owner's own account is run through the
+   * WHOLE path a panel uses — parse -> optionForExplain -> attachEvidence -> breakdown. Three
+   * carry a body and all three come out itemised, reconciled, and covering their own rate; the
+   * fourth answered `{"status":"Success"}` with no body and is reported as an ABSENCE with a
+   * reason rather than drawn as "no adjustments", which is a claim no rate sheet made.
+   *
+   * So a body that arrives is a breakdown that renders. That is why the search identity above is
+   * where the work went: the display was never the thing that was broken.
+   */
+  const live = require(path.join(ROOT, 'src/longterm/loannex/capture/evidence-live.json'));
+  const bd = require(path.join(ROOT, 'src/longterm/pricing/breakdown.js'));
+  let answered = 0; let silent = 0; let cells = 0; let named = 0; let rowsSeen = 0;
+  for (const s of live.samples) {
+    const ev = parse.parseEvidence(s.response);
+    const q = s.request.quote || {};
+    if (!ev) {
+      silent += 1;
+      const ab = parse.explainAbsence(s.response);
+      ok(ab && ab.reason === 'vendor_returned_no_evidence', `F-silent  ${s.investor}: a bodyless Success is reported as an absence`);
+      ok(ab && typeof ab.message === 'string' && ab.message.length > 10, `F-silent  ${s.investor}: and says so in the vendor's own terms`);
+      continue;
+    }
+    answered += 1;
+    const base = qs.optionForExplain(
+      { rate: q.rate, price: q.price, lockDays: q.lockDays, priceHashKey: q.priceHashKey },
+      { priceBuild: { noteRate: q.rate }, terms: { dayLock: q.lockDays, term: 30 }, loanAmount: 375000 },
+    );
+    ok(qs.evidenceCoversRate(ev, base), `F1 ${s.investor}: the answer covers the rate and lock it was asked about`);
+    const opt = qs.attachEvidence(base, ev, {});
+    ok(opt.evidence && opt.evidence.appliesToThisRate === true, `F2 ${s.investor}: it is attached rather than refused`);
+    ok(opt.evidence && opt.evidence.reconciles === true, `F3 ${s.investor}: basePrice + adjustments = price, to the thousandth`);
+    ok((opt.adjustments || []).length > 0, `F4 ${s.investor}: the itemized rows survive onto the option`);
+    ok((opt.adjustments || []).every((a) => a.detail || a.reason), `F5 ${s.investor}: every row can say what it is for`);
+    cells += (opt.adjustments || []).filter((a) => a.detail).length;
+    named += (opt.adjustments || []).filter((a) => a.reason).length;
+    rowsSeen += (opt.adjustments || []).length;
+    const built = bd.breakdown(opt, { reveal: false });
+    ok(((built && built.lines) || []).length === (opt.adjustments || []).length,
+      `F6 ${s.investor}: every row reaches the breakdown the panel draws`);
+  }
+  ok(answered === 3, `F7  three of the four recorded investors itemised (got ${answered})`);
+  ok(silent === 1, `F8  and one answered with no body at all (got ${silent})`);
+  /**
+   * ⛔ THE GRID CELL IS THE WHOLE POINT, so it is counted EXACTLY rather than tolerated.
+   *
+   * `F5` accepts a row that has only a name, because one genuinely does ("PPP 5% Fixed" carries no
+   * description) — and that tolerance let a mutation gutting `detail` sail straight through. These
+   * are the MEASURED figures over the recorded corpus: 10 rows, 9 carrying the cell that says
+   * WHICH bucket the adjustment came out of, 10 carrying the grid's name. A name alone says which
+   * grid; only the cell says why this loan landed where it did.
+   */
+  ok(rowsSeen === 10, `F9  the recorded corpus is 10 itemized rows (got ${rowsSeen})`);
+  ok(cells === 9, `F10 nine of them carry the grid CELL — the reason the price is the price (got ${cells})`);
+  ok(named === 10, `F11 and all ten name their grid (got ${named})`);
+
   srv.close();
   console.log(fail ? `\n${fail} FAILED, ${pass} passed` : `\nALL PASSED — ${pass} checks`);
   if (fail) process.exit(1);
