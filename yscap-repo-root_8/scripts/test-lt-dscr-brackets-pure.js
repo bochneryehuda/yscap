@@ -434,6 +434,104 @@ async function main() {
     ok(oldRefused > 0,
       `⛔ CONTROL: the same rates priced the old way — one assumed 1.25 for the whole board — DO refuse (${oldRefused} of ${checked}), which is the bug`);
 
+
+    // =========================================================================
+    section('G. ⛔ THE SHEET JUDGES THE BAND THE OPTION WAS PRICED IN — NOT THE FORM\'S RATIO');
+    // =========================================================================
+    /* Owner-reported 2026-09-02, the day after the banded board shipped: *"Option
+       5.75% — Harbor has moved band. These figures come to 1.25, a higher DSCR band
+       than the 1.14 it was priced in… the 5.75 was actually priced on the 1.25 band…
+       You should not look at the original scenario. You should look at what was the
+       actual pricing on."*
+
+       Section F proved the gate cannot fire on this board — but it built each
+       selection with `scenario.dscr` = the band's own ratio, which is what the
+       browser SHOULD have sent and did not. The real screen sent the FORM's ratio for
+       every option, so every option outside the seed's band read as "moved band".
+       This section builds selections the way the browser now builds them — the
+       form's ratio as the scenario, the option's own stamp as `pricedDscr` — and
+       runs the real gate. The control drops the stamp and the owner's sentence
+       comes straight back. */
+    const FORM = 1.14;                                   // the owner's typed ratio, band 6
+    const formTier = tiers.dscrTier(FORM);
+    const stamped = [];                                  // every option, with its stamp
+    for (const b of list(out.brackets)) {
+      for (const p of list(b.programs)) {
+        for (const o of boardMod.optionsOf(p)) {
+          const { rate } = boardMod.optionRate(o);
+          stamped.push({ rate, dscr: o.dscr, tier: o.dscrTier, band: b.label });
+        }
+      }
+    }
+    const elsewhere = stamped.filter((q) => q.tier !== formTier);
+    ok(stamped.length > 0 && stamped.every((q) => Number.isFinite(q.dscr) && Number.isInteger(q.tier)),
+      `CONTROL every option on the board carries its own ratio and band (${stamped.length} options)`);
+    ok(elsewhere.length > 0,
+      `CONTROL ${elsewhere.length} of them were priced in a band OTHER than the form's ${FORM} (band ${formTier}) — the case the report is about`);
+
+    const selFor = (q, withStamp) => ({
+      label: 'A', consumerLabel: 'Platinum A', product: '30-Year Fixed DSCR', mode: 'borrowerPaid',
+      ratePct: q.rate, rawPrice: 100, scenario: scFor(FORM), pricedAt: '2026-09-01T13:00:00.000Z',
+      ...(withStamp ? { pricedDscr: q.dscr } : {}),
+    });
+    const gateOf = (sel) => {
+      const built = snapshot.buildSnapshot({ selections: [sel], plan: PLAN, prepared: PREP });
+      return built.ok ? snapshot.exportGate(built.snapshot) : { error: built.error };
+    };
+
+    const nowRefused = stamped.filter((q) => (gateOf(selFor(q, true)) || {}).error === 'dscr_below_priced');
+    ok(nowRefused.length === 0,
+      `⛔ selections built the way the browser now builds them — form ${FORM}, the option's own stamp — pass the real gate: ${stamped.length - nowRefused.length} of ${stamped.length}`
+      + (nowRefused.length ? ` (refused: ${nowRefused.map((q) => `${q.rate}% in ${q.band}`).join('; ')})` : ''));
+
+    const wasRefused = stamped.filter((q) => (gateOf(selFor(q, false)) || {}).error === 'dscr_below_priced');
+    ok(wasRefused.length === elsewhere.length && wasRefused.length > 0,
+      `⛔ CONTROL: the same selections WITHOUT the stamp refuse exactly the options outside the form's band (${wasRefused.length} of ${stamped.length}) — which is the owner's report`);
+    const first = elsewhere[0] && gateOf(selFor(elsewhere[0], false));
+    ok(!!first && /it was priced in/.test(first.message || '') && new RegExp(FORM.toFixed(2).replace('.', '\\.')).test(first.message || ''),
+      `…and the control's sentence names the form's ${FORM.toFixed(2)} as "the ratio it was priced in", which is the misreading`);
+
+    /* WHAT THE MEMBER SAYS IT WAS PRICED AT. The stamp becomes the member's own
+       scenario ratio — the scenario as it was PRICED for this option — so the cart
+       stores it, the document prints it and the re-price rule judges it, all from
+       one field. */
+    const one = elsewhere[0] || stamped[0];
+    const m = snapshot.buildMember(selFor(one, true), PLAN);
+    ok(m.ok && m.member.scenario.dscr === one.dscr && m.member.dscr === one.dscr,
+      `the member's scenario carries the ratio it was PRICED at (${one.dscr}), not the form's ${FORM}`);
+    const bare = snapshot.buildMember(selFor(one, false), PLAN);
+    ok(bare.ok && bare.member.scenario.dscr === FORM,
+      `…and with no stamp — an unbracketed board, an older cart — the form's ratio stands (${FORM})`);
+    for (const [label, junk] of [['0', 0], ['-1', -1], ['"x"', 'x'], ['""', ''], ['null', null], ['NaN', NaN]]) {
+      const j = snapshot.buildMember({ ...selFor(one, false), pricedDscr: junk }, PLAN);
+      ok(j.ok && j.member.scenario.dscr === FORM,
+        `…a stamp of ${label} is ignored, never judged on (scenario keeps ${FORM})`);
+    }
+
+    /* ⛔ AND THE RULE ITSELF DID NOT SOFTEN. A stamp is a fact about where the price
+       came from, not a licence: figures that leave that band still refuse, both ways. */
+    const bandOf = one.tier;
+    const lower = tiers.DSCR_TIERS.find((t) => t.tier === bandOf - 1);
+    const higher = tiers.DSCR_TIERS.find((t) => t.tier === bandOf + 1);
+    if (lower || higher) {
+      const pull = (ratio) => {
+        // Rent that produces `ratio` against THIS option's own payment.
+        const built = snapshot.buildMember(selFor(one, true), PLAN);
+        const pi = built.member.monthlyPI;
+        return Math.ceil(ratio * (pi + TAX + INS));
+      };
+      if (lower) {
+        const g = gateOf({ ...selFor(one, true), scenario: { ...scFor(FORM), rentMonthly: pull(lower.from + 0.001) } });
+        ok(g && g.error === 'dscr_below_priced' && g.direction === 'down',
+          `figures that drop this option into band ${lower.tier} still refuse, downward`);
+      }
+      if (higher) {
+        const g = gateOf({ ...selFor(one, true), scenario: { ...scFor(FORM), rentMonthly: pull(higher.from + 0.001) } });
+        ok(g && g.error === 'dscr_below_priced' && g.direction === 'up',
+          `figures that lift this option into band ${higher.tier} still refuse, upward`);
+      }
+    }
+
     console.log(bad ? `\n${bad} FAILED` : '\nALL PASSED');
   process.exit(bad ? 1 : 0);
 }
