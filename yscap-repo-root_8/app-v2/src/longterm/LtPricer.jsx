@@ -875,7 +875,9 @@ function askedLine(a) {
   if (!a || typeof a !== 'object') return null;
   const parts = [];
   if (a.rate != null && Number.isFinite(Number(a.rate))) parts.push(`${Number(a.rate).toFixed(3)}%`);
-  if (a.price != null && Number.isFinite(Number(a.price))) parts.push(`price ${Number(a.price).toFixed(3)}`);
+  // NO PRICE ON THIS LINE. The vendor is asked about ITS price, which carries the holdback, and
+  // printing it under a row that shows the held-back price would let a reader subtract the two.
+  // The rate, the lock, the place and the search identify the question on their own.
   if (a.lockDays != null && Number.isFinite(Number(a.lockDays))) parts.push(`${Number(a.lockDays)}-day lock`);
   const where = [a.county ? `${a.county} County` : null, a.state || null].filter(Boolean).join(', ');
   if (where || a.zip) parts.push(`${where || ''}${a.zip ? `${where ? ' ' : ''}${a.zip}` : ''}`.trim());

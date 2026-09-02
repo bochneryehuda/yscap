@@ -295,9 +295,14 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     same pure, offline, deterministic enrichment on the same input, so the explain body is
     IDENTICAL to the board's; a scenario the price door refuses is refused with the same 422 and
     never sent as a different loan. And because a screenshot of an empty panel cannot be diagnosed,
-    the answer now carries `asked` (rate, price, lock, state, county, search id — portal only under
-    reveal, never a vendor name) on the option's own evidence block, and the panel prints it under
-    the "returned no breakdown" note. **Still not confirmed against the live API from here** — no
+    the answer now carries `asked` (rate, lock, state, county, ZIP, search id — never a vendor
+    name; the PRICE and the portal only under `revealSource`, because the vendor is asked about
+    ITS price, which carries the holdback, and stating it beside a held-back row would let a reader
+    subtract the two — the pre-merge audit caught the first cut printing it) on the option's own
+    evidence block, and the panel prints it under the "returned no breakdown" note. A refused
+    scenario is the price door's 422; an internal failure of the check itself is a 500 that says so,
+    proven by mutation (test B12b–e, and E4b pins that both doors answer through the one function),
+    never a 422 blaming the caller. **Still not confirmed against the live API from here** — no
     credentials in this environment; `asked` is what makes the owner's next screenshot decisive.
 
 13. **THE INTEREST-ONLY SWITCH OFF NARROWED NOTHING (2026-09-02, owner: "Interest-only program still
@@ -308,10 +313,16 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     default, and the DSCR base carries `interestOnly: false`). So Lender Price was asked for an
     amortising board while `wantFrom` read `io: null` and left LoanNEX's interest-only programmes
     on — the two boards answering two different questions, which is the drift the filter exists to
-    prevent. `wantFrom` now resolves a silent scenario from the BUILT Lender Price request's own
-    `criteria.interestOnly` (the same object `lp.price` sends), the same mirror rule amortization
-    already follows; a stated answer still wins, and with no request to mirror the dimension stays
-    un-narrowed. The option-level filter reads the same resolved answer, and now KEEPS a row it
+    prevent. `wantFrom` now resolves a silent scenario from the request Lender Price was ACTUALLY
+    sent — `priceBoth` hands it the criteria of the WIRE body the client returns, the one built on
+    the tenant's live foundation — the same mirror rule amortization already follows; a stated
+    answer still wins, and with no request to mirror the dimension stays un-narrowed. **The first
+    cut mirrored the STATIC build (`chk.request`, from `search-base.json`), and the pre-merge audit
+    showed that is not what goes on the wire**: `mergeKnownRequestDefaults` copies same-typed
+    scalars, `criteria.interestOnly` included, from the LIVE defaultSearch, so a tenant default of
+    `true` would have narrowed LoanNEX to amortising while Lender Price was asked for interest-only.
+    The static build is now the FALLBACK, used only when Lender Price failed and there is no wire
+    body (test C16/C17). The option-level filter reads the same resolved answer, and now KEEPS a row it
     cannot classify (the rule its own header always stated). In the same pass the LoanNEX board
     options gained the `terms` block the Details panel reads, so a LoanNEX row states its
     amortization, term and lock instead of drawing an em dash for all three. Vendor fact unchanged:

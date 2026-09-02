@@ -337,16 +337,32 @@ function explainScenario(req) {
 }
 
 /**
+ * A REFUSED scenario is a 422 naming the field, exactly as the price door answers it. An error
+ * with no status is not a refusal — `validateScenario` itself threw — and answering 422 for it
+ * would tell the caller their scenario is wrong when the server is. That is a 500 that says so.
+ */
+function scenarioRefused(res, e) {
+  if (e && e.status) {
+    return res.status(e.status).json({ ok: false, error: e.code || 'invalid_scenario', field: e.field || null, message: reasonOf(e) });
+  }
+  return res.status(500).json({ ok: false, error: 'scenario_check_failed', message: reasonOf(e) });
+}
+
+/**
  * WHAT WAS ASKED, stated on the answer so an empty panel can say what it asked about.
  *
- * Carries the figures a person can check against the board — never a vendor name, and the portal
- * only when the caller asked to see where rows come from (it names the investor's own portal).
+ * Carries the figures a person can check against the board — never a vendor name. TWO figures
+ * ride only when the caller asked to see where rows come from: the PORTAL (it names the
+ * investor's own portal) and the PRICE. The vendor is asked about ITS price, which is the
+ * held-back price plus the holdback, and stating it beside a row that shows the held-back price
+ * would let a reader subtract the two — the same reason `stripExplainedTrail` withholds
+ * `priceBuild.vendor*` (pre-merge audit 2026-09-02). The rate, the lock, the place and the search
+ * identify the question on their own.
  */
 function askedOf(sc, vendorQ, ident, opts = {}) {
   const s = sc || {}; const q = vendorQ || {}; const id = ident || {};
   const out = {
     rate: q.rate == null ? null : Number(q.rate),
-    price: q.price == null ? null : Number(q.price),
     lockDays: q.lockDays == null ? null : Number(q.lockDays),
     transactionId: id.transactionId || null,
     state: s.state || null,
@@ -356,7 +372,10 @@ function askedOf(sc, vendorQ, ident, opts = {}) {
     loan: s.loan == null ? null : Number(s.loan),
     value: s.value == null ? null : Number(s.value),
   };
-  if (opts.reveal) out.portal = id.portal || null;
+  if (opts.reveal) {
+    out.price = q.price == null ? null : Number(q.price);
+    out.portal = id.portal || null;
+  }
   return out;
 }
 
@@ -489,7 +508,11 @@ async function priceBoth(scenario, opts = {}) {
        * returns the same object it was handed.
        */
       const held = vendorMargin.applyToBoard(withPrograms, 'lenderprice', { extraFor });
-      return { ...held, searchKey: r.searchKey || null, provenance: r.provenance || null };
+      // THE WIRE REQUEST RIDES BACK for the narrowing below. `r.request` is the body the client
+      // actually POSTed — built on the tenant's LIVE foundation — and is the only honest copy of
+      // what Lender Price was asked; the static build under `chk.request` is its FALLBACK. It is
+      // stripped off again before the board is answered (see `lpBoard`).
+      return { ...held, searchKey: r.searchKey || null, provenance: r.provenance || null, request: r.request || null };
     })(),
     nex.price(sc, opts.loannex || {}),
   ]);
@@ -509,18 +532,32 @@ async function priceBoth(scenario, opts = {}) {
    * which is the owner's own condition on this filter. It runs HERE, before the holdback, the merge,
    * the routing, the counts and the option shape, so every one of those describes the same board.
    */
-  // ⛔ THE INTEREST-ONLY ANSWER COMES OFF THE BUILT LENDER PRICE REQUEST when the scenario is
-  // silent. The screen omits an OFF switch rather than sending `false` (see `product-filter.
-  // wantFrom`), so without this the LoanNEX board was never narrowed on interest-only while Lender
-  // Price's tenant default already had — one board answering an amortising question and the other
-  // answering none (owner-reported 2026-09-02). `chk.request` is the very request `lp.price` sends.
-  const want = productFilter.wantFrom(sc, lpModel._internals, { lpCriteria: chk.request && chk.request.criteria });
+  // ⛔ THE INTEREST-ONLY ANSWER COMES OFF THE REQUEST LENDER PRICE WAS ACTUALLY SENT when the
+  // scenario is silent. The screen omits an OFF switch rather than sending `false` (see
+  // `product-filter.wantFrom`), so without this the LoanNEX board was never narrowed on
+  // interest-only while Lender Price's tenant default already had — one board answering an
+  // amortising question and the other answering none (owner-reported 2026-09-02).
+  //
+  // WHICH REQUEST: the WIRE body `lp.price` hands back (`request`), never only the static build in
+  // `chk.request`. The client builds the body it POSTs on the tenant's LIVE foundation, and
+  // `mergeKnownRequestDefaults` copies same-typed scalars — `criteria.interestOnly` included —
+  // from the live defaultSearch, so the two can disagree. The pre-merge audit (2026-09-02) found
+  // the first cut mirroring the static one: a live default of `true` would have narrowed LoanNEX
+  // to amortising while Lender Price was asked for interest-only. The static build is the
+  // FALLBACK for a Lender Price failure, when there is no wire body to mirror.
+  const wire = lpRes.status === 'fulfilled' && lpRes.value && lpRes.value.request && typeof lpRes.value.request === 'object'
+    ? lpRes.value.request : null;
+  const lpCriteria = (wire && wire.criteria && typeof wire.criteria === 'object') ? wire.criteria
+    : (chk.request && chk.request.criteria);
+  const want = productFilter.wantFrom(sc, lpModel._internals, { lpCriteria });
   const narrowed = nxRes.status === 'fulfilled'
     ? productFilter.narrowBoard(nxRes.value.board, want)
     : null;
+  // The wire body was for the narrowing; it is not part of the answer.
+  const lpBoard = lpRes.status === 'fulfilled' ? (({ request: _wire, ...rest }) => rest)(lpRes.value) : null;
 
   const boards = {
-    lenderprice: lpRes.status === 'fulfilled' ? lpRes.value : null,
+    lenderprice: lpBoard,
     // THE MARGIN HOLDBACK GOES ON HERE — before the merge, the comparison, the
     // quote shape or the compensation overlay sees a single number. Lender
     // Price's feed already carries it and LoanNEX's does not, so this is what
@@ -1058,7 +1095,7 @@ function makeRouter(opts = {}) {
     // is a 422 naming the field, exactly as the price door answers it.
     let sc;
     try { sc = explainScenario(req); }
-    catch (e) { return res.status(e.status || 422).json({ ok: false, error: e.code || 'invalid_scenario', field: e.field || null, message: reasonOf(e) }); }
+    catch (e) { return scenarioRefused(res, e); }
     const ident = searchIdentity(quote, b);
     holdbackOnRow(b.investorKey, b)
       // Never lets the answer fail: an unreadable settings store costs the base shift, not the
@@ -1131,7 +1168,7 @@ function makeRouter(opts = {}) {
     }
     let sc;
     try { sc = explainScenario(req); }
-    catch (e) { return res.status(e.status || 422).json({ ok: false, error: e.code || 'invalid_scenario', field: e.field || null, message: reasonOf(e) }); }
+    catch (e) { return scenarioRefused(res, e); }
     nex.evidence(sc, quote, searchIdentity(quote, b))
       .then((r) => res.json({ ok: true, ...r }))
       .catch((e) => res.status(isNotConfigured(e) ? 503 : 502)
@@ -1141,4 +1178,4 @@ function makeRouter(opts = {}) {
   return router;
 }
 
-module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, explainScenario, askedOf, reasonOf, vendorQuote, searchIdentity, routing, quoteShape, breakdown } };
+module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, explainScenario, scenarioRefused, askedOf, reasonOf, vendorQuote, searchIdentity, routing, quoteShape, breakdown } };

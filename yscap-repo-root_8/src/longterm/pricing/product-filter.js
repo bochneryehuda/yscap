@@ -95,10 +95,12 @@ function wantFrom(sc = {}, lpInternals = {}, opts = {}) {
    * two different questions, which is the exact drift this module exists to prevent.
    *
    * The scenario still wins when it SAYS something; when it says nothing, the answer is what the
-   * built Lender Price request carries (`opts.lpCriteria.interestOnly`, the same object `priceBoth`
-   * sends on the wire), and only with neither is the dimension left un-narrowed. This is the same
-   * mirror rule amortization already follows below — an unstated search resolves the way the
-   * other vendor's request resolved it, never a guess of our own.
+   * request Lender Price was ACTUALLY sent carries (`opts.lpCriteria.interestOnly` — `priceBoth`
+   * hands over the criteria of the WIRE body the client returns, falling back to the static build
+   * only when Lender Price failed and there is no wire body), and only with neither is the
+   * dimension left un-narrowed. This is the same mirror rule amortization already follows below —
+   * an unstated search resolves the way the other vendor's request resolved it, never a guess of
+   * our own.
    */
   const lpc = opts && opts.lpCriteria && typeof opts.lpCriteria === 'object' ? opts.lpCriteria : null;
   const io = s.io === true ? true : (s.io === false ? false

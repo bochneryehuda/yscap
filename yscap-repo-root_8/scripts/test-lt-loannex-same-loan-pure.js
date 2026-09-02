@@ -40,19 +40,27 @@ const lpModel = require(path.join(ROOT, 'src/longterm/lenderprice/search-model')
 const qs = require(path.join(ROOT, 'src/longterm/pricing/quote-shape'));
 const pf = require(path.join(ROOT, 'src/longterm/pricing/product-filter'));
 
-/** One Lender Price leaf, amortising, so the board is genuinely two-vendor. */
-lpClient.price = async () => ({
-  ok: true,
-  raw: { results: { qualifiedNonQMData: {
-    type: 'CriteriaFromLineResultKey', keyLabel: 'DSCR 30 Yr Fixed',
-    childs: [{ type: 'LenderKey', keyLabel: 'Acra Lending', plenderId: 'L1', leafs: [{
-      companyId: 'L1', companyName: 'Acra Lending', programName: 'DSCR 30 Yr Fixed', productName: '30 Yr Fixed',
-      rate: 7.5, adjustedPoints: 1, basePoints: 0.5, adjustmentPoints: 0.5, dayLock: 30, term: 30,
-      loanAmount: 375000, monthlyPayment: { monthlyPI: 2500 }, isInterestOnly: false,
-    }] }],
-  } } },
-  searchKey: 'k1', request: {}, provenance: null,
-});
+/**
+ * One Lender Price leaf, amortising, so the board is genuinely two-vendor. The stub also hands back
+ * a WIRE REQUEST — the body the real client returns after building it on the live foundation — so
+ * section C can make it disagree with the static build, and can take Lender Price down entirely.
+ */
+const LP = { criteria: { interestOnly: false }, fail: false };
+lpClient.price = async () => {
+  if (LP.fail) { const e = new Error('lender price down (stub)'); e.code = 'lp_stub_down'; throw e; }
+  return {
+    ok: true,
+    raw: { results: { qualifiedNonQMData: {
+      type: 'CriteriaFromLineResultKey', keyLabel: 'DSCR 30 Yr Fixed',
+      childs: [{ type: 'LenderKey', keyLabel: 'Acra Lending', plenderId: 'L1', leafs: [{
+        companyId: 'L1', companyName: 'Acra Lending', programName: 'DSCR 30 Yr Fixed', productName: '30 Yr Fixed',
+        rate: 7.5, adjustedPoints: 1, basePoints: 0.5, adjustmentPoints: 0.5, dayLock: 30, term: 30,
+        loanAmount: 375000, monthlyPayment: { monthlyPI: 2500 }, isInterestOnly: false,
+      }] }],
+    } } },
+    searchKey: 'k1', request: { criteria: { ...LP.criteria } }, provenance: null,
+  };
+};
 
 const REAL = parse.parse(require(path.join(ROOT, 'src/longterm/loannex/capture/quick-prices.json')).response);
 const TXN = REAL.transactionId;
@@ -67,7 +75,7 @@ nexClient.evidence = async (sc, quote, opts) => {
 };
 
 const routeMod = require(path.join(ROOT, 'src/longterm/routes/combined-pricer'));
-const { priceBoth, explainScenario, askedOf } = routeMod._internals;
+const { priceBoth, explainScenario, askedOf, scenarioRefused } = routeMod._internals;
 
 let pass = 0; let fail = 0;
 const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log(`  FAIL ${m}`); } };
@@ -92,9 +100,12 @@ const reg = registryOf.capturedRegistry();
     const enriched = explainScenario({ body: { scenario: BROWSER } });
     eq(enriched.state, 'NJ', 'A1  explainScenario enriches the ZIP into the state the board was priced in');
     eq(enriched.countyName, 'Atlantic', 'A2  …and the county');
-    const boardSc = lpModel.validateScenario(BROWSER).scenario;
-    eq(nexScenario.buildNexApp(enriched, reg, { countyKey: 31001 }), nexScenario.buildNexApp(boardSc, reg, { countyKey: 31001 }),
-      'A3  the vendor body the explain builds is IDENTICAL, field for field, to the body the board built');
+    // Asserted on the BUILT VENDOR BODY, against the state the board was priced in — not against
+    // a second run of the same chain, which would agree with itself whatever it did.
+    const built = nexScenario.buildNexApp(enriched, reg, { countyKey: 31001 });
+    eq(built.state, 'NJ', 'A3  the vendor body the explain builds names the state the board was priced in');
+    ok(Object.keys(built).length === Object.keys(rawApp).length,
+      'A3b …by FILLING the state the raw build left null, not by adding a field the raw build lacked');
     let refused = null;
     try { explainScenario({ body: { scenario: { ...BROWSER, zip: 'nope' } } }); } catch (e) { refused = e; }
     ok(refused && refused.status === 422 && refused.code === 'invalid_zip', 'A4  a scenario the price door refuses is refused here with the same 422 and code');
@@ -125,10 +136,14 @@ const reg = registryOf.capturedRegistry();
     eq(asked.opts.transactionId, TXN, 'B4  …inside the row\'s own search (the 2026-09-02 identity fix still rides)');
     ok(r.body.asked && r.body.asked.state === 'NJ' && r.body.asked.county === 'Atlantic' && r.body.asked.zip === '08201',
       'B5  the answer SAYS which loan it asked about');
-    eq([r.body.asked.rate, r.body.asked.price, r.body.asked.lockDays], [5.75, 98, 15],
-      'B6  …and which quote: the vendor\'s OWN price (held-back 97.75 + the 0.25 holdback), the rate and the lock');
+    eq([r.body.asked.rate, r.body.asked.lockDays], [5.75, 15], 'B6  …and which quote: the rate and the lock');
+    ok(!('price' in r.body.asked) && !('price' in r.body.option.evidence.asked),
+      'B6b …but NOT the price: the vendor is asked about its own (97.75 held back + 0.25), and stating it beside a held-back row would let a reader subtract the two');
     eq(r.body.asked.transactionId, TXN, 'B7  …and which search');
     ok(!('portal' in r.body.asked), 'B8  the portal is NOT on the answer unless the caller asked to see the source (it names the investor\'s own portal)');
+    const rev = await post('/explain', { quote: HANDLE, scenario: BROWSER, option: { priceBuild: { noteRate: 5.75 }, terms: { dayLock: 15 } }, marginHoldback: 0.25, routes: {}, revealSource: true });
+    ok(rev.status === 200 && rev.body.asked.price === 98 && rev.body.asked.portal === PORTAL,
+      `B8b an admin who asked to see the source gets the price the vendor was asked about (97.75 + 0.25 = 98) and the portal (got ${rev.body.asked && rev.body.asked.price}, ${rev.body.asked && rev.body.asked.portal})`);
     ok(r.body.option && r.body.option.evidence && r.body.option.evidence.asked && r.body.option.evidence.asked.state === 'NJ',
       'B9  what was asked rides ON THE OPTION\'S EVIDENCE BLOCK, which is the shape the panel reads');
     ok(r.body.vendor && r.body.vendor.answered === false && r.body.vendor.reason === 'vendor_returned_no_evidence',
@@ -139,6 +154,21 @@ const reg = registryOf.capturedRegistry();
 
     const bad = await post('/explain', { quote: HANDLE, scenario: { ...BROWSER, zip: 'nope' }, option: {} });
     ok(bad.status === 422 && bad.body.error === 'invalid_zip', 'B12 a refused scenario is a 422 naming the field — never sent to the vendor as a different loan');
+
+    // A REFUSAL and an INTERNAL FAILURE are two different answers (pre-merge audit 2026-09-02,
+    // finding 4): `validateScenario` THROWING is the server's fault, and answering 422 for it
+    // tells the caller their scenario is wrong when it is not. The doors cannot be made to throw
+    // internally from outside (the checker is bound at load), so the ONE function both doors
+    // answer through is exercised directly, and E4b pins that both doors actually use it.
+    const fakeRes = () => { const r = { code: null, body: null }; r.status = (c) => { r.code = c; return r; }; r.json = (b) => { r.body = b; return r; }; return r; };
+    const typed = fakeRes(); scenarioRefused(typed, Object.assign(new Error('bad zip'), { status: 422, code: 'invalid_zip', field: 'zip' }));
+    ok(typed.code === 422 && typed.body.error === 'invalid_zip' && typed.body.field === 'zip', 'B12b a typed refusal answers its own status, code and field');
+    const own = fakeRes(); scenarioRefused(own, Object.assign(new Error('nope'), { status: 400, code: 'x' }));
+    ok(own.code === 400, 'B12c …and keeps the status it was given (a refusal is never forced to 422)');
+    const crash = fakeRes(); scenarioRefused(crash, new Error('validateScenario blew up'));
+    ok(crash.code === 500 && crash.body.error === 'scenario_check_failed' && crash.body.ok === false,
+      `B12d an error with NO status is not a refusal: it is a 500 that says the scenario check failed (got ${crash.code} ${crash.body && crash.body.error})`);
+    ok(!('field' in crash.body) || crash.body.field == null, 'B12e …and it names no field, because no field was refused');
 
     asked = null;
     const legacy = await post('/loannex/explain', { quote: HANDLE, scenario: BROWSER });
@@ -181,6 +211,25 @@ const reg = registryOf.capturedRegistry();
     eq(pf.wantFrom({}, lpModel._internals, {}).io, null, 'C13 with no request to mirror the dimension stays un-narrowed (the honest answer, never a guess)');
     eq(pf.wantFrom({}, lpModel._internals, { lpCriteria: { interestOnly: 'false' } }).io, null, 'C14 a request carrying a non-boolean is not read as an answer');
 
+    // ⛔ THE MIRROR READS THE WIRE, NOT THE STATIC BUILD (pre-merge audit 2026-09-02). The client
+    // builds the body it POSTs on the tenant's LIVE foundation, and a live default can carry a
+    // different `interestOnly` from the static base `validateScenario` builds from. The static
+    // build for this scenario says false (C1); the wire says true here.
+    LP.criteria = { interestOnly: true };
+    const wireIo = await board({ ...BROWSER });
+    eq(wireIo.productFilter.asked.io, true, 'C16 a silent scenario mirrors the request Lender Price was ACTUALLY sent — the wire says interest-only, whatever the static build says');
+    const wireNex = nexProgs(wireIo);
+    ok(wireNex.length > 0 && wireNex.every((p) => p.isInterestOnly === true), `C16b …and the LoanNEX board is narrowed to match it (${wireNex.filter((p) => !p.isInterestOnly).length} amortising of ${wireNex.length})`);
+    LP.criteria = { interestOnly: false };
+    LP.fail = true;
+    const lpDown = await board({ ...BROWSER });
+    const lpStatus = (out) => ((out.merged.sources || {}).lenderprice) || {};
+    ok(lpStatus(off).answered === true && lpStatus(lpDown).answered === false && /lp_stub_down|down/.test(String(lpStatus(lpDown).error || '')),
+      'C17 CONTROL — Lender Price failed on this search (the merge says so, with the reason), so there is no wire body');
+    eq(lpDown.productFilter.asked.io, false, 'C17b …and the narrowing falls back to the static build (the DSCR base says false) — never to un-narrowed');
+    ok(nexProgs(lpDown).every((p) => p.isInterestOnly === false), 'C17c …so the LoanNEX board is still amortising while Lender Price is down');
+    LP.fail = false;
+
     // ⛔ WHY THE SERVER HAS TO RESOLVE IT: the screen omits an off switch. If this ever changes the
     // server rule is harmless (a stated false is the same answer) — but the rule exists BECAUSE of it.
     const sf = read('app-v2/src/longterm/scenarioFields.js');
@@ -200,8 +249,17 @@ const reg = registryOf.capturedRegistry();
     ok(nexOpts.every((o) => o.terms && Number.isFinite(o.terms.term) && o.terms.termInMonths === true),
       'D3  …and its term, in months, said to be months (the panel prints "360 months")');
     ok(nexOpts.every((o) => o.terms && Number.isFinite(o.terms.dayLock)), 'D4  …and its lock');
+    // Against the PARSED BOARD the option shape was built FROM — the input side of the function
+    // under test — never two fields computed from one source inside it, which can only agree.
+    const byProduct = new Map(REAL.programs.map((p) => [`${p.lenderId}|${p.productId}`, p]));
+    // A LoanNEX option keeps its vendor ids on its `explain` handle (the row carries no vendor id
+    // of its own without reveal).
+    const traced = nexOpts.map((o) => ({ o, p: byProduct.get(`${(o.explain || {}).lenderId}|${(o.explain || {}).productId}`) }));
+    ok(traced.every((t) => t.p), `D5  every LoanNEX quote traces back to a recorded programme by lender + product (${traced.filter((t) => !t.p).length} untraced)`);
+    ok(traced.every((t) => t.p && t.o.terms.term === t.p.termInMonths && t.o.terms.interestOnly === t.p.isInterestOnly),
+      'D5b …and its terms block states what THAT programme states: the term in months and whether it is interest-only');
     ok(nexOpts.every((o) => o.terms.interestOnly === o.interestOnly && o.terms.dayLock === o.dayLock),
-      'D5  the top-level copies (which older readers use) agree with the terms block');
+      'D5c the top-level copies (which older readers use) agree with the terms block');
     const split = qs.splitInterestOnly(nexOpts);
     ok(split.unknown.length === 0 && split.io.length === nexOpts.length, 'D6  the option-level interest-only filter can now classify every board quote (none unknown)');
     ok(lpOpts.length > 0 && lpOpts.every((o) => o.terms && o.terms.interestOnly === false), 'D7  a Lender Price quote\'s terms are exactly what they were');
@@ -210,11 +268,16 @@ const reg = registryOf.capturedRegistry();
   // ── E. WHAT MUST NOT MOVE ─────────────────────────────────────────────────
   {
     const src = read('src/longterm/routes/combined-pricer.js');
-    ok(/const want = productFilter\.wantFrom\(sc, lpModel\._internals, \{ lpCriteria: chk\.request && chk\.request\.criteria \}\)/.test(src),
-      'E1  priceBoth hands the narrowing the BUILT Lender Price request — the same object lp.price sends');
+    ok(/request: r\.request \|\| null/.test(src)
+      && /const lpCriteria = \(wire && wire\.criteria && typeof wire\.criteria === 'object'\) \? wire\.criteria\s*\n\s*: \(chk\.request && chk\.request\.criteria\);/.test(src)
+      && /const want = productFilter\.wantFrom\(sc, lpModel\._internals, \{ lpCriteria \}\)/.test(src),
+      'E1  priceBoth mirrors the WIRE request the client hands back, and falls back to the static build only when there is none');
+    ok(/\(\(\{ request: _wire, \.\.\.rest \}\) => rest\)\(lpRes\.value\)/.test(src),
+      'E1b …and strips the wire body off the board before it is answered');
     ok(/const io = want\.io;/.test(src), 'E2  the option-level filter reads the SAME resolved answer as the programme narrowing');
     ok(!/nex\s*\.evidence\(scenarioOf\(req\)/.test(src), 'E3  no explain door hands the vendor the raw browser scenario any more');
     ok((src.match(/sc = explainScenario\(req\)/g) || []).length === 2, 'E4  both explain doors run the scenario through explainScenario');
+    ok((src.match(/catch \(e\) \{ return scenarioRefused\(res, e\); \}/g) || []).length === 2, 'E4b …and both answer a refusal through scenarioRefused — the one function B12b–e prove');
     const jsx = read('app-v2/src/longterm/LtPricer.jsx');
     ok(/askedLine\(ev\.asked\)/.test(jsx), 'E5  the panel prints what was asked under an empty breakdown');
     ok(!/loannex|LoanNEX/i.test(jsx.slice(jsx.indexOf('function askedLine'), jsx.indexOf('function askedLine') + 1500)), 'E6  …and names no vendor doing it');
