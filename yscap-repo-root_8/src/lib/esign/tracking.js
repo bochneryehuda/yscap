@@ -206,7 +206,37 @@ async function encompassSendBlock(applicationId) {
  * and must never break on it), and "no term sheet on the file at all" is left to
  * the orchestrator's own missing-document message rather than duplicated here.
  */
-async function termSheetStampBlock(db, applicationId) {
+/* The signer verdict for ONE stored sheet, remembered per document row: the panel
+   polls this every few seconds, the bytes of a stored document never change, and
+   the roster only changes with the file — so the verdict is recomputed when the
+   sheet OR the roster's shape changes, never on every poll. Bounded. */
+const signerVerdicts = new Map();
+const SIGNER_VERDICT_MAX = 500;
+
+async function termSheetSignersOnFile(db, applicationId, doc, { storage } = {}) {
+  const orchestrate = require('./orchestrate');
+  const signers = require('./term-sheet-signers');
+  const app = await orchestrate.loadApplication(db, applicationId);
+  if (!app) return null;
+  const roster = orchestrate.buildRoster(app, orchestrate.packageSpec('term_sheet_package'), null)
+    .map((r) => ({ role: r.role, name: r.name }));
+  const key = `${doc.id}|${doc.storage_ref || ''}|${roster.map((r) => r.role).join(',')}`;
+  if (signerVerdicts.has(key)) return signerVerdicts.get(key);
+  let verdict;
+  try {
+    const bytes = await (storage || require('../storage')).read(doc.storage_ref);
+    verdict = await signers.checkTermSheetSigners(bytes, roster);
+  } catch (e) {
+    // Bytes unreadable right now (storage hiccup): the panel stays advisory and
+    // says nothing; the send still judges the real bytes. Not cached.
+    return null;
+  }
+  if (signerVerdicts.size >= SIGNER_VERDICT_MAX) signerVerdicts.delete(signerVerdicts.keys().next().value);
+  signerVerdicts.set(key, verdict);
+  return verdict;
+}
+
+async function termSheetStampBlock(db, applicationId, { storage } = {}) {
   /* THE STORED SHEET IS WHAT GOES OUT, so its stamp is a real send blocker again
      (owner-directed 2026-08-14). Between 2026-08-06 and 2026-08-14 this reported a
      hard-coded `{ final: true, block: false, canFinalize: false }` because the
@@ -216,7 +246,7 @@ async function termSheetStampBlock(db, applicationId) {
      unreachable. Reporting the truth here is what turns them back on. */
   try {
     const r = await db.query(
-      `SELECT id, term_sheet_final, created_at
+      `SELECT id, term_sheet_final, created_at, storage_ref
          FROM documents
         WHERE application_id = $1 AND doc_kind = 'term_sheet'
           AND COALESCE(review_status,'') <> 'rejected'
@@ -233,12 +263,21 @@ async function termSheetStampBlock(db, applicationId) {
     try { stamp = await require('./term-sheet-stamp').termSheetStamp(applicationId, { db }); } catch (_) { /* fail closed → canFinalize false */ }
     const blockers = (stamp.blockers || []).map((b) => ({ code: b.code, label: b.label, reason: b.reason }));
     const final = !!(doc && doc.term_sheet_final === true);
-    // canFinalize: the file may be stamped final now, and it is not already final.
-    const canFinalize = !!stamp.final && !final;
-    if (!doc) return { onFile: false, final: false, block: false, message: null, canFinalize, blockers };
+    if (!doc) return { onFile: false, final: false, block: false, message: null, canFinalize: !!stamp.final, blockers };
+    /* A FINAL sheet can still be the WRONG sheet: one drawn without the co-borrower
+       (owner-reported 2026-09-02 — "only the first guarantor"). orchestrate refuses
+       to send it (TERM_SHEET_SIGNERS_MISMATCH), so the panel must say so FIRST and
+       offer the same remedy — regenerate from the file's current borrowers. The
+       roster judged here is the one the send would build, from the same file read. */
+    const signers = final ? await termSheetSignersOnFile(db, applicationId, doc, { storage }) : null;
+    const signerBlock = !!(signers && !signers.ok);
+    const block = !final || signerBlock;
+    // canFinalize: the file may be stamped final now, and the sheet on file needs remaking.
+    const canFinalize = !!stamp.final && block;
     return {
-      onFile: true, final, block: !final, generatedAt: doc.created_at,
-      message: final ? null : require('./term-sheet-stamp').REGENERATE_MESSAGE,
+      onFile: true, final, block, generatedAt: doc.created_at,
+      message: !final ? require('./term-sheet-stamp').REGENERATE_MESSAGE : signerBlock ? signers.message : null,
+      signers: signers ? { ok: signers.ok, missing: signers.missing, extra: signers.extra } : null,
       canFinalize, blockers,
     };
   } catch (_) {
@@ -247,7 +286,7 @@ async function termSheetStampBlock(db, applicationId) {
 }
 
 /** Per-file: the send-gate + the two packages' envelopes (with signed-doc links). */
-async function fileEsign(db, applicationId) {
+async function fileEsign(db, applicationId, { storage } = {}) {
   const g = await gate.esignSendGate(applicationId, { db });
   // dashboard() already attached e.documents (signed PDFs) + e.certificate via
   // attachSignedArtifacts — the per-file view reuses them directly.
@@ -275,7 +314,7 @@ async function fileEsign(db, applicationId) {
   // send, enforced at the send route. The panel needs it to tell the truth about
   // readiness and to offer the admin override instead of a dead end.
   const encompass = await encompassSendBlock(applicationId);
-  const termSheet = await termSheetStampBlock(db, applicationId);
+  const termSheet = await termSheetStampBlock(db, applicationId, { storage });
   return { gate: g, packages: byPurpose, envelopes, loanNumber: meta.ys_loan_number || null, exceptionReasonCodes, encompass, termSheet, nooApplicable };
 }
 

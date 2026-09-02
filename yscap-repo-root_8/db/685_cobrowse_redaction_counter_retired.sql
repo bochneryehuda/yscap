@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/684 — the co-browse redaction counter is RETIRED (owner-directed 2026-09-02)
+-- db/685 — the co-browse redaction counter is RETIRED (owner-directed 2026-09-02)
 --
 -- WHAT THIS CHANGES, AND WHY. db/683 added `cobrowse_sessions.redaction_drops`
 -- for a server-side content guard that DROPPED an rrweb batch carrying an
@@ -29,7 +29,7 @@
 -- ============================================================================
 
 COMMENT ON COLUMN cobrowse_sessions.redaction_drops IS
-  'RETIRED 2026-09-02 (db/684) and written by nothing. It counted batches a '
+  'RETIRED 2026-09-02 (db/685) and written by nothing. It counted batches a '
   'server-side content guard refused to relay; refusing a batch desynchronises '
   'a stateful rrweb stream and blanked the mirror, so the guard was removed. '
   'Masking happens in the guest browser before a byte leaves it. Historic counts '

@@ -173,6 +173,22 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
     if (r && (r.dead || r.terminal || r.ok === false)) throw new Error(r.error || 'The document could not be sent — check the file and try again.');
     setEncOvrOpen(false); setEncOvrNote('');
   }, 'Sent for signature.');
+  /* A term-sheet send refused because the sheet on file does not carry a signature
+     line for everyone on the package (TERM_SHEET_SIGNERS_MISMATCH — e.g. a sheet drawn
+     before the co-borrower was linked). The panel normally shows this up front and
+     routes Send through finalizeAndSend; this covers a refresh that hasn't caught up:
+     regenerate from the file's current borrowers, then send, in the one click. */
+  const sendTermSheet = (purpose, reissue) => act(`send:${purpose}`, async () => {
+    const r = await api.post(`/api/staff/applications/${appId}/esign/send`, { purpose, reissue: !!reissue });
+    if (r && r.dead && /TERM_SHEET_SIGNERS_MISMATCH|signature line for|without the co-borrower/i.test(String(r.code || r.error || ''))) {
+      const f = await (onFinalizeTermSheet ? onFinalizeTermSheet() : Promise.resolve({ ok: false, reason: 'Open Products & Pricing to finalize the term sheet.' }));
+      if (!f || !f.ok) throw new Error((f && f.reason) || 'Could not regenerate the term sheet.');
+      const again = await api.post(`/api/staff/applications/${appId}/esign/send`, { purpose, reissue: true });
+      if (again && (again.dead || again.terminal || again.ok === false)) throw new Error(again.error || 'The document could not be sent — check the file and try again.');
+      return;
+    }
+    if (r && (r.dead || r.terminal || r.ok === false)) throw new Error(r.error || 'The document could not be sent — check the file and try again.');
+  }, 'Sent for signature.', onChanged);
   // FINALIZE, then SEND (owner-directed 2026-08-04): "that button to send out the
   // term sheet and package should be the button that is generating the final term
   // sheet after all the conditions are met." When the sheet on file still prints
@@ -343,6 +359,9 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
   // this safe against an older server payload with no `termSheet`.
   const tsDoc = data.termSheet || { onFile: false, final: false, block: false };
   const tsStampBlocks = !!tsDoc.block;
+  // A FINAL sheet that was drawn for the wrong signers (e.g. without the co-borrower):
+  // blocked for a different reason than the stamp, with the server's own sentence.
+  const tsSignerBlock = tsStampBlocks && !!tsDoc.final && !!(tsDoc.signers && tsDoc.signers.ok === false);
   // The file is ready to issue a FINAL sheet RIGHT NOW — so the Send button can
   // regenerate + attach it in place, rather than dead-ending at "re-register"
   // (owner-directed 2026-08-04). When it is NOT ready, tsBlockers says why.
@@ -782,7 +801,21 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
             sheet stamped FINAL. */}
         {tsStampBlocks && (
           <div className={`notice ${tsCanFinalize ? 'info' : 'err'}`} style={{ margin: '2px 0 10px' }}>
-            {tsCanFinalize ? (
+            {tsSignerBlock ? (
+              /* The sheet is FINAL but was drawn for the wrong set of signers — most often
+                 without the co-borrower (owner-reported 2026-09-02). The server's own
+                 sentence names who is missing; the remedy is the same regenerate. */
+              <div>
+                <strong>The term sheet on file doesn’t match this file’s signers.</strong>{' '}
+                {tsDoc.message}
+                {tsCanFinalize
+                  ? <> Sending the term-sheet package below regenerates and attaches the corrected sheet automatically, or finalize it now, then send.</>
+                  : (tsBlockers.length
+                      ? <> It can’t be regenerated yet — still outstanding: {tsBlockers.map((b) => b.label).filter(Boolean).join(', ')}. Finish those, then send.</>
+                      : null)}
+                {' '}<span className="muted small">(The Heter Iska is not affected.)</span>
+              </div>
+            ) : tsCanFinalize ? (
               <div>
                 <strong>The term sheet on file still prints “INITIAL — NOT FINAL”, but this file is ready to issue.</strong>{' '}
                 Sending the term-sheet package below generates and attaches the FINAL sheet automatically — the version
@@ -898,7 +931,9 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
                 ? 'Encompass doesn’t match yet — use “Send anyway — make an exception for this send” above'
                 : 'Encompass doesn’t match yet — fix the fields, or ask an admin to make an exception for this send')
               : (sendAllowed ? (gate.ready ? p.hint : `${p.hint} (approved by super-admin exception)`) : 'Complete the outstanding requirements above first — or request a super-admin exception to send now');
-            const onSend = tsFinalizeHere ? () => finalizeAndSend(p.purpose) : () => send(p.purpose);
+            const onSend = tsFinalizeHere ? () => finalizeAndSend(p.purpose)
+              : p.purpose === 'term_sheet_package' ? () => sendTermSheet(p.purpose)
+              : () => send(p.purpose);
             return (
               <button key={p.purpose} className="btn primary btn-sm" disabled={sendBlocked || busy === `send:${p.purpose}`}
                 title={title} onClick={onSend}>

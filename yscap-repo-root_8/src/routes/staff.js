@@ -3179,9 +3179,42 @@ router.get('/applications/:id/pricing', async (req, res) => {
       const progAvail = require('../lib/program-availability');
       programAvailability = progAvail.availabilityFor(await pricingSettings.load(), f.app);
     } catch (_) { programAvailability = null; }
+    /* THE PARTIES THE SHEET MUST NAME, read from the file at THIS moment (owner-reported
+       2026-09-02: a term sheet drawn with the co-borrower box empty went out naming one
+       guarantor on a two-borrower file). The studio prefills its party boxes from the
+       screen's copy of the file, which can be older than the file — a co-borrower linked
+       a minute ago, a name corrected in another tab. This is the server's own read, made
+       for this response, and the studio takes it over anything it holds. Every borrower
+       on the file is a guarantor unless an approved waiver says otherwise (the waiver
+       flag travels separately, as it always has). */
+    let parties = null;
+    try {
+      const pn = require('../lib/person-name');
+      const pr = (await db.query(
+        `SELECT b.full_name AS b_full, b.first_name AS b_first, b.middle_name AS b_middle, b.last_name AS b_last, b.name_suffix AS b_suffix,
+                cb.full_name AS cb_full, cb.first_name AS cb_first, cb.middle_name AS cb_middle, cb.last_name AS cb_last, cb.name_suffix AS cb_suffix,
+                a.co_borrower_id, l.llc_name AS entity_name
+           FROM applications a JOIN borrowers b ON b.id = a.borrower_id
+           LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
+           LEFT JOIN llcs l ON l.id = a.llc_id
+          WHERE a.id = $1`, [req.params.id])).rows[0];
+      if (pr) {
+        const nameOf = (p) => {
+          const full = String(pr[`${p}_full`] || '').replace(/\s+/g, ' ').trim();
+          if (full && !pn.isPlaceholderName(full)) return full;
+          return pn.joinFullName({ first_name: pr[`${p}_first`], middle_name: pr[`${p}_middle`], last_name: pr[`${p}_last`], name_suffix: pr[`${p}_suffix`] }) || '';
+        };
+        parties = {
+          entityName: pr.entity_name || '',
+          borrowerName: nameOf('b'),
+          coBorrowerName: pr.co_borrower_id ? nameOf('cb') : '',
+          hasCoBorrower: !!pr.co_borrower_id,
+        };
+      }
+    } catch (_) { parties = null; }
     res.json({ current, history: hist.rows, quote, enginesReady: pricing.enginesReady(),
       econVersion: pricing.econVersionFor(f.app), manualEscalation, manualDefaults, pricingDefaults, termSheetHold,
-      termSheetFinal, termSheetFinalBlockers, programAvailability });
+      termSheetFinal, termSheetFinalBlockers, programAvailability, parties });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -21887,6 +21920,7 @@ router.post('/applications/:id/esign/send', async (req, res) => {
       ok: out.ok, envelopeRowId: out.envelopeRowId, result: r,
       dead: !!r.dead, queued: !!r.queued, terminal: !!out.terminal,
       error: reason,
+      ...(r.code ? { code: r.code } : {}),
     });
   } catch (e) {
     sendEsignError(res, e, { outstanding: e.outstanding });

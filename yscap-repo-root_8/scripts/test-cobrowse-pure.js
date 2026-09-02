@@ -274,9 +274,9 @@ ok(/ADD COLUMN IF NOT EXISTS control_status/.test(m683) && /control_events/.test
 // db/683's redaction_drops column is DELIBERATELY left in place — this repo never drops a
 // column — it is simply written by nothing and reported by nothing.
 ok(/redaction_drops/.test(m683), 'the retired counter column is left alone, never dropped');
-const m684 = read('db/684_cobrowse_redaction_counter_retired.sql');
-ok(/COMMENT ON COLUMN cobrowse_sessions\.redaction_drops/.test(m684) && /RETIRED/.test(m684) && !/DROP COLUMN/i.test(m684),
-  'db/684 corrects the column\'s own documentation instead of dropping it — the database stops describing a guard that no longer runs');
+const m685 = read('db/685_cobrowse_redaction_counter_retired.sql');
+ok(/COMMENT ON COLUMN cobrowse_sessions\.redaction_drops/.test(m685) && /RETIRED/.test(m685) && !/DROP COLUMN/i.test(m685),
+  'db/685 corrects the column\'s own documentation instead of dropping it — the database stops describing a guard that no longer runs');
 ok(/scripts\/render-cobrowse-mask\.js/.test(mask), 'the mask module names the harness that proves it');
 
 // ---- the blank mirror, and the buttons (owner-reported 2026-09-02) ------------------------------

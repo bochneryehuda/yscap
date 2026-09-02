@@ -105,6 +105,10 @@ function fakeDocusign() {
   };
 }
 
+// The stored term sheet is a REAL PDF carrying the studio's anchors — ONE fixture
+// definition shared by every suite that stores a sheet and sends it.
+const { studioLikeTermSheet } = require('./lib/term-sheet-fixture');
+
 // A fake storage provider — keeps bytes in a Map keyed by ref.
 function fakeStorage() {
   const store = new Map();
@@ -178,8 +182,14 @@ function fakeStorage() {
     // SHEET — NOT FINAL" is refused by the send (owner-directed 2026-08-02), so
     // the fixture carries the sheet a ready-to-issue file really has. The
     // refusal itself is covered by test-term-sheet-final-stamp-db.js.
+    // …and it is a REAL PDF carrying the studio's anchors for everyone on this
+    // roster (borrower b1, co-borrower b2, lender admin — no LO is assigned here):
+    // since 2026-09-02 the send refuses a sheet that has no signature line for a
+    // package signer (term-sheet-signers.js), so a fake byte string would be
+    // refused for the right reason and prove nothing about the send.
+    const termSheetBytes = await studioLikeTermSheet(['/ts_b1_sig/', '/ts_b1_dt/', '/ts_b2_sig/', '/ts_b2_dt/', '/ts_admin_sig/', '/ts_admin_dt/']);
     for (const kind of ['term_sheet']) {
-      const { ref } = await storage.save(Buffer.from(`${kind}-bytes`));
+      const { ref } = await storage.save(termSheetBytes);
       await pool.query(
         `INSERT INTO documents (application_id,filename,storage_provider,storage_ref,doc_kind,is_current,term_sheet_final)
          VALUES ($1,$2,'local',$3,$4,true,true)`, [app, `${kind}.pdf`, ref, kind]);
@@ -403,8 +413,35 @@ function fakeStorage() {
       const def = await orchestrate.buildDefinition(tsRow, { db: pool, storage });
       const ts = def.documents.find((dd) => dd.name === 'Term Sheet');
       ok(ts && ts.fileExtension === 'pdf', 'HIGH-2: the term sheet rides in the envelope as a PDF');
-      ok(Buffer.from(ts.base64, 'base64').toString('latin1') === 'term_sheet-bytes',
+      ok(Buffer.from(ts.base64, 'base64').equals(termSheetBytes),
         'HIGH-2: it is the STORED studio sheet, byte-for-byte — the sender never draws its own');
+      // The signer check (2026-09-02): a sheet with a b2 line on a file that has a
+      // co-borrower passes; the SAME roster against a sheet drawn without the
+      // co-borrower is refused, permanently, naming the co-borrower and the button.
+      {
+        const oneBorrower = await studioLikeTermSheet(['/ts_b1_sig/', '/ts_b1_dt/', '/ts_admin_sig/', '/ts_admin_dt/']);
+        const { ref: badRef } = await storage.save(oneBorrower);
+        const badDoc = (await pool.query(
+          `INSERT INTO documents (application_id,filename,storage_provider,storage_ref,doc_kind,is_current,term_sheet_final)
+           VALUES ($1,'term_sheet_one_borrower.pdf','local',$2,'term_sheet',true,true) RETURNING id`, [app, badRef])).rows[0].id;
+        await pool.query(`UPDATE documents SET is_current=false WHERE application_id=$1 AND doc_kind='term_sheet' AND id<>$2`, [app, badDoc]);
+        let refused = null;
+        try { await orchestrate.buildDefinition(tsRow, { db: pool, storage }); }
+        catch (e) { refused = e; }
+        ok(refused, 'SIGNERS: a sheet with no co-borrower line is refused for a two-borrower package');
+        eq(refused && refused.code, 'TERM_SHEET_SIGNERS_MISMATCH', 'SIGNERS: …with its own code');
+        eq(refused && refused.retryable, false, 'SIGNERS: …permanently (the same bytes can never pass)');
+        ok(refused && /Chris Co/.test(refused.message) && /Finalize & send/.test(refused.message), 'SIGNERS: the refusal names the co-borrower and the button');
+        // The panel's readiness read says the same thing FIRST, from the same rule.
+        const tsBlock = await require(R + '/src/lib/esign/tracking').fileEsign(pool, app, { storage });
+        const tsDoc = tsBlock && tsBlock.termSheet;
+        ok(tsDoc && tsDoc.final === true && tsDoc.block === true && tsDoc.signers && tsDoc.signers.ok === false,
+          'SIGNERS: the readiness panel blocks a FINAL sheet whose signers do not match the file');
+        ok(tsDoc && /Chris Co/.test(tsDoc.message || ''), 'SIGNERS: …with the same sentence');
+        // Restore the good sheet.
+        await pool.query(`DELETE FROM documents WHERE id=$1`, [badDoc]);
+        await pool.query(`UPDATE documents SET is_current=true WHERE application_id=$1 AND doc_kind='term_sheet'`, [app]);
+      }
       // The application_export is likewise GENERATED fresh on every build.
       const freshApp = def.documents.find((dd) => dd.name === 'Loan Application');
       ok(freshApp && freshApp.fileExtension === 'pdf', 'the Loan Application is generated fresh on every build (as a PDF)');
