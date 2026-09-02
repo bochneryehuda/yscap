@@ -69,7 +69,12 @@ const VIEWER_GRACE_MS = 60000;   // last viewer dropped: same
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;   // one rrweb batch; a full snapshot of a huge page is ~1 MB
 const BUDGET_WINDOW_MS = 10000;
 const BUDGET_BYTES = 24 * 1024 * 1024;       // per guest per window — far above real traffic, catches a runaway
-const BATCH_FLUSH_EVERY = 20;                // bookkeeping writes per N relayed batches
+// Bookkeeping writes per N relayed batches. It is 40 rather than 20 because the guest's
+// flush window was halved to 40 ms (the mirror was 'extremely slow'), which DOUBLES the
+// batch rate: at 20 that would have doubled this table's write rate too, for counters
+// nobody reads in real time. Keep the product of the two roughly constant — raising the
+// flush rate again means raising this with it.
+const BATCH_FLUSH_EVERY = 40;
 const MAX_INPUT_BYTES = 16 * 1024;           // one viewer input event (a pasted value at most)
 const INPUT_RATE_PER_SEC = 60;               // per viewer: mouse moves are already sampled client-side
 const INPUT_KINDS = new Set(['click', 'dblclick', 'input', 'change', 'key', 'paste', 'scroll', 'cursor', 'focus', 'blur', 'submit']);

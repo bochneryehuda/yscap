@@ -419,32 +419,107 @@ ok(/ONLY PLACE A SECRET IS KEPT OUT OF THE STREAM/.test(mask), 'the mask module 
 
 // ── THE PICTURE IS PROMPT, AND IT IS READABLE (owner-reported 2026-09-02: "the refresh
 //    ratio is very slow … extremely slow and extremely unclear") ─────────────────────────
-//    Both halves were MEASURED before they were changed, and both are pinned here rather
+//    Both halves were MEASURED before they were changed, and both are pinned HERE rather
 //    than only in the browser drive, because the drive needs Chromium and CI has none —
 //    so CI could never have caught either one. The drive additionally allowed the mirror
 //    TWENTY SECONDS to show anything, which is exactly why "slow" was invisible to it.
+//
+//    THE READABILITY HALF IS PINNED BY BEHAVIOUR, NOT BY A REGEX, and that is the lesson
+//    the pre-merge audit taught: its first cut checked only that the CONTROLS existed, and
+//    the audit proved by mutation that the exact defect being fixed (`const s = f` — the
+//    applied scale IS the fit scale, so 100% is unreachable and the stage never scrolls)
+//    could be restored with the whole suite still green. Arithmetic that can be reverted
+//    invisibly belongs in a function somebody can call with real numbers.
 {
   const guestLib = read('app-v2/src/lib/cobrowse.js');
   const flush = (guestLib.match(/const FLUSH_MS = (\d+)/) || [])[1];
   const buffer = (viewerSrc.match(/const LIVE_BUFFER_MS = (\d+)/) || [])[1];
   ok(flush && Number(flush) <= 40, `the guest holds events no longer than 40 ms before sending (FLUSH_MS = ${flush})`);
   ok(buffer && Number(buffer) <= 40, `the viewer's smoothing buffer is no longer than 40 ms (LIVE_BUFFER_MS = ${buffer})`);
-  // The measurement is written down beside each constant, so the next person raising one
-  // knows what it cost last time rather than guessing.
+  // DOCUMENTATION, not a behavioural guard, and labelled as one: no production mutation
+  // can fail it. It is here so that raising a constant and deleting the measurement that
+  // justified the last cut cannot both happen quietly in one commit.
   ok(/533 ms floor/.test(guestLib) && /533 ms floor/.test(viewerSrc),
-    'both constants record the measured latency they were cut from');
+    'both constants still record the measured latency they were cut from (documentation)');
   ok(/rp\.startLive\(ts - LIVE_BUFFER_MS\)/.test(viewerSrc), 'the live baseline uses that named buffer, not a literal');
+  // The faster flush DOUBLES the batch rate, so the hub's bookkeeping write must not
+  // double with it — the two are kept in inverse step.
+  {
+    const hubSrc = read('src/lib/cobrowse/hub.js');
+    const every = (hubSrc.match(/const BATCH_FLUSH_EVERY = (\d+)/) || [])[1];
+    ok(every && Number(every) >= 40,
+      `the hub still writes its batch counter about once a second, not twice (BATCH_FLUSH_EVERY = ${every})`);
+  }
 
-  // READABLE: fit is for orientation, 100% is for reading. A mirror that can only ever
-  // be shrunk to fit a page column renders a 1920-wide guest at about half size.
-  ok(/const \[zoom, setZoom\]/.test(viewerSrc), 'the viewer keeps a chosen size');
-  ok(/setZoom\(1\)/.test(viewerSrc) && />100%</.test(viewerSrc), 'the viewer offers 100% — the size the guest sees');
-  ok(/setZoom\('fit'\)/.test(viewerSrc) && />Fit</.test(viewerSrc), 'and Fit, to see the whole screen');
-  ok(/overflow: scale > fitScale \? 'auto' : 'hidden'/.test(viewerSrc),
-    'zoomed past the fit scale the stage SCROLLS rather than clipping the picture');
-  // A cap at the fit scale is the defect being fixed — it is what made 100% unreachable.
-  ok(!/Math\.min\(1, \(host\.clientWidth/.test(viewerSrc) || /const f = Math\.min\(1, \(host\.clientWidth/.test(viewerSrc),
-    'the fit scale is computed separately from the applied scale');
+  // READABLE — the arithmetic, run with real numbers. `fit` is for orientation, 100% is
+  // for reading; a mirror that can only ever be shrunk to fit a page column renders a
+  // 1920-wide guest at about half size, which is what "extremely unclear" meant.
+  // The module is ESM with no imports (the app's convention for a pure browser rule), so
+  // it is evaluated here the same way render-cobrowse-mask.js loads the mask: strip the
+  // export line and hand back the functions. That runs the REAL source, not a copy.
+  const zoomSrc = read('app-v2/src/lib/cobrowseZoom.js').replace(/^export \{[^}]*\};?\s*$/m, '');
+  const Z = new Function(`${zoomSrc}\nreturn { ZOOM_STOPS, MAX_ZOOM, fitScaleFor, appliedScale, stageOverflow, stageHeight, nextZoom, canZoom };`)();
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+
+  // The measured cases from the report: the stage is ~950px wide in this screen.
+  const fit1280 = Z.fitScaleFor(950, 1280);
+  const fit1920 = Z.fitScaleFor(950, 1920);
+  ok(near(Math.round(fit1280 * 1000) / 1000, 0.736), `a 1280-wide guest fits at 0.736 (got ${fit1280.toFixed(3)})`);
+  ok(fit1920 < 0.51, `a 1920-wide guest fits at about half size (got ${fit1920.toFixed(3)}) — the reason a zoom exists`);
+  ok(Z.fitScaleFor(2000, 1280) === 1, 'a guest narrower than the stage is shown at actual size, never stretched');
+
+  // THE DEFECT: the applied scale must NOT be the fit scale. This is the assertion the
+  // audit's mutation walked straight past when it lived as a regex.
+  ok(near(Z.appliedScale('fit', fit1280), fit1280), 'Fit draws at the fit scale');
+  ok(near(Z.appliedScale(1, fit1280), 1), 'but 100% draws at ACTUAL SIZE — never capped at the fit scale');
+  ok(near(Z.appliedScale(3, fit1280), 3) && near(Z.appliedScale(9, fit1280), 3), 'and zoom is clamped at 3x');
+  ok(near(Z.appliedScale('nonsense', fit1280), fit1280) && near(Z.appliedScale(0, fit1280), fit1280),
+    'an unusable stored size falls back to Fit, never to a nonsense scale');
+
+  // Past the fit scale the stage scrolls; at or below it there is nothing to scroll to.
+  ok(Z.stageOverflow(1, fit1280) === 'auto', 'zoomed past the fit scale the stage SCROLLS rather than clipping');
+  ok(Z.stageOverflow('fit', fit1280) === 'hidden', 'at Fit it does not, so a scrollbar cannot steal the width the next fit measures');
+
+  // The stage keeps the FIT height however far you zoom in, or the whole page grows a
+  // second scrollbar to hold one screen.
+  ok(Z.stageHeight(800, 1, fit1280) === Z.stageHeight(800, fit1280, fit1280),
+    'the stage keeps its fit height when zoomed, so the page never grows a second scrollbar');
+
+  // THE LADDER. 100% is always exactly reachable (stepping by 0.25 from an arbitrary fit
+  // scale never lands on 1), and stepping down off the bottom returns to FIT rather than
+  // pinning the mirror at the fit NUMBER — the audit found that a press that looked like
+  // nothing happened then clipped the picture the next time the window narrowed.
+  ok(Z.nextZoom('fit', fit1280, 1) === 1, 'one step up from Fit is actual size');
+  ok(Z.nextZoom(1, fit1280, -1) === 'fit', 'and one step down from actual size returns to FIT, never to the fit scale as a number');
+  ok(Z.nextZoom('fit', fit1280, -1) === 'fit' && Z.canZoom('fit', fit1280, -1) === false,
+    'there is no step below Fit, and the control says so rather than doing nothing');
+  ok(Z.nextZoom(3, fit1280, 1) === 3 && Z.canZoom(3, fit1280, 1) === false, 'and none above 3x');
+  ok(Z.ZOOM_STOPS.includes(1), 'the ladder passes through exactly 100%');
+  {
+    // Walk the whole ladder up and back down from a real fit scale and land where we began.
+    let z = 'fit'; const up = [];
+    for (let i = 0; i < 8; i += 1) { const n = Z.nextZoom(z, fit1280, 1); if (n === z) break; z = n; up.push(z); }
+    let back = z; for (let i = 0; i < 8; i += 1) { const n = Z.nextZoom(back, fit1280, -1); if (n === back) break; back = n; }
+    ok(up.length >= 2 && up[0] === 1 && back === 'fit',
+      `the ladder walks up (${up.join(' → ')}) and all the way back to Fit`);
+  }
+  // A guest narrower than the stage: Fit already IS actual size, so the ladder starts above it.
+  ok(Z.nextZoom('fit', 1, 1) > 1, 'when the whole screen already fits at actual size, stepping up still zooms in');
+
+  // AND THE SCREEN MUST CALL IT rather than keep a second opinion. Comment-stripped, per
+  // this file's own rule — the first cut read raw source and a mutation that deleted the
+  // entire control while leaving one comment line behind passed.
+  const viewStrip = strip(viewerSrc);
+  ok(/const s = appliedScale\(/.test(viewStrip) && /setScale\(s\)/.test(viewStrip),
+    'the viewer draws at the size the module resolves, not one it works out itself');
+  ok(/setFitScale\(\s*f\s*\)/.test(viewStrip) && /const f = fitScaleFor\(/.test(viewStrip), 'and takes the fit scale from the same module');
+  ok(/overflow:\s*stageOverflow\(/.test(viewStrip), 'the stage asks the module whether to scroll');
+  ok(/stageHeight\(/.test(viewStrip), 'and how tall to be');
+  ok(/nextZoom\(z, fitScale, -1\)/.test(viewStrip) && /nextZoom\(z, fitScale, 1\)/.test(viewStrip), 'the -/+ steps walk the shared ladder');
+  ok(/disabled=\{!canZoom\(/.test(viewStrip), 'and are disabled at their end rather than doing nothing');
+  ok(!/Math\.min\(1,\s*\(host\.clientWidth/.test(viewStrip), 'the fit scale is nowhere re-inlined in the screen');
+  ok(/data-zoom="actual"/.test(viewStrip) && /data-zoom="fit"/.test(viewStrip),
+    'the size buttons carry a stable handle — the readout can read "100%" too, so matching on the text finds two elements');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { Replayer } from '@rrweb/replay';
 import '@rrweb/replay/dist/style.css';
 import { api, getToken } from '../lib/api.js';
+import { fitScaleFor, appliedScale, stageOverflow, stageHeight, nextZoom, canZoom } from '../lib/cobrowseZoom.js';
 
 /* THE VIEWER (owner-directed 2026-09-02).
    Replays the watched person's masked page LIVE inside a sandboxed frame. This is
@@ -51,9 +52,16 @@ export default function StaffCobrowse() {
   const [fitScale, setFitScale] = useState(1);
   const zoomRef = useRef('fit');
   useEffect(() => { zoomRef.current = zoom; }, [zoom]);
-  // Re-fit when the chosen size changes. `fit` is redefined each render and reads
-  // the zoom through a ref, so it is deliberately not a dependency here.
-  useEffect(() => { fit(); }, [zoom]);
+  // Re-fit when the chosen size changes, and AGAIN on the next frame. The second pass is
+  // load-bearing: leaving a zoomed stage flips `overflow` back to hidden and REMOVES its
+  // scrollbar, so the width the first pass measured was ~15px short and Fit came back
+  // about 1% small until some later event happened to re-fit. `fit` is redefined each
+  // render and reads the zoom through a ref, so it is deliberately not a dependency.
+  useEffect(() => {
+    fit();
+    const id = requestAnimationFrame(() => fit());
+    return () => cancelAnimationFrame(id);
+  }, [zoom]);
 
   useEffect(() => {
     let alive = true;
@@ -71,14 +79,11 @@ export default function StaffCobrowse() {
     // zoom buttons can say "Fit" without recomputing it, and so 100% is a real choice
     // rather than a cap. `clientWidth` is read AFTER any scrollbar, so a zoomed stage
     // does not fight itself for width.
-    const f = Math.min(1, (host.clientWidth - 8) / w);
+    const f = fitScaleFor(host.clientWidth, w);
     setFitScale(f);
-    const z = zoomRef.current;
-    const s = z === 'fit' ? f : Number(z) || f;
+    const s = appliedScale(zoomRef.current, f);
     setScale(s);
-    // Zoomed past the stage the host scrolls, so its height is the stage's own, not the
-    // scaled picture's — otherwise the page grows a second scrollbar for one screen.
-    host.style.height = `${Math.ceil(h * Math.min(s, f)) + 8}px`;
+    host.style.height = `${stageHeight(h, s, f)}px`;
   };
 
   useEffect(() => {
@@ -377,20 +382,26 @@ export default function StaffCobrowse() {
           )}
           {!state.ended && <span className="act-sep" aria-hidden="true" />}
           {/* SIZE. Fit shows their whole screen; 100% shows it at the size THEY see it,
-              with the stage scrolling. Zooming out below the fit scale is pointless (the
-              whole screen is already in view), so the minus stops there. */}
+              with the stage scrolling. Below the fit scale there is nothing more to see,
+              so the floor is Fit ITSELF — never the fit scale as a number, which would
+              look like nothing happened and then clip the picture the next time the
+              window narrowed. Both steps are DISABLED at their end rather than doing
+              nothing. The buttons carry `data-zoom` because the readout can read "100%"
+              too, and a harness matching on the text would find two elements. */}
           {!state.ended && (
             <span className="act-group">
               <span className="act-label">Size</span>
-              <span className="seg" role="group" aria-label="Mirror size">
-                <button type="button" className={`btn small ${zoom === 'fit' ? 'primary' : 'ghost'}`} onClick={() => setZoom('fit')}>Fit</button>
-                <button type="button" className={`btn small ${zoom !== 'fit' && Number(zoom) === 1 ? 'primary' : 'ghost'}`} onClick={() => setZoom(1)} title="Show it at the size they see it — the stage scrolls.">100%</button>
+              <span className="cb-seg" role="group" aria-label="Mirror size">
+                <button type="button" data-zoom="fit" className={`btn small ${zoom === 'fit' ? 'primary' : 'ghost'}`} onClick={() => setZoom('fit')}>Fit</button>
+                <button type="button" data-zoom="actual" className={`btn small ${zoom !== 'fit' && Number(zoom) === 1 ? 'primary' : 'ghost'}`} onClick={() => setZoom(1)} title="Show it at the size they see it — the stage scrolls.">100%</button>
               </span>
-              <button type="button" className="btn soft small" aria-label="Smaller" title="Smaller"
-                onClick={() => setZoom((z) => Math.max(fitScale, Math.round(((z === 'fit' ? fitScale : Number(z)) - 0.25) * 100) / 100))}>−</button>
-              <span className="small" style={{ color: MUTED, minWidth: 44, textAlign: 'center' }} aria-live="polite">{Math.round(scale * 100)}%</span>
-              <button type="button" className="btn soft small" aria-label="Bigger" title="Bigger"
-                onClick={() => setZoom((z) => Math.min(3, Math.round(((z === 'fit' ? fitScale : Number(z)) + 0.25) * 100) / 100))}>+</button>
+              <button type="button" data-zoom="out" className="btn soft small" aria-label="Smaller" title="Smaller"
+                disabled={!canZoom(zoom, fitScale, -1)}
+                onClick={() => setZoom((z) => nextZoom(z, fitScale, -1))}>−</button>
+              <span data-zoom-readout className="small" style={{ color: MUTED, minWidth: 44, textAlign: 'center' }} aria-live="polite">{Math.round(scale * 100)}%</span>
+              <button type="button" data-zoom="in" className="btn soft small" aria-label="Bigger" title="Bigger"
+                disabled={!canZoom(zoom, fitScale, 1)}
+                onClick={() => setZoom((z) => nextZoom(z, fitScale, 1))}>+</button>
             </span>
           )}
           {!state.ended && <span className="act-sep" aria-hidden="true" />}
@@ -411,7 +422,7 @@ export default function StaffCobrowse() {
                   : (state.notice.text || '')}
         </div>
       )}
-      <div ref={hostRef} className="cobrowse-stage" tabIndex={-1} style={{ position: 'relative', border: state.control === 'granted' ? '3px solid #B3261E' : '1px solid #D9D2C5', borderRadius: 10, background: '#F6F3EC', overflow: scale > fitScale ? 'auto' : 'hidden', minHeight: 320 }}>
+      <div ref={hostRef} className="cobrowse-stage" tabIndex={-1} style={{ position: 'relative', border: state.control === 'granted' ? '3px solid #B3261E' : '1px solid #D9D2C5', borderRadius: 10, background: '#F6F3EC', overflow: stageOverflow(scale, fitScale), minHeight: 320 }}>
         <style>{`.cobrowse-stage .replayer-wrapper{transform-origin:0 0;transform:scale(${scale});position:absolute;left:4px;top:4px}.cobrowse-stage .replayer-mouse{z-index:20}`}</style>
         {state.ended && <div style={{ position: 'absolute', inset: 0, background: 'rgba(246,243,236,.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: INK, fontWeight: 600, zIndex: 30 }}>{reasonText[state.ended] || 'Session ended.'}</div>}
       </div>

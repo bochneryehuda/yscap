@@ -204,24 +204,65 @@ async function main() {
     //    screen — MEASURED at 0.736 for a 1280-wide guest in this stage, and about 0.50
     //    for a 1920-wide one, which is half-size body text. 100% is what makes it
     //    readable, and the stage must SCROLL there rather than clip.
+    //    The buttons are addressed by `data-zoom`, NEVER by their text: the readout beside
+    //    them can itself read "100%", and `text=100%` then resolves to two elements and
+    //    throws a strict-mode violation rather than failing an assertion.
     const sizeOf = () => viewer.page.evaluate(() => {
       const st = document.querySelector('.cobrowse-stage');
       const wrap = st && st.querySelector('.replayer-wrapper');
       const t = wrap ? getComputedStyle(wrap).transform : '';
       const m = /matrix\(([\d.]+)/.exec(t || '');
-      return { scale: m ? Number(m[1]) : null, overflow: st ? getComputedStyle(st).overflowX : null };
+      const fr = st && st.querySelector('iframe');
+      return {
+        scale: m ? Number(m[1]) : null,
+        overflow: st ? getComputedStyle(st).overflowX : null,
+        stageW: st ? st.clientWidth : null,
+        guestW: fr ? Number(fr.getAttribute('width')) || fr.offsetWidth : null,
+      };
     });
     const fitSize = await sizeOf();
-    ok(fitSize.scale !== null && fitSize.scale <= 1, `Fit shows the whole screen (scale ${fitSize.scale})`);
-    await viewer.page.click('text=100%');
-    await viewer.page.waitForTimeout(400);
-    const fullSize = await sizeOf();
-    ok(Math.abs((fullSize.scale || 0) - 1) < 0.01, `100% really is actual size (scale ${fullSize.scale}) — the old fit-to-width cap made this unreachable`);
-    ok(fullSize.overflow === 'auto' || fullSize.overflow === 'scroll',
-      `zoomed in the stage scrolls instead of clipping (overflow-x: ${fullSize.overflow})`);
-    await viewer.page.click('text=Fit');
-    await viewer.page.waitForTimeout(300);
-    ok(Math.abs((await sizeOf()).scale - fitSize.scale) < 0.01, 'and Fit puts it back');
+    // Not merely "<= 1" — that holds for a broken 0.05 too. Fit must actually put the
+    // guest's whole width inside the stage, and be the largest scale that does.
+    ok(fitSize.scale !== null && fitSize.guestW > 0
+      && fitSize.scale * fitSize.guestW <= fitSize.stageW + 1
+      && fitSize.scale * fitSize.guestW > fitSize.stageW - 40,
+      `Fit puts the guest's whole ${fitSize.guestW}px screen inside the ${fitSize.stageW}px stage and no smaller (scale ${fitSize.scale})`);
+
+    if (fitSize.scale >= 0.995) {
+      // The viewer's window is wide enough that Fit already IS actual size, so there is no
+      // cap to prove unreachable. Said out loud rather than passing quietly on nothing.
+      ok(true, 'SKIPPED the 100% check: this viewer window fits the guest at actual size already');
+    } else {
+      await viewer.page.click('[data-zoom="actual"]');
+      await viewer.page.waitForTimeout(400);
+      const fullSize = await sizeOf();
+      ok(Math.abs((fullSize.scale || 0) - 1) < 0.01, `100% really is actual size (scale ${fullSize.scale}) — the old fit-to-width cap made this unreachable`);
+      ok(fullSize.overflow === 'auto' || fullSize.overflow === 'scroll',
+        `zoomed in the stage scrolls instead of clipping (overflow-x: ${fullSize.overflow})`);
+      // Stepping down off the bottom of the ladder must return to FIT, not pin the mirror
+      // at the fit scale as a number — a press that looks like nothing happened and then
+      // clips the picture the next time the window narrows (pre-merge audit).
+      await viewer.page.click('[data-zoom="out"]');
+      await viewer.page.waitForTimeout(400);
+      const backDown = await sizeOf();
+      const minusDisabled = await viewer.page.locator('[data-zoom="out"]').isDisabled();
+      ok(Math.abs(backDown.scale - fitSize.scale) < 0.01 && minusDisabled,
+        `one step down returns to Fit and the step says it is the floor (scale ${backDown.scale}, − disabled ${minusDisabled})`);
+
+      await viewer.page.click('[data-zoom="actual"]');
+      await viewer.page.waitForTimeout(300);
+      await viewer.page.click('[data-zoom="fit"]');
+      // Fit is re-measured on the NEXT frame because leaving a zoomed stage removes its
+      // scrollbar, so the first pass measured a width ~15px short. Wait for the value to
+      // settle rather than sampling once and hoping.
+      await viewer.page.waitForFunction((want) => {
+        const st = document.querySelector('.cobrowse-stage');
+        const wrap = st && st.querySelector('.replayer-wrapper');
+        const m = /matrix\(([\d.]+)/.exec((wrap ? getComputedStyle(wrap).transform : '') || '');
+        return m && Math.abs(Number(m[1]) - want) < 0.005;
+      }, fitSize.scale, { timeout: 4000 }).catch(() => {});
+      ok(Math.abs((await sizeOf()).scale - fitSize.scale) < 0.01, 'and Fit puts it back exactly, with no scrollbar-width shortfall');
+    }
 
     // ── THE GUEST CAN STILL DO EVERYTHING WHILE WATCHED (the owner's own question) ──
     //    Co-browsing is an observer on top of the app, never a cage: while merely watched,
@@ -471,7 +512,13 @@ async function main() {
     ok(r.data.session.status === 'ended', 'the phone session ends on Stop');
     await phone.close();
 
-    const bad = (l) => errors[l].filter((e) => !/favicon|manifest|ResizeObserver|net::ERR_ABORTED|events\?token|EventSource/.test(e));
+    // "Blocked script execution … the document's frame is sandboxed" is Chromium saying the
+    // MIRROR'S SANDBOX DID ITS JOB: nothing inside the replay frame may run, which is the
+    // whole security posture of this feature. It appears only when the mirrored page happens
+    // to carry a script node at snapshot time, so it cannot be asserted as present — but
+    // counting it as a page error reports a guarantee as a defect, and a check that fails on
+    // its own success teaches the reader to disbelieve it.
+    const bad = (l) => errors[l].filter((e) => !/favicon|manifest|ResizeObserver|net::ERR_ABORTED|events\?token|EventSource|Blocked script execution/.test(e));
     ok(bad('guest').length === 0, `no page errors on the guest (${bad('guest').slice(0, 2).join(' | ')})`);
     ok(bad('viewer').length === 0, `no page errors on the viewer (${bad('viewer').slice(0, 2).join(' | ')})`);
   } catch (e) {

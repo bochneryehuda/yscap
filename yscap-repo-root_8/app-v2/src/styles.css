@@ -6852,6 +6852,13 @@ tr.tape-row-on{background:rgba(47,127,134,.07)}
 .cb-answer{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px}
 .cb-answer .cb-answer-no{color:#B3261E}
 .cb-answer .cb-answer-quiet{color:#4B585C}
+/* The mirror's Fit / 100% pair. Its own class, not the global `.seg`: that one carries a
+   `margin:2px 0 6px` from an earlier definition (which knocks it off the centre line of
+   the action bar it sits in) and stacks into two full-width rows under 720px, which is
+   wrong for a two-word pair inside a toolbar. Same namespacing lesson as `.crx-off`. */
+.cb-seg{display:inline-flex;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.cb-seg > .btn{border-radius:0;border:0;min-height:30px;padding:4px 11px;font-size:12px}
+.cb-seg > .btn + .btn{border-left:1px solid var(--border)}
 
 @media(max-width:720px){
   .cb-wait{width:100%;justify-content:space-between;border-radius:12px}
