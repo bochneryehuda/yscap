@@ -889,6 +889,40 @@ const SETTINGS = [
       + 'decision beats a lookup; the label always comes from the canonical investor.',
     evidence: 'Owner-directed 2026-08-30: "We should be able to link them together side by side '
       + 'and then select this one. Want to see from this program."' },
+  // INVESTORS WE ADD BY HAND — the door for an investor the code registry has
+  // never heard of (owner-directed 2026-09-02: *"I want to be able to add a new
+  // investor myself — one came up on a vendor board and there was nowhere to put
+  // it. And I need to give it our own name, the way the others have one."*).
+  //
+  // WHY A SETTING AND NOT A BIGGER REGISTRY: the registry in
+  // `encompass/investors.js` is CODE — it carries what the loan file has seen,
+  // and growing it takes a deploy. An investor that turns up on a vendor board
+  // this morning cannot wait for one. This map is the human overlay: it is laid
+  // OVER the registry by `pricing/investor-roster.js`, which is the only place
+  // the two are ever combined, so there is still exactly one effective roster and
+  // no second copy of the registry lives here.
+  //
+  // ⛔ THE WHITE LABEL IS A CLIENT-FACING NAME, so the write door does more than
+  // shape-check it: it refuses a key or a spelling that collides with anything
+  // already recorded (a link that means two investors is worse than no link), and
+  // it PROVES the label and every alias survive the audience scrub before the
+  // value is stored. An investor whose real name would reach a borrower is
+  // refused at this door rather than discovered on a quote.
+  { key: 'pricing.customInvestors', group: 'Combined Pricing Engine', label: 'Combined engine — investors added by hand',
+    type: 'map', default: {},
+    description: 'Per investor key: { label, whiteLabel, aliases: ["…"], addedBy, addedAt }. '
+      + '`label` is the investor\'s real name, `aliases` are the spellings the vendors use for it, '
+      + 'and `whiteLabel` is the name a client may see. The key must be lower-case letters, digits '
+      + 'and underscores, and may not be one the registry already uses.',
+    evidence: 'Owner-directed 2026-09-02: "I want to be able to add a new investor myself… And I '
+      + 'need to give it our own name, the way the others have one."',
+    // The write door and the load hook, declared HERE beside the key so a caller
+    // cannot save this map down some other path and skip either one.
+    validate: (v) => {
+      const r = require('../pricing/investor-roster').validateCustom(v);
+      return { ok: r.ok, value: r.custom, problems: r.problems };
+    },
+    applyOnLoad: (v) => require('../audience').useCustomInvestors(v) },
   // THE MARGIN HOLDBACK WE ADD OURSELVES, and it is a SETTING now rather than a
   // constant (owner-directed 2026-08-30: *"there should always be in the
   // settings the possibility to move up the margin hold back, remove the margin

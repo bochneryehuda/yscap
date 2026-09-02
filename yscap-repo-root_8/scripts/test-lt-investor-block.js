@@ -25,6 +25,7 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const A = require(path.join(ROOT, 'src/longterm/audience'));
 const investors = require(path.join(ROOT, 'src/longterm/encompass/investors'));
+const roster = require(path.join(ROOT, 'src/longterm/pricing/investor-roster'));
 
 let failures = 0;
 const check = (cond, msg) => {
@@ -83,9 +84,24 @@ const CONTEXTS = [
   (n) => `${n}_approval_signed.pdf`,
   (n) => `Per ${n} guidelines, two months of statements are needed.`,
 ];
+// AN INVESTOR SOMEBODY ADDED BY HAND IS SWEPT EXACTLY LIKE A RECORDED ONE.
+// Its label and every spelling recorded for it are names a client may not see,
+// and the whole point of the door that adds one is that it does not take a
+// deploy — so a scrub that covered only the code registry would go stale the
+// first afternoon somebody used it. `useCustomInvestors` is the hook the
+// settings store fires on the load that read them; this is that same call.
+const CUSTOM_FIXTURE = {
+  swept_capital: {
+    label: 'Sweptside Capital Partners',
+    whiteLabel: 'Northgate',
+    aliases: ['Sweptside Capital Partners', 'Sweptside Cap', 'SWEPTSIDE CAPITAL PARTNERS LLC'],
+  },
+};
+A.useCustomInvestors(CUSTOM_FIXTURE);
+
 let missed = [];
 let checkedSpellings = 0;
-for (const inv of investors.INVESTORS) {
+for (const inv of roster.effectiveList(roster.readCustom(CUSTOM_FIXTURE).custom)) {
   for (const raw of [inv.label].concat(inv.aliases || [])) {
     const name = String(raw || '').trim();
     if (!name) continue;
@@ -216,8 +232,48 @@ check(!A.mentionsInvestor(JSON.stringify(forClient)),
 // If this ever stops holding, the block has been re-implemented against a
 // hard-coded list somewhere and will rot the day a new investor is added.
 const src = require('fs').readFileSync(path.join(ROOT, 'src/longterm/audience.js'), 'utf8');
-check(/require\(['"]\.\/encompass\/investors['"]\)/.test(src),
-  'the block reads the investor REGISTRY — not a private hard-coded list');
+const rosterSrc = require('fs').readFileSync(path.join(ROOT, 'src/longterm/pricing/investor-roster.js'), 'utf8');
+// The block reads the EFFECTIVE ROSTER, and the effective roster reads the
+// registry. Both halves are asserted: a block reading a roster that had stopped
+// reading the registry would pass a check on either one alone, and would rot the
+// day a new investor is added to the code — which is the failure this guards.
+check(/require\(['"]\.\/pricing\/investor-roster['"]\)/.test(src),
+  'the block reads the ONE effective roster — not a private hard-coded list');
+check(/require\(['"]\.\.\/encompass\/investors['"]\)/.test(rosterSrc),
+  '…and that roster is the code registry with the hand-added investors laid over it');
+check(!/require\(['"]\.\/encompass\/investors['"]\)/.test(src),
+  'the block has no second door to the registry, so the two can never drift');
+
+// A HAND-ADDED INVESTOR IS BLOCKED THE MOMENT IT IS SAVED — the property the
+// write door proves before it stores a white label, asserted here from the other
+// end: after the load hook has run, the label and every spelling are scrubbed in
+// every one of the five sentence shapes, and the client-safe name survives.
+{
+  const before = A.summary().customInvestorsBlocked;
+  A.useCustomInvestors(CUSTOM_FIXTURE);
+  check(A.summary().customInvestorsBlocked === 1 && before === 1,
+    'the investors added by hand are in force in the block');
+  let leaked = [];
+  for (const spelling of CUSTOM_FIXTURE.swept_capital.aliases.concat([CUSTOM_FIXTURE.swept_capital.label])) {
+    for (const ctx of CONTEXTS) {
+      const text = ctx(spelling);
+      if (A.scrubInvestorNames(text, 'borrower') === text) leaked.push(`"${spelling}" in ${JSON.stringify(text)}`);
+    }
+  }
+  check(leaked.length === 0,
+    `a hand-added investor's label and every spelling are scrubbed in every shape (${leaked.length} leaked)`);
+  if (leaked.length) leaked.slice(0, 4).forEach((m) => console.error(`         · ${m}`));
+  const wl = CUSTOM_FIXTURE.swept_capital.whiteLabel;
+  check(A.scrubInvestorNames(`Your ${wl} quote is ready to review.`, 'borrower') === `Your ${wl} quote is ready to review.`,
+    'and the name a client MAY see survives the scrub untouched — otherwise the investor could never be quoted');
+  // Taking them back out is what a settings store that could not be read does.
+  A.useCustomInvestors(null);
+  check(A.summary().customInvestorsBlocked === 0
+    && A.scrubInvestorNames(`Approval received from ${CUSTOM_FIXTURE.swept_capital.label} on 5/2.`, 'borrower')
+      .includes(CUSTOM_FIXTURE.swept_capital.label),
+    'with none in force the block is the registry alone — the behaviour before they existed');
+  A.useCustomInvestors(CUSTOM_FIXTURE);
+}
 check(A.summary().spellingsBlocked >= 80,
   `${A.summary().spellingsBlocked} spellings are actively blocked`);
 

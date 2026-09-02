@@ -195,6 +195,53 @@ for (const [spelling, wantKey] of LIVE_LP) {
     check(!aliasSet.has(name.toLowerCase()),
       `F: …and "${name}" is not a recorded investor spelling (${key})`);
   }
+
+  /* THE SAME PROPERTY, FOR AN INVESTOR SOMEBODY ADDS BY HAND (2026-09-02).
+     The sheet is committed code, so its names were checked once when they were
+     written. A hand-added investor's client-safe name is typed by a person on an
+     afternoon, and it has to hold the SAME property or that investor's quote
+     would print as "our capital partner" with nobody able to tell why. It is
+     held by the write door, which RUNS this scrub before it stores the value —
+     so the property is asserted here from both ends: a good name survives, and
+     a name that would be redacted is refused rather than stored. */
+  const roster = require(path.join(ROOT, 'src/longterm/pricing/investor-roster'));
+  const good = roster.validateCustom({ x: { label: 'Fine Name Capital', whiteLabel: 'Northgate' } });
+  const sentence = 'Your Northgate quote is ready to review.';
+  check(good.ok && A.scrubInvestorNames(sentence, 'borrower') === sentence
+    && A.scrubInvestorNames(sentence, 'tpo') === sentence,
+  'F: a hand-added investor’s client-safe name survives the borrower AND TPO scrub');
+  const bad = roster.validateCustom({
+    x: { label: 'Fine Name Capital', whiteLabel: `${investors.INVESTORS[0].label} Group` },
+  });
+  check(!bad.ok && bad.problems.some((p) => p.problem === 'white_label_would_be_redacted'),
+    'F: …and one the scrub WOULD redact is refused at the door, never stored to be discovered on a quote');
+}
+
+// ── F2. The DECORATION reaches a hand-added investor too ─────────────────────
+// The decoration is what puts the client-safe name on a row. An investor the
+// registry has never heard of had none, so its rows read as unmapped on the
+// internal board; it now carries both names exactly as a recorded investor does
+// — and still carries NULL when nobody has named it, because a client may never
+// be shown a name we did not choose.
+{
+  const roster = require(path.join(ROOT, 'src/longterm/pricing/investor-roster'));
+  const custom = roster.readCustom({
+    sweptside: { label: 'Sweptside Capital Partners', whiteLabel: 'Northgate', aliases: ['Sweptside Cap'] },
+    nameless: { label: 'Nameless Capital' },
+  }).custom;
+  const deco = IP.decorateDisqualifiedLenders([
+    { lender: 'Sweptside Cap', items: [{ program: 'DSCR 30yr', rate: 7.5, reasons: ['dscr'] }] },
+    { lender: 'Nameless Capital', items: [{ program: 'DSCR 30yr', rate: 7.5, reasons: ['dscr'] }] },
+  ], custom);
+  check(deco[0].investorKey === 'sweptside' && deco[0].whiteLabel === 'Northgate',
+    'F2: a hand-added investor is decorated with its key and the name a client may see');
+  check(deco[1].investorKey === 'nameless' && deco[1].whiteLabel === null,
+    'F2: …and one nobody has named is recognised but carries NO client-safe name');
+  const plain = IP.decorateDisqualifiedLenders([
+    { lender: 'Sweptside Cap', items: [{ program: 'DSCR 30yr', rate: 7.5, reasons: ['dscr'] }] },
+  ]);
+  check(plain[0].investorKey === null && plain[0].whiteLabel === null,
+    'F2: CONTROL: with none in force that same row is nobody — the behaviour before this existed');
 }
 
 // ── G. The full roster — what the pre-search dropdown offers ─────────────────

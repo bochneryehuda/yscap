@@ -147,10 +147,19 @@ console.log('\nD. both screens are the super admin\'s alone');
 console.log('\nE. the settings screen keeps no roster of its own');
 {
   const s = codeOf(settings);
+  const links = codeOf(read('app-v2/src/longterm/LtInvestorLinks.jsx'));
   ok(/ltApi\.combinedInvestors\(\)/.test(s) && /ltApi\.combinedSaveInvestors\(/.test(s),
     'E1 it reads the roster from the server and writes the whole map back');
-  ok(!/deephaven|oaktree|pennymac|acra|nqm|eresi/i.test(s),
-    'E2 …and it names NO investor in its own source — the roster is derived server-side from the one registry');
+  // The list of names below is not a list of investors — it is a list of the
+  // ways one could get INTO a screen. `clearedge` rides with them because it is
+  // the investor the owner asked to be able to add by hand, and the door for
+  // that must not be a name typed into a screen.
+  ok(!/deephaven|oaktree|pennymac|acra|nqm|eresi|clearedge/i.test(s),
+    'E2 …and it names NO investor in its own source — the roster is derived server-side from the one effective roster');
+  ok(!/deephaven|oaktree|pennymac|acra|nqm|eresi|clearedge/i.test(links),
+    'E2b …nor does the linking screen, which now also carries the form that ADDS one');
+  ok(/ltApi\.combinedCustomInvestors\(\)/.test(s) && /ltApi\.combinedSaveCustomInvestors\(/.test(s),
+    'E2c the investors added by hand are read and written through the server as well — the browser keeps no copy of them');
   ok(/whiteLabelMissing/.test(s) && /never (be )?invented|nothing has been made up/i.test(settings),
     'E3 …and an investor with no client-safe name is shown EMPTY and said out loud, never filled with a guess');
 }

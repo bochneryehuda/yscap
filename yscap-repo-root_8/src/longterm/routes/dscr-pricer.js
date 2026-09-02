@@ -21,6 +21,7 @@ const investorPrograms = require('../lenderprice/investor-programs');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
 const zipCounty = require('../lenderprice/zip-county');
 const settingsStore = require('../settings/store');
+const rosterContext = require('../pricing/roster-context');
 const { resolveCompPlan } = require('../comp-plan');
 const bracketRun = require('../pricing/bracket-run');
 const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
@@ -611,10 +612,19 @@ async function compPlanHandler(req, res) {
 // GET /investors — the FULL white-label roster (owner-directed 2026-08-27): every
 // investor on the owner's sheet, live in Lender Price or not, so the pre-search
 // dropdown lists them all and an investor that comes online later "is already
-// there". A pure read of the committed sheet — no vendor call, no database — so
-// the screen may fetch it from an effect.
-function investorsRoster(req, res) {
-  res.json({ ok: true, investors: investorPrograms.fullRoster() });
+// there". No vendor call. It DOES read settings now, because the roster is no
+// longer only the committed sheet: an investor added by hand belongs on this
+// list the moment somebody adds it, and a white label chosen in settings is the
+// name that applies. `rosterContext.load()` never throws — a settings outage
+// answers the sheet alone and says `degraded`, which is what this door answered
+// before custom investors existed.
+async function investorsRoster(req, res) {
+  const ctx = await rosterContext.load();
+  res.json({
+    ok: true,
+    investors: investorPrograms.fullRoster(ctx.custom, ctx.settings),
+    degraded: ctx.degraded === true,
+  });
 }
 
 // A router with the endpoints wired. Auth is applied by the mount (staff at /api/lt, or the
@@ -623,7 +633,10 @@ function makeRouter() {
   const router = express.Router();
   router.use(express.json({ limit: '256kb' }));
   router.get('/zip/:zip', zipLookup);
-  router.get('/investors', investorsRoster);
+  router.get('/investors', (req, res) => investorsRoster(req, res).catch((e) => {
+    console.error('[lt-dscr] investors roster failed:', (e && e.message) || e);
+    res.status(500).json({ ok: false, error: 'lt_dscr_investors_error' });
+  }));
   router.get('/comp-plan', (req, res) => compPlanHandler(req, res).catch((e) => {
     console.error('[lt-dscr] comp-plan failed:', (e && e.message) || e);
     // ⛔ NO PLAN IS THE ANSWER, never a guessed one — the screen falls back to raw pricing

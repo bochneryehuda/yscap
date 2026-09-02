@@ -143,10 +143,9 @@ ok(g.nexted && g.code === null, 'gate passes through on correct token');
   ok(s.lenders[0].investorKey === 'newrez' && s.lenders[0].whiteLabel === 'Onyx',
     'a decorated declined group keeps its investorKey + white-label through the pager');
 
-  let sent = null;
-  dp.handlers.investorsRoster({}, { json: (b) => { sent = b; } });
-  ok(sent && sent.ok === true && Array.isArray(sent.investors) && sent.investors.length === 24,
-    `GET /investors answers the whole 24-name sheet (${sent && sent.investors ? sent.investors.length : 0})`);
+  // GET /investors is asserted at the bottom of this file — it reads settings
+  // now (an investor somebody added by hand belongs on the pre-search list the
+  // moment it exists), so it is async and needs a stubbed store to prove.
 
   const routeSrc = require('fs').readFileSync(require('path').join(__dirname, '../src/longterm/routes/dscr-pricer.js'), 'utf8');
   ok(/investorPrograms\.decorate\(full\.programs\)/.test(routeSrc) && /investorRoster: deco\.roster/.test(routeSrc),
@@ -159,5 +158,63 @@ ok(g.nexted && g.code === null, 'gate passes through on correct token');
     'the poll-by-key door decorates a COPY — the client\'s cached parse is never mutated');
 }
 
-console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
-process.exit(failures ? 1 : 0);
+/**
+ * GET /investors — THE ROSTER DOOR, WHICH NOW READS SETTINGS.
+ *
+ * It used to answer the committed white-label sheet and nothing else. It still
+ * answers that sheet — every name on it, live in Lender Price or not — and it
+ * ALSO answers the investors somebody added by hand, because an investor that
+ * turns up on a vendor board this morning belongs on the pre-search list this
+ * morning rather than after a deploy.
+ *
+ * The settings store is stubbed at the DATABASE, not at the store: stubbing the
+ * store would prove this door calls a function, and what has to be proven is
+ * that a row somebody saved reaches the list.
+ */
+(async () => {
+  const path = require('path');
+  const dbPath = require.resolve(path.join(__dirname, '../src/longterm/db'));
+  const realDb = require.cache[dbPath];
+  const store = require('../src/longterm/settings/store');
+
+  const rows = [{
+    key: 'pricing.customInvestors',
+    value: {
+      swept_capital: {
+        label: 'Sweptside Capital Partners',
+        whiteLabel: 'Northgate',
+        aliases: ['Sweptside Capital Partners', 'Sweptside Cap'],
+      },
+    },
+  }];
+  require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { query: async () => ({ rows }) } };
+  store.bust();
+
+  let sent = null;
+  await dp.handlers.investorsRoster({}, { json: (b) => { sent = b; } });
+  const names = (sent && sent.investors ? sent.investors : []).map((i) => i.whiteLabel);
+  ok(sent && sent.ok === true && Array.isArray(sent.investors) && sent.investors.length >= 24,
+    `GET /investors answers the whole sheet (${sent && sent.investors ? sent.investors.length : 0} names)`);
+  ok(names.includes('Northgate'),
+    'and an investor somebody added by hand is ON that list, under the name a client may see');
+  ok(sent && sent.degraded === false,
+    'a readable store is not reported as degraded');
+
+  // The sheet ALONE when the store cannot be read — the behaviour this door had
+  // before hand-added investors existed. A settings outage may cost the ones
+  // somebody added; it may never cost the sheet.
+  require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { query: async () => { throw new Error('no database'); } } };
+  store.bust();
+  let out = null;
+  await dp.handlers.investorsRoster({}, { json: (b) => { out = b; } });
+  ok(out && out.ok === true && out.investors.length === 24 && !out.investors.some((i) => i.whiteLabel === 'Northgate'),
+    'an unreadable store answers the 24-name sheet alone — never an empty list, never a throw');
+  ok(out && out.degraded === true,
+    '…and says so, so a short list is never presented as the whole truth');
+
+  if (realDb) require.cache[dbPath] = realDb; else delete require.cache[dbPath];
+  store.bust();
+
+  console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
+  process.exit(failures ? 1 : 0);
+})();

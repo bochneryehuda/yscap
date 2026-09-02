@@ -280,6 +280,57 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     empty panel has a second cause; one live call settles it. What is certain is that we were not
     behaving the way the vendor's own client does, and now we are.
 
+12. **AN INVESTOR NOBODY HAS RECORDED CAN BE ADDED BY HAND, AND IT BEHAVES LIKE A RECORDED ONE
+    (owner-directed 2026-09-02).** *"I want to be able to add a new investor myself — one came up on
+    a vendor board and there was nowhere to put it. And I need to give it our own name, the way the
+    others have one."* Also, on the linking screen: *"the list should be alphabetical so I can find
+    a name"*, and *"the save button should always be there."*
+    **WHAT WAS BROKEN.** Identity came from `encompass/investors.js` alone, which is CODE: a
+    spelling it does not carry resolves to nothing, the merge keeps that row OFF the board (it must
+    — an unnamed investor cannot be white-labelled, and a client may never read a real investor
+    name), and the only fix was a deploy. The 2026-08-30 links screen closed half of that: a person
+    could say "this spelling IS that investor" — but only about an investor the registry already
+    knew. An investor we have never priced could be pointed at nothing.
+    **THE SHAPE.** `pricing/investor-roster.js` is the ONE place the code registry and a settings
+    map are ever combined, and it is PURE: every reader takes the map as an ARGUMENT
+    (`investor-settings`, `investor-links`, `merge`, `investor-routing`, `investor-programs`,
+    `pricer-groups`, both engines' roster doors, the loan-investor mirror), so nothing keeps a
+    private copy and nothing has to reach for a store to answer "who is this". `pricing/roster-
+    context.js` is the ONE loader that fetches the map, and it never throws: an unreadable store
+    yields the REGISTRY ALONE and says so, which is exactly how the engine behaved before this
+    existed — a broken setting can cost the hand-added investors, never the board.
+    **THE DOOR IS WHERE THE SAFETY IS**, because a white label is a name a client may read.
+    `validateCustom` refuses the whole map — never half-repairs it — when a key, a name or a
+    spelling collides with anything already recorded (a link that means two investors is worse than
+    no link), and it PROVES the client-safe name by RUNNING the audience scrub over it rather than
+    checking a list: a name that would be blanked out is refused at the door instead of discovered
+    on a quote. It is declared BESIDE the setting (`settings/encompass-settings.js` `validate`), and
+    the settings store runs it, so there is no second path that stores the value unchecked. Its
+    sibling `applyOnLoad` tells `audience.js` on the read that loaded it, so the block knows a new
+    investor's spellings without anybody remembering to tell it — and `audience.js` now sweeps the
+    EFFECTIVE roster, so the hard rule "the investor name never reaches a client" covers an investor
+    added this afternoon exactly as it covers one in the registry.
+    **THE SCREENS.** The link pick-list is A to Z with a type-to-search box; the picker had to be
+    lifted OUT of the screen and memoised, because a component declared inside another component is
+    a new component type on every render — React throws it away and rebuilds it, so the search box
+    lost focus and every keystroke. Both Save buttons are always live and say in words why there is
+    nothing to send, rather than being greyed out and saying nothing. The "not recognised on the
+    last board" block now reaches the settings screen (the last board's pairing is remembered for
+    the session) and each row offers "Add this as a new investor", carrying the vendor's OWN
+    spelling in as the first alias — retyping it by hand is how a second, slightly different
+    spelling gets created. `app-v2/src/longterm/customInvestors.js` is the browser twin of the key
+    rule, pinned to the server's by a test that RUNS both.
+    **TWO THINGS DELIBERATELY NOT DONE, both flagged to the owner rather than guessed.** Clearing a
+    white label takes that row's own name AWAY, so the row returns to the sheet's name where there
+    is one — the screen now SAYS which name will apply before saving, but a deliberate "this
+    investor has a sheet name and may still never be shown to a client" is not expressible (switch
+    the investor off instead). And the general engine's PRICE path is untouched: only its roster
+    door reads the hand-added investors, because the owner's standing rule is *"don't touch our
+    current setup"*.
+    Guarded by `scripts/test-lt-custom-investors-pure.js` (ten mutations proven, with green controls
+    either side) and by re-pointed assertions in the investor-block, link, programs, holdback,
+    dscr-routes, pricer-shared, settings-screen and combined-audit suites.
+
 ---
 
 ## Update, 2026-08-30 (second pass)

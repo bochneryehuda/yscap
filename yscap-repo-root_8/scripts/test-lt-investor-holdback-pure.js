@@ -105,6 +105,35 @@ console.log('\n== C. WHOSE ROWS IT MOVES ==');
   // The AIM is resolved by the ONE resolver, never a second lookup.
   ok(/resolveInvestor\(/.test(src('src/longterm/routes/combined-pricer.js')),
     'AIM-5 …and the route resolves which investor a row belongs to with merge\'s own resolver, not a second lookup that could disagree with the merge');
+
+  /* AN INVESTOR SOMEBODY ADDED BY HAND CARRIES ITS OWN EXTRA TOO (2026-09-02).
+     The whole chain has to know about it or the extra silently does nothing: the
+     row is resolved by the same resolver, the setting is read against the same
+     effective roster, and the price moves. A chain that knew about the investor
+     in one of those three places and not the others would take the standing
+     figure off a row somebody had deliberately set an extra on. */
+  const roster = require('../src/longterm/pricing/investor-roster');
+  const custom = roster.readCustom({
+    sweptside: { label: 'Sweptside Capital Partners', whiteLabel: 'Northgate', aliases: ['Sweptside Cap'] },
+  }).custom;
+  const cfg2 = settings.readSettings({ sweptside: { holdback: 0.25 } }, custom);
+  const extraFor2 = (prog) => {
+    const hit = mergeMod.resolveInvestor(prog, null, custom);
+    if (!hit || !hit.key) return null;
+    const row = settings.settingFor(hit.key, cfg2.settings, custom);
+    return row && row.holdbackOrigin === 'setting' ? row.holdback : null;
+  };
+  const b2 = { source: 'loannex', programs: [{ investor: 'Sweptside Cap', rungs: [{ rate: 7, price: 101.5, points: -1.5 }] }] };
+  const withCustom = vm.applyToBoard(b2, 'loannex', { extraFor: extraFor2 });
+  ok(withCustom.programs[0].rungs[0].price === 101 && withCustom.programs[0].marginHoldback === 0.5,
+    `AIM-10 a hand-added investor's own extra reaches its rows (got ${withCustom.programs[0].rungs[0].price})`);
+  const without = vm.applyToBoard(
+    { source: 'loannex', programs: [{ investor: 'Sweptside Cap', rungs: [{ rate: 7, price: 101.5, points: -1.5 }] }] },
+    'loannex',
+    { extraFor: (prog) => { const h = mergeMod.resolveInvestor(prog, null); return h.key ? 0.25 : null; } },
+  );
+  ok(without.programs[0].rungs[0].price === 101.25 && without.programs[0].marginHoldback === 0.25,
+    'AIM-11 CONTROL: with none in force that same row is nobody, so it takes the standing figure alone');
 }
 {
   // With nobody carrying an extra, the board is what it always was.

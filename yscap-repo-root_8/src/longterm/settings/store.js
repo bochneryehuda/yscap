@@ -30,6 +30,18 @@
  *      perhaps monthly. The cache is busted on every write in this process; the TTL
  *      is what carries a write made by another instance.
  *
+ * A FIFTH, ADDED FOR THE MAPS: a declaration may carry its OWN write door
+ * (`validate`) and its own load hook (`applyOnLoad`), and this store runs them.
+ * A setting whose value is a small database of its own — the investors added by
+ * hand, whose white labels are names a client may see — cannot be checked by
+ * "is the key declared"; the rules that make it safe live with the thing it
+ * describes, and running them HERE is what makes them unskippable: every write
+ * lands through `save()`, so there is no second path that stores the value
+ * unchecked. `applyOnLoad` is the mirror: a value that something in the process
+ * must be TOLD about (the audience block, which has to know a hand-added
+ * investor's spellings before it can scrub them) is handed over on the read that
+ * loaded it, so nothing has to remember to do it.
+ *
  * SEPARATION: reads and writes only `lt_settings`. No RTL table, no RTL import.
  */
 
@@ -109,8 +121,13 @@ async function load(scope = DEFAULT_SCOPE, { fresh = false } = {}) {
     degraded = true;
   }
 
+  // TELL WHOEVER ASKED TO BE TOLD, on the read that filled the cache. A cache
+  // HIT deliberately does not re-run them: the values are the same object the
+  // hooks already saw, and settings are read on nearly every request.
+  const hooksFailed = applyHooks(base);
+
   cache.set(key, { at: Date.now(), settings: base, degraded, stored });
-  return { settings: base, degraded, stored, source: 'db' };
+  return { settings: base, degraded, stored, source: 'db', hooksFailed };
 }
 
 /** One effective value. */
@@ -129,12 +146,61 @@ async function get(settingKey, scope = DEFAULT_SCOPE) {
 function validate(patch) {
   const clean = {};
   const rejected = [];
+  const problems = [];
   for (const [k, v] of Object.entries(patch || {})) {
-    if (!isKnown(k)) { rejected.push(k); continue; }
+    const def = decl.definition(k);
+    if (!def) { rejected.push(k); continue; }
     if (v === undefined) continue;
+    // THE DECLARATION'S OWN DOOR. A setting that carries one is refused WHOLE
+    // when it fails — a half-saved map of investors is worse than a refused one,
+    // because the person who filled the form in cannot tell which half applied.
+    if (typeof def.validate === 'function') {
+      let verdict;
+      try {
+        verdict = def.validate(v);
+      } catch (e) {
+        // A door that THREW checked nothing. Treat that as a refusal, never as a
+        // pass: this is the only place the value is examined at all.
+        verdict = { ok: false, problems: [{ problem: 'check_failed', says: (e && e.message) || String(e) }] };
+      }
+      if (!verdict || verdict.ok !== true) {
+        for (const p of (verdict && verdict.problems) || []) problems.push({ setting: k, ...p });
+        if (!problems.some((p) => p.setting === k)) problems.push({ setting: k, problem: 'refused' });
+        continue;
+      }
+      clean[k] = verdict.value === undefined ? v : verdict.value;
+      continue;
+    }
     clean[k] = v;
   }
-  return { ok: rejected.length === 0, clean, rejected };
+  return { ok: rejected.length === 0 && problems.length === 0, clean, rejected, problems };
+}
+
+/**
+ * Hand every loaded value to its declaration's `applyOnLoad`, where one exists.
+ *
+ * Runs on the read that filled the cache and after every write, so a process
+ * that has looked at settings at all has been told. A hook that throws is
+ * reported, never swallowed and never fatal: settings are read on the way to
+ * something else, and a broken hook must not take that request down with it.
+ */
+function applyHooks(settings, onlyKeys = null) {
+  const failed = [];
+  for (const s of decl.SETTINGS) {
+    if (!s || typeof s.applyOnLoad !== 'function') continue;
+    // A WRITE only knows about the keys it wrote. Handing a hook the DECLARED
+    // DEFAULT for a key this patch never touched would quietly undo somebody
+    // else's saved value — so a filtered run skips it and leaves the value the
+    // load already applied standing.
+    if (onlyKeys && !onlyKeys.has(s.key)) continue;
+    try {
+      s.applyOnLoad(settings[s.key]);
+    } catch (e) {
+      failed.push(s.key);
+      console.error(`[lt-settings] applyOnLoad failed for ${s.key}:`, (e && e.message) || e);
+    }
+  }
+  return failed;
 }
 
 /**
@@ -155,11 +221,17 @@ function validate(patch) {
  * exactly the junk this rule exists to keep out.
  */
 async function save(patch, { scope = DEFAULT_SCOPE, staffId = null, keepDefault = false } = {}) {
-  const { ok, clean, rejected } = validate(patch);
+  const { ok, clean, rejected, problems } = validate(patch);
   if (!ok) {
-    const err = new Error(`unknown setting key(s): ${rejected.join(', ')}`);
+    const err = new Error(rejected.length
+      ? `unknown setting key(s): ${rejected.join(', ')}`
+      : `setting refused: ${problems.map((p) => p.setting).join(', ')}`);
     err.status = 400;
     err.rejected = rejected;
+    // WHAT WAS WRONG, not just THAT it was wrong. A map refused for a name
+    // collision has to be able to say which name — the person is looking at a
+    // form, not a log.
+    err.problems = problems;
     throw err;
   }
 
@@ -195,7 +267,18 @@ async function save(patch, { scope = DEFAULT_SCOPE, staffId = null, keepDefault 
   }
 
   cache.delete(scope);
-  return { written, cleared };
+  // A WRITE MUST REACH THE HOOKS TOO, and immediately — the whole point of
+  // `applyOnLoad` on the investors-added-by-hand map is that the audience block
+  // knows the new spellings before the next quote is drawn, not a cache TTL
+  // later. A CLEARED key goes back to its declared default, which is the value
+  // that now applies.
+  const base2 = defaults();
+  const applied = {};
+  for (const k of written) applied[k] = clean[k];
+  for (const k of cleared) applied[k] = base2[k];
+  const hooksFailed = applyHooks(applied, new Set([...written, ...cleared]));
+
+  return { written, cleared, hooksFailed };
 }
 
 /** Drop the cache. Exposed for tests and for an admin "reload settings" action. */
@@ -216,7 +299,11 @@ async function describe(scope = DEFAULT_SCOPE) {
   // decl.groups() returns an OBJECT keyed by group name -> array of declarations.
   const groups = Object.entries(decl.groups()).map(([name, list]) => ({
     group: name,
-    settings: list.map((s) => ({
+    settings: list.map(({ validate: _v, applyOnLoad: _a, ...s }) => ({
+      // A declaration's own door and load hook are FUNCTIONS — machinery, not
+      // anything a settings screen can draw. They are dropped here rather than
+      // left to JSON.stringify, so the object this returns is the object the
+      // screen receives.
       ...s,
       value: settings[s.key],
       default: base[s.key],
@@ -255,4 +342,5 @@ module.exports = {
   save,
   bust,
   describe,
+  applyHooks,
 };

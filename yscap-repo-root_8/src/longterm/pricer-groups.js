@@ -28,6 +28,9 @@
 
 const lazy = {
   get db() { return require('./db'); },
+  // The effective roster (registry + the investors added by hand) and the
+  // per-investor settings, loaded once per call — see `sanitizeInvestors`.
+  get rosterContext() { return require('./pricing/roster-context'); },
 };
 
 const programs = require('./lenderprice/investor-programs');
@@ -42,12 +45,21 @@ function sanitizeName(v) {
 }
 
 /**
- * Keep only canonical keys the white-label sheet knows. Returns
+ * Keep only canonical keys that carry a client-safe name. Returns
  * `{investors, dropped}` — `dropped` NAMES what was refused, because a group
  * silently missing an investor is a group that quietly prices the wrong set.
  * De-duplicated, order kept (a person arranged them).
+ *
+ * "Carries a client-safe name" is `effectiveWhiteLabel` — the owner's sheet,
+ * OR the name typed when an investor was added by hand, OR a name a person
+ * typed on the settings screen (2026-09-02). Before, this read the sheet
+ * alone, so an investor named ONLY in settings (Button Finance with a typed
+ * white label; any hand-added investor) was silently dropped from every group.
+ * `ctx` is `{ custom, settings }` from `pricing/roster-context.load()`; called
+ * without it, the sheet alone is consulted, exactly as before.
  */
-function sanitizeInvestors(raw) {
+function sanitizeInvestors(raw, ctx) {
+  const c = ctx || {};
   const out = [];
   const dropped = [];
   const seen = new Set();
@@ -55,7 +67,7 @@ function sanitizeInvestors(raw) {
     const k = String(v == null ? '' : v).trim();
     if (!k) continue;
     if (seen.has(k)) continue;
-    if (programs.whiteLabelOf(k) === null) { dropped.push(k); continue; }
+    if (programs.effectiveWhiteLabel(k, c.custom, c.settings) === null) { dropped.push(k); continue; }
     seen.add(k);
     out.push(k);
   }
@@ -77,8 +89,10 @@ async function listGroups(staffId, dbc = null) {
       ORDER BY sort_order, name`,
     [String(staffId)],
   );
+  // ONE read of the roster for the whole list — never one per group.
+  const ctx = await lazy.rosterContext.load();
   return rows.map((r) => {
-    const { investors, dropped } = sanitizeInvestors(r.investors);
+    const { investors, dropped } = sanitizeInvestors(r.investors, ctx);
     return {
       id: r.id,
       name: r.name,
@@ -102,7 +116,8 @@ async function saveGroup({ staffId, name, investors }) {
   if (!staffId) return { ok: false, reason: 'A group needs a signed-in person.' };
   const cleanName = sanitizeName(name);
   if (!cleanName) return { ok: false, reason: 'Give the group a name.' };
-  const { investors: clean, dropped } = sanitizeInvestors(investors);
+  const ctx = await lazy.rosterContext.load();
+  const { investors: clean, dropped } = sanitizeInvestors(investors, ctx);
   if (!clean.length) {
     return { ok: false, reason: 'Pick at least one investor for the group.' };
   }

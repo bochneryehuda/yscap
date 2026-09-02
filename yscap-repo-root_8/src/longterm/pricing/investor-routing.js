@@ -33,8 +33,6 @@
  * PURE: no network, no database, no RTL import.
  */
 
-const investors = require('../encompass/investors');
-
 const settingsOf = require('./investor-settings');
 
 /** A route is now simply the investor's SOURCE. Kept as its own word because a
@@ -72,14 +70,17 @@ function sourcesUnder(source, presentIn) {
  */
 function applyRouting(merged, opts = {}) {
   const board = merged || {};
-  const cfg = settingsOf.readSettings(opts.routes !== undefined ? opts.routes : opts.settings);
+  // The investors added by hand (`pricing/investor-roster.js`) — a hand-added
+  // investor gets a settings row and is routed exactly like a registry one.
+  const custom = opts.custom;
+  const cfg = settingsOf.readSettings(opts.routes !== undefined ? opts.routes : opts.settings, custom);
   const settings = cfg.settings;
   const reveal = opts.revealSource === true;
   const hidden = [];
   const list = [];
 
   for (const e of board.investors || []) {
-    const row = settingsOf.settingFor(e.key, settings);
+    const row = settingsOf.settingFor(e.key, settings, custom);
 
     if (!row.enabled) {
       hidden.push({
