@@ -84,6 +84,13 @@ function applyRouting(merged, opts = {}) {
     if (!row.enabled) {
       hidden.push({
         investor: e.investor, key: e.key, why: 'switched_off',
+        // ⛔ THE CLIENT-SAFE NAME TRAVELS WITH EVERY HIDDEN ROW TOO (audit F8, 2026-09-02).
+        // A SHOWN investor has carried `whiteLabel` since this function was written; a hidden one
+        // did not, and the panel draws `h.whiteLabel || h.investor || h.key` — so the fallback
+        // reached the INVESTOR'S REAL NAME on exactly the rows nobody had thought about. Internal
+        // today, because this engine is super-admin only; a rule-10 breach the day it is promoted,
+        // which is the stated plan. Two shapes for one question is how that day arrives unnoticed.
+        whiteLabel: row.whiteLabel, whiteLabelMissing: row.whiteLabelMissing,
         reason: row.note || 'This investor is switched off in the investor settings.',
       });
       continue;
@@ -95,6 +102,8 @@ function applyRouting(merged, opts = {}) {
       const outage = src && src.answered === false;
       hidden.push({
         investor: e.investor, key: e.key, why: outage ? 'source_did_not_answer' : 'source_had_no_quote',
+        // The same client-safe name, on the other hidden shape — see above.
+        whiteLabel: row.whiteLabel, whiteLabelMissing: row.whiteLabelMissing,
         reason: outage
           ? `Set to ${label(row.source)}, which did not answer at all${src.error ? ` (${src.error})` : ''}. The other program's price is deliberately NOT shown in its place — this investor is priced there, so ours would be second-hand.`
           : `Set to ${label(row.source)}, which answered but did not quote this investor for this scenario. The other program's price is deliberately NOT shown in its place.`,

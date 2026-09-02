@@ -726,14 +726,30 @@ async function priceBoth(scenario, opts = {}) {
       value: sc.value, loan: sc.loan, ltvPct: sc.ltv != null ? (sc.ltv > 1 ? sc.ltv : sc.ltv * 100) : null,
       dscr: sc.dscr, lines: cellsOnBoard(mergedRaw),
     }),
-    // How each half was ASKED — a merged number nobody can trace back to a
-    // request is not a number anybody should price a loan on.
-    provenance: {
-      lenderprice: lpRes.status === 'fulfilled' ? { searchKey: lpRes.value.searchKey, provenance: lpRes.value.provenance } : null,
-      loannex: nxRes.status === 'fulfilled'
-        ? { portal: nxRes.value.portal, portalId: nxRes.value.portalId, transactionId: nxRes.value.transactionId, county: nxRes.value.county, registry: nxRes.value.registry }
-        : null,
-    },
+    /**
+     * How each half was ASKED — a merged number nobody can trace back to a
+     * request is not a number anybody should price a loan on.
+     *
+     * ⛔ BUT ONLY FOR AN ADMIN WHO ASKED (audit F8, 2026-09-02). This block was returned
+     * UNCONDITIONALLY, and it is keyed by vendor name with `loannex.portal` inside it — so the one
+     * board whose rule is that it must not be tellable apart was handing over both the vendor's
+     * name and its portal on every answer. `askedOf` already withholds the portal from the EXPLAIN
+     * answer, and says why: *it names the investor's own portal*. The same fact cannot be a secret
+     * two functions away and public here.
+     *
+     * Nothing is discarded — the flag decides what is SHOWN, exactly as it does for `source`, the
+     * per-vendor split and the holdback trail. No browser code reads this block at all (checked:
+     * no reference to `provenance` anywhere in `app-v2/src/longterm`), so withholding it costs no
+     * screen anything today, and an admin who asks still gets the whole trail.
+     */
+    ...(opts.revealSource === true ? {
+      provenance: {
+        lenderprice: lpRes.status === 'fulfilled' ? { searchKey: lpRes.value.searchKey, provenance: lpRes.value.provenance } : null,
+        loannex: nxRes.status === 'fulfilled'
+          ? { portal: nxRes.value.portal, portalId: nxRes.value.portalId, transactionId: nxRes.value.transactionId, county: nxRes.value.county, registry: nxRes.value.registry }
+          : null,
+      },
+    } : {}),
   };
 }
 

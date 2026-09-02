@@ -451,6 +451,60 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     one-system rule says must not be tellable apart. Recorded against the vendor-tell work rather
     than folded in here.
 
+17. **THE ORDINARY BOARD STILL NAMED THE VENDOR (2026-09-02, audit F8).** `stripSource` goes to
+    real lengths to remove the fingerprint, and then three things put it straight back.
+
+    - **`provenance` was returned unconditionally** — keyed by vendor name, with `loannex.portal`
+      inside it. `askedOf` already withholds the portal from the EXPLAIN answer and says why: *it
+      names the investor's own portal.* The same fact cannot be a secret two functions away and
+      public here. Now behind `revealSource`, like `source`, the per-vendor split and the holdback
+      trail. No browser code reads it (checked: no reference in `app-v2/src/longterm`).
+    - **The explain handle carried `vendor: 'loannex'`** in plain text on every row. Nothing ever
+      read it — `/explain` decides a row is explainable by the presence of `priceHashKey`, and no
+      browser code mentions it. Removed.
+    - **Hidden rows carried no white label.** A SHOWN investor has carried `whiteLabel` since
+      `applyRouting` was written; a hidden one did not, and the panel draws
+      `whiteLabel || investor || key` — so the fallback reached the investor's REAL name on exactly
+      the rows nobody had thought about. Both hidden shapes now carry it.
+
+    **Measured:** the board an ordinary search hands back now contains the vendor's name **zero**
+    times, in any casing. Putting the handle's `vendor` back makes it 809.
+
+    **THE PORTAL STAYS, AND THAT IS THE INTERESTING PART.** It was gated behind the reveal too, and
+    that change was WRONG — two guards caught it (`C3`/`D2`: *"the vendor is asked on the row's own
+    portal"*, `got undefined, want "nqmfcorr"`). The mistaken reasoning was that the portal is one
+    process-wide `NEX_PORTAL` and the browser never sends one, so an explain call carrying no portal
+    would resolve to the same value the price call did. True of the **aggregator** only: an
+    investor-specific portal is a real, designed second source (the `web` portal answers nine
+    investors, `nqmfcorr` answers exactly one), and the portal a row was priced on comes back on the
+    VENDOR'S OWN answer. Dropping it would have sent the explain to the wrong portal for precisely
+    those rows — re-opening the empty-LLPA defect the owner reported twice. So the tell stays, with
+    the reason written at the field. The honest fix is an opaque handle, which changes the wire
+    contract on the one path that cannot be verified without a live vendor.
+
+    **Two guards were re-pointed rather than deleted, and both had been passing for the wrong
+    reason.** `NEX-4` PINNED `explain.vendor === 'loannex'` as correct — a guard that requires the
+    fingerprint would have to be deleted to fix the defect, so it is turned around instead
+    (`NEX-4b` asserts the absence). `D8` FOUND handles by that same field, so it could only pass
+    while the defect stood; it now finds them by where they live (`option.explain`). Sniffing for
+    `priceHashKey` was tried and is wrong — the raw rungs carry that key too, and the walk collected
+    809 objects that were never handles.
+
+    **The sweep, and why it is scoped.** Rather than three field names, the guard walks everything
+    the BOARD hands over and counts the vendor's name. The first cut swept the whole answer and
+    found nine more hits — all `investorPairing.rows[].names.loannex`. That block is not a defect:
+    it is the owner's own A-to-Z linking panel, and its entire purpose is to put "what LoanNEX
+    called this investor" beside "what Lender Price called them" so a person can join the two. You
+    cannot link two spellings without naming the two programs. The rule is about the priced ROW.
+    Narrowed with the reason stated, and the swept parts named explicitly.
+
+    **And one guard of mine could not fail.** The hidden-row assertion filtered `merged.hidden`,
+    which is EMPTY on that board — so removing `whiteLabel` from both shapes left the suite green.
+    Caught by mutation. Both hidden shapes are now built deliberately (one investor switched off,
+    one routed to a source with no quote) and the count is asserted before the property is; it now
+    reddens on the partial regression too, not only the total one. *An assertion about "none of X"
+    is worthless until something proves there was an X.*
+
 ---
 
 ## Update, 2026-08-30 (second pass)
