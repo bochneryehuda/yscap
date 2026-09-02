@@ -331,5 +331,30 @@ console.log('\n== F. THE SIBLING SETTING FINALLY HAS A DOOR ==');
     'NAME-5 …and running THAT door refuses the unsafe name and accepts the safe one — so deleting it from the settings file reddens this line');
 }
 
+// ---- G. ONE ANSWER TO "WHAT MAY A CLIENT CALL THIS INVESTOR" ----------------
+console.log('\n== G. THE CLIENT-SAFE NAME IS DECIDED ONCE ==');
+{
+  /* AUDIT F9. `merge.js` asked `whiteLabelOf` — the owner's SHEET and nothing else — while
+     `investor-routing` asked `settingFor(...).whiteLabel`, the name somebody TYPED or the sheet's.
+     Two answers to one question, and the merge was the copy that drifted. Today it only reaches the
+     sort order, which is why it went unnoticed; but it is the question rule 10 turns on. */
+  const wl = require('../src/longterm/lenderprice/investor-programs');
+  const saved = settings.readSettings({ button_finance: { whiteLabel: 'Slate' } }).settings;
+  const board = { lenderprice: { programs: [{ lender: 'Button Finance, Inc.', investor: 'Button Finance, Inc.', options: [] }] }, loannex: null };
+  const nameIn = (out) => ((out.investors || []).find((e) => e.key === 'button_finance') || {}).whiteLabel;
+
+  ok(wl.whiteLabelOf('button_finance') === null && wl.effectiveWhiteLabel('button_finance', undefined, saved) === 'Slate',
+    'ONE-1 CONTROL: the sheet alone says nothing about this investor, while the ONE definition says "Slate" — so the two answers really do differ');
+  ok(nameIn(mergeMod.merge(board, { settings: saved })) === 'Slate',
+    'ONE-2 THE ONE THAT MATTERS: the merge now answers with the ONE definition, so it and the routing cannot disagree about what a client may see');
+  ok(nameIn(mergeMod.merge(board, {})) === null,
+    'ONE-3 …and a caller that hands over no settings still gets the sheet alone — exactly what this did before, so nothing that never had settings changed');
+
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'src/longterm/routes/combined-pricer.js'), 'utf8');
+  ok(/const investorRowsForNames = routing\.readSettings\(saved\.raw, custom\)\.settings;/.test(src)
+    && /merge\(boards, \{ errors, links: linked\.raw, custom, settings: investorRowsForNames \}\)/.test(src),
+    'ONE-4 …and the route reads the settings ONCE and hands the same map to both, so they cannot even read different rows');
+}
+
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

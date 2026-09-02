@@ -607,7 +607,11 @@ async function priceBoth(scenario, opts = {}) {
   // The human's investor links, resolved the same way the routing is, so the
   // board and the settings screen can never disagree about who is who.
   const linked = opts.links !== undefined ? { raw: opts.links } : await linksRaw();
-  const mergedRaw = merge(boards, { errors, links: linked.raw, custom });
+  /* ⛔ ONE READ OF THE SETTINGS, HANDED TO BOTH (audit F9). The merge and the routing each decide
+     what a client may call an investor; giving them the same resolved map is what stops them
+     answering differently. Read here rather than twice, so they cannot even read different rows. */
+  const investorRowsForNames = routing.readSettings(saved.raw, custom).settings;
+  const mergedRaw = merge(boards, { errors, links: linked.raw, custom, settings: investorRowsForNames });
   const merged = routing.applyRouting(mergedRaw, { routes: saved.raw, custom, revealSource: opts.revealSource === true });
 
   // The unified option list, on request. Built from the ROUTED board so a
