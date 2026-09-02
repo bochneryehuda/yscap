@@ -52,6 +52,24 @@ investor there and it is blocked everywhere, automatically. The test proves that
 sweeping **every one of the 150 recorded spellings** through five sentence shapes and
 failing if a single one survives.
 
+> ⛔ **"Add it there" now means THREE places, and that sentence used to name only one.**
+> When this was written the registry was the only place a spelling could be recorded. It is
+> not any more, and an audit found the gap the hard way: a name recorded in the **links map**
+> resolved as a real investor for pricing, routing, the white label and the holdback, and
+> walked straight past the scrubber to a borrower, while the registry's own name for that
+> same investor was redacted. The three places are now named here so this promise stays true:
+>
+> 1. `encompass/investors.js` — the code registry.
+> 2. `pricing.customInvestors` — the investors somebody added by hand (section below).
+> 3. `pricing.investorLinks` — the human links map, whose **key is free text**: a person
+>    types a spelling a vendor used and points it at a canonical investor. `validateLinks`
+>    checks the TARGET exists; it never looked at the spelling.
+>
+> All three reach the block through the settings declaration's `applyOnLoad` hook, so a
+> spelling is blocked from the moment it is saved rather than from the next deploy — and all
+> three refuse to fall back to their default when the store cannot be read, because an empty
+> map means *block fewer investor names*.
+
 ---
 
 ## The two defences, in order
@@ -145,3 +163,96 @@ client are not in tension, and the test asserts both at once.
 
 **Never re-implement this check.** A second copy is how the two drift, and the one that
 drifts is the one that leaks.
+
+---
+
+## The list is no longer only the registry (2026-09-02)
+
+`audience.js` used to build its blocked spellings from `encompass/investors.js` alone — a
+list in **code**. Since the combined engine let somebody **add an investor by hand**
+(`pricing.customInvestors`, see `src/longterm/loannex/README.md` item 12), the block is
+built from the **effective roster**: the code registry with that stored map laid over it,
+combined in exactly one place, `pricing/investor-roster.js`.
+
+That change moves part of a hard rule from code into a **setting**, which is a different
+kind of thing, and three properties are what make it safe.
+
+**1. The block is fed by the COMPANY scope alone, and a read can only ever widen it.**
+`lt_settings` is keyed on `(scope, key)`. A per-user read answers the *declared default* —
+an empty map — for every key that person has never set. When the settings store ran its
+`applyOnLoad` hooks for every scope, a read of somebody's personal settings handed that
+empty map to the block and **switched the investor-name rule off for the whole process**;
+the company-scope cache hit afterwards did not re-assert it, so it stayed off until the
+cache entry expired. `routes/me.js`, `routes/settings.js` and `routes/term-sheet.js` each
+read both scopes in one `Promise.all`, and the term-sheet request goes straight on to build
+a borrower's document. A term sheet naming a real investor was accepted and printed. The
+store now runs those hooks for the company scope **only**, and re-asserts on a cache hit.
+*Nothing but a company-scope read may narrow this list.*
+
+**2. Something must TELL the block before the first request, because the surfaces that need
+it never read settings.** A borrower's own conditions (`routes/my-conditions.js`,
+`conditions/read.js`), the term-sheet snapshot and the PDF all scrub without ever asking for
+a setting. Nothing warmed the map, so the first borrower to open their conditions after a
+deploy was read to by a block that had never heard of the hand-added investors. The
+Long-Term router now calls `settingsStore.warm()` when it is built — once per process,
+before any request.
+
+**3. An outage may never SHRINK the list.** The store's standing posture is "fail to our
+behaviour": on an unreadable database it answers the declared defaults. That is right for a
+value with a sensible default and exactly wrong for this one, where the empty state means
+*block fewer names* — a database blip would remove a protection. A degraded read now keeps
+the last known map and records that it may be stale (`applyOnUnreadable`), and
+`audience.summary().customInvestors` tells apart **none stored**, **not loaded yet** and
+**degraded**. All three used to report `0` and look identical.
+
+### What a client-safe name has to survive, on the way in AND the way out
+
+A hand-added investor's *white label* is typed by a person, and it is the one name a client
+may read. Two checks, in **one** routine (`investor-roster.whiteLabelProblem`), run by both
+the write door and the read:
+
+- it may not be a name that already means somebody — a recorded registry spelling, a name on
+  the white-label sheet, or another hand-added investor's;
+- it must **survive this scrub**, proven by running it, not by consulting a list.
+
+The door refuses the whole map (a person is at a form and can fix it); the read **drops** the
+name and says so (nobody is there to ask), leaving the investor priceable but with no name a
+client may see. Running the rule on only one side of a store is not a rule: a white label of
+"⟨a registry investor⟩ Group" was once refused at the door, kept on read, and reached a
+borrower as "our capital partner Group".
+
+### The staleness window — a real exposure, bounded, not eliminated
+
+A save applies immediately **in the process that made it**. Every other process learns on
+its next company read.
+
+An earlier version of this section said that window "is not a leak in either direction".
+**That was wrong, and only half-checked.** It reasoned about the *board* — rule 10's second
+defence, the payload — and never about the *first* defence, the free-text scrub. A re-audit
+reproduced the miss across two processes:
+
+- the **board** half does hold: a process that has not heard of an investor has no white
+  label for it either, so its rows resolve to nobody and stay off the board rather than
+  being quoted under a name; and an investor *removed* lingers in the block, which blocks
+  more, not less;
+- the **free-text** half does not. A process whose cache predates the save answers
+  `mentionsInvestor(...) = false` for the new investor's real name, `resolveProgramName`
+  accepts that name as a manual program name, and **a staff-typed condition body is served
+  to a borrower unredacted** — for the whole window.
+
+So it is a genuine rule-10 exposure, for one class of text, for a bounded time after an
+admin adds an investor. What has been done about it:
+
+- `settingsStore.keepWarm()` re-reads the company settings on its own interval —
+  `LT_SETTINGS_REFRESH_MS`, **default 15s** — independently of request traffic and
+  deliberately shorter than the read cache's `LT_SETTINGS_TTL_MS` (60s). That interval,
+  not the TTL, is the bound.
+- `settingsStore.ensureWarm()` is mounted on the Long-Term router *and* on the borrower
+  mount (which `server.js` mounts directly and which therefore runs nothing else here), so
+  the *first-request* case — a process that has never read the settings at all — is closed
+  outright rather than merely shortened.
+
+Closing the remaining window properly needs processes to be told when a write happens.
+There is no such channel in this deployment: a shorter interval trades database reads for
+exposure, and the honest statement is the one above rather than a number chosen to sound
+small. **If you add a notification channel, this is the first thing to hang off it.**

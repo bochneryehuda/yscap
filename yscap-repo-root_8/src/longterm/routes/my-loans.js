@@ -42,11 +42,24 @@
 const express = require('express');
 const router = express.Router();
 
+
 const db = require('../db');
 const audience = require('../audience');
 const productTerm = require('../product-term');
 const settingsStore = require('../settings/store');
 const myScope = require('../my-scope');
+
+/* ⛔ AND THIS MOUNT IS NOT BEHIND THE LONG-TERM ROUTER, which is exactly why the
+   guard is repeated here — FIRST, before the conditions router and before every
+   route below it. `/api/lt/my` is mounted directly in server.js, so nothing in
+   `longterm/index.js` runs for a borrower request, including the read that puts
+   the investor-name block in force. This is the only surface in the product
+   where a client reads free text we typed, so it is the last place that may be
+   served by a block nobody has told anything — and a guard mounted after the
+   conditions router would not run for the conditions, which is the whole point
+   of it. Asserted by position in `test-lt-custom-investors-pure.js`. */
+router.use(settingsStore.ensureWarm());
+
 
 /* THE BORROWER'S CONDITIONS RIDE THIS SAME MOUNT — /api/lt/my, already behind
    `requireAuth` + `requireBorrower` in server.js. Mounting them here rather than

@@ -613,6 +613,25 @@ async function compPlanHandler(req, res) {
 // dropdown lists them all and an investor that comes online later "is already
 // there". A pure read of the committed sheet — no vendor call, no database — so
 // the screen may fetch it from an effect.
+//
+// ⛔ IT STAYS THAT WAY. This door briefly read the settings store, so that an
+// investor somebody added by hand and a white label typed on the combined
+// engine's settings screen both showed up here. That was wrong twice over, and
+// it is the owner's most-repeated instruction — *"don't touch our current setup
+// that we currently have: our General Pricing Engine"*:
+//
+//   · THIS LIST IS A FILTER, NOT A DISPLAY. An officer picks a name here and the
+//     search is narrowed to it. This engine asks Lender Price and nobody else, so
+//     a LoanNEX-only investor offered here produces an EMPTY BOARD with nothing
+//     on the screen to explain why.
+//   · AND IT IS A SECOND CHANGE TO WHAT THIS SCREEN CALLS AN INVESTOR, on a door
+//     that had only ever read the committed sheet.
+//
+// The combined engine reads the hand-added investors; this one does not. If that
+// should ever change it is the owner's call, not a side effect of a shared
+// module gaining an argument. `test-lt-dscr-routes.js` asserts that this handler
+// performs no settings read and answers identically whether or not somebody has
+// added an investor.
 function investorsRoster(req, res) {
   res.json({ ok: true, investors: investorPrograms.fullRoster() });
 }

@@ -27,10 +27,14 @@
 
 const mapper = require('./mapper');
 const investors = require('../encompass/investors');
+const roster = require('../pricing/investor-roster');
 const floodZone = require('../flood-zone');
 
 const lazy = {
   get db() { return require('../db'); },
+  // Lazy for the same reason `db` is: this module is required by pure tests
+  // that never open a settings store.
+  get rosterContext() { return require('../pricing/roster-context'); },
 };
 
 /**
@@ -508,6 +512,13 @@ async function syncBorrowerPairs(loanId, loan, opts = {}) {
  * spelling the registry does not recognise resolves to nothing rather than to a
  * guess, and the names are still stored so a human can see what was typed.
  *
+ * "THE REGISTRY" HERE MEANS THE EFFECTIVE ROSTER — the code registry with the
+ * investors somebody added by hand laid over it. A loan whose investor was added
+ * this morning has to resolve to the SAME key the pricing board gave it, or the
+ * mirror and the board would hold two different investors under one name. An
+ * unreadable custom map falls back to the registry alone (and says so), which is
+ * exactly how this behaved before hand-added investors existed.
+ *
  * THE INVESTOR'S LOAN NUMBER IS VALIDATED, not trusted: the same module knows the
  * placeholders this tenant types into that box ("---", "n/a"), and a placeholder
  * stored as a reference number is worse than an empty one, because it looks like
@@ -520,7 +531,20 @@ async function syncLoanInvestor(loanId, loan, opts = {}) {
   const row = mapper.readInvestor(loan, opts.values);
   if (!row) return { ok: true, written: false, reason: 'the payload named no investor' };
 
-  const resolved = investors.resolve(row.accurateName || row.shorthandName || '');
+  let custom = roster.EMPTY;
+  let customUnread = null;
+  if (opts.custom !== undefined) {
+    custom = roster.asCustom(opts.custom);
+  } else {
+    // NEVER THROWS, and a failure here may never cost the mirror: the loan is
+    // still written, resolved against the registry alone, and the problem is
+    // reported on the answer.
+    const c = await lazy.rosterContext.loadCustom();
+    custom = c.custom;
+    customUnread = c.problem || null;
+  }
+
+  const resolved = roster.effectiveResolve(row.accurateName || row.shorthandName || '', custom);
   const canonicalKey = (resolved && resolved.key) || null;
   const ref = investors.investorLoanNumber(row.investorLoanNumber);
 
@@ -552,6 +576,10 @@ async function syncLoanInvestor(loanId, loan, opts = {}) {
     // file would bury the handful that hold a placeholder or an investor's NAME
     // where their loan number belongs.
     loanNumberRefused: (ref && !ref.usable && ref.reason !== 'blank') ? ref.reason : null,
+    // The hand-added investors could not be read, so this name was matched
+    // against the code registry alone. Said out loud: an investor added by hand
+    // would resolve to nothing here and read as unrecognised.
+    customInvestorsUnread: customUnread,
   };
 }
 
