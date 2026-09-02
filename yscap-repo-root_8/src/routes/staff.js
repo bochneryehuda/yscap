@@ -3193,10 +3193,13 @@ router.get('/applications/:id/pricing', async (req, res) => {
       const pr = (await db.query(
         `SELECT b.full_name AS b_full, b.first_name AS b_first, b.middle_name AS b_middle, b.last_name AS b_last, b.name_suffix AS b_suffix,
                 cb.full_name AS cb_full, cb.first_name AS cb_first, cb.middle_name AS cb_middle, cb.last_name AS cb_last, cb.name_suffix AS cb_suffix,
-                a.co_borrower_id, l.llc_name AS entity_name
+                a.co_borrower_id, l.llc_name AS entity_name,
+                a.loan_officer_id, COALESCE(lo.full_name, a.loan_officer_name) AS officer_name,
+                lo.email AS officer_email, lo.nmls AS officer_nmls
            FROM applications a JOIN borrowers b ON b.id = a.borrower_id
            LEFT JOIN borrowers cb ON cb.id = a.co_borrower_id
            LEFT JOIN llcs l ON l.id = a.llc_id
+           LEFT JOIN staff_users lo ON lo.id = a.loan_officer_id
           WHERE a.id = $1`, [req.params.id])).rows[0];
       if (pr) {
         const nameOf = (p) => {
@@ -3209,6 +3212,11 @@ router.get('/applications/:id/pricing', async (req, res) => {
           borrowerName: nameOf('b'),
           coBorrowerName: pr.co_borrower_id ? nameOf('cb') : '',
           hasCoBorrower: !!pr.co_borrower_id,
+          /* THE OFFICER WHO SIGNS, by the send's OWN rule (orchestrate.loanOfficerSigner):
+             the studio draws the officer's signature line from this, never from the
+             screen's copy of the file, so an officer assigned after the page loaded
+             still gets a line — and never a line the send would not ask to be signed. */
+          loanOfficer: require('../lib/esign/orchestrate').loanOfficerSigner(pr),
         };
       }
     } catch (_) { parties = null; }
