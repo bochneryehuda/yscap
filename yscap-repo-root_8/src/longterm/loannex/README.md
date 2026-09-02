@@ -361,7 +361,7 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     first-request case outright. Closing the rest needs processes to be told when a write happens,
     and this deployment has no such channel — so it is stated here rather than dressed up. The
     reasoning of record is `docs/longterm/AUDIENCE-RULES.md`.
-    Guarded by `scripts/test-lt-custom-investors-pure.js` (thirty-four mutations proven across three batteries,
+    Guarded by `scripts/test-lt-custom-investors-pure.js` (forty mutations proven across four batteries,
     with green controls either side) and by re-pointed assertions in the investor-block, link, programs,
     holdback, dscr-routes, pricer-shared, settings-screen and combined-audit suites.
 

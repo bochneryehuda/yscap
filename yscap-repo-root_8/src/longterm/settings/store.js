@@ -83,8 +83,42 @@ function defaults() {
  * object, and anything that wants to warn a human can see that it is not the full
  * picture.
  */
-async function load(scope = DEFAULT_SCOPE, { fresh = false } = {}) {
+const inFlight = new Map();
+/**
+ * How many times each scope has been invalidated.
+ *
+ * ⛔ WHAT THIS IS FOR, and it is a bug the de-duplication above created rather
+ * than found: a read that is already in flight when somebody calls `bust()` —
+ * or writes, which busts — is carrying values from BEFORE that moment. Letting
+ * it fill the cache on arrival re-installs the stale settings the bust existed
+ * to throw away, and they then stand for a full TTL. So a read stamps the
+ * generation it started in and declines to cache its answer if the generation
+ * has moved on. The caller still gets its (slightly stale) answer, which is no
+ * worse than any other read that raced a write; what it may not do is publish it
+ * to everybody else.
+ */
+const generation = new Map();
+const genOf = (key) => generation.get(key) || 0;
+
+async function load(scope = DEFAULT_SCOPE, opts = {}) {
+  // ⛔ ONE READ AT A TIME PER SCOPE. `ensureWarm` runs on every request, so a
+  // cold process taking N concurrent requests used to fire N concurrent SELECTs
+  // before the first one filled the cache — a thundering herd this feature
+  // created by mounting the guard everywhere. Callers share the in-flight read
+  // instead. A `fresh` read is not shared with a cached-path caller (it is
+  // asking for something different), but two `fresh` readers still share.
   const key = String(scope || DEFAULT_SCOPE);
+  const lane = `${key}:${opts.fresh ? 'fresh' : 'any'}`;
+  const running = inFlight.get(lane);
+  if (running) return running;
+  const p = loadNow(key, opts).finally(() => { inFlight.delete(lane); });
+  inFlight.set(lane, p);
+  return p;
+}
+
+async function loadNow(scope, { fresh = false } = {}) {
+  const key = String(scope || DEFAULT_SCOPE);
+  const startedIn = genOf(key);
   const hit = cache.get(key);
   if (!fresh && hit && Date.now() - hit.at < TTL_MS) {
     // ⛔ A CACHE HIT RE-ASSERTS. It used to skip the hooks on the grounds that
@@ -136,12 +170,15 @@ async function load(scope = DEFAULT_SCOPE, { fresh = false } = {}) {
   // which for a value like the investors added by hand means "block fewer
   // names". So an outage says "I could not read" and whatever was already in
   // force stands.
-  const hooksFailed = degraded ? applyUnreadable(base, key) : applyHooks(base, null, key);
+  // A read that raced a write does not get to publish what it read. It also does
+  // not get to APPLY it: pushing a stale map into the audience block is the same
+  // mistake one layer further on, and the write's own hook run has already told
+  // the block the truth.
+  if (genOf(key) !== startedIn) {
+    return { settings: base, degraded, stored, source: 'db-stale', hooksFailed: [] };
+  }
 
-  // "HAS THIS PROCESS EVER HAD A GOOD LOOK AT THE COMPANY'S SETTINGS?" — the
-  // question `ensureWarm` asks, and a different one from "is there a cache
-  // entry": a degraded read fills the cache with the declared defaults.
-  if (!degraded && String(key) === DEFAULT_SCOPE) EVER_LOADED = true;
+  const hooksFailed = degraded ? applyUnreadable(base, key) : applyHooks(base, null, key);
 
   cache.set(key, { at: Date.now(), settings: base, degraded, stored });
   return { settings: base, degraded, stored, source: 'db', hooksFailed };
@@ -363,10 +400,6 @@ async function save(patch, { scope = DEFAULT_SCOPE, staffId = null, keepDefault 
   return { written, cleared, hooksFailed };
 }
 
-/** Has a company read ever SUCCEEDED in this process? */
-let EVER_LOADED = false;
-function loadedOnce() { return EVER_LOADED; }
-
 /**
  * Read the company settings once, so whatever the declarations push is in force.
  *
@@ -461,32 +494,44 @@ function keepWarm(opts = {}) {
 }
 
 /**
- * Express middleware: if this process has never had a clean company read, TAKE
- * ONE before serving the request.
+ * Express middleware: make sure the company settings have been read — and their
+ * declarations applied — before this request is served.
  *
- * This is what makes "before any request" true rather than aspirational. It is a
- * no-op after the first success — one boolean — so it costs nothing on the
- * millionth request, and it never fails a request: a read that will not work
- * leaves the handler to run exactly as it would have.
+ * This is what makes "before any request" true rather than aspirational.
+ *
+ * ⛔ IT ASKS ABOUT THE STATE, NOT THE HISTORY, and it does so on EVERY request.
+ * An earlier version skipped once any company read had ever succeeded, which is
+ * a fact about the past and not about what is in force now. What this costs on a
+ * warm cache is a `Date.now()` comparison plus the cache-hit re-assertion — a
+ * JSON identity check over a map of a handful of entries — and NOT, as this
+ * comment once claimed, "one boolean": the body calls `load` every time, and a
+ * doc that describes a cheaper function than the one below is how the next
+ * person budgets wrongly. The cold path is the one that actually waits, once.
+ *
+ * It never fails a request: a read that will not work leaves the handler to run
+ * exactly as it would have.
+ *
+ * The returned function is NAMED because a test asserts it is the FIRST layer on
+ * the routers that need it. A grep for the call site cannot do that — the
+ * comment explaining the call site satisfies the grep — and a guard mounted
+ * second is a guard that does not run for the route mounted first.
  */
 function ensureWarm() {
-  return (req, res, next) => {
-    // ⛔ IT ASKS ABOUT THE STATE, NOT THE HISTORY. The first version skipped the
-    // read once any company read had ever succeeded — "somebody was told once",
-    // which is a fact about the past and not about what is in force now. `load`
-    // on a warm cache is a Date.now comparison and a JSON identity check, and it
-    // RE-ASSERTS the declarations' hooks, so this middleware guarantees the
-    // thing it is named for on every request rather than on the first one.
-    // A read that will not work never fails the request: the handler runs
-    // exactly as it would have.
+  return function ltSettingsEnsureWarm(req, res, next) {
     load(DEFAULT_SCOPE).then(() => next(), () => next());
   };
 }
 
 /** Drop the cache. Exposed for tests and for an admin "reload settings" action. */
 function bust(scope = null) {
-  if (scope) cache.delete(String(scope));
-  else cache.clear();
+  if (scope) {
+    const key = String(scope);
+    cache.delete(key);
+    generation.set(key, genOf(key) + 1);
+    return;
+  }
+  cache.clear();
+  for (const key of new Set([...generation.keys(), DEFAULT_SCOPE])) generation.set(key, genOf(key) + 1);
 }
 
 /**
@@ -549,5 +594,4 @@ module.exports = {
   warm,
   keepWarm,
   ensureWarm,
-  loadedOnce,
 };

@@ -255,24 +255,49 @@ function readCustomUncached(raw) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) { problems.push({ key, problem: 'not_an_object', message: `The entry for "${key}" must be an object.` }); continue; }
     const label = cleanText(value.label, MAX_LABEL);
     if (!label) { problems.push({ key, problem: 'no_label', message: `The investor "${key}" has no name.` }); continue; }
-    if (taken.has(label.toLowerCase()) || normals.has(investors.normalize(label))) {
-      problems.push({ key, problem: 'label_is_registry_spelling', message: `"${label}" is already a recorded spelling of a registry investor, so "${key}" was left out.` });
-      continue;
-    }
+    /* ⛔ THE LABEL GOES THROUGH THE ALIAS CHECKS, exactly as it does at the door.
+       It used to be checked SEPARATELY and first, which made the two sides
+       disagree on the one shape nobody had tried: a label equal to another
+       investor's white-label sheet name answered `label_is_registry_spelling`
+       here and `alias_taken` at the door. The door has never had a separate label
+       check — it runs `[label].concat(aliases)` through one loop — so the fix is
+       to stop having one here rather than to add one there.
+
+       And the old message was FALSE once this map was seeded with the sheet's
+       names: it said "is already a recorded spelling of a registry investor"
+       about a name that was actually another investor's CLIENT-SAFE name. These
+       problems are served verbatim by `GET /custom-investors`, so an admin read
+       that sentence. The description now comes from the map that knows. */
     const aliases = [];
+    let labelUnusable = null;
     for (const a of [label].concat(parseAliases(value.aliases))) {
+      const isLabel = a === label;
       if (aliases.some((x) => x.toLowerCase() === a.toLowerCase())) continue;
       const n = investors.normalize(a);
-      if (a.length < MIN_ALIAS || !n) { problems.push({ key, alias: a, problem: 'alias_unusable', message: `"${a}" is too short to be a spelling of "${label}".` }); continue; }
-      // Same three checks, in the same order, answering the same problem codes as
-      // the write door — see `validateCustom`.
-      if (taken.has(a.toLowerCase())) { problems.push({ key, alias: a, problem: 'alias_taken', dropped: true, message: `"${a}" is ${taken.get(a.toLowerCase())} — it cannot also mean "${label}", so it was left off.` }); continue; }
-      if (normals.has(n)) { problems.push({ key, alias: a, problem: 'alias_is_registry_spelling', dropped: true, message: `"${a}" reads as a registry investor once the company words are set aside, so it was left off "${label}".` }); continue; }
-      if (claimed.has(n) && claimed.get(n) !== key) { problems.push({ key, alias: a, problem: 'alias_claimed', dropped: true, message: `"${a}" already belongs to "${claimed.get(n)}" and was left off "${label}".` }); continue; }
+      let problem = null;
+      if (a.length < MIN_ALIAS || !n) {
+        problem = { key, alias: a, problem: 'alias_unusable', message: `"${a}" is too short to be a spelling of "${label}".` };
+      } else if (taken.has(a.toLowerCase())) {
+        problem = { key, alias: a, problem: 'alias_taken', message: `"${a}" is ${taken.get(a.toLowerCase())} — it cannot also mean "${label}".` };
+      } else if (normals.has(n)) {
+        problem = { key, alias: a, problem: 'alias_is_registry_spelling', message: `"${a}" reads as a registry investor once the company words are set aside — it cannot also mean "${label}".` };
+      } else if (claimed.has(n) && claimed.get(n) !== key) {
+        problem = { key, alias: a, problem: 'alias_claimed', message: `"${a}" already belongs to "${claimed.get(n)}".` };
+      }
+      if (problem) {
+        // A spelling is dropped; the INVESTOR'S OWN NAME being unusable takes the
+        // whole entry with it, because what is left is an investor with no name.
+        problems.push(isLabel
+          ? { ...problem, dropped: true, message: `${problem.message} That is this investor's own name, so "${key}" was left out.` }
+          : { ...problem, dropped: true, message: `${problem.message} It was left off "${label}".` });
+        if (isLabel) { labelUnusable = true; break; }
+        continue;
+      }
       claimed.set(n, key);
       taken.set(a.toLowerCase(), `a spelling of ${key}`);
       aliases.push(a);
     }
+    if (labelUnusable) continue;
     if (!aliases.length) { problems.push({ key, problem: 'no_usable_alias', message: `"${label}" has no spelling left that can be matched.` }); continue; }
     const whiteLabel = cleanText(value.whiteLabel, MAX_WHITE_LABEL) || null;
     custom.set(key, entryOf(key, label, whiteLabel, aliases, value));

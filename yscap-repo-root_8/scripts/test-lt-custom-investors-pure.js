@@ -25,7 +25,7 @@
  * proven is that a row somebody SAVED reaches the board, not that a function is
  * called.
  *
- * MUTATION-PROVEN — THIRTY-FOUR of them, in three batteries. Each was applied to the
+ * MUTATION-PROVEN — FORTY of them, in four batteries. Each was applied to the
  * production code, the named suite went RED, and a green control run either side
  * confirmed it was the mutation and not the weather.
  *
@@ -74,6 +74,28 @@
  *  B10. a declaration with only `applyOnLoad` silently skipped in an outage   → §L
  *  B11. the load hooks running for every scope (the original breach)          → §J
  *  B12. a new GET door added and never opened   → test-lt-routes-smoke-db
+ *
+ * A FOURTH ROUND, after a verification pass beat the MOUNT assertions the third
+ * round had just added — same defect, one level up:
+ *   C1. DELETING `router.use(ensureWarm())` from the Long-Term router          → §K
+ *   C2. …and from the BORROWER router                                          → §K
+ *   C3. MOVING the borrower guard behind the conditions router (order, not
+ *       presence — a grep cannot see order, a mounted layer can)               → §K
+ *   C4. the read checking the LABEL separately again, ahead of the alias loop   → §L
+ *   C5. an in-flight read that raced a `bust()` publishing its stale answer     → §K3
+ *   C6. `ensureWarm` losing its name, so no mounted layer can be recognised     → §K
+ *
+ * ⛔ THE RULE THIS SUITE HAS NOW PAID FOR TWICE, so it is written at the top:
+ * A GUARD THAT GREPS FOR A LITERAL CAN BE SATISFIED BY THE COMMENT THAT EXPLAINS
+ * IT. §K's mount assertions read `src/longterm/index.js` for `ensureWarm()` and
+ * `keepWarm(` — and the paragraph ABOVE the call site contains both, so deleting
+ * the actual `router.use(...)` left this whole suite green, exit 0, including the
+ * assertion claiming the router "makes a request wait". The same trick moved the
+ * borrower guard below the conditions router, killing it for the one surface
+ * where a client reads free text we typed, because a grep cannot see ORDER.
+ * Either strip comments before matching, or — better — assert the behaviour or
+ * the mounted object. §K now asks the routers what layer they actually carry,
+ * and where.
  *
  * FOUR ASSERTIONS ONLY BIT AFTER THEY WERE FIXED, and they are the same lesson in
  * four shapes — an assertion with two independent reasons to pass proves NEITHER.
@@ -871,16 +893,40 @@ head('K. proven by BEHAVIOUR, because a grep over the source proved neither of t
       '…and the investor added by hand is blocked from that moment on');
   }
 
-  // The wiring itself: both mounts, because the borrower's own mount does NOT
-  // go through the Long-Term router and is the one surface where a client reads
-  // free text we typed. Behaviour above proves the mechanism; this proves it is
-  // actually attached to the two doors that need it.
-  const ltSrc = fs.readFileSync(path.join(ROOT, 'src/longterm/index.js'), 'utf8');
-  const borrowerSrc = fs.readFileSync(path.join(ROOT, 'src/longterm/routes/my-loans.js'), 'utf8');
-  ok(/ensureWarm\(\)/.test(ltSrc) && /keepWarm\(/.test(ltSrc),
-    'the Long-Term router both keeps the settings warm and makes a request wait if they never were');
-  ok(/ensureWarm\(\)/.test(borrowerSrc),
-    '…and so does the borrower mount, which server.js mounts DIRECTLY and which therefore runs none of the above');
+  /**
+   * ⛔ THE MOUNT ITSELF, ASSERTED AS A MOUNTED LAYER — never as a grep.
+   *
+   * These two assertions used to read the source for `ensureWarm()` and
+   * `keepWarm(`, and an auditor deleted the actual `router.use(...)` line from
+   * `src/longterm/index.js` while leaving the paragraph that EXPLAINS it: this
+   * whole suite stayed green, exit 0, including the assertion claiming the
+   * router "makes a request wait". The comment's own words satisfied both halves
+   * of the regex. The same trick worked on the borrower mount by moving the
+   * guard BELOW the conditions router — killing it for the one surface where a
+   * client reads free text we typed — because a grep cannot see order.
+   *
+   * So: ask the router what it is actually carrying, and where. Express runs
+   * layers in the order they were added, so being FIRST is half the guarantee —
+   * a guard mounted after a route does not run for that route.
+   *
+   * THE GENERAL RULE, since this is the second round it has cost: A GUARD THAT
+   * GREPS FOR A LITERAL CAN BE SATISFIED BY THE COMMENT THAT EXPLAINS IT. Strip
+   * comments before matching, or — better, and what is done here — assert the
+   * behaviour or the mounted object.
+   */
+  {
+    const ltRouter = require(path.join(ROOT, 'src/longterm/index')).router;
+    const borrowerRouter = require(path.join(ROOT, 'src/longterm/routes/my-loans'));
+    const layerName = (r) => (r && r.stack && r.stack[0] && r.stack[0].handle
+      ? (r.stack[0].handle.name || '(anonymous)') : '(no layers)');
+
+    ok(layerName(ltRouter) === 'ltSettingsEnsureWarm',
+      `THE ONE THAT MATTERS: the Long-Term router's FIRST layer is the settings guard (got ${layerName(ltRouter)}) — mounted, and ahead of every route including /health`);
+    ok(layerName(borrowerRouter) === 'ltSettingsEnsureWarm',
+      `THE ONE THAT MATTERS: so is the borrower mount's (got ${layerName(borrowerRouter)}) — server.js mounts it DIRECTLY, so nothing in the Long-Term router runs for a borrower, and a guard behind the conditions router would not run for the conditions`);
+    ok(ltRouter.stack.length > 1 && borrowerRouter.stack.length > 1,
+      '…and both routers really do carry routes behind that guard, so "first" is a claim about something');
+  }
 
   // ── K3. THE BOARD ITSELF, over HTTP ──────────────────────────────────────
   /**
@@ -980,9 +1026,59 @@ head('L. what the two sides agree about, and what the machinery actually promise
       '…while the door refuses the same input');
     ok(read.problems[0].problem === door.problems[0].problem,
       'THE ONE THAT MATTERS: the two sides answer the SAME problem code for the same input — one rule, not two that agree by luck');
-    ok(roster.readCustom({ x: { label: 'Fine Name Capital', whiteLabel: sheetName } }).problems[0].problem
-      === roster.validateCustom({ x: { label: 'Fine Name Capital', whiteLabel: sheetName } }).problems[0].problem,
-    '…and so do the client-safe-name checks, which used to differ because the two were handed different lists');
+  }
+
+  /**
+   * …AND THAT IS ASSERTED OVER A BATTERY, not over the two shapes that happened
+   * to be written first.
+   *
+   * The previous round asserted parity on the alias and client-safe-name shapes
+   * only, and an audit found the LABEL shapes still disagreeing: the read checked
+   * the label separately, BEFORE folding it into the alias loop, while the door
+   * has only ever run `[label].concat(aliases)` through one loop. A label equal
+   * to another investor's client-safe name therefore answered
+   * `label_is_registry_spelling` on the read and `alias_taken` at the door —
+   * and, once this map was seeded with the sheet's names, the read's message was
+   * simply FALSE about what the name was. These problems are served verbatim by
+   * `GET /custom-investors`, so an admin read that sentence.
+   */
+  {
+    const regSpelling = REGISTRY[0].label;
+    const shapes = [
+      ['a label that is another investor’s client-safe name', { x: { label: sheetName } }],
+      ['a label that is a recorded registry spelling', { x: { label: regSpelling } }],
+      ['an alias that is another investor’s client-safe name', { x: { label: 'Fine Name Capital', aliases: [sheetName] } }],
+      ['an alias that is a recorded registry spelling', { x: { label: 'Fine Name Capital', aliases: [regSpelling] } }],
+      ['an alias too short to match on', { x: { label: 'Fine Name Capital', aliases: ['A'] } }],
+      ['a client-safe name another investor already shows', { x: { label: 'Fine Name Capital', whiteLabel: sheetName } }],
+      ['a client-safe name the block would blank out', { x: { label: 'Fine Name Capital', whiteLabel: `${regSpelling} Group` } }],
+      ['a key the registry already uses', { [REGISTRY[0].key]: { label: 'Fine Name Capital' } }],
+      ['a key that is not a key', { 'Bad Key': { label: 'Fine Name Capital' } }],
+      ['an investor with no name at all', { x: {} }],
+      ['two hand-added investors under one name', { a: { label: 'Alpha Ridge Capital' }, b: { label: 'Alpha Ridge Capital' } }],
+      ['two hand-added investors under one client-safe name', {
+        a: { label: 'Alpha Ridge Capital', whiteLabel: 'Northgate' },
+        b: { label: 'Beta Hollow Funding', whiteLabel: 'Northgate' },
+      }],
+    ];
+    const disagreed = [];
+    for (const [what, raw] of shapes) {
+      const r = (roster.readCustom(raw).problems[0] || {}).problem || '(none)';
+      const d = (roster.validateCustom(raw).problems[0] || {}).problem || '(none)';
+      if (r !== d) disagreed.push(`${what}: read=${r} door=${d}`);
+    }
+    ok(disagreed.length === 0,
+      `THE ONE THAT MATTERS: across ${shapes.length} shapes the read and the door name the SAME problem (${disagreed.length} disagreements)`);
+    disagreed.slice(0, 4).forEach((d) => console.error(`         · ${d}`));
+
+    // AND THE SENTENCE IS TRUE. `problems` is served verbatim to an admin by
+    // GET /custom-investors, so a message that misdescribes what a name is, is a
+    // screen telling somebody something false about their own data.
+    const said = roster.readCustom({ x: { label: sheetName } }).problems[0].message;
+    ok(said.includes('client-safe name') && !said.includes('recorded spelling of a registry investor'),
+      `a name that is another investor’s client-safe name is DESCRIBED as one, not as a registry spelling (${said.slice(0, 72)}…)`);
+    ok(roster.readCustom({ x: { label: regSpelling } }).problems[0].message.includes('this investor\'s own name'),
+      '…and a label that cannot be used says the whole investor was left out, rather than reading as one dropped spelling');
   }
 
   /**

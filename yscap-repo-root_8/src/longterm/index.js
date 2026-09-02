@@ -33,7 +33,7 @@ require('./conditions-center/photo-id-share');
 const router = express.Router();
 
 /* ⛔ THE INVESTOR-NAME BLOCK MUST BE IN FORCE BEFORE THE FIRST REQUEST, and
-   "before" is a claim about time that has to be true.
+   "before" is a claim about time and ORDER that has to be true of both.
 
    The block in `audience.js` is fed by the settings store's `applyOnLoad` hook,
    which fires on a company-scope READ. The surfaces that most need it never take
@@ -43,22 +43,27 @@ const router = express.Router();
    added by hand, so the FIRST borrower to open their conditions after a deploy
    was read to by a block that had never heard of them.
 
-   A single fire-and-forget read here was not enough, and an audit measured why:
-   the require returned and the read landed ~28ms later with `app.listen()` in
+   A single fire-and-forget read was not enough, and an audit measured why: the
+   require returned and the read landed ~28ms later with `app.listen()` in
    between, so a request in that window was still served cold — and a read that
-   came back DEGRADED gave up for good, leaving the block cold indefinitely on
-   borrower-only traffic. So there are two mechanisms, and they are different:
+   came back DEGRADED gave up for good. So there are two mechanisms:
 
-     · `keepWarm()` RETRIES until a clean read lands, then re-reads on an
-       interval — which also bounds how far behind this process can be after an
-       admin adds an investor somewhere else (see AUDIENCE-RULES.md).
-     · `ensureWarm()` makes the first request WAIT for a read if none has ever
-       succeeded, which is what closes the race rather than narrowing it.
+     · keepWarm RETRIES until a clean read lands, then re-reads on an interval,
+       which also bounds how far behind this process can be after an admin adds
+       an investor somewhere else (see AUDIENCE-RULES.md).
+     · the guard below makes a request WAIT for a read, which closes the race
+       rather than narrowing it.
 
-   Both are no-ops once a clean read has landed. */
+   ⛔ IT IS MOUNTED FIRST, BEFORE ANY ROUTE ON THIS ROUTER — including /health.
+   Express runs layers in the order they were added, so a guard added after a
+   route simply does not run for that route. `test-lt-custom-investors-pure.js`
+   asserts the mounted LAYER and its POSITION rather than grepping for this call,
+   because the paragraph you are reading satisfies any grep on its own. */
 const settingsStore = require('./settings/store');
 const warmth = settingsStore.keepWarm();
 router.use(settingsStore.ensureWarm());
+
+
 
 // Liveness / identity of the LT side (no DB) — lets the front end and ops confirm
 // the Long-Term module is mounted.
