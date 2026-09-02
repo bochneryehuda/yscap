@@ -55,6 +55,10 @@ ok(s2.tabs.signHereTabs.length === 1 && s2.tabs.signHereTabs[0].anchorString ===
 ok(def.customFields.textCustomFields[0].value === 'app-1', 'custom field correlation carried');
 ok(def.eventNotification.requireAcknowledgment === 'true', 'eventNotification requires ack (no silent loss)');
 ok(def.eventNotification.includeCertificateOfCompletion === 'true', 'CoC included in webhook');
+// 2026-09-02: the receiver rejects an unsigned Connect post (401, fail closed), so the
+// envelope's own subscription must ask DocuSign to sign — without this every event of
+// every envelope we created was refused and parked in the Connect failure log.
+ok(def.eventNotification.includeHMAC === 'true', 'eventNotification asks DocuSign to HMAC-sign every post (the receiver drops unsigned ones)');
 // A package with no fillable boxes keeps the minimal shape it always had — the
 // borrower/Iska/term-sheet envelopes must not grow empty tab arrays.
 ok(!('textTabs' in s1.tabs) && !('radioGroupTabs' in s1.tabs), 'sign/date-only signer carries no empty tab arrays');

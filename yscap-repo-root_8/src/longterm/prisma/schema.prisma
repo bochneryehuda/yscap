@@ -2924,6 +2924,7 @@ model LtVorEnvelope {
   voidedAt   DateTime? @map("voided_at") @db.Timestamptz(6)
 
   lastError String?  @map("last_error")
+  docusignCheckedAt DateTime? @map("docusign_checked_at") @db.Timestamptz(6)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
