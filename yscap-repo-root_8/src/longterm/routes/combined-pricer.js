@@ -308,6 +308,58 @@ function scenarioOf(req) {
   return b && typeof b === 'object' && b.scenario && typeof b.scenario === 'object' ? b.scenario : b;
 }
 
+/**
+ * THE SCENARIO AN EXPLAIN CALL IS MADE ABOUT — the SAME enriched loan the board was priced on.
+ *
+ * ⛔ THE DEFECT THIS CLOSES (owner-reported 2026-09-02, *"Very important: I still don't see the
+ * detailed LLPA and adjustments populate"*). `priceBoth` runs every scenario through
+ * `validateScenario` BEFORE either vendor is asked: the browser sends a ZIP and nothing else about
+ * the location, and that step turns it into state + county (+ FIPS), canonicalises the buttons and
+ * clamps a ratio above the vendor's ceiling. The explain doors handed the RAW browser scenario
+ * straight to the LoanNEX body builder, so the vendor was asked to itemise a quote for a loan with
+ * NO STATE — `nexApp.state: null` against the board's `"NJ"`, measured field by field — and the
+ * eligibility screen it re-runs behind `/evidences` had nothing to screen. The live recording of
+ * 30 Aug supplied the state by hand and three of four investors itemised; the board never does.
+ *
+ * `validateScenario` is pure, offline and deterministic, so running it here on the same input the
+ * price call ran it on yields the same enriched scenario — the explain call now describes the
+ * loan the quote was priced on, to the field. A scenario it refuses is refused HERE with the same
+ * 422 the price door gives, never sent to the vendor as a different loan.
+ */
+function explainScenario(req) {
+  const chk = validateScenario(scenarioOf(req) || {});
+  if (!chk.ok) {
+    const err = new Error(chk.message || 'invalid scenario');
+    err.code = chk.error; err.field = chk.field; err.status = chk.status || 422;
+    throw err;
+  }
+  return chk.scenario;
+}
+
+/**
+ * WHAT WAS ASKED, stated on the answer so an empty panel can say what it asked about.
+ *
+ * Carries the figures a person can check against the board — never a vendor name, and the portal
+ * only when the caller asked to see where rows come from (it names the investor's own portal).
+ */
+function askedOf(sc, vendorQ, ident, opts = {}) {
+  const s = sc || {}; const q = vendorQ || {}; const id = ident || {};
+  const out = {
+    rate: q.rate == null ? null : Number(q.rate),
+    price: q.price == null ? null : Number(q.price),
+    lockDays: q.lockDays == null ? null : Number(q.lockDays),
+    transactionId: id.transactionId || null,
+    state: s.state || null,
+    county: s.countyName || s.county || null,
+    zip: s.zip || null,
+    dscr: s.dscr == null ? null : Number(s.dscr),
+    loan: s.loan == null ? null : Number(s.loan),
+    value: s.value == null ? null : Number(s.value),
+  };
+  if (opts.reveal) out.portal = id.portal || null;
+  return out;
+}
+
 /** An upstream failure, reduced to a reason string a caller may safely see. */
 function reasonOf(e) {
   if (!e) return 'unknown_error';
@@ -457,7 +509,12 @@ async function priceBoth(scenario, opts = {}) {
    * which is the owner's own condition on this filter. It runs HERE, before the holdback, the merge,
    * the routing, the counts and the option shape, so every one of those describes the same board.
    */
-  const want = productFilter.wantFrom(sc, lpModel._internals);
+  // ⛔ THE INTEREST-ONLY ANSWER COMES OFF THE BUILT LENDER PRICE REQUEST when the scenario is
+  // silent. The screen omits an OFF switch rather than sending `false` (see `product-filter.
+  // wantFrom`), so without this the LoanNEX board was never narrowed on interest-only while Lender
+  // Price's tenant default already had — one board answering an amortising question and the other
+  // answering none (owner-reported 2026-09-02). `chk.request` is the very request `lp.price` sends.
+  const want = productFilter.wantFrom(sc, lpModel._internals, { lpCriteria: chk.request && chk.request.criteria });
   const narrowed = nxRes.status === 'fulfilled'
     ? productFilter.narrowBoard(nxRes.value.board, want)
     : null;
@@ -493,7 +550,9 @@ async function priceBoth(scenario, opts = {}) {
   // suppressed or routed-away investor cannot reappear through a second door.
   let options;
   if (opts.shape === 'options') {
-    const io = sc.io;
+    // The SAME resolved answer the programme narrowing used — never `sc.io` on its own, which is
+    // absent when the switch is off and would leave this second pass un-narrowed too.
+    const io = want.io;
     const rows = [];
     // The per-vendor split, for SHAPING ONLY. On a revealing call the routed
     // board already carries it; otherwise it is taken from a second routing pass
@@ -995,25 +1054,41 @@ function makeRouter(opts = {}) {
      * because that is the price on the board and the price somebody quotes; `holdBackExplainedBase`
      * then moves the vendor's own base by the same amount so the running total still lands on it.
      */
+    // The SAME enriched loan the board was priced on — see `explainScenario`. A refused scenario
+    // is a 422 naming the field, exactly as the price door answers it.
+    let sc;
+    try { sc = explainScenario(req); }
+    catch (e) { return res.status(e.status || 422).json({ ok: false, error: e.code || 'invalid_scenario', field: e.field || null, message: reasonOf(e) }); }
+    const ident = searchIdentity(quote, b);
     holdbackOnRow(b.investorKey, b)
       // Never lets the answer fail: an unreadable settings store costs the base shift, not the
       // breakdown the caller asked for.
       .catch(() => ({ points: 0 }))
-      .then((hb) => nex
-        .evidence(scenarioOf(req), vendorQuote(quote, (hb && hb.points) || 0), searchIdentity(quote, b))
-        .then((r) => [r, hb]))
-      .then(([r, hb]) => {
+      .then((hb) => {
+        const vq = vendorQuote(quote, (hb && hb.points) || 0);
+        return nex.evidence(sc, vq, ident).then((r) => [r, hb, vq]);
+      })
+      .then(([r, hb, vq]) => {
         // THE SAME LAYOUT, WHATEVER PRICED IT. The vendor's answer is folded onto
         // an option in the common shape and handed to the ONE breakdown builder,
         // so this door and a Lender Price row produce the same rows, in the same
         // order, with the same keys.
-        const option = vendorMargin.holdBackExplainedBase(quoteShape.attachEvidence(
+        const explained = vendorMargin.holdBackExplainedBase(quoteShape.attachEvidence(
           quoteShape.optionForExplain(quote, b.option), r.evidence, { absence: r.absence },
         ), (hb && hb.points) || 0);
+        /**
+         * WHAT WAS ASKED RIDES ON THE OPTION'S OWN EVIDENCE BLOCK, so the panel that prints "the
+         * rate sheet returned no breakdown" can print, beside it, exactly which loan and which
+         * quote it asked about — the one line that turns an empty panel into a diagnosis.
+         */
+        const asked = askedOf(sc, vq, ident, { reveal });
+        const option = { ...explained, evidence: { ...(explained.evidence || {}), asked } };
         const built = breakdown.breakdown(option, { reveal });
         res.json({
           ok: true,
           breakdown: built,
+          asked,
+          vendor: { answered: !!r.evidence, reason: r.absence ? r.absence.reason : null, message: r.absence ? r.absence.message : null },
           /**
            * ⛔ THE OPTION ITSELF, so the screen never re-keys a breakdown into an option shape.
            *
@@ -1054,7 +1129,10 @@ function makeRouter(opts = {}) {
     if (!quote || !quote.priceHashKey) {
       return res.status(400).json({ ok: false, error: 'missing_quote', message: 'Send the quote to explain, including its priceHashKey (the `explain` block on any LoanNEX option row).' });
     }
-    nex.evidence(scenarioOf(req), quote, searchIdentity(quote, b))
+    let sc;
+    try { sc = explainScenario(req); }
+    catch (e) { return res.status(e.status || 422).json({ ok: false, error: e.code || 'invalid_scenario', field: e.field || null, message: reasonOf(e) }); }
+    nex.evidence(sc, quote, searchIdentity(quote, b))
       .then((r) => res.json({ ok: true, ...r }))
       .catch((e) => res.status(isNotConfigured(e) ? 503 : 502)
         .json({ ok: false, error: e.code || 'loannex_evidence_error', message: reasonOf(e) }));
@@ -1063,4 +1141,4 @@ function makeRouter(opts = {}) {
   return router;
 }
 
-module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, reasonOf, vendorQuote, searchIdentity, routing, quoteShape, breakdown } };
+module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, explainScenario, askedOf, reasonOf, vendorQuote, searchIdentity, routing, quoteShape, breakdown } };

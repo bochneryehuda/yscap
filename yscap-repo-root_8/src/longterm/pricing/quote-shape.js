@@ -353,11 +353,20 @@ function splitInterestOnly(options) {
   return { io, amortizing, unknown };
 }
 
-/** Apply the scenario's interest-only answer to a set of options. */
+/**
+ * Apply the scenario's interest-only answer to a set of options.
+ *
+ * ⛔ A ROW WHOSE PRODUCT DOES NOT SAY IS KEPT AND COUNTED, never dropped — the same rule the
+ * programme-level narrowing (`product-filter.narrowBoard`) holds, and the rule the header above
+ * has always stated. An earlier cut returned only the matching half and left `unknown` for the
+ * count alone, so the moment the answer was resolved for every search (2026-09-02) a row nobody
+ * could classify vanished from the option list with nothing on screen to say so. The unknown rows
+ * ride at the END so the matched ones are still read first, and `unknown` still reports them.
+ */
 function filterInterestOnly(options, want) {
   if (want === undefined || want === null) return { options: options || [], filtered: false, unknown: [] };
   const s = splitInterestOnly(options);
-  return { options: want ? s.io : s.amortizing, filtered: true, unknown: s.unknown };
+  return { options: (want ? s.io : s.amortizing).concat(s.unknown), filtered: true, unknown: s.unknown };
 }
 
 
@@ -454,6 +463,26 @@ function programsFromLoanNex(board, opts = {}) {
         cushionedLockDays: r.cushionedLockDays == null ? null : r.cushionedLockDays,
         dscr: numOrNull(r.dscr),
         interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
+        /**
+         * THE TERMS, UNDER THE KEY THE SCREEN READS. The Details panel draws `o.terms.term`,
+         * `o.terms.interestOnly` and `o.terms.dayLock` (that is where every Lender Price option
+         * carries them), and `splitInterestOnly` judges an option on `o.terms.interestOnly` — so a
+         * LoanNEX board row, which stated all three only at the top level, drew an em dash for its
+         * term, its amortization and its lock on the one panel whose job is to state them, and
+         * could not be classified by the option-level interest-only filter at all. The vendor's own
+         * published facts, restated where they are read; the top-level copies stay for anything
+         * that reads them there.
+         */
+        terms: {
+          dayLock: r.lockDays == null ? null : r.lockDays,
+          cushionedLockDays: r.cushionedLockDays == null ? null : r.cushionedLockDays,
+          interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
+          interestOnlyTerm: p.interestOnlyTerm == null ? null : p.interestOnlyTerm,
+          amortizationType: p.amortizationType || null,
+          term: p.termInMonths == null ? null : p.termInMonths, termInMonths: p.termInMonths != null,
+          ...termPair(p.termInMonths, 'months'),
+          dscr: numOrNull(r.dscr),
+        },
         isException: !!r.isException,
         softStop: !!r.hasSoftStopViolation,
         explain: explainHandle(r, p, price, opts),
