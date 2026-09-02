@@ -550,7 +550,8 @@ ok('…and the parked draw files are COUNTED and explained, never silently dropp
 ok('every row names the property, the job, the file status, the loan officer and how late it is', () => {
   const proc = grouped.tables[0];
   assert.deepStrictEqual(proc.head, ['Property / file', 'Waiting for', 'File status', 'Loan officer', 'Over by']);
-  assert.deepStrictEqual(proc.rows[0], ['1 Oak St, Newark, NJ', 'Processing', 'in processing', 'Dani R', '30h']);
+  // 'Full Processing' since 2026-09-01 (owner-directed: the whole-file hand-off is named for what it is).
+  assert.deepStrictEqual(proc.rows[0], ['1 Oak St, Newark, NJ', 'Full Processing', 'in processing', 'Dani R', '30h']);
   // Past two days it reads in days; an unassigned officer says so rather than blank.
   assert.deepStrictEqual(proc.rows[1], ['2 Elm Ave, Newark, NJ', 'Condition Clearing', 'underwriting', 'unassigned', '4d']);
 });
