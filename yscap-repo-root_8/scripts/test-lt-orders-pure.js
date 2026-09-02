@@ -173,7 +173,14 @@ const PLACES = [
   ['insurance', 'Declarations Page.pdf', 'binder'],
   ['insurance', 'invoice.pdf', 'invoice'],
   ['flood_insurance', 'Flood Binder.pdf', 'binder'],
-  ['ny_settlement_agent', 'Engagement Letter.pdf', 'engagement'],
+  /* The New York settlement agent is asked for three documents, and the
+     engagement letter is not one of them (owner, 2026-09-02) — so it has no slot
+     and a copy that arrives anyway files on the condition. Asserted here as
+     WELL as in test-lt-order-slot-map-pure because both suites keep their own
+     table of this, and the one that is not updated is the one that goes stale. */
+  ['ny_settlement_agent', 'Engagement Letter.pdf', null],
+  ['ny_settlement_agent', 'Settlement Agent E&O.pdf', 'eo'],
+  ['ny_settlement_agent', 'wire instructions.pdf', 'wire_instructions'],
   ['condo_questionnaire', 'HOA Questionnaire.pdf', 'questionnaire'],
   ['condo_questionnaire', '2026 Budget.pdf', 'budget'],
 ];

@@ -37,6 +37,7 @@ import ConditionActions, { DocActions } from '../components/ConditionActions.jsx
 import { CONDITION_FILTER_KEYS, conditionFilterLabel, conditionFilterHint, matchConditionFilter } from '../lib/condition-filter.js';
 import LtConditionContacts from './LtConditionContacts.jsx';
 import LtConditionOrder from './LtConditionOrder.jsx';
+import LtSubmittalPanel from './LtSubmittalPanel.jsx';
 import DocPreview from '../components/DocPreview.jsx';
 import DropZone from '../components/DropZone.jsx';
 import UploadRows from '../components/UploadRows.jsx';
@@ -425,6 +426,16 @@ export default function LtFileConditions({ loanId }) {
   const uploadFiles = useCallback(async (conditionId, files, replaceDocumentId) => {
     if (!files || !files.length) return;
     setRowErr((prev) => ({ ...prev, [conditionId]: null }));
+    /* A CONDITION WITH ONE SLOT FILES THE UPLOAD INTO IT. The required-slot
+       gate matches on `slot_label`, and an upload with no slot sat on the photo
+       ID and the executed contract as "Still waiting on: …" until somebody found
+       the "File under" picker — the blocker never said so (audit 2026-09-02).
+       With exactly one slot there is nothing to pick; with several the picker
+       still decides. */
+    const cond = ((data && data.buckets) || []).flatMap((b) => b.conditions || [])
+      .find((c) => String(c.id) === String(conditionId));
+    const slot = cond && Array.isArray(cond.slots) && cond.slots.length === 1 && cond.slots[0] && cond.slots[0].label
+      ? String(cond.slots[0].label) : null;
     let failed = 0;
     for (const file of Array.from(files)) {
       try {
@@ -438,6 +449,7 @@ export default function LtFileConditions({ loanId }) {
           file,
           filename: file.name,
           contentType: file.type || 'application/octet-stream',
+          ...(slot ? { slot } : {}),
           ...(replaceDocumentId ? { replaceDocumentId } : {}),
         });
         /* THE MORTGAGE STATEMENT READS ITSELF. The server sends this back only
@@ -456,7 +468,7 @@ export default function LtFileConditions({ loanId }) {
       }
     }
     if (failed < Array.from(files).length) load();
-  }, [loanId, load, say]);
+  }, [loanId, load, say, data]);
 
   const pickFiles = useCallback((conditionId, replaceDocumentId) => {
     aimRef.current = { conditionId, replaceDocumentId: replaceDocumentId || null };
@@ -500,6 +512,18 @@ export default function LtFileConditions({ loanId }) {
           one. */}
       <LtSendConditions loanId={loanId} />
 
+      {/* THE RULES RAN AS THIS OPENED, and changed something — said out loud,
+          because a condition that appears on its own with nothing explaining it
+          is one nobody trusts. Silent when nothing changed. */}
+      {data.rules && data.rules.evaluated && (data.rules.added > 0 || data.rules.removed > 0) && (
+        <p style={{ margin: '0 0 10px', color: MUTED, fontSize: 13, lineHeight: 1.55 }}>
+          The rules ran as this file opened:
+          {data.rules.added > 0 && <> {data.rules.added} condition{data.rules.added === 1 ? '' : 's'} added</>}
+          {data.rules.added > 0 && data.rules.removed > 0 && ','}
+          {data.rules.removed > 0 && <> {data.rules.removed} taken off</>}.
+        </p>
+      )}
+
       {/* A DEGRADED READ IS NOT AN EMPTY FILE. */}
       {data.degraded && (
         <p style={{ margin: '0 0 10px', color: RED, fontSize: 13, lineHeight: 1.55 }}>
@@ -533,9 +557,14 @@ export default function LtFileConditions({ loanId }) {
             ))}
           </select>
         </label>
+        {/* THE RULES RUN BY THEMSELVES (owner-directed 2026-09-02): the server
+            runs them when this file is opened and the background pass runs them
+            over the whole book whenever the mirror or the library moves. This
+            button is the manual run for the impatient — it is no longer the
+            only way a condition gets onto a file. */}
         <button className="btn soft" onClick={evaluate} disabled={busy}
-          title="Run the rules against this file again and bring its conditions into line.">
-          Re-check the rules
+          title="The rules already run by themselves — when this file is opened, and in the background whenever the file or the rules change. Press this to run them right now.">
+          Run the rules now
         </button>
       </div>
 
@@ -563,6 +592,19 @@ export default function LtFileConditions({ loanId }) {
             )}
           </div>
           {b.blurb && <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>{b.blurb}</div>}
+
+          {/* PRIOR TO SUBMITTAL — COMPLETED (owner-directed 2026-09-02). Under
+              this one bucket's heading: what the officer still has to do, and
+              the button. It re-reads whenever the list below changes (`data`),
+              so a Done click moves an item down the list at once. Opening an
+              item from it expands the condition row below. */}
+          {b.key === 'prior_to_submission' && (
+            <LtSubmittalPanel
+              loanId={loanId}
+              refreshKey={data}
+              onOpenCondition={(id) => setOpen((prev) => new Set(prev).add(id))}
+              onChanged={load} />
+          )}
 
           <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
             {b.conditions.map((c) => (
@@ -599,8 +641,9 @@ export default function LtFileConditions({ loanId }) {
 
       {groups.length === 0 && (
         <p style={{ margin: 0, color: MUTED, fontSize: 13, lineHeight: 1.55 }}>
-          No conditions have been worked out for this file yet. Press <strong>Re-check the rules</strong>{' '}
-          to run the library against it.
+          No conditions have been worked out for this file yet. The rules run by themselves when the
+          file is opened and in the background; if this is still empty in a moment, press{' '}
+          <strong>Run the rules now</strong>.
         </p>
       )}
 

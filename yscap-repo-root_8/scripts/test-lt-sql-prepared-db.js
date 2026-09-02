@@ -200,6 +200,8 @@ async function main() {
     // assembled form runs against a real Postgres in this job:
     'sync/milestone-ladder.js': 'test-lt-milestone-ladder.js section H drives ladderDue live (the assembled not-trash WHERE), and sections E–I drive every other statement in the file',
     'clickup/push.js': 'test-lt-clickup-writer.js DB half drives pushLoan, createForLoan, pushPass and createPass live — every loan load assembles the trash guard',
+    'clickup/submittal.js': 'test-lt-submittal-db.js section E drives pushPass live (the assembled not-trash WHERE over the owed completions) and pushForLoan on a completed and a never-completed loan',
+    'conditions-center/sweep.js': 'test-lt-condition-rules-db.js drives sweepOnce (the assembled not-trash + due WHERE) and evaluateIfStale (the same predicate for one loan) in a rolled-back transaction',
     // The SHARED scoped loader every per-loan section goes through. It composes the
     // trash guard into its `SELECT ... FROM lt_loans`, so the statement only exists
     // once a door assembles it. The smoke test's all-zeros loan id is a VALID uuid,

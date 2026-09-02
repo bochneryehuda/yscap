@@ -273,8 +273,32 @@ async function evaluateLoan(loanId, opts = {}) {
     }
   }
 
+  // THE START of the pass is what gets stamped (db/679), not the end: a mirror
+  // write that lands while this pass is running is newer than the stamp and
+  // the sweep runs the loan again. Stamping the end would swallow it.
+  //
+  // READ FROM THE DATABASE'S CLOCK, not this process's. The stamp is compared
+  // against `encompass_synced_at`, which the loan sync writes with the
+  // database's now(); the web process and the database are different machines
+  // and a few seconds of skew between them would make a loan read "current"
+  // that the sync had in fact moved. `clock_timestamp()` rather than now() so
+  // a caller inside a transaction (the tests) gets the real moment, not the
+  // transaction's start. Falls back to this clock only if the read fails.
+  // EVERY STATEMENT OF THE PASS RUNS ON THE LOCK'S OWN CONNECTION. Holding one
+  // pooled connection for the lock and issuing the pass's statements through
+  // the pool pinned TWO connections per pass out of a pool of five — so the
+  // worker's sweep plus a few files opened at once could exhaust the pool and
+  // stall every long-term request for the ten-second queue timeout (audit
+  // 2026-09-02). One connection per pass; with no lock (`skipLock`, or a
+  // lock that failed open) the caller's runner is used exactly as before.
+  const cx = lockClient || client;
+  let startedAt = new Date();
   try {
-    const ctx = await loadContext(loanId, client);
+    const { rows } = await cx.query('SELECT clock_timestamp() AS t');
+    if (rows[0] && rows[0].t) startedAt = rows[0].t;
+  } catch (_) { /* the fallback above stands */ }
+  try {
+    const ctx = await loadContext(loanId, cx);
     if (!ctx.loan) {
       out.ok = false;
       out.degraded = 'No such long-term loan, or it could not be read.';
@@ -282,12 +306,12 @@ async function evaluateLoan(loanId, opts = {}) {
     }
     if (ctx.unreadable.length) out.degraded = ctx.unreadable.map((u) => u.what).join(', ');
 
-    const library = await loadLibrary(client);
+    const library = await loadLibrary(cx);
     const fields = registry.fieldMap();
 
     const where = ownerWhere(owner);
-    const { rows: existing } = await client.query(
-      `SELECT id, template_id, status, origin_kind, notes, field_key,
+    const { rows: existing } = await cx.query(
+      `SELECT id, template_id, status, origin_kind, notes, field_key, reviewed_at,
               (tool_payload IS NOT NULL AND tool_payload <> '{}'::jsonb) AS has_answer
          FROM checklist_items WHERE ${where.sql}`,
       where.params,
@@ -314,7 +338,7 @@ async function evaluateLoan(loanId, opts = {}) {
           // remembering which columns exist this month.
           const cols = ownerCols(owner);
           const { item_kind, tool_key } = vocab.kindToShared(t.kind);
-          const { rows } = await client.query(
+          const { rows } = await cx.query(
             `INSERT INTO checklist_items
                (scope, application_id, lt_loan_id, template_id, category,
                 label, hint, borrower_label, borrower_hint, audience,
@@ -364,8 +388,14 @@ async function evaluateLoan(loanId, opts = {}) {
       // `out.unchanged` honest), while the statement is what closes the window
       // between the read and the write. The one that must never go is the one in
       // the DELETE.
+      // A DONE STAMP IS WORK SOMEBODY DID, exactly as a note or a stored answer
+      // is (audit 2026-09-02). `reviewed_at` is the loan officer's "I have done
+      // my part" on the prior-to-submittal list, so a rule changing its mind
+      // would otherwise delete their declaration without a word. Like the
+      // answer clause above it, this can only ever KEEP more rows.
       const untouched = have.origin_kind === 'auto' && have.status === UNTOUCHED
-        && !String(have.notes || '').trim() && have.has_answer !== true;
+        && !String(have.notes || '').trim() && have.has_answer !== true
+        && !have.reviewed_at;
       if (!untouched) { out.unchanged += 1; continue; }
       try {
         // THE WHOLE TEST IS INSIDE THE DELETE, deliberately: the read above is
@@ -373,9 +403,10 @@ async function evaluateLoan(loanId, opts = {}) {
         // this statement must not be able to lose its condition. The short-term
         // side does this as read-then-write, which is the shape db/401 records
         // as having produced real duplicates under ordinary traffic.
-        const { rows } = await client.query(
+        const { rows } = await cx.query(
           `DELETE FROM checklist_items
             WHERE id = $1::uuid AND origin_kind = 'auto' AND status = $2
+              AND reviewed_at IS NULL
               AND COALESCE(notes,'') = ''
               AND COALESCE(tool_payload, '{}'::jsonb) = '{}'::jsonb
               AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id = checklist_items.id)
@@ -415,13 +446,14 @@ async function evaluateLoan(loanId, opts = {}) {
       // takes the starting index for exactly this reason; two clauses both
       // claiming $1 is a bind mismatch that only shows up at run time.
       const ciWhere = ownerWhere(owner, 'ci', 2);
-      const { rows } = await client.query(
+      const { rows } = await cx.query(
         `DELETE FROM checklist_items ci
           USING checklist_templates t
           WHERE t.id = ci.template_id
             AND t.is_active = false
             AND ci.origin_kind = 'auto'
             AND ci.status = $1
+            AND ci.reviewed_at IS NULL
             AND COALESCE(ci.notes,'') = ''
             AND COALESCE(ci.tool_payload, '{}'::jsonb) = '{}'::jsonb
             AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id = ci.id)
@@ -432,6 +464,35 @@ async function evaluateLoan(loanId, opts = {}) {
       for (const r of rows) out.removed.push({ code: r.code, label: r.label, retired: true });
     } catch (e) {
       out.skipped.push({ code: '(retired)', why: `Could not remove retired conditions: ${String((e && e.message) || e).slice(0, 160)}` });
+    }
+
+    // ── THE STAMP (db/679) — so the sweep and the file's screen know this ran ──
+    // CLEAN means every table was read and every decision was written. A rule
+    // the engine could not decide because a FIELD is blank (4008 unanswered,
+    // property type unread) is NOT unclean: the fact is stable until the mirror
+    // moves, and the mirror moving is what makes the loan due again. A table it
+    // could not READ, or an insert/delete it could not make, IS unclean: the
+    // loan is left due — tried again on the next pass — rather than believed.
+    //
+    // `tried_at` moves either way, so a loan that fails every time goes to the
+    // back of the sweep's queue instead of holding its front. Best-effort: a
+    // stamp that cannot be written costs the next pass one needless run, never
+    // this pass its result.
+    out.clean = out.ok && !out.degraded && !out.skipped.some((s) => /^Could not /.test(String(s.why || '')));
+    if (opts.stamp !== false) {
+      try {
+        await cx.query(
+          `UPDATE lt_loans
+              SET conditions_evaluate_tried_at = clock_timestamp(),
+                  conditions_evaluated_at = CASE WHEN $2::boolean THEN $3::timestamptz ELSE conditions_evaluated_at END
+            WHERE id = $1::uuid`,
+          [String(loanId), out.clean === true, startedAt],
+        );
+        out.stamped = out.clean === true;
+      } catch (e) {
+        out.stamped = false;
+        out.stampError = String((e && e.message) || e).slice(0, 160);
+      }
     }
   } catch (e) {
     // Rule 6: never throw at the caller.

@@ -874,6 +874,17 @@ export default function LtLoan() {
     });
   }, []);
 
+  // A card deep inside one section may need to open ANOTHER — the rent order on
+  // the Orders desk sends people to the Verification of rent section, which is
+  // the only place the form goes out from (`LtOrders.openLoanSection`). It asks
+  // by event because it has no prop path to this screen; this is the answer.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onOpen = (e) => { if (e && typeof e.detail === 'string' && e.detail) jumpToSection(e.detail); };
+    window.addEventListener('lt:open-section', onOpen);
+    return () => window.removeEventListener('lt:open-section', onOpen);
+  }, [jumpToSection]);
+
   if (err) {
     return (
       <LtLayout title="Long-term file">

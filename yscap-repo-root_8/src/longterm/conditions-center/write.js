@@ -57,6 +57,11 @@ const requiredSlots = require('../../lib/conditions/required-slots');
 // are the read and write halves of the same three conditions and a direct
 // require would make a cycle the first time it needs one of these rules.
 const workspace = require('./workspace');
+// The one reader of "which of this condition's contacts are still missing" —
+// shared with the prior-to-submittal readiness list and the screen.
+const read = require('./read');
+// The card the appraisal is charged to, on the borrower's shared profile.
+const profileLinks = require('./profile-links');
 
 /** How many accepted documents a slot-bearing condition still needs. */
 function missingSlots(condition, files) {
@@ -83,13 +88,21 @@ function documentsByLine(files) {
  */
 function signOffProblem(condition, files, opts = {}) {
   if (!condition) return { ok: false, why: 'That condition is not on this file.' };
-  if (opts.readFailed) {
-    // FAILS OPEN, and says so. The caller records `checkSkipped` on the row.
-    return { ok: true, checkSkipped: 'PILOT could not read this condition’s documents, so it did not check them.' };
-  }
 
   const kind = String(condition.kind || 'document');
-  const current = (files || []).filter((f) => f.is_current);
+  /* TWO STAGES, ONE SET OF RULES. `stage: 'officer'` is the loan officer's
+     question — "have I done my part?" — asked by the prior-to-submittal list
+     (owner-directed 2026-09-02: *"Upload the three documents to the entity
+     condition and click done on it"*). An upload IS the officer's part; the
+     back office accepting it is theirs. So at the officer stage a PENDING
+     document counts as present and the "nothing un-reviewed" rule below is
+     the back office's alone. A REJECTED document never counts at either
+     stage. Every other rule — the contacts on the file, the credit reissued,
+     the entity's three documents, the choice answered — is the same rule at
+     both stages, which is the point of a mode rather than a second function. */
+  const officer = opts.stage === 'officer';
+  const current = (files || []).filter((f) => f.is_current)
+    .map((f) => (officer && f.review_status === 'pending' ? { ...f, review_status: 'accepted' } : f));
 
   // NOTHING UN-REVIEWED IS EVER FULFILMENT, whatever the kind. A pending
   // document on any condition is somebody's unfinished work.
@@ -99,6 +112,92 @@ function signOffProblem(condition, files, opts = {}) {
       ok: false,
       why: `${pending.length} document${pending.length === 1 ? '' : 's'} on this condition ${pending.length === 1 ? 'has' : 'have'} not been looked at yet. Accept or reject ${pending.length === 1 ? 'it' : 'them'} first.`,
     };
+  }
+
+  // ── THE CONTACTS A CONDITION ASKS FOR HAVE TO BE ON THE FILE ─────────────
+  // Owner-directed 2026-09-02: the file-contacts condition is finished by
+  // *"put[ting] in the file contact"* — the title company, the hazard agent,
+  // and the landlord / HOA / settlement agent where the deal calls for them.
+  // Until this gate, `satisfy` signed the contacts condition off with nothing
+  // on the file at all (it is `kind: 'form'`, which fell straight through). The
+  // list of what is missing is `read.missingContacts` — the same reader the
+  // screen's "still needed" line and the prior-to-submittal list use — so the
+  // three can never disagree about which row is still open. Unreadable is
+  // refused, never treated as "nothing missing".
+  if (opts.contacts) {
+    if (opts.contacts.unreadable) {
+      return { ok: false, why: 'PILOT could not read this file’s contacts just now, so it cannot confirm they are all on the file. Try again in a moment.' };
+    }
+    if (opts.contacts.missing.length) {
+      const names = opts.contacts.missing.map((m) => m.label).join(', ');
+      const unknown = opts.contacts.missing.filter((m) => m.whyUnknown);
+      return {
+        ok: false,
+        why: `Still needed on the file: ${names}. Pick each one from the vendor directory on this condition first.`
+          + (unknown.length ? ` (${unknown.map((m) => `${m.label}: ${m.whyUnknown}`).join(' ')})` : ''),
+      };
+    }
+  }
+
+  // ── THE CREDIT HAS TO HAVE BEEN REISSUED BEFORE THE MORTGAGES ARE "DONE" ──
+  // Owner-directed 2026-09-02: *"the credit needs to be reissued in Encompass,
+  // and once the credit is reissued it's automatically gonna fill up the
+  // liabilities on the REO condition. Which means that the REO condition
+  // actually needs to have liabilities on it … you need to look for the
+  // liability section. It needs to be filled. That means that it was
+  // reissued."* `answers.satisfies` deliberately answers a condition with no
+  // mortgages as finished — a borrower with none has nothing to send — which
+  // is right ONCE THE CREDIT HAS BEEN READ and wrong before it: an empty
+  // liability list on a file whose credit was never reissued is not "no
+  // debts", it is "nobody has looked". So the liabilities must have come
+  // across from Encompass at all (one row is enough — the credit report is
+  // what puts them there) before the per-line rules are even consulted. A
+  // borrower with a genuinely clean report is waived with a reason, which is
+  // the door built for a claim a person is standing behind.
+  if (opts.liabilities) {
+    if (opts.liabilities.unreadable) {
+      return { ok: false, why: opts.liabilities.why || 'PILOT could not read the liabilities from the credit report just now.' };
+    }
+    if (opts.liabilities.count === 0) {
+      return {
+        ok: false,
+        why: 'No liabilities have come across from Encompass yet — reissue the credit in Encompass, and the '
+          + 'mortgages on the report fill in here by themselves. (A borrower with a genuinely clean report: waive this with a reason.)',
+      };
+    }
+    // THE LINES HAVE ARRIVED BUT NOBODY HAS LOOKED. The screen saves the
+    // classification as a `mortgages` array — EMPTY when a person looked and
+    // ticked none — so an ABSENT array is the one state that means "not
+    // filled out", which is the owner's *"the REO condition needs to be
+    // filled"*. `answers.satisfies` reads an empty list as "nothing to send",
+    // which is right after a person has said so and wrong before.
+    const recorded = condition.answer && typeof condition.answer === 'object' ? condition.answer : {};
+    if (!Array.isArray(recorded.mortgages)) {
+      return {
+        ok: false,
+        why: `${opts.liabilities.count} liabilit${opts.liabilities.count === 1 ? 'y has' : 'ies have'} come across from the credit report, `
+          + 'but nobody has marked which of them are mortgages yet. Open the condition, tick the mortgage lines '
+          + '(or save with none ticked if there are none), and answer each one.',
+      };
+    }
+  }
+
+  // ── THE CARD FOR THE APPRAISAL HAS TO BE ON THE PROFILE ──────────────────
+  // Owner-directed 2026-09-02: *"You need to have the credit card information
+  // on file to order an appraisal."* The condition is `kind: 'form'` and used
+  // to fall straight through; the fact it asks for lives on the borrower's
+  // shared profile (`profile-links.js`), so that is what is checked — a card
+  // that has expired is not a card the appraisal can be charged to.
+  if (opts.card) {
+    if (opts.card.unreadable) {
+      return { ok: false, why: opts.card.why || 'PILOT could not read the card on the borrower’s profile just now.' };
+    }
+    if (!opts.card.available) {
+      return { ok: false, why: 'No card is on the borrower’s profile yet. Enter the card the appraisal is charged to on this condition — it is kept on the profile for the next loan.' };
+    }
+    if (opts.card.expired) {
+      return { ok: false, why: `The ${opts.card.brand || 'card'} ending ${opts.card.last4 || '····'} on the borrower’s profile has expired (${opts.card.exp || ''}). A current card is needed.` };
+    }
   }
 
   // ── THE COMPANY IS ALREADY VERIFIED ON THE BORROWER'S PROFILE ────────────
@@ -116,6 +215,62 @@ function signOffProblem(condition, files, opts = {}) {
   // for documents that may not be needed — the safe way to be wrong.
   if (opts.entity && opts.entity.verified) {
     return { ok: true, note: 'This company is already verified on the borrower’s profile.' };
+  }
+
+  // ── THE ID IS ALREADY ON THE BORROWER'S PROFILE ──────────────────────────
+  // The photo-ID condition's own hint says an ID already on the profile "does
+  // not need sending again", and `photo-id-share` puts an upload on the profile
+  // for exactly that reason — but until this rule nothing READ it back, so the
+  // officer was told "Still waiting on: Photo ID" over an ID PILOT already held
+  // (audit 2026-09-02). The profile's ID counts at the officer stage as soon as
+  // it is there and not rejected; the back office counts it only once ACCEPTED,
+  // which is the same standard the short-term reused-profile-ID gate applies.
+  if (opts.photoId && opts.photoId.available) {
+    const st = String(opts.photoId.status || 'pending');
+    if (st === 'accepted' || (officer && st !== 'rejected')) {
+      return {
+        ok: true,
+        note: `The borrower’s ID on the profile${opts.photoId.filename ? ` (${opts.photoId.filename})` : ''} is the ID of record; nothing needs sending again.`,
+      };
+    }
+  }
+
+  // ── AT THE OFFICER STAGE, THE COMPANY'S OWN SLOTS COUNT ──────────────────
+  // The owner's instruction was to *"upload the three documents to the entity
+  // condition and click done"*, and the screen files those three onto the
+  // COMPANY's slots on the borrower's profile (the LtEntity door), never onto
+  // this loan's condition — so a rule that reads only the condition's own
+  // documents told the officer the documents were missing after they had just
+  // uploaded them (audit 2026-09-02). Each required slot here is filled by a
+  // document on the matching profile slot (formation / agreement / ein map 1:1)
+  // OR on the condition itself. Officer stage only: the back office reviews the
+  // company's documents on the profile and verifies the company there, which
+  // is what clears this condition for them (the rule above).
+  if (officer && opts.entity && opts.entity.found && Array.isArray(opts.entity.slots)) {
+    // PRESENT and not rejected — not `filled`, which entity-prefill reserves
+    // for ACCEPTED (the back office's standard, and the next loan's).
+    const onProfile = new Set(opts.entity.slots
+      .filter((s) => s && s.documentId && String(s.status || 'pending') !== 'rejected')
+      .map((s) => String(s.key)));
+    const required = requiredSlots.normalize(condition.slots).filter((s) => s.required);
+    if (required.length) {
+      const stillShort = required.filter((s) => !onProfile.has(String(s.key))
+        && requiredSlots.missingSlots([s], current).length > 0);
+      if (stillShort.length) return { ok: false, why: requiredSlots.missingSlotsMsg(stillShort.map((s) => s.label)) };
+      return { ok: true, note: 'The company’s documents are on the borrower’s profile; the back office reviews them there.' };
+    }
+  }
+
+  // FAILS OPEN — BUT ONLY FOR THE RULES THAT READ THE DOCUMENTS. Every rule
+  // above (the contacts on the file, the credit reissued, the card, the entity)
+  // reads other tables and stands whatever happened to the documents query;
+  // only the rules below depend on `files`. This return used to sit at the top
+  // of the function, where one transient failure of that one SELECT signed off
+  // the contacts condition with nothing on the file at all — the exact defect
+  // the contacts gate was written to close (audit 2026-09-02). The caller
+  // records `checkSkipped` on the row.
+  if (opts.readFailed) {
+    return { ok: true, checkSkipped: 'PILOT could not read this condition’s documents, so it did not check them.' };
   }
 
   // ── A CONDITION THAT CAN BE ANSWERED ANOTHER WAY ─────────────────────────
@@ -212,7 +367,65 @@ async function loadCondition(loanId, conditionId, client = db) {
     }
   }
 
-  return { condition, files, readFailed, entity };
+  // The contacts a condition asks for (the file-contacts condition, and any
+  // other carrying `config.contactTypes`), read through the one shared reader.
+  // Never throws: an unreadable answer is carried as such and refused at the gate.
+  let contacts = null;
+  if (condition.config && Array.isArray(condition.config.contactTypes) && condition.config.contactTypes.length) {
+    try {
+      contacts = await read.missingContacts(loanId, condition, client);
+    } catch (_) {
+      contacts = { missing: [], unreadable: true };
+    }
+  }
+  // Whether the credit has come across at all — for the mortgages condition only.
+  let liabilities = null;
+  if (String(condition.code || '') === 'lt_reo_liabilities') {
+    try {
+      const l = await workspace._internals.liabilitiesFor(loanId, client);
+      liabilities = { count: (l.rows || []).length, unreadable: !!l.unreadable, why: l.why || null };
+    } catch (_) {
+      liabilities = { count: 0, unreadable: true, why: null };
+    }
+  }
+
+  // The card the appraisal is charged to lives on the borrower's profile —
+  // the one reader (`profile-links.js`), so this and the screen agree.
+  let card = null;
+  if (String(condition.code || '') === 'lt_appraisal_card') {
+    try {
+      const links = await profileLinks.forLoan(loanId, { db: client });
+      card = links.unreadable
+        ? { available: false, unreadable: true, why: links.why || null }
+        : { ...(links.card || { available: false }), unreadable: false };
+    } catch (_) {
+      card = { available: false, unreadable: true, why: null };
+    }
+  }
+
+  // The ID on the borrower's profile — for the photo-ID condition only, and
+  // with the document's OWN review state read back, because "on the profile"
+  // and "accepted" are two different facts (see the gate).
+  let photoId = null;
+  if (String(condition.code || '') === 'lt_photo_id') {
+    try {
+      const links = await profileLinks.forLoan(loanId, { db: client });
+      const p = (links && !links.unreadable && links.photoId) || { available: false };
+      photoId = { available: !!p.available, documentId: p.documentId || null, filename: p.filename || null, status: null };
+      if (photoId.available && photoId.documentId) {
+        const { rows: d } = await client.query(
+          `SELECT COALESCE(review_status,'pending') AS review_status, is_current FROM documents WHERE id = $1::uuid`,
+          [String(photoId.documentId)],
+        );
+        if (!d[0] || d[0].is_current === false) photoId = { available: false };
+        else photoId.status = d[0].review_status;
+      }
+    } catch (_) {
+      photoId = null;
+    }
+  }
+
+  return { condition, files, readFailed, entity, contacts, liabilities, card, photoId };
 }
 
 /* ── THE SUBJECT-PROPERTY MORTGAGE, SATISFIED FROM THE CREDIT REPORT ────────
@@ -416,10 +629,19 @@ async function recordAnswer(loanId, conditionId, incoming, staffId, client = db)
      stored, rather than something every later reader has to re-derive. */
   merged = answers.withFixed(condition, merged);
 
+  /* AT THE RECORDING DOOR AN UPLOADED DOCUMENT IS ENOUGH. Recording the choice
+     is the officer's act, and "I uploaded the statement" is that act done —
+     the back office ACCEPTING it is theirs, and the sign-off gate still asks for
+     it (`signOffProblem` reads ACCEPTED only). Asking for acceptance here left
+     the "upload a statement" way unrecordable until the back office had
+     reviewed a document the officer could not yet declare (audit 2026-09-02). A
+     REJECTED document never counts. */
+  const uploaded = current.filter((f) => f.review_status !== 'rejected')
+    .map((f) => (f.review_status === 'pending' ? { ...f, review_status: 'accepted' } : f));
   const problem = answers.answerProblem(condition, merged, {
     deal,
-    hasDocument: current.some((f) => f.review_status === 'accepted'),
-    documentsByLine: documentsByLine(current),
+    hasDocument: uploaded.some((f) => f.review_status === 'accepted'),
+    documentsByLine: documentsByLine(uploaded),
     lineLabels: Object.fromEntries(
       (Array.isArray(merged.mortgages) ? merged.mortgages : [])
         .filter((m) => m && typeof m === 'object')
@@ -457,7 +679,10 @@ async function satisfy(loanId, conditionId, staffId, client = db) {
   const found = await loadCondition(loanId, conditionId, client);
   if (!found) return { ok: false, status: 404, error: 'That condition is not on this file.' };
 
-  const gate = signOffProblem(found.condition, found.files, { readFailed: found.readFailed, entity: found.entity });
+  const gate = signOffProblem(found.condition, found.files, {
+    readFailed: found.readFailed, entity: found.entity, contacts: found.contacts, liabilities: found.liabilities,
+    card: found.card, photoId: found.photoId,
+  });
   if (!gate.ok) return { ok: false, status: 422, error: gate.why };
 
   const note = gate.checkSkipped

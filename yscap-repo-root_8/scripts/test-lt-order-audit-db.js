@@ -236,7 +236,22 @@ const check = (cond, msg) => {
 
     for (const o of deskWide.orders) {
       const before = sent.length;
-      const r = await deskMod.place(wide, o.kind, { db, actor: { name: 'Auditor', email: 'auditor@yscapgroup.com' } });
+      let r;
+      if (o.kind === 'vor') {
+        /* THE RENT VERIFICATION NEVER LEAVES WITHOUT THE FORM (audit 2026-09-02,
+           B1). The orders desk refuses a bare `place` for `vor` — the letter says
+           "complete the short verification attached" — so the honest door is the
+           rent desk's own send, which draws the form and encloses it. Both halves
+           are asserted: the refusal sends nothing, and the real door sends once. */
+        const bare = await deskMod.place(wide, 'vor', { db });
+        check(bare && bare.ok === false && bare.reason === 'vor_form_required' && sent.length === before,
+          `vor: the orders desk refuses the letter without the form and sends nothing (${bare && (bare.reason || bare.error)})`);
+        const vorDesk = require('../src/longterm/vor/desk.js');
+        const s = await vorDesk.send(wide, { method: 'email', db });
+        r = s && s.ok ? { ok: true } : { ok: false, error: (s && s.message) || 'the rent desk did not send' };
+      } else {
+        r = await deskMod.place(wide, o.kind, { db, actor: { name: 'Auditor', email: 'auditor@yscapgroup.com' } });
+      }
       check(r && r.ok === true, `${o.kind} sends (${r && r.ok ? 'ok' : (r && (r.error || r.reason))})`);
       const mail = sent[sent.length - 1];
       check(sent.length === before + 1, `${o.kind} put exactly one message on the wire`);
@@ -293,10 +308,19 @@ const check = (cond, msg) => {
     check(refs.length === 1 && String(refs[0].loanId) === String(wide),
       'the order\'s own reply address resolves back to that order — the per-order box');
 
+    /* `wide` is a NEW YORK file, and in New York the title company is not asked
+       for the CPL or the wiring instructions — the settlement agent is (the
+       owner's New York rule; `lt_title_docs` carries `notWhenField: 'is_new_york'`
+       on both slots since db/677). A title company that sends them anyway has
+       them filed on the condition with NO slot, exactly as the screen shows no
+       such slot on this file: filed into a slot the screen never renders, they
+       were "filed, invisible, counted by nothing" (audit 2026-09-02, S5). The
+       New-Jersey twin of this assertion — where both slots DO apply — is in
+       `test-lt-order-guards-db.js`. */
     const files = [
       ['Title Commitment 2026.pdf', 'commitment'],
-      ['CPL for lender.pdf', 'cpl'],
-      ['Wiring instructions.pdf', 'wire_instructions'],
+      ['CPL for lender.pdf', null],
+      ['Wiring instructions.pdf', null],
       ['Invoice 4471.pdf', 'invoice'],
       ['scan001.pdf', null],
     ];

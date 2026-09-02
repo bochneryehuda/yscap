@@ -47,7 +47,7 @@ const os = require('os');
 const path = require('path');
 
 const F = require('../src/longterm/vor/fields');
-const { buildVorPdf, BLANK_PATH, _internals } = require('../src/longterm/vor/pdf');
+const { buildVorPdf, BLANK_PATH, _internals, SIGNATURE_METRICS } = require('../src/longterm/vor/pdf');
 
 let checks = 0;
 function ok(name, fn) {
@@ -98,6 +98,9 @@ async function runsOf(bytes) {
         y: i.transform[5],
         w: i.width,
         h: i.height,
+        // Which face drew it — the signature is the one run not in Helvetica,
+        // and its ink extents are judged with its own font's metrics below.
+        f: i.fontName,
       })),
   };
 }
@@ -126,8 +129,21 @@ function printedWords(key, value) {
  */
 const ASCENT = 0.718;
 const DESCENT = 0.207;
+/* THE SIGNATURE IS NOT HELVETICA. It is drawn in the script face
+   (owner-directed 2026-09-02), whose ascent and descent are read off the font
+   file by pdf.js itself — never typed here — so a run in that face is judged
+   with the real extents of the ink it actually put down. `SCRIPT_FONTS` is
+   filled in below from the rendered form: the face that drew the signature. */
+const SCRIPT_FONTS = new Set();
+function extentsOf(r) {
+  if (SCRIPT_FONTS.has(r.f)) return { asc: SIGNATURE_METRICS.ascent, desc: SIGNATURE_METRICS.descent };
+  return { asc: ASCENT, desc: DESCENT };
+}
 function overlaps(a, b) {
-  const box = (r) => ({ x1: r.x, x2: r.x + r.w, y1: r.y - r.h * DESCENT, y2: r.y + r.h * ASCENT });
+  const box = (r) => {
+    const e = extentsOf(r);
+    return { x1: r.x, x2: r.x + r.w, y1: r.y - r.h * e.desc, y2: r.y + r.h * e.asc };
+  };
   const A = box(a);
   const B = box(b);
   return A.x1 < B.x2 && B.x1 < A.x2 && A.y1 < B.y2 && B.y1 < A.y2;
@@ -142,6 +158,9 @@ console.log('\nLong-Term — the verification of rent, overlaid on the owner’s
 
   const blankKeys = new Set(blank.runs.map(runKey));
   const ourRuns = out.runs.filter((r) => !blankKeys.has(runKey(r)));
+  // The face that drew the signature is the script face; every other run of
+  // ours is Helvetica. Learned from the rendered form, not assumed.
+  for (const r of ourRuns) if (r.s.trim() === FULL.lender_signature) SCRIPT_FONTS.add(r.f);
   const ourText = ourRuns.map((r) => r.s).join(' ');
   const allText = out.runs.map((r) => r.s).join(' ');
 
@@ -376,24 +395,108 @@ ok('the lender row clears both printed labels — the "a little too low" fix', (
      descenders reached ~510.0, INSIDE the next label's glyphs. */
   const LABEL_BASE = 530.4;
   const NEXT_BASE = 503.4;
-  const ASC = 0.718;   // Helvetica
+  const ASC = 0.718;   // Helvetica — the printed labels, and three of the four fields
   const DESC = 0.207;
+  const LABEL_SIZE = 9; // the form's own labels are 9pt Helvetica
   const row = ['lender_signature', 'lender_title', 'request_date', 'loan_number'].map((k) => F.BY_KEY.get(k));
 
   assert.ok(row.every(Boolean), 'all four fields on the lender row exist');
-  const ys = [...new Set(row.map((f) => f.y))];
-  assert.deepStrictEqual(ys, [row[0].y],
-    `the four share one baseline — raising only the two the owner named would leave the row crooked (got ${ys.join(', ')})`);
+  /* THE THREE TYPED FIELDS SHARE ONE BASELINE — raising only the two the owner
+     named would leave the row crooked. THE SIGNATURE HAS ITS OWN (owner-directed
+     2026-09-02: it is drawn in a signature script whose extents are nothing like
+     Helvetica's), and what is asserted of it is not "the same baseline" but the
+     thing the baseline was for: its ink clears both printed labels. */
+  const typed = row.filter((f) => f.font !== 'signature');
+  const ys = [...new Set(typed.map((f) => f.y))];
+  assert.deepStrictEqual(ys, [typed[0].y],
+    `the typed fields share one baseline (got ${ys.join(', ')})`);
+  assert.strictEqual(row.filter((f) => f.font === 'signature').length, 1, 'exactly one field on the row is the signature');
 
   for (const f of row) {
     const size = f.size || F.DEFAULT_SIZE;
-    const top = f.y + size * ASC;
-    const bottom = f.y - size * DESC;
-    assert.ok(top < LABEL_BASE - size * DESC - 1.5,
+    // Each field is judged with ITS OWN face's extents — the signature's read
+    // off the font file by pdf.js, never typed here — at its LARGEST size, since
+    // a signature only ever shrinks from there.
+    const asc = f.font === 'signature' ? SIGNATURE_METRICS.ascent : ASC;
+    const desc = f.font === 'signature' ? SIGNATURE_METRICS.descent : DESC;
+    const top = f.y + size * asc;
+    const bottom = f.y - size * desc;
+    assert.ok(top < LABEL_BASE - LABEL_SIZE * DESC - 1.5,
       `${f.key}: its ascenders (${top.toFixed(1)}) must clear the label above`);
-    assert.ok(bottom > NEXT_BASE + size * ASC + 1.5,
+    assert.ok(bottom > NEXT_BASE + LABEL_SIZE * ASC + 1.5,
       `${f.key}: its descenders (${bottom.toFixed(1)}) must clear the next section's label — this is the reported defect`);
   }
+});
+
+/* ── THE SIGNATURE IS A SIGNATURE, NOT A TYPED NAME ──────────────────────────
+   Owner-directed 2026-09-02: *"the place for the signature of the lender,
+   you're typing the name of the user. We need it to be in a more scribbled font
+   so it should look like the signature of the user, and the title needs to have
+   the title of the user."* */
+await okAsync('the signature is drawn in the script face, and nothing else is', async () => {
+  const pdf = await buildVorPdf(FULL);
+  const out = await runsOf(pdf);
+  const blank = await runsOf(fs.readFileSync(BLANK_PATH));
+  const blankKeys = new Set(blank.runs.map(runKey));
+  const ours = out.runs.filter((r) => !blankKeys.has(runKey(r)) && r.h > 5);
+  const sig = ours.filter((r) => r.s.trim() === FULL.lender_signature);
+  assert.strictEqual(sig.length, 1, 'the signature is one run');
+  const helvetica = new Set(ours.filter((r) => r.s.trim() !== FULL.lender_signature).map((r) => r.f));
+  assert.ok(!helvetica.has(sig[0].f), 'the signature run is in a face no other run of ours uses — the script face');
+  assert.strictEqual(helvetica.size, 1, 'every other run of ours is in the one typed face');
+  assert.strictEqual(sig[0].h, F.BY_KEY.get('lender_signature').size, 'at the field\'s own size');
+  assert.strictEqual(SIGNATURE_METRICS.family, 'Great Vibes', 'and that face is the one the field map reasons about');
+});
+
+ok('the signature is pinned by digest, like the blank', () => {
+  const bytes = fs.readFileSync(_internals.SIGNATURE_FONT_PATH);
+  const got = require('crypto').createHash('sha256').update(bytes).digest('hex');
+  assert.strictEqual(got, _internals.SIGNATURE_FONT_SHA256, 'the vendored font is the pinned file');
+  assert.ok(fs.existsSync(path.join(path.dirname(_internals.SIGNATURE_FONT_PATH), 'GreatVibes-OFL.txt')),
+    'its licence travels with it, as the OFL requires');
+});
+
+await okAsync('the WHOLE face is in the form — a subset of it extracts as text and renders as nothing', async () => {
+  /* MEASURED 2026-09-02 in a real Chromium render (pdf.js): with pdf-lib's
+     subset of this face the signature box was EMPTY while every text-based
+     check here passed, because the ToUnicode map was intact. So the proof is
+     not "the run is there" but "the bytes that draw it are there": one Flate
+     stream in the PDF inflates to exactly the pinned font file. */
+  const pdf = await buildVorPdf({ lender_signature: 'Chaya Gruber' });
+  const streams = _internals.inflatedStreams(pdf.toString('latin1'));
+  const face = fs.readFileSync(_internals.SIGNATURE_FONT_PATH).toString('latin1');
+  assert.ok(streams.some((s) => s === face), 'the embedded font stream is the whole pinned file, byte for byte');
+  const bare = await buildVorPdf({ lender_title: 'Loan Officer' });
+  const bareStreams = _internals.inflatedStreams(bare.toString('latin1'));
+  assert.ok(!bareStreams.some((s) => s === face), 'and a form with no signature carries no copy of it');
+});
+
+await okAsync('a long name shrinks to fit the signature line rather than wrapping, and past the floor it is reported', async () => {
+  const { PDFDocument } = require('pdf-lib');
+  const doc = await PDFDocument.create();
+  doc.registerFontkit(require('@pdf-lib/fontkit'));
+  const face = await doc.embedFont(fs.readFileSync(_internals.SIGNATURE_FONT_PATH), { subset: true });
+  const f = F.BY_KEY.get('lender_signature');
+  const short = _internals.fitSignature(f, 'Chaya Gruber', face);
+  assert.strictEqual(short.size, f.size, 'a short name is drawn at the full size');
+  assert.ok(short.fits, 'and fits');
+  const long = _internals.fitSignature(f, 'Simcha Yehoshua Shedrowitzky-Mermelstein', face);
+  assert.ok(long.size < f.size && long.size >= f.minSize, `a long name comes down (to ${long.size}pt), never below the floor`);
+  assert.ok(long.width <= f.width || long.size === f.minSize, 'it fits, or it stopped at the floor');
+  const absurd = _internals.fitSignature(f, 'A'.repeat(80), face);
+  assert.strictEqual(absurd.size, f.minSize, 'an absurd name stops at the floor');
+  assert.strictEqual(absurd.fits, false, '…and is reported as not fitting');
+  const overflow = await require('../src/longterm/vor/pdf').measureOverflow({ lender_signature: 'A'.repeat(80) });
+  assert.ok(overflow.some((o) => o.key === 'lender_signature'), 'which the preview\'s overflow measure surfaces');
+  const fine = await require('../src/longterm/vor/pdf').measureOverflow({ lender_signature: 'Chaya Gruber' });
+  assert.ok(!fine.some((o) => o.key === 'lender_signature'), 'and a name that fits is not reported');
+});
+
+ok('the title is the person\'s own roster title, with the role word only as the fallback', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'vor', 'data.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+  assert.ok(/NULLIF\(btrim\(su\.title\), ''\) AS title/.test(src), 'the signatory read selects staff_users.title');
+  assert.ok(/r\.title \? String\(r\.title\) : TITLE_BY_ROLE\[/.test(src), 'and the roster title wins over the role word');
 });
 
 ok('the landlord block carries the contact details, in the band the form leaves', () => {
