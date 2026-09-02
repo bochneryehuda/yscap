@@ -262,6 +262,24 @@ UNIQUE (cart_id, position)
 - **Cap it at 8** (setting). Beyond that the PDF stops being a comparison and becomes a catalogue,
   and the anchor arithmetic (§9) stops being readable.
 
+### The rail on screen
+
+The cart is drawn as a rail **below** the board ("Build a comparison"), folded until something
+is collected and opening itself on the first add; the pinned search strip's *collected* chip
+jumps to it in one press. Two rules about its shape, both owner-directed:
+
+- **One page, one scroll** (2026-09-02: *"you need to scroll within the comparison screen (which
+  is within your own screen) and gets very tightened up"*). The rail's body is **not** capped
+  and does not scroll inside itself. The cap it once had was the pinned era's — a rail at the
+  top of the page had to stay short — and it survived the move down on the reasoning that
+  twenty options would be a wall, which the cap of eight above makes impossible. What it
+  actually did was put the address box and the Issue button at the bottom of a nested scroll
+  and clip the address autocomplete. A phone never had it.
+- **One line per collected option.** The row is the anchor choice, the label, rate, price,
+  programme and comp position, then *Even out the price* (closed) and *Remove*. The adjuster
+  opens into its own full-width panel beneath the row only when pressed, so eight options are
+  eight lines, not sixteen.
+
 ---
 
 ## 7. Workflow A — one loan, different rate and point options
