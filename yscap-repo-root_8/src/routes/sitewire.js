@@ -1241,6 +1241,8 @@ router.get('/files/:id/draw-request', requireDrawView, async (req, res) => {
       can_send: switches.on('DOCUSIGN_SEND_ENABLED') && Object.values(prereqs).every(Boolean),
       envelope: env ? {
         row_id: env.id, status: env.status, sent_at: env.sent_at, completed_at: env.completed_at, created_at: env.created_at,
+        // THE FULL LOG (owner-directed 2026-09-01) — the same builder every other package card reads.
+        events: ((await require('../lib/esign/events').envelopeEvents(db, [env.id]))[String(env.id)]) || [],
         terminal: ['completed', 'declined', 'voided'].includes(String(env.status || '')),
         // Live = out for signature, so its recipient's email can still be corrected + re-sent.
         live: envLive,

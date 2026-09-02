@@ -328,8 +328,24 @@ ok(!/--lt-comp-h/.test(noComments(CSS)) && !/--lt-comp-h/.test(noComments(P)),
 ok(/id="lt-comparison"/.test(P), 'F5 the comparison area is addressable');
 ok(/scroll-margin-top/.test(CSS),
   'F6 …and lands clear of the pinned strip rather than under it');
-ok(/max-height:min\(46vh,420px\);overflow-y:auto/.test(CSS),
-  'F7 the collected list is still capped and scrolls inside itself');
+/* ⛔ F7 INVERTED — THE BODY IS NOT CAPPED AND DOES NOT SCROLL INSIDE ITSELF (owner-reported
+   2026-09-02: *"when you actually scroll down and you go into the comparison screen, you need
+   to scroll within the comparison screen (which is within your own screen) and gets very
+   tightened up."*). This line used to PIN the cap. The cap was the pinned era's — a rail at the
+   top of the page had to stay short — and it survived the move down here on "twenty options
+   is a wall", which the cart's own clamp of EIGHT makes impossible. What it did do: put the
+   address box and the Issue button at the bottom of a scroll inside a scroll, stop the wheel
+   dead at the box's end (`overscroll-behavior:contain`), and clip the address autocomplete
+   under an `overflow` ancestor. One page, one scroll. Asserted on the stylesheet with its
+   comments stripped, because the change necessarily NAMES the old rule while explaining why
+   it is gone. */
+const railRules = (noComments(CSS).match(/\.lt-comp-rail[^{]*\{[^}]*\}/g) || []).join('\n');
+ok(railRules.length > 0 && !/max-height|overflow|overscroll/.test(railRules),
+  'F7 ⛔ the collected list is NOT capped and does NOT scroll inside itself — one page, one scroll');
+ok(!/lt-comp-body/.test(noComments(CSS)),
+  'F7b …and the stylesheet gives the body nothing at all — no desktop cap AND no phone override left behind as a half state');
+ok(/\.lt-comp-rail\{position:static;scroll-margin-top:96px\}/.test(noComments(CSS)),
+  'F7c …while the rail keeps its place below the board and its landing clear of the pinned strip');
 ok(/aria-expanded=\{open\}/.test(P) && /setOpen\(true\)/.test(P),
   'F8 the body folds away, and opens itself the moment something is collected');
 
@@ -338,8 +354,8 @@ ok(/\{children\}\n\s*<\/div>/.test(P),
   'G1 the collected options and the issue form live INSIDE the rail — one list, not a copy');
 ok(/option\$\{count === 1 \? '' : 's'\} collected/.test(P),
   'G2 the rail header states how many are in');
-ok(/lt-comp-body/.test(P) && /lt-comp-body/.test(CSS),
-  'G3 the scrolling body is the part that is capped, so the header is never scrolled away');
+ok(/className="lt-comp-body"/.test(P),
+  'G3 the body is the fold\'s own element — what Hide/Show folds — and (F7b) the sheet caps it with nothing');
 
 console.log('\nH. the chooser folds away once it has been answered');
 /* The rail is pinned, so every pixel it keeps is board an officer cannot see — and two
@@ -348,9 +364,28 @@ ok(/picked \? \(/.test(P), 'H1 a chosen workflow renders the compact form');
 ok(/onChoose\(null\)/.test(P), 'H2 …with a way back to the full chooser');
 ok(/COMPARISON_WORKFLOWS\.map/.test(P), 'H3 …and the full chooser is still there when nothing is chosen');
 
-console.log('\nI. the tick-box is on the row, on both row shapes');
-ok((B.match(/<PickBox /g) || []).length === 2, 'I1 the lender\'s front row and its other programmes both carry it');
-ok(/ts\.picking/.test(B), 'I2 …and it only appears while a comparison is being built');
+console.log('\nI. the Add-to-comparison button is on the row, on both row shapes, always');
+/* Owner-directed 2026-09-02: *"the small box that was on the right side to add to the
+   comparison… disappeared… You should be able to do that right away… It can just be a
+   button, but it needs to be very clean, modern, user-friendly, and simple. Next to each
+   and every quote."* It used to be a tick-box that appeared only once a workflow had been
+   chosen — which, to a person pricing a deal, is a control that is not there. */
+const Bsrc = B.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+ok((Bsrc.match(/<CompareButton /g) || []).length === 2, 'I1 the lender\'s front row and its other programmes both carry it');
+ok(!/ts\.picking|picking:/.test(Bsrc), 'I2 ⛔ …and nothing gates it on a "picking" mode any more — it is there the moment the cart is');
+ok((Bsrc.match(/\{ts && ts\.enabled && (g\.best && )?\(\s*<CompareButton/g) || []).length === 2,
+  'I3 …its only condition being that this board has a cart at all');
+const Psrc = P.replace(/\/\*[\s\S]*?\*\//g, ' ');
+ok(/export function CompareButton/.test(Psrc) && !/export function PickBox/.test(Psrc),
+  'I4 the tick-box is gone and the button has taken its place');
+ok(/'Add to comparison'/.test(Psrc) && /'In comparison'/.test(Psrc),
+  'I5 it says what it does in words — "Add to comparison", then "In comparison"');
+ok(/aria-pressed=\{on\}/.test(Psrc) && /press to take it out/.test(Psrc),
+  'I6 …carries its state for a screen reader, and says what the NEXT press does');
+ok(!/type="checkbox"/.test(/export function CompareButton[\s\S]*?\n}\n/.exec(Psrc)[0]),
+  'I7 …and there is no checkbox left inside it');
+ok(/minHeight: 44/.test(/export function CompareButton[\s\S]*?\n}\n/.exec(Psrc)[0]) && /\.btn\{min-height:44px/.test(CSS),
+  'I8 it is the same height as the Details button beside it, so the two read as one pair');
 
 console.log('\nJ. a comparison is DOWNLOADED as a comparison, not as a term sheet');
 // Owner-reported 2026-08-31: *"the comparison, when you want to export it, is basically issued
@@ -402,6 +437,76 @@ console.log('\nJ. a comparison is DOWNLOADED as a comparison, not as a term shee
   ok(parse('attachment; filename="../../etc/passwd"') === null,
     'J8 ⛔ a traversal attempt is refused outright rather than tidied into a name');
   ok(parse('attachment; filename="a/b/c.pdf"') === 'abc.pdf', 'J9 …and separators are stripped');
+}
+
+
+console.log('\nK. ⛔ the band an option was PRICED IN is the option\'s own stamp — on both sides of the mirror');
+/* Owner-reported 2026-09-02: *"the 5.75 was actually priced on the 1.25 band… You
+   should not look at the original scenario. You should look at what was the actual
+   pricing on."* The banded board stamps each option with the ratio its band was bought
+   at; the form's DSCR is only where the search started. The server prefers the stamp
+   (`buildMember`), so the screen's own pre-check must prefer it too — a screen judging
+   against the form while the server judges against the stamp promises a refusal the
+   issue then allows, or the reverse. Both preferences are pinned here, and then the
+   two verdicts are run side by side through the REAL build path. */
+{
+  const PRICER = readFileSync(new URL('../app-v2/src/longterm/LtPricer.jsx', import.meta.url), 'utf8');
+  const body = PRICER.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  ok(/pricedDscr:\s*o\s*&&\s*nn\(o\.dscr\)\s*\?\s*o\.dscr\s*:\s*null/.test(body),
+    'K1 a collected option carries the board\'s stamp as `pricedDscr` (null when the board did not bracket)');
+  const check = /ratioCheck:\s*\(\)\s*=>\s*\{([\s\S]*?)ratioVerdict\(/.exec(body);
+  ok(!!check && /const priced\s*=\s*o\s*&&\s*nn\(o\.dscr\)\s*\?\s*o\.dscr\s*:\s*toNumber\(f\.dscr\)/.test(check[1]),
+    'K2 ⛔ the screen\'s pre-check judges against the option\'s stamp first and the form only when there is none');
+  ok(!!check && !/const priced\s*=\s*toNumber\(f\.dscr\)\s*;/.test(check[1]),
+    'K3 …and the old reading — the form alone — is gone from it');
+
+  /* THE MIRROR, THROUGH THE REAL PATH. A selection is built the way the browser now
+     builds it (the form's ratio as the scenario, the stamp as `pricedDscr`), turned
+     into a member by the real `buildMember`, and the real gate is asked. Beside it the
+     screen's `ratioVerdict` is asked with the SAME stamp. They must agree on every
+     loan — and the decoy form ratio must never be the one either side judges on. */
+  const PLAN = { borrowerPaid: 2, ysp: 2, lenderPaid: 2, applicationFee: 500, commitmentFee: 1595 };
+  const PREP = { borrowerName: 'Sample Borrower', propertyAddress: '1 Test St' };
+  const TAX = 400, INS = 200;
+  const sel = (over) => ({
+    label: 'A', consumerLabel: 'Platinum A', product: '30-Year Fixed DSCR', mode: 'borrowerPaid',
+    ratePct: 7.125, rawPrice: 100, pricedAt: '2026-09-02T00:00:00.000Z',
+    scenario: {
+      purpose: 'Purchase', propertyType: 'Single family', value: 500000, loan: 375000, ltv: 75,
+      termYears: 30, fico: 740, state: 'NJ', zip: '08701', taxMonthly: TAX, insuranceMonthly: INS,
+      hoaMonthly: 0, prepayMonths: 60, prepayStructure: '5 Year', ...over,
+    },
+  });
+  // The payment this rate and loan really produce, off a built member — so the rents
+  // below are chosen against the same figure the gate divides by.
+  const probe = snapshot.buildMember({ ...sel({ dscr: 1.2, rentMonthly: 3000 }), pricedDscr: 1.2 }, PLAN);
+  ok(probe.ok && Number.isFinite(probe.member.monthlyPI), 'K4 (the probe member builds, so the battery can run)');
+  const PI = probe.ok ? probe.member.monthlyPI : 2000;
+  let ran = 0, disagree = 0, decoyWon = 0;
+  for (const stamp of [0.8, 0.95, 1.05, 1.12, 1.2, 1.27, 1.35, 1.45, 1.6]) {
+    // A form ratio in a DIFFERENT band from the stamp — the owner's exact shape.
+    const decoy = dscrTier(stamp) === dscrTier(1.14) ? 1.45 : 1.14;
+    for (let step = 60; step <= 180; step += 3) {
+      const ratio = step / 100;
+      const rent = Math.round(ratio * (PI + TAX + INS) * 100) / 100;
+      const built = snapshot.buildSnapshot({
+        selections: [{ ...sel({ dscr: decoy, rentMonthly: rent }), pricedDscr: stamp }], plan: PLAN, prepared: PREP,
+      });
+      if (!built.ok) continue;
+      ran += 1;
+      const g = snapshot.exportGate(built.snapshot);
+      const serverRefuses = g.error === 'dscr_below_priced';
+      const actual = Math.round((rent / (built.snapshot.members[0].monthlyPI + TAX + INS)) * 100) / 100;
+      const screenBlocks = ['below', 'above'].includes(ratioVerdict(actual, stamp));
+      if (serverRefuses !== screenBlocks) { disagree += 1; if (disagree <= 3) console.error(`       stamp=${stamp} decoy=${decoy} ratio=${ratio} server=${serverRefuses} screen=${screenBlocks}`); }
+      // The decoy must never be the figure the server judged on.
+      if (serverRefuses && g.pricedAt === decoy) decoyWon += 1;
+      if (built.snapshot.members[0].scenario.dscr !== stamp) decoyWon += 1;
+    }
+  }
+  ok(ran >= 300, `K5 (the battery really ran — ${ran} loans, each with a decoy form ratio in another band)`);
+  ok(disagree === 0, `K6 ⛔ the screen and the server agree on every one of them (${disagree} disagreed)`);
+  ok(decoyWon === 0, `K7 ⛔ and the form's decoy ratio never became the one judged on (${decoyWon} times it did)`);
 }
 
 console.log(bad === 0 ? '\nOFFLINE: all passed' : `\nOFFLINE: ${bad} FAILED`);

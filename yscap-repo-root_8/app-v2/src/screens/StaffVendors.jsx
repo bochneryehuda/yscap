@@ -11,10 +11,19 @@ import { askConfirm } from '../lib/dialog.js';
    or delete entries — borrowers then autocomplete against the clean records. */
 
 const TYPES = [
+  // EVERY type the file-contacts section can hold — one list with the server's
+  // VENDOR_TYPES / FILE_CONTACT_TYPES (owner-directed 2026-09-01: the whole directory is
+  // visible, so a settlement agent or flood insurer must be findable here too).
   { v: 'title_company', label: 'Title company' },
+  { v: 'settlement_agent', label: 'Settlement agent' },
   { v: 'insurance_agent', label: 'Insurance agent' },
+  { v: 'flood_insurance', label: 'Flood insurance' },
   { v: 'attorney', label: 'Attorney' },
+  { v: 'realtor', label: 'Realtor' },
   { v: 'contractor', label: 'Contractor' },
+  { v: 'appraiser', label: 'Appraiser' },
+  { v: 'lender', label: 'Lender' },
+  { v: 'escrow', label: 'Escrow' },
   { v: 'other', label: 'Other' },
 ];
 const TYPE_LABEL = Object.fromEntries(TYPES.map(t => [t.v, t.label]));
@@ -444,7 +453,9 @@ export default function StaffVendors() {
     };
   }, [rows]);
 
-  if (!isAdmin) return <div role="alert" className="notice err">The vendor directory is admin-only.</div>;
+  /* READ-ONLY FOR EVERYONE ELSE (owner-directed 2026-09-01): the whole directory is
+     visible to every staffer; adding, editing, merging and deleting stay with
+     manage_vendors, gated button by button below. */
   const needle = q.trim().toLowerCase();
   const shown = (rows || []).filter(v => !needle
     || [v.company_name, v.contact_name, v.email, v.phone].some(x => String(x || '').toLowerCase().includes(needle)));
@@ -454,9 +465,11 @@ export default function StaffVendors() {
       <div className="page-head">
         <div>
           <h1>Vendors</h1>
-          <div className="sub">Every title company and insurance agent entered across the platform — curate them here.</div>
+          <div className="sub">{isAdmin
+            ? 'Every vendor entered on any file across the platform — title, insurance, attorneys, contractors and more. Curate them here.'
+            : 'Every vendor entered on any file across the platform. Pick any of them on a file from the Company field of a contact or an order; an admin curates the list.'}</div>
         </div>
-        <div className="page-head-actions">
+        {isAdmin && <div className="page-head-actions">
           {/* THE SAME-EMAIL SWEEP (owner-directed 2026-08-28): vendors sharing an
               email merge automatically — gaps fill, extra numbers just add;
               only a genuine CONFLICT (two different names on one inbox) is left
@@ -483,7 +496,7 @@ export default function StaffVendors() {
             {autoMerging ? 'Merging…' : '⇆ Auto-merge duplicates'}
           </button>
           <button className="btn btn-ink btn-sm" onClick={() => { setAdding(a => !a); setEditing(null); }}>{adding ? 'Close' : '+ Add vendor'}</button>
-        </div>
+        </div>}
       </div>
       {toast}
       {err && <div role="alert" className="notice err">{err}</div>}
@@ -513,7 +526,7 @@ export default function StaffVendors() {
           if (!groups.has(k)) groups.set(k, []);
           groups.get(k).push(v);
         }
-        if (!groups.size) return null;
+        if (!groups.size || !isAdmin) return null;
         return (
           <div className="notice" role="region" aria-label="Duplicate vendor suggestions"
             style={{ margin: '0 0 12px', background: 'var(--gold-soft, rgba(174,135,70,.08))',
@@ -619,12 +632,14 @@ export default function StaffVendors() {
                         <td className="num files-c" data-label="Files">{v.files_used || 0}</td>
                         <td data-label="Added by"><span className="mut">{v.added_by_staff ? `${v.added_by_staff} (staff)` : v.added_by_borrower ? `${v.added_by_borrower} (borrower)` : '—'}</span></td>
                         <td className="actc" data-label="">
-                          <button className="rowbtn" onClick={() => { setEditing(editing === v.id ? null : v.id); setAdding(false); }}>{editing === v.id ? 'Close' : 'Edit'}</button>
-                          <button className="rowbtn" title="Merge this vendor into another one — combines emails, phones, and files"
-                            onClick={() => setMergePickChoice(mergePickChoice === v.id ? null : v.id)}>
-                            {mergePickChoice === v.id ? 'Pick target…' : 'Merge'}
-                          </button>
-                          <button className="rowbtn danger" onClick={() => del(v)}>Delete</button>
+                          {isAdmin ? (<>
+                            <button className="rowbtn" onClick={() => { setEditing(editing === v.id ? null : v.id); setAdding(false); }}>{editing === v.id ? 'Close' : 'Edit'}</button>
+                            <button className="rowbtn" title="Merge this vendor into another one — combines emails, phones, and files"
+                              onClick={() => setMergePickChoice(mergePickChoice === v.id ? null : v.id)}>
+                              {mergePickChoice === v.id ? 'Pick target…' : 'Merge'}
+                            </button>
+                            <button className="rowbtn danger" onClick={() => del(v)}>Delete</button>
+                          </>) : <span className="mut small">read-only</span>}
                         </td>
                       </tr>
                       {editing === v.id && (

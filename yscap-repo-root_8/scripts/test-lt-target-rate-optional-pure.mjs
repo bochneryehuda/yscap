@@ -67,7 +67,7 @@ section('D. a rate that is typed but WRONG is still refused');
 /* ⛔ ASSUMING PAST BAD INPUT WOULD HIDE SOMEBODY'S MISTAKE behind a confident ratio — it would
    quietly price the loan on a rate they never chose while their own typing sat on screen. A
    missing rate and a wrong one are different states and only the first is answered. */
-for (const [label, badRate] of [['-1', -1], ['"abc"', 'abc'], ['"7.5%"', '7.5%'], ['NaN', NaN]]) {
+for (const [label, badRate] of [['-1', -1], ['"abc"', 'abc'], [`"${TYPICAL_RATE_PCT}%"`, `${TYPICAL_RATE_PCT}%`], ['NaN', NaN]]) {
   // The label is spelled out because `JSON.stringify(NaN)` is the string "null", which would make
   // this line claim a case the battery never ran.
   const out = dscrFrom({ ...BASE, ratePct: badRate });
@@ -76,7 +76,7 @@ for (const [label, badRate] of [['-1', -1], ['"abc"', 'abc'], ['"7.5%"', '7.5%']
 }
 
 section('E. nothing else about the calculator moved');
-ok(dscrFrom({ ...BASE, ratePct: 7.5 }).dscr === assumed.dscr,
+ok(dscrFrom({ ...BASE, ratePct: TYPICAL_RATE_PCT }).dscr === assumed.dscr,
   'E1 the assumed answer equals typing the typical rate by hand — no second formula');
 const noRent = dscrFrom({ ...BASE, rentMonthly: null, ratePct: '' });
 ok(noRent.dscr == null && noRent.missing.includes('rent'),

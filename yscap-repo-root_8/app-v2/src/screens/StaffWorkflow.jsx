@@ -18,8 +18,8 @@ import { useUrlState } from '../lib/useUrlState.js';
    never merged. The closer/draw views link straight to their fully-detailed desk. */
 
 const TYPE_LABEL = {
-  loan_setup: 'Loan Setup', processing: 'Processing', condition_clearing: 'Condition Clearing',
-  clear_to_close: 'Clear to Close', closing: 'Closing', draw_setup: 'Draw Setup',
+  loan_setup: 'Loan Setup', processing: 'Full Processing', condition_clearing: 'Condition Clearing',
+  clear_to_close: 'Clear to Close', track_record_review: 'Track Record Review', closing: 'Closing', draw_setup: 'Draw Setup',
   post_closing: 'Post-Closing / Investor Delivery', exception: 'Exception', escalation: 'Escalation',
   trustpoint_import: 'TrustPoint Draw Entry', trinity_inspection_order: 'Trinity Inspection Order',
 };
@@ -32,11 +32,21 @@ const ROLE_WF = [
   { role: 'underwriter', label: 'Underwriting workflow', desk: null },
   { role: 'super_admin', label: 'Escalations workflow', desk: null },
 ];
-const ROLE_LABEL = {
-  super_admin: 'Super Admin', admin: 'Admin', underwriter: 'Underwriter', loan_officer: 'Loan Officer',
-  loan_coordinator: 'Loan Coordinator', draw_coordinator: 'Draw Coordinator', processor: 'Processor',
-  closer: 'Closer', software_setup: 'Software Setup',
-};
+/* THE PROCESSOR'S TABS (owner-directed 2026-09-01): one tab per kind of hand-off she
+   receives, each in the order it arrived, plus the overall queue. FULL PROCESSING is
+   not a queue item — a file handed over whole sits in its own box until it is cleared
+   to close — so it is drawn apart from the queue and carries no Done button. */
+const PROCESSOR_TABS = [
+  { key: 'all', label: 'Overall queue' },
+  { key: 'loan_setup', label: 'Loan setup' },
+  { key: 'processing', label: 'Full processing' },
+  { key: 'condition_clearing', label: 'Condition clearing' },
+  { key: 'clear_to_close', label: 'Clear to close' },
+  { key: 'track_record_review', label: 'Track record review' },
+];
+const FULL_FILE_TYPE = 'processing';
+// Role labels come from the ONE front-end role registry (lib/roles.js).
+import { ROLE_LABEL } from '../lib/roles.js';
 const addrLine = (a) => !a ? '' : (a.oneLine || [a.street, a.city, a.state].filter(Boolean).join(', ') || '');
 const initials = (...p) => p.filter(Boolean).map(s => String(s).trim()[0] || '').join('').slice(0, 2).toUpperCase() || '—';
 // Aging, in plain words. Anything sitting a while reads as more urgent.
@@ -72,11 +82,18 @@ export default function StaffWorkflow() {
   const [outcome, setOutcome] = useState('');
   const [note, setNote] = useState('');
 
-  const OUTCOMES = ['Finished processing', 'Finished loan setup', 'Finished CTC', 'Cleared conditions',
+  const OUTCOMES = ['Finished processing', 'Finished loan setup', 'Finished CTC', 'Track record reviewed', 'Cleared conditions',
     'Added conditions', 'Cleared exception', 'Finished closing', 'Finished draw setup', 'Entered in TrustPoint', 'Reviewed', 'Sent back — needs more'];
+  // The per-kind tab (processor queues only) and the live counts behind each tab.
+  const [kind, setKind] = useUrlState('kind', 'all');
+  const [counts, setCounts] = useState(null);
 
   const isMine = view === 'mine';
   const roleView = view.startsWith('role:') ? view.slice(5) : null;
+  // The tabs belong to a PROCESSOR's queue: my own when I am one, or the processing
+  // workflow when an admin looks at it.
+  const processorTabs = (isMine && role === 'processor') || roleView === 'processor';
+  const kindFilter = processorTabs && kind !== 'all' ? kind : null;
   // A role view has no per-person history — force the live tab (the Removed
   // view works everywhere: remove/restore lives on the workflows, owner-directed
   // 2026-08-18).
@@ -89,8 +106,10 @@ export default function StaffWorkflow() {
     const p = { tab: effTab };
     if (view.startsWith('role:')) { p.role = view.slice(5); }
     else if (view.startsWith('staff:')) { p.staffId = view.slice(6); }
+    if (kindFilter) p.type = kindFilter;
     api.workflowQueue(p).then(setRows).catch(e => setErr(e.message));
-  }, [effTab, view]);
+    if (isMine) api.workflowCount().then(setCounts).catch(() => setCounts(null));
+  }, [effTab, view, kindFilter, isMine]);
   useEffect(() => { reload(); }, [reload]);
 
   // Every hand-off action belongs to a row — confirm in the fixed toast so
@@ -99,7 +118,7 @@ export default function StaffWorkflow() {
 
   const pickup = useCallback(async (id) => {
     if (busy) return; setBusy(id); setErr('');
-    try { await api.workflowPickup(id); say('Picked up — it’s yours to work now.'); reload(); }
+    try { await api.workflowPickup(id); say('Picked up — it’s yours to work now. The loan officer has been told.'); reload(); }
     catch (e) { setErr(e.message || 'Could not pick it up'); } finally { setBusy(null); }
   }, [busy, reload]);
 
@@ -109,7 +128,7 @@ export default function StaffWorkflow() {
     setBusy(id); setErr('');
     try {
       await api.workflowReturn(id, outcome, note || undefined);
-      say('Sent back to the loan officer. It’s off your list.');
+      say('Done — the loan officer has your note, and it’s off your list.');
       setReturning(null); setOutcome(''); setNote(''); reload();
     } catch (e) { setErr(e.message || 'Could not send it back'); } finally { setBusy(null); }
   }, [busy, outcome, note, reload]);
@@ -132,14 +151,19 @@ export default function StaffWorkflow() {
   }, [busy, reload]);
 
   // KPI tiles for the live queue.
+  // FULL PROCESSING sits in its own box (owner-directed 2026-09-01: "a separate box for
+  // files that are fully processing, which is not part of the queue"). The QUEUE is
+  // everything else, in arrival order — and its position numbers count only the queue.
+  const fullFileRows = useMemo(() => (processorTabs && kind === 'all' && rows ? rows.filter(r => r.submission_type === FULL_FILE_TYPE) : []), [rows, processorTabs, kind]);
+  const queueRows = useMemo(() => (rows ? (processorTabs && kind === 'all' ? rows.filter(r => r.submission_type !== FULL_FILE_TYPE) : rows) : null), [rows, processorTabs, kind]);
   const kpis = useMemo(() => {
-    if (!rows || effTab !== 'next') return null;
-    const open = rows.filter(r => r.status === 'open').length;
-    const inProg = rows.filter(r => r.status === 'in_progress').length;
-    const overdue = rows.filter(r => r.sla_state === 'overdue'
+    if (!queueRows || effTab !== 'next') return null;
+    const open = queueRows.filter(r => r.status === 'open').length;
+    const inProg = queueRows.filter(r => r.status === 'in_progress').length;
+    const overdue = queueRows.filter(r => r.sla_state === 'overdue'
       || (!r.sla_state && (Number(r.age_seconds) || 0) >= 86400)).length;
-    return { total: rows.length, open, inProg, overdue };
-  }, [rows, effTab]);
+    return { total: queueRows.length, open, inProg, overdue };
+  }, [queueRows, effTab]);
 
   const wfMeta = roleView ? ROLE_WF.find(w => w.role === roleView) : null;
   const title = isMine ? 'My Workflow'
@@ -148,7 +172,9 @@ export default function StaffWorkflow() {
       ? `${(roster.staff.find(s => `staff:${s.id}` === view) || {}).full_name}’s workflow`
       : 'Workflow';
   const subtitle = isMine
-    ? 'Every file submitted to you, in the order it arrived. Pick it up, do your part, then send it back.'
+    ? (processorTabs
+      ? 'Every file submitted to you, in the order it arrived — one tab per kind of work. Pick it up, do your part, then mark it done with a note for the loan officer.'
+      : 'Every file submitted to you, in the order it arrived. Pick it up, do your part, then send it back.')
     : 'Oversight view — every file live in this workflow right now.';
 
   if (err && !rows) return <div role="alert" className="notice err">{err}</div>;
@@ -185,6 +211,19 @@ export default function StaffWorkflow() {
         </div>
       </div>
 
+      {processorTabs && effTab === 'next' && (
+        <div className="tabs" style={{ marginBottom: 12, flexWrap: 'wrap' }} role="tablist" aria-label="Kind of work">
+          {PROCESSOR_TABS.map(t => {
+            const n = t.key === 'all' ? null : (counts && counts.byType ? counts.byType[t.key] : null);
+            return (
+              <button key={t.key} role="tab" aria-selected={kind === t.key} className={`tab ${kind === t.key ? 'on' : ''}`} onClick={() => setKind(t.key)}>
+                {t.label}{n != null && n > 0 ? <span className="pill" style={{ marginLeft: 6 }}>{n}</span> : null}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {wfMeta && wfMeta.desk && (
         <div className="notice" style={{ marginBottom: 12 }}>
           This is the {wfMeta.label.toLowerCase()}. For the full process with all its details, open <Link className="btn link small" to={wfMeta.desk}>{wfMeta.deskLabel} →</Link>
@@ -206,14 +245,40 @@ export default function StaffWorkflow() {
             </div>
           )}
 
-          {effTab === 'next' && (rows.length === 0
-            ? <div className="panel"><div className="panel-b"><div className="empty-state"><h3>{isMine ? 'Nothing in your workflow right now 🎉' : 'Nothing live in this workflow right now'}</h3><p>{isMine ? 'When a teammate submits a file to you, it shows up here in the order it arrived.' : 'Files being worked in this process will appear here.'}</p></div></div></div>
+          {effTab === 'next' && fullFileRows.length > 0 && (
+            <div className="panel">
+              <div className="panel-h"><h3 style={{ margin: 0 }}>Files in full processing</h3>
+                <span className="muted small">Handed to you whole — not part of the queue. They leave when the file is cleared to close.</span></div>
+              <div className="q-table wf-table">
+                <div className="q-head"><span>File</span><span>Submitted</span><span>From</span><span>With you</span><span>Open</span></div>
+                {fullFileRows.map(it => (
+                  <div className="q-row wf-row" key={it.id}>
+                    <Link to={`/internal/app/${it.application_id}`} className="wf-file">
+                      <span className="mono">{initials(it.first_name, it.last_name)}</span>
+                      <span><span className="who">{it.first_name} {it.last_name}</span><span className="what">{addrLine(it.property_address) || it.ys_loan_number || 'File'}</span></span>
+                    </Link>
+                    <span className="muted small">{fmtWhen(it.received_at)}{it.note && <span style={{ display: 'block' }}>“{it.note}”</span>}</span>
+                    <span className="muted small">{it.from_name || '—'}</span>
+                    <span className="muted small">{ageText(it.age_seconds)}{it.status === 'in_progress' ? ' · started' : ''}</span>
+                    <span className="wf-acts">
+                      {isMine && it.status === 'open' && <button className="btn ghost small" disabled={busy === it.id} onClick={() => pickup(it.id)}>Pick up</button>}
+                      {(isMine || isAdmin) && <button className="btn ghost small" disabled={busy === it.id} onClick={() => removeIt(it, 'full processing')}>Remove</button>}
+                      <Link className="btn ghost small" to={`/internal/app/${it.application_id}`}>Open</Link>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {effTab === 'next' && (queueRows.length === 0
+            ? (fullFileRows.length ? null : <div className="panel"><div className="panel-b"><div className="empty-state"><h3>{isMine ? 'Nothing in your workflow right now 🎉' : 'Nothing live in this workflow right now'}</h3><p>{isMine ? 'When a teammate submits a file to you, it shows up here in the order it arrived.' : 'Files being worked in this process will appear here.'}</p></div></div></div>)
             : <div className="panel">
                 <div className="q-table wf-table">
                   <div className="q-head">
-                    <span>File</span><span>What for</span><span>{isMine ? 'From' : 'Assigned to'}</span><span>Waiting</span><span>{isMine ? 'Do' : 'Open'}</span>
+                    <span>File</span><span>What for</span><span>{isMine ? 'From · submitted' : 'Assigned to'}</span><span>Waiting</span><span>{isMine ? 'Do' : 'Open'}</span>
                   </div>
-                  {rows.map(it => (
+                  {queueRows.map((it, idx) => (
                     <React.Fragment key={it.id}>
                       <div className="q-row wf-row">
                         <Link to={`/internal/app/${it.application_id}`} className="wf-file">
@@ -223,21 +288,22 @@ export default function StaffWorkflow() {
                             <span className="what">{addrLine(it.property_address) || it.ys_loan_number || 'File'}</span>
                           </span>
                         </Link>
-                        <span><span className="pill">{TYPE_LABEL[it.submission_type] || it.submission_type}</span>
+                        <span>{processorTabs && <span className="mono muted small" title="Position in this queue — first in, first out" style={{ marginRight: 6 }}>#{idx + 1}</span>}
+                          <span className="pill">{TYPE_LABEL[it.submission_type] || it.submission_type}</span>
                           {it.auto && <span className="pill" style={{ marginLeft: 6 }} title="Created automatically by PILOT">Auto</span>}
                           {it.status === 'in_progress' && <span className="muted small" style={{ marginLeft: 6 }}>· started</span>}
                           {it.est_closing_date && <span className="muted small" style={{ display: 'block' }}>Est. close {fmtDate(it.est_closing_date)}</span>}
                           {it.note && <span className="muted small" style={{ display: 'block' }}>“{it.note}”</span>}
                         </span>
                         <span className="muted small">{isMine
-                          ? (it.from_name || '—')
+                          ? <>{it.from_name || '—'}<span style={{ display: 'block' }} title="When it was submitted">{fmtWhen(it.received_at)}</span></>
                           : (it.to_name ? <>{it.to_name}{it.to_staff_role ? <span style={{ display: 'block' }}>{ROLE_LABEL[it.to_staff_role] || it.to_staff_role}</span> : null}</> : <span title="Unclaimed — in the role inbox">Unclaimed ({ROLE_LABEL[it.to_role] || it.to_role || '—'})</span>)}</span>
                         <span className={`due ${slaClass(it)}`} title={it.due_at ? `Target: ${fmtWhen(it.due_at)}` : ''}>
                           {it.sla_state === 'overdue' ? 'Overdue' : ageText(it.age_seconds)}</span>
                         <span className="wf-acts">
                           {isMine && it.status === 'open' && <button className="btn ghost small" disabled={busy === it.id} onClick={() => pickup(it.id)}>Pick up</button>}
                           {isMine && it.submission_type === 'escalation' && <Link className="btn primary small" to={`/internal/escalations?app=${it.application_id}`} title="Review the exception request and approve, decline, or counter-offer">Review exception</Link>}
-                          {isMine && <button className="btn primary small" disabled={busy === it.id} onClick={() => { setReturning(returning === it.id ? null : it.id); setOutcome(''); setNote(''); }}>Send back</button>}
+                          {isMine && it.submission_type !== FULL_FILE_TYPE && <button className="btn primary small" disabled={busy === it.id} onClick={() => { setReturning(returning === it.id ? null : it.id); setOutcome(''); setNote(''); }}>{processorTabs ? 'Done' : 'Send back'}</button>}
                           {(isMine || isAdmin) && <button className="btn ghost small" disabled={busy === it.id}
                             title="Take this hand-off off the workflow (does not delete the file — restorable from the Removed view)"
                             onClick={() => removeIt(it, wfMeta ? wfMeta.label.toLowerCase() : isMine ? 'your workflow' : 'this workflow')}>Remove</button>}
@@ -246,14 +312,14 @@ export default function StaffWorkflow() {
                       </div>
                       {isMine && returning === it.id && (
                         <div className="wf-returnbar">
-                          <div className="muted small" style={{ marginBottom: 6 }}>Finish this and send the file back to <b>{it.from_name || 'the loan officer'}</b>. What did you do?</div>
+                          <div className="muted small" style={{ marginBottom: 6 }}>Mark this done and send the file back to <b>{it.from_name || 'the loan officer'}</b>. What did you do? Your note goes to them and is saved on the file’s tasks.</div>
                           <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                             <select className="input" style={{ maxWidth: 220 }} value={outcome} onChange={e => setOutcome(e.target.value)}>
                               <option value="">— choose what you finished —</option>
                               {OUTCOMES.map(o => <option key={o} value={o}>{o}</option>)}
                             </select>
-                            <input className="input" style={{ flex: 1, minWidth: 200 }} placeholder="Add a note (optional)" value={note} onChange={e => setNote(e.target.value)} />
-                            <button className="btn primary small" disabled={busy === it.id || !outcome} onClick={() => sendBack(it.id)}>Send back</button>
+                            <input className="input" style={{ flex: 1, minWidth: 200 }} placeholder="Note for the loan officer (saved on the file)" value={note} onChange={e => setNote(e.target.value)} />
+                            <button className="btn primary small" disabled={busy === it.id || !outcome} onClick={() => sendBack(it.id)}>{processorTabs ? 'Done' : 'Send back'}</button>
                             <button className="btn ghost small" onClick={() => setReturning(null)}>Cancel</button>
                           </div>
                         </div>

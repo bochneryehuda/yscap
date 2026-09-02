@@ -107,7 +107,7 @@ console.log('\nC. every difference between the two boards is DECLARED');
   // FORK 7, and it outlives the fork: an engine under audit must not issue a document a borrower reads.
   ok(/cart: true/.test(gBlock) && /cart: false/.test(cBlock),
     'C2 the combined board has NO term-sheet cart, and the general board still does');
-  ok(!/TermSheetPanel|ComparisonStrip|QuoteTermSheetActions|useTermSheetCart|PickBox/.test(codeOf(combined)),
+  ok(!/TermSheetPanel|ComparisonStrip|QuoteTermSheetActions|useTermSheetCart|CompareButton|PickBox/.test(codeOf(combined)),
     'C3 …and the combined screen imports no part of the cart at all');
   ok(/lenderCount: true/.test(gBlock) && /lenderCount: false/.test(cBlock),
     'C4 only a board whose door returns a lender count states one');

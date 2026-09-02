@@ -13,11 +13,28 @@
 
 // Ordered high → low for display; not a strict hierarchy (permissions are the
 // real authority — super_admin is the only implicit all-powerful role).
+//
+// `persona` (optional) names the role whose SCREENS AND BEHAVIOUR this role
+// inherits — which conditions view opens by default, whose "Done" step it is,
+// which dashboard is home, which nav entries show. A role with no `persona` is
+// its own persona. Every surface that used to ask `role === 'loan_officer'` to
+// decide *how the app behaves for this person* asks `personaOf(role)` instead,
+// so a role that is "the same persona as X" is declared ONCE, here, and never
+// re-listed at each call site. Capabilities are separate and stay per-role in
+// ROLE_DEFAULTS below — a persona says how the app looks, never what it allows.
 const ROLES = [
   { key: 'super_admin', label: 'Super Admin' },
   { key: 'admin', label: 'Admin' },
   { key: 'underwriter', label: 'Underwriter' },
   { key: 'loan_officer', label: 'Loan Officer' },
+  // The Loan Officer Assistant (owner-directed 2026-09-02, short-term side): a
+  // back-office role that works a loan officer's files with the loan officer's
+  // own permissions and screens — explicitly NOT a processor's. On a file they
+  // hold their own slot, `loan_officer_assistant` in application_assignees
+  // (db/672), and they can never be placed in the processor slot: the assignee
+  // route refuses any staffer whose role is not the slot's role, and the
+  // processor pointer only ever accepts `role='processor'`.
+  { key: 'loan_officer_assistant', label: 'Loan Officer Assistant', persona: 'loan_officer' },
   { key: 'loan_coordinator', label: 'Loan Coordinator' },
   { key: 'draw_coordinator', label: 'Draw Coordinator' },
   { key: 'processor', label: 'Loan Processor' },
@@ -29,6 +46,19 @@ const ROLES = [
 ];
 const ROLE_KEYS = ROLES.map((r) => r.key);
 const ROLE_LABEL = Object.fromEntries(ROLES.map((r) => [r.key, r.label]));
+// role → persona, for every internal role (a role with no `persona` maps to itself).
+const ROLE_PERSONA = Object.fromEntries(ROLES.map((r) => [r.key, r.persona || r.key]));
+
+/**
+ * The persona a staff role behaves as. Unknown / external / missing roles
+ * answer themselves unchanged, so `personaOf(x) === 'loan_officer'` is exactly
+ * "this person is a loan officer OR a role declared to behave as one" and can
+ * never be true of a role nobody registered.
+ */
+function personaOf(role) {
+  const key = role == null ? '' : String(role);
+  return ROLE_PERSONA[key] || key;
+}
 
 const CAPABILITIES = [
   { key: 'see_all_files', label: 'See every loan file', hint: 'Otherwise only files they are assigned to as officer/processor/coordinator.' },
@@ -88,6 +118,12 @@ const CAPABILITIES = [
 ];
 const CAP_KEYS = CAPABILITIES.map((c) => c.key);
 
+// THE loan officer's default capabilities — one array, held by every role that
+// is a loan officer by permission (loan_officer itself and its assistant below).
+// Written once so "same permissions as a loan officer" is a fact of the data,
+// not a second list somebody has to remember to keep matching.
+const LOAN_OFFICER_CAPS = ['review_conditions', 'pull_credit', 'waive_vesting_llc', 'send_term_sheet', 'view_draws'];
+
 // Role defaults. super_admin is handled implicitly (all). admin gets everything
 // too by default but is still a distinct, revocable role.
 const ROLE_DEFAULTS = {
@@ -127,7 +163,13 @@ const ROLE_DEFAULTS = {
   // explicitly grants it per-person from the Team screen. (super_admin has every capability implicitly.)
   // view_draws (owner-directed 2026-08-12): a read-only draw section + approve/dispute
   // a finding on the borrower's behalf. Still NOT manage_draws (no draw desk).
-  loan_officer: ['review_conditions', 'pull_credit', 'waive_vesting_llc', 'send_term_sheet', 'view_draws'],
+  loan_officer: LOAN_OFFICER_CAPS,
+  // The Loan Officer Assistant holds EXACTLY the loan officer's defaults — the
+  // same array, not a copy, so the two can never drift apart (owner-directed
+  // 2026-09-02: "the same permissions as a loan officer, not the permissions of
+  // a processor"). No see_all_files: like an officer they see the files they are
+  // on. An admin can still widen or narrow one person from the Team screen.
+  loan_officer_assistant: LOAN_OFFICER_CAPS,
   // Closers see the whole pipeline (they need the closing queue across files) and
   // can review + sign off closing conditions on the files handed to them, plus run
   // the closing desk (manage_closings) and pull credit. An admin can widen/narrow
@@ -300,7 +342,7 @@ const tpoBorrowerScopeSql = (alias, p) =>
   ` AND ${tpoFirmScopeSql('a2', p)})`;
 
 module.exports = {
-  ROLES, ROLE_KEYS, ROLE_LABEL, CAPABILITIES, CAP_KEYS, ROLE_DEFAULTS,
+  ROLES, ROLE_KEYS, ROLE_LABEL, ROLE_PERSONA, personaOf, CAPABILITIES, CAP_KEYS, ROLE_DEFAULTS,
   defaultsFor, effectivePermissions, can, sanitizeOverrides, assigneeExistsSql,
   visibleOfficersSql, visibleBorrowerSql, visibleLeadSql,
   // TPO portal

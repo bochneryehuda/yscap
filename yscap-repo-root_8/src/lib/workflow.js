@@ -33,9 +33,13 @@ const TYPES = {
     helper: 'Sends this file to the processor to set it up, and moves the file to Loan Setup.',
   },
   processing: {
-    label: 'Processing', role: 'processor', pointer: 'processor_id',
-    internalStatus: 'workflow', gate: null, assigns: true,
-    helper: 'Sends this file to the processor to work, and moves the file to Processing.',
+    // FULL PROCESSING (owner-directed 2026-09-01): the processor works the WHOLE file. It
+    // is not a queue item to be finished and sent back — the file sits in the processor's
+    // "in full processing" box until it is cleared to close (the CTC hand-off finishing
+    // returns it automatically). `fullFile` is what the screens read to draw it apart.
+    label: 'Full Processing', role: 'processor', pointer: 'processor_id',
+    internalStatus: 'workflow', gate: null, assigns: true, fullFile: true,
+    helper: 'Hands the whole file to the processor to process from start to finish, and moves the file to Processing.',
   },
   condition_clearing: {
     label: 'Condition Clearing', role: 'processor', pointer: 'processor_id',
@@ -46,6 +50,14 @@ const TYPES = {
     label: 'Clear to Close', role: 'processor', pointer: 'processor_id',
     internalStatus: 'delegated ctc submission', gate: 'ctc', assigns: true,
     helper: 'Submits this file for clear-to-close. The processor signs it off — you only mark your side done.',
+  },
+  track_record_review: {
+    // Owner-directed 2026-09-01: "another action which would be track record review
+    // submission and she should have a separate tab for which files she needs to review
+    // the track record". Routed to the processor; moves no status.
+    label: 'Track Record Review', role: 'processor', pointer: 'processor_id',
+    internalStatus: null, gate: null, assigns: true,
+    helper: 'Sends this file to the processor to review and clear the borrower’s track record.',
   },
   closing: {
     label: 'Closing', role: 'closer', pointer: 'closer_id',
@@ -89,7 +101,7 @@ const TYPE_KEYS = Object.keys(TYPES);
 // wall-clock hours from when it lands in the queue). Drives the on-time /
 // at-risk / overdue read and the overdue nudge (db/213). Tunable here.
 const SLA_HOURS = {
-  loan_setup: 24, processing: 48, condition_clearing: 48, clear_to_close: 24,
+  loan_setup: 24, processing: 48, condition_clearing: 48, clear_to_close: 24, track_record_review: 24,
   closing: 72, draw_setup: 48, post_closing: 72, exception: 24, escalation: 24,
   // A submitted draw doesn't exist in TrustPoint until a human enters it — the borrower's
   // money clock is running, so this hand-off gets the tightest draw SLA.
@@ -105,6 +117,7 @@ function typeConfig(t) { return TYPES[t] || null; }
 // Plain-language outcome labels the recipient picks when sending a file back.
 const OUTCOME_LABELS = [
   'Finished processing', 'Finished loan setup', 'Finished CTC',
+  'Track record reviewed',
   'Cleared conditions', 'Added conditions', 'Cleared exception',
   'Finished closing', 'Finished draw setup', 'Entered in TrustPoint',
   'Inspection ordered', 'Reviewed', 'Sent back — needs more',
@@ -564,6 +577,46 @@ async function listQueue(staffId, { tab = 'next', sort = 'received', type = null
   return r.rows;
 }
 
+/* ───────────────────────── THE PROCESSOR'S QUEUE, IN ORDER ─────────────────────────
+   Owner-directed 2026-09-01: the processor's workflow has one tab per kind of hand-off
+   ("Loan setup", "Full processing", "Condition clearing", "Clear to close", "Track record
+   review"), everything goes in the order it was received, and the submit buttons say
+   where in the queue a file is ("you're first in queue, your second in queue"). ONE
+   ordering — `SORTS.received`, the same the screen lists by — so the number a loan
+   officer reads and the row the processor sees next can never disagree. */
+const PROCESSOR_QUEUE_TYPES = TYPE_KEYS.filter((t) => TYPES[t].role === 'processor');
+
+/* The live items of one kind in one person's queue (or, for an unclaimed kind, the role
+   inbox), in queue order. `staffId` null → the whole role's live items. */
+async function queueOf({ staffId = null, role = 'processor', type }, client = db) {
+  if (!type || !TYPES[type]) return [];
+  const params = [type];
+  let who;
+  if (staffId) { params.push(staffId); who = `(w.to_staff_id = $2 OR (w.to_staff_id IS NULL AND w.to_role = (SELECT role FROM staff_users WHERE id = $2)))`; }
+  else { params.push(role); who = `(w.to_role = $2 OR EXISTS (SELECT 1 FROM staff_users s WHERE s.id = w.to_staff_id AND s.role = $2))`; }
+  const r = await client.query(
+    `SELECT w.id, w.application_id, w.received_at, w.status
+       FROM workflow_items w JOIN applications a ON a.id = w.application_id AND a.deleted_at IS NULL
+      WHERE w.submission_type = $1 AND w.status IN ('open','in_progress') AND ${who}
+      ORDER BY ${SORTS.received}`, params);
+  return r.rows;
+}
+
+/** { position, length } for a live item — 1 = next up. null when the item is not live. */
+async function queuePositionOf(itemId, client = db) {
+  const it = (await client.query(
+    `SELECT id, submission_type, to_staff_id, to_role FROM workflow_items WHERE id = $1 AND status IN ('open','in_progress')`, [itemId])).rows[0];
+  if (!it) return null;
+  const q = await queueOf({ staffId: it.to_staff_id, role: it.to_role || 'processor', type: it.submission_type }, client);
+  const idx = q.findIndex((x) => String(x.id) === String(it.id));
+  return idx < 0 ? null : { position: idx + 1, length: q.length };
+}
+
+/** Where a NEW hand-off of `type` to `staffId` (or the role inbox) would land: length + 1. */
+async function queueLengthFor({ staffId = null, role = 'processor', type }, client = db) {
+  return (await queueOf({ staffId, role, type }, client)).length;
+}
+
 // The roles that HAVE a workflow queue (for the admin/super_admin oversight
 // picker). Each is viewed as its OWN separate workflow — never merged together.
 const WORKFLOW_ROLES = ['processor', 'closer', 'draw_coordinator', 'underwriter', 'super_admin'];
@@ -789,6 +842,7 @@ async function advanceClosing(client, appId, stage, actorId) {
 }
 
 module.exports = {
+  PROCESSOR_QUEUE_TYPES, queueOf, queuePositionOf, queueLengthFor,
   TYPES, TYPE_KEYS, typeConfig, OUTCOME_LABELS, SLA_HOURS, slaHoursFor,
   candidatesForRole, allActiveStaff,
   conditionsClearedPct, fileLiveItems, fileTimeline,

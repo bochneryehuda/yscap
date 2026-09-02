@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { api } from '../lib/api.js';
-import { useAuth } from '../lib/auth.jsx';
+import { useAuth, takeReturnTo } from '../lib/auth.jsx';
 import { Brand } from './Layout.jsx';
 import TpoViewBanner from './TpoViewBanner.jsx';
 import { useStaleBuild, StaleBuildBanner } from '../lib/useStaleBuild.jsx';
@@ -32,7 +32,7 @@ export default function TpoLayout({ children }) {
   // gold hairline (so even a screenshot reads as "this is a view") and the way
   // out is "Back to my console", not "Sign out" (which would try to log the real
   // broker out — the guard blocks it, but locally it would strand the staffer).
-  const leaveView = async () => { const ok = await exitTpoView(); nav(ok ? '/internal/tpo-view' : '/internal/login', { replace: true }); };
+  const leaveView = async () => { const ok = await exitTpoView(); nav(ok ? (takeReturnTo() || '/internal/tpo-view') : '/internal/login', { replace: true }); };
 
   return (
     <div className={`shell${isTpoView ? ' shell-bview' : ''}`}>

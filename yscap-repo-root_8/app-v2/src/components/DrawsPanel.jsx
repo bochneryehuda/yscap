@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState, useRef } from 'react';
+import EsignEventLog from './EsignEventLog.jsx';
 import { showMessage, askConfirm, askPrompt } from '../lib/dialog.js';
 import { api, saveBlob, trackUploads } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -586,10 +587,12 @@ function DrawRequestCard({ appId }) {
     setBusy(true); setMsg('');
     try {
       const r = await api.post(`/api/staff/esign/${env.row_id}/resend`, {});
-      // The server tells us when the form is old enough that a reminder is likely
-      // to reach a dead envelope — say so rather than letting somebody press it
-      // three more times.
-      setMsg('Reminder resent to the current signer.' + (r && r.notice ? ` ${r.notice}` : ''));
+      // The server says what REALLY went out (owner-directed 2026-09-01: a real resend to
+      // the same address) and when the form is old enough that a reminder is likely to
+      // reach a dead envelope — say so rather than letting somebody press it three more times.
+      setMsg((r && r.sent
+        ? `Reminder re-sent to ${(r.recipients || []).join(', ') || 'the current signer'}.`
+        : ((r && r.error) || 'No reminder went out.')) + (r && r.notice ? ` ${r.notice}` : ''));
       reload();
     } catch (e) {
       const d = (e && e.data) || {};
@@ -739,6 +742,8 @@ function DrawRequestCard({ appId }) {
               </div>
             );
           })}
+          {/* THE FULL LOG at the bottom of the wire package too (owner-directed 2026-09-01). */}
+          <EsignEventLog events={env.events} compact />
         </div>
       )}
 

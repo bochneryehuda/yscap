@@ -142,7 +142,7 @@ function PriceAdjuster({ mode, rawPrice, value, onChange, compact }) {
 
   if (!open) {
     return (
-      <div style={{ marginTop: compact ? 5 : 8 }}>
+      <div style={{ marginTop: compact ? 0 : 8 }}>
         <button type="button" style={{ ...btn(), padding: '4px 9px', minHeight: 26, fontSize: 12 }}
           onClick={() => setOpen(true)}>
           {set ? `Price evened out by ${value > 0 ? '+' : ''}${value}` : 'Even out the price'}
@@ -153,7 +153,9 @@ function PriceAdjuster({ mode, rawPrice, value, onChange, compact }) {
 
   return (
     <div style={{
-      marginTop: 8, padding: 10, borderRadius: 8,
+      // Opened, it takes the whole line beneath a collected row (a wrapping flex row);
+      // in the single-sheet form there is no flex parent and this is simply a block.
+      flexBasis: '100%', marginTop: 8, padding: 10, borderRadius: 8,
       background: PAPER, border: '1px solid rgba(20,27,34,.10)',
     }}>
       <div style={{ fontSize: 11.5, color: MUTED, fontWeight: 600 }}>
@@ -826,53 +828,62 @@ export function RatioCheck({ check, onReprice, busy }) {
 
 
 /**
- * THE TICK-BOX ON A PROGRAMME'S OWN ROW.
+ * THE ADD-TO-COMPARISON BUTTON ON A PROGRAMME'S OWN ROW.
  *
- * Owner-directed 2026-08-30: *"You don't understand how you select which program should be
- * parked. I think it should be a checkbox, maybe, or a select mode by the two comparison things.
- * Select which program should be included … I can't figure it out."*
+ * Owner-directed 2026-09-02: *"You don't need to click Details and go down and click Add.
+ * You should be able to do that right away… It can just be a button, but it needs to be
+ * very clean, modern, user-friendly, and simple. Next to each and every quote."* And, of
+ * the tick-box it replaces: *"it needs to have something clear: what it is and what you
+ * do with that."*
  *
- * ⛔ WHAT WAS ACTUALLY WRONG: selecting lived at the BOTTOM of a programme's Details drawer, and
- * the collected options lived in a strip somewhere else. Nothing on the board itself ever said
- * "this one is in" — so an officer could not answer, by looking, which programmes they had picked.
- * Two clicks deep to select, and no way to see the result: that is the whole complaint.
+ * ⛔ IT SAYS WHAT IT DOES IN WORDS. A 17-pixel box with "ADD" beside it answered "is this
+ * in?" and left "in what?" to a tooltip. The button reads *Add to comparison* and, once
+ * pressed, *In comparison* — the words the rail at the bottom of the board uses — so a
+ * person who has never opened the rail knows what the press did and where to look.
  *
- * ⛔ IT IS A REAL CHECKBOX, not a button that toggles. Choosing several things out of a list is
- * what a checkbox is for, it announces its own state to a screen reader without being told, and it
- * is the control everybody already knows.
+ * ⛔ ONE CONTROL, TWO STATES, ONE PRESS EACH WAY. Pressed once it collects; pressed again
+ * it takes the option back out. `aria-pressed` carries the state and the title spells
+ * out what the NEXT press does, because a toggle whose two faces differ only by colour
+ * is a control people press twice to find out.
  *
- * ⛔ AND IT ANSWERS FROM THE CART, never from a list kept here. `memberForQuote` matches on what
- * the offer IS, so the tick survives a re-render, a re-price and a reload — the cart is the
- * server's. A private "selected" set in the browser would drift from it the moment anything else
- * changed the cart, and a tick that lies about what is collected is worse than no tick.
+ * ⛔ IT ANSWERS FROM THE CART, never from a list kept here. `memberForQuote` matches on
+ * what the offer IS (programme, product, rate, comp position, fee waive), so a re-run
+ * search still marks the right rows — and nothing is remembered on this screen that the
+ * server does not hold.
+ *
+ * ⛔ THE SAME HEIGHT AS THE DETAILS BUTTON BESIDE IT (the portal's `.btn` is 44px), so the
+ * two read as one pair of controls rather than a button and a chip. The colours are the
+ * measured pairs — gold text on white, ink on the gold-tinted paper — never white on
+ * gold, which measured 3.31:1 on this very board.
  */
-export function PickBox({ quote, comp, members, busy, onAdd, onRemove }) {
+export function CompareButton({ quote, comp, members, busy, onAdd, onRemove }) {
   const mine = memberForQuote(members, quote, comp);
   const on = !!mine;
-  const label = on ? 'In the comparison — untick to take it out' : 'Add this programme to the comparison';
+  const next = on ? 'In the comparison — press to take it out' : 'Add this programme to the comparison';
   return (
-    <label
-      title={label}
+    <button
+      type="button"
+      aria-pressed={on}
+      aria-label={next}
+      title={busy ? 'One moment…' : next}
+      disabled={!!busy}
+      onClick={() => (on ? onRemove(mine) : onAdd())}
       style={{
-        display: 'inline-flex', alignItems: 'center', gap: 5, cursor: busy ? 'progress' : 'pointer',
-        // A real target on a phone, where a bare 13px box is a quarter of what a thumb lands on.
-        minHeight: 30, paddingRight: 2,
+        display: 'inline-flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap',
+        font: 'inherit', fontSize: 12, fontWeight: 700, letterSpacing: '.01em', lineHeight: 1,
+        padding: '0 14px', minHeight: 44, borderRadius: 999,
+        cursor: busy ? 'progress' : 'pointer',
+        border: `1px solid ${on ? GOLD : `${GOLD}99`}`,
+        background: on ? PAPER : '#fff',
+        color: on ? INK : GOLD_TEXT,
+        opacity: busy ? 0.7 : 1,
+        transition: 'background .12s ease, border-color .12s ease, color .12s ease',
       }}
     >
-      <input
-        type="checkbox"
-        checked={on}
-        disabled={!!busy}
-        aria-label={label}
-        onChange={() => (on ? onRemove(mine) : onAdd())}
-        style={{ width: 17, height: 17, accentColor: GOLD, cursor: 'inherit' }}
-      />
-      {/* The state in WORDS as well as in the box. A tick is shape and colour alone, and this line
-          is read across a board of near-identical rows. */}
-      <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: '.04em', color: on ? GOLD_TEXT : MUTED }}>
-        {on ? 'IN' : 'ADD'}
-      </span>
-    </label>
+      {/* The glyph is decoration for a sighted reader; the words carry the meaning. */}
+      <span aria-hidden="true" style={{ fontSize: 14, lineHeight: 1 }}>{on ? '\u2713' : '+'}</span>
+      {busy ? (on ? 'Removing\u2026' : 'Adding\u2026') : (on ? 'In comparison' : 'Add to comparison')}
+    </button>
   );
 }
 
@@ -1337,6 +1348,25 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
                   {m.mode === 'lenderPaid' ? 'lender paid' : 'borrower paid'}{m.waive_lender_fees ? ' · fees waived' : ''}
                 </span>
                 <span style={{ flex: 1 }} />
+                {/* §40 — PER OPTION, because a comparison is several offers and the
+                    owner rounds them one at a time. The mode is this member's own:
+                    three framings of one deal legitimately sit side by side, and the
+                    compensation an adjustment comes out of is different in each.
+
+                    ⛔ ON THE ROW'S OWN LINE, closed. It used to sit in a full-width wrapper
+                    under every row, so each collected option was two lines tall and a cart
+                    of eight ran to a screen and a half (owner-reported 2026-09-02: the rail
+                    "gets very tightened up"). Closed it is one small button and belongs
+                    beside Remove; opened, the panel takes the whole line below by itself
+                    (`flexBasis: 100%` on its open root), so nothing here has to know which
+                    state it is in. Remove stays last — the destructive action at the end. */}
+                <PriceAdjuster
+                  compact
+                  mode={m.mode}
+                  rawPrice={(m.program || {}).rawPrice}
+                  value={adjusts[m.id] == null ? null : adjusts[m.id]}
+                  onChange={(pts) => setAdjusts((st) => ({ ...st, [m.id]: pts }))}
+                />
                 <button type="button" style={{ ...btn(), padding: '4px 8px', minHeight: 26 }}
                   disabled={busy === m.id} onClick={() => remove(m.id)}>Remove</button>
                 {!p.consumerLabel && (
@@ -1358,19 +1388,6 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
                     />
                   </div>
                 )}
-                {/* §40 — PER OPTION, because a comparison is several offers and the
-                    owner rounds them one at a time. The mode is this member's own:
-                    three framings of one deal legitimately sit side by side, and the
-                    compensation an adjustment comes out of is different in each. */}
-                <div style={{ flexBasis: '100%' }}>
-                  <PriceAdjuster
-                    compact
-                    mode={m.mode}
-                    rawPrice={(m.program || {}).rawPrice}
-                    value={adjusts[m.id] == null ? null : adjusts[m.id]}
-                    onChange={(pts) => setAdjusts((st) => ({ ...st, [m.id]: pts }))}
-                  />
-                </div>
               </div>
             );
           })}

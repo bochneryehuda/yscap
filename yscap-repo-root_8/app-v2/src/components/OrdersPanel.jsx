@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { api, saveBlob } from '../lib/api.js';
 import { PhoneInput, EmailInput } from './FormattedInputs.jsx';
+import VendorAutocomplete from './VendorAutocomplete.jsx';
 import EmailCenter from './EmailCenter.jsx';
 import ClosingPrepCard from './ClosingPrepCard.jsx';
 import DocPreview from './DocPreview.jsx';
@@ -81,23 +82,40 @@ function when(ts) { return ts ? new Date(ts).toLocaleString([], { dateStyle: 'me
    and nobody has to go to the condition and come back (owner-directed 2026-08-03).
    `existing` (a file-contact link row) turns this into an EDIT of that contact
    rather than a second directory entry for the same company. */
-function ContactForm({ appId, kind, existing, onSaved, onCancel }) {
+function ContactForm({ appId, kind, existing, replace = false, onSaved, onCancel }) {
   const [f, setF] = useState({
     companyName: (existing && existing.company_name) || '',
     contactName: (existing && existing.contact_name) || '',
     email: (existing && existing.email) || '',
     phone: (existing && existing.phone) || '',
+    contactId: null,   // set when a vendor is picked from the directory type-ahead
   });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  /* THE COMPANY VENDOR DIRECTORY, RIGHT HERE (owner-directed 2026-09-01: "in the file,
+     they can import the vendor … in the condition or on the order … You don't need to
+     type email. It populates from our vendor database"). The same type-ahead the
+     condition slot uses, against the same file-scoped endpoint. */
+  const suggest = useCallback((q) => api.staffVendorSuggest(appId, CONTACT_TYPE[kind], q), [appId, kind]);
+  const takeVendor = (v) => setF((p) => ({
+    ...p, contactId: v.id || null,
+    companyName: v.companyName || p.companyName || '',
+    contactName: v.contactName || p.contactName || '',
+    email: (v.emails && v.emails[0]) || p.email || '',
+    phone: v.phone || p.phone || '',
+  }));
   const save = async () => {
     setErr('');
     if (!f.companyName && !f.contactName && !f.email && !f.phone) { setErr('Enter at least one detail.'); return; }
     if (!f.email) { setErr('An email is required to send the order.'); return; }
     setBusy(true);
     try {
-      if (existing && existing.link_id) await api.staffEditFileContact(existing.link_id, { contactType: CONTACT_TYPE[kind], ...f });
-      else await api.staffAddFileContact(appId, { contactType: CONTACT_TYPE[kind], ...f });
+      const body = { contactType: CONTACT_TYPE[kind], companyName: f.companyName, contactName: f.contactName, email: f.email, phone: f.phone };
+      if (existing && existing.link_id) await api.staffEditFileContact(existing.link_id, body);
+      /* REPLACE, NEVER ADD BESIDE (owner-reported 2026-09-01: after "Use a different one"
+         the order "is ordering now from both agents"). `replace:true` retires the previous
+         vendor of this type from the file and its thread, so the new agent alone gets it. */
+      else await api.staffAddFileContact(appId, { ...body, contactId: f.contactId || undefined, replace: replace || undefined });
       onSaved && onSaved();
     } catch (e) { setErr((e && e.message) || 'Could not save the contact.'); }
     finally { setBusy(false); }
@@ -105,11 +123,17 @@ function ContactForm({ appId, kind, existing, onSaved, onCancel }) {
   return (
     <div className="panel" style={{ background: 'var(--surface-soft, var(--ink-2))', marginTop: 8 }}>
       <div className="muted small" style={{ marginBottom: 6 }}>
-        {existing ? 'Edit' : 'Add'} the {CONTACT_ASK[kind]} — this also fills the file's {CONTACT_ASK[kind]} condition,
-        so you don't have to open the condition to enter it.
+        {replace
+          ? <>Switch this order to a different {CONTACT_ASK[kind]}. The current one comes off this file's order and stops
+              receiving its emails — the new one gets them alone.</>
+          : <>{existing ? 'Edit' : 'Add'} the {CONTACT_ASK[kind]} — this also fills the file's {CONTACT_ASK[kind]} condition,
+              so you don't have to open the condition to enter it.</>}
       </div>
       <div className="grid cols-2" style={{ gap: 8 }}>
-        <div><label className="muted small">Company</label><input className="input" value={f.companyName} onChange={e => setF({ ...f, companyName: e.target.value })} /></div>
+        <div><label className="muted small">Company</label>
+          <VendorAutocomplete className="input" value={f.companyName} onChange={(v) => setF((p) => ({ ...p, companyName: v, contactId: null }))}
+            onPick={takeVendor} fetchSuggestions={suggest} placeholder="Company — start typing to pick from the vendor directory"
+            emptyHint="No match in the vendor directory — type the details in." /></div>
         <div><label className="muted small">Contact name</label><input className="input" value={f.contactName} onChange={e => setF({ ...f, contactName: e.target.value })} /></div>
         <div><label className="muted small">Email</label><EmailInput value={f.email} onChange={v => setF({ ...f, email: v })} /></div>
         <div><label className="muted small">Phone</label><PhoneInput value={f.phone} onChange={v => setF({ ...f, phone: v })} /></div>
@@ -186,7 +210,7 @@ function ContactSlot({ appId, kind, vendor, onChanged }) {
         {vendor
           ? <button className="btn ghost small" disabled={busy} onClick={openEditor}>{busy ? '…' : 'Edit contact'}</button>
           : <button className="btn primary small" onClick={() => setAdding(true)}>Add {CONTACT_ASK[kind]}</button>}
-        {vendor && !editing && <button className="btn ghost small" onClick={() => setAdding(true)} title="Use a different company for this order">Use a different one</button>}
+        {vendor && !editing && <button className="btn ghost small" onClick={() => setAdding(true)} title="Switch this order to a different company — the current one comes off the order">Use a different one</button>}
       </div>
       {score && score.card && score.card.orders > 0 && (
         <div className="small" style={{ color: '#4B585C', marginTop: 2, paddingLeft: 128 }}>
@@ -200,7 +224,7 @@ function ContactSlot({ appId, kind, vendor, onChanged }) {
       )}
       {err && <div role="alert" className="small" style={{ color: 'var(--danger)', marginTop: 4 }}>{err}</div>}
       {(editing || adding) && (
-        <ContactForm appId={appId} kind={kind} existing={editing ? link : null}
+        <ContactForm appId={appId} kind={kind} existing={editing ? link : null} replace={adding && !!vendor}
           onSaved={done} onCancel={() => { setEditing(false); setAdding(false); setLink(null); }} />
       )}
     </div>

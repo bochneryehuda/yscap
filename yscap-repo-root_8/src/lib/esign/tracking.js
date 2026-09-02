@@ -112,6 +112,9 @@ async function dashboard(db, scope = { where: '', params: [] }) {
     deadLettered: Number(sh.deadLettered),
   };
   await attachSignedArtifacts(db, envelopes);
+  // THE FULL LOG (owner-directed 2026-09-01) — merged from the envelope, its signers
+  // and the staff actions, attached here so every card reads the same list.
+  await require('./events').attachEvents(db, envelopes);
   return { envelopes, counts, sendHealth };
 }
 

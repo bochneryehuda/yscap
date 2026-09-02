@@ -397,6 +397,38 @@ console.log('\nH. evening out a price — the control RENDERS on all three docum
   });
   ok(/Price evened out by -0\.1/.test(set),
     'H5 an adjustment already made is visible without opening anything');
+
+  /* ⛔ ON THE ROW'S OWN LINE (owner-reported 2026-09-02: the comparison rail "gets very
+     tightened up"). The closed control used to sit in a full-width wrapper UNDER every
+     collected row, so each option was two lines and a cart of eight ran to a screen and a
+     half. Closed, it is one small button and rides the row beside Remove; opened, its panel
+     takes the whole line below by itself. RENDERED, for the same reason as H2: only a render
+     tells a control on the row from one parked under it. */
+  const eight = Array.from({ length: 8 }, (_, i) => ({
+    id: `m${i}`, position: i, label: `Option ${i + 1}`, mode: 'borrowerPaid',
+    program: { ratePct: 6 + i / 8, consumerLabel: `Programme ${i + 1}`, rawPrice: 100 + i / 4 },
+  }));
+  const full = draw(globalThis.__ComparisonStrip, {
+    open: true, cart: { anchor_position: 0 }, members: eight, onChange: () => {},
+    onIssued: () => {}, onPlan: () => {},
+  });
+  const rows = full.split('>Remove<').slice(0, -1);      // one slice per collected row
+  ok(rows.length === 8, `H6 a full cart of eight draws eight rows (${rows.length})`);
+  ok(rows.every((r) => r.includes('Even out the price')),
+    'H6a …and every row carries its own closed adjuster');
+  ok(rows.every((r) => !/flex-basis:100%[^>]*>\s*<div[^>]*>\s*<button[^>]*>Even out the price/.test(r)),
+    'H6b ⛔ …ON the row, not parked in a full-width wrapper beneath it');
+  // Between the closed adjuster and Remove there is no full-width block — they share the line.
+  ok(rows.every((r) => !/flex-basis:100%/.test(r.slice(r.lastIndexOf('Even out the price')))),
+    'H6c …and nothing full-width sits between it and Remove, which stays last — the two share the line');
+  // The open panel is the one state a static render cannot reach, so its own-line rule is
+  // read from the source: the open root claims the whole line of a wrapping flex row.
+  const PANEL_SRC = fs.readFileSync(path.join(appv2, 'src/longterm/TermSheetPanel.jsx'), 'utf8');
+  const openRoot = /if \(!open\) \{[\s\S]*?\}\s*return \(\s*<div style=\{\{([\s\S]*?)\}\}>/.exec(PANEL_SRC);
+  ok(!!openRoot && /flexBasis: '100%'/.test(openRoot[1]),
+    'H6d …while the OPENED panel takes the whole line beneath the row by itself');
+  ok(!/<div style=\{\{ flexBasis: '100%' \}\}>\s*<PriceAdjuster/.test(PANEL_SRC),
+    'H6e …and no row wraps the control in a full-width box any more');
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

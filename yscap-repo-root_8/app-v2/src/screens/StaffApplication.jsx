@@ -45,6 +45,7 @@ import TapeSendModal from '../components/TapeSendModal.jsx';
 import FileOverviewSlideOver from '../components/FileOverviewSlideOver.jsx';
 import { CreditCondition } from '../components/CreditReport.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
+import StatusActionsCard from '../components/StatusActionsCard.jsx';
 import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
 import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { PhoneInput, ZipInput , EmailInput, DateCommitInput } from '../components/FormattedInputs.jsx';
@@ -66,6 +67,7 @@ import ConditionActions, { DocActions } from '../components/ConditionActions.jsx
 import ConditionLine, { ConditionNote, ConditionExternalNote, NoteBuyerMark, ConditionCollapse } from '../components/ConditionLine.jsx';
 import UspsAddressVerification from '../components/UspsAddressVerification.jsx';
 import { canComplete, canDeleteDoc } from '../lib/condition-actions.js';
+import { isLoanOfficerPersona } from '../lib/roles.js';
 import EsignFileSection from '../components/EsignFileSection.jsx';
 import ExceptionRegisterCard from '../components/ExceptionRegisterCard.jsx';
 import GuarantyWaiverCard from '../components/GuarantyWaiverCard.jsx';
@@ -3235,7 +3237,11 @@ function VestingLlcOwners({ appId, app }) {
 // through the admin-only Assign control; the PROCESSOR primary is open to
 // anyone on the file (owner-directed 2026-08-26). `officers`/`processors` are
 // the roster lists already loaded by the parent; `onChanged` refreshes the file.
-function TeamAssignees({ appId, officers, processors, closers = [], drawCoordinators = [], onChanged }) {
+// LOAN OFFICER ASSISTANTS (owner-directed 2026-09-02, db/672) have a slot of
+// their OWN: the pool is only staffers who hold that role, and the server
+// refuses to seat anyone in a slot whose role they do not hold — which is what
+// keeps an assistant out of the processor slot. No primary; access + team only.
+function TeamAssignees({ appId, officers, processors, closers = [], drawCoordinators = [], loanOfficerAssistants = [], onChanged }) {
   const [rows, setRows] = useState(null);
   const [busy, setBusy] = useState('');
   const [err, setErr] = useState('');
@@ -3270,11 +3276,14 @@ function TeamAssignees({ appId, officers, processors, closers = [], drawCoordina
       )}
     </span>
   );
-  const Line = ({ label, list }) => (
+  // `empty` is the wording for a slot with nobody in it. The default is the
+  // desk slots' truth ("the whole desk gets the work"); a slot that routes no
+  // work — the assistant's — says plainly that nobody holds it.
+  const Line = ({ label, list, empty = 'Whole desk (nobody assigned)' }) => (
     <div className="metrow" style={{ alignItems: 'flex-start' }}>
       <span className="k">{label}</span>
       <span className="v" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
-        {list.length ? list.map(r => <Chip key={r.staff_id} r={r} />) : <span className="muted small">Whole desk (nobody assigned)</span>}
+        {list.length ? list.map(r => <Chip key={r.staff_id} r={r} />) : <span className="muted small">{empty}</span>}
       </span>
     </div>
   );
@@ -3304,16 +3313,19 @@ function TeamAssignees({ appId, officers, processors, closers = [], drawCoordina
       <Line label="Processors" list={byRole('processor')} />
       <Line label="Closers" list={byRole('closer')} />
       <Line label="Draw coordinators" list={byRole('draw_coordinator')} />
+      <Line label="Loan officer assistants" list={byRole('loan_officer_assistant')} empty="None on this file" />
       <div className="row" style={{ gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
         <AddRow role="loan_officer" label="+ Add assistant LO…" pool={officers} firstIsPrimary={false} />
         <AddRow role="processor" label="+ Add assistant processor…" pool={processors} firstIsPrimary={false} />
         <AddRow role="closer" label="+ Assign / add closer…" pool={closers} firstIsPrimary />
         <AddRow role="draw_coordinator" label="+ Assign / add draw coordinator…" pool={drawCoordinators} firstIsPrimary />
+        <AddRow role="loan_officer_assistant" label="+ Add loan officer assistant…" pool={loanOfficerAssistants} firstIsPrimary={false} />
       </div>
       <p className="muted small" style={{ margin: '6px 0 0' }}>
         Closing and draw submissions go to the file’s assigned closer / draw coordinator; with nobody assigned they
         go to the whole desk (the default, unchanged). Everyone assigned to a role here sees the file’s items in
-        their own workflow.
+        their own workflow. A loan officer assistant works the file with the loan officer’s permissions and is
+        never a processor on it.
       </p>
       {err && <p className="notice err small" style={{ marginTop: 6 }}>{err}</p>}
     </div>
@@ -3806,7 +3818,9 @@ function BorrowerConditions({ appId, app, items, docs, onPatch, onReviewDoc, onD
   }
   const docsFor = (itemId) => docs.filter(d => d.checklist_item_id === itemId && d.is_current && d.source_type !== 'chat_attachment');
   const signedCount = ordered.filter(it => it.signed_off_at).length;
-  const isLO = role === 'loan_officer';
+  // The PERSONA, not the raw role (lib/roles.js): the loan officer assistant
+  // holds the officer's permissions and gets the officer's steps and buttons.
+  const isLO = isLoanOfficerPersona(role);
   // Role-aware "off my plate" (owner-directed #135): a loan officer clears a
   // condition by marking it Done (reviewed) OR when it's signed off/satisfied;
   // a processor/underwriter only clears it by SIGNING IT OFF — so an accepted
@@ -6047,6 +6061,10 @@ export default function StaffApplication() {
       {/* THE WORKFLOW (owner-directed 2026-07-21) — the primary way a file moves.
           Submit it to the next person; the status follows automatically. */}
       <SubmitFilePanel appId={id} onChange={load} />
+      {/* THE STATUS ACTIONS (owner-directed 2026-09-01): the processor moves the file's
+          status from the overview when she finishes her part — through the same status
+          door as the dropdown, with the clear-to-close sign-off gate explained by name. */}
+      <StatusActionsCard appId={id} app={app} onChanged={load} />
       {/* Status, ClickUp status & closing — one clean labeled control panel. The
           old version crammed the selects + buttons into loose rows and cut off the
           long ClickUp-status field; labels now sit above full-width fields in a
@@ -6098,6 +6116,7 @@ export default function StaffApplication() {
         <TeamAssignees appId={id} officers={officers} processors={processors}
           closers={team.filter(m => m.role === 'closer')}
           drawCoordinators={team.filter(m => m.role === 'draw_coordinator')}
+          loanOfficerAssistants={team.filter(m => m.role === 'loan_officer_assistant')}
           onChanged={load} />
         {uwName && <div className="metrow"><span className="k">Underwriter</span><span className="v">{uwName}</span></div>}
         {/* Reassigning the LOAN OFFICER is an admin function (S3-02) — the

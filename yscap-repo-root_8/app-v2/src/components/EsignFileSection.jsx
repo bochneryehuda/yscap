@@ -3,6 +3,7 @@ import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { goToSection, requestAppDetailTab } from './FileSections.jsx';
 import { askConfirm, askPrompt } from '../lib/dialog.js';
+import EsignEventLog from './EsignEventLog.jsx';
 import {
   PHASE, PURPOSE, ROLE, TERMINAL, timeAgo, absTime, recipientSteps, recipientState,
   agingHours, agingLevel, agingLabel,
@@ -127,7 +128,11 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
     setBusy(key); setErr(''); setMsg('');
     if (msgT.current) { clearTimeout(msgT.current); msgT.current = null; }
     try {
-      await fn(); if (okMsg) { setMsg(okMsg); msgT.current = setTimeout(() => setMsg(''), 6000); }   // auto-dismiss so a stale "Sent" banner never sits above a failed card
+      const r = await fn();
+      // okMsg may be a function of the result, so a message can state what REALLY happened
+      // (a resend says how many invitations went out, never a blanket "resent").
+      const text = typeof okMsg === 'function' ? okMsg(r) : okMsg;
+      if (text) { setMsg(text); msgT.current = setTimeout(() => setMsg(''), 9000); }   // auto-dismiss so a stale "Sent" banner never sits above a failed card
       await load(true);
       if (after) { try { await after(); } catch (_) { /* the parent refresh is best-effort */ } }
     } catch (e) {
@@ -208,7 +213,14 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
     if (!r || !r.ok) throw new Error((r && r.error) || 'Could not save the loan number.');
     setLnInput('');
   }, 'Loan number saved.');
-  const resend = (rowId) => act(`resend:${rowId}`, () => api.post(`/api/staff/esign/${rowId}/resend`), 'Reminder resent.');
+  /* A REAL RESEND (owner-directed 2026-09-01): the server re-sends PILOT's own invitation
+     to the address the package was sent to — the same email the change-email path sends —
+     and answers with how many went out. `recipientRowId` narrows it to one signer. */
+  const resendMsg = (r) => (r && r.sent
+    ? `Reminder re-sent to ${(r.recipients || []).join(', ') || 'the signer'}.${r.notice ? ` ${r.notice}` : ''}`
+    : `${(r && r.error) || 'No reminder went out.'}${r && r.notice ? ` ${r.notice}` : ''}`);
+  const resend = (rowId, recipientRowId) => act(`resend:${recipientRowId || rowId}`,
+    () => api.post(`/api/staff/esign/${rowId}/resend`, recipientRowId ? { recipientRowId } : {}), resendMsg);
   // Change a signer's email on an ALREADY-SENT package and re-send the invitation to
   // the new address (owner-directed) — the fix for a wrong email, without void + re-issue.
   const openEmailEdit = (envId, r) => { setEmailWarn(null); setErr(''); setEmailEdit({ rid: r.id, envId, email: r.email || '', name: r.name || '' }); };
@@ -460,7 +472,11 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
               <div key={r.id || `${r.role}-${r.routingOrder}`}>
                 <Recipient r={r} />
                 {canEditEmail && !editing && (
-                  <div style={{ margin: '-2px 0 10px', paddingLeft: 4 }}>
+                  <div className="row" style={{ margin: '-2px 0 10px', paddingLeft: 4, gap: 6, flexWrap: 'wrap' }}>
+                    <button className="btn ghost btn-sm" disabled={busy === `resend:${r.id}`} onClick={() => resend(e.id, r.id)}
+                      title={`Re-send the invitation to ${r.email} — same address, fresh email and signing link.`}>
+                      {busy === `resend:${r.id}` ? '…' : '↻ Resend to this address'}
+                    </button>
                     <button className="btn ghost btn-sm" onClick={() => openEmailEdit(e.id, r)}
                       title="Wrong email? Change it and re-send the invitation to the new address — no need to void and re-issue.">
                       ✎ Change email &amp; re-send
@@ -510,7 +526,8 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
           )}
           {!terminal && e.envelopeId && (
             <>
-              <button className="btn ghost btn-sm" disabled={busy === `resend:${e.id}`} onClick={() => resend(e.id)}>{busy === `resend:${e.id}` ? '…' : 'Resend reminder'}</button>
+              <button className="btn ghost btn-sm" disabled={busy === `resend:${e.id}`} onClick={() => resend(e.id)}
+                title="Re-send the invitation to everyone whose turn it is to sign — same addresses, fresh email and link.">{busy === `resend:${e.id}` ? '…' : 'Resend reminder'}</button>
               <button className="btn ghost btn-sm" disabled={busy === `void:${e.id}`} onClick={() => voidEnv(e.id)}>Void</button>
             </>
           )}
@@ -541,6 +558,8 @@ export default function EsignFileSection({ appId, role, onChanged, onFinalizeTer
               title="DocuSign Certificate of Completion — the legal audit trail (signers, timestamps, IP addresses)">{busy === `dl:${e.certificate.documentId}` ? '…' : '↓ certificate'}</button>
           ) : null}
         </div>
+        {/* THE FULL LOG at the bottom of every package (owner-directed 2026-09-01). */}
+        <EsignEventLog events={e.events} />
         </>}
       </div>
     );

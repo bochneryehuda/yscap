@@ -61,7 +61,12 @@ function throttleProblem(actorKey, now = Date.now()) {
   return '';
 }
 
-const MODES = Object.freeze(['fix', 'rewrite', 'draft']);
+// `condition` (owner-directed 2026-09-01): "bring in [AI] in the underwriting condition
+// section to help the processor write the condition … it should understand to use
+// really short language as a condition and populate the header". Input: whatever the
+// person typed (a name, a sentence, a paragraph). Output: a HEADER (≤ 8 words) and ONE
+// sentence of instruction to the borrower — two labelled lines the screen parses.
+const MODES = Object.freeze(['fix', 'rewrite', 'draft', 'condition']);
 const TONES = Object.freeze({
   professional: 'professional and courteous',
   friendly: 'warm and friendly',
@@ -81,6 +86,12 @@ const BASE_RULES =
 function requestProblem(b = {}) {
   const mode = String(b.mode || '');
   if (!MODES.includes(mode)) return 'Pick what to do: fix, rewrite, or draft.';
+  if (mode === 'condition') {
+    const text = String(b.text == null ? '' : b.text).trim();
+    if (!text) return 'Type what the condition is about first — a few words is enough.';
+    if (text.length > MAX_INPUT) return `Keep it under ${MAX_INPUT.toLocaleString('en-US')} characters.`;
+    return '';
+  }
   if (mode === 'draft') {
     const ins = String(b.instruction == null ? '' : b.instruction).trim();
     if (!ins) return 'Say what the message should do (e.g. "ask the title company for the updated commitment").';
@@ -107,8 +118,42 @@ function systemFor(mode, tone) {
     return BASE_RULES + ` TASK: rewrite the message to say the same things better — tone: ${t}. `
       + 'Every point in the input survives; nothing new is added.';
   }
+  if (mode === 'condition') {
+    return 'You are Pilot AI inside PILOT, a lending platform. You turn a loan processor\'s rough note into a '
+      + 'loan CONDITION the borrower reads. HARD RULES: never invent a fact, a figure, a date or a name that is not '
+      + 'in the input; no greeting, no signature, no markdown. Write in the second person to the borrower ("Provide…", '
+      + '"Upload…"). Conditions are SHORT. Return EXACTLY two lines and nothing else:\n'
+      + 'Header: <what is needed, as a noun phrase of at most 8 words, Title Case, no trailing period>\n'
+      + 'Instruction: <ONE plain sentence (at most 25 words) saying exactly what to provide and, if the input says so, for what period or which property>';
+  }
   return BASE_RULES + ' TASK: draft the message the instruction asks for. Where a needed detail is not '
     + 'given (a date, an amount, a name), write a [bracketed placeholder] rather than inventing one.';
+}
+
+/**
+ * Parse the condition mode's two labelled lines. Tolerant of the model wrapping,
+ * re-ordering or adding a stray line; STRICT about what it returns — a header it
+ * cannot find is a failure, never a guess.
+ */
+function parseCondition(text) {
+  const lines = String(text || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  let header = '', wording = '';
+  for (const l of lines) {
+    // Tolerant of markdown bold/underscore around the label or the colon ("**Header:** x").
+    const m = /^[*_\s]*(header|title)[*_\s]*:[*_\s]*(.+)$/i.exec(l);
+    const n = /^[*_\s]*(instruction|wording|condition)[*_\s]*:[*_\s]*(.+)$/i.exec(l);
+    if (m && !header) header = m[2].trim();
+    else if (n && !wording) wording = n[2].trim();
+  }
+  // A two-line answer without labels: first line header, second instruction.
+  if (!header && !wording && lines.length >= 2 && lines[0].split(/\s+/).length <= 10) { header = lines[0]; wording = lines[1]; }
+  header = header.replace(/^["'“”]+|["'“”.]+$/g, '').trim().slice(0, 120);
+  wording = wording.replace(/^["'“”]+|["'“”]+$/g, '').trim().slice(0, 400);
+  if (!header) return null;
+  // At most 8 words — the rule is enforced here, not trusted to the model.
+  const words = header.split(/\s+/);
+  if (words.length > 8) header = words.slice(0, 8).join(' ');
+  return { header, wording };
 }
 
 /**
@@ -129,6 +174,8 @@ async function assist(b = {}, opts = {}) {
     const mode = String(b.mode);
     const userContent = mode === 'draft'
       ? `Write this message:\n${String(b.instruction).trim()}${String(b.text || '').trim() ? `\n\nWhat is typed so far (build on it):\n${String(b.text).trim().slice(0, MAX_INPUT)}` : ''}`
+      : mode === 'condition'
+      ? `Turn this into a loan condition:\n${String(b.text).trim()}`
       : String(b.text).trim();
     const res = await azureOpenai.complete({
       system: systemFor(mode, b.tone),
@@ -141,10 +188,15 @@ async function assist(b = {}, opts = {}) {
     }
     let text = String(res.text).trim();
     if (typeof opts.scrub === 'function') { try { text = opts.scrub(text); } catch (_) { /* the raw text is never returned on a scrub failure */ return { ok: false, reason: 'Pilot AI could not answer just now — try again.' }; } }
+    if (mode === 'condition') {
+      const parsed = parseCondition(text);
+      if (!parsed) return { ok: false, reason: 'Pilot AI could not shape that into a condition — try a few more words.' };
+      return { ok: true, text, header: parsed.header, wording: parsed.wording };
+    }
     return { ok: true, text };
   } catch (_) {
     return { ok: false, reason: 'Pilot AI could not answer just now — try again.' };
   }
 }
 
-module.exports = { MODES, TONES, MAX_INPUT, requestProblem, systemFor, assist, throttleProblem, _hits };
+module.exports = { MODES, TONES, MAX_INPUT, requestProblem, systemFor, assist, throttleProblem, parseCondition, _hits };

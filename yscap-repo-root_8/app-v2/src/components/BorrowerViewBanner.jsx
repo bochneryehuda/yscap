@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../lib/auth.jsx';
+import { useAuth, takeReturnTo } from '../lib/auth.jsx';
 
 /* BORROWER VIEW banner (owner-directed 2026-07-26).
    While a staffer is standing inside a borrower's portal, this bar is pinned to
@@ -15,13 +15,10 @@ import { useAuth } from '../lib/auth.jsx';
    and a bar that silently expires would look like a bug. */
 
 /* "Back to my loan officer view" / "…my processor view" / "…my admin view" —
-   the owner asked for the way back to be named in the staffer's own terms. */
-const ROLE_VIEW = {
-  super_admin: 'admin view', admin: 'admin view', underwriter: 'underwriter view',
-  loan_officer: 'loan officer view', loan_coordinator: 'coordinator view',
-  draw_coordinator: 'draw desk', processor: 'processor view', closer: 'closer view',
-  software_setup: 'setup console',
-};
+   the owner asked for the way back to be named in the staffer's own terms.
+   The per-role wording lives in the ONE front-end role registry (lib/roles.js),
+   where a new role has to name its view or fail the pinning test. */
+import { ROLE_VIEW_NAME as ROLE_VIEW } from '../lib/roles.js';
 
 function remaining(expiresAt) {
   if (!expiresAt) return '';
@@ -57,7 +54,9 @@ export default function BorrowerViewBanner() {
     setBusy(true);
     const ok = await exitBorrowerView();
     setBusy(false);
-    nav(ok ? '/internal/borrower-view' : '/internal/login', { replace: true });
+    // BACK TO EXACTLY WHERE THEY WERE (owner-reported 2026-09-01) — the file and tab
+    // they stepped in from; the picker list only when nothing was parked.
+    nav(ok ? (takeReturnTo() || '/internal/borrower-view') : '/internal/login', { replace: true });
   };
 
   return (

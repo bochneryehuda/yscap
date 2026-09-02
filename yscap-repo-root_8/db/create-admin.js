@@ -21,7 +21,10 @@
 const db = require('../src/db');
 const C  = require('../src/lib/crypto');
 
-const ROLES = ['super_admin', 'admin', 'loan_officer', 'processor', 'underwriter'];
+// The role list is THE registry's (src/lib/permissions.js ROLES), never a
+// hand-kept subset — a role the Team screen can assign is a role this bootstrap
+// can seed, and a new persona is accepted here the day it is registered.
+const ROLES = require('../src/lib/permissions').ROLE_KEYS;
 
 async function main() {
   const a = process.argv.slice(2);
