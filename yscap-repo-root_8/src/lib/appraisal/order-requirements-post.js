@@ -157,13 +157,19 @@ async function postForClassOrder(db, orderRowId, appId, opts = {}) {
    (`reqs.correctionMessage`).
 
    SHAPE — the same as every other boot backfill in this repo:
-     · BOUNDED per pass (`limit`), and SELF-DRAINING: an order is selected only
-       while it carries a superseded message and NO correction; posting the
-       correction removes it from the next pass. A vendor failure leaves it
-       selected for the next boot (the Class row records `send_error`; NAN
-       journals the attempt) — a retry, never a duplicate, because the
-       correction row exists only once the vendor accepted it (NAN) or is
-       written first and re-checked by marker (Class).
+     · BOUNDED per pass (`limit`, default 200 per vendor per boot — a backlog
+       larger than that drains over the next boots, never in one unbounded
+       sweep), and SELF-DRAINING: an order is selected only while it carries a
+       superseded message and NO correction; posting the correction removes it
+       from the next pass. Never a duplicate, because the correction row exists
+       only once the vendor accepted it (NAN) or is written first and
+       re-checked by marker (Class). A vendor FAILURE differs by vendor, and
+       that is stated rather than implied: NAN inserts its comment only after
+       the vendor accepts, so a failed NAN correction is re-selected next boot
+       (a retry); Class writes its note row BEFORE calling the vendor and stamps
+       `send_error` on failure, so a failed Class correction reads as posted to
+       this job and is NOT retried here — it sits on the Class thread with its
+       error visible, where the desk's ordinary resend handles it.
      · WHO: orders that are not cancelled/rejected and not un-placed
        drafts/errors — INCLUDING completed ones. The owner said "everybody",
        and a report already delivered under the wrong instruction is exactly

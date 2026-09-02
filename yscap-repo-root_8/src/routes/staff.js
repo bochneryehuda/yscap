@@ -6962,7 +6962,14 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
           closingPrep.buildFollowupEmail(data, { note: bodyText, address, senderName, reply: true }),
           override, { title: 'Closing prep' });
         if (previewOnly) {
-          return res.json(MO.previewShape(buildReply({ address: null }), { to: closingParties.to, cc: closingParties.cc, scope: 'closing' }));
+          // Show the subject the chain will actually carry: once the chain has one,
+          // sendOnThread re-uses it Re:-prefixed (closing-thread), so the preview must
+          // say so rather than show the built title. Locked — the chain owns it.
+          const builtReply = buildReply({ address: null });
+          const shown = thread && thread.subject
+            ? { ...builtReply, subject: closingThread.replySubject(thread.subject) || builtReply.subject }
+            : builtReply;
+          return res.json(MO.previewShape(shown, { to: closingParties.to, cc: closingParties.cc, scope: 'closing', subjectLocked: true }));
         }
         const sent = await closingThread.sendOnThread({
           // 'manual' is the chain's own kind for a human-written message (closing-thread
@@ -16977,12 +16984,16 @@ router.post('/workflow/:itemId/pickup', async (req, res) => {
       try {
         const label = (workflow.typeConfig(item.submission_type) || {}).label || item.submission_type;
         const lo = (await db.query(`SELECT loan_officer_id FROM applications WHERE id = $1`, [item.application_id])).rows[0];
+        // req.actor carries no name (auth builds { id, kind, role, sid }) — read it, so
+        // the officer is told WHO picked the file up, not "the processor".
+        const me = (await db.query(`SELECT full_name FROM staff_users WHERE id = $1`, [req.actor.id])).rows[0];
+        const picker = (me && me.full_name) || 'The processor';
         const targets = [...new Set([item.from_staff_id, lo && lo.loan_officer_id].filter(Boolean).map(String))]
           .filter((id) => id !== String(req.actor.id));
         for (const staffId of targets) {
           await notify.notifyStaff(staffId, {
-            type: 'workflow_picked_up', title: `${req.actor.name || 'The processor'} picked up ${label}`,
-            body: `Your file was picked up — ${req.actor.name || 'the processor'} is now working on ${label} for it.`,
+            type: 'workflow_picked_up', title: `${picker} picked up ${label}`,
+            body: `Your file was picked up — ${picker} is now working on ${label} for it.`,
             applicationId: item.application_id, ctaLabel: 'Open the loan file', link: `/internal/app/${item.application_id}`,
           }).catch(() => {});
         }
