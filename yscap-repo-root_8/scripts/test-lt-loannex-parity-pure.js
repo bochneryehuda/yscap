@@ -815,8 +815,33 @@ console.log('Two programs, one loan — parity');
     'BOARD-6 …and the payment is the VENDOR\'s own, under the key that screen reads — never re-derived, or two screens would quote one loan two ways');
   ok(nxRow && nxRow.options[0].priceBuild.pointsDerivedFromPrice === true && nxRow.options[0].priceBuild.basePoints === null,
     'BOARD-7 …with the points flagged as DERIVED from the price, and the un-fetched LLPA base left null rather than a fabricated 0');
-  ok(!/"source"|lenderId|investorOrganizationGuid/.test(JSON.stringify(progs)),
-    'BOARD-8 and not one row on the ordinary board names a vendor — the one-system rule reaches the copied screen too');
+  /**
+   * THE ROW NAMES NO VENDOR — and the ADDRESS is judged separately, because they are two different
+   * things and this assertion used to conflate them.
+   *
+   * As written before 2026-09-02 this was a grep over the whole serialised board for three keys,
+   * under wording that claims no row "names a vendor". It never enforced that: the `explain` handle
+   * on every LoanNEX row carries `vendor: 'loannex'` in plain text, and only a LoanNEX row has an
+   * `explain` handle at all — so the board has always been tellable through that block, with this
+   * assertion green. It was checking three key names, not the rule it stated.
+   *
+   * So the rule is stated as the two things it actually is. The ROW BODY — everything a screen
+   * draws — must carry no vendor tell. The ADDRESS BLOCK is what the vendor's own explain call is
+   * handed to itemise one quote, it is LoanNEX-shaped by construction, and it is pinned to an
+   * ALLOWLIST so nothing can ride out inside it under cover of being "part of the address". That is
+   * strictly more than the old line proved; what it does not close — that the address block exists
+   * at all, and says so — is recorded as an open item in the LoanNEX README rather than papered
+   * over here.
+   */
+  const bodies = JSON.stringify(progs.map((p) => ({ ...p, options: (p.options || []).map(({ explain, ...o }) => o) })));
+  ok(!/"source"|lenderId|investorOrganizationGuid/.test(bodies),
+    'BOARD-8 no row BODY on the ordinary board names a vendor — the one-system rule reaches the copied screen too');
+  const handles = progs.flatMap((p) => (p.options || []).map((o) => o.explain).filter(Boolean));
+  const ADDRESS_KEYS = ['vendor', 'priceHashKey', 'rate', 'price', 'lockDays', 'productId', 'lenderId', 'transactionId', 'portal'];
+  ok(handles.length > 0 && handles.every((h) => Object.keys(h).every((k) => ADDRESS_KEYS.includes(k))),
+    `BOARD-8b …and the explain ADDRESS carries only the keys that address a quote, nothing more (${handles.length} handles, offending keys: ${JSON.stringify([...new Set(handles.flatMap((h) => Object.keys(h)).filter((k) => !ADDRESS_KEYS.includes(k)))])})`);
+  ok(handles.every((h) => h.lenderId != null),
+    `BOARD-8c …and every one of them can actually be addressed: the investor id the vendor's evidence call needs is on the ORDINARY board, not only the revealed one (${handles.filter((h) => h.lenderId == null).length} unaddressable)`);
   // The reveal has to be asked for in BOTH places, and the route does exactly
   // that (one `opts.revealSource` feeds both calls). Asking only here cannot
   // work and must not appear to: `applyRouting` has already stripped the vendor

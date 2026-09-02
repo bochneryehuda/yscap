@@ -329,6 +329,31 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     LoanNEX takes no interest-only input; `isInterestOnly` is a real boolean on every one of the 19
     recorded mortgage products, and "IO" in a product's name agrees with it on all 19.
 
+14. **THE ORDINARY BOARD ASKED FOR AN ITEMISATION WITHOUT NAMING THE INVESTOR (2026-09-02, the
+    A-to-Z audit; the SECOND half of "I still don't see the detailed LLPA and adjustments
+    populate").** Item 12 fixed the loan the vendor was asked about; this is the QUOTE it was asked
+    about. `loannex/client.evidence` addresses a quote by BOTH ids — `{ productId, investorId }`,
+    exactly as the vendor's own recorded request does (`capture/evidence.json`) — and
+    `explainHandle` reads them off the programme row. But the handle is built AFTER
+    `investor-routing.stripSource` has removed the vendor ids for the one-system view, and the
+    screen asks for the ORDINARY board (it sends `revealSource` only when an admin ticks "show
+    where each row came from"). MEASURED on the recorded board before anything was changed: **735
+    of 735 handles carried the investor id with the source revealed, 0 of 735 without** — so every
+    Details panel opened from the board asked LoanNEX to itemise a quote without telling it whose
+    it was. `productId` was never stripped, for the same reason; this is the other half of the same
+    address and is now kept the same way. It travels as a NON-ENUMERABLE property (`EXPLAIN_LENDER_ID`,
+    named once in `investor-routing` so its one reader asks for it by name), so it reaches
+    `explainHandle` and **cannot serialise onto the row** — proven both ways, and both proven by
+    mutation: dropping the carry leaves 809 handles unaddressable (D9), making it an ordinary
+    property puts it on the wire (D10), and the strip still bites on the row itself (D11).
+    In the same pass `BOARD-8` in the parity suite was re-pointed: it greps three key names under
+    wording claiming no row "names a vendor", and it has always passed while the same handle carries
+    `vendor: 'loannex'` in plain text — it now judges the row BODY and the ADDRESS separately, and
+    pins the address to an allowlist so nothing can ride out inside it. **Still open, recorded not
+    papered over:** the address block exists only on LoanNEX rows and says so, so the board is
+    tellable through it; closing that means an opaque handle the browser cannot read, which changes
+    the wire contract and is its own change.
+
 ---
 
 ## Update, 2026-08-30 (second pass)

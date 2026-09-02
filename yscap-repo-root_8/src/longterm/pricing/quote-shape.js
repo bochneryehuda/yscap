@@ -420,6 +420,8 @@ function filterInterestOnly(options, want) {
  * They ride ON THE ROW rather than in browser state so a handle can never be paired with a later
  * board's transaction — the commonest way a per-row fetch silently explains the wrong quote.
  */
+const { EXPLAIN_LENDER_ID } = require('./investor-routing');
+
 function explainHandle(r, p, price, opts = {}) {
   if (!r || !r.priceHashKey) return null;
   const h = {
@@ -429,8 +431,14 @@ function explainHandle(r, p, price, opts = {}) {
     price,
     lockDays: r.lockDays,
     productId: p.productId,
-    lenderId: p.lenderId,
+    // BOTH ids, on the ordinary board too. The vendor addresses a quote by product AND investor
+    // (`loannex/client.evidence` → `{ productId, investorId }`), and `investor-routing.stripSource`
+    // renames the investor id rather than dropping it precisely so this handle can still carry it
+    // — see the note there. Without the fallback the default board asked for an itemisation of a
+    // quote it never identified, which is why the panel came back empty (measured 2026-09-02).
+    lenderId: p.lenderId != null ? p.lenderId : (p[EXPLAIN_LENDER_ID] != null ? p[EXPLAIN_LENDER_ID] : undefined),
   };
+  if (h.lenderId === undefined) delete h.lenderId;
   // Omitted rather than sent as null: a null would read as "asked and there was none",
   // and the route falls back to the request body only when the key is genuinely absent.
   if (opts.transactionId != null) h.transactionId = opts.transactionId;

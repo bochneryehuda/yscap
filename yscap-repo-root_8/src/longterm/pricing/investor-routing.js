@@ -174,6 +174,12 @@ function applyRouting(merged, opts = {}) {
 }
 
 /**
+ * The key the addressing id travels under, named once so its ONE reader (`quote-shape.explainHandle`)
+ * asks for it by name rather than retyping a string two modules apart.
+ */
+const EXPLAIN_LENDER_ID = 'explainLenderId';
+
+/**
  * A program row with every trace of which vendor produced it removed.
  *
  * ⛔ THE VENDOR IS A FINGERPRINT, NOT ONLY A NAME. Dropping `source` and the two
@@ -219,6 +225,28 @@ function stripSource(p) {
   // ride out on the ordinary board the moment somebody opened a price build — the exact leak this
   // module exists to close, one level deeper than it used to look.
   if (Array.isArray(rest.options)) rest.options = rest.options.map(stripOptionHoldbackTrail);
+  /**
+   * ⚠️ THE ADDRESS THE EXPLAIN CALL CANNOT DO WITHOUT SURVIVES — under a name that says what it
+   * is for, and it never reaches the row.
+   *
+   * MEASURED 2026-09-02, and it is the second half of the owner's *"I still don't see the detailed
+   * LLPA and adjustments populate"*: the vendor's evidence call addresses a quote by BOTH ids
+   * (`{ productId, investorId }` — its own recorded request carries both, `capture/evidence.json`),
+   * `explainHandle` reads them off the program, and the handle is built AFTER this strip. So on the
+   * ORDINARY board — the one the screen asks for, since it sends no `revealSource` unless an admin
+   * ticks the box — every LoanNEX row went out with no investor id and the vendor was asked to
+   * itemise a quote without being told whose it was. Reproduced: 735 of 735 rows carried it with
+   * the source revealed, 0 of 735 without.
+   *
+   * `productId` was never stripped, for the same reason. This is the OTHER half of the same
+   * address, so it is kept the same way — renamed, so nothing reads it as the vendor tell that
+   * `lenderId` is, and so the one place that may consume it has to ask for it by that name.
+   * `programsFromLoanNex` builds its row field by field and never copies this key, so it exists
+   * only long enough for `explainHandle` to move it onto the opaque handle.
+   */
+  if (lenderId != null) {
+    Object.defineProperty(rest, EXPLAIN_LENDER_ID, { value: lenderId, enumerable: false, configurable: true });
+  }
   return rest;
 }
 
@@ -259,5 +287,6 @@ module.exports = {
   readSettings: settingsOf.readSettings, settingFor: settingsOf.settingFor,
   resolveRaw: settingsOf.resolveRaw,
   roster: settingsOf.roster, describeSettings: settingsOf.describe,
+  EXPLAIN_LENDER_ID,
   _internals: { label, stripSource, stripHoldbackTrail, bestOfMany },
 };

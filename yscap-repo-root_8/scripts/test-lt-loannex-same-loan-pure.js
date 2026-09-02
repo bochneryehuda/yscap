@@ -265,6 +265,45 @@ const reg = registryOf.capturedRegistry();
     ok(lpOpts.length > 0 && lpOpts.every((o) => o.terms && o.terms.interestOnly === false), 'D7  a Lender Price quote\'s terms are exactly what they were');
   }
 
+  // ── D2. THE ORDINARY BOARD CAN ACTUALLY BE ASKED FOR AN ITEMISATION ───────
+  /**
+   * THE SECOND HALF OF THE OWNER'S *"I still don't see the detailed LLPA and adjustments
+   * populate"*, found by the A-to-Z audit on 2026-09-02 and MEASURED before it was fixed.
+   *
+   * The vendor addresses a quote by BOTH of its ids — `loannex/client.evidence` builds
+   * `{ productId, investorId }`, and the vendor's own recorded request carries both
+   * (`capture/evidence.json`). `explainHandle` reads them off the program row, and the handle is
+   * built AFTER `investor-routing.stripSource` has removed the vendor ids for the one-system view.
+   * So on the ORDINARY board — the one the screen asks for, since it sends no `revealSource`
+   * unless an admin ticks the box — every LoanNEX row went out with NO investor id, and the vendor
+   * was asked to itemise a quote without being told whose it was. Measured on the recorded board:
+   * 735 of 735 handles carried it with the source revealed, 0 of 735 without.
+   *
+   * The fix carries the id to the handle as a NON-ENUMERABLE property, so it reaches the one
+   * function that needs it and cannot serialise onto the board. Both halves are pinned here: the
+   * board must be ADDRESSABLE, and the carrier must be INVISIBLE.
+   */
+  {
+    const plain = await priceBoth({ ...BROWSER }, { marginHoldback: 0.25, routes: ALL_NEX, links: {}, revealSource: false });
+    const handles = [];
+    const seen = new Set();
+    (function walk(v) {
+      if (!v || typeof v !== 'object' || seen.has(v)) return;
+      seen.add(v);
+      if (v.priceHashKey && v.vendor === 'loannex') handles.push(v);
+      if (Array.isArray(v)) v.forEach(walk); else Object.values(v).forEach(walk);
+    })(plain);
+    ok(handles.length > 0, `D8  the ordinary board carries LoanNEX rows to address (${handles.length})`);
+    ok(handles.every((h) => h.lenderId != null),
+      `D9  EVERY one of them names the investor the vendor needs to itemise it — on the board the screen actually asks for, not only the revealed one (${handles.filter((h) => h.lenderId == null).length} unaddressable)`);
+    const wire = JSON.stringify(plain);
+    ok(!wire.includes('explainLenderId'),
+      'D10 …and the key it travelled under never reaches the answer, so it is not a new vendor tell on the row');
+    const progs = (plain.merged.investors || []).flatMap((e) => e.programs || []);
+    ok(progs.length > 0 && progs.every((p) => p.lenderId == null && p.source == null),
+      `D11 the one-system strip still bites on the ROW itself: no programme names a vendor (${progs.filter((p) => p.lenderId != null || p.source != null).length} of ${progs.length} do)`);
+  }
+
   // ── E. WHAT MUST NOT MOVE ─────────────────────────────────────────────────
   {
     const src = read('src/longterm/routes/combined-pricer.js');
