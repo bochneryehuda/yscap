@@ -64,9 +64,21 @@ async function main() {
 
   const browser = await pw.chromium.launch({ headless: true });
   const errors = { guest: [], viewer: [] };
-  const open = async (label, token, hash) => {
+  // `clockSkewMs` makes this browser's clock genuinely wrong, the way two office
+  // computers routinely are. rrweb schedules every event by comparing the GUEST's
+  // timestamp to the baseline the viewer handed startLive, so a viewer seeded with
+  // its OWN Date.now() draws nothing at all — a blank stage with a moving cursor,
+  // which is what the owner reported. Both browsers here share one machine clock,
+  // so without this the harness could never see that class of bug.
+  const open = async (label, token, hash, clockSkewMs = 0) => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' });
     await ctx.addInitScript((t) => { try { localStorage.setItem('ys_portal_token', t); } catch (_) { /* fine */ } }, token);
+    if (clockSkewMs) {
+      await ctx.addInitScript((ms) => {
+        const realNow = Date.now.bind(Date);
+        Date.now = () => realNow() + ms;
+      }, clockSkewMs);
+    }
     const page = await ctx.newPage();
     page.on('pageerror', (e) => errors[label].push(String(e && e.message)));
     page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors[label].push(m.text()); });
@@ -104,13 +116,19 @@ async function main() {
     ok(r.data.session.status === 'active', 'the register reads active');
 
     // ── the viewer opens the mirror and sees the guest's page ──
-    viewer = await open('viewer', saTok, `/internal/cobrowse/${sid}`);
+    // ON A CLOCK 45 SECONDS AHEAD OF THE GUEST'S, deliberately: the mirror must still
+    // draw. This is the owner's blank-screen report ("in general, it doesn't see their
+    // screen") reproduced as the thing that causes it — the live baseline has to come
+    // off the guest's own event timestamps, never off ours. Revert that and every
+    // mirror assertion below goes blank.
+    const VIEWER_CLOCK_SKEW_MS = 45000;
+    viewer = await open('viewer', saTok, `/internal/cobrowse/${sid}`, VIEWER_CLOCK_SKEW_MS);
     await viewer.page.waitForSelector('text=Watching', { timeout: 20000 });
     const mirrorHas = async (text, ms = 20000) => viewer.page.waitForFunction((t) => {
       const f = document.querySelector('.cobrowse-stage iframe'); const d = f && f.contentDocument;
       return !!(d && d.body && d.body.innerText.includes(t));
     }, text, { timeout: ms }).then(() => true).catch(() => false);
-    ok(await mirrorHas('Everybody on the YS Capital desk'), 'the mirror shows the guest\'s Team screen (rrweb snapshot relayed and replayed)');
+    ok(await mirrorHas('Everybody on the YS Capital desk'), `the mirror shows the guest's Team screen even with the viewer's clock ${VIEWER_CLOCK_SKEW_MS / 1000}s out of step (rrweb snapshot relayed and replayed)`);
     ok(await viewer.page.locator('text=Watch-only').count() > 0, 'the viewer is told it is watch-only');
 
     // ── the guest navigates; the mirror follows ──
@@ -182,7 +200,7 @@ async function main() {
     await viewer.page.click('button:has-text("Ask to control")');
     await guest.page.waitForSelector('text=asks to control your screen', { timeout: 15000 });
     ok(true, 'the guest sees the second consent prompt');
-    ok(await guest.page.locator('text=Move your mouse or press Stop').count() > 0, 'it says how to take control back');
+    ok(await guest.page.locator('text=Click anywhere, press a key, or press Take back').count() > 0, 'it says how to take control back');
     await guest.page.click('button:has-text("Allow control")');
     await viewer.page.waitForSelector('text=You are in control', { timeout: 15000 });
     ok(true, 'the viewer is told they are in control');
@@ -213,7 +231,7 @@ async function main() {
     // A REAL mouse and a REAL keyboard on the viewer — the capture relays only trusted
     // events (a dispatched one is the replayer painting the mirror, and echoing those back
     // wipes the guest's own box), so a person's own hands are what this must be driven by.
-    const box = await viewer.page.evaluate(() => {
+    const boxOf = () => viewer.page.evaluate(() => {
       // The replayer SCALES the mirror to fit the stage, so a point inside the replayed
       // document is not a point on this screen until it is multiplied by that scale. Reading
       // the two rects and adding them (the obvious version) aims at a different element
@@ -225,22 +243,51 @@ async function main() {
       const el = d.querySelector('[data-e2e-target="1"]'); const r = el.getBoundingClientRect();
       return { x: fr.left + (r.left + r.width / 2) * scale, y: fr.top + (r.top + r.height / 2) * scale, scale };
     });
-    await viewer.page.mouse.click(box.x, box.y);
-    await viewer.page.waitForTimeout(200);
+    // WAIT FOR THE PRECONDITION, NEVER FOR A FIXED SLEEP — AND CLICK AGAIN IF IT DID NOT
+    // TAKE. The click is relayed as an rrweb MIRROR ID and the GUEST's browser is what
+    // performs it, so two things can lose one: the round trip can outlast a flat 200ms
+    // sleep, and a fresh full snapshot landing in the same instant RE-MINTS every mirror
+    // id, so an id read a moment earlier resolves to nothing on the guest. Both are
+    // self-correcting for a person (they click again) and both made this harness fail
+    // about one run in two — on main as well — with a symptom ("the box does not read
+    // hello") that indicted the product for the harness's own impatience.
+    let focused = false;
+    for (let attempt = 0; attempt < 5 && !focused; attempt += 1) {
+      const b = await boxOf();
+      await viewer.page.mouse.click(b.x, b.y);
+      focused = await guest.page.waitForFunction(
+        () => document.activeElement === document.querySelector('[data-e2e-target="1"]'),
+        null, { timeout: 3000 },
+      ).then(() => true).catch(() => false);
+    }
+    ok(focused, 'the viewer\'s click focused the guest\'s own box (relayed, then performed by their browser)');
     await viewer.page.keyboard.type('hello', { delay: 40 });
     ok(true, 'the viewer clicked and typed on the mirror with a real mouse and keyboard');
     const landed = await guest.page.waitForFunction(() => { const el = document.querySelector('[data-e2e-target="1"]'); return el && el.value === 'hello'; }, null, { timeout: 10000 }).then(() => true).catch(() => false);
     ok(landed, 'the guest\'s REAL box now reads "hello" — typed by the viewer through the mirror');
     ok(await guest.page.evaluate(() => !!document.querySelector('[data-cobrowse-block="pointer"]')), 'the controller\'s pointer is drawn on the guest\'s page');
 
-    // ── the guest moves their own mouse: control is taken back ──
-    await guest.page.mouse.move(300, 300); await guest.page.mouse.move(320, 330);
+    // ── A PASSIVE MOUSE MOVE MUST NOT TAKE CONTROL BACK. This is the owner's own
+    //    report reproduced in a real browser (2026-09-02: "when I ask for control,
+    //    even if they approve it, I'm not getting it"): the first cut released after
+    //    40px of cumulative pointer travel that was never reset, so an ordinary hand
+    //    resting on a trackpad ended the grant seconds after Allow was pressed. A
+    //    threshold on a signal a person produces without meaning to has no safe value.
+    for (let i = 0; i < 12; i += 1) await guest.page.mouse.move(300 + i * 9, 300 + i * 7);
+    await guest.page.waitForTimeout(500);
+    ok(await guest.page.evaluate(() => document.documentElement.classList.contains('cobrowse-controlled')),
+      'a hand drifting across the trackpad does NOT end the grant — the reported bug, reproduced and refused');
+    r = await api('GET', `/api/cobrowse/${sid}`, null, saTok);
+    ok(r.data.session.control.status === 'granted', `and the register still says granted (got ${r.data.session.control.status})`);
+
+    // ── the guest takes it back with a DELIBERATE act of their own hand ──
+    await guest.page.mouse.click(300, 300);
     await guest.page.waitForSelector('text=is watching your screen', { timeout: 10000 });
-    ok(await guest.page.evaluate(() => !document.documentElement.classList.contains('cobrowse-controlled')), 'a real mouse move on the guest takes control back (frame gone)');
+    ok(await guest.page.evaluate(() => !document.documentElement.classList.contains('cobrowse-controlled')), 'a real click of the guest\'s own hand takes control back (frame gone)');
     await viewer.page.waitForSelector('text=Watch-only', { timeout: 10000 });
     ok(true, 'the viewer is back to watch-only');
     r = await api('GET', `/api/cobrowse/${sid}`, null, saTok);
-    ok(r.data.session.control.status === 'released' && r.data.session.control.releaseReason === 'guest_moved', `the register says released by guest_moved (got ${r.data.session.control.status}/${r.data.session.control.releaseReason})`);
+    ok(r.data.session.control.status === 'released' && r.data.session.control.releaseReason === 'guest_moved', `the register says released by the guest (got ${r.data.session.control.status}/${r.data.session.control.releaseReason})`);
     // typing again changes nothing
     await viewer.page.keyboard.type('XYZ', { delay: 20 });
     await sleep(800);

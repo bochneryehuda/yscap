@@ -19,9 +19,11 @@ import { startGuest, stopGuest, rememberedSessionId, releaseFromGuest } from '..
       begins only after Accept and stops the instant they press Stop, sign out, or
       the viewer leaves.
    3. THE SECOND CONSENT (Phase B): "X asks to control your screen — they can click
-      and type for you. Move your mouse or press Stop to take it back." Nothing is
-      driven until Allow; the banner turns to "X is controlling your screen" with
-      a Take back button; the request cancels itself after 30 seconds.
+      and type for you. Click anywhere, press a key, or press Stop to take it back."
+      Nothing is driven until Allow; the banner turns to "X is controlling your
+      screen" with a Take back button; the request cancels itself after 30 seconds.
+      TAKING IT BACK IS AN ACT, NOT A MOUSE MOVE — see armDriving in lib/cobrowse.js
+      for why a passive move may never release control.
 
    Text colours are explicit darks (never an --ink* token). */
 /** While nothing is showing, the register is re-read this often — the SSE stream is the fast path, not the only one. */
@@ -239,7 +241,7 @@ export default function CobrowseHost() {
             <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: 5, background: link.recording ? '#FF4D4D' : '#BBB', display: 'inline-block' }} />
             {link.control === 'granted' ? (
               <span><strong>{viewerName(active)}</strong> is controlling your screen — they can click and type for you.
-                {' '}Move your mouse, or press Take back, to take control back.</span>
+                {' '}Click anywhere, press a key, or press Take back, to take control back.</span>
             ) : (
               <span><strong>{viewerName(active)}</strong> is watching your screen{link.connected ? '' : ' (reconnecting…)'}.
                 {' '}Passwords and Social Security numbers are hidden from them.</span>
@@ -263,7 +265,7 @@ export default function CobrowseHost() {
             </div>
             <p id="cb-ctl-body" className="app-dialog-body" style={{ color: '#141B22' }}>
               <strong>{viewerName(controlAsk)}</strong> asks to control your screen — they can click and type for you.
-              {'\n'}Move your mouse or press Stop at any time to take it back. They still cannot see your passwords or Social Security number, and they cannot sign documents, pick files, or sign you out.
+              {'\n'}Click anywhere, press a key, or press Take back at any time to take it back. They still cannot see your passwords or Social Security number, and they cannot sign documents, pick files, or sign you out.
             </p>
             <div className="app-dialog-actions">
               <button type="button" className="btn ghost" onClick={() => answerControl(false)}>No, keep watching only</button>

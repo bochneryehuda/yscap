@@ -194,7 +194,6 @@ async function view(row, actor, dbc = db) {
       grants: Number(row.control_grants) || 0,
       events: Number(row.control_events) || 0,
     },
-    redactionDrops: Number(row.redaction_drops) || 0,
   };
 }
 
@@ -442,7 +441,7 @@ async function history(actor, { limit = 50 } = {}, dbc = db) {
     applicationId: s.application_id, requestedAt: s.requested_at, consentedAt: s.consented_at,
     startedAt: s.started_at, endedAt: s.ended_at, eventBatches: Number(s.event_batches) || 0,
     controlGrants: Number(s.control_grants) || 0, controlEvents: Number(s.control_events) || 0,
-    controlReleaseReason: s.control_release_reason || null, redactionDrops: Number(s.redaction_drops) || 0,
+    controlReleaseReason: s.control_release_reason || null,
   }));
 }
 
@@ -459,10 +458,6 @@ function bumpBatches(sessionId, n) {
 /** Phase B: how many input events the viewer sent while in control (a count, never the keys). */
 function bumpControl(sessionId, n) {
   db.query(`UPDATE cobrowse_sessions SET control_events = control_events + $2, last_seen_at = now() WHERE id = $1::uuid`, [sessionId, Number(n) || 0]).catch(() => {});
-}
-/** Phase C: batches the hub refused to relay because a secret-shaped value was in the clear. */
-function bumpRedactions(sessionId, n) {
-  db.query(`UPDATE cobrowse_sessions SET redaction_drops = redaction_drops + $2 WHERE id = $1::uuid`, [sessionId, Number(n) || 0]).catch(() => {});
 }
 
 /* ── Phase B: TAKE CONTROL — a second consent, on top of the first ─────────────
@@ -607,6 +602,6 @@ module.exports = {
   REQUEST_TTL_SEC, MAX_SESSION_SEC, CONTROL_REQUEST_TTL_SEC, STALE_ACTIVE_SEC, NEVER_STARTED_SEC,
   END_REASONS, KINDS, CONTROL_STATUSES, CONTROL_RELEASE_REASONS,
   mayWatch, request, respond, end, endAllFor, pendingFor, activeFor, history, view, loadRaw,
-  isViewer, isWatched, markStarted, touch, bumpBatches, bumpControl, bumpRedactions, sweep,
+  isViewer, isWatched, markStarted, touch, bumpBatches, bumpControl, sweep,
   requestControl, respondControl, releaseControl,
 };

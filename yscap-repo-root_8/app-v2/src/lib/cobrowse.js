@@ -31,7 +31,9 @@
  * says somebody else is driving.
  *
  * The mask itself is ONE definition in ./cobrowseMask.js, shared with the
- * Playwright redaction harness. */
+ * Playwright mask harness — and it is the ONLY thing keeping a secret out of
+ * the stream, so mark a sensitive element rather than expecting a server-side
+ * check to catch it. */
 import { record } from '@rrweb/record';
 import { getToken, api } from './api.js';
 import { BLOCK_SELECTOR, NO_RECORD_ROUTES, NO_DRIVE_SELECTOR, NO_DRIVE_ROUTES, recordOptions } from './cobrowseMask.js';
@@ -53,7 +55,7 @@ const MAX_RETRY_MS = 5 * 60 * 1000;
 
 const FLUSH_MS = 80;           // batch rrweb events; ~12 batches/s worst case
 const RECONNECT_MS = 2500;
-const MOVE_TAKEBACK_PX = 40;   // total pointer travel that reads as "I want it back"
+const TAKEBACK_GRACE_MS = 600; // the Allow press itself, and trailing trackpad momentum
 
 let live = null;   // { sessionId, ws, stop, timer, queue, closedByServer, onState }
 
@@ -271,35 +273,30 @@ function setControlLocal(state, status) {
 function armDriving(state) {
   state.driving = true;
   document.documentElement.classList.add('cobrowse-controlled');
-  // TAKE IT BACK: any TRUSTED mouse move, wheel, touch or key of this person's own
-  // hand. Every event the driver dispatches below is synthetic (isTrusted false),
-  // so the controller can never release themselves through this path.
+  // TAKE IT BACK: a DELIBERATE act of this person's own hand — a click, a key, a
+  // scroll or a touch — or the Take back / Stop button, which never comes through
+  // here at all. Every event the driver dispatches below is synthetic (isTrusted
+  // false), so the controller can never release themselves through this path.
+  //
+  // A PASSIVE MOUSE MOVE IS NOT AN ACT, AND MUST NEVER RELEASE CONTROL. The first
+  // cut released after 40px of CUMULATIVE pointer travel that was never reset, so
+  // an ordinary hand resting on a trackpad reached it within a second or two of
+  // Allow being pressed: control was granted and lost again immediately, on every
+  // session, which reads as "I asked for control and never got it". A threshold on
+  // a signal a person produces without meaning to has no safe value — so the test
+  // is the ACT, not the distance. Never re-add a mousemove release here.
   const armedAt = Date.now();
-  // A MOUSE MOVE MUST BE A DECISION, NOT A BRUSH. A trackpad reports a move when a palm
-  // touches it, so releasing on the first pixel meant the guest could not even watch their
-  // own screen while somebody helped them. A keystroke, a wheel or a touch is deliberate on
-  // its own; a pointer has to travel MOVE_TAKEBACK_PX before it counts.
-  let from = null, travelled = 0;
   const takeBack = (e) => {
     if (!e.isTrusted || live !== state || state.control !== 'granted') return;
-    if (Date.now() - armedAt < 400) return;   // the Allow click itself
-    if (e.type === 'mousemove') {
-      if (!from) { from = { x: e.clientX, y: e.clientY }; return; }
-      travelled += Math.abs(e.clientX - from.x) + Math.abs(e.clientY - from.y);
-      from = { x: e.clientX, y: e.clientY };
-      if (travelled < MOVE_TAKEBACK_PX) return;
-    }
+    // The Allow press itself, and trailing trackpad/inertial momentum from a scroll
+    // that ended just before it. The Take back button is not gated by this.
+    if (Date.now() - armedAt < TAKEBACK_GRACE_MS) return;
     releaseFromGuest(state, 'guest_moved');
   };
-  window.addEventListener('mousemove', takeBack, true);
-  window.addEventListener('keydown', takeBack, true);
-  window.addEventListener('wheel', takeBack, true);
-  window.addEventListener('touchstart', takeBack, true);
+  const TAKEBACK_EVENTS = ['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'];
+  for (const t of TAKEBACK_EVENTS) window.addEventListener(t, takeBack, true);
   state.releaseUnsub = () => {
-    window.removeEventListener('mousemove', takeBack, true);
-    window.removeEventListener('keydown', takeBack, true);
-    window.removeEventListener('wheel', takeBack, true);
-    window.removeEventListener('touchstart', takeBack, true);
+    for (const t of TAKEBACK_EVENTS) window.removeEventListener(t, takeBack, true);
   };
   ensureCursor(state);
 }

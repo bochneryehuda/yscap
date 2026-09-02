@@ -10,8 +10,26 @@ import { subscribeChat } from '../lib/chatEvents.js';
    and only then opens the live viewer.
 
    Who may press it is the server's decision (one rule, src/lib/cobrowse/sessions.js);
-   a refusal is shown inline, never a dead button. `kind` is 'staff' | 'borrower'. */
-export default function CobrowseButton({ kind, id, name = '', applicationId = null, className = 'btn ghost small', label = 'Co-browse' }) {
+   a refusal is shown inline, never a dead button. `kind` is 'staff' | 'borrower'.
+
+   THE DESIGN IS REAL BUTTONS, NEVER TEXT (owner-directed 2026-09-02: "the CoBrowse
+   button a little bit nicer and the cancel button a little bit nicer, with real
+   buttons, not just text"). Cancel was a `.btn.link`, which on a crowded roster row
+   reads as a sentence; it is a real button on a bordered waiting chip now, and a
+   declined / expired ask offers Ask again rather than leaving a dead sentence
+   behind. The styles are the `cb-` block in styles.css. */
+
+/** A small screen-and-stand glyph — this is about somebody's SCREEN, not an eye. */
+function ScreenIcon() {
+  return (
+    <svg className="cb-ico" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+      <rect x="1" y="2" width="14" height="9.5" rx="1.6" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M5.5 14h5M8 11.5V14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export default function CobrowseButton({ kind, id, name = '', applicationId = null, className = 'btn soft small', label = 'Co-browse' }) {
   const nav = useNavigate();
   const [phase, setPhase] = useState('idle');   // idle | asking | waiting | declined | expired
   const [err, setErr] = useState('');
@@ -54,28 +72,35 @@ export default function CobrowseButton({ kind, id, name = '', applicationId = nu
   };
   const cancel = async () => {
     if (sessionRef.current) api.cobrowseEnd(sessionRef.current).catch(() => {});
+    sessionRef.current = null;
     setPhase('idle');
   };
 
   const first = (name || '').split(' ')[0] || (kind === 'borrower' ? 'the borrower' : 'them');
+  const answered = phase === 'declined' || phase === 'expired';
   return (
     <span className="row" style={{ gap: 8, flex: 'none', alignItems: 'center', flexWrap: 'wrap' }}>
       {phase === 'waiting' ? (
-        <span className="small" style={{ color: '#3A4550', display: 'inline-flex', gap: 8, alignItems: 'center' }}>
-          <span className="spin" aria-hidden="true" />
-          Waiting for {first} to accept…
-          <button type="button" className="btn link small" onClick={cancel}>Cancel</button>
+        <span className="cb-wait" role="status">
+          <span className="cb-spin" aria-hidden="true" />
+          <span className="cb-wait-text">Waiting for {first} to accept…</span>
+          <button type="button" className="btn ghost small" onClick={cancel}>Cancel</button>
+        </span>
+      ) : answered ? (
+        <span className="cb-answer" role="status">
+          <span className={phase === 'declined' ? 'cb-answer-no' : 'cb-answer-quiet'}>
+            {phase === 'declined' ? `${first} declined.` : 'No answer — the request expired.'}
+          </span>
+          <button type="button" className="btn soft small cb-btn" onClick={ask}><ScreenIcon />Ask again</button>
         </span>
       ) : (
-        <button type="button" className={className} style={{ flex: 'none' }} disabled={phase === 'asking'} onClick={ask}
+        <button type="button" className={`${className} cb-btn`} style={{ flex: 'none' }} disabled={phase === 'asking'} onClick={ask}
           title={name
-            ? `Ask ${name} to let you watch their live PILOT screen — they see a request and must accept. You cannot click for them (that is a later step).`
+            ? `Ask ${name} to let you watch their live PILOT screen — they see a request and must accept. You cannot click for them until they allow that too.`
             : 'Ask this person to let you watch their live PILOT screen — they must accept first.'}>
-          {phase === 'asking' ? 'Asking…' : label}
+          <ScreenIcon />{phase === 'asking' ? 'Asking…' : label}
         </button>
       )}
-      {phase === 'declined' && <span className="small" role="status" style={{ color: '#B3261E' }}>{first} declined.</span>}
-      {phase === 'expired' && <span className="small" role="status" style={{ color: '#4B585C' }}>No answer — the request expired.</span>}
       {err && <span className="small" role="alert" style={{ color: '#B3261E' }}>{err}</span>}
     </span>
   );

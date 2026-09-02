@@ -12,7 +12,7 @@ import { api, getToken } from '../lib/api.js';
    are captured on the mirror and sent as `{t:'input'}` with the rrweb mirror id
    of the element under the pointer — the hub relays them only while the register
    says 'granted', and their browser performs them inside its own allowlist. The
-   watched person takes control back by moving their own mouse or pressing Stop. What cannot be mirrored is SAID rather than left blank: their file
+   watched person takes control back with a click, a key or Stop. What cannot be mirrored is SAID rather than left blank: their file
    picker and downloads happen on their machine; an outside site (DocuSign,
    SharePoint) opens in a tab we never see.
 
@@ -56,22 +56,61 @@ export default function StaffCobrowse() {
       speed: 1, showWarning: false, showDebug: false,
     });
     replayerRef.current = rp;
-    // A 600ms buffer smooths the stream; a longer one only adds lag.
-    rp.startLive(Date.now() - 600);
+    // THE LIVE BASELINE COMES OFF THE FIRST EVENT'S OWN CLOCK, NEVER OURS. rrweb
+    // schedules each event by comparing its `timestamp` to this baseline plus the
+    // elapsed time — and those timestamps are stamped on the GUEST's machine. Two
+    // office computers are routinely seconds apart, so seeding it with our own
+    // Date.now() means every event is "in the future" (nothing is ever drawn — a
+    // blank stage with a moving cursor) or far in the past. Started lazily below,
+    // 200ms behind the first event we actually receive, so the picture plays at once.
+    let started = false;
+    const startFrom = (ev) => { if (started) return; started = true; rp.startLive(Number(ev && ev.timestamp) - 200 || Date.now() - 600); };
     rp.on('resize', fit);
     window.addEventListener('resize', fit);
 
     let retry = null; let closed = false; let backoff = 2500; let retryUntil = 0;
+    // Healing a picture that never arrived: ask the guest to re-send a full snapshot,
+    // at most once every SNAPSHOT_RETRY_MS and at most SNAPSHOT_RETRIES times, so a
+    // page we genuinely cannot replay can never turn into a request storm.
+    let sawSnapshot = false; let askedAt = 0; let asks = 0;
+    const SNAPSHOT_RETRY_MS = 4000, SNAPSHOT_RETRIES = 4;
+    const askSnapshot = (why) => {
+      const now = Date.now();
+      if (now - askedAt < SNAPSHOT_RETRY_MS || asks >= SNAPSHOT_RETRIES) return;
+      askedAt = now; asks += 1;
+      const ws = wsRef.current;
+      if (ws && ws.readyState === 1) { try { ws.send(JSON.stringify({ t: 'snapshot' })); } catch { /* the reconnect asks again */ } }
+      setState((s) => ({ ...s, notice: { kind: why, text: 'The picture has not come through yet — asking for a fresh one.', at: now } }));
+    };
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const connect = () => {
       if (closed) return;
       const ws = new WebSocket(`${proto}//${window.location.host}/ws/cobrowse?token=${encodeURIComponent(getToken())}&session=${encodeURIComponent(sessionId)}&role=viewer`);
       wsRef.current = ws;
-      ws.onopen = () => { backoff = 2500; retryUntil = 0; setState((s) => ({ ...s, connected: true })); ws.send(JSON.stringify({ t: 'snapshot' })); };
+      ws.onopen = () => { backoff = 2500; retryUntil = 0; asks = 0; askedAt = Date.now(); setState((s) => ({ ...s, connected: true })); ws.send(JSON.stringify({ t: 'snapshot' })); };
       ws.onmessage = (e) => {
         let m = null; try { m = JSON.parse(String(e.data)); } catch { return; }
         if (!m) return;
-        if (m.t === 'rrweb' && Array.isArray(m.events)) { for (const ev of m.events) { try { rp.addEvent(ev); } catch { /* one bad event never stops the stream */ } } setTimeout(fit, 0); }
+        if (m.t === 'rrweb' && Array.isArray(m.events)) {
+          for (const ev of m.events) {
+            startFrom(ev);
+            if (ev && ev.type === 2) { sawSnapshot = true; setState((s) => (s.notice && s.notice.kind === 'no_picture' ? { ...s, notice: null } : s)); }
+            // A REFUSED EVENT IS NEVER SILENT — BUT ONLY WHILE THERE IS NO PICTURE.
+            // An rrweb stream is STATEFUL: every mutation is expressed against node
+            // ids the full snapshot established, so if that snapshot never arrived
+            // each one throws here and the stage stays empty for ever. Once a picture
+            // IS on screen, a single mutation the replayer will not take is the
+            // ordinary "one bad event never stops the stream" case and must stay
+            // swallowed: asking for a snapshot then REBUILDS the mirrored document,
+            // which throws away the caret and the focus a controller is typing into.
+            // (Measured: healing on every failure made the two-browser drive drop
+            // keystrokes about one run in three.)
+            try { rp.addEvent(ev); } catch { if (!sawSnapshot) askSnapshot('no_picture'); }
+          }
+          setTimeout(fit, 0);
+          // Events flowing with no snapshot behind them is the same illness with no error.
+          if (!sawSnapshot) askSnapshot('no_picture');
+        }
         else if (m.t === 'route') setState((s) => ({ ...s, route: m.path || '', title: m.title || '' }));
         else if (m.t === 'hello') { controlRef.current = m.control || 'none'; setState((s) => ({ ...s, guestOnline: !!m.guestOnline, control: m.control || 'none' })); }
         else if (m.t === 'control') { controlRef.current = m.status || 'none'; setState((s) => ({ ...s, control: m.status || 'none' })); }
@@ -256,16 +295,27 @@ export default function StaffCobrowse() {
                   : 'Watch-only: clicking here does nothing on their screen. Passwords and Social Security numbers are hidden.'}
           </div>
         </div>
-        <div className="row" style={{ gap: 8 }}>
-          {!state.ended && state.guestOnline && state.control !== 'granted' && state.control !== 'requested' && (
-            <button type="button" className="btn ghost small" onClick={askControl} title="Ask them to let you click and type on their screen. They see the request and choose.">Ask to control</button>
+        {/* ACTIONS ARE GROUPED AND WEIGHTED, never a row of identical outlines (the
+            2026-08-03 action-design rule): what you are ASKING for is the primary,
+            the utility (refresh the picture) is soft, and ending the session — the
+            one thing that cannot be undone — is separated and destructive. */}
+        <div className="act-bar" style={{ marginTop: 0 }}>
+          {!state.ended && (
+            <span className="act-group">
+              <span className="act-label">Control</span>
+              {state.guestOnline && state.control !== 'granted' && state.control !== 'requested' && (
+                <button type="button" className="btn primary small" onClick={askControl} title="Ask them to let you click and type on their screen. They see the request and choose.">Ask to control</button>
+              )}
+              {state.control === 'requested' && <button type="button" className="btn soft small" disabled>Waiting for them…</button>}
+              {state.control === 'granted' && (
+                <button type="button" className="btn ghost small" onClick={releaseControl}>Hand control back</button>
+              )}
+              <button type="button" className="btn soft small" title="Ask them for a fresh picture of their whole screen." onClick={() => wsRef.current && wsRef.current.readyState === 1 && wsRef.current.send(JSON.stringify({ t: 'snapshot' }))}>Refresh picture</button>
+            </span>
           )}
-          {!state.ended && state.control === 'granted' && (
-            <button type="button" className="btn ghost small" onClick={releaseControl}>Hand control back</button>
-          )}
-          {!state.ended && <button type="button" className="btn ghost small" onClick={() => wsRef.current && wsRef.current.readyState === 1 && wsRef.current.send(JSON.stringify({ t: 'snapshot' }))}>Refresh picture</button>}
+          {!state.ended && <span className="act-sep" aria-hidden="true" />}
           {!state.ended ? <button type="button" className="btn small" style={{ background: '#7A1F1F', color: '#fff', border: 'none' }} onClick={end}>End session</button>
-            : <Link className="btn ghost small" to={session.applicationId ? `/internal/app/${session.applicationId}` : '/internal'}>Back</Link>}
+            : <Link className="btn soft small" to={session.applicationId ? `/internal/app/${session.applicationId}` : '/internal'}>Back to the file</Link>}
         </div>
       </div>
       <div className="small" style={{ color: MUTED, marginBottom: 8 }}>
@@ -278,8 +328,7 @@ export default function StaffCobrowse() {
               : state.notice.kind === 'file_picker_blocked' ? 'A file chooser can only be opened by them — ask them to pick the file.'
               : state.notice.kind === 'download' ? `${who.name} downloaded a file — it landed on their computer.`
                 : state.notice.kind === 'new_tab' ? `${who.name} opened a link in a new tab — that page is outside PILOT and is not mirrored.`
-                  : state.notice.kind === 'redacted' ? 'One frame was held back because it carried a number shaped like a Social Security or card number in plain text — the mirror will catch up on its own.'
-                    : (state.notice.text || '')}
+                  : (state.notice.text || '')}
         </div>
       )}
       <div ref={hostRef} className="cobrowse-stage" tabIndex={-1} style={{ position: 'relative', border: state.control === 'granted' ? '3px solid #B3261E' : '1px solid #D9D2C5', borderRadius: 10, background: '#F6F3EC', overflow: 'hidden', minHeight: 320 }}>

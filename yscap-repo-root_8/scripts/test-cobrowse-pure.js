@@ -131,7 +131,17 @@ for (const must of ["input[type=\"file\"]", 'a[download]', 'a[target="_blank"]',
 const libNow = strip(read('app-v2/src/lib/cobrowse.js'));
 ok(/from '\.\/cobrowseMask\.js'/.test(libNow) && /record\(recordOptions\(/.test(libNow), 'the recorder reads the ONE mask definition');
 ok(/if \(!e\.isTrusted \|\| live !== state \|\| state\.control !== 'granted'\) return;/.test(libNow), 'take-back fires only on a TRUSTED event of the watched person\'s own hand');
-ok(/releaseFromGuest\(state, 'guest_moved'\)/.test(libNow), 'a real mouse move / key / wheel / touch releases control');
+ok(/releaseFromGuest\(state, 'guest_moved'\)/.test(libNow), 'a real click / key / wheel / touch of their own hand releases control');
+// A PASSIVE MOUSE MOVE MAY NEVER RELEASE CONTROL. The first cut released after 40px of
+// CUMULATIVE pointer travel that was never reset, so a hand resting on a trackpad reached
+// it seconds after Allow: control was granted and lost again at once, on every session
+// ("I ask for control and I'm not getting it" — owner, 2026-09-02). The test is the ACT.
+ok(/TAKEBACK_EVENTS = \['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'\]/.test(libNow),
+  'take-back listens for a deliberate act — pointerdown / mousedown / keydown / wheel / touchstart');
+ok(!/'mousemove', takeBack/.test(libNow) && !/MOVE_TAKEBACK_PX/.test(libNow),
+  'a passive mousemove is NOT a take-back — no listener, no travel threshold (the bug that made control unusable)');
+ok(/TAKEBACK_GRACE_MS = 600/.test(libNow) && /Date\.now\(\) - armedAt < TAKEBACK_GRACE_MS/.test(libNow),
+  'a short grace covers the Allow press itself and trailing trackpad momentum');
 ok(/el\.closest\(NO_DRIVE_SELECTOR\)\) return null/.test(libNow), 'the driver refuses any element inside the no-drive allowlist');
 ok(/if \(!routeAllowsDriving\(\)\) return false;/.test(libNow), 'on a no-drive route every input is ignored');
 ok(/record\.mirror\.getNode\(Number\(id\)\)/.test(libNow), 'targets are resolved through rrweb mirror ids, never a selector the viewer typed');
@@ -209,7 +219,12 @@ ok(/state\.stableTimer = setTimeout/.test(libNow), 'the give-up clock resets onl
 ok(/ws\.bufferedAmount > MAX_BUFFERED/.test(libNow) && /state\.queue\.length >= MAX_QUEUE/.test(libNow),
   "the stream degrades, never the guest's own browser: the socket backlog and the held queue are both bounded");
 ok(/stopRecorder\(state\);\n    state\.queue = \[\];/.test(libNow), 'a disconnected recorder is stopped — the guest never pays for events nobody receives');
-ok(/MOVE_TAKEBACK_PX = 40/.test(libNow) && /travelled < MOVE_TAKEBACK_PX/.test(libNow), 'taking control back needs real pointer travel, not an incidental trackpad brush');
+// Re-pointed 2026-09-02, NOT loosened: the stated subject is that an incidental brush must
+// never release control. The 40px travel threshold that used to carry it was itself reached
+// by an ordinary resting hand (it accumulated and never reset), so the rule is now that a
+// passive move is not a take-back at all — strictly stronger, asserted with the take-back
+// listener list above.
+ok(!/mousemove/.test(libNow), 'taking control back is never an incidental trackpad brush — a passive move is not a take-back');
 // ── a drive that dies must SAY it died ──────────────────────────────────────────────────
 const driveSrc = read('scripts/render-cobrowse-e2e.js');
 ok(/const scale = f\.offsetWidth \? fr\.width \/ f\.offsetWidth : 1;/.test(driveSrc), 'the drive aims through the replayer\'s SCALE — adding the two rects clicks a different element');
@@ -220,23 +235,33 @@ ok(/WATCHED: the guest types with their own keyboard/.test(driveSrc) && /AFTER S
 
 ok(/asks to control your screen/.test(hostNow) && /Allow control/.test(hostNow) && /keep watching only/.test(hostNow), 'the second consent prompt: allow / keep watching only');
 ok(/Take back/.test(hostNow) && /cobrowse-controlled/.test(hostNow), 'the banner turns to controlling with a Take back button and the red frame');
+ok(/Click anywhere, press a key, or press Take back/.test(hostNow),
+  'the banner tells the watched person what actually takes control back');
+ok(!/Move your mouse/.test(hostNow), 'no screen still promises that moving the mouse takes control back');
 ok(/useAuth\(\)/.test(hostNow) && /!!token && !isBorrowerView && !isTpo && !isAssistant/.test(hostNow), 'the host keys on the live auth token and stands down inside a borrower view, for any TPO session (a broker is refused at every door) and for a helper (audit)');
 ok(/PILOT records who watched and when; it never records the screen itself/.test(hostNow), 'the consent prompt states what is kept');
 ok(/const POLL_MS = 10000;/.test(hostNow) && /if \(!eligible \|\| active \|\| pending\) return undefined;/.test(hostNow) && /setInterval\(\(\) => \{[\s\S]{0,400}?api\.cobrowseMine\(\)/.test(hostNow), 'while nothing is showing the host re-reads the register every 10 s — a request is never missed because the stream was down (the drive caught it)');
 
 
 // ---- Phase C: hardening -----------------------------------------------------------------------
-const R = require('../src/lib/cobrowse/redaction.js');
-for (const [name, text, exp] of [
-  ['a dashed SSN', 'ssn 123-45-6789', true], ['a spaced SSN', '123 45 6789', true],
-  ['a bare 9-digit run (phone / loan number)', '2125551234 123456789', false],
-  ['a Luhn-valid card 4-4-4-4', '4111 1111 1111 1111', true], ['a Luhn-valid card bare', '4111111111111111', true],
-  ['16 digits that fail Luhn', '1234567890123456', false], ['the mask marker', 'v ••••••', false],
-  ['a phone', '(212) 555-1234', false], ['money', '$1,250,000.00', false], ['ZIP+4', 'NJ 08701-1234', false],
-]) ok(R.looksLikeSecret(text) === exp, `redaction: ${name} → ${exp ? 'secret' : 'not a secret'}`);
-ok(R.judgeBatch('{"t":"route","path":"/x 123-45-6789"}', { t: 'route' }).ok === true, 'only rrweb batches are judged (a route message is never page text)');
-ok(R.judgeBatch('{"t":"rrweb","events":[{"text":"123-45-6789"}]}', { t: 'rrweb' }).ok === false, 'an rrweb batch carrying an SSN in the clear is refused');
-ok(/redaction\.judgeBatch\(text, \{ t \}\)/.test(hubSrc) && /S\.bumpRedactions\(r\.id, 1\)/.test(hubSrc) && /kind: 'redacted'/.test(hubSrc), 'the hub drops a secret-shaped batch, counts it, and tells the viewer why');
+// THE SERVER RELAYS THE GUEST'S BYTES UNCONDITIONALLY, AND THAT IS A CORRECTNESS RULE,
+// not a relaxed one. An rrweb stream is STATEFUL: the full snapshot establishes every DOM
+// node id and each later mutation is expressed against those ids, so a server that DROPS a
+// batch desynchronises the mirror permanently — and the batch a content check most wants to
+// refuse is the FULL SNAPSHOT, the one that carries every printed value on the page. The
+// 2026-09-02 guard did exactly that and the owner's viewer showed a blank stage with a
+// moving cursor, with "Refresh picture" dropping the replacement in turn. The mask
+// (app-v2/src/lib/cobrowseMask.js, proven in a real browser by render-cobrowse-mask.js) is
+// what keeps a secret out of the stream. A future guard must SCRUB WITHIN the event and
+// relay it — never refuse the batch.
+ok(!fs.existsSync(path.join(root, 'src/lib/cobrowse/redaction.js')), 'there is no server-side content guard on the stream');
+ok(!/redaction|judgeBatch|looksLikeSecret/.test(hubSrc), 'the hub carries no content check');
+ok(/broadcastViewers\(r, text\);/.test(hubSrc) && !/bumpRedactions/.test(hubSrc), 'the hub relays the guest\'s own bytes untouched and unconditionally');
+ok(/Never re-introduce a content check that returns without relaying/.test(hubRaw) && /stateful/i.test(hubRaw),
+  'the hub says in writing why a batch may never be refused');
+ok(!/bumpRedactions/.test(sessSrc) && !/redactionDrops/.test(sessSrc), 'nothing writes or reports a redaction count any more');
+ok(!/redacted/.test(strip(read('app-v2/src/screens/StaffCobrowse.jsx'))) && !/redactionDrops/.test(strip(read('app-v2/src/components/CobrowseHistory.jsx'))),
+  'no screen still tells anybody a frame was held back');
 ok(/STALE_ACTIVE_SEC = 180\b/.test(sessRaw) && /liveIds\.has\(String\(r\.id\)\)\) continue/.test(sessSrc), 'restart recovery closes an orphaned active row but never one with a live room');
 ok(/sessions\(\)\.sweep\(\{ liveIds: new Set\(rooms\.keys\(\)\) \}\)/.test(hubSrc), 'the hub hands the sweep its live rooms');
 ok(/setTimeout\(\(\) => \{ sessions\(\)\.sweep\(\{ liveIds: new Set\(rooms\.keys\(\)\) \}\)/.test(hubSrc), 'a fresh process sweeps orphans right after attaching');
@@ -245,8 +270,59 @@ ok(/data-cobrowse-block="ssn"/.test(strip(read('app-v2/src/screens/StaffBorrower
 ok(/cobrowse: \(\(\) => \{ try \{ return require\('\.\/lib\/cobrowse\/hub'\)\.stats\(\)/.test(server), '/api/health carries the hub stats');
 ok(/import CobrowseHistory/.test(team) && /canSeeTheirScreen && <CobrowseHistory \/>/.test(team), 'the register is on the Team screen for super admins');
 const m683 = read('db/683_cobrowse_control_and_hardening_counters.sql');
-ok(/ADD COLUMN IF NOT EXISTS control_status/.test(m683) && /control_events/.test(m683) && /redaction_drops/.test(m683) && !/keystroke|\bkeys\s+text/i.test(m683.replace(/--.*$/gm, '')), 'db/683 adds state and COUNTS, still no column that could hold the screen or a keystroke');
-ok(/scripts\/render-cobrowse-redaction\.js/.test(mask), 'the mask module names the harness that proves it');
+ok(/ADD COLUMN IF NOT EXISTS control_status/.test(m683) && /control_events/.test(m683) && !/keystroke|\bkeys\s+text/i.test(m683.replace(/--.*$/gm, '')), 'db/683 adds state and COUNTS, still no column that could hold the screen or a keystroke');
+// db/683's redaction_drops column is DELIBERATELY left in place — this repo never drops a
+// column — it is simply written by nothing and reported by nothing.
+ok(/redaction_drops/.test(m683), 'the retired counter column is left alone, never dropped');
+const m684 = read('db/684_cobrowse_redaction_counter_retired.sql');
+ok(/COMMENT ON COLUMN cobrowse_sessions\.redaction_drops/.test(m684) && /RETIRED/.test(m684) && !/DROP COLUMN/i.test(m684),
+  'db/684 corrects the column\'s own documentation instead of dropping it — the database stops describing a guard that no longer runs');
+ok(/scripts\/render-cobrowse-mask\.js/.test(mask), 'the mask module names the harness that proves it');
+
+// ---- the blank mirror, and the buttons (owner-reported 2026-09-02) ------------------------------
+const viewNow = read('app-v2/src/screens/StaffCobrowse.jsx');
+const viewSrc2 = strip(viewNow);
+// THE LIVE BASELINE COMES OFF THE GUEST'S OWN CLOCK. rrweb schedules each event by
+// comparing its `timestamp` — stamped on the GUEST's machine — to the baseline given to
+// startLive. Seeding that with OUR Date.now() means an office computer a few seconds out
+// of step makes every event "future" and nothing is ever drawn: a blank stage with a
+// moving cursor, which is exactly what the owner was looking at.
+ok(/rp\.startLive\(Number\(ev && ev\.timestamp\)/.test(viewSrc2) && !/rp\.startLive\(Date\.now\(\) - 600\)/.test(viewSrc2),
+  'the viewer starts live from the FIRST EVENT\'s own timestamp, never from the viewer\'s clock');
+// A REFUSED EVENT IS NEVER SILENT. An rrweb mutation against ids no snapshot established
+// throws, and swallowing it leaves an empty stage for ever with nothing said.
+ok(/catch \{ if \(!sawSnapshot\) askSnapshot\('no_picture'\); \}/.test(viewSrc2) && /if \(!sawSnapshot\) askSnapshot\('no_picture'\);/.test(viewSrc2),
+  'events with no snapshot behind them ask for a fresh picture');
+// AND ONLY WHILE THERE IS NO PICTURE: healing rebuilds the mirrored document, which throws
+// away the caret a controller is typing into. Measured on the two-browser drive — healing on
+// every failed event dropped keystrokes about one run in three.
+ok(!/catch \{ askSnapshot/.test(viewSrc2), 'a failed event on a mirror that HAS a picture is still swallowed — healing never interrupts typing');
+ok(/asks >= SNAPSHOT_RETRIES/.test(viewSrc2) && /now - askedAt < SNAPSHOT_RETRY_MS/.test(viewSrc2),
+  'that healing is bounded and throttled — a page we genuinely cannot replay is never a request storm');
+ok(/className="act-bar"/.test(viewSrc2) && /btn primary small" onClick=\{askControl\}/.test(viewSrc2) && /btn soft small" title="Ask them for a fresh picture/.test(viewSrc2),
+  'the viewer actions are grouped and weighted — the ask is primary, the utility is soft, ending is separated');
+
+// REAL BUTTONS, NOT TEXT (the owner's third ask). Cancel was a `.btn.link`, which on a
+// crowded roster row reads as a sentence rather than a control.
+const btnNow = read('app-v2/src/components/CobrowseButton.jsx');
+const btnSrc = strip(btnNow);
+ok(!/btn link/.test(btnSrc), 'no control on the launcher is a bare text link any more');
+ok(/className="btn ghost small" onClick=\{cancel\}/.test(btnSrc), 'Cancel is a real button');
+ok(/className = 'btn soft small'/.test(btnSrc) && /<ScreenIcon \/>/.test(btnSrc), 'the launcher is a real soft button carrying its own glyph');
+ok(/onClick=\{ask\}><ScreenIcon \/>Ask again/.test(btnSrc), 'a declined or expired ask offers Ask again — never a dead sentence');
+const cssNow = read('app-v2/src/styles.css');
+// `.spin` was never a class in this stylesheet, so the waiting state rendered a
+// zero-size span and looked frozen. The component and the stylesheet must agree.
+ok(!/className="spin"/.test(btnSrc) && /className="cb-spin"/.test(btnSrc) && /\.cb-spin\{/.test(cssNow),
+  'the waiting spinner is a class that actually exists (the old `.spin` was styled by nothing)');
+ok(/\.cb-wait\{/.test(cssNow) && /\.cb-answer\{/.test(cssNow), 'the waiting chip and the answer row are styled');
+// A bare `.off`/`.wait` would collide with the global utilities (the `.crx-off` lesson).
+ok(/namespaced `cb-`/.test(cssNow), 'the block says why every class is namespaced');
+{
+  const block = cssNow.slice(cssNow.indexOf('CO-BROWSE — the launcher and the waiting chip'));
+  ok(!/color:\s*var\(--ink/.test(block), 'no co-browse style paints text with an --ink* token (a LIGHT paper colour — white on white)');
+}
+ok(/ONLY PLACE A SECRET IS KEPT OUT OF THE STREAM/.test(mask), 'the mask module says it is the only protection — mark the element, do not expect a server check');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
