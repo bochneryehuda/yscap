@@ -795,6 +795,28 @@ function resolveRecipientIdentity(r, app) {
   return { email: null, name: null };
 }
 
+/**
+ * THE LOAN OFFICER WHO SIGNS THE TERM SHEET — one definition (owner-directed
+ * 2026-09-02, closing the officer half of the stale-parties gap). The roster puts
+ * an officer on the term-sheet package only when the file has an ASSIGNED officer
+ * whose staff record carries an email; the Term Sheet Studio must draw the officer's
+ * signature line (the `/ts_lo_sig/` anchor) under EXACTLY the same rule, or the
+ * sheet and the send disagree about whether an officer signs — and the signer
+ * check (term-sheet-signers.js) then refuses a sheet that was drawn from a stale
+ * screen. EVERY officer predicate in this file goes through it (the roster, the
+ * send-time re-check, the late splice, the completeness need list). PURE: `app` is
+ * a row carrying `loan_officer_id`, `officer_name`, `officer_email` (loadApplication's
+ * shape) and, where the read selects it, `officer_nmls` (the pricing route's read;
+ * absent reads as ''). Returns null when no officer signs.
+ */
+function loanOfficerSigner(app) {
+  if (!app || !app.loan_officer_id || !app.officer_email) return null;
+  const email = String(app.officer_email).trim();
+  if (!email) return null;
+  const name = String(app.officer_name || '').trim() || email;
+  return { name, email, nmls: String(app.officer_nmls || '').trim() };
+}
+
 function buildRoster(app, spec, envelopeRowId, opts = {}) {
   const roster = [];
   // Draw-send recipient choice (owner-directed 2026-07-21): the SOLO package (the draw request / wire form)
@@ -825,10 +847,11 @@ function buildRoster(app, spec, envelopeRowId, opts = {}) {
   // the borrower AND the loan officer have signed (owner-directed 2026-07-21). Only
   // added when the file has an ASSIGNED loan officer with an email — an unassigned
   // file falls back to the previous roster shape so the send never blocks.
-  if (!spec.soloBorrower && spec.loanOfficerRequired && app.loan_officer_id && app.officer_email) {
+  const loSigner = !spec.soloBorrower && spec.loanOfficerRequired ? loanOfficerSigner(app) : null;
+  if (loSigner) {
     roster.push({
       role: 'loan_officer', routingOrder: 1, recipientId: String(roster.length + 1), isCountersigner: false,
-      borrowerId: null, name: app.officer_name || app.officer_email, email: app.officer_email,
+      borrowerId: null, name: loSigner.name, email: loSigner.email,
       clientUserId: clientUserIdFor(envelopeRowId, 'loan_officer'),
     });
   }
@@ -1084,7 +1107,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
       await db.query(`DELETE FROM esign_recipients WHERE envelope_row_id=$1 AND recipient_id_ds=$2`, [row.id, r.recipient_id_ds]);
       continue;   // removed co-borrower → drop from the send AND the roster
     }
-    if (r.role === 'loan_officer' && (!app.loan_officer_id || !app.officer_email)) {
+    if (r.role === 'loan_officer' && !loanOfficerSigner(app)) {
       // LO unassigned or missing an email between seed and send → drop from the
       // send instead of blocking (a re-assignment before send is honored below).
       await db.query(`DELETE FROM esign_recipients WHERE envelope_row_id=$1 AND recipient_id_ds=$2`, [row.id, r.recipient_id_ds]);
@@ -1101,8 +1124,8 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   // If an LO was ASSIGNED between seeding and send (or the package spec now requires
   // one and the seeded roster missed it), splice one in at routingOrder 1 so the file
   // benefits from the new signer without a re-issue. Skip if the LO seat already exists.
-  if (!spec.soloBorrower && spec.loanOfficerRequired && app.loan_officer_id && app.officer_email
-      && !roster.some((r) => r.role === 'loan_officer')) {
+  const loSplice = !spec.soloBorrower && spec.loanOfficerRequired ? loanOfficerSigner(app) : null;
+  if (loSplice && !roster.some((r) => r.role === 'loan_officer')) {
     const nextRid = String(Math.max(0, ...roster.map((r) => Number(r.recipient_id_ds) || 0)) + 1);
     const clientUserId = clientUserIdFor(row.id, 'loan_officer');
     try {
@@ -1112,7 +1135,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
             borrower_id, name, email, embedded, client_user_id, status)
          VALUES ($1,'loan_officer',1,false,$2,NULL,$3,$4,true,$5,'created')
          RETURNING role, routing_order, recipient_id_ds, name, email, client_user_id, is_countersigner, borrower_id`,
-        [row.id, nextRid, app.officer_name || app.officer_email, app.officer_email, clientUserId]);
+        [row.id, nextRid, loSplice.name, loSplice.email, clientUserId]);
       roster.push(ins.rows[0]);
     } catch (e) {
       // Best-effort — if the insert races or fails we still send with the existing
@@ -1176,7 +1199,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   const have = new Set(roster.map((r) => r.role));
   const need = ['borrower',
     ...(!spec.soloBorrower && app.co_borrower_id ? ['co_borrower'] : []),
-    ...(!spec.soloBorrower && spec.loanOfficerRequired && app.loan_officer_id && app.officer_email ? ['loan_officer'] : []),
+    ...(!spec.soloBorrower && spec.loanOfficerRequired && loanOfficerSigner(app) ? ['loan_officer'] : []),
     ...(!spec.soloBorrower && spec.countersignRequired ? ['admin'] : [])];
   if (!need.every((role) => have.has(role))) {
     const e = new Error('Recipient roster not fully seeded yet — will retry.'); e.retryable = true; throw e;
@@ -1360,6 +1383,7 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
 }
 
 module.exports = {
+  loanOfficerSigner,
   packageLabel,
   PACKAGES, packageSpec, buildDefinition, sendPackage,
   createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem,
