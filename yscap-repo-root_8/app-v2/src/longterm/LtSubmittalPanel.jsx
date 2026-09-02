@@ -44,10 +44,10 @@ const eyebrow = {
 };
 
 function Bar({ done, total }) {
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const filled = total > 0 ? Math.round((done / total) * 100) : 0;
   return (
     <div aria-label={`${done} of ${total} done`} style={{ height: 8, borderRadius: 999, background: '#ECE7DB', overflow: 'hidden' }}>
-      <div style={{ width: `${pct}%`, height: '100%', background: pct === 100 ? GREEN : GOLD_TEXT, transition: 'width .3s ease' }} />
+      <div style={{ width: `${filled}%`, height: '100%', background: filled === 100 ? GREEN : GOLD_TEXT, transition: 'width .3s ease' }} />
     </div>
   );
 }
