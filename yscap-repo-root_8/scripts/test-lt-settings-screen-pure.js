@@ -61,6 +61,23 @@ check(handled.length === types.length,
 check(!/case 'map'|=== 'map'/.test(code) || /return null/.test(code),
   'a map is not given a generic editor');
 
+/* THE COMBINED ENGINE'S OWN SETTINGS SCREEN IS HELD TO THE SAME RULE.
+   It is not the generic screen — it draws per-investor rows and, since
+   2026-09-02, the form that ADDS an investor — so it could reach for a settings
+   key directly. It must not: every one of those settings has a door of its own
+   that validates what is sent (the investors-added-by-hand map is refused whole
+   if a name would collide or a client-safe name would be blanked out by the
+   investor-name block), and a screen writing the key straight into the store
+   would walk past all of it. */
+{
+  const combined = stripComments(read('app-v2/src/longterm/LtCombinedSettings.jsx'));
+  const namedThere = keys.filter((k) => combined.includes(`'${k}'`) || combined.includes(`"${k}"`) || combined.includes(`\`${k}\``));
+  check(namedThere.length === 0,
+    `the combined engine's settings screen names no declared setting key either${namedThere.length ? ` — found ${namedThere.join(', ')}` : ''}`);
+  check(/ltApi\.combinedSaveCustomInvestors\(/.test(combined) && !/saveSettings\(/.test(combined),
+    '…and the investors it adds go through their own door, which is where they are checked');
+}
+
 console.log('\nthe screen talks only to Long-Term');
 
 const api = read('app-v2/src/longterm/api.js');

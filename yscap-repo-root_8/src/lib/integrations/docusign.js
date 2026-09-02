@@ -453,6 +453,15 @@ function eventNotification(webhookUrl, { includeCertificate = true } = {}) {
     url: webhookUrl,
     loggingEnabled: 'true',
     requireAcknowledgment: 'true',
+    /* SIGNED, OR IT IS THROWN AWAY. Our receiver verifies every Connect post against the
+     * account's Connect HMAC keys and rejects an unsigned one with 401 — fail closed, by
+     * design. This per-envelope subscription never asked DocuSign to sign, so EVERY event
+     * of EVERY envelope we created was posted bare, rejected, retried ten times, and parked
+     * in the account's Connect failure log (56 envelopes deep on 2026-09-02, every one
+     * "(401) Unauthorized"), while status only ever reached us through the poller. The
+     * account-level Connect configuration is a separate subscription with its own switch;
+     * this one has to say so itself. DocuSign signs with the same account keys. */
+    includeHMAC: 'true',
     includeDocuments: 'false',
     includeCertificateOfCompletion: String(includeCertificate),
     // L-E: DocuSign documents these capitalized; Connect treats them

@@ -103,6 +103,8 @@ const READERS = [
   'src/lib/underwriting/authenticity.js', 'src/lib/underwriting/pdf-slice.js',
   'src/routes/underwriting.js', 'src/server.js', 'src/sitewire/media-archive.js',
   'src/lib/track-record/records-stamp.js',
+  // reads the studio's term sheet text layer for its signature anchors (2026-09-02); draws nothing
+  'src/lib/esign/term-sheet-signers.js',
 ];
 
 console.log('every stamped export says it, in the owner\'s own words');

@@ -395,6 +395,35 @@ function shiftBase(pb, pts) {
   // Only when the vendor STATED one — a base price this module invented would be indistinguishable
   // from one the sheet published, and `breakdown.priceOf` already derives it when it is absent.
   if (nn(pb.basePrice)) next.basePrice = r3(100 - next.basePoints);
+  /**
+   * ⛔ THE FLOOR AND THE CEILING MOVE WITH IT, or the holdback is recoverable by SUBTRACTION.
+   *
+   * Audit F5 (2026-09-02), and it is the same defect that was closed for `asked.price` two fields
+   * away in the same object. `breakdown.priceOf` prints `floor` and `ceiling` beside the HELD-BACK
+   * price, and these rode out at the vendor's own figures. Measured: a vendor rung of 104.5 becomes
+   * a board rung of 104.25 and the panel carried `{price: 104.25, floor: 98, ceiling: 104.5}` —
+   * **ceiling minus price IS the holdback**, read straight off the panel with no arithmetic worth
+   * the name. It binds in practice, not just in principle: on the recorded board Acra's ceiling
+   * binds at 104.500 on 28 of 34 rates across three programmes.
+   *
+   * They are PRICES on the same scale as `basePrice`, so they move the same way and by the same
+   * amount: `basePoints` gained `pts`, so every price fell by `pts`. Shifting rather than deleting
+   * is also the more useful answer — a ceiling is what this board can actually deliver, and after
+   * our margin that is `ceiling - pts`, not the vendor's own number.
+   *
+   * The vendor's own figures ride along under `vendorPriceFloor` / `vendorPriceCeiling` for the
+   * reveal, exactly as `vendorBasePoints` does, and are stripped with the rest of the trail on the
+   * ordinary board (`investor-routing.stripOptionHoldbackTrail`) — keeping them under their plain
+   * names would simply move the subtraction one field along.
+   */
+  if (nn(pb.priceFloor)) {
+    next.vendorPriceFloor = r3(Number(pb.vendorPriceFloor != null ? pb.vendorPriceFloor : pb.priceFloor));
+    next.priceFloor = r3(next.vendorPriceFloor - pts);
+  }
+  if (nn(pb.priceCeiling)) {
+    next.vendorPriceCeiling = r3(Number(pb.vendorPriceCeiling != null ? pb.vendorPriceCeiling : pb.priceCeiling));
+    next.priceCeiling = r3(next.vendorPriceCeiling - pts);
+  }
   return next;
 }
 

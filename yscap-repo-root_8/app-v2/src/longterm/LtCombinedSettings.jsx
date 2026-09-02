@@ -3,6 +3,7 @@ import { SettingsScreen } from './LtSettings.jsx';
 import { COMBINED_ENGINE } from './pricerEngine.js';
 import { ltApi } from './api.js';
 import LtInvestorLinks from './LtInvestorLinks.jsx';
+import { keyFromLabel, parseAliases } from './customInvestors.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub, input, label, LINE } from './ppeStyles.js';
 
 /**
@@ -46,6 +47,7 @@ const ORIGIN_NOTE = {
   owner_directed: 'pre-filled by instruction',
   default: 'pre-filled',
   sheet: 'from the white-label sheet',
+  custom: 'the name you gave it when you added it',
   unset: 'not named yet',
 };
 
@@ -71,6 +73,19 @@ function patchOf(row, edit) {
   // stored setting disappears, and the row goes back to answering to the pre-fill.
   if (edit.reset) return {};
   const out = {};
+  //
+  // CLEARING THE BOX TAKES THIS ROW'S OWN NAME AWAY — it does not blank the
+  // investor. The key is left out, so the row goes back to whatever the pre-fill
+  // answers: the white-label sheet where there is one, the name given when the
+  // investor was added by hand, and genuinely nothing where there is neither.
+  // The row SAYS which of those will apply before it is saved (see the note under
+  // the box) — the old behaviour did the same thing and said nothing, so a person
+  // clearing the box watched the sheet's name come back and could not tell why.
+  //
+  // ⛔ A DELIBERATE BLANK — "this investor has a sheet name and may still never be
+  // shown to a client" — is NOT expressible here, and that is an owner decision
+  // rather than an oversight: the way to keep an investor off client surfaces
+  // today is to switch it off. Flagged rather than guessed at.
   if (edit.whiteLabel !== undefined && String(edit.whiteLabel).trim() !== String(row.whiteLabel || '')) {
     const wl = String(edit.whiteLabel).trim();
     if (wl) out.whiteLabel = wl;
@@ -123,6 +138,16 @@ export default function LtCombinedSettings() {
   const [hbBusy, setHbBusy] = useState(false);
   const [hbMsg, setHbMsg] = useState(null);
   const [hbErr, setHbErr] = useState(null);
+  // THE INVESTORS SOMEBODY ADDED BY HAND. Their own read and their own save —
+  // they are a different setting from the per-investor rows above (which decide
+  // what to do with an investor that already exists) and mixing the two saves
+  // would mean one form's refusal could hold up the other's work.
+  const [ci, setCi] = useState(null);
+  const [ciForm, setCiForm] = useState({ label: '', whiteLabel: '', aliases: '', key: '' });
+  const [ciEditKey, setCiEditKey] = useState(null);
+  const [ciBusy, setCiBusy] = useState(false);
+  const [ciMsg, setCiMsg] = useState(null);
+  const [ciErr, setCiErr] = useState(null);
 
   const load = useCallback(() => {
     setErr(null);
@@ -131,6 +156,13 @@ export default function LtCombinedSettings() {
       .catch((e) => setErr((e && e.message) || 'The settings could not be read.'));
   }, []);
   useEffect(load, [load]);
+
+  const loadCi = useCallback(() => {
+    ltApi.combinedCustomInvestors()
+      .then((r) => setCi(r))
+      .catch((e) => setCiErr((e && e.message) || 'The investors you added could not be read.'));
+  }, []);
+  useEffect(loadCi, [loadCi]);
 
   const loadHb = useCallback(() => {
     ltApi.combinedMarginHoldback()
@@ -155,6 +187,87 @@ export default function LtCombinedSettings() {
     } finally { setHbBusy(false); }
   }
 
+  /** The stored map as the form is about to send it — the WHOLE map, always. */
+  const ciMap = useCallback((mutate) => {
+    const map = {};
+    for (const e of (ci && ci.list) || []) {
+      map[e.key] = {
+        label: e.label,
+        whiteLabel: e.whiteLabel || '',
+        aliases: e.aliases || [],
+        addedBy: e.addedBy || null,
+        addedAt: e.addedAt || null,
+      };
+    }
+    return mutate ? mutate(map) : map;
+  }, [ci]);
+
+  const putCustom = useCallback(async (map, done) => {
+    setCiBusy(true); setCiErr(null); setCiMsg(null);
+    try {
+      const out = await ltApi.combinedSaveCustomInvestors(map);
+      setCi(out);
+      setCiForm({ label: '', whiteLabel: '', aliases: '', key: '' });
+      setCiEditKey(null);
+      setCiMsg(done);
+      // The rows above and the link pick-list are both drawn from the effective
+      // roster, so an investor added here has to reach them without a reload.
+      load();
+    } catch (e) {
+      const problems = e && e.body && Array.isArray(e.body.problems) ? e.body.problems : null;
+      setCiErr(problems
+        ? `Not saved — nothing was stored. ${problems.map((x) => x.message || x.problem).join(' · ')}`
+        : (e && e.message) || 'That could not be saved.');
+    } finally { setCiBusy(false); }
+  }, [load]);
+
+  // WHAT THE FORM WOULD CREATE, worked out in the browser only so a person can
+  // see the key before they press the button. The server derives its own and is
+  // the one that decides; this is a preview, never an instruction.
+  const ciKey = String(ciForm.key || '').trim() || keyFromLabel(ciForm.label);
+  const ciAliases = parseAliases(ciForm.aliases);
+  const ciTaken = !!(ci && (ci.keysInUse || []).includes(ciKey) && ciKey !== ciEditKey);
+
+  async function saveCustomInvestor() {
+    if (ciBusy) return;
+    const lbl = String(ciForm.label || '').trim();
+    if (!lbl) { setCiErr('Type the investor’s real name first — that is what the key and the list are built from.'); return; }
+    if (!ciKey) { setCiErr('That name has no letters or digits in it, so there is no key to give it.'); return; }
+    if (ciTaken) { setCiErr(`The key “${ciKey}” is already in use. Give this one a key of its own.`); return; }
+    const wl = String(ciForm.whiteLabel || '').trim();
+    await putCustom(ciMap((map) => {
+      if (ciEditKey && ciEditKey !== ciKey) delete map[ciEditKey];
+      map[ciKey] = { label: lbl, whiteLabel: wl, aliases: ciAliases };
+      return map;
+    }), ciEditKey ? `Saved. “${lbl}” has been updated.` : `Saved. “${lbl}” can now be priced, linked and named.`);
+  }
+
+  async function removeCustomInvestor(key, lbl) {
+    if (ciBusy) return;
+    await putCustom(ciMap((map) => { delete map[key]; return map; }), `Removed “${lbl}”.`);
+  }
+
+  /**
+   * The "Add this as a new investor" button on the links block below, answered.
+   * The vendor's OWN spelling is carried in as the first spelling, because that
+   * is the name the board could not match — retyping it by hand is how a second,
+   * slightly different spelling gets created.
+   */
+  const startAddInvestor = useCallback((seed) => {
+    setCiErr(null); setCiMsg(null); setCiEditKey(null);
+    setCiForm({
+      label: String((seed && seed.label) || '').trim(),
+      whiteLabel: '',
+      aliases: String((seed && seed.alias) || '').trim(),
+      key: '',
+    });
+    try {
+      const el = document.getElementById('ci-label');
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center' });
+      if (el && el.focus) el.focus();
+    } catch { /* a browser that will not scroll is not an error */ }
+  }, []);
+
   const rows = (data && data.investors) || [];
   const shown = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -176,6 +289,9 @@ export default function LtCombinedSettings() {
   const dirty = Object.keys(edits).length > 0;
 
   async function save() {
+    if (busy) return;
+    if (!data) { setErr('The investor list has not finished loading yet.'); return; }
+    if (!dirty) { setSaved('Nothing has changed since this was last saved, so there is nothing to send.'); return; }
     setBusy(true); setErr(null); setSaved(null);
     try {
       const map = {};
@@ -329,9 +445,21 @@ export default function LtCombinedSettings() {
             <input id="cps-q" style={input} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Type a name" />
           </div>
           <div style={{ flex: '0 0 auto' }}>
-            <button type="button" className="btn primary" disabled={!dirty || busy} onClick={save}>
-              {busy ? 'Saving…' : dirty ? 'Save changes' : 'Nothing to save'}
+            {/* ⛔ ALWAYS CLICKABLE (owner-directed 2026-09-02: *"the save button
+                should always be there"*). A greyed-out button cannot say why it
+                is greyed out; this one answers instead and sends nothing when
+                there is nothing to send. */}
+            <button
+              type="button"
+              className="btn primary"
+              aria-disabled={busy ? 'true' : 'false'}
+              onClick={save}
+            >
+              {busy ? 'Saving…' : 'Save changes'}
             </button>
+            <div style={{ fontSize: 12, color: dirty ? CAUTION : MUTED, marginTop: 6 }}>
+              {dirty ? 'Not saved yet.' : 'Nothing has changed since this was last saved.'}
+            </div>
           </div>
         </div>
         {data && (
@@ -360,7 +488,10 @@ export default function LtCombinedSettings() {
         // A blank box is the honest reading of "nothing of my own here": only a row
         // somebody has actually answered shows a figure, so the placeholder 0 never
         // reads as a decision nobody made.
-        const hb = pending ? (pre.holdback != null ? String(pre.holdback) : '')
+        // Named apart from the screen's own `hb` (the ONE standing holdback for
+        // the whole LoanNEX feed): one row's extra and the feed-wide figure are
+        // different decisions, and a name that means both is how they get mixed up.
+        const hbRow = pending ? (pre.holdback != null ? String(pre.holdback) : '')
           : (e.holdback !== undefined ? e.holdback : (r.holdbackOrigin === 'setting' ? String(r.holdback) : ''));
         const pinned = isPinned(r);
         return (
@@ -399,6 +530,13 @@ export default function LtCombinedSettings() {
                   onChange={(ev) => edit(r.key, { whiteLabel: ev.target.value })}
                 />
                 <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>{ORIGIN_NOTE[r.whiteLabelOrigin] || ''}</div>
+                {!pending && e.whiteLabel !== undefined && !String(e.whiteLabel).trim() && r.whiteLabelOrigin === 'setting' && (
+                  <div style={{ fontSize: 11, color: CAUTION, marginTop: 4, lineHeight: 1.6 }}>
+                    {pre.whiteLabel
+                      ? `On save this investor goes back to being called “${pre.whiteLabel}”, which is the name on file for it.`
+                      : 'On save this investor has no name a client may see, so it cannot be put in front of one until you name it.'}
+                  </div>
+                )}
               </div>
               <div style={{ flex: '0 1 190px' }}>
                 <label style={label} htmlFor={`src-${r.key}`}>Fetch their pricing from</label>
@@ -420,7 +558,7 @@ export default function LtCombinedSettings() {
                 <label style={label} htmlFor={`hb-${r.key}`}>Extra holdback (points)</label>
                 <input
                   id={`hb-${r.key}`} style={input} inputMode="decimal" disabled={pending}
-                  value={hb} placeholder="0"
+                  value={hbRow} placeholder="0"
                   onChange={(ev) => edit(r.key, { holdback: ev.target.value })}
                 />
                 <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>
@@ -450,10 +588,160 @@ export default function LtCombinedSettings() {
 
       <div style={{ height: 8, borderTop: `1px solid ${LINE}`, marginTop: 16 }} />
 
+      {/* ═══ AN INVESTOR WE HAVE NEVER PRICED BEFORE ═══
+          Owner-directed 2026-09-02: *"I want to be able to add a new investor
+          myself — one came up on a vendor board and there was nowhere to put it.
+          And I need to give it our own name, the way the others have one."*
+
+          ⛔ NO INVESTOR IS NAMED IN THIS FILE. Everything drawn here arrives from
+          the server, which is the only thing that knows the roster.
+
+          ⛔ NOTHING IS CHECKED HERE THAT MATTERS. The key shown below is a preview
+          so a person is not surprised by it; every rule that makes an investor
+          safe to add — that no name collides with one already recorded, and that
+          the client-safe name cannot slip past the block that keeps a real
+          investor name away from a client — is applied at the door and cannot be
+          talked past from a screen. */}
+      <div style={{ ...card, borderColor: `${GOLD}55` }}>
+        <div style={eyebrow}>Add an investor</div>
+        <div style={{ ...sub, color: SLATE, lineHeight: 1.7 }}>
+          For an investor that turns up on one of the programs and is not on the list above. Give
+          the real name, the name a client may see, and every spelling the programs use for it —
+          that is what lets a board find it instead of dropping the row.
+        </div>
+
+        {ciErr && <div style={{ fontSize: 13, color: DANGER, marginBottom: 10, lineHeight: 1.6 }}>{ciErr}</div>}
+        {ciMsg && <div style={{ fontSize: 13, color: GOLD_TEXT, marginBottom: 10 }}>{ciMsg}</div>}
+
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div style={{ flex: '1 1 240px' }}>
+            <label style={label} htmlFor="ci-label">Their real name</label>
+            <input
+              id="ci-label" style={input} value={ciForm.label}
+              onChange={(ev) => { setCiErr(null); setCiForm((f) => ({ ...f, label: ev.target.value })); }}
+            />
+            <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>
+              Internal only. It is never shown to a client.
+            </div>
+          </div>
+          <div style={{ flex: '1 1 200px' }}>
+            <label style={label} htmlFor="ci-wl">Name a client may see</label>
+            <input
+              id="ci-wl" style={input} value={ciForm.whiteLabel}
+              onChange={(ev) => { setCiErr(null); setCiForm((f) => ({ ...f, whiteLabel: ev.target.value })); }}
+            />
+            <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>
+              Leave it blank and this investor stays off anything a client sees until you name it.
+            </div>
+          </div>
+          <div style={{ flex: '1 1 260px' }}>
+            <label style={label} htmlFor="ci-aliases">Other spellings the programs use</label>
+            <input
+              id="ci-aliases" style={input} value={ciForm.aliases}
+              placeholder="Separate them with commas"
+              onChange={(ev) => { setCiErr(null); setCiForm((f) => ({ ...f, aliases: ev.target.value })); }}
+            />
+            <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>
+              {ciAliases.length
+                ? `${ciAliases.length} spelling${ciAliases.length === 1 ? '' : 's'} · the real name always counts as one.`
+                : 'The real name always counts as one.'}
+            </div>
+          </div>
+          <div style={{ flex: '0 1 200px' }}>
+            <label style={label} htmlFor="ci-key">Its key</label>
+            <input
+              id="ci-key" style={{ ...input, borderColor: ciTaken ? `${DANGER}88` : undefined }}
+              value={ciForm.key} placeholder={ciKey || '(from the name)'}
+              onChange={(ev) => { setCiErr(null); setCiForm((f) => ({ ...f, key: ev.target.value })); }}
+            />
+            <div style={{ fontSize: 11, color: ciTaken ? DANGER : MUTED, marginTop: 4, lineHeight: 1.6 }}>
+              {ciTaken
+                ? `“${ciKey}” is already in use.`
+                : (ciKey ? `Saved as “${ciKey}”. Lower-case letters, digits and underscores.` : 'Built from the name.')}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 12, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn primary"
+            aria-disabled={ciBusy ? 'true' : 'false'}
+            onClick={saveCustomInvestor}
+          >
+            {ciBusy ? 'Saving…' : (ciEditKey ? 'Save this investor' : 'Add this investor')}
+          </button>
+          {ciEditKey && (
+            <button
+              type="button"
+              onClick={() => { setCiEditKey(null); setCiForm({ label: '', whiteLabel: '', aliases: '', key: '' }); setCiErr(null); }}
+              style={{ border: `1px solid ${LINE}`, background: '#fff', color: INK, borderRadius: 8, padding: '8px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+            >Stop editing</button>
+          )}
+        </div>
+
+        {ci && ci.problem && (
+          <div style={{ fontSize: 12, color: CAUTION, marginTop: 10, lineHeight: 1.6 }}>
+            The investors added by hand could not be read, so none of them are in force right now
+            and boards are being priced on the standing list alone.
+          </div>
+        )}
+        {ci && (ci.problems || []).length > 0 && (
+          <div style={{ fontSize: 12, color: CAUTION, marginTop: 10, lineHeight: 1.6 }}>
+            {(ci.problems || []).map((x) => x.message || x.problem).join(' · ')}
+          </div>
+        )}
+
+        <div style={{ marginTop: 14, borderTop: `1px solid ${LINE}`, paddingTop: 10 }}>
+          <div style={{ fontSize: 12, color: MUTED, fontWeight: 700, marginBottom: 6 }}>
+            Investors you have added ({(ci && ci.list ? ci.list.length : 0)})
+          </div>
+          {ci && (ci.list || []).length === 0 && (
+            <div style={{ fontSize: 13, color: MUTED }}>None yet.</div>
+          )}
+          {ci && (ci.list || []).map((e) => (
+            <div key={e.key} style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', padding: '10px 0', borderTop: `1px solid ${LINE}` }}>
+              <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+                <div style={{ fontSize: 13, color: INK, fontWeight: 700 }}>{e.label}</div>
+                <div style={{ fontSize: 11, color: e.whiteLabel ? MUTED : CAUTION, marginTop: 2 }}>
+                  {e.whiteLabel
+                    ? `Clients see “${e.whiteLabel}”`
+                    : 'No name a client may see yet, so this investor is kept off client-facing surfaces.'}
+                </div>
+                <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>
+                  {e.aliases.length} spelling{e.aliases.length === 1 ? '' : 's'} · key {e.key}
+                  {e.addedAt ? ` · added ${String(e.addedAt).slice(0, 10)}` : ''}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setCiErr(null); setCiMsg(null); setCiEditKey(e.key);
+                  setCiForm({
+                    label: e.label,
+                    whiteLabel: e.whiteLabel || '',
+                    // The real name is a spelling in its own right and the server
+                    // adds it back, so it is not offered for editing here.
+                    aliases: (e.aliases || []).filter((a) => a !== e.label).join(', '),
+                    key: e.key,
+                  });
+                }}
+                style={{ border: `1px solid ${LINE}`, background: '#fff', color: INK, borderRadius: 8, padding: '8px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+              >Edit</button>
+              <button
+                type="button"
+                onClick={() => removeCustomInvestor(e.key, e.label)}
+                style={{ border: `1px solid ${LINE}`, background: '#fff', color: DANGER, borderRadius: 8, padding: '8px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+              >Remove</button>
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* THE LINKS. Mounted here rather than re-implemented, so the settings screen
           and the priced board show ONE arrangement of the same thing — the board
           additionally passes the live side-by-side, which only exists there. */}
-      <LtInvestorLinks />
+      <LtInvestorLinks onAddInvestor={startAddInvestor} onChanged={load} />
 
       <div style={{ height: 24, borderTop: `1px solid ${LINE}`, marginTop: 8 }} />
       </>

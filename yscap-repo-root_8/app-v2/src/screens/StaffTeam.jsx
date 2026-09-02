@@ -161,7 +161,7 @@ function TeamRosterReadOnly({ myId }) {
                       <div className="muted small">{s.title || '—'} · {s.email}</div>
                     </div>
                   </div>
-                  {s.id !== myId && <CobrowseButton kind="staff" id={s.id} name={s.full_name} className="btn ghost small" />}
+                  {s.id !== myId && <CobrowseButton kind="staff" id={s.id} name={s.full_name} />}
                 </div>
               ))}
             </div>
@@ -461,7 +461,7 @@ export default function StaffTeam() {
                       as them. Offered to every admin on this roster (the super-admin-only
                       test above is for the view-as); the server holds the one rule. */}
                   {s.id !== myId && !!s.is_active && (
-                    <CobrowseButton kind="staff" id={s.id} name={s.full_name} className="btn link" />
+                    <CobrowseButton kind="staff" id={s.id} name={s.full_name} className="btn soft small" />
                   )}
                   <button className="btn link" onClick={() => setPermFor(permFor === s.id ? null : s.id)}>
                     {permFor === s.id ? 'Hide permissions' : 'Permissions'}

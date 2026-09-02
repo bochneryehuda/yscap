@@ -278,6 +278,13 @@ export function buildRateStack(programs) {
         price: nn(b.price) ? b.price : null,
         adjustedPoints: nn(b.adjustedPoints) ? b.adjustedPoints : null,
         monthlyPi: o && o.monthlyPayment && nn(o.monthlyPayment.monthlyPI) ? o.monthlyPayment.monthlyPI : null,
+        /* THE RATE LOCK THIS QUOTE IS PRICED AT. Carried on every row, drawn only where the engine
+           says to (`showRowLock`), because a price without its lock is not comparable to another
+           price: across the recorded LoanNEX board, 1661 rate-points carry more than one lock and
+           the spread between them averages 0.206 points — more than half the whole margin holdback,
+           and up to 0.500. Read off `o.terms.dayLock`, the one place the server puts it, so the row
+           and the Details panel can never disagree about it. */
+        lockDays: o && o.terms && nn(o.terms.dayLock) ? o.terms.dayLock : null,
         expired: !!(o && o.rateSheet && o.rateSheet.expired),
         /* STALENESS HAS THREE STATES, NOT TWO, and the third is carried rather than flattened.
            `!!expired` reads "we do not know" as "not expired" — a reassurance no rate sheet gave
@@ -1428,6 +1435,15 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
             const sheetNote = (q) => (q && q.sheet && dupLabels.has(programLabelKey(q))
               ? <div style={{ fontSize: 11, color: MUTED }} title={q.sheet}>via {q.sheet.length > 58 ? q.sheet.slice(0, 55) + '…' : q.sheet}</div>
               : null);
+            /* THE RATE LOCK THIS PRICE IS FOR — drawn only on an engine that asked for it
+               (`showRowLock`, FORK 10), so the general board is unchanged. A price is not
+               comparable to another price at a different lock, and on the combined board two
+               programs answer: the lock is what says the comparison is like for like. Nothing is
+               drawn when the option carries no lock — an absent lock is stated by its absence,
+               never filled in with the profile's 30. */
+            const lockNote = (q) => (engine.showRowLock && q && nn(q.lockDays)
+              ? <div style={{ fontSize: 11, color: MUTED }}>{`${q.lockDays}-day lock`}</div>
+              : null);
             return (
               <div key={g.key}>
                 {/* THE LENDER LINE — one per lender, showing their BEST price.
@@ -1475,6 +1491,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                         ? <span style={{ color: MUTED }}> · {g.best.consumerLabel}</span> : null}
                     </div>
                     {sheetNote(g.best)}
+                    {lockNote(g.best)}
                     {g.best && g.best.expired && (
                       <div style={{ fontSize: 11, color: CAUTION, fontWeight: 700 }}>
                         this lender&rsquo;s rate sheet is expired
@@ -1522,6 +1539,7 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                               ? <span style={{ color: MUTED, fontSize: 11.5 }}> · {q.consumerLabel}</span> : null}
                           </div>
                           {sheetNote(q)}
+                          {lockNote(q)}
                           {q.investor && q.investor !== q.lender && (
                             <div style={{ fontSize: 11.5, color: MUTED }}>{q.investor}</div>
                           )}

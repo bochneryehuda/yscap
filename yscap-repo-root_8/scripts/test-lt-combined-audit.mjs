@@ -33,6 +33,7 @@ const nexParse = require('../src/longterm/loannex/parse');
 const quoteShape = require('../src/longterm/pricing/quote-shape');
 const BD = require('../src/longterm/pricing/breakdown');
 const investorLinks = require('../src/longterm/pricing/investor-links');
+const A = require('../src/longterm/audience');
 const comp = require('../app-v2/src/longterm/compOverlay.js');
 const nexBoardRaw = require('../src/longterm/loannex/capture/quick-prices.json');
 const lpCapture = require('./fixtures/lt-pricer-live-capture.json');
@@ -281,6 +282,36 @@ H('THE ONE THING THIS AUDIT ASSERTS — a shared field name must mean one thing'
     'COMP-2a …and its body reads no investor or programme field either, so narrowing a board to one of them cannot move a borrower\'s cash to close');
   ok(keysOf(lpB) === keysOf(nexB),
     'LAYOUT-1 a breakdown from either program has the same top-level shape');
+}
+
+/* AN INVESTOR NEITHER PROGRAM'S REGISTRY HAS EVER HEARD OF — the owner's own
+   example, and the reason the add-an-investor door exists. It is PROBED rather
+   than asserted about a particular company: what the audit can honestly say is
+   what happens to a name nobody has recorded, and what a person can do about it. */
+H('AN INVESTOR NOBODY HAS RECORDED — what happens, and what fixes it');
+{
+  const roster = require('../src/longterm/pricing/investor-roster');
+  const NAME = 'ClearEdge Lending';
+  const cold = roster.effectiveResolve(NAME, null);
+  console.log(`  "${NAME}" against the registry alone: ${cold.key ? `${cold.key} (${cold.match})` : 'nobody — the row would be kept off the board'}`);
+  ok(cold.key === null,
+    'NEW-1 a name the registry has never seen resolves to NOBODY rather than to a guess — the row is reported unmapped, never priced under the wrong name');
+
+  const added = roster.validateCustom({
+    clearedge: { label: NAME, whiteLabel: 'Summit Ridge', aliases: ['ClearEdge', 'CLEAREDGE LENDING LLC'] },
+  });
+  ok(added.ok, 'NEW-2 …and it can be ADDED by hand, which used to take a code change and a deploy');
+  const custom = roster.readCustom(added.custom).custom;
+  const warm = roster.effectiveResolve('CLEAREDGE LENDING LLC', custom);
+  console.log(`  once added, a vendor's own spelling resolves to: ${warm.key} (${warm.match})`);
+  ok(warm.key === 'clearedge',
+    'NEW-3 …after which every spelling recorded for it prices onto the board under one investor');
+  const sentence = 'Your Summit Ridge quote is ready to review.';
+  // The block is asked ABOUT THIS MAP rather than told to adopt it — an audit
+  // may not change what the process is holding.
+  ok(A.scrubInvestorNames(sentence, 'borrower', { custom }) === sentence
+    && A.scrubInvestorNames(`Sent to ${NAME} for review`, 'borrower', { custom }) !== `Sent to ${NAME} for review`,
+  'NEW-4 …with the name a client may see surviving the block and its real name blocked, which is the property the door proves before it stores anything');
 }
 
 H('WHAT THIS AUDIT SAYS IS STILL MISSING');

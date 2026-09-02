@@ -31,6 +31,7 @@ const storageDefault = require('../storage');
 const sendEngine = require('./send');
 const gate = require('./gate');
 const termSheetStamp = require('./term-sheet-stamp');
+const termSheetSigners = require('./term-sheet-signers');
 const docgen = require('./docgen');
 const onDeadLetter = require('./dead-letter');
 const { notifyReadyToSign } = require('./notify-signers');
@@ -794,6 +795,28 @@ function resolveRecipientIdentity(r, app) {
   return { email: null, name: null };
 }
 
+/**
+ * THE LOAN OFFICER WHO SIGNS THE TERM SHEET — one definition (owner-directed
+ * 2026-09-02, closing the officer half of the stale-parties gap). The roster puts
+ * an officer on the term-sheet package only when the file has an ASSIGNED officer
+ * whose staff record carries an email; the Term Sheet Studio must draw the officer's
+ * signature line (the `/ts_lo_sig/` anchor) under EXACTLY the same rule, or the
+ * sheet and the send disagree about whether an officer signs — and the signer
+ * check (term-sheet-signers.js) then refuses a sheet that was drawn from a stale
+ * screen. EVERY officer predicate in this file goes through it (the roster, the
+ * send-time re-check, the late splice, the completeness need list). PURE: `app` is
+ * a row carrying `loan_officer_id`, `officer_name`, `officer_email` (loadApplication's
+ * shape) and, where the read selects it, `officer_nmls` (the pricing route's read;
+ * absent reads as ''). Returns null when no officer signs.
+ */
+function loanOfficerSigner(app) {
+  if (!app || !app.loan_officer_id || !app.officer_email) return null;
+  const email = String(app.officer_email).trim();
+  if (!email) return null;
+  const name = String(app.officer_name || '').trim() || email;
+  return { name, email, nmls: String(app.officer_nmls || '').trim() };
+}
+
 function buildRoster(app, spec, envelopeRowId, opts = {}) {
   const roster = [];
   // Draw-send recipient choice (owner-directed 2026-07-21): the SOLO package (the draw request / wire form)
@@ -824,10 +847,11 @@ function buildRoster(app, spec, envelopeRowId, opts = {}) {
   // the borrower AND the loan officer have signed (owner-directed 2026-07-21). Only
   // added when the file has an ASSIGNED loan officer with an email — an unassigned
   // file falls back to the previous roster shape so the send never blocks.
-  if (!spec.soloBorrower && spec.loanOfficerRequired && app.loan_officer_id && app.officer_email) {
+  const loSigner = !spec.soloBorrower && spec.loanOfficerRequired ? loanOfficerSigner(app) : null;
+  if (loSigner) {
     roster.push({
       role: 'loan_officer', routingOrder: 1, recipientId: String(roster.length + 1), isCountersigner: false,
-      borrowerId: null, name: app.officer_name || app.officer_email, email: app.officer_email,
+      borrowerId: null, name: loSigner.name, email: loSigner.email,
       clientUserId: clientUserIdFor(envelopeRowId, 'loan_officer'),
     });
   }
@@ -846,10 +870,9 @@ function buildRoster(app, spec, envelopeRowId, opts = {}) {
 // TERM SHEET ONLY (/ts_admin_sig/). documentIdByKind maps a doc_kind to the
 // numeric documentId assigned at assembly time.
 function tabsFor(role, spec, documentIdByKind) {
-  const suffix = role === 'borrower' ? 'b1'
-    : role === 'co_borrower' ? 'b2'
-    : role === 'loan_officer' ? 'lo'
-    : 'admin';
+  // ONE map for the anchor a role signs on — shared with term-sheet-signers.js, which
+  // checks the stored sheet carries that anchor BEFORE this places a tab on it.
+  const suffix = termSheetSigners.ANCHOR_SUFFIX_BY_ROLE[role] || 'admin';
   const tabsByDoc = {};
   for (const d of spec.docs) {
     const documentId = documentIdByKind[d.kind];
@@ -985,6 +1008,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   // docs (the term sheet), never to a generated one.
   const needsFreshness = spec.docs.some((d) => d.freshnessCheck);
   const apprBackAt = needsFreshness ? await gate.appraisalBackAt(row.application_id, { db }) : null;
+  let termSheetBytes = null;
   for (let i = 0; i < spec.docs.length; i++) {
     const d = spec.docs[i];
     const documentId = i + 1;
@@ -1057,6 +1081,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     let buf;
     try { buf = await storage.read(doc.storage_ref); }
     catch (e) { const err = new Error(`Could not read ${d.kind} bytes: ${e.message}`); err.retryable = true; throw err; }
+    if (d.kind === 'term_sheet') termSheetBytes = buf;   // judged against the roster below
     documentIdByKind[d.kind] = documentId;
     documents.push({ base64: Buffer.from(buf).toString('base64'), name: d.name, documentId, fileExtension: 'pdf' });
   }
@@ -1082,7 +1107,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
       await db.query(`DELETE FROM esign_recipients WHERE envelope_row_id=$1 AND recipient_id_ds=$2`, [row.id, r.recipient_id_ds]);
       continue;   // removed co-borrower → drop from the send AND the roster
     }
-    if (r.role === 'loan_officer' && (!app.loan_officer_id || !app.officer_email)) {
+    if (r.role === 'loan_officer' && !loanOfficerSigner(app)) {
       // LO unassigned or missing an email between seed and send → drop from the
       // send instead of blocking (a re-assignment before send is honored below).
       await db.query(`DELETE FROM esign_recipients WHERE envelope_row_id=$1 AND recipient_id_ds=$2`, [row.id, r.recipient_id_ds]);
@@ -1099,8 +1124,8 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   // If an LO was ASSIGNED between seeding and send (or the package spec now requires
   // one and the seeded roster missed it), splice one in at routingOrder 1 so the file
   // benefits from the new signer without a re-issue. Skip if the LO seat already exists.
-  if (!spec.soloBorrower && spec.loanOfficerRequired && app.loan_officer_id && app.officer_email
-      && !roster.some((r) => r.role === 'loan_officer')) {
+  const loSplice = !spec.soloBorrower && spec.loanOfficerRequired ? loanOfficerSigner(app) : null;
+  if (loSplice && !roster.some((r) => r.role === 'loan_officer')) {
     const nextRid = String(Math.max(0, ...roster.map((r) => Number(r.recipient_id_ds) || 0)) + 1);
     const clientUserId = clientUserIdFor(row.id, 'loan_officer');
     try {
@@ -1110,12 +1135,32 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
             borrower_id, name, email, embedded, client_user_id, status)
          VALUES ($1,'loan_officer',1,false,$2,NULL,$3,$4,true,$5,'created')
          RETURNING role, routing_order, recipient_id_ds, name, email, client_user_id, is_countersigner, borrower_id`,
-        [row.id, nextRid, app.officer_name || app.officer_email, app.officer_email, clientUserId]);
+        [row.id, nextRid, loSplice.name, loSplice.email, clientUserId]);
       roster.push(ins.rows[0]);
     } catch (e) {
       // Best-effort — if the insert races or fails we still send with the existing
       // roster; the completeness check below can retry the send with LO on the next tick.
       console.warn('[esign] loan_officer splice failed:', e.message);
+    }
+  }
+  /* THE SHEET MUST CARRY A SIGNATURE LINE FOR EVERYONE WHO IS ABOUT TO SIGN IT
+     (owner-reported 2026-09-02, YSCAP258134773: "the term sheet doesn't populate
+     signature for both borrowers … only the first guarantor"). The roster is built
+     from the FILE, the sheet was drawn by the studio from whatever names it was
+     handed, and DocuSign's anchor tabs are ignore-if-absent — so a sheet made
+     without the co-borrower sent silently, with one signature block and one
+     guarantor named, to a package addressed to two. This is the last place the
+     bytes and the roster meet, so it refuses, PERMANENTLY (a re-send of the same
+     bytes cannot pass), naming who is missing and the button that regenerates the
+     sheet from the file's current borrowers. term-sheet-signers.js owns the rule;
+     tracking.termSheetStampBlock reads the same rule so the panel says it FIRST. */
+  if (termSheetBytes) {
+    const check = await termSheetSigners.checkTermSheetSigners(termSheetBytes, roster.map((r) => ({ role: r.role, name: r.name })));
+    if (!check.ok) {
+      const err = new Error(`Cannot send ${spec.label}: ${check.message}`);
+      err.retryable = false; err.code = 'TERM_SHEET_SIGNERS_MISMATCH';
+      err.missing = check.missing; err.extra = check.extra;
+      throw err;
     }
   }
   const signers = roster.map((r) => ({
@@ -1154,7 +1199,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   const have = new Set(roster.map((r) => r.role));
   const need = ['borrower',
     ...(!spec.soloBorrower && app.co_borrower_id ? ['co_borrower'] : []),
-    ...(!spec.soloBorrower && spec.loanOfficerRequired && app.loan_officer_id && app.officer_email ? ['loan_officer'] : []),
+    ...(!spec.soloBorrower && spec.loanOfficerRequired && loanOfficerSigner(app) ? ['loan_officer'] : []),
     ...(!spec.soloBorrower && spec.countersignRequired ? ['admin'] : [])];
   if (!need.every((role) => have.has(role))) {
     const e = new Error('Recipient roster not fully seeded yet — will retry.'); e.retryable = true; throw e;
@@ -1338,6 +1383,7 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
 }
 
 module.exports = {
+  loanOfficerSigner,
   packageLabel,
   PACKAGES, packageSpec, buildDefinition, sendPackage,
   createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem,

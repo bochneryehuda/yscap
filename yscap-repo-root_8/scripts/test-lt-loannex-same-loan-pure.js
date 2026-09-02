@@ -39,6 +39,7 @@ const registryOf = require(path.join(ROOT, 'src/longterm/loannex/field-registry'
 const lpModel = require(path.join(ROOT, 'src/longterm/lenderprice/search-model'));
 const qs = require(path.join(ROOT, 'src/longterm/pricing/quote-shape'));
 const pf = require(path.join(ROOT, 'src/longterm/pricing/product-filter'));
+const routing = require(path.join(ROOT, 'src/longterm/pricing/investor-routing'));
 
 /**
  * One Lender Price leaf, amortising, so the board is genuinely two-vendor. The stub also hands back
@@ -290,7 +291,16 @@ const reg = registryOf.capturedRegistry();
     (function walk(v) {
       if (!v || typeof v !== 'object' || seen.has(v)) return;
       seen.add(v);
-      if (v.priceHashKey && v.vendor === 'loannex') handles.push(v);
+      /* RE-POINTED 2026-09-02 (audit F8). This used to find handles by `v.vendor === 'loannex'` —
+         reading the very fingerprint the one-system rule says must not be on the ordinary board, so
+         the guard could only pass while the defect stood.
+         A handle is now found by WHERE IT LIVES: it is the `explain` block of an option, which is
+         also the only thing the screen ever hands to `/explain`. Sniffing for `priceHashKey`
+         instead was tried and is WRONG — the raw rungs under `merged` carry that key too
+         (`loannex/parse.js` puts it on every rung), so the walk collected 809 rungs that were never
+         handles and D9 failed on objects it should never have been looking at. Structure, not a
+         field that happens to be present. */
+      if (v.explain && typeof v.explain === 'object') handles.push(v.explain);
       if (Array.isArray(v)) v.forEach(walk); else Object.values(v).forEach(walk);
     })(plain);
     ok(handles.length > 0, `D8  the ordinary board carries LoanNEX rows to address (${handles.length})`);
@@ -302,6 +312,83 @@ const reg = registryOf.capturedRegistry();
     const progs = (plain.merged.investors || []).flatMap((e) => e.programs || []);
     ok(progs.length > 0 && progs.every((p) => p.lenderId == null && p.source == null),
       `D11 the one-system strip still bites on the ROW itself: no programme names a vendor (${progs.filter((p) => p.lenderId != null || p.source != null).length} of ${progs.length} do)`);
+
+    /* ── AUDIT F8: THE THREE PLACES THE ORDINARY BOARD STILL NAMED THE VENDOR ──────────────
+       `stripSource` goes to real lengths to remove the fingerprint, and then three things put it
+       straight back. Each is asserted on the SAME ordinary board above, and against a REVEALED
+       control, so "withheld" is proved to be a decision the flag makes rather than a field that
+       was never there. */
+    ok(!('provenance' in plain),
+      'D12 the ordinary board carries NO `provenance` block — it was returned unconditionally, keyed by vendor name, with the LoanNEX portal inside it');
+    /* ⛔ HIDDEN ROWS ARE BUILT ON PURPOSE, because this board produces NONE.
+       The first cut of this asserted "no hidden row lacks a white label" against
+       `plain.merged.hidden` — which is EMPTY here, so the filter was empty and the assertion could
+       not fail. Removing `whiteLabel` from both hidden shapes left the suite green, which is how it
+       was caught. That is the same vacuous shape this suite has been finding all day, and it is
+       worth naming once more: an assertion about "none of X" is worthless until something proves
+       there was an X. Both hidden shapes are now driven deliberately — one investor switched OFF,
+       one routed to a source with no quote — and the count is asserted before the property is. */
+    const hid = routing.applyRouting({
+      investors: [
+        { key: 'acra', investor: 'Acra Lending', presentIn: ['loannex'], programs: { loannex: [{ program: 'P' }] } },
+        { key: 'nqm', investor: 'NQM Funding', presentIn: ['loannex'], programs: { loannex: [{ program: 'Q' }] } },
+      ],
+      sources: { lenderprice: { answered: false, error: 'down' } },
+    }, { routes: { acra: { enabled: false }, nqm: { source: 'lenderprice' } } }).hidden || [];
+    ok(hid.length === 2 && hid.some((h) => h.why === 'switched_off') && hid.some((h) => /source_/.test(h.why)),
+      `D13a BOTH hidden shapes are on the table to judge — switched off, and a source that did not answer (${hid.map((h) => h.why).join(', ')})`);
+    const badHidden = hid.filter((h) => !('whiteLabel' in h));
+    ok(badHidden.length === 0,
+      `D13 every HIDDEN row carries the client-safe name too (${badHidden.length} of ${hid.length} without) — a SHOWN row always did, and the panel draws \`whiteLabel || investor || key\`, so the odd one out fell back to the investor's REAL name`);
+
+    /* THE SWEEP. Not a list of three field names — everything the BOARD hands over, for the
+       vendor's own name in any casing. It is the guard that will still be right about a field
+       nobody has written yet, and it is what turns "we fixed three places" into "there are none".
+
+       ⛔ SCOPED TO THE BOARD, AND HERE IS WHY — the first cut swept the whole answer and found
+       nine more hits, all of them `investorPairing.rows[].names.loannex`. That block is NOT a
+       defect: it is the owner's own A-to-Z linking panel (*"it would be better to do an A-to-Z
+       search on this one"*), it is mounted unconditionally on this screen, and its entire purpose
+       is to put "what LoanNEX called this investor" beside "what Lender Price called them" so a
+       person can join the two. You cannot link two spellings without naming the two programs. The
+       one-system rule is about the PRICED ROW — that a quote must not be tellable apart — not about
+       an admin's linking table. Narrowed with the reason stated rather than deleted, and the parts
+       swept are named explicitly so nothing new rides in under a key this list forgot. */
+    const boardOnly = JSON.stringify({
+      programs: plain.programs,
+      merged: plain.merged,
+      hidden: plain.hidden,
+      productFilter: plain.productFilter,
+      investorRoster: plain.investorRoster,
+      investorsUnmapped: plain.investorsUnmapped,
+      sources: plain.sources,
+      options: plain.options,
+    });
+    const hits = (boardOnly.match(/loannex/gi) || []).length;
+    const where = [];
+    (function locate(v, at) {
+      if (v == null) return;
+      if (typeof v === 'string') { if (/loannex/i.test(v)) where.push(`${at} = ${JSON.stringify(v).slice(0, 40)}`); return; }
+      if (typeof v !== 'object') return;
+      if (Array.isArray(v)) return v.forEach((x, i) => locate(x, `${at}[${i}]`));
+      for (const [k, val] of Object.entries(v)) {
+        if (/loannex/i.test(k)) where.push(`${at}.${k}  (the KEY)`);
+        locate(val, `${at}.${k}`);
+      }
+    }(JSON.parse(boardOnly), ''));
+    ok(hits === 0,
+      `D14 THE SWEEP: the vendor's name appears ${hits} times in the entire ordinary-board answer${where.length ? ' -> ' + [...new Set(where)].slice(0, 6).join(' | ') : ''}`);
+  }
+
+  // ── D3. AND THE SAME ANSWER, REVEALED, STILL HAS EVERYTHING ───────────────
+  // The controls for D12/D14: nothing was deleted, the flag decides what is SHOWN. A "withheld"
+  // guard whose control is not checked is satisfied just as well by a field that never existed.
+  {
+    const shown = await priceBoth({ ...BROWSER }, { marginHoldback: 0.25, routes: ALL_NEX, links: {}, revealSource: true });
+    ok(shown.provenance && typeof shown.provenance === 'object' && 'loannex' in shown.provenance,
+      'D15 an admin who ASKS still gets the whole provenance block back — nothing was thrown away');
+    ok(JSON.stringify(shown).includes('loannex'),
+      'D16 …and the revealed answer does name the vendor, which is what makes D14 a decision rather than an accident');
   }
 
   // ── E. WHAT MUST NOT MOVE ─────────────────────────────────────────────────
@@ -309,8 +396,17 @@ const reg = registryOf.capturedRegistry();
     const src = read('src/longterm/routes/combined-pricer.js');
     ok(/request: r\.request \|\| null/.test(src)
       && /const lpCriteria = \(wire && wire\.criteria && typeof wire\.criteria === 'object'\) \? wire\.criteria\s*\n\s*: \(chk\.request && chk\.request\.criteria\);/.test(src)
-      && /const want = productFilter\.wantFrom\(sc, lpModel\._internals, \{ lpCriteria \}\)/.test(src),
+      && /const want = productFilter\.wantFrom\(sc, lpModel\._internals, \{ lpCriteria, lpRequest \}\)/.test(src),
       'E1  priceBoth mirrors the WIRE request the client hands back, and falls back to the static build only when there is none');
+    /* 2026-09-02 — E1 CAUGHT THIS ONE ITSELF, which is the point of it: the rate lock became a
+       fourth mirrored dimension and the call site grew a second argument, so the guard went red
+       until it was re-pointed at the new truth. Re-pointed, not relaxed — the lock travels the
+       SAME wire-first, static-fallback road as the criteria, and both halves are now asserted.
+       The lock is read off the body ROOT (`dayLocksCriteria`), not off `criteria`, so a mirror
+       that quietly went back to reading `lpCriteria.dayLocks` would find nothing and narrow
+       nothing — silently, which is exactly how this defect lived. */
+    ok(/const lpRequest = wire \|\| \(chk\.request && typeof chk\.request === 'object' \? chk\.request : null\);/.test(src),
+      'E1b …and the RATE LOCK is mirrored off the same wire body, with the same static fallback — one road for both, never two that can drift');
     ok(/\(\(\{ request: _wire, \.\.\.rest \}\) => rest\)\(lpRes\.value\)/.test(src),
       'E1b …and strips the wire body off the board before it is answered');
     ok(/const io = want\.io;/.test(src), 'E2  the option-level filter reads the SAME resolved answer as the programme narrowing');

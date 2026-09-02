@@ -33,8 +33,6 @@
  * PURE: no network, no database, no RTL import.
  */
 
-const investors = require('../encompass/investors');
-
 const settingsOf = require('./investor-settings');
 
 /** A route is now simply the investor's SOURCE. Kept as its own word because a
@@ -72,18 +70,28 @@ function sourcesUnder(source, presentIn) {
  */
 function applyRouting(merged, opts = {}) {
   const board = merged || {};
-  const cfg = settingsOf.readSettings(opts.routes !== undefined ? opts.routes : opts.settings);
+  // The investors added by hand (`pricing/investor-roster.js`) — a hand-added
+  // investor gets a settings row and is routed exactly like a registry one.
+  const custom = opts.custom;
+  const cfg = settingsOf.readSettings(opts.routes !== undefined ? opts.routes : opts.settings, custom);
   const settings = cfg.settings;
   const reveal = opts.revealSource === true;
   const hidden = [];
   const list = [];
 
   for (const e of board.investors || []) {
-    const row = settingsOf.settingFor(e.key, settings);
+    const row = settingsOf.settingFor(e.key, settings, custom);
 
     if (!row.enabled) {
       hidden.push({
         investor: e.investor, key: e.key, why: 'switched_off',
+        // ⛔ THE CLIENT-SAFE NAME TRAVELS WITH EVERY HIDDEN ROW TOO (audit F8, 2026-09-02).
+        // A SHOWN investor has carried `whiteLabel` since this function was written; a hidden one
+        // did not, and the panel draws `h.whiteLabel || h.investor || h.key` — so the fallback
+        // reached the INVESTOR'S REAL NAME on exactly the rows nobody had thought about. Internal
+        // today, because this engine is super-admin only; a rule-10 breach the day it is promoted,
+        // which is the stated plan. Two shapes for one question is how that day arrives unnoticed.
+        whiteLabel: row.whiteLabel, whiteLabelMissing: row.whiteLabelMissing,
         reason: row.note || 'This investor is switched off in the investor settings.',
       });
       continue;
@@ -95,6 +103,8 @@ function applyRouting(merged, opts = {}) {
       const outage = src && src.answered === false;
       hidden.push({
         investor: e.investor, key: e.key, why: outage ? 'source_did_not_answer' : 'source_had_no_quote',
+        // The same client-safe name, on the other hidden shape — see above.
+        whiteLabel: row.whiteLabel, whiteLabelMissing: row.whiteLabelMissing,
         reason: outage
           ? `Set to ${label(row.source)}, which did not answer at all${src.error ? ` (${src.error})` : ''}. The other program's price is deliberately NOT shown in its place — this investor is priced there, so ours would be second-hand.`
           : `Set to ${label(row.source)}, which answered but did not quote this investor for this scenario. The other program's price is deliberately NOT shown in its place.`,
@@ -257,12 +267,25 @@ function stripHoldbackTrail(r) {
   return rest;
 }
 
-/** One priced option with the same trail removed — never its price or its adjustments. */
+/**
+ * One priced option with the same trail removed — never its price or its adjustments.
+ *
+ * ⛔ THE VENDOR'S OWN FLOOR AND CEILING GO WITH IT (audit F5, 2026-09-02). `vendor-margin.shiftBase`
+ * now moves `priceFloor` / `priceCeiling` down with the price and keeps the vendor's own figures
+ * beside them, exactly as it does for the base. Leaving those raw figures on the answer would move
+ * the subtraction one field along rather than close it: `vendorPriceCeiling` minus `price` is the
+ * holdback just as plainly as the unshifted ceiling was. Every `vendor*` key this module knows
+ * about is named here, so the list and the shift are read together.
+ */
 function stripOptionHoldbackTrail(o) {
   if (!o || typeof o !== 'object') return o;
   const { marginHoldback, ...rest } = o;
   if (rest.priceBuild && typeof rest.priceBuild === 'object') {
-    const { vendorPrice, vendorBasePoints, vendorAdjustedPoints, ...pb } = rest.priceBuild;
+    const {
+      vendorPrice, vendorBasePoints, vendorAdjustedPoints,
+      vendorPriceFloor, vendorPriceCeiling,
+      ...pb
+    } = rest.priceBuild;
     rest.priceBuild = pb;
   }
   return rest;
@@ -280,8 +303,32 @@ function bestOfMany(list) {
 
 function label(src) { return src === 'loannex' ? 'LoanNEX' : src === 'lenderprice' ? 'Lender Price' : src; }
 
+/**
+ * "WHAT DOES THIS ROW'S OWN INVESTOR ADD TO THE HOLDBACK?" — as a function of a
+ * priced row, ready to hand to `vendor-margin.applyToBoard`.
+ *
+ * ⛔ IT LIVES HERE RATHER THAN IN THE ROUTE because it is the join between three
+ * things that must agree: which investor a row belongs to (`merge.resolveInvestor`,
+ * the ONE resolver), what that investor's saved settings say, and which investors
+ * exist at all. A copy of this closure — in a second route, or re-typed inside a
+ * test — is a copy that can keep passing after the real one stops threading the
+ * hand-added investors, which is exactly the shape of bug it exists to prevent.
+ *
+ * A row whose investor nobody can name, or who carries no setting of their own,
+ * answers null: the board-wide figure then applies, untouched.
+ */
+function extraResolver(settings = {}, links = null, custom = undefined) {
+  const merge = require('./merge');
+  return (row) => {
+    const hit = merge.resolveInvestor(row, links, custom);
+    if (!hit || !hit.key) return null;
+    const saved = settingsOf.settingFor(hit.key, settings, custom);
+    return saved && saved.holdbackOrigin === 'setting' ? saved.holdback : null;
+  };
+}
+
 module.exports = {
-  ROUTES, DEFAULT_ROUTE, sourcesUnder, applyRouting,
+  ROUTES, DEFAULT_ROUTE, sourcesUnder, applyRouting, extraResolver,
   // Re-exported so a caller has ONE door to the investor decisions rather than
   // needing to know which of the two modules holds which half.
   readSettings: settingsOf.readSettings, settingFor: settingsOf.settingFor,

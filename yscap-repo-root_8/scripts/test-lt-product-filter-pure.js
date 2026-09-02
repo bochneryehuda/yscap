@@ -179,7 +179,7 @@ const nexRows = (out) => (out.programs || []).filter((p) => NEX_PROGRAMS.some((n
       ok(lp === expectLp && nex === expectNex,
         `SAME-${asked || 'unstated'} Lender Price is asked ${lp} and LoanNEX is narrowed to ${nex} — read through the SAME mapper, so they cannot drift`);
     }
-    ok(JSON.stringify(pf.wantFrom({ termYears: 30 })) === JSON.stringify({ amortization: null, io: null, termMonths: null }),
+    ok(JSON.stringify(pf.wantFrom({ termYears: 30 })) === JSON.stringify({ amortization: null, io: null, termMonths: null, lockDays: null }),
       'SAME-none with no Lender Price request to mirror, nothing is narrowed at all — the honest answer, never a guessed one');
   }
 
@@ -252,6 +252,126 @@ const nexRows = (out) => (out.programs || []).filter((p) => NEX_PROGRAMS.some((n
       'UI-7 an answer carrying no narrowing report says nothing extra — the general board\'s empty state is unchanged');
     ok(/left out/.test(narrowedAway({ productFilter: { applied: true, asked: { amortization: 'fixed' }, dropped: { amortization: 3, interestOnly: 0, term: 2 } } })),
       'UI-8 …and an empty board that a product answer emptied SAYS SO, rather than reading as "nothing prices this loan"');
+  }
+
+
+  console.log('\n── THE RATE LOCK: THE FOURTH DIMENSION, MIRRORED OFF THE REQUEST ──');
+  {
+    /* ⛔ THE REAL RECORDED BOARD, not the five-programme fixture. This defect is about a spread
+       between locks that only a real rate sheet has: the fixture's every rung is 30 days, so it
+       could not show the defect and cannot prove the fix. */
+    const nexParse = require(path.join(ROOT, 'src/longterm/loannex/parse'));
+    const REAL = nexParse.parse(require(path.join(ROOT, 'src/longterm/loannex/capture/quick-prices.json')).response);
+
+    // ── WHAT IT COSTS TO GET THIS WRONG, measured on that board ──────────────────────────────
+    let multiLock = 0; const spreads = [];
+    for (const pr of REAL.programs) {
+      const byRate = new Map();
+      for (const r of pr.rungs) if (r.price != null) { if (!byRate.has(r.rate)) byRate.set(r.rate, []); byRate.get(r.rate).push(r); }
+      for (const rs of byRate.values()) {
+        if (rs.length < 2) continue;
+        multiLock += 1;
+        const ps = rs.map((r) => r.price);
+        spreads.push(Math.max(...ps) - Math.min(...ps));
+      }
+    }
+    const meanSpread = spreads.reduce((a, b) => a + b, 0) / spreads.length;
+    const maxSpread = Math.max(...spreads);
+    ok(multiLock === 1661 && Math.abs(meanSpread - 0.2059) < 0.001 && Math.abs(maxSpread - 0.5) < 1e-9,
+      `LOCK-1 the harm is real and measured: ${multiLock} rate-points on the recorded board carry more than ONE lock, mean spread ${meanSpread.toFixed(4)} points and max ${maxSpread.toFixed(3)} — twice the whole 0.25 margin holdback`);
+
+    const acra = REAL.programs.find((pr) => /acra/i.test(pr.investor || '') && /30 Yr\. Fixed/i.test(pr.product || ''));
+    const acraRungs = acra ? acra.rungs.filter((r) => r.rate === 6.25 && r.price != null) : [];
+    const acraAt = (d) => { const r = acraRungs.find((x) => x.lockDays === d); return r ? r.price : null; };
+    ok(acraAt(15) === 101.036 && acraAt(30) === 100.886 && acraAt(45) === 100.736,
+      `LOCK-2 …and it is one investor's one rate: Acra's 30-year fixed at 6.25 is ${acraAt(15)} at 15 days, ${acraAt(30)} at 30 and ${acraAt(45)} at 45 — a 15-day rung beside a 30-day Lender Price quote looked a sixth of a point better for no reason on the row`);
+
+    // ── THE MIRROR: read off the request Lender Price was ACTUALLY sent ──────────────────────
+    for (const [asked, expect] of [[undefined, 30], [15, 15], [45, 45], [60, 60]]) {
+      const raw = { ...LP_BASE };
+      if (asked === undefined) delete raw.lockDays; else raw.lockDays = asked;
+      const v = lpModel.validateScenario({ ...SCENARIO, ...raw });
+      const body = lpModel.buildSearch(v.scenario);
+      const w = pf.wantFrom(v.scenario, lpModel._internals, { lpCriteria: body.criteria, lpRequest: body });
+      ok(body.dayLocksCriteria[0] === expect && w.lockDays === expect,
+        `LOCK-3${asked === undefined ? 'a' : asked} Lender Price is asked ${body.dayLocksCriteria[0]} days and LoanNEX is narrowed to ${w.lockDays} — read off the WIRE body, so an unstated lock resolves through the profile's OWN 30-day default rather than a second copy of it here`);
+    }
+    ok(pf.wantFrom({}, {}, { lpRequest: { brokerCriteria: { dayLocks: 45 } } }).lockDays === 45,
+      'LOCK-4 a body carrying the lock only in `brokerCriteria` is still mirrored — the two halves of the request say the same thing and either one will do');
+    ok(pf.wantFrom({}, {}, { lpRequest: {} }).lockDays === null
+      && pf.wantFrom({}, {}, {}).lockDays === null,
+      'LOCK-5 …and with no lock anywhere in the request the dimension is NOT narrowed — never a guessed 30, which would drop every rung of a board nobody asked a lock about');
+    ok(pf.wantFrom({ lockDays: 21 }, {}, {}).lockDays === 21,
+      'LOCK-6 a caller with no Lender Price request to mirror falls back to the scenario\'s own lock');
+
+    // ── THE DEFECT, AND THAT IT IS CLOSED ────────────────────────────────────────────────────
+    /* ⛔ THE FULL `want` THE SCREEN ACTUALLY PRODUCES — fixed, 360 months, plus the lock — and the
+       SAME want with the lock alone removed as the control. A first cut of this battery compared a
+       lock-only want against a fixed+term one and reported the two boards as before-and-after; they
+       were two different questions, and the "after" board came out LARGER than the "before". Both
+       sides of a comparison have to be narrowed the same way or the numbers mean nothing. */
+    const FULL = { amortization: 'fixed', io: null, termMonths: [360] };
+    const at = (d) => pf.narrowBoard(REAL, { ...FULL, lockDays: d });
+    const before = pf.narrowBoard(REAL, { ...FULL, lockDays: null });
+    const shape = (n) => `${n.kept}/${n.board.rungCount}`;
+    const shapes = [15, 30, 45, 60].map((d) => shape(at(d)));
+    ok(shape(before) === '26/1553' && new Set(shapes).size === 4,
+      `LOCK-7 one search, four locks: the board WAS ${shape(before)} whichever lock was asked, and is now ${shapes.join('  ')} — four different boards where there had been one, which is the whole defect`);
+    ok(shapes.every((x) => Number(x.split('/')[1]) < 1553),
+      `LOCK-7b …and every one of them is SMALLER than the board that ignored the lock — the rungs removed are the ones priced at a lock nobody asked for, never a shortening of the answer`);
+    for (const d of [15, 30, 45, 60]) {
+      const n = at(d);
+      const strays = [];
+      for (const pr of n.board.programs) for (const r of pr.rungs) if (r.lockDays != null && Number(r.lockDays) !== d) strays.push(r.lockDays);
+      ok(n.board.rungCount > 0 && strays.length === 0,
+        `LOCK-8@${d} every one of the ${n.board.rungCount} surviving rungs is at the asked ${d}-day lock — ${strays.length} at any other`);
+    }
+
+    // ── UNKNOWNS ARE KEPT, THE SAME DIRECTION THE OTHER THREE FAIL IN ────────────────────────
+    const blind = { source: 'loannex', programCount: 1, lenderCount: 1, rungCount: 2, programs: [{
+      lender: 'L', investor: 'L', program: 'P', product: 'P', amortizationType: 'Fixed', isInterestOnly: false, termInMonths: 360,
+      rungs: [{ rate: 7, price: 101, points: -1, lockDays: null }, { rate: 7.25, price: 100, points: 0, lockDays: null }],
+      rungCount: 2, lockDaysOffered: [],
+    }] };
+    const bn = pf.narrowBoard(blind, { lockDays: 30 });
+    ok(bn.kept === 1 && bn.board.programs[0].rungs.length === 2 && bn.unclassified === 1 && bn.unclassifiedRungs === 2,
+      'LOCK-9 a programme that publishes NO lock is kept and counted unclassified, rungs and all — a board we cannot judge is not a board we silently shorten');
+    const partial = { source: 'loannex', programCount: 1, lenderCount: 1, rungCount: 3, programs: [{
+      lender: 'L', investor: 'L', program: 'P', product: 'P', amortizationType: 'Fixed', isInterestOnly: false, termInMonths: 360,
+      rungs: [{ rate: 6.5, price: 99, points: 1, lockDays: 30 }, { rate: 7, price: 102.5, points: -2.5, lockDays: 60 }, { rate: 7.25, price: 101, points: -1, lockDays: null }],
+      rungCount: 3, lockDaysOffered: [30, 60],
+    }] };
+    const pn = pf.narrowBoard(partial, { lockDays: 30 });
+    const kept = pn.board.programs[0];
+    ok(kept.rungs.length === 2 && kept.rungCount === 2 && kept.minRate === 6.5 && kept.maxPrice === 101
+      && kept.minPoints === -1 && JSON.stringify(kept.lockDaysOffered) === '[30]',
+      `LOCK-10 EVERY aggregate is recomputed off the surviving rungs (rungCount ${kept.rungCount}, minRate ${kept.minRate}, maxPrice ${kept.maxPrice}, minPoints ${kept.minPoints}, offers ${JSON.stringify(kept.lockDaysOffered)}) — a maxPrice left behind from the dropped 60-day rung would have the row advertising 102.5 at a lock that is no longer on it`);
+    ok(partial.programs[0].rungs.length === 3 && partial.rungCount === 3 && REAL.rungCount === 5286,
+      'LOCK-11 …and the vendor\'s own board is never mutated — a new board, new programmes, new rung arrays');
+    const gone = pf.narrowBoard({ source: 'loannex', programCount: 1, lenderCount: 1, rungCount: 1, programs: [{
+      lender: 'L', investor: 'L', program: 'P', product: 'P', amortizationType: 'Fixed', isInterestOnly: false, termInMonths: 360,
+      rungs: [{ rate: 7, price: 101, points: -1, lockDays: 60 }], rungCount: 1, lockDaysOffered: [60],
+    }] }, { lockDays: 30 });
+    ok(gone.kept === 0 && gone.dropped.lock === 1 && gone.board.programCount === 0,
+      'LOCK-12 a programme that does not price at the asked lock AT ALL is off the board and SAID SO — never kept at some other lock');
+    ok(pf.narrowBoard(REAL, { lockDays: null }).narrowed === false,
+      'LOCK-13 with no lock asked and nothing else asked either, the board is returned untouched — the general engine\'s door passes no request here and must stay exactly as it was');
+  }
+
+  console.log('\n── AND THE ROW SAYS WHICH LOCK IT IS, ON THE BOARD WHERE TWO PROGRAMS ANSWER ──');
+  {
+    const eng = read('app-v2/src/longterm/pricerEngine.js');
+    ok(/key: 'general',[\s\S]{0,6000}?showRowLock: false,/.test(eng),
+      'ROW-1 the GENERAL engine does not print the lock — every row there came from one vendor answering one lock, and the owner\'s rule for that screen is "don\'t touch our current setup"');
+    ok(/key: 'combined',[\s\S]{0,6000}?showRowLock: true,/.test(eng),
+      'ROW-2 …and the COMBINED engine does, because that is the board where two programs answer and the lock is what says the comparison is like for like');
+    const pricer = read('app-v2/src/longterm/LtPricer.jsx');
+    ok(/lockDays: o && o\.terms && nn\(o\.terms\.dayLock\) \? o\.terms\.dayLock : null,/.test(pricer),
+      'ROW-3 the row carries the lock off `o.terms.dayLock` — the ONE place the server puts it, so the row and the Details panel cannot disagree');
+    ok(/const lockNote = \(q\) => \(engine\.showRowLock && q && nn\(q\.lockDays\)/.test(pricer),
+      'ROW-4 …and it is drawn behind the engine flag, so a component rendered with no provider above it draws nothing new');
+    ok((noComments(pricer).match(/\{lockNote\(/g) || []).length === 2,
+      'ROW-5 …on BOTH row lines — the lender line and the per-programme line under it, so opening a lender does not lose the lock');
   }
 
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);

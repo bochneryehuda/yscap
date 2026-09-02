@@ -639,17 +639,33 @@ async function drainInbox(opts = {}) {
     `SELECT * FROM docusign_event_inbox
       WHERE processed_at IS NULL AND attempts < $2
       ORDER BY received_at LIMIT $1`, [limit, MAX_INBOX_ATTEMPTS]);
-  const results = [];
+  /* ONE TRUTH FETCH PER ENVELOPE PER DRAIN. A single signature lands as a burst of
+     Connect events (recipient-completed, envelope-delivered, recipient-sent for the
+     next signer…) and — because the account-level Connect configuration and the
+     envelope's own subscription both post — each of them arrives TWICE. Every row
+     used to cost its own Envelopes:get, so one signature was six to twelve DocuSign
+     reads that all returned the same envelope. The event is only a trigger and the
+     reconcile reads the current truth, so all the rows for one envelope are served by
+     ONE reconcile: they are marked processed together, or all count a failed attempt
+     together. Rows with no envelope id still go one by one (nothing to group on). */
+  const groups = new Map();
   for (const row of due.rows) {
+    const key = row.envelope_id ? `env:${row.envelope_id}` : `row:${row.id}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  const results = [];
+  for (const rows of groups.values()) {
+    const ids = rows.map((r) => r.id);
     try {
-      const r = await processInboxRow(db, docusign, storage, row);
-      await db.query(`UPDATE docusign_event_inbox SET processed_at = now(), process_error = NULL WHERE id = $1`, [row.id]);
-      results.push({ id: row.id, ...r });
+      const r = await processInboxRow(db, docusign, storage, rows[0]);
+      await db.query(`UPDATE docusign_event_inbox SET processed_at = now(), process_error = NULL WHERE id = ANY($1::uuid[])`, [ids]);
+      for (const row of rows) results.push({ id: row.id, ...r, ...(rows.length > 1 ? { coalesced: rows.length } : {}) });
     } catch (e) {
       const msg = ((e && e.message) || String(e)).slice(0, 500);
       await db.query(
-        `UPDATE docusign_event_inbox SET attempts = attempts + 1, process_error = $2 WHERE id = $1`, [row.id, msg]);
-      results.push({ id: row.id, error: msg });
+        `UPDATE docusign_event_inbox SET attempts = attempts + 1, process_error = $2 WHERE id = ANY($1::uuid[])`, [ids, msg]);
+      for (const row of rows) results.push({ id: row.id, error: msg });
     }
   }
   return results;

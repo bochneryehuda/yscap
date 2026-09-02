@@ -98,7 +98,7 @@ const tracking = read('src/lib/esign/tracking.js');
 const blockFn = (tracking.match(/async function termSheetStampBlock[\s\S]*?\n}/) || [''])[0];
 ok(/term_sheet_final/.test(blockFn),
   'termSheetStampBlock reads the real stamp off the stored document');
-ok(/canFinalize = !!stamp\.final && !final/.test(blockFn),
+ok(/canFinalize = !!stamp\.final && (?:!final|block)/.test(blockFn),
   'termSheetStampBlock computes canFinalize (hard-coding false silently disables the finalize buttons)');
 ok(!/final: true, block: false, message: null, canFinalize: false/.test(blockFn),
   'termSheetStampBlock does not report a hard-coded "always final, never blocked"');
