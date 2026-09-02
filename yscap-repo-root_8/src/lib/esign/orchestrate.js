@@ -795,6 +795,26 @@ function resolveRecipientIdentity(r, app) {
   return { email: null, name: null };
 }
 
+/**
+ * THE LOAN OFFICER WHO SIGNS THE TERM SHEET — one definition (owner-directed
+ * 2026-09-02, closing the officer half of the stale-parties gap). The roster puts
+ * an officer on the term-sheet package only when the file has an ASSIGNED officer
+ * whose staff record carries an email; the Term Sheet Studio must draw the officer's
+ * signature line (the `/ts_lo_sig/` anchor) under EXACTLY the same rule, or the
+ * sheet and the send disagree about whether an officer signs — and the signer
+ * check (term-sheet-signers.js) then refuses a sheet that was drawn from a stale
+ * screen. Both sides call this. PURE: `app` is a row carrying `loan_officer_id`,
+ * `officer_name`, `officer_email`, `officer_nmls` (loadApplication's shape, or the
+ * pricing route's own read). Returns null when no officer signs.
+ */
+function loanOfficerSigner(app) {
+  if (!app || !app.loan_officer_id || !app.officer_email) return null;
+  const email = String(app.officer_email).trim();
+  if (!email) return null;
+  const name = String(app.officer_name || '').trim() || email;
+  return { name, email, nmls: String(app.officer_nmls || '').trim() };
+}
+
 function buildRoster(app, spec, envelopeRowId, opts = {}) {
   const roster = [];
   // Draw-send recipient choice (owner-directed 2026-07-21): the SOLO package (the draw request / wire form)
@@ -825,10 +845,11 @@ function buildRoster(app, spec, envelopeRowId, opts = {}) {
   // the borrower AND the loan officer have signed (owner-directed 2026-07-21). Only
   // added when the file has an ASSIGNED loan officer with an email — an unassigned
   // file falls back to the previous roster shape so the send never blocks.
-  if (!spec.soloBorrower && spec.loanOfficerRequired && app.loan_officer_id && app.officer_email) {
+  const loSigner = !spec.soloBorrower && spec.loanOfficerRequired ? loanOfficerSigner(app) : null;
+  if (loSigner) {
     roster.push({
       role: 'loan_officer', routingOrder: 1, recipientId: String(roster.length + 1), isCountersigner: false,
-      borrowerId: null, name: app.officer_name || app.officer_email, email: app.officer_email,
+      borrowerId: null, name: loSigner.name, email: loSigner.email,
       clientUserId: clientUserIdFor(envelopeRowId, 'loan_officer'),
     });
   }
@@ -1360,6 +1381,7 @@ async function sendPackage(applicationId, purpose, actor, opts = {}) {
 }
 
 module.exports = {
+  loanOfficerSigner,
   packageLabel,
   PACKAGES, packageSpec, buildDefinition, sendPackage,
   createOrClaimEnvelope, buildRoster, resolveRecipientIdentity, tabsFor, resolveConditionItem,

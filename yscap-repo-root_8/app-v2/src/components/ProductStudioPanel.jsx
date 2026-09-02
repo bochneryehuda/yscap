@@ -1422,6 +1422,22 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
       setBusy(false);
     }
   }
+  /* THE OFFICER'S SIGNATURE LINE, from the server's OWN read (owner-directed
+     2026-09-02, the officer half of the stale-parties gap). The screen's `app`
+     carries the officer's NAME as of page load and never the email or NMLS; the
+     server's `parties.loanOfficer` is decided by the SAME rule the send uses to
+     put an officer on the package, read for THIS response. So an officer assigned
+     after the page loaded gets a line, the NMLS prints, and the sheet never draws
+     a line the send would not ask to be signed. The screen is the fallback only
+     while the server has not answered. Memoised on the three fields, so the
+     studio's re-publish effect fires on a real change, not on every render. */
+  const partiesLo = data && data.parties ? (data.parties.loanOfficer || null) : undefined;
+  const loName = partiesLo !== undefined ? (partiesLo ? partiesLo.name : '') : ((app && app.loan_officer_name) || '');
+  const loEmail = partiesLo !== undefined ? (partiesLo ? partiesLo.email : '') : ((app && app.loan_officer_email) || '');
+  const loNmls = partiesLo !== undefined ? (partiesLo ? partiesLo.nmls : '') : ((app && app.loan_officer_nmls) || '');
+  const studioOfficer = useMemo(
+    () => (isStaff && (loName || loEmail) ? { name: loName, email: loEmail, nmls: loNmls, role: 'Loan officer' } : null),
+    [isStaff, loName, loEmail, loNmls]);
   finalizeRef.current = finalizeTermSheet;
 
   // Request an EXCEPTION to a guideline the deal otherwise follows — e.g. to
@@ -1902,9 +1918,7 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
                        origination + broker fee) so the broker sheet prices exactly
                        what registers. Null on staff/borrower (route omits it). */
                     pricingDefaults={(isTpo && data && data.pricingDefaults) || null}
-                    officer={isStaff && app && (app.loan_officer_name || app.loan_officer_email)
-                      ? { name: app.loan_officer_name || '', email: app.loan_officer_email || '', nmls: app.loan_officer_nmls || '', role: 'Loan officer' }
-                      : null} />
+                    officer={studioOfficer} />
                 : <p className="muted small">Loading your scenario…</p>}
               {/* Pricing controls are open to every staff role again, and every
                   change to them goes for approval (owner-directed 2026-07-27).

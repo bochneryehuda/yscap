@@ -626,6 +626,25 @@ const TermSheetStudio = forwardRef(function TermSheetStudio({ prefill, lockedIds
   useEffect(() => {
     try { const w = winRef.current; if (w) w.TS_PROVENANCE = provenance ? { kind: provenance } : null; } catch (_) { /* cosmetic */ }
   }, [provenance]);
+  /* Same for the OFFICER (owner-directed 2026-09-02): the host re-reads the file's
+     parties on every pricing reload, so an officer assigned after the studio was
+     opened arrives here as a changed prop. Re-publish it to the tool's YSBRAND so
+     the next export draws that officer's signature line. Only ever publishes a
+     PRESENT officer — an absent one keeps whatever the boot stamp decided (the
+     person at the keyboard on an unassigned file, owner-directed 2026-08-07). */
+  const officerName = officer ? String(officer.name || '') : '';
+  const officerEmail = officer ? String(officer.email || '') : '';
+  const officerNmls = officer ? String(officer.nmls || '') : '';
+  useEffect(() => {
+    try {
+      const w = winRef.current;
+      if (w && officerName) {
+        w.YSBRAND = Object.assign({}, officer, {
+          code: (officer && officer.code) || String(officerEmail || officerName).split('@')[0].toLowerCase(),
+        });
+      }
+    } catch (_) { /* cosmetic — falls back to the boot stamp */ }
+  }, [officerName, officerEmail, officerNmls]); // eslint-disable-line react-hooks/exhaustive-deps
   // Push the resolved TPO firm pricing whenever it lands/changes (a pricing reload
   // on a TPO file). The tool's own boot fetch is overridden by this. No-op off a
   // TPO file (pricingDefaults null) or before the frame is up (the boot handler
