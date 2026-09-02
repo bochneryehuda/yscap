@@ -404,8 +404,25 @@ ok(h.environment === 'uat', 'UAT is the default environment, never production');
 ok(h.tokenConfirmed === true,
    'the UAT identity host is now vendor-CONFIRMED (ids.uat.classvaluation.com)');
 ok(client._internals.HOSTS.test.tokenConfirmed === true, 'the test identity host IS confirmed by the guide');
-ok(client._internals.HOSTS.production.tokenConfirmed === false,
-   'production identity is STILL inferred — confirm it before switching production on');
+ok(client._internals.HOSTS.production.tokenConfirmed === true,
+   'production identity is CONFIRMED (a live production sign-in minted a bearer at ids.classvaluation.com, 2026-09-02)');
+// The short spellings an operator naturally types fold to `production` instead of
+// silently falling back to UAT (the live failure of 2026-09-02: CLASS_ENVIRONMENT=prod
+// sent production credentials to the UAT sign-in host).
+const reloadHosts = () => {
+  delete require.cache[require.resolve('../src/config')];
+  delete require.cache[require.resolve('../src/class/client')];
+  return require('../src/class/client').hosts();
+};
+for (const alias of ['prod', 'PROD', 'prd', 'live']) {
+  process.env.CLASS_ENVIRONMENT = alias;
+  const ha = reloadHosts();
+  ok(ha.environment === 'production' && ha.tokenUrl === 'https://ids.classvaluation.com/connect/token'
+     && ha.apiBase === 'https://api.classvaluation.com/intg',
+     `CLASS_ENVIRONMENT=${alias} resolves to the production hosts`);
+}
+process.env.CLASS_ENVIRONMENT = 'uat';
+reloadHosts();   // put the UAT default back for everything that follows
 // The data prefix the live API hangs every route off — reported so a preflight can
 // print exactly where an order call goes (not just the host).
 ok(h.apiPrefix === '/intg' && h.apiBase === 'https://api.uat.classvaluation.com/intg',
