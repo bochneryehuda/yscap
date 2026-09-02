@@ -32,6 +32,7 @@ const data = require('../orders/data');
 const letter = require('../orders/letter');
 const kinds = require('../orders/kinds');
 const landlordMemory = require('../landlord-memory');
+const sweep = require('../conditions-center/sweep');
 const vendorDirectory = require('../../lib/vendor-directory');
 const { loadScopedLoan, UUID_RE } = require('./scoped-loan');
 
@@ -71,9 +72,17 @@ router.get('/loans/:loanId', async (req, res) => {
   const scoped = await loadScopedLoan(req, res, 'lt-orders');
   if (!scoped) return;
   try {
+    /* THE RULES RUN BEFORE THE DESK IS READ, when the file is due a pass — the
+       same door the condition centre's own screen opens with. The desk's "does
+       this order belong on this file" is answered by which conditions the engine
+       attached (`orders/applies.js`), and until 2026-09-02 nothing on this route
+       refreshed that list, so a property that became a condominium yesterday
+       still greyed the condo questionnaire today (audit S9). Best-effort: a pass
+       that fails is reported in `rules` and the desk is read regardless. */
+    const rules = await sweep.evaluateIfStale(scoped.loan.id, { db });
     const view = await desk.desk(scoped.loan.id, db);
     if (!view) return res.status(404).json({ error: 'No such long-term loan.' });
-    res.json({ ...view, canEditLetters: await isAdmin(req) });
+    res.json({ ...view, rules, canEditLetters: await isAdmin(req) });
   } catch (e) {
     console.error('[lt-orders] desk read failed:', (e && e.message) || e);
     res.status(503).json({ error: 'Could not read the orders on this loan just now. Try again in a moment.' });
@@ -108,7 +117,12 @@ router.get('/loans/:loanId/:kind/preview', async (req, res) => {
     const d = await data.getOrderData(scoped.loan.id, db);
     if (!d) return res.status(404).json({ error: 'No such long-term loan.' });
     const followup = String(req.query.followup || '') === '1';
-    const built = letter.buildLetter(kind, d, { followup, note: String(req.query.note || '') });
+    /* The preview is signed by the person READING it, because they are the one
+       who will press Send — "what a person reads here is what the vendor
+       receives" is the whole contract of this route, and a preview signed by
+       somebody else breaks it on the one line the vendor replies to. */
+    const previewSender = await data.loadStaffCard(actorId(req));
+    const built = letter.buildLetter(kind, d, { followup, note: String(req.query.note || ''), sender: previewSender });
     const recips = require('../../lib/order-email').recipientsFor(kind, d, {
       replyTo: require('../../lib/file-address').ltOrderReplyTo(scoped.loan.id, kind),
     });
@@ -252,6 +266,9 @@ router.get('/loans/:loanId/vendors', async (req, res) => {
   const scoped = await loadScopedLoan(req, res, 'lt-orders');
   if (!scoped) return;
   try {
+    // The same on-open pass as the desk above: `contactTypes` below says which
+    // contacts belong on THIS file, off the conditions the engine attached.
+    const rules = await sweep.evaluateIfStale(scoped.loan.id, { db });
     /* THE LANDLORD THIS BORROWER ALREADY HAD, filled in before the list is read
        so the screen shows it rather than an empty slot. Owner-directed
        2026-08-31: *"the landlord contact information also saved directly to the
@@ -294,6 +311,7 @@ router.get('/loans/:loanId/vendors', async (req, res) => {
     }
     res.json({
       kinds: kinds.VENDOR_KINDS,
+      rules,
       contactTypes,
       // Said out loud when it happens. A card that appears on its own, with
       // nothing explaining where it came from, is one nobody trusts and everybody
@@ -631,10 +649,20 @@ router.delete('/loans/:loanId/vendors/:linkId', async (req, res) => {
   if (!UUID_RE.test(String(req.params.linkId || ''))) return res.status(404).json({ error: 'No such contact on this loan.' });
   try {
     const { rows } = await db.query(
-      'DELETE FROM lt_loan_vendors WHERE id = $1::uuid AND loan_id = $2::uuid RETURNING id',
+      'DELETE FROM lt_loan_vendors WHERE id = $1::uuid AND loan_id = $2::uuid RETURNING id, kind',
       [req.params.linkId, scoped.loan.id]);
     if (!rows.length) return res.status(404).json({ error: 'No such contact on this loan.' });
-    res.json({ ok: true });
+    /* A LANDLORD TAKEN OFF STAYS OFF. The read above fills the remembered landlord
+       in on every open, so removing the card here and nothing else put it straight
+       back on the next read (audit 2026-09-02, S3). The memory for this loan's
+       renting borrowers at their homes is marked declined (db/676); linking a
+       landlord for the same home again clears it. Best-effort — the unlink itself
+       has already happened and is reported either way. */
+    let landlordDeclined = null;
+    if (rows[0].kind === 'landlord') {
+      landlordDeclined = await landlordMemory.declineForLoan(scoped.loan.id, { db });
+    }
+    res.json({ ok: true, landlordDeclined });
   } catch (e) {
     console.error('[lt-orders] vendor unlink failed:', (e && e.message) || e);
     res.status(500).json({ error: 'Could not take that contact off the loan.' });

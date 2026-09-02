@@ -218,7 +218,11 @@ async function forCondition(loanId, conditionId, opts = {}) {
       code,
       shape: 'entity',
       entityName: vesting.name,
-      profile: prefill,
+      // WHOSE profile, so the screen can send a person to the SAME company on
+      // the borrower's own page (owner-directed 2026-09-02: *"It should actually
+      // be connected really to the profile, so you can edit it on the profile"*).
+      // It is the shared `llcs` row either way; this is only the address of it.
+      profile: { ...prefill, borrowerId: vesting.borrowerId ? String(vesting.borrowerId) : null },
       alreadyDone: settled.ok,
       note: settled.why,
     };

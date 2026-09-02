@@ -143,12 +143,17 @@ const ORDER_KINDS = Object.freeze({
     condition: 'lt_order_title',
     docCondition: 'lt_title_docs',
     letter: 'title',
+    /* THE INVOICE IS TESTED FIRST. A title company names its bill after the thing
+       it is for — "Invoice - Title Commitment.pdf" — and with the commitment
+       pattern first that bill filed itself as the commitment, so the condition
+       read as holding a commitment it did not have (audit 2026-09-02, S5). An
+       invoice named for anything is still an invoice. */
     slotMap: [
+      [/invoice|bill/i, 'invoice'],
       [/commit/i, 'commitment'],
       [/\bcpl\b|closing\s*protection/i, 'cpl'],
-      [/prelim|settlement\s*statement|\bhud\b|\bcd\b/i, 'prelim_settlement'],
+      [/prelim|settlement\s*statement|\bhud(-1)?\b|\bcd\b|closing\s*disclosure/i, 'prelim_settlement'],
       [/wir(e|ing)/i, 'wire_instructions'],
-      [/invoice|bill/i, 'invoice'],
     ],
   },
   insurance: {
@@ -179,13 +184,40 @@ const ORDER_KINDS = Object.freeze({
     condition: 'lt_order_ny_settlement_agent',
     docCondition: 'lt_ny_settlement_docs',
     letter: 'generic',
-    // What the settlement agent is asked to produce. Named here rather than in the
-    // letter so the ask and the slots that receive it are one list.
-    wants: ['Engagement letter', 'Wire instructions', 'Preliminary settlement statement'],
+    /* What the settlement agent is asked to produce. Named here rather than in
+       the letter so the ask and the slots that receive it are one list.
+
+       NO CLOSING PROTECTION LETTER — OWNER-CORRECTED 2026-09-02: *"In NY, there
+       is no CPL. We only ask them for their Errors and Omissions Assurance."*
+       The New York rule in docs/longterm/OWNER-ORDER-DRAFTS.md said the CPL
+       moved from the title order onto this one; it does not move, because there
+       is none to move. That draft is corrected at the source — leaving it would
+       put the CPL back the next time somebody reads it. What genuinely comes
+       from the settlement agent rather than from title is the E&O, which the
+       shared title letter already cuts from a New York title ask
+       (`lib/order-email.js` NY_TITLE_CUT). Asking an agent for a document their
+       state does not issue is how an order stalls on a reply nobody can send. */
+    wants: [
+      'Wire instructions',
+      'Your errors and omissions (E&O) insurance',
+      'Preliminary settlement statement',
+    ],
+    /* The settlement STATEMENT is named in full. A bare `settlement` swallowed
+       "Settlement Agent E&O.pdf" and "Settlement Agent W9.pdf" into the statement
+       slot — the agent's own name is on every document they send (audit S5). The
+       E&O is tested before it for the same reason.
+       NO `cpl` ROW: there is no closing protection letter in New York (owner,
+       2026-09-02) and there is no slot to file one into, so a filename merely
+       MENTIONING one must fall through to the condition rather than be filed
+       against a slot that does not exist. */
     slotMap: [
-      [/engag|retain/i, 'engagement'],
+      /* NO `engagement` ROW, for the CPL's reason: the owner asked for three
+         documents and the engagement letter is not one of them (2026-09-02), so
+         there is no slot to file one into and a retainer that arrives anyway
+         must fall through to the condition rather than a slot that is gone. */
       [/wir(e|ing)/i, 'wire_instructions'],
-      [/settlement|statement|\bhud\b|\bcd\b/i, 'settlement_statement'],
+      [/e&o|errors?\s*(and|&)\s*omissions/i, 'eo'],
+      [/settlement\s*statement|\bhud(-1)?\b|\bcd\b|closing\s*disclosure/i, 'settlement_statement'],
     ],
   },
   payoff: {
@@ -201,7 +233,10 @@ const ORDER_KINDS = Object.freeze({
        carries a REQUIRED `payoff` slot, which then still read as missing the
        document sitting right there. There is exactly one slot on that condition,
        so there is nothing for a guess to get wrong. */
-    slotMap: [[/payoff|demand|statement/i, 'payoff']],
+    /* NOT a bare `statement`: a servicer's reply often carries the borrower's
+       monthly "Mortgage Statement June.pdf" beside the payoff, and that is not the
+       payoff — filed as one, the condition read as satisfied by a bill (audit S5). */
+    slotMap: [[/payoff|demand/i, 'payoff']],
   },
   condo_questionnaire: {
     label: 'Condo questionnaire',
@@ -230,8 +265,12 @@ const ORDER_KINDS = Object.freeze({
        `question|cert` must not also swallow a certificate of insurance — hence
        the insurance test runs FIRST in `slotFor` order terms and the
        questionnaire pattern excludes an insurance word. */
+    /* The MASTER policy (or a "master insurance" certification of it) or a
+       CERTIFICATE of insurance, named as such. A bare `insur` filed "Insurance
+       Agent Contact.pdf" — the OTHER half of the owner's either/or, a name and a
+       phone number — as the master policy (audit S5). */
     slotMap: [
-      [/insur|master\s*polic/i, 'master_insurance'],
+      [/master\s*(polic|insurance)|certificate\s*of\s*insurance/i, 'master_insurance'],
       [/bylaw|by-law|by\s+law/i, 'bylaws'],
       [/budget/i, 'budget'],
       [/question|cert(ification)?\b/i, 'questionnaire'],
@@ -253,7 +292,13 @@ const ORDER_KINDS = Object.freeze({
     slotMap: [
       [/\bvom\b|verification\s+of\s+mortgage|mortgage\s+verification/i, 'vom_primary'],
       [/rent[\s-]*free|living\s+rent/i, 'rent_free_letter'],
-      [/\bvor\b|verification\s+of\s+rent|rent\s+verification|verification|rent/i, 'vor'],
+      /* THE COMPLETED VERIFICATION, named as one — never a bare `rent` or
+         `verification`. "Rent Ledger.pdf" and "Rent Receipts.pdf" are evidence a
+         landlord sends WITH the form and are not the form; filed as it, the
+         condition read as verified on a ledger nobody reviewed (audit S5). The
+         hyphenated and run-together spellings ("verification-of-rent.pdf", the
+         file's own name) are the same document. */
+      [/\bvor\b|verification\s*[-\s]*of\s*[-\s]*rent|rent\s*verification/i, 'vor'],
     ],
   },
 });

@@ -44,9 +44,24 @@ const F = require('./fields');
 const { buildVorPdf, measureOverflow } = require('./pdf');
 const vorData = require('./data');
 const orders = require('../orders/desk');
+const inbox = require('../orders/inbox');
 
 const FILENAME = 'verification-of-rent.pdf';
+/** The form as the landlord signed it on DocuSign, with the certificate appended. */
+const SIGNED_FILENAME = 'verification-of-rent-signed.pdf';
 const SUBJECT = 'Verification of rent';
+
+/**
+ * THE LETTER'S LAST LINE DEPENDS ON HOW THE FORM WENT (audit 2026-09-02, S11).
+ * The email letter used to promise "signed electronically from the link in this
+ * email" on an email-only send, where there is no link and no envelope. Keyed by
+ * method rather than a flag, so a fourth way of sending has to say its own line.
+ */
+const CLOSING_BY_METHOD = Object.freeze({
+  email: 'Please fill in Part III, sign it, and send the completed form back to us by replying to this email with it attached.',
+  both: 'You will also receive a separate DocuSign email with the same form, which can be signed electronically there — '
+    + 'or fill this copy in and send it back to us by reply. Either is fine; there is no need to do both.',
+});
 
 /** The envelope states that are still OUT — the ones a manual return must stop. */
 const LIVE_ENVELOPE = ['created', 'sent', 'delivered'];
@@ -291,13 +306,34 @@ async function send(loanId, opts = {}) {
   }
 
   if (method === 'email' || method === 'both') {
-    result.email = await sendAttachment({ loanId: id, form, pdf, from: opts.from, staffId: opts.staffId, force: !!opts.force });
+    result.email = await sendAttachment({ loanId: id, form, pdf, method, from: opts.from, staffId: opts.staffId, force: !!opts.force });
     // An email that fails after the envelope went out is NOT a failed send: the
     // landlord already has the signable copy. It is reported, never rolled back —
     // voiding a live envelope because a courtesy copy bounced would be worse.
     if (!result.email.ok && method === 'email') {
       return { ok: false, reason: 'email', message: result.email.message, email: result.email };
     }
+  }
+
+  /* THE ENVELOPE IS ON THE ORDER, so the two surfaces agree (audit 2026-09-02,
+     S1). Only `orders.place` ever wrote the order row and moved `lt_vor_sent`, so
+     a form sent by DocuSign alone left the condition outstanding and the orders
+     desk reading "Not ordered" while the landlord had it. Recorded AFTER the
+     email half on purpose: on "both" the email's own `place` writes the row and
+     its 'order' event first, and this adds the envelope beside it rather than
+     claiming the row ahead of a send that then reads as a second press. A record
+     that could not be written is reported on the result, never thrown — the
+     landlord has the form either way. */
+  if (result.docusign && result.docusign.ok) {
+    result.recorded = await orders.recordExternalSend(id, 'vor', {
+      channel: 'docusign',
+      externalRef: result.docusign.envelopeId,
+      filename: FILENAME,
+      to: result.docusign.to,
+      subject: `${SUBJECT} — ${form.data.account_name || 'loan applicant'}`,
+      text: `Sent to ${result.docusign.to || 'the landlord'} for e-signature on DocuSign (envelope ${result.docusign.envelopeId}).`,
+      staffId: opts.staffId,
+    });
   }
 
   return result;
@@ -370,13 +406,17 @@ async function failEnvelope(client, rowId, e) {
  * landlord's reply carrying the filled-in form files itself onto the loan exactly as
  * a title company's return does.
  */
-async function sendAttachment({ loanId, form, pdf, from, staffId, force }) {
+async function sendAttachment({ loanId, form, pdf, method, from, staffId, force }) {
   try {
     const res = await orders.place(loanId, 'vor', {
       staffId,
       from,
       force,
       note: 'The form is attached. Please complete Part III and send it back to this address.',
+      // The last line says what is TRUE of this send — an email-only send has
+      // no e-signature link to point at (S11). `place` refuses a rent order with
+      // no attachment at all (B1), so the form can never leave without itself.
+      closing: CLOSING_BY_METHOD[method === 'both' ? 'both' : 'email'],
       attachments: [{ filename: FILENAME, content: pdf.toString('base64') }],
     });
     /* The orders desk answers `{ok:false, error}` — its OWN refusals are quoted
@@ -440,6 +480,29 @@ async function recordManualReturn(loanId, opts = {}, client = db) {
       opts.storageRef || null, opts.filename || null, opts.staffId || null, note])).rows[0];
 
   const reason = `A completed form came back another way: ${note}`.slice(0, 200);
+
+  /* THE ORDER STANDS DOWN WITH THE SAME REASON (audit 2026-09-02, S6). The rent
+     ORDER row stayed 'ordered' after a manual return, so the next send by email
+     hit "this has already been ordered" and there was no way through — a dead
+     end. Stood down rather than forced past: the row then says, in the words a
+     person typed, WHY the ask ended, the thread keeps the inbound return beside
+     the letter that asked for it, and a later send is a fresh order through the
+     ordinary door rather than a `force` that hides what happened. Only an order
+     still WAITING is touched — one a person already completed is theirs. */
+  const orderRow = await orders.findOrder(id, 'vor', client).catch(() => null);
+  let stoodDown = null;
+  if (orderRow) {
+    await orders.recordEvent(client, orderRow, {
+      direction: 'inbound', msgType: 'return', subject: `${SUBJECT} — came back another way`,
+      text: note, status: 'received', staffId: opts.staffId || null,
+      attachments: opts.filename ? [{ filename: opts.filename, storageRef: opts.storageRef || null }] : [],
+    }).catch(() => null);
+    const c = await orders.cancel(id, 'vor', {
+      reason, staffId: opts.staffId || null, fromStatuses: ['ordered', 'documents_in'],
+    });
+    stoodDown = c && c.ok ? c.order.id : null;
+  }
+
   const voided = [];
   for (const e of live) {
     await client.query(
@@ -461,7 +524,7 @@ async function recordManualReturn(loanId, opts = {}, client = db) {
     }
   }
 
-  return { ok: true, returnId: ret.id, voided };
+  return { ok: true, returnId: ret.id, voided, orderStoodDown: stoodDown };
 }
 
 /**
@@ -503,9 +566,70 @@ async function applyEnvelopeStatus(envelopeId, status, opts = {}) {
      ON CONFLICT (envelope_id) WHERE source = 'docusign' AND envelope_id IS NOT NULL
      DO NOTHING`,
     [row.loan_id, row.id, JSON.stringify(opts.answers && typeof opts.answers === 'object' ? opts.answers : {}),
-      FILENAME, 'The landlord signed the form on DocuSign.']);
+      SIGNED_FILENAME, 'The landlord signed the form on DocuSign.']);
 
-  return { ok: true, status: next, recorded: true };
+  const document = await fileSignedDocument(row, eid, client);
+  return { ok: true, status: next, recorded: true, document };
+}
+
+/**
+ * THE SIGNED FORM REACHES THE HOUSING-HISTORY CONDITION (audit 2026-09-02, S2).
+ *
+ * A DocuSign return used to be a row with a filename and no document: nothing
+ * fetched the completed envelope, so the landlord's signed form never reached
+ * `lt_housing_history` and a person had to download it from DocuSign by hand and
+ * upload it — on the one order the owner asked to have "tied directly".
+ *
+ * The shared transport already exposes the download (`getCombinedDocument`, the
+ * signed PDF with the certificate of completion appended); this is the one call
+ * to it. The bytes then go through the SAME filing the email return uses
+ * (`inbox.fileAttachment`: dedupe by digest, storage, the `documents` row on the
+ * condition, pending review, staff-only), with the slot named explicitly — the
+ * signed form is the rent verification by construction, not by filename. The
+ * return row then carries the storage ref, as db/645 said it would.
+ *
+ * IDEMPOTENT ON A REDELIVERY: Connect resends freely and the poll re-applies, so
+ * the download is attempted only while the return has no storage ref, and the
+ * digest dedupe refuses the same bytes twice. A failed download is recorded on
+ * the envelope (`last_error`) and reported — never thrown, because the signature
+ * itself was recorded above and must not read as lost — and the next
+ * redelivery tries again.
+ */
+async function fileSignedDocument(envRow, envelopeId, client) {
+  const ret = (await client.query(
+    `SELECT id, storage_ref FROM lt_vor_returns
+      WHERE envelope_id = $1 AND source = 'docusign' ORDER BY created_at DESC LIMIT 1`,
+    [envRow.id])).rows[0];
+  if (!ret) return { ok: false, reason: 'no_return' };
+  if (ret.storage_ref) return { ok: true, already: true };
+  if (!docusignReady()) return { ok: false, reason: 'docusign_off' };
+
+  let pdf;
+  try {
+    pdf = await docusign.getCombinedDocument(envelopeId, { certificate: true });
+    if (!pdf || !pdf.length) throw new Error('DocuSign returned an empty document');
+  } catch (e) {
+    const msg = `The signed form could not be downloaded: ${String((e && e.message) || e).slice(0, 400)}`;
+    try {
+      await client.query(`UPDATE lt_vor_envelopes SET last_error = $2, updated_at = now() WHERE id = $1`, [envRow.id, msg]);
+    } catch (_) { /* the signature is recorded; losing the note must not mask that */ }
+    return { ok: false, reason: 'download_failed', message: msg };
+  }
+
+  const condition = await inbox.docConditionFor(envRow.loan_id, 'vor', client).catch(() => null);
+  if (!condition) return { ok: false, reason: 'no_condition', message: 'There is no housing-history condition on this loan to file the signed form onto.' };
+
+  const filed = await inbox.fileAttachment({
+    loanId: envRow.loan_id, order: { kind: 'vor' }, condition,
+    att: { filename: SIGNED_FILENAME, contentType: 'application/pdf', content: Buffer.from(pdf).toString('base64') },
+    slot: 'vor',
+  }, client);
+  if (!filed.filed) return { ok: false, reason: (filed.skipped && filed.skipped.reason) || 'not_filed', message: filed.skipped && filed.skipped.why };
+
+  await client.query(
+    `UPDATE lt_vor_returns SET storage_ref = $2, filename = $3 WHERE id = $1 AND storage_ref IS NULL`,
+    [ret.id, filed.filed.storageRef || null, SIGNED_FILENAME]);
+  return { ok: true, documentId: filed.filed.id, slot: filed.filed.slot, conditionId: condition.id };
 }
 
 /**
@@ -612,6 +736,6 @@ module.exports = {
   state, loadForm, saveForm, confirmForm, preview, send, recordManualReturn, applyEnvelopeStatus,
   reconcileOpenEnvelopes, answersFromEnvelope,
   listEnvelopes, listReturns,
-  BLOCKER_TEXT, LIVE_ENVELOPE, FILENAME,
-  _internals: { blockersFor, anchorsPresent, docusignReady, sendEnvelope, sendAttachment },
+  BLOCKER_TEXT, LIVE_ENVELOPE, FILENAME, SIGNED_FILENAME, CLOSING_BY_METHOD,
+  _internals: { blockersFor, anchorsPresent, docusignReady, sendEnvelope, sendAttachment, fileSignedDocument },
 };
