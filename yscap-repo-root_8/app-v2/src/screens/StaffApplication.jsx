@@ -45,6 +45,7 @@ import TapeSendModal from '../components/TapeSendModal.jsx';
 import FileOverviewSlideOver from '../components/FileOverviewSlideOver.jsx';
 import { CreditCondition } from '../components/CreditReport.jsx';
 import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
+import StatusActionsCard from '../components/StatusActionsCard.jsx';
 import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
 import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
 import { PhoneInput, ZipInput , EmailInput, DateCommitInput } from '../components/FormattedInputs.jsx';
@@ -6047,6 +6048,10 @@ export default function StaffApplication() {
       {/* THE WORKFLOW (owner-directed 2026-07-21) — the primary way a file moves.
           Submit it to the next person; the status follows automatically. */}
       <SubmitFilePanel appId={id} onChange={load} />
+      {/* THE STATUS ACTIONS (owner-directed 2026-09-01): the processor moves the file's
+          status from the overview when she finishes her part — through the same status
+          door as the dropdown, with the clear-to-close sign-off gate explained by name. */}
+      <StatusActionsCard appId={id} app={app} onChanged={load} />
       {/* Status, ClickUp status & closing — one clean labeled control panel. The
           old version crammed the selects + buttons into loose rows and cut off the
           long ClickUp-status field; labels now sit above full-width fields in a

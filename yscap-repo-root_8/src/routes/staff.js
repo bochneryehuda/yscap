@@ -5376,7 +5376,13 @@ router.post('/applications/:id/conditions/custom', async (req, res) => {
      VALUES ('application',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'staff',$15,$16,$17)
      RETURNING id`,
     [req.params.id, label.slice(0, 300),
-     scrubText(String(b.borrowerLabel || '').trim().slice(0, 300)) || null,
+     /* THE HEADER THE BORROWER SEES IS NEVER BLANK (owner-reported 2026-09-01: the card said
+        "An item your loan team needs" with the real wording in small text — the borrower
+        payload COALESCEs borrower_label to that phrase). A borrower-facing condition with no
+        borrower-facing name takes the internal name, scrubbed, exactly as the template
+        author (admin-conditions.js) and the document-request route already default it. An
+        internal-only condition keeps NULL — it has no borrower header to show. */
+     scrubText(String(b.borrowerLabel || (audience !== 'staff' ? label : '')).trim().slice(0, 300)) || null,
      String(b.hint || '').trim().slice(0, 2000) || null,
      scrubText(String(b.borrowerHint || '').trim().slice(0, 2000)) || null,
      audience, CONDITION_TYPES[type].itemKind, toolKey || null, fieldKey,
@@ -6887,6 +6893,15 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
   }
   const attach = composed.attachments;
   const attachSkipped = composed.skipped;
+  /* PREVIEW BEFORE IT GOES OUT (owner-directed 2026-09-01: "any email that it's sending,
+     even if it's a follow-up, should preview the text that's going to be sent: insurance
+     and title and all others"). `preview:true` runs EVERY branch below exactly as the send
+     would — same builder, same recipients — and answers with the preview shape instead of
+     sending, with no side effects. An edit made in that preview comes back as `override`
+     and lands through the ONE chokepoint every manual send uses (manual-override). */
+  const previewOnly = !!(req.body && req.body.preview === true);
+  const override = (req.body && req.body.override) || null;
+  const MO = require('../lib/email/manual-override');
   try {
     const ctx = await notify.fileContext(appId).catch(() => null);
     // The acting staffer's own email/name (req.actor carries only id/role/perms).
@@ -6940,14 +6955,32 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
         const data = await closingPrep.getClosingPrepData(appId);
         if (!data) return res.status(404).json({ error: 'not found' });
         const senderName = meRow.full_name || meRow.email || '';
+        // A TYPED REPLY, not the stock follow-up (owner-reported 2026-09-01): the
+        // person's own words under the chain's subject — never the "Following up on
+        // this closing" headline, which belongs to the Follow-up button alone.
+        const buildReply = ({ address }) => MO.applyOverride(
+          closingPrep.buildFollowupEmail(data, { note: bodyText, address, senderName, reply: true }),
+          override, { title: 'Closing prep' });
+        if (previewOnly) {
+          // Show the subject the chain will actually carry: once the chain has one,
+          // sendOnThread re-uses it Re:-prefixed (closing-thread), so the preview must
+          // say so rather than show the built title. Locked — the chain owns it.
+          const builtReply = buildReply({ address: null });
+          const shown = thread && thread.subject
+            ? { ...builtReply, subject: closingThread.replySubject(thread.subject) || builtReply.subject }
+            : builtReply;
+          return res.json(MO.previewShape(shown, { to: closingParties.to, cc: closingParties.cc, scope: 'closing', subjectLocked: true }));
+        }
         const sent = await closingThread.sendOnThread({
-          applicationId: appId, eventKind: 'followup', dedupeKey: null,
+          // 'manual' is the chain's own kind for a human-written message (closing-thread
+          // EVENT_KINDS); 'followup' is reserved for the Follow-up button.
+          applicationId: appId, eventKind: 'manual', dedupeKey: null,
           to: closingParties.to, cc: closingParties.cc, fromName: senderName, staffId: req.actor.id,
-          msgType: 'closing_followup', attachments: attach,
-          build: ({ address }) => closingPrep.buildFollowupEmail(data, { note: bodyText, address, senderName }),
+          msgType: 'closing_message', attachments: attach,
+          build: buildReply,
         });
         if (!sent.ok) return res.status(500).json({ error: 'Could not send on the closing chain.', code: sent.reason });
-        await audit(req, 'closing_prep_followup', 'application', appId, { to: sent.to.length, via: 'email_center', attached: attach.length });
+        await audit(req, 'closing_prep_reply', 'application', appId, { to: sent.to.length, via: 'email_center', attached: attach.length });
         return res.json({ ok: true, sent_to: sent.to, cc: sent.cc, attached: attach.length, attachSkipped });
       }
     }
@@ -6987,7 +7020,16 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       if (data.uspsGate && !data.uspsImported) {
         return res.status(422).json({ error: `The property address is no longer USPS-verified. Re-verify and import it in “USPS Address Verification” before writing to the ${kind === 'title' ? 'title company' : 'insurance agent'}, so they never get an unverified address.`, code: 'usps' });
       }
-      const built = orders.buildOrderEmail(kind, data, { followup: true, note: bodyText });
+      /* THE PERSON'S OWN WORDS, NOT A FOLLOW-UP (owner-reported 2026-09-01: "even if they
+         manually reply, it fills out like it's a follow-up email. It pre-fills stuff from
+         the follow-up button … only your text should be sent"). This door used to build
+         through `followup:true` with the typed text as the intro, so every reply carried
+         the deliverables ask, the fact table and a "— Follow-up" headline, and was counted
+         as a chase. The reply mode renders the typed text alone (greeting, paragraphs,
+         sign-off, officer card). The official follow-up stays on the Follow-up button. */
+      const built = MO.applyOverride(
+        orders.buildOrderEmail(kind, data, { reply: true, note: bodyText, senderName: meRow.full_name || '' }),
+        override, { title: `${kind === 'title' ? 'Title' : 'Insurance'} order` });
       const replyCc = await ccBorrowerFor(appId, kind, { storedMeta: row.meta });
       const replyHelperCc = await ccHelperFor(appId, kind, { storedMeta: row.meta });
       const base = orders.recipientsFor(kind, data, { ccBorrower: replyCc, ccHelper: replyHelperCc });
@@ -7002,36 +7044,45 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       const parties = await threadParticipants.replyRecipients({
         applicationId: appId, msgTypes: [`${kind}_message`],
         to: base.to, cc: base.cc,
-        never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data)].filter(Boolean),
+        never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data),
+          ...require('../lib/file-contacts').retiredVendorEmails(row && row.meta)].filter(Boolean),
       });
       const { to, cc } = parties;
       const { replyTo } = base;
       // Reply on the SAME vendor chain the order was placed on (owner-directed
       // 2026-08-04) — same subject + the order's Message-ID, not a new thread.
       const thread = { root: row.meta && row.meta.rootMessageId, last: row.meta && row.meta.lastMessageId, subject: row.subject };
+      if (previewOnly) {
+        // The subject the send will really use: the thread's, with one "Re:" — the
+        // preview must never show a subject the vendor will not see.
+        const shown = { ...built, subject: orders.replyOrderSubject(thread.subject || built.subject) || built.subject };
+        return res.json(MO.previewShape(shown, { to, cc, scope: kind, subjectLocked: true }));
+      }
       const sent = await orders.sendOrderMail({
         appId, kind, data, to, cc, replyTo, built,
         fromName: meRow.full_name || meRow.email,
-        type: `${kind}_followup`, thread, attachments: attach,
+        type: `${kind}_message`, thread, attachments: attach,
       });
       if (!sent.ok && !sent.ambiguous) {
         return res.status(sent.reason === 'contact' ? 400 : 502).json({ error: sent.message, code: sent.reason });
       }
-      // A reply IS a follow-up on this order — record it as one so the aging clock
-      // and the desk's "last chased" both reflect that somebody wrote to the vendor,
-      // and advance the thread (lastMessageId) on a confirmed send.
+      // A typed reply is NOT a chase: it does not touch followup_count / last_followup_at
+      // (those belong to the Follow-up button, and moving them here made the desk say a
+      // vendor had been "chased" when somebody had only answered a question). It DOES
+      // advance the thread (lastMessageId) on a confirmed send, so the next message
+      // still lands in the vendor's conversation.
       await db.query(
-        `UPDATE file_orders SET followup_count=followup_count+1, last_followup_at=now(),
+        `UPDATE file_orders SET
                 meta = CASE WHEN $3::text IS NOT NULL
                          THEN COALESCE(meta,'{}'::jsonb) || jsonb_build_object('lastMessageId', $3::text)
                          ELSE meta END,
                 updated_at=now()
           WHERE application_id=$1 AND order_type=$2`, [appId, kind, sent.messageId || null]);
       await orderTracking.recordEvent({
-        applicationId: appId, orderType: kind, kind: 'followed_up', actorId: req.actor.id,
+        applicationId: appId, orderType: kind, kind: 'message_sent', actorId: req.actor.id,
         detail: { to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous },
       });
-      try { await audit(req, 'order_followup', 'application', appId, { kind, to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous }); } catch (_) { /* sent either way */ }
+      try { await audit(req, 'order_reply', 'application', appId, { kind, to: to.length, via: 'email_center', unconfirmed: !!sent.ambiguous }); } catch (_) { /* sent either way */ }
       if (sent.ambiguous) return res.json({ ok: true, unconfirmed: true, warning: sent.message, sent_to: to, cc, attached: attach.length, attachSkipped });
       return res.json({ ok: true, sent_to: to, cc, attached: attach.length, attachSkipped });
     }
@@ -7075,7 +7126,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
     // Split the typed reply into paragraphs: the first is the intro (body), the
     // rest render as additional lines — never both, so the text isn't duplicated.
     const paras = safeBody.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
-    const built = notify.buildEmail({
+    const builtPlain = notify.buildEmail({
       title: subject.replace(/^\s*re:\s*/i, '') || 'A message from your loan team',
       body: paras[0] || safeBody,
       lines: paras.slice(1),
@@ -7085,6 +7136,13 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       ctaLabel: audience === 'borrower' ? 'Open your file' : 'Open the loan file',
       replyable: true,
     }, audience);
+    // An edit made in the preview lands here too — the same chokepoint as every
+    // other manual send. A borrower-bound edit is scrubbed like the typed body was.
+    const safeOverride = override && anyBorrower
+      ? { subject: override.subject ? scrubTextExcept(String(override.subject), protect) : null,
+          text: override.text ? scrubTextExcept(String(override.text), protect) : null }
+      : override;
+    const built = MO.applyOverride(builtPlain, safeOverride, { title: subject.replace(/^\s*re:\s*/i, '') || 'A message from your loan team' });
     // From the officer by name so the reply reads as a person, not a robot.
     const fromName = email.fromWithName ? email.fromWithName(meRow.full_name || meRow.email) : null;
     // A reply/compose sent FROM the draw email center is tagged 'draw_message' so it
@@ -7106,6 +7164,7 @@ router.post('/applications/:id/emails/reply', async (req, res) => {
       const loopIn = await require('../lib/draw-recipients').drawReplyLoopIn(appId);
       drawCc = require('../lib/draw-recipients').replyCcFrom(loopIn, { toEmails, sender: meEmail });
     } catch (_) { /* best-effort: the reply still sends */ }
+    if (previewOnly) return res.json(MO.previewShape(built, { to: toEmails, cc: drawCc, scope: scopeIn || 'file' }));
     await email.sendMail({
       to: toEmails, subject: built.subject, html: built.html, text: built.text,
       cc: drawCc.length ? drawCc : undefined,
@@ -7612,7 +7671,8 @@ router.get('/applications/:id/orders/:kind/email-preview', async (req, res) => {
       const parties = await threadParticipants.replyRecipients({
         applicationId: appId, msgTypes: [`${kind}_message`],
         to: base.to, cc: base.cc,
-        never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data)].filter(Boolean),
+        never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data),
+          ...require('../lib/file-contacts').retiredVendorEmails(row && row.meta)].filter(Boolean),
       });
       to = parties.to; cc = parties.cc;
     }
@@ -8134,7 +8194,8 @@ router.post('/applications/:id/orders/:kind/followup', async (req, res) => {
     const fuParties = await threadParticipants.replyRecipients({
       applicationId: appId, msgTypes: [`${kind}_message`],
       to: fuBase.to, cc: fuBase.cc,
-      never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data)].filter(Boolean),
+      never: [data.borrowerEmail, data.coBorrowerEmail, ...orders.helperEmails(data),
+          ...require('../lib/file-contacts').retiredVendorEmails(row && row.meta)].filter(Boolean),
     });
     const { to, cc } = fuParties;
     const { replyTo } = fuBase;
@@ -15911,6 +15972,26 @@ router.get('/applications/:id/note-buyer', async (req, res) => {
   }
 });
 
+// WHAT THE APPRAISER WILL BE TOLD, before the order is placed (owner-directed
+// 2026-09-01). Read-only. Says which capital provider's appraisal requirements
+// this file carries and the exact message that will be posted on the order — or,
+// when nothing on the file decides the provider, that the officer should be asked
+// to pick one (optional; ordering without one is allowed and posts nothing).
+// STAFF-ONLY like the note-buyer slot: this router is staff-gated + file-scoped,
+// and the note-buyer name never reaches a borrower. The choice itself still goes
+// through the ONE write path (`complete-fields` with `lender`).
+router.get('/applications/:id/appraisal-requirements', async (req, res) => {
+  try {
+    const out = await require('../lib/appraisal/order-requirements-post').summaryFor(db, req.params.id);
+    if (!out) return res.status(404).json({ error: 'not found' });
+    res.json(out);
+  } catch (e) {
+    if (e && e.code === '22P02') return res.status(400).json({ error: 'invalid id' });
+    console.warn('[staff] appraisal requirements summary error:', db.describeError(e));
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 /* THE PAYOFF SECTION (owner-directed 2026-07-31) — everything the file's payoff
    card needs: which kind of refinance this is, what has been entered, what is
    still missing and WHY it matters, what the structure implies the borrower
@@ -16538,7 +16619,10 @@ async function applicationCompleteness(appId) {
   const missing = need.filter(([v]) => v == null || v === '').map(([, label]) => label);
   return { complete: missing.length === 0, missing };
 }
-const COND_CLEAR_THRESHOLD = 0.80;   // "once 80–90% of conditions are cleared" (owner)
+// Owner-directed 2026-09-01: "We can move down the requirement for condition clearing so
+// that we can submit for condition clearing at 65% of conditions already." (Was 0.80 —
+// "once 80–90% of conditions are cleared", 2026-07-21.)
+const COND_CLEAR_THRESHOLD = 0.65;
 
 // The data behind the file's Submit panel: which people each type routes to (the
 // already-assigned person or the list to pick from), what's already in someone's
@@ -16593,6 +16677,25 @@ router.get('/applications/:id/workflow/options', async (req, res) => {
       live,
       outcomeLabels: workflow.OUTCOME_LABELS,
       expectedClosing: app.expected_closing || null,
+      /* WHERE IN THE QUEUE (owner-directed 2026-09-01: "on the Clear to Close button, the
+         Condition Clearing button, and the Track Record Review button, you should be able to
+         see where in the queue you are … the number should change according to the queue").
+         For a kind this file already has live: its position. Otherwise: the position a
+         submission made now would take — the processor's live queue of that kind + 1. */
+      queue: await (async () => {
+        const out = {};
+        for (const t of workflow.PROCESSOR_QUEUE_TYPES) {
+          const liveItem = (live || []).find((x) => x.submission_type === t);
+          try {
+            if (liveItem) out[t] = { live: true, ...(await workflow.queuePositionOf(liveItem.id) || {}) };
+            else {
+              const length = await workflow.queueLengthFor({ staffId: app.processor_id || null, role: 'processor', type: t });
+              out[t] = { live: false, position: length + 1, length };
+            }
+          } catch (_) { out[t] = null; }
+        }
+        return out;
+      })(),
     });
   } catch (e) { console.warn('[workflow] options error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
@@ -16612,6 +16715,12 @@ router.post('/applications/:id/workflow/submit', async (req, res) => {
   const b = req.body || {};
   const cfg = workflow.typeConfig(b.submissionType);
   if (!cfg) return res.status(400).json({ error: 'unknown submission type' });
+  // AN ESCALATION SAYS WHAT IT WANTS (owner-directed 2026-09-01: "we can click to escalate
+  // the super admin, but it needs to be defined what they want"). A bare escalation is a
+  // question nobody can answer; the note is the ask, and it is required.
+  if (b.submissionType === 'escalation' && !String(b.note || '').trim()) {
+    return res.status(400).json({ error: 'escalation_note_required', message: 'Say what you need from the super admin — the note is required on an escalation.' });
+  }
   try {
     const app = (await db.query(
       `SELECT id, status, processor_id, closer_id, underwriter_id, loan_officer_id FROM applications WHERE id=$1 AND deleted_at IS NULL`, [appId])).rows[0];
@@ -16867,6 +16976,29 @@ router.post('/workflow/:itemId/pickup', async (req, res) => {
     let item;
     try { await client.query('BEGIN'); item = await workflow.pickItem(client, req.params.itemId, req.actor.id); await client.query('COMMIT'); }
     catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    /* THE OFFICER HEARS IT WAS PICKED UP (owner-directed 2026-09-01: "The pick up button
+       should send a notification to the officer on the file that your file was … picked up
+       and the processor is now going to work on your file"). To the person who submitted
+       it AND the file's loan officer when that is somebody else; never to the picker. */
+    if (item) {
+      try {
+        const label = (workflow.typeConfig(item.submission_type) || {}).label || item.submission_type;
+        const lo = (await db.query(`SELECT loan_officer_id FROM applications WHERE id = $1`, [item.application_id])).rows[0];
+        // req.actor carries no name (auth builds { id, kind, role, sid }) — read it, so
+        // the officer is told WHO picked the file up, not "the processor".
+        const me = (await db.query(`SELECT full_name FROM staff_users WHERE id = $1`, [req.actor.id])).rows[0];
+        const picker = (me && me.full_name) || 'The processor';
+        const targets = [...new Set([item.from_staff_id, lo && lo.loan_officer_id].filter(Boolean).map(String))]
+          .filter((id) => id !== String(req.actor.id));
+        for (const staffId of targets) {
+          await notify.notifyStaff(staffId, {
+            type: 'workflow_picked_up', title: `${picker} picked up ${label}`,
+            body: `Your file was picked up — ${picker} is now working on ${label} for it.`,
+            applicationId: item.application_id, ctaLabel: 'Open the loan file', link: `/internal/app/${item.application_id}`,
+          }).catch(() => {});
+        }
+      } catch (_) { /* the pickup stands */ }
+    }
     res.json({ ok: true, item });
   } catch (e) { res.status(500).json({ error: 'server error' }); }
 });
@@ -16895,6 +17027,37 @@ router.post('/workflow/:itemId/return', async (req, res) => {
     let item;
     try { await client.query('BEGIN'); item = await workflow.returnItem(client, req.params.itemId, req.actor.id, outcomeLabel, note); await client.query('COMMIT'); }
     catch (e) { await client.query('ROLLBACK').catch(() => {}); throw e; } finally { client.release(); }
+    /* THE DONE NOTE LIVES ON THE FILE (owner-directed 2026-09-01: "when she clicks the done
+       button pops up a column to put in a note … which also goes to the loan officer and
+       saves in her own notes on the file on the task section"). The workflow event already
+       keeps it; this ALSO writes it as a completed task on the file — the Tasks section is
+       where the team reads a processor's notes — attributed to the processor. Best-effort. */
+    if (item && String(note || '').trim()) {
+      try {
+        const label = (workflow.typeConfig(it.submission_type) || {}).label || it.submission_type;
+        await db.query(
+          `INSERT INTO reminders (application_id, kind, title, body, due_at, assignee_staff_id, status, created_by, completed_by, completed_at, meta)
+           VALUES ($1,'task',$2,$3,now(),$4,'done',$4,$4,now(),$5::jsonb)`,
+          [it.application_id, `${label} — ${String(outcomeLabel).slice(0, 80)}`.slice(0, 200), String(note).slice(0, 4000), req.actor.id,
+           JSON.stringify({ source: 'workflow_return', workflowItemId: req.params.itemId, outcomeLabel })]);
+      } catch (_) { /* the send-back stands */ }
+    }
+    /* FINISHING CLEAR TO CLOSE FINISHES FULL PROCESSING (owner-directed 2026-09-01: a file
+       submitted for full processing "doesn't need to have the done button. The done button
+       only comes up once it's clear to close"). The whole-file hand-off has no Done of its
+       own; the CTC hand-off finishing is what ends it. */
+    if (item && it.submission_type === 'clear_to_close') {
+      try {
+        const fullFile = (await db.query(
+          `SELECT id FROM workflow_items WHERE application_id = $1 AND submission_type = 'processing' AND status IN ('open','in_progress')`,
+          [it.application_id])).rows;
+        for (const f of fullFile) {
+          const c2 = await db.getClient();
+          try { await c2.query('BEGIN'); await workflow.returnItem(c2, f.id, req.actor.id, 'Finished processing', '[auto] Finished with the clear-to-close hand-off.'); await c2.query('COMMIT'); }
+          catch (e) { await c2.query('ROLLBACK').catch(() => {}); } finally { c2.release(); }
+        }
+      } catch (_) { /* best-effort */ }
+    }
     // Tell the person who submitted it that it's been finished + sent back.
     if (it.from_staff_id && String(it.from_staff_id) !== String(req.actor.id)) {
       const label = (workflow.typeConfig(it.submission_type) || {}).label || it.submission_type;
@@ -19558,6 +19721,20 @@ router.post('/documents/:id/review', async (req, res) => {
     await condReview.applyVerdict(db, { doc, verdict, actorId: req.actor.id, hooks: condHooks.RTL });
     await audit(req, action === 'accept' ? (requestMore ? 'accept_document_request_more' : 'accept_document') : 'reject_document', 'document', doc.id,
       action === 'reject' ? { reason: b.reason } : requestMore ? { note: moreNote } : null);
+    /* THE ACCEPTED DOCUMENT DECIDES THE VENDOR (owner-directed 2026-09-01: "if you
+       ordered two insurance quotes, based on the document that you accept, the system
+       shall keep the information of the insurance agent … who sent these documents").
+       Acts only on a returned order document with a recorded sender, on a file that
+       has more than one contact of that type; best-effort, the verdict already stands. */
+    if (action === 'accept') {
+      try {
+        const adopted = await require('../lib/file-contacts').adoptVendorFromAcceptedDocument(db, doc.id);
+        if (adopted && adopted.adopted) {
+          await audit(req, 'replace_file_contact', 'application', doc.application_id,
+            { contactType: adopted.type, via: 'accepted_document', documentId: doc.id, removed: adopted.removed.length });
+        }
+      } catch (_) { /* best-effort */ }
+    }
 
     // Tell the borrower another document is needed on this condition — the
     // accepted file is kept; this is an "and also", not a rejection.
@@ -20105,7 +20282,11 @@ router.get('/team', async (req, res) => {
 // Every title company / insurance agent contact entered anywhere on the
 // platform, tagged by type. Admins curate it: enrich, correct, or delete bad
 // entries — borrowers then autocomplete against the cleaned-up records.
-const VENDOR_TYPES = ['title_company', 'insurance_agent', 'attorney', 'contractor', 'other'];
+// EVERY kind of contact the file-contacts section can hold (owner-directed 2026-09-01:
+// the whole directory is visible, so the screen must be able to show, filter and edit
+// every type — a settlement agent or flood insurer was previously unmanageable here).
+// ONE list: FILE_CONTACT_TYPES below is this same array.
+const VENDOR_TYPES = ['realtor', 'attorney', 'title_company', 'settlement_agent', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
 // Normalize an email for dedup / matching — lowercased + whitespace stripped.
 // Returns '' for blank / non-string input. Used by the vendor merge suggester +
 // the mergeArrays helper below (case-only duplicates collapse to one entry).
@@ -20128,7 +20309,11 @@ function dedupBy(arr, norm) {
 }
 
 router.get('/vendors', async (req, res) => {
-  if (!can(req.actor, 'manage_vendors')) return res.status(403).json({ error: 'you do not have permission to manage vendors' });
+  /* READ IS FOR EVERY STAFFER (owner-directed 2026-09-01: "All the loan officers should
+     get access to all the company vendors"). This router is already staff-gated; the
+     directory holds vendor business contacts, not borrower PII, and a loan officer
+     could already reach every row of it through the per-file type-ahead. WRITES
+     (add / edit / delete / merge, below) stay on manage_vendors. */
   const type = VENDOR_TYPES.includes(req.query.type) ? req.query.type : null;
   // Merged rows are hidden by default — the merge target absorbs them. Pass
   // ?includeMerged=1 to include them (for an audit view / history panel).
@@ -20360,7 +20545,7 @@ router.post('/vendors/merge', async (req, res) => {
 // contact type that meant it (only the broader `escrow` / `title_company`).
 // Keep this list in step with the copy in routes/borrower.js and the TYPES list in
 // app-v2/src/components/FileContacts.jsx — an unlisted type is coerced to 'other'.
-const FILE_CONTACT_TYPES = ['realtor', 'attorney', 'title_company', 'settlement_agent', 'insurance_agent', 'flood_insurance', 'contractor', 'appraiser', 'lender', 'escrow', 'other'];
+const FILE_CONTACT_TYPES = VENDOR_TYPES;   // one definition (see VENDOR_TYPES above)
 
 /* TYPE-AHEAD OVER THE VENDOR DIRECTORY (owner-directed 2026-08-20: "we already
    have a database from all the vendors that we're using across the board. Anywhere
@@ -20463,20 +20648,31 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
      full set the order goes to. The scalar is always the FIRST of the array, so
      the two can never describe different vendors. A form that sends only the old
      `email` field still works untouched. */
-  const VD = require('../lib/vendor-directory');
-  const emails = VD.dedupBy(Array.isArray(b.emails) ? b.emails : (b.email ? [b.email] : []), VD._internals.normEmail);
-  const sc = await db.query(
-    `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,emails,phone,address,notes,added_by_staff_id,last_used_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,now()) RETURNING id`,
-    [app.rows[0].borrower_id, type, custom, b.companyName || null, b.contactName || null,
-     emails[0] || null, emails.length ? emails : null,
-     b.phone || null, b.address || null, b.notes || null, req.actor.id]);
-  const link = await db.query(
-    `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type,added_by_kind,added_by_id)
-     VALUES ($1,$2,$3,'staff',$4)
-     ON CONFLICT (application_id,service_contact_id) DO UPDATE SET contact_type=EXCLUDED.contact_type RETURNING id`,
-    [req.params.id, sc.rows[0].id, type, req.actor.id]);
-  await audit(req, 'add_file_contact', 'application', req.params.id, { contactType: type });
+  /* ONE WRITER FOR THE DIRECTORY (lib/file-contacts, owner-reported 2026-09-01). The
+     vendor is FOUND before it is inserted — same type, same email (or same name when
+     there is no email) — and its gaps filled, so changing an agent and changing back
+     can never leave the same company on the file twice. `contactId` links a directory
+     row picked from the type-ahead outright. `replace:true` (the Orders desk's "Use a
+     different one") makes this the ONLY contact of its type on the file: the previous
+     vendor's addresses are retired from the order's thread and its link removed, so
+     the next order email reaches the new agent alone. */
+  const FC = require('../lib/file-contacts');
+  let sc;
+  try {
+    sc = await FC.upsertContact(db, {
+      borrowerId: app.rows[0].borrower_id, type, customType: custom, contactId: b.contactId || null,
+      companyName: b.companyName, contactName: b.contactName, emails: Array.isArray(b.emails) ? b.emails : null, email: b.email,
+      phone: b.phone, address: b.address, notes: b.notes, addedByStaffId: req.actor.id,
+    });
+  } catch (e) { if (e && e.status) return res.status(e.status).json({ error: e.message }); throw e; }
+  const linkId = await FC.linkContact(db, { applicationId: req.params.id, contactId: sc.id, type, addedByKind: 'staff', addedById: req.actor.id });
+  let replaced = null;
+  if (b.replace === true) {
+    replaced = await FC.replaceSameType(db, { applicationId: req.params.id, keepContactId: sc.id, type });
+  }
+  const link = { rows: [{ id: linkId }] };
+  await audit(req, b.replace === true ? 'replace_file_contact' : 'add_file_contact', 'application', req.params.id,
+    { contactType: type, reused: sc.reused, removed: replaced ? replaced.removed.length : undefined });
   // #107: entering the title / insurance contact completes the borrower's contact
   // CONDITION too — the LO / processor / admin can satisfy it on the borrower's
   // behalf, the same 'received' transition the borrower's own form submission makes
@@ -20500,7 +20696,8 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
       for (const row of upd.rows) enqueueChecklistStatusPush(row.id).catch(() => {});
     } catch (_) { /* condition completion is best-effort */ }
   }
-  res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: sc.rows[0].id });
+  res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: sc.id, reused: sc.reused,
+    replaced: replaced ? replaced.removed.length : 0 });
 });
 // Edit a file contact in place (owner-directed 2026-07-16: staff had only a
 // Remove button — a mistyped title/insurance/realtor contact needs an Edit, not
@@ -21665,12 +21862,14 @@ router.post('/esign/:rowId/resend', async (req, res) => {
     // Resend is a real borrower email — the master kill-switch must gate it too. Read the RUNTIME
     // switch (override ?? env) so flipping DocuSign off on the API Health page stops resends immediately.
     if (!require('../lib/integrations/switches').on('DOCUSIGN_SEND_ENABLED')) return res.status(409).json({ error: 'Sending is paused right now. Turn sending back on before resending.' });
-    // A resend can only re-notify the address DocuSign baked into the envelope at
-    // send time — it cannot re-address. If the file's borrower email changed since,
-    // a resend would nudge the STALE address. Refuse and steer staff to "Change
-    // email & re-send" (which re-addresses the envelope), or void + re-issue.
-    // (Test envelopes are app-less — no file borrower to compare against, so they
-    // skip this check.)
+    /* THE ADDRESS ON FILE MAY HAVE MOVED ON. A resend re-notifies the address DocuSign
+       baked into the envelope; it cannot re-address. This used to REFUSE when the file's
+       borrower email differed — which, together with the silent no-op below, is why the
+       owner experienced "you can only change the email and resend" (2026-09-01). It is now
+       a WARNING carried on the response: the person asked for a reminder to the envelope's
+       address and gets one; the screen tells them the file shows a different email and
+       offers "Change email & re-send" for that. (Test envelopes are app-less — skipped.) */
+    let driftNotice = null;
     if (row.application_id) {
       const cur = (await db.query(
         `SELECT b.email AS file_email, r.email AS env_email
@@ -21682,8 +21881,19 @@ router.post('/esign/:rowId/resend', async (req, res) => {
       const fileEmail = cur && cur.file_email && String(cur.file_email).trim().toLowerCase();
       const envEmail = cur && cur.env_email && String(cur.env_email).trim().toLowerCase();
       if (fileEmail && envEmail && fileEmail !== envEmail) {
-        return res.status(409).json({ error: 'The borrower’s email on file changed since this package was sent. A resend can’t update the address — use “Change email & re-send” on the signer to re-address it (or void and re-issue).' });
+        driftNotice = `Heads up: the borrower’s email on the file (${fileEmail}) differs from the one this package was sent to (${envEmail}). The reminder went to the package’s address — use “Change email & re-send” on the signer if it should go to the file’s.`;
       }
+    }
+    /* ONE SIGNER OR THE CURRENT ONES. `recipientRowId` narrows the resend to one signer
+       (the per-signer "Resend to this address" button); without it every signer whose
+       turn it is gets the reminder. */
+    let onlyRecipientIdDs = null;
+    const recipientRowId = String((req.body && req.body.recipientRowId) || '').trim();
+    if (recipientRowId) {
+      const rr = (await db.query(
+        `SELECT recipient_id_ds, email FROM esign_recipients WHERE id = $1 AND envelope_row_id = $2`, [recipientRowId, row.id])).rows[0];
+      if (!rr) return res.status(404).json({ error: 'That signer is not on this package.' });
+      onlyRecipientIdDs = rr.recipient_id_ds;
     }
     try {
       await docusignLib.resendEnvelope(row.envelope_id);
@@ -21706,10 +21916,28 @@ router.post('/esign/:rowId/resend', async (req, res) => {
       }
       throw e;
     }
-    await audit(req, 'esign_resend', 'application', row.application_id, { purpose: row.purpose });
-    // Advisory only -- the reminder HAS gone out. It explains a nudge that is
-    // likely to produce nothing, so nobody presses it three more times.
-    res.json({ ok: true, notice: resendReadiness.staleNotice(row) || undefined });
+    /* THE EMAIL THAT ACTUALLY REACHES THE SIGNER. Since 2026-08-21 every recipient is a
+       captive (embedded) signer, and DocuSign sends a captive recipient NO email — so
+       `resend_envelope=true` above re-notifies nobody, and this route reported "Reminder
+       resent" while nothing left the building. That is the defect behind the owner's
+       report (2026-09-01: "you can only change the email and resend"): the change-email
+       path was the only one that called PILOT's own invitation. The same call, forced,
+       is the resend. The verdict is REAL: `sent` is how many invitations went out. */
+    const nudged = await require('../lib/esign/notify-signers').notifyReadyToSign(row.id, {
+      db, force: true, ...(onlyRecipientIdDs ? { onlyRecipientIdDs } : {}),
+    });
+    await audit(req, 'esign_resend', 'application', row.application_id,
+      { purpose: row.purpose, envelopeRowId: row.id, recipientRowId: recipientRowId || undefined,
+        sent: nudged.sent, recipients: nudged.recipients });
+    const notices = [resendReadiness.staleNotice(row), driftNotice].filter(Boolean);
+    if (!nudged.sent) {
+      // Honest: nothing went out. Say why it is likely (nobody is at their turn / already
+      // signed) instead of a false "resent".
+      return res.json({ ok: false, sent: 0, recipients: [],
+        error: 'No reminder went out — nobody on this package is waiting to sign right now (already signed, declined, or not their turn yet).',
+        notice: notices.join(' ') || undefined });
+    }
+    res.json({ ok: true, sent: nudged.sent, recipients: nudged.recipients, notice: notices.join(' ') || undefined });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
 
@@ -21732,6 +21960,7 @@ router.post('/esign/:rowId/recipient-email', async (req, res) => {
     });
     await audit(req, 'esign_recipient_email_changed', 'application', row.application_id, {
       purpose: row.purpose, role: out.role, from: out.prevEmail, to: out.email, differsFromFile: out.differsFromFile,
+      envelopeRowId: row.id, recipientRowId,   // so the package's own log can show this line (esign/events)
     });
     res.json({ ok: true, ...out });
   } catch (e) {
@@ -21756,7 +21985,7 @@ router.post('/esign/:rowId/void', async (req, res) => {
     await db.query(
       `UPDATE esign_envelopes SET status='voided', voided_at=now(), void_reason=$2, updated_at=now() WHERE id=$1`,
       [row.id, reason]);
-    await audit(req, 'esign_void', 'application', row.application_id, { purpose: row.purpose, reason });
+    await audit(req, 'esign_void', 'application', row.application_id, { purpose: row.purpose, reason, envelopeRowId: row.id });
     res.json({ ok: true });
   } catch (e) { console.warn('[staff] handler error:', db.describeError(e)); res.status(500).json({ error: 'server error' }); }
 });
@@ -21774,7 +22003,7 @@ router.post('/esign/:rowId/clear', async (req, res) => {
     const reason = String((req.body && req.body.reason) || '').trim() || undefined;
     const out = await require('../lib/esign/clear').clearPackage({ rowId: row.id, actorId: req.actor.id, reason, db, docusign: docusignLib });
     await audit(req, 'esign_clear', 'application', row.application_id,
-      { purpose: row.purpose, voided: out.voided, docsCleared: out.docsCleared, conditionsReopened: (out.conditionsReopened || []).length });
+      { envelopeRowId: row.id, purpose: row.purpose, voided: out.voided, docsCleared: out.docsCleared, conditionsReopened: (out.conditionsReopened || []).length });
     res.json({ ok: true, ...out });
   } catch (e) {
     if (e && e.status && e.expose) return res.status(e.status).json({ error: e.message });
@@ -21799,7 +22028,7 @@ router.post('/esign/:rowId/countersign-view', async (req, res) => {
       returnUrl, email: rec.email, userName: rec.name,
       clientUserId: rec.client_user_id, recipientId: rec.recipient_id_ds,
     });
-    await audit(req, 'esign_countersign_view', 'application', row.application_id, { purpose: row.purpose });
+    await audit(req, 'esign_countersign_view', 'application', row.application_id, { purpose: row.purpose, envelopeRowId: row.id });
     res.json({ url });
   } catch (e) { sendEsignError(res, e); }
 });

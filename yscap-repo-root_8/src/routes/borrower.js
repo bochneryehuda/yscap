@@ -2806,17 +2806,15 @@ router.post('/applications/:id/file-contacts', async (req, res) => {
   const VDf = require('../lib/vendor-directory');
   const fcEmails = VDf.dedupBy(Array.isArray(b.emails) ? b.emails : (b.email ? [b.email] : []), VDf._internals.normEmail);
   if (!b.companyName && !b.contactName && !fcEmails.length && !b.phone) return res.status(400).json({ error: 'enter at least one contact detail' });
-  const sc = await db.query(
-    `INSERT INTO service_contacts (borrower_id,contact_type,custom_type,company_name,contact_name,email,emails,phone,address,notes,added_by_borrower_id,last_used_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$10,$7,$8,$9,$1,now()) RETURNING id`,
-    [me(req), type, custom, b.companyName || null, b.contactName || null, fcEmails[0] || null,
-     b.phone || null, b.address || null, b.notes || null, fcEmails.length ? fcEmails : null]);
-  const scId = sc.rows[0].id;
-  const link = await db.query(
-    `INSERT INTO application_service_contacts (application_id,service_contact_id,contact_type,added_by_kind,added_by_id)
-     VALUES ($1,$2,$3,'borrower',$4)
-     ON CONFLICT (application_id,service_contact_id) DO UPDATE SET contact_type=EXCLUDED.contact_type RETURNING id`,
-    [req.params.id, scId, type, me(req)]);
+  // The same ONE writer staff use (lib/file-contacts): the vendor is found before it is
+  // inserted, so a borrower re-entering their title company never doubles it.
+  const FC = require('../lib/file-contacts');
+  const scRow = await FC.upsertContact(db, {
+    borrowerId: me(req), type, customType: custom, companyName: b.companyName, contactName: b.contactName,
+    emails: fcEmails, phone: b.phone, address: b.address, notes: b.notes, addedByBorrowerId: me(req),
+  });
+  const scId = scRow.id;
+  const link = { rows: [{ id: await FC.linkContact(db, { applicationId: req.params.id, contactId: scId, type, addedByKind: 'borrower', addedById: me(req) }) }] };
   await audit(req, 'add_file_contact', 'application', req.params.id, { contactType: type });
   res.status(201).json({ ok: true, linkId: link.rows[0].id, contactId: scId });
 });
@@ -3750,7 +3748,30 @@ const uploadBorrowerDocument = async (req, res) => {
             ? [{ filename: b.filename, contentType: b.contentType || 'application/octet-stream', content: emailCopy.toString('base64') }]
             : undefined,
         };
-        await notify.notifyAppStaff(b.applicationId, opts);   // #113: whole team (primary + assistants)
+        /* THE PROCESSOR WORKING THIS FILE IS EMAILED, WITH THE DOCUMENT (owner-directed
+           2026-09-01: "a file that … was submitted for full processing … the processor
+           should receive notifications when a document is being uploaded, with the document
+           attached"). doc_uploaded is an in-app-only staff type — the whole team, LO
+           included, gets the row and no email (the 2026-07-20 "stop the bombardment" rule).
+           The ONE exception is the processor on a file that has a LIVE processing hand-off
+           in their workflow: that person asked for the file's documents, so the same
+           notification goes to them as an EMAIL too (inAppOnly:false), with the attachment.
+           Being merely ASSIGNED as processor does not count — only the submission does. */
+        let processorToEmail = null;
+        try {
+          const wf = await db.query(
+            `SELECT COALESCE(w.to_staff_id, a.processor_id) AS staff_id
+               FROM workflow_items w JOIN applications a ON a.id = w.application_id
+              WHERE w.application_id = $1 AND w.submission_type = 'processing' AND w.status IN ('open','in_progress')
+              ORDER BY w.received_at DESC LIMIT 1`, [b.applicationId]);
+          processorToEmail = (wf.rows[0] && wf.rows[0].staff_id) || null;
+        } catch (_) { processorToEmail = null; }
+        if (processorToEmail) {
+          await notify.notifyAppStaff(b.applicationId, { ...opts, exceptStaffId: processorToEmail });
+          await notify.notifyStaff(processorToEmail, { ...opts, inAppOnly: false });
+        } else {
+          await notify.notifyAppStaff(b.applicationId, opts);   // #113: whole team (primary + assistants)
+        }
       }
     } catch (_) { /* never fail the upload on a notify hiccup */ }
   }

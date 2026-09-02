@@ -99,6 +99,27 @@ const call = (method, path, { token, body } = {}) => new Promise((resolve) => {
     eq((await call('POST', '/api/staff-view/start', { token: ownerTok, body: { staffId: '00000000-0000-0000-0000-000000000000' } })).status, 404,
       '1g an unknown id is refused, not guessed at');
 
+    // ── 1h. THE VIEWER'S REAL token_version RIDES IN THE TOKEN (owner-reported 2026-09-01:
+    //        "When I click on See my screen, I'm popping back up to the sign-in window").
+    //        The route used to read `req.actor.tokenVersion ?? req.actor.tv` — properties
+    //        that do not exist — so every view carried viewerTv 0, and a super admin whose
+    //        row had ever been bumped (a password set from an invite, a reset, a
+    //        sign-out-everywhere) was 'revoked' on the very next request. Every fixture
+    //        above has token_version 0, which is exactly why this never fired here. ──
+    {
+      const bumped = await mkStaff('super_admin');
+      await db.query(`UPDATE staff_users SET token_version = 7 WHERE id = $1`, [bumped.id]);
+      const bumpedTok = staffToken({ ...bumped, token_version: 7 });
+      const st = await call('POST', '/api/staff-view/start', { token: bumpedTok, body: { staffId: officer.id } });
+      eq(st.status, 200, '1h a super admin with a bumped token_version can start a view');
+      const nextReq = await call('GET', '/auth/me', { token: st.body.token });
+      eq(nextReq.status, 200, '1h1 …and the very NEXT request inside the view still authenticates (it used to 401 session:invalid)');
+      eq(nextReq.body && nextReq.body.id, officer.id, '1h2 as the teammate');
+      const sess = (await db.query(`SELECT ended_at, ended_reason FROM staff_view_sessions WHERE viewer_staff_id = $1 ORDER BY started_at DESC LIMIT 1`, [bumped.id])).rows[0];
+      yes(sess && !sess.ended_at, `1h3 the session register does not show it revoked (got ${sess && sess.ended_reason})`);
+      await call('POST', '/api/staff-view/exit', { token: st.body.token });
+    }
+
     // ── 2. THE TOKEN IS THE TARGET'S OWN CONSOLE ──────────────────────────
     const started = await call('POST', '/api/staff-view/start', { token: ownerTok, body: { staffId: officer.id } });
     eq(started.status, 200, '2a a super admin opens a view of an active teammate');

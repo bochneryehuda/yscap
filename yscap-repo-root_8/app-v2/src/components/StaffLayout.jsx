@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { useAuth } from '../lib/auth.jsx';
+import { useAuth, takeReturnTo } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import { arena as arenaApi } from '../lib/arena.js';
@@ -472,7 +472,10 @@ export default function StaffLayout({ children }) {
      because the token has changed under the running app. */
   const leaveStaffView = async () => {
     const restored = await exitStaffView();
-    window.location.assign(restored ? '/portal/#/internal' : '/');
+    // Back to where the super admin was before they opened the teammate's screen
+    // (owner-reported 2026-09-01), else the console home.
+    const back = restored ? (takeReturnTo() || '/internal') : '';
+    window.location.assign(restored ? `/portal/#${back}` : '/');
     window.location.reload();
   };
 
@@ -628,7 +631,10 @@ export default function StaffLayout({ children }) {
         {canManageDraws && <NavLink className="sb-link" to="/internal/draws" title="Draw Management — the post-funding phase: every draw, approvals, inspector photos, releases, and reports"><NavIcon name="pipeline" />Draw Management</NavLink>}
         {canViewDraws && <NavLink className="sb-link" to="/internal/draws" title="My draws — your active-draw properties, view-only: every draw, the inspector's results, photos and reports"><NavIcon name="pipeline" />My draws</NavLink>}
         {canManageConditions && <NavLink className="sb-link" to="/internal/conditions" title="Condition Center — the global condition library & rules"><NavIcon name="conditions" />Conditions</NavLink>}
-        {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><NavIcon name="vendors" />Vendors</NavLink>}
+        {/* EVERY STAFFER SEES THE DIRECTORY (owner-directed 2026-09-01: "All the loan officers
+            should get access to all the company vendors"); editing it still needs manage_vendors,
+            which the screen enforces button by button. */}
+        <NavLink className="sb-link" to="/internal/vendors" title={canManageVendors ? 'The company vendor directory — title, insurance, attorneys, contractors and every other vendor entered on any file' : 'The company vendor directory (read-only) — every vendor entered on any file'}><NavIcon name="vendors" />Vendors</NavLink>
         {canDeleteFiles && <NavLink className="sb-link" to="/internal/archived" title="Archived files — restore or delete permanently"><NavIcon name="archived" />Archived</NavLink>}
 
         {(canManageTeam || canManagePricing || canPlatformSetup || canViewAudit) && <div className="sb-sec">Admin</div>}

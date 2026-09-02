@@ -39,6 +39,28 @@ export default function AddConditionPanel({ appId, items, onChanged, onError, on
   const internal = f.conditionType === 'internal_task' || f.conditionType === 'internal_condition';
   const external = !internal && f.audience !== 'staff';
 
+  /* PILOT AI WRITES THE CONDITION (owner-directed 2026-09-01: "help the processor write
+     the condition … it should understand to use really short language as a condition and
+     populate the header, but it can also be filled manually"). Advisory: the suggestion
+     lands in the fields, where it can be edited or thrown away before "Add condition". */
+  const [aiErr, setAiErr] = useState('');
+  async function suggestWording() {
+    const seed = [f.label, f.borrowerHint].map((x) => String(x || '').trim()).filter(Boolean).join('\n');
+    if (!seed) { setAiErr('Type a few words about the condition first.'); return; }
+    setBusy('ai'); setAiErr('');
+    try {
+      const r = await api.pilotWriter('staff', { mode: 'condition', text: seed });
+      if (!r || !r.ok) { setAiErr((r && r.reason) || 'Pilot AI could not answer just now.'); return; }
+      setF((x) => ({
+        ...x,
+        label: x.label.trim() || r.header,
+        borrowerLabel: r.header,
+        borrowerHint: r.wording || x.borrowerHint,
+      }));
+    } catch (e) { setAiErr((e && e.message) || 'Pilot AI could not answer just now.'); }
+    finally { setBusy(''); }
+  }
+
   const setType = (v) => setF((x) => ({
     ...x, conditionType: v,
     audience: (v === 'internal_task' || v === 'internal_condition') ? 'staff'
@@ -166,8 +188,11 @@ export default function AddConditionPanel({ appId, items, onChanged, onError, on
       {external && (
         <div className="grid cols-2">
           <div className="field">
-            <label>Borrower-facing name (optional)</label>
-            <input className="input" value={f.borrowerLabel} placeholder="Defaults to the name above"
+            {/* THE HEADER ON THE BORROWER'S CARD (owner-reported 2026-09-01: the card read
+                "An item your loan team needs" with the real wording in small text). It is
+                the card's title; blank means the internal name above is used. */}
+            <label>Header shown on the borrower's card</label>
+            <input className="input" value={f.borrowerLabel} placeholder={f.label.trim() ? `Defaults to “${f.label.trim()}”` : 'Short — what is needed, in a few words'}
               onChange={(e) => setF((x) => ({ ...x, borrowerLabel: e.target.value }))} />
           </div>
           <div className="field">
@@ -177,8 +202,15 @@ export default function AddConditionPanel({ appId, items, onChanged, onError, on
           </div>
         </div>
       )}
-      <div className="row" style={{ gap: 8 }}>
+      <div className="row" style={{ gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <button className="btn primary" onClick={add} disabled={busy === 'add'}>{busy === 'add' ? 'Adding…' : 'Add condition'}</button>
+        {external && (
+          <button type="button" className="btn ghost small" onClick={suggestWording} disabled={busy === 'ai'}
+            title="Pilot AI turns what you typed into a short header and one sentence of instruction — you can still edit both before adding.">
+            {busy === 'ai' ? '✦ Writing…' : '✦ Pilot AI: suggest header & wording'}
+          </button>
+        )}
+        {aiErr ? <span className="small" style={{ color: 'var(--danger, #B4453B)' }}>{aiErr}</span> : null}
       </div>
 
       <div className="gold-rule" style={{ margin: '14px 0' }} />

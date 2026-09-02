@@ -321,6 +321,11 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
         </>
       ) : null}
 
+      {/* ── Who is buying this loan decides what the appraiser is told. Asked
+             (never required) BEFORE the order, because the requirements post the
+             moment the order is placed and cannot be un-posted. */}
+      <CapitalProviderPrompt appId={appId} onChanged={onChanged} />
+
       {/* ── Order builder: a soft card. Header (title + vendor selector) + the
              connection line + the selected vendor's builder body. */}
       <div className="aord-card">
@@ -359,6 +364,131 @@ export default function AppraisalOrderSection({ appId, onChanged }) {
       ) : null}
     </div>
   );
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   THE CAPITAL PROVIDER, BEFORE THE ORDER (owner-directed 2026-09-01).
+
+   Some capital providers have appraisal requirements that PILOT posts onto the
+   order thread the moment the order is placed. Whether that happens is decided
+   by the file's note buyer (or the program that implies one). When NOTHING on
+   the file decides it, the officer is asked — here, above the builder — to pick
+   the provider first. It is OPTIONAL: "Order without choosing" hides the ask
+   for this visit and the order proceeds with nothing posted.
+
+   When the provider IS known, the same card shrinks to one quiet line saying
+   what the appraiser will be told, with the exact message one click away — so
+   nobody has to guess what went out on their order.
+
+   The choice is saved through the ONE existing write path for the note buyer
+   (`complete-fields` with `lender`, the same call NoteBuyerCard makes), so it
+   re-runs the condition engine and everything else a note-buyer change does.
+   Options come from the note-buyer slot endpoint — one list, never a copy.
+   STAFF-ONLY: the note-buyer name is never shown to a borrower, and this
+   section only renders on the staff file view.
+   ════════════════════════════════════════════════════════════════════════════ */
+function CapitalProviderPrompt({ appId, onChanged }) {
+  const [summary, setSummary] = useState(null);   // { investor, noteBuyer, message, needsProvider }
+  const [options, setOptions] = useState([]);     // [{ value, label }] from the note-buyer slot
+  const [choice, setChoice] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [skipped, setSkipped] = useState(false);
+  const [showMsg, setShowMsg] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const load = useCallback(async () => {
+    try { setSummary(await api.get(`/api/staff/applications/${appId}/appraisal-requirements`)); }
+    catch (_) { setSummary(null); }
+  }, [appId]);
+
+  useEffect(() => { let live = true; load(); return () => { live = false; }; }, [load]);
+
+  // The provider list is only fetched when the ask is actually shown.
+  useEffect(() => {
+    if (!summary || !summary.needsProvider || skipped) return;
+    let live = true;
+    api.get(`/api/staff/applications/${appId}/note-buyer`)
+      .then((r) => { if (live) setOptions((r && r.options) || []); })
+      .catch(() => { if (live) setOptions([]); });
+    return () => { live = false; };
+  }, [appId, summary, skipped]);
+
+  async function save() {
+    const opt = options.find((o) => o.value === choice);
+    if (!opt) return;
+    setBusy(true); setErr('');
+    try {
+      await api.post(`/api/staff/applications/${appId}/complete-fields`, { lender: opt.label });
+      setSaved(true);
+      await load();
+      if (onChanged) onChanged();
+    } catch (e) {
+      setErr((e && e.message) || 'Could not save the capital provider.');
+    } finally { setBusy(false); }
+  }
+
+  if (!summary) return null;
+
+  // ── The ask: nothing on the file decides the provider yet.
+  if (summary.needsProvider && !skipped) {
+    return (
+      <div className="aord-card" style={{ borderColor: WARN_LINE, background: WARN_BG }}>
+        <div className="aord-title" style={{ fontSize: 15 }}>Which capital provider is this file going to?</div>
+        <div className="aord-sub" style={{ color: MUTED, maxWidth: 680 }}>
+          Optional, but worth a moment: some providers have appraisal requirements that PILOT posts
+          to the appraiser the moment the order is placed. This file has no provider yet, so nothing
+          would be posted. Pick one now and the order will carry that provider’s requirements
+          automatically — or order without choosing.
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
+          <select value={choice} onChange={(e) => setChoice(e.target.value)} disabled={busy}
+            style={{ font: 'inherit', fontSize: 13.5, padding: '8px 10px', borderRadius: 10, border: `1px solid ${LINE}`, background: '#fff', color: INK, minWidth: 240 }}>
+            <option value="">Choose a capital provider…</option>
+            {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <button className="aord-btn pri" disabled={busy || !choice} onClick={save}>
+            {busy ? 'Saving…' : 'Save to the file'}
+          </button>
+          <button className="aord-btn" disabled={busy} onClick={() => setSkipped(true)} style={{ color: MUTED }}>
+            Order without choosing
+          </button>
+        </div>
+        {err ? <div style={{ color: BAD, fontSize: 12.5, marginTop: 8 }}>{err}</div> : null}
+      </div>
+    );
+  }
+
+  // ── The provider is known and has requirements: say so, show them on request.
+  if (summary.investor && summary.message) {
+    return (
+      <div className="aord-card" style={{ padding: '12px 16px' }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 13, color: INK }}>
+            <span style={{ fontWeight: 650 }}>{saved ? 'Saved. ' : ''}This order will carry the loan’s appraisal requirements</span>
+            <span style={{ color: MUTED }}> — posted to the appraiser automatically right after the order is placed.</span>
+          </div>
+          <button className="aord-btn" style={{ color: TEAL, padding: '2px 8px' }} onClick={() => setShowMsg((v) => !v)}>
+            {showMsg ? 'Hide the message' : 'Show the message'}
+          </button>
+        </div>
+        {showMsg ? (
+          <pre style={{ whiteSpace: 'pre-wrap', font: 'inherit', fontSize: 12.5, lineHeight: 1.5, color: INK, background: '#FAF8F3',
+            border: `1px solid ${LINE}`, borderRadius: 10, padding: '10px 12px', margin: '10px 0 0' }}>{summary.message}</pre>
+        ) : null}
+      </div>
+    );
+  }
+
+  // ── A provider is named (or implied) but has no appraisal requirements: one quiet line.
+  if (summary.noteBuyer || (!summary.needsProvider && !summary.investor)) {
+    return (
+      <div style={{ color: MUTED, fontSize: 12.5, padding: '2px 4px 8px' }}>
+        {saved ? 'Saved. ' : ''}No appraisal requirements are posted to the appraiser for this file’s capital provider.
+      </div>
+    );
+  }
+  return null;
 }
 
 /* ════════════════════════════════════════════════════════════════════════════

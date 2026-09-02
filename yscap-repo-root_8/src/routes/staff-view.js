@@ -72,10 +72,26 @@ router.post('/start', requireSuperAdmin, async (req, res) => {
       ip: req.ip || null,
       userAgent: req.get('user-agent') || null,
     });
+    /* THE VIEWER'S OWN token_version, READ FROM THE DATABASE — exactly as the borrower-
+       view and TPO-view siblings do (borrower-view.js startSession, tpo-view.js). This
+       used to read `req.actor.tokenVersion ?? req.actor.tv`, and neither property exists
+       on req.actor (auth builds it as {id, kind, role, sid}), so every minted token
+       carried viewerTv 0. The very next request re-validates the viewer against the
+       row's real token_version (auth/index.js) — non-zero for anyone who ever set a
+       password from an invite, reset it, or signed out everywhere — found a mismatch,
+       ended the session as 'revoked' and answered 401 session:invalid, which the RTL
+       client treats as "signed out" and bounces to the sign-in screen (owner-reported
+       2026-09-01: "When I click on See my screen, I'm popping back up to the sign-in
+       window"). The LT screen only looked like it worked because its HTTP client has
+       no global session-expiry handling. */
+    const viewer = (await db.query(
+      `SELECT token_version FROM staff_users WHERE id = $1::uuid AND is_active = true AND is_external = false`,
+      [req.actor.id])).rows[0];
+    if (!viewer) return res.status(403).json({ error: 'Your own account could not be verified — sign in again and retry.' });
     const token = staffView.mintToken({
       targetId: target.id, targetRole: target.role, targetTv: target.token_version || 0,
       viewerId: req.actor.id, viewerRole: req.actor.role,
-      viewerTv: (req.actor.tokenVersion != null ? req.actor.tokenVersion : req.actor.tv) || 0,
+      viewerTv: viewer.token_version || 0,
       sessionId: session.id, startedAt: session.startedAt,
     });
     res.json({ ok: true, token, viewing: { id: target.id, name: target.full_name, role: target.role },

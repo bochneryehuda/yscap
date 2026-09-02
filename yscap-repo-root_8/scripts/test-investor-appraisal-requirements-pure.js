@@ -53,26 +53,36 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
 }
 
 // ── B. THE MESSAGE ─────────────────────────────────────────────────────────
+// Owner-directed 2026-09-01: the message states ONE requirement — the anchor
+// comp — with its three criteria numbered 1, 2, 3. "All comps within 1 mile" was
+// wrong and is gone; interior photos and the lender name are "self-understood"
+// and are no longer listed.
 {
   const msg = reqs.orderMessage({ investorKey: 'emcap', loanNumber: 'YSCAP258134728',
     propertyAddress: '27 Beacon St, Lakewood, NJ 08701', rentalExit: false });
   ok(typeof msg === 'string' && msg.length > 200, 'an EMCAP order gets a message');
   ok(msg.startsWith(reqs.MARKER), 'it starts with the stable marker (which is also the do-not-repeat key)');
   ok(/YSCAP258134728/.test(msg) && /27 Beacon St/.test(msg), 'it names the loan and the property');
-  ok(/within 1 mile/.test(msg), 'it states the 1-mile rule the owner gave');
   ok(/12 months/.test(msg) && /15% net adjustment/.test(msg) && /SETTLED sale/.test(msg),
     'it states the anchor rule: settled, 12 months, under 15%');
-  // THE ANCHOR'S THREE CRITERIA ARE PRINTED AS THREE, not run together in a
-  // sentence (owner-directed 2026-08-16: "EMCAP needs three things for the
-  // anchor comp"). An appraiser skimming a paragraph misses the third.
   ok(/all THREE of/.test(msg), 'the anchor requirement says plainly that there are three things');
-  const anchorItem = msg.split('\n').filter((l) => /^ *[abc]\. /.test(l));
-  ok(anchorItem.length === 3, `the three criteria are three separate lines (found ${anchorItem.length})`);
-  ok(/a\..*within 1 mile/.test(anchorItem[0] || ''), 'criterion a is the mile');
-  ok(/b\..*last 12 months/.test(anchorItem[1] || ''), 'criterion b is the year');
-  ok(/c\..*under 15% net adjustment/.test(anchorItem[2] || ''), 'criterion c is the net adjustment');
-  ok(/[Ii]nterior photograph/.test(msg), 'it states the interior-photo requirement');
-  ok(/YS Capital as the lender/.test(msg), 'it states that the report must be in our name');
+  const criteria = msg.split('\n').filter((l) => /^[123]\. /.test(l));
+  ok(criteria.length === 3, `the three criteria are three separate NUMBERED lines (found ${criteria.length})`);
+  ok(/^1\. within 1 mile of the subject;$/.test(criteria[0] || ''), 'criterion 1 is the mile');
+  ok(/^2\. sold within the last 12 months;$/.test(criteria[1] || ''), 'criterion 2 is the year');
+  ok(/^3\. under 15% net adjustment\.$/.test(criteria[2] || ''), 'criterion 3 is the net adjustment');
+  ok(!msg.split('\n').some((l) => /^ *[abc]\. /.test(l)), 'no a/b/c lettering remains (the owner asked for 1, 2, 3)');
+
+  // THE THREE WITHDRAWN ITEMS ARE GONE. Asserted on the exact lines that went
+  // out, and on the ideas behind them, so a rewording cannot bring one back.
+  for (const line of reqs.SUPERSEDED_LINES) ok(!msg.includes(line), `the withdrawn line is gone: "${line}"`);
+  ok(!/Comparable sales must be within/.test(msg), 'it no longer says every comparable must be within the mile');
+  ok(!/[Ii]nterior photograph/.test(msg), 'interior photographs are not listed (self-understood)');
+  ok(!/YS Capital as the lender/.test(msg) && !/lender\/client/.test(msg), 'the lender-name line is not listed (self-understood)');
+  // The mile is stated exactly ONCE — in the anchor criterion — never as a blanket rule.
+  ok((msg.match(/within 1 mile/g) || []).length === 1, 'the mile appears exactly once, as the anchor criterion');
+  // And the requirement is the ONLY numbered thing: no outer 1./2./3. list wraps it.
+  ok(msg.indexOf('1. within') > msg.indexOf('all THREE of'), 'the numbers belong to the anchor criteria, not to an outer list');
 
   // THE RENT SCHEDULE ONLY ON A RENTAL EXIT (owner-directed 2026-08-16). Tested
   // on the WHOLE sentence, not just "1007" — asking a flip's appraiser for a
@@ -83,10 +93,7 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok(/1007/.test(rental) && /1025/.test(rental), 'a rental exit IS told a rental analysis is required');
   // ...and the rental line is the ONLY difference between the two messages, so
   // switching a file's exit can never quietly change any other requirement.
-  // Same context on both sides — otherwise this would be comparing the loan
-  // number, not the requirements. The renumbering the extra item causes is
-  // stripped too, or every later line would read as "changed".
-  const flat = (t) => t.split('\n').filter((l) => !RENTAL_RE.test(l)).join('\n').replace(/^\d+\. /gm, '');
+  const flat = (t) => t.split('\n').filter((l) => !RENTAL_RE.test(l)).join('\n').replace(/\n{2,}/g, '\n');
   const plainNoCtx = reqs.orderMessage({ investorKey: 'emcap' });
   ok(flat(plainNoCtx) === flat(rental), 'the rental line is the only thing a rental exit adds');
   ok(reqs.orderMessage({ investorKey: 'emcap', rentalExit: false }) === plainNoCtx
@@ -101,6 +108,55 @@ const ok = (c, m) => { if (c) { pass++; } else { fail++; console.log('  FAIL:', 
   ok(leaked.length === 0, `no capital-partner name appears in the message (leaked: ${leaked})`);
   ok(!/emcap/i.test(msg) && !/emcap/i.test(rental), 'the word EMCAP itself never appears');
   ok(borrowerSafe.hasPartnerName(msg) !== true, 'the shared partner-name detector finds nothing in the message');
+}
+
+// ── B2. THE CORRECTION for orders that got the earlier message ─────────────
+// Owner-directed 2026-09-01: "a one-time run job for all the files that you sent
+// this message in the past, everybody, correcting the instructions."
+{
+  // The detector recognises EXACTLY the withdrawn wording — rebuilt here as it
+  // was posted on 2026-08-16, not read from the module, so this test would catch
+  // the module drifting away from the historical text it must keep matching.
+  const oldMsg = [
+    'Appraisal requirements for this loan — Loan #YSCAP1 · 27 Beacon St, Lakewood, NJ 08701', '',
+    'Before this report is submitted, please make sure it meets the following. These are the requirements this loan will be reviewed against, so a report that misses one will have to come back for revision.', '',
+    '1. Comparable sales must be within 1 mile of the subject.',
+    '2. At least one As-Is comparable — and, where the report gives an after-repair (ARV) value, at least one ARV comparable — must be an "anchor" comp. An anchor comp is a SETTLED sale (an active or pending listing does not count) that meets all THREE of:',
+    '      a. within 1 mile of the subject;', '      b. sold within the last 12 months;', '      c. under 15% net adjustment.',
+    '3. Interior photographs of the subject are required.',
+    '4. The report must name YS Capital as the lender/client.', '',
+    'If any of these cannot be met on this property, please reply on this order and tell us before you complete the report.',
+  ].join('\n');
+  ok(reqs.isSupersededMessage(oldMsg) === true, 'the 2026-08-16 wording is recognised as superseded');
+  ok(reqs.isSupersededMessage(reqs.orderMessage({ investorKey: 'emcap' })) === false,
+    'the CURRENT wording is not superseded (a message posted today needs no correction)');
+  ok(reqs.isSupersededMessage(reqs.orderMessage({ investorKey: 'emcap', rentalExit: true })) === false,
+    'the current rental wording is not superseded either');
+  ok(reqs.isSupersededMessage(reqs.correctionMessage({ investorKey: 'emcap' })) === false,
+    'a correction is never itself "superseded" (or it would be corrected again, forever)');
+  ok(reqs.isSupersededMessage('Comparable sales must be within 1 mile of the subject.') === false,
+    'a HUMAN message that happens to contain the old line is not ours and is left alone');
+  ok(reqs.isSupersededMessage(null) === false && reqs.isSupersededMessage('') === false, 'nothing → not superseded');
+
+  const corr = reqs.correctionMessage({ investorKey: 'emcap', loanNumber: 'YSCAP258134728',
+    propertyAddress: '27 Beacon St, Lakewood, NJ 08701' });
+  ok(typeof corr === 'string' && corr.startsWith(reqs.CORRECTION_MARKER), 'the correction leads with its own marker');
+  ok(!corr.startsWith(reqs.MARKER) && !reqs.CORRECTION_MARKER.startsWith(reqs.MARKER),
+    'the correction marker can never be mistaken for the requirements marker (each is its own do-not-repeat key)');
+  ok(/every comparable sale must be within 1 mile/.test(corr) && /not the requirement/.test(corr),
+    'it says plainly what the earlier message got wrong');
+  ok(/replaces it in full/.test(corr), 'it says the new list replaces the old one');
+  ok(!/disregard.*photograph/i.test(corr) && !/[Ii]nterior photograph/.test(corr) && !/lender\/client/.test(corr),
+    'it does NOT tell the appraiser to skip photographs or the lender name — those still apply, they just are not listed');
+  ok(corr.includes(reqs._internals.anchorRequirement()),
+    'the correction states the anchor requirement from the SAME single definition the live message uses');
+  ok(corr.split('\n').filter((l) => /^[123]\. /.test(l)).length === 3, 'its three criteria are numbered 1, 2, 3');
+  ok(/YSCAP258134728/.test(corr) && /27 Beacon St/.test(corr), 'it names the loan and the property');
+  ok(!borrowerSafe.hasPartnerName(corr) && !/emcap/i.test(corr), 'the correction names no capital partner');
+  ok(/1007/.test(reqs.correctionMessage({ investorKey: 'emcap', rentalExit: true }))
+    && !/1007/.test(corr), 'the rental line follows the file\'s exit on the correction too');
+  ok(reqs.correctionMessage({ investorKey: null }) === null && reqs.correctionMessage({ investorKey: 'other' }) === null
+    && reqs.correctionMessage({}) === null, 'a file with no requirements gets no correction (nothing to correct it TO)');
 }
 
 // ── C. SILENT WHEN THERE IS NOTHING TO SAY ────────────────────────────────

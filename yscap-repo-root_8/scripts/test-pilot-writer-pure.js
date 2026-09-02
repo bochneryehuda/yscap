@@ -36,7 +36,10 @@ const azure = require('../src/lib/ai/azure-openai');
   ok('B2 draft demands placeholders over invention', /\[bracketed placeholder\]/.test(PW.systemFor('draft')));
   ok('B3 rewrite carries the chosen tone', /polite but firm/.test(PW.systemFor('rewrite', 'firm')));
   ok('B4 every mode forbids invented facts', PW.MODES.every((m) => /never invent a fact/.test(PW.systemFor(m))));
-  ok('B5 every mode returns ONLY the text', PW.MODES.every((m) => /Return ONLY the finished text/.test(PW.systemFor(m))));
+  // The three prose modes hand back the finished text alone; the CONDITION mode (2026-09-01)
+  // hands back exactly two labelled lines the screen parses into a header + an instruction.
+  ok('B5 every prose mode returns ONLY the text', PW.MODES.filter((m) => m !== 'condition').every((m) => /Return ONLY the finished text/.test(PW.systemFor(m))));
+  ok('B5b the condition mode returns exactly two labelled lines', /Return EXACTLY two lines/.test(PW.systemFor('condition')) && /Header:/.test(PW.systemFor('condition')));
 
   // ---- C. assist() ------------------------------------------------------------------------
   const realAvailable = azure.available, realComplete = azure.complete;

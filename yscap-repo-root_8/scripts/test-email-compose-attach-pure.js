@@ -147,8 +147,9 @@ ok('E1 the reply route reads the uploads through the ONE reader',
 // All four branches — the closing chain, the two vendor orders, and the plain file reply
 // (which also serves the draw section). One of them missing is the whole feature missing on
 // that screen, and nothing would error.
-ok('E2 the closing chain carries them', /msgType: 'closing_followup', attachments: attach,/.test(staffSrc));
-ok('E3 the title / insurance order carries them', /type: `\$\{kind\}_followup`, thread, attachments: attach,/.test(staffSrc));
+// A typed reply is a MESSAGE, not a follow-up (owner-reported 2026-09-01) — the types moved with it.
+ok('E2 the closing chain carries them', /msgType: 'closing_message', attachments: attach,/.test(staffSrc));
+ok('E3 the title / insurance order carries them', /type: `\$\{kind\}_message`, thread, attachments: attach,/.test(staffSrc));
 ok('E4 the plain file reply (and the draw section) carries them',
   /cc: drawCc\.length \? drawCc : undefined,\s*\n\s*\.\.\.\(attach\.length \? \{ attachments: attach \} : \{\}\),/.test(staffSrc));
 ok('E5 every branch tells the caller what could NOT be attached',

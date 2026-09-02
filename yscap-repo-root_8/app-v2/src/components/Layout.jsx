@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { NavLink, useNavigate, Link } from 'react-router-dom';
 import { api } from '../lib/api.js';
-import { useAuth } from '../lib/auth.jsx';
+import { useAuth, takeReturnTo } from '../lib/auth.jsx';
 import ChatBubble from './ChatBubble.jsx';
 import BorrowerViewBanner from './BorrowerViewBanner.jsx';
 import AssistantBanner from './AssistantBanner.jsx';
@@ -110,7 +110,7 @@ export default function Layout({ children }) {
                 their own phone mid-upload). The server refuses that call
                 outright; here the button simply becomes the way back. */}
             {isBorrowerView
-              ? <button className="btn ghost small" onClick={async () => { const ok = await exitBorrowerView(); nav(ok ? '/internal/borrower-view' : '/internal/login'); }}>Leave borrower view</button>
+              ? <button className="btn ghost small" onClick={async () => { const ok = await exitBorrowerView(); nav(ok ? (takeReturnTo() || '/internal/borrower-view') : '/internal/login'); }}>Leave borrower view</button>
               : <button className="btn ghost small" onClick={() => { signOut(); nav('/login'); }}>Sign out</button>}
           </nav>
         </div>

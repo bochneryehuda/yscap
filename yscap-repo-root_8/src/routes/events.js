@@ -95,6 +95,20 @@ router.get('/', async (req, res) => {
       return res.status(401).json({ error: 'broker view ended' });
   }
 
+  // STAFF VIEW (src/lib/staff-view.js): the third view-as token. The same re-validation
+  // as the two above — a revoked, deactivated or demoted super admin must not keep a
+  // teammate's live stream open through the one endpoint that bypasses authenticate().
+  const stv = require('../lib/staff-view');
+  const simp = stv.readImpersonation(claims);
+  if (simp) {
+    if (stv.sessionExpired(simp)) return res.status(401).json({ error: 'team view ended' });
+    const ss = await db.query(
+      `SELECT token_version, is_active, role FROM staff_users WHERE id=$1 AND is_external=false`, [simp.viewerId]);
+    const ssu = ss.rows[0];
+    if (!ssu || ssu.is_active === false || (ssu.token_version || 0) !== (simp.viewerTv || 0) || String(ssu.role) !== 'super_admin')
+      return res.status(401).json({ error: 'team view ended' });
+  }
+
   // Borrowers only receive presence for the staff on their own files.
   let teamKeys = null;
   if (claims.kind === 'borrower') {

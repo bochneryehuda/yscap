@@ -1,0 +1,23 @@
+-- ============================================================================
+-- db/669 — documents from_email sender provenance
+--
+-- WHAT THIS CHANGES, AND WHY. A document that arrives by email on an order thread
+-- (a title company's commitment, an insurance agent's quote or binder) was filed
+-- with no record of WHO sent it: order-inbox received the sender's address and
+-- never stored it. The owner's rule (2026-09-01) is that when two insurance
+-- quotes were ordered, "based on the document that you accept, the system shall
+-- keep the information of the insurance agent … who sent these documents." That
+-- decision needs the sender on the document row, so this adds it. Written by
+-- order-inbox for every returned document from now on; read by the accept path
+-- to promote that sender's contact to the file's order contact.
+--
+-- IDEMPOTENT: ADD COLUMN IF NOT EXISTS.
+--
+-- BACKFILL: none. The sender of an already-filed document was never recorded
+-- anywhere it could be recovered from; the accept path treats a NULL sender as
+-- "unknown" and changes nothing.
+--
+-- PRODUCT SEPARATION: RTL only (documents is an RTL table).
+-- ============================================================================
+
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS from_email text;
