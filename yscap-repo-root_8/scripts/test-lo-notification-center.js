@@ -300,10 +300,14 @@ const rulesRow = async (staffId) => (await db.query(
     T('GET /rules 200', rulesGet.status === 200);
     T('default timezone America/New_York', rulesGet.body.rules.timezone === 'America/New_York');
 
-    // Quiet hours 00:00–23:59 (essentially all day)
+    // Quiet hours ALL DAY. start === end is the gate's own definition of 24/7 quiet
+    // (_inQuietWindow). The previous 00:00–23:59 window was "essentially all day" —
+    // the end is EXCLUSIVE, so the one minute 23:59 New York was outside it, and the
+    // suite failed on main whenever CI happened to run in that minute (2026-09-02
+    // 03:59 UTC). A test of "quiet hours demote the send" must not depend on the clock.
     const putRules = await call(server, 'PUT', '/api/staff/notification-center/rules', loTok, {
       timezone: 'America/New_York',
-      quiet_hours_start: '00:00', quiet_hours_end: '23:59',
+      quiet_hours_start: '00:00', quiet_hours_end: '00:00',
       work_days_mask: 127, auto_send_after_hours: 24, compose_default: 'send', undo_window_seconds: 8,
     });
     T('PUT /rules 200', putRules.status === 200);
