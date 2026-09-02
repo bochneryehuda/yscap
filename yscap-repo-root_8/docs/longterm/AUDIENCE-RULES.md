@@ -49,21 +49,21 @@ through to a borrower.
 So the block is built on **the same registry that resolves those spellings**
 (`encompass/investors.js`) — the only thing that can actually catch them all. Add a new
 investor there and it is blocked everywhere, automatically. The test proves that by
-sweeping **every one of the 135 recorded spellings** through five sentence shapes and
+sweeping **every one of the 142 recorded spellings** through five sentence shapes and
 failing if a single one survives.
 
 > ⛔ **TWO NUMBERS, AND THEY ARE NOT THE SAME NUMBER (corrected 2026-09-02).** Three
 > places disagreed — `CLAUDE.md` said 117, this file said 151 and then 150, and
-> `investors.js` says 151 — while the code answers **135**. The disagreement was that
+> `investors.js` says 151 — while the code answers **142**. The disagreement was that
 > two different facts were being quoted as one:
 >
 > - **151** is how many distinct spellings the two free-text Encompass fields held on
 >   2026-08-14. It is a fact about the LIVE BOOK, it is why this registry exists, and it
 >   does not change when the registry does.
-> - **135** is how many distinct spellings the REGISTRY records and the block sweeps
+> - **142** is how many distinct spellings the REGISTRY records and the block sweeps
 >   today — from 42 investors and 207 label-plus-alias rows, de-duplicated.
 >
-> Both are true; quoting either as the other is what made them look wrong. The 135 is
+> Both are true; quoting either as the other is what made them look wrong. The 142 is
 > now asserted against the code by `test-lt-investor-block.js`, so this paragraph cannot
 > go stale again without a test saying so.
 

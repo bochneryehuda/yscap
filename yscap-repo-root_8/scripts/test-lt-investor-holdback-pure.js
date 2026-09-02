@@ -339,11 +339,27 @@ console.log('\n== G. THE CLIENT-SAFE NAME IS DECIDED ONCE ==');
      Two answers to one question, and the merge was the copy that drifted. Today it only reaches the
      sort order, which is why it went unnoticed; but it is the question rule 10 turns on. */
   const wl = require('../src/longterm/lenderprice/investor-programs');
-  const saved = settings.readSettings({ button_finance: { whiteLabel: 'Slate' } }).settings;
-  const board = { lenderprice: { programs: [{ lender: 'Button Finance, Inc.', investor: 'Button Finance, Inc.', options: [] }] }, loannex: null };
-  const nameIn = (out) => ((out.investors || []).find((e) => e.key === 'button_finance') || {}).whiteLabel;
+  const investorsMod = require('../src/longterm/encompass/investors');
+  /* ⛔ THE SUBJECT IS DERIVED, NOT HAND-PICKED, and that is the whole point of this
+     control. It needs an investor the SHEET says nothing about, so that the sheet's
+     answer (null) and the ONE definition's answer ("Slate") genuinely differ. It used
+     to name `button_finance` — until the owner put Button Finance ON the sheet
+     (2026-09-02, as "Jade"), at which point the control silently stopped testing
+     anything and the suite went red. Picking a different investor by hand would just
+     re-arm the same trap for the next sheet change. The first registry key not on the
+     sheet, in sorted order so two runs never disagree — and it THROWS rather than
+     skips if every investor is on the sheet, because a control that quietly has
+     nothing to control is exactly the "green for the wrong reason" this file exists
+     to prevent. */
+  const offSheet = investorsMod.list().map((r) => r.key)
+    .filter((k) => wl.whiteLabelOf(k) === null).sort()[0];
+  if (!offSheet) throw new Error('ONE-1 has no subject: every registry investor is on the white-label sheet, so this control can no longer tell the two answers apart. Re-point it rather than deleting it.');
+  const offSheetLabel = investorsMod.list().find((r) => r.key === offSheet).label;
+  const saved = settings.readSettings({ [offSheet]: { whiteLabel: 'Slate' } }).settings;
+  const board = { lenderprice: { programs: [{ lender: offSheetLabel, investor: offSheetLabel, options: [] }] }, loannex: null };
+  const nameIn = (out) => ((out.investors || []).find((e) => e.key === offSheet) || {}).whiteLabel;
 
-  ok(wl.whiteLabelOf('button_finance') === null && wl.effectiveWhiteLabel('button_finance', undefined, saved) === 'Slate',
+  ok(wl.whiteLabelOf(offSheet) === null && wl.effectiveWhiteLabel(offSheet, undefined, saved) === 'Slate',
     'ONE-1 CONTROL: the sheet alone says nothing about this investor, while the ONE definition says "Slate" — so the two answers really do differ');
   ok(nameIn(mergeMod.merge(board, { settings: saved })) === 'Slate',
     'ONE-2 THE ONE THAT MATTERS: the merge now answers with the ONE definition, so it and the routing cannot disagree about what a client may see');

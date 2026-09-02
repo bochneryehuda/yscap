@@ -82,20 +82,33 @@ const OWNER_SOURCE = {
   nqm: 'loannex',
   acra: 'loannex',
   eresi: 'loannex',
+  /* TURNED ON 2026-09-02, owner-directed ("Turn them both on"), and the SOURCE is
+     the half that makes "on" mean anything. Both of these are investors on the
+     LoanNEX board; neither is quoted by Lender Price. Enabling them while they
+     still defaulted to `lenderprice` would ask the one rate sheet that has never
+     heard of them and put an investor on the roster whose board is permanently
+     empty — which reads to an officer as a broken screen, not as a setting.
+     Button Finance's source was named by the owner when it was first parked:
+     "we're gonna put it there so that it should take it from LoanNEX." */
+  button_finance: 'loannex',
+  clearedge: 'loannex',
 };
 
 /**
- * OFF unless somebody turns them on. *"For Button Finance, just pre-fill that as
- * off, and whenever we're ready for it, we're gonna turn it on over there. We're
- * gonna put in the white label name for it, and we're gonna put it there so that
- * it should take it from LoanNEX."*
+ * OFF unless somebody turns them on.
  *
- * Note this is now a SETTING and no longer a rule baked into the code — which is
- * exactly what makes "whenever we're ready" a switch rather than a deploy.
+ * EMPTY SINCE 2026-09-02, and deliberately kept rather than deleted. Button
+ * Finance was the one entry: parked on 2026-08-30 ("just pre-fill that as off,
+ * and whenever we're ready for it, we're gonna turn it on over there"), and
+ * turned on by the owner on 2026-09-02 once it had a white-label name — which
+ * was the stated condition. The map is the mechanism for parking the NEXT one,
+ * so removing it would mean rebuilding it the next time an investor arrives
+ * before we are ready to show it.
+ *
+ * Note this is a SETTING and not a rule baked into the code — which is exactly
+ * what made "whenever we're ready" a switch rather than a deploy.
  */
-const OWNER_DISABLED = {
-  button_finance: 'Owner-directed 2026-08-30: pre-filled off. Turn it on with its white-label name and LoanNEX as its source when ready.',
-};
+const OWNER_DISABLED = {};
 
 const isSource = (v) => SOURCES.includes(String(v || '').toLowerCase());
 
