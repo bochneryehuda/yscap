@@ -25,7 +25,7 @@
  * proven is that a row somebody SAVED reaches the board, not that a function is
  * called.
  *
- * MUTATION-PROVEN — FORTY-SIX of them, in five batteries. Each was applied to the
+ * MUTATION-PROVEN — FORTY-NINE of them, in six batteries. Each was applied to the
  * production code, the named suite went RED, and a green control run either side
  * confirmed it was the mutation and not the weather.
  *
@@ -85,6 +85,11 @@
  *   C5. an in-flight read that raced a `bust()` publishing its stale answer     → §K3
  *   C6. `ensureWarm` losing its name, so no mounted layer can be recognised     → §K
  *
+ * A SIXTH ROUND, after the fifth round's own guard turned out to be vacuous:
+ *   E1. `fullRoster` reaching SIDEWAYS for the in-force map, arity unchanged  → §E
+ *   E2. the saved-group filter doing the same                                → §E
+ *   E3. `decorate` reaching sideways on the general engine's board           → §E
+ *
  * A FIFTH ROUND, after an audit found this feature had moved the GENERAL pricing
  * engine — the one thing the owner has said most often it must not do. Its roster
  * door had become a settings read, so a LoanNEX-only investor appeared in a
@@ -101,6 +106,19 @@
  * D3 needed its assertion rewritten first: naming ONE key is satisfied by a
  * filter that consults the store for every other key, so it is now the invariant
  * — a saved group keeps ONLY investors on the committed sheet.
+ *
+ * ⛔ AND ITS SIBLING, WHICH COST A SIXTH ROUND: A GUARD MUST BE ABLE TO FAIL.
+ * A "does not contain X" assertion where X was never available to the thing being
+ * asked is green for the wrong reason. §E asserted that the general engine's
+ * roster did not contain a hand-added investor while NO custom map was in force
+ * anywhere in the process — so it was asserting the absence of an input nobody
+ * had offered. An auditor made `fullRoster` reach SIDEWAYS for the in-force map
+ * (arity unchanged, so the arity check still passed) and a LoanNEX-only investor
+ * landed on the General Pricing Engine's dropdown with this suite still green.
+ * The shape that cannot go vacuous is the one §E uses now: put the thing genuinely
+ * IN FORCE, capture, forget, capture again, and assert the two are byte-identical.
+ * Same family as the grep below — both are guards that pass without being able to
+ * fail.
  *
  * ⛔ THE RULE THIS SUITE HAS NOW PAID FOR TWICE, so it is written at the top:
  * A GUARD THAT GREPS FOR A LITERAL CAN BE SATISFIED BY THE COMMENT THAT EXPLAINS
@@ -497,53 +515,108 @@ head('E. it behaves like a recorded investor everywhere a roster is read');
   }
 
   /**
-   * ⛔ AND THE GENERAL ENGINE DOES NOT MOVE. `fullRoster()` is the list behind
-   * the GENERAL pricing screen's pre-search dropdown, and that list is a FILTER:
-   * an officer picks a name and the search narrows to it. That engine asks
-   * Lender Price and nobody else.
+   * ⛔ AND THE GENERAL ENGINE DOES NOT MOVE.
    *
-   * An earlier cut of this feature threaded the hand-added investors into it —
-   * and this suite ASSERTED that as correct, which is how a regression gets a
-   * green test. An audit caught it: a LoanNEX-only investor appeared in a
-   * Lender-Price-only dropdown, and picking it produced an empty board with
-   * nothing on the screen to explain why. The owner's standing instruction is
-   * that the general engine does not move; if a hand-added investor should ever
-   * appear there, that is his decision to make, not a side effect of a shared
-   * module gaining an argument.
-   */
-  ok(programs.fullRoster.length === 0,
-    'the general engine’s roster takes NO roster argument — there is no way to hand it the hand-added investors');
-  ok(!programs.fullRoster().some((r) => r.key === CE.key || r.whiteLabel === CE.whiteLabel),
-    'THE ONE THAT MATTERS: a hand-added investor is NOT on the general engine’s pre-search list');
-  ok(JSON.stringify(programs.fullRoster()) === JSON.stringify(programs.fullRoster()),
-    '…and that list is a pure read of the committed sheet, so it answers the same thing every time');
-  ok(programs.fullRoster().every((r) => !('custom' in r)),
-    '…in the shape that screen has always been sent, with no flag it never had');
-
-  /**
-   * THE SECOND GENERAL-ENGINE DOOR, for the same reason. Saved investor groups
-   * belong to `app-v2/src/longterm/LtPricer.jsx` — the general screen — and this
-   * filter briefly consulted the settings store, so a group quietly began KEEPING
-   * a key it used to drop.
+   * `fullRoster()` is the list behind the GENERAL pricing screen's pre-search
+   * dropdown, and that list is a FILTER: an officer picks a name and the search
+   * narrows to it. That engine asks Lender Price and nobody else, so a
+   * LoanNEX-only investor offered there is an empty board nobody can explain.
+   *
+   * ⛔ HOW THIS IS ASSERTED IS THE WHOLE LESSON, AND IT HAS NOW BITTEN THREE
+   * TIMES: A GUARD MUST BE ABLE TO FAIL. The first version of this block read
+   * `!fullRoster().some(r => r.key === CE.key)` — while NO custom map was in
+   * force anywhere in the process. It asserted that a list built from an input
+   * never offered did not contain that input: green for the wrong reason, and
+   * incapable of failing. An auditor proved it by making `fullRoster` reach
+   * SIDEWAYS for the in-force map instead of taking it as an argument — arity
+   * stayed 0, so the arity check below still passed — and ClearEdge landed on the
+   * general engine's dropdown with this suite still green. Same family as a grep
+   * satisfied by the comment that explains it.
+   *
+   * So the map is put genuinely IN FORCE, exactly as the settings hook installs
+   * it, and each surface is captured with it installed and again with it
+   * forgotten. The assertion is BYTE-IDENTICAL JSON — a difference the leak would
+   * create — rather than the absence of something that was never supplied.
    */
   {
+    const inForce = {
+      [CE.key]: { label: CE.label, whiteLabel: CE.whiteLabel, aliases: CE.aliases },
+      clearedge_lending: { label: 'ClearEdge Lending', whiteLabel: 'Summit', aliases: ['ClearEdge'] },
+    };
     const pricerGroups = require(path.join(ROOT, 'src/longterm/pricer-groups'));
     const sheetKeys = new Set(programs.fullRoster().map((r) => r.key));
-    // Asserted as an INVARIANT rather than about one name: "only sheet investors
-    // survive". A guard naming a single key is satisfied by a filter that
-    // consults the settings store for every OTHER key, which is exactly the
-    // mutation that got past the first version of this assertion.
-    const probe = [...sheetKeys].slice(0, 3)
+    const groupProbe = [...sheetKeys].slice(0, 3)
       .concat([CE.key, 'clearedge_lending', 'nameless_capital', 'not_a_key']);
-    const kept = pricerGroups._internals.sanitizeInvestors(probe);
-    ok(pricerGroups._internals.sanitizeInvestors.length === 1,
-      'the saved-group filter takes no roster argument');
-    ok(kept.investors.every((k) => sheetKeys.has(k)),
-      `THE ONE THAT MATTERS: a saved group keeps ONLY investors on the committed sheet — never one somebody added by hand (kept ${JSON.stringify(kept.investors)})`);
-    ok(kept.dropped.includes(CE.key) && kept.dropped.includes('clearedge_lending'),
-      '…so a hand-added investor is dropped, exactly as it was before this feature existed');
-    ok(kept.investors.length === 3,
-      '…while every sheet investor asked for is kept, so the drop is a rule and not a broken filter');
+
+    /**
+     * Run one bare call twice — once with the hand-added investors in force in
+     * this process, once with them forgotten — and say whether the two answers
+     * are the same bytes. Everything the GENERAL engine reads must be.
+     */
+    const unmovedBy = (fn) => {
+      audience.useCustomInvestors(inForce);
+      const installed = JSON.stringify(fn());
+      const sawIt = audience.summary().customInvestors.count === 2;
+      audience._internals.forgetCustomInvestors();
+      const forgotten = JSON.stringify(fn());
+      return { same: installed === forgotten, sawIt, installed, forgotten };
+    };
+
+    // The control for every row below: the map really WAS in force while the
+    // first capture was taken. Without this the whole battery goes vacuous again
+    // the day `useCustomInvestors` stops installing anything.
+    const control = unmovedBy(() => programs.fullRoster().length);
+    ok(control.sawIt === true,
+      'CONTROL: the hand-added investors really are in force while these captures are taken — without this, everything below proves nothing');
+
+    const surfaces = [
+      ['the general engine’s pre-search roster', () => programs.fullRoster()],
+      ['a saved investor group’s filter', () => pricerGroups._internals.sanitizeInvestors(groupProbe)],
+      ['the white label of every investor, asked bare', () => programs.fullRoster().map((r) => programs.whiteLabelOf(r.key))],
+      ['the general engine’s decoration of a priced board', () => programs.decorate([
+        { lender: CE.label, program: 'P' }, { lender: 'ClearEdge Lending', program: 'Q' },
+      ]).programs.map((p) => ({ k: p.investorKey, w: p.whiteLabel }))],
+      ['its decoration of a declined board', () => programs.decorateDisqualifiedLenders([
+        { lender: 'ClearEdge Lending', items: [] },
+      ]).map((l) => ({ k: l.investorKey, w: l.whiteLabel }))],
+      ['the merge, called without a roster', () => {
+        const out = mergeMod.merge(board, {});
+        return { keys: out.investors.map((i) => i.key), unmapped: (out.unmapped || []).map((u) => u.name) };
+      }],
+      ['the investor settings, read without a roster', () => investorSettings
+        .readSettings({ [CE.key]: { source: 'loannex' } }).problems.map((p) => p.problem)],
+      ['the settings roster, asked bare', () => investorSettings.roster().map((r) => r.key)],
+      // The same family, swept rather than left to be found one at a time: every
+      // "with no roster this answers nobody" assertion elsewhere in this suite is
+      // vacuous on its own, because nothing is in force when it runs. Here they
+      // are asked while something IS.
+      ['a link to a hand-added investor, validated without a roster',
+        () => investorLinks.validateLinks({ 'Some Name': { key: CE.key } }).ok],
+      ['the roster asked for a hand-added key with an empty map',
+        () => roster.effectiveByKey(CE.key, roster.EMPTY)],
+      ['the roster resolving a hand-added name with no map',
+        () => roster.effectiveResolve(CE.label, null).key],
+    ];
+    const moved = [];
+    for (const [what, fn] of surfaces) {
+      const r = unmovedBy(fn);
+      if (!r.same) moved.push(`${what}: ${r.installed.slice(0, 90)} vs ${r.forgotten.slice(0, 90)}`);
+    }
+    ok(moved.length === 0,
+      `THE ONE THAT MATTERS: with hand-added investors IN FORCE, every surface the general engine reads answers the same bytes as without them (${moved.length} moved)`);
+    moved.forEach((m) => console.error(`         · ${m}`));
+
+    // Arity still earns its place: it catches the OTHER shape of the same
+    // regression, where the map arrives as an argument rather than sideways.
+    ok(programs.fullRoster.length === 0 && pricerGroups._internals.sanitizeInvestors.length === 1,
+      '…and neither takes a roster argument, so the map cannot be handed to them either');
+    ok(programs.fullRoster().every((r) => !('custom' in r)),
+      '…in the shape that screen has always been sent, with no flag it never had');
+    const kept = pricerGroups._internals.sanitizeInvestors(groupProbe);
+    ok(kept.investors.every((k) => sheetKeys.has(k)) && kept.investors.length === 3,
+      `a saved group keeps ONLY investors on the committed sheet (kept ${JSON.stringify(kept.investors)})`);
+
+    audience._internals.forgetCustomInvestors();
   }
 
   // THE PANEL'S OWN HOLDBACK. A hand-added investor's extra is read like any
