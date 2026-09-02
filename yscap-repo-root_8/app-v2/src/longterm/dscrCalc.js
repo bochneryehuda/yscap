@@ -129,7 +129,7 @@ export function housingPayment({ pi, taxMonthly, insuranceMonthly, hoaMonthly })
  * not this assumed rate, which is safe (the frontier re-prices every band on its own true ratio)
  * but is a real asymmetry rather than a claim that the two can never differ.
  */
-export const TYPICAL_RATE_PCT = 7.5;
+export const TYPICAL_RATE_PCT = 7;
 
 export function dscrFrom(input) {
   const i = input || {};
