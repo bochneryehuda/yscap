@@ -549,7 +549,12 @@ async function priceBoth(scenario, opts = {}) {
     ? lpRes.value.request : null;
   const lpCriteria = (wire && wire.criteria && typeof wire.criteria === 'object') ? wire.criteria
     : (chk.request && chk.request.criteria);
-  const want = productFilter.wantFrom(sc, lpModel._internals, { lpCriteria });
+  // ⛔ THE RATE LOCK COMES OFF THE BODY ROOT, not off `criteria` — `search-model` writes it to
+  // `dayLocksCriteria` (and `brokerCriteria.dayLocks`) beside `criteria`, never inside it. Same
+  // rule and same fallback as interest-only above: the WIRE body Lender Price actually received,
+  // and the static build only when Lender Price failed and there is no wire body to mirror.
+  const lpRequest = wire || (chk.request && typeof chk.request === 'object' ? chk.request : null);
+  const want = productFilter.wantFrom(sc, lpModel._internals, { lpCriteria, lpRequest });
   const narrowed = nxRes.status === 'fulfilled'
     ? productFilter.narrowBoard(nxRes.value.board, want)
     : null;
@@ -675,8 +680,12 @@ async function priceBoth(scenario, opts = {}) {
     productFilter: {
       asked: want,
       applied: !!(narrowed && narrowed.narrowed),
-      dropped: narrowed ? narrowed.dropped : { amortization: 0, interestOnly: 0, term: 0 },
+      dropped: narrowed ? narrowed.dropped : { amortization: 0, interestOnly: 0, term: 0, lock: 0 },
+      // The lock removes RUNGS from programmes that stay, so it is reported as its own quantity
+      // rather than folded into a programme count that would then not add up.
+      droppedRungs: narrowed ? narrowed.droppedRungs : { lock: 0 },
       unclassified: narrowed ? narrowed.unclassified : 0,
+      unclassifiedRungs: narrowed ? narrowed.unclassifiedRungs : 0,
     },
     // The general engine's own top-level keys, so the copied screen needs no
     // reshaping of its own. `investorRoster` / `investorsUnmapped` keep the

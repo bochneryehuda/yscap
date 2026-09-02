@@ -354,6 +354,47 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     tellable through it; closing that means an opaque handle the browser cannot read, which changes
     the wire contract and is its own change.
 
+15. **THE TWO BOARDS WERE COMPARED AT DIFFERENT RATE LOCKS (2026-09-02, audit F4).** The same class
+    of defect as the interest-only one the owner reported, on a fourth dimension nobody had looked
+    at. `product-filter` mirrored three things onto the LoanNEX board — amortization, interest-only,
+    term — and not the rate lock. Lender Price narrows on `dayLocksCriteria` and the officer sets a
+    lock on **every** search (the field defaults to 30 days), so it answers at the asked lock and at
+    no other. LoanNEX accepts no lock in its search and answers at **all** of them at once.
+
+    **Measured on the recorded board:** asking 15 / 30 / 45 / 60 left the LoanNEX list byte-identical
+    every time — 26 programmes, 1553 rungs, whatever was asked. And the prices are not the same
+    across locks: **1661 rate-points carry more than one lock, mean spread 0.206 points, maximum
+    0.500** — twice the whole margin holdback. Acra's 30-year fixed at 6.25 is 101.036 at 15 days,
+    100.886 at 30 and 100.736 at 45. So a 15-day LoanNEX rung sat beside a 30-day Lender Price quote
+    looking a sixth of a point better, with nothing on the row to explain it. The merge's own
+    election was never wrong (`offerIndex` keys on `lockDays`); the board it elected *from* was.
+
+    **The fix, in the shape the other three already have.** `wantFrom` reads the lock off the WIRE
+    request Lender Price was actually sent — `dayLocksCriteria` at the body ROOT, not inside
+    `criteria`, with `brokerCriteria.dayLocks` as the second reading and the scenario's own
+    `lockDays` only for a caller with no request to mirror. Reading it there rather than re-deriving
+    it is what makes an **unstated** lock resolve through the profile's own 30-day default instead of
+    a second copy of that rule living here. With none of the three present the dimension is simply
+    not narrowed — never a guessed 30, which would empty a board nobody asked a lock about.
+
+    **Why it needed a rung-level pass and not just a programme verdict.** The other three dimensions
+    are properties of the programme; the lock is a property of the RUNG — one programme carries the
+    same rate at four locks at four prices. Keeping the programme and leaving its rungs alone would
+    have left three quarters of the board priced at a lock nobody asked for, and the programme's own
+    `maxPrice` / `minPoints` computed off them. Every aggregate is recomputed the way `parse.js`
+    computes it. A programme or rung that publishes **no** lock is KEPT and counted unclassified —
+    the same direction the other three fail in.
+
+    **On the screen:** the combined board now prints the lock on each row (FORK 10,
+    `showRowLock`). The general engine does **not** — every row there came from one vendor answering
+    one lock, so it would be the same number repeated down the page, and the owner's rule for that
+    screen is *"don't touch our current setup"*. A guard asserts both halves of that, so the general
+    board is protected by a test rather than by intent.
+
+    **Proven by mutation, eight ways:** removing the mirror, removing the rung pass, leaving one
+    aggregate behind, dropping the route's wire read, flipping either engine's flag, and removing
+    either row line each redden a *named* assertion with the rest of the suite green.
+
 ---
 
 ## Update, 2026-08-30 (second pass)

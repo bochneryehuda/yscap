@@ -309,8 +309,17 @@ const reg = registryOf.capturedRegistry();
     const src = read('src/longterm/routes/combined-pricer.js');
     ok(/request: r\.request \|\| null/.test(src)
       && /const lpCriteria = \(wire && wire\.criteria && typeof wire\.criteria === 'object'\) \? wire\.criteria\s*\n\s*: \(chk\.request && chk\.request\.criteria\);/.test(src)
-      && /const want = productFilter\.wantFrom\(sc, lpModel\._internals, \{ lpCriteria \}\)/.test(src),
+      && /const want = productFilter\.wantFrom\(sc, lpModel\._internals, \{ lpCriteria, lpRequest \}\)/.test(src),
       'E1  priceBoth mirrors the WIRE request the client hands back, and falls back to the static build only when there is none');
+    /* 2026-09-02 — E1 CAUGHT THIS ONE ITSELF, which is the point of it: the rate lock became a
+       fourth mirrored dimension and the call site grew a second argument, so the guard went red
+       until it was re-pointed at the new truth. Re-pointed, not relaxed — the lock travels the
+       SAME wire-first, static-fallback road as the criteria, and both halves are now asserted.
+       The lock is read off the body ROOT (`dayLocksCriteria`), not off `criteria`, so a mirror
+       that quietly went back to reading `lpCriteria.dayLocks` would find nothing and narrow
+       nothing — silently, which is exactly how this defect lived. */
+    ok(/const lpRequest = wire \|\| \(chk\.request && typeof chk\.request === 'object' \? chk\.request : null\);/.test(src),
+      'E1b …and the RATE LOCK is mirrored off the same wire body, with the same static fallback — one road for both, never two that can drift');
     ok(/\(\(\{ request: _wire, \.\.\.rest \}\) => rest\)\(lpRes\.value\)/.test(src),
       'E1b …and strips the wire body off the board before it is answered');
     ok(/const io = want\.io;/.test(src), 'E2  the option-level filter reads the SAME resolved answer as the programme narrowing');
