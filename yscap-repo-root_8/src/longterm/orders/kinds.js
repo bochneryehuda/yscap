@@ -198,7 +198,6 @@ const ORDER_KINDS = Object.freeze({
        (`lib/order-email.js` NY_TITLE_CUT). Asking an agent for a document their
        state does not issue is how an order stalls on a reply nobody can send. */
     wants: [
-      'Engagement letter',
       'Wire instructions',
       'Your errors and omissions (E&O) insurance',
       'Preliminary settlement statement',
@@ -212,7 +211,10 @@ const ORDER_KINDS = Object.freeze({
        MENTIONING one must fall through to the condition rather than be filed
        against a slot that does not exist. */
     slotMap: [
-      [/engag|retain/i, 'engagement'],
+      /* NO `engagement` ROW, for the CPL's reason: the owner asked for three
+         documents and the engagement letter is not one of them (2026-09-02), so
+         there is no slot to file one into and a retainer that arrives anyway
+         must fall through to the condition rather than a slot that is gone. */
       [/wir(e|ing)/i, 'wire_instructions'],
       [/e&o|errors?\s*(and|&)\s*omissions/i, 'eo'],
       [/settlement\s*statement|\bhud(-1)?\b|\bcd\b|closing\s*disclosure/i, 'settlement_statement'],

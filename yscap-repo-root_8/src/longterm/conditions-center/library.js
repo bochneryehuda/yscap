@@ -571,12 +571,19 @@ const PRIOR_TO_CTC = [
        A CPL slot on a New York file is a slot nobody can ever fill, which is
        the exact failure `lt_title_docs`'s own `notWhenField` guards against.
        db/680 removes it from the templates and items db/677 already seeded.
-       `orders/kinds.js` asks for the same list. */
+       `orders/kinds.js` asks for the same list.
+
+       NO ENGAGEMENT LETTER EITHER — owner, 2026-09-02, asked directly and
+       answering item by item: *"Errors & Omissions insurance and also the
+       preliminary settlement statement, not for engagement letter, but yes for
+       wire instructions."* So the New York settlement agent is asked for
+       exactly three things, and db/681 takes the engagement letter off the rows
+       db/677 seeded. It was never the owner's ask — it predates the New York
+       work and was carried forward unexamined. */
     slots: [
-      { key: 'engagement', label: 'Engagement letter', required: true },
       { key: 'wire_instructions', label: 'Wire instructions', required: true },
       { key: 'eo', label: 'Settlement agent E&O insurance', required: true },
-      { key: 'settlement_statement', label: 'Settlement statement', required: true },
+      { key: 'settlement_statement', label: 'Preliminary settlement statement', required: true },
     ],
   },
   {

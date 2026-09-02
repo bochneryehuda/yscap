@@ -75,8 +75,8 @@ const TABLE = [
   ['flood_insurance', 'Elevation Certificate.pdf', null, 'an elevation certificate has no slot'],
 
   // ── New York settlement agent ──
-  ['ny_settlement_agent', 'Engagement Letter.pdf', 'engagement', 'the engagement letter'],
-  ['ny_settlement_agent', 'Retainer.pdf', 'engagement', 'a retainer'],
+  ['ny_settlement_agent', 'Engagement Letter.pdf', null, 'THE ENGAGEMENT LETTER IS NOT ASKED FOR (owner 2026-09-02) — no slot, so it files on the condition'],
+  ['ny_settlement_agent', 'Retainer.pdf', null, 'and neither is a retainer'],
   ['ny_settlement_agent', 'Wire instructions.pdf', 'wire_instructions', 'the wiring instructions'],
   ['ny_settlement_agent', 'Settlement Statement.pdf', 'settlement_statement', 'the settlement statement'],
   ['ny_settlement_agent', 'HUD.pdf', 'settlement_statement', 'a HUD'],
@@ -176,6 +176,22 @@ ok('every slot a map names exists, and every required slot is reachable');
   const slot = (code, key) => (byCode.get(code).slots || []).find((s) => s.key === key);
   assert.ok(!slot('lt_ny_settlement_docs', 'cpl'),
     'THERE IS NO CPL IN NEW YORK: the settlement agent documents carry no CPL slot');
+  /* EXACTLY THREE, and asserted as a SET rather than as three separate presence
+     checks — the owner answered this item by item, so a fourth slot creeping
+     back (the engagement letter did exactly that, unexamined, for months) is the
+     failure worth catching, and presence checks alone cannot see it. */
+  assert.deepStrictEqual((byCode.get('lt_ny_settlement_docs').slots || []).map((x) => x.key).sort(),
+    ['eo', 'settlement_statement', 'wire_instructions'],
+    'the New York settlement agent is asked for exactly three documents');
+  assert.ok(!slot('lt_ny_settlement_docs', 'engagement'),
+    '…and the engagement letter is not one of them');
+  assert.strictEqual(slot('lt_ny_settlement_docs', 'settlement_statement').label,
+    'Preliminary settlement statement',
+    'the statement slot is called what the letter actually asks for');
+  assert.ok(!(kinds.ORDER_KINDS.ny_settlement_agent.slotMap || []).some(([, k]) => k === 'engagement'),
+    'and nothing maps a document into an engagement slot');
+  assert.strictEqual(kinds.ORDER_KINDS.ny_settlement_agent.wants.length, 3,
+    'the letter asks for those three and nothing else');
   assert.ok(slot('lt_ny_settlement_docs', 'eo') && slot('lt_ny_settlement_docs', 'eo').required,
     'the settlement agent documents carry a required E&O slot');
   const asked = kinds.ORDER_KINDS.ny_settlement_agent.wants.join(' | ');

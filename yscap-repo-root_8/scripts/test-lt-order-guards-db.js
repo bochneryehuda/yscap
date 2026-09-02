@@ -213,7 +213,8 @@ inboundMail.retrieveAttachmentsSafe = async () => {
          because the two migrations replay in filename order on every boot and
          what has to be true is that they CONVERGE — db/677 re-adding it and
          db/680 taking it off leaves no CPL by the time anybody reads the row. */
-      assert(!has(nySlots, 'cpl'), 'the settlement-agent TEMPLATE in the database carries NO cpl slot');
+      assert(!has(nySlots, 'cpl') && !has(nySlots, 'engagement'),
+        'the settlement-agent TEMPLATE in the database carries neither a cpl nor an engagement slot');
       assert(has(nySlots, 'eo') && has(nySlots, 'eo').required, '…and a required eo slot');
       const titleSlots = await tpl('lt_title_docs');
       assert(has(titleSlots, 'wire_instructions') && has(titleSlots, 'wire_instructions').notWhenField === 'is_new_york',
@@ -229,7 +230,8 @@ inboundMail.retrieveAttachmentsSafe = async () => {
       const keys = (c) => (c ? c.slots.map((s) => s.key) : null);
       assert(nyRead.has('lt_ny_settlement_docs'), 'FIXTURE: the engine put the settlement-agent documents on the New York file');
       const nySa = keys(nyRead.get('lt_ny_settlement_docs')) || [];
-      assert(!nySa.includes('cpl') && nySa.includes('eo'), `THE ONE THAT MATTERS: the New York file's settlement-agent condition shows the E&O and no CPL (${nySa.join(',')})`);
+      assert(JSON.stringify(nySa.slice().sort()) === JSON.stringify(['eo', 'settlement_statement', 'wire_instructions']),
+        `THE ONE THAT MATTERS: the New York file's settlement-agent condition shows exactly the three asked for (${nySa.join(',')})`);
       const nyTitle = keys(nyRead.get('lt_title_docs')) || [];
       assert(!nyTitle.includes('wire_instructions') && !nyTitle.includes('cpl') && !nyTitle.includes('prelim_settlement'),
         `…and its title condition shows neither the wire, the CPL nor the preliminary statement (${nyTitle.join(',')})`);
@@ -238,7 +240,7 @@ inboundMail.retrieveAttachmentsSafe = async () => {
     }
 
     /* ═════════ S4b. db/677 AND db/680 CONVERGE, WHATEVER STATE WE START IN ═══ */
-    console.log('\nS4b. There is no CPL in New York — the two migrations converge and stay converged');
+    console.log('\nS4b. The New York settlement agent is asked for three things — the three migrations converge and stay converged');
     {
       /* Replayed IN FILENAME ORDER, which is how migrate-boot runs them, inside
          a transaction that is rolled back — this asserts about the SQL, not
@@ -251,21 +253,27 @@ inboundMail.retrieveAttachmentsSafe = async () => {
         fs.readdirSync(path.join(__dirname, '..', 'db')).find((f) => f.startsWith(`${n}_`))), 'utf8');
       const d677 = sqlOf('677');
       const d680 = sqlOf('680');
+      const d681 = sqlOf('681');
 
-      const PRE = [{ key: 'engagement', label: 'Engagement letter', required: true },
-        { key: 'wire_instructions', label: 'Wire instructions', required: true },
-        { key: 'settlement_statement', label: 'Settlement statement', required: true }];
-      const WITH_CPL = [PRE[0], PRE[1],
-        { key: 'cpl', label: 'Closing protection letter', required: true },
-        { key: 'eo', label: 'Settlement agent E&O insurance', required: true }, PRE[2]];
-      const CORRECT = [PRE[0], PRE[1], { key: 'eo', label: 'Settlement agent E&O insurance', required: true }, PRE[2]];
-      /* A row somebody has EDITED: a re-labelled engagement slot and one they
-         added. It must keep BOTH and still lose the CPL — the owner's rule is
-         about every row, and clobbering an edit to enforce it would be its own
-         defect. */
-      const EDITED = [{ key: 'engagement', label: 'Their engagement letter', required: true },
-        { key: 'cpl', label: 'Closing protection letter', required: true },
-        { key: 'eo', label: 'Settlement agent E&O insurance', required: true },
+      const EO = { key: 'eo', label: 'Settlement agent E&O insurance', required: true };
+      const WIRE = { key: 'wire_instructions', label: 'Wire instructions', required: true };
+      const ENGAGE = { key: 'engagement', label: 'Engagement letter', required: true };
+      const CPL = { key: 'cpl', label: 'Closing protection letter', required: true };
+      const STMT_OLD = { key: 'settlement_statement', label: 'Settlement statement', required: true };
+
+      const PRE = [ENGAGE, WIRE, STMT_OLD];                     // before db/677
+      const WITH_CPL = [ENGAGE, WIRE, CPL, EO, STMT_OLD];       // what db/677 wrote
+      const NO_CPL = [ENGAGE, WIRE, EO, STMT_OLD];              // after db/680, before db/681
+      const CORRECT = [WIRE, EO, { ...STMT_OLD, label: 'Preliminary settlement statement' }];
+      /* A row somebody has EDITED: a re-labelled WIRE slot (one the owner
+         confirmed, so it survives) and a slot they added. It must keep BOTH and
+         still lose the CPL and the engagement letter — the owner's rules are
+         about every row, and clobbering somebody's edit to enforce them would be
+         its own defect. Deliberately NOT keyed on `engagement` any more: that
+         slot is now removed by db/681, so using it as the "kept edit" example
+         would assert the opposite of the rule. */
+      const EDITED = [{ ...WIRE, label: 'Their wiring instructions' },
+        ENGAGE, CPL, EO,
         { key: 'local_form', label: 'County transfer form', required: false }];
 
       const keysAfterReplay = async (start, times) => {
@@ -274,17 +282,24 @@ inboundMail.retrieveAttachmentsSafe = async () => {
           await c.query('BEGIN');
           await c.query(`UPDATE checklist_templates SET slots=$1::jsonb WHERE code='lt_ny_settlement_docs' AND scope='lt_loan'`,
             [JSON.stringify(start)]);
-          for (let i = 0; i < times; i += 1) { await c.query(d677); await c.query(d680); }
+          for (let i = 0; i < times; i += 1) { await c.query(d677); await c.query(d680); await c.query(d681); }
           const r = await c.query(`SELECT slots FROM checklist_templates WHERE code='lt_ny_settlement_docs' AND scope='lt_loan'`);
           return r.rows[0].slots;
         } finally { await c.query('ROLLBACK').catch(() => {}); c.release(); }
       };
 
-      for (const [name, start] of [['its pre-db/677 shape', PRE], ['the CPL db/677 added', WITH_CPL], ['already corrected', CORRECT]]) {
+      for (const [name, start] of [['its pre-db/677 shape', PRE], ['the CPL db/677 added', WITH_CPL],
+        ['the mid-correction shape', NO_CPL], ['already corrected', CORRECT]]) {
         const after = await keysAfterReplay(start, 1);
-        const ks = after.map((x) => x.key);
-        assert(!ks.includes('cpl'), `starting from ${name}, one boot leaves no CPL (${ks.join(',')})`);
-        assert(ks.includes('eo'), `…and the E&O is there (${ks.join(',')})`);
+        const ks = after.map((x) => x.key).sort();
+        /* Asserted as the WHOLE SET, not as "no CPL": the owner answered this
+           item by item, so what must be true is that the row ends up as exactly
+           those three — a leftover fourth slot is the failure that actually
+           happened here (the engagement letter, carried forward unexamined). */
+        assert(JSON.stringify(ks) === JSON.stringify(['eo', 'settlement_statement', 'wire_instructions']),
+          `starting from ${name}, one boot leaves exactly the three the owner asked for (${ks.join(',')})`);
+        assert((after.find((x) => x.key === 'settlement_statement') || {}).label === 'Preliminary settlement statement',
+          '…and the statement is called what the letter asks for');
       }
       /* A SECOND boot must change nothing — the failure this catches is a
          migration that is not idempotent, which breaks every future deploy
@@ -295,10 +310,11 @@ inboundMail.retrieveAttachmentsSafe = async () => {
 
       const edited = await keysAfterReplay(EDITED, 1);
       const ek = edited.map((x) => x.key);
-      assert(!ek.includes('cpl'), `a hand-edited row loses the CPL too (${ek.join(',')})`);
+      assert(!ek.includes('cpl') && !ek.includes('engagement'),
+        `a hand-edited row loses the CPL and the engagement letter too (${ek.join(',')})`);
       assert(ek.includes('local_form'), '…and keeps the slot somebody added');
-      assert((edited.find((x) => x.key === 'engagement') || {}).label === 'Their engagement letter',
-        '…and keeps their own wording');
+      assert((edited.find((x) => x.key === 'wire_instructions') || {}).label === 'Their wiring instructions',
+        '…and keeps their own wording on a slot the owner confirmed');
     }
 
     console.log('\nS5. A document that names a slot the FILE does not have is filed with no slot');

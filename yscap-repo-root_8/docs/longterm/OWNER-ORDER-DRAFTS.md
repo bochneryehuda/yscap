@@ -81,10 +81,17 @@ On a NEW YORK file the title ask REMOVES exactly two items:
 - no CPL — and it is not asked of anybody else either; there is none
 - no Preliminary Settlement Statement — this one **does** move, see below
 
-The NEW YORK SETTLEMENT AGENT order asks the settlement agent for:
-- the preliminary settlement statement
+The NEW YORK SETTLEMENT AGENT order asks the settlement agent for **exactly
+three things** — confirmed by the owner item by item on 2026-09-02 (*"Errors &
+Omissions insurance and also the preliminary settlement statement, not for
+engagement letter, but yes for wire instructions"*):
+- wire instructions
 - the settlement agent's errors and omissions (E&O) insurance
-- (plus their engagement letter and wire instructions, which were always theirs)
+- the preliminary settlement statement
+
+**NOT the engagement letter.** It sat on this condition from the day it was
+seeded and was never something the owner asked for; db/681 removes it. A
+required slot nobody wants filled holds the condition open forever.
 
 ---
 
