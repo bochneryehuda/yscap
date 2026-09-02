@@ -98,18 +98,37 @@ ok(/label: orderKinds\.VENDOR_KINDS\[t\.key\]/.test(read('src/longterm/condition
   }
 }
 
-// ── B. THE CONDITION ASKS FOR TWO ───────────────────────────────────────────
-console.log('\nB. THE PRE-SUBMITTAL CONDITION ASKS FOR TWO');
+// ── B. THE CONDITION ASKS FOR TWO, PLUS THE THREE THAT FOLLOW THE DEAL ─────
+console.log('\nB. THE PRE-SUBMITTAL CONDITION ASKS FOR TWO ON EVERY FILE, AND THREE MORE WHEN THE DEAL CALLS FOR THEM');
 
 const contacts = lib.library().find((c) => c.code === 'lt_file_contacts');
 ok(!!contacts, 'the file-contacts condition is in the library');
 {
   const rows = (contacts.config && contacts.config.contactTypes) || [];
   const keys = rows.map((r) => r.key).sort();
-  ok(JSON.stringify(keys) === JSON.stringify(['hazard_insurance', 'title']),
-    'THE ONE THAT MATTERS: the title company and the hazard insurance agent, and nobody else', keys.join(', '));
+  ok(JSON.stringify(keys) === JSON.stringify(['hazard_insurance', 'hoa', 'landlord', 'ny_settlement_agent', 'title']),
+    'THE ONE THAT MATTERS: the title company and the hazard agent, plus the landlord, the HOA and the settlement agent — and nobody else', keys.join(', '));
   ok(rows.every((r) => r.required === true),
-    '…and both are required — they are what the file cannot be submitted without');
+    '…and every one is required — when it applies');
+  const by = Object.fromEntries(rows.map((r) => [r.key, r]));
+  ok(!by.title.whenField && !by.hazard_insurance.whenField,
+    'the two are asked for on every file — no rule field on either');
+  ok(by.landlord.whenField === 'borrower_rents' && by.hoa.whenField === 'is_condo' && by.ny_settlement_agent.whenField === 'is_new_york',
+    'the three each carry the fact that turns them on (owner-directed 2026-09-02: renter → landlord, condo → HOA, New York → settlement agent)');
+  // The greying is the read side's three-valued answer, so a deal that needs
+  // none of the three still asks for exactly the two. Exercised through the
+  // same function the screen and the gate use.
+  const grey = ccRead._internals.contactTypesFor({ config: { contactTypes: rows }, answer: {} },
+    { borrower_rents: false, is_condo: false, is_new_york: false });
+  ok(grey.filter((t) => t.applies !== false).map((t) => t.key).sort().join(',') === 'hazard_insurance,title',
+    'a homeowner\'s New Jersey purchase of a house asks for exactly the two');
+  const renter = ccRead._internals.contactTypesFor({ config: { contactTypes: rows }, answer: {} },
+    { borrower_rents: true, is_condo: false, is_new_york: true });
+  ok(renter.filter((t) => t.applies === true).map((t) => t.key).sort().join(',') === 'hazard_insurance,landlord,ny_settlement_agent,title',
+    'a renter buying in New York is asked for the landlord and the settlement agent as well');
+  const unknown = ccRead._internals.contactTypesFor({ config: { contactTypes: rows }, answer: {} }, {});
+  ok(unknown.filter((t) => t.applies === null).length === 3 && unknown.every((t) => t.applies !== false),
+    'a file whose facts are not read yet answers "cannot tell yet" on the three — never a confident no');
   // DERIVED, not retyped: the condition's rows must be the SAME objects the desk
   // shows, or the two surfaces can call one company two things.
   for (const r of rows) {
@@ -250,6 +269,26 @@ console.log('\nE. THE CHANGE REACHES DATABASES THAT ALREADY EXIST');
     '…replacing the contact types with the two');
   ok(/array_agg\(t->>'key' ORDER BY t->>'key'\)/.test(mig),
     '…guarded on the exact seven it replaces, compared as a SET so key order cannot decide it — a hand-edited row is left alone and a replay does nothing');
+
+  // db/674 — the three that follow the deal, on the databases that already
+  // hold the two. The JSON it writes is the library's own rows, so the two
+  // cannot drift apart: what a new database seeds and what an old one is
+  // updated to are compared here as VALUES.
+  const mig670 = read('db/674_the_pre_submittal_contacts_follow_the_deal.sql');
+  ok(/UPDATE checklist_templates/.test(mig670) && /lt_file_contacts/.test(mig670) && /'\{contactTypes\}'/.test(mig670),
+    'db/674 carries the five rows to the databases that already have the two');
+  ok(/= ARRAY\['hazard_insurance','title'\]::text\[\]/.test(mig670),
+    '…guarded on exactly the two db/667 shipped, as a SET — a hand-edited row survives and a replay does nothing');
+  const shipped = JSON.parse(mig670.match(/'\{contactTypes\}',\s*'(\[[\s\S]*?\])'::jsonb/)[1]);
+  const seeded = (contacts.config && contacts.config.contactTypes) || [];
+  const canon = (rows) => JSON.stringify(rows.map((r) => ({ key: r.key, label: r.label, required: !!r.required, whenField: r.whenField || null }))
+    .sort((a, b) => a.key.localeCompare(b.key)));
+  ok(canon(shipped) === canon(seeded),
+    'THE ROWS THE MIGRATION WRITES ARE THE ROWS THE LIBRARY SEEDS — same keys, same labels, same rule fields', `${canon(shipped)} vs ${canon(seeded)}`);
+  ok(/code = 'lt_hoa_contact'/.test(mig670) && /is_active = false/.test(mig670),
+    '…and it retires the stand-alone HOA condition, which asked for the same vendor row twice');
+  ok(!lib.library().some((c) => c.code === 'lt_hoa_contact'),
+    'which is out of the library a new database would be seeded from');
 }
 
 console.log(`\n${pass} passed, ${fails.length} failed`);

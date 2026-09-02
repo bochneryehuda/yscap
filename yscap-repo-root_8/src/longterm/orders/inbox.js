@@ -113,13 +113,45 @@ async function docConditionFor(loanId, kind, client = db) {
      (`checklist_templates.slots`, seeded by the library). */
   const w = ownerWhere(ownerOf('lt_loan', loanId), 'c', 2);
   const { rows } = await client.query(
-    `SELECT c.id, t.code, t.slots
+    `SELECT c.id, t.code, COALESCE(c.slots, t.slots) AS slots
        FROM checklist_items c
        JOIN checklist_templates t ON t.id = c.template_id
       WHERE t.code = $1 AND ${w.sql}
       ORDER BY c.created_at LIMIT 1`,
     [def.docCondition, ...w.params]);
-  return rows[0] || null;
+  const cond = rows[0] || null;
+  if (!cond) return null;
+  /* WHICH OF ITS SLOTS APPLY ON THIS FILE. A slot carrying `notWhenField` /
+     `whenField` is finer than the condition: New York's title package has no
+     closing protection letter, no preliminary settlement statement and no wiring
+     instructions, and the Condition Center screen already drops those slots on a
+     New York file (`read.slotsFor`). A returned "CD.pdf" was still filed INTO the
+     dropped slot — filed, invisible, counted by nothing (audit 2026-09-02, S5).
+     The SAME filter, over the SAME live values, so the desk and the screen can
+     never disagree about which slots a file has; an unreadable context keeps
+     every slot, exactly as the screen does, because hiding on a guess is the
+     expensive direction. */
+  try {
+    const read = require('../conditions-center/read');
+    const live = await read._internals.liveFieldValues(loanId, client);
+    const kept = read._internals.slotsFor({ slots: cond.slots, answer: null }, true, live);
+    cond.applicableSlots = kept.map((x) => x.key);
+  } catch (_) {
+    cond.applicableSlots = null;
+  }
+  return cond;
+}
+
+/** The slot a returned document files into on THIS condition, or null. The
+    filename's own answer (`kinds.slotForFilename`), refused when the slot does not
+    apply on the file; `explicitSlot` is for a caller that already knows (the
+    signed DocuSign form is the rent verification by construction, not by name). */
+function slotOn(condition, kind, filename, explicitSlot) {
+  const slot = explicitSlot !== undefined ? explicitSlot : kinds.slotForFilename(kind, filename);
+  if (!slot) return null;
+  const applicable = condition && Array.isArray(condition.applicableSlots) ? condition.applicableSlots : null;
+  if (applicable && !applicable.includes(slot)) return null;
+  return slot;
 }
 
 /**
@@ -128,7 +160,7 @@ async function docConditionFor(loanId, kind, client = db) {
  * NEVER THROWS: a document that cannot be filed is returned as a skip with its
  * reason, so the caller can put it on the thread rather than lose it.
  */
-async function fileAttachment({ loanId, order, condition, att, eventId }, client = db) {
+async function fileAttachment({ loanId, order, condition, att, eventId, slot: explicitSlot }, client = db) {
   const filename = String((att && att.filename) || 'attachment');
   try {
     /* `decodeUploadBase64` answers `{ buf, sha256 }`, NOT a Buffer — and treating
@@ -170,7 +202,7 @@ async function fileAttachment({ loanId, order, condition, att, eventId }, client
     }
 
     const saved = await storage.save(buf, { filename });
-    const slot = kinds.slotForFilename(order.kind, filename);
+    const slot = slotOn(condition, order.kind, filename, explicitSlot);
     /* THE SHARED `documents` TABLE, not `lt_condition_files`. db/653 moved the
        long-term conditions into `checklist_items`, and `lt_condition_files`
        carries a FOREIGN KEY to the retired `lt_file_conditions` — so this insert
@@ -199,7 +231,9 @@ async function fileAttachment({ loanId, order, condition, att, eventId }, client
        RETURNING id`,
       [condition.id, String(loanId), filename, att.contentType || null,
         buf.length, sha, saved.provider, saved.ref, slot || null]);
-    return { filed: { id: rows[0].id, filename, slot: slot || null, bytes: buf.length } };
+    // `storageRef` rides on the answer so a caller that keeps its own record of
+    // the document (the rent desk's return row) never re-reads the shared table.
+    return { filed: { id: rows[0].id, filename, slot: slot || null, bytes: buf.length, storageRef: saved.ref } };
   } catch (e) {
     // TRANSIENT by construction — a storage or database failure, not a fact about
     // the document — so it is reported as an error rather than as a cap, and the
@@ -296,6 +330,18 @@ async function handleOne(ref, event, full) {
     }
   } catch (_) { /* the documents are filed and the message is on the thread */ }
 
+  /* THE DOCUMENTS CONDITION MOVES OFF "OUTSTANDING". The order row went to
+     'documents_in' and the condition the documents were filed onto stayed
+     'outstanding' — a title commitment sitting on a condition that still read as
+     if nobody had sent one (audit 2026-09-02, N4). The same helper the desk uses
+     to mark a condition asked for: outstanding → received, and NOTHING further,
+     because a vendor's own document is not a reviewed one — the sign-off gate is
+     what clears it. Best-effort AFTER the filing, like the desk's own call. */
+  if (filed.length) {
+    const def = kinds.orderKind(ref.orderKind);
+    await desk.markConditionAsked(ref.loanId, def && def.docCondition).catch(() => {});
+  }
+
   return { status: 'filed', filed: filed.length, skipped: skipped.length };
 }
 
@@ -340,6 +386,6 @@ async function processReceivedEvent(event) {
 }
 
 module.exports = {
-  processReceivedEvent, ordersFromEvent, handleOne, fileAttachment, docConditionFor,
+  processReceivedEvent, ordersFromEvent, handleOne, fileAttachment, docConditionFor, slotOn,
   resolveOrder, MAX_RETURN_DOCS,
 };
