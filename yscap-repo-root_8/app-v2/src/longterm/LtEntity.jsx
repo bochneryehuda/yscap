@@ -228,7 +228,7 @@ export default function LtEntity({ loanId, entityName, profile, note, onChanged,
           {profile.borrowerId && (
             <p style={{ margin: '8px 0 0', fontSize: 12, color: MUTED, lineHeight: 1.5 }}>
               This is the borrower’s own record. It can also be edited on their profile:{' '}
-              <a href={`/internal/borrowers/${encodeURIComponent(profile.borrowerId)}`} target="_blank" rel="noreferrer"
+              <a href={`#/internal/borrowers/${encodeURIComponent(profile.borrowerId)}`} target="_blank" rel="noreferrer"
                 style={{ color: GOLD_TEXT, fontWeight: 600 }}>
                 open the borrower’s profile ↗
               </a>

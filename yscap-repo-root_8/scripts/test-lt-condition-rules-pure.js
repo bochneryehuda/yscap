@@ -82,7 +82,7 @@ console.log('\nC. "DUE" HAS ONE DEFINITION');
 console.log('\nD. THE ENGINE STAMPS THE LOAN, AND ONLY ON A CLEAN PASS');
 {
   const src = strip(read('src/longterm/conditions-center/engine.js'));
-  ok(/SELECT clock_timestamp\(\) AS t/.test(src) && src.indexOf('let startedAt') < src.indexOf('await loadContext(loanId, client)'),
+  ok(/SELECT clock_timestamp\(\) AS t/.test(src) && src.indexOf('let startedAt') < src.indexOf('await loadContext(loanId, cx)'),
     'the DATABASE clock is read BEFORE the context, so the stamp is the start of the pass in the same clock the sync writes');
   ok(/out\.clean = out\.ok && !out\.degraded && !out\.skipped\.some/.test(src),
     'a pass is clean only when every table was read and every decision written');

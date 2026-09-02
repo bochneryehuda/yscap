@@ -284,13 +284,21 @@ async function evaluateLoan(loanId, opts = {}) {
   // that the sync had in fact moved. `clock_timestamp()` rather than now() so
   // a caller inside a transaction (the tests) gets the real moment, not the
   // transaction's start. Falls back to this clock only if the read fails.
+  // EVERY STATEMENT OF THE PASS RUNS ON THE LOCK'S OWN CONNECTION. Holding one
+  // pooled connection for the lock and issuing the pass's statements through
+  // the pool pinned TWO connections per pass out of a pool of five — so the
+  // worker's sweep plus a few files opened at once could exhaust the pool and
+  // stall every long-term request for the ten-second queue timeout (audit
+  // 2026-09-02). One connection per pass; with no lock (`skipLock`, or a
+  // lock that failed open) the caller's runner is used exactly as before.
+  const cx = lockClient || client;
   let startedAt = new Date();
   try {
-    const { rows } = await client.query('SELECT clock_timestamp() AS t');
+    const { rows } = await cx.query('SELECT clock_timestamp() AS t');
     if (rows[0] && rows[0].t) startedAt = rows[0].t;
   } catch (_) { /* the fallback above stands */ }
   try {
-    const ctx = await loadContext(loanId, client);
+    const ctx = await loadContext(loanId, cx);
     if (!ctx.loan) {
       out.ok = false;
       out.degraded = 'No such long-term loan, or it could not be read.';
@@ -298,11 +306,11 @@ async function evaluateLoan(loanId, opts = {}) {
     }
     if (ctx.unreadable.length) out.degraded = ctx.unreadable.map((u) => u.what).join(', ');
 
-    const library = await loadLibrary(client);
+    const library = await loadLibrary(cx);
     const fields = registry.fieldMap();
 
     const where = ownerWhere(owner);
-    const { rows: existing } = await client.query(
+    const { rows: existing } = await cx.query(
       `SELECT id, template_id, status, origin_kind, notes, field_key,
               (tool_payload IS NOT NULL AND tool_payload <> '{}'::jsonb) AS has_answer
          FROM checklist_items WHERE ${where.sql}`,
@@ -330,7 +338,7 @@ async function evaluateLoan(loanId, opts = {}) {
           // remembering which columns exist this month.
           const cols = ownerCols(owner);
           const { item_kind, tool_key } = vocab.kindToShared(t.kind);
-          const { rows } = await client.query(
+          const { rows } = await cx.query(
             `INSERT INTO checklist_items
                (scope, application_id, lt_loan_id, template_id, category,
                 label, hint, borrower_label, borrower_hint, audience,
@@ -389,7 +397,7 @@ async function evaluateLoan(loanId, opts = {}) {
         // this statement must not be able to lose its condition. The short-term
         // side does this as read-then-write, which is the shape db/401 records
         // as having produced real duplicates under ordinary traffic.
-        const { rows } = await client.query(
+        const { rows } = await cx.query(
           `DELETE FROM checklist_items
             WHERE id = $1::uuid AND origin_kind = 'auto' AND status = $2
               AND COALESCE(notes,'') = ''
@@ -431,7 +439,7 @@ async function evaluateLoan(loanId, opts = {}) {
       // takes the starting index for exactly this reason; two clauses both
       // claiming $1 is a bind mismatch that only shows up at run time.
       const ciWhere = ownerWhere(owner, 'ci', 2);
-      const { rows } = await client.query(
+      const { rows } = await cx.query(
         `DELETE FROM checklist_items ci
           USING checklist_templates t
           WHERE t.id = ci.template_id
@@ -465,7 +473,7 @@ async function evaluateLoan(loanId, opts = {}) {
     out.clean = out.ok && !out.degraded && !out.skipped.some((s) => /^Could not /.test(String(s.why || '')));
     if (opts.stamp !== false) {
       try {
-        await client.query(
+        await cx.query(
           `UPDATE lt_loans
               SET conditions_evaluate_tried_at = clock_timestamp(),
                   conditions_evaluated_at = CASE WHEN $2::boolean THEN $3::timestamptz ELSE conditions_evaluated_at END

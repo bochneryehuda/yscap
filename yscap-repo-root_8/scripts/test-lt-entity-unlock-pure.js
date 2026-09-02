@@ -77,7 +77,7 @@ console.log('\nD. THE SAME COMPANY, ON THE BORROWER\'S PROFILE');
   ok(/profile: \{ \.\.\.prefill, borrowerId: vesting\.borrowerId \? String\(vesting\.borrowerId\) : null \}/.test(ws),
     'the workspace hands the screen the borrower the company belongs to');
   const src = strip(read('app-v2/src/longterm/LtEntity.jsx'));
-  ok(/href=\{`\/internal\/borrowers\/\$\{encodeURIComponent\(profile\.borrowerId\)\}`\}/.test(src),
+  ok(/href=\{`#\/internal\/borrowers\/\$\{encodeURIComponent\(profile\.borrowerId\)\}`\}/.test(src),
     'and the control links to that borrower\'s own page, where the same section is edited');
   const app = strip(read('app-v2/src/App.jsx'));
   ok(/path="\/internal\/borrowers\/:id"/.test(app), 'which is a route the app actually serves');

@@ -386,6 +386,22 @@ model LtLoan {
   /// Encompass's own last-modified stamp for the loan, which the sync pages on.
   encompassLastModified DateTime? @map("encompass_last_modified") @db.Timestamptz(6)
 
+  /// When the condition rules last ran CLEAN on this file (db/672) — the start of
+  /// that pass. A mirror read or a library edit after it makes the loan due again.
+  conditionsEvaluatedAt DateTime? @map("conditions_evaluated_at") @db.Timestamptz(6)
+  /// When the rules were last ATTEMPTED, clean or not, so a failing loan goes to
+  /// the back of the sweep's queue rather than holding its front.
+  conditionsEvaluateTriedAt DateTime? @map("conditions_evaluate_tried_at") @db.Timestamptz(6)
+
+  /// Prior to submittal — completed (db/673): who declared the officer's part done,
+  /// and when. Stamped once.
+  submittalCompletedAt DateTime? @map("submittal_completed_at") @db.Timestamptz(6)
+  submittalCompletedBy String? @map("submittal_completed_by") @db.Uuid
+  /// When the ClickUp card's "Prior to submittal conditions" was set to Completed,
+  /// and the last reason it could not be.
+  submittalClickupPushedAt DateTime? @map("submittal_clickup_pushed_at") @db.Timestamptz(6)
+  submittalClickupError String? @map("submittal_clickup_error")
+
   /// Why the last read failed, if it did. Kept so a file that stops refreshing is
   /// visible rather than silently stale.
   encompassSyncError String? @map("encompass_sync_error")

@@ -140,7 +140,10 @@ router.get('/loans/:loanId/submittal', async (req, res) => {
   const scoped = await loadScopedLoan(req, res, 'lt-cond');
   if (!scoped) return;
   const out = await submittal.readiness(scoped.loan.id, { db });
-  if (!out.ok) return res.status(503).json({ error: out.degraded || 'Could not read this file just now.' });
+  if (!out.ok) {
+    const status = /No such long-term loan/i.test(String(out.degraded || '')) ? 404 : 503;
+    return res.status(status).json({ error: out.degraded || 'Could not read this file just now.' });
+  }
   return res.json(out);
 });
 
@@ -452,6 +455,27 @@ const uploadConditionDoc = async (req, res) => {
   // against a condition the path never authorized.
   body.checklistItemId = String(req.params.conditionId);
 
+  /* THE OFFICER'S DONE STAMP SURVIVES THEIR OWN UPLOAD. The shared upload door
+     drops `reviewed_at` on every new document (checklist-evidence.js: a new
+     unreviewed version must not keep a SIGN-OFF), and on the short-term side
+     that stamp IS the sign-off. Here it is the loan officer's "I did my part"
+     for the prior-to-submittal list, and uploading a document IS doing their
+     part — so the stamp was being wiped by the very action that earned it, and
+     the list went back to "Click Done on it" with nothing saying why (audit
+     2026-09-02). The SIGN-OFF (`signed_off_at`) is still dropped, and the
+     officer's stamp never clears a condition on its own: the readiness gate
+     re-judges the documents every time, so a rejected or missing document keeps
+     the item outstanding whatever the stamp says. Read before, restored after,
+     and only when the upload landed. */
+  let marked = null;
+  try {
+    const { rows } = await db.query(
+      'SELECT reviewed_at, reviewed_by FROM checklist_items WHERE id = $1::uuid',
+      [body.checklistItemId],
+    );
+    marked = rows[0] && rows[0].reviewed_at ? rows[0] : null;
+  } catch (_) { marked = null; }
+
   try {
     const landed = await condUpload.uploadConditionDocument(req, {
       owner: ownerOf('lt_loan', scoped.loan.id),
@@ -482,6 +506,15 @@ const uploadConditionDoc = async (req, res) => {
        identical bytes were filed moments ago and already adopted. Never throws
        (the document is filed either way), and the answer is reported so the
        screen can say what happened rather than implying more than it did. */
+    if (marked && !landed.deduped) {
+      try {
+        await db.query(
+          `UPDATE checklist_items SET reviewed_at = $2, reviewed_by = $3
+            WHERE id = $1::uuid AND reviewed_at IS NULL`,
+          [body.checklistItemId, marked.reviewed_at, marked.reviewed_by],
+        );
+      } catch (_) { /* the document is filed; the officer presses Done again */ }
+    }
     let profile = null;
     if (!landed.deduped) {
       profile = await require('../conditions-center/photo-id-share').adoptFromLoan({
@@ -1135,7 +1168,8 @@ router.put('/documents/:documentId/slot', async (req, res) => {
     // the check is against the slot list of the condition the document is
     // actually on — not the one the caller says it is on.
     const { rows } = await db.query(
-      `SELECT d.id, d.checklist_item_id, COALESCE(t.slots, ci.slots, '[]'::jsonb) AS slots
+      `SELECT d.id, d.checklist_item_id, COALESCE(t.slots, ci.slots, '[]'::jsonb) AS slots,
+              t.code, ci.lt_loan_id
          FROM documents d
          JOIN checklist_items ci ON ci.id = d.checklist_item_id
          LEFT JOIN checklist_templates t ON t.id = ci.template_id
@@ -1149,6 +1183,26 @@ router.put('/documents/:documentId/slot', async (req, res) => {
 
     const slots = Array.isArray(row.slots) ? row.slots : [];
     if (wants !== null) {
+      /* A MORTGAGE LINE IS A SLOT OF ITS OWN. The liabilities condition carries
+         no fixed slot list — its "slots" are the mortgage lines the credit report
+         put on the file, one per liability, keyed `liab:<id>` (workspace.js
+         lineKey), and the per-line "upload a statement" way is satisfied by a
+         document filed under that key. Until this arm nothing could WRITE that
+         key (audit 2026-09-02: the way was unsatisfiable through any door). The
+         id must be one of THIS loan's liabilities, or the write is refused. */
+      const line = /^liab:([0-9a-f-]{36})$/i.exec(wants);
+      if (line && String(row.code || '') === 'lt_reo_liabilities' && row.lt_loan_id) {
+        const liabs = await require('../conditions-center/workspace')._internals.liabilitiesFor(String(row.lt_loan_id), db);
+        const key = `liab:${line[1].toLowerCase()}`;
+        // The reader hands each line back under its OWN key (workspace.lineKey),
+        // which is the same key the answer and the per-line document carry.
+        const known = (liabs.rows || []).some((l) => String(l.key) === key);
+        if (!known) {
+          return res.status(400).json({ error: 'That mortgage line is not on this file’s credit report.' });
+        }
+        await db.query(`UPDATE documents SET slot_label = $2 WHERE id = $1::uuid`, [found.documentId, key]);
+        return res.json({ ok: true, slot: key });
+      }
       const hit = slots.find((sl) => String(sl.label) === wants || String(sl.key) === wants);
       if (!hit) {
         return res.status(400).json({

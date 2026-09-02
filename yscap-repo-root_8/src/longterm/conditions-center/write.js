@@ -88,10 +88,6 @@ function documentsByLine(files) {
  */
 function signOffProblem(condition, files, opts = {}) {
   if (!condition) return { ok: false, why: 'That condition is not on this file.' };
-  if (opts.readFailed) {
-    // FAILS OPEN, and says so. The caller records `checkSkipped` on the row.
-    return { ok: true, checkSkipped: 'PILOT could not read this condition’s documents, so it did not check them.' };
-  }
 
   const kind = String(condition.kind || 'document');
   /* TWO STAGES, ONE SET OF RULES. `stage: 'officer'` is the loan officer's
@@ -219,6 +215,62 @@ function signOffProblem(condition, files, opts = {}) {
   // for documents that may not be needed — the safe way to be wrong.
   if (opts.entity && opts.entity.verified) {
     return { ok: true, note: 'This company is already verified on the borrower’s profile.' };
+  }
+
+  // ── THE ID IS ALREADY ON THE BORROWER'S PROFILE ──────────────────────────
+  // The photo-ID condition's own hint says an ID already on the profile "does
+  // not need sending again", and `photo-id-share` puts an upload on the profile
+  // for exactly that reason — but until this rule nothing READ it back, so the
+  // officer was told "Still waiting on: Photo ID" over an ID PILOT already held
+  // (audit 2026-09-02). The profile's ID counts at the officer stage as soon as
+  // it is there and not rejected; the back office counts it only once ACCEPTED,
+  // which is the same standard the short-term reused-profile-ID gate applies.
+  if (opts.photoId && opts.photoId.available) {
+    const st = String(opts.photoId.status || 'pending');
+    if (st === 'accepted' || (officer && st !== 'rejected')) {
+      return {
+        ok: true,
+        note: `The borrower’s ID on the profile${opts.photoId.filename ? ` (${opts.photoId.filename})` : ''} is the ID of record; nothing needs sending again.`,
+      };
+    }
+  }
+
+  // ── AT THE OFFICER STAGE, THE COMPANY'S OWN SLOTS COUNT ──────────────────
+  // The owner's instruction was to *"upload the three documents to the entity
+  // condition and click done"*, and the screen files those three onto the
+  // COMPANY's slots on the borrower's profile (the LtEntity door), never onto
+  // this loan's condition — so a rule that reads only the condition's own
+  // documents told the officer the documents were missing after they had just
+  // uploaded them (audit 2026-09-02). Each required slot here is filled by a
+  // document on the matching profile slot (formation / agreement / ein map 1:1)
+  // OR on the condition itself. Officer stage only: the back office reviews the
+  // company's documents on the profile and verifies the company there, which
+  // is what clears this condition for them (the rule above).
+  if (officer && opts.entity && opts.entity.found && Array.isArray(opts.entity.slots)) {
+    // PRESENT and not rejected — not `filled`, which entity-prefill reserves
+    // for ACCEPTED (the back office's standard, and the next loan's).
+    const onProfile = new Set(opts.entity.slots
+      .filter((s) => s && s.documentId && String(s.status || 'pending') !== 'rejected')
+      .map((s) => String(s.key)));
+    const required = requiredSlots.normalize(condition.slots).filter((s) => s.required);
+    if (required.length) {
+      const stillShort = required.filter((s) => !onProfile.has(String(s.key))
+        && requiredSlots.missingSlots([s], current).length > 0);
+      if (stillShort.length) return { ok: false, why: requiredSlots.missingSlotsMsg(stillShort.map((s) => s.label)) };
+      return { ok: true, note: 'The company’s documents are on the borrower’s profile; the back office reviews them there.' };
+    }
+  }
+
+  // FAILS OPEN — BUT ONLY FOR THE RULES THAT READ THE DOCUMENTS. Every rule
+  // above (the contacts on the file, the credit reissued, the card, the entity)
+  // reads other tables and stands whatever happened to the documents query;
+  // only the rules below depend on `files`. This return used to sit at the top
+  // of the function, where one transient failure of that one SELECT signed off
+  // the contacts condition with nothing on the file at all — the exact defect
+  // the contacts gate was written to close (audit 2026-09-02). The caller
+  // records `checkSkipped` on the row.
+  if (opts.readFailed) {
+    return { ok: true, checkSkipped: 'PILOT could not read this condition’s documents, so it did not check them.' };
   }
 
   // ── A CONDITION THAT CAN BE ANSWERED ANOTHER WAY ─────────────────────────
@@ -351,7 +403,29 @@ async function loadCondition(loanId, conditionId, client = db) {
     }
   }
 
-  return { condition, files, readFailed, entity, contacts, liabilities, card };
+  // The ID on the borrower's profile — for the photo-ID condition only, and
+  // with the document's OWN review state read back, because "on the profile"
+  // and "accepted" are two different facts (see the gate).
+  let photoId = null;
+  if (String(condition.code || '') === 'lt_photo_id') {
+    try {
+      const links = await profileLinks.forLoan(loanId, { db: client });
+      const p = (links && !links.unreadable && links.photoId) || { available: false };
+      photoId = { available: !!p.available, documentId: p.documentId || null, filename: p.filename || null, status: null };
+      if (photoId.available && photoId.documentId) {
+        const { rows: d } = await client.query(
+          `SELECT COALESCE(review_status,'pending') AS review_status, is_current FROM documents WHERE id = $1::uuid`,
+          [String(photoId.documentId)],
+        );
+        if (!d[0] || d[0].is_current === false) photoId = { available: false };
+        else photoId.status = d[0].review_status;
+      }
+    } catch (_) {
+      photoId = null;
+    }
+  }
+
+  return { condition, files, readFailed, entity, contacts, liabilities, card, photoId };
 }
 
 /* ── THE SUBJECT-PROPERTY MORTGAGE, SATISFIED FROM THE CREDIT REPORT ────────
@@ -555,10 +629,19 @@ async function recordAnswer(loanId, conditionId, incoming, staffId, client = db)
      stored, rather than something every later reader has to re-derive. */
   merged = answers.withFixed(condition, merged);
 
+  /* AT THE RECORDING DOOR AN UPLOADED DOCUMENT IS ENOUGH. Recording the choice
+     is the officer's act, and "I uploaded the statement" is that act done —
+     the back office ACCEPTING it is theirs, and the sign-off gate still asks for
+     it (`signOffProblem` reads ACCEPTED only). Asking for acceptance here left
+     the "upload a statement" way unrecordable until the back office had
+     reviewed a document the officer could not yet declare (audit 2026-09-02). A
+     REJECTED document never counts. */
+  const uploaded = current.filter((f) => f.review_status !== 'rejected')
+    .map((f) => (f.review_status === 'pending' ? { ...f, review_status: 'accepted' } : f));
   const problem = answers.answerProblem(condition, merged, {
     deal,
-    hasDocument: current.some((f) => f.review_status === 'accepted'),
-    documentsByLine: documentsByLine(current),
+    hasDocument: uploaded.some((f) => f.review_status === 'accepted'),
+    documentsByLine: documentsByLine(uploaded),
     lineLabels: Object.fromEntries(
       (Array.isArray(merged.mortgages) ? merged.mortgages : [])
         .filter((m) => m && typeof m === 'object')
@@ -598,7 +681,7 @@ async function satisfy(loanId, conditionId, staffId, client = db) {
 
   const gate = signOffProblem(found.condition, found.files, {
     readFailed: found.readFailed, entity: found.entity, contacts: found.contacts, liabilities: found.liabilities,
-    card: found.card,
+    card: found.card, photoId: found.photoId,
   });
   if (!gate.ok) return { ok: false, status: 422, error: gate.why };
 

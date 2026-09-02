@@ -426,6 +426,16 @@ export default function LtFileConditions({ loanId }) {
   const uploadFiles = useCallback(async (conditionId, files, replaceDocumentId) => {
     if (!files || !files.length) return;
     setRowErr((prev) => ({ ...prev, [conditionId]: null }));
+    /* A CONDITION WITH ONE SLOT FILES THE UPLOAD INTO IT. The required-slot
+       gate matches on `slot_label`, and an upload with no slot sat on the photo
+       ID and the executed contract as "Still waiting on: …" until somebody found
+       the "File under" picker — the blocker never said so (audit 2026-09-02).
+       With exactly one slot there is nothing to pick; with several the picker
+       still decides. */
+    const cond = ((data && data.buckets) || []).flatMap((b) => b.conditions || [])
+      .find((c) => String(c.id) === String(conditionId));
+    const slot = cond && Array.isArray(cond.slots) && cond.slots.length === 1 && cond.slots[0] && cond.slots[0].label
+      ? String(cond.slots[0].label) : null;
     let failed = 0;
     for (const file of Array.from(files)) {
       try {
@@ -439,6 +449,7 @@ export default function LtFileConditions({ loanId }) {
           file,
           filename: file.name,
           contentType: file.type || 'application/octet-stream',
+          ...(slot ? { slot } : {}),
           ...(replaceDocumentId ? { replaceDocumentId } : {}),
         });
         /* THE MORTGAGE STATEMENT READS ITSELF. The server sends this back only
@@ -457,7 +468,7 @@ export default function LtFileConditions({ loanId }) {
       }
     }
     if (failed < Array.from(files).length) load();
-  }, [loanId, load, say]);
+  }, [loanId, load, say, data]);
 
   const pickFiles = useCallback((conditionId, replaceDocumentId) => {
     aimRef.current = { conditionId, replaceDocumentId: replaceDocumentId || null };

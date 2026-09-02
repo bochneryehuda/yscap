@@ -87,7 +87,7 @@ function judge(c, found) {
   }
   const gate = write.signOffProblem(found.condition, found.files, {
     readFailed: found.readFailed, entity: found.entity, contacts: found.contacts,
-    liabilities: found.liabilities, card: found.card, stage: 'officer',
+    liabilities: found.liabilities, card: found.card, photoId: found.photoId, stage: 'officer',
   });
   const blockers = [];
   if (!gate.ok) blockers.push(gate.why);
@@ -192,7 +192,11 @@ async function complete(loanId, staffId, opts = {}) {
     return { ok: false, status: 400, error: 'Completing the prior-to-submittal work records who did it, so it needs a signed-in member of staff.' };
   }
   const r = await readiness(loanId, { db: client });
-  if (!r.ok) return { ok: false, status: 503, error: r.degraded || 'Could not read this file just now.' };
+  if (!r.ok) {
+    // A loan that does not exist is a 404, not an outage.
+    const status = /No such long-term loan/i.test(String(r.degraded || '')) ? 404 : 503;
+    return { ok: false, status, error: r.degraded || 'Could not read this file just now.' };
+  }
   if (r.completed) {
     return { ok: true, already: true, completed: r.completed, clickup: r.clickup };
   }
@@ -203,7 +207,9 @@ async function complete(loanId, staffId, opts = {}) {
       status: 422,
       error: r.degraded
         ? `Some of this file could not be read (${r.degraded}), so it cannot be declared complete yet.`
-        : `${left.length} prior-to-submittal item${left.length === 1 ? ' is' : 's are'} still outstanding: ${left.map((i) => i.label).join(', ')}.`,
+        : (r.total === 0
+          ? 'The condition rules have not run on this file yet, so there is nothing to declare complete. They run by themselves within a few minutes of the file arriving; open the conditions list to run them now.'
+          : `${left.length} prior-to-submittal item${left.length === 1 ? ' is' : 's are'} still outstanding: ${left.map((i) => i.label).join(', ')}.`),
       outstanding: left,
     };
   }

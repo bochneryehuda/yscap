@@ -116,6 +116,10 @@ async function pushCompleted({ taskId, ltLoanId = null, deps = {} } = {}) {
     return { ok: true, wrote: false, dryRun: true };
   }
   try {
+    // The breaker counts the last ten minutes of writes from the JOURNAL, and a
+    // fresh process starts with that window empty — so seed it first, exactly as
+    // pushLoan/pushPass do, or this module's writes are undercounted.
+    await push._internals.seedBreakerFromDb();
     push._internals.circuitCheck();
     await setField(id, FIELD.id, option.id);
     push._internals.countWrite();

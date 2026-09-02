@@ -159,7 +159,10 @@ const ok = (cond, name, detail) => {
           if (/FROM lt_parties/i.test(String(sql))) return Promise.reject(new Error('simulated: parties unreadable'));
           return cx.query(sql, params);
         },
-        getClient: () => cx.connect ? cx.connect() : db.pool.connect(),
+        // NEVER CALLED with skipLock (the only getClient is inside the lock
+        // branch). If a change ever makes the engine ask for one here, fail
+        // loudly rather than hand back a Client that is already connected.
+        getClient: () => { throw new Error('getClient must not be called under skipLock'); },
       };
       const r = await engine.evaluateLoan(a, { db: flaky, skipLock: true });
       ok(r.ok === true && !!r.degraded, 'the engine reports the degraded read rather than throwing', JSON.stringify({ ok: r.ok, degraded: r.degraded }));

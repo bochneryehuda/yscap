@@ -195,6 +195,22 @@ console.log('\nD. THE CLICKUP WRITE');
       ok(/Not on this list, by design/.test(read('app-v2/src/longterm/LtSubmittalPanel.jsx')), 'the orders are named as loan setup\'s, so nobody hunts for them here');
     }
 
+    console.log('\nE. WHAT THE A-TO-Z WALK FOUND (2026-09-02) — the source half');
+    {
+      const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      const screen = strip(fs.readFileSync(path.join(__dirname, '..', 'app-v2/src/longterm/LtFileConditions.jsx'), 'utf8'));
+      ok(/cond\.slots\.length === 1/.test(screen) && /\.\.\.\(slot \? \{ slot \} : \{\}\)/.test(screen),
+        'the screen names the slot on an upload to a single-slot condition — an unnamed upload never filled its slot');
+      const eng = strip(fs.readFileSync(path.join(__dirname, '..', 'src/longterm/conditions-center/engine.js'), 'utf8'));
+      ok(/const cx = lockClient \|\| client;/.test(eng) && !/loadContext\(loanId, client\)/.test(eng),
+        'the rules pass runs every statement on the lock\'s own connection, never two per pass');
+      const w = strip(fs.readFileSync(path.join(__dirname, '..', 'src/longterm/conditions-center/write.js'), 'utf8'));
+      ok(w.indexOf('if (opts.readFailed)') > w.indexOf('if (opts.contacts)') && w.indexOf('if (opts.readFailed)') > w.indexOf('if (opts.card)'),
+        'a documents-read failure is answered AFTER the contacts, credit and card gates, so it can never sign those off');
+      const entity = strip(fs.readFileSync(path.join(__dirname, '..', 'app-v2/src/longterm/LtEntity.jsx'), 'utf8'));
+      ok(/href=\{`#\/internal\/borrowers\//.test(entity), 'the profile link stays inside the portal (a HashRouter route), never a bare /internal path');
+    }
+
     console.log(`\n${pass} passed, ${fails.length} failed`);
     if (fails.length) { fails.forEach((f) => console.error('  FAIL ' + f)); process.exit(1); }
   })().catch((e) => { console.error('UNEXPECTED', e); process.exit(1); });
