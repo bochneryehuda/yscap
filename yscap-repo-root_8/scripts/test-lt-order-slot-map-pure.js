@@ -32,8 +32,8 @@
  *
  * PROVEN TO FAIL: each of the five loosened patterns above was put back in turn
  * and this went red on the case it names, green again once restored; dropping
- * the `cpl` / `eo` slots from the library or the settlement agent's `wants`
- * fails section C.
+ * the `eo` slot from the library or the settlement agent's `wants`, or putting
+ * the CPL back on either, fails section C.
  */
 const assert = require('assert');
 const kinds = require('../src/longterm/orders/kinds.js');
@@ -85,8 +85,8 @@ const TABLE = [
   ['ny_settlement_agent', 'Settlement Agent E&O.pdf', 'eo', 'THE AGENT\'S E&O IS THE E&O, NOT THE STATEMENT (S5, S4)'],
   ['ny_settlement_agent', 'Errors and Omissions policy.pdf', 'eo', 'the E&O in words'],
   ['ny_settlement_agent', 'Errors & Omissions.pdf', 'eo', 'the E&O with an ampersand'],
-  ['ny_settlement_agent', 'CPL.pdf', 'cpl', 'THE CPL, ON THE SETTLEMENT AGENT IN NEW YORK (S4)'],
-  ['ny_settlement_agent', 'Closing protection letter.pdf', 'cpl', 'the CPL in words'],
+  ['ny_settlement_agent', 'CPL.pdf', null, 'THERE IS NO CPL IN NEW YORK — it files on the condition, not a slot (owner 2026-09-02)'],
+  ['ny_settlement_agent', 'Closing protection letter.pdf', null, 'the same, in words'],
   ['ny_settlement_agent', 'Settlement Agent W9.pdf', null, 'THE AGENT\'S W-9 IS NOT THE STATEMENT (S5)'],
   ['ny_settlement_agent', 'Settlement Agent License.pdf', null, 'the agent\'s licence is not the statement'],
 
@@ -160,29 +160,44 @@ for (const k of kinds.ORDER_KIND_KEYS) {
 ok('every slot a map names exists, and every required slot is reachable');
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   C. THE OWNER'S NEW YORK RULE (S4): the CPL and the E&O are the settlement
-      agent's — asked for, with a slot each — and the title company is no longer
-      left holding a required wiring-instructions slot in New York.
+   C. THE OWNER'S NEW YORK RULE, AS CORRECTED 2026-09-02.
+
+      *"In NY, there is no CPL. We only ask them for their Errors and Omissions
+      Assurance."* So the E&O is the settlement agent's — asked for, with a slot
+      — and the CPL is NOBODY'S in New York: not title's (its slot carries
+      `notWhenField`) and not the settlement agent's (no slot, no ask, no map
+      row). db/677 had briefly given the agent a required CPL slot on the
+      strength of a draft that said it "moved" from title; db/680 takes it back
+      off. The assertions below are written the strict way round — the slot and
+      the ask must be ABSENT — so restoring either turns this red.
    ───────────────────────────────────────────────────────────────────────────── */
 {
   const ny = byCode.get('lt_ny_settlement_docs');
   const slot = (code, key) => (byCode.get(code).slots || []).find((s) => s.key === key);
-  assert.ok(slot('lt_ny_settlement_docs', 'cpl') && slot('lt_ny_settlement_docs', 'cpl').required,
-    'the settlement agent documents carry a required CPL slot');
+  assert.ok(!slot('lt_ny_settlement_docs', 'cpl'),
+    'THERE IS NO CPL IN NEW YORK: the settlement agent documents carry no CPL slot');
   assert.ok(slot('lt_ny_settlement_docs', 'eo') && slot('lt_ny_settlement_docs', 'eo').required,
     'the settlement agent documents carry a required E&O slot');
   const asked = kinds.ORDER_KINDS.ny_settlement_agent.wants.join(' | ');
-  assert.ok(/\bCPL\b|closing protection/i.test(asked), `the settlement agent is ASKED for the CPL (${asked})`);
+  assert.ok(!/\bCPL\b|closing protection/i.test(asked),
+    `…and the settlement agent is NOT asked for one (${asked})`);
   assert.ok(/E&O|errors and omissions/i.test(asked), `the settlement agent is ASKED for the E&O (${asked})`);
   assert.ok(/preliminary settlement statement/i.test(asked), 'and still for the preliminary settlement statement');
   assert.ok(JSON.stringify(ny.ruleLogic || null).includes('is_new_york'), 'and only in New York');
+
+  /* No map row either — a filename that merely MENTIONS a closing protection
+     letter must fall through to the condition rather than be filed against a
+     slot that does not exist. The TABLE above proves the behaviour; this proves
+     the row is gone, which is what makes the behaviour durable. */
+  assert.ok(!(kinds.ORDER_KINDS.ny_settlement_agent.slotMap || []).some(([, k]) => k === 'cpl'),
+    'and nothing maps a document into a cpl slot on the settlement agent');
 
   for (const key of ['cpl', 'prelim_settlement', 'wire_instructions']) {
     const s = slot('lt_title_docs', key);
     assert.strictEqual(s && s.notWhenField, 'is_new_york', `title's "${key}" slot does not apply in New York`);
   }
   assert.strictEqual(slot('lt_title_docs', 'commitment').notWhenField, undefined, 'the commitment still applies everywhere');
-  ok('New York: the CPL and the E&O are the settlement agent\'s, and title is not asked for the wiring instructions');
+  ok('New York: the E&O is the settlement agent\'s, the CPL is nobody\'s, and title is not asked for the wiring instructions');
 }
 
 console.log(`\ntest-lt-order-slot-map-pure: ${checks} checks passed\n`);

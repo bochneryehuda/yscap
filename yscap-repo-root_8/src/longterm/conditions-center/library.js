@@ -560,16 +560,21 @@ const PRIOR_TO_CTC = [
     kind: 'document',
     autoApply: 'rules',
     rule: when('is_new_york', 'is_true'),
-    /* THE OWNER'S NEW YORK RULE (docs/longterm/OWNER-ORDER-DRAFTS.md): the CPL
-       and the settlement agent's own errors-and-omissions insurance come from
-       the settlement agent, not from title. Both slots were missing until
-       2026-09-02, so on a New York file nobody was asked for either and there
-       was nowhere to file them (audit S4). `orders/kinds.js` asks for the same
-       list; db/677 carries the two slots onto templates and items already seeded. */
+    /* THERE IS NO CLOSING PROTECTION LETTER IN NEW YORK — OWNER-CORRECTED
+       2026-09-02: *"In NY, there is no CPL. We only ask them for their Errors
+       and Omissions Assurance."* db/677 had added a `cpl` slot here, taken from
+       the New York rule in docs/longterm/OWNER-ORDER-DRAFTS.md, which said the
+       CPL moved from title onto this order. It does not move — it does not
+       exist there — so that draft was WRONG and is corrected at the source, or
+       the next reader restores the slot from it. What DOES come from the
+       settlement agent rather than from title is the E&O.
+       A CPL slot on a New York file is a slot nobody can ever fill, which is
+       the exact failure `lt_title_docs`'s own `notWhenField` guards against.
+       db/680 removes it from the templates and items db/677 already seeded.
+       `orders/kinds.js` asks for the same list. */
     slots: [
       { key: 'engagement', label: 'Engagement letter', required: true },
       { key: 'wire_instructions', label: 'Wire instructions', required: true },
-      { key: 'cpl', label: 'Closing protection letter', required: true },
       { key: 'eo', label: 'Settlement agent E&O insurance', required: true },
       { key: 'settlement_statement', label: 'Settlement statement', required: true },
     ],

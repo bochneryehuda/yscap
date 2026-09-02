@@ -187,28 +187,33 @@ const ORDER_KINDS = Object.freeze({
     /* What the settlement agent is asked to produce. Named here rather than in
        the letter so the ask and the slots that receive it are one list.
 
-       THE OWNER'S NEW YORK RULE (docs/longterm/OWNER-ORDER-DRAFTS.md, "New York
-       rule"): the CPL, the preliminary settlement statement and the settlement
-       agent's own errors-and-omissions insurance move OFF the title order and
-       onto this one — the shared title letter cuts all three from a New York
-       title ask (`lib/order-email.js` NY_TITLE_CUT). Until 2026-09-02 this list
-       asked for none of the three, so on a New York file NOBODY was asked for
-       the CPL or the E&O (audit S4). */
+       NO CLOSING PROTECTION LETTER — OWNER-CORRECTED 2026-09-02: *"In NY, there
+       is no CPL. We only ask them for their Errors and Omissions Assurance."*
+       The New York rule in docs/longterm/OWNER-ORDER-DRAFTS.md said the CPL
+       moved from the title order onto this one; it does not move, because there
+       is none to move. That draft is corrected at the source — leaving it would
+       put the CPL back the next time somebody reads it. What genuinely comes
+       from the settlement agent rather than from title is the E&O, which the
+       shared title letter already cuts from a New York title ask
+       (`lib/order-email.js` NY_TITLE_CUT). Asking an agent for a document their
+       state does not issue is how an order stalls on a reply nobody can send. */
     wants: [
       'Engagement letter',
       'Wire instructions',
-      'Closing protection letter (CPL)',
       'Your errors and omissions (E&O) insurance',
       'Preliminary settlement statement',
     ],
     /* The settlement STATEMENT is named in full. A bare `settlement` swallowed
        "Settlement Agent E&O.pdf" and "Settlement Agent W9.pdf" into the statement
        slot — the agent's own name is on every document they send (audit S5). The
-       E&O and the CPL are tested before it for the same reason. */
+       E&O is tested before it for the same reason.
+       NO `cpl` ROW: there is no closing protection letter in New York (owner,
+       2026-09-02) and there is no slot to file one into, so a filename merely
+       MENTIONING one must fall through to the condition rather than be filed
+       against a slot that does not exist. */
     slotMap: [
       [/engag|retain/i, 'engagement'],
       [/wir(e|ing)/i, 'wire_instructions'],
-      [/\bcpl\b|closing\s*protection/i, 'cpl'],
       [/e&o|errors?\s*(and|&)\s*omissions/i, 'eo'],
       [/settlement\s*statement|\bhud(-1)?\b|\bcd\b|closing\s*disclosure/i, 'settlement_statement'],
     ],

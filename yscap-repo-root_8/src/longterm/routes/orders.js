@@ -117,7 +117,12 @@ router.get('/loans/:loanId/:kind/preview', async (req, res) => {
     const d = await data.getOrderData(scoped.loan.id, db);
     if (!d) return res.status(404).json({ error: 'No such long-term loan.' });
     const followup = String(req.query.followup || '') === '1';
-    const built = letter.buildLetter(kind, d, { followup, note: String(req.query.note || '') });
+    /* The preview is signed by the person READING it, because they are the one
+       who will press Send — "what a person reads here is what the vendor
+       receives" is the whole contract of this route, and a preview signed by
+       somebody else breaks it on the one line the vendor replies to. */
+    const previewSender = await data.loadStaffCard(actorId(req));
+    const built = letter.buildLetter(kind, d, { followup, note: String(req.query.note || ''), sender: previewSender });
     const recips = require('../../lib/order-email').recipientsFor(kind, d, {
       replyTo: require('../../lib/file-address').ltOrderReplyTo(scoped.loan.id, kind),
     });

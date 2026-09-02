@@ -345,6 +345,13 @@ function buildLetter(kind, data, opts = {}) {
       followup: !!opts.followup,
       note: opts.note || '',
       fullOrder: !!opts.followup,
+      /* WHO SIGNS IT — the person who pressed Send, when the caller resolved
+         one. Passed THROUGH rather than re-decided here: the title letter is
+         the short-term desk's own builder, so letting it apply the same rule
+         is what keeps one definition of who signs an order. Unset (a worker
+         retry, an automatic send) it falls back to the file's officer inside
+         that builder, exactly as it always has. */
+      sender: opts.sender || null,
       // The standard company clause: a long-term note is serviced by us, and the
       // short-term servicer variant is keyed on a note-buyer registry that has no
       // meaning here.
@@ -365,11 +372,21 @@ function buildLetter(kind, data, opts = {}) {
     .filter(Boolean).join(' · ');
   const clause = orderEmail.MORTGAGEE_CLAUSE
     .concat(`Loan Number: ${d.loanNumber || '(pending)'}`).join('\n');
-  const officerCard = d.officer
-    ? { name: d.officer.name, title: d.officer.title || 'Loan Officer', email: d.officer.email || null, phone: d.officer.phone || null, nmls: d.officer.nmls || null }
+  /* WHO SIGNS IT (owner-directed 2026-09-02: *"this should be signed with the
+     send button"*). The person who pressed Send when the caller resolved one,
+     else the file's loan officer — which is what every automatic send and every
+     worker retry gets, because a letter signed by nobody is worse than one
+     signed by the officer who owns the file. The contact card moves WITH the
+     signature: a letter signed by one person printing another's direct line
+     reads as a mistake and sends the vendor to the wrong desk. A `sender` with
+     no name is not a signature and falls back. The same rule is applied by the
+     shared title builder above — one definition, two renderers. */
+  const signer = (opts.sender && opts.sender.name) ? opts.sender : d.officer;
+  const officerCard = signer
+    ? { name: signer.name, title: signer.title || 'Loan Officer', email: signer.email || null, phone: signer.phone || null, nmls: signer.nmls || null }
     : null;
-  const signOff = d.officer && d.officer.name
-    ? `Thank you,\n${d.officer.name}${d.officer.title ? `, ${d.officer.title}` : ''}\nYS Capital Group`
+  const signOff = signer && signer.name
+    ? `Thank you,\n${signer.name}${signer.title ? `, ${signer.title}` : ''}\nYS Capital Group`
     : 'Thank you,\nYS Capital Group';
 
   // What we are asking for: this buyer's own list, else the kind's own, else the

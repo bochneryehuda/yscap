@@ -341,7 +341,14 @@ async function place(loanId, kind, opts = {}) {
   }
 
   const template = opts.template || null;
-  const built = letter.buildLetter(kind, d, { note: opts.note || '', template, closing: opts.closing });
+  /* WHO SIGNS IT: the person who pressed Send (owner-directed 2026-09-02). Read
+     here rather than inside the letter because this is the only layer that knows
+     the actor — `opts.staffId` is already what every row this door writes is
+     stamped with, so the signature and the audit trail can never name two
+     different people. Unresolvable (no actor on an automatic send, a departed
+     staffer) answers null and the letter falls back to the file's officer. */
+  const sender = await data.loadStaffCard(opts.staffId || null);
+  const built = letter.buildLetter(kind, d, { note: opts.note || '', template, closing: opts.closing, sender });
   /* Never blocks the send: a form we cannot read costs the enclosure and is
      reported, because an order that reaches the vendor a form short is fixed by
      one reply while an order that refuses to go out is not. */
@@ -463,7 +470,8 @@ async function followUp(loanId, kind, opts = {}) {
   const d = await data.getOrderData(loanId);
   if (!d) return { ok: false, status: 404, error: 'That loan is not here.' };
 
-  const built = letter.buildLetter(kind, d, { followup: true, note: opts.note || '', template: opts.template || null });
+  const fuSender = await data.loadStaffCard(opts.staffId || null);
+  const built = letter.buildLetter(kind, d, { followup: true, note: opts.note || '', template: opts.template || null, sender: fuSender });
   const replyTo = order.reply_to || ltOrderReplyTo(loanId, kind);
   const recips = orderEmail.recipientsFor(kind, d, {
     /* THE FOLLOW-UP KEEPS THE ORIGINAL ORDER'S ANSWER, which is the "recorded when

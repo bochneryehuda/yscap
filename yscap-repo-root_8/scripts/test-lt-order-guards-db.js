@@ -19,8 +19,15 @@
  *   S5  A slot that does not apply on the file (New York's title package has no
  *       CD / wiring instructions) still received the document — filed into a
  *       slot the screen never renders.
- *   S4  On a New York file nobody was asked for the CPL or the E&O and there was
- *       no slot for either; title's wiring-instructions slot stayed required.
+ *   S4  On a New York file nobody was asked for the E&O and there was no slot
+ *       for it; title's wiring-instructions slot stayed required.
+ *   S4b THE CORRECTION. db/677's first cut ALSO gave the settlement agent a
+ *       required CPL slot, from a draft that said the CPL "moved" off the title
+ *       order. The owner corrected that on 2026-09-02 — *"In NY, there is no
+ *       CPL"* — so db/680 takes it back off. Both files replay on every boot in
+ *       filename order, so what must be proven is that they CONVERGE, from
+ *       whichever state a database happens to be in, and that a row somebody
+ *       has edited keeps their edit while still losing the CPL.
  *   S9  The desk's "does this order belong on this file" read a conditions list
  *       nothing on that route refreshed — a property that became a condominium
  *       still greyed the condo questionnaire.
@@ -29,7 +36,10 @@
  * test database (S8 red); the `markConditionAsked` call removed from the inbox
  * (N4 red); the guard reverted to `status === 'ordered'` (S7 red); the
  * applicable-slot filter removed (S5 red); the db/677 template rows reverted
- * (S4 red); `evaluateIfStale` removed from the route (S9 red).
+ * (S4 red); `evaluateIfStale` removed from the route (S9 red); db/680's two
+ * statements neutered (S4b red on every starting state); the `sender` dropped
+ * from either renderer (S10 red on that renderer alone, which is the point of
+ * asserting both).
  *
  * Run: DATABASE_URL=... node scripts/test-lt-order-guards-db.js
  */
@@ -192,12 +202,18 @@ inboundMail.retrieveAttachmentsSafe = async () => {
     }
 
     /* ═════════ S4 + S5. NEW YORK: the slots, and a document that does not apply ═ */
-    console.log('\nS4. New York: the settlement agent carries the CPL and the E&O; title is not asked for the wire');
+    console.log('\nS4. New York: the settlement agent carries the E&O and NO CPL; title is not asked for the wire');
     {
       const tpl = async (code) => (await db.query(`SELECT slots FROM checklist_templates WHERE code=$1 AND scope='lt_loan'`, [code])).rows[0].slots;
       const nySlots = await tpl('lt_ny_settlement_docs');
       const has = (slots, k) => slots.find((s) => s.key === k);
-      assert(has(nySlots, 'cpl') && has(nySlots, 'cpl').required, 'the settlement-agent TEMPLATE in the database carries a required cpl slot');
+      /* THERE IS NO CPL IN NEW YORK (owner, 2026-09-02). db/677 added the slot on
+         the strength of a draft that said it moved off the title order; db/680
+         removes it. Asserted against the LIVE database rather than the library,
+         because the two migrations replay in filename order on every boot and
+         what has to be true is that they CONVERGE — db/677 re-adding it and
+         db/680 taking it off leaves no CPL by the time anybody reads the row. */
+      assert(!has(nySlots, 'cpl'), 'the settlement-agent TEMPLATE in the database carries NO cpl slot');
       assert(has(nySlots, 'eo') && has(nySlots, 'eo').required, '…and a required eo slot');
       const titleSlots = await tpl('lt_title_docs');
       assert(has(titleSlots, 'wire_instructions') && has(titleSlots, 'wire_instructions').notWhenField === 'is_new_york',
@@ -213,12 +229,76 @@ inboundMail.retrieveAttachmentsSafe = async () => {
       const keys = (c) => (c ? c.slots.map((s) => s.key) : null);
       assert(nyRead.has('lt_ny_settlement_docs'), 'FIXTURE: the engine put the settlement-agent documents on the New York file');
       const nySa = keys(nyRead.get('lt_ny_settlement_docs')) || [];
-      assert(nySa.includes('cpl') && nySa.includes('eo'), `THE ONE THAT MATTERS: the New York file's settlement-agent condition shows cpl + eo (${nySa.join(',')})`);
+      assert(!nySa.includes('cpl') && nySa.includes('eo'), `THE ONE THAT MATTERS: the New York file's settlement-agent condition shows the E&O and no CPL (${nySa.join(',')})`);
       const nyTitle = keys(nyRead.get('lt_title_docs')) || [];
       assert(!nyTitle.includes('wire_instructions') && !nyTitle.includes('cpl') && !nyTitle.includes('prelim_settlement'),
         `…and its title condition shows neither the wire, the CPL nor the preliminary statement (${nyTitle.join(',')})`);
       const njTitle = keys(njRead.get('lt_title_docs')) || [];
       assert(njTitle.includes('wire_instructions') && njTitle.includes('cpl'), `CONTROL: New Jersey's title condition still asks for both (${njTitle.join(',')})`);
+    }
+
+    /* ═════════ S4b. db/677 AND db/680 CONVERGE, WHATEVER STATE WE START IN ═══ */
+    console.log('\nS4b. There is no CPL in New York — the two migrations converge and stay converged');
+    {
+      /* Replayed IN FILENAME ORDER, which is how migrate-boot runs them, inside
+         a transaction that is rolled back — this asserts about the SQL, not
+         about the row the rest of the suite is using. A one-off `UPDATE` in a
+         test would prove the end state and say nothing about the replay, and
+         the replay is the whole risk: db/677 runs FIRST on every single boot. */
+      const fs = require('fs');
+      const path = require('path');
+      const sqlOf = (n) => fs.readFileSync(path.join(__dirname, '..', 'db',
+        fs.readdirSync(path.join(__dirname, '..', 'db')).find((f) => f.startsWith(`${n}_`))), 'utf8');
+      const d677 = sqlOf('677');
+      const d680 = sqlOf('680');
+
+      const PRE = [{ key: 'engagement', label: 'Engagement letter', required: true },
+        { key: 'wire_instructions', label: 'Wire instructions', required: true },
+        { key: 'settlement_statement', label: 'Settlement statement', required: true }];
+      const WITH_CPL = [PRE[0], PRE[1],
+        { key: 'cpl', label: 'Closing protection letter', required: true },
+        { key: 'eo', label: 'Settlement agent E&O insurance', required: true }, PRE[2]];
+      const CORRECT = [PRE[0], PRE[1], { key: 'eo', label: 'Settlement agent E&O insurance', required: true }, PRE[2]];
+      /* A row somebody has EDITED: a re-labelled engagement slot and one they
+         added. It must keep BOTH and still lose the CPL — the owner's rule is
+         about every row, and clobbering an edit to enforce it would be its own
+         defect. */
+      const EDITED = [{ key: 'engagement', label: 'Their engagement letter', required: true },
+        { key: 'cpl', label: 'Closing protection letter', required: true },
+        { key: 'eo', label: 'Settlement agent E&O insurance', required: true },
+        { key: 'local_form', label: 'County transfer form', required: false }];
+
+      const keysAfterReplay = async (start, times) => {
+        const c = await db.pool.connect();
+        try {
+          await c.query('BEGIN');
+          await c.query(`UPDATE checklist_templates SET slots=$1::jsonb WHERE code='lt_ny_settlement_docs' AND scope='lt_loan'`,
+            [JSON.stringify(start)]);
+          for (let i = 0; i < times; i += 1) { await c.query(d677); await c.query(d680); }
+          const r = await c.query(`SELECT slots FROM checklist_templates WHERE code='lt_ny_settlement_docs' AND scope='lt_loan'`);
+          return r.rows[0].slots;
+        } finally { await c.query('ROLLBACK').catch(() => {}); c.release(); }
+      };
+
+      for (const [name, start] of [['its pre-db/677 shape', PRE], ['the CPL db/677 added', WITH_CPL], ['already corrected', CORRECT]]) {
+        const after = await keysAfterReplay(start, 1);
+        const ks = after.map((x) => x.key);
+        assert(!ks.includes('cpl'), `starting from ${name}, one boot leaves no CPL (${ks.join(',')})`);
+        assert(ks.includes('eo'), `…and the E&O is there (${ks.join(',')})`);
+      }
+      /* A SECOND boot must change nothing — the failure this catches is a
+         migration that is not idempotent, which breaks every future deploy
+         quietly, because migrate-boot logs the throw and carries on. */
+      const once = await keysAfterReplay(WITH_CPL, 1);
+      const twice = await keysAfterReplay(WITH_CPL, 3);
+      assert(JSON.stringify(once) === JSON.stringify(twice), 'three boots leave exactly what one boot left');
+
+      const edited = await keysAfterReplay(EDITED, 1);
+      const ek = edited.map((x) => x.key);
+      assert(!ek.includes('cpl'), `a hand-edited row loses the CPL too (${ek.join(',')})`);
+      assert(ek.includes('local_form'), '…and keeps the slot somebody added');
+      assert((edited.find((x) => x.key === 'engagement') || {}).label === 'Their engagement letter',
+        '…and keeps their own wording');
     }
 
     console.log('\nS5. A document that names a slot the FILE does not have is filed with no slot');
@@ -243,6 +323,67 @@ inboundMail.retrieveAttachmentsSafe = async () => {
     }
 
     /* ═════════ S9. THE DESK RUNS THE RULES BEFORE IT IS READ ═════════════ */
+    /* ═════════ S10. THE LETTER IS SIGNED BY WHOEVER PRESSED SEND ════════════ */
+    console.log('\nS10. The order is signed by the person who sent it, not the file\'s officer');
+    {
+      const dataMod = require('../src/longterm/orders/data');
+      const letterMod = require('../src/longterm/orders/letter');
+      /* A SECOND staffer, who is NOT this file's loan officer — the fixture's
+         officer IS `staffId`, so signing as the sender and signing as the officer
+         would be indistinguishable without one. That is the whole reason this
+         section seeds its own person rather than reusing the admin. */
+      const sender = (await db.query(
+        `INSERT INTO staff_users (email, full_name, role, title, is_active)
+         VALUES ($1,'Sending Processor','processor','Loan Processor',true) RETURNING id`,
+        [`${uniq}-sender@example.test`])).rows[0];
+      const senderId = String(sender.id);
+
+      const d = await dataMod.getOrderData(nj);
+      assert(d && d.officer && d.officer.name === 'LT Guards Admin', 'FIXTURE: the file\'s officer is somebody else');
+      const card = await dataMod.loadStaffCard(senderId);
+      assert(card && card.name === 'Sending Processor' && card.title === 'Loan Processor',
+        'the sender\'s own card reads back, title and all');
+
+      /* BOTH RENDERERS. A title order is drawn by the SHORT-TERM desk's shared
+         builder and everything else by this product's own; they are two code
+         paths, so a `sender` wired into one and not the other would leave half
+         the orders still signed by the officer — and title is the commonest
+         order there is. */
+      const genericSigned = letterMod.buildLetter('payoff', d, { sender: card });
+      assert(/Sending Processor, Loan Processor/.test(genericSigned.html),
+        'GENERIC LETTER: signed by the sender, with their real title');
+      assert(!/LT Guards Admin/.test(genericSigned.html), '…and the file\'s officer is not on it');
+
+      const genericFallback = letterMod.buildLetter('payoff', d, {});
+      assert(/LT Guards Admin/.test(genericFallback.html),
+        'CONTROL: with no sender — an automatic send, a worker retry — it falls back to the file\'s officer');
+
+      const titleSigned = letterMod.buildLetter('title', d, { sender: card });
+      assert(/Sending Processor, Loan Processor/.test(titleSigned.html),
+        'TITLE LETTER (the shared short-term builder): signed by the sender too');
+      assert(!/LT Guards Admin/.test(titleSigned.html), '…and not by the officer');
+      const titleFallback = letterMod.buildLetter('title', d, {});
+      assert(/LT Guards Admin/.test(titleFallback.html), 'CONTROL: and it falls back the same way');
+
+      /* AND ON THE WIRE, through the real door with the real mailer stubbed —
+         a builder that signs correctly proves nothing if the door never passes
+         the actor down to it. */
+      await desk.cancel(nj, 'title', { staffId, reason: 'staged for the signature test' });
+      const before = sent.length;
+      const placed = await desk.place(nj, 'title', { staffId: senderId });
+      assert(placed && placed.ok === true, 'the order goes out');
+      assert(sent.length === before + 1, '…and exactly one email reached the mailer');
+      const wire = sent[sent.length - 1];
+      assert(/Sending Processor/.test(wire.html), 'THE ONE THAT MATTERS: the email that actually went out is signed by the sender');
+      assert(!/LT Guards Admin/.test(wire.html), '…and does not carry the officer\'s name or direct line');
+
+      /* A departed or unknown staffer is not a signature: the letter falls back
+         rather than going out signed by nobody. */
+      assert((await dataMod.loadStaffCard(crypto.randomUUID())) === null, 'an unknown staff id resolves to nobody');
+      await db.query(`UPDATE staff_users SET is_active=false WHERE id=$1::uuid`, [senderId]);
+      assert((await dataMod.loadStaffCard(senderId)) === null, '…and so does one who has left');
+    }
+
     console.log('\nS9. The property becomes a condominium — the desk says the condo questionnaire applies');
     {
       const first = await call('GET', `/api/lt/orders/loans/${nj}`, token);
