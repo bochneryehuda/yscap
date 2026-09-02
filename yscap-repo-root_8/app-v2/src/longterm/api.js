@@ -262,6 +262,14 @@ export const ltApi = {
   // join would put one investor's pricing under another investor's name, and that
   // name is the one thing a client may see.
   combinedLinkSuggest: (name) => ltGet(lt(`/dscr/combined/investor-links/suggest?name=${encodeURIComponent(name)}`)),
+  // THE INVESTORS SOMEBODY ADDED BY HAND — the ones the code registry has never
+  // heard of. A free read of our own server; it prices nothing.
+  combinedCustomInvestors: () => ltGet(lt('/dscr/combined/custom-investors')),
+  // The WHOLE map, always — same rule as the links beside it: a partial write
+  // cannot express an investor somebody REMOVED. The server refuses a bad map
+  // whole (422 naming each problem) and refuses to remove one that is still
+  // linked to a spelling or carries a settings row of its own.
+  combinedSaveCustomInvestors: (investors) => ltPut(lt('/dscr/combined/custom-investors'), { investors }),
   // Is each program configured? No login attempted, no vendor reached.
   combinedHealth: () => ltGet(lt('/dscr/combined/health')),
   // THE SIGNED-IN PERSON'S OWN SAVED SCENARIOS (owner-directed 2026-08-31). A
