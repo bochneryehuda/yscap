@@ -212,7 +212,7 @@ What has to be true before the file can be cleared to close.
 
 **What it is.** New York only — what the settlement agent provides in place of the title company’s own closing package.
 
-**How it behaves.** appears only when the file calls for it; 5 named slots (Engagement letter, Wire instructions, Closing protection letter, Settlement agent E&O insurance, Settlement statement).
+**How it behaves.** appears only when the file calls for it; 4 named slots (Engagement letter, Wire instructions, Settlement agent E&O insurance, Settlement statement).
 
 <sub>`lt_ny_settlement_docs`</sub>
 
