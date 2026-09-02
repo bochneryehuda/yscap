@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**962 objects**, and a database rebuilt from the Prisma
+**963 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 680 numbered migrations in `db/` (highest `db/683`) remain the only thing that builds this database.
+rebuild a database from them.** The 681 numbered migrations in `db/` (highest `db/684`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -20,16 +20,16 @@ the live database.
 | | |
 |---|---|
 | Tables | 410 |
-| Columns | 6571 |
+| Columns | 6572 |
 | Triggers | 38 |
 | Functions | 142 |
 | CHECK constraints | 353 |
 | Generated columns | 12 |
-| Partial indexes | 417 |
+| Partial indexes | 418 |
 | Primary keys | 410 |
 | Foreign keys | 831 |
 | Unique constraints | 48 |
-| Indexes (all kinds) | 1424 |
+| Indexes (all kinds) | 1425 |
 | Enum types | 12 |
 | Views | 0 |
 
@@ -234,7 +234,7 @@ the live database.
 - **trg_set_borrower_owning_officer()** → trigger
 - **underwriting_review_guard()** → trigger
 
-## Partial indexes (417)
+## Partial indexes (418)
 
 - **arena_challenge_entries_pending_idx** on `arena_challenge_entries`
 - **arena_challenges_due_idx** on `arena_challenges`
@@ -566,6 +566,7 @@ the live database.
 - **lt_report_definitions_shared_idx** on `lt_report_definitions`
 - **lt_residences_enc_uk** on `lt_residences`
 - **lt_staff_links_confirmed_staff_uk** on `lt_staff_links`
+- **lt_vor_envelopes_checked_idx** on `lt_vor_envelopes`
 - **lt_vor_envelopes_envelope_uk** on `lt_vor_envelopes`
 - **lt_vor_returns_env_docusign_uk** on `lt_vor_returns`
 - **market_areas_name_uk** on `market_areas`
@@ -1918,7 +1919,7 @@ _None._
 
 ## Primary keys and indexes
 
-Every one of the 410 primary keys and 1424 indexes is
+Every one of the 410 primary keys and 1425 indexes is
 recorded in `beyond-prisma.json` and compared on every drift check. They are
 deliberately not listed here — one line each would be longer than everything
 above put together, and the partial indexes, which are the ones a person
