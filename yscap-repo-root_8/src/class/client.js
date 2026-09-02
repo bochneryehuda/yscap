@@ -92,10 +92,12 @@ const HOSTS = {
   // real create call at `POST https://api.uat.classvaluation.com/orders` — so the
   // order paths hang off the ROOT of these hosts.
   production: { orders: 'https://api.classvaluation.com',      ordersConfirmed: true,
-                token:  'https://ids.classvaluation.com/connect/token',     tokenConfirmed: false },
-  // The vendor confirmed the UAT identity host directly, so its token URL is
-  // confirmed. Production's identity host is still INFERRED from the shape of the
-  // test/UAT ones — confirm it before switching production on.
+                token:  'https://ids.classvaluation.com/connect/token',     tokenConfirmed: true },
+  // The vendor confirmed the UAT identity host directly. Production's identity host
+  // was confirmed the hard way on 2026-09-02: the production credentials Class
+  // issued minted a real bearer at `ids.classvaluation.com/connect/token`, and the
+  // same token read `/intg/products` (49 products) and `/intg/orders` on
+  // `api.classvaluation.com`. The UAT and test hosts rejected those credentials.
   uat:        { orders: 'https://api.uat.classvaluation.com',  ordersConfirmed: true,
                 token:  'https://ids.uat.classvaluation.com/connect/token', tokenConfirmed: true },
   test:       { orders: 'https://api.test.classvaluation.com', ordersConfirmed: true,
@@ -114,9 +116,14 @@ function apiPrefix() {
 // token route deliberately does NOT go through here — it uses `hosts().tokenUrl`.
 function apiBase() { return hosts().ordersUrl + apiPrefix(); }
 
+let _warnedEnv = false;
 function hosts() {
   const c = CLASS();
   const env = HOSTS[c.environment] ? c.environment : 'uat';
+  if (env !== c.environment && !_warnedEnv) {
+    _warnedEnv = true;
+    console.warn(`[class] CLASS_ENVIRONMENT=${JSON.stringify(c.environment)} is not one of ${Object.keys(HOSTS).join('/')} — falling back to UAT hosts`);
+  }
   const row = HOSTS[env];
   const ordersUrl = c.ordersUrl || row.orders;
   const tokenUrl = c.tokenUrl || row.token;
