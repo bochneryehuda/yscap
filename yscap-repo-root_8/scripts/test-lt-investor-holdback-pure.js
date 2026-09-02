@@ -295,5 +295,41 @@ console.log('\n== E. THE SETTING ==');
     'REPORT-3 …and the settings ceiling is the SAME number the pricing side enforces — two ceilings for one kind of figure is how a screen accepts what the board then refuses');
 }
 
+// ---- F. THE CLIENT-SAFE NAME IS JUDGED, NOT JUST TRIMMED --------------------
+console.log('\n== F. THE SIBLING SETTING FINALLY HAS A DOOR ==');
+{
+  /* AUDIT N9, pre-existing. `pricing.combinedInvestors` carries a per-investor `whiteLabel` that
+     OUTRANKS the hand-added roster's, and it was the ONE investor map with no `validate` at all.
+     Reproduced: "Deephaven Group" stored with `problems: []`, and a borrower then read
+     "Your our capital partner Group quote is ready to review." — the name block doing its job on a
+     name that was never safe to show. Not a leak; nonsense on a client-facing quote. */
+  const bad = settings.readSettings({ oaktree: { whiteLabel: 'Deephaven Group' } });
+  ok(bad.problems.some((p) => p.error === 'white_label_would_be_redacted')
+    && !(bad.settings.oaktree || {}).whiteLabel,
+    `NAME-1 a client-safe name the BLOCK would blank out is refused and named, never stored (${bad.problems.map((p) => p.error).join(', ') || 'none'})`);
+  const audience = require('../src/longterm/audience');
+  ok(audience.scrubInvestorNames('Your Deephaven Group quote is ready to review.', 'borrower')
+    !== 'Your Deephaven Group quote is ready to review.',
+    'NAME-1b CONTROL: that name really would have been blanked out — so NAME-1 is about a real harm, not a rule for its own sake');
+
+  const taken = settings.readSettings({ oaktree: { whiteLabel: 'Pearl' } });
+  ok(taken.problems.some((p) => p.error === 'white_label_taken'),
+    'NAME-2 …and a name that is ALREADY another investor\'s client-safe name is refused — two investors showing a client one name is its own confusion');
+
+  const good = settings.readSettings({ oaktree: { whiteLabel: 'Summit Ridge' } });
+  ok(good.problems.length === 0 && good.settings.oaktree.whiteLabel === 'Summit Ridge',
+    'NAME-3 …while a genuinely client-safe name is stored untouched, so the door is not simply refusing everything');
+
+  /* AND THE WRITE DOOR IS ASSERTED THROUGH THE DECLARATION, invoked rather than grepped — the
+     lesson this codebase keeps re-learning. */
+  const decl = require('../src/longterm/settings/encompass-settings')
+    .SETTINGS.find((d) => d && d.key === 'pricing.combinedInvestors');
+  ok(!!decl && typeof decl.validate === 'function',
+    'NAME-4 the setting declares a write door at all — it was the only investor map without one');
+  ok(decl.validate({ oaktree: { whiteLabel: 'Deephaven Group' } }).ok === false
+    && decl.validate({ oaktree: { whiteLabel: 'Summit Ridge' } }).ok === true,
+    'NAME-5 …and running THAT door refuses the unsafe name and accepts the safe one — so deleting it from the settings file reddens this line');
+}
+
 console.log(`\n${fail === 0 ? 'OFFLINE: all passed' : 'FAILURES: ' + fail} (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

@@ -853,6 +853,25 @@ function makeRouter(opts = {}) {
       loannex: { portal: b.portal },
       shape: b.shape || req.query.shape,
       routes: b.routes,   // an explicit map overrides the environment's
+      /**
+       * ⛔ THE WHAT-IF FIGURES TRAVEL TOO (audit F7). `priceBoth` resolves both of these with
+       * "an explicit value in the request still wins so a caller can price a what-if without
+       * saving it" — its own words — and this door forwarded neither, so that promise described
+       * behaviour nothing could reach through HTTP.
+       *
+       * It was not a silent no-op, it was a DISAGREEMENT: the two sibling doors both honour
+       * `marginHoldback` (`/loannex/price` reads it, and `/explain` reads it through
+       * `holdbackOnRow`). So a what-if sent to all three resolved one number two ways — the BOARD
+       * priced on the saved figure while the EXPLAIN itemised the what-if, which asks the vendor
+       * about a price it never quoted and leaves the Details panel with an unexplained gap between
+       * its running total and `adjustedPoints`. Those are exactly the two defects README item 10
+       * records fixing.
+       *
+       * `undefined` is the "not asked" signal all the way down — `priceBoth` tests
+       * `!== undefined` — so a body that omits them behaves exactly as it did.
+       */
+      marginHoldback: b.marginHoldback,
+      links: b.links,
       // The admin's "show me where this came from". Off by default, so the board
       // reads as one system for everybody who does not ask.
       revealSource: b.revealSource === true || String(req.query.source || '') === 'show',

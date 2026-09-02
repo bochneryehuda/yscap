@@ -139,7 +139,32 @@ function readSettings(raw, custom) {
     }
     if (value.whiteLabel !== undefined) {
       const wl = String(value.whiteLabel == null ? '' : value.whiteLabel).trim();
-      if (wl) row.whiteLabel = wl;
+      /**
+       * ⛔ AND IT IS JUDGED, NOT JUST TRIMMED (audit N9). This setting's `whiteLabel` OUTRANKS the
+       * hand-added roster's (`investor-programs.effectiveWhiteLabel` reads it first), and it was
+       * the one investor map with no check on it at all. Reproduced: `oaktree` with the
+       * client-safe name "Deephaven Group" stored with `problems: []`, and a borrower then read
+       *
+       *     Your our capital partner Group quote is ready to review.
+       *
+       * — the investor-name block doing its job on a name that was never safe to show, producing
+       * nonsense on a client-facing quote. Not a name LEAK (the PDF chokepoint and the borrower
+       * reads scrub every string), but the same defect class, and exactly the artefact the
+       * hand-added investor work cites as the harm it set out to prevent.
+       *
+       * ⛔ THE SAME ROUTINE, NOT A SECOND COPY. `roster.whiteLabelProblem` is what the hand-added
+       * door already uses: it checks the name against every registry spelling and every sheet
+       * name, and then does the ROUND TRIP — would a client actually read this, or would the block
+       * blank it out? Two routines for one question is how two doors come to disagree about the
+       * same name.
+       *
+       * DROPPED AND NAMED, never stored: a refused name leaves the investor with whatever it had,
+       * which is the sheet's name or none — the same direction every other refusal here takes.
+       */
+      const bad = wl ? require('./investor-roster')._internals
+        .whiteLabelProblem(key, key, wl, require('./investor-roster')._internals.takenNames(), custom) : null;
+      if (bad) out.problems.push({ investor: key, error: bad.problem, message: bad.message });
+      else if (wl) row.whiteLabel = wl;
     }
     /**
      * THIS INVESTOR'S OWN EXTRA MARGIN HOLDBACK (owner-directed 2026-08-30:

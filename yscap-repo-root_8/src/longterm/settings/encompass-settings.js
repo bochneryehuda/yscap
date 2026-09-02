@@ -864,7 +864,32 @@ const SETTINGS = [
       + 'pre-fill derived from the investor registry.',
     evidence: 'Owner-directed 2026-08-30: "You should open a settings menu where you have every '
       + 'single investor listed… For every investor, we can always switch it from where we want to '
-      + 'take the information."' },
+      + 'take the information."',
+    /**
+     * ⛔ A WRITE DOOR, at last (audit N9, pre-existing). This map's `whiteLabel` OUTRANKS the
+     * hand-added roster's, and it was the ONE investor map with no `validate` at all — the other
+     * two now declare all three hooks. Reproduced: `oaktree` with the client-safe name "Deephaven
+     * Group" saved with no complaint, and a borrower then read *"Your our capital partner Group
+     * quote is ready to review."*
+     *
+     * `readSettings` is the same routine the board reads through, so the door and the read cannot
+     * disagree about a name: it refuses here, and drops-and-names on read for a row already stored
+     * before this door existed.
+     *
+     * ⛔ REFUSED ALL-OR-NOTHING, deliberately. A half-saved investor map is one nobody can reason
+     * about, and every problem is named so a person can fix the one that is wrong rather than
+     * being told "invalid".
+     *
+     * NO `applyOnLoad`: unlike the other two, nothing about this map feeds the investor-name block
+     * — it decides where a row is priced and what a client may call it, both read per request. A
+     * hook that did nothing would be one more thing to keep in step.
+     */
+    validate: (v) => {
+      const roster = require('../pricing/investor-roster');
+      const custom = require('../audience').customInvestorsInForce();
+      const r = require('../pricing/investor-settings').readSettings(v, custom);
+      return { ok: r.problems.length === 0, value: v, problems: r.problems };
+    } },
   // "THIS INVESTOR AND THIS INVESTOR ARE THE SAME" — the human-recorded overlay
   // (owner-directed 2026-08-30: *"we need to be able to link a investor from
   // lender price and loannex by if the name is a little different the system
