@@ -179,6 +179,53 @@ async function seed() {
   assert.strictEqual(rec.skipped, 'docusign_off', 'it costs nothing where DocuSign is not configured');
   ok('the reconcile pass stands down cleanly when DocuSign is not connected');
 
+  // ── I. the reconcile pass asks DocuSign about each envelope at most once per window ──
+  // The sync tick is every 5 minutes; DocuSign allows one status request per envelope
+  // per 15. Two live envelopes: one never asked about, one asked about a minute ago.
+  {
+    const ds = require.cache[dsPath].exports;
+    const asked = [];
+    ds.configured = () => true;
+    ds.getEnvelope = async (envelopeId) => { asked.push(envelopeId); return { status: 'sent' }; };
+    try {
+      const fresh = (await db.query(
+        `INSERT INTO lt_vor_envelopes (loan_id, envelope_id, status, recipient_email, sent_at, docusign_checked_at)
+         VALUES ($1::uuid, 'ENV-DUE', 'sent', 'due@acme.example', now() - interval '1 hour', NULL),
+                ($1::uuid, 'ENV-RECENT', 'sent', 'recent@acme.example', now() - interval '2 hours', now() - interval '1 minute')
+         RETURNING envelope_id`, [LOAN])).rows;
+      assert.strictEqual(fresh.length, 2);
+
+      const pass1 = await desk.reconcileOpenEnvelopes({});
+      assert.strictEqual(pass1.ok, true);
+      assert.strictEqual(pass1.everyMin, desk.POLL_EVERY_MIN);
+      assert.deepStrictEqual(asked, ['ENV-DUE'], 'only the never-asked envelope is asked about; the one asked a minute ago waits');
+      const due = (await db.query(`SELECT docusign_checked_at FROM lt_vor_envelopes WHERE envelope_id = 'ENV-DUE'`)).rows[0];
+      assert.ok(due.docusign_checked_at, 'and the moment it was asked is recorded on the row');
+      ok('a pass asks only about the envelopes due — never one asked about inside the window');
+
+      const pass2 = await desk.reconcileOpenEnvelopes({});
+      assert.strictEqual(pass2.checked, 0);
+      assert.deepStrictEqual(asked, ['ENV-DUE'], 'a second pass right away asks DocuSign nothing at all');
+      ok('the next tick asks nothing — the same envelope is never polled twice inside the window');
+
+      await db.query(`UPDATE lt_vor_envelopes SET docusign_checked_at = now() - interval '16 minutes' WHERE envelope_id = 'ENV-RECENT'`);
+      ds.getEnvelope = async (envelopeId) => { asked.push(envelopeId); throw new Error('DocuSign is down'); };
+      const pass3 = await desk.reconcileOpenEnvelopes({});
+      assert.deepStrictEqual(asked, ['ENV-DUE', 'ENV-RECENT'], 'once the window has passed the envelope is due again');
+      assert.strictEqual(pass3.failed, 1, 'a failed read is counted and named');
+      assert.ok(/DocuSign is down/.test(pass3.reasons[0]));
+      const recent = (await db.query(`SELECT docusign_checked_at > now() - interval '1 minute' AS just FROM lt_vor_envelopes WHERE envelope_id = 'ENV-RECENT'`)).rows[0];
+      assert.strictEqual(recent.just, true, 'the stamp was written BEFORE the failing call');
+      const pass4 = await desk.reconcileOpenEnvelopes({});
+      assert.strictEqual(pass4.checked, 0, 'so an outage never turns into a request storm');
+      assert.deepStrictEqual(asked, ['ENV-DUE', 'ENV-RECENT']);
+      ok('a failing read is paced exactly like a successful one — a DocuSign outage is not retried every tick');
+    } finally {
+      ds.configured = () => false;
+      ds.getEnvelope = async () => ({ status: 'completed' });
+    }
+  }
+
   await db.query(`DELETE FROM lt_loans WHERE id = $1::uuid`, [LOAN]);
   console.log(`\ntest-lt-vor-db: ${checks} checks passed\n`);
   process.exit(0);

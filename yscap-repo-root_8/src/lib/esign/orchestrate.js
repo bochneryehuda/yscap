@@ -31,6 +31,7 @@ const storageDefault = require('../storage');
 const sendEngine = require('./send');
 const gate = require('./gate');
 const termSheetStamp = require('./term-sheet-stamp');
+const termSheetSigners = require('./term-sheet-signers');
 const docgen = require('./docgen');
 const onDeadLetter = require('./dead-letter');
 const { notifyReadyToSign } = require('./notify-signers');
@@ -846,10 +847,9 @@ function buildRoster(app, spec, envelopeRowId, opts = {}) {
 // TERM SHEET ONLY (/ts_admin_sig/). documentIdByKind maps a doc_kind to the
 // numeric documentId assigned at assembly time.
 function tabsFor(role, spec, documentIdByKind) {
-  const suffix = role === 'borrower' ? 'b1'
-    : role === 'co_borrower' ? 'b2'
-    : role === 'loan_officer' ? 'lo'
-    : 'admin';
+  // ONE map for the anchor a role signs on — shared with term-sheet-signers.js, which
+  // checks the stored sheet carries that anchor BEFORE this places a tab on it.
+  const suffix = termSheetSigners.ANCHOR_SUFFIX_BY_ROLE[role] || 'admin';
   const tabsByDoc = {};
   for (const d of spec.docs) {
     const documentId = documentIdByKind[d.kind];
@@ -985,6 +985,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
   // docs (the term sheet), never to a generated one.
   const needsFreshness = spec.docs.some((d) => d.freshnessCheck);
   const apprBackAt = needsFreshness ? await gate.appraisalBackAt(row.application_id, { db }) : null;
+  let termSheetBytes = null;
   for (let i = 0; i < spec.docs.length; i++) {
     const d = spec.docs[i];
     const documentId = i + 1;
@@ -1057,6 +1058,7 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
     let buf;
     try { buf = await storage.read(doc.storage_ref); }
     catch (e) { const err = new Error(`Could not read ${d.kind} bytes: ${e.message}`); err.retryable = true; throw err; }
+    if (d.kind === 'term_sheet') termSheetBytes = buf;   // judged against the roster below
     documentIdByKind[d.kind] = documentId;
     documents.push({ base64: Buffer.from(buf).toString('base64'), name: d.name, documentId, fileExtension: 'pdf' });
   }
@@ -1116,6 +1118,26 @@ async function buildDefinition(row, { db = dbDefault, storage = storageDefault }
       // Best-effort — if the insert races or fails we still send with the existing
       // roster; the completeness check below can retry the send with LO on the next tick.
       console.warn('[esign] loan_officer splice failed:', e.message);
+    }
+  }
+  /* THE SHEET MUST CARRY A SIGNATURE LINE FOR EVERYONE WHO IS ABOUT TO SIGN IT
+     (owner-reported 2026-09-02, YSCAP258134773: "the term sheet doesn't populate
+     signature for both borrowers … only the first guarantor"). The roster is built
+     from the FILE, the sheet was drawn by the studio from whatever names it was
+     handed, and DocuSign's anchor tabs are ignore-if-absent — so a sheet made
+     without the co-borrower sent silently, with one signature block and one
+     guarantor named, to a package addressed to two. This is the last place the
+     bytes and the roster meet, so it refuses, PERMANENTLY (a re-send of the same
+     bytes cannot pass), naming who is missing and the button that regenerates the
+     sheet from the file's current borrowers. term-sheet-signers.js owns the rule;
+     tracking.termSheetStampBlock reads the same rule so the panel says it FIRST. */
+  if (termSheetBytes) {
+    const check = await termSheetSigners.checkTermSheetSigners(termSheetBytes, roster.map((r) => ({ role: r.role, name: r.name })));
+    if (!check.ok) {
+      const err = new Error(`Cannot send ${spec.label}: ${check.message}`);
+      err.retryable = false; err.code = 'TERM_SHEET_SIGNERS_MISMATCH';
+      err.missing = check.missing; err.extra = check.extra;
+      throw err;
     }
   }
   const signers = roster.map((r) => ({
