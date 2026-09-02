@@ -18,7 +18,7 @@
  *   · retention is who / whom / when / what was done — never the screen.
  *
  * WHAT THIS MODULE IS. One definition of (1) who may ask to watch whom, (2) the
- * request → consent → active → ended lifecycle in `cobrowse_sessions` (db/672),
+ * request → consent → active → ended lifecycle in `cobrowse_sessions` (db/674),
  * and (3) the notices to both parties over the existing SSE bus. It mints NO
  * token: the watched person's browser streams a masked copy of its own page to
  * the viewer through src/lib/cobrowse/hub.js, and nothing runs as anybody else.

@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/672 — CO-BROWSING: the consent register for "watch my live screen".
+-- db/674 — CO-BROWSING: the consent register for "watch my live screen".
 --
 -- Owner-directed 2026-09-02. Next to the existing "See their view" (which hands a
 -- super admin a real token for the other person and needs no consent), a second

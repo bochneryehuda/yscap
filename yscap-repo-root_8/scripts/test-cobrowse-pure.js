@@ -53,7 +53,7 @@ const auth = strip(read('src/auth/index.js'));
 ok(/cobrowse\/sessions'\)\.endAllFor\(req\.actor\.kind,\s*req\.actor\.id,\s*'signed_out'\)/.test(auth), 'signing out ends every co-browse session the person is party to');
 const routes = strip(read('src/routes/cobrowse.js'));
 ok(/req\.impersonation\s*\|\|\s*req\.staffImpersonation/.test(routes) && /inside_view/.test(routes), 'nobody inside a view-as may start or answer a co-browse (code inside_view)');
-const schema = read('db/672_cobrowse_sessions_consent_register.sql');
+const schema = read('db/674_cobrowse_sessions_consent_register.sql');
 ok(!/events?\s+(jsonb|bytea|text)/i.test(schema) && /event_batches\s+integer/i.test(schema), 'the register holds a COUNT of batches, never the screen — retention is metadata only');
 
 // ---- client: the guest -------------------------------------------------------------
@@ -174,8 +174,8 @@ ok(/state\.backoff = Math\.min\(20000/.test(libNow) && /MAX_RETRY_MS/.test(read(
 ok(/data-cobrowse-block="ssn"/.test(strip(read('app-v2/src/screens/StaffBorrowerDetail.jsx'))), 'the revealed-SSN button on the borrower profile is blocked (audit note 7a)');
 ok(/cobrowse: \(\(\) => \{ try \{ return require\('\.\/lib\/cobrowse\/hub'\)\.stats\(\)/.test(server), '/api/health carries the hub stats');
 ok(/import CobrowseHistory/.test(team) && /canSeeTheirScreen && <CobrowseHistory \/>/.test(team), 'the register is on the Team screen for super admins');
-const m673 = read('db/673_cobrowse_control_and_hardening_counters.sql');
-ok(/ADD COLUMN IF NOT EXISTS control_status/.test(m673) && /control_events/.test(m673) && /redaction_drops/.test(m673) && !/keystroke|\bkeys\s+text/i.test(m673.replace(/--.*$/gm, '')), 'db/673 adds state and COUNTS, still no column that could hold the screen or a keystroke');
+const m675 = read('db/675_cobrowse_control_and_hardening_counters.sql');
+ok(/ADD COLUMN IF NOT EXISTS control_status/.test(m675) && /control_events/.test(m675) && /redaction_drops/.test(m675) && !/keystroke|\bkeys\s+text/i.test(m675.replace(/--.*$/gm, '')), 'db/675 adds state and COUNTS, still no column that could hold the screen or a keystroke');
 ok(/scripts\/render-cobrowse-redaction\.js/.test(mask), 'the mask module names the harness that proves it');
 
 console.log(`\n${pass} passed, ${fail} failed`);

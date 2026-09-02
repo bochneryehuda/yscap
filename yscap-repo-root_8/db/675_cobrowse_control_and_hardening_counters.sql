@@ -1,7 +1,7 @@
 -- ============================================================================
--- db/673 — CO-BROWSING Phase B (take control) + Phase C (hardening counters).
+-- db/675 — CO-BROWSING Phase B (take control) + Phase C (hardening counters).
 --
--- Owner-directed 2026-09-02: "Build everything in one big phase." db/672 reserved
+-- Owner-directed 2026-09-02: "Build everything in one big phase." db/674 reserved
 -- the three control timestamps; this file adds the STATE the hub keys on and the
 -- counters the register needs to say what a session DID — still metadata only,
 -- never the screen and never a keystroke.
