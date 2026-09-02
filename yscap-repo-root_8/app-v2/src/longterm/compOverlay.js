@@ -131,6 +131,14 @@ export function shiftBuild(b, shift) {
   return {
     ...src,
     basePoints: nn(src.basePoints) ? r3(src.basePoints + shift) : src.basePoints,
+    /* ⛔ THE BASE PRICE MOVES WITH THE BASE POINTS, or the two rows contradict each other.
+       Only a sheet that STATES a base price has this key — LoanNEX does, Lender Price does not —
+       so leaving it out shifted one vendor's base and not the other's: on a LoanNEX row with the
+       comp switch on, "Base price" and "Base points" stopped satisfying price = 100 − points and
+       disagreed by exactly the comp shift, while the same row on Lender Price stayed consistent
+       because its price is derived from the points that had moved. One line, one vendor, and the
+       two boards no longer describe the same base two ways. */
+    basePrice: nn(src.basePrice) ? r3(src.basePrice - shift) : src.basePrice,
     adjustedPoints: nn(src.adjustedPoints) ? r3(src.adjustedPoints + shift) : src.adjustedPoints,
     price: nn(src.price) ? r3(src.price - shift) : src.price,
   };

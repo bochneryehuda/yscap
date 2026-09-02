@@ -44,6 +44,11 @@ console.log('\n── A. THE SERVER AND THE BROWSER RESOLVE ONE BASE ──');
   // The states that must NOT be guessed at.
   builds.push({}, { basePrice: null, basePoints: null }, { basePrice: undefined },
     { basePrice: NaN }, { basePoints: Infinity }, { basePrice: '101.5' }, { basePoints: '2' });
+  // …and the same battery again with the SHEET'S OWN ANSWER attached, in every value it can carry,
+  // so the mirror is proven over the marker and not only over absence.
+  for (const marker of ['price', 'points', null, undefined, 'PRICE', 'nonsense', 42]) {
+    for (const pb of builds.slice()) builds.push({ ...pb, baseStated: marker });
+  }
 
   let disagreements = 0;
   for (const pb of builds) {
@@ -141,6 +146,89 @@ console.log('\n── C. THE PANEL SAYS WHICH FIGURE IS THE SHEET\'S AND WHICH I
     'BASE-19 the old unconditional derivation is gone from the panel entirely');
   ok(/let run = nn\(base\.basePoints\)/.test(src),
     'BASE-20 the running total starts from the RESOLVED base points, so a price-quoting sheet stacks its adjustments from a real starting point');
+}
+
+console.log('\n\u2500\u2500 D. WHEN BOTH HALVES ARE FILLED, THE SHEET\'S OWN ANSWER DECIDES \u2500\u2500');
+{
+  /* ⛔ WHY THIS SECTION EXISTS. Section A's rule reads ABSENCE: whichever half is missing was
+     derived. That is exact for Lender Price (points, no price) and for a board rung (neither), and
+     it is BLIND on the case that actually reaches a reader — a LoanNEX option that has been
+     explained, which carries the vendor's price AND the points we worked out from it. Absence says
+     "the sheet stated both", so the panel captioned our own arithmetic as the rate sheet's figure
+     on every explained LoanNEX row, and the Lender Price row beside it said "Derived" honestly.
+     Measured on the recorded captures below, not argued. */
+  const bothHalves = { basePrice: 102.375, basePoints: -2.375 };
+  ok(baseOf(bothHalves).baseDerived === null,
+    'BASE-21 with no marker, two stated halves are still read as two stated halves (the old rule, unchanged)');
+  ok(baseOf({ ...bothHalves, baseStated: 'price' }).baseDerived === 'points_from_price',
+    'BASE-22 a sheet that says it published the PRICE has its points reported as derived');
+  ok(baseOf({ ...bothHalves, baseStated: 'points' }).baseDerived === 'price_from_points',
+    'BASE-23 …and one that published the POINTS has its price reported as derived');
+  ok(baseOf({ ...bothHalves, baseStated: 'price' }).basePrice === 102.375
+    && baseOf({ ...bothHalves, baseStated: 'price' }).basePoints === -2.375,
+    'BASE-24 the marker changes only the ACCOUNT — both numbers are still the ones that arrived');
+  ok(baseOf({ baseStated: 'price' }).baseDerived === null
+    && baseOf({ baseStated: 'points' }).baseDerived === null,
+    'BASE-25 a marker with no numbers behind it claims nothing — an empty build is still empty');
+  for (const junk of ['PRICE', 'Price', '', 0, 1, true, {}, ['price']]) {
+    ok(baseOf({ ...bothHalves, baseStated: junk }).baseDerived === null,
+      `BASE-26 an unrecognised marker (${JSON.stringify(junk)}) is ignored rather than believed`);
+  }
+  ok(BD.priceOf({ priceBuild: { ...bothHalves, baseStated: 'price' } }).baseDerived === 'points_from_price',
+    'BASE-27 the server twin reads the marker the same way, so the two panels cannot disagree');
+
+  /* THE REAL MAPPER, on the REAL recorded answer — the only check here that can catch the marker
+     being dropped on the way out of the vendor's payload. */
+  const quoteShape = require('../src/longterm/pricing/quote-shape.js');
+  const nexParse = require('../src/longterm/loannex/parse.js');
+  const cap = require('../src/longterm/loannex/capture/evidence.json');
+  // The capture holds the raw HTTP answers; `parseEvidence` is the same reader the live route
+  // uses, so this runs the real chain — recorded payload → parser → mapper → resolver — rather
+  // than a shape hand-built to agree with itself.
+  const withEvidence = ((cap && cap.samples) || [])
+    .map((x) => nexParse.parseEvidence(x && x.response))
+    .filter((ev) => ev && ev.basePrice != null);
+  ok(withEvidence.length > 0,
+    `BASE-28 the recorded LoanNEX capture really does carry priced evidence to run this against (${withEvidence.length} sample(s))`);
+  let checkedRows = 0; let allSaidPrice = true; let allReadDerived = true; let refused = 0;
+  for (const ev of withEvidence) {
+    // The option the evidence is FOR: `attachEvidence` refuses an evidence whose rate or lock does
+    // not match the row, and a refusal that quietly passed this check would prove nothing, so the
+    // row is built from the recorded answer's own rate and lock and the refusals are counted.
+    const option = quoteShape.emptyOption();
+    option.priceBuild.noteRate = ev.rate;
+    option.terms = { ...(option.terms || {}), dayLock: ev.lockPeriod };
+    const built = quoteShape.attachEvidence(option, ev);
+    if (!built.evidence || built.evidence.appliesToThisRate !== true) { refused++; continue; }
+    const pb = built.priceBuild;
+    checkedRows++;
+    if (pb.baseStated !== 'price') allSaidPrice = false;
+    if (baseOf(pb).baseDerived !== 'points_from_price') allReadDerived = false;
+  }
+  ok(refused === 0, `BASE-29a every recorded evidence actually attached to its row — none was refused (${refused} refused)`);
+  ok(checkedRows > 0, `BASE-29 …and at least one of them states a base price (${checkedRows} row(s) checked)`);
+  ok(checkedRows > 0 && allSaidPrice,
+    'BASE-30 every explained LoanNEX row says the SHEET published the price');
+  ok(checkedRows > 0 && allReadDerived,
+    'BASE-31 …so the panel now reports its base POINTS as derived — the same way round Lender Price reports its base price');
+
+  /* THE COMP OVERLAY MOVES BOTH HALVES OR NEITHER. Shifting the points and leaving a stated price
+     behind made the two rows contradict each other by exactly the comp shift — on LoanNEX only,
+     because Lender Price has no stated price to leave behind. */
+  const { shiftBuild } = await import('../app-v2/src/longterm/compOverlay.js');
+  let consistent = 0; let inconsistent = 0;
+  for (const shift of [0.25, -0.5, 1, 2.75, -1.125]) {
+    for (const bp of [102.375, 98.5, 100, 104.5]) {
+      const moved = shiftBuild({ basePrice: bp, basePoints: r3(100 - bp), price: bp, adjustedPoints: r3(100 - bp) }, shift);
+      const b = baseOf(moved);
+      if (Math.abs(r3(100 - b.basePoints) - b.basePrice) < 1e-9) consistent++; else inconsistent++;
+    }
+  }
+  ok(inconsistent === 0 && consistent === 20,
+    `BASE-32 after a comp shift the base price is still 100 minus the base points, on all ${consistent + inconsistent} shapes tried`);
+  const lp = shiftBuild({ basePoints: 3.439, price: 98.561, adjustedPoints: 1.439 }, 0.5);
+  ok(lp.basePrice === undefined && lp.basePoints === 3.939,
+    'BASE-33 …and a Lender Price build, which states no base price, gains no invented one');
 }
 
 console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);

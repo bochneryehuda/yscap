@@ -90,6 +90,10 @@ function emptyOption() {
       parRate: null, baseRate: null, rateAdjustment: null, noteRate: null,
       basePoints: null, adjustmentPoints: null, adjustedPoints: null, borrowerPaidPoints: null,
       price: null, basePrice: null, priceFloor: null, priceCeiling: null,
+      // Which half of the base the SHEET published — 'price', 'points', or null for a
+      // vendor that published neither. Read by `breakdown.priceOf` and its browser
+      // twin `priceBuild.baseOf` to say which figure is the vendor's and which is ours.
+      baseStated: null,
       priceDerivedFromPoints: false, pointsDerivedFromPrice: false, apr: null, apor: null,
     },
     adjustments: null,       // null = not fetched. [] = fetched and there were none.
@@ -355,6 +359,13 @@ function attachEvidence(option, ev, opts = {}) {
       priceCeiling: numOrNull(ev.priceCeiling),
       basePoints: ev.basePrice == null ? null : round3(100 - Number(ev.basePrice)),
       adjustmentPoints: all.length ? round3(-totalGiven) : null,
+      /* THE SHEET PUBLISHED A PRICE; THE POINTS ON THE LINE ABOVE ARE OURS. Saying so is the
+         whole of it: both halves are filled here, so the panel could no longer tell the
+         vendor's figure from our arithmetic and captioned both as the rate sheet's. Lender
+         Price needs no such marker — it states points and no price, so its absence already
+         says which is which — and it is exactly that asymmetry this closes, so a LoanNEX row
+         and a Lender Price row now describe their own base the same way round. */
+      baseStated: ev.basePrice == null ? null : 'price',
     },
     adjustments: all,
     rateSheet: { validAsOf: ev.rateSheetLastUpdated || null },
