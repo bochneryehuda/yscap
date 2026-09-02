@@ -33,8 +33,6 @@
  * PURE: no network, no database, no RTL import.
  */
 
-const investors = require('../encompass/investors');
-
 const settingsOf = require('./investor-settings');
 
 /** A route is now simply the investor's SOURCE. Kept as its own word because a
@@ -72,14 +70,17 @@ function sourcesUnder(source, presentIn) {
  */
 function applyRouting(merged, opts = {}) {
   const board = merged || {};
-  const cfg = settingsOf.readSettings(opts.routes !== undefined ? opts.routes : opts.settings);
+  // The investors added by hand (`pricing/investor-roster.js`) — a hand-added
+  // investor gets a settings row and is routed exactly like a registry one.
+  const custom = opts.custom;
+  const cfg = settingsOf.readSettings(opts.routes !== undefined ? opts.routes : opts.settings, custom);
   const settings = cfg.settings;
   const reveal = opts.revealSource === true;
   const hidden = [];
   const list = [];
 
   for (const e of board.investors || []) {
-    const row = settingsOf.settingFor(e.key, settings);
+    const row = settingsOf.settingFor(e.key, settings, custom);
 
     if (!row.enabled) {
       hidden.push({
@@ -302,8 +303,32 @@ function bestOfMany(list) {
 
 function label(src) { return src === 'loannex' ? 'LoanNEX' : src === 'lenderprice' ? 'Lender Price' : src; }
 
+/**
+ * "WHAT DOES THIS ROW'S OWN INVESTOR ADD TO THE HOLDBACK?" — as a function of a
+ * priced row, ready to hand to `vendor-margin.applyToBoard`.
+ *
+ * ⛔ IT LIVES HERE RATHER THAN IN THE ROUTE because it is the join between three
+ * things that must agree: which investor a row belongs to (`merge.resolveInvestor`,
+ * the ONE resolver), what that investor's saved settings say, and which investors
+ * exist at all. A copy of this closure — in a second route, or re-typed inside a
+ * test — is a copy that can keep passing after the real one stops threading the
+ * hand-added investors, which is exactly the shape of bug it exists to prevent.
+ *
+ * A row whose investor nobody can name, or who carries no setting of their own,
+ * answers null: the board-wide figure then applies, untouched.
+ */
+function extraResolver(settings = {}, links = null, custom = undefined) {
+  const merge = require('./merge');
+  return (row) => {
+    const hit = merge.resolveInvestor(row, links, custom);
+    if (!hit || !hit.key) return null;
+    const saved = settingsOf.settingFor(hit.key, settings, custom);
+    return saved && saved.holdbackOrigin === 'setting' ? saved.holdback : null;
+  };
+}
+
 module.exports = {
-  ROUTES, DEFAULT_ROUTE, sourcesUnder, applyRouting,
+  ROUTES, DEFAULT_ROUTE, sourcesUnder, applyRouting, extraResolver,
   // Re-exported so a caller has ONE door to the investor decisions rather than
   // needing to know which of the two modules holds which half.
   readSettings: settingsOf.readSettings, settingFor: settingsOf.settingFor,

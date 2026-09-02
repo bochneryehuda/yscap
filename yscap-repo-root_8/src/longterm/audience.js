@@ -33,9 +33,26 @@
  *
  * READ-ONLY and PURE: no database, no network, no Encompass. It classifies and
  * redacts strings.
+ *
+ * ── THE INVESTORS ADDED BY HAND ARE UNDER THE SAME BLOCK (2026-09-02) ───────
+ * A super admin can now add an investor the code registry does not carry
+ * (`pricing.customInvestors`, read through `pricing/investor-roster.js`). Rule
+ * 10 does not say "a REGISTRY investor's name never reaches a client"; it says
+ * an investor's name never does. So the spellings this module blocks are the
+ * EFFECTIVE roster — registry plus custom — through the one roster module,
+ * never a second list here. The custom map reaches this module two ways:
+ *   • `useCustomInvestors(map)` — called by the settings store every time the
+ *     company settings are read or written (the declaration's `applyOnLoad`
+ *     hook), so the block is rebuilt the moment somebody adds an investor and
+ *     never runs a request behind; and
+ *   • `opts.custom` on `scrubInvestorNames` — for a caller holding a candidate
+ *     map in its hand, which is how the write door proves a typed white label
+ *     survives the scrub BEFORE the map is stored.
+ * The spelling list is memoised PER MAP (by identity), so a request costs no
+ * rebuild and a changed map cannot serve a stale block.
  */
 
-const investors = require('./encompass/investors');
+const roster = require('./pricing/investor-roster');
 
 // ── The three audiences a long-term surface can serve ────────────────────────
 // Deliberately an ordered list rather than a boolean: "internal or not" is the
@@ -167,40 +184,71 @@ function escapeRe(s) {
 }
 
 /**
- * Every spelling of every investor we have ever seen, longest first.
+ * How ONE spelling is allowed to match. The single classifier for a registry
+ * spelling and a hand-added one alike — a custom alias that happened to be a
+ * short code or an ambiguous English word gets exactly the treatment the
+ * registry's own would, because the rules above are about the WORD, not about
+ * where it was recorded. Null for a blank.
+ */
+function classify(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  const lower = s.toLowerCase();
+  if (s.includes(' ')) {
+    // A multi-word name is specific enough to match in any case. This
+    // deliberately includes "Oak Tree", "Blue Lake" and "Temple View" —
+    // they read like scenery, and they are the investor.
+    return { text: s, mode: 'phrase' };
+  }
+  if (SHORT_CODES.has(s.toUpperCase())) return { text: s.toUpperCase(), mode: 'code' };
+  if (AMBIGUOUS_ALONE.has(lower)) return { text: s, mode: 'capitalised' };
+  // Not an English word — 'deepahven', 'emcap', 'oaktree', 'rcn'. Safe in
+  // any case.
+  return { text: s, mode: 'word' };
+}
+
+/**
+ * Every spelling of every investor we have ever seen, longest first — over the
+ * EFFECTIVE roster (registry + the investors added by hand).
  *
  * LONGEST FIRST IS LOAD-BEARING: "Deephaven Mortgage LLC" must be replaced
  * before "Deephaven", or the leading match leaves " Mortgage LLC" stranded in
  * the sentence and the reader can still infer the company.
+ *
+ * Memoised PER CUSTOM MAP, by identity. The module-level map is swapped only
+ * when its contents actually change (`useCustomInvestors`), so ordinary
+ * requests never rebuild, and a caller's own candidate map gets its own list.
  */
-let SPELLINGS = null;
-function spellings() {
-  if (SPELLINGS) return SPELLINGS;
+const SPELLINGS_BY_MAP = new WeakMap();
+/**
+ * The custom investors in force for this process, and — just as load-bearing —
+ * WHETHER ANYBODY HAS TOLD US.
+ *
+ * ⛔ THREE STATES, NEVER TWO. "Nobody has added an investor", "nothing has read
+ * the settings yet" and "the settings could not be read" are three different
+ * facts, and reporting all three as an empty map is what let an audit-found
+ * breach hide: every one of them looked like a confident zero. `loaded` and
+ * `degraded` are what a caller — and `summary()` — need to tell them apart.
+ */
+let CUSTOM = roster.EMPTY;
+let CUSTOM_IDENTITY = 'null';
+let CUSTOM_LOADED = false;
+let CUSTOM_DEGRADED = null;
+
+function spellings(custom) {
+  const map = custom === undefined ? CUSTOM : roster.asCustom(custom);
+  const hit = SPELLINGS_BY_MAP.get(map);
+  if (hit) return hit;
   const out = [];
-  for (const inv of investors.INVESTORS) {
+  for (const inv of roster.effectiveList(map)) {
     for (const raw of [inv.label].concat(inv.aliases || [])) {
-      const s = String(raw || '').trim();
-      if (!s) continue;
-      const lower = s.toLowerCase();
-      if (s.includes(' ')) {
-        // A multi-word name is specific enough to match in any case. This
-        // deliberately includes "Oak Tree", "Blue Lake" and "Temple View" —
-        // they read like scenery, and they are the investor.
-        out.push({ text: s, mode: 'phrase' });
-      } else if (SHORT_CODES.has(s.toUpperCase())) {
-        out.push({ text: s.toUpperCase(), mode: 'code' });
-      } else if (AMBIGUOUS_ALONE.has(lower)) {
-        out.push({ text: s, mode: 'capitalised' });
-      } else {
-        // Not an English word — 'deepahven', 'emcap', 'oaktree', 'rcn'. Safe in
-        // any case.
-        out.push({ text: s, mode: 'word' });
-      }
+      const c = classify(raw);
+      if (c) out.push(c);
     }
   }
   // De-duplicate per mode, then sort longest-first.
   const seen = new Set();
-  SPELLINGS = out
+  const list = out
     .filter((e) => {
       const k = `${e.mode}:${e.text.toLowerCase()}`;
       if (seen.has(k)) return false;
@@ -208,7 +256,60 @@ function spellings() {
       return true;
     })
     .sort((a, b) => b.text.length - a.text.length);
-  return SPELLINGS;
+  SPELLINGS_BY_MAP.set(map, list);
+  return list;
+}
+
+/**
+ * Tell the block which investors have been added by hand.
+ *
+ * Called by the settings store with the COMPANY's stored map — and only ever
+ * with the company's, which is the whole of the fix for the breach this
+ * function once carried. The identity is the map's JSON: an unchanged map is a
+ * no-op, a changed one swaps the module-level map and — because the memo is
+ * keyed on the map — the spelling list is rebuilt on the next scrub.
+ *
+ * ⛔ WHO IS ALLOWED TO CALL THIS IS THE RULE. `lt_settings` is keyed on
+ * (scope, key), so a PER-USER read answers the declared default — an empty map
+ * — for a key that person has never set. Handing that to this function emptied
+ * the block for the whole process, and the routes that read both scopes in one
+ * breath (`me.js`, `settings.js`, `term-sheet.js`) then went on to build a
+ * borrower's document. The store now runs this hook for the company scope
+ * ALONE; this note is here so the next person to widen it knows what it costs.
+ *
+ * Never throws: a map that cannot be read at all leaves the registry block
+ * exactly as it was.
+ */
+function useCustomInvestors(raw) {
+  let identity;
+  try { identity = JSON.stringify(raw === undefined ? null : raw); } catch { identity = null; }
+  // A READ IS A READ even when the value has not changed: it is what turns
+  // "nothing has told us" into "there are none", and those must not read alike.
+  CUSTOM_LOADED = true;
+  CUSTOM_DEGRADED = null;
+  if (identity === CUSTOM_IDENTITY) return { changed: false, customInvestors: CUSTOM.size };
+  let next = roster.EMPTY;
+  try { next = raw == null ? roster.EMPTY : roster.readCustom(raw).custom; } catch { next = roster.EMPTY; }
+  CUSTOM = next;
+  CUSTOM_IDENTITY = identity;
+  return { changed: true, customInvestors: CUSTOM.size };
+}
+
+/**
+ * The company settings could not be read — KEEP what we already knew.
+ *
+ * ⛔ THE INVERSION THIS EXISTS TO PREVENT. Falling back to the declared default
+ * is right for a value with a sensible default and exactly wrong here: an empty
+ * map means "block fewer names", so a database blip would REMOVE a rule-10
+ * protection, silently, for as long as the outage lasted. The last known map
+ * stands and the staleness is reported instead. The only thing an outage may
+ * cost is learning about an investor added DURING it — and an investor this
+ * process has not learned about has no client-safe name here either, so its
+ * rows never reach a client surface to begin with.
+ */
+function markCustomInvestorsUnread(reason = 'the settings store could not be read') {
+  CUSTOM_DEGRADED = String(reason || 'unreadable');
+  return { customInvestors: CUSTOM.size, loaded: CUSTOM_LOADED, degraded: CUSTOM_DEGRADED };
 }
 
 /**
@@ -222,14 +323,18 @@ function spellings() {
  *
  * @param {string} text
  * @param {string} [audience] — internal text is returned untouched.
+ * @param {{custom?: Map|object}} [opts] — a custom map to scrub against INSTEAD
+ *   of the one in force; the write door uses it to prove a typed white label
+ *   survives before the map is stored. Omitted → the map in force.
  * @returns {string}
  */
-function scrubInvestorNames(text, audience = AUDIENCES.BORROWER) {
+function scrubInvestorNames(text, audience = AUDIENCES.BORROWER, opts = undefined) {
   if (text === null || text === undefined) return text;
   let s = String(text);
   if (!isClient(audience)) return s;
   try {
-    for (const { text: name, mode } of spellings()) {
+    const custom = opts && opts.custom !== undefined ? opts.custom : undefined;
+    for (const { text: name, mode } of spellings(custom)) {
       // Whitespace inside a name matches any run of it, so "Oak  Tree" and a
       // name broken across a line are both caught.
       const body = escapeRe(name).replace(/\s+/g, '\\s+');
@@ -263,9 +368,9 @@ function scrubInvestorNames(text, audience = AUDIENCES.BORROWER) {
 
 /** Does this text still name an investor? For tests and for a last-line guard
  *  before something goes out. */
-function mentionsInvestor(text) {
+function mentionsInvestor(text, opts = undefined) {
   if (text === null || text === undefined) return false;
-  return scrubInvestorNames(String(text), AUDIENCES.BORROWER) !== String(text);
+  return scrubInvestorNames(String(text), AUDIENCES.BORROWER, opts) !== String(text);
 }
 
 /**
@@ -302,6 +407,21 @@ function summary() {
     internalOnlyFieldIds: internalOnlyFieldIds().length,
     internalOnlyColumns: internalOnlyColumns().length,
     spellingsBlocked: spellings().length,
+    // How many hand-added investors the block currently covers, so a health
+    // reading can tell "no custom investors" from "the store never told us".
+    customInvestorsBlocked: CUSTOM.size,
+    /**
+     * THE THREE STATES, TOLD APART. `count` alone answered every one of them
+     * with 0 — "nobody has added an investor", "nothing has read the settings in
+     * this process yet" and "the store is down and this list may be stale" —
+     * which is how a switched-off block looked exactly like a quiet one.
+     */
+    customInvestors: {
+      count: CUSTOM.size,
+      loaded: CUSTOM_LOADED,
+      degraded: CUSTOM_DEGRADED !== null,
+      problem: CUSTOM_DEGRADED,
+    },
     redaction: REDACTION,
     rule: 'The investor name never reaches a borrower or a TPO. Internal staff only. '
       + 'Owner-directed 2026-08-14.',
@@ -321,6 +441,23 @@ module.exports = {
   scrubInvestorNames,
   mentionsInvestor,
   stripInternalOnly,
+  useCustomInvestors,
+  markCustomInvestorsUnread,
   summary,
-  _internals: { spellings, AMBIGUOUS_ALONE, SHORT_CODES },
+  _internals: {
+    spellings,
+    classify,
+    AMBIGUOUS_ALONE,
+    SHORT_CODES,
+    customInForce: () => CUSTOM,
+    // Back to cold — nothing has told us anything. For tests that need to prove
+    // "not loaded yet" is a different answer from "none stored"; no shipped
+    // caller has any business forgetting.
+    forgetCustomInvestors: () => {
+      CUSTOM = roster.EMPTY;
+      CUSTOM_IDENTITY = 'null';
+      CUSTOM_LOADED = false;
+      CUSTOM_DEGRADED = null;
+    },
+  },
 };

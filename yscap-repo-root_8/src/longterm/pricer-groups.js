@@ -28,6 +28,8 @@
 
 const lazy = {
   get db() { return require('./db'); },
+  // The effective roster (registry + the investors added by hand) and the
+  // per-investor settings, loaded once per call — see `sanitizeInvestors`.
 };
 
 const programs = require('./lenderprice/investor-programs');
@@ -42,10 +44,19 @@ function sanitizeName(v) {
 }
 
 /**
- * Keep only canonical keys the white-label sheet knows. Returns
+ * Keep only canonical keys that carry a client-safe name. Returns
  * `{investors, dropped}` — `dropped` NAMES what was refused, because a group
  * silently missing an investor is a group that quietly prices the wrong set.
  * De-duplicated, order kept (a person arranged them).
+ *
+ * "Carries a client-safe name" is the WHITE-LABEL SHEET and nothing else.
+ *
+ * ⛔ AND NOT THE SETTINGS STORE. This briefly read `effectiveWhiteLabel`, so a
+ * key named only in the combined engine's settings — or a hand-added investor —
+ * survived here where it used to be dropped. These groups belong to the GENERAL
+ * pricing screen (`app-v2/src/longterm/LtPricer.jsx`), and the owner's standing
+ * instruction is that the general engine does not move. A group that quietly
+ * started keeping a key it used to drop is that engine moving.
  */
 function sanitizeInvestors(raw) {
   const out = [];
@@ -77,6 +88,7 @@ async function listGroups(staffId, dbc = null) {
       ORDER BY sort_order, name`,
     [String(staffId)],
   );
+  // ONE read of the roster for the whole list — never one per group.
   return rows.map((r) => {
     const { investors, dropped } = sanitizeInvestors(r.investors);
     return {

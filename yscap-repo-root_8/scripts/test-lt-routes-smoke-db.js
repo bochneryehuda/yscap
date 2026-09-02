@@ -345,6 +345,13 @@ async function main() {
       // design and an unreadable one keeps the standing 0.25, which on a screen
       // is indistinguishable from "nobody has changed it".
       '/api/lt/dscr/combined/margin-holdback',
+      // THE INVESTORS SOMEBODY ADDED BY HAND. A pure read of the settings store
+      // that reaches no vendor — and the one door here whose read RUNS the
+      // audience scrub over each stored client-safe name, so opening it is what
+      // proves that whole path is exercisable rather than only unit-tested.
+      // Every other check on this map is pure; this is the only place the real
+      // store, the real declaration hooks and the real block meet a request.
+      '/api/lt/dscr/combined/custom-investors',
     ];
 
     // ── WHAT THE LIST OMITS, SAID OUT LOUD ──────────────────────────────────
@@ -454,7 +461,8 @@ async function main() {
       // it"* — so an ordinary officer must get NOTHING, and 404 rather than 403
       // so its existence is not advertised.
       for (const door of ['/api/lt/dscr/combined/health', '/api/lt/dscr/combined/investors',
-        '/api/lt/dscr/combined/investor-links', '/api/lt/dscr/combined/margin-holdback']) {
+        '/api/lt/dscr/combined/investor-links', '/api/lt/dscr/combined/margin-holdback',
+        '/api/lt/dscr/combined/custom-investors']) {
         const shut = await fetch(base + door, { headers: { authorization: `Bearer ${loToken}` } });
         check(shut.status === 404,
           `${door} is 404 for a loan officer (got ${shut.status}) — the combined engine is the super admin's alone while it is under audit`);

@@ -505,6 +505,108 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     reddens on the partial regression too, not only the total one. *An assertion about "none of X"
     is worthless until something proves there was an X.*
 
+18. **AN INVESTOR NOBODY HAS RECORDED CAN BE ADDED BY HAND, AND IT BEHAVES LIKE A RECORDED ONE
+    (owner-directed 2026-09-02).** *"I want to be able to add a new investor myself — one came up on
+    a vendor board and there was nowhere to put it. And I need to give it our own name, the way the
+    others have one."* Also, on the linking screen: *"the list should be alphabetical so I can find
+    a name"*, and *"the save button should always be there."*
+    **WHAT WAS BROKEN.** Identity came from `encompass/investors.js` alone, which is CODE: a
+    spelling it does not carry resolves to nothing, the merge keeps that row OFF the board (it must
+    — an unnamed investor cannot be white-labelled, and a client may never read a real investor
+    name), and the only fix was a deploy. The 2026-08-30 links screen closed half of that: a person
+    could say "this spelling IS that investor" — but only about an investor the registry already
+    knew. An investor we have never priced could be pointed at nothing.
+    **THE SHAPE.** `pricing/investor-roster.js` is the ONE place the code registry and a settings
+    map are ever combined, and it is PURE: every reader takes the map as an ARGUMENT
+    (`investor-settings`, `investor-links`, `merge`, `investor-routing`, `investor-programs`,
+    `pricer-groups`, both engines' roster doors, the loan-investor mirror), so nothing keeps a
+    private copy and nothing has to reach for a store to answer "who is this". `pricing/roster-
+    context.js` is the ONE loader that fetches the map, and it never throws: an unreadable store
+    yields the REGISTRY ALONE and says so, which is exactly how the engine behaved before this
+    existed — a broken setting can cost the hand-added investors, never the board.
+    **THE DOOR IS WHERE THE SAFETY IS**, because a white label is a name a client may read.
+    `validateCustom` refuses the whole map — never half-repairs it — when a key, a name or a
+    spelling collides with anything already recorded (a link that means two investors is worse than
+    no link), and it PROVES the client-safe name by RUNNING the audience scrub over it rather than
+    checking a list: a name that would be blanked out is refused at the door instead of discovered
+    on a quote. It is declared BESIDE the setting (`settings/encompass-settings.js` `validate`), and
+    the settings store runs it, so there is no second path that stores the value unchecked. Its
+    sibling `applyOnLoad` tells `audience.js` on the read that loaded it, so the block knows a new
+    investor's spellings without anybody remembering to tell it — and `audience.js` now sweeps the
+    EFFECTIVE roster, so the hard rule "the investor name never reaches a client" covers an investor
+    added this afternoon exactly as it covers one in the registry.
+    **THE SCREENS.** The link pick-list is A to Z with a type-to-search box; the picker had to be
+    lifted OUT of the screen and memoised, because a component declared inside another component is
+    a new component type on every render — React throws it away and rebuilds it, so the search box
+    lost focus and every keystroke. Both Save buttons are always live and say in words why there is
+    nothing to send, rather than being greyed out and saying nothing. The "not recognised on the
+    last board" block now reaches the settings screen (the last board's pairing is remembered for
+    the session) and each row offers "Add this as a new investor", carrying the vendor's OWN
+    spelling in as the first alias — retyping it by hand is how a second, slightly different
+    spelling gets created. `app-v2/src/longterm/customInvestors.js` is the browser twin of the key
+    rule, pinned to the server's by a test that RUNS both.
+    **⛔ THE GENERAL PRICING ENGINE DOES NOT MOVE, and the first cut of this moved it.**
+    Its roster door (`routes/dscr-pricer.js` `GET /investors`) was a pure, synchronous read of
+    the committed white-label sheet. This feature made it `async` and had it read the settings
+    store, so a hand-added investor — and a white label typed on the COMBINED engine's settings
+    screen — appeared on the general screen's pre-search dropdown. That list is a FILTER: an
+    officer picks a name and the search narrows to it, and this engine asks Lender Price and
+    nobody else, so a LoanNEX-only investor offered there produces an empty board with nothing on
+    screen to explain it. Saved investor groups (`pricer-groups.js`, used by `LtPricer.jsx` — the
+    general screen) had the same defect from the other end: `sanitizeInvestors` began KEEPING keys
+    it used to drop. Both are restored to exactly what they were at 33fcf61 — byte-identical
+    answers, asserted — and guarded behaviourally: the door is proven to perform NO settings or
+    database read, and to answer the same bytes whether or not somebody has added an investor.
+    Should a hand-added investor ever belong on the general dropdown once it comes online, that is
+    the owner's decision, not a side effect of a shared module gaining an argument.
+
+    **TWO THINGS DELIBERATELY NOT DONE, both flagged to the owner rather than guessed.** Clearing a
+    white label takes that row's own name AWAY, so the row returns to the sheet's name where there
+    is one — the screen now SAYS which name will apply before saving, but a deliberate "this
+    investor has a sheet name and may still never be shown to a client" is not expressible (switch
+    the investor off instead). And the general engine's PRICE path is untouched: only its roster
+    door reads the hand-added investors, because the owner's standing rule is *"don't touch our
+    current setup"*.
+    **THE FIRST CUT SHIPPED A RULE-10 BREACH, and the fix is the interesting half (audited
+    2026-09-02, fixed the same day).** The block was PUSHED by whoever last read the settings, and
+    every scope pushed: `lt_settings` is keyed on (scope, key), so a PER-USER read answers the
+    declared default — an empty map — and handing that to the block switched the investor-name rule
+    off for the whole process, with the company cache hit afterwards deliberately not re-asserting
+    it. `routes/me.js`, `routes/settings.js` and `routes/term-sheet.js` each read both scopes in one
+    `Promise.all`, and the term-sheet request goes on to build a borrower's document: a term sheet
+    naming a real investor was accepted and printed. Three further inversions rode with it — nothing
+    warmed the map at boot while the borrower-facing scrub sites never read settings at all, so the
+    first borrower after a deploy was read to by a cold block; a degraded read pushed the DEFAULTS,
+    so a database blip REMOVED the protection; and a map already stored was never held to the
+    door's own white-label rules, so a name refused on the way in was kept on the way out and
+    reached a borrower as "our capital partner Group". Now: `applyOnLoad` runs for the COMPANY
+    scope alone and re-asserts on a cache hit, `settingsStore.warm()` is called when the Long-Term
+    router is built, an unreadable store KEEPS the last known map and flags it
+    (`applyOnUnreadable`), `audience.summary()` tells "none stored" from "not loaded yet" from
+    "degraded", and one shared routine (`whiteLabelProblem`) is run by both the door and the read —
+    the door refusing, the read dropping the name and saying so. The reasoning is recorded in
+    `docs/longterm/AUDIENCE-RULES.md`, which rule 10 names as the reasoning of record.
+    **THE STALENESS WINDOW IS A REAL EXPOSURE, BOUNDED RATHER THAN CLOSED — and the first version
+    of this paragraph got it wrong.** It said the window "is not a leak in either direction",
+    reasoning about the BOARD (rule 10's payload defence) and never about the free-text SCRUB (its
+    other defence). A re-audit reproduced the miss across two processes: a process whose cache
+    predates the save answers `mentionsInvestor(...) = false` for the new investor's real name,
+    `resolveProgramName` then accepts that name as a manual program name, and a staff-typed
+    condition body reaches a borrower unredacted. The board half of the old claim does hold — an
+    investor a process has not heard of has no white label there either, so its rows stay off the
+    board; and a removed investor lingers in the block, which blocks more, not less. Now:
+    `keepWarm()` re-reads the company settings every `LT_SETTINGS_REFRESH_MS` (default 15s),
+    independently of traffic and deliberately shorter than the 60s read cache, and that interval is
+    the bound; `ensureWarm()` on both the Long-Term router and the borrower mount closes the
+    first-request case outright. Closing the rest needs processes to be told when a write happens,
+    and this deployment has no such channel — so it is stated here rather than dressed up. The
+    reasoning of record is `docs/longterm/AUDIENCE-RULES.md`.
+    Guarded by `scripts/test-lt-custom-investors-pure.js` (forty-six mutations proven across five batteries,
+    with green controls either side) and by re-pointed assertions in the investor-block, link, programs,
+    holdback, dscr-routes, pricer-shared, settings-screen and combined-audit suites.
+
+---
+
 ---
 
 ## Update, 2026-08-30 (second pass)

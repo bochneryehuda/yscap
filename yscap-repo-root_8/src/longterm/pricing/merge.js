@@ -49,10 +49,18 @@
  * white-label name has NO consumer label — null, never a fallback to the real
  * name (rule 10).
  *
+ * ── THE INVESTORS ADDED BY HAND (2026-09-02) ───────────────────────────────
+ * `opts.custom` is the map of investors a super admin added on the settings
+ * screen (`pricing/investor-roster.js`). It is threaded into the ONE resolver
+ * here and into the suggestion list, so a vendor's row naming a hand-added
+ * investor is merged onto the board like a registry one — instead of being
+ * kept off it in `unmapped` with a deploy as the only way in. Absent, the
+ * behaviour is byte-for-byte what it was.
+ *
  * PURE: no network, no database, no RTL import.
  */
 
-const investors = require('../encompass/investors');
+const effective = require('./investor-roster');
 const investorLinks = require('./investor-links');
 const whiteLabel = require('../lenderprice/investor-programs');
 const { classify } = require('./product-class');
@@ -68,17 +76,17 @@ const round3 = (n) => (n == null ? null : Math.round(Number(n) * 1000) / 1000);
  * same investor" (owner-directed 2026-08-30). It is consulted first and it is
  * OPTIONAL, so every existing caller behaves exactly as it did.
  */
-function resolveInvestor(row, links) {
+function resolveInvestor(row, links, custom) {
   const r = row || {};
   for (const raw of [r.investor, r.lender]) {
     if (raw == null || String(raw).trim() === '') continue;
-    const hit = links ? investorLinks.resolveWithLinks(raw, links) : investors.resolve(raw);
+    const hit = links ? investorLinks.resolveWithLinks(raw, links, custom) : effective.effectiveResolve(raw, custom);
     if (hit && hit.key) {
-      return { key: hit.key, label: hit.label, match: hit.match, raw: String(raw), linked: !!hit.linked };
+      return { key: hit.key, label: hit.label, match: hit.match, raw: String(raw), linked: !!hit.linked, custom: !!hit.custom };
     }
   }
   const raw = r.investor || r.lender || null;
-  return { key: null, label: null, match: 'none', raw: raw == null ? null : String(raw), linked: false };
+  return { key: null, label: null, match: 'none', raw: raw == null ? null : String(raw), linked: false, custom: false };
 }
 
 /**
@@ -203,6 +211,8 @@ function merge(boards, opts = {}) {
   // The human's "these two names are the same investor" map. Absent → the code
   // registry alone, which is exactly what this did before it existed.
   const links = opts.links || null;
+  // The investors added by hand. Absent → the registry alone.
+  const custom = opts.custom === undefined ? null : opts.custom;
   const byInvestor = new Map();
   const unmapped = [];
   const matchedByGuess = new Set();
@@ -212,17 +222,18 @@ function merge(boards, opts = {}) {
     const board = input[src];
     if (!board || !Array.isArray(board.programs)) continue;
     for (const p of board.programs) {
-      const id = resolveInvestor(p, links);
+      const id = resolveInvestor(p, links, custom);
       const row = { ...p, source: src };
       if (!id.key) {
         // NEVER SILENTLY: a row nobody can name cannot be white-labelled, and the
         // investor's REAL name may never reach a client — so it is kept OFF the
         // priced board and reported here instead. What is new is that the report
         // now carries what a person needs to ACT on it: which program said it and
-        // which investors it might be. Before, the only fix was a code change.
+        // which investors it might be. Before, the only fix was a code change;
+        // now a super admin can link the spelling or add the investor by hand.
         unmapped.push({
           source: src, name: id.raw, program: p.program || null, product: p.product || null,
-          suggestions: id.raw ? investorLinks.suggestFor(id.raw) : [],
+          suggestions: id.raw ? investorLinks.suggestFor(id.raw, { custom }) : [],
         });
         continue;
       }
@@ -231,7 +242,7 @@ function merge(boards, opts = {}) {
       if (investorLinks.isGuess(id.match)) matchedByGuess.add(id.key);
       if (id.linked) matchedByLink.add(id.key);
       let e = byInvestor.get(id.key);
-      if (!e) { e = { key: id.key, label: id.label, whiteLabel: whiteLabel.whiteLabelOf(id.key), programs: { lenderprice: [], loannex: [] } }; byInvestor.set(id.key, e); }
+      if (!e) { e = { key: id.key, label: id.label, whiteLabel: whiteLabel.whiteLabelOf(id.key, custom), programs: { lenderprice: [], loannex: [] } }; byInvestor.set(id.key, e); }
       e.programs[src].push(row);
     }
   }

@@ -58,10 +58,20 @@
  *
  * PURE — no database, no network, no config. The stored map is passed in.
  *
+ * ── THE INVESTORS ADDED BY HAND (2026-09-02) ────────────────────────────────
+ * "An investor that exists" now means the EFFECTIVE roster — the registry plus
+ * the investors a super admin added on the settings screen
+ * (`pricing/investor-roster.js`). Every reader here takes that map as an
+ * OPTIONAL trailing argument and stays pure; a link may point at a hand-added
+ * investor exactly as it may point at a registry one, and the pick-list a
+ * screen draws is the effective list. Called without the map, every function
+ * answers exactly as it did.
+ *
  * SEPARATION: LT-only.
  */
 
 const investors = require('../encompass/investors');
+const effective = require('./investor-roster');
 
 /** The settings key the stored map lives under. One name, used by every caller. */
 const SETTING_KEY = 'pricing.investorLinks';
@@ -96,7 +106,7 @@ function linkKeyOf(name) {
  * NEVER THROWS. A map that cannot be read at all yields an empty one, which is
  * today's behaviour — a broken setting costs the links, never the board.
  */
-function readLinks(raw) {
+function readLinks(raw, custom) {
   const out = new Map();
   const problems = [];
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { links: out, problems };
@@ -106,8 +116,9 @@ function readLinks(raw) {
     const entry = value && typeof value === 'object' && !Array.isArray(value) ? value : { key: value };
     const key = entry.key == null ? '' : String(entry.key).trim();
     if (!key) { problems.push({ name, problem: 'no_investor' }); continue; }
-    // RULE 2 — a link may only point at an investor that exists.
-    if (!investors.byKey(key)) { problems.push({ name, key, problem: 'unknown_investor' }); continue; }
+    // RULE 2 — a link may only point at an investor that exists: in the
+    // registry, or among the investors somebody added by hand.
+    if (!effective.effectiveByKey(key, custom)) { problems.push({ name, key, problem: 'unknown_investor' }); continue; }
     out.set(k, {
       key,
       // Kept for the screen so a person can see what they typed, not the
@@ -127,18 +138,18 @@ function readLinks(raw) {
  * The returned shape is byte-compatible with `investors.resolve`, plus `linked`
  * so a caller can tell a decision from a lookup without parsing `match`.
  */
-function resolveWithLinks(name, links) {
+function resolveWithLinks(name, links, custom) {
   const raw = name == null ? null : String(name);
-  const map = links instanceof Map ? links : (readLinks(links).links);
+  const map = links instanceof Map ? links : (readLinks(links, custom).links);
   const k = linkKeyOf(raw);
   if (k && map.has(k)) {
     const hit = map.get(k);
-    const inv = investors.byKey(hit.key);
+    const inv = effective.effectiveByKey(hit.key, custom);
     // RULE 1 — a person's decision beats every registry match, `exact` included.
-    if (inv) return { raw, key: inv.key, label: inv.label, match: 'link', linked: true };
+    if (inv) return { raw, key: inv.key, label: inv.label, match: 'link', linked: true, custom: !!inv.custom };
   }
-  const r = investors.resolve(raw);
-  return { raw, key: r.key, label: r.label, match: r.match, linked: false };
+  const r = effective.effectiveResolve(raw, custom);
+  return { raw, key: r.key, label: r.label, match: r.match, linked: false, custom: !!r.custom };
 }
 
 /**
@@ -195,7 +206,8 @@ function suggestFor(name, opts = {}) {
   const letters = letterFormOf(name);
   if (!n && !letters) return [];
   const scored = [];
-  for (const inv of investors.list()) {
+  // `opts.custom` — the hand-added investors are proposed like any other.
+  for (const inv of effective.effectiveList(opts.custom)) {
     const forms = [inv.label, ...(inv.aliases || [])];
     let best = 0;
     let why = null;
@@ -227,12 +239,12 @@ function suggestFor(name, opts = {}) {
  * quietly drop half of, so the route answers 422 with the list and the person
  * sees exactly which row is wrong.
  */
-function validateLinks(raw) {
+function validateLinks(raw, custom) {
   if (raw == null) return { ok: true, links: {}, problems: [] };
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, links: null, problems: [{ problem: 'not_a_map', message: 'Send one entry per vendor spelling.' }] };
   }
-  const { links, problems } = readLinks(raw);
+  const { links, problems } = readLinks(raw, custom);
   const clean = {};
   for (const [, v] of links) {
     clean[v.name] = { key: v.key, source: v.source, linkedBy: v.linkedBy, linkedAt: v.linkedAt };
@@ -240,7 +252,7 @@ function validateLinks(raw) {
   const worded = problems.map((p) => ({
     ...p,
     message: p.problem === 'unknown_investor'
-      ? `"${p.name}" points at an investor this system does not know (${p.key}). Pick one from the list rather than typing a key.`
+      ? `"${p.name}" points at an investor this system does not know (${p.key}) — it is not in the registry and not one added by hand. Pick one from the list, or add the investor first.`
       : p.problem === 'no_investor'
         ? `"${p.name}" has no investor chosen — say which investor it is, or remove the row.`
         : 'That spelling could not be read as a name.',
@@ -262,15 +274,15 @@ function validateLinks(raw) {
  * nothing gets its own row with suggestions attached — that row is the whole
  * point, because today such a name is dropped and nobody can act on it.
  */
-function pairing(namesBySource, links) {
-  const map = links instanceof Map ? links : readLinks(links).links;
+function pairing(namesBySource, links, custom) {
+  const map = links instanceof Map ? links : readLinks(links, custom).links;
   const byKey = new Map();
   const unlinked = [];
   for (const source of SOURCES) {
     for (const name of (namesBySource && namesBySource[source]) || []) {
-      const r = resolveWithLinks(name, map);
+      const r = resolveWithLinks(name, map, custom);
       if (!r.key) {
-        unlinked.push({ source, name, suggestions: suggestFor(name) });
+        unlinked.push({ source, name, suggestions: suggestFor(name, { custom }) });
         continue;
       }
       if (!byKey.has(r.key)) {

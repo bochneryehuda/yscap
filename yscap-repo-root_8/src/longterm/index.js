@@ -32,6 +32,39 @@ require('./conditions-center/photo-id-share');
 
 const router = express.Router();
 
+/* ⛔ THE INVESTOR-NAME BLOCK MUST BE IN FORCE BEFORE THE FIRST REQUEST, and
+   "before" is a claim about time and ORDER that has to be true of both.
+
+   The block in `audience.js` is fed by the settings store's `applyOnLoad` hook,
+   which fires on a company-scope READ. The surfaces that most need it never take
+   one: a borrower's own conditions (`routes/my-conditions.js`,
+   `conditions/read.js`), the term-sheet snapshot and the PDF all scrub without
+   ever asking for a setting. Nothing told the block about the investors somebody
+   added by hand, so the FIRST borrower to open their conditions after a deploy
+   was read to by a block that had never heard of them.
+
+   A single fire-and-forget read was not enough, and an audit measured why: the
+   require returned and the read landed ~28ms later with `app.listen()` in
+   between, so a request in that window was still served cold — and a read that
+   came back DEGRADED gave up for good. So there are two mechanisms:
+
+     · keepWarm RETRIES until a clean read lands, then re-reads on an interval,
+       which also bounds how far behind this process can be after an admin adds
+       an investor somewhere else (see AUDIENCE-RULES.md).
+     · the guard below makes a request WAIT for a read, which closes the race
+       rather than narrowing it.
+
+   ⛔ IT IS MOUNTED FIRST, BEFORE ANY ROUTE ON THIS ROUTER — including /health.
+   Express runs layers in the order they were added, so a guard added after a
+   route simply does not run for that route. `test-lt-custom-investors-pure.js`
+   asserts the mounted LAYER and its POSITION rather than grepping for this call,
+   because the paragraph you are reading satisfies any grep on its own. */
+const settingsStore = require('./settings/store');
+const warmth = settingsStore.keepWarm();
+router.use(settingsStore.ensureWarm());
+
+
+
 // Liveness / identity of the LT side (no DB) — lets the front end and ops confirm
 // the Long-Term module is mounted.
 router.get('/health', (req, res) => res.json({ ok: true, product: 'long-term' }));
@@ -218,4 +251,9 @@ router.use('/ppe', require('./routes/ppe'));
 // a script may do — starts no timers and reads nothing.
 require('./sync/worker').start();
 
-module.exports = { router };
+/* `warmth.ready` resolves on the first CLEAN company read. Exported so a caller
+   that wants to hold traffic until the block is in force can await it — nothing
+   does today, because `ensureWarm` already makes every request that could reach
+   a scrub wait for it, and holding a boot on a database read would trade a
+   bounded cold window for an unbounded one. */
+module.exports = { router, ready: warmth.ready };
