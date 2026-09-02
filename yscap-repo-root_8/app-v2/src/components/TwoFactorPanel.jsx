@@ -50,7 +50,9 @@ export default function TwoFactorPanel() {
   const on = !!status.mfaEnabled;
 
   return (
-    <div className="panel" style={{ marginBottom: 16 }}>
+    // data-cobrowse-block: the 2FA setup (secret, QR, recovery codes) is never mirrored
+    // to a co-browse viewer — lib/cobrowse.js BLOCK_SELECTOR.
+    <div className="panel" style={{ marginBottom: 16 }} data-cobrowse-block="mfa">
       <div className="row" style={{ marginBottom: 8, alignItems: 'center' }}>
         <h3 style={{ margin: 0 }}>Two-factor authentication</h3>
         <span className={`pill ${on ? 'done' : ''}`} style={{ marginLeft: 8 }}>{on ? 'On' : 'Off'}</span>

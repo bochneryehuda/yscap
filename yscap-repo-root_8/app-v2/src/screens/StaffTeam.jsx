@@ -5,6 +5,8 @@ import { useAuth } from '../lib/auth.jsx';
 import { passwordProblem, PASSWORD_HINT } from '../lib/password.js';
 import { fullNameOf } from '../lib/personName.js';
 import { useFlash } from '../components/FlashToast.jsx';
+import CobrowseButton from '../components/CobrowseButton.jsx';
+import CobrowseHistory from '../components/CobrowseHistory.jsx';
 
 // Fallback role list (replaced live by GET /permissions-meta) — the ONE
 // front-end role registry (lib/roles.js), not a second hand-kept list.
@@ -116,6 +118,60 @@ function FileGrants({ staffer, flash, onError }) {
   );
 }
 
+/* THE TEAM SCREEN IS FOR EVERYBODY (owner-directed 2026-09-02: "Set up the team
+   screen for all the users so they can see everybody on the team. They cannot see
+   what they can see … they have the co-browsing feature as long as it's with
+   consent"). A non-admin gets the roster from the ungated /api/staff/team (name,
+   role, title, email — the same list the assignment dropdowns read) and exactly
+   ONE action per row: Co-browse. No role editor, no permissions, no add form, no
+   "See their screen" — that view-as is super-admin only and lives on the admin
+   roster below. Deactivated people are not in that list, so every row is live. */
+function TeamRosterReadOnly({ myId }) {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => { api.staffTeam().then(setRows).catch(e => setErr(e.message)); }, []);
+  const groups = [
+    { key: 'sales', label: 'Sales & Loan Coordinators' },
+    { key: 'operations', label: 'Operations & Back Office' },
+    { key: null, label: 'Other' },
+  ];
+  const byDept = (d) => (rows || []).filter(r => (r.department || null) === d);
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <h1>Team</h1>
+          <div className="sub">Everybody on the YS Capital desk. Co-browse asks a teammate to share their screen — they see the request and choose to accept.</div>
+        </div>
+      </div>
+      {err && <div role="alert" className="notice err">{err}</div>}
+      {rows == null && !err ? <div className="panel muted pad">Loading…</div> : groups.map(g => {
+        const list = byDept(g.key);
+        if (!list.length) return null;
+        return (
+          <div className="panel" key={g.label} style={{ marginBottom: 16 }}>
+            <div className="panel-h"><h3>{g.label}</h3><span className="pill mut">{list.length}</span></div>
+            <div className="panel-b" style={{ paddingTop: 4, paddingBottom: 4 }}>
+              {list.map(s => (
+                <div key={s.id} className="checkitem" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div className="who" style={{ flex: 1, minWidth: 220 }}>
+                    <span className="mono" aria-hidden="true">{initials(s.full_name)}</span>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="nm">{s.full_name} <span className={roleClass(s.role)}>{FALLBACK_ROLES.find(r => r.key === s.role)?.label || s.role}</span></div>
+                      <div className="muted small">{s.title || '—'} · {s.email}</div>
+                    </div>
+                  </div>
+                  {s.id !== myId && <CobrowseButton kind="staff" id={s.id} name={s.full_name} className="btn ghost small" />}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 export default function StaffTeam() {
   const { can, role, actor, startStaffView } = useAuth();
   const isAdmin = can('manage_team');
@@ -219,7 +275,7 @@ export default function StaffTeam() {
     } catch (e) { flashErr(e.message); }
   }
 
-  if (!isAdmin) return <div role="alert" className="notice err">You do not have permission to manage the team.</div>;
+  if (!isAdmin) return <TeamRosterReadOnly myId={myId} />;
 
   // Effective capability for a staffer given their (possibly overridden) grants.
   const effectiveFor = (s) => new Set(s.effectivePermissions || meta.roleDefaults[s.role] || []);
@@ -330,6 +386,9 @@ export default function StaffTeam() {
         </div>
       </div>
 
+      {/* ---- the co-browse register (Phase C): a super admin sees every session ---- */}
+      {canSeeTheirScreen && <CobrowseHistory />}
+
       {/* ---- roster ---- */}
       {rows == null ? <div className="panel muted pad">Loading…</div> : groups.map(g => {
         const list = byDept(g.key);
@@ -375,7 +434,7 @@ export default function StaffTeam() {
                       your screen) and a deactivated person (there is no session to
                       see). Everything else the server decides and reports honestly. */}
                   {canSeeTheirScreen && s.id !== myId && !!s.is_active && (
-                    <button className="btn link" disabled={mailBusy === `v${s.id}`}
+                    <button className="btn link" disabled={mailBusy === `v${s.id}`} data-cobrowse-nodrive="view-as"
                       title="Open their console exactly as they see it — read-only, and recorded"
                       onClick={async () => {
                         if (mailBusy) return;
@@ -395,6 +454,14 @@ export default function StaffTeam() {
                       }}>
                       See their screen
                     </button>
+                  )}
+                  {/* CO-BROWSE (owner-directed 2026-09-02) — beside "See their screen" and
+                      deliberately NOT the same thing: this asks the teammate, they accept
+                      on their own screen, and you watch their live session; nothing runs
+                      as them. Offered to every admin on this roster (the super-admin-only
+                      test above is for the view-as); the server holds the one rule. */}
+                  {s.id !== myId && !!s.is_active && (
+                    <CobrowseButton kind="staff" id={s.id} name={s.full_name} className="btn link" />
                   )}
                   <button className="btn link" onClick={() => setPermFor(permFor === s.id ? null : s.id)}>
                     {permFor === s.id ? 'Hide permissions' : 'Permissions'}
