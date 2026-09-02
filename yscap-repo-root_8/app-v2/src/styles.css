@@ -5352,6 +5352,13 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    `.dp-back` is TWO classes, so it beats the single-class `.cv-modal-back`
    z-index on specificity — no !important needed, and an ordinary dialog opened
    from inside a preview still paints over it. */
+/* CO-BROWSE CONSENT SITS ABOVE EVERY OTHER OVERLAY. A request nobody sees expires in 90 s, and
+   the person may have a tool sheet (1000), a report (3000) or the address-verification modal
+   (10000) open when it arrives — the ordinary .cv-modal-back (200) would put the prompt UNDER
+   them. The watching/controlling banner sits just below the prompt (19999) so it stays visible
+   over a modal backdrop and never covers the prompt's own buttons. The controller's pointer
+   (2147483000) is above everything by design. Guarded by test-cobrowse-pure. */
+.cv-modal-back.cobrowse-consent{z-index:20000}
 .cv-modal-back.dp-back{z-index:150}
 /* A FULL-SCREEN TOOL SHEET — the Scope of Work, the track record, the Products &
    Pricing studio and the terms it generates (owner-reported 2026-08-21: "the nice

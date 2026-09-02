@@ -149,11 +149,33 @@ ok(/if \(notCancelled\) applyTextKey\(el, key, init\)/.test(libNow) && /function
 ok(/m\.k === 'paste'/.test(libNow) && /insertText\(el, String\(m\.value/.test(libNow), 'the guest inserts pasted text at the real selection');
 ok(/INPUT_KINDS = new Set\(\[[^\]]*'paste'/.test(hubSrc), "the hub admits 'paste' as an input kind");
 ok(/el\.tagName === 'SELECT' && Number\.isFinite\(Number\(m\.idx\)\)/.test(libNow) && /'idx'\]/.test(hubSrc), 'a <select> is driven by option index (its mirror value is masked)');
+// The consent prompt must sit above every other fixed overlay in the portal (a request nobody
+// sees expires in 90 s). Read the highest z-index any OTHER overlay declares and assert both
+// consent layers clear it; the pointer (2147483000) is deliberately excluded — it is above all.
+{
+  const css = read('app-v2/src/styles.css');
+  const consentZ = Number((css.match(/\.cv-modal-back\.cobrowse-consent\{z-index:(\d+)\}/) || [])[1]);
+  const bannerZ = Number((read('app-v2/src/components/CobrowseHost.jsx').match(/zIndex: (\d+)/) || [])[1]);
+  const glob = require('fs').readdirSync; const path = require('path');
+  const walk = (d) => glob(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
+  const files = walk(path.join(__dirname, '..', 'app-v2', 'src')).filter((f) => /\.(jsx?|css)$/.test(f) && !/Cobrowse|lib\/cobrowse/.test(f));
+  // Our own rule lives in styles.css, so it is stripped before the scan; the three popover
+  // layers at 2147483000 (autocomplete lists, the drop-files sheet, the pointer) are
+  // non-blocking and deliberately above all — a consent prompt need not out-rank them.
+  let maxOther = 0;
+  for (const f of files) {
+    const src = require('fs').readFileSync(f, 'utf8').replace(/\.cv-modal-back\.cobrowse-consent\{[^}]*\}/g, '');
+    for (const m of src.matchAll(/z-?[iI]ndex:\s*'?(?<!\d)(\d+)(?!\d)/g)) { const z = Number(m[1]); if (z < 2147000000) maxOther = Math.max(maxOther, z); }
+  }
+  ok(consentZ > maxOther && bannerZ > maxOther && consentZ > bannerZ, `the consent prompt (${consentZ}) and the banner (${bannerZ}) sit above every other overlay (highest elsewhere: ${maxOther})`);
+}
 const hostNow = read('app-v2/src/components/CobrowseHost.jsx');
 ok(/asks to control your screen/.test(hostNow) && /Allow control/.test(hostNow) && /keep watching only/.test(hostNow), 'the second consent prompt: allow / keep watching only');
 ok(/Take back/.test(hostNow) && /cobrowse-controlled/.test(hostNow), 'the banner turns to controlling with a Take back button and the red frame');
 ok(/useAuth\(\)/.test(hostNow) && /!!token && !isBorrowerView && !isTpoView && !isAssistant/.test(hostNow), 'the host keys on the live auth token and stands down inside a view-as / for a helper (audit)');
 ok(/PILOT records who watched and when; it never records the screen itself/.test(hostNow), 'the consent prompt states what is kept');
+ok(/const POLL_MS = 10000;/.test(hostNow) && /if \(!eligible \|\| active \|\| pending\) return undefined;/.test(hostNow) && /setInterval\(\(\) => \{\s*api\.cobrowseMine\(\)/.test(hostNow), 'while nothing is showing the host re-reads the register every 10 s — a request is never missed because the stream was down (the drive caught it)');
+
 
 // ---- Phase C: hardening -----------------------------------------------------------------------
 const R = require('../src/lib/cobrowse/redaction.js');

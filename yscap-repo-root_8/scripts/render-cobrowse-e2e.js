@@ -183,6 +183,47 @@ async function main() {
     ok(r.data.session.status === 'ended' && r.data.session.endReason === 'stopped_by_guest' && r.data.session.control.grants === 1 && r.data.session.control.events >= 1,
       `the register: ended by the guest, control given once, ${r.data.session.control.events} input event(s) counted`);
 
+    // ── PHONE WIDTH + LAYERING: the prompt and the banner on an iPhone-12-wide screen, with
+    //    a higher overlay open. A request nobody sees expires in 90 s, so the prompt must sit
+    //    above every other overlay (a report backdrop is 3000, the address-verification modal
+    //    10000) and be tappable at 390px with no sideways scroll. ──
+    const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, serviceWorkers: 'block' });
+    await phone.addInitScript((t) => { try { localStorage.setItem('ys_portal_token', t); } catch (_) { /* fine */ } }, loTok);
+    const pp = await phone.newPage();
+    await pp.goto(`${base}/portal/#/internal/team`);
+    await pp.waitForSelector('text=Everybody on the YS Capital desk', { timeout: 20000 });
+    ok(await pp.evaluate(() => window.innerWidth) === 390, 'the phone renders at the device width (innerWidth 390)');
+    // an overlay the way a report or the address-verification modal draws one
+    await pp.evaluate(() => { const d = document.createElement('div'); d.id = 'e2e-overlay'; d.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(20,27,34,.55)'; document.body.appendChild(d); });
+    r = await api('POST', '/api/cobrowse/request', { kind: 'staff', id: lo.id }, saTok);
+    ok(r.status === 200, `a second request while a 10000-z overlay is open (got ${r.status})`);
+    const sid2 = r.data.session.id;
+    await pp.waitForSelector('button:has-text("Accept")', { timeout: 15000 });
+    // The sheet SLIDES up (.26 s); geometry is read once it has settled, or the button is
+    // measured mid-animation, 20px below the screen — a fact about the timing, not the page.
+    await pp.waitForFunction(() => { const b = Array.from(document.querySelectorAll('button')).find((x) => /^Accept$/.test(x.textContent.trim())); const r0 = b && b.getBoundingClientRect(); return !!r0 && r0.bottom <= window.innerHeight; }, null, { timeout: 3000 }).catch(() => {});
+    const hit = await pp.evaluate(() => {
+      const b = Array.from(document.querySelectorAll('button')).find((x) => /^Accept$/.test(x.textContent.trim()));
+      const r0 = b.getBoundingClientRect(); const el = document.elementFromPoint(r0.left + r0.width / 2, r0.top + r0.height / 2);
+      const card = b.closest('.cv-modal'); const c = card ? card.getBoundingClientRect() : r0;
+      return { onButton: !!el && (el === b || b.contains(el)), rect: [r0.left, r0.top, r0.right, r0.bottom].map(Math.round), card: [c.left, c.top, c.right, c.bottom].map(Math.round), inView: r0.left >= 0 && r0.right <= window.innerWidth && r0.top >= 0 && r0.bottom <= window.innerHeight, over: document.documentElement.scrollWidth - window.innerWidth };
+    });
+    ok(hit.onButton, 'the Accept button is the element at its own centre — the prompt sits ABOVE a 10000-z overlay');
+    ok(hit.inView && hit.over <= 0, `the prompt fits the phone (button ${hit.rect.join(',')}, card ${hit.card.join(',')} in 390×844; sideways overflow ${hit.over}px)`);
+    await pp.tap('button:has-text("Accept")');
+    await pp.waitForSelector('text=is watching your screen', { timeout: 10000 });
+    const stop = await pp.evaluate(() => {
+      const b = Array.from(document.querySelectorAll('button')).find((x) => /^Stop$/.test(x.textContent.trim()));
+      if (!b) return { found: false };
+      const r0 = b.getBoundingClientRect(); const el = document.elementFromPoint(r0.left + r0.width / 2, r0.top + r0.height / 2);
+      return { found: true, onButton: !!el && (el === b || b.contains(el)), over: document.documentElement.scrollWidth - window.innerWidth };
+    });
+    ok(stop.found && stop.onButton && stop.over <= 0, 'the watching banner\'s Stop is tappable above the overlay on the phone, no sideways scroll');
+    await pp.tap('button:has-text("Stop")');
+    r = await api('GET', `/api/cobrowse/${sid2}`, null, saTok);
+    ok(r.data.session.status === 'ended', 'the phone session ends on Stop');
+    await phone.close();
+
     const bad = (l) => errors[l].filter((e) => !/favicon|manifest|ResizeObserver|net::ERR_ABORTED|events\?token|EventSource/.test(e));
     ok(bad('guest').length === 0, `no page errors on the guest (${bad('guest').slice(0, 2).join(' | ')})`);
     ok(bad('viewer').length === 0, `no page errors on the viewer (${bad('viewer').slice(0, 2).join(' | ')})`);

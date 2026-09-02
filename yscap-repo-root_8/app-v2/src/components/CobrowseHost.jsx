@@ -24,6 +24,9 @@ import { startGuest, stopGuest, rememberedSessionId, releaseFromGuest } from '..
       a Take back button; the request cancels itself after 30 seconds.
 
    Text colours are explicit darks (never an --ink* token). */
+/** While nothing is showing, the register is re-read this often — the SSE stream is the fast path, not the only one. */
+const POLL_MS = 10000;
+
 export default function CobrowseHost() {
   // THE TOKEN COMES FROM THE AUTH CONTEXT, NOT A ONE-TIME READ (pre-merge audit
   // 2026-09-02): sign-in is in-SPA and this host is mounted above the routes, so an
@@ -89,6 +92,26 @@ export default function CobrowseHost() {
     });
   }, [pending, eligible, token]);
 
+  // SAFETY POLL. A request reaches this screen live over the SSE stream — and a stream
+  // is not a guarantee: it may not be open yet (a request that lands a second after the
+  // page rendered), it may be between reconnects with no 'reconnect' event fired, or a
+  // laptop may have just woken. A request nobody sees expires in 90 s and the viewer sits
+  // on "waiting…". So while NOTHING is showing — no live session, no prompt — the register
+  // is re-read every POLL_MS (one indexed query); the moment something is showing, the
+  // stream carries the rest. Proven by the two-browser drive, which asks the instant the
+  // Team screen renders.
+  useEffect(() => {
+    if (!eligible || active || pending) return undefined;
+    const t = setInterval(() => {
+      api.cobrowseMine().then((r) => {
+        if (activeRef.current) return;
+        if (r && r.active && r.active.isWatched) begin(r.active);
+        else if (r && r.pending && r.pending.length) setPending(r.pending[0]);
+      }).catch(() => {});
+    }, POLL_MS);
+    return () => clearInterval(t);
+  }, [eligible, active, pending, token, begin]);
+
   // A request that nobody answers goes away when the server says it expired.
   useEffect(() => {
     if (!pending || !pending.expiresAt) return undefined;
@@ -134,7 +157,7 @@ export default function CobrowseHost() {
         <>
           {/* The red frame while somebody else is driving — the whole page says so, not only the bar. */}
           <style>{`html.cobrowse-controlled body{outline:4px solid #B3261E;outline-offset:-4px}`}</style>
-          <div role="status" aria-live="polite" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1002,
+          <div role="status" aria-live="polite" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 19999,
             background: link.control === 'granted' ? '#B3261E' : '#7A1F1F', color: '#fff', padding: '8px 14px', display: 'flex', alignItems: 'center',
             justifyContent: 'center', gap: 12, fontSize: 14, boxShadow: '0 2px 6px rgba(0,0,0,.25)', flexWrap: 'wrap' }}>
             <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: 5, background: link.recording ? '#FF4D4D' : '#BBB', display: 'inline-block' }} />
@@ -153,7 +176,7 @@ export default function CobrowseHost() {
         </>
       )}
       {active && controlAsk && (
-        <div className="cv-modal-back" role="presentation">
+        <div className="cv-modal-back cobrowse-consent" role="presentation">
           <div className="cv-modal app-dialog" role="dialog" aria-modal="true" aria-labelledby="cb-ctl-title" aria-describedby="cb-ctl-body">
             <div className="app-dialog-head">
               <span className="app-dialog-mark" aria-hidden="true" />
@@ -174,7 +197,7 @@ export default function CobrowseHost() {
         </div>
       )}
       {pending && !active && (
-        <div className="cv-modal-back" role="presentation">
+        <div className="cv-modal-back cobrowse-consent" role="presentation">
           <div className="cv-modal app-dialog" role="dialog" aria-modal="true" aria-labelledby="cb-ask-title" aria-describedby="cb-ask-body">
             <div className="app-dialog-head">
               <span className="app-dialog-mark" aria-hidden="true" />
