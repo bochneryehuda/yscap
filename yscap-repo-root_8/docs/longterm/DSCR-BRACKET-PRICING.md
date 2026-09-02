@@ -121,6 +121,55 @@ are different facts, and neither is *"we did not look"*. A band whose search
 **failed** is reported separately again: that is a fact about the vendor, not about
 the loan.
 
+### The sheet judges the band the option was priced in — not the form's ratio
+
+Reported 2026-09-02, the day after the banded board shipped:
+
+> *"Option 5.75% — Harbor has moved band. These figures come to 1.25, a higher DSCR
+> band than the 1.14 it was priced in… I searched a scenario, which was a full
+> scenario. It comes up all the bands, and the 5.75 was actually priced on the 1.25
+> band… He's still claiming that it's a different band just because he's not
+> looking at the correct ratio, but in real life, it was priced on the correct
+> ratio… You should not look at the original scenario. You should look at what was
+> the actual pricing on."*
+
+The board was right and the sheet was wrong. `ratioProblem` asks *"which band was
+this priced in?"* of the member's `scenario.dscr`, and the browser sent the
+**form's** DSCR as the scenario of every option it collected — on a banded board
+that figure is only where the search *started*. The 5.75% option was bought in
+band 8 at band 8's own ratio, and stamped 1.25 to say so; the sheet judged it
+against the 1.14 the officer typed, found a different band, and refused.
+
+**The fix is a fact carried, not a rule changed.** A collected option now carries
+the ratio it was priced at (`pricedDscr` — the board's own stamp on the option)
+and `snapshot.buildMember` makes it the member's `scenario.dscr`: *the scenario as
+it was priced* for that option, which is what the cart stores per member, what the
+document prints, and what the re-price rule judges. An option that carries none
+(an unbracketed board, the combined board, an older cart) keeps the form's ratio,
+which on those boards is what was actually sent. The browser's own pre-check
+(`ratioCheck`) prefers the same stamp, and the comparison-ux suite fails the
+moment the two preferences differ.
+
+Section G of `test-lt-dscr-brackets-pure.js` reproduces the report exactly —
+the form at 1.14, every option on the real board, selections built the way the
+browser now builds them — through the real `exportGate`: none refuses. The
+control sends the same selections without the stamp and the owner's sentence
+comes straight back.
+
+### Collecting a row is one press, on the row
+
+Owner-directed 2026-09-02: *"You don't need to click Details and go down and
+click Add. You should be able to do that right away… It can just be a button, but
+it needs to be very clean, modern, user-friendly, and simple. Next to each and
+every quote."*
+
+Every quote row carries **Add to comparison**, which becomes **In comparison**
+once pressed and takes the option back out on the next press. It is there
+whether or not a workflow has been chosen at the bottom of the board — the
+chooser still says which *document* is being built, but it no longer gates
+whether a row can be collected, which is what made the earlier tick-box look as
+though it had disappeared.
+
 ## On logging in several times
 
 > *"Maybe you can duplicate your agents to log in several times separately,
@@ -145,7 +194,8 @@ keystroke — and the button states the cost before it is pressed.
   built as a second, pressed view so the existing board is untouched and the extra
   vendor cost is opted into. Making it the default is a one-line change and a real
   decision about spend.
-- **Should the term sheet be issued straight from a bracket row?** Today an
-  officer prices the band, then prices that scenario normally to collect it. A
-  direct hand-off would remove a step; it also means deciding which of several
-  bands a sheet is "from", which is a workflow question, not a code one.
+- ~~**Should the term sheet be issued straight from a bracket row?**~~ Settled
+  2026-09-02: every row carries *Add to comparison*, so collecting from a band is
+  one press, and a single option's term sheet issues from its Details panel as it
+  always did. The sheet knows which band it is "from" because the option carries
+  the ratio it was priced at (see above).

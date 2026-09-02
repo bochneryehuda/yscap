@@ -251,6 +251,36 @@ function buildMember(sel, plan, opts = {}) {
     return refuse('missing_loan', 'That quote has no loan amount, so the fees cannot be worked out.');
   }
 
+  /* ⛔ THE RATIO THIS OPTION WAS PRICED AT, NOT THE ONE THE FORM STARTED FROM
+     (owner-reported 2026-09-02: *"the 5.75 was actually priced on the 1.25 band…
+     he's still claiming that it's a different band just because he's not looking
+     at the correct ratio, but in real life, it was priced on the correct ratio…
+     You should not look at the original scenario. You should look at what was the
+     actual pricing on."*).
+
+     The bracket board prices every band at its OWN ratio and stamps that ratio on
+     each option it keeps (`bracket-board.buildBoard`), so on a banded board the
+     form's DSCR is only where the search STARTED — the option in front of the
+     officer was bought at the ratio its band was asked at. `ratioProblem` asks
+     "which band was this priced in?" of `scenario.dscr`, so a scenario that still
+     carried the form's figure made every option outside the seed's band read as
+     "has moved band" — the refusal firing on the exact case the board exists to
+     make impossible. Measured on the owner's deal: form 1.14, a 5.75% option
+     stamped 1.25 and priced in band 8, refused as "moved up from 1.14".
+
+     So a selection that names the ratio it was priced at REPLACES the scenario's
+     figure with it. The scenario on this member is *the scenario as it was
+     PRICED* for this option — which is what the cart stores per member, what the
+     document prints, and what the re-price rule judges. A selection that names
+     none (an unbracketed board, the combined board, an older cart) keeps the
+     form's ratio, which on those boards IS what was sent. Junk — zero, negative,
+     a string — is ignored rather than trusted: judging on no ratio is the one
+     thing worse than judging on the wrong one. Trusted to the same degree as
+     `scenario.dscr` beside it, no more: both are the browser's report of what the
+     board did, and the board is ours. */
+  const pricedDscr = num(s.pricedDscr);
+  if (pricedDscr != null && pricedDscr > 0) scenario.dscr = pricedDscr;
+
   const waive = s.waiveLenderFees === true;
 
   /* ⛔ THE ADJUSTMENT IS A MOVED PLAN, NOT A SECOND NUMBER (§40, owner-directed

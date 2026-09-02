@@ -258,6 +258,28 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     holdback is now resolved first and added back for the question only; and a sheet that returns no
     breakdown now has its reason PRINTED where the empty table was, in the vendor's own words.
 
+11. **A QUOTE BELONGS TO A SEARCH, and the explain call has to say which one (2026-09-02).**
+    LoanNEX scopes a priced quote to the transaction that produced it: `POST
+    /loans/apps/{u}/quick-prices` mints a `transactionId`, and BOTH follow-up reads hang off it —
+    `/loans/evidences/{u}/{txn}/fails` (why each investor said no) and `/loans/evidences/{u}/{txn}`
+    (the itemized LLPAs). **Their own web app proves the intent**: in the HAR all three explain calls
+    carry the SAME `scenarioTestId` `27684de7-…` — the id of the search AND the id in the
+    rate-stack URL. A `priceHashKey` is a handle INTO a transaction, not a global name for a quote.
+    Ours sent NEITHER the transaction nor the portal: the browser never read `provenance`, so every
+    explain arrived with `{}` and `evidence()` minted a fresh id — we were asking the vendor to
+    itemise a quote inside a search it had never seen. The search's identity is now stamped onto
+    each row's own `explain` handle by `priceBoth` (from the very result the rungs were read out
+    of), so the browser forwards it without knowing it exists and a handle can never be paired with
+    a LATER board's transaction — the commonest way a per-row fetch silently explains the wrong
+    quote. `searchIdentity` prefers the ROW and keeps the request body as a fallback for a caller
+    that predates the stamp; when neither says, the key is OMITTED so the client's own
+    `opts.transactionId || newTransactionId()` fallback is reached exactly as before.
+    **Measured, and stated plainly: this has NOT been confirmed against the live API from here** —
+    there are no LoanNEX credentials in this environment. The evidence body also carries the full
+    `nexApp`, so it is possible the vendor can re-price without the original transaction and the
+    empty panel has a second cause; one live call settles it. What is certain is that we were not
+    behaving the way the vendor's own client does, and now we are.
+
 ---
 
 ## Update, 2026-08-30 (second pass)
@@ -278,6 +300,19 @@ A fifth recording — the investor portals, with pricing — settled several thi
   thousandth. Fixture: `capture/rate-stack-vs-board.json`.
 - **The itemised LLPAs are the one thing that costs a call per quote.** `basePrice + Σ adjustments =
   price` reconciles exactly on the captured evidence, and `priceFloor`/`priceCeiling` do bite.
+- **WHERE the itemization lives, measured live 2026-08-30:**
+  `data.primary.pending.evidence.pricingEvidence.adjustments[]`, each row `{ description,
+  priceAdjustment }` — the `description` is the exact GRID CELL ("FICO : 760 - 779, CLTV : 70.01% -
+  75.00%"), which is the whole of "why is this price this price" — beside `basePrice`, `addOns`,
+  `priceFloor` and `priceCeiling`. Of four investors asked, three itemised (3, 3 and 4 rows) and one
+  answered `{"status":"Success"}` with no body at all, which is why absence is reported rather than
+  drawn as "no adjustments".
+- **THE STRUCTURAL DIFFERENCE FROM LENDER PRICE, and it is the whole reason this can fail at all:**
+  Lender Price sends `skipAdjustments: false` on the SEARCH (`search-model.js`), so every priced
+  leaf comes back with `groupAdjustmentProperties` already itemised — the breakdown arrives WITH
+  the board and there is nothing to fetch. LoanNEX's search returns only the ladder; the itemization
+  is a SECOND call, per quote. So a Lender Price row cannot have an empty price build, and a
+  LoanNEX row can.
 - **Interest-only is not an input here.** Across all 19 recorded pricing bodies LoanNEX takes no such
   field; it is a product the answer returns.
 - **The scenario defaults and the button names are now shared** with Lender Price
