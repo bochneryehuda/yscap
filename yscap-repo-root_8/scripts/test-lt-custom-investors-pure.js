@@ -25,9 +25,11 @@
  * proven is that a row somebody SAVED reaches the board, not that a function is
  * called.
  *
- * MUTATION-PROVEN — TEN of them. Each was applied to the production code, this
- * suite went RED, and a green control run either side confirmed it was the
- * mutation and not the weather:
+ * MUTATION-PROVEN — TWENTY-TWO of them, in two batteries. Each was applied to the
+ * production code, the named suite went RED, and a green control run either side
+ * confirmed it was the mutation and not the weather.
+ *
+ * THE FEATURE ITSELF:
  *    1. the registry-key collision check removed (both the read and the door)   → §B §C
  *    2. `validateCustom` skipping the audience-scrub proof on the white label   → §C
  *    3. `effectiveResolve` asking the registry BEFORE the recorded spellings    → §D
@@ -39,12 +41,31 @@
  *    8. the screen's Picker declared inside the screen (loses what is typed)    → §H
  *    9. a client-safe name typed in settings dropped from the roster again      → §E
  *
- * TWO OF THEM ONLY BIT AFTER THE ASSERTION WAS FIXED, and both are the same
- * lesson: an assertion with TWO independent reasons to pass proves NEITHER. The
- * scrub proof (2) was first asserted on a name that ALSO collided with a recorded
- * spelling, so the list check refused it and the mutation sailed through; it now
- * uses a name that collides with nothing and would still be blanked out. The load
- * hook (5) was first asserted only after a SAVE, which runs its own hook.
+ * THE RULE-10 BREACH THE PRE-MERGE AUDIT FOUND, and each half of its fix. The
+ * first cut PUSHED the block from whoever last read the settings, and every scope
+ * pushed — so a read of somebody's PERSONAL settings emptied it for the whole
+ * process and a term sheet naming a real investor was printed for a borrower:
+ *   R1. the load hooks running for every scope again (the breach itself)        → §J
+ *   R2. a company cache hit no longer re-asserting the map                      → §J
+ *   R3. a degraded read pushing the declared defaults (a blip removing a block) → §J
+ *  R3b. …the same fail-open, seen from the block's own suite   → test-lt-investor-block
+ *   R4. nothing warming the block when the Long-Term router is built           → §J
+ *   R5. the READ no longer holding a stored map to the door's white-label rules → §B
+ *  R5b. the scrub round-trip dropping out of the shared routine                 → §B §C
+ *   R6. `summary()` collapsing the three states back into one count             → §J
+ *   R7. the spelling memo keyed on something coarse (the map's size)            → §F
+ *   R8. the board not threading the map into its holdback resolver → test-lt-investor-holdback-pure
+ *   R9. the roster door serving one investor twice                 → test-lt-dscr-routes
+ *  R10. a screen hard-coding an investor name                      → test-lt-pricer-shared
+ *
+ * FOUR ASSERTIONS ONLY BIT AFTER THEY WERE FIXED, and they are the same lesson in
+ * four shapes — an assertion with two independent reasons to pass proves NEITHER.
+ * The scrub proof (2) was first written against a name that ALSO collided with a
+ * recorded spelling. The load hook (5) was first asserted only after a SAVE, which
+ * runs its own hook. The memo (R7) compared a one-entry map's list with a
+ * two-entry map's, which is longer by construction. And this suite's own fake
+ * store ignored the scope it was asked for, which made R1 — a real breach, in
+ * shipped code — structurally invisible.
  *
  *   node scripts/test-lt-custom-investors-pure.js
  */
@@ -57,11 +78,25 @@ const ROOT = path.join(__dirname, '..');
 
 // ── A STUBBED DATABASE, so the real settings store can be exercised ─────────
 const DB_PATH = require.resolve(path.join(ROOT, 'src/longterm/db'));
-const state = { rows: [], failReads: false };
+/**
+ * ⛔ THE FIXTURE HONOURS THE SCOPE, and that is not a detail.
+ *
+ * The settings table is keyed on (scope, key): the company's settings and each
+ * person's own live side by side, and a per-user read answers the DECLARED
+ * DEFAULT for anything that person has not set. A fake store that returned the
+ * company's rows whatever it was asked made an entire class of bug structurally
+ * invisible — the one where a per-user read hands the audience block an empty
+ * map and switches the investor-name rule off for the whole process. The audit
+ * found exactly that bug in the shipped code, past a green suite.
+ */
+const state = { rows: { company: [] }, failReads: false };
+const rowsFor = (scope) => state.rows[String(scope)] || (state.rows[String(scope)] = []);
 const fakeDb = {
-  query: async (sql) => {
+  query: async (sql, params) => {
     if (state.failReads) throw new Error('no database');
-    if (/FROM lt_settings/i.test(sql)) return { rows: state.rows.map((r) => ({ key: r.key, value: r.value })) };
+    if (/FROM lt_settings/i.test(sql)) {
+      return { rows: rowsFor((params || [])[0]).map((r) => ({ key: r.key, value: r.value })) };
+    }
     return { rows: [] };
   },
   getClient: async () => ({
@@ -69,13 +104,13 @@ const fakeDb = {
       const q = String(sql).trim();
       if (/^(BEGIN|COMMIT|ROLLBACK)/i.test(q)) return { rows: [] };
       if (/^DELETE FROM lt_settings/i.test(q)) {
-        state.rows = state.rows.filter((r) => r.key !== params[1]);
+        state.rows[String(params[0])] = rowsFor(params[0]).filter((r) => r.key !== params[1]);
         return { rows: [] };
       }
       if (/^INSERT INTO lt_settings/i.test(q)) {
-        const key = params[1];
-        state.rows = state.rows.filter((r) => r.key !== key);
-        state.rows.push({ key, value: JSON.parse(params[2]) });
+        const scope = String(params[0]);
+        state.rows[scope] = rowsFor(scope).filter((r) => r.key !== params[1]);
+        state.rows[scope].push({ key: params[1], value: JSON.parse(params[2]) });
         return { rows: [] };
       }
       return { rows: [] };
@@ -149,6 +184,44 @@ head('B. reading the stored map — tolerant, and never silent about what it dro
   const clash = roster.readCustom({ [registryKey]: { label: 'Something Else' } });
   ok(clash.custom.size === 0 && clash.problems.some((p) => p.key === registryKey),
     'an entry standing on a key the registry already uses is REFUSED on the read as well as the write');
+
+  /* ⛔ THE READ HOLDS A STORED MAP TO THE DOOR'S OWN STANDARD, and the audit
+     found it not doing so. The door refused three things the read never looked
+     at — a client-safe name belonging to somebody else, one belonging to a second
+     hand-added investor, and one the scrub would rewrite — so a value written
+     before a rule existed, or straight into the table, was refused on the way IN
+     and kept on the way OUT. Measured: a white label of "⟨registry investor⟩
+     Group" was kept with no problem reported and reached a borrower as "our
+     capital partner Group". A rule enforced on one side of a store is not a rule.
+
+     The read DROPS the name rather than the investor: it still prices, is still
+     blocked by its real name, and simply has no name a client may see. */
+  {
+    const wouldBeScrubbed = `${investors.INVESTORS[0].label} Group`;
+    const kept = roster.readCustom({ x: { label: 'Fine Name Capital', whiteLabel: wouldBeScrubbed } });
+    ok(kept.custom.get('x') && kept.custom.get('x').whiteLabel === null,
+      'THE ONE THAT MATTERS: a stored client-safe name the block would blank out is DROPPED on the read, not served to a client surface');
+    ok(kept.problems.some((p) => p.problem === 'white_label_would_be_redacted' && p.dropped === true),
+      '…and the drop is named, so a screen can say why that investor has no client-safe name');
+    ok(kept.custom.get('x').label === 'Fine Name Capital',
+      '…while the investor itself is kept — it still prices, and its real name is still blocked');
+
+    const takenName = programs.fullRoster()[0].whiteLabel;
+    const stolen = roster.readCustom({ x: { label: 'Fine Name Capital', whiteLabel: takenName } });
+    ok(stolen.custom.get('x').whiteLabel === null
+      && stolen.problems.some((p) => p.problem === 'white_label_taken'),
+    'a stored client-safe name that already belongs to another investor is dropped too — two investors may never show a client one name');
+
+    const twins = roster.readCustom({
+      a: { label: 'Alpha Ridge Capital', whiteLabel: 'Northgate' },
+      b: { label: 'Beta Hollow Funding', whiteLabel: 'Northgate' },
+    });
+    ok(twins.custom.get('a').whiteLabel === 'Northgate' && twins.custom.get('b').whiteLabel === null,
+      '…including two hand-added investors reaching for the same one: the first keeps it, the second is told');
+
+    ok(roster.readCustom({ x: { label: 'Fine Name Capital', whiteLabel: 'Northgate' } }).problems.length === 0,
+      'CONTROL: a usable client-safe name is kept, with nothing reported');
+  }
 }
 
 // ── C. THE WRITE DOOR ──────────────────────────────────────────────────────
@@ -341,7 +414,7 @@ head('E. it behaves like a recorded investor everywhere a roster is read');
 // ── F. THE SCRUB, AFTER A REAL SAVE ────────────────────────────────────────
 head('F. the block learns about it on the save — not on the next deploy');
 {
-  state.rows = [];
+  state.rows = { company: [] };
   settingsStore.bust();
   audience.useCustomInvestors(null);
 
@@ -378,23 +451,40 @@ head('F. the block learns about it on the save — not on the next deploy');
   ok(audience.summary().customInvestorsBlocked === 1,
     'the block says how many hand-added investors it is holding');
 
-  // The SPELLINGS list is memoised per map — a rebuild that never happened is
-  // how a saved investor stays unblocked until the next restart.
   // THE LOAD HOOK, which is what covers a process that did not do the saving:
   // the block is told on the READ that brought the map into the process, so a
   // web worker that came up after somebody saved is holding it too. Simulated by
   // forgetting them and reading the settings again.
-  audience.useCustomInvestors(null);
-  ok(audience.scrubInvestorNames(`Sent to ${CE.label} for review`, 'borrower').includes(CE.label),
-    'CONTROL: a process that has not read the settings does not know about them');
+  audience._internals.forgetCustomInvestors();
+  ok(audience.scrubInvestorNames(`Sent to ${CE.label} for review`, 'borrower').includes(CE.label)
+    && audience.summary().customInvestors.loaded === false,
+  'CONTROL: a process that has not read the settings does not know about them, and SAYS it has not read them');
   settingsStore.bust();
   await settingsStore.load('company');
   ok(!audience.scrubInvestorNames(`Sent to ${CE.label} for review`, 'borrower').includes(CE.label),
     'THE ONE THAT MATTERS: the read that loads the settings TELLS the block — nobody has to remember to');
 
   const before = audience._internals.spellings(customOf(ONE)).length;
-  const after = audience._internals.spellings(customOf({ ...ONE, second: { label: 'Second Capital' } })).length;
-  ok(after > before, 'the blocked-spellings list is rebuilt when the map changes, not cached forever');
+  /* THE MEMO — asserted on what it actually claims.
+     The first version compared the LENGTH of the list for a one-entry map with
+     the length for a two-entry map, which is longer by construction: it could
+     not fail, and it proved nothing. What has to hold is two things at once —
+     the same map object is not re-walked (that is the memo), and a DIFFERENT map
+     yields a list describing that map (that is the rebuild). The second is
+     asserted with two maps of the SAME SIZE and different contents, so a memo
+     keyed on something coarse — a count, a flag, nothing at all — reddens this
+     rather than sailing past it. */
+  const mapA = customOf({ one: { label: 'Alpha Ridge Capital' } });
+  const mapB = customOf({ one: { label: 'Beta Hollow Funding' } });
+  const listA = audience._internals.spellings(mapA);
+  ok(audience._internals.spellings(mapA) === listA,
+    'the spelling list for one map is built once and remembered — every scrub does not re-walk the whole roster');
+  const listB = audience._internals.spellings(mapB);
+  const textOf = (l) => l.map((e) => e.text).join('|');
+  ok(listA.length === listB.length && textOf(listA) !== textOf(listB),
+    'THE ONE THAT MATTERS: a DIFFERENT map of the same size yields that map’s OWN spellings — the memo can never answer about the wrong roster');
+  ok(textOf(listA).includes('Alpha Ridge Capital') && !textOf(listA).includes('Beta Hollow Funding'),
+    '…and each list holds the investor it was built for, and not the other one');
 }
 
 // ── G. THE DOORS ───────────────────────────────────────────────────────────
@@ -417,7 +507,7 @@ head('G. the doors — over real HTTP, against the real settings store');
   };
 
   {
-    state.rows = [];
+    state.rows = { company: [] };
     settingsStore.bust();
 
     // ADD ONE.
@@ -559,6 +649,93 @@ head('I. the browser twin of the key rule agrees with the server’s, character 
   }
   ok(drift.length === 0, `the two copies answer identically on every case (${drift.length} disagreements)`);
   if (drift.length) drift.slice(0, 5).forEach((d) => console.error(`         · ${d}`));
+}
+
+
+// ── J. THE BLOCK CANNOT BE NARROWED BY SOMEBODY ELSE'S READ ────────────────
+head('J. rule 10 — no read by any other scope, and no outage, may switch the block off');
+{
+  state.rows = { company: [] };
+  state.failReads = false;
+  settingsStore.bust();
+  audience.useCustomInvestors(null);
+
+  await settingsStore.save({ [roster.SETTING_KEY]: roster.validateCustom(ONE).custom }, { scope: 'company' });
+  const leaks = () => audience.scrubInvestorNames(`Sent to ${CE.label} for review`, 'borrower').includes(CE.label);
+  ok(!leaks(), 'the hand-added investor is blocked after the company settings are saved');
+
+  /**
+   * ⛔ THE ONE THE AUDIT FOUND. `lt_settings` is keyed on (scope, key), and a
+   * PER-USER read answers the DECLARED DEFAULT — an empty map — for a key that
+   * person has never set. A load hook that ran for every scope handed that empty
+   * map to the block and emptied it process-wide; the company cache hit
+   * afterwards did not re-assert it, so the block stayed off for the whole cache
+   * TTL. `routes/me.js`, `routes/settings.js` and `routes/term-sheet.js` each
+   * read BOTH scopes in one `Promise.all`, and the term-sheet request goes
+   * straight on to build a borrower's document. A real investor name reached a
+   * borrower through this.
+   */
+  await settingsStore.load('user:someone-else');
+  ok(!leaks(),
+    'THE ONE THAT MATTERS: a read of somebody’s PERSONAL settings cannot empty the block — that read knows nothing about the company’s investors');
+  ok(audience.summary().customInvestorsBlocked === 1,
+    '…and the map is still the one the company saved');
+
+  // The same, the other way round: the company scope re-asserts on a CACHE HIT.
+  // The cache is filled FIRST (the save above dropped it), so the read under
+  // test is provably a hit and not another trip to the database — a hit was the
+  // exact path that used to skip the hooks.
+  const filled = await settingsStore.load('company');
+  const second = await settingsStore.load('company');
+  ok(filled.source === 'db' && second.source === 'cache',
+    'CONTROL: the second company read really is served from cache');
+  audience.useCustomInvestors(null);
+  ok(leaks(), 'CONTROL: with the block emptied by hand, the name is not blocked');
+  const third = await settingsStore.load('company');
+  ok(third.source === 'cache' && !leaks(),
+    'THE ONE THAT MATTERS: a company read re-asserts the map even from CACHE — being told once is not enough if anything can untell it');
+
+  /**
+   * ⛔ AND AN OUTAGE MUST NOT SHRINK THE LIST. Falling back to the declared
+   * defaults is right for a value with a sensible default and exactly wrong for
+   * this one: it would mean a database blip REMOVES a protection. The last known
+   * map is kept and the fact that it may be stale is reported.
+   */
+  state.failReads = true;
+  settingsStore.bust();
+  const degraded = await settingsStore.load('company');
+  state.failReads = false;
+  ok(degraded.degraded === true, 'an unreadable store is reported as degraded');
+  ok(!leaks(),
+    'THE ONE THAT MATTERS: a store outage KEEPS the investors it already knew — a blip may never take a rule-10 protection away');
+  ok(audience.summary().customInvestors.degraded === true,
+    '…and says the list may be stale, rather than reporting a confident zero');
+
+  // THREE STATES, TOLD APART. All three used to report 0 and look identical.
+  settingsStore.bust();
+  await settingsStore.load('company');
+  const stored = audience.summary().customInvestors;
+  ok(stored.loaded === true && stored.degraded === false && stored.count === 1,
+    'a good read says: loaded, not degraded, this many');
+  await settingsStore.save({ [roster.SETTING_KEY]: {} }, { scope: 'company' });
+  const none = audience.summary().customInvestors;
+  ok(none.loaded === true && none.degraded === false && none.count === 0,
+    'NONE STORED is loaded, not degraded, zero — a real answer');
+  audience._internals.forgetCustomInvestors();
+  const cold = audience.summary().customInvestors;
+  ok(cold.loaded === false && cold.count === 0,
+    'NOT LOADED YET is a different answer from none stored — a process that has not read cannot claim there are none');
+
+  /**
+   * NOTHING IS BLOCKED UNTIL SOMETHING WARMS IT, so the LT router warms it once
+   * when it is built. The borrower-facing scrub sites — a borrower's conditions,
+   * the term-sheet snapshot, the PDF — never read settings at all, so without
+   * this the FIRST borrower to open their conditions after a deploy reads the
+   * real name.
+   */
+  const ltSrc = fs.readFileSync(path.join(ROOT, 'src/longterm/index.js'), 'utf8');
+  ok(/settings\/store'\)\.warm\(\)|settingsStore\.warm\(\)/.test(ltSrc),
+    'the Long-Term router warms the block when it is built — nothing else on the borrower’s path reads settings');
 }
 
 console.log(`\n${failures ? `FAILED — ${failures} check(s).` : 'OK — an investor added by hand behaves like a recorded one, and is blocked from every client surface.'}`);

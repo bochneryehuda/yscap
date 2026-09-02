@@ -266,12 +266,28 @@ check(!/require\(['"]\.\/encompass\/investors['"]\)/.test(src),
   const wl = CUSTOM_FIXTURE.swept_capital.whiteLabel;
   check(A.scrubInvestorNames(`Your ${wl} quote is ready to review.`, 'borrower') === `Your ${wl} quote is ready to review.`,
     'and the name a client MAY see survives the scrub untouched — otherwise the investor could never be quoted');
-  // Taking them back out is what a settings store that could not be read does.
-  A.useCustomInvestors(null);
-  check(A.summary().customInvestorsBlocked === 0
-    && A.scrubInvestorNames(`Approval received from ${CUSTOM_FIXTURE.swept_capital.label} on 5/2.`, 'borrower')
-      .includes(CUSTOM_FIXTURE.swept_capital.label),
-    'with none in force the block is the registry alone — the behaviour before they existed');
+  /* ⛔ AN OUTAGE MAY NEVER SHRINK THIS LIST, and this assertion used to say the
+     opposite. It read "taking them back out is what a settings store that could
+     not be read does" — encoding a fail-OPEN as correct, so no test could ever
+     catch it. An audit found the code doing exactly that: `load()` caught the
+     database error, fell back to the declared defaults and pushed an EMPTY map
+     into the block, so a blip removed a rule-10 protection for as long as it
+     lasted. An empty map is what "nobody has added an investor" means; it is not
+     what "we could not find out" means. */
+  const customName = CUSTOM_FIXTURE.swept_capital.label;
+  A.markCustomInvestorsUnread('the settings store could not be read');
+  check(!A.scrubInvestorNames(`Approval received from ${customName} on 5/2.`, 'borrower').includes(customName),
+    'THE ONE THAT MATTERS: a settings store that cannot be read KEEPS the investors already known — an outage may never take a block away');
+  check(A.summary().customInvestors.degraded === true && A.summary().customInvestors.count === 1,
+    '…and says the list may be stale rather than reporting a confident zero');
+
+  // A map that really IS empty — somebody removed the last one — does clear it.
+  // That is a reading, not a failure to read, and the two must not look alike.
+  A.useCustomInvestors({});
+  check(A.summary().customInvestors.count === 0
+    && A.summary().customInvestors.degraded === false
+    && A.scrubInvestorNames(`Approval received from ${customName} on 5/2.`, 'borrower').includes(customName),
+    'with none stored the block is the registry alone — the behaviour before they existed');
   A.useCustomInvestors(CUSTOM_FIXTURE);
 }
 check(A.summary().spellingsBlocked >= 80,

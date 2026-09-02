@@ -102,9 +102,16 @@ console.log('\n== C. WHOSE ROWS IT MOVES ==');
     `AIM-3 …and every other investor is untouched at the standing 0.25 (got ${at('Deephaven Mortgage').rungs[0].price}) — an extra that leaked onto the rest of the board would be the whole feature going wrong`);
   ok(at('NQM Funding').rungs[0].points === -1 && at('Acra Lending').rungs[0].points === -1.5,
     'AIM-4 …and each row\'s points move with its own price, so no row contradicts itself');
-  // The AIM is resolved by the ONE resolver, never a second lookup.
-  ok(/resolveInvestor\(/.test(src('src/longterm/routes/combined-pricer.js')),
-    'AIM-5 …and the route resolves which investor a row belongs to with merge\'s own resolver, not a second lookup that could disagree with the merge');
+  // The AIM is resolved by the ONE resolver, never a second lookup — asserted at
+  // BOTH ends now that the closure lives in `investor-routing` rather than being
+  // written out in the route: the route uses the shared resolver, and the shared
+  // resolver asks the merge. Either half alone would pass while the chain was
+  // broken in the other.
+  ok(/routing\.extraResolver\(/.test(src('src/longterm/routes/combined-pricer.js')),
+    'AIM-5 …and the route resolves a row\'s investor through the SHARED resolver rather than a second lookup of its own');
+  ok(/function extraResolver\(/.test(src('src/longterm/pricing/investor-routing.js'))
+    && /merge\.resolveInvestor\(/.test(src('src/longterm/pricing/investor-routing.js')),
+  'AIM-5b …and that resolver is merge\'s own, so the extra can never land on an investor the merge put elsewhere');
 
   /* AN INVESTOR SOMEBODY ADDED BY HAND CARRIES ITS OWN EXTRA TOO (2026-09-02).
      The whole chain has to know about it or the extra silently does nothing: the
@@ -112,26 +119,33 @@ console.log('\n== C. WHOSE ROWS IT MOVES ==');
      effective roster, and the price moves. A chain that knew about the investor
      in one of those three places and not the others would take the standing
      figure off a row somebody had deliberately set an extra on. */
+  /* ⛔ THE ROUTE'S OWN RESOLVER, NOT A COPY OF IT. This used to re-type the
+     closure `priceBoth` builds — resolve the row, read the setting, return the
+     extra — which meant the test went on passing whatever the route did. It now
+     calls `routing.extraResolver`, the one definition the board itself uses, so
+     a route that stopped threading the hand-added investors reddens this. */
   const roster = require('../src/longterm/pricing/investor-roster');
+  const routeSrc = src('src/longterm/routes/combined-pricer.js');
+  ok(/const extraFor = routing\.extraResolver\(/.test(routeSrc),
+    'AIM-10a the board builds its per-investor extra with the SHARED resolver, so this test drives the same code the board runs');
+
   const custom = roster.readCustom({
     sweptside: { label: 'Sweptside Capital Partners', whiteLabel: 'Northgate', aliases: ['Sweptside Cap'] },
   }).custom;
-  const cfg2 = settings.readSettings({ sweptside: { holdback: 0.25 } }, custom);
-  const extraFor2 = (prog) => {
-    const hit = mergeMod.resolveInvestor(prog, null, custom);
-    if (!hit || !hit.key) return null;
-    const row = settings.settingFor(hit.key, cfg2.settings, custom);
-    return row && row.holdbackOrigin === 'setting' ? row.holdback : null;
-  };
-  const b2 = { source: 'loannex', programs: [{ investor: 'Sweptside Cap', rungs: [{ rate: 7, price: 101.5, points: -1.5 }] }] };
-  const withCustom = vm.applyToBoard(b2, 'loannex', { extraFor: extraFor2 });
+  const board2 = () => ({ source: 'loannex', programs: [{ investor: 'Sweptside Cap', rungs: [{ rate: 7, price: 101.5, points: -1.5 }] }] });
+
+  const withCustom = vm.applyToBoard(board2(), 'loannex', {
+    extraFor: routing.extraResolver(settings.readSettings({ sweptside: { holdback: 0.25 } }, custom).settings, null, custom),
+  });
   ok(withCustom.programs[0].rungs[0].price === 101 && withCustom.programs[0].marginHoldback === 0.5,
     `AIM-10 a hand-added investor's own extra reaches its rows (got ${withCustom.programs[0].rungs[0].price})`);
-  const without = vm.applyToBoard(
-    { source: 'loannex', programs: [{ investor: 'Sweptside Cap', rungs: [{ rate: 7, price: 101.5, points: -1.5 }] }] },
-    'loannex',
-    { extraFor: (prog) => { const h = mergeMod.resolveInvestor(prog, null); return h.key ? 0.25 : null; } },
-  );
+
+  // CONTROL: the same board and the same resolver, with no hand-added investors
+  // in force. The row is nobody, so nobody's extra applies and the standing
+  // figure stands — which is what this did before any of it existed.
+  const without = vm.applyToBoard(board2(), 'loannex', {
+    extraFor: routing.extraResolver(settings.readSettings({ sweptside: { holdback: 0.25 } }).settings, null),
+  });
   ok(without.programs[0].rungs[0].price === 101.25 && without.programs[0].marginHoldback === 0.25,
     'AIM-11 CONTROL: with none in force that same row is nobody, so it takes the standing figure alone');
 }

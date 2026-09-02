@@ -77,7 +77,16 @@ const MAX_CUSTOM = 200;
 const MIN_ALIAS = 2;
 
 /** A shared, frozen "no custom investors" — so callers may compare identity. */
+/**
+ * The shared "no custom investors" map. Handed out by every path that has none,
+ * so it is REALLY read-only rather than described as such: `Object.freeze` does
+ * nothing to a Map, and one caller doing `EMPTY.set(...)` would give every other
+ * caller an investor nobody added.
+ */
 const EMPTY = new Map();
+for (const m of ['set', 'delete', 'clear']) {
+  EMPTY[m] = () => { throw new Error(`investor-roster: the shared EMPTY roster is read-only (${m})`); };
+}
 
 // ── The registry's own spellings, indexed once ───────────────────────────────
 // Lower-cased exact spellings (labels + aliases) and their normalized forms. A
@@ -162,6 +171,12 @@ function entryOf(key, label, whiteLabel, aliases, value) {
   };
 }
 
+// A raw object handed straight to a reader is read once and remembered by
+// identity, so a route that loads the map once and passes it to ten readers
+// does not parse it ten times. The read now runs the scrub over each client-safe
+// name, which is another reason not to repeat it per reader.
+const READ_CACHE = new WeakMap();
+
 /**
  * Read a stored map into the form the readers use.
  *
@@ -175,6 +190,21 @@ function entryOf(key, label, whiteLabel, aliases, value) {
  * was written must not start hijacking a registry investor the day after.
  */
 function readCustom(raw) {
+  // MEMOISED BY THE STORED OBJECT'S IDENTITY. The read now runs the audience
+  // scrub over each client-safe name, which is the right check in the wrong
+  // place if it happens per reader per request: the settings store hands out the
+  // same object for the life of its cache entry, so one read serves them all and
+  // a save — which produces a new object — is read afresh.
+  if (raw !== null && raw !== undefined && typeof raw === 'object') {
+    const seen = READ_CACHE.get(raw);
+    if (seen) return seen;
+  }
+  const out = readCustomUncached(raw);
+  if (raw !== null && raw !== undefined && typeof raw === 'object') READ_CACHE.set(raw, out);
+  return out;
+}
+
+function readCustomUncached(raw) {
   const custom = new Map();
   const problems = [];
   if (raw === null || raw === undefined) return { custom, problems };
@@ -209,34 +239,103 @@ function readCustom(raw) {
       aliases.push(a);
     }
     if (!aliases.length) { problems.push({ key, problem: 'no_usable_alias', message: `"${label}" has no spelling left that can be matched.` }); continue; }
-    let whiteLabel = cleanText(value.whiteLabel, MAX_WHITE_LABEL) || null;
-    if (whiteLabel && exact.has(whiteLabel.toLowerCase())) {
-      // The scrub would redact it off the very surface it exists for; better a
-      // missing name, said out loud, than a name that prints as "our capital partner".
-      problems.push({ key, problem: 'white_label_is_registry_spelling', message: `The client-safe name "${whiteLabel}" on "${label}" is a recorded investor spelling, so it is not being used.` });
-      whiteLabel = null;
-    }
+    const whiteLabel = cleanText(value.whiteLabel, MAX_WHITE_LABEL) || null;
     custom.set(key, entryOf(key, label, whiteLabel, aliases, value));
     if (custom.size >= MAX_CUSTOM) { problems.push({ problem: 'too_many', message: `Only the first ${MAX_CUSTOM} custom investors were read.` }); break; }
   }
+
+  /* THE CLIENT-SAFE NAMES, held to the SAME standard the write door holds them
+     to — see `whiteLabelProblem`. A bad one is DROPPED and named: the investor
+     still prices and is still blocked from client surfaces by its real name; it
+     simply has no name a client may be shown until somebody gives it one. Keeping
+     it would put a name in front of a borrower that either reads as somebody
+     else's investor or prints as "our capital partner".
+
+     This runs after the loop because the scrub has to be asked about the roster
+     AS IT WILL BE — an investor's own spellings are in force when the block reads
+     a sentence about it. */
+  const taken = takenNames();
+  for (const e of custom.values()) {
+    if (!e.whiteLabel) continue;
+    const bad = whiteLabelProblem(e.key, e.label, e.whiteLabel, taken, custom);
+    if (bad) {
+      problems.push({ ...bad, dropped: true, message: `${bad.message} It is not being used, so "${e.label}" has no name a client may see.` });
+      e.whiteLabel = null;
+      continue;
+    }
+    taken.set(e.whiteLabel.toLowerCase(), `the client-safe name of ${e.key}`);
+  }
+
   return { custom, problems };
 }
 
-// A raw object handed straight to a reader is read once and remembered by
-// identity, so a route that loads the map once and passes it to ten readers
-// does not parse it ten times.
-const READ_CACHE = new WeakMap();
+/**
+ * WHAT MAKES A CLIENT-SAFE NAME UNUSABLE — in ONE place, run by BOTH the write
+ * door and the read.
+ *
+ * ⛔ WHY BOTH. The door refused three things the read did not even look at: a
+ * name already used as another investor's client-safe name, a name belonging to
+ * a second hand-added investor, and — the one that matters — a name the audience
+ * scrub would rewrite. So a value that got in before a rule existed, or was
+ * written into the table by hand, was refused on the way IN and kept on the way
+ * OUT. Measured by the audit: a white label of "<a registry investor> Group"
+ * was refused at the door, kept on read with no problem reported, and reached a
+ * borrower as "our capital partner Group". A rule enforced on one side of a
+ * store is not a rule.
+ *
+ * Answers a problem object, or null when the name is usable. `taken` maps a
+ * lower-cased name to a description of who already owns it; `roster` is the
+ * candidate map the scrub is run against (its own investors have to be in force
+ * for the question to mean anything).
+ */
+function whiteLabelProblem(key, label, whiteLabel, taken, rosterMap) {
+  if (!whiteLabel) return null;
+  const owner = taken.get(whiteLabel.toLowerCase());
+  if (owner) {
+    return {
+      key,
+      problem: 'white_label_taken',
+      message: `The client-safe name "${whiteLabel}" is ${owner}. A client may never see an investor's name, and two investors may never show a client one name.`,
+    };
+  }
+  // THE ROUND TRIP. Not "is this name on a list" — "would a client actually read
+  // it". A name the scrub rewrites prints as "our capital partner", which is the
+  // one outcome a client-safe name exists to prevent.
+  const aud = require('../audience');
+  const sentence = `Your ${whiteLabel} quote is ready to review.`;
+  for (const who of ['borrower', 'tpo']) {
+    if (aud.scrubInvestorNames(sentence, who, { custom: rosterMap }) !== sentence) {
+      return {
+        key,
+        problem: 'white_label_would_be_redacted',
+        message: `The client-safe name "${whiteLabel}" on "${label}" would be blanked out by the investor-name block, so a client would never read it.`,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Every name that already means somebody: the registry's recorded spellings and
+ * the white-label sheet's own names. The custom entries' spellings are added by
+ * the caller as it goes, because they are only known while it walks them.
+ */
+function takenNames() {
+  const taken = new Map();
+  for (const spelling of registrySpellings()) taken.set(spelling, 'a recorded spelling of a registry investor');
+  const sheet = require('../lenderprice/investor-programs');
+  for (const [k, v] of Object.entries(sheet.PROGRAM_NAMES)) {
+    taken.set(String(v).toLowerCase(), `the client-safe name of ${k}`);
+  }
+  return taken;
+}
 
 /** Whatever a caller passed — a Map, a stored object, or nothing — as a Map. */
 function asCustom(custom) {
   if (custom instanceof Map) return custom;
   if (custom === null || custom === undefined) return EMPTY;
   if (typeof custom !== 'object') return EMPTY;
-  const hit = READ_CACHE.get(custom);
-  if (hit) return hit;
-  const read = readCustom(custom).custom;
-  READ_CACHE.set(custom, read);
-  return read;
+  return readCustom(custom).custom;
 }
 
 // ── The effective roster ─────────────────────────────────────────────────────
@@ -341,13 +440,10 @@ function validateCustom(raw) {
   // Lazy on purpose: the sheet module and the audience module both read THIS
   // module at load, so requiring them at the top would be a cycle. Both are
   // needed only at the door, which is the one place they are asked for.
-  const sheet = require('../lenderprice/investor-programs');
-  const audience = require('../audience');
 
   const problems = [];
   const exact = registrySpellings();
   const normals = registryNormals();
-  const sheetNames = new Map(Object.entries(sheet.PROGRAM_NAMES).map(([k, v]) => [String(v).toLowerCase(), k]));
 
   const entries = [];
   const keys = Object.keys(raw);
@@ -376,9 +472,7 @@ function validateCustom(raw) {
 
   // Every spelling that already means somebody: registry spellings, sheet
   // white labels, and — as they are checked — the other custom entries.
-  const takenSpelling = new Map(); // lower → what it is
-  for (const s of exact) takenSpelling.set(s, 'a recorded spelling of a registry investor');
-  for (const [s, k] of sheetNames) takenSpelling.set(s, `the client-safe name of ${k}`);
+  const takenSpelling = takenNames();
   const takenNormal = new Map();   // normalized → key
   for (const e of entries) {
     for (const a of e.aliases) {
@@ -392,30 +486,17 @@ function validateCustom(raw) {
       takenSpelling.set(lower, `a spelling of ${e.key}`);
     }
   }
-  for (const e of entries) {
-    if (!e.whiteLabel) continue;
-    const lower = e.whiteLabel.toLowerCase();
-    const owner = takenSpelling.get(lower);
-    if (owner) {
-      problems.push({ key: e.key, problem: 'white_label_taken', message: `The client-safe name "${e.whiteLabel}" is ${owner}. A client may never see an investor's name, so pick a different one.` });
-      continue;
-    }
-    takenSpelling.set(lower, `the client-safe name of ${e.key}`);
-  }
-
-  if (!problems.length) {
-    // The scrub, with THIS map applied. A white label the scrubber changes is a
-    // broken name — it would print as "our capital partner" on a client's screen.
+  /* THE CLIENT-SAFE NAMES, through the SAME routine the READ runs — one
+     definition, so a value cannot be refused on the way in and kept on the way
+     out. The difference between the two callers is what they DO about a bad one:
+     the door refuses the whole map (the person is at a form and can fix it); the
+     read drops the name and says so (nobody is there to ask). */
+  {
     const candidate = new Map(entries.map((e) => [e.key, entryOf(e.key, e.label, e.whiteLabel, e.aliases, e.value)]));
     for (const e of entries) {
-      if (!e.whiteLabel) continue;
-      const sentence = `Your ${e.whiteLabel} quote is ready to review.`;
-      for (const aud of ['borrower', 'tpo']) {
-        if (audience.scrubInvestorNames(sentence, aud, { custom: candidate }) !== sentence) {
-          problems.push({ key: e.key, problem: 'white_label_would_be_redacted', message: `The client-safe name "${e.whiteLabel}" would be blanked out by the investor-name block, so a client would never read it. Pick a name that is not an investor's.` });
-          break;
-        }
-      }
+      const bad = whiteLabelProblem(e.key, e.label, e.whiteLabel, takenSpelling, candidate);
+      if (bad) { problems.push({ ...bad, message: `${bad.message} Pick a different one.` }); continue; }
+      if (e.whiteLabel) takenSpelling.set(e.whiteLabel.toLowerCase(), `the client-safe name of ${e.key}`);
     }
   }
 
@@ -439,5 +520,5 @@ module.exports = {
   readCustom, asCustom,
   effectiveList, effectiveByKey, effectiveResolve,
   validateCustom,
-  _internals: { registrySpellings, registryNormals, cleanText, MAX_KEY, MAX_LABEL, MAX_WHITE_LABEL, MAX_ALIASES, MAX_CUSTOM, MIN_ALIAS },
+  _internals: { registrySpellings, registryNormals, cleanText, whiteLabelProblem, takenNames, MAX_KEY, MAX_LABEL, MAX_WHITE_LABEL, MAX_ALIASES, MAX_CUSTOM, MIN_ALIAS },
 };

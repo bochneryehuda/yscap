@@ -193,8 +193,14 @@ ok(g.nexted && g.code === null, 'gate passes through on correct token');
   let sent = null;
   await dp.handlers.investorsRoster({}, { json: (b) => { sent = b; } });
   const names = (sent && sent.investors ? sent.investors : []).map((i) => i.whiteLabel);
-  ok(sent && sent.ok === true && Array.isArray(sent.investors) && sent.investors.length >= 24,
-    `GET /investors answers the whole sheet (${sent && sent.investors ? sent.investors.length : 0} names)`);
+  // EXACT, not "at least". `>=` was loose enough to pass while the roster served
+  // the same investor twice — a duplicate in a pre-search dropdown is exactly the
+  // kind of thing an overlay over a registry produces, and it must be caught.
+  ok(sent && sent.ok === true && Array.isArray(sent.investors) && sent.investors.length === 25,
+    `GET /investors answers the whole 24-name sheet plus the one added by hand (${sent && sent.investors ? sent.investors.length : 0})`);
+  const keys = (sent && sent.investors ? sent.investors : []).map((i) => i.key);
+  ok(new Set(keys).size === keys.length,
+    '…each investor exactly once — an overlay laid over a registry is how one investor comes to be on a list twice');
   ok(names.includes('Northgate'),
     'and an investor somebody added by hand is ON that list, under the name a client may see');
   ok(sent && sent.degraded === false,

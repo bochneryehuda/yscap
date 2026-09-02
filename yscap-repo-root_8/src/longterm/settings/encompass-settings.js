@@ -922,7 +922,12 @@ const SETTINGS = [
       const r = require('../pricing/investor-roster').validateCustom(v);
       return { ok: r.ok, value: r.custom, problems: r.problems };
     },
-    applyOnLoad: (v) => require('../audience').useCustomInvestors(v) },
+    applyOnLoad: (v) => require('../audience').useCustomInvestors(v),
+    // ⛔ AND WHAT TO DO WHEN THE STORE CANNOT BE READ, which for this key is NOT
+    // "apply the default". An empty map means "block fewer investor names", so
+    // falling back to it would let a database blip take a rule-10 protection
+    // away. The block keeps what it had and records that it may be stale.
+    applyOnUnreadable: () => require('../audience').markCustomInvestorsUnread() },
   // THE MARGIN HOLDBACK WE ADD OURSELVES, and it is a SETTING now rather than a
   // constant (owner-directed 2026-08-30: *"there should always be in the
   // settings the possibility to move up the margin hold back, remove the margin

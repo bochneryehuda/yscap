@@ -79,7 +79,6 @@ const investorLinks = require('../pricing/investor-links');
 // The canonical investor roster and the client-safe names, both read-only here —
 // the pick-list a person chooses from is DERIVED from the one registry, never a
 // second list this route keeps for itself.
-const investors = require('../encompass/investors');
 const { whiteLabelOf } = require('../lenderprice/investor-programs');
 const quoteShape = require('../pricing/quote-shape');
 const productFilter = require('../pricing/product-filter');
@@ -415,12 +414,7 @@ async function priceBoth(scenario, opts = {}) {
   const linksForHoldback = opts.links !== undefined ? { raw: opts.links } : await linksRaw();
   const investorRows = routing.readSettings(savedForHoldback.raw, custom).settings;
   const linkMapForHoldback = investorLinks.readLinks(linksForHoldback.raw, custom).links;
-  const extraFor = (prog) => {
-    const hit = mergeMod.resolveInvestor(prog, linkMapForHoldback, custom);
-    if (!hit || !hit.key) return null;
-    const row = routing.settingFor(hit.key, investorRows, custom);
-    return row && row.holdbackOrigin === 'setting' ? row.holdback : null;
-  };
+  const extraFor = routing.extraResolver(investorRows, linkMapForHoldback, custom);
 
   const [lpRes, nxRes] = await Promise.allSettled([
     (async () => {

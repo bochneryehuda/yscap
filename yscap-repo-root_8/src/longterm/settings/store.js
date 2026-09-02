@@ -87,6 +87,15 @@ async function load(scope = DEFAULT_SCOPE, { fresh = false } = {}) {
   const key = String(scope || DEFAULT_SCOPE);
   const hit = cache.get(key);
   if (!fresh && hit && Date.now() - hit.at < TTL_MS) {
+    // ⛔ A CACHE HIT RE-ASSERTS. It used to skip the hooks on the grounds that
+    // the values were the same object they had already seen — which is true of
+    // the VALUES and says nothing about what has happened to the thing they were
+    // pushed into. Anything that could narrow the audience block between two
+    // company reads then stayed narrowed until the entry expired. Re-asserting
+    // is a JSON identity check against a map of a handful of entries; being
+    // told once is not enough if something else can untell it.
+    if (hit.degraded) applyUnreadable(key);
+    else applyHooks(hit.settings, null, key);
     return { settings: hit.settings, degraded: hit.degraded, stored: hit.stored, source: 'cache' };
   }
 
@@ -121,10 +130,13 @@ async function load(scope = DEFAULT_SCOPE, { fresh = false } = {}) {
     degraded = true;
   }
 
-  // TELL WHOEVER ASKED TO BE TOLD, on the read that filled the cache. A cache
-  // HIT deliberately does not re-run them: the values are the same object the
-  // hooks already saw, and settings are read on nearly every request.
-  const hooksFailed = applyHooks(base);
+  // TELL WHOEVER ASKED TO BE TOLD — but only about a reading we actually took.
+  // A DEGRADED read has no values to hand over: `base` is the declared defaults,
+  // and pushing those would tell the hooks that nobody has configured anything,
+  // which for a value like the investors added by hand means "block fewer
+  // names". So an outage says "I could not read" and whatever was already in
+  // force stands.
+  const hooksFailed = degraded ? applyUnreadable(key) : applyHooks(base, null, key);
 
   cache.set(key, { at: Date.now(), settings: base, degraded, stored });
   return { settings: base, degraded, stored, source: 'db', hooksFailed };
@@ -179,12 +191,26 @@ function validate(patch) {
 /**
  * Hand every loaded value to its declaration's `applyOnLoad`, where one exists.
  *
- * Runs on the read that filled the cache and after every write, so a process
- * that has looked at settings at all has been told. A hook that throws is
- * reported, never swallowed and never fatal: settings are read on the way to
- * something else, and a broken hook must not take that request down with it.
+ * ⛔ THE COMPANY SCOPE ALONE, AND THIS IS A RULE-10 GUARD, NOT AN OPTIMISATION.
+ *
+ * `lt_settings` is keyed on (scope, key). A PER-USER read answers the DECLARED
+ * DEFAULT for every key that person has never set — an empty map for the
+ * investors added by hand — and running the hooks on it handed that empty map
+ * to the audience block, switching the investor-name rule OFF for the whole
+ * process. The company-scope cache hit afterwards did not re-assert it, so it
+ * stayed off for the cache's lifetime. `routes/me.js`, `routes/settings.js` and
+ * `routes/term-sheet.js` each read both scopes in one `Promise.all`, and the
+ * term-sheet request goes straight on to build a borrower's document: a real
+ * investor name reached a borrower this way. A scope other than the company's
+ * knows nothing about a company-wide setting and must be structurally incapable
+ * of narrowing one.
+ *
+ * A hook that throws is reported, never swallowed and never fatal: settings are
+ * read on the way to something else, and a broken hook must not take that
+ * request down with it.
  */
-function applyHooks(settings, onlyKeys = null) {
+function applyHooks(settings, onlyKeys = null, scope = DEFAULT_SCOPE) {
+  if (String(scope) !== DEFAULT_SCOPE) return [];
   const failed = [];
   for (const s of decl.SETTINGS) {
     if (!s || typeof s.applyOnLoad !== 'function') continue;
@@ -198,6 +224,33 @@ function applyHooks(settings, onlyKeys = null) {
     } catch (e) {
       failed.push(s.key);
       console.error(`[lt-settings] applyOnLoad failed for ${s.key}:`, (e && e.message) || e);
+    }
+  }
+  return failed;
+}
+
+/**
+ * The company settings could not be read — tell the hooks THAT, rather than
+ * handing them the defaults.
+ *
+ * ⛔ THE FAIL-CLOSED HALF. The store's own posture is "fail to OUR behaviour":
+ * the caller still gets a complete settings object built from the declared
+ * defaults, which is right for a value with a sensible default. It is exactly
+ * wrong for a value whose empty state means "protect fewer things" — pushing
+ * the default there would let a database blip REMOVE a rule-10 protection. A
+ * declaration that owns such a value says so with `applyOnUnreadable`, and
+ * keeps whatever it already had.
+ */
+function applyUnreadable(scope = DEFAULT_SCOPE) {
+  if (String(scope) !== DEFAULT_SCOPE) return [];
+  const failed = [];
+  for (const s of decl.SETTINGS) {
+    if (!s || typeof s.applyOnUnreadable !== 'function') continue;
+    try {
+      s.applyOnUnreadable();
+    } catch (e) {
+      failed.push(s.key);
+      console.error(`[lt-settings] applyOnUnreadable failed for ${s.key}:`, (e && e.message) || e);
     }
   }
   return failed;
@@ -276,9 +329,31 @@ async function save(patch, { scope = DEFAULT_SCOPE, staffId = null, keepDefault 
   const applied = {};
   for (const k of written) applied[k] = clean[k];
   for (const k of cleared) applied[k] = base2[k];
-  const hooksFailed = applyHooks(applied, new Set([...written, ...cleared]));
+  const hooksFailed = applyHooks(applied, new Set([...written, ...cleared]), scope);
 
   return { written, cleared, hooksFailed };
+}
+
+/**
+ * Read the company settings once, so whatever the declarations push is in force
+ * before the first request that depends on it.
+ *
+ * ⛔ WHY THIS EXISTS. The investor-name block is fed by `applyOnLoad`, and the
+ * surfaces that most need it — a borrower's conditions, the term-sheet snapshot
+ * and the PDF — never read settings at all. Nothing warmed the map, so the FIRST
+ * borrower to open their conditions after a deploy was read to from a block that
+ * had never been told about the investors somebody added by hand. Called when
+ * the Long-Term router is built, which is the one moment that happens exactly
+ * once per process and before any request.
+ *
+ * Fire-and-forget and never throws: a warm that fails leaves the process exactly
+ * as it was — cold, and honest about it in `audience.summary()`.
+ */
+function warm(scope = DEFAULT_SCOPE) {
+  return load(scope, { fresh: true }).catch((e) => {
+    console.error('[lt-settings] warm failed:', (e && e.message) || e);
+    return null;
+  });
 }
 
 /** Drop the cache. Exposed for tests and for an admin "reload settings" action. */
@@ -343,4 +418,6 @@ module.exports = {
   bust,
   describe,
   applyHooks,
+  applyUnreadable,
+  warm,
 };

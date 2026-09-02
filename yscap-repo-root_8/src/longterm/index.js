@@ -32,6 +32,22 @@ require('./conditions-center/photo-id-share');
 
 const router = express.Router();
 
+/* ⛔ WARM THE INVESTOR-NAME BLOCK BEFORE THE FIRST REQUEST.
+
+   The block in `audience.js` is fed by the settings store's `applyOnLoad` hook,
+   which fires on a company-scope READ. The surfaces that most need it never take
+   one: a borrower's own conditions (`routes/my-conditions.js`,
+   `conditions/read.js`), the term-sheet snapshot and the PDF all scrub without
+   ever asking for a setting. So nothing told the block about the investors
+   somebody added by hand, and the FIRST borrower to open their conditions after
+   a deploy was read to from a block that had never heard of them.
+
+   Building this router is the one moment that happens exactly once per process
+   and before any request, so the read is made here. It is fire-and-forget and
+   cannot throw: a warm that fails leaves the block cold, and `audience.summary()`
+   says so rather than reporting a confident zero. */
+require('./settings/store').warm();
+
 // Liveness / identity of the LT side (no DB) — lets the front end and ops confirm
 // the Long-Term module is mounted.
 router.get('/health', (req, res) => res.json({ ok: true, product: 'long-term' }));

@@ -253,8 +253,32 @@ function bestOfMany(list) {
 
 function label(src) { return src === 'loannex' ? 'LoanNEX' : src === 'lenderprice' ? 'Lender Price' : src; }
 
+/**
+ * "WHAT DOES THIS ROW'S OWN INVESTOR ADD TO THE HOLDBACK?" — as a function of a
+ * priced row, ready to hand to `vendor-margin.applyToBoard`.
+ *
+ * ⛔ IT LIVES HERE RATHER THAN IN THE ROUTE because it is the join between three
+ * things that must agree: which investor a row belongs to (`merge.resolveInvestor`,
+ * the ONE resolver), what that investor's saved settings say, and which investors
+ * exist at all. A copy of this closure — in a second route, or re-typed inside a
+ * test — is a copy that can keep passing after the real one stops threading the
+ * hand-added investors, which is exactly the shape of bug it exists to prevent.
+ *
+ * A row whose investor nobody can name, or who carries no setting of their own,
+ * answers null: the board-wide figure then applies, untouched.
+ */
+function extraResolver(settings = {}, links = null, custom = undefined) {
+  const merge = require('./merge');
+  return (row) => {
+    const hit = merge.resolveInvestor(row, links, custom);
+    if (!hit || !hit.key) return null;
+    const saved = settingsOf.settingFor(hit.key, settings, custom);
+    return saved && saved.holdbackOrigin === 'setting' ? saved.holdback : null;
+  };
+}
+
 module.exports = {
-  ROUTES, DEFAULT_ROUTE, sourcesUnder, applyRouting,
+  ROUTES, DEFAULT_ROUTE, sourcesUnder, applyRouting, extraResolver,
   // Re-exported so a caller has ONE door to the investor decisions rather than
   // needing to know which of the two modules holds which half.
   readSettings: settingsOf.readSettings, settingFor: settingsOf.settingFor,

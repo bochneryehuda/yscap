@@ -327,9 +327,35 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     the investor off instead). And the general engine's PRICE path is untouched: only its roster
     door reads the hand-added investors, because the owner's standing rule is *"don't touch our
     current setup"*.
-    Guarded by `scripts/test-lt-custom-investors-pure.js` (ten mutations proven, with green controls
-    either side) and by re-pointed assertions in the investor-block, link, programs, holdback,
-    dscr-routes, pricer-shared, settings-screen and combined-audit suites.
+    **THE FIRST CUT SHIPPED A RULE-10 BREACH, and the fix is the interesting half (audited
+    2026-09-02, fixed the same day).** The block was PUSHED by whoever last read the settings, and
+    every scope pushed: `lt_settings` is keyed on (scope, key), so a PER-USER read answers the
+    declared default — an empty map — and handing that to the block switched the investor-name rule
+    off for the whole process, with the company cache hit afterwards deliberately not re-asserting
+    it. `routes/me.js`, `routes/settings.js` and `routes/term-sheet.js` each read both scopes in one
+    `Promise.all`, and the term-sheet request goes on to build a borrower's document: a term sheet
+    naming a real investor was accepted and printed. Three further inversions rode with it — nothing
+    warmed the map at boot while the borrower-facing scrub sites never read settings at all, so the
+    first borrower after a deploy was read to by a cold block; a degraded read pushed the DEFAULTS,
+    so a database blip REMOVED the protection; and a map already stored was never held to the
+    door's own white-label rules, so a name refused on the way in was kept on the way out and
+    reached a borrower as "our capital partner Group". Now: `applyOnLoad` runs for the COMPANY
+    scope alone and re-asserts on a cache hit, `settingsStore.warm()` is called when the Long-Term
+    router is built, an unreadable store KEEPS the last known map and flags it
+    (`applyOnUnreadable`), `audience.summary()` tells "none stored" from "not loaded yet" from
+    "degraded", and one shared routine (`whiteLabelProblem`) is run by both the door and the read —
+    the door refusing, the read dropping the name and saying so. The reasoning is recorded in
+    `docs/longterm/AUDIENCE-RULES.md`, which rule 10 names as the reasoning of record.
+    **THE STALENESS WINDOW, STATED RATHER THAN CLOSED.** A save applies immediately in the process
+    that made it; another process picks it up on its next company read, so it can be up to
+    `LT_SETTINGS_TTL_MS` (default 60s) behind. That is not a leak in either direction: a process
+    that has not yet heard of an investor has no white label for it either, so its rows resolve to
+    nobody and stay off the board rather than being quoted under a name; and an investor removed
+    lingers in the block, which blocks more, not less. Closing it properly needs a notification
+    channel between processes, which this deployment does not have.
+    Guarded by `scripts/test-lt-custom-investors-pure.js` (twenty-two mutations proven across two batteries,
+    with green controls either side) and by re-pointed assertions in the investor-block, link, programs,
+    holdback, dscr-routes, pricer-shared, settings-screen and combined-audit suites.
 
 ---
 

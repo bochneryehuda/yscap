@@ -220,9 +220,20 @@ function classify(raw) {
  * requests never rebuild, and a caller's own candidate map gets its own list.
  */
 const SPELLINGS_BY_MAP = new WeakMap();
-/** The custom investors in force for this process — set by the settings store. */
+/**
+ * The custom investors in force for this process, and — just as load-bearing —
+ * WHETHER ANYBODY HAS TOLD US.
+ *
+ * ⛔ THREE STATES, NEVER TWO. "Nobody has added an investor", "nothing has read
+ * the settings yet" and "the settings could not be read" are three different
+ * facts, and reporting all three as an empty map is what let an audit-found
+ * breach hide: every one of them looked like a confident zero. `loaded` and
+ * `degraded` are what a caller — and `summary()` — need to tell them apart.
+ */
 let CUSTOM = roster.EMPTY;
 let CUSTOM_IDENTITY = 'null';
+let CUSTOM_LOADED = false;
+let CUSTOM_DEGRADED = null;
 
 function spellings(custom) {
   const map = custom === undefined ? CUSTOM : roster.asCustom(custom);
@@ -252,23 +263,53 @@ function spellings(custom) {
 /**
  * Tell the block which investors have been added by hand.
  *
- * Called by the settings store on every read and every write of the company
- * settings (the declaration's `applyOnLoad` hook), with the STORED map. The
- * identity is the map's JSON: an unchanged map is a no-op, a changed one swaps
- * the module-level map and — because the memo is keyed on the map — the
- * spelling list is rebuilt on the next scrub. Never throws: an unreadable map
- * reads as no custom investors, which leaves the registry block exactly as it
- * was and can only ever cost the hand-added names, never the block itself.
+ * Called by the settings store with the COMPANY's stored map — and only ever
+ * with the company's, which is the whole of the fix for the breach this
+ * function once carried. The identity is the map's JSON: an unchanged map is a
+ * no-op, a changed one swaps the module-level map and — because the memo is
+ * keyed on the map — the spelling list is rebuilt on the next scrub.
+ *
+ * ⛔ WHO IS ALLOWED TO CALL THIS IS THE RULE. `lt_settings` is keyed on
+ * (scope, key), so a PER-USER read answers the declared default — an empty map
+ * — for a key that person has never set. Handing that to this function emptied
+ * the block for the whole process, and the routes that read both scopes in one
+ * breath (`me.js`, `settings.js`, `term-sheet.js`) then went on to build a
+ * borrower's document. The store now runs this hook for the company scope
+ * ALONE; this note is here so the next person to widen it knows what it costs.
+ *
+ * Never throws: a map that cannot be read at all leaves the registry block
+ * exactly as it was.
  */
 function useCustomInvestors(raw) {
   let identity;
   try { identity = JSON.stringify(raw === undefined ? null : raw); } catch { identity = null; }
+  // A READ IS A READ even when the value has not changed: it is what turns
+  // "nothing has told us" into "there are none", and those must not read alike.
+  CUSTOM_LOADED = true;
+  CUSTOM_DEGRADED = null;
   if (identity === CUSTOM_IDENTITY) return { changed: false, customInvestors: CUSTOM.size };
   let next = roster.EMPTY;
   try { next = raw == null ? roster.EMPTY : roster.readCustom(raw).custom; } catch { next = roster.EMPTY; }
   CUSTOM = next;
   CUSTOM_IDENTITY = identity;
   return { changed: true, customInvestors: CUSTOM.size };
+}
+
+/**
+ * The company settings could not be read — KEEP what we already knew.
+ *
+ * ⛔ THE INVERSION THIS EXISTS TO PREVENT. Falling back to the declared default
+ * is right for a value with a sensible default and exactly wrong here: an empty
+ * map means "block fewer names", so a database blip would REMOVE a rule-10
+ * protection, silently, for as long as the outage lasted. The last known map
+ * stands and the staleness is reported instead. The only thing an outage may
+ * cost is learning about an investor added DURING it — and an investor this
+ * process has not learned about has no client-safe name here either, so its
+ * rows never reach a client surface to begin with.
+ */
+function markCustomInvestorsUnread(reason = 'the settings store could not be read') {
+  CUSTOM_DEGRADED = String(reason || 'unreadable');
+  return { customInvestors: CUSTOM.size, loaded: CUSTOM_LOADED, degraded: CUSTOM_DEGRADED };
 }
 
 /**
@@ -369,6 +410,18 @@ function summary() {
     // How many hand-added investors the block currently covers, so a health
     // reading can tell "no custom investors" from "the store never told us".
     customInvestorsBlocked: CUSTOM.size,
+    /**
+     * THE THREE STATES, TOLD APART. `count` alone answered every one of them
+     * with 0 — "nobody has added an investor", "nothing has read the settings in
+     * this process yet" and "the store is down and this list may be stale" —
+     * which is how a switched-off block looked exactly like a quiet one.
+     */
+    customInvestors: {
+      count: CUSTOM.size,
+      loaded: CUSTOM_LOADED,
+      degraded: CUSTOM_DEGRADED !== null,
+      problem: CUSTOM_DEGRADED,
+    },
     redaction: REDACTION,
     rule: 'The investor name never reaches a borrower or a TPO. Internal staff only. '
       + 'Owner-directed 2026-08-14.',
@@ -389,6 +442,22 @@ module.exports = {
   mentionsInvestor,
   stripInternalOnly,
   useCustomInvestors,
+  markCustomInvestorsUnread,
   summary,
-  _internals: { spellings, classify, AMBIGUOUS_ALONE, SHORT_CODES, customInForce: () => CUSTOM },
+  _internals: {
+    spellings,
+    classify,
+    AMBIGUOUS_ALONE,
+    SHORT_CODES,
+    customInForce: () => CUSTOM,
+    // Back to cold — nothing has told us anything. For tests that need to prove
+    // "not loaded yet" is a different answer from "none stored"; no shipped
+    // caller has any business forgetting.
+    forgetCustomInvestors: () => {
+      CUSTOM = roster.EMPTY;
+      CUSTOM_IDENTITY = 'null';
+      CUSTOM_LOADED = false;
+      CUSTOM_DEGRADED = null;
+    },
+  },
 };
