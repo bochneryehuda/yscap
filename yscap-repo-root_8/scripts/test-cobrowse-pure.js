@@ -131,7 +131,19 @@ for (const must of ["input[type=\"file\"]", 'a[download]', 'a[target="_blank"]',
 const libNow = strip(read('app-v2/src/lib/cobrowse.js'));
 ok(/from '\.\/cobrowseMask\.js'/.test(libNow) && /record\(recordOptions\(/.test(libNow), 'the recorder reads the ONE mask definition');
 ok(/if \(!e\.isTrusted \|\| live !== state \|\| state\.control !== 'granted'\) return;/.test(libNow), 'take-back fires only on a TRUSTED event of the watched person\'s own hand');
-ok(/releaseFromGuest\(state, 'guest_moved'\)/.test(libNow), 'a real mouse move / key / wheel / touch releases control');
+ok(/releaseFromGuest\(state, 'guest_moved'\)/.test(libNow), 'a real click / key / wheel / touch of their own hand releases control');
+// A PASSIVE MOUSE MOVE MAY NEVER RELEASE CONTROL. The first cut released after 40px of
+// CUMULATIVE pointer travel that was never reset, so a hand resting on a trackpad reached
+// it seconds after Allow: control was granted and lost again at once, on every session
+// ("I ask for control and I'm not getting it" — owner, 2026-09-02). The test is the ACT.
+ok(/TAKEBACK_EVENTS = \['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'\]/.test(libNow),
+  'take-back listens for a deliberate act — pointerdown / mousedown / keydown / wheel / touchstart');
+ok(!/'mousemove', takeBack/.test(libNow) && !/MOVE_TAKEBACK_PX/.test(libNow),
+  'a passive mousemove is NOT a take-back — no listener, no travel threshold (the bug that made control unusable)');
+ok(/TAKEBACK_GRACE_MS = 600/.test(libNow) && /TAKEBACK_WHEEL_GRACE_MS = 1800/.test(libNow)
+  && /const grace = e\.type === 'wheel' \? TAKEBACK_WHEEL_GRACE_MS : TAKEBACK_GRACE_MS;/.test(libNow)
+  && /Date\.now\(\) - armedAt < grace/.test(libNow),
+  'a short grace covers the Allow press itself and trailing trackpad momentum');
 ok(/el\.closest\(NO_DRIVE_SELECTOR\)\) return null/.test(libNow), 'the driver refuses any element inside the no-drive allowlist');
 ok(/if \(!routeAllowsDriving\(\)\) return false;/.test(libNow), 'on a no-drive route every input is ignored');
 ok(/record\.mirror\.getNode\(Number\(id\)\)/.test(libNow), 'targets are resolved through rrweb mirror ids, never a selector the viewer typed');
@@ -143,8 +155,8 @@ ok(/mirror\.getId\(node\)/.test(viewerNow) && /t: 'input'/.test(viewerNow), 'the
 // Typing travels as KEYS and the guest's own browser edits the real value: the mirror is
 // masked, so a whole-value echo from the viewer sent `'' + key` on every press and nothing
 // ever accumulated (the e2e drive caught it — 6 input events, the box still empty).
-ok(!/k: 'input', id, value: next/.test(viewerNow) && /sendInput\(\{ k: 'key', id, key: e\.key/.test(viewerNow), 'the viewer relays a keystroke as a key, never a value derived from the masked mirror');
-ok(/k: 'paste', id, value: text/.test(viewerNow), 'a paste travels as its own text, never appended to a mirror value');
+ok(!/k: 'input', id, value: next/.test(viewerNow) && /sendInput\(\{ k: 'key', id, fp: fpOf\(e\.target\), key: e\.key/.test(viewerNow), 'the viewer relays a keystroke as a key, never a value derived from the masked mirror');
+ok(/k: 'paste', id, fp: fpOf\(node\), value: text/.test(viewerNow), 'a paste travels as its own text, never appended to a mirror value');
 ok(/if \(notCancelled\) applyTextKey\(el, key, init\)/.test(libNow) && /function insertText\(el, text\)/.test(libNow) && /el\.setSelectionRange\(caret, caret\)/.test(libNow), "the guest inserts each relayed character at its REAL selection through the native setter");
 ok(/m\.k === 'paste'/.test(libNow) && /insertText\(el, String\(m\.value/.test(libNow), 'the guest inserts pasted text at the real selection');
 ok(/INPUT_KINDS = new Set\(\[[^\]]*'paste'/.test(hubSrc), "the hub admits 'paste' as an input kind");
@@ -209,10 +221,21 @@ ok(/state\.stableTimer = setTimeout/.test(libNow), 'the give-up clock resets onl
 ok(/ws\.bufferedAmount > MAX_BUFFERED/.test(libNow) && /state\.queue\.length >= MAX_QUEUE/.test(libNow),
   "the stream degrades, never the guest's own browser: the socket backlog and the held queue are both bounded");
 ok(/stopRecorder\(state\);\n    state\.queue = \[\];/.test(libNow), 'a disconnected recorder is stopped — the guest never pays for events nobody receives');
-ok(/MOVE_TAKEBACK_PX = 40/.test(libNow) && /travelled < MOVE_TAKEBACK_PX/.test(libNow), 'taking control back needs real pointer travel, not an incidental trackpad brush');
+// Re-pointed 2026-09-02, NOT loosened: the stated subject is that an incidental brush must
+// never release control. The 40px travel threshold that used to carry it was itself reached
+// by an ordinary resting hand (it accumulated and never reset), so the rule is now that a
+// passive move is not a take-back at all — strictly stronger, asserted with the take-back
+// listener list above.
+ok(!/mousemove/.test(libNow), 'taking control back is never an incidental trackpad brush — a passive move is not a take-back');
 // ── a drive that dies must SAY it died ──────────────────────────────────────────────────
 const driveSrc = read('scripts/render-cobrowse-e2e.js');
-ok(/const scale = f\.offsetWidth \? fr\.width \/ f\.offsetWidth : 1;/.test(driveSrc), 'the drive aims through the replayer\'s SCALE — adding the two rects clicks a different element');
+// RE-POINTED, NOT LOOSENED: the subject is that the drive lands on the element it means,
+// under the replayer's CSS scale. It computed that by hand and still clicked the wrong
+// element (the guest's own banner, which the product then refused); Playwright's
+// frameLocator scrolls it into view and re-reads the box under the transform on every try.
+ok(/frameLocator\('\.cobrowse-stage iframe'\)\.locator\('\[data-e2e-target="1"\]'\)/.test(driveSrc)
+  && !/fr\.left \+ \(r\.left \+ r\.width \/ 2\) \* scale/.test(driveSrc),
+  'the drive ADDRESSES the mirrored element rather than aiming at a hand-computed pixel');
 ok(/\} catch \(e\) \{[\s\S]{0,400}?FAIL the drive threw/.test(driveSrc) && /the drive did not finish within 8 minutes/.test(driveSrc),
   'the two-browser drive reports a thrown timeout as a failure and cannot hang CI silently');
 ok(/WATCHED: the guest types with their own keyboard/.test(driveSrc) && /AFTER STOP: the guest carries on working normally/.test(driveSrc),
@@ -220,23 +243,93 @@ ok(/WATCHED: the guest types with their own keyboard/.test(driveSrc) && /AFTER S
 
 ok(/asks to control your screen/.test(hostNow) && /Allow control/.test(hostNow) && /keep watching only/.test(hostNow), 'the second consent prompt: allow / keep watching only');
 ok(/Take back/.test(hostNow) && /cobrowse-controlled/.test(hostNow), 'the banner turns to controlling with a Take back button and the red frame');
+ok(/Click anywhere, press a key, or press Take back/.test(hostNow),
+  'the banner tells the watched person what actually takes control back');
+ok(!/Move your mouse/.test(hostNow), 'no screen still promises that moving the mouse takes control back');
+// A STALE RULE IS WORSE THAN NONE — and this repo's canonical rules live in prose, where
+// nothing compiles them. The pre-merge audit found the OLD take-back rule still standing in
+// four places (CLAUDE.md's Phase B bullet, the sessions.js header, the cobrowse.js module
+// header and the plan doc), which is a written instruction to re-create the very bug the
+// owner reported. Comments are NOT stripped here: the promise being banned is the one a
+// future session reads, and prose is exactly where it must not survive.
+for (const f of ['CLAUDE.md', 'src/lib/cobrowse/sessions.js', 'app-v2/src/lib/cobrowse.js',
+  'app-v2/src/components/CobrowseHost.jsx', 'app-v2/src/screens/StaffCobrowse.jsx',
+  'docs/COBROWSE-RESEARCH-AND-PLAN.md']) {
+  ok(!/Move your mouse|takes it back by MOVING|TAKES IT BACK BY MOVING/i.test(read(f)),
+    `${f} no longer tells anyone that moving the mouse takes control back`);
+}
+// TAKING YOUR SCREEN BACK MUST NOT ALSO PRESS SOMETHING. The pointer is wherever the
+// CONTROLLER left it, which on a driven page can be over a real button.
+ok(/if \(e\.type === 'pointerdown' \|\| e\.type === 'mousedown'\) \{[\s\S]{0,140}?e\.preventDefault\(\); e\.stopPropagation\(\);/.test(libNow),
+  'the releasing click is swallowed — taking control back never actuates the page under the pointer');
+ok(/e\.target\.closest\('\[data-cobrowse-ui\]'\)\) return;/.test(libNow) && /data-cobrowse-ui="banner"/.test(hostNow),
+  "our own banner is not the page: Take back / Stop speak for themselves instead of being read as a drift");
+
+// A STALE MIRROR ID RESOLVES TO SOMEBODY ELSE, NOT TO NOTHING. Every full rrweb snapshot
+// re-mints every node id and the viewer reads its id from a mirror that lags, so an id sent
+// a moment ago can name a DIFFERENT live element on the guest. The pre-merge audit
+// instrumented exactly that: a relayed click meant for a search box pressed the guest's own
+// co-browse "Stop" button and ENDED the session — recorded against the watched person, who
+// did nothing. So the viewer sends what it MEANT to act on and the guest refuses a mismatch.
+ok(/function fingerprint\(el\)/.test(libNow) && /if \(typeof fp === 'string' && fp && fp !== fingerprint\(el\)\) return null;/.test(libNow),
+  'the guest refuses an input whose target is not the element the viewer meant');
+ok(/drivable\(m\.id, m\.fp\)/.test(libNow) && !/drivable\(m\.id\)[^,]/.test(libNow),
+  'every addressed input is resolved WITH that check — no call site skips it');
+ok(/const fpOf = \(node\) =>/.test(viewerNow) && (viewerNow.match(/fp: fpOf\(/g) || []).length >= 5,
+  'the viewer fingerprints every addressed input it sends (click, key, change, scroll, paste)');
+ok(/if \(typeof m\.fp === 'string'\) out\.fp = m\.fp\.slice\(0, 120\);/.test(hubSrc),
+  'the hub relays the fingerprint as an opaque capped string and never interprets it');
+// The fingerprint is content-free by construction: a tag, an input type and the first class.
+ok(!/textContent|innerText|\.value/.test(viewerNow.slice(viewerNow.indexOf('const fpOf'), viewerNow.indexOf('const fpOf') + 600)),
+  'the fingerprint carries no content — it cannot leak what a person typed off a masked mirror');
+// Belt and braces: the guest's own way out can never be driven, whatever an id resolves to.
+ok(/data-cobrowse-nodrive="take-back"/.test(hostNow) && /data-cobrowse-nodrive="stop"/.test(hostNow),
+  "the guest's own Take back and Stop are never drivable by the controller");
+
+// A RELEASE THE SERVER NEVER HEARD MUST NOT BE RE-GRANTED BEHIND THEIR BACK.
+ok(/st\.releasePending = \(st\.releasePending \|\| 0\) \+ 1;/.test(libNow) && /setTimeout\(attempt, 400 \* tries\)/.test(libNow),
+  'a failed release is retried rather than swallowed');
+ok(/if \(st === 'granted' && state\.releasePending > 0\) return;/.test(libNow),
+  "a pushed 'granted' cannot re-arm the red frame while their release is still in flight");
+// The masking promise must not out-run the mask: an SSN printed in an UNMARKED place does
+// reach the viewer now that the server guard is gone (render-cobrowse-mask asserts exactly that).
+for (const f of ['app-v2/src/components/CobrowseHost.jsx', 'app-v2/src/screens/StaffCobrowse.jsx']) {
+  ok(!/never your passwords or Social Security number|Passwords and Social Security numbers are hidden\./.test(read(f)),
+    `${f} does not promise a Social Security number is hidden everywhere, only where PILOT shows one`);
+}
+// The drive's clock skew must point the way that actually freezes rrweb, and its fixture
+// wipe must not kill a concurrent run (two audit agents share one database here).
+{
+  const drv = read('scripts/render-cobrowse-e2e.js');
+  ok(/VIEWER_CLOCK_SKEW_MS = -45000/.test(drv),
+    "the drive's viewer clock is BEHIND the guest's — rrweb draws an event OLDER than the baseline at once, so only a baseline behind the timestamps freezes");
+  ok(/created_at < now\(\) - interval '1 hour'/.test(drv),
+    'the drive tidies up after PREVIOUS runs by age, never deleting a concurrent run\'s signed-in fixtures');
+}
 ok(/useAuth\(\)/.test(hostNow) && /!!token && !isBorrowerView && !isTpo && !isAssistant/.test(hostNow), 'the host keys on the live auth token and stands down inside a borrower view, for any TPO session (a broker is refused at every door) and for a helper (audit)');
 ok(/PILOT records who watched and when; it never records the screen itself/.test(hostNow), 'the consent prompt states what is kept');
 ok(/const POLL_MS = 10000;/.test(hostNow) && /if \(!eligible \|\| active \|\| pending\) return undefined;/.test(hostNow) && /setInterval\(\(\) => \{[\s\S]{0,400}?api\.cobrowseMine\(\)/.test(hostNow), 'while nothing is showing the host re-reads the register every 10 s — a request is never missed because the stream was down (the drive caught it)');
 
 
 // ---- Phase C: hardening -----------------------------------------------------------------------
-const R = require('../src/lib/cobrowse/redaction.js');
-for (const [name, text, exp] of [
-  ['a dashed SSN', 'ssn 123-45-6789', true], ['a spaced SSN', '123 45 6789', true],
-  ['a bare 9-digit run (phone / loan number)', '2125551234 123456789', false],
-  ['a Luhn-valid card 4-4-4-4', '4111 1111 1111 1111', true], ['a Luhn-valid card bare', '4111111111111111', true],
-  ['16 digits that fail Luhn', '1234567890123456', false], ['the mask marker', 'v ••••••', false],
-  ['a phone', '(212) 555-1234', false], ['money', '$1,250,000.00', false], ['ZIP+4', 'NJ 08701-1234', false],
-]) ok(R.looksLikeSecret(text) === exp, `redaction: ${name} → ${exp ? 'secret' : 'not a secret'}`);
-ok(R.judgeBatch('{"t":"route","path":"/x 123-45-6789"}', { t: 'route' }).ok === true, 'only rrweb batches are judged (a route message is never page text)');
-ok(R.judgeBatch('{"t":"rrweb","events":[{"text":"123-45-6789"}]}', { t: 'rrweb' }).ok === false, 'an rrweb batch carrying an SSN in the clear is refused');
-ok(/redaction\.judgeBatch\(text, \{ t \}\)/.test(hubSrc) && /S\.bumpRedactions\(r\.id, 1\)/.test(hubSrc) && /kind: 'redacted'/.test(hubSrc), 'the hub drops a secret-shaped batch, counts it, and tells the viewer why');
+// THE SERVER RELAYS THE GUEST'S BYTES UNCONDITIONALLY, AND THAT IS A CORRECTNESS RULE,
+// not a relaxed one. An rrweb stream is STATEFUL: the full snapshot establishes every DOM
+// node id and each later mutation is expressed against those ids, so a server that DROPS a
+// batch desynchronises the mirror permanently — and the batch a content check most wants to
+// refuse is the FULL SNAPSHOT, the one that carries every printed value on the page. The
+// 2026-09-02 guard did exactly that and the owner's viewer showed a blank stage with a
+// moving cursor, with "Refresh picture" dropping the replacement in turn. The mask
+// (app-v2/src/lib/cobrowseMask.js, proven in a real browser by render-cobrowse-mask.js) is
+// what keeps a secret out of the stream. A future guard must SCRUB WITHIN the event and
+// relay it — never refuse the batch.
+ok(!fs.existsSync(path.join(root, 'src/lib/cobrowse/redaction.js')), 'there is no server-side content guard on the stream');
+ok(!/redaction|judgeBatch|looksLikeSecret/.test(hubSrc), 'the hub carries no content check');
+ok(/broadcastViewers\(r, text\);/.test(hubSrc) && !/bumpRedactions/.test(hubSrc), 'the hub relays the guest\'s own bytes untouched and unconditionally');
+ok(/Never re-introduce a content check that returns without relaying/.test(hubRaw) && /stateful/i.test(hubRaw),
+  'the hub says in writing why a batch may never be refused');
+ok(!/bumpRedactions/.test(sessSrc) && !/redactionDrops/.test(sessSrc), 'nothing writes or reports a redaction count any more');
+ok(!/redacted/.test(strip(read('app-v2/src/screens/StaffCobrowse.jsx'))) && !/redactionDrops/.test(strip(read('app-v2/src/components/CobrowseHistory.jsx'))),
+  'no screen still tells anybody a frame was held back');
 ok(/STALE_ACTIVE_SEC = 180\b/.test(sessRaw) && /liveIds\.has\(String\(r\.id\)\)\) continue/.test(sessSrc), 'restart recovery closes an orphaned active row but never one with a live room');
 ok(/sessions\(\)\.sweep\(\{ liveIds: new Set\(rooms\.keys\(\)\) \}\)/.test(hubSrc), 'the hub hands the sweep its live rooms');
 ok(/setTimeout\(\(\) => \{ sessions\(\)\.sweep\(\{ liveIds: new Set\(rooms\.keys\(\)\) \}\)/.test(hubSrc), 'a fresh process sweeps orphans right after attaching');
@@ -245,8 +338,189 @@ ok(/data-cobrowse-block="ssn"/.test(strip(read('app-v2/src/screens/StaffBorrower
 ok(/cobrowse: \(\(\) => \{ try \{ return require\('\.\/lib\/cobrowse\/hub'\)\.stats\(\)/.test(server), '/api/health carries the hub stats');
 ok(/import CobrowseHistory/.test(team) && /canSeeTheirScreen && <CobrowseHistory \/>/.test(team), 'the register is on the Team screen for super admins');
 const m683 = read('db/683_cobrowse_control_and_hardening_counters.sql');
-ok(/ADD COLUMN IF NOT EXISTS control_status/.test(m683) && /control_events/.test(m683) && /redaction_drops/.test(m683) && !/keystroke|\bkeys\s+text/i.test(m683.replace(/--.*$/gm, '')), 'db/683 adds state and COUNTS, still no column that could hold the screen or a keystroke');
-ok(/scripts\/render-cobrowse-redaction\.js/.test(mask), 'the mask module names the harness that proves it');
+ok(/ADD COLUMN IF NOT EXISTS control_status/.test(m683) && /control_events/.test(m683) && !/keystroke|\bkeys\s+text/i.test(m683.replace(/--.*$/gm, '')), 'db/683 adds state and COUNTS, still no column that could hold the screen or a keystroke');
+// db/683's redaction_drops column is DELIBERATELY left in place — this repo never drops a
+// column — it is simply written by nothing and reported by nothing.
+ok(/redaction_drops/.test(m683), 'the retired counter column is left alone, never dropped');
+const m685 = read('db/685_cobrowse_redaction_counter_retired.sql');
+ok(/COMMENT ON COLUMN cobrowse_sessions\.redaction_drops/.test(m685) && /RETIRED/.test(m685) && !/DROP COLUMN/i.test(m685),
+  'db/685 corrects the column\'s own documentation instead of dropping it — the database stops describing a guard that no longer runs');
+ok(/scripts\/render-cobrowse-mask\.js/.test(mask), 'the mask module names the harness that proves it');
+
+// ---- the blank mirror, and the buttons (owner-reported 2026-09-02) ------------------------------
+const viewNow = read('app-v2/src/screens/StaffCobrowse.jsx');
+const viewSrc2 = strip(viewNow);
+// THE LIVE BASELINE COMES OFF THE GUEST'S OWN CLOCK. rrweb schedules each event by
+// comparing its `timestamp` — stamped on the GUEST's machine — to the baseline given to
+// startLive. Seeding that with OUR Date.now() means an office computer a few seconds out
+// of step makes every event "future" and nothing is ever drawn: a blank stage with a
+// moving cursor, which is exactly what the owner was looking at.
+// The BUFFER's size moved to a named constant (see the latency block below); this
+// assertion is about WHOSE CLOCK the baseline comes from, which is the property that
+// blanks the mirror when it is wrong — so it is re-pointed, never loosened.
+ok(/const ts = Number\(ev && ev\.timestamp\);/.test(viewSrc2) && /rp\.startLive\(ts - LIVE_BUFFER_MS\);/.test(viewSrc2)
+  && !/rp\.startLive\(Date\.now\(\)/.test(viewSrc2),
+  'the viewer starts live from the FIRST EVENT\'s own timestamp, never from the viewer\'s clock');
+// A BAD TIMESTAMP MUST DEFER, NOT POISON THE BASELINE. `Number(null) - 200` is -200, which
+// is TRUTHY, so the obvious `|| Date.now() - 600` fallback never runs and rrweb schedules
+// every event ~55 years out — a permanently blank mirror, from one null event, on a hub that
+// now relays the guest's bytes untouched (pre-merge audit, 2026-09-02).
+ok(/if \(!Number\.isFinite\(ts\) \|\| ts <= 0\) return;/.test(viewSrc2) && !/\|\| Date\.now\(\) - 600\)/.test(viewSrc2),
+  'an unusable first timestamp defers to the next event instead of poisoning the live baseline');
+// A REFUSED EVENT IS NEVER SILENT. An rrweb mutation against ids no snapshot established
+// throws, and swallowing it leaves an empty stage for ever with nothing said.
+// TWO INDEPENDENT CALL SITES, asserted independently — the first cut's second conjunct was
+// a literal substring of its first, so it proved nothing extra (pre-merge audit).
+ok(/catch \{ if \(!sawSnapshot\) askSnapshot\('no_picture'\); \}/.test(viewSrc2),
+  'an event the replayer cannot apply asks for a fresh picture — while there is no picture');
+ok(/setTimeout\(fit, 0\);[\s\S]{0,200}?if \(!sawSnapshot\) askSnapshot\('no_picture'\);/.test(viewSrc2),
+  'and so does a batch that arrived with no snapshot behind it at all (the separate call site)');
+// AND ONLY WHILE THERE IS NO PICTURE: healing rebuilds the mirrored document, which throws
+// away the caret a controller is typing into. Measured on the two-browser drive — healing on
+// every failed event dropped keystrokes about one run in three.
+ok(!/catch \{ askSnapshot/.test(viewSrc2), 'a failed event on a mirror that HAS a picture is still swallowed — healing never interrupts typing');
+ok(/asks >= SNAPSHOT_RETRIES/.test(viewSrc2) && /now - askedAt < SNAPSHOT_RETRY_MS/.test(viewSrc2),
+  'that healing is bounded and throttled — a page we genuinely cannot replay is never a request storm');
+ok(/className="act-bar"/.test(viewSrc2) && /btn primary small" onClick=\{askControl\}/.test(viewSrc2) && /btn soft small" title="Ask them for a fresh picture/.test(viewSrc2),
+  'the viewer actions are grouped and weighted — the ask is primary, the utility is soft, ending is separated');
+
+// REAL BUTTONS, NOT TEXT (the owner's third ask). Cancel was a `.btn.link`, which on a
+// crowded roster row reads as a sentence rather than a control.
+const btnNow = read('app-v2/src/components/CobrowseButton.jsx');
+const btnSrc = strip(btnNow);
+ok(!/btn link/.test(btnSrc), 'no control on the launcher is a bare text link any more');
+ok(/className="btn ghost small" onClick=\{cancel\}/.test(btnSrc), 'Cancel is a real button');
+ok(/className = 'btn soft small'/.test(btnSrc) && /<ScreenIcon \/>/.test(btnSrc), 'the launcher is a real soft button carrying its own glyph');
+ok(/onClick=\{ask\}><ScreenIcon \/>Ask again/.test(btnSrc), 'a declined or expired ask offers Ask again — never a dead sentence');
+ok(/className=\{`\$\{className\} cb-btn`\} onClick=\{ask\}><ScreenIcon \/>Ask again/.test(btnSrc),
+  "Ask again keeps the caller's own button class — a screen that asked for a different weight still gets it");
+const cssNow = read('app-v2/src/styles.css');
+// `.spin` was never a class in this stylesheet, so the waiting state rendered a
+// zero-size span and looked frozen. The component and the stylesheet must agree.
+ok(!/className="spin"/.test(btnSrc) && /className="cb-spin"/.test(btnSrc) && /\.cb-spin\{/.test(cssNow),
+  'the waiting spinner is a class that actually exists (the old `.spin` was styled by nothing)');
+ok(/\.cb-wait\{/.test(cssNow) && /\.cb-answer\{/.test(cssNow), 'the waiting chip and the answer row are styled');
+// A bare `.off`/`.wait` would collide with the global utilities (the `.crx-off` lesson).
+ok(/namespaced `cb-`/.test(cssNow), 'the block says why every class is namespaced');
+{
+  // FIND THE BLOCK BEFORE JUDGING IT. `slice(indexOf(...))` on a marker that has moved
+  // returns one character and the assertion below then passes on nothing — a vacuous
+  // pass on the HARD colour rule (pre-merge audit, 2026-09-02).
+  const at = cssNow.indexOf('CO-BROWSE — the launcher and the waiting chip');
+  ok(at > 0, 'the co-browse CSS block is where this test looks for it');
+  const block = cssNow.slice(at);
+  ok(!/color:\s*var\(--ink/.test(block), 'no co-browse style paints text with an --ink* token (a LIGHT paper colour — white on white)');
+  // …and every class in it really is namespaced, rather than a comment saying so.
+  const classes = [...block.matchAll(/^\.([a-zA-Z][\w-]*)/gm)].map((m) => m[1]);
+  ok(classes.length >= 3 && classes.every((c) => c.startsWith('cb-')),
+    `every class in the co-browse block is cb-namespaced (${classes.join(', ')})`);
+}
+ok(/ONLY PLACE A SECRET IS KEPT OUT OF THE STREAM/.test(mask), 'the mask module says it is the only protection — mark the element, do not expect a server check');
+
+// ── THE PICTURE IS PROMPT, AND IT IS READABLE (owner-reported 2026-09-02: "the refresh
+//    ratio is very slow … extremely slow and extremely unclear") ─────────────────────────
+//    Both halves were MEASURED before they were changed, and both are pinned HERE rather
+//    than only in the browser drive, because the drive needs Chromium and CI has none —
+//    so CI could never have caught either one. The drive additionally allowed the mirror
+//    TWENTY SECONDS to show anything, which is exactly why "slow" was invisible to it.
+//
+//    THE READABILITY HALF IS PINNED BY BEHAVIOUR, NOT BY A REGEX, and that is the lesson
+//    the pre-merge audit taught: its first cut checked only that the CONTROLS existed, and
+//    the audit proved by mutation that the exact defect being fixed (`const s = f` — the
+//    applied scale IS the fit scale, so 100% is unreachable and the stage never scrolls)
+//    could be restored with the whole suite still green. Arithmetic that can be reverted
+//    invisibly belongs in a function somebody can call with real numbers.
+{
+  const guestLib = read('app-v2/src/lib/cobrowse.js');
+  const flush = (guestLib.match(/const FLUSH_MS = (\d+)/) || [])[1];
+  const buffer = (viewerSrc.match(/const LIVE_BUFFER_MS = (\d+)/) || [])[1];
+  ok(flush && Number(flush) <= 40, `the guest holds events no longer than 40 ms before sending (FLUSH_MS = ${flush})`);
+  ok(buffer && Number(buffer) <= 40, `the viewer's smoothing buffer is no longer than 40 ms (LIVE_BUFFER_MS = ${buffer})`);
+  // DOCUMENTATION, not a behavioural guard, and labelled as one: no production mutation
+  // can fail it. It is here so that raising a constant and deleting the measurement that
+  // justified the last cut cannot both happen quietly in one commit.
+  ok(/533 ms floor/.test(guestLib) && /533 ms floor/.test(viewerSrc),
+    'both constants still record the measured latency they were cut from (documentation)');
+  ok(/rp\.startLive\(ts - LIVE_BUFFER_MS\)/.test(viewerSrc), 'the live baseline uses that named buffer, not a literal');
+  // The faster flush DOUBLES the batch rate, so the hub's bookkeeping write must not
+  // double with it — the two are kept in inverse step.
+  {
+    const hubSrc = read('src/lib/cobrowse/hub.js');
+    const every = (hubSrc.match(/const BATCH_FLUSH_EVERY = (\d+)/) || [])[1];
+    ok(every && Number(every) >= 40,
+      `the hub still writes its batch counter about once a second, not twice (BATCH_FLUSH_EVERY = ${every})`);
+  }
+
+  // READABLE — the arithmetic, run with real numbers. `fit` is for orientation, 100% is
+  // for reading; a mirror that can only ever be shrunk to fit a page column renders a
+  // 1920-wide guest at about half size, which is what "extremely unclear" meant.
+  // The module is ESM with no imports (the app's convention for a pure browser rule), so
+  // it is evaluated here the same way render-cobrowse-mask.js loads the mask: strip the
+  // export line and hand back the functions. That runs the REAL source, not a copy.
+  const zoomSrc = read('app-v2/src/lib/cobrowseZoom.js').replace(/^export \{[^}]*\};?\s*$/m, '');
+  const Z = new Function(`${zoomSrc}\nreturn { ZOOM_STOPS, MAX_ZOOM, fitScaleFor, appliedScale, stageOverflow, stageHeight, nextZoom, canZoom };`)();
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+
+  // The measured cases from the report: the stage is ~950px wide in this screen.
+  const fit1280 = Z.fitScaleFor(950, 1280);
+  const fit1920 = Z.fitScaleFor(950, 1920);
+  ok(near(Math.round(fit1280 * 1000) / 1000, 0.736), `a 1280-wide guest fits at 0.736 (got ${fit1280.toFixed(3)})`);
+  ok(fit1920 < 0.51, `a 1920-wide guest fits at about half size (got ${fit1920.toFixed(3)}) — the reason a zoom exists`);
+  ok(Z.fitScaleFor(2000, 1280) === 1, 'a guest narrower than the stage is shown at actual size, never stretched');
+
+  // THE DEFECT: the applied scale must NOT be the fit scale. This is the assertion the
+  // audit's mutation walked straight past when it lived as a regex.
+  ok(near(Z.appliedScale('fit', fit1280), fit1280), 'Fit draws at the fit scale');
+  ok(near(Z.appliedScale(1, fit1280), 1), 'but 100% draws at ACTUAL SIZE — never capped at the fit scale');
+  ok(near(Z.appliedScale(3, fit1280), 3) && near(Z.appliedScale(9, fit1280), 3), 'and zoom is clamped at 3x');
+  ok(near(Z.appliedScale('nonsense', fit1280), fit1280) && near(Z.appliedScale(0, fit1280), fit1280),
+    'an unusable stored size falls back to Fit, never to a nonsense scale');
+
+  // Past the fit scale the stage scrolls; at or below it there is nothing to scroll to.
+  ok(Z.stageOverflow(1, fit1280) === 'auto', 'zoomed past the fit scale the stage SCROLLS rather than clipping');
+  ok(Z.stageOverflow('fit', fit1280) === 'hidden', 'at Fit it does not, so a scrollbar cannot steal the width the next fit measures');
+
+  // The stage keeps the FIT height however far you zoom in, or the whole page grows a
+  // second scrollbar to hold one screen.
+  ok(Z.stageHeight(800, 1, fit1280) === Z.stageHeight(800, fit1280, fit1280),
+    'the stage keeps its fit height when zoomed, so the page never grows a second scrollbar');
+
+  // THE LADDER. 100% is always exactly reachable (stepping by 0.25 from an arbitrary fit
+  // scale never lands on 1), and stepping down off the bottom returns to FIT rather than
+  // pinning the mirror at the fit NUMBER — the audit found that a press that looked like
+  // nothing happened then clipped the picture the next time the window narrowed.
+  ok(Z.nextZoom('fit', fit1280, 1) === 1, 'one step up from Fit is actual size');
+  ok(Z.nextZoom(1, fit1280, -1) === 'fit', 'and one step down from actual size returns to FIT, never to the fit scale as a number');
+  ok(Z.nextZoom('fit', fit1280, -1) === 'fit' && Z.canZoom('fit', fit1280, -1) === false,
+    'there is no step below Fit, and the control says so rather than doing nothing');
+  ok(Z.nextZoom(3, fit1280, 1) === 3 && Z.canZoom(3, fit1280, 1) === false, 'and none above 3x');
+  ok(Z.ZOOM_STOPS.includes(1), 'the ladder passes through exactly 100%');
+  {
+    // Walk the whole ladder up and back down from a real fit scale and land where we began.
+    let z = 'fit'; const up = [];
+    for (let i = 0; i < 8; i += 1) { const n = Z.nextZoom(z, fit1280, 1); if (n === z) break; z = n; up.push(z); }
+    let back = z; for (let i = 0; i < 8; i += 1) { const n = Z.nextZoom(back, fit1280, -1); if (n === back) break; back = n; }
+    ok(up.length >= 2 && up[0] === 1 && back === 'fit',
+      `the ladder walks up (${up.join(' → ')}) and all the way back to Fit`);
+  }
+  // A guest narrower than the stage: Fit already IS actual size, so the ladder starts above it.
+  ok(Z.nextZoom('fit', 1, 1) > 1, 'when the whole screen already fits at actual size, stepping up still zooms in');
+
+  // AND THE SCREEN MUST CALL IT rather than keep a second opinion. Comment-stripped, per
+  // this file's own rule — the first cut read raw source and a mutation that deleted the
+  // entire control while leaving one comment line behind passed.
+  const viewStrip = strip(viewerSrc);
+  ok(/const s = appliedScale\(/.test(viewStrip) && /setScale\(s\)/.test(viewStrip),
+    'the viewer draws at the size the module resolves, not one it works out itself');
+  ok(/setFitScale\(\s*f\s*\)/.test(viewStrip) && /const f = fitScaleFor\(/.test(viewStrip), 'and takes the fit scale from the same module');
+  ok(/overflow:\s*stageOverflow\(/.test(viewStrip), 'the stage asks the module whether to scroll');
+  ok(/stageHeight\(/.test(viewStrip), 'and how tall to be');
+  ok(/nextZoom\(z, fitScale, -1\)/.test(viewStrip) && /nextZoom\(z, fitScale, 1\)/.test(viewStrip), 'the -/+ steps walk the shared ladder');
+  ok(/disabled=\{!canZoom\(/.test(viewStrip), 'and are disabled at their end rather than doing nothing');
+  ok(!/Math\.min\(1,\s*\(host\.clientWidth/.test(viewStrip), 'the fit scale is nowhere re-inlined in the screen');
+  ok(/data-zoom="actual"/.test(viewStrip) && /data-zoom="fit"/.test(viewStrip),
+    'the size buttons carry a stable handle — the readout can read "100%" too, so matching on the text finds two elements');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

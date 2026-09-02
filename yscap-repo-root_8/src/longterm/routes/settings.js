@@ -140,7 +140,7 @@ router.patch('/', requireSettingsAdmin, async (req, res) => {
     res.json({ ok: true, ...out, ...described });
   } catch (e) {
     if (e && e.status === 400) {
-      return res.status(400).json({ error: e.message, rejected: e.rejected || [] });
+      return res.status(400).json({ error: e.message, rejected: e.rejected || [], problems: e.problems || [] });
     }
     console.error('[lt] save settings failed:', (e && e.message) || e);
     res.status(500).json({ error: 'Could not save the settings.' });
@@ -255,7 +255,7 @@ router.patch('/mine', async (req, res) => {
     const out = await settingsStore.save(patch, { scope: userScope(staffId), staffId, keepDefault: true });
     res.json({ ok: true, ...out });
   } catch (e) {
-    if (e && e.status === 400) return res.status(400).json({ error: e.message, rejected: e.rejected || [] });
+    if (e && e.status === 400) return res.status(400).json({ error: e.message, rejected: e.rejected || [], problems: e.problems || [] });
     console.error('[lt] save own settings failed:', (e && e.message) || e);
     res.status(500).json({ error: 'Could not save your settings.' });
   }

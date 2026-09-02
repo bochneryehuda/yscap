@@ -41,10 +41,19 @@
  * invented one goes in front of borrowers and brokers. The empty ones are
  * reported by `needsWhiteLabel()` so they can be named on purpose.
  *
+ * ── THE INVESTORS ADDED BY HAND (2026-09-02) ────────────────────────────────
+ * The roster is now the EFFECTIVE roster — the registry plus the investors a
+ * super admin added on the settings screen (`pricing.customInvestors`, read
+ * through `pricing/investor-roster.js`). Every reader here takes that map as an
+ * OPTIONAL trailing argument and stays pure; the route loads it once and hands
+ * it down. A hand-added investor gets a settings row exactly like a registry
+ * one — on/off, source, holdback, white label — and its recorded white label
+ * is the pre-fill where the sheet's would be (`whiteLabelOrigin: 'custom'`).
+ *
  * PURE: no network, no database, no RTL import.
  */
 
-const investors = require('../encompass/investors');
+const effective = require('./investor-roster');
 const whiteLabel = require('../lenderprice/investor-programs');
 
 /** Where an investor's pricing may be fetched. */
@@ -100,8 +109,11 @@ const isSource = (v) => SOURCES.includes(String(v || '').toLowerCase());
  * would have, so moving this into a table later is a reader change rather than a
  * redesign. Anything unreadable is REPORTED BY NAME and ignored — a typo'd
  * source silently read as "off" would hide a lender nobody meant to hide.
+ *
+ * `custom` is the hand-added investors in force; a key is "known" when EITHER
+ * the registry or that map carries it.
  */
-function readSettings(raw) {
+function readSettings(raw, custom) {
   const src = raw !== undefined ? raw : process.env.LT_INVESTOR_SETTINGS;
   const out = { settings: {}, problems: [] };
   if (src == null || src === '') return out;
@@ -157,7 +169,7 @@ function readSettings(raw) {
         row.holdback = Math.round(n * 1000) / 1000;
       }
     }
-    if (!investors.byKey || !investors.byKey(key)) out.problems.push({ investor: key, error: 'unknown_investor', message: 'No investor by that key — the setting is kept, but nothing will match it.' });
+    if (!effective.effectiveByKey(key, custom)) out.problems.push({ investor: key, error: 'unknown_investor', message: 'No investor by that key — not in the registry and not one added by hand. The setting is kept, but nothing will match it.' });
     if (Object.keys(row).length) out.settings[key] = row;
   }
   return out;
@@ -187,12 +199,17 @@ function resolveRaw(input = {}) {
 }
 
 /** One investor's effective row. */
-function settingFor(key, settings = {}) {
+function settingFor(key, settings = {}, custom) {
   const saved = settings[key] || {};
-  const label = (investors.byKey && investors.byKey(key) || {}).label || key;
+  const inv = effective.effectiveByKey(key, custom);
+  const label = (inv && inv.label) || key;
+  const isCustom = !!(inv && inv.custom);
 
-  const wlSheet = whiteLabel.whiteLabelOf(key) || null;
-  const wl = saved.whiteLabel || wlSheet || null;
+  // The RECORDED name — the owner's sheet for a registry investor, the name a
+  // person typed when adding one by hand — and then the one answer to "what may
+  // a client call this investor", with the row's own setting laid over it.
+  const wlSheet = whiteLabel.whiteLabelOf(key, custom) || null;
+  const wl = whiteLabel.effectiveWhiteLabel(key, custom, settings) || null;
 
   const source = isSource(saved.source) ? saved.source
     : (OWNER_SOURCE[key] || DEFAULT_SOURCE);
@@ -206,12 +223,16 @@ function settingFor(key, settings = {}) {
 
   return {
     key, label,
+    // Said plainly on the row, so a screen can mark an investor somebody added
+    // by hand without a second lookup — and so a client-facing surface can
+    // never mistake one for a registry entry with a sheet name.
+    custom: isCustom,
     whiteLabel: wl,
     // Said out loud rather than left for a reader to notice a null: this
     // investor has NO name a client may be shown, so they cannot be put in front
     // of one until somebody names them.
     whiteLabelMissing: !wl,
-    whiteLabelOrigin: saved.whiteLabel ? 'setting' : (wlSheet ? 'sheet' : 'unset'),
+    whiteLabelOrigin: saved.whiteLabel ? 'setting' : (wlSheet ? (isCustom ? 'custom' : 'sheet') : 'unset'),
     source, sourceOrigin,
     enabled, enabledOrigin,
     // WHAT THIS INVESTOR ADDS TO (or takes off) THE HOLDBACK, and whether a
@@ -238,22 +259,23 @@ function settingFor(key, settings = {}) {
   };
 }
 
-/** Every investor, in one list, ready to be drawn as a settings screen. */
-function roster(settings = {}) {
-  return investors.list()
-    .map((x) => settingFor(x.key || x, settings))
+/** Every investor — registry and hand-added — in one list, ready to be drawn as a settings screen. */
+function roster(settings = {}, custom) {
+  return effective.effectiveList(custom)
+    .map((x) => settingFor(x.key || x, settings, custom))
     .sort((a, b) => String(a.label).localeCompare(String(b.label)));
 }
 
 /** The investors with no client-safe name yet — the ones to go and name. */
-function needsWhiteLabel(settings = {}) {
-  return roster(settings).filter((r) => r.whiteLabelMissing).map((r) => ({ key: r.key, investor: r.label }));
+function needsWhiteLabel(settings = {}, custom) {
+  return roster(settings, custom).filter((r) => r.whiteLabelMissing).map((r) => ({ key: r.key, investor: r.label }));
 }
 
-/** The whole picture a settings screen needs, in one call. */
+/** The whole picture a settings screen needs, in one call. `opts.custom` is the hand-added investors in force. */
 function describe(raw, opts = {}) {
-  const cfg = readSettings(raw);
-  const rows = roster(cfg.settings);
+  const custom = opts.custom;
+  const cfg = readSettings(raw, custom);
+  const rows = roster(cfg.settings, custom);
   return {
     sources: SOURCES,
     defaultSource: DEFAULT_SOURCE,
@@ -271,6 +293,9 @@ function describe(raw, opts = {}) {
       fromLoanNex: rows.filter((r) => r.enabled && r.source === 'loannex').length,
       fromBoth: rows.filter((r) => r.enabled && r.source === 'both').length,
       missingWhiteLabel: rows.filter((r) => r.whiteLabelMissing).length,
+      // How many of the rows are investors somebody added by hand, so a screen
+      // can say "42 from the registry and 1 you added" rather than 43.
+      custom: rows.filter((r) => r.custom).length,
       // How many investors carry an extra of their own, so a screen can say at a
       // glance whether the board is priced on one number or several.
       withExtraHoldback: rows.filter((r) => r.holdbackOrigin === 'setting' && r.holdback !== 0).length,

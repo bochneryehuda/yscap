@@ -122,7 +122,49 @@ function wantFrom(sc = {}, lpInternals = {}, opts = {}) {
       if (months.length) termMonths = months;
     }
   }
-  return { amortization, io, termMonths };
+
+  /**
+   * ⛔ THE RATE LOCK IS THE FOURTH DIMENSION, and it is read off the REQUEST, never re-decided.
+   *
+   * The same class of defect as interest-only, on a dimension nobody had noticed. Lender Price
+   * narrows on `dayLocksCriteria` and the officer sets a lock on EVERY search (the field defaults
+   * to 30 days), so Lender Price answers at the asked lock and at no other. LoanNEX accepts no lock
+   * in its search and answers at ALL of them at once — 15, 30, 45 and 60 in the same board.
+   *
+   * MEASURED on the recorded board: asking 15 / 30 / 45 / 60 left the LoanNEX list byte-identical
+   * every time (26 programmes, 1553 rungs), and the prices are NOT the same across locks — 1661
+   * rate-points carry more than one lock, mean spread 0.206 points, max 0.500, which is twice the
+   * whole margin holdback. Acra's 30-year fixed at 6.25 is 101.036 at 15 days, 100.886 at 30 and
+   * 100.736 at 45. So a 15-day LoanNEX rung was sitting beside a 30-day Lender Price quote looking
+   * a sixth of a point better for no reason a human could see.
+   *
+   * WHICH REQUEST, and why the model root rather than `criteria`: `search-model` writes the lock to
+   * `m.dayLocksCriteria` (and mirrors it to `brokerCriteria.dayLocks`) at the body ROOT, resolving
+   * `sc.lockDays` against the DSCR profile's own 30-day default. Reading it there — rather than
+   * re-deriving it from `sc.lockDays` — is what makes the set this narrows to the set Lender Price
+   * was actually asked for, exactly as interest-only now does. `brokerCriteria.dayLocks` is the
+   * fallback for a body that carries the one and not the other; the scenario's own `lockDays` is
+   * the last resort, for a caller with no Lender Price request to mirror at all.
+   *
+   * With none of the three present the dimension is simply not narrowed.
+   */
+  const req = opts && opts.lpRequest && typeof opts.lpRequest === 'object' ? opts.lpRequest : null;
+  let lockDays = null;
+  if (req) {
+    const list = Array.isArray(req.dayLocksCriteria) ? req.dayLocksCriteria : null;
+    const fromList = list && list.length ? Number(list[0]) : null;
+    const fromBroker = req.brokerCriteria && typeof req.brokerCriteria === 'object'
+      ? Number(req.brokerCriteria.dayLocks) : null;
+    const asked = Number.isFinite(fromList) && fromList > 0 ? fromList
+      : (Number.isFinite(fromBroker) && fromBroker > 0 ? fromBroker : null);
+    if (asked != null) lockDays = asked;
+  }
+  if (lockDays == null) {
+    const own = Number(s.lockDays);
+    if (Number.isFinite(own) && own > 0) lockDays = own;
+  }
+
+  return { amortization, io, termMonths, lockDays };
 }
 
 /**
@@ -148,7 +190,77 @@ function programVerdict(p, want = {}) {
     if (!Number.isFinite(n) || n <= 0) out.unclassified = true;
     else if (!want.termMonths.includes(n)) { out.keep = false; out.failed = 'term'; return out; }
   }
+  /**
+   * THE LOCK, asked of the programme as a whole: does it price at this lock AT ALL? A programme
+   * that offers only 30 and 45 cannot answer a 15-day search, and keeping it would put a rung at
+   * some other lock on the board — the very thing this dimension exists to stop.
+   *
+   * A programme carrying NO lock information anywhere is `unclassified` and KEPT, the same
+   * direction the other three fail in: a board we cannot judge is not a board we silently shorten.
+   */
+  if (Number.isFinite(want.lockDays) && want.lockDays > 0) {
+    const offered = Array.isArray(p.lockDaysOffered)
+      ? p.lockDaysOffered.map(Number).filter((n) => Number.isFinite(n)) : [];
+    if (!offered.length) out.unclassified = true;
+    else if (!offered.includes(want.lockDays)) { out.keep = false; out.failed = 'lock'; return out; }
+  }
   return out;
+}
+
+/**
+ * ONE programme, with only the rungs that price at the asked lock — a NEW programme object with a
+ * NEW rung array, never a mutation of the parsed board. The result's programme is under
+ * `narrowed`, NOT `program`: WORD-1 forbids this module touching a `.program` / `.product` /
+ * `.name` field, and it is right to — the owner's condition is that this filter reads structure
+ * and never words. A key of my own that happens to collide with a vendor text field is my problem
+ * to rename, not the guard's to relax.
+ *
+ * WHY THIS IS NOT ENOUGH TO DO AT PROGRAMME LEVEL. The other three dimensions are properties of
+ * the PROGRAMME (its amortization, whether it is interest-only, its term), so keeping or dropping
+ * the programme settles them. The lock is a property of the RUNG: one programme carries the same
+ * rate at 15, 30, 45 and 60 days at four different prices. Keeping the programme and leaving its
+ * rungs alone would leave three quarters of the board priced at a lock nobody asked for, and the
+ * board's best-price figures (`maxPrice`, `minPoints`) computed off them.
+ *
+ * A rung with NO lock recorded is KEPT and counted unclassified — the same direction as above.
+ *
+ * ⛔ EVERY AGGREGATE IS RECOMPUTED the way `loannex/parse.js` computes it, for the same reason
+ * `narrowBoard` recomputes the board's: a `maxPrice` left behind from the full rung list would
+ * have the row advertising a price at a lock that is no longer on it.
+ */
+function narrowProgramRungs(p, lockDays) {
+  const rungs = p && Array.isArray(p.rungs) ? p.rungs : null;
+  if (!rungs || !Number.isFinite(lockDays) || lockDays <= 0) {
+    return { narrowed: p, kept: rungs ? rungs.length : 0, dropped: 0, unclassified: 0 };
+  }
+  const keep = [];
+  let unclassified = 0;
+  for (const r of rungs) {
+    const d = r && r.lockDays != null ? Number(r.lockDays) : null;
+    if (d == null || !Number.isFinite(d)) { unclassified += 1; keep.push(r); continue; }
+    if (d === lockDays) keep.push(r);
+  }
+  if (keep.length === rungs.length) {
+    return { narrowed: p, kept: keep.length, dropped: 0, unclassified };
+  }
+  return {
+    narrowed: {
+      ...p,
+      rungs: keep,
+      rungCount: keep.length,
+      /* The LOWEST rate among the survivors, computed rather than read off `keep[0]`. `parse.js`
+         sorts rungs by rate and filtering preserves that, so the first element is the right answer
+         TODAY — but this module would then be silently depending on another module's sort, and the
+         cost of not depending on it is one reduce. */
+      minRate: keep.reduce((m, r) => (r.rate != null && (m == null || r.rate < m) ? r.rate : m), null),
+      minPoints: keep.reduce((m, r) => (r.points != null && (m == null || r.points < m) ? r.points : m), null),
+      maxPrice: keep.reduce((m, r) => (r.price != null && (m == null || r.price > m) ? r.price : m), null),
+      lockDaysOffered: [...new Set(keep.map((r) => r.lockDays).filter((d) => d != null))].sort((a, b) => a - b),
+    },
+    kept: keep.length,
+    dropped: rungs.length - keep.length,
+    unclassified,
+  };
 }
 
 /**
@@ -160,21 +272,46 @@ function programVerdict(p, want = {}) {
  */
 function narrowBoard(board, want = {}) {
   const programs = (board && Array.isArray(board.programs)) ? board.programs : null;
-  const dropped = { amortization: 0, interestOnly: 0, term: 0 };
-  if (!programs) return { board, kept: 0, dropped, unclassified: 0, narrowed: false };
+  const dropped = { amortization: 0, interestOnly: 0, term: 0, lock: 0 };
+  // Rungs are counted separately from programmes because they are a different quantity: the lock
+  // removes RUNGS from programmes that stay on the board. Reporting them in the same bucket would
+  // read as "the lock dropped 3733 programmes" over a board of 90.
+  const droppedRungs = { lock: 0 };
+  if (!programs) {
+    return { board, kept: 0, dropped, droppedRungs, unclassified: 0, unclassifiedRungs: 0, narrowed: false };
+  }
 
+  const lock = Number.isFinite(want.lockDays) && want.lockDays > 0 ? want.lockDays : null;
   const nothingAsked = !want.amortization
     && want.io !== true && want.io !== false
-    && !(Array.isArray(want.termMonths) && want.termMonths.length);
-  if (nothingAsked) return { board, kept: programs.length, dropped, unclassified: 0, narrowed: false };
+    && !(Array.isArray(want.termMonths) && want.termMonths.length)
+    && lock == null;
+  if (nothingAsked) {
+    return { board, kept: programs.length, dropped, droppedRungs, unclassified: 0, unclassifiedRungs: 0, narrowed: false };
+  }
 
   const keep = [];
   let unclassified = 0;
+  let unclassifiedRungs = 0;
   for (const p of programs) {
     const v = programVerdict(p, want);
     if (v.unclassified) unclassified += 1;
-    if (v.keep) keep.push(p);
-    else if (v.failed && dropped[v.failed] !== undefined) dropped[v.failed] += 1;
+    if (!v.keep) {
+      if (v.failed && dropped[v.failed] !== undefined) dropped[v.failed] += 1;
+      continue;
+    }
+    // The programme prices at this lock; now keep only the rungs that DO.
+    const trimmed = narrowProgramRungs(p, lock);
+    droppedRungs.lock += trimmed.dropped;
+    unclassifiedRungs += trimmed.unclassified;
+    /**
+     * A programme whose every rung was unclassified-or-matching keeps all of them; one left with
+     * NOTHING is off the board, and it is counted under `lock` because that is what removed it.
+     * `programVerdict` catches almost all of these off `lockDaysOffered`; this catches the case
+     * where the programme advertised the lock but carries no rung at it.
+     */
+    if (trimmed.kept === 0) { dropped.lock += 1; continue; }
+    keep.push(trimmed.narrowed);
   }
   return {
     /**
@@ -192,9 +329,11 @@ function narrowBoard(board, want = {}) {
     },
     kept: keep.length,
     dropped,
+    droppedRungs,
     unclassified,
+    unclassifiedRungs,
     narrowed: true,
   };
 }
 
-module.exports = { wantFrom, narrowBoard, programVerdict, _internals: { amortizationKey, wantedAmortization } };
+module.exports = { wantFrom, narrowBoard, programVerdict, _internals: { amortizationKey, wantedAmortization, narrowProgramRungs } };

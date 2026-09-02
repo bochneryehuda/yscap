@@ -102,9 +102,52 @@ console.log('\n== C. WHOSE ROWS IT MOVES ==');
     `AIM-3 …and every other investor is untouched at the standing 0.25 (got ${at('Deephaven Mortgage').rungs[0].price}) — an extra that leaked onto the rest of the board would be the whole feature going wrong`);
   ok(at('NQM Funding').rungs[0].points === -1 && at('Acra Lending').rungs[0].points === -1.5,
     'AIM-4 …and each row\'s points move with its own price, so no row contradicts itself');
-  // The AIM is resolved by the ONE resolver, never a second lookup.
-  ok(/resolveInvestor\(/.test(src('src/longterm/routes/combined-pricer.js')),
-    'AIM-5 …and the route resolves which investor a row belongs to with merge\'s own resolver, not a second lookup that could disagree with the merge');
+  // The AIM is resolved by the ONE resolver, never a second lookup — asserted at
+  // BOTH ends now that the closure lives in `investor-routing` rather than being
+  // written out in the route: the route uses the shared resolver, and the shared
+  // resolver asks the merge. Either half alone would pass while the chain was
+  // broken in the other.
+  ok(/routing\.extraResolver\(/.test(src('src/longterm/routes/combined-pricer.js')),
+    'AIM-5 …and the route resolves a row\'s investor through the SHARED resolver rather than a second lookup of its own');
+  ok(/function extraResolver\(/.test(src('src/longterm/pricing/investor-routing.js'))
+    && /merge\.resolveInvestor\(/.test(src('src/longterm/pricing/investor-routing.js')),
+  'AIM-5b …and that resolver is merge\'s own, so the extra can never land on an investor the merge put elsewhere');
+
+  /* AN INVESTOR SOMEBODY ADDED BY HAND CARRIES ITS OWN EXTRA TOO (2026-09-02).
+     The whole chain has to know about it or the extra silently does nothing: the
+     row is resolved by the same resolver, the setting is read against the same
+     effective roster, and the price moves. A chain that knew about the investor
+     in one of those three places and not the others would take the standing
+     figure off a row somebody had deliberately set an extra on. */
+  /* ⛔ THE ROUTE'S OWN RESOLVER, NOT A COPY OF IT. This used to re-type the
+     closure `priceBoth` builds — resolve the row, read the setting, return the
+     extra — which meant the test went on passing whatever the route did. It now
+     calls `routing.extraResolver`, the one definition the board itself uses, so
+     a route that stopped threading the hand-added investors reddens this. */
+  const roster = require('../src/longterm/pricing/investor-roster');
+  const routeSrc = src('src/longterm/routes/combined-pricer.js');
+  ok(/const extraFor = routing\.extraResolver\(/.test(routeSrc),
+    'AIM-10a the board builds its per-investor extra with the SHARED resolver, so this test drives the same code the board runs');
+
+  const custom = roster.readCustom({
+    sweptside: { label: 'Sweptside Capital Partners', whiteLabel: 'Northgate', aliases: ['Sweptside Cap'] },
+  }).custom;
+  const board2 = () => ({ source: 'loannex', programs: [{ investor: 'Sweptside Cap', rungs: [{ rate: 7, price: 101.5, points: -1.5 }] }] });
+
+  const withCustom = vm.applyToBoard(board2(), 'loannex', {
+    extraFor: routing.extraResolver(settings.readSettings({ sweptside: { holdback: 0.25 } }, custom).settings, null, custom),
+  });
+  ok(withCustom.programs[0].rungs[0].price === 101 && withCustom.programs[0].marginHoldback === 0.5,
+    `AIM-10 a hand-added investor's own extra reaches its rows (got ${withCustom.programs[0].rungs[0].price})`);
+
+  // CONTROL: the same board and the same resolver, with no hand-added investors
+  // in force. The row is nobody, so nobody's extra applies and the standing
+  // figure stands — which is what this did before any of it existed.
+  const without = vm.applyToBoard(board2(), 'loannex', {
+    extraFor: routing.extraResolver(settings.readSettings({ sweptside: { holdback: 0.25 } }).settings, null),
+  });
+  ok(without.programs[0].rungs[0].price === 101.25 && without.programs[0].marginHoldback === 0.25,
+    'AIM-11 CONTROL: with none in force that same row is nobody, so it takes the standing figure alone');
 }
 {
   // With nobody carrying an extra, the board is what it always was.
@@ -151,6 +194,87 @@ console.log('\n== D. HIDDEN FROM CONSUMERS, BAKED INTO THE RATE ==');
   const p = revealed.investors[0].programs[0];
   ok(p && p.marginHoldback === 0.5 && p.marginHoldbackExtra === 0.25,
     'HIDE-5 …while an admin who asks for the source gets the whole trail back — nothing is thrown away, the flag decides what is SHOWN');
+}
+
+
+// ---- D2. AND NOT RECOVERABLE BY SUBTRACTION ---------------------------------
+console.log('\n== D2. THE HOLDBACK IS NOT RECOVERABLE BY SUBTRACTION ==');
+{
+  /* AUDIT F5. Stripping the trail is only half of hiding a number. The vendor ALSO publishes a
+     price floor and a price ceiling on its explain payload, `breakdown.priceOf` prints both beside
+     the HELD-BACK price, and `shiftBase` used to move only the base — so the panel carried
+     `{price: 104.25, floor: 98, ceiling: 104.5}` and CEILING MINUS PRICE was the holdback, read
+     straight off, with no field named `marginHoldback` anywhere in sight.
+
+     WHAT IS AND IS NOT MEASURED HERE, stated because the task this came from claimed more than
+     this repository can show. Every explain payload in `loannex/capture/` was walked: SEVEN carry a
+     ceiling, and the ceiling BINDS (price === ceiling) on NONE of them — so on the recorded
+     traffic the subtraction yields the vendor's headroom rather than our margin. The task's "binds
+     on 28 of 34 rates" could not be reproduced from anything committed here and is not repeated.
+     The defect is real regardless and is fixed on its own terms: a price and its own bounds must be
+     on ONE scale, and where the ceiling does bind — which is the vendor's choice, not ours — the
+     gap IS the holdback. A guard that waits for the vendor to bind its ceiling before it protects
+     the margin is a guard that fails on the day it matters. */
+  // ⛔ THE MODULE'S OWN ROUNDING, not a second copy. A guard that rounds differently from the code
+  // it judges will one day disagree with it about a tenth of a point and be believed.
+  const round3 = vm._internals.r3;
+  const PTS = 0.25;
+  const vendorBuild = () => ({
+    price: 104.5, basePoints: -4.5, basePrice: 104.5,
+    priceFloor: 98, priceCeiling: 104.5, adjustmentPoints: 0,
+  });
+
+  const shifted = vm._internals.shiftBase(vendorBuild(), PTS);
+  const boardPrice = round3(100 - shifted.basePoints);
+  ok(boardPrice === 104.25 && shifted.priceCeiling === 104.25 && shifted.priceFloor === 97.75,
+    `SUB-1 the bounds move WITH the price (price ${boardPrice}, floor ${shifted.priceFloor}, ceiling ${shifted.priceCeiling}) — before this, the ceiling rode out at the vendor's own 104.5`);
+  ok(round3(shifted.priceCeiling - boardPrice) === 0,
+    'SUB-2 THE ONE THAT MATTERS: ceiling minus price is now ZERO where it used to be exactly the holdback');
+  ok(round3(vendorBuild().priceCeiling - boardPrice) === PTS,
+    `SUB-2b …and the control says the subtraction really did work: the vendor's OWN ceiling minus the board price is still ${PTS}, which is what a reader had`);
+  ok(round3(shifted.vendorPriceCeiling - shifted.priceCeiling) === PTS
+    && round3(shifted.vendorPriceFloor - shifted.priceFloor) === PTS,
+    'SUB-3 both bounds moved by the SAME amount as the price, and by the holdback exactly — a bound on a different scale from the price it bounds is not a bound');
+  ok(shifted.vendorPriceFloor === 98 && shifted.vendorPriceCeiling === 104.5,
+    'SUB-4 the vendor\'s own figures ride along under `vendor*` names for the reveal, exactly as `vendorBasePoints` does — nothing is thrown away');
+
+  // ⛔ CALLED TWICE, the way a re-priced option can be. `vendorPriceFloor` is the base for the
+  // shift once it exists, so the holdback is taken ONCE however many times this runs.
+  const twice = vm._internals.shiftBase(shifted, PTS);
+  ok(twice.priceCeiling === 104.25 && twice.priceFloor === 97.75 && twice.vendorPriceCeiling === 104.5,
+    'SUB-5 shifting an already-shifted build takes the holdback ONCE — the raw figure is the base, never the shifted one');
+
+  // A LENDER PRICE build has no bounds at all. Nothing may be invented for it.
+  const noBounds = vm._internals.shiftBase({ basePoints: -1, basePrice: 101 }, PTS);
+  ok(!('priceFloor' in noBounds) && !('priceCeiling' in noBounds)
+    && !('vendorPriceFloor' in noBounds) && !('vendorPriceCeiling' in noBounds),
+    'SUB-6 a build the vendor gave no bounds for gets none invented — a floor we made up is indistinguishable from one a sheet published');
+
+  // AND THE ORDINARY BOARD CARRIES NEITHER RAW FIGURE.
+  const row = {
+    investor: 'NQM Funding', source: 'loannex', lenderId: 'X-1', marginHoldback: PTS,
+    options: [{ marginHoldback: PTS, priceBuild: { ...shifted, price: boardPrice } }],
+  };
+  const shown = routing._internals.stripSource(row);
+  const pb = shown.options[0].priceBuild;
+  const raw = Object.keys(pb).filter((k) => /^vendor/i.test(k));
+  ok(raw.length === 0, `SUB-7 the ordinary board carries no \`vendor*\` figure at all (${raw.join(', ') || 'none'}) — keeping the raw ceiling under a new name would move the subtraction one field along, not close it`);
+
+  /* THE SWEEP, which is the guard that will still be right about a field nobody has written yet.
+     Rather than naming floor and ceiling, it walks EVERY number the ordinary board hands over and
+     asserts that none of them sits exactly one holdback away from the price. A future field with
+     this same defect reddens this line on the day it is added. */
+  const nums = [];
+  (function walk(o) {
+    if (!o || typeof o !== 'object') return;
+    for (const [k, v] of Object.entries(o)) {
+      if (typeof v === 'number') nums.push([k, v]);
+      else if (v && typeof v === 'object') walk(v);
+    }
+  }(shown));
+  const tells = nums.filter(([k, v]) => k !== 'price' && round3(Math.abs(v - boardPrice)) === PTS);
+  ok(tells.length === 0,
+    `SUB-8 THE SWEEP: no number anywhere on the ordinary board sits exactly one holdback from the price (${tells.map(([k, v]) => `${k}=${v}`).join(', ') || 'none of ' + nums.length + ' numbers'})`);
 }
 
 // ---- E. THE SETTING ITSELF --------------------------------------------------

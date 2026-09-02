@@ -166,8 +166,16 @@ const nexRowOf = (out) => (out.programs || []).find((p) => p.program === 'DSCR 3
     ok(o.priceBuild && o.priceBuild.basePoints === null && o.priceBuild.adjustmentPoints === null,
       'NEX-2 …and still says plainly that it published no base or adjustment total with the ladder — it explains on demand');
     ok(o.monthlyPayment && o.monthlyPayment.monthlyPI === 2400, 'NEX-3 …and its payment still comes off its own `payment` key');
-    ok(o.explain && o.explain.vendor === 'loannex' && o.explain.priceHashKey === 'h1',
+    /* RE-POINTED 2026-09-02 (audit F8). This PINNED `explain.vendor === 'loannex'` as correct — on
+       the ordinary board, whose whole rule is that it must not be tellable apart. A guard that
+       requires the fingerprint is a guard that would have to be deleted to fix the defect, so it is
+       turned around instead: the handle must still ADDRESS the quote, and must no longer NAME the
+       vendor. Nothing ever read that field — `/explain` routes on `priceHashKey` and no browser
+       code mentions it. */
+    ok(o.explain && o.explain.priceHashKey === 'h1',
       'NEX-4 …and it still carries the handle the explain door needs');
+    ok(o.explain && !('vendor' in o.explain),
+      'NEX-4b …and that handle no longer NAMES the vendor — it addresses the quote without saying who sold it');
   }
 
   console.log('\n── THE PARSER WITH THE FLAG OFF IS BYTE-IDENTICAL ──');

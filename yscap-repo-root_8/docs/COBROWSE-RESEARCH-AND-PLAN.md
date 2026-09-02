@@ -92,7 +92,13 @@ Phase A — Watch-only with cursor (1.5–3 wk)
     in server.js; /ws/cobrowse with token + session auth; in-memory rooms.
   - Guest: @rrweb/record with maskAllInputs, maskTextSelector/blockSelector for the
     sensitive list, recording OFF on auth/MFA/e-sign routes; full snapshot on viewer join.
-  - Viewer: @rrweb/replay liveMode in a sandboxed iframe, 500ms–1s buffer, route header.
+  - Viewer: @rrweb/replay liveMode in a sandboxed iframe, route header, and a size
+    control (Fit / 100% / a ladder to 3x, the stage scrolling past the fit scale).
+    [CORRECTED 2026-09-02 — this line originally proposed a "500ms–1s buffer" and that
+    is WRONG, so it is struck rather than left to be copied: the buffer is a delay on
+    EVERY change, not a jitter cushion. Shipped at 200 ms it MEASURED a 533 ms floor end
+    to end and the owner's words were "extremely slow". It is 40 ms, measured back to a
+    315 ms median. Do not raise it without re-running the drive's latency check.]
   - Consent v1: the WATCHED person sees a request and must Accept; persistent banner
     "X is watching your screen — Stop"; ends on Stop, sign-out, cap, or viewer leaving.
   - Tables: cobrowse_sessions (viewer, watched kind+id, application_id?, started/ended,
@@ -109,7 +115,7 @@ Phase B — Take control (2–4 wk)
     setter; drivable allowlist; hard blocks: e-sign, file inputs, view-as, sign-out, MFA.
   - Controller cursor overlay on the guest; guest-friendly notes for upload/download/new tab.
 Phase C — Hardening (2–4 wk)
-  - Redaction CI harness: fails if an SSN/password/OTP pattern appears in the event stream.
+  - Mask CI harness: fails if a password/OTP/marked-secret pattern appears in the event stream.
   - Reconnect + re-snapshot on deploy; per-session rate limits; metadata-only retention
     (no stream stored); legal copy for consent; owner sign-off on wording.
 
@@ -150,10 +156,12 @@ manager copied; (4) retention: store nothing but who/when/what-was-done (recomme
 - Phase B (take control): db/683 control state; a SECOND consent; the hub relays sanitised input only
   while `granted`; the guest's own browser performs it through rrweb mirror ids inside a hard allowlist
   (no blocked element, file picker, download/new-tab link, iframe/e-sign, sign-out; no-drive routes);
-  a trusted move/key of the guest's own hand, Take back, Stop or the session's end release it;
+  a deliberate act of the guest's own hand (click/key/wheel/touch — never a passive mouse move,
+  which the 2026-09-02 fix removed), Take back, Stop or the session's end release it;
   30 s request expiry; red frame + controller pointer on the guest.
-- Phase C (hardening): server-side redaction guard (dashed SSN / Luhn card → frame dropped, counted,
-  viewer told); Playwright harness proving the mask against the real rrweb build (SKIPs without
+- Phase C (hardening): [the server-side redaction guard shipped here and was REMOVED on 2026-09-02 —
+  an rrweb stream is stateful, so dropping a frame blanked the mirror permanently; the browser mask is
+  the protection]; Playwright harness proving the mask against the real rrweb build (SKIPs without
   Chromium); restart recovery (orphaned `active` rows closed 3 s after boot and every 30 s); terminal
   close codes stop reconnects, backoff + 5-minute give-up; per-viewer input rate cap; atomic request
   under an advisory lock (an unanswered request counts as busy); helper / guest-link tokens refused at
