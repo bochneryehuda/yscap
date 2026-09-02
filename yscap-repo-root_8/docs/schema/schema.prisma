@@ -9,17 +9,17 @@
 // *** IT IS INCOMPLETE, AND THAT IS NOT A DEFECT — IT IS A PROPERTY OF THE
 // *** PRISMA SCHEMA LANGUAGE. It cannot express triggers, functions, CHECK
 // *** constraints, generated columns or partial indexes. On this database
-// *** that is 959 objects it cannot see, listed in full in
+// *** that is 960 objects it cannot see, listed in full in
 // *** BEYOND-PRISMA.md next to this file.
 //
 // *** SO: NEVER REBUILD A DATABASE FROM THIS FILE. Doing so produces SQL that
 // *** runs without a single error and silently leaves out every one of those
-// *** 959 objects — including the guard that keeps a budget
+// *** 960 objects — including the guard that keeps a budget
 // *** condition from being signed off unless the totals match to the cent.
-// *** The 669 numbered migrations in db/ (highest db/672) are the only
+// *** The 671 numbered migrations in db/ (highest db/675) are the only
 // *** thing that builds this database.
 //
-// Snapshot: 410 tables, 6558 columns.
+// Snapshot: 410 tables, 6563 columns.
 // ===========================================================================
 datasource db {
   provider = "postgresql"

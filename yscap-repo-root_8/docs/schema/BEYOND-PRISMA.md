@@ -5,11 +5,11 @@
 The Prisma schema file describes tables, columns and relations. Its schema
 language cannot represent triggers, functions, CHECK constraints, generated
 columns or partial indexes. On this database that is
-**959 objects**, and a database rebuilt from the Prisma
+**960 objects**, and a database rebuilt from the Prisma
 file alone would be missing every one of them — silently, with no error.
 
 That is why the rule is absolute: **the schema files are for reading. Never
-rebuild a database from them.** The 669 numbered migrations in `db/` (highest `db/672`) remain the only thing that builds this database.
+rebuild a database from them.** The 671 numbered migrations in `db/` (highest `db/675`) remain the only thing that builds this database.
 
 Everything below is also recorded, object by object, in
 `beyond-prisma.json`, which is what `npm run schema:check` compares against
@@ -20,10 +20,10 @@ the live database.
 | | |
 |---|---|
 | Tables | 410 |
-| Columns | 6558 |
+| Columns | 6563 |
 | Triggers | 38 |
 | Functions | 142 |
-| CHECK constraints | 352 |
+| CHECK constraints | 353 |
 | Generated columns | 12 |
 | Partial indexes | 415 |
 | Primary keys | 410 |
@@ -652,7 +652,7 @@ the live database.
 - **uq_trk_finding_open** on `track_record_findings`
 - **uq_wf_live** on `workflow_items`
 
-## CHECK constraints (352)
+## CHECK constraints (353)
 
 - **ai_suggestions_status_check** on `ai_suggestions`
 - **amc_party_map_kind_check** on `amc_party_map`
@@ -764,6 +764,7 @@ the live database.
 - **closing_handling_settings_scope_check** on `closing_handling_settings`
 - **closing_thread_messages_event_kind_check** on `closing_thread_messages`
 - **closing_workflow_stage_check** on `closing_workflow`
+- **cobrowse_sessions_control_status_chk** on `cobrowse_sessions`
 - **cobrowse_sessions_kind_chk** on `cobrowse_sessions`
 - **cobrowse_sessions_not_self_chk** on `cobrowse_sessions`
 - **cobrowse_sessions_status_chk** on `cobrowse_sessions`
