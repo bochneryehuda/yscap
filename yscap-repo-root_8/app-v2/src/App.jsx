@@ -85,6 +85,8 @@ import StaffInvestorSuite from './screens/StaffInvestorSuite.jsx';
 import StaffBorrowerDetail from './screens/StaffBorrowerDetail.jsx';
 import StaffBorrowerView from './screens/StaffBorrowerView.jsx';
 import StaffTpoView from './screens/StaffTpoView.jsx';
+import StaffCobrowse from './screens/StaffCobrowse.jsx';
+import CobrowseHost from './components/CobrowseHost.jsx';
 import StaffVendors from './screens/StaffVendors.jsx';
 // The research desk: the property / comparable / appraiser database (db/409) and
 // the build-your-own valuation grid (db/410).
@@ -207,6 +209,12 @@ export default function App() {
             lib/dialog falls back to the browser's native box, so a message is
             never swallowed — see the note in that file. */}
         <AppDialogHost />
+        {/* CO-BROWSE, guest side (owner-directed 2026-09-02). Mounted once, beside the
+            dialog host and outside the ErrorBoundary for the same reasons: the consent
+            prompt and the "X is watching" banner must reach every signed-in screen —
+            a borrower's portal as much as a teammate's console — and must survive a
+            screen that crashes. It draws nothing until a request arrives. */}
+        <CobrowseHost />
         <ErrorBoundary>
         <Routes>
           {/* public */}
@@ -362,6 +370,7 @@ export default function App() {
           <Route path="/internal/borrower-view" element={<StaffPrivate><StaffBorrowerView /></StaffPrivate>} />
           {/* Broker (TPO) view — pick one of your firms' brokers and see PILOT as they see it. */}
           <Route path="/internal/tpo-view" element={<StaffPrivate><StaffTpoView /></StaffPrivate>} />
+          <Route path="/internal/cobrowse/:sessionId" element={<StaffPrivate><StaffCobrowse /></StaffPrivate>} />
           <Route path="/internal/vendors" element={<StaffPrivate><StaffVendors /></StaffPrivate>} />
           {/* Research desk — every staff role, no per-file scoping (owner-directed:
               "make it available for all the staff users to see all the things"). */}

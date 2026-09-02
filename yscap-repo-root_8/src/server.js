@@ -492,6 +492,11 @@ app.use('/api/term-sheet-offers',
 // leave + status calls are made while holding a BORROWER-kind token.
 app.use('/api/borrower-view', require('./routes/borrower-view'));
 app.use('/api/staff-view', require('./routes/staff-view'));
+// CO-BROWSING (owner-directed 2026-09-02): ask / consent / status / end. Mounted outside
+// /api/staff because the WATCHED person may be a borrower answering the prompt or
+// pressing Stop with a borrower-kind token. The live stream itself is a WebSocket on
+// this same server — see src/lib/cobrowse/hub.js, attached in the listen block below.
+app.use('/api/cobrowse', require('./routes/cobrowse'));
 // Start / leave / audit a TPO (broker) view. Mounted outside /api/staff because
 // the leave + status calls are made while holding a TPO-kind token.
 app.use('/api/tpo-view', require('./routes/tpo-view'));
@@ -878,7 +883,14 @@ function logEmailConfig() {
 }
 
 if (require.main === module) {
-  app.listen(cfg.port, async () => {
+  // ONE http.Server carries both Express and the co-browsing WebSocket endpoint
+  // (/ws/cobrowse). `app.listen` would create a server we never get a handle to;
+  // creating it here is what lets the hub answer the HTTP upgrade. Every other
+  // upgrade path is refused by the hub (PILOT has no other WebSocket).
+  const httpServer = require('http').createServer(app);
+  try { require('./lib/cobrowse/hub').attach(httpServer); }
+  catch (e) { console.error('[cobrowse] hub did not attach — co-browsing is off this boot:', e && e.message); }
+  httpServer.listen(cfg.port, async () => {
     console.log(`YS Capital Portal on :${cfg.port} (${cfg.env}) — email:${cfg.emailProvider} storage:${cfg.storageProvider}`);
     logEmailConfig();
     // Resolve + report the storage base up front so a bad disk mount is obvious

@@ -611,6 +611,9 @@ export default function StaffLayout({ children }) {
             style={{ paddingLeft: 41, fontSize: 13 }}>{p.label}</NavLink>
         ))}
 
+        {/* TEAM FOR EVERYBODY (owner-directed 2026-09-02). Admins reach it under
+            Admin below; everyone else gets the read-only roster with Co-browse. */}
+        {!canManageTeam && <NavLink className="sb-link" to="/internal/team" title="Team — everybody on the YS Capital desk, and Co-browse to see a teammate's screen with their permission"><NavIcon name="team" />Team</NavLink>}
         <div className="sb-sec">Files</div>
         <NavLink className="sb-link" to="/internal/borrowers" title="Your borrowers — invite to PILOT, reset or set a password, see last login"><NavIcon name="borrowers" />Borrowers</NavLink>
         <NavLink className="sb-link" to="/internal/borrower-view" title="Borrower view — step into a borrower's portal and see PILOT exactly as they see it, so you can walk them through a screen live. One click brings you back."><NavIcon name="borrowerView" />Borrower view</NavLink>

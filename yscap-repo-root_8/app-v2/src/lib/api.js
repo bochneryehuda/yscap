@@ -1950,6 +1950,16 @@ export const api = {
   staffViewExit:     () => req('POST', '/api/staff-view/exit'),
   staffViewHistory:  (limit) => req('GET', '/api/staff-view/history' + qs({ limit })),
 
+  // ---- Co-browsing (owner-directed 2026-09-02): watch a teammate's or a borrower's LIVE
+  // screen WITH their consent. No token swap — the watched person's own browser streams a
+  // masked copy of its page (lib/cobrowse.js) and the viewer replays it (screens/StaffCobrowse).
+  cobrowseRequest: (kind, id, applicationId) => req('POST', '/api/cobrowse/request', { kind, id, applicationId: applicationId || null }),
+  cobrowseRespond: (sessionId, accept) => req('POST', `/api/cobrowse/${encodeURIComponent(sessionId)}/respond`, { accept: !!accept }),
+  cobrowseEnd:     (sessionId) => req('POST', `/api/cobrowse/${encodeURIComponent(sessionId)}/end`),
+  cobrowseMine:    () => req('GET', '/api/cobrowse/mine'),
+  cobrowseGet:     (sessionId) => req('GET', `/api/cobrowse/${encodeURIComponent(sessionId)}`),
+  cobrowseHistory: (limit) => req('GET', '/api/cobrowse/history' + qs({ limit })),
+
   // ---- Research desk: the property / comparable / appraiser database ----------
   // Built out of every appraisal XML we have ever imported (db/409). Staff-wide —
   // it holds addresses, property facts and recorded sale prices, no borrower data.
