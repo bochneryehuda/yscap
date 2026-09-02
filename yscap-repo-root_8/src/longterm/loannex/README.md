@@ -320,6 +320,21 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     spelling in as the first alias — retyping it by hand is how a second, slightly different
     spelling gets created. `app-v2/src/longterm/customInvestors.js` is the browser twin of the key
     rule, pinned to the server's by a test that RUNS both.
+    **⛔ THE GENERAL PRICING ENGINE DOES NOT MOVE, and the first cut of this moved it.**
+    Its roster door (`routes/dscr-pricer.js` `GET /investors`) was a pure, synchronous read of
+    the committed white-label sheet. This feature made it `async` and had it read the settings
+    store, so a hand-added investor — and a white label typed on the COMBINED engine's settings
+    screen — appeared on the general screen's pre-search dropdown. That list is a FILTER: an
+    officer picks a name and the search narrows to it, and this engine asks Lender Price and
+    nobody else, so a LoanNEX-only investor offered there produces an empty board with nothing on
+    screen to explain it. Saved investor groups (`pricer-groups.js`, used by `LtPricer.jsx` — the
+    general screen) had the same defect from the other end: `sanitizeInvestors` began KEEPING keys
+    it used to drop. Both are restored to exactly what they were at 33fcf61 — byte-identical
+    answers, asserted — and guarded behaviourally: the door is proven to perform NO settings or
+    database read, and to answer the same bytes whether or not somebody has added an investor.
+    Should a hand-added investor ever belong on the general dropdown once it comes online, that is
+    the owner's decision, not a side effect of a shared module gaining an argument.
+
     **TWO THINGS DELIBERATELY NOT DONE, both flagged to the owner rather than guessed.** Clearing a
     white label takes that row's own name AWAY, so the row returns to the sheet's name where there
     is one — the screen now SAYS which name will apply before saving, but a deliberate "this
@@ -361,7 +376,7 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     first-request case outright. Closing the rest needs processes to be told when a write happens,
     and this deployment has no such channel — so it is stated here rather than dressed up. The
     reasoning of record is `docs/longterm/AUDIENCE-RULES.md`.
-    Guarded by `scripts/test-lt-custom-investors-pure.js` (forty mutations proven across four batteries,
+    Guarded by `scripts/test-lt-custom-investors-pure.js` (forty-six mutations proven across five batteries,
     with green controls either side) and by re-pointed assertions in the investor-block, link, programs,
     holdback, dscr-routes, pricer-shared, settings-screen and combined-audit suites.
 

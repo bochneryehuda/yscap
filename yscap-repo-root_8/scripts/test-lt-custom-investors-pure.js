@@ -25,7 +25,7 @@
  * proven is that a row somebody SAVED reaches the board, not that a function is
  * called.
  *
- * MUTATION-PROVEN — FORTY of them, in four batteries. Each was applied to the
+ * MUTATION-PROVEN — FORTY-SIX of them, in five batteries. Each was applied to the
  * production code, the named suite went RED, and a green control run either side
  * confirmed it was the mutation and not the weather.
  *
@@ -84,6 +84,23 @@
  *   C4. the read checking the LABEL separately again, ahead of the alias loop   → §L
  *   C5. an in-flight read that raced a `bust()` publishing its stale answer     → §K3
  *   C6. `ensureWarm` losing its name, so no mounted layer can be recognised     → §K
+ *
+ * A FIFTH ROUND, after an audit found this feature had moved the GENERAL pricing
+ * engine — the one thing the owner has said most often it must not do. Its roster
+ * door had become a settings read, so a LoanNEX-only investor appeared in a
+ * Lender-Price-only dropdown (an empty board nobody could explain), and saved
+ * investor groups had quietly started KEEPING keys they used to drop. Worse, §E
+ * of this suite ASSERTED the first of those as correct — a regression with a
+ * green test:
+ *   D1. the general roster door reading the settings store again  → test-lt-dscr-routes
+ *   D2. `fullRoster` taking the hand-added investors again                     → §E
+ *   D3. saved groups consulting the settings store (the second general door)   → §E
+ *   D4. that door becoming async again                            → test-lt-dscr-routes
+ *   D5. …leaking a `degraded` key it never had                    → test-lt-dscr-routes
+ *   D6. …answering a shape with a `custom` flag on it             → test-lt-dscr-routes
+ * D3 needed its assertion rewritten first: naming ONE key is satisfied by a
+ * filter that consults the store for every other key, so it is now the invariant
+ * — a saved group keeps ONLY investors on the committed sheet.
  *
  * ⛔ THE RULE THIS SUITE HAS NOW PAID FOR TWICE, so it is written at the top:
  * A GUARD THAT GREPS FOR A LITERAL CAN BE SATISFIED BY THE COMMENT THAT EXPLAINS
@@ -466,27 +483,67 @@ head('E. it behaves like a recorded investor everywhere a roster is read');
   ok(routed.investors.some((e) => e.key === CE.key),
     'the routed board keeps it, so a person can choose which program to price it from');
 
-  // THE WHITE LABEL REACHES THE CONSUMER-SAFE SURFACES.
+  // THE WHITE LABEL REACHES THE COMBINED ENGINE'S SURFACES — and ONLY those.
   ok(programs.whiteLabelOf(CE.key, custom) === CE.whiteLabel,
     'the name a client may see is answered for a hand-added investor');
-  ok(programs.fullRoster(custom).some((r) => r.key === CE.key && r.whiteLabel === CE.whiteLabel),
-    'and it is on the full white-label roster the pre-search list is drawn from');
-  ok(!programs.fullRoster().some((r) => r.key === CE.key),
-    'CONTROL: with none in force that roster is the committed sheet alone');
   {
-    // A WHITE LABEL SET IN SETTINGS IS NOT DROPPED. `fullRoster` used to include
-    // only investors the SHEET named, so an investor whose client-safe name was
-    // typed on the settings screen was silently absent from every list built
-    // from it.
     const noneOnSheet = { nameless: { label: 'Nameless Capital' } };
     const c2 = customOf(noneOnSheet);
     const withSetting = investorSettings.readSettings({ nameless: { whiteLabel: 'Ridgeway' } }, c2).settings;
     ok(programs.effectiveWhiteLabel('nameless', c2, withSetting) === 'Ridgeway',
-      'a client-safe name typed on the settings screen is the one that applies');
-    ok(programs.fullRoster(c2, withSetting).some((r) => r.whiteLabel === 'Ridgeway'),
-      '…and it reaches the roster, rather than being dropped for not being on the sheet');
-    ok(!programs.fullRoster(c2).some((r) => r.key === 'nameless'),
-      '…while an investor nobody has named is kept OFF it — a client may never be shown a name we did not choose');
+      'a client-safe name typed on the combined engine’s settings screen is the one that applies THERE');
+    ok(programs.effectiveWhiteLabel('nameless', c2) === null,
+      '…and an investor nobody has named has none — a client may never be shown a name we did not choose');
+  }
+
+  /**
+   * ⛔ AND THE GENERAL ENGINE DOES NOT MOVE. `fullRoster()` is the list behind
+   * the GENERAL pricing screen's pre-search dropdown, and that list is a FILTER:
+   * an officer picks a name and the search narrows to it. That engine asks
+   * Lender Price and nobody else.
+   *
+   * An earlier cut of this feature threaded the hand-added investors into it —
+   * and this suite ASSERTED that as correct, which is how a regression gets a
+   * green test. An audit caught it: a LoanNEX-only investor appeared in a
+   * Lender-Price-only dropdown, and picking it produced an empty board with
+   * nothing on the screen to explain why. The owner's standing instruction is
+   * that the general engine does not move; if a hand-added investor should ever
+   * appear there, that is his decision to make, not a side effect of a shared
+   * module gaining an argument.
+   */
+  ok(programs.fullRoster.length === 0,
+    'the general engine’s roster takes NO roster argument — there is no way to hand it the hand-added investors');
+  ok(!programs.fullRoster().some((r) => r.key === CE.key || r.whiteLabel === CE.whiteLabel),
+    'THE ONE THAT MATTERS: a hand-added investor is NOT on the general engine’s pre-search list');
+  ok(JSON.stringify(programs.fullRoster()) === JSON.stringify(programs.fullRoster()),
+    '…and that list is a pure read of the committed sheet, so it answers the same thing every time');
+  ok(programs.fullRoster().every((r) => !('custom' in r)),
+    '…in the shape that screen has always been sent, with no flag it never had');
+
+  /**
+   * THE SECOND GENERAL-ENGINE DOOR, for the same reason. Saved investor groups
+   * belong to `app-v2/src/longterm/LtPricer.jsx` — the general screen — and this
+   * filter briefly consulted the settings store, so a group quietly began KEEPING
+   * a key it used to drop.
+   */
+  {
+    const pricerGroups = require(path.join(ROOT, 'src/longterm/pricer-groups'));
+    const sheetKeys = new Set(programs.fullRoster().map((r) => r.key));
+    // Asserted as an INVARIANT rather than about one name: "only sheet investors
+    // survive". A guard naming a single key is satisfied by a filter that
+    // consults the settings store for every OTHER key, which is exactly the
+    // mutation that got past the first version of this assertion.
+    const probe = [...sheetKeys].slice(0, 3)
+      .concat([CE.key, 'clearedge_lending', 'nameless_capital', 'not_a_key']);
+    const kept = pricerGroups._internals.sanitizeInvestors(probe);
+    ok(pricerGroups._internals.sanitizeInvestors.length === 1,
+      'the saved-group filter takes no roster argument');
+    ok(kept.investors.every((k) => sheetKeys.has(k)),
+      `THE ONE THAT MATTERS: a saved group keeps ONLY investors on the committed sheet — never one somebody added by hand (kept ${JSON.stringify(kept.investors)})`);
+    ok(kept.dropped.includes(CE.key) && kept.dropped.includes('clearedge_lending'),
+      '…so a hand-added investor is dropped, exactly as it was before this feature existed');
+    ok(kept.investors.length === 3,
+      '…while every sheet investor asked for is kept, so the drop is a rule and not a broken filter');
   }
 
   // THE PANEL'S OWN HOLDBACK. A hand-added investor's extra is read like any

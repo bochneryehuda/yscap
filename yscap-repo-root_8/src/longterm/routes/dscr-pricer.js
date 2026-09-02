@@ -21,7 +21,6 @@ const investorPrograms = require('../lenderprice/investor-programs');
 const { REGISTRY_FIELDS } = require('../lenderprice/field-registry');
 const zipCounty = require('../lenderprice/zip-county');
 const settingsStore = require('../settings/store');
-const rosterContext = require('../pricing/roster-context');
 const { resolveCompPlan } = require('../comp-plan');
 const bracketRun = require('../pricing/bracket-run');
 const { REGISTRY_WARNINGS, CASHOUT_INTERNAL, validateScenario, _internals: modelInternals } = require('../lenderprice/search-model');
@@ -612,19 +611,29 @@ async function compPlanHandler(req, res) {
 // GET /investors — the FULL white-label roster (owner-directed 2026-08-27): every
 // investor on the owner's sheet, live in Lender Price or not, so the pre-search
 // dropdown lists them all and an investor that comes online later "is already
-// there". No vendor call. It DOES read settings now, because the roster is no
-// longer only the committed sheet: an investor added by hand belongs on this
-// list the moment somebody adds it, and a white label chosen in settings is the
-// name that applies. `rosterContext.load()` never throws — a settings outage
-// answers the sheet alone and says `degraded`, which is what this door answered
-// before custom investors existed.
-async function investorsRoster(req, res) {
-  const ctx = await rosterContext.load();
-  res.json({
-    ok: true,
-    investors: investorPrograms.fullRoster(ctx.custom, ctx.settings),
-    degraded: ctx.degraded === true,
-  });
+// there". A pure read of the committed sheet — no vendor call, no database — so
+// the screen may fetch it from an effect.
+//
+// ⛔ IT STAYS THAT WAY. This door briefly read the settings store, so that an
+// investor somebody added by hand and a white label typed on the combined
+// engine's settings screen both showed up here. That was wrong twice over, and
+// it is the owner's most-repeated instruction — *"don't touch our current setup
+// that we currently have: our General Pricing Engine"*:
+//
+//   · THIS LIST IS A FILTER, NOT A DISPLAY. An officer picks a name here and the
+//     search is narrowed to it. This engine asks Lender Price and nobody else, so
+//     a LoanNEX-only investor offered here produces an EMPTY BOARD with nothing
+//     on the screen to explain why.
+//   · AND IT IS A SECOND CHANGE TO WHAT THIS SCREEN CALLS AN INVESTOR, on a door
+//     that had only ever read the committed sheet.
+//
+// The combined engine reads the hand-added investors; this one does not. If that
+// should ever change it is the owner's call, not a side effect of a shared
+// module gaining an argument. `test-lt-dscr-routes.js` asserts that this handler
+// performs no settings read and answers identically whether or not somebody has
+// added an investor.
+function investorsRoster(req, res) {
+  res.json({ ok: true, investors: investorPrograms.fullRoster() });
 }
 
 // A router with the endpoints wired. Auth is applied by the mount (staff at /api/lt, or the
@@ -633,10 +642,7 @@ function makeRouter() {
   const router = express.Router();
   router.use(express.json({ limit: '256kb' }));
   router.get('/zip/:zip', zipLookup);
-  router.get('/investors', (req, res) => investorsRoster(req, res).catch((e) => {
-    console.error('[lt-dscr] investors roster failed:', (e && e.message) || e);
-    res.status(500).json({ ok: false, error: 'lt_dscr_investors_error' });
-  }));
+  router.get('/investors', investorsRoster);
   router.get('/comp-plan', (req, res) => compPlanHandler(req, res).catch((e) => {
     console.error('[lt-dscr] comp-plan failed:', (e && e.message) || e);
     // ⛔ NO PLAN IS THE ANSWER, never a guessed one — the screen falls back to raw pricing

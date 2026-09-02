@@ -164,14 +164,13 @@ function resolveRow(row, custom) {
  * `effectiveWhiteLabel`, so this list and the settings rows can never disagree
  * about who has a client-safe name. Called bare, it is the sheet alone.
  */
-function fullRoster(custom, settings) {
-  const out = [];
-  for (const inv of roster.effectiveList(custom)) {
-    const whiteLabel = effectiveWhiteLabel(inv.key, custom, settings);
-    if (!whiteLabel) continue;
-    out.push({ key: inv.key, whiteLabel, investorLabel: inv.label || inv.key, custom: !!inv.custom });
-  }
-  return out.sort((a, b) => a.whiteLabel.localeCompare(b.whiteLabel));
+function fullRoster() {
+  return Object.entries(PROGRAM_NAMES)
+    .map(([key, whiteLabel]) => {
+      const inv = investors.byKey(key);
+      return { key, whiteLabel, investorLabel: (inv && inv.label) || key };
+    })
+    .sort((a, b) => a.whiteLabel.localeCompare(b.whiteLabel));
 }
 
 /**

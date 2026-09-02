@@ -159,68 +159,92 @@ ok(g.nexted && g.code === null, 'gate passes through on correct token');
 }
 
 /**
- * GET /investors — THE ROSTER DOOR, WHICH NOW READS SETTINGS.
+ * GET /investors — THE GENERAL ENGINE'S ROSTER DOOR, AND IT READS NOTHING.
  *
- * It used to answer the committed white-label sheet and nothing else. It still
- * answers that sheet — every name on it, live in Lender Price or not — and it
- * ALSO answers the investors somebody added by hand, because an investor that
- * turns up on a vendor board this morning belongs on the pre-search list this
- * morning rather than after a deploy.
+ * ⛔ THE RULE THIS GUARDS is the owner's most-repeated one: *"don't touch our
+ * current setup that we currently have: our General Pricing Engine."*
  *
- * The settings store is stubbed at the DATABASE, not at the store: stubbing the
- * store would prove this door calls a function, and what has to be proven is
- * that a row somebody saved reaches the list.
+ * This door briefly read the settings store, so that an investor somebody added
+ * by hand on the COMBINED engine — and a white label typed on the combined
+ * engine's settings screen — appeared here too. That was wrong twice over:
+ *
+ *   · THIS LIST IS A FILTER, NOT A DISPLAY. An officer picks a name and the
+ *     search narrows to it. This engine asks Lender Price and nobody else, so a
+ *     LoanNEX-only investor offered here yields an EMPTY BOARD with nothing on
+ *     the screen to explain why.
+ *   · AND IT CHANGED WHAT THIS SCREEN CALLS AN INVESTOR, on a door that had only
+ *     ever read the committed sheet.
+ *
+ * So these are asserted by BEHAVIOUR, not by grepping the handler: a grep is
+ * satisfied by the comment that explains it (this suite's siblings paid for that
+ * lesson twice). The handler is called with a database that COUNTS queries and
+ * with a settings store primed with a hand-added investor; it must answer the
+ * same bytes either way, and must not read anything at all.
  */
-(async () => {
+{
   const path = require('path');
-  const dbPath = require.resolve(path.join(__dirname, '../src/longterm/db'));
-  const realDb = require.cache[dbPath];
-  const store = require('../src/longterm/settings/store');
-
+  const DB_PATH = require.resolve(path.join(__dirname, '../src/longterm/db'));
+  const realDb = require.cache[DB_PATH];
+  let queries = 0;
   const rows = [{
     key: 'pricing.customInvestors',
     value: {
-      swept_capital: {
-        label: 'Sweptside Capital Partners',
-        whiteLabel: 'Northgate',
-        aliases: ['Sweptside Capital Partners', 'Sweptside Cap'],
+      clearedge_lending: {
+        label: 'ClearEdge Lending',
+        whiteLabel: 'Summit',
+        aliases: ['ClearEdge Lending', 'ClearEdge'],
       },
     },
   }];
-  require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { query: async () => ({ rows }) } };
+  require.cache[DB_PATH] = {
+    id: DB_PATH,
+    filename: DB_PATH,
+    loaded: true,
+    exports: { query: async () => { queries += 1; return { rows }; } },
+  };
+  const store = require('../src/longterm/settings/store');
+  const audience = require('../src/longterm/audience');
   store.bust();
+
+  // The hand-added investor really IS in force in this process — otherwise the
+  // comparison below would prove nothing at all.
+  audience.useCustomInvestors(rows[0].value);
+  ok(audience.summary().customInvestors.count === 1,
+    'CONTROL: a hand-added investor is in force in this process, so the door has something to leak');
 
   let sent = null;
-  await dp.handlers.investorsRoster({}, { json: (b) => { sent = b; } });
-  const names = (sent && sent.investors ? sent.investors : []).map((i) => i.whiteLabel);
-  // EXACT, not "at least". `>=` was loose enough to pass while the roster served
-  // the same investor twice — a duplicate in a pre-search dropdown is exactly the
-  // kind of thing an overlay over a registry produces, and it must be caught.
-  ok(sent && sent.ok === true && Array.isArray(sent.investors) && sent.investors.length === 25,
-    `GET /investors answers the whole 24-name sheet plus the one added by hand (${sent && sent.investors ? sent.investors.length : 0})`);
-  const keys = (sent && sent.investors ? sent.investors : []).map((i) => i.key);
+  const returned = dp.handlers.investorsRoster({}, { json: (b) => { sent = b; } });
+  const withCustomInForce = JSON.stringify(sent);
+
+  ok(returned === undefined && !(returned && typeof returned.then === 'function'),
+    'the roster handler is SYNCHRONOUS — it awaits nothing, because there is nothing to await');
+  ok(queries === 0,
+    `THE ONE THAT MATTERS: it read NOTHING — no settings, no database (${queries} queries) — so no combined-engine setting can reach the general screen`);
+  ok(sent && sent.ok === true && Array.isArray(sent.investors) && sent.investors.length === 24,
+    `it answers the whole 24-name sheet (${sent && sent.investors ? sent.investors.length : 0})`);
+  const keys = sent.investors.map((i) => i.key);
   ok(new Set(keys).size === keys.length,
-    '…each investor exactly once — an overlay laid over a registry is how one investor comes to be on a list twice');
-  ok(names.includes('Northgate'),
-    'and an investor somebody added by hand is ON that list, under the name a client may see');
-  ok(sent && sent.degraded === false,
-    'a readable store is not reported as degraded');
+    '…each investor exactly once — an overlay laid over a registry is how one comes to be listed twice');
+  ok(!keys.includes('clearedge_lending')
+    && !sent.investors.some((i) => i.whiteLabel === 'Summit'),
+  'THE ONE THAT MATTERS: a hand-added investor is NOT on it — this engine prices Lender Price alone, and offering a LoanNEX-only name here is an empty board nobody can explain');
+  ok(!('degraded' in sent),
+    '…and the answer carries no `degraded` key, because nothing was read that could be degraded');
+  ok(sent.investors.every((i) => !('custom' in i)),
+    '…and no entry carries a `custom` flag: the shape is the one this screen has always been sent');
 
-  // The sheet ALONE when the store cannot be read — the behaviour this door had
-  // before hand-added investors existed. A settings outage may cost the ones
-  // somebody added; it may never cost the sheet.
-  require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: { query: async () => { throw new Error('no database'); } } };
+  // The same door with NOTHING stored — byte for byte.
+  audience.useCustomInvestors(null);
   store.bust();
-  let out = null;
-  await dp.handlers.investorsRoster({}, { json: (b) => { out = b; } });
-  ok(out && out.ok === true && out.investors.length === 24 && !out.investors.some((i) => i.whiteLabel === 'Northgate'),
-    'an unreadable store answers the 24-name sheet alone — never an empty list, never a throw');
-  ok(out && out.degraded === true,
-    '…and says so, so a short list is never presented as the whole truth');
+  rows.length = 0;
+  let bare = null;
+  dp.handlers.investorsRoster({}, { json: (b) => { bare = b; } });
+  ok(JSON.stringify(bare) === withCustomInForce,
+    'THE ONE THAT MATTERS: byte-identical whether or not somebody has added an investor — the only way to be sure this door does not move when the combined engine does');
 
-  if (realDb) require.cache[dbPath] = realDb; else delete require.cache[dbPath];
+  if (realDb) require.cache[DB_PATH] = realDb; else delete require.cache[DB_PATH];
   store.bust();
+}
 
-  console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
-  process.exit(failures ? 1 : 0);
-})();
+console.log(`\n${failures ? failures + ' FAILED' : 'all passed'}`);
+process.exit(failures ? 1 : 0);
