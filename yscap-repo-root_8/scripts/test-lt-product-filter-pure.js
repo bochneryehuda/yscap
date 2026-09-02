@@ -191,8 +191,16 @@ const nexRows = (out) => (out.programs || []).filter((p) => NEX_PROGRAMS.some((n
       `ROUTE-1 the programme rows the SCREEN draws are the narrowed set (${rows.map((p) => p.program).join(', ')})`);
     ok(out.productFilter && out.productFilter.applied === true,
       'ROUTE-2 the answer REPORTS that it narrowed — never a silent cap');
-    ok(out.productFilter.dropped.amortization === 1 && out.productFilter.dropped.term === 2,
+    // RE-POINTED 2026-09-02: the interest-only answer now follows the BUILT Lender Price request
+    // when the scenario is silent (owner-reported: IO programmes stayed on with the switch off).
+    // This search states no `io`, Lender Price's own base carries `interestOnly: false`, so the
+    // 'IO 40' programme is refused on INTEREST-ONLY — the dimension checked before term — where it
+    // used to fall through to the term check. One programme moved from `term` to `interestOnly`;
+    // nothing was loosened: the same five programmes, the same two survivors.
+    ok(out.productFilter.dropped.amortization === 1 && out.productFilter.dropped.interestOnly === 1 && out.productFilter.dropped.term === 1,
       `ROUTE-3 …with a count per dimension (${JSON.stringify(out.productFilter.dropped)})`);
+    ok(out.productFilter.asked && out.productFilter.asked.io === false,
+      'ROUTE-3b an unstated interest-only answer is resolved to what Lender Price was actually asked (false), never left un-narrowed');
     ok(out.productFilter.asked && out.productFilter.asked.amortization === 'fixed',
       'ROUTE-4 …and what it took the search to be asking for');
     ok(out.productFilter.unclassified === 1,

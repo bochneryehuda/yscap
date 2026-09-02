@@ -35,7 +35,7 @@ export function useStaleBuild() {
 export function StaleBuildBanner({ stale }) {
   if (!stale) return null;
   return (
-    <div role="alert" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1000,
+    <div role="alert" style={{ position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1000,
       background: '#AE8746', color: '#fff', padding: '8px 14px', display: 'flex',
       alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14 }}>
       <span>PILOT was updated — refresh to get the latest screens and fixes.</span>

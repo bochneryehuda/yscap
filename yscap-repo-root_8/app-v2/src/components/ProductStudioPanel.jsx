@@ -1063,9 +1063,18 @@ const ProductStudioPanel = forwardRef(function ProductStudioPanel({ appId, app, 
     const entity = fromApp ? (app.entity_name || '') : ((profile && profile.entity_name) || '');
     // Co-borrower name (the file carries it) → prefills the term sheet's second
     // signature line (#137).
-    const coName = (fromApp && app.co_borrower_id)
+    const coNameFromScreen = (fromApp && app.co_borrower_id)
       ? (fullNameOf(app, 'co_') || '')
       : '';
+    /* THE SERVER'S OWN READ OF THE PARTIES WINS (owner-reported 2026-09-02: a sheet
+       drawn with this box empty went out on a two-borrower file naming one guarantor
+       and carrying one borrower signature line). `app` is the screen's copy of the
+       file and can be older than the file; `data.parties` was read by the server for
+       THIS response. Every borrower on the file is a guarantor — the sheet's own
+       guaranty wording takes both names from this one box (see termsheet.js
+       guarantyInfo), so the box must never be empty when the file has two. */
+    const parties = (data && data.parties) || null;
+    const coName = parties ? (parties.coBorrowerName || '') : coNameFromScreen;
     // #143 — the stored engine inputs ARE the exact registered scenario, but
     // older registrations / server quotes sometimes omit an economics field (most
     // often the construction / rehab budget), so reopening the studio left that

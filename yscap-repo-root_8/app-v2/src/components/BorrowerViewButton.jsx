@@ -46,6 +46,7 @@ export default function BorrowerViewButton({
       <button
         type="button"
         className={className}
+        data-cobrowse-nodrive="view-as"
         style={{ flex: 'none' }}
         disabled={busy}
         onClick={go}

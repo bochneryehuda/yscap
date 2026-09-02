@@ -345,7 +345,9 @@ export function BorrowerSsnRow({ b, onChanged, fromAppId = null }) {
 
   return (
     <>
-      <div className="metrow">
+      {/* data-cobrowse-block: this row is never mirrored to a co-browse viewer
+          (lib/cobrowse.js BLOCK_SELECTOR) — the Social stays on this screen only. */}
+      <div className="metrow" data-cobrowse-block="ssn">
         <span className="k">SSN</span>
         <span className="v" style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
           {editing ? (

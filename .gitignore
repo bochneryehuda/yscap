@@ -1,0 +1,5 @@
+# The agent harness creates isolated git worktrees here. They are full checkouts of
+# this same repository, so staging one would nest a copy of the repo inside itself
+# (`git add -A` at the root would otherwise do exactly that). Nothing under it is
+# ever part of the project.
+.claude/worktrees/

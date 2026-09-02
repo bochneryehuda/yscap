@@ -532,6 +532,60 @@ async function main() {
       }
     }
 
+
+    // =========================================================================
+    section('H. ⛔ EACH OPTION\'S RATIO COMES FROM THE VENDOR\'S OWN PAYMENT — INTEREST-ONLY INCLUDED — NEVER FROM THE CALCULATOR');
+    // =========================================================================
+    /* Owner, 2026-09-02: *"make sure that the same bracket levels calculate
+       accordingly to the principal, interest, taxes, and insurance. If it's
+       interest-only, it calculates it differently according to the interest-only
+       monthly payments, so the ratios are better, and all the brackets get
+       adjusted… make sure it's calculated from the actual payment and not from
+       your search calculator, which may be wrong."*
+
+       `ratioAtRate` takes the vendor's quoted monthly P&I when the option carries
+       one and recomputes only when the vendor was silent — and that recompute
+       honours the scenario's interest-only flag. Neither path reads the
+       calculator. Pinned from the outside so a refactor cannot quietly route the
+       board back through an estimate. */
+    const vendorPI = 1234.56;                                    // a figure no amortisation of LOAN at these rates produces
+    const withVendor = boardMod.ratioAtRate(F, 7.0, vendorPI);
+    const expectVendor = Math.round((RENT / (Math.round((vendorPI + TAX + INS) * 100) / 100)) * 100) / 100;
+    ok(withVendor === expectVendor,
+      `⛔ with a vendor payment on the option, the ratio is rent ÷ (THAT payment + taxes + insurance): ${withVendor} = ${expectVendor}`);
+    const silent = boardMod.ratioAtRate(F, 7.0, null);
+    ok(silent != null && silent !== withVendor,
+      `…and with the vendor silent it recomputes from the rate instead (${silent}), so the two are visibly different paths`);
+    const asOption = boardMod.optionRate({ priceBuild: { noteRate: 7.0 }, monthlyPayment: { monthlyPI: vendorPI } });
+    ok(asOption.rate === 7.0 && asOption.monthlyPi === vendorPI,
+      '…and an option\'s own `monthlyPayment.monthlyPI` is what `optionRate` hands to it');
+
+    // INTEREST-ONLY: the same loan at the same rate carries a smaller payment, so the
+    // ratio is higher and can sit in a better band — "all the brackets get adjusted".
+    const Fio = boardMod.readFigures({ ...FIG, interestOnly: true });
+    ok(Fio != null && Fio.interestOnly === true, 'CONTROL an interest-only reading of the same deal is accepted');
+    const rAmort = boardMod.ratioAtRate(F, 7.5, null);
+    const rIO = boardMod.ratioAtRate(Fio, 7.5, null);
+    const ioPayment = Math.round((LOAN * (7.5 / 100) / 12) * 100) / 100;
+    const expectIO = Math.round((RENT / (Math.round((ioPayment + TAX + INS) * 100) / 100)) * 100) / 100;
+    ok(rIO === expectIO,
+      `⛔ vendor silent + interest-only: the fallback uses the interest-only payment (loan × rate ÷ 12 = ${ioPayment}) → ${rIO}`);
+    ok(rIO > rAmort,
+      `…which is a BETTER ratio than the amortising one at the same rate (${rIO} > ${rAmort})`);
+    ok(tiers.dscrTier(rIO) >= tiers.dscrTier(rAmort),
+      `…so the option lands in the same or a stronger band (band ${tiers.dscrTier(rIO)} vs ${tiers.dscrTier(rAmort)})`);
+    // And a vendor payment on an IO product is simply the vendor's IO payment — no special case.
+    ok(boardMod.ratioAtRate(Fio, 7.5, ioPayment) === rIO,
+      '…and a vendor that quotes that same IO payment lands on exactly the same ratio — one arithmetic, two sources');
+
+    // NOTHING HERE READS THE CALCULATOR. The typical coupon seeds which band is asked
+    // FIRST; it never enters a ratio.
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'longterm', 'pricing', 'bracket-board.js'), 'utf8');
+    const fn = /function ratioAtRate\([\s\S]*?\n\}/.exec(src);
+    ok(!!fn && !/TYPICAL_RATE_PCT|dscrCalc|seedRatio/.test(fn[0]),
+      '⛔ `ratioAtRate` reads the vendor payment or recomputes from THIS rate — never the seed coupon or the calculator');
+    ok(!/require\(.*dscrCalc/.test(src), '…and the board module imports no browser calculator at all');
+
     console.log(bad ? `\n${bad} FAILED` : '\nALL PASSED');
   process.exit(bad ? 1 : 0);
 }

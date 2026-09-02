@@ -27,10 +27,21 @@ const cfg = require('../../config').docusign;
 const POLL_SEC = parseInt(process.env.DOCUSIGN_POLL_SEC || '60', 10);
 const STALE_MIN = parseInt(process.env.DOCUSIGN_RECONCILE_STALE_MIN || '30', 10);
 // A freshly-sent, not-yet-finished envelope is ACTIVELY being signed — reconcile it
-// EVERY tick (not just after STALE_MIN of quiet) so a signature is reflected within
-// one poll cycle even if the real-time Connect webhook isn't delivering/verifying.
+// on a SHORT cadence (not just after STALE_MIN of quiet) so a signature is reflected
+// promptly even if the real-time Connect webhook isn't delivering/verifying.
 // After this window it falls back to the STALE_MIN missed-webhook belt.
 const ACTIVE_MIN = parseInt(process.env.DOCUSIGN_ACTIVE_RECONCILE_MIN || '180', 10);
+/* HOW OFTEN ONE ACTIVE ENVELOPE MAY BE RE-READ. This used to be EVERY tick — 60
+   Envelopes:get an hour per in-flight envelope — which is DocuSign's published
+   polling violation (its API rules allow an envelope's status to be polled at most
+   once every 15 minutes; the hourly budget is shared by every send, download and
+   webhook-driven read on the account). It was tolerable only because the webhook
+   was silently rejected (see docusign.js eventNotification) and the poll was the
+   ONLY way a signature reached the file. Now that Connect delivers and verifies,
+   a signature arrives through the inbox within seconds, and this cadence is the
+   belt for a MISSED event, not the way news travels. 15 minutes is DocuSign's own
+   floor; set DOCUSIGN_ACTIVE_RECONCILE_EVERY_MIN lower only for a test bench. */
+const ACTIVE_EVERY_MIN = parseInt(process.env.DOCUSIGN_ACTIVE_RECONCILE_EVERY_MIN || '15', 10);
 
 let timer = null;
 
@@ -80,11 +91,14 @@ async function reconcileStale(opts = {}) {
     `SELECT * FROM esign_envelopes
       WHERE envelope_id IS NOT NULL
         AND status IN ('sent','delivered')
-        AND (sent_at > now() - ($2 || ' minutes')::interval    -- fresh: reconcile every tick
-             OR last_event_at IS NULL
+        AND (last_event_at IS NULL
+             -- fresh: re-read on the short cadence (never more often than DocuSign's floor)
+             OR (sent_at > now() - ($2 || ' minutes')::interval
+                 AND last_event_at < now() - ($3 || ' minutes')::interval)
+             -- everything else: the missed-webhook belt
              OR last_event_at < now() - ($1 || ' minutes')::interval)
       ORDER BY COALESCE(last_event_at, sent_at) NULLS FIRST
-      LIMIT 25`, [String(STALE_MIN), String(ACTIVE_MIN)])).rows;
+      LIMIT 25`, [String(STALE_MIN), String(ACTIVE_MIN), String(ACTIVE_EVERY_MIN)])).rows;
   const out = [];
   for (const row of rows) {
     try { out.push({ id: row.id, status: await webhook.reconcileEnvelope(db, docusign, opts.storage || require('../storage'), row) }); }
@@ -136,7 +150,7 @@ function start() {
   if (boot.unref) boot.unref();
   timer = setInterval(() => { tick().catch(() => {}); }, POLL_SEC * 1000);
   if (timer.unref) timer.unref();
-  console.log(`[esign-poll] started (every ${POLL_SEC}s; reconcile stale > ${STALE_MIN}m)`);
+  console.log(`[esign-poll] started (every ${POLL_SEC}s; active envelopes re-read every ${ACTIVE_EVERY_MIN}m for ${ACTIVE_MIN}m, then stale > ${STALE_MIN}m)`);
 }
 
 function stop() { if (timer) { clearInterval(timer); timer = null; } }

@@ -70,6 +70,22 @@ function call(server, method, p, token, body) {
   });
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+/**
+ * Wait for the STATE a read is about to assert, with a deadline — a wheel reveals itself on its
+ * own timer, and a fixed sleep followed by an immediate read lands in the gap on a loaded runner
+ * (the race that held main red on 2026-09-02). Hands back the last row seen so a real failure
+ * still reports the real state.
+ */
+async function settled(read, isDone, timeoutMs = 8000) {
+  const t0 = Date.now();
+  let row = null;
+  for (;;) {
+    row = await read();
+    if (row && isDone(row)) return row;
+    if (Date.now() - t0 > timeoutMs) return row;
+    await wait(100);
+  }
+}
 
 (async () => {
   if (!process.env.DATABASE_URL) { console.log('  ~~ SKIP Arena play DB (no DATABASE_URL)'); process.exit(0); }
@@ -234,8 +250,9 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
     ok(stopped.stopped_at, 'with the moment it was pressed on the record');
     ok(Number(stopped.target_rotation_deg) > 0, 'and the angle it came to rest at');
 
-    await wait(2000);
-    const landed = (await db.query(`SELECT * FROM arena_draws WHERE id = $1`, [w3.id])).rows[0];
+    const landed = await settled(
+      () => db.query(`SELECT * FROM arena_draws WHERE id = $1`, [w3.id]).then((r) => r.rows[0]),
+      (d) => d.state === 'revealed');
     eq(landed.state, 'revealed', 'the wheel comes to rest and the winner is announced');
 
     // The whole point: it is checkable afterwards.

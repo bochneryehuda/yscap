@@ -48,6 +48,7 @@ import SubmitFilePanel from '../components/SubmitFilePanel.jsx';
 import StatusActionsCard from '../components/StatusActionsCard.jsx';
 import FileNotificationOverrides from '../components/FileNotificationOverrides.jsx';
 import BorrowerViewButton from '../components/BorrowerViewButton.jsx';
+import CobrowseButton from '../components/CobrowseButton.jsx';
 import { PhoneInput, ZipInput , EmailInput, DateCommitInput } from '../components/FormattedInputs.jsx';
 import EditFileDetails from '../components/EditFileDetails.jsx';
 import ToolModal from '../components/ToolModal.jsx';
@@ -5968,6 +5969,9 @@ export default function StaffApplication() {
             you can walk them through a condition while looking at their screen. */}
         <BorrowerViewButton applicationId={id} borrowerId={app.borrower_id}
           borrowerName={fullNameOf(app)} />
+        {/* CO-BROWSE (owner-directed 2026-09-02) — beside Borrower view. Asks the
+            borrower on their own screen; opens the live viewer once they accept. */}
+        {app.borrower_id && <CobrowseButton kind="borrower" id={app.borrower_id} name={fullNameOf(app)} applicationId={id} />}
         {canDelete && (app.deleted_at
           ? <span className="row" style={{ gap: 8, flex: 'none' }}>
               <span className="pill" style={{ borderColor: 'var(--gold)', color: 'var(--gold-ink)' }} title="This file is archived">Archived</span>
