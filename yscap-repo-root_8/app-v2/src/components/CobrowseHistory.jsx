@@ -19,7 +19,7 @@ const END = {
   signed_out: 'they signed out', revoked: 'revoked',
 };
 const RELEASE = {
-  guest_moved: 'they took it back by moving', guest_stop: 'they pressed Take back / Stop', viewer_release: 'the viewer handed it back',
+  guest_moved: 'they took it back themselves', guest_stop: 'they pressed Take back / Stop', viewer_release: 'the viewer handed it back',
   request_expired: 'control request not answered', session_ended: 'session ended', guest_refused: 'they said no',
 };
 
@@ -73,7 +73,6 @@ export default function CobrowseHistory({ limit = 50 }) {
                   <td className="small">
                     {STATUS[s.status] || s.status}
                     {s.endReason ? ` — ${END[s.endReason] || s.endReason}` : ''}
-                    {s.redactionDrops ? ` · ${s.redactionDrops} frame${s.redactionDrops === 1 ? '' : 's'} held back` : ''}
                   </td>
                   <td className="small">
                     {s.controlGrants ? `given ${s.controlGrants}× · ${s.controlEvents} action${s.controlEvents === 1 ? '' : 's'}${s.controlReleaseReason ? ` · ${RELEASE[s.controlReleaseReason] || s.controlReleaseReason}` : ''}` : 'watch only'}

@@ -1,7 +1,12 @@
 /* CO-BROWSING — the MASK, as one pure definition (no imports, no DOM access at
-   module load), so the browser recorder and the Playwright redaction harness
-   (scripts/render-cobrowse-redaction.js) read the SAME rules. A second copy is
-   how one screen ends up masked in the app and unmasked in the proof. */
+   module load), so the browser recorder and the Playwright mask harness
+   (scripts/render-cobrowse-mask.js) read the SAME rules. A second copy is how
+   one screen ends up masked in the app and unmasked in the proof.
+
+   THIS IS THE ONLY PLACE A SECRET IS KEPT OUT OF THE STREAM. There is no
+   server-side content check behind it, and there must never be one that DROPS a
+   batch: an rrweb stream is stateful (see src/lib/cobrowse/hub.js), so a
+   refused batch blanks the mirror permanently. Mark the element instead. */
 
 /** Elements never mirrored at all — replaced by a same-size grey box. */
 export const BLOCK_SELECTOR = '[data-cobrowse-block], input[type="password"], input[autocomplete="one-time-code"], .cobrowse-block';
