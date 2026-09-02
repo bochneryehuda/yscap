@@ -279,5 +279,45 @@ console.log('\nH. BOTH SUITES RUN');
   ok(test.includes('node scripts/test-loan-officer-assistant-db.js'), 'the database suite is in npm test');
 }
 
+// ── I. THE OWNER'S FOLLOW-UP DECISIONS (2026-09-02) ─────────────────────────
+console.log('\nI. THE WEEKLY OFFICER EMAIL, THE HETER ISKA AND THE TERM SHEET PACKAGE INCLUDE THE ASSISTANT');
+{
+  // "also give them the weekly officer pipeline email": the audience is DERIVED — every role
+  // whose persona is the loan officer — and the book is read from both officer-persona slots.
+  const digest = stripComments(read('src/lib/notification-digests.js'));
+  ok(/const OFFICER_PERSONA_ROLES = perms\.ROLE_KEYS\.filter\(\(r\) => perms\.personaOf\(r\) === 'loan_officer'\);/.test(digest),
+    'the weekly officer email\'s audience is derived from the registry (every loan-officer persona), not typed');
+  ok(/const OFFICER_BOOK_SLOTS = \['loan_officer', 'loan_officer_assistant'\];/.test(digest),
+    'an officer-persona\'s book is read from the officer slot AND the assistant slot');
+  ok(/role = ANY\(\$1::text\[\]\)/.test(digest) && /aa\.role = ANY\(\$3::text\[\]\)/.test(digest),
+    'both lists are bound as parameters (no second typed copy inside the SQL)');
+  ok(!/role = 'loan_officer'\s*\n\s*AND COALESCE\(notifications_enabled/.test(digest),
+    'the old single-role audience is gone');
+  const audience = perms.ROLE_KEYS.filter((r) => perms.personaOf(r) === 'loan_officer');
+  ok(same(audience, [LO, LOA]), 'today that audience is exactly loan_officer + loan_officer_assistant', audience.join(','));
+
+  // "add a loan officer assistant to this [the Heter Iska viewer list]": judged by the staff role.
+  const esign = stripComments(read('src/lib/esign/orchestrate.js'));
+  ok(/iskaOnly \? `AND su\.role IN \('loan_officer','loan_officer_assistant','processor'\)` : ''/.test(esign),
+    'the Heter Iska viewer list is loan officer + loan officer assistant + processor');
+  // "…and also add them to the term sheet package as well": the term sheet copies every
+  // active assignee (no role filter when the purpose is not the ISKA), so an assistant seated
+  // on the file is a viewer there by construction — pinned over a real envelope in
+  // scripts/test-esign-cc-viewers.js.
+  const cc = read('scripts/test-esign-cc-viewers.js');
+  ok(/tcc3\.includes\(`la\+\$\{TAG\}@ys\.com`\)/.test(cc), 'the viewer suite asserts the assistant is copied on the term sheet package');
+  ok(/iskaCc\.includes\(`la\+\$\{TAG\}@ys\.com`\)/.test(cc), '…and on the Heter Iska');
+
+  // The whole-team notification fan-out scopes each ASSIGNEE SLOT to "their part" (lib/notify.js
+  // STAFF_ROLE_CATEGORIES) and its own suite (test-notify-role-scope-db) fails the build when a
+  // slot the assignees door accepts has no explicit entry — CI caught exactly that on the first
+  // push. The assistant's slot sees the WHOLE file, as the officer's does: same persona.
+  const notifySrc = stripComments(read('src/lib/notify.js'));
+  const map = /const STAFF_ROLE_CATEGORIES = \{([\s\S]*?)\};/.exec(notifySrc);
+  ok(!!map && /loan_officer_assistant:\s*'\*'/.test(map[1]),
+    'the notification visibility map gives the assistant slot the whole file (\'*\'), like the officer\'s');
+  ok(!!map && /loan_officer:\s*'\*'/.test(map[1]), '…which is what the officer\'s slot has');
+}
+
 console.log(`\n${failures ? `${failures} FAILED` : 'ok — test-loan-officer-assistant-pure'}`);
 process.exit(failures ? 1 : 0);

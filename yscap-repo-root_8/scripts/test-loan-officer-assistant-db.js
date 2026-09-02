@@ -21,6 +21,9 @@
  *       as a primary, and the team rail shows them there;
  *   (d) once seated they open THAT file and only that file, and their pipeline
  *       lists it;
+ *   (e) the weekly officer pipeline email reaches them (owner-directed 2026-09-02) —
+ *       and not the processor seated on the same file: the audience is the
+ *       loan-officer persona, not "anyone on a file";
  *   (f) an admin's file grant seats them in their own slot, never the processor
  *       bucket, and revoking it closes the door again;
  *   (g) a file an assistant CREATES stays reachable to them: seated as the
@@ -140,6 +143,20 @@ async function main() {
     ok(r.status === 200 && listed.includes(APP) && !listed.includes(APP2),
       `(d) their pipeline lists the one file and not the other — got ${r.status} (has: ${listed.includes(APP)}, excludes: ${!listed.includes(APP2)})`);
 
+    // ---- (e) the weekly officer pipeline email ------------------------------
+    // (owner-directed 2026-09-02: "also give them the weekly officer pipeline email").
+    // The pass CLAIMS a once-per-6-days audit_log row per recipient before it writes to
+    // them (lib/throttle-claim), which is the durable trace of "this person was sent the
+    // snapshot". The processor seated on the same file (b-control) must have NO claim:
+    // the audience is the loan-officer PERSONA, derived from the registry.
+    const digests = require(REPO + '/src/lib/notification-digests');
+    await digests.weeklyOfficerPipelineOnce();
+    const claimed = async (id) => (await db.query(
+      `SELECT count(*)::int AS n FROM audit_log WHERE action='officer_pipeline_weekly' AND entity_id=$1`, [id])).rows[0].n;
+    ok(await claimed(LOA) === 1, '(e) the weekly officer pipeline email goes to the assistant — their book is the file they are seated on');
+    ok(await claimed(LO) === 1, '(e-control) …and to the loan officer, as before');
+    ok(await claimed(PROC) === 0, '(e-control) …but NOT to the processor seated on the same file — the audience is the officer persona');
+
     // ---- (f) an admin's file grant ------------------------------------------
     r = await api(server, 'POST', `/api/admin/staff/${LOA}/file-grants`, adminTok, { applicationId: APP2 });
     ok(r.status === 201, `(f) an admin grants the assistant a file — got ${r.status} ${short(r.body)}`);
@@ -204,6 +221,7 @@ async function main() {
     try { await db.query(`DELETE FROM application_assignees WHERE application_id = ANY($1::uuid[])`, [madeApps]); } catch (_) {}
     try { await db.query(`DELETE FROM applications WHERE id = ANY($1::uuid[])`, [madeApps]); } catch (_) {}
     try { await db.query(`DELETE FROM borrowers WHERE id = ANY($1::uuid[])`, [madeBorrowers]); } catch (_) {}
+    try { await db.query(`DELETE FROM audit_log WHERE action='officer_pipeline_weekly' AND entity_id = ANY($1::uuid[])`, [[LO, LOA, PROC, ADMIN]]); } catch (_) {}
     try { await db.query(`DELETE FROM staff_users WHERE id = ANY($1::uuid[])`, [[LO, LOA, PROC, ADMIN]]); } catch (_) {}
     server.close();
   }
