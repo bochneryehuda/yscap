@@ -92,7 +92,13 @@ Phase A — Watch-only with cursor (1.5–3 wk)
     in server.js; /ws/cobrowse with token + session auth; in-memory rooms.
   - Guest: @rrweb/record with maskAllInputs, maskTextSelector/blockSelector for the
     sensitive list, recording OFF on auth/MFA/e-sign routes; full snapshot on viewer join.
-  - Viewer: @rrweb/replay liveMode in a sandboxed iframe, 500ms–1s buffer, route header.
+  - Viewer: @rrweb/replay liveMode in a sandboxed iframe, route header, and a size
+    control (Fit / 100% / a ladder to 3x, the stage scrolling past the fit scale).
+    [CORRECTED 2026-09-02 — this line originally proposed a "500ms–1s buffer" and that
+    is WRONG, so it is struck rather than left to be copied: the buffer is a delay on
+    EVERY change, not a jitter cushion. Shipped at 200 ms it MEASURED a 533 ms floor end
+    to end and the owner's words were "extremely slow". It is 40 ms, measured back to a
+    315 ms median. Do not raise it without re-running the drive's latency check.]
   - Consent v1: the WATCHED person sees a request and must Accept; persistent banner
     "X is watching your screen — Stop"; ends on Stop, sign-out, cap, or viewer leaving.
   - Tables: cobrowse_sessions (viewer, watched kind+id, application_id?, started/ended,
