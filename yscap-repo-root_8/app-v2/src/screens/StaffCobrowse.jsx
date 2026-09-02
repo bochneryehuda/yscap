@@ -19,6 +19,16 @@ import { api, getToken } from '../lib/api.js';
    Text colours are explicit darks per the HARD RULE. */
 const INK = '#141B22', MUTED = '#4B585C';
 
+// HOW FAR BEHIND THE GUEST THE PICTURE PLAYS. rrweb's live scheduler draws an event
+// older than the baseline at once and queues a newer one for `baseline + elapsed`, so
+// this is a smoothing buffer: every change is drawn this many milliseconds after it
+// happened. It was 200 ms, and MEASURED end to end on localhost the mirror ran at a
+// 533 ms floor (min 532 / median 533 / max 546 over six probes) — most of it this
+// constant plus the guest's own batching, and the owner's word for the result was
+// "extremely slow" (2026-09-02). 40 ms still orders a burst without being felt.
+// Do not raise it without re-running the drive's latency check.
+const LIVE_BUFFER_MS = 40;
+
 export default function StaffCobrowse() {
   const { sessionId } = useParams();
   const [session, setSession] = useState(null);
@@ -30,6 +40,20 @@ export default function StaffCobrowse() {
   const replayerRef = useRef(null);
   const wsRef = useRef(null);
   const [scale, setScale] = useState(1);
+  // ZOOM. A mirror is a picture of somebody else's screen, and a picture scaled to fit
+  // a page column is not readable: MEASURED, a 1280-wide guest in this screen's stage
+  // renders at 0.736 and a 1920-wide guest at about 0.50 — half-size body text, which
+  // is what "extremely unclear" means (owner-reported 2026-09-02). `fit` keeps the whole
+  // screen in view; a number is an explicit zoom the person chose, and past the stage
+  // the stage SCROLLS rather than clipping. Never capped at the fit scale: leaning in
+  // on one figure is the whole reason somebody watches a screen.
+  const [zoom, setZoom] = useState('fit');
+  const [fitScale, setFitScale] = useState(1);
+  const zoomRef = useRef('fit');
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+  // Re-fit when the chosen size changes. `fit` is redefined each render and reads
+  // the zoom through a ref, so it is deliberately not a dependency here.
+  useEffect(() => { fit(); }, [zoom]);
 
   useEffect(() => {
     let alive = true;
@@ -43,9 +67,18 @@ export default function StaffCobrowse() {
     if (!host || !rp) return;
     const iframe = rp.iframe; if (!iframe) return;
     const w = Number(iframe.width) || 1280; const h = Number(iframe.height) || 800;
-    const s = Math.min(1, (host.clientWidth - 8) / w);
+    // The FIT scale is what shows the whole screen; it is reported separately so the
+    // zoom buttons can say "Fit" without recomputing it, and so 100% is a real choice
+    // rather than a cap. `clientWidth` is read AFTER any scrollbar, so a zoomed stage
+    // does not fight itself for width.
+    const f = Math.min(1, (host.clientWidth - 8) / w);
+    setFitScale(f);
+    const z = zoomRef.current;
+    const s = z === 'fit' ? f : Number(z) || f;
     setScale(s);
-    host.style.height = `${Math.ceil(h * s) + 8}px`;
+    // Zoomed past the stage the host scrolls, so its height is the stage's own, not the
+    // scaled picture's — otherwise the page grows a second scrollbar for one screen.
+    host.style.height = `${Math.ceil(h * Math.min(s, f)) + 8}px`;
   };
 
   useEffect(() => {
@@ -76,7 +109,7 @@ export default function StaffCobrowse() {
       const ts = Number(ev && ev.timestamp);
       if (!Number.isFinite(ts) || ts <= 0) return;   // wait for an event we can trust
       started = true;
-      rp.startLive(ts - 200);
+      rp.startLive(ts - LIVE_BUFFER_MS);
     };
     rp.on('resize', fit);
     window.addEventListener('resize', fit);
@@ -343,6 +376,24 @@ export default function StaffCobrowse() {
             </span>
           )}
           {!state.ended && <span className="act-sep" aria-hidden="true" />}
+          {/* SIZE. Fit shows their whole screen; 100% shows it at the size THEY see it,
+              with the stage scrolling. Zooming out below the fit scale is pointless (the
+              whole screen is already in view), so the minus stops there. */}
+          {!state.ended && (
+            <span className="act-group">
+              <span className="act-label">Size</span>
+              <span className="seg" role="group" aria-label="Mirror size">
+                <button type="button" className={`btn small ${zoom === 'fit' ? 'primary' : 'ghost'}`} onClick={() => setZoom('fit')}>Fit</button>
+                <button type="button" className={`btn small ${zoom !== 'fit' && Number(zoom) === 1 ? 'primary' : 'ghost'}`} onClick={() => setZoom(1)} title="Show it at the size they see it — the stage scrolls.">100%</button>
+              </span>
+              <button type="button" className="btn soft small" aria-label="Smaller" title="Smaller"
+                onClick={() => setZoom((z) => Math.max(fitScale, Math.round(((z === 'fit' ? fitScale : Number(z)) - 0.25) * 100) / 100))}>−</button>
+              <span className="small" style={{ color: MUTED, minWidth: 44, textAlign: 'center' }} aria-live="polite">{Math.round(scale * 100)}%</span>
+              <button type="button" className="btn soft small" aria-label="Bigger" title="Bigger"
+                onClick={() => setZoom((z) => Math.min(3, Math.round(((z === 'fit' ? fitScale : Number(z)) + 0.25) * 100) / 100))}>+</button>
+            </span>
+          )}
+          {!state.ended && <span className="act-sep" aria-hidden="true" />}
           {!state.ended ? <button type="button" className="btn small" style={{ background: '#7A1F1F', color: '#fff', border: 'none' }} onClick={end}>End session</button>
             : <Link className="btn soft small" to={session.applicationId ? `/internal/app/${session.applicationId}` : '/internal'}>Back to the file</Link>}
         </div>
@@ -360,7 +411,7 @@ export default function StaffCobrowse() {
                   : (state.notice.text || '')}
         </div>
       )}
-      <div ref={hostRef} className="cobrowse-stage" tabIndex={-1} style={{ position: 'relative', border: state.control === 'granted' ? '3px solid #B3261E' : '1px solid #D9D2C5', borderRadius: 10, background: '#F6F3EC', overflow: 'hidden', minHeight: 320 }}>
+      <div ref={hostRef} className="cobrowse-stage" tabIndex={-1} style={{ position: 'relative', border: state.control === 'granted' ? '3px solid #B3261E' : '1px solid #D9D2C5', borderRadius: 10, background: '#F6F3EC', overflow: scale > fitScale ? 'auto' : 'hidden', minHeight: 320 }}>
         <style>{`.cobrowse-stage .replayer-wrapper{transform-origin:0 0;transform:scale(${scale});position:absolute;left:4px;top:4px}.cobrowse-stage .replayer-mouse{z-index:20}`}</style>
         {state.ended && <div style={{ position: 'absolute', inset: 0, background: 'rgba(246,243,236,.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: INK, fontWeight: 600, zIndex: 30 }}>{reasonText[state.ended] || 'Session ended.'}</div>}
       </div>

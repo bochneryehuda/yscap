@@ -355,7 +355,10 @@ const viewSrc2 = strip(viewNow);
 // startLive. Seeding that with OUR Date.now() means an office computer a few seconds out
 // of step makes every event "future" and nothing is ever drawn: a blank stage with a
 // moving cursor, which is exactly what the owner was looking at.
-ok(/const ts = Number\(ev && ev\.timestamp\);/.test(viewSrc2) && /rp\.startLive\(ts - 200\);/.test(viewSrc2)
+// The BUFFER's size moved to a named constant (see the latency block below); this
+// assertion is about WHOSE CLOCK the baseline comes from, which is the property that
+// blanks the mirror when it is wrong — so it is re-pointed, never loosened.
+ok(/const ts = Number\(ev && ev\.timestamp\);/.test(viewSrc2) && /rp\.startLive\(ts - LIVE_BUFFER_MS\);/.test(viewSrc2)
   && !/rp\.startLive\(Date\.now\(\)/.test(viewSrc2),
   'the viewer starts live from the FIRST EVENT\'s own timestamp, never from the viewer\'s clock');
 // A BAD TIMESTAMP MUST DEFER, NOT POISON THE BASELINE. `Number(null) - 200` is -200, which
@@ -413,6 +416,36 @@ ok(/namespaced `cb-`/.test(cssNow), 'the block says why every class is namespace
     `every class in the co-browse block is cb-namespaced (${classes.join(', ')})`);
 }
 ok(/ONLY PLACE A SECRET IS KEPT OUT OF THE STREAM/.test(mask), 'the mask module says it is the only protection — mark the element, do not expect a server check');
+
+// ── THE PICTURE IS PROMPT, AND IT IS READABLE (owner-reported 2026-09-02: "the refresh
+//    ratio is very slow … extremely slow and extremely unclear") ─────────────────────────
+//    Both halves were MEASURED before they were changed, and both are pinned here rather
+//    than only in the browser drive, because the drive needs Chromium and CI has none —
+//    so CI could never have caught either one. The drive additionally allowed the mirror
+//    TWENTY SECONDS to show anything, which is exactly why "slow" was invisible to it.
+{
+  const guestLib = read('app-v2/src/lib/cobrowse.js');
+  const flush = (guestLib.match(/const FLUSH_MS = (\d+)/) || [])[1];
+  const buffer = (viewerSrc.match(/const LIVE_BUFFER_MS = (\d+)/) || [])[1];
+  ok(flush && Number(flush) <= 40, `the guest holds events no longer than 40 ms before sending (FLUSH_MS = ${flush})`);
+  ok(buffer && Number(buffer) <= 40, `the viewer's smoothing buffer is no longer than 40 ms (LIVE_BUFFER_MS = ${buffer})`);
+  // The measurement is written down beside each constant, so the next person raising one
+  // knows what it cost last time rather than guessing.
+  ok(/533 ms floor/.test(guestLib) && /533 ms floor/.test(viewerSrc),
+    'both constants record the measured latency they were cut from');
+  ok(/rp\.startLive\(ts - LIVE_BUFFER_MS\)/.test(viewerSrc), 'the live baseline uses that named buffer, not a literal');
+
+  // READABLE: fit is for orientation, 100% is for reading. A mirror that can only ever
+  // be shrunk to fit a page column renders a 1920-wide guest at about half size.
+  ok(/const \[zoom, setZoom\]/.test(viewerSrc), 'the viewer keeps a chosen size');
+  ok(/setZoom\(1\)/.test(viewerSrc) && />100%</.test(viewerSrc), 'the viewer offers 100% — the size the guest sees');
+  ok(/setZoom\('fit'\)/.test(viewerSrc) && />Fit</.test(viewerSrc), 'and Fit, to see the whole screen');
+  ok(/overflow: scale > fitScale \? 'auto' : 'hidden'/.test(viewerSrc),
+    'zoomed past the fit scale the stage SCROLLS rather than clipping the picture');
+  // A cap at the fit scale is the defect being fixed — it is what made 100% unreachable.
+  ok(!/Math\.min\(1, \(host\.clientWidth/.test(viewerSrc) || /const f = Math\.min\(1, \(host\.clientWidth/.test(viewerSrc),
+    'the fit scale is computed separately from the applied scale');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

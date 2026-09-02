@@ -171,6 +171,58 @@ async function main() {
     const probe = (guestText.match(/Pipeline|Files|Dashboard/) || [])[0];
     ok(!!probe && await mirrorHas(probe), `after the guest navigates the mirror follows (saw "${probe}")`);
 
+    // ── THE PICTURE IS PROMPT (owner-reported 2026-09-02: "the refresh ratio is very
+    //    slow … extremely slow"). Every mirror assertion above allows TWENTY SECONDS,
+    //    which is right for "did it arrive" and blind to "how long did it take" — so
+    //    slowness was invisible to this drive. This MEASURES it.
+    //
+    //    THE BUDGET IS A REGRESSION GUARD, NOT A TARGET. Measured on localhost the
+    //    median was 533 ms before the fix (200 ms viewer buffer + 80 ms guest batching)
+    //    and 315 ms after. A CI box is slower and shares a database, so the budget is
+    //    set well above the measured median: it catches a return to the multi-second
+    //    behaviour the owner reported, and the printed median is what a human reads for
+    //    drift. Tighten it only against a fresh measurement.
+    const LATENCY_BUDGET_MS = 1500;
+    const lat = [];
+    for (let i = 0; i < 5; i++) {
+      const marker = `LATPROBE${i}_${Date.now()}`;
+      const t0 = Date.now();
+      await guest.page.evaluate((m) => {
+        let d = document.getElementById('__lat');
+        if (!d) { d = document.createElement('div'); d.id = '__lat'; document.body.appendChild(d); }
+        d.textContent = m;
+      }, marker);
+      if (await mirrorHas(marker, 25000)) lat.push(Date.now() - t0);
+      await guest.page.waitForTimeout(400);
+    }
+    const median = lat.length ? [...lat].sort((a, b) => a - b)[Math.floor(lat.length / 2)] : -1;
+    ok(lat.length === 5, `every one of 5 changes on the guest's screen reached the mirror (${lat.length}/5)`);
+    ok(median > 0 && median < LATENCY_BUDGET_MS,
+      `the mirror keeps up: median ${median} ms from change to picture (budget ${LATENCY_BUDGET_MS} ms; measured 533 ms before the fix, 315 ms after)`);
+
+    // ── AND IT IS READABLE (the same report: "extremely unclear"). Fit shows the whole
+    //    screen — MEASURED at 0.736 for a 1280-wide guest in this stage, and about 0.50
+    //    for a 1920-wide one, which is half-size body text. 100% is what makes it
+    //    readable, and the stage must SCROLL there rather than clip.
+    const sizeOf = () => viewer.page.evaluate(() => {
+      const st = document.querySelector('.cobrowse-stage');
+      const wrap = st && st.querySelector('.replayer-wrapper');
+      const t = wrap ? getComputedStyle(wrap).transform : '';
+      const m = /matrix\(([\d.]+)/.exec(t || '');
+      return { scale: m ? Number(m[1]) : null, overflow: st ? getComputedStyle(st).overflowX : null };
+    });
+    const fitSize = await sizeOf();
+    ok(fitSize.scale !== null && fitSize.scale <= 1, `Fit shows the whole screen (scale ${fitSize.scale})`);
+    await viewer.page.click('text=100%');
+    await viewer.page.waitForTimeout(400);
+    const fullSize = await sizeOf();
+    ok(Math.abs((fullSize.scale || 0) - 1) < 0.01, `100% really is actual size (scale ${fullSize.scale}) — the old fit-to-width cap made this unreachable`);
+    ok(fullSize.overflow === 'auto' || fullSize.overflow === 'scroll',
+      `zoomed in the stage scrolls instead of clipping (overflow-x: ${fullSize.overflow})`);
+    await viewer.page.click('text=Fit');
+    await viewer.page.waitForTimeout(300);
+    ok(Math.abs((await sizeOf()).scale - fitSize.scale) < 0.01, 'and Fit puts it back');
+
     // ── THE GUEST CAN STILL DO EVERYTHING WHILE WATCHED (the owner's own question) ──
     //    Co-browsing is an observer on top of the app, never a cage: while merely watched,
     //    nothing about the guest's own use may change except the banner. Every action below

@@ -54,7 +54,14 @@ export const TERMINAL_CLOSE_CODES = [4400, 4401, 4403, 4404, 4000, 1008, 1009];
 export const CLOSE_REASON = { 4000: 'opened_elsewhere', 1008: 'too_busy', 1009: 'too_busy' };
 const MAX_RETRY_MS = 5 * 60 * 1000;
 
-const FLUSH_MS = 80;           // batch rrweb events; ~12 batches/s worst case
+// HOW LONG THE GUEST HOLDS EVENTS BEFORE SENDING. Every millisecond here is a
+// millisecond the watcher waits. It was 80, and MEASURED end to end the mirror ran at a
+// 533 ms floor on localhost — this plus the viewer's own 200 ms smoothing buffer were
+// most of it, and the owner's word for the result was "extremely slow" (2026-09-02).
+// 40 ms halves it and still coalesces a burst into one message (~25/s worst case, far
+// under the hub's own budget). Do not raise it without re-running the drive's latency
+// check, which fails above LATENCY_BUDGET_MS.
+const FLUSH_MS = 40;
 const RECONNECT_MS = 2500;
 const TAKEBACK_GRACE_MS = 600;        // the Allow press itself
 const TAKEBACK_WHEEL_GRACE_MS = 1800; // macOS momentum scrolling outlives the press by 1-2s
