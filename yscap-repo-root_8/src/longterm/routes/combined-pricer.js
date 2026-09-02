@@ -69,7 +69,8 @@ const express = require('express');
 
 const lp = require('../lenderprice/client');
 const lpPrograms = require('../lenderprice/investor-programs');
-const { validateScenario } = require('../lenderprice/search-model');
+const lpModel = require('../lenderprice/search-model');
+const { validateScenario } = lpModel;
 const nex = require('../loannex/client');
 const mergeMod = require('../pricing/merge');
 const { merge } = mergeMod;
@@ -81,6 +82,7 @@ const investorLinks = require('../pricing/investor-links');
 const investors = require('../encompass/investors');
 const { whiteLabelOf } = require('../lenderprice/investor-programs');
 const quoteShape = require('../pricing/quote-shape');
+const productFilter = require('../pricing/product-filter');
 const breakdown = require('../pricing/breakdown');
 const nearTier = require('../pricing/near-tier');
 const vendorMargin = require('../pricing/vendor-margin');
@@ -149,6 +151,26 @@ function stripExplainedTrail(option) {
   if (!option || !option.priceBuild) return option;
   const { vendorPrice, vendorBasePoints, vendorAdjustedPoints, ...pb } = option.priceBuild;
   return { ...option, priceBuild: pb };
+}
+
+/**
+ * THE QUOTE AS THE RATE SHEET ITSELF WROTE IT — our margin added back on, for the QUESTION only.
+ *
+ * A LoanNEX rung reaches the browser with the holdback already in its price (`applyToBoard` runs
+ * before the merge), so the price on the explain handle is OURS rather than the vendor's. This puts
+ * the vendor's own figure back for the one call that is addressed to them, and touches nothing else
+ * on the quote — `priceHashKey`, rate, lock, product and investor ride through untouched, and the
+ * option the panel draws is still built from the ORIGINAL held-back quote.
+ *
+ * A holdback of zero, an unreadable one, or a quote with no price returns the quote itself, so a
+ * Lender Price row and an ordinary board are byte-identical to what they were.
+ */
+function vendorQuote(quote, points) {
+  const pts = Number(points);
+  if (!quote || !Number.isFinite(pts) || pts === 0) return quote;
+  const price = Number(quote.price);
+  if (!Number.isFinite(price)) return quote;
+  return { ...quote, price: Math.round((price + pts) * 1000) / 1000 };
 }
 
 /**
@@ -398,6 +420,26 @@ async function priceBoth(scenario, opts = {}) {
     nex.price(sc, opts.loannex || {}),
   ]);
 
+  /**
+   * ⛔ ONE BOARD IS NARROWED AND THE OTHER IS NOT, AND THAT IS WHAT MAKES THEM AGREE.
+   *
+   * Fixed-or-ARM, interest-only and the loan term are SEARCH CRITERIA at Lender Price
+   * (`criteria.loanType` + `loanTypeCriteria`, `criteria.interestOnly`, `termsCriteria`), so its
+   * answer arrives already narrowed to the product asked for. LoanNEX accepts none of the three and
+   * answers with everything it has, stating what each programme IS — which is why one board came
+   * back with 27 programmes for a single investor and the officer's own interest-only and term
+   * answers appeared to do nothing.
+   *
+   * `product-filter` narrows the LoanNEX board on the vendor's OWN published fields
+   * (`amortizationType`, `isInterestOnly`, `termInMonths`) — never a word out of a product name,
+   * which is the owner's own condition on this filter. It runs HERE, before the holdback, the merge,
+   * the routing, the counts and the option shape, so every one of those describes the same board.
+   */
+  const want = productFilter.wantFrom(sc, lpModel._internals);
+  const narrowed = nxRes.status === 'fulfilled'
+    ? productFilter.narrowBoard(nxRes.value.board, want)
+    : null;
+
   const boards = {
     lenderprice: lpRes.status === 'fulfilled' ? lpRes.value : null,
     // THE MARGIN HOLDBACK GOES ON HERE — before the merge, the comparison, the
@@ -405,7 +447,7 @@ async function priceBoth(scenario, opts = {}) {
     // Price's feed already carries it and LoanNEX's does not, so this is what
     // puts the two on the same footing; applying it any later would have the
     // comparison electing on one set of numbers and the board showing another.
-    loannex: nxRes.status === 'fulfilled' ? vendorMargin.applyToBoard(nxRes.value.board, 'loannex', { saved: heldSetting, extraFor }) : null,
+    loannex: narrowed ? vendorMargin.applyToBoard(narrowed.board, 'loannex', { saved: heldSetting, extraFor }) : null,
   };
   const errors = {
     lenderprice: lpRes.status === 'rejected' ? reasonOf(lpRes.reason) : null,
@@ -492,6 +534,20 @@ async function priceBoth(scenario, opts = {}) {
 
   return {
     merged,
+    /**
+     * WHAT THE BOARD WAS NARROWED TO, AND WHAT THAT COST — never a silent cap.
+     *
+     * `asked` is the product the search actually stood for; `dropped` is how many LoanNEX
+     * programmes each dimension removed, and `unclassified` how many it could not judge and
+     * therefore KEPT. A board that quietly went from 209 programmes to 41 with nothing on screen to
+     * say why is the same silence as an empty price build.
+     */
+    productFilter: {
+      asked: want,
+      applied: !!(narrowed && narrowed.narrowed),
+      dropped: narrowed ? narrowed.dropped : { amortization: 0, interestOnly: 0, term: 0 },
+      unclassified: narrowed ? narrowed.unclassified : 0,
+    },
     // The general engine's own top-level keys, so the copied screen needs no
     // reshaping of its own. `investorRoster` / `investorsUnmapped` keep the
     // names those two carry there.
@@ -889,19 +945,36 @@ function makeRouter(opts = {}) {
         message: 'This rate sheet publishes its itemized adjustments with the quote, so there is nothing further to fetch — the breakdown on this row is complete.',
       });
     }
-    Promise.all([
-      nex.evidence(scenarioOf(req), quote, { portal: b.portal, transactionId: b.transactionId }),
+    /**
+     * \u26d4 THE VENDOR IS ASKED ABOUT ITS OWN PRICE, NOT OURS \u2014 which is why the holdback is
+     * resolved BEFORE the question rather than beside it.
+     *
+     * `vendor-margin.applyToBoard` runs on the LoanNEX board before the merge, so by the time
+     * `programsFromLoanNex` writes a rung's explain handle the `price` on it is ALREADY the
+     * held-back one. Sending that straight through asked the rate sheet to itemise a price it has
+     * never quoted \u2014 a question about a number that does not exist on its sheet \u2014 and the row's
+     * `priceHashKey` is what actually identifies the quote, so the price rides as an assertion
+     * beside it. `holdbackOnRow` is the SAME resolver the board used, so what is added back here is
+     * exactly what was taken there.
+     *
+     * \u26d4 ONLY THE QUESTION IS RESTATED. The option the panel draws keeps the held-back price,
+     * because that is the price on the board and the price somebody quotes; `holdBackExplainedBase`
+     * then moves the vendor's own base by the same amount so the running total still lands on it.
+     */
+    holdbackOnRow(b.investorKey, b)
       // Never lets the answer fail: an unreadable settings store costs the base shift, not the
       // breakdown the caller asked for.
-      holdbackOnRow(b.investorKey, b).catch(() => ({ points: 0 })),
-    ])
+      .catch(() => ({ points: 0 }))
+      .then((hb) => nex
+        .evidence(scenarioOf(req), vendorQuote(quote, (hb && hb.points) || 0), { portal: b.portal, transactionId: b.transactionId })
+        .then((r) => [r, hb]))
       .then(([r, hb]) => {
         // THE SAME LAYOUT, WHATEVER PRICED IT. The vendor's answer is folded onto
         // an option in the common shape and handed to the ONE breakdown builder,
         // so this door and a Lender Price row produce the same rows, in the same
         // order, with the same keys.
         const option = vendorMargin.holdBackExplainedBase(quoteShape.attachEvidence(
-          quoteShape.optionForQuote(quote), r.evidence, { absence: r.absence },
+          quoteShape.optionForExplain(quote, b.option), r.evidence, { absence: r.absence },
         ), (hb && hb.points) || 0);
         const built = breakdown.breakdown(option, { reveal });
         res.json({
@@ -956,4 +1029,4 @@ function makeRouter(opts = {}) {
   return router;
 }
 
-module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, reasonOf, routing, quoteShape, breakdown } };
+module.exports = { makeRouter, _internals: { enabled, isSuperAdmin, priceBoth, scenarioOf, reasonOf, vendorQuote, routing, quoteShape, breakdown } };

@@ -842,6 +842,21 @@ export function ChargeList({ charges, sheet }) {
    and it is printed BESIDE the vendor's own total, never instead of it. If the two ever
    disagree the screen says so on its face rather than quietly showing one of them.
    ────────────────────────────────────────────────────────────────────────── */
+/**
+ * WHY THERE IS NO ITEMIZATION, in plain words â a FALLBACK, never a second copy of the rule.
+ *
+ * The vendor's own sentence (`evidence.message`) is preferred wherever the server has one; these
+ * cover the two states that have a reason and no message, and the last resort. Keyed on the codes
+ * `quote-shape.attachEvidence` and `loannex/parse.explainAbsence` actually emit.
+ */
+const EXPLAIN_REASON = {
+  not_requested: 'This rate sheet has not been asked to itemise this price.',
+  no_answer: 'The rate sheet was asked and nothing came back, so there is no breakdown to show.',
+  evidence_is_for_a_different_rate_or_lock:
+    'The breakdown that came back is for a different rate or lock, so it is not shown against this one.',
+  unknown: 'No breakdown could be read from the rate sheet’s answer.',
+};
+
 export function PriceBuild({ o: oProp, comp, ts, quote }) {
   const engine = useEngine();
   /**
@@ -872,7 +887,7 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
     let dead = false;
     setAsking(true); setAskErr(null); setFetched(null);
     Promise.resolve()
-      .then(() => explainer({ ...handle, investorKey: invKey }))
+      .then(() => explainer({ ...handle, investorKey: invKey }, oProp))
       .then((r) => {
         if (dead) return;
         // `alreadyExplained` is not a failure and must not read as one: that sheet published its
@@ -916,6 +931,24 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
     })
     : null;
   const adj = Array.isArray(o && o.adjustments) ? o.adjustments : [];
+  /**
+   * ⛔ AN EMPTY TABLE IS A CLAIM, SO THE PANEL SAYS WHOSE SILENCE IT IS.
+   *
+   * The owner's *"nothing populates at all"* had a second half the first fix did not reach: when a
+   * rate sheet is asked to itemise a price and answers with nothing, the panel drew "none itemized"
+   * over an empty build and offered no reason — indistinguishable from a quote that genuinely
+   * carries no adjustments, which is a statement no rate sheet made. The server already records
+   * WHICH silence it was (`evidence.reason`, and the vendor's own words in `evidence.message`);
+   * this puts it where the table would have been.
+   *
+   * ⛔ IT IS SHOWN ONLY WHERE IT IS TRUE: a row that arrived explained with the search reads
+   * `inline_with_search` and `appliesToThisRate: true`, so it never appears there, and the general
+   * board — which asks nobody — never reaches this at all.
+   */
+  const ev = (o && o.evidence) || null;
+  const explainNote = (!asking && !askErr && askable && ev && ev.appliesToThisRate === false && adj.length === 0)
+    ? (ev.message || EXPLAIN_REASON[ev.reason] || EXPLAIN_REASON.unknown)
+    : null;
 
   let run = nn(b.basePoints) ? b.basePoints : null;
   const stack = adj.map((a) => {
@@ -952,6 +985,12 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
       )}
       {askErr && (
         <div style={{ fontSize: 12.5, color: CAUTION, marginBottom: 10, lineHeight: 1.6 }}>{askErr}</div>
+      )}
+      {explainNote && (
+        <div style={{
+          fontSize: 12.5, color: SLATE, lineHeight: 1.6, marginBottom: 10,
+          padding: '8px 10px', borderRadius: 8, background: `${GOLD}14`, border: `1px solid ${GOLD}44`,
+        }}>{explainNote}</div>
       )}
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
         <Track title="Price build"
@@ -1047,7 +1086,12 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
           <Row k="Loan amount" v={money(o && o.terms && o.terms.loanAmount)} />
           <Row k="Term" v={o && o.terms && nn(o.terms.term)
             ? `${o.terms.term} ${o.terms.termInMonths ? 'months' : 'years'}` : '—'} />
-          <Row k="Amortization" v={o && o.terms
+          {/* ⛔ AN UNSTATED INTEREST-ONLY FLAG IS AN EM DASH, NEVER "FULLY AMORTISING". `null` on this
+              key means the rate sheet did not say, and printing the amortising answer turns a
+              silence into a claim about the loan. Lender Price fills it with `!!leaf.isInterestOnly`
+              on every option, so it is never null there and the general board draws exactly what it
+              always drew; the sheet that explains on demand is the one that can leave it unsaid. */}
+          <Row k="Amortization" v={o && o.terms && o.terms.interestOnly != null
             ? (o.terms.interestOnly ? 'Interest-only' : 'Fully amortising') : '—'} />
           <Row k="Lock" v={o && o.terms && nn(o.terms.dayLock) ? `${o.terms.dayLock} days` : '—'} />
           <Row k="Monthly P&amp;I" v={money2(o && o.monthlyPayment && o.monthlyPayment.monthlyPI)} />
@@ -1073,7 +1117,7 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
           <Track title={`${engine.sheetPossessive} own fee fields`}
             note="The vendor's numbers verbatim — our fee sheet shows in the borrower-paid and lender-paid positions.">
             {feeLines.filter((r) => r.key !== 'pointsFinanced').length === 0
-              ? <div style={{ fontSize: 12.5, color: MUTED }}>Lender Price returned no fee lines on this quote.</div>
+              ? <div style={{ fontSize: 12.5, color: MUTED }}>{`${engine.sheetSubject} returned no fee lines on this quote.`}</div>
               : feeLines.filter((r) => r.key !== 'pointsFinanced')
                 .map((r) => <Row key={r.key} k={labelize(r.key)} v={r.text} title={r.key} />)}
           </Track>
@@ -1104,7 +1148,7 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
             own block is read verbatim, one click away. */}
         {!compActive && <Track title="Comp">
           {compRows.length === 0
-            ? <div style={{ fontSize: 12.5, color: MUTED }}>Lender Price returned no comp lines on this quote.</div>
+            ? <div style={{ fontSize: 12.5, color: MUTED }}>{`${engine.sheetSubject} returned no comp lines on this quote.`}</div>
             : compRows.map((r) => (
               <div key={r.key}>
                 <Row k={labelize(r.key)} v={r.text} title={r.key} />
@@ -1734,6 +1778,33 @@ export function IneligibleView({ dq, onAsk, loanAmount, initialOpen, comp, invSe
  * a screen that lists its own exceptions is a copy with extra steps. Each is given what it needs
  * from this screen's state and nothing else.
  */
+/**
+ * WHAT THE PRODUCT ANSWERS TOOK OFF THE BOARD, in one plain sentence — or nothing at all.
+ *
+ * Reads the server's own `productFilter` report (`asked` + `dropped`), never a second count of its
+ * own: the board and this sentence must be describing the same narrowing. Returns '' whenever
+ * nothing was dropped, so an ordinary empty board reads exactly as it always did.
+ */
+export function narrowedAway(res) {
+  const pf = res && res.productFilter;
+  const d = (pf && pf.dropped) || null;
+  if (!pf || !pf.applied || !d) return '';
+  const parts = [];
+  if (d.amortization > 0) {
+    const want = pf.asked && pf.asked.amortization === 'arm' ? 'ARM' : 'fixed-rate';
+    parts.push(`${d.amortization} that are not ${want}`);
+  }
+  if (d.interestOnly > 0) {
+    const want = pf.asked && pf.asked.io ? 'interest-only' : 'fully amortising';
+    parts.push(`${d.interestOnly} that are not ${want}`);
+  }
+  if (d.term > 0) parts.push(`${d.term} on a different term`);
+  if (!parts.length) return '';
+  const list = parts.length === 1 ? parts[0]
+    : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+  return ` Your rate-type, interest-only and term answers also left out ${list} — change one of those above to widen the search.`;
+}
+
 export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
   /* ⛔ THE FORM IS THE SHARED ONE. Its state, its ZIP lookup, its amount triangle and its derived
      setters all live in `LtScenarioFields.jsx`, because the scenario page mounts the SAME fields —
@@ -2412,7 +2483,7 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
   const explainRow = React.useMemo(() => {
     if (!engine.explain || !pricedForm) return null;
     const sc = toScenario(pricedForm);
-    return (quote) => engine.explain(quote, sc);
+    return (quote, option) => engine.explain(quote, sc, option);
   }, [engine, pricedForm]);
 
   return (
@@ -2714,8 +2785,14 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
                     {filteredRes && filteredRes.hidden > 0
                       ? `Your investor filter is hiding ${filteredRes.hidden === filteredRes.total
                         ? `every one of the ${filteredRes.total}`
-                        : `${filteredRes.hidden} of the ${filteredRes.total}`} programmes Lender Price returned — none of the ticked investors priced this scenario. Press Show all investors above to see the whole board.`
-                      : 'Lender Price returned no priced rungs for this scenario. The Ineligible view says which products it looked at and why each was ruled out.'}
+                        : `${filteredRes.hidden} of the ${filteredRes.total}`} programmes ${engine.sheetReturned} — none of the ticked investors priced this scenario. Press Show all investors above to see the whole board.`
+                      /* ⛔ AN EMPTY BOARD NAMES WHAT NARROWED IT. The rate-type / interest-only /
+                         term answers are real search criteria at one program and a narrowing of the
+                         other's own board, so a board they emptied must say so — otherwise the one
+                         screen that could explain the emptiness reads as "nothing prices this loan",
+                         which is a claim neither rate sheet made. Only ever ADDED to the vendor's
+                         own sentence, never in place of it. */
+                      : `${engine.sheetSubject} returned no priced rungs for this scenario. The Ineligible view says which products it looked at and why each was ruled out.${narrowedAway(res)}`}
                   </div>
                 ) : (banded || { items: stack.rates.map((row) => ({ kind: 'rate', key: row.key, row })) }).items.map((it) => (
                   /* ⛔ ONE LIST, TWO KINDS OF ROW. The board is the SAME board — the
