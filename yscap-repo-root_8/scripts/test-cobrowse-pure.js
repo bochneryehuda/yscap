@@ -172,7 +172,7 @@ ok(/el\.tagName === 'SELECT' && Number\.isFinite\(Number\(m\.idx\)\)/.test(libNo
 const hostNow = read('app-v2/src/components/CobrowseHost.jsx');
 ok(/asks to control your screen/.test(hostNow) && /Allow control/.test(hostNow) && /keep watching only/.test(hostNow), 'the second consent prompt: allow / keep watching only');
 ok(/Take back/.test(hostNow) && /cobrowse-controlled/.test(hostNow), 'the banner turns to controlling with a Take back button and the red frame');
-ok(/useAuth\(\)/.test(hostNow) && /!!token && !isBorrowerView && !isTpoView && !isAssistant/.test(hostNow), 'the host keys on the live auth token and stands down inside a view-as / for a helper (audit)');
+ok(/useAuth\(\)/.test(hostNow) && /!!token && !isBorrowerView && !isTpo && !isAssistant/.test(hostNow), 'the host keys on the live auth token and stands down inside a borrower view, for any TPO session (a broker is refused at every door) and for a helper (audit)');
 ok(/PILOT records who watched and when; it never records the screen itself/.test(hostNow), 'the consent prompt states what is kept');
 ok(/const POLL_MS = 10000;/.test(hostNow) && /if \(!eligible \|\| active \|\| pending\) return undefined;/.test(hostNow) && /setInterval\(\(\) => \{\s*api\.cobrowseMine\(\)/.test(hostNow), 'while nothing is showing the host re-reads the register every 10 s — a request is never missed because the stream was down (the drive caught it)');
 

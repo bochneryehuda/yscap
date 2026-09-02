@@ -35,8 +35,10 @@ export default function CobrowseHost() {
   // And NEVER inside a view-as: a staffer standing in a borrower's portal is not
   // that borrower and must be neither prompted nor recorded (the server refuses
   // too; this keeps the banner and the reconnect loop off their console).
-  const { token, isBorrowerView, isTpoView, isAssistant } = useAuth();
-  const eligible = !!token && !isBorrowerView && !isTpoView && !isAssistant;
+  const { token, isBorrowerView, isTpo, isAssistant } = useAuth();
+  // A TPO broker (kind 'tpo' — their own login, or a staffer inside a broker view) is refused
+  // by every co-browse door, so the host stands down for them rather than polling a 403.
+  const eligible = !!token && !isBorrowerView && !isTpo && !isAssistant;
   const [pending, setPending] = useState(null);   // the request being shown
   const [active, setActive] = useState(null);     // { id, viewer:{name} }
   const [link, setLink] = useState({ connected: false, recording: false, control: 'none' });
