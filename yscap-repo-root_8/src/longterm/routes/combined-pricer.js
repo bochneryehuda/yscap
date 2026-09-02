@@ -740,6 +740,13 @@ async function priceBoth(scenario, opts = {}) {
     // What is NOT on the board, and why — so a short board can always be
     // accounted for without asking anybody.
     hidden: merged.hidden || [],
+    /**
+     * ⛔ IS THIS THE WHOLE BOARD? Lifted to the top level beside `hidden` and `settings` because
+     * that is where the screen reads it, and because a fact this important must not be one level
+     * down inside `merged` where the only thing that ever looks is another module. Vendor-neutral
+     * by construction — see `investor-routing.applyRouting`.
+     */
+    completeness: merged.completeness || null,
     settings: merged.settings || null,
     options,
     scenario: { requested: scenario || {}, priced: sc, countyEnrichment: chk.countyEnrichment || null },

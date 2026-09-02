@@ -67,6 +67,13 @@ export const GENERAL_ENGINE = {
      programs, which is why the combined engine answers with a clause of its own rather than a name
      English cannot place there. */
   sheetReturned: 'Lender Price returned',
+  /* FORK 11 — THE EMPTY BOARD'S OWN SENTENCE, whole rather than assembled. `sheetSubject` is the
+     right word in the three places that describe ONE QUOTE's own sheet ("this rate sheet returned
+     no fee lines on this quote"), and the wrong one for the WHOLE BOARD, which on the combined
+     engine two rate sheets quote. Splicing a subject into a shared sentence cannot fix that —
+     "Neither rate sheet returned no priced rungs" — so each engine owns its own grammar, the same
+     reason `sheetReturned` exists. */
+  emptyBoardLine: 'Lender Price returned no priced rungs for this scenario.',
   /* FORK 9 — MAY THE OFFICER CHOOSE FIXED OR ARM? Both programs take the answer (Lender Price as
      `criteria.loanType`, LoanNEX by narrowing its own board on `amortizationType`), but this
      engine's search has forced `Fixed` since it was written — a DSCR investor search is a
@@ -138,6 +145,10 @@ export const COMBINED_ENGINE = {
   sheetSubject: 'This rate sheet',
   sheetPossessive: "The rate sheet's",
   sheetReturned: 'came back',
+  /* FORK 11 — two rate sheets quote this board, so the singular was simply wrong (audit F2).
+     A person reading "this rate sheet returned nothing" on a board quoted by two has been told
+     something untrue about which sheets were asked. */
+  emptyBoardLine: 'Neither rate sheet returned a priced rung for this scenario.',
   /* FORK 9 — the officer picks the product, because on THIS board it decides what comes back from
      both programs at once. Lender Price is asked for it; LoanNEX cannot be asked, so its board is
      narrowed on the fields it publishes about each programme. */

@@ -473,6 +473,35 @@ const reg = registryOf.capturedRegistry();
     srv.close();
   }
 
+  /* ── D5. A SHORT BOARD SAYS SO, WITHOUT NAMING A VENDOR (audit F2) ─────────────────────────
+     The most expensive failure class here: when one program does not answer, the board comes back
+     with half the prices and NOTHING on it says so. The front end reads neither `sources` nor
+     `provenance`, `hidden[]` can only report an investor that reached the merge, and the
+     empty-board copy said "This rate sheet returned no priced rungs" — singular, about a board two
+     rate sheets quote.
+
+     The control is the whole point: the SAME board with both programs up must say nothing. */
+  {
+    LP.fail = false;
+    const whole = await priceBoth({ ...BROWSER }, { marginHoldback: 0.25, routes: ALL_NEX, links: {} });
+    ok(whole.completeness && whole.completeness.complete === true
+      && whole.completeness.programsAnswered === 2 && whole.completeness.message === null,
+      `D20 CONTROL: with both programs answering the board reports itself COMPLETE and says nothing (${(whole.completeness || {}).programsAnswered}/${(whole.completeness || {}).programsAsked})`);
+
+    LP.fail = true;
+    const short = await priceBoth({ ...BROWSER }, { marginHoldback: 0.25, routes: ALL_NEX, links: {} });
+    LP.fail = false;
+    ok(short.completeness && short.completeness.complete === false
+      && short.completeness.programsAnswered === 1 && typeof short.completeness.message === 'string',
+      `D21 THE ONE THAT MATTERS: with one program down the SAME board says it is short (${(short.completeness || {}).programsAnswered}/${(short.completeness || {}).programsAsked}) — before this it came back quietly with half the prices`);
+    ok(short.programs && short.programs.length > 0,
+      `D21a …and it is a board with prices ON it, not an empty one (${(short.programs || []).length} rows) — the expensive case is a SHORT board that reads as complete, not an empty one`);
+    ok(!/loannex|lender ?price/i.test(String((short.completeness || {}).message || '')),
+      `D22 …and the sentence names NO vendor, which is what lets this be said on the one-system board at all: "${(short.completeness || {}).message || ''}"`);
+    ok(!('sources' in short),
+      'D23 …while `sources` itself, which DOES name them, is still withheld — the neutral count replaced it rather than reopening it');
+  }
+
   // ── E. WHAT MUST NOT MOVE ─────────────────────────────────────────────────
   {
     const src = read('src/longterm/routes/combined-pricer.js');

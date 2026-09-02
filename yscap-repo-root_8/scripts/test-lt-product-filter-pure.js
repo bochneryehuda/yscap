@@ -374,6 +374,39 @@ const nexRows = (out) => (out.programs || []).filter((p) => NEX_PROGRAMS.some((n
       'ROW-5 …on BOTH row lines — the lender line and the per-programme line under it, so opening a lender does not lose the lock');
   }
 
+
+  console.log('\n── AND A SHORT BOARD SAYS SO ON THE SCREEN, WITHOUT NAMING A VENDOR ──');
+  {
+    const pricer = read('app-v2/src/longterm/LtCombinedPricer.jsx');
+    ok(/export function ShortBoardNotice\(\{ completeness \}\)/.test(pricer),
+      'SHORT-1 the notice exists and takes ONLY the server\'s own answer — it works nothing out for itself');
+    ok(/if \(!c \|\| c\.complete !== false \|\| !c\.message\) return null;/.test(pricer),
+      'SHORT-2 …and renders NOTHING when the board is whole, which is almost always');
+    ok(/<ShortBoardNotice completeness=\{res\.completeness\} \/>/.test(pricer),
+      'SHORT-3 …and it is mounted on the combined screen, reading the key the route lifts to the top level');
+    const idxNotice = pricer.indexOf('<ShortBoardNotice');
+    const idxNear = pricer.indexOf('<NearTierFlag');
+    ok(idxNotice > 0 && idxNear > 0 && idxNotice < idxNear,
+      'SHORT-4 …ABOVE everything else on the strip — "some of your prices are missing" outranks every other thing a person could read there');
+    ok(!/loannex|LoanNEX|Lender Price/.test(pricer.slice(idxNotice - 1400, idxNotice + 200)),
+      'SHORT-5 …and the notice names no vendor, so it can be said on the one-system board at all');
+
+    /* THE EMPTY-BOARD SENTENCE. `sheetSubject` is RIGHT in the three places that describe ONE
+       quote's own sheet, and was wrong for the whole board, which two rate sheets quote. Forked
+       whole rather than assembled — "Neither rate sheet returned no priced rungs" is what splicing
+       a subject into a shared sentence produces. */
+    const eng = read('app-v2/src/longterm/pricerEngine.js');
+    ok(/key: 'general',[\s\S]{0,6000}?emptyBoardLine: 'Lender Price returned no priced rungs for this scenario\.',/.test(eng),
+      'SHORT-6 the GENERAL engine\'s empty-board sentence is unchanged, word for word');
+    ok(/key: 'combined',[\s\S]{0,6000}?emptyBoardLine: 'Neither rate sheet returned a priced rung for this scenario\.',/.test(eng),
+      'SHORT-7 …and the COMBINED engine says NEITHER, because two rate sheets quote that board');
+    const lt = read('app-v2/src/longterm/LtPricer.jsx');
+    ok(/\$\{engine\.emptyBoardLine\} The Ineligible view/.test(lt),
+      'SHORT-8 …and the shared screen draws the engine\'s own sentence rather than splicing a subject into one of its own');
+    ok((noComments(lt).match(/engine\.sheetSubject/g) || []).length === 3,
+      'SHORT-9 …while the three ONE-QUOTE messages still use `sheetSubject`, where the singular is correct — this forked the board sentence, not the word');
+  }
+
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);
   process.exit(fail ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

@@ -2867,7 +2867,7 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
                          screen that could explain the emptiness reads as "nothing prices this loan",
                          which is a claim neither rate sheet made. Only ever ADDED to the vendor's
                          own sentence, never in place of it. */
-                      : `${engine.sheetSubject} returned no priced rungs for this scenario. The Ineligible view says which products it looked at and why each was ruled out.${narrowedAway(res)}`}
+                      : `${engine.emptyBoardLine} The Ineligible view says which products it looked at and why each was ruled out.${narrowedAway(res)}`}
                   </div>
                 ) : (banded || { items: stack.rates.map((row) => ({ kind: 'rate', key: row.key, row })) }).items.map((it) => (
                   /* ⛔ ONE LIST, TWO KINDS OF ROW. The board is the SAME board — the
