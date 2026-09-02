@@ -995,6 +995,17 @@ if (require.main === module) {
         require('./lib/appraisal-order-mirror').backfillOnce()
           .then((r) => r && r.synced && console.log('[boot] appraisal Orders-desk backfill:', JSON.stringify(r)))
           .catch((e) => console.error('[boot] appraisal Orders-desk backfill failed:', e.message));
+        /* THE APPRAISERS WHO WERE TOLD THE WRONG RULE (owner-directed 2026-09-01: "make a
+           one-time run job for all the files that you sent this message in the past,
+           everybody, correcting the instructions"). The requirements message posted between
+           2026-08-16 and 2026-09-01 said every comparable must be within 1 mile; the rule is
+           the anchor comp's. Each order still carrying that message gets ONE correction on
+           its own vendor thread, from the same single definition the live message uses.
+           Bounded, self-draining (a corrected order leaves the selection), never throws.
+           Off with APPRAISAL_REQS_CORRECTION_DISABLED=1. */
+        require('./lib/appraisal/order-requirements-post').correctSupersededOnce(require('./db'))
+          .then((r) => r && (r.corrected || r.failed) && console.log('[boot] appraisal requirements correction:', JSON.stringify(r)))
+          .catch((e) => console.error('[boot] appraisal requirements correction failed:', e.message));
         // Previous-files fix (owner-reported 2026-08-02): galleries extracted before photographs
         // were told apart from the form's own artwork are stored in raw page order, so the
         // appraiser's signature outranks the subject front photo and shows as the property's main

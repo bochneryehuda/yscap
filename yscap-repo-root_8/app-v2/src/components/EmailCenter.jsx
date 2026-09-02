@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { api, saveBlob } from '../lib/api.js';
 import PilotWriter from './PilotWriter.jsx';
 import DropZone from './DropZone.jsx';
+import EmailPreview from './EmailPreview.jsx';
 
 /* ════════════════════════════════════════════════════════════════════════════
    EMAIL CENTER — a modern Gmail/Outlook-style history of every email +
@@ -418,6 +419,7 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [recips, setRecips] = useState(null);
+  const [preview, setPreview] = useState(null);   // { subject, text, to, cc, subjectLocked } from the server
   useEffect(() => { if (!isNew) setSubj(subject && /^\s*re:/i.test(subject) ? subject : `Re: ${subject || 'your loan file'}`); }, [subject, isNew]);
   useEffect(() => {
     if (!open) return;
@@ -470,15 +472,32 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
   };
   const removeAtt = (i) => setAtts((cur) => cur.filter((_, n) => n !== i));
 
-  const send = async () => {
+  /* EVERY OUTGOING EMAIL IS PREVIEWED FIRST (owner-directed 2026-09-01: "any email that
+     it's sending, even if it's a follow-up, should preview the text that's going to be
+     sent: insurance and title and all others"). The server runs the send's own branch in
+     preview mode — same builder, same recipients — so what this shows is what goes out.
+     An edit made here rides back as `override` and lands through the one chokepoint. */
+  const payload = (extra) => ({
+    body, subject: subj, scope: scope || undefined,
+    // Only the three keys the server's contract names — never the local `size`.
+    attachments: atts.map((a) => ({ filename: a.filename, contentType: a.contentType, dataBase64: a.dataBase64 })),
+    ...extra,
+  });
+  const openPreview = async () => {
     if (!body.trim()) return;
     setBusy(true); setMsg('');
     try {
-      const r = await api.staffAppEmailReply(appId, {
-        body, subject: subj, scope: scope || undefined,
-        // Only the three keys the server's contract names — never the local `size`.
-        attachments: atts.map((a) => ({ filename: a.filename, contentType: a.contentType, dataBase64: a.dataBase64 })),
-      });
+      const pv = await api.staffAppEmailReply(appId, payload({ preview: true }));
+      setPreview({ subject: pv.subject || '', text: pv.text || '', to: pv.to || [], cc: pv.cc || [],
+        subjectLocked: !!(pv.subjectLocked || scoped) });
+    } catch (e) { setMsg(e.message || 'Could not build the preview.'); }
+    finally { setBusy(false); }
+  };
+  const send = async (override) => {
+    if (!body.trim()) return;
+    setBusy(true); setMsg('');
+    try {
+      const r = await api.staffAppEmailReply(appId, payload(override && Object.keys(override).length ? { override } : {}));
       // NOTHING IS SILENTLY DROPPED. The server refuses an attachment it cannot carry (a web
       // page, an unreadable file, one that does not fit) and names it; say so rather than
       // letting somebody believe the vendor received it.
@@ -489,12 +508,12 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
           : `Sent to ${(r.sent_to || []).length} recipient${(r.sent_to || []).length === 1 ? '' : 's'}${r.attached ? ` with ${r.attached} attachment${r.attached === 1 ? '' : 's'}` : ''}.`,
         held.length ? `Not attached: ${held.map((h) => `${h.filename} (${h.why})`).join('; ')}.` : '',
       ].filter(Boolean).join(' '));
-      setBody(''); setAtts([]); if (!isNew) setOpen(false); if (isNew && onClose) onClose();
+      setBody(''); setAtts([]); setPreview(null); if (!isNew) setOpen(false); if (isNew && onClose) onClose();
       onSent && onSent();
     } catch (e) { setMsg(e.message || 'Could not send.'); }
     finally { setBusy(false); }
   };
-  const onKey = (e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') send(); };
+  const onKey = (e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') openPreview(); };
   if (!open) {
     return (
       <div className="ec-reply-bar">
@@ -532,7 +551,7 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
       <textarea className="ec-reply-text" rows={5} placeholder="Type your message…  (⌘/Ctrl + Enter to send)" value={body}
         onChange={(e) => setBody(e.target.value)} onKeyDown={onKey} autoFocus />
       <div className="row" style={{ gap: 8, marginTop: 8, alignItems: 'center' }}>
-        <button className="btn primary small" onClick={send} disabled={busy || !body.trim()}>{busy ? 'Sending…' : (isNew ? 'Send message' : 'Send reply')}</button>
+        <button className="btn primary small" onClick={openPreview} disabled={busy || !body.trim()}>{busy ? 'Working…' : (isNew ? 'Preview & send' : 'Preview & send reply')}</button>
         {/* Pilot AI (2026-08-18): fix / rewrite / draft the email — advisory,
             replaces into the box only on "Use this". Staff surface (EmailCenter
             is a staff screen). */}
@@ -562,6 +581,16 @@ function Composer({ appId, subject, onSent, isNew, onClose, scope }) {
       ) : (
         <div className="ec-att-hint">Drag a document onto this box to attach it — or use Attach.</div>
       )}
+      {preview ? (
+        <EmailPreview
+          title={scoped ? scoped.verb : (isNew ? 'Review this message before it goes out' : 'Review this reply before it goes out')}
+          subject={preview.subject} text={preview.text} to={preview.to} cc={preview.cc}
+          subjectLocked={preview.subjectLocked}
+          lockNote="This stays on the existing conversation, so its subject is kept."
+          busy={busy} sendLabel={isNew ? 'Send message' : 'Send reply'}
+          onClose={() => setPreview(null)}
+          onSend={async (override) => { await send(override); }} />
+      ) : null}
     </DropZone>
   );
 }

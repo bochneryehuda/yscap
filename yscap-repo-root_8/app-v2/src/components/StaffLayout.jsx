@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { useAuth } from '../lib/auth.jsx';
+import { useAuth, takeReturnTo } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
 import { subscribeChat } from '../lib/chatEvents.js';
 import { arena as arenaApi } from '../lib/arena.js';
@@ -15,11 +15,9 @@ import ChatBubble from './ChatBubble.jsx';
 import { useStaleBuild } from '../lib/useStaleBuild.jsx';
 import { RESEARCH_PAGES, inResearch as isResearchPath } from './ResearchNav.jsx';
 
-const ROLE_LABEL = {
-  super_admin: 'Super Admin', admin: 'Admin', underwriter: 'Underwriter',
-  loan_officer: 'Loan Officer', loan_coordinator: 'Loan Coordinator',
-  processor: 'Loan Processor', software_setup: 'Software Setup',
-};
+// Role labels + the persona test come from the ONE front-end role registry
+// (lib/roles.js, pinned to the server's) — never a hand-kept map here.
+import { ROLE_LABEL, isLoanOfficerPersona } from '../lib/roles.js';
 
 /* Sidebar nav line-icons (18px, currentColor stroke). One per nav item — the
    blueprint's ds.css `.ic` is an 18px icon slot; the preview HTML used colour
@@ -472,7 +470,10 @@ export default function StaffLayout({ children }) {
      because the token has changed under the running app. */
   const leaveStaffView = async () => {
     const restored = await exitStaffView();
-    window.location.assign(restored ? '/portal/#/internal' : '/');
+    // Back to where the super admin was before they opened the teammate's screen
+    // (owner-reported 2026-09-01), else the console home.
+    const back = restored ? (takeReturnTo() || '/internal') : '';
+    window.location.assign(restored ? `/portal/#${back}` : '/');
     window.location.reload();
   };
 
@@ -621,14 +622,17 @@ export default function StaffLayout({ children }) {
         <NavLink className="sb-link" to="/internal/esign" title="E-Signatures — PILOT’s own DocuSign cockpit: every package, every signer, live"><NavIcon name="esign" />E-signatures</NavLink>
         <NavLink className="sb-link" to="/internal/orders" title="Orders — every title & insurance order across your files, and what's waiting to be classified"><NavIcon name="vendors" />Orders</NavLink>
         {canExportTapes && <NavLink className="sb-link" to="/internal/tapes" title="Data Tapes — export each capital provider's loan tape (their Excel workbook, filled with the loan's figures). One loan at a time or in bulk by provider."><NavIcon name="pipeline" />Data tapes</NavLink>}
-        {(canManageClosings || role === 'loan_officer' || role === 'processor') && <NavLink className="sb-link" to="/internal/closing" title="Closing — files submitted to closing: cash-to-close checks, warehouse & collateral, closing conditions, reconciliation."><NavIcon name="pipeline" />Closing
+        {(canManageClosings || isLoanOfficerPersona(role) || role === 'processor') && <NavLink className="sb-link" to="/internal/closing" title="Closing — files submitted to closing: cash-to-close checks, warehouse & collateral, closing conditions, reconciliation."><NavIcon name="pipeline" />Closing
           {closingCount > 0 && <span className="sb-badge">{closingCount > 99 ? '99+' : closingCount}</span>}</NavLink>}
         {canManagePurchasing && <NavLink className="sb-link" to="/internal/purchasing" title="Purchasing — every file that moved to purchasing after investor delivery: what's still missing, notes and tasks. A table-funded loan was sold at closing and never lands here."><NavIcon name="pipeline" />Purchasing
           {purchasingCount > 0 && <span className="sb-badge">{purchasingCount > 99 ? '99+' : purchasingCount}</span>}</NavLink>}
         {canManageDraws && <NavLink className="sb-link" to="/internal/draws" title="Draw Management — the post-funding phase: every draw, approvals, inspector photos, releases, and reports"><NavIcon name="pipeline" />Draw Management</NavLink>}
         {canViewDraws && <NavLink className="sb-link" to="/internal/draws" title="My draws — your active-draw properties, view-only: every draw, the inspector's results, photos and reports"><NavIcon name="pipeline" />My draws</NavLink>}
         {canManageConditions && <NavLink className="sb-link" to="/internal/conditions" title="Condition Center — the global condition library & rules"><NavIcon name="conditions" />Conditions</NavLink>}
-        {canManageVendors && <NavLink className="sb-link" to="/internal/vendors" title="Title & insurance vendor directory"><NavIcon name="vendors" />Vendors</NavLink>}
+        {/* EVERY STAFFER SEES THE DIRECTORY (owner-directed 2026-09-01: "All the loan officers
+            should get access to all the company vendors"); editing it still needs manage_vendors,
+            which the screen enforces button by button. */}
+        <NavLink className="sb-link" to="/internal/vendors" title={canManageVendors ? 'The company vendor directory — title, insurance, attorneys, contractors and every other vendor entered on any file' : 'The company vendor directory (read-only) — every vendor entered on any file'}><NavIcon name="vendors" />Vendors</NavLink>
         {canDeleteFiles && <NavLink className="sb-link" to="/internal/archived" title="Archived files — restore or delete permanently"><NavIcon name="archived" />Archived</NavLink>}
 
         {(canManageTeam || canManagePricing || canPlatformSetup || canViewAudit) && <div className="sb-sec">Admin</div>}

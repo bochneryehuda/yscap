@@ -27,6 +27,7 @@ const workflowQueues = require('./email/workflow-queues');
 const loanExceptions = require('./loan-exceptions');
 const { outstandingItems } = require('./reminders');
 const { claimOncePerPeriod } = require('./throttle-claim');
+const perms = require('./permissions');   // the role registry: who has the loan officer's persona
 // Advisory-only sources must never score or notify — one shared filter (audit 2026-07-27).
 const aiSuggestions = require('./underwriting/ai-suggestions');
 
@@ -372,22 +373,33 @@ async function dailyPipelineDigestOnce() {
    oldest-at-stage first, so the top row is the thing to chase today. This one is a WEEK's read:
    the totals first (what is in flight, what closed), then the file-by-file detail.
 
-   ONLY LOAN OFFICERS, by the owner's word. `role='loan_officer'` is the test, so a processor or
-   a closer who happens to be assigned to files does not receive it — they have their own Workflow
-   nudge, and an officer's book is a sales read, not a task list.
+   ONLY LOAN OFFICERS, by the owner's word — and, since 2026-09-02, THE LOAN OFFICER ASSISTANT too
+   (owner-directed: "also give them the weekly officer pipeline email"). The test is the PERSONA
+   (permissions.personaOf(role) === 'loan_officer'), which is exactly the loan officer and every
+   role registered to behave as one, so a processor or a closer who happens to be assigned to
+   files does not receive it — they have their own Workflow nudge, and an officer's book is a
+   sales read, not a task list. An assistant's book is the files they hold in THEIR slot
+   (`loan_officer_assistant`, db/672) — plus any they were seated in the officer slot for — so
+   the two slots below are the book of anyone with the officer's persona.
 
    Every figure is a plain count/sum over the officer's own assigned, non-deleted files. Nothing
    here is a pricing number — `loan_amount` is the registered amount already stored on the row. */
+// The staff roles that receive the weekly officer snapshot — DERIVED from the registry
+// (every role whose persona is the loan officer), never typed here. Today: loan_officer,
+// loan_officer_assistant. The slots that make up such a person's book: theirs.
+const OFFICER_PERSONA_ROLES = perms.ROLE_KEYS.filter((r) => perms.personaOf(r) === 'loan_officer');
+const OFFICER_BOOK_SLOTS = ['loan_officer', 'loan_officer_assistant'];
 async function weeklyOfficerPipelineOnce() {
   let sent = 0;
   let officers = [];
   try {
     officers = (await db.query(
       `SELECT id, email, full_name FROM staff_users
-        WHERE is_active = true AND role = 'loan_officer'
+        WHERE is_active = true AND role = ANY($1::text[])
+          AND COALESCE(is_external, false) = false
           AND COALESCE(notifications_enabled, true) = true
           AND email IS NOT NULL AND btrim(email) <> ''
-        ORDER BY full_name`)).rows;
+        ORDER BY full_name`, [OFFICER_PERSONA_ROLES])).rows;
   } catch (_) { return 0; }
 
   const money0 = (n) => '$' + Math.round(Number(n) || 0).toLocaleString('en-US');
@@ -406,13 +418,13 @@ async function weeklyOfficerPipelineOnce() {
                     AND ci.status IN ('outstanding','requested','issue')) AS open_borrower
            FROM applications a
            JOIN application_assignees aa ON aa.application_id = a.id
-                AND aa.staff_id = $1 AND aa.removed_at IS NULL AND aa.role = 'loan_officer'
+                AND aa.staff_id = $1 AND aa.removed_at IS NULL AND aa.role = ANY($3::text[])
           WHERE a.deleted_at IS NULL
             AND (a.status <> ALL($2)
                  OR (a.status = 'funded' AND a.funded_date IS NOT NULL
                      AND a.funded_date >= (now() - interval '90 days')::date))
           ORDER BY a.status_changed_at ASC NULLS FIRST, a.id
-          LIMIT 200`, [st.id, TERMINAL]);
+          LIMIT 200`, [st.id, TERMINAL, OFFICER_BOOK_SLOTS]);
 
       const all = r.rows;
       const active = all.filter((f) => f.status !== 'funded');

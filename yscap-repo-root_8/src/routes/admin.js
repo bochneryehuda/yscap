@@ -152,7 +152,10 @@ router.post('/staff', async (req, res) => {
     if (!isSuper(req) && existing.rows[0] && existing.rows[0].role === 'admin')
       return res.status(403).json({ error: 'only a super admin can modify an admin account' });
 
-    const dept = b.department || (['processor', 'underwriter', 'loan_coordinator', 'software_setup'].includes(role) ? 'operations' : 'sales');
+    // The department default when the form leaves it blank. The loan officer
+    // assistant is a BACK-OFFICE role by the owner's word (2026-09-02), so it
+    // defaults to operations even though its permissions are the officer's.
+    const dept = b.department || (['processor', 'underwriter', 'loan_coordinator', 'software_setup', 'loan_officer_assistant'].includes(role) ? 'operations' : 'sales');
     const permOverrides = sanitizeOverrides(b.permissions);
     // S1-05: the create path must apply the SAME powerful-cap gate as the edit
     // path — otherwise a non-super manage_team holder could mint a brand-new
@@ -364,7 +367,12 @@ async function adminAudit(req, action, entity_type, entity_id, detail) {
 // Map a staffer's role to the assignee access-bucket. Access itself is role-agnostic
 // (assigneeExistsSql matches ANY active row); the bucket only keeps the row shape
 // consistent with the file-team rail + the primary-mirror trigger (db/103).
-const grantBucket = (staffRole) => (staffRole === 'loan_officer' ? 'loan_officer' : 'processor');
+// The LOAN OFFICER ASSISTANT has a slot of its own (db/672) and must NEVER be
+// filed under 'processor' (owner-directed 2026-09-02: "should not be able to be
+// added as a processor on the file") — so a grant seats them in their own slot,
+// exactly as the file's team rail would.
+const grantBucket = (staffRole) => (staffRole === 'loan_officer' ? 'loan_officer'
+  : staffRole === 'loan_officer_assistant' ? 'loan_officer_assistant' : 'processor');
 
 // List the files a staffer has been manually granted (any ACTIVE assistant row —
 // whether added here or from a file's team rail), ONE entry per file, newest first.

@@ -32,7 +32,9 @@ export default function BorrowerViewButton({
     setBusy(true); setErr('');
     try {
       const r = await startBorrowerView(borrowerId, applicationId);
-      nav(r.landing || '/dashboard', { replace: true });
+      // A plain push, not a replace: the browser's Back button then also returns to the
+      // file (the exit buttons use the parked location; this is the second way home).
+      nav(r.landing || '/dashboard');
     } catch (e) {
       setErr(e.message);
       setBusy(false);

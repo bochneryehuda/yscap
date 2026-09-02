@@ -49,6 +49,7 @@ async function main() {
   console.log('\n2. orchestrate.buildDefinition copies the loan officer + processor');
   const loId = crypto.randomUUID(), prId = crypto.randomUUID(), bId = crypto.randomUUID();
   const cbId = crypto.randomUUID(), dupAdmin = crypto.randomUUID();
+  const laId = crypto.randomUUID();   // the LOAN OFFICER ASSISTANT (db/672), seated in their own slot
   let appId, envRowId;
   try {
     await db.query(`INSERT INTO staff_users (id, email, full_name, role) VALUES ($1,$2,'Dana Officer','loan_officer'),($3,$4,'Perry Processor','processor')`,
@@ -203,6 +204,16 @@ async function main() {
        as an assignee (admin file-grants store them with aa.role='processor',
        so the filter must judge the STAFF role). dupAdmin (staff role 'admin',
        seated as a processor-assignee in section 3) is the exact fixture. */
+    /* …PLUS THE LOAN OFFICER ASSISTANT (owner-directed 2026-09-02, on the new
+       role: "add a loan officer assistant to this and also add them to the
+       term sheet package as well"). Seated in THEIR OWN slot
+       (aa.role='loan_officer_assistant', db/672) — the filter judges the staff
+       role, so the slot must not matter. */
+    await db.query(`INSERT INTO staff_users (id, email, full_name, role) VALUES ($1,$2,'Ari Assistant','loan_officer_assistant')`,
+      [laId, `la+${TAG}@ys.com`]);
+    await db.query(
+      `INSERT INTO application_assignees (application_id, staff_id, role, is_primary)
+       VALUES ($1,$2,'loan_officer_assistant',false) ON CONFLICT DO NOTHING`, [appId, laId]).catch(() => {});
     const idef = await orchestrate.buildDefinition(row, { db });
     const iskaCc = (idef.carbonCopies || []).map((c) => c.email);
     ok(!iskaCc.includes(`dc+${TAG}@ys.com`),
@@ -211,6 +222,8 @@ async function main() {
       'an ADMIN seated as an assignee is NOT copied on the HETER ISKA — the "Esther and Yehuda get every signed ISKA" report, fixed');
     ok(iskaCc.includes(`lo+${TAG}@ys.com`) && iskaCc.includes(`pr+${TAG}@ys.com`),
       '…while the loan officer and the processor still are');
+    ok(iskaCc.includes(`la+${TAG}@ys.com`),
+      '…and so is the LOAN OFFICER ASSISTANT seated on the file (owner-directed 2026-09-02)');
 
     // THE DESK FALLBACK MUST NOT REACH AN ORIGINATION PACKAGE. A file has no draw
     // project until it FUNDS, so at term-sheet time the file has no coordinator EVERY
@@ -223,6 +236,9 @@ async function main() {
     const tcc3 = (tdef3.carbonCopies || []).map((c) => c.email);
     ok(!tcc3.includes(dr.DRAW_DESK_INBOX), 'with NO coordinator assigned, the shared draws@ inbox is NOT on the term sheet');
     ok(!tcc3.includes(`dc+${TAG}@ys.com`), '…and neither is the desk-wide coordinator who was never assigned to this file');
+    ok(tcc3.includes(`la+${TAG}@ys.com`),
+      'the LOAN OFFICER ASSISTANT seated on the file IS copied on the TERM SHEET PACKAGE (owner-directed 2026-09-02 — every active assignee rides along, the assistant among them)');
+    ok(tcc3.includes(`pr+${TAG}@ys.com`), '…beside the processor, as before');
     // …while the WIRE FORM keeps its cover, which is the 2026-07-28 rule and is unchanged.
     const deskViewers = (await dr.drawEnvelopeViewers(appId)).map((v) => v.email);
     ok(deskViewers.includes(dr.DRAW_DESK_INBOX), 'the WIRE FORM resolver still falls back to the desk (never uncovered)');
@@ -292,7 +308,7 @@ async function main() {
     if (appId) await db.query(`DELETE FROM applications WHERE id=$1`, [appId]).catch(() => {});
     await db.query(`DELETE FROM borrowers WHERE id = ANY($1)`, [[bId, cbId]]).catch(() => {});
     await db.query(`DELETE FROM staff_users WHERE role='draw_coordinator' AND email LIKE $1`, [`dc+${TAG}@%`]).catch(() => {});
-    await db.query(`DELETE FROM staff_users WHERE id = ANY($1)`, [[loId, prId, dupAdmin]]).catch(() => {});
+    await db.query(`DELETE FROM staff_users WHERE id = ANY($1)`, [[loId, prId, dupAdmin, laId]]).catch(() => {});
     await db.pool.end().catch(() => {});
   }
   process.exit(fail === 0 ? 0 : 1);

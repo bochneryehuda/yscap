@@ -30,11 +30,8 @@ function timeAgo(iso) {
   return `${Math.round(mo / 12)}y ago`;
 }
 
-const ROLE_LABEL = {
-  super_admin: 'Super Admin', admin: 'Admin', underwriter: 'Underwriter',
-  loan_officer: 'Loan Officer', loan_coordinator: 'Loan Coordinator',
-  processor: 'Processor', software_setup: 'Software Setup',
-};
+// Role labels come from the ONE front-end role registry (lib/roles.js).
+import { ROLE_LABEL } from '../lib/roles.js';
 
 const PAGE = 100;
 
