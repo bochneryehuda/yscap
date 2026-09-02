@@ -142,7 +142,7 @@ function PriceAdjuster({ mode, rawPrice, value, onChange, compact }) {
 
   if (!open) {
     return (
-      <div style={{ marginTop: compact ? 5 : 8 }}>
+      <div style={{ marginTop: compact ? 0 : 8 }}>
         <button type="button" style={{ ...btn(), padding: '4px 9px', minHeight: 26, fontSize: 12 }}
           onClick={() => setOpen(true)}>
           {set ? `Price evened out by ${value > 0 ? '+' : ''}${value}` : 'Even out the price'}
@@ -153,7 +153,9 @@ function PriceAdjuster({ mode, rawPrice, value, onChange, compact }) {
 
   return (
     <div style={{
-      marginTop: 8, padding: 10, borderRadius: 8,
+      // Opened, it takes the whole line beneath a collected row (a wrapping flex row);
+      // in the single-sheet form there is no flex parent and this is simply a block.
+      flexBasis: '100%', marginTop: 8, padding: 10, borderRadius: 8,
       background: PAPER, border: '1px solid rgba(20,27,34,.10)',
     }}>
       <div style={{ fontSize: 11.5, color: MUTED, fontWeight: 600 }}>
@@ -1346,6 +1348,25 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
                   {m.mode === 'lenderPaid' ? 'lender paid' : 'borrower paid'}{m.waive_lender_fees ? ' · fees waived' : ''}
                 </span>
                 <span style={{ flex: 1 }} />
+                {/* §40 — PER OPTION, because a comparison is several offers and the
+                    owner rounds them one at a time. The mode is this member's own:
+                    three framings of one deal legitimately sit side by side, and the
+                    compensation an adjustment comes out of is different in each.
+
+                    ⛔ ON THE ROW'S OWN LINE, closed. It used to sit in a full-width wrapper
+                    under every row, so each collected option was two lines tall and a cart
+                    of eight ran to a screen and a half (owner-reported 2026-09-02: the rail
+                    "gets very tightened up"). Closed it is one small button and belongs
+                    beside Remove; opened, the panel takes the whole line below by itself
+                    (`flexBasis: 100%` on its open root), so nothing here has to know which
+                    state it is in. Remove stays last — the destructive action at the end. */}
+                <PriceAdjuster
+                  compact
+                  mode={m.mode}
+                  rawPrice={(m.program || {}).rawPrice}
+                  value={adjusts[m.id] == null ? null : adjusts[m.id]}
+                  onChange={(pts) => setAdjusts((st) => ({ ...st, [m.id]: pts }))}
+                />
                 <button type="button" style={{ ...btn(), padding: '4px 8px', minHeight: 26 }}
                   disabled={busy === m.id} onClick={() => remove(m.id)}>Remove</button>
                 {!p.consumerLabel && (
@@ -1367,19 +1388,6 @@ export function ComparisonStrip({ open, cart, members, onChange, onIssued, onPla
                     />
                   </div>
                 )}
-                {/* §40 — PER OPTION, because a comparison is several offers and the
-                    owner rounds them one at a time. The mode is this member's own:
-                    three framings of one deal legitimately sit side by side, and the
-                    compensation an adjustment comes out of is different in each. */}
-                <div style={{ flexBasis: '100%' }}>
-                  <PriceAdjuster
-                    compact
-                    mode={m.mode}
-                    rawPrice={(m.program || {}).rawPrice}
-                    value={adjusts[m.id] == null ? null : adjusts[m.id]}
-                    onChange={(pts) => setAdjusts((st) => ({ ...st, [m.id]: pts }))}
-                  />
-                </div>
               </div>
             );
           })}

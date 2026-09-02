@@ -328,8 +328,24 @@ ok(!/--lt-comp-h/.test(noComments(CSS)) && !/--lt-comp-h/.test(noComments(P)),
 ok(/id="lt-comparison"/.test(P), 'F5 the comparison area is addressable');
 ok(/scroll-margin-top/.test(CSS),
   'F6 …and lands clear of the pinned strip rather than under it');
-ok(/max-height:min\(46vh,420px\);overflow-y:auto/.test(CSS),
-  'F7 the collected list is still capped and scrolls inside itself');
+/* ⛔ F7 INVERTED — THE BODY IS NOT CAPPED AND DOES NOT SCROLL INSIDE ITSELF (owner-reported
+   2026-09-02: *"when you actually scroll down and you go into the comparison screen, you need
+   to scroll within the comparison screen (which is within your own screen) and gets very
+   tightened up."*). This line used to PIN the cap. The cap was the pinned era's — a rail at the
+   top of the page had to stay short — and it survived the move down here on "twenty options
+   is a wall", which the cart's own clamp of EIGHT makes impossible. What it did do: put the
+   address box and the Issue button at the bottom of a scroll inside a scroll, stop the wheel
+   dead at the box's end (`overscroll-behavior:contain`), and clip the address autocomplete
+   under an `overflow` ancestor. One page, one scroll. Asserted on the stylesheet with its
+   comments stripped, because the change necessarily NAMES the old rule while explaining why
+   it is gone. */
+const railRules = (noComments(CSS).match(/\.lt-comp-rail[^{]*\{[^}]*\}/g) || []).join('\n');
+ok(railRules.length > 0 && !/max-height|overflow|overscroll/.test(railRules),
+  'F7 ⛔ the collected list is NOT capped and does NOT scroll inside itself — one page, one scroll');
+ok(!/lt-comp-body/.test(noComments(CSS)),
+  'F7b …and the stylesheet gives the body nothing at all — no desktop cap AND no phone override left behind as a half state');
+ok(/\.lt-comp-rail\{position:static;scroll-margin-top:96px\}/.test(noComments(CSS)),
+  'F7c …while the rail keeps its place below the board and its landing clear of the pinned strip');
 ok(/aria-expanded=\{open\}/.test(P) && /setOpen\(true\)/.test(P),
   'F8 the body folds away, and opens itself the moment something is collected');
 
@@ -338,8 +354,8 @@ ok(/\{children\}\n\s*<\/div>/.test(P),
   'G1 the collected options and the issue form live INSIDE the rail — one list, not a copy');
 ok(/option\$\{count === 1 \? '' : 's'\} collected/.test(P),
   'G2 the rail header states how many are in');
-ok(/lt-comp-body/.test(P) && /lt-comp-body/.test(CSS),
-  'G3 the scrolling body is the part that is capped, so the header is never scrolled away');
+ok(/className="lt-comp-body"/.test(P),
+  'G3 the body is the fold\'s own element — what Hide/Show folds — and (F7b) the sheet caps it with nothing');
 
 console.log('\nH. the chooser folds away once it has been answered');
 /* The rail is pinned, so every pixel it keeps is board an officer cannot see — and two
