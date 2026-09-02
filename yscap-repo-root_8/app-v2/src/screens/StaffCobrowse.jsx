@@ -64,7 +64,20 @@ export default function StaffCobrowse() {
     // blank stage with a moving cursor) or far in the past. Started lazily below,
     // 200ms behind the first event we actually receive, so the picture plays at once.
     let started = false;
-    const startFrom = (ev) => { if (started) return; started = true; rp.startLive(Number(ev && ev.timestamp) - 200 || Date.now() - 600); };
+    const startFrom = (ev) => {
+      if (started) return;
+      // A BAD TIMESTAMP MUST FALL BACK, NOT POISON THE BASELINE. The obvious
+      // `Number(ev && ev.timestamp) - 200 || Date.now() - 600` is wrong for a NULL or
+      // zero-timestamp event: Number(null) is 0, 0 - 200 is -200, and -200 is TRUTHY,
+      // so the fallback never runs and rrweb schedules every event ~55 years out —
+      // a permanently blank mirror, the very defect this exists to fix, and one the
+      // hub can no longer filter now that it relays the guest's bytes untouched.
+      // Judge the timestamp FIRST, then subtract. (Pre-merge audit, 2026-09-02.)
+      const ts = Number(ev && ev.timestamp);
+      if (!Number.isFinite(ts) || ts <= 0) return;   // wait for an event we can trust
+      started = true;
+      rp.startLive(ts - 200);
+    };
     rp.on('resize', fit);
     window.addEventListener('resize', fit);
 
@@ -174,6 +187,22 @@ export default function StaffCobrowse() {
     const doc = iframe.contentDocument; if (!doc) return undefined;
     const mirror = rp.getMirror ? rp.getMirror() : null;
     const idOf = (node) => { try { return mirror ? mirror.getId(node) : null; } catch { return null; } };
+    // WHAT WE MEANT TO ACT ON, so the guest can refuse a stale id. An rrweb mirror id is
+    // re-minted by every full snapshot, and a stale one does NOT resolve to nothing on the
+    // guest — it resolves to a DIFFERENT live element. The pre-merge audit instrumented
+    // exactly that: a relayed click on a search box pressed the guest's own co-browse
+    // "Stop" button and ended the session, recorded against the WATCHED person. This
+    // fingerprint travels with every addressed input and the guest drops a mismatch.
+    // It carries no content — the tag, the input type and the first class — so it is safe
+    // on a masked mirror and cannot leak what a person typed.
+    const fpOf = (node) => {
+      try {
+        const el = node && node.nodeType === 1 ? node : (node && node.parentElement) || null;
+        if (!el) return '';
+        const cls = String(el.className || '').split(/\s+/).filter(Boolean)[0] || '';
+        return `${el.tagName || ''}|${el.getAttribute ? (el.getAttribute('type') || '') : ''}|${cls}`.slice(0, 120);
+      } catch { return ''; }
+    };
     const sendInput = (obj) => { const ws = wsRef.current; if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'input', ...obj })); };
     const pageXY = (e) => ({ x: e.clientX + (doc.defaultView ? doc.defaultView.scrollX : 0), y: e.clientY + (doc.defaultView ? doc.defaultView.scrollY : 0) });
     iframe.style.pointerEvents = 'auto';
@@ -219,7 +248,7 @@ export default function StaffCobrowse() {
       const id = idOf(e.target); if (id == null || id < 0) return;
       target = e.target;
       try { e.target.focus && e.target.focus({ preventScroll: true }); } catch { /* the mirror may refuse; `target` still holds it */ }
-      sendInput({ k: e.detail >= 2 ? 'dblclick' : 'click', id, ...pageXY(e) });
+      sendInput({ k: e.detail >= 2 ? 'dblclick' : 'click', id, fp: fpOf(e.target), ...pageXY(e) });
     };
     const onKey = (e) => {
       if (!mine(e)) return;
@@ -234,11 +263,11 @@ export default function StaffCobrowse() {
       // value or the caret — the guest's own browser inserts the character into
       // its real box (applyInput → applyTextKey). Deriving a whole value from the
       // mirror here sent `'' + key` on every press and nothing ever accumulated.
-      sendInput({ k: 'key', id, key: e.key, code: e.code, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
+      sendInput({ k: 'key', id, fp: fpOf(e.target), key: e.key, code: e.code, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
     };
-    const onChange = (e) => { if (!mine(e)) return; const id = idOf(e.target); if (id == null || id < 0) return; const t = e.target; if (t.type === 'checkbox' || t.type === 'radio') sendInput({ k: 'change', id, checked: !!t.checked }); else sendInput({ k: 'change', id, value: String(t.value || ''), idx: t.tagName === 'SELECT' ? t.selectedIndex : undefined }); };
-    const onScroll = (e) => { if (!mine(e) || Date.now() - gestureAt > GESTURE_MS) return; const t = e.target; if (t === doc || t === doc.documentElement || t === doc.body) { const w = doc.defaultView; sendInput({ k: 'scroll', id: 1, sx: w ? w.scrollX : 0, sy: w ? w.scrollY : 0 }); return; } const id = idOf(t); if (id == null || id < 0) return; sendInput({ k: 'scroll', id, sx: t.scrollLeft, sy: t.scrollTop }); };
-    const onPaste = (e) => { if (!mine(e)) return; e.preventDefault(); const id = idOf((doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null) || target); if (id == null || id < 0) return; const text = (e.clipboardData && e.clipboardData.getData('text')) || ''; if (text) sendInput({ k: 'paste', id, value: text }); };
+    const onChange = (e) => { if (!mine(e)) return; const id = idOf(e.target); if (id == null || id < 0) return; const t = e.target; if (t.type === 'checkbox' || t.type === 'radio') sendInput({ k: 'change', id, fp: fpOf(t), checked: !!t.checked }); else sendInput({ k: 'change', id, fp: fpOf(t), value: String(t.value || ''), idx: t.tagName === 'SELECT' ? t.selectedIndex : undefined }); };
+    const onScroll = (e) => { if (!mine(e) || Date.now() - gestureAt > GESTURE_MS) return; const t = e.target; if (t === doc || t === doc.documentElement || t === doc.body) { const w = doc.defaultView; sendInput({ k: 'scroll', id: 1, sx: w ? w.scrollX : 0, sy: w ? w.scrollY : 0 }); return; } const id = idOf(t); if (id == null || id < 0) return; sendInput({ k: 'scroll', id, fp: fpOf(t), sx: t.scrollLeft, sy: t.scrollTop }); };
+    const onPaste = (e) => { if (!mine(e)) return; e.preventDefault(); const node = (doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null) || target; const id = idOf(node); if (id == null || id < 0) return; const text = (e.clipboardData && e.clipboardData.getData('text')) || ''; if (text) sendInput({ k: 'paste', id, fp: fpOf(node), value: text }); };
     for (const g of ['wheel', 'pointerdown', 'touchstart', 'keydown']) doc.addEventListener(g, noteGesture, true);
     doc.addEventListener('mousemove', onMove, true);
     doc.addEventListener('click', onClick, true);
@@ -289,10 +318,10 @@ export default function StaffCobrowse() {
               : !state.connected ? 'Connecting…'
                 : !state.guestOnline ? `${who.name} is not on PILOT right now — the picture appears when they are.`
                   : `Live · they are on ${state.route || 'PILOT'}${state.title ? ` — ${state.title}` : ''}`}
-            {' '}· {state.control === 'granted' ? 'You are in control: what you click and type here happens on their screen. Passwords and Social Security numbers stay hidden.'
+            {' '}· {state.control === 'granted' ? 'You are in control: what you click and type here happens on their screen. Their passwords and security codes stay hidden, and so does a Social Security number anywhere PILOT prints one.'
               : state.control === 'requested' ? `Asked ${who.name} for control — waiting for them to allow it…`
                 : state.control === 'refused' ? `${who.name} chose to keep it watch-only.`
-                  : 'Watch-only: clicking here does nothing on their screen. Passwords and Social Security numbers are hidden.'}
+                  : 'Watch-only: clicking here does nothing on their screen. Their passwords and security codes are hidden, and so is a Social Security number anywhere PILOT prints one.'}
           </div>
         </div>
         {/* ACTIONS ARE GROUPED AND WEIGHTED, never a row of identical outlines (the

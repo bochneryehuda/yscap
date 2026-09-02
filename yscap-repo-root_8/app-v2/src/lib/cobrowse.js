@@ -25,10 +25,11 @@
  * rrweb mirror ids, never a selector the viewer typed — inside a hard allowlist:
  * nothing blocked from the mirror can be driven, nor a file picker, a download,
  * a new-tab link, an e-sign frame, sign-out, view-as; and on a no-drive route
- * every input is ignored. The watched person takes control back by MOVING (a
- * trusted mouse move or key of their own — the events this module dispatches
- * are never trusted), by pressing Stop, or by ending the session. A red frame
- * says somebody else is driving.
+ * every input is ignored. The watched person takes control back with a DELIBERATE
+ * ACT of their own — a click, a key, a scroll, a touch (the events this module
+ * dispatches are never trusted, so a controller can never release themselves) —
+ * or by pressing Take back / Stop, or by ending the session. A passive mouse move
+ * is NOT a take-back: see armDriving. A red frame says somebody else is driving.
  *
  * The mask itself is ONE definition in ./cobrowseMask.js, shared with the
  * Playwright mask harness — and it is the ONLY thing keeping a secret out of
@@ -55,7 +56,8 @@ const MAX_RETRY_MS = 5 * 60 * 1000;
 
 const FLUSH_MS = 80;           // batch rrweb events; ~12 batches/s worst case
 const RECONNECT_MS = 2500;
-const TAKEBACK_GRACE_MS = 600; // the Allow press itself, and trailing trackpad momentum
+const TAKEBACK_GRACE_MS = 600;        // the Allow press itself
+const TAKEBACK_WHEEL_GRACE_MS = 1800; // macOS momentum scrolling outlives the press by 1-2s
 
 let live = null;   // { sessionId, ws, stop, timer, queue, closedByServer, onState }
 
@@ -262,6 +264,13 @@ function routeAllowsDriving() { return recordingAllowedHere() && !NO_DRIVE_ROUTE
 /** Control state as the hub reports it. Draws the red frame, arms the take-back. */
 function setControlLocal(state, status) {
   const st = String(status || 'none');
+  // A RELEASE STILL IN FLIGHT OUTRANKS A PUSHED 'granted'. The register reads 'granted'
+  // until our release lands, so a `hello` on the next attach — or a control push that
+  // crossed it on the wire — would re-arm the red frame with no second consent and hand
+  // the screen back to somebody the watched person had just stopped. Nothing else is
+  // suppressed: 'requested' still prompts, and a grant they give AFTER this settles arms
+  // normally. (Pre-merge audit, 2026-09-02.)
+  if (st === 'granted' && state.releasePending > 0) return;
   if (state.control === st) return;
   state.control = st;
   const on = st === 'granted';
@@ -288,9 +297,29 @@ function armDriving(state) {
   const armedAt = Date.now();
   const takeBack = (e) => {
     if (!e.isTrusted || live !== state || state.control !== 'granted') return;
-    // The Allow press itself, and trailing trackpad/inertial momentum from a scroll
-    // that ended just before it. The Take back button is not gated by this.
-    if (Date.now() - armedAt < TAKEBACK_GRACE_MS) return;
+    // The Allow press itself. A WHEEL gets a longer one of its own: macOS momentum
+    // scrolling keeps firing TRUSTED wheel events for a second or two after the finger
+    // has left the trackpad, so somebody who flick-scrolls the Allow button into view
+    // and presses it would have had control taken back by their own inertia — the
+    // owner's original report in a narrower form (pre-merge audit, 2026-09-02).
+    // The Take back button is not gated by any of this.
+    const grace = e.type === 'wheel' ? TAKEBACK_WHEEL_GRACE_MS : TAKEBACK_GRACE_MS;
+    if (Date.now() - armedAt < grace) return;
+    // OUR OWN BANNER IS NOT THE PAGE. Take back and Stop live in it, and this
+    // listener runs in the window CAPTURE phase, so without this the button's press
+    // released as 'guest_moved' and its own onClick then found control already gone
+    // — the register recorded a deliberate press as a drift, and 'guest_stop' became
+    // unreachable. Let those buttons speak for themselves.
+    if (e.target && e.target.closest && e.target.closest('[data-cobrowse-ui]')) return;
+    // TAKING CONTROL BACK MUST NOT ALSO PRESS SOMETHING. The banner tells them to
+    // click anywhere, and the pointer is wherever the CONTROLLER left it — which on a
+    // driven page can be over a real button. Swallow the gesture that releases; their
+    // next click is their own and behaves normally. (A key, a wheel or a touch is not
+    // swallowed: reading their own screen with the keyboard or scrolling it is not a
+    // side effect worth blocking, and cancelling a key would eat their keystroke.)
+    if (e.type === 'pointerdown' || e.type === 'mousedown') {
+      try { e.preventDefault(); e.stopPropagation(); } catch { /* release anyway */ }
+    }
     releaseFromGuest(state, 'guest_moved');
   };
   const TAKEBACK_EVENTS = ['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'];
@@ -308,11 +337,31 @@ function disarmDriving(state) {
   if (state.cursor) { try { state.cursor.remove(); } catch { /* fine */ } state.cursor = null; }
 }
 
-/** The watched person takes control back (their own mouse, their Take back / Stop). */
+/**
+ * The watched person takes control back (their own hand, their Take back / Stop).
+ *
+ * THE SERVER MUST ACTUALLY HEAR IT. Local state going 'released' stops input here, but
+ * the register still reads 'granted' until this call lands — and the next `hello` or
+ * `control` push would then re-arm the red frame with NO second consent, silently handing
+ * the screen back (pre-merge audit, 2026-09-02). So it retries, and while a release is in
+ * flight a pushed 'granted' is ignored: the only thing that may re-arm control is a grant
+ * this person gave AFTER their release.
+ */
 export function releaseFromGuest(state, reason) {
   const st = state || live; if (!st) return;
   setControlLocal(st, 'released');
-  api.cobrowseControlRelease(st.sessionId, reason).catch(() => {});
+  st.releasePending = (st.releasePending || 0) + 1;
+  let tries = 0;
+  const attempt = () => {
+    api.cobrowseControlRelease(st.sessionId, reason)
+      .then(() => { st.releasePending = Math.max(0, (st.releasePending || 1) - 1); })
+      .catch(() => {
+        tries += 1;
+        if (tries >= 4 || live !== st) { st.releasePending = Math.max(0, (st.releasePending || 1) - 1); return; }
+        setTimeout(attempt, 400 * tries);
+      });
+  };
+  attempt();
 }
 
 /** The controller's pointer, drawn on the real page so the person sees where the hand is. */
@@ -330,13 +379,38 @@ function ensureCursor(state) {
 
 const KEY_CODES = { Enter: 13, Escape: 27, Tab: 9, Backspace: 8, Delete: 46, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Home: 36, End: 35, ' ': 32 };
 
-/** Mirror id → the real element, or null when it may not be driven. */
-function drivable(id) {
+/** OUR OWN READING OF THE ELEMENT, in the same shape the viewer sends. */
+function fingerprint(el) {
+  try {
+    const cls = String(el.className || '').split(/\s+/).filter(Boolean)[0] || '';
+    return `${el.tagName || ''}|${el.getAttribute ? (el.getAttribute('type') || '') : ''}|${cls}`.slice(0, 120);
+  } catch { return ''; }
+}
+
+/**
+ * Mirror id → the real element, or null when it may not be driven.
+ *
+ * A STALE ID DOES NOT RESOLVE TO NOTHING — IT RESOLVES TO SOMEBODY ELSE. Every full
+ * rrweb snapshot re-mints every node id, and the viewer reads its id from a mirror that
+ * necessarily lags, so an id computed a moment ago can name a DIFFERENT live element
+ * here. The pre-merge audit instrumented it: a relayed click meant for a search box
+ * pressed this guest's own co-browse "Stop" button and ended the session — recorded
+ * against the WATCHED person, who did nothing. So the viewer sends what it MEANT to act
+ * on (`fp`) and we refuse anything that is not that: tag, input type, first class. It is
+ * content-free, so it is safe on a masked mirror.
+ *
+ * A message with NO fingerprint is still honoured — the guest may be running a newer
+ * build than the viewer across a deploy, and refusing every input then would look like
+ * control silently not working. Belt-and-braces: this repo's own destructive controls
+ * carry `data-cobrowse-nodrive`, which is checked below whatever the fingerprint says.
+ */
+function drivable(id, fp) {
   const node = record.mirror && typeof record.mirror.getNode === 'function' ? record.mirror.getNode(Number(id)) : null;
   if (!node) return null;
   const el = node.nodeType === 1 ? node : node.parentElement;
   if (!el || !document.contains(el)) return null;
   if (el.closest && el.closest(NO_DRIVE_SELECTOR)) return null;
+  if (typeof fp === 'string' && fp && fp !== fingerprint(el)) return null;   // the mirror moved under us
   return el;
 }
 
@@ -426,10 +500,10 @@ export function applyInput(state, m) {
     }
     if (m.k === 'scroll') {
       if (m.id == null || m.id === 0 || m.id === 1) { window.scrollTo({ left: Number(m.sx) || 0, top: Number(m.sy) || 0, behavior: 'auto' }); return true; }
-      const el = drivable(m.id); if (!el) return false;
+      const el = drivable(m.id, m.fp); if (!el) return false;
       el.scrollLeft = Number(m.sx) || 0; el.scrollTop = Number(m.sy) || 0; return true;
     }
-    const el = drivable(m.id); if (!el) return false;
+    const el = drivable(m.id, m.fp); if (!el) return false;
     if (m.k === 'click' || m.k === 'dblclick') {
       mouseAt(el, 'mousedown', m.x, m.y); mouseAt(el, 'mouseup', m.x, m.y);
       if (typeof el.focus === 'function') { try { el.focus({ preventScroll: true }); } catch { /* fine */ } }

@@ -140,7 +140,9 @@ ok(/TAKEBACK_EVENTS = \['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchst
   'take-back listens for a deliberate act — pointerdown / mousedown / keydown / wheel / touchstart');
 ok(!/'mousemove', takeBack/.test(libNow) && !/MOVE_TAKEBACK_PX/.test(libNow),
   'a passive mousemove is NOT a take-back — no listener, no travel threshold (the bug that made control unusable)');
-ok(/TAKEBACK_GRACE_MS = 600/.test(libNow) && /Date\.now\(\) - armedAt < TAKEBACK_GRACE_MS/.test(libNow),
+ok(/TAKEBACK_GRACE_MS = 600/.test(libNow) && /TAKEBACK_WHEEL_GRACE_MS = 1800/.test(libNow)
+  && /const grace = e\.type === 'wheel' \? TAKEBACK_WHEEL_GRACE_MS : TAKEBACK_GRACE_MS;/.test(libNow)
+  && /Date\.now\(\) - armedAt < grace/.test(libNow),
   'a short grace covers the Allow press itself and trailing trackpad momentum');
 ok(/el\.closest\(NO_DRIVE_SELECTOR\)\) return null/.test(libNow), 'the driver refuses any element inside the no-drive allowlist');
 ok(/if \(!routeAllowsDriving\(\)\) return false;/.test(libNow), 'on a no-drive route every input is ignored');
@@ -153,8 +155,8 @@ ok(/mirror\.getId\(node\)/.test(viewerNow) && /t: 'input'/.test(viewerNow), 'the
 // Typing travels as KEYS and the guest's own browser edits the real value: the mirror is
 // masked, so a whole-value echo from the viewer sent `'' + key` on every press and nothing
 // ever accumulated (the e2e drive caught it — 6 input events, the box still empty).
-ok(!/k: 'input', id, value: next/.test(viewerNow) && /sendInput\(\{ k: 'key', id, key: e\.key/.test(viewerNow), 'the viewer relays a keystroke as a key, never a value derived from the masked mirror');
-ok(/k: 'paste', id, value: text/.test(viewerNow), 'a paste travels as its own text, never appended to a mirror value');
+ok(!/k: 'input', id, value: next/.test(viewerNow) && /sendInput\(\{ k: 'key', id, fp: fpOf\(e\.target\), key: e\.key/.test(viewerNow), 'the viewer relays a keystroke as a key, never a value derived from the masked mirror');
+ok(/k: 'paste', id, fp: fpOf\(node\), value: text/.test(viewerNow), 'a paste travels as its own text, never appended to a mirror value');
 ok(/if \(notCancelled\) applyTextKey\(el, key, init\)/.test(libNow) && /function insertText\(el, text\)/.test(libNow) && /el\.setSelectionRange\(caret, caret\)/.test(libNow), "the guest inserts each relayed character at its REAL selection through the native setter");
 ok(/m\.k === 'paste'/.test(libNow) && /insertText\(el, String\(m\.value/.test(libNow), 'the guest inserts pasted text at the real selection');
 ok(/INPUT_KINDS = new Set\(\[[^\]]*'paste'/.test(hubSrc), "the hub admits 'paste' as an input kind");
@@ -227,7 +229,13 @@ ok(/stopRecorder\(state\);\n    state\.queue = \[\];/.test(libNow), 'a disconnec
 ok(!/mousemove/.test(libNow), 'taking control back is never an incidental trackpad brush — a passive move is not a take-back');
 // ── a drive that dies must SAY it died ──────────────────────────────────────────────────
 const driveSrc = read('scripts/render-cobrowse-e2e.js');
-ok(/const scale = f\.offsetWidth \? fr\.width \/ f\.offsetWidth : 1;/.test(driveSrc), 'the drive aims through the replayer\'s SCALE — adding the two rects clicks a different element');
+// RE-POINTED, NOT LOOSENED: the subject is that the drive lands on the element it means,
+// under the replayer's CSS scale. It computed that by hand and still clicked the wrong
+// element (the guest's own banner, which the product then refused); Playwright's
+// frameLocator scrolls it into view and re-reads the box under the transform on every try.
+ok(/frameLocator\('\.cobrowse-stage iframe'\)\.locator\('\[data-e2e-target="1"\]'\)/.test(driveSrc)
+  && !/fr\.left \+ \(r\.left \+ r\.width \/ 2\) \* scale/.test(driveSrc),
+  'the drive ADDRESSES the mirrored element rather than aiming at a hand-computed pixel');
 ok(/\} catch \(e\) \{[\s\S]{0,400}?FAIL the drive threw/.test(driveSrc) && /the drive did not finish within 8 minutes/.test(driveSrc),
   'the two-browser drive reports a thrown timeout as a failure and cannot hang CI silently');
 ok(/WATCHED: the guest types with their own keyboard/.test(driveSrc) && /AFTER STOP: the guest carries on working normally/.test(driveSrc),
@@ -238,6 +246,66 @@ ok(/Take back/.test(hostNow) && /cobrowse-controlled/.test(hostNow), 'the banner
 ok(/Click anywhere, press a key, or press Take back/.test(hostNow),
   'the banner tells the watched person what actually takes control back');
 ok(!/Move your mouse/.test(hostNow), 'no screen still promises that moving the mouse takes control back');
+// A STALE RULE IS WORSE THAN NONE — and this repo's canonical rules live in prose, where
+// nothing compiles them. The pre-merge audit found the OLD take-back rule still standing in
+// four places (CLAUDE.md's Phase B bullet, the sessions.js header, the cobrowse.js module
+// header and the plan doc), which is a written instruction to re-create the very bug the
+// owner reported. Comments are NOT stripped here: the promise being banned is the one a
+// future session reads, and prose is exactly where it must not survive.
+for (const f of ['CLAUDE.md', 'src/lib/cobrowse/sessions.js', 'app-v2/src/lib/cobrowse.js',
+  'app-v2/src/components/CobrowseHost.jsx', 'app-v2/src/screens/StaffCobrowse.jsx',
+  'docs/COBROWSE-RESEARCH-AND-PLAN.md']) {
+  ok(!/Move your mouse|takes it back by MOVING|TAKES IT BACK BY MOVING/i.test(read(f)),
+    `${f} no longer tells anyone that moving the mouse takes control back`);
+}
+// TAKING YOUR SCREEN BACK MUST NOT ALSO PRESS SOMETHING. The pointer is wherever the
+// CONTROLLER left it, which on a driven page can be over a real button.
+ok(/if \(e\.type === 'pointerdown' \|\| e\.type === 'mousedown'\) \{[\s\S]{0,140}?e\.preventDefault\(\); e\.stopPropagation\(\);/.test(libNow),
+  'the releasing click is swallowed — taking control back never actuates the page under the pointer');
+ok(/e\.target\.closest\('\[data-cobrowse-ui\]'\)\) return;/.test(libNow) && /data-cobrowse-ui="banner"/.test(hostNow),
+  "our own banner is not the page: Take back / Stop speak for themselves instead of being read as a drift");
+
+// A STALE MIRROR ID RESOLVES TO SOMEBODY ELSE, NOT TO NOTHING. Every full rrweb snapshot
+// re-mints every node id and the viewer reads its id from a mirror that lags, so an id sent
+// a moment ago can name a DIFFERENT live element on the guest. The pre-merge audit
+// instrumented exactly that: a relayed click meant for a search box pressed the guest's own
+// co-browse "Stop" button and ENDED the session — recorded against the watched person, who
+// did nothing. So the viewer sends what it MEANT to act on and the guest refuses a mismatch.
+ok(/function fingerprint\(el\)/.test(libNow) && /if \(typeof fp === 'string' && fp && fp !== fingerprint\(el\)\) return null;/.test(libNow),
+  'the guest refuses an input whose target is not the element the viewer meant');
+ok(/drivable\(m\.id, m\.fp\)/.test(libNow) && !/drivable\(m\.id\)[^,]/.test(libNow),
+  'every addressed input is resolved WITH that check — no call site skips it');
+ok(/const fpOf = \(node\) =>/.test(viewerNow) && (viewerNow.match(/fp: fpOf\(/g) || []).length >= 5,
+  'the viewer fingerprints every addressed input it sends (click, key, change, scroll, paste)');
+ok(/if \(typeof m\.fp === 'string'\) out\.fp = m\.fp\.slice\(0, 120\);/.test(hubSrc),
+  'the hub relays the fingerprint as an opaque capped string and never interprets it');
+// The fingerprint is content-free by construction: a tag, an input type and the first class.
+ok(!/textContent|innerText|\.value/.test(viewerNow.slice(viewerNow.indexOf('const fpOf'), viewerNow.indexOf('const fpOf') + 600)),
+  'the fingerprint carries no content — it cannot leak what a person typed off a masked mirror');
+// Belt and braces: the guest's own way out can never be driven, whatever an id resolves to.
+ok(/data-cobrowse-nodrive="take-back"/.test(hostNow) && /data-cobrowse-nodrive="stop"/.test(hostNow),
+  "the guest's own Take back and Stop are never drivable by the controller");
+
+// A RELEASE THE SERVER NEVER HEARD MUST NOT BE RE-GRANTED BEHIND THEIR BACK.
+ok(/st\.releasePending = \(st\.releasePending \|\| 0\) \+ 1;/.test(libNow) && /setTimeout\(attempt, 400 \* tries\)/.test(libNow),
+  'a failed release is retried rather than swallowed');
+ok(/if \(st === 'granted' && state\.releasePending > 0\) return;/.test(libNow),
+  "a pushed 'granted' cannot re-arm the red frame while their release is still in flight");
+// The masking promise must not out-run the mask: an SSN printed in an UNMARKED place does
+// reach the viewer now that the server guard is gone (render-cobrowse-mask asserts exactly that).
+for (const f of ['app-v2/src/components/CobrowseHost.jsx', 'app-v2/src/screens/StaffCobrowse.jsx']) {
+  ok(!/never your passwords or Social Security number|Passwords and Social Security numbers are hidden\./.test(read(f)),
+    `${f} does not promise a Social Security number is hidden everywhere, only where PILOT shows one`);
+}
+// The drive's clock skew must point the way that actually freezes rrweb, and its fixture
+// wipe must not kill a concurrent run (two audit agents share one database here).
+{
+  const drv = read('scripts/render-cobrowse-e2e.js');
+  ok(/VIEWER_CLOCK_SKEW_MS = -45000/.test(drv),
+    "the drive's viewer clock is BEHIND the guest's — rrweb draws an event OLDER than the baseline at once, so only a baseline behind the timestamps freezes");
+  ok(/created_at < now\(\) - interval '1 hour'/.test(drv),
+    'the drive tidies up after PREVIOUS runs by age, never deleting a concurrent run\'s signed-in fixtures');
+}
 ok(/useAuth\(\)/.test(hostNow) && /!!token && !isBorrowerView && !isTpo && !isAssistant/.test(hostNow), 'the host keys on the live auth token and stands down inside a borrower view, for any TPO session (a broker is refused at every door) and for a helper (audit)');
 ok(/PILOT records who watched and when; it never records the screen itself/.test(hostNow), 'the consent prompt states what is kept');
 ok(/const POLL_MS = 10000;/.test(hostNow) && /if \(!eligible \|\| active \|\| pending\) return undefined;/.test(hostNow) && /setInterval\(\(\) => \{[\s\S]{0,400}?api\.cobrowseMine\(\)/.test(hostNow), 'while nothing is showing the host re-reads the register every 10 s — a request is never missed because the stream was down (the drive caught it)');
@@ -287,12 +355,23 @@ const viewSrc2 = strip(viewNow);
 // startLive. Seeding that with OUR Date.now() means an office computer a few seconds out
 // of step makes every event "future" and nothing is ever drawn: a blank stage with a
 // moving cursor, which is exactly what the owner was looking at.
-ok(/rp\.startLive\(Number\(ev && ev\.timestamp\)/.test(viewSrc2) && !/rp\.startLive\(Date\.now\(\) - 600\)/.test(viewSrc2),
+ok(/const ts = Number\(ev && ev\.timestamp\);/.test(viewSrc2) && /rp\.startLive\(ts - 200\);/.test(viewSrc2)
+  && !/rp\.startLive\(Date\.now\(\)/.test(viewSrc2),
   'the viewer starts live from the FIRST EVENT\'s own timestamp, never from the viewer\'s clock');
+// A BAD TIMESTAMP MUST DEFER, NOT POISON THE BASELINE. `Number(null) - 200` is -200, which
+// is TRUTHY, so the obvious `|| Date.now() - 600` fallback never runs and rrweb schedules
+// every event ~55 years out — a permanently blank mirror, from one null event, on a hub that
+// now relays the guest's bytes untouched (pre-merge audit, 2026-09-02).
+ok(/if \(!Number\.isFinite\(ts\) \|\| ts <= 0\) return;/.test(viewSrc2) && !/\|\| Date\.now\(\) - 600\)/.test(viewSrc2),
+  'an unusable first timestamp defers to the next event instead of poisoning the live baseline');
 // A REFUSED EVENT IS NEVER SILENT. An rrweb mutation against ids no snapshot established
 // throws, and swallowing it leaves an empty stage for ever with nothing said.
-ok(/catch \{ if \(!sawSnapshot\) askSnapshot\('no_picture'\); \}/.test(viewSrc2) && /if \(!sawSnapshot\) askSnapshot\('no_picture'\);/.test(viewSrc2),
-  'events with no snapshot behind them ask for a fresh picture');
+// TWO INDEPENDENT CALL SITES, asserted independently — the first cut's second conjunct was
+// a literal substring of its first, so it proved nothing extra (pre-merge audit).
+ok(/catch \{ if \(!sawSnapshot\) askSnapshot\('no_picture'\); \}/.test(viewSrc2),
+  'an event the replayer cannot apply asks for a fresh picture — while there is no picture');
+ok(/setTimeout\(fit, 0\);[\s\S]{0,200}?if \(!sawSnapshot\) askSnapshot\('no_picture'\);/.test(viewSrc2),
+  'and so does a batch that arrived with no snapshot behind it at all (the separate call site)');
 // AND ONLY WHILE THERE IS NO PICTURE: healing rebuilds the mirrored document, which throws
 // away the caret a controller is typing into. Measured on the two-browser drive — healing on
 // every failed event dropped keystrokes about one run in three.
@@ -310,6 +389,8 @@ ok(!/btn link/.test(btnSrc), 'no control on the launcher is a bare text link any
 ok(/className="btn ghost small" onClick=\{cancel\}/.test(btnSrc), 'Cancel is a real button');
 ok(/className = 'btn soft small'/.test(btnSrc) && /<ScreenIcon \/>/.test(btnSrc), 'the launcher is a real soft button carrying its own glyph');
 ok(/onClick=\{ask\}><ScreenIcon \/>Ask again/.test(btnSrc), 'a declined or expired ask offers Ask again — never a dead sentence');
+ok(/className=\{`\$\{className\} cb-btn`\} onClick=\{ask\}><ScreenIcon \/>Ask again/.test(btnSrc),
+  "Ask again keeps the caller's own button class — a screen that asked for a different weight still gets it");
 const cssNow = read('app-v2/src/styles.css');
 // `.spin` was never a class in this stylesheet, so the waiting state rendered a
 // zero-size span and looked frozen. The component and the stylesheet must agree.
@@ -319,8 +400,17 @@ ok(/\.cb-wait\{/.test(cssNow) && /\.cb-answer\{/.test(cssNow), 'the waiting chip
 // A bare `.off`/`.wait` would collide with the global utilities (the `.crx-off` lesson).
 ok(/namespaced `cb-`/.test(cssNow), 'the block says why every class is namespaced');
 {
-  const block = cssNow.slice(cssNow.indexOf('CO-BROWSE — the launcher and the waiting chip'));
+  // FIND THE BLOCK BEFORE JUDGING IT. `slice(indexOf(...))` on a marker that has moved
+  // returns one character and the assertion below then passes on nothing — a vacuous
+  // pass on the HARD colour rule (pre-merge audit, 2026-09-02).
+  const at = cssNow.indexOf('CO-BROWSE — the launcher and the waiting chip');
+  ok(at > 0, 'the co-browse CSS block is where this test looks for it');
+  const block = cssNow.slice(at);
   ok(!/color:\s*var\(--ink/.test(block), 'no co-browse style paints text with an --ink* token (a LIGHT paper colour — white on white)');
+  // …and every class in it really is namespaced, rather than a comment saying so.
+  const classes = [...block.matchAll(/^\.([a-zA-Z][\w-]*)/gm)].map((m) => m[1]);
+  ok(classes.length >= 3 && classes.every((c) => c.startsWith('cb-')),
+    `every class in the co-browse block is cb-namespaced (${classes.join(', ')})`);
 }
 ok(/ONLY PLACE A SECRET IS KEPT OUT OF THE STREAM/.test(mask), 'the mask module says it is the only protection — mark the element, do not expect a server check');
 

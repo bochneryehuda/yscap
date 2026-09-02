@@ -91,7 +91,7 @@ export default function CobrowseButton({ kind, id, name = '', applicationId = nu
           <span className={phase === 'declined' ? 'cb-answer-no' : 'cb-answer-quiet'}>
             {phase === 'declined' ? `${first} declined.` : 'No answer — the request expired.'}
           </span>
-          <button type="button" className="btn soft small cb-btn" onClick={ask}><ScreenIcon />Ask again</button>
+          <button type="button" className={`${className} cb-btn`} onClick={ask}><ScreenIcon />Ask again</button>
         </span>
       ) : (
         <button type="button" className={`${className} cb-btn`} style={{ flex: 'none' }} disabled={phase === 'asking'} onClick={ask}

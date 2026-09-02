@@ -109,7 +109,7 @@ Phase B — Take control (2–4 wk)
     setter; drivable allowlist; hard blocks: e-sign, file inputs, view-as, sign-out, MFA.
   - Controller cursor overlay on the guest; guest-friendly notes for upload/download/new tab.
 Phase C — Hardening (2–4 wk)
-  - Redaction CI harness: fails if an SSN/password/OTP pattern appears in the event stream.
+  - Mask CI harness: fails if a password/OTP/marked-secret pattern appears in the event stream.
   - Reconnect + re-snapshot on deploy; per-session rate limits; metadata-only retention
     (no stream stored); legal copy for consent; owner sign-off on wording.
 
@@ -150,10 +150,12 @@ manager copied; (4) retention: store nothing but who/when/what-was-done (recomme
 - Phase B (take control): db/683 control state; a SECOND consent; the hub relays sanitised input only
   while `granted`; the guest's own browser performs it through rrweb mirror ids inside a hard allowlist
   (no blocked element, file picker, download/new-tab link, iframe/e-sign, sign-out; no-drive routes);
-  a trusted move/key of the guest's own hand, Take back, Stop or the session's end release it;
+  a deliberate act of the guest's own hand (click/key/wheel/touch — never a passive mouse move,
+  which the 2026-09-02 fix removed), Take back, Stop or the session's end release it;
   30 s request expiry; red frame + controller pointer on the guest.
-- Phase C (hardening): server-side redaction guard (dashed SSN / Luhn card → frame dropped, counted,
-  viewer told); Playwright harness proving the mask against the real rrweb build (SKIPs without
+- Phase C (hardening): [the server-side redaction guard shipped here and was REMOVED on 2026-09-02 —
+  an rrweb stream is stateful, so dropping a frame blanked the mirror permanently; the browser mask is
+  the protection]; Playwright harness proving the mask against the real rrweb build (SKIPs without
   Chromium); restart recovery (orphaned `active` rows closed 3 s after boot and every 30 s); terminal
   close codes stop reconnects, backoff + 5-minute give-up; per-viewer input rate cap; atomic request
   under an advisory lock (an unanswered request counts as busy); helper / guest-link tokens refused at

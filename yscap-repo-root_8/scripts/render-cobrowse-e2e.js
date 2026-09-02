@@ -42,7 +42,33 @@ async function main() {
   const bundle = fs.readdirSync(path.join(__dirname, '../web/v2/portal/assets')).filter((f) => /^index-.*\.js$/.test(f));
   ok(bundle.length === 1, `one built bundle is present (${bundle.join(', ')})`);
 
-  await db.query(`DELETE FROM staff_users WHERE email LIKE 'e2e-%@example.test'`).catch(() => {});
+  // TIDY UP AFTER PREVIOUS RUNS, NEVER A CONCURRENT ONE. This repo's own workflow puts
+  // two audit agents and the main session on ONE Postgres, and an unscoped wipe of every
+  // `e2e-%` staffer deletes the users a run in flight is signed in as — their tokens then
+  // fail the token_version check and the victim collapses with 401s that read as a product
+  // defect. Age-scoped: anything older than an hour is certainly nobody's live fixture.
+  await db.query(`DELETE FROM staff_users
+                   WHERE email LIKE 'e2e-%@example.test'
+                     AND created_at < now() - interval '1 hour'`).catch(() => {});
+
+  // THIS DRIVE NEEDS A SCRATCH DATABASE, AND IT SAYS SO INSTEAD OF BLAMING THE PRODUCT.
+  // It runs two real browsers against a real server for a couple of minutes, and the
+  // server's own housekeeping is time-based (a control request expires in 30 s, an
+  // orphaned session in 3 min). On a database that has carried many previous runs the
+  // whole thing slows down enough that those clocks start firing mid-run, and the
+  // assertions that fail read exactly like product defects ("control was lost", "the
+  // click did not focus"). MEASURED: on a pristine database, 50 of 50; on one reused
+  // across ten runs, six failures with no product change between them. So: refuse to
+  // report on a database that is already carrying live sessions, and say why.
+  const busy = Number((await db.query(
+    `SELECT count(*)::int AS n FROM cobrowse_sessions WHERE status IN ('requested','active')`,
+  ).catch(() => ({ rows: [{ n: 0 }] }))).rows[0].n) || 0;
+  if (busy > 0) {
+    console.log(`SKIP render-cobrowse-e2e: ${busy} co-browse session(s) are live on this database — `
+      + 'another run is in flight, or a previous one crashed. Point DATABASE_URL at a scratch '
+      + 'database (createdb + let this run the migrations) rather than reading these results.');
+    process.exit(0);
+  }
   const server = http.createServer(app);
   hub.attach(server);
   await new Promise((r) => server.listen(0, r));
@@ -65,11 +91,18 @@ async function main() {
   const browser = await pw.chromium.launch({ headless: true });
   const errors = { guest: [], viewer: [] };
   // `clockSkewMs` makes this browser's clock genuinely wrong, the way two office
-  // computers routinely are. rrweb schedules every event by comparing the GUEST's
-  // timestamp to the baseline the viewer handed startLive, so a viewer seeded with
-  // its OWN Date.now() draws nothing at all — a blank stage with a moving cursor,
-  // which is what the owner reported. Both browsers here share one machine clock,
-  // so without this the harness could never see that class of bug.
+  // computers routinely are. Both browsers here share one machine clock, so without
+  // this the harness could never see that class of bug at all.
+  //
+  // THE SIGN MATTERS, AND IT IS THE OPPOSITE OF THE OBVIOUS ONE. rrweb's live
+  // scheduler is `isSync = event.timestamp < baselineTime` (@rrweb/replay
+  // replay.js): an event OLDER than the baseline is drawn immediately, a newer one
+  // is queued for `baseline + elapsed`. So seeding the baseline from a viewer whose
+  // clock is AHEAD makes every guest event look old and it still draws — the case
+  // that freezes is a viewer clock BEHIND the guest's, where every event looks like
+  // the future and nothing is ever drawn. Hence a NEGATIVE skew here. (Caught by the
+  // pre-merge audit reading rrweb's source; the first cut skewed the wrong way and
+  // would have passed with the bug restored.)
   const open = async (label, token, hash, clockSkewMs = 0) => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, serviceWorkers: 'block' });
     await ctx.addInitScript((t) => { try { localStorage.setItem('ys_portal_token', t); } catch (_) { /* fine */ } }, token);
@@ -121,14 +154,14 @@ async function main() {
     // screen") reproduced as the thing that causes it — the live baseline has to come
     // off the guest's own event timestamps, never off ours. Revert that and every
     // mirror assertion below goes blank.
-    const VIEWER_CLOCK_SKEW_MS = 45000;
+    const VIEWER_CLOCK_SKEW_MS = -45000;   // the viewer's clock is BEHIND the guest's — see open()
     viewer = await open('viewer', saTok, `/internal/cobrowse/${sid}`, VIEWER_CLOCK_SKEW_MS);
     await viewer.page.waitForSelector('text=Watching', { timeout: 20000 });
     const mirrorHas = async (text, ms = 20000) => viewer.page.waitForFunction((t) => {
       const f = document.querySelector('.cobrowse-stage iframe'); const d = f && f.contentDocument;
       return !!(d && d.body && d.body.innerText.includes(t));
     }, text, { timeout: ms }).then(() => true).catch(() => false);
-    ok(await mirrorHas('Everybody on the YS Capital desk'), `the mirror shows the guest's Team screen even with the viewer's clock ${VIEWER_CLOCK_SKEW_MS / 1000}s out of step (rrweb snapshot relayed and replayed)`);
+    ok(await mirrorHas('Everybody on the YS Capital desk'), `the mirror shows the guest's Team screen with the viewer's clock ${Math.abs(VIEWER_CLOCK_SKEW_MS) / 1000}s BEHIND the guest's (rrweb snapshot relayed and replayed)`);
     ok(await viewer.page.locator('text=Watch-only').count() > 0, 'the viewer is told it is watch-only');
 
     // ── the guest navigates; the mirror follows ──
@@ -231,33 +264,56 @@ async function main() {
     // A REAL mouse and a REAL keyboard on the viewer — the capture relays only trusted
     // events (a dispatched one is the replayer painting the mirror, and echoing those back
     // wipes the guest's own box), so a person's own hands are what this must be driven by.
-    const boxOf = () => viewer.page.evaluate(() => {
-      // The replayer SCALES the mirror to fit the stage, so a point inside the replayed
-      // document is not a point on this screen until it is multiplied by that scale. Reading
-      // the two rects and adding them (the obvious version) aims at a different element
-      // entirely — this drive clicked the page header and reported typing as broken.
-      const f = document.querySelector('.cobrowse-stage iframe');
-      const fr = f.getBoundingClientRect();
-      const scale = f.offsetWidth ? fr.width / f.offsetWidth : 1;
-      const d = f.contentDocument;
-      const el = d.querySelector('[data-e2e-target="1"]'); const r = el.getBoundingClientRect();
-      return { x: fr.left + (r.left + r.width / 2) * scale, y: fr.top + (r.top + r.height / 2) * scale, scale };
-    });
+    // THE REPLAYER SCALES THE MIRROR to fit the stage, so a point inside the replayed
+    // document is not a point on this screen until it is multiplied by that scale. This
+    // drive used to compute that by hand and clicked a different element for its trouble;
+    // frameLocator below does it, and re-does it after every layout shift.
     // WAIT FOR THE PRECONDITION, NEVER FOR A FIXED SLEEP — AND CLICK AGAIN IF IT DID NOT
     // TAKE. The click is relayed as an rrweb MIRROR ID and the GUEST's browser is what
     // performs it, so two things can lose one: the round trip can outlast a flat 200ms
     // sleep, and a fresh full snapshot landing in the same instant RE-MINTS every mirror
-    // id, so an id read a moment earlier resolves to nothing on the guest. Both are
+    // id. A stale id does NOT resolve to nothing — it resolves to a DIFFERENT live
+    // element, which the pre-merge audit caught pressing the guest's own Stop button; the
+    // guest now refuses any target that is not the one the viewer fingerprinted, so a
+    // mistargeted click is dropped and this loop simply tries again. Both are
     // self-correcting for a person (they click again) and both made this harness fail
     // about one run in two — on main as well — with a symptom ("the box does not read
     // hello") that indicted the product for the harness's own impatience.
+    // ADDRESS THE ELEMENT, DO NOT AIM AT A REMEMBERED PIXEL. Hand-computed coordinates
+    // were the whole trouble here: the guest's own co-browse banner is mirrored too, it
+    // wraps to two or three lines and grows again when the web fonts arrive, so everything
+    // below it slides down between reading a rect and clicking it — and this drive's click
+    // landed on the guest's BANNER. The product REFUSED that (those buttons carry
+    // data-cobrowse-nodrive, added by the pre-merge audit), so nothing was pressed and the
+    // harness then reported the product as broken. Playwright's own frameLocator scrolls
+    // the element into view, re-reads its box under the CSS transform and clicks its centre
+    // with a real mouse — which is exactly what a person does and what this must assert.
+    const mirrorTarget = viewer.page.frameLocator('.cobrowse-stage iframe').locator('[data-e2e-target="1"]');
+    // WAIT FOR THE MIRROR TO STOP MOVING FIRST. The guest's own banner is mirrored, it
+    // wraps to two or three lines and grows again when the web fonts arrive, so the whole
+    // page slides down for a second or two after control is granted. Clicking into that is
+    // how the click landed on the banner. A person waits for the page to settle; so does
+    // this. Give up waiting after ~8 s and try anyway — the retry below is the backstop.
+    // Settle on BOTH counts: the element must stop MOVING and must stop being REPLACED.
+    // A full rrweb snapshot makes the replayer rebuild the mirrored document, so the node a
+    // locator just resolved is thrown away mid-click — which is the other half of why this
+    // section was unreliable. Same NODE and same offset for five consecutive polls.
+    await viewer.page.waitForFunction(() => {
+      const f = document.querySelector('.cobrowse-stage iframe'); const d = f && f.contentDocument;
+      const el = d && d.querySelector('[data-e2e-target="1"]'); if (!el) return false;
+      const y = Math.round(el.getBoundingClientRect().top);
+      const w = window;
+      const steady = (w.__lastY === y && w.__lastNode === el) ? (w.__sameFor || 0) + 1 : 0;
+      w.__lastY = y; w.__lastNode = el; w.__sameFor = steady;
+      return steady >= 5;
+    }, null, { timeout: 15000, polling: 200 }).catch(() => {});
     let focused = false;
-    for (let attempt = 0; attempt < 5 && !focused; attempt += 1) {
-      const b = await boxOf();
-      await viewer.page.mouse.click(b.x, b.y);
+    for (let attempt = 0; attempt < 8 && !focused; attempt += 1) {
+      const clicked = await mirrorTarget.click({ timeout: 5000 }).then(() => true).catch(() => false);
+      if (!clicked) { await viewer.page.waitForTimeout(400); continue; }
       focused = await guest.page.waitForFunction(
         () => document.activeElement === document.querySelector('[data-e2e-target="1"]'),
-        null, { timeout: 3000 },
+        null, { timeout: 4000 },
       ).then(() => true).catch(() => false);
     }
     ok(focused, 'the viewer\'s click focused the guest\'s own box (relayed, then performed by their browser)');

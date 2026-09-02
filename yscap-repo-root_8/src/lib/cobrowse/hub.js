@@ -192,6 +192,13 @@ function onViewerMessage(r, ws, data) {
     if (typeof m.value === 'string') out.value = m.value.slice(0, 4000);
     if (typeof m.key === 'string') out.key = m.key.slice(0, 32);
     if (typeof m.code === 'string') out.code = m.code.slice(0, 32);
+    // THE TARGET FINGERPRINT (see drivable() in app-v2/src/lib/cobrowse.js). An rrweb
+    // mirror id is re-minted by every full snapshot, so an id the viewer read a moment
+    // ago can resolve on the guest to a DIFFERENT live element — measured by the
+    // pre-merge audit as a relayed click pressing the guest's own "Stop" button. The
+    // viewer sends what it MEANT to act on and the guest refuses a mismatch. Relayed
+    // as an opaque, capped string; the hub never interprets it.
+    if (typeof m.fp === 'string') out.fp = m.fp.slice(0, 120);
     for (const f of ['ctrl', 'shift', 'alt', 'meta', 'checked']) if (typeof m[f] === 'boolean') out[f] = m[f];
     send(r.guest, out);
     r.pendingControl += 1;
