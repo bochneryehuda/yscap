@@ -319,10 +319,23 @@ const otherPdf = Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog/X 2>>endobj\ntrai
         'the BORROWER is not on the To line — the whole reason this branch exists');
       assert(!cc.includes(borrowerEmail.toLowerCase()),
         'and title does not CC the borrower by default (owner-directed 2026-07-31)');
+      /* A TYPED REPLY IS NOT A CHASE (owner-reported 2026-09-01: "if you just write your own
+         reply … only your text should be sent" — the official follow-up is the Follow-up
+         button alone). It used to bump followup_count, so the desk said a vendor had been
+         chased when somebody had only answered a question. The reply is still recorded on
+         the order's own history as a message, so "did anybody write to them" is answered. */
       const after = (await db.query(
         `SELECT followup_count FROM file_orders WHERE application_id=$1 AND order_type='title'`, [appId])).rows[0];
-      assert(Number(after.followup_count) === 1,
-        'the reply counts as chasing the vendor, so the desk knows somebody wrote to them');
+      assert(Number(after.followup_count) === 0,
+        'a typed reply does NOT count as chasing the vendor (that is the Follow-up button alone)');
+      const ev = (await db.query(
+        `SELECT kind FROM file_order_events WHERE application_id=$1 AND order_type='title' ORDER BY created_at DESC, kind = 'message_sent' DESC LIMIT 1`, [appId])).rows[0];
+      assert(ev && ev.kind === 'message_sent', `the reply is on the order's history as a message (got ${ev && ev.kind})`);
+      // And the typed text went out ALONE — no deliverables ask, no "Follow-up" headline.
+      const body = String(sent[0].text || '');
+      assert(/Any update on the commitment\?/.test(body), 'the typed text is the email');
+      assert(!/Follow-up/.test(body) && !/Please provide the following/.test(body),
+        'nothing from the follow-up template rides on a typed reply');
     } finally { email.sendMail = realSend; }
   }
 

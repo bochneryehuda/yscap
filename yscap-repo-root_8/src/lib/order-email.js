@@ -194,12 +194,27 @@ function insuranceDetailMeta(data) {
   return out;
 }
 
-/** Purchase vs Refinance, best-effort from the file's loan_type. */
+/**
+ * Purchase vs Refinance, from the file's loan_type (the loan PURPOSE column).
+ *
+ * Owner-reported 2026-09-01: "The title order should say if it's a purchase or a
+ * refinance. Right now, it doesn't mention." The row existed but was dropped
+ * whenever this returned '' (a blank loan_type, or one the sanitizer nulled), and a
+ * cash-out was flattened to the bare word "Refinance". So: the refinance KIND is
+ * kept when the file states it, and a file that does not say is printed as exactly
+ * that — never omitted, because an omitted row reads as "nobody thought of it".
+ */
+const TRANSACTION_UNKNOWN = 'Not stated on the file — please confirm with the loan officer';
 function transactionType(loanType) {
   const s = String(loanType || '').toLowerCase();
-  if (/refi|refinance/.test(s)) return 'Refinance';
+  if (/refi|refinance/.test(s)) {
+    if (/cash/.test(s)) return 'Refinance — Cash-Out';
+    if (/rate/.test(s) && /term/.test(s)) return 'Refinance — Rate & Term';
+    return 'Refinance';
+  }
+  if (/delayed/.test(s) && /purchase|financ/.test(s)) return 'Delayed Purchase Financing';
   if (/purchase|acquisition/.test(s)) return 'Purchase';
-  return loanType ? String(loanType) : '';
+  return loanType ? String(loanType) : TRANSACTION_UNKNOWN;
 }
 
 /** A one-line property address from the applications.property_address jsonb. */
@@ -227,7 +242,7 @@ function vendorGreetName(vendor) {
  * Build the branded order email (or its follow-up). Returns { subject, html,
  * text }. `subjectTag` (loan# · borrower · street) rides in the subject.
  */
-function buildOrderEmail(kind, data, { followup = false, note = '', fullOrder = false, mortgageeClause = null } = {}) {
+function buildOrderEmail(kind, data, { followup = false, reply = false, note = '', fullOrder = false, mortgageeClause = null, senderName = '' } = {}) {
   const label = ORDER_LABEL[kind];
   const vendor = data.vendors[kind];
   const subjectTag = [data.loanNumber || null, data.borrowerName, data.propertyLine.split(',')[0]].filter(Boolean).join(' · ');
@@ -255,7 +270,9 @@ function buildOrderEmail(kind, data, { followup = false, note = '', fullOrder = 
   // the two can never state different facts. `filter(Boolean)` still runs last so a
   // detail we genuinely do not hold is simply absent rather than printed blank.
   const orderMeta = [
-    data.transactionType ? { label: 'Transaction Type', value: data.transactionType } : null,
+    // ALWAYS printed (owner-reported 2026-09-01): purchase or refinance is the first thing
+    // a title company needs to know, so a file that does not say prints that it does not.
+    { label: 'Transaction Type', value: data.transactionType || TRANSACTION_UNKNOWN },
     { label: 'Property Address', value: data.propertyLine || '—' },
     { label: 'Borrower Name', value: data.borrowerName },
     kind === 'insurance' && data.dob ? { label: 'Borrower DOB', value: data.dob } : null,
@@ -279,6 +296,37 @@ function buildOrderEmail(kind, data, { followup = false, note = '', fullOrder = 
            ? `Please make the policy effective on or before the estimated closing date, ${dayText(data.expectedClosing)}. We will confirm the final closing date as soon as it is set.`
            : 'Please advise the earliest effective date available — we will confirm the closing date as soon as it is set.'] }]
     : undefined;
+
+  if (reply) {
+    /* A TYPED REPLY IS THE PERSON'S OWN WORDS AND NOTHING ELSE (owner-reported
+       2026-09-01: "even if they manually reply, it fills out like it's a follow-up
+       email … If you just write your own reply and you just write text, then only
+       your text should be sent"). Until now the Email Center's reply box was built
+       through the FOLLOW-UP branch below with the typed text as its intro — so a
+       one-line "closing moved to Tuesday" went out under a "— Follow-up" headline,
+       followed by the whole deliverables ask and a restated fact table, and was
+       recorded as a chase. This branch renders: the greeting, the typed paragraphs,
+       the sign-off, the officer's card and the reply delimiter. No deliverables
+       list, no fact table, no coverage block, no "Follow-up" title. The official
+       follow-up is still the branch below, reached ONLY by the Follow-up button. */
+    const paras = String(note || '').trim().split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
+    const who = senderName && String(senderName).trim() ? String(senderName).trim() : null;
+    const replySignOff = who ? `Thank you,\n${who}\nYS Capital Group` : signOff;
+    return tpl.render({
+      title: `${label} order`,
+      subjectTag,
+      kicker: `${label} order`,
+      preheader: paras[0] ? paras[0].slice(0, 120) : `A message about the ${label.toLowerCase()} order for ${data.propertyLine}`,
+      greeting: `Hi ${vendorGreetName(vendor)},`,
+      intro: paras[0] || '',
+      lines: paras.slice(1).concat(['', replySignOff]),
+      officer: officerCard,
+      note: 'Reply to this email and it reaches the whole loan team.',
+      replyable: true,
+      replyMarker: quote.replyMarker('and it reaches the whole loan team'),
+      audience: 'staff',
+    });
+  }
 
   if (followup) {
     // The follow-up is a SEPARATE, lighter message on the same thread — it is
@@ -551,6 +599,7 @@ function replyOrderSubject(subject) {
 
 
 module.exports = {
+  TRANSACTION_UNKNOWN,
   // What an order IS
   ORDER_TYPES, VENDOR_TYPE, ORDER_LABEL,
   // The clause (the standard one, and the short-term servicer variant its own

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../lib/auth.jsx';
+import { useAuth, takeReturnTo } from '../lib/auth.jsx';
 import { api } from '../lib/api.js';
 
 /* TPO VIEW banner (owner-directed 2026-08-04; TPO blueprint decision 6).
@@ -68,7 +68,7 @@ export default function TpoViewBanner() {
     setBusy(true);
     const ok = await exitTpoView();
     setBusy(false);
-    nav(ok ? '/internal/tpo-view' : '/internal/login', { replace: true });
+    nav(ok ? (takeReturnTo() || '/internal/tpo-view') : '/internal/login', { replace: true });
   };
 
   return (

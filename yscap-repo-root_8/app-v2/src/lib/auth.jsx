@@ -42,6 +42,28 @@ const STAFF_TOKEN_KEY = 'ys_portal_staff_token';
 const stashStaffToken = (t) => { try { t ? sessionStorage.setItem(STAFF_TOKEN_KEY, t) : sessionStorage.removeItem(STAFF_TOKEN_KEY); } catch { /* private mode */ } };
 const readStaffToken = () => { try { return sessionStorage.getItem(STAFF_TOKEN_KEY) || ''; } catch { return ''; } };
 
+/* WHERE THE STAFFER WAS when they stepped into a view — parked beside their token
+   (owner-reported 2026-09-01: after "Done" on a borrower view "they get back, out of
+   the blue, somewhere. They need to get back exactly where they were before" — the
+   file they were in, the tab they had open). The console is a HashRouter app, so the
+   hash IS the location, including the file's section deep link. Written by the three
+   start* handoffs below, consumed ONCE by the matching exit. Nothing else reads it. */
+const RETURN_TO_KEY = 'ys_portal_return_to';
+const currentConsolePath = () => {
+  try {
+    const h = String(window.location.hash || '');
+    const path = h.startsWith('#') ? h.slice(1) : h;
+    // Only a real console location is worth returning to — never the sign-in screen
+    // or an empty hash, which would send somebody back to nowhere.
+    return path && path.startsWith('/internal') && !path.startsWith('/internal/login') ? path : '';
+  } catch { return ''; }
+};
+const stashReturnTo = (path) => { try { path ? sessionStorage.setItem(RETURN_TO_KEY, path) : sessionStorage.removeItem(RETURN_TO_KEY); } catch { /* private mode */ } };
+/** Read AND clear the parked location, or '' when none was parked. */
+export const takeReturnTo = () => {
+  try { const v = sessionStorage.getItem(RETURN_TO_KEY) || ''; sessionStorage.removeItem(RETURN_TO_KEY); return v; } catch { return ''; }
+};
+
 const Ctx = createContext(null);
 
 export function AuthProvider({ children }) {
@@ -136,6 +158,7 @@ export function AuthProvider({ children }) {
   const startBorrowerView = useCallback(async (borrowerId, applicationId) => {
     const r = await api.borrowerViewStart(borrowerId, applicationId);
     stashStaffToken(getToken());          // park my own console session
+    stashReturnTo(currentConsolePath());  // ...and where I was, so "Done" brings me back here
     setToken(r.token); setTok(r.token);
     return r;
   }, []);
@@ -165,6 +188,7 @@ export function AuthProvider({ children }) {
   const startTpoView = useCallback(async (tpoUserId, applicationId) => {
     const r = await api.tpoViewStart(tpoUserId, applicationId);
     stashStaffToken(getToken());          // park my own console session
+    stashReturnTo(currentConsolePath());  // ...and where I was, so "Done" brings me back here
     setToken(r.token); setTok(r.token);
     return r;
   }, []);
@@ -207,6 +231,7 @@ export function AuthProvider({ children }) {
   const startStaffView = useCallback(async (staffId) => {
     const r = await api.staffViewStart(staffId);
     stashStaffToken(getToken());          // park my own console session
+    stashReturnTo(currentConsolePath());  // ...and where I was, so "Done" brings me back here
     setToken(r.token); setTok(r.token);
     return r;
   }, []);

@@ -105,8 +105,11 @@ console.log('\n5. The carve-outs the desks require');
      Counted rather than matched once: there are three such doors (the Email Center
      reply, the follow-up send, the follow-up preview), and a guard that passes on
      one of them would let the other two drift. */
+  // Since 2026-09-01 every order door ALSO keeps a RETIRED vendor off the thread (a replaced
+  // insurance agent — lib/file-contacts), so the list is two lines; the borrower / co-borrower
+  // / helper carve-out is unchanged and still counted three times.
   const orderNever = src.match(
-    /never: \[data\.borrowerEmail, data\.coBorrowerEmail, \.\.\.orders\.helperEmails\(data\)\]\.filter\(Boolean\)/g) || [];
+    /never: \[data\.borrowerEmail, data\.coBorrowerEmail, \.\.\.orders\.helperEmails\(data\),\s*\.\.\.require\('\.\.\/lib\/file-contacts'\)\.retiredVendorEmails\(row && row\.meta\)\]\.filter\(Boolean\)/g) || [];
   ok(orderNever.length === 3,
     `an order never ADDS the borrower or their helper this way — the ccBorrower/ccHelper settings stay the only doors (found ${orderNever.length} of 3)`);
   ok(!/never: \[data\.borrowerEmail, data\.coBorrowerEmail\]\.filter\(Boolean\)/.test(src),

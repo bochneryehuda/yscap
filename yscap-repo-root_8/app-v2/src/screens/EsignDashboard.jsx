@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, saveBlob } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { askPrompt } from '../lib/dialog.js';
+import EsignEventLog from '../components/EsignEventLog.jsx';
 import {
   PHASE, PURPOSE, ROLE, TERMINAL, timeAgo, absTime as abs, recipientSteps,
   agingHours, agingLevel, agingLabel,
@@ -76,9 +77,17 @@ function EnvelopeCard({ e, onReload, isAdmin }) {
   // stay open to all staff.
   const canResend = !!e.envelopeId && !TERMINAL.includes(e.phase) && (!e.isTest || isAdmin);   // one shared terminal vocabulary across all e-sign surfaces
   const canVoid = canResend;   // same window: sent but not yet finished
+  const [actMsg, setActMsg] = useState('');
   async function resend() {
-    setBusy(true); setActErr('');
-    try { await api.post(`/api/staff/esign/${e.id}/resend`); if (onReload) onReload(); }
+    setBusy(true); setActErr(''); setActMsg('');
+    try {
+      // The server answers with what REALLY went out (owner-directed 2026-09-01: a real
+      // resend, to the same address) — never a blanket "resent".
+      const r = await api.post(`/api/staff/esign/${e.id}/resend`);
+      if (r && r.sent) setActMsg(`Reminder re-sent to ${(r.recipients || []).join(', ') || 'the signer'}.${r.notice ? ` ${r.notice}` : ''}`);
+      else setActErr(`${(r && r.error) || 'No reminder went out.'}${r && r.notice ? ` ${r.notice}` : ''}`);
+      if (onReload) onReload();
+    }
     catch (err) { setActErr(err.message || 'Could not resend the email.'); }
     finally { setBusy(false); }
   }
@@ -151,6 +160,7 @@ function EnvelopeCard({ e, onReload, isAdmin }) {
         {canVoid ? <button className="btn ghost btn-sm" disabled={busy} onClick={voidEnv} title="Cancel this package — the signer can no longer sign">Void</button> : null}
       </div>
       {actErr ? <div role="alert" className="notice err" style={{ margin: '8px 0 0' }}>{actErr}</div> : null}
+      {actMsg ? <div className="notice ok" style={{ margin: '8px 0 0' }}>{actMsg}</div> : null}
 
       {e.waitingOn ? (
         <div className={`esign-waiting ${e.phase === 'awaiting_countersign' ? 'is-admin' : ''}`}>
@@ -228,6 +238,9 @@ function EnvelopeCard({ e, onReload, isAdmin }) {
           ) : null}
         </div>
       ) : null}
+
+      {/* THE FULL LOG at the bottom of every package (owner-directed 2026-09-01). */}
+      <EsignEventLog events={e.events} />
 
       <div className="esign-foot muted small">
         <span>{sentSummary}</span>
