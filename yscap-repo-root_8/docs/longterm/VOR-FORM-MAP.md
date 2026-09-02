@@ -14,7 +14,7 @@ data comes from, NOT a template to follow for what gets prefilled).
   name + address).
 - **2. From (lender)** — label y=615 x=320; band y≈560–608, x≈320–560:
   `YS Capital Group` / `5 New Montrose Avenue, #Bsmt` / `Brooklyn, NY 11211`.
-- **3. Signature of Lender** (y=530 x=60 label; value band ≈ y=512) — the sender.
+- **3. Signature of Lender** (y=530 x=60 label; drawn at y=516.5 x=60 in the Great Vibes signature script, 12pt shrinking to 9pt to fit 115pt — the sender’s name as a signature, not typed).
 - **4. Title** (x=190), **5. Date** (x=353), **6. Lender's No. (Optional)** (x=467)
   → the LT loan number.
 - **7. Information to be verified**: **Property Address** (label y=490 x=49; value

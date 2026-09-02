@@ -507,11 +507,20 @@ const itemRow = async (id) => (await db.query(
   {
     const canSee = require('../src/routes/staff').canSeeDocument;
     assert(typeof canSee === 'function', 'S0 the short-term document gate is reachable to test');
-    // Any Long-Term document the run above actually created — the loan handles are
-    // block-scoped, and asking the table is both simpler and a stronger claim: it
-    // fails loudly if the doors above stopped producing rows at all.
+    // Any Long-Term document THIS RUN actually created — the loan handles are
+    // block-scoped, so the table is asked, but scoped to this run's own loans
+    // (their loan numbers carry `uniq`). It still fails loudly if the doors
+    // above stopped producing rows at all. UNSCOPED, `LIMIT 1` of every
+    // long-term document on a shared test database picked up an ENTITY document
+    // another suite had left behind (`llc_id` set, `lt_loan_id` set by that
+    // suite's own door) and S2 failed on a fact about somebody else's row.
     const ltDoc = (await db.query(
-      'SELECT id, application_id, lt_loan_id, borrower_id, llc_id FROM documents WHERE lt_loan_id IS NOT NULL LIMIT 1')).rows[0];
+      `SELECT d.id, d.application_id, d.lt_loan_id, d.borrower_id, d.llc_id
+         FROM documents d
+         JOIN lt_loans l ON l.id = d.lt_loan_id
+        WHERE l.loan_number LIKE $1
+        ORDER BY d.created_at DESC
+        LIMIT 1`, [`${uniq}-%`])).rows[0];
     assert(!!ltDoc && !!ltDoc.lt_loan_id,
       'S1 there really is a Long-Term document to try (the assertions below are not vacuous)');
     assert(ltDoc.application_id === null && ltDoc.borrower_id === null && ltDoc.llc_id === null,

@@ -500,7 +500,45 @@ async function fileContactTypes(loanId, client) {
   return contactTypesFor({ config: { contactTypes: types }, answer: {} }, values);
 }
 
+/**
+ * WHICH OF A CONDITION'S CONTACTS ARE STILL MISSING ON THIS FILE.
+ *
+ * ONE DEFINITION for the sign-off gate (`write.signOffProblem`), the
+ * prior-to-submittal readiness list and the screen's "still needed" line: a
+ * row is missing when it is required, it does not NOT apply (`applies !== false`
+ * — "we cannot tell yet" still asks, because a confident "no" is the expensive
+ * mistake), and no `lt_loan_vendors` row of its kind is on the loan.
+ *
+ * @param {string} loanId
+ * @param {object} row   a condition with `config.contactTypes` (a template row or
+ *                       a shaped condition — only `config` and `answer` are read)
+ * @param {object} client
+ * @returns {Promise<{missing: Array<{key:string,label:string,whyUnknown:string|null}>, unreadable: boolean}>}
+ *   `unreadable: true` when the vendors could not be read — reported, never
+ *   answered as "nothing missing".
+ */
+async function missingContacts(loanId, row, client = db) {
+  const types = (row && row.config && Array.isArray(row.config.contactTypes)) ? row.config.contactTypes : [];
+  if (!types.length) return { missing: [], unreadable: false };
+  let kinds;
+  try {
+    const { rows } = await client.query(
+      'SELECT DISTINCT kind FROM lt_loan_vendors WHERE loan_id = $1::uuid', [String(loanId)]);
+    kinds = new Set(rows.map((r) => String(r.kind)));
+  } catch (_) {
+    return { missing: [], unreadable: true };
+  }
+  const live = await liveFieldValues(loanId, client);
+  const rows = contactTypesFor({ config: row.config, answer: row.answer || {} }, live);
+  return {
+    unreadable: false,
+    missing: rows
+      .filter((t) => t.required && t.applies !== false && !kinds.has(t.key))
+      .map((t) => ({ key: t.key, label: t.label, whyUnknown: t.applies === null ? t.whyNot : null })),
+  };
+}
+
 module.exports = {
-  buckets, forLoan, documentsByCondition, fileContactTypes, DONE, CLIENT_VISIBLE,
+  buckets, forLoan, documentsByCondition, fileContactTypes, missingContacts, DONE, CLIENT_VISIBLE,
   _internals: { shape, slotsFor, contactTypesFor, liveFieldValues, count, emptySummary },
 };

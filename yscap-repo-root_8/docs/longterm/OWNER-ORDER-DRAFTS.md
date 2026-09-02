@@ -64,15 +64,34 @@ Please provide the following as soon as they become available:
 Thank you.
 
 ### New York rule (same as the short-term side)
-On a NEW YORK file the title ask REMOVES exactly two items:
-- no CPL
-- no Preliminary Settlement Statement
 
-Those two move to the NEW YORK SETTLEMENT AGENT order instead, which asks the
-settlement agent for:
-- the CPL
-- the preliminary settlement statement
+> **CORRECTED BY THE OWNER 2026-09-02 — read this before the list below.**
+> *"In NY, there is no CPL. We only ask them for their Errors and Omissions
+> Assurance."*
+>
+> The earlier wording of this section said the CPL **moved** from the title ask
+> onto the settlement-agent ask. It does not move: **there is no closing
+> protection letter in New York at all**, so nobody is asked for one — not title,
+> not the settlement agent. db/677 had added a `cpl` slot to
+> `lt_ny_settlement_docs` on the strength of the old wording; db/680 removes it.
+> A slot for a document a state does not issue can never be filled, and the
+> condition sits outstanding forever.
+
+On a NEW YORK file the title ask REMOVES exactly two items:
+- no CPL — and it is not asked of anybody else either; there is none
+- no Preliminary Settlement Statement — this one **does** move, see below
+
+The NEW YORK SETTLEMENT AGENT order asks the settlement agent for **exactly
+three things** — confirmed by the owner item by item on 2026-09-02 (*"Errors &
+Omissions insurance and also the preliminary settlement statement, not for
+engagement letter, but yes for wire instructions"*):
+- wire instructions
 - the settlement agent's errors and omissions (E&O) insurance
+- the preliminary settlement statement
+
+**NOT the engagement letter.** It sat on this condition from the day it was
+seeded and was never something the owner asked for; db/681 removes it. A
+required slot nobody wants filled holds the condition open forever.
 
 ---
 

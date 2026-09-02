@@ -250,8 +250,11 @@ async function getOrderData(loanId, client = db) {
      verification of rent, so both showed as belonging on every file including the
      purchases and the owner-occupied ones their conditions are never attached to.
 
-     `routes/orders.js` re-runs `evaluateLoan` immediately before reading the desk,
-     so this list is the engine's own current answer rather than a stale one.
+     `routes/orders.js` runs `sweep.evaluateIfStale` before it reads the desk or
+     the contacts — the engine when the file is DUE a pass, nothing when it is
+     current — so this list is the engine's own current answer rather than a
+     stale one. (Until 2026-09-02 this comment claimed a re-run the route did not
+     make; audit S9.)
 
      NULL, NEVER AN EMPTY LIST, when it cannot be read — "this file has no
      conditions" and "PILOT could not read them" are different facts, and only the
@@ -429,7 +432,48 @@ function blockerText(code, kind, data) {
   return BLOCKER_TEXT[code] || String(code);
 }
 
+/**
+ * The contact card for ONE staff member — who signs the order they just sent
+ * (owner-directed 2026-09-02: *"this should be signed with the send button"*).
+ *
+ * The SAME shape and the SAME columns as the loan officer read above, on
+ * purpose: the two cards render through one template, so a second query with a
+ * different column list is how one of them starts printing a blank title.
+ * `staff_users` is the SHARED identity roster and this is a READ, which is the
+ * one thing Long-Term may do with it.
+ *
+ * NEVER THROWS, and answers `null` on anything it cannot resolve — no id, a
+ * departed staffer, an unreadable database. Null means "fall back to the file's
+ * officer", which is what an automatic send and a worker retry get; a signature
+ * is not worth failing an order over, and a letter signed by the officer who
+ * owns the file is never wrong, only less precise.
+ *
+ * @param {string|null} staffId
+ * @param {{db?:object}} [opts]
+ * @returns {Promise<{id:string,name:string|null,title:string,email:string|null,phone:string|null,nmls:string|null}|null>}
+ */
+async function loadStaffCard(staffId, opts) {
+  if (!staffId) return null;
+  const dbc = (opts && opts.db) || db;
+  try {
+    const r = await dbc.query(
+      `SELECT su.id, NULLIF(btrim(su.full_name), '') AS name, su.email, su.phone, su.title, su.nmls
+         FROM staff_users su
+        WHERE su.id = $1::uuid AND su.is_active = true`, [staffId]);
+    const row = r && r.rows && r.rows[0];
+    if (!row || !row.name) return null;   // an unnamed row is not a signature
+    return {
+      id: row.id,
+      name: row.name,
+      title: row.title || 'Loan Officer',
+      email: row.email || null,
+      phone: row.phone || null,
+      nmls: row.nmls || null,
+    };
+  } catch (_) { return null; }
+}
+
 module.exports = {
-  getOrderData, blockers, blockerText, vendorEmails, BLOCKER_TEXT,
+  getOrderData, blockers, blockerText, vendorEmails, loadStaffCard, BLOCKER_TEXT,
   _internals: { propertyLine, transactionType, partyName, residenceLine },
 };

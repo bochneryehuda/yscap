@@ -242,7 +242,7 @@ function vendorGreetName(vendor) {
  * Build the branded order email (or its follow-up). Returns { subject, html,
  * text }. `subjectTag` (loan# · borrower · street) rides in the subject.
  */
-function buildOrderEmail(kind, data, { followup = false, reply = false, note = '', fullOrder = false, mortgageeClause = null, senderName = '' } = {}) {
+function buildOrderEmail(kind, data, { followup = false, reply = false, note = '', fullOrder = false, mortgageeClause = null, senderName = '', sender = null } = {}) {
   const label = ORDER_LABEL[kind];
   const vendor = data.vendors[kind];
   const subjectTag = [data.loanNumber || null, data.borrowerName, data.propertyLine.split(',')[0]].filter(Boolean).join(' · ');
@@ -255,13 +255,28 @@ function buildOrderEmail(kind, data, { followup = false, reply = false, note = '
      the note ourselves; it is never guessed from a name this file cannot read. */
   const clauseLines = Array.isArray(mortgageeClause) && mortgageeClause.length ? mortgageeClause : MORTGAGEE_CLAUSE;
   const clause = clauseLines.concat(`Loan Number: ${data.loanNumber || '(pending)'}`).join('\n');
-  // The loan officer signs the order (a real person the vendor can reach) — as
-  // the branded contact card the template already renders.
-  const officerCard = data.officer
-    ? { name: data.officer.name, title: data.officer.title || 'Loan Officer',
-        email: data.officer.email || null, phone: data.officer.phone || null, nmls: data.officer.nmls || null }
+  /* WHO SIGNS IT. By default the file's loan officer — a real person the vendor
+     can reach — rendered as the branded contact card the template already draws.
+
+     `sender` OVERRIDES that with the person who actually pressed Send
+     (owner-directed 2026-09-02, long-term side: *"this should be signed with the
+     send button"*). It is an OPTION, not a rule decided here, and it is INERT
+     when unset: every existing caller passes nothing and gets byte-identical
+     output, so the short-term desk's letters do not move. A caller that wants
+     the sender's name on it says so.
+
+     The card moves WITH the signature rather than staying on the officer. A
+     letter signed by one person that prints another person's direct line reads
+     to the vendor as a mistake, and the vendor telephones the wrong desk; the
+     reply-to already reaches the whole loan team either way, so nothing is lost
+     by the two agreeing. A `sender` with no NAME is not a signature and is
+     ignored — falling back is always better than signing with a blank. */
+  const signer = (sender && sender.name) ? sender : data.officer;
+  const officerCard = signer
+    ? { name: signer.name, title: signer.title || 'Loan Officer',
+        email: signer.email || null, phone: signer.phone || null, nmls: signer.nmls || null }
     : null;
-  const signOff = data.officer ? `Thank you,\n${data.officer.name}${data.officer.title ? `, ${data.officer.title}` : ''}\nYS Capital Group` : 'Thank you,\nYS Capital Group';
+  const signOff = signer ? `Thank you,\n${signer.name}${signer.title ? `, ${signer.title}` : ''}\nYS Capital Group` : 'Thank you,\nYS Capital Group';
 
   // The FULL detail block the order carries, hoisted so BOTH the initial order and
   // the follow-up restate the exact same facts (owner-directed 2026-08-12: the
@@ -310,7 +325,13 @@ function buildOrderEmail(kind, data, { followup = false, reply = false, note = '
        list, no fact table, no coverage block, no "Follow-up" title. The official
        follow-up is still the branch below, reached ONLY by the Follow-up button. */
     const paras = String(note || '').trim().split(/\n{2,}/).map((s) => s.trim()).filter(Boolean);
-    const who = senderName && String(senderName).trim() ? String(senderName).trim() : null;
+    /* `sender` and `senderName` are the same question asked two ways — the full
+       card and the bare name — and this branch predates the card. Prefer the
+       card when a caller passed one so a reply cannot be signed by one person
+       while the card beside it names another; `senderName` still answers on its
+       own for every caller that only has a name. */
+    const who = (sender && sender.name) ? String(sender.name).trim()
+      : (senderName && String(senderName).trim() ? String(senderName).trim() : null);
     const replySignOff = who ? `Thank you,\n${who}\nYS Capital Group` : signOff;
     return tpl.render({
       title: `${label} order`,

@@ -213,6 +213,9 @@ async function rememberForLoan(loanId, opts) {
             SET service_contact_id = EXCLUDED.service_contact_id,
                 address_text       = EXCLUDED.address_text,
                 last_loan_id       = EXCLUDED.last_loan_id,
+                -- A person who links a landlord for this home has answered again,
+                -- so an earlier "no" (db/676) no longer stands.
+                declined_at        = NULL,
                 updated_at         = now()`,
         [p.borrowerId, p.key, contactId, p.text, loanId]);
       n += 1;
@@ -238,15 +241,22 @@ async function suggestForLoan(loanId, opts) {
   try {
     const parties = await rentingParties(loanId, client);
     if (!parties.length) return { contactId: null, why: 'no_address' };
-    const { rows } = await client.query(
-      `SELECT l.borrower_id, l.address_key, l.service_contact_id, l.address_text,
+    const { rows: all } = await client.query(
+      `SELECT l.borrower_id, l.address_key, l.service_contact_id, l.address_text, l.declined_at,
               sc.company_name, sc.contact_name
          FROM lt_borrower_landlords l
          JOIN service_contacts sc ON sc.id = l.service_contact_id
         WHERE (l.borrower_id, l.address_key) IN (
                 SELECT * FROM unnest($1::uuid[], $2::text[]))`,
       [parties.map((p) => p.borrowerId), parties.map((p) => p.key)]);
-    if (!rows.length) return { contactId: null, why: 'nothing_remembered' };
+    /* A DECLINED MEMORY IS NEVER FILLED IN AGAIN (db/676). Somebody took this
+       landlord off a file for this very home, and the next read of the screen
+       used to put the same card straight back — the removal could never stick
+       (audit 2026-09-02, S3). Answered as its own reason rather than folded into
+       "nothing remembered", because it is a different fact: there IS a memory,
+       and a person said no to it. */
+    const rows = all.filter((r) => !r.declined_at);
+    if (!rows.length) return { contactId: null, why: all.length ? 'declined' : 'nothing_remembered' };
     const distinct = [...new Set(rows.map((r) => String(r.service_contact_id)))];
     if (distinct.length > 1) return { contactId: null, why: 'more_than_one' };
     const r = rows[0];
@@ -286,6 +296,40 @@ async function applyForLoan(loanId, opts) {
   } catch (e) {
     console.error('[lt-landlord] could not fill in the remembered landlord:', (e && e.message) || e);
     return { applied: false, why: 'unreadable' };
+  }
+}
+
+/**
+ * A PERSON SAID NO — the landlord came OFF a file for the home this loan's
+ * borrowers rent, so the memory for that home is marked declined and never
+ * filled in again (db/676; audit 2026-09-02, S3).
+ *
+ * A STAMP, NOT A DELETE. This module's own rule is that the memory is a RECORD
+ * of what was known — "a later answer replaces an earlier one at the same
+ * address" — and an unlink is one more answer about that home, not a reason to
+ * forget the earlier ones existed. It is also the only shape that catches the
+ * case that actually happened: the memory was written by an EARLIER loan and
+ * applied to this one, so deleting rows by `last_loan_id = this loan` would
+ * have matched nothing. Linking a landlord for the same home clears it
+ * (`rememberForLoan`). Best-effort; never throws.
+ */
+async function declineForLoan(loanId, opts) {
+  const client = (opts && opts.db) || lazyDb();
+  try {
+    return await guarded(client, async () => {
+      const parties = await rentingParties(loanId, client);
+      if (!parties.length) return { declined: 0, why: 'no_address' };
+      const { rowCount } = await client.query(
+        `UPDATE lt_borrower_landlords
+            SET declined_at = now(), updated_at = now()
+          WHERE (borrower_id, address_key) IN (SELECT * FROM unnest($1::uuid[], $2::text[]))
+            AND declined_at IS NULL`,
+        [parties.map((p) => p.borrowerId), parties.map((p) => p.key)]);
+      return { declined: rowCount || 0 };
+    });
+  } catch (e) {
+    console.error('[lt-landlord] could not record that the landlord was declined:', (e && e.message) || e);
+    return { declined: 0, error: true };
   }
 }
 
@@ -331,7 +375,7 @@ async function backfillOnce(opts) {
 
 module.exports = {
   addressKey, addressText,
-  rememberForLoan, suggestForLoan, applyForLoan, backfillOnce,
+  rememberForLoan, suggestForLoan, applyForLoan, declineForLoan, backfillOnce,
   _internals: { norm, zip5, squash, SUFFIX, rentingParties, primaryLandlordId },
 };
 
