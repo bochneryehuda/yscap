@@ -313,6 +313,13 @@ async function loadApplication(db, applicationId) {
  * exactly the admins the owner asked to remove — and no draw coordinator either. The
  * term sheet package and the wire form are unchanged.
  *
+ * …PLUS THE LOAN OFFICER ASSISTANT (owner-directed 2026-09-02, on the new role: "add a
+ * loan officer assistant to this and also add them to the term sheet package as well").
+ * The ISKA list is now loan officer + loan officer assistant + processor, still judged
+ * by the STAFF role. The term sheet package needed no new filter: it copies EVERY active
+ * assignee of the file, and an assistant seated on the file is one — so they ride along
+ * as a viewer there already; scripts/test-esign-cc-viewers.js proves both.
+ *
  * "ISKA" here is the HETER ISKA envelope (`heter_iska`), not ISAOA — ISAOA exists in this
  * codebase only as the lender's mortgagee-clause text and has no envelope at all.
  *
@@ -328,15 +335,15 @@ async function loadApplication(db, applicationId) {
  */
 async function loadCcViewers(db, applicationId, purpose) {
   if (!applicationId) return [];
-  // The Heter Iska's viewer list is LO + processor ONLY (owner-directed
-  // 2026-08-26 — see the header); every other purpose keeps the whole team.
+  // The Heter Iska's viewer list is LO + LO assistant + processor ONLY (owner-directed
+  // 2026-08-26, widened 2026-09-02 — see the header); every other purpose keeps the whole team.
   const iskaOnly = purpose === 'heter_iska';
   const r = await db.query(
     `SELECT DISTINCT ON (lower(su.email)) su.email, su.full_name
        FROM application_assignees aa JOIN staff_users su ON su.id = aa.staff_id
       WHERE aa.application_id = $1 AND aa.removed_at IS NULL AND su.is_active = true
         AND su.email IS NOT NULL AND su.email <> ''
-        ${iskaOnly ? `AND su.role IN ('loan_officer','processor')` : ''}
+        ${iskaOnly ? `AND su.role IN ('loan_officer','loan_officer_assistant','processor')` : ''}
       ORDER BY lower(su.email)`, [applicationId]);
   const out = r.rows.map((x) => ({ email: x.email, name: x.full_name || x.email }));
   // Which resolver — see the header. The wire form keeps its desk fallback; the term

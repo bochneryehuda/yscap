@@ -300,11 +300,17 @@ const rulesRow = async (staffId) => (await db.query(
     T('GET /rules 200', rulesGet.status === 200);
     T('default timezone America/New_York', rulesGet.body.rules.timezone === 'America/New_York');
 
-    // Quiet hours ALL DAY. start === end is the gate's own definition of 24/7 quiet
-    // (_inQuietWindow). The previous 00:00–23:59 window was "essentially all day" —
-    // the end is EXCLUSIVE, so the one minute 23:59 New York was outside it, and the
-    // suite failed on main whenever CI happened to run in that minute (2026-09-02
-    // 03:59 UTC). A test of "quiet hours demote the send" must not depend on the clock.
+    /**
+     * Quiet hours that cover the WHOLE day — in the gate's OWN 24/7 form, `start === end`.
+     *
+     * ⛔ NOT `00:00`–`23:59`. The gate's end bound is EXCLUSIVE on purpose (a window ending 07:00
+     * ends at 07:00:00, not 07:00:59), so `23:59` as the end leaves a one-minute hole every night:
+     * `_inQuietWindow('00:00','23:59','23:59')` is `1439 < 1439` → false. This suite runs inside
+     * `test-db`, which takes ~35 minutes and lands wherever the clock happens to be — and on
+     * 2026-09-02 it landed at 03:59:17 UTC = 23:59:17 New York, this check failed on main, and the
+     * gated deploy was held for everyone. The old comment called the range "essentially all day";
+     * "essentially" was the hole. `_inQuietWindow` reads `start === end` as 24/7 quiet.
+     */
     const putRules = await call(server, 'PUT', '/api/staff/notification-center/rules', loTok, {
       timezone: 'America/New_York',
       quiet_hours_start: '00:00', quiet_hours_end: '00:00',
@@ -322,6 +328,22 @@ const rulesRow = async (staffId) => (await db.query(
     await notify.notifyBorrower(borrowerId, { type: 'reminder', title: 'nudge', applicationId: appId });
     const dAfterRem = (await draftRows(loId, 'pending')).filter((d) => d.notif_key === 'reminder').length;
     T('quiet hours demote send → draft', dAfterRem === dBeforeRem + 1);
+
+    /**
+     * ⛔ THE BOUNDARY, PINNED AT THE GATE ITSELF — so this suite can never again pass at 23:58 and
+     * fail at 23:59. Pure, clock-independent: the exact minute is handed in rather than read.
+     * Both halves are load-bearing: the new fixture must cover the last minute of the day, AND the
+     * old fixture must be shown NOT to, or the next person "simplifies" it back to 23:59.
+     */
+    const iq = gate._internal._inQuietWindow;
+    // Reads the window AS STORED (`rr`, the row the gate itself consults), not a restatement of the
+    // fixture — so putting 23:59 back fails here at any hour of the day, not only in the one minute
+    // the hole is open. `putRules.body` is `{ rules: … }`, the route's echo, not the flat fields.
+    T('the stored window is quiet at 23:59 — the last minute of the day', iq(rr.quiet_hours_start, rr.quiet_hours_end, '23:59') === true);
+    T('24/7 form (00:00–00:00) is quiet at 23:59 — the minute the old fixture missed', iq('00:00', '00:00', '23:59') === true);
+    T('24/7 form is quiet at 00:00 and at noon too', iq('00:00', '00:00', '00:00') === true && iq('00:00', '00:00', '12:00') === true);
+    T('the OLD fixture 00:00–23:59 has a hole at 23:59 (exclusive end — this is why it changed)', iq('00:00', '23:59', '23:59') === false);
+    T('…and is quiet one minute earlier, which is why it passed on every other run', iq('00:00', '23:59', '23:58') === true);
 
     // auto_send_after_hours=0 → server treats as null (audit fix)
     const rulesZero = await call(server, 'PUT', '/api/staff/notification-center/rules', loTok, { ...putRules.body, auto_send_after_hours: 0, quiet_hours_start: null, quiet_hours_end: null });

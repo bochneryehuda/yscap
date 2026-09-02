@@ -90,13 +90,22 @@ const { raiseEntityIssue } = require('../lib/raise-issue');
 const uspsVerify = require('../lib/usps-verify');
 const { componentsOf: uspsComponentsOf } = require('../lib/address-usps-verify');
 
-const { can, visibleOfficersSql, visibleBorrowerSql, visibleLeadSql } = require('../lib/permissions');
+const { can, personaOf, ROLE_KEYS, visibleOfficersSql, visibleBorrowerSql, visibleLeadSql } = require('../lib/permissions');
 // Every staff persona reaches the console; per-file scoping + capability gates
 // (below) decide what each can see and do.
 // draw_coordinator + closer are here so they can reach their OWN personal
 // Workflow queue (/api/staff/workflow) and the files handed to them; every route
 // still applies its own per-route capability / see_all_files / file-scope gate.
-router.use(requireAuth, requireRole('admin', 'loan_officer', 'processor', 'underwriter', 'loan_coordinator', 'draw_coordinator', 'closer', 'software_setup'));
+// EVERY INTERNAL ROLE MAY ENTER THE STAFF ROUTER — the list is THE registry's
+// (permissions.ROLE_KEYS), never typed here. This used to be a hand-kept copy of
+// the roles, and the day a role was added (the loan officer assistant, db/672)
+// the copy silently refused it at the door: a fully seated assistant got
+// `forbidden` on every staff route while every gate below would have let them
+// through. What a role may DO is decided by the capability gates on each route;
+// this line only decides that an internal staffer is an internal staffer.
+// (super_admin passes every requireRole gate implicitly; an external TPO user is
+// kind 'tpo', never 'staff', and is refused by requireRole before the list is read.)
+router.use(requireAuth, requireRole(...ROLE_KEYS));
 // Who sees every file vs. only their assigned ones — now a capability, so an
 // admin can grant "see all files" to a coordinator without a code change.
 const seesAll = (req) => can(req.actor, 'see_all_files');
@@ -1755,6 +1764,7 @@ router.post('/applications', async (req, res) => {
           borrower's application and the public form can never disagree. */
        require('../lib/fields').vestsIndividually(b)]);
     const appId = ins.rows[0].id;
+    await keepCreatorOnFile(req, appId);   // a creating assistant stays on the file (see the helper)
 
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'staff_create' }); }
     catch (e) {
@@ -6134,6 +6144,7 @@ router.post('/mismo/create', async (req, res) => {
     if (!parsed.borrower) return res.status(422).json({ error: 'this file has no borrower, so a loan file can’t be created from it' });
     const officerId = req.actor.role === 'loan_officer' ? req.actor.id : null;
     const { borrowerId, applicationId } = await mismo.createFromParsed(parsed, { officerId });
+    await keepCreatorOnFile(req, applicationId);   // a creating assistant stays on the file (see the helper)
     await audit(req, 'import_mismo', 'application', applicationId, { borrowerId, warnings: (parsed.warnings || []).length });
     res.status(201).json({ ok: true, applicationId, borrowerId, warnings: parsed.warnings || [] });
   } catch (e) {
@@ -11330,12 +11341,46 @@ router.get('/applications/:id/assignees', async (req, res) => {
 // Roles a file can carry people for. loan_officer/processor since db/103;
 // closer + draw_coordinator since db/392 (owner-directed 2026-07-31: the
 // defaults stay, but the file can name its own closer(s)/draw coordinator(s),
-// multiple per role, and their workflow shows only files assigned to them).
-const ASSIGNEE_ROLES = ['loan_officer', 'processor', 'closer', 'draw_coordinator'];
+// multiple per role, and their workflow shows only files assigned to them);
+// loan_officer_assistant since db/672 (owner-directed 2026-09-02: a back-office
+// role with the LOAN OFFICER's permissions and screens, never a processor's —
+// it has its OWN slot on the file, so an assistant is never filed under
+// "processor", and the role check below is what refuses to put one there).
+const ASSIGNEE_ROLES = ['loan_officer', 'processor', 'closer', 'draw_coordinator', 'loan_officer_assistant'];
 const ASSIGNEE_ROLE_LABEL = {
   loan_officer: 'a loan officer', processor: 'a processor',
   closer: 'a closer', draw_coordinator: 'a draw coordinator',
+  loan_officer_assistant: 'a loan officer assistant',
 };
+// The slots that ROUTE WORK — a workflow hand-off addressed to the slot's role
+// shows in every holder's queue (lib/workflow.js). The other slots (the loan
+// officer's, the assistant's) are ACCESS + team membership only, so the
+// "added to a file" notice must not promise them a queue they do not have.
+const QUEUED_ASSIGNEE_ROLES = workflow.WORKFLOW_ROLES;
+
+// A staffer who OPENS a file must still be able to reach it afterwards. The loan
+// officer becomes the officer of record; an admin / processor / closer sees the
+// whole pipeline; the LOAN OFFICER ASSISTANT is neither — no see_all_files, and
+// deliberately never the officer of record (they assist one) — so the file they
+// just created would answer `forbidden` on the very next request. Seat them in
+// their own slot at creation, exactly as a teammate adding them would. ONE
+// helper for every create door (new file, MISMO import, lead convert) so no
+// door can forget it. Idempotent (an active row wins over a second insert) and
+// best-effort: a seating hiccup must never fail a file that already exists.
+async function keepCreatorOnFile(req, appId) {
+  const role = req && req.actor ? req.actor.role : null;
+  if (!appId || role !== 'loan_officer_assistant') return false;
+  try {
+    const r = await db.query(
+      `INSERT INTO application_assignees (application_id, staff_id, role, is_primary, added_by)
+       SELECT $1, $2, 'loan_officer_assistant', false, $2
+        WHERE NOT EXISTS (SELECT 1 FROM application_assignees
+                           WHERE application_id=$1 AND staff_id=$2 AND role='loan_officer_assistant' AND removed_at IS NULL)`,
+      [appId, req.actor.id]);
+    if (r.rowCount) await audit(req, 'add_assignee', 'application', appId, { staffId: req.actor.id, role: 'loan_officer_assistant', primary: false, via: 'creator' });
+    return !!r.rowCount;
+  } catch (e) { console.warn('[staff] could not seat the creating assistant on the file:', db.describeError(e)); return false; }
+}
 
 router.post('/applications/:id/assignees', async (req, res) => {
   try {
@@ -11385,7 +11430,10 @@ router.post('/applications/:id/assignees', async (req, res) => {
     }
     await notify.notifyStaff(staffId, {
       type: 'assignment', title: `You were ${asPrimary ? 'assigned to a file' : 'added to a file'} as ${ASSIGNEE_ROLE_LABEL[role] || role}`,
-      body: `${req.actor.name || 'A teammate'} ${asPrimary ? 'assigned you as the ' + (ASSIGNEE_ROLE_LABEL[role] || role).replace(/^an? /, '') + ' on' : 'added you to'} this file. Its ${role.replace(/_/g, ' ')} workflow items now show in your queue.`,
+      body: `${req.actor.name || 'A teammate'} ${asPrimary ? 'assigned you as the ' + (ASSIGNEE_ROLE_LABEL[role] || role).replace(/^an? /, '') + ' on' : 'added you to'} this file. `
+        + (QUEUED_ASSIGNEE_ROLES.includes(role)
+          ? `Its ${role.replace(/_/g, ' ')} workflow items now show in your queue.`
+          : 'You can open and work it now, and it shows in your pipeline.'),
       applicationId: req.params.id, ctaLabel: 'Open the loan file', link: `/internal/app/${req.params.id}` });
     await audit(req, 'add_assignee', 'application', req.params.id, { staffId, role, primary: asPrimary });
     res.json({ ok: true });
@@ -19288,6 +19336,7 @@ router.post('/leads/:id/convert', async (req, res) => {
         // raw intField() would 500 on an overflowing count — together they close both.
         (intv(pv.expFlips) || 0), (intv(pv.expBrrrr) || 0), (intv(pv.expGround) || 0)]);
     const appId = ins.rows[0].id;
+    await keepCreatorOnFile(req, appId);   // a creating assistant stays on the file (see the helper)
 
     try { await require('../lib/conditions/ensure').ensureFileConditions(appId, { reason: 'lead_convert' }); }
     catch (e) { console.error('[lead-convert] checklist failed:', db.describeError ? db.describeError(e) : e.message); }
@@ -19871,7 +19920,10 @@ router.delete('/documents/:id', async (req, res) => {
     // LOAN OFFICER on the file. The file scope is already proven by
     // canSeeDocument above (an LO only sees documents on their own files), and
     // every delete is audited. software_setup stays excluded.
-    const isLoanOfficer = req.actor && req.actor.role === 'loan_officer';
+    // "Loan officer" here is the PERSONA (permissions.personaOf), so the loan
+    // officer assistant — who holds the officer's permissions by design — gets
+    // the same button on the same files.
+    const isLoanOfficer = !!req.actor && personaOf(req.actor.role) === 'loan_officer';
     if (!can(req.actor, 'sign_off_conditions') && !isLoanOfficer)
       return res.status(403).json({ error: 'You do not have permission to permanently delete documents.' });
 

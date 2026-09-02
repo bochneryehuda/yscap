@@ -15,11 +15,9 @@ import ChatBubble from './ChatBubble.jsx';
 import { useStaleBuild } from '../lib/useStaleBuild.jsx';
 import { RESEARCH_PAGES, inResearch as isResearchPath } from './ResearchNav.jsx';
 
-const ROLE_LABEL = {
-  super_admin: 'Super Admin', admin: 'Admin', underwriter: 'Underwriter',
-  loan_officer: 'Loan Officer', loan_coordinator: 'Loan Coordinator',
-  processor: 'Loan Processor', software_setup: 'Software Setup',
-};
+// Role labels + the persona test come from the ONE front-end role registry
+// (lib/roles.js, pinned to the server's) — never a hand-kept map here.
+import { ROLE_LABEL, isLoanOfficerPersona } from '../lib/roles.js';
 
 /* Sidebar nav line-icons (18px, currentColor stroke). One per nav item — the
    blueprint's ds.css `.ic` is an 18px icon slot; the preview HTML used colour
@@ -627,7 +625,7 @@ export default function StaffLayout({ children }) {
         <NavLink className="sb-link" to="/internal/esign" title="E-Signatures — PILOT’s own DocuSign cockpit: every package, every signer, live"><NavIcon name="esign" />E-signatures</NavLink>
         <NavLink className="sb-link" to="/internal/orders" title="Orders — every title & insurance order across your files, and what's waiting to be classified"><NavIcon name="vendors" />Orders</NavLink>
         {canExportTapes && <NavLink className="sb-link" to="/internal/tapes" title="Data Tapes — export each capital provider's loan tape (their Excel workbook, filled with the loan's figures). One loan at a time or in bulk by provider."><NavIcon name="pipeline" />Data tapes</NavLink>}
-        {(canManageClosings || role === 'loan_officer' || role === 'processor') && <NavLink className="sb-link" to="/internal/closing" title="Closing — files submitted to closing: cash-to-close checks, warehouse & collateral, closing conditions, reconciliation."><NavIcon name="pipeline" />Closing
+        {(canManageClosings || isLoanOfficerPersona(role) || role === 'processor') && <NavLink className="sb-link" to="/internal/closing" title="Closing — files submitted to closing: cash-to-close checks, warehouse & collateral, closing conditions, reconciliation."><NavIcon name="pipeline" />Closing
           {closingCount > 0 && <span className="sb-badge">{closingCount > 99 ? '99+' : closingCount}</span>}</NavLink>}
         {canManagePurchasing && <NavLink className="sb-link" to="/internal/purchasing" title="Purchasing — every file that moved to purchasing after investor delivery: what's still missing, notes and tasks. A table-funded loan was sold at closing and never lands here."><NavIcon name="pipeline" />Purchasing
           {purchasingCount > 0 && <span className="sb-badge">{purchasingCount > 99 ? '99+' : purchasingCount}</span>}</NavLink>}

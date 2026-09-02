@@ -8,16 +8,9 @@ import { useFlash } from '../components/FlashToast.jsx';
 import CobrowseButton from '../components/CobrowseButton.jsx';
 import CobrowseHistory from '../components/CobrowseHistory.jsx';
 
-// Fallback role list (replaced live by GET /permissions-meta).
-const FALLBACK_ROLES = [
-  { key: 'loan_officer', label: 'Loan Officer' },
-  { key: 'loan_coordinator', label: 'Loan Coordinator' },
-  { key: 'processor', label: 'Loan Processor' },
-  { key: 'underwriter', label: 'Underwriter' },
-  { key: 'software_setup', label: 'Software Setup' },
-  { key: 'admin', label: 'Admin' },
-  { key: 'super_admin', label: 'Super Admin' },
-];
+// Fallback role list (replaced live by GET /permissions-meta) — the ONE
+// front-end role registry (lib/roles.js), not a second hand-kept list.
+import { INTERNAL_ROLES as FALLBACK_ROLES } from '../lib/roles.js';
 const blankForm = () => ({
   fullName: '', email: '', role: 'loan_officer', title: '', department: 'sales',
   phone: '', cell: '', ext: '', siteSelectable: true, provision: 'invite', password: '',

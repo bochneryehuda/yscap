@@ -95,7 +95,7 @@
       {
         "name": "application_assignees_role_check",
         "table": "application_assignees",
-        "definition": "CHECK ((role = ANY (ARRAY['loan_officer'::text, 'processor'::text, 'closer'::text, 'draw_coordinator'::text, 'account_executive'::text, 'account_manager'::text])))"
+        "definition": "CHECK ((role = ANY (ARRAY['loan_officer'::text, 'processor'::text, 'closer'::text, 'draw_coordinator'::text, 'account_executive'::text, 'account_manager'::text, 'loan_officer_assistant'::text])))"
       },
       {
         "name": "applications_a_piece_amount_chk",
@@ -1650,7 +1650,7 @@
       {
         "name": "staff_users_role_check",
         "table": "staff_users",
-        "definition": "CHECK ((role = ANY (ARRAY['super_admin'::text, 'admin'::text, 'underwriter'::text, 'loan_officer'::text, 'loan_coordinator'::text, 'draw_coordinator'::text, 'processor'::text, 'closer'::text, 'software_setup'::text, 'tpo_officer'::text, 'tpo_processor'::text])))"
+        "definition": "CHECK ((role = ANY (ARRAY['super_admin'::text, 'admin'::text, 'underwriter'::text, 'loan_officer'::text, 'loan_officer_assistant'::text, 'loan_coordinator'::text, 'draw_coordinator'::text, 'processor'::text, 'closer'::text, 'software_setup'::text, 'tpo_officer'::text, 'tpo_processor'::text])))"
       },
       {
         "name": "staff_view_sessions_not_self_chk",

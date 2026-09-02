@@ -261,7 +261,7 @@ export function AuthProvider({ children }) {
       actor,
       isAuthed: !!token,
       kind:     actor?.kind || null,        // 'borrower' | 'staff'
-      role:     actor?.role || null,        // borrower | loan_officer | processor | underwriter | admin | super_admin | loan_coordinator | software_setup
+      role:     actor?.role || null,        // 'borrower', or an internal staff role — the list is lib/roles.js (INTERNAL_ROLES)
       isStaff,
       isTpo,
       isBorrower: actor?.kind === 'borrower',
