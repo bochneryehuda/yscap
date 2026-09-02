@@ -469,7 +469,7 @@ const PRIOR_TO_SUBMISSION = [
     config: { orderType: 'payoff' },
   },
   /* `lt_hoa_contact` — the stand-alone "HOA management company" condition —
-     was RETIRED by db/670 (owner-directed 2026-09-02: the HOA is asked for on
+     was RETIRED by db/674 (owner-directed 2026-09-02: the HOA is asked for on
      the file-contacts condition itself, greyed unless the property is a condo).
      It was the same `hoa` vendor row asked for twice; the row lives on, on the
      File contacts desk and on `lt_file_contacts`. Retired the way db/660

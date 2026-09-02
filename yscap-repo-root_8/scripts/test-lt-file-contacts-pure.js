@@ -270,13 +270,13 @@ console.log('\nE. THE CHANGE REACHES DATABASES THAT ALREADY EXIST');
   ok(/array_agg\(t->>'key' ORDER BY t->>'key'\)/.test(mig),
     '…guarded on the exact seven it replaces, compared as a SET so key order cannot decide it — a hand-edited row is left alone and a replay does nothing');
 
-  // db/670 — the three that follow the deal, on the databases that already
+  // db/674 — the three that follow the deal, on the databases that already
   // hold the two. The JSON it writes is the library's own rows, so the two
   // cannot drift apart: what a new database seeds and what an old one is
   // updated to are compared here as VALUES.
-  const mig670 = read('db/670_the_pre_submittal_contacts_follow_the_deal.sql');
+  const mig670 = read('db/674_the_pre_submittal_contacts_follow_the_deal.sql');
   ok(/UPDATE checklist_templates/.test(mig670) && /lt_file_contacts/.test(mig670) && /'\{contactTypes\}'/.test(mig670),
-    'db/670 carries the five rows to the databases that already have the two');
+    'db/674 carries the five rows to the databases that already have the two');
   ok(/= ARRAY\['hazard_insurance','title'\]::text\[\]/.test(mig670),
     '…guarded on exactly the two db/667 shipped, as a SET — a hand-edited row survives and a replay does nothing');
   const shipped = JSON.parse(mig670.match(/'\{contactTypes\}',\s*'(\[[\s\S]*?\])'::jsonb/)[1]);

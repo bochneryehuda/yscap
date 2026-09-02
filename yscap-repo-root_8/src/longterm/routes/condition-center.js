@@ -67,10 +67,10 @@ const condReview = require('../../lib/condition-docs/review');
 const condRemove = require('../../lib/condition-docs/remove');
 const condServe = require('../../lib/condition-docs/serve');
 const { ownerOf } = require('../../lib/condition-owner');
-// The rules run by themselves (db/668): the file's own door runs the engine
+// The rules run by themselves (db/672): the file's own door runs the engine
 // when the loan is DUE, before its conditions are read.
 const sweep = require('../conditions-center/sweep');
-// Prior to submittal — completed (db/669): the officer's list and the button,
+// Prior to submittal — completed (db/673): the officer's list and the button,
 // and the one ClickUp write it makes.
 const submittal = require('../conditions-center/submittal');
 const clickupSubmittal = require('../clickup/submittal');

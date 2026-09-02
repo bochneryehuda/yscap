@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/670 — the pre-submittal file-contacts condition follows the deal
+-- db/674 — the pre-submittal file-contacts condition follows the deal
 --
 -- WHAT THIS CHANGES, AND WHY. Owner-directed 2026-09-02, on the file-contacts
 -- CONDITION (not the File contacts desk): *"prior to submittal, we only have

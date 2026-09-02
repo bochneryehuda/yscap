@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/669 — "Prior to submittal completed": the loan officer's hand-off stamp
+-- db/673 — "Prior to submittal completed": the loan officer's hand-off stamp
 --
 -- WHAT THIS CHANGES, AND WHY. Owner-directed 2026-09-02: *"After the bunch of
 -- prior to submittal conditions there should be an option of a button that a

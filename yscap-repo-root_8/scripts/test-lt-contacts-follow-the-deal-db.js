@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * THE PRE-SUBMITTAL FILE-CONTACTS CONDITION FOLLOWS THE DEAL (db/670).
+ * THE PRE-SUBMITTAL FILE-CONTACTS CONDITION FOLLOWS THE DEAL (db/674).
  *
  * Owner-directed 2026-09-02: *"prior to submittal, we only have hazard
  * insurance and title insurance. This file is actually his primary, and we
@@ -12,7 +12,7 @@
  * WHAT IS PROVEN, against a real Postgres:
  *
  *   A. THE MIGRATION reaches a database that already holds db/667's two-row
- *      config: the row is put back to the two, db/670 is run, and the row now
+ *      config: the row is put back to the two, db/674 is run, and the row now
  *      carries the five — with the migration's JSON and the library's seed
  *      compared as VALUES. A replay does nothing; a hand-edited row is left alone.
  *   B. ON A LIVE FILE the three rows answer from the file's own facts: a
@@ -42,7 +42,7 @@ const ok = (cond, name, detail) => {
   console.log('  ✗ ' + name + (detail ? ` — ${detail}` : ''));
 };
 
-const MIGRATION = fs.readFileSync(path.join(__dirname, '..', 'db', '670_the_pre_submittal_contacts_follow_the_deal.sql'), 'utf8');
+const MIGRATION = fs.readFileSync(path.join(__dirname, '..', 'db', '674_the_pre_submittal_contacts_follow_the_deal.sql'), 'utf8');
 
 (async () => {
   await require(__dirname + '/lib/db-gate').skipUnlessDb('lt-contacts-follow-the-deal');
@@ -82,7 +82,7 @@ const MIGRATION = fs.readFileSync(path.join(__dirname, '..', 'db', '670_the_pre_
         `SELECT config->'contactTypes' AS ct FROM checklist_templates WHERE code = 'lt_file_contacts' AND scope = 'lt_loan'`)).rows[0];
       const keys = (after.ct || []).map((t) => t.key).sort();
       ok(JSON.stringify(keys) === JSON.stringify(['hazard_insurance', 'hoa', 'landlord', 'ny_settlement_agent', 'title']),
-        'THE ONE THAT MATTERS: after db/670 the row carries the five', keys.join(','));
+        'THE ONE THAT MATTERS: after db/674 the row carries the five', keys.join(','));
       const canon = (rows) => JSON.stringify(rows.map((r) => ({ key: r.key, label: r.label, required: !!r.required, whenField: r.whenField || null }))
         .sort((a, b) => a.key.localeCompare(b.key)));
       const seeded = lib.library().find((c) => c.code === 'lt_file_contacts').config.contactTypes;
@@ -232,7 +232,7 @@ const MIGRATION = fs.readFileSync(path.join(__dirname, '..', 'db', '670_the_pre_
       const t = (await cx.query(
         `SELECT is_active, config->>'enabled' AS enabled, config->>'disabledReason' AS why
            FROM checklist_templates WHERE code = 'lt_hoa_contact'`)).rows[0];
-      ok(t.is_active === false && t.enabled === 'false' && /Retired/.test(t.why || ''), 'db/670 §3 retires it in the library\'s own words — inactive, switched off, and told why');
+      ok(t.is_active === false && t.enabled === 'false' && /Retired/.test(t.why || ''), 'db/674 §3 retires it in the library\'s own words — inactive, switched off, and told why');
 
       await engine.evaluateLoan(condoA, { db: cx, skipLock: true });
       await engine.evaluateLoan(condoB, { db: cx, skipLock: true });

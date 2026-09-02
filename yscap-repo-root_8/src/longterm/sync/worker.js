@@ -327,7 +327,7 @@ async function tickOnce({ trigger = 'worker' } = {}) {
     } catch (e) {
       out.clickupPush = { ok: false, reason: (e && e.message) || String(e) };
     }
-    // "PRIOR TO SUBMITTAL CONDITIONS → COMPLETED" ON THE CARD (db/669,
+    // "PRIOR TO SUBMITTAL CONDITIONS → COMPLETED" ON THE CARD (db/673,
     // owner-directed 2026-09-02). The click pushes it on the spot; this is the
     // retry for a loan whose card was linked AFTER the click, or whose push met
     // an outage — declared complete and not yet on the card, oldest first.

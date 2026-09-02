@@ -119,7 +119,7 @@ const ok = (cond, name, detail) => {
     ok(!!nyContacts && Array.isArray(nyContacts.contactTypes), 'the contacts condition publishes its contact types');
     {
       const keys = ((nyContacts && nyContacts.contactTypes) || []).map((t) => t.key).sort();
-      /* Since 2026-09-02 (db/670) the condition carries the three that follow
+      /* Since 2026-09-02 (db/674) the condition carries the three that follow
          the deal as well, each answered from the file's own facts. */
       ok(JSON.stringify(keys) === JSON.stringify(['hazard_insurance', 'hoa', 'landlord', 'ny_settlement_agent', 'title']),
         'THE CONDITION ASKS FOR THE TWO, plus the landlord, the HOA and the settlement agent when the deal calls for them', keys.join(', '));

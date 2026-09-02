@@ -255,7 +255,7 @@ check(L.length >= 25, `the owner's list is seeded (${L.length} conditions)`);
 check(new Set(L.map((c) => c.code)).size === L.length, 'no two conditions share a code');
 
 const byBucket = L.reduce((a, c) => { a[c.bucketKey] = (a[c.bucketKey] || 0) + 1; return a; }, {});
-// 14 since db/670 retired the stand-alone HOA contact condition (2026-09-02).
+// 14 since db/674 retired the stand-alone HOA contact condition (2026-09-02).
 check((byBucket.prior_to_submission || 0) >= 14,
   `the prior-to-submission set is here (${byBucket.prior_to_submission})`);
 check((byBucket.prior_to_ctc || 0) >= 10,
@@ -319,7 +319,7 @@ check(rules.evaluateRule(c('lt_vor_sent').ruleLogic, { borrower_rents: true }, F
   'the verification of rent asks only when the borrower RENTS — the owner\'s "the field that is telling you if he rents … is FR0115"');
 check((c('lt_vor_sent').config.fields || []).join(',') === 'monthly_rent,rented_since',
   '…and it collects the two tenancy facts the retired landlord condition used to');
-// The stand-alone HOA contact condition was retired by db/670 (2026-09-02): the
+// The stand-alone HOA contact condition was retired by db/674 (2026-09-02): the
 // HOA row now lives on the file-contacts condition, greyed unless the property
 // is a condominium, and the questionnaire order keeps its own rule.
 check(rules.evaluateRule(c('lt_condo_questionnaire_ordered').ruleLogic, { is_condo: true }, FIELDS) === true
@@ -327,7 +327,7 @@ check(rules.evaluateRule(c('lt_condo_questionnaire_ordered').ruleLogic, { is_con
   'the condo questionnaire only on a condo');
 check(!L.some((t) => t.code === 'lt_hoa_contact')
    && (c('lt_file_contacts').config.contactTypes || []).some((t) => t.key === 'hoa' && t.whenField === 'is_condo'),
-  'the HOA contact is a row on the file-contacts condition that turns on only on a condo — the stand-alone condition is retired (db/670)');
+  'the HOA contact is a row on the file-contacts condition that turns on only on a condo — the stand-alone condition is retired (db/674)');
 check(rules.evaluateRule(c('lt_ny_settlement_docs').ruleLogic, { is_new_york: true }, FIELDS) === true
    && rules.evaluateRule(c('lt_ny_settlement_docs').ruleLogic, { is_new_york: false }, FIELDS) === false,
   'the settlement agent is New York only');

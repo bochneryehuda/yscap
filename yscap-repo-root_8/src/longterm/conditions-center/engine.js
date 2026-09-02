@@ -273,7 +273,7 @@ async function evaluateLoan(loanId, opts = {}) {
     }
   }
 
-  // THE START of the pass is what gets stamped (db/668), not the end: a mirror
+  // THE START of the pass is what gets stamped (db/672), not the end: a mirror
   // write that lands while this pass is running is newer than the stamp and
   // the sweep runs the loan again. Stamping the end would swallow it.
   //
@@ -450,7 +450,7 @@ async function evaluateLoan(loanId, opts = {}) {
       out.skipped.push({ code: '(retired)', why: `Could not remove retired conditions: ${String((e && e.message) || e).slice(0, 160)}` });
     }
 
-    // ── THE STAMP (db/668) — so the sweep and the file's screen know this ran ──
+    // ── THE STAMP (db/672) — so the sweep and the file's screen know this ran ──
     // CLEAN means every table was read and every decision was written. A rule
     // the engine could not decide because a FIELD is blank (4008 unanswered,
     // property type unread) is NOT unclean: the fact is stable until the mirror

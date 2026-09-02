@@ -174,7 +174,7 @@ const ok = (cond, name, detail) => {
          those open slots should be only in the file context and not… a condition
          before submittal. The only stuff that should be a condition before
          submittal is the title company and the hazard insurance agent."* */
-      /* …and, since 2026-09-02 (db/670), the three that follow the deal — the
+      /* …and, since 2026-09-02 (db/674), the three that follow the deal — the
          landlord, the HOA and the settlement agent — each on the same
          condition, each greyed by its own fact on a file that does not need it. */
       ok(JSON.stringify(keys) === JSON.stringify(['hazard_insurance', 'hoa', 'landlord', 'ny_settlement_agent', 'title']),

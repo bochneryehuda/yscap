@@ -1,5 +1,5 @@
 -- ============================================================================
--- db/668 — the condition rules run by themselves (owner-directed 2026-09-02)
+-- db/672 — the condition rules run by themselves (owner-directed 2026-09-02)
 --
 -- WHAT THIS CHANGES, AND WHY. The owner: *"all the conditions that we build —
 -- we need to click a rule to re-run the condition rules that the condition
