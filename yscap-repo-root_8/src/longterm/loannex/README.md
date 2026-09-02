@@ -411,6 +411,46 @@ NEX_TOKEN_KEY=… NEX_DIAG_TOKEN=… \
     one that ignored the lock. A number that moves the wrong way is worth chasing down even when
     the change under it is right.
 
+16. **THE HOLDBACK WAS RECOVERABLE BY SUBTRACTION (2026-09-02, audit F5).** Stripping the trail is
+    only half of hiding a number. The vendor also publishes a **price floor** and a **price
+    ceiling** on its explain payload, `breakdown.priceOf` prints both beside the HELD-BACK price,
+    and `shiftBase` moved only the base — so the panel carried `{price: 104.25, floor: 98,
+    ceiling: 104.5}`, and **ceiling minus price was the holdback**, read straight off, with no
+    field named `marginHoldback` anywhere in sight.
+
+    **The fix.** They are prices on the same scale as `basePrice`, so they move the same way and by
+    the same amount — `basePoints` gains `pts`, so every price falls by `pts`. Shifting rather than
+    deleting is the more useful answer too: a ceiling is what this board can actually deliver, and
+    after our margin that is `ceiling - pts`. The vendor's own figures ride along as
+    `vendorPriceFloor` / `vendorPriceCeiling` for the reveal, exactly as `vendorBasePoints` does,
+    and are stripped with the rest of the trail on the ordinary board — keeping them under their
+    plain names would have moved the subtraction one field along rather than closed it. A build the
+    vendor gave no bounds for gets none invented, and shifting an already-shifted build takes the
+    holdback once.
+
+    **WHAT IS AND IS NOT MEASURED, because the audit claimed more than this repository can show.**
+    Every explain payload in `loannex/capture/` was walked: **seven carry a ceiling, and the ceiling
+    binds (price === ceiling) on NONE of them** — so on the recorded traffic the subtraction yields
+    the vendor's headroom, not our margin. The audit's *"Acra's ceiling binds at 104.500 on 28 of 34
+    rates across three programmes"* **could not be reproduced** from anything committed here, and is
+    not repeated. The defect is real on its own terms regardless — a price and its own bounds must
+    be on one scale — and a guard that waits for the vendor to bind its ceiling before it protects
+    the margin is a guard that fails on the day it matters.
+
+    **The guard that will outlive the fix.** Beside the named assertions there is a SWEEP: it walks
+    every number the ordinary board hands over and asserts that none sits exactly one holdback from
+    the price. A future field with this same defect reddens it on the day it is added — and it
+    already earns its place, catching two of the four mutations on its own.
+
+    **Proven by mutation, four ways:** stopping the bounds moving, moving them the wrong way,
+    letting the raw figures ride out on the ordinary board, and taking the holdback twice each
+    redden a *named* assertion with a green control.
+
+    **Still open, deliberately:** the SHIFTED `priceFloor` / `priceCeiling` remain a vendor tell —
+    only LoanNEX publishes them, so a row carrying them at all is a LoanNEX row on a board the
+    one-system rule says must not be tellable apart. Recorded against the vendor-tell work rather
+    than folded in here.
+
 ---
 
 ## Update, 2026-08-30 (second pass)

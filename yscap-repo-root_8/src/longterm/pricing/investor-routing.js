@@ -257,12 +257,25 @@ function stripHoldbackTrail(r) {
   return rest;
 }
 
-/** One priced option with the same trail removed — never its price or its adjustments. */
+/**
+ * One priced option with the same trail removed — never its price or its adjustments.
+ *
+ * ⛔ THE VENDOR'S OWN FLOOR AND CEILING GO WITH IT (audit F5, 2026-09-02). `vendor-margin.shiftBase`
+ * now moves `priceFloor` / `priceCeiling` down with the price and keeps the vendor's own figures
+ * beside them, exactly as it does for the base. Leaving those raw figures on the answer would move
+ * the subtraction one field along rather than close it: `vendorPriceCeiling` minus `price` is the
+ * holdback just as plainly as the unshifted ceiling was. Every `vendor*` key this module knows
+ * about is named here, so the list and the shift are read together.
+ */
 function stripOptionHoldbackTrail(o) {
   if (!o || typeof o !== 'object') return o;
   const { marginHoldback, ...rest } = o;
   if (rest.priceBuild && typeof rest.priceBuild === 'object') {
-    const { vendorPrice, vendorBasePoints, vendorAdjustedPoints, ...pb } = rest.priceBuild;
+    const {
+      vendorPrice, vendorBasePoints, vendorAdjustedPoints,
+      vendorPriceFloor, vendorPriceCeiling,
+      ...pb
+    } = rest.priceBuild;
     rest.priceBuild = pb;
   }
   return rest;
