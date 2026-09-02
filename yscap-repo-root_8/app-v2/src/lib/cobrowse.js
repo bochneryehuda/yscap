@@ -211,8 +211,18 @@ export function startGuest(sessionId, onState) {
     const kind = t.matches('input[type="file"]') ? 'file_picker' : t.matches('a[download]') ? 'download' : 'new_tab';
     sendWs(state, { t: 'notice', kind });
   };
+  // AND THE ONE THAT ALMOST NEVER FIRED. Nearly every upload here is a HIDDEN
+  // `<input type=file>` that a button opens with `.click()` — synthetic, so the handler
+  // above (rightly) ignores it and the viewer was never told why the mirror had frozen.
+  // The file input's own `change` is the honest signal: a file was actually chosen.
+  const onPicked = (e) => {
+    if (live !== state) return;
+    const t = e.target;
+    if (t && t.matches && t.matches('input[type="file"]') && t.files && t.files.length) sendWs(state, { t: 'notice', kind: 'file_picked' });
+  };
   document.addEventListener('click', onNotice, true);
-  const noticeUnsub = () => document.removeEventListener('click', onNotice, true);
+  document.addEventListener('change', onPicked, true);
+  const noticeUnsub = () => { document.removeEventListener('click', onNotice, true); document.removeEventListener('change', onPicked, true); };
   try { sessionStorage.setItem(SESSION_KEY, sessionId); } catch { /* private mode */ }
   // Route changes: stop on a secret screen, resume (with a fresh snapshot) elsewhere.
   const onRoute = () => {

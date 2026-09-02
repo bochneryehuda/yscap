@@ -192,6 +192,8 @@ ok(/Date\.now\(\) - gestureAt > GESTURE_MS\) return;/.test(viewerSrc) && /for \(
 ok(/let target = null;/.test(viewerSrc) && /const el = live \|\| target \|\| e\.target;/.test(viewerSrc),
   'typing is addressed to the box the viewer CLICKED — a click-through mirror never moves the viewer\'s own focus, so every keystroke went to the body');
 ok(/if \(p\.x === lastX && p\.y === lastY\) return;/.test(viewerSrc), 'a stationary pointer sends no cursor updates (the mirror repaints under it constantly)');
+ok(/kind: 'file_picked'/.test(libNow) && /chose a file on their computer/.test(viewerSrc),
+  "a file actually CHOSEN tells the viewer why the mirror froze — nearly every upload here opens a hidden file input with .click(), which is synthetic, so the trusted-click notice could not fire");
 // ── THE GUEST IS NEVER CAGED (owner-directed: they must be able to do everything) ────────
 ok(/const bannerRef = useRef\(null\)/.test(hostNow) && /document\.body\.style\.paddingTop = `\$\{h\}px`/.test(hostNow) && /ResizeObserver/.test(hostNow),
   "the fixed banner pushes the page down by its MEASURED height — otherwise it buries the app's own top bar, and with it the phone's nav toggle");

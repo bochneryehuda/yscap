@@ -274,7 +274,8 @@ export default function StaffCobrowse() {
       {state.notice && (
         <div className="notice" role="status" style={{ marginBottom: 8, color: INK }}>
           {state.notice.kind === 'file_picker' ? `${who.name} opened their file chooser — that window is on their computer and cannot be shown here.`
-            : state.notice.kind === 'file_picker_blocked' ? 'A file chooser can only be opened by them — ask them to pick the file.'
+            : state.notice.kind === 'file_picked' ? `${who.name} chose a file on their computer — it uploads from their side.`
+              : state.notice.kind === 'file_picker_blocked' ? 'A file chooser can only be opened by them — ask them to pick the file.'
               : state.notice.kind === 'download' ? `${who.name} downloaded a file — it landed on their computer.`
                 : state.notice.kind === 'new_tab' ? `${who.name} opened a link in a new tab — that page is outside PILOT and is not mirrored.`
                   : state.notice.kind === 'redacted' ? 'One frame was held back because it carried a number shaped like a Social Security or card number in plain text — the mirror will catch up on its own.'
