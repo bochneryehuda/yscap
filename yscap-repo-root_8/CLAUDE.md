@@ -143,6 +143,23 @@ exercised ON MAIN, holding the gated deploy. The check abstains on a stale map f
 column yet" (a model landing with its migration), but a column the map PHOTOGRAPHS that the model does
 not declare is never excused — so the model edit cannot wait for a later pass.
 
+**`unref`'ing a timer is NOT enough when the work inside it takes a ref'd handle (learned 2026-09-02,
+the red main behind run 4343).** `test-db` ran its step for exactly sixty minutes and was killed by the
+timeout — no failing assertion anywhere, the last suite printed "14 passed, 0 failed" and the log went
+quiet. `npm test` had stopped: requiring the long-term module arms `settings/store.keepWarm()`, a
+carefully-`unref`'d fifteen-second re-read whose own comment says it "must never hold a process open,
+least of all a test runner's". The timer did not. Its QUERY did — every tick borrows a client from
+Long-Term's own pool and restarts that client's thirty-second idle countdown, so the pooled socket is
+never reaped, and a live TCP handle keeps Node's loop alive however many timers are `unref`'d. Every
+database suite that boots the app hung after its last assertion. TWO THINGS TO KEEP: a pool that a
+script does not explicitly end needs `allowExitOnIdle: true` (it changes nothing on a server, which is
+held open by its listener); and when CI hangs, PROBE THE LIVE PROCESS —
+`process._getActiveHandles()` with `net.Socket.prototype.connect` patched to record a stack named the
+owner in one run, after reading the diff had named the wrong suspect twice. `test-lt-pool-exit-db`
+holds it, and holds it BEHAVIOURALLY: it starts a real child the way the app does and requires it to
+EXIT, because a grep for the option name passes for an option renamed, mis-spelled, set to `false`, or
+overridden by a second pool.
+
 ## Repository layout gotcha
 
 The entire project lives in the **`yscap-repo-root_8/`** subfolder of the git root — `package.json`, `src/`, `db/`, `web/`, `app/` are all there, not at the git top level. Run all `npm` commands from inside `yscap-repo-root_8/`. Render auto-detects this nested `package.json`; deploys run from that folder.
