@@ -188,8 +188,8 @@ function optionsFromLoanNex(board, opts = {}) {
           // reassurance nobody gave us.
           expired: null,
         },
-        // What to hand the vendor to explain this exact quote.
-        explain: r.priceHashKey ? { vendor: 'loannex', priceHashKey: r.priceHashKey, rate: round3(r.rate), price, lockDays: r.lockDays, productId: p.productId, lenderId: p.lenderId } : null,
+        // What to hand the vendor to explain this exact quote. See `explainHandle`.
+        explain: explainHandle(r, p, price, opts),
       }));
     }
   }
@@ -393,6 +393,42 @@ function filterInterestOnly(options, want) {
  * returns a payment per rung; recomputing one here would put two different
  * numbers for one loan on two screens.
  */
+/**
+ * WHAT TO HAND THE VENDOR TO EXPLAIN THIS EXACT QUOTE.
+ *
+ * ⛔ `transactionId` AND `portal` ARE PART OF THE QUOTE'S IDENTITY, NOT DECORATION.
+ *
+ * LoanNEX scopes a priced quote to the SEARCH that produced it: `POST /loans/apps/{u}/quick-prices`
+ * mints a transaction, and BOTH follow-up reads hang off it — `/loans/evidences/{u}/{txn}/fails`
+ * (why each investor said no) and `/loans/evidences/{u}/{txn}` (this itemization). Their own web
+ * app proves the intent: in the recorded HAR every explain call carries the SAME
+ * `scenarioTestId` as the search and as the rate-stack URL. A `priceHashKey` is a handle INTO a
+ * transaction, so asking under a fresh one is asking about a search the vendor has never seen.
+ *
+ * The portal rides for the same reason: an investor portal is a DIFFERENT session that returns a
+ * different set of investors, so a quote found on one is not addressable on another.
+ *
+ * They ride ON THE ROW rather than in browser state so a handle can never be paired with a later
+ * board's transaction — the commonest way a per-row fetch silently explains the wrong quote.
+ */
+function explainHandle(r, p, price, opts = {}) {
+  if (!r || !r.priceHashKey) return null;
+  const h = {
+    vendor: 'loannex',
+    priceHashKey: r.priceHashKey,
+    rate: round3(r.rate),
+    price,
+    lockDays: r.lockDays,
+    productId: p.productId,
+    lenderId: p.lenderId,
+  };
+  // Omitted rather than sent as null: a null would read as "asked and there was none",
+  // and the route falls back to the request body only when the key is genuinely absent.
+  if (opts.transactionId != null) h.transactionId = opts.transactionId;
+  if (opts.portal != null) h.portal = opts.portal;
+  return h;
+}
+
 function programsFromLoanNex(board, opts = {}) {
   const out = [];
   for (const p of (board && board.programs) || []) {
@@ -420,9 +456,7 @@ function programsFromLoanNex(board, opts = {}) {
         interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
         isException: !!r.isException,
         softStop: !!r.hasSoftStopViolation,
-        explain: r.priceHashKey
-          ? { vendor: 'loannex', priceHashKey: r.priceHashKey, rate: round3(r.rate), price, lockDays: r.lockDays, productId: p.productId, lenderId: p.lenderId }
-          : null,
+        explain: explainHandle(r, p, price, opts),
       });
     }
     const row = {
@@ -463,7 +497,13 @@ function programsForBoard(merged, opts = {}) {
       // Which it is decides how it is shaped, and NOT the row's `source`, which
       // the one-system view has already stripped by the time this runs.
       if (Array.isArray(p.rungs) && !Array.isArray(p.options)) {
-        rows.push(...programsFromLoanNex({ programs: [p] }, { investorKey: e.key, whiteLabel: e.whiteLabel || null, reveal }));
+        rows.push(...programsFromLoanNex({ programs: [p] }, {
+          investorKey: e.key, whiteLabel: e.whiteLabel || null, reveal,
+          // The SEARCH this row came out of — see `explainHandle`. Forwarded rather than
+          // re-derived, so every row on one board names the one transaction that produced it.
+          transactionId: opts.transactionId != null ? opts.transactionId : null,
+          portal: opts.portal != null ? opts.portal : null,
+        }));
       } else {
         rows.push(base);
       }
