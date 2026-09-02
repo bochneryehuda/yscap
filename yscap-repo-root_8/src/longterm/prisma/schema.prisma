@@ -386,7 +386,7 @@ model LtLoan {
   /// Encompass's own last-modified stamp for the loan, which the sync pages on.
   encompassLastModified DateTime? @map("encompass_last_modified") @db.Timestamptz(6)
 
-  /// When the condition rules last ran CLEAN on this file (db/672) — the start of
+  /// When the condition rules last ran CLEAN on this file (db/679) — the start of
   /// that pass. A mirror read or a library edit after it makes the loan due again.
   conditionsEvaluatedAt DateTime? @map("conditions_evaluated_at") @db.Timestamptz(6)
   /// When the rules were last ATTEMPTED, clean or not, so a failing loan goes to

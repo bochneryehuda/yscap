@@ -26,7 +26,7 @@
  *                           read, so what a person opens is already current
  *                           rather than current five minutes later.
  *
- * Both call the same engine; the engine stamps the loan (db/672) so neither
+ * Both call the same engine; the engine stamps the loan (db/679) so neither
  * door has to keep its own memory of what it did. A loan is due when:
  *
  *   · it has never been evaluated (`conditions_evaluated_at IS NULL`);

@@ -175,7 +175,7 @@ async function readiness(loanId, opts = {}) {
   out.total = out.items.length;
   out.outstanding = out.items.filter((i) => !i.done).length;
   // A file with NO officer conditions at all is not "ready" — it has not been
-  // evaluated. The rules run by themselves (db/672); this is the moment before.
+  // evaluated. The rules run by themselves (db/679); this is the moment before.
   out.ready = out.total > 0 && out.outstanding === 0 && !out.degraded;
   return out;
 }

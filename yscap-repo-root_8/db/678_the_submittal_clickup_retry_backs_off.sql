@@ -16,7 +16,7 @@
 -- starve a loan that was completed a minute ago and would have pushed fine.
 --
 -- THE STAMP THIS ADDS is the same shape as `conditions_evaluate_tried_at`
--- (db/672) and is there for the same reason:
+-- (db/679) and is there for the same reason:
 --
 --   submittal_clickup_tried_at   the last ATTEMPT, landed or not. The pass
 --                                orders on it (never tried first), and skips a

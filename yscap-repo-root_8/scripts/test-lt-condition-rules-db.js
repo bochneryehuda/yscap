@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * THE CONDITION RULES RUN BY THEMSELVES (db/672, conditions-center/sweep.js).
+ * THE CONDITION RULES RUN BY THEMSELVES (db/679, conditions-center/sweep.js).
  *
  * Owner-directed 2026-09-02: *"You don't need to click this button; that
  * populates automatically on all the files and always re-checks if stuff and
