@@ -480,7 +480,7 @@ export default function StaffLayout({ children }) {
   return (
     <div className="app">
       {staffViewOf && (
-        <div role="alert" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1001,
+        <div role="alert" style={{ position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1001,
           background: '#1F3864', color: '#fff', padding: '8px 14px', display: 'flex',
           alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14 }}>
           <span>You are seeing <strong>{staffViewOf.name || 'a team member'}</strong>’s screen — read-only.
@@ -490,7 +490,7 @@ export default function StaffLayout({ children }) {
         </div>
       )}
       {staleBuild && (
-        <div role="alert" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 1000,
+        <div role="alert" style={{ position: 'fixed', top: 'var(--cobrowse-bar, 0px)', left: 0, right: 0, zIndex: 1000,
           background: '#AE8746', color: '#fff', padding: '8px 14px', display: 'flex',
           alignItems: 'center', justifyContent: 'center', gap: 12, fontSize: 14 }}>
           <span>PILOT was updated — refresh to get the latest screens and fixes.</span>

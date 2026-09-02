@@ -38,12 +38,22 @@ import { BLOCK_SELECTOR, NO_RECORD_ROUTES, NO_DRIVE_SELECTOR, NO_DRIVE_ROUTES, r
 
 export { BLOCK_SELECTOR, NO_RECORD_ROUTES, NO_DRIVE_SELECTOR, NO_DRIVE_ROUTES };
 export const SESSION_KEY = 'ys_cobrowse_session';
-/** Server close codes after which reconnecting is pointless: refused, not ours, no live session. */
-export const TERMINAL_CLOSE_CODES = [4400, 4401, 4403, 4404];
+/**
+ * Server close codes after which reconnecting is pointless — refused, not ours, no live
+ * session (44xx); this screen opened in ANOTHER TAB (4000: the hub keeps ONE guest socket,
+ * so two tabs would evict each other forever, each eviction costing a fresh rrweb snapshot);
+ * and the hub's own limits (1009 a frame too large, 1008 the byte budget) — reconnecting
+ * there re-snapshots the very screen that blew the budget, which is a loop that costs the
+ * GUEST'S OWN browser, not just the stream.
+ */
+export const TERMINAL_CLOSE_CODES = [4400, 4401, 4403, 4404, 4000, 1008, 1009];
+/** Why we stopped, in the guest's own words. */
+export const CLOSE_REASON = { 4000: 'opened_elsewhere', 1008: 'too_busy', 1009: 'too_busy' };
 const MAX_RETRY_MS = 5 * 60 * 1000;
 
 const FLUSH_MS = 80;           // batch rrweb events; ~12 batches/s worst case
 const RECONNECT_MS = 2500;
+const MOVE_TAKEBACK_PX = 40;   // total pointer travel that reads as "I want it back"
 
 let live = null;   // { sessionId, ws, stop, timer, queue, closedByServer, onState }
 
@@ -62,6 +72,9 @@ function startRecorder(state) {
   if (state.stop) return;
   if (!recordingAllowedHere()) return;   // resumes on the next route change
   state.stop = record(recordOptions((ev) => {
+    // A bound on what is held: a burst nobody can send must never grow without limit in
+    // the guest's own tab. Dropping the oldest costs the viewer a snapshot, not the guest.
+    if (state.queue.length >= MAX_QUEUE) { state.queue = []; state.needSnapshot = true; }
     state.queue.push(ev);
     if (!state.timer) state.timer = setTimeout(() => flush(state), FLUSH_MS);
   }));
@@ -75,12 +88,31 @@ function stopRecorder(state) {
   state.onState && state.onState({ recording: false });
 }
 
+const MAX_BUFFERED = 2 * 1024 * 1024;   // the socket's own backlog, not ours
+const MAX_QUEUE = 4000;                 // events held while disconnected
+
 function flush(state) {
   state.timer = null;
   if (!state.queue.length) return;
+  // BACK-PRESSURE. On a phone's uplink `send` never blocks — the browser just buffers, and
+  // an unbounded buffer is the GUEST'S OWN memory and main thread. Past the mark we drop
+  // this batch and ask for a fresh snapshot once it drains: the viewer catches up whole
+  // rather than the guest's browser paying for a backlog nobody will ever see.
+  const ws = state.ws;
+  if (ws && ws.readyState === 1 && ws.bufferedAmount > MAX_BUFFERED) {
+    state.queue = []; state.needSnapshot = true;
+    if (!state.drainTimer) state.drainTimer = setInterval(() => {
+      const w = state.ws;
+      if (!w || w.readyState !== 1) { clearInterval(state.drainTimer); state.drainTimer = null; return; }
+      if (w.bufferedAmount > MAX_BUFFERED / 2) return;
+      clearInterval(state.drainTimer); state.drainTimer = null;
+      if (state.needSnapshot) { state.needSnapshot = false; try { record.takeFullSnapshot(true); } catch { /* fine */ } }
+    }, 500);
+    return;
+  }
   const events = state.queue; state.queue = [];
-  if (state.ws && state.ws.readyState === 1) {
-    try { state.ws.send(JSON.stringify({ t: 'rrweb', events })); } catch { /* dropped; a snapshot request will heal the viewer */ }
+  if (ws && ws.readyState === 1) {
+    try { ws.send(JSON.stringify({ t: 'rrweb', events })); } catch { /* dropped; a snapshot request will heal the viewer */ }
   }
 }
 
@@ -90,7 +122,13 @@ function connect(state) {
   try { ws = new WebSocket(wsUrl(state.sessionId)); } catch { return; }
   state.ws = ws;
   ws.onopen = () => {
-    state.backoff = RECONNECT_MS; state.retryUntil = 0;
+    state.backoff = RECONNECT_MS;
+    // The five-minute give-up clock is reset only once a connection has HELD for a while.
+    // Resetting it on `open` means a socket that opens and dies in the same second resets
+    // it every time, and the loop never gives up.
+    state.openedAt = Date.now();
+    if (state.stableTimer) clearTimeout(state.stableTimer);
+    state.stableTimer = setTimeout(() => { if (live === state && state.ws && state.ws.readyState === 1) state.retryUntil = 0; }, 10000);
     state.onState && state.onState({ connected: true });
     // Tell the viewer where we are, then start (or restart) recording so the
     // hub's snapshot request lands on a live recorder.
@@ -115,10 +153,18 @@ function connect(state) {
   };
   ws.onclose = (e) => {
     state.ws = null;
+    // Nobody is receiving: stop paying for rrweb's observers in the guest's own tab. The
+    // recorder restarts on the next `open`, which requests a full snapshot anyway.
+    stopRecorder(state);
+    state.queue = [];
+    if (state.drainTimer) { clearInterval(state.drainTimer); state.drainTimer = null; }
     state.onState && state.onState({ connected: false });
     if (state.closedByServer || !live || live !== state) return;
     // Refused / not ours / no live session: reconnecting would only repeat the refusal.
-    if (e && TERMINAL_CLOSE_CODES.includes(e.code)) { state.closedByServer = 'refused'; endLocal(state, 'refused'); return; }
+    if (e && TERMINAL_CLOSE_CODES.includes(e.code)) {
+      const why = CLOSE_REASON[e.code] || 'refused';
+      state.closedByServer = why; endLocal(state, why); return;
+    }
     // The server keeps the room ~60s for us to come back (a deploy, a blip); back
     // off up to ~20s with jitter so a hundred tabs do not reconnect in the same
     // instant after a deploy, and give up after five minutes of nothing.
@@ -132,6 +178,8 @@ function connect(state) {
 }
 
 function endLocal(state, reason) {
+  if (state.stableTimer) { clearTimeout(state.stableTimer); state.stableTimer = null; }
+  if (state.drainTimer) { clearInterval(state.drainTimer); state.drainTimer = null; }
   if (live === state) live = null;
   setControlLocal(state, 'none');
   stopRecorder(state);
@@ -173,8 +221,20 @@ export function startGuest(sessionId, onState) {
     if (!state.stop && state.ws && state.ws.readyState === 1) startRecorder(state);
     if (state.ws && state.ws.readyState === 1) { try { state.ws.send(JSON.stringify({ t: 'route', path: routeNow(), title: document.title })); } catch { /* fine */ } }
   };
+  // A HASH ROUTER NAVIGATES WITH pushState, WHICH FIRES NO `hashchange`. React Router's
+  // hash history pushes and listens on `popstate`, so every ordinary link click was
+  // invisible here: a secret screen (`NO_RECORD_ROUTES`) reached from INSIDE the app was
+  // still being recorded, and a recorder stopped on one never resumed. So the location is
+  // polled on an animation-frame-cheap interval as the source of truth, with hashchange
+  // and popstate kept as the instant path.
   window.addEventListener('hashchange', onRoute);
-  state.routeUnsub = () => { window.removeEventListener('hashchange', onRoute); noticeUnsub(); };
+  window.addEventListener('popstate', onRoute);
+  let lastRoute = routeNow();
+  const routePoll = setInterval(() => { const r = routeNow(); if (r !== lastRoute) { lastRoute = r; onRoute(); } }, 400);
+  state.routeUnsub = () => {
+    window.removeEventListener('hashchange', onRoute); window.removeEventListener('popstate', onRoute);
+    clearInterval(routePoll); noticeUnsub();
+  };
   connect(state);
   return state;
 }
@@ -205,9 +265,20 @@ function armDriving(state) {
   // hand. Every event the driver dispatches below is synthetic (isTrusted false),
   // so the controller can never release themselves through this path.
   const armedAt = Date.now();
+  // A MOUSE MOVE MUST BE A DECISION, NOT A BRUSH. A trackpad reports a move when a palm
+  // touches it, so releasing on the first pixel meant the guest could not even watch their
+  // own screen while somebody helped them. A keystroke, a wheel or a touch is deliberate on
+  // its own; a pointer has to travel MOVE_TAKEBACK_PX before it counts.
+  let from = null, travelled = 0;
   const takeBack = (e) => {
     if (!e.isTrusted || live !== state || state.control !== 'granted') return;
     if (Date.now() - armedAt < 400) return;   // the Allow click itself
+    if (e.type === 'mousemove') {
+      if (!from) { from = { x: e.clientX, y: e.clientY }; return; }
+      travelled += Math.abs(e.clientX - from.x) + Math.abs(e.clientY - from.y);
+      from = { x: e.clientX, y: e.clientY };
+      if (travelled < MOVE_TAKEBACK_PX) return;
+    }
     releaseFromGuest(state, 'guest_moved');
   };
   window.addEventListener('mousemove', takeBack, true);
@@ -278,16 +349,36 @@ function editableText(el) {
   if (el.tagName !== 'INPUT') return false;
   return TEXT_INPUT_TYPES.has(String(el.getAttribute('type') || '').toLowerCase());
 }
+/**
+ * A number / email / tel input REPORTS NO CARET and SANITISES what is set on it: typing
+ * 1 . 5 sets '1', then '1.' — which the browser stores as '' — then '5', so a naive
+ * read-back-and-append types "5" where a person typed "1.5", and a leading '-' is eaten.
+ * So the string being composed is remembered per element, and the box's own value is
+ * trusted again the moment it stops matching what the browser kept from our last set —
+ * which is exactly what happens when the guest (or the app) changes it themselves.
+ */
+const composing = new WeakMap();   // el → { text: what we meant, set: what the browser kept }
+function caretless(el) { return el.selectionStart == null || el.selectionEnd == null; }
+function composedValue(el) {
+  const c = composing.get(el);
+  return c && c.set === el.value ? c.text : String(el.value || '');
+}
+/** Set the value, remember it when the element has no caret, and tell React. */
+function putValue(el, next) {
+  const capped = el.maxLength > 0 ? next.slice(0, el.maxLength) : next;   // a programmatic set bypasses maxlength
+  setNativeValue(el, capped);
+  if (caretless(el)) composing.set(el, { text: capped, set: el.value });
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  return capped;
+}
+
 /** Replace the current selection with `text` and tell React. */
 function insertText(el, text) {
-  const v = String(el.value || '');
-  let start = el.selectionStart, end = el.selectionEnd;
-  if (!Number.isFinite(start) || !Number.isFinite(end)) { start = v.length; end = v.length; }
-  const next = v.slice(0, start) + text + v.slice(end);
-  setNativeValue(el, next);
-  const caret = start + text.length;
-  try { el.setSelectionRange(caret, caret); } catch { /* number inputs refuse; fine */ }
-  el.dispatchEvent(new Event('input', { bubbles: true }));
+  const noCaret = caretless(el);
+  const v = noCaret ? composedValue(el) : String(el.value || '');
+  const start = noCaret ? v.length : el.selectionStart, end = noCaret ? v.length : el.selectionEnd;
+  const capped = putValue(el, v.slice(0, start) + text + v.slice(end));
+  if (!noCaret) { const caret = Math.min(capped.length, start + text.length); try { el.setSelectionRange(caret, caret); } catch { /* fine */ } }
 }
 /** Apply one keystroke's EDIT to a text control: printable → insert, Backspace/Delete → remove. */
 function applyTextKey(el, key, init) {
@@ -295,16 +386,17 @@ function applyTextKey(el, key, init) {
   if (init.ctrlKey || init.metaKey || init.altKey) return false;
   if (key.length === 1) { insertText(el, key); return true; }
   if (key === 'Backspace' || key === 'Delete') {
-    const v = String(el.value || '');
-    let start = el.selectionStart, end = el.selectionEnd;
-    if (!Number.isFinite(start) || !Number.isFinite(end)) { start = v.length; end = v.length; }
+    const noCaret = caretless(el);
+    const v = noCaret ? composedValue(el) : String(el.value || '');
+    let start = noCaret ? v.length : el.selectionStart, end = noCaret ? v.length : el.selectionEnd;
     if (start === end) { if (key === 'Backspace') start = Math.max(0, start - 1); else end = Math.min(v.length, end + 1); }
     if (start === end) return false;
-    setNativeValue(el, v.slice(0, start) + v.slice(end));
-    try { el.setSelectionRange(start, start); } catch { /* fine */ }
-    el.dispatchEvent(new Event('input', { bubbles: true }));
+    putValue(el, v.slice(0, start) + v.slice(end));
+    if (!noCaret) { try { el.setSelectionRange(start, start); } catch { /* fine */ } }
     return true;
   }
+  // A contenteditable region is deliberately not driven: this portal has none, and
+  // guessing at rich-text editing is how a controller destroys somebody's document.
   return false;
 }
 
@@ -345,9 +437,14 @@ export function applyInput(state, m) {
       if (isCheck) { if (typeof m.checked === 'boolean' && el.checked !== m.checked) el.click(); return true; }
       if (!('value' in el)) return false;
       // A <select> on the mirror is MASKED like every other input, so its value is
-      // meaningless here — the option INDEX the viewer picked is what travels.
-      if (el.tagName === 'SELECT' && Number.isFinite(Number(m.idx)) && Number(m.idx) >= 0 && Number(m.idx) < el.options.length) el.selectedIndex = Number(m.idx);
-      else setNativeValue(el, String(m.value == null ? '' : m.value));
+      // meaningless here — the option INDEX the viewer picked is what travels. With no
+      // usable index we REFUSE: falling through would set the masked marker as the value,
+      // which leaves selectedIndex at -1 and wipes the guest's own choice.
+      if (el.tagName === 'SELECT') {
+        const i = Number(m.idx);
+        if (!Number.isFinite(i) || i < 0 || i >= el.options.length) return false;
+        el.selectedIndex = i;
+      } else setNativeValue(el, String(m.value == null ? '' : m.value));
       el.dispatchEvent(new Event('input', { bubbles: true }));
       if (m.k === 'change' || el.tagName === 'SELECT') el.dispatchEvent(new Event('change', { bubbles: true }));
       return true;
@@ -366,8 +463,10 @@ export function applyInput(state, m) {
       // selection, through the native setter React reads (setNativeValue).
       if (notCancelled) applyTextKey(el, key, init);
       el.dispatchEvent(new KeyboardEvent('keyup', init));
-      // Enter on a form control submits the way this person's own Enter would.
-      if (key === 'Enter' && el.form && el.tagName !== 'TEXTAREA') { try { el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit(); } catch { /* fine */ } }
+      // Enter on a form control submits the way this person's own Enter would — and only
+      // when the page did NOT cancel the keydown (a typeahead picking a suggestion cancels
+      // it precisely so Enter does not submit; submitting anyway files the form early).
+      if (notCancelled && key === 'Enter' && el.form && el.tagName !== 'TEXTAREA') { try { el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit(); } catch { /* fine */ } }
       return true;
     }
     if (m.k === 'paste') {

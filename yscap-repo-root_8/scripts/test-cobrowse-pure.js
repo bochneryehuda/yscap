@@ -135,7 +135,7 @@ ok(/releaseFromGuest\(state, 'guest_moved'\)/.test(libNow), 'a real mouse move /
 ok(/el\.closest\(NO_DRIVE_SELECTOR\)\) return null/.test(libNow), 'the driver refuses any element inside the no-drive allowlist');
 ok(/if \(!routeAllowsDriving\(\)\) return false;/.test(libNow), 'on a no-drive route every input is ignored');
 ok(/record\.mirror\.getNode\(Number\(id\)\)/.test(libNow), 'targets are resolved through rrweb mirror ids, never a selector the viewer typed');
-ok(/TERMINAL_CLOSE_CODES = \[4400, 4401, 4403, 4404\]/.test(read('app-v2/src/lib/cobrowse.js')) && /TERMINAL_CLOSE_CODES\.includes\(e\.code\)/.test(libNow), 'the guest stops reconnecting on a terminal close code');
+ok(/TERMINAL_CLOSE_CODES = \[4400, 4401, 4403, 4404,/.test(read('app-v2/src/lib/cobrowse.js')) && /TERMINAL_CLOSE_CODES\.includes\(e\.code\)/.test(libNow), 'the guest stops reconnecting on a terminal close code');
 const viewerNow = strip(read('app-v2/src/screens/StaffCobrowse.jsx'));
 ok(/\[4400, 4401, 4403, 4404\]\.includes\(ev\.code\)/.test(viewerNow), 'the viewer stops reconnecting on a terminal close code');
 ok(/Ask to control/.test(read('app-v2/src/screens/StaffCobrowse.jsx')) && /Hand control back/.test(read('app-v2/src/screens/StaffCobrowse.jsx')), 'the viewer offers Ask to control / Hand control back');
@@ -148,7 +148,7 @@ ok(/k: 'paste', id, value: text/.test(viewerNow), 'a paste travels as its own te
 ok(/if \(notCancelled\) applyTextKey\(el, key, init\)/.test(libNow) && /function insertText\(el, text\)/.test(libNow) && /el\.setSelectionRange\(caret, caret\)/.test(libNow), "the guest inserts each relayed character at its REAL selection through the native setter");
 ok(/m\.k === 'paste'/.test(libNow) && /insertText\(el, String\(m\.value/.test(libNow), 'the guest inserts pasted text at the real selection');
 ok(/INPUT_KINDS = new Set\(\[[^\]]*'paste'/.test(hubSrc), "the hub admits 'paste' as an input kind");
-ok(/el\.tagName === 'SELECT' && Number\.isFinite\(Number\(m\.idx\)\)/.test(libNow) && /'idx'\]/.test(hubSrc), 'a <select> is driven by option index (its mirror value is masked)');
+ok(/el\.tagName === 'SELECT'/.test(libNow) && /const i = Number\(m\.idx\);/.test(libNow) && /'idx'\]/.test(hubSrc), 'a <select> is driven by option index (its mirror value is masked)');
 // The consent prompt must sit above every other fixed overlay in the portal (a request nobody
 // sees expires in 90 s). Read the highest z-index any OTHER overlay declares and assert both
 // consent layers clear it; the pointer (2147483000) is deliberately excluded — it is above all.
@@ -170,11 +170,57 @@ ok(/el\.tagName === 'SELECT' && Number\.isFinite\(Number\(m\.idx\)\)/.test(libNo
   ok(consentZ > maxOther && bannerZ > maxOther && consentZ > bannerZ, `the consent prompt (${consentZ}) and the banner (${bannerZ}) sit above every other overlay (highest elsewhere: ${maxOther})`);
 }
 const hostNow = read('app-v2/src/components/CobrowseHost.jsx');
+// ── the driver may never damage what it cannot see (second audit pass) ──────────────────
+ok(/if \(notCancelled && key === 'Enter'/.test(libNow), 'a relayed Enter submits only when the page did not cancel the keydown');
+ok(/if \(el\.tagName === 'SELECT'\) \{[\s\S]{0,220}?return false;/.test(libNow) && !/else setNativeValue\(el, String\(m\.value == null[\s\S]{0,40}\)\);[\s\S]{0,10}\n[\s\S]{0,60}SELECT/.test(libNow),
+  'a <select> with no usable option index is REFUSED — never set to the masked marker, which would wipe the guest\'s choice');
+ok(/el\.maxLength > 0 \? next\.slice\(0, el\.maxLength\)/.test(libNow), 'a relayed value honours the box\'s own maxlength (a programmatic set bypasses it)');
+ok(/const composing = new WeakMap\(\)/.test(libNow) && /function caretless\(el\)/.test(libNow) && /c && c\.set === el\.value \? c\.text/.test(libNow),
+  'a number/email/tel box (no caret, value sanitised on set) composes against what was meant, so "1.5" cannot arrive as "5"');
+// ── the viewer is never left guessing, and the poll never nags a door that refuses it ───
+const viewerSrc = read('app-v2/src/screens/StaffCobrowse.jsx');
+ok(/too_large: 'That was too big to send/.test(viewerSrc) && /state\.notice\.text \|\| ''/.test(viewerSrc), 'a hub refusal is SAID to the viewer, never a page that silently does not move');
+ok(/const refusedRef = useRef\(false\)/.test(hostNow) && /if \(refusedRef\.current\) return;/.test(hostNow) && /code === 'inside_view'/.test(hostNow),
+  'one 403 from a door that refuses this session (a staffer inside a view-as) stands the poll down instead of asking every 10 s forever');
+ok(/document\.visibilityState === 'hidden'\) return;/.test(hostNow), 'a tab nobody is looking at does not poll');
+ok(/const adopt = useCallback/.test(hostNow) && (hostNow.match(/api\.cobrowseMine\(\)/g) || []).length >= 2 && /\.then\(adopt\)/.test(hostNow),
+  'the load and the poll read the register through ONE function — two copies is how a rejoin loses the control prompt waiting with it');
+ok(/const mine = \(e\) => e && e\.isTrusted;/.test(viewerSrc) && (viewerSrc.match(/if \(!mine\(e\)/g) || []).length >= 6,
+  "the viewer relays only its OWN trusted actions — the replayer paints the mirror by dispatching events, and echoing those back scrolled the guest's page and wiped their real box");
+ok(/Date\.now\(\) - gestureAt > GESTURE_MS\) return;/.test(viewerSrc) && /for \(const g of \['wheel', 'pointerdown', 'touchstart', 'keydown'\]\) doc\.addEventListener/.test(viewerSrc),
+  'a SCROLL is relayed only just after a real gesture — the browser marks a scripted scroll trusted too, so the replayer\'s own painting came back as 91 relayed scrolls that moved the guest\'s page');
+ok(/let target = null;/.test(viewerSrc) && /const el = live \|\| target \|\| e\.target;/.test(viewerSrc),
+  'typing is addressed to the box the viewer CLICKED — a click-through mirror never moves the viewer\'s own focus, so every keystroke went to the body');
+ok(/if \(p\.x === lastX && p\.y === lastY\) return;/.test(viewerSrc), 'a stationary pointer sends no cursor updates (the mirror repaints under it constantly)');
+// ── THE GUEST IS NEVER CAGED (owner-directed: they must be able to do everything) ────────
+ok(/const bannerRef = useRef\(null\)/.test(hostNow) && /document\.body\.style\.paddingTop = `\$\{h\}px`/.test(hostNow) && /ResizeObserver/.test(hostNow),
+  "the fixed banner pushes the page down by its MEASURED height — otherwise it buries the app's own top bar, and with it the phone's nav toggle");
+ok(/top: 'var\(--cobrowse-bar, 0px\)'/.test(read('app-v2/src/lib/useStaleBuild.jsx')) && (read('app-v2/src/components/StaffLayout.jsx').match(/top: 'var\(--cobrowse-bar, 0px\)'/g) || []).length === 2,
+  'the other fixed top banners stack under it rather than behind it (the Refresh button stays clickable)');
+ok(!/autoFocus/.test(hostNow) && /askRef/.test(hostNow) && /e\.key === 'Enter' \|\| e\.key === ' '/.test(hostNow),
+  'a prompt focuses the DIALOG, never an answer — a stray Enter can never share somebody\'s screen, and their sentence keeps its letters');
+ok(/const routePoll = setInterval/.test(libNow) && /popstate', onRoute/.test(libNow),
+  'the route is followed through a HashRouter push (which fires no hashchange) — a secret screen reached from inside the app is never recorded');
+ok(/TERMINAL_CLOSE_CODES = \[4400, 4401, 4403, 4404, 4000, 1008, 1009\]/.test(libNow) && /opened_elsewhere/.test(libNow),
+  'a second tab and the hub\'s own budget closes are terminal — never a reconnect storm that costs the guest a full snapshot every few seconds');
+ok(/state\.stableTimer = setTimeout/.test(libNow), 'the give-up clock resets only after a connection HELD, so a socket that dies on open cannot loop forever');
+ok(/ws\.bufferedAmount > MAX_BUFFERED/.test(libNow) && /state\.queue\.length >= MAX_QUEUE/.test(libNow),
+  "the stream degrades, never the guest's own browser: the socket backlog and the held queue are both bounded");
+ok(/stopRecorder\(state\);\n    state\.queue = \[\];/.test(libNow), 'a disconnected recorder is stopped — the guest never pays for events nobody receives');
+ok(/MOVE_TAKEBACK_PX = 40/.test(libNow) && /travelled < MOVE_TAKEBACK_PX/.test(libNow), 'taking control back needs real pointer travel, not an incidental trackpad brush');
+// ── a drive that dies must SAY it died ──────────────────────────────────────────────────
+const driveSrc = read('scripts/render-cobrowse-e2e.js');
+ok(/const scale = f\.offsetWidth \? fr\.width \/ f\.offsetWidth : 1;/.test(driveSrc), 'the drive aims through the replayer\'s SCALE — adding the two rects clicks a different element');
+ok(/\} catch \(e\) \{[\s\S]{0,400}?FAIL the drive threw/.test(driveSrc) && /the drive did not finish within 8 minutes/.test(driveSrc),
+  'the two-browser drive reports a thrown timeout as a failure and cannot hang CI silently');
+ok(/WATCHED: the guest types with their own keyboard/.test(driveSrc) && /AFTER STOP: the guest carries on working normally/.test(driveSrc),
+  'the drive proves the guest can still work normally while watched, and again after it ends');
+
 ok(/asks to control your screen/.test(hostNow) && /Allow control/.test(hostNow) && /keep watching only/.test(hostNow), 'the second consent prompt: allow / keep watching only');
 ok(/Take back/.test(hostNow) && /cobrowse-controlled/.test(hostNow), 'the banner turns to controlling with a Take back button and the red frame');
 ok(/useAuth\(\)/.test(hostNow) && /!!token && !isBorrowerView && !isTpo && !isAssistant/.test(hostNow), 'the host keys on the live auth token and stands down inside a borrower view, for any TPO session (a broker is refused at every door) and for a helper (audit)');
 ok(/PILOT records who watched and when; it never records the screen itself/.test(hostNow), 'the consent prompt states what is kept');
-ok(/const POLL_MS = 10000;/.test(hostNow) && /if \(!eligible \|\| active \|\| pending\) return undefined;/.test(hostNow) && /setInterval\(\(\) => \{\s*api\.cobrowseMine\(\)/.test(hostNow), 'while nothing is showing the host re-reads the register every 10 s — a request is never missed because the stream was down (the drive caught it)');
+ok(/const POLL_MS = 10000;/.test(hostNow) && /if \(!eligible \|\| active \|\| pending\) return undefined;/.test(hostNow) && /setInterval\(\(\) => \{[\s\S]{0,400}?api\.cobrowseMine\(\)/.test(hostNow), 'while nothing is showing the host re-reads the register every 10 s — a request is never missed because the stream was down (the drive caught it)');
 
 
 // ---- Phase C: hardening -----------------------------------------------------------------------

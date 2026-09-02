@@ -56,8 +56,11 @@ async function main() {
   // so an old 'cb-…' staffer can never make a busy check answer for a fresh one.
   await db.query(`DELETE FROM staff_users WHERE email LIKE 'cb-%@example.test'`).catch(() => {});
   await db.query(`DELETE FROM borrowers WHERE email LIKE 'cb-%@b.test'`).catch(() => {});
-  await db.query(`DELETE FROM tpo_firms WHERE name LIKE 'Firm %' AND NOT EXISTS (SELECT 1 FROM staff_users su WHERE su.tpo_firm_id = tpo_firms.id)`).catch(() => {});
-  const firmId = (await db.query(`INSERT INTO tpo_firms (name) VALUES ($1) RETURNING id`, [`Firm ${tag}`])).rows[0].id;
+  // ONLY this suite's own fixtures. `LIKE 'Firm %'` would match a real brokerage in
+  // whatever database DATABASE_URL happens to point at — a test may never delete a row
+  // it did not create.
+  await db.query(`DELETE FROM tpo_firms WHERE name LIKE 'Firm cb-%' AND NOT EXISTS (SELECT 1 FROM staff_users su WHERE su.tpo_firm_id = tpo_firms.id)`).catch(() => {});
+  const firmId = (await db.query(`INSERT INTO tpo_firms (name) VALUES ($1) RETURNING id`, [`Firm cb-${tag}`])).rows[0].id;
   const mk = async (role, name, extra = {}) => {
     const r = await db.query(
       `INSERT INTO staff_users (email, full_name, role, password_hash, is_active, is_external, tpo_firm_id, token_version)

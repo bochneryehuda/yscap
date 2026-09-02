@@ -77,6 +77,13 @@ export default function StaffCobrowse() {
         else if (m.t === 'control') { controlRef.current = m.status || 'none'; setState((s) => ({ ...s, control: m.status || 'none' })); }
         else if (m.t === 'notice') setState((s) => ({ ...s, notice: { kind: m.kind, at: Date.now() } }));
         else if (m.t === 'error' && m.code === 'no_control') { controlRef.current = 'released'; setState((s) => ({ ...s, control: 'released' })); }
+        // Every other refusal is SAID. A frame the hub would not carry (a paste past its
+        // size cap, a kind it does not know) used to do nothing at all: the page simply
+        // did not move and the viewer was left guessing whether the other side had frozen.
+        else if (m.t === 'error') {
+          const said = { too_large: 'That was too big to send — paste it in smaller pieces.', bad_input: 'PILOT would not send that action.' }[m.code];
+          setState((s) => ({ ...s, notice: { kind: m.code || 'error', text: said || m.message || 'That action was not sent.', at: Date.now() } }));
+        }
         else if (m.t === 'guest_online') { setState((s) => ({ ...s, guestOnline: true })); ws.send(JSON.stringify({ t: 'snapshot' })); }
         else if (m.t === 'guest_offline') setState((s) => ({ ...s, guestOnline: false }));
         else if (m.t === 'ended') { closed = true; setState((s) => ({ ...s, ended: m.reason || 'ended', connected: false })); }
@@ -131,12 +138,58 @@ export default function StaffCobrowse() {
     const sendInput = (obj) => { const ws = wsRef.current; if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'input', ...obj })); };
     const pageXY = (e) => ({ x: e.clientX + (doc.defaultView ? doc.defaultView.scrollX : 0), y: e.clientY + (doc.defaultView ? doc.defaultView.scrollY : 0) });
     iframe.style.pointerEvents = 'auto';
-    let lastMove = 0;
-    const onMove = (e) => { const now = Date.now(); if (now - lastMove < 40) return; lastMove = now; const p = pageXY(e); sendInput({ k: 'cursor', ...p }); };
-    const onClick = (e) => { e.preventDefault(); e.stopPropagation(); const id = idOf(e.target); if (id == null || id < 0) return; sendInput({ k: e.detail >= 2 ? 'dblclick' : 'click', id, ...pageXY(e) }); };
-    const onKey = (e) => {
+    // ONLY THE VIEWER'S OWN HANDS. The replayer PAINTS the mirror by dispatching events into
+    // this very document — scrolls, focus, value changes — and every one of them was being
+    // captured and sent BACK to the guest: a feedback loop that scrolled their page around
+    // and, worse, echoed a MASKED value into their real box, wiping what they had typed (the
+    // two-browser drive caught it as 446 relayed events where 6 were real). A replayed event
+    // is synthetic, a person's is trusted, so that single test tells them apart — the same
+    // rule the guest's own take-back is built on.
+    const mine = (e) => e && e.isTrusted;
+    // A SCROLL IS NOT EVIDENCE OF A PERSON. The browser fires `scroll` with isTrusted TRUE
+    // even when a script did the scrolling — and the replayer scrolls this document on every
+    // frame it paints. So the guest's own scroll came back as a relayed scroll, moved their
+    // page, was recorded, replayed, and came back again: the drive measured 91 relayed
+    // scrolls oscillating (104 → 98 → 88 → 79 …) on a viewer who touched nothing. A scroll
+    // is relayed only in the second after a real gesture that could have caused one.
+    let gestureAt = 0;
+    const GESTURE_MS = 1000;
+    const noteGesture = (e) => { if (mine(e)) gestureAt = Date.now(); };
+    let lastMove = 0, lastX = null, lastY = null;
+    // A STATIONARY POINTER STILL FIRES `mousemove`: the mirror repaints under it constantly,
+    // and the browser reports a move every time the element beneath the pointer changes. The
+    // position is therefore compared, not just the clock — otherwise a viewer who touched
+    // nothing sent 25 cursor updates a second for the whole session (the drive counted 446).
+    const onMove = (e) => {
+      if (!mine(e)) return;
+      const now = Date.now(); if (now - lastMove < 40) return;
+      const p = pageXY(e);
+      if (p.x === lastX && p.y === lastY) return;
+      lastMove = now; lastX = p.x; lastY = p.y;
+      sendInput({ k: 'cursor', ...p });
+    };
+    // WHERE THE VIEWER IS WORKING. rrweb's replay makes the mirror click-through, so a real
+    // click there does not move the viewer's OWN focus — `document.activeElement` stays on
+    // the body and every keystroke afterwards was addressed to the wrong element, so nothing
+    // a person typed ever arrived. The clicked element is remembered (and focused locally
+    // where the mirror allows it), and that is what typing is addressed to.
+    let target = null;
+    const onClick = (e) => {
+      if (!mine(e)) return;
       e.preventDefault(); e.stopPropagation();
-      const id = idOf(doc.activeElement || e.target); if (id == null || id < 0) return;
+      const id = idOf(e.target); if (id == null || id < 0) return;
+      target = e.target;
+      try { e.target.focus && e.target.focus({ preventScroll: true }); } catch { /* the mirror may refuse; `target` still holds it */ }
+      sendInput({ k: e.detail >= 2 ? 'dblclick' : 'click', id, ...pageXY(e) });
+    };
+    const onKey = (e) => {
+      if (!mine(e)) return;
+      e.preventDefault(); e.stopPropagation();
+      // The active element when the mirror actually moved focus, else the box the viewer
+      // last clicked — never the body, which is where a click-through mirror leaves focus.
+      const live = doc.activeElement && doc.activeElement !== doc.body && doc.activeElement !== doc.documentElement ? doc.activeElement : null;
+      const el = live || target || e.target;
+      const id = idOf(el); if (id == null || id < 0) return;
       // Every keystroke is relayed AS A KEY. The mirror is masked (a typed value
       // shows as the fixed-length marker), so this side cannot know the real
       // value or the caret — the guest's own browser inserts the character into
@@ -144,9 +197,10 @@ export default function StaffCobrowse() {
       // mirror here sent `'' + key` on every press and nothing ever accumulated.
       sendInput({ k: 'key', id, key: e.key, code: e.code, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey });
     };
-    const onChange = (e) => { const id = idOf(e.target); if (id == null || id < 0) return; const t = e.target; if (t.type === 'checkbox' || t.type === 'radio') sendInput({ k: 'change', id, checked: !!t.checked }); else sendInput({ k: 'change', id, value: String(t.value || ''), idx: t.tagName === 'SELECT' ? t.selectedIndex : undefined }); };
-    const onScroll = (e) => { const t = e.target; if (t === doc || t === doc.documentElement || t === doc.body) { const w = doc.defaultView; sendInput({ k: 'scroll', id: 1, sx: w ? w.scrollX : 0, sy: w ? w.scrollY : 0 }); return; } const id = idOf(t); if (id == null || id < 0) return; sendInput({ k: 'scroll', id, sx: t.scrollLeft, sy: t.scrollTop }); };
-    const onPaste = (e) => { e.preventDefault(); const id = idOf(doc.activeElement); if (id == null || id < 0) return; const text = (e.clipboardData && e.clipboardData.getData('text')) || ''; if (text) sendInput({ k: 'paste', id, value: text }); };
+    const onChange = (e) => { if (!mine(e)) return; const id = idOf(e.target); if (id == null || id < 0) return; const t = e.target; if (t.type === 'checkbox' || t.type === 'radio') sendInput({ k: 'change', id, checked: !!t.checked }); else sendInput({ k: 'change', id, value: String(t.value || ''), idx: t.tagName === 'SELECT' ? t.selectedIndex : undefined }); };
+    const onScroll = (e) => { if (!mine(e) || Date.now() - gestureAt > GESTURE_MS) return; const t = e.target; if (t === doc || t === doc.documentElement || t === doc.body) { const w = doc.defaultView; sendInput({ k: 'scroll', id: 1, sx: w ? w.scrollX : 0, sy: w ? w.scrollY : 0 }); return; } const id = idOf(t); if (id == null || id < 0) return; sendInput({ k: 'scroll', id, sx: t.scrollLeft, sy: t.scrollTop }); };
+    const onPaste = (e) => { if (!mine(e)) return; e.preventDefault(); const id = idOf((doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null) || target); if (id == null || id < 0) return; const text = (e.clipboardData && e.clipboardData.getData('text')) || ''; if (text) sendInput({ k: 'paste', id, value: text }); };
+    for (const g of ['wheel', 'pointerdown', 'touchstart', 'keydown']) doc.addEventListener(g, noteGesture, true);
     doc.addEventListener('mousemove', onMove, true);
     doc.addEventListener('click', onClick, true);
     doc.addEventListener('keydown', onKey, true);
@@ -160,6 +214,7 @@ export default function StaffCobrowse() {
       doc.removeEventListener('mousemove', onMove, true); doc.removeEventListener('click', onClick, true);
       doc.removeEventListener('keydown', onKey, true); doc.removeEventListener('change', onChange, true);
       doc.removeEventListener('scroll', onScroll, true); doc.removeEventListener('paste', onPaste, true);
+      for (const g of ['wheel', 'pointerdown', 'touchstart', 'keydown']) doc.removeEventListener(g, noteGesture, true);
     };
     captureRef.current = off;
     return off;
@@ -223,7 +278,7 @@ export default function StaffCobrowse() {
               : state.notice.kind === 'download' ? `${who.name} downloaded a file — it landed on their computer.`
                 : state.notice.kind === 'new_tab' ? `${who.name} opened a link in a new tab — that page is outside PILOT and is not mirrored.`
                   : state.notice.kind === 'redacted' ? 'One frame was held back because it carried a number shaped like a Social Security or card number in plain text — the mirror will catch up on its own.'
-                    : ''}
+                    : (state.notice.text || '')}
         </div>
       )}
       <div ref={hostRef} className="cobrowse-stage" tabIndex={-1} style={{ position: 'relative', border: state.control === 'granted' ? '3px solid #B3261E' : '1px solid #D9D2C5', borderRadius: 10, background: '#F6F3EC', overflow: 'hidden', minHeight: 320 }}>

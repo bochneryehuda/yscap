@@ -5359,6 +5359,11 @@ textarea.app-dialog-field{resize:vertical;min-height:76px}
    over a modal backdrop and never covers the prompt's own buttons. The controller's pointer
    (2147483000) is above everything by design. Guarded by test-cobrowse-pure. */
 .cv-modal-back.cobrowse-consent{z-index:20000}
+/* CONSEQUENCE, stated rather than discovered later: while a session is live the watching
+   banner (19999, top:0) sits over the stale-build "PILOT was updated — Refresh" bar
+   (useStaleBuild, z 1000) and the staff-view banner (1001). Both return the moment the
+   session ends, and a co-browse session is capped at four hours — being asked to reload
+   in the middle of somebody watching your screen is the worse of the two. */
 .cv-modal-back.dp-back{z-index:150}
 /* A FULL-SCREEN TOOL SHEET — the Scope of Work, the track record, the Products &
    Pricing studio and the terms it generates (owner-reported 2026-08-21: "the nice

@@ -55,9 +55,28 @@ export default function CobrowseHost() {
     });
   }, []);
 
+  // ONE reading of the register, used by the load and by the safety poll — two copies is
+  // how a rejoin quietly loses the control prompt that was waiting with it.
+  const adopt = useCallback((r) => {
+    if (activeRef.current) return true;
+    if (r && r.active && r.active.isWatched) {
+      begin(r.active);
+      if (r.active.control && r.active.control.status === 'requested') setControlAsk({ sessionId: r.active.id, viewer: r.active.viewer, expiresAt: r.active.control.expiresAt });
+      return true;
+    }
+    if (r && r.pending && r.pending.length) { setPending(r.pending[0]); return true; }
+    return false;
+  }, [begin]);
+
+  // A door that REFUSES this session (a staffer inside a view-as: the routes answer 403
+  // `inside_view`) is refused for as long as that session lasts, so asking again every 10 s
+  // is pure noise. One refusal stands the poll down until the token changes.
+  const refusedRef = useRef(false);
+
   // On load / sign-in: any prompt waiting for me, and any live session to rejoin (a
   // reload). On sign-out or entering a view-as: everything down, recording stopped.
   useEffect(() => {
+    refusedRef.current = false;   // a new token is a new answer
     if (!eligible) {
       stopGuest('signed_out');
       activeRef.current = null; setActive(null); setPending(null); setControlAsk(null);
@@ -65,14 +84,14 @@ export default function CobrowseHost() {
       return;
     }
     api.cobrowseMine().then((r) => {
-      if (r && r.active && r.active.isWatched) {
-        begin(r.active);
-        if (r.active.control && r.active.control.status === 'requested') setControlAsk({ sessionId: r.active.id, viewer: r.active.viewer, expiresAt: r.active.control.expiresAt });
-      } else if (r && r.pending && r.pending.length) setPending(r.pending[0]);
+      if (adopt(r)) { /* a live session or a prompt was taken up */ }
       const remembered = rememberedSessionId();
       if (remembered && !(r && r.active)) { try { sessionStorage.removeItem('ys_cobrowse_session'); } catch { /* fine */ } }
-    }).catch(() => {});
-  }, [begin, eligible, token]);
+    }).catch((e) => {
+      const code = e && (e.code || e.body && e.body.code);
+      if (code === 'inside_view' || code === 'proxy_actor' || (e && e.status === 403)) refusedRef.current = true;
+    });
+  }, [adopt, eligible, token]);
 
   // Live: a new request, or the session ended from the other side.
   useEffect(() => {
@@ -105,14 +124,17 @@ export default function CobrowseHost() {
   useEffect(() => {
     if (!eligible || active || pending) return undefined;
     const t = setInterval(() => {
-      api.cobrowseMine().then((r) => {
-        if (activeRef.current) return;
-        if (r && r.active && r.active.isWatched) begin(r.active);
-        else if (r && r.pending && r.pending.length) setPending(r.pending[0]);
-      }).catch(() => {});
+      if (refusedRef.current) return;
+      // A tab nobody is looking at cannot show a prompt anyway; it reads the register when
+      // it comes back (the browser fires visibilitychange, and this interval keeps running).
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      api.cobrowseMine().then(adopt).catch((e) => {
+        const code = e && (e.code || e.body && e.body.code);
+        if (code === 'inside_view' || code === 'proxy_actor' || (e && e.status === 403)) refusedRef.current = true;
+      });
     }, POLL_MS);
     return () => clearInterval(t);
-  }, [eligible, active, pending, token, begin]);
+  }, [eligible, active, pending, token, adopt]);
 
   // A request that nobody answers goes away when the server says it expired.
   useEffect(() => {
@@ -151,6 +173,58 @@ export default function CobrowseHost() {
     api.cobrowseEnd(a.id).catch(() => {});
   };
 
+  // THE BANNER MUST NOT COVER THE APP. It is `position:fixed`, so without this the page's
+  // own sticky top bar sits UNDER it — and on a phone that bar holds the hamburger, which is
+  // the only way to open the navigation: the guest could not move around their own PILOT
+  // while being watched (the two-browser drive reproduced it, as a click that never landed).
+  // The height is MEASURED, not assumed: the text wraps to two or three lines at 390px and
+  // grows again when the web fonts arrive, so a constant would be wrong on exactly the
+  // screens that matter. `--cobrowse-bar` also offsets the other two fixed top banners.
+  const bannerRef = useRef(null);
+  useEffect(() => {
+    const el = bannerRef.current;
+    if (!active || !el) return undefined;
+    const root = document.documentElement;
+    const apply = () => {
+      const h = Math.ceil(el.getBoundingClientRect().height || 0);
+      root.style.setProperty('--cobrowse-bar', `${h}px`);
+      document.body.style.paddingTop = `${h}px`;
+      root.style.scrollPaddingTop = `${h}px`;   // an in-page #anchor lands below the bar
+    };
+    apply();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(apply) : null;
+    if (ro) ro.observe(el);
+    window.addEventListener('resize', apply);
+    window.addEventListener('load', apply);
+    return () => {
+      if (ro) ro.disconnect();
+      window.removeEventListener('resize', apply); window.removeEventListener('load', apply);
+      root.style.removeProperty('--cobrowse-bar');
+      document.body.style.paddingTop = '';
+      root.style.scrollPaddingTop = '';
+    };
+  }, [active, link.control, link.connected]);
+
+  // A PROMPT ARRIVES UNANNOUNCED, OVER WHATEVER THEY WERE DOING. Two consequences, both
+  // handled here: focusing an ANSWER button would put the guest's next keystroke on
+  // "Accept" (a stray Enter or Space would then share their screen), and their sentence
+  // would lose its remaining letters. So the DIALOG is focused — the reader is moved, no
+  // answer is armed — and Enter/Space are ignored for a beat while their hands catch up.
+  const askRef = useRef(null);
+  const askArmedRef = useRef(0);
+  useEffect(() => {
+    if (!pending && !controlAsk) return undefined;
+    askArmedRef.current = Date.now();
+    const el = askRef.current;
+    if (el) { try { el.focus({ preventScroll: true }); } catch { /* fine */ } }
+    const swallow = (e) => {
+      if (Date.now() - askArmedRef.current > 600) return;
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); e.stopPropagation(); }
+    };
+    window.addEventListener('keydown', swallow, true);
+    return () => window.removeEventListener('keydown', swallow, true);
+  }, [pending, controlAsk]);
+
   const viewerName = (p) => (p && p.viewer && p.viewer.name) || 'A team member';
 
   return (
@@ -159,7 +233,7 @@ export default function CobrowseHost() {
         <>
           {/* The red frame while somebody else is driving — the whole page says so, not only the bar. */}
           <style>{`html.cobrowse-controlled body{outline:4px solid #B3261E;outline-offset:-4px}`}</style>
-          <div role="status" aria-live="polite" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 19999,
+          <div ref={bannerRef} role="status" aria-live="polite" style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 19999,
             background: link.control === 'granted' ? '#B3261E' : '#7A1F1F', color: '#fff', padding: '8px 14px', display: 'flex', alignItems: 'center',
             justifyContent: 'center', gap: 12, fontSize: 14, boxShadow: '0 2px 6px rgba(0,0,0,.25)', flexWrap: 'wrap' }}>
             <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: 5, background: link.recording ? '#FF4D4D' : '#BBB', display: 'inline-block' }} />
@@ -179,7 +253,7 @@ export default function CobrowseHost() {
       )}
       {active && controlAsk && (
         <div className="cv-modal-back cobrowse-consent" role="presentation">
-          <div className="cv-modal app-dialog" role="dialog" aria-modal="true" aria-labelledby="cb-ctl-title" aria-describedby="cb-ctl-body">
+          <div ref={askRef} tabIndex={-1} className="cv-modal app-dialog" role="dialog" aria-modal="true" aria-labelledby="cb-ctl-title" aria-describedby="cb-ctl-body">
             <div className="app-dialog-head">
               <span className="app-dialog-mark" aria-hidden="true" />
               <div>
@@ -193,14 +267,14 @@ export default function CobrowseHost() {
             </p>
             <div className="app-dialog-actions">
               <button type="button" className="btn ghost" onClick={() => answerControl(false)}>No, keep watching only</button>
-              <button type="button" className="btn primary" autoFocus onClick={() => answerControl(true)}>Allow control</button>
+              <button type="button" className="btn primary" onClick={() => answerControl(true)}>Allow control</button>
             </div>
           </div>
         </div>
       )}
       {pending && !active && (
         <div className="cv-modal-back cobrowse-consent" role="presentation">
-          <div className="cv-modal app-dialog" role="dialog" aria-modal="true" aria-labelledby="cb-ask-title" aria-describedby="cb-ask-body">
+          <div ref={askRef} tabIndex={-1} className="cv-modal app-dialog" role="dialog" aria-modal="true" aria-labelledby="cb-ask-title" aria-describedby="cb-ask-body">
             <div className="app-dialog-head">
               <span className="app-dialog-mark" aria-hidden="true" />
               <div>
@@ -215,7 +289,7 @@ export default function CobrowseHost() {
             </p>
             <div className="app-dialog-actions">
               <button type="button" className="btn ghost" onClick={() => answer(false)}>Decline</button>
-              <button type="button" className="btn primary" autoFocus onClick={() => answer(true)}>Accept</button>
+              <button type="button" className="btn primary" onClick={() => answer(true)}>Accept</button>
             </div>
           </div>
         </div>
