@@ -347,6 +347,89 @@ const stack = buildRateStack(capture.programs);
 }
 
 // ---------------------------------------------------------------------------
+// 3b) ADD TO COMPARISON is on every quote row, always — owner-directed 2026-09-02
+// ---------------------------------------------------------------------------
+/* *"the small box that was on the right side to add to the comparison… disappeared… You
+   don't need to click Details and go down and click Add. You should be able to do that
+   right away… It can just be a button, but it needs to be very clean, modern,
+   user-friendly, and simple. Next to each and every quote."*
+
+   The tick-box appeared only once a comparison workflow had been chosen at the bottom
+   of the board, which to a person pricing a deal is a control that is not there. So:
+   a cart that exists (`ts.enabled`) is the ONLY condition, there is no `picking` flag
+   to satisfy, and the control is a button that says what it does. */
+{
+  const first = stack.rates[0];
+  const comp = { mode: 'borrowerPaid', shift: 0, plan: null, waive: false };
+  const cart = (members) => ({ enabled: true, members, busyKey: null, count: members.length, pick: () => {}, unpick: () => {}, reload: () => {} });
+
+  const r = attempt(() => render(React.createElement(RateRow, {
+    row: first, open: true, onToggle: () => {}, openQuote: null, onOpenQuote: () => {},
+    openLenders: new Set(), onToggleLender: () => {}, loanAmount: 375000, comp, ts: cart([]),
+  })));
+  ok(r.err === null, `R23a a row with a cart and NO workflow chosen renders${r.err ? ` — ${r.err.message}` : ''}`);
+  const buttons = ((r.html || '').match(/Add to comparison/g) || []).length;
+  // One per lender line drawn (the lender's best), which is what an unopened lender shows.
+  const lenders = new Set(first.quotes.map((q) => q.lender)).size;
+  ok(buttons >= lenders && buttons > 0,
+    `R23b ⛔ every quote line carries "Add to comparison" without any workflow chosen (${buttons} on ${lenders} lender lines)`);
+  ok(!/type="checkbox"/.test(r.html || ''), 'R23c …and it is a button, not a tick-box');
+  ok(/aria-pressed="false"/.test(r.html || '') && /Add this programme to the comparison/.test(r.html || ''),
+    'R23d …that says what the next press does');
+  ok(!/>ADD</.test(r.html || '') && !/>IN</.test(r.html || ''), 'R23e …and the two-letter labels are gone');
+
+  // The SAME offer already in the cart → the button shows it, from the cart's own shape.
+  // A synthetic row rather than the capture's: the capture's programmes carry no client-facing
+  // label, and an unidentifiable offer is — correctly — never matched, so a test on it would
+  // assert nothing. Two lenders at one rate, one of them already collected.
+  const twoLenders = buildRateStack([
+    { lender: 'Harbor', consumerLabel: 'Harbor Select', product: '30-Year Fixed DSCR',
+      options: [{ priceBuild: { noteRate: 5.75, price: 99.5 }, monthlyPayment: { monthlyPI: 2100 } }] },
+    { lender: 'Pearl', consumerLabel: 'Pearl-2', product: '30-Year Fixed DSCR',
+      options: [{ priceBuild: { noteRate: 5.75, price: 100.25 }, monthlyPayment: { monthlyPI: 2100 } }] },
+  ]).rates[0];
+  const inCart = cart([{
+    id: 'm1', position: 0, label: 'x', mode: 'borrowerPaid', waive_lender_fees: false,
+    program: { consumerLabel: 'Harbor Select', product: '30-Year Fixed DSCR', ratePct: 5.75 },
+    scenario: {}, priced_at: null,
+  }]);
+  const r2 = attempt(() => render(React.createElement(RateRow, {
+    row: twoLenders, open: true, onToggle: () => {}, openQuote: null, onOpenQuote: () => {},
+    openLenders: new Set(), onToggleLender: () => {}, loanAmount: 375000, comp, ts: inCart,
+  })));
+  ok(r2.err === null && twoLenders && twoLenders.quotes.length === 2, `R23f a two-lender row renders${r2.err ? ` — ${r2.err.message}` : ''}`);
+  ok(((r2.html || '').match(/In comparison/g) || []).length === 1 && /aria-pressed="true"/.test(r2.html || '')
+    && /press to take it out/.test(r2.html || ''),
+    'R23f1 ⛔ the lender already collected reads "In comparison" and offers the way out');
+  ok(((r2.html || '').match(/Add to comparison/g) || []).length === 1 && /aria-pressed="false"/.test(r2.html || ''),
+    'R23f2 …while the other lender on the same rate still offers "Add to comparison"');
+  // The match is on what the offer IS, not on price: the cart holds 99.5 and the row prints
+  // whatever the sheet says today — a refreshed sheet must not silently un-collect a row.
+  const repriced = buildRateStack([
+    { lender: 'Harbor', consumerLabel: 'Harbor Select', product: '30-Year Fixed DSCR',
+      options: [{ priceBuild: { noteRate: 5.75, price: 98.875 }, monthlyPayment: { monthlyPI: 2100 } }] },
+  ]).rates[0];
+  const r2b = attempt(() => render(React.createElement(RateRow, {
+    row: repriced, open: true, onToggle: () => {}, openQuote: null, onOpenQuote: () => {},
+    openLenders: new Set(), onToggleLender: () => {}, loanAmount: 375000, comp, ts: inCart,
+  })));
+  ok(r2b.err === null && /In comparison/.test(r2b.html || ''),
+    'R23f3 …and a collected offer stays "In comparison" after its price moves');
+
+  // A board with NO cart keeps its narrow cell and no button — the ineligible board's own shape.
+  const r3 = attempt(() => render(React.createElement(RateRow, {
+    row: first, open: true, onToggle: () => {}, openQuote: null, onOpenQuote: () => {},
+    openLenders: new Set(), onToggleLender: () => {}, loanAmount: 375000, comp,
+  })));
+  ok(r3.err === null && !/Add to comparison/.test(r3.html || ''), 'R23g …and a board without a cart draws no button at all');
+
+  // The heading's trailing spacer and the rows' action cell are ONE width — the defect the
+  // owner reported on 2026-08-30 was the two disagreeing by 62px.
+  const widths = new Set(((r.html || '').match(/flex:0 0 (\d+)px/g) || []).filter((w) => !/0 0 (82|108|104)px/.test(w)));
+  ok(widths.size === 1, `R23h the heading and every row reserve the SAME action width (${[...widths].join(', ') || 'none found'})`);
+}
+
+// ---------------------------------------------------------------------------
 // 4) THE BREAKDOWN — the four things the owner asked to see behind a price
 // ---------------------------------------------------------------------------
 {

@@ -10,7 +10,7 @@ import { labelize, compRowsOf, feeRowsOf, groupByLender, buildIneligibleStack, p
 // Lender Price returned. The search itself NEVER changes (it stays borrower-paid); these rules
 // decide how the answer is shown and what the fee list says. Plain `.js` so CI runs them.
 import { COMP_MODES, DEFAULT_COMP_MODE, compShiftPoints, shiftedPrice, shiftBuild, quoteCharges, closingSheet } from './compOverlay.js';
-import { QuoteTermSheetActions, ComparisonStrip, ComparisonWorkflowPanel, PickBox, useTermSheetCart } from './TermSheetPanel.jsx';
+import { QuoteTermSheetActions, ComparisonStrip, ComparisonWorkflowPanel, CompareButton, useTermSheetCart } from './TermSheetPanel.jsx';
 import { offBoardCount } from './cartMatch.js';
 // The INVESTOR FILTER (owner-directed 2026-08-27) — a display overlay on top of the
 // answer. The search itself is NEVER narrowed: Lender Price is always asked for
@@ -95,9 +95,13 @@ const NUM = { fontVariantNumeric: 'tabular-nums' };
 
    ⛔ SO THE WIDTH IS WRITTEN ONCE AND READ BY BOTH. Two hand-typed numbers that have to
    agree are two numbers that will disagree the next time one of them is touched.
-   `ACT_W` is the eligible board's cell (it carries the tick-box); `ACT_W_PLAIN` is the
-   ineligible board's, which has only a Details button and deliberately stays narrow. */
-const ACT_W = '0 0 132px';
+   `ACT_W` is the eligible board's cell (it carries the Add-to-comparison button beside
+   Details); `ACT_W_PLAIN` is the ineligible board's, which has only a Details button and
+   deliberately stays narrow. The button says what it does in words — *"Add to
+   comparison"* — rather than a box and a two-letter label, so the cell is wider than the
+   tick-box it replaced (owner-directed 2026-09-02: *"it needs to have something clear:
+   what it is and what you do with that"*). */
+const ACT_W = '0 0 236px';
 const ACT_W_PLAIN = '0 0 70px';
 
 /* The three things a TERM SHEET needs that a price does not: who it is for and
@@ -1452,12 +1456,12 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                     <span className="ltq-cell" data-k={pitiKey} style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 13, fontWeight: 600, color: INK, ...NUM }}>{money2(pitiOf(g.best))}</span>
                   )}
                   <span className="ltq-act" style={{ flex: actW, textAlign: 'right', display: 'inline-flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
-                    {/* ⛔ THE TICK IS ON THE ROW, not two clicks inside it. Owner-directed
-                        2026-08-30 — an officer must be able to SEE which programmes are in the
-                        comparison without opening anything. It only appears once a comparison is
-                        being built, so an ordinary price search keeps the board it always had. */}
-                    {ts && ts.picking && ts.enabled && g.best && (
-                      <PickBox quote={g.best} comp={comp} members={ts.members} busy={ts.busyKey === g.best.key}
+                    {/* ⛔ THE BUTTON IS ON THE ROW, not two clicks inside it, and it is ALWAYS
+                        there (owner-directed 2026-09-02: *"You should be able to do that right
+                        away"*). An officer must be able to SEE which programmes are in the
+                        comparison and put one in without opening anything. */}
+                    {ts && ts.enabled && g.best && (
+                      <CompareButton quote={g.best} comp={comp} members={ts.members} busy={ts.busyKey === g.best.key}
                         onAdd={() => ts.pick(g.best, g.best.option)} onRemove={(m) => ts.unpick(m)} />
                     )}
                     <button type="button" className="btn ghost" style={{ fontSize: 12 }}
@@ -1500,10 +1504,10 @@ export function RateRow({ row, open, onToggle, openQuote, onOpenQuote, openLende
                           <span className="ltq-cell" data-k={pitiKey} style={{ flex: '0 0 104px', textAlign: 'right', fontSize: 12.5, fontWeight: 600, color: INK, ...NUM }}>{money2(pitiOf(q))}</span>
                         )}
                         <span className="ltq-act" style={{ flex: actW, textAlign: 'right', display: 'inline-flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
-                          {/* Every programme is tickable, not only the lender's best — the whole
-                              point of opening a lender is to compare its other programmes. */}
-                          {ts && ts.picking && ts.enabled && (
-                            <PickBox quote={q} comp={comp} members={ts.members} busy={ts.busyKey === q.key}
+                          {/* Every programme can be collected, not only the lender's best — the
+                              whole point of opening a lender is to compare its other programmes. */}
+                          {ts && ts.enabled && (
+                            <CompareButton quote={q} comp={comp} members={ts.members} busy={ts.busyKey === q.key}
                               onAdd={() => ts.pick(q, q.option)} onRemove={(m) => ts.unpick(m)} />
                           )}
                           <button type="button" className="btn ghost" style={{ fontSize: 12 }}
@@ -2169,6 +2173,15 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
         adjustedPoints: q.adjustedPoints,
       },
       pricedAt: (o && o.rateSheet && o.rateSheet.effectiveAt) || (res && res.pricedAt) || null,
+      /* ⛔ THE RATIO THIS OPTION WAS PRICED AT — the bracket board's own stamp on the
+         option (`o.dscr`), never the form's figure. On a banded board the form's DSCR
+         is only where the search started; each band was asked at its own ratio and
+         the option carries it. The server prefers this over `scenario.dscr` when it
+         is there (`snapshot.buildMember`), so the re-price rule judges the band the
+         option was REALLY bought in (owner-reported 2026-09-02: *"the 5.75 was
+         actually priced on the 1.25 band"*). Null on a board that did not bracket,
+         where the form's ratio is what was sent and the server keeps it. */
+      pricedDscr: o && nn(o.dscr) ? o.dscr : null,
       scenario: {
         purpose: dealPurpose,
         propertyType: f.propertyType,
@@ -2216,17 +2229,23 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
     setCalc,
 
     /* ── PICKING PROGRAMMES FOR A COMPARISON ────────────────────────────────
-       ⛔ THE TICKS APPEAR ONLY WHILE A COMPARISON IS BEING BUILT. Owner-directed
-       2026-08-30: *"a select mode by the two comparison things."* Choosing one of
-       the two documents at the top turns selecting ON; an ordinary price search
-       keeps exactly the board it has always had, with no extra column of boxes
-       on every row for a job nobody is doing.
+       ⛔ THE BUTTON IS ON EVERY QUOTE, ALWAYS (owner-directed 2026-09-02: *"You
+       don't need to click Details and go down and click Add. You should be able
+       to do that right away… It can just be a button, but it needs to be very
+       clean, modern, user-friendly, and simple. Next to each and every quote."*).
+
+       It used to appear only once one of the two comparison workflows had been
+       chosen at the bottom of the board (2026-08-30, *"a select mode"*) — and the
+       owner, pricing a deal, saw no way to collect a row without opening it. A
+       control that exists only after a choice made somewhere else is a control
+       that has disappeared. The workflow chooser still says which DOCUMENT is
+       being built; it no longer gates whether a row can be collected.
 
        ⛔ AND THE CART IS THE ONLY RECORD. `pick`/`unpick` post to the server and
-       reload; the tick is drawn from what came back. Nothing here remembers a
-       selection, so the board cannot show a tick the cart does not have — which
-       is the failure that would make this worse than the drawer it replaces. */
-    picking: !!compWorkflow,
+       reload; the button's state is drawn from what came back. Nothing here
+       remembers a selection, so the board cannot say "in comparison" of an
+       option the cart does not have — which is the failure that would make this
+       worse than the drawer it replaces. */
     busyKey: pickBusy,
     pick: async (q, o) => {
       setPickBusy(q && q.key);
@@ -2287,7 +2306,14 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
         repriceWanted.current = true;
       },
       ratioCheck: () => {
-        const priced = toNumber(f.dscr);
+        /* ⛔ THE BAND THIS OPTION WAS PRICED IN IS THE OPTION'S OWN (owner-reported
+           2026-09-02: *"the 5.75 was actually priced on the 1.25 band"*). The bracket
+           board stamps the ratio each band was bought at on the option; the form's
+           figure is only where the search started. The SAME preference the server
+           makes in `buildMember` — a screen that judged against the form while the
+           server judged against the stamp would promise a refusal the issue then
+           allows, or the reverse. Guarded by test-lt-comparison-ux-pure. */
+        const priced = o && nn(o.dscr) ? o.dscr : toNumber(f.dscr);
         const out = dscrFrom({
           loanAmount,
           ratePct: q && q.noteRate,
