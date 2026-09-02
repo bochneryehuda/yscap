@@ -861,6 +861,31 @@ const EXPLAIN_REASON = {
   unknown: 'No breakdown could be read from the rate sheet’s answer.',
 };
 
+/**
+ * WHAT THE RATE SHEET WAS ASKED, in one line — printed only where the table is empty.
+ *
+ * Owner-reported 2026-09-02, the second time: *"Very important: I still don't see the detailed
+ * LLPA and adjustments populate."* An empty panel that says only "the rate sheet returned no
+ * breakdown" cannot be diagnosed from a screenshot; one that also says WHICH quote and WHICH loan
+ * it asked about can. The server stamps `evidence.asked` (rate, lock, the location the board
+ * was priced in, the search id; the price and the portal only when the source is revealed) so
+ * this reads it back — no vendor is named, and the
+ * vendor's own quote figures are what the board already shows on the row.
+ */
+function askedLine(a) {
+  if (!a || typeof a !== 'object') return null;
+  const parts = [];
+  if (a.rate != null && Number.isFinite(Number(a.rate))) parts.push(`${Number(a.rate).toFixed(3)}%`);
+  // NO PRICE ON THIS LINE. The vendor is asked about ITS price, which carries the holdback, and
+  // printing it under a row that shows the held-back price would let a reader subtract the two.
+  // The rate, the lock, the place and the search identify the question on their own.
+  if (a.lockDays != null && Number.isFinite(Number(a.lockDays))) parts.push(`${Number(a.lockDays)}-day lock`);
+  const where = [a.county ? `${a.county} County` : null, a.state || null].filter(Boolean).join(', ');
+  if (where || a.zip) parts.push(`${where || ''}${a.zip ? `${where ? ' ' : ''}${a.zip}` : ''}`.trim());
+  if (a.transactionId) parts.push(`search …${String(a.transactionId).slice(-6)}`);
+  return parts.length ? `Asked about: ${parts.join(' · ')}` : null;
+}
+
 export function PriceBuild({ o: oProp, comp, ts, quote }) {
   const engine = useEngine();
   /**
@@ -994,7 +1019,13 @@ export function PriceBuild({ o: oProp, comp, ts, quote }) {
         <div style={{
           fontSize: 12.5, color: SLATE, lineHeight: 1.6, marginBottom: 10,
           padding: '8px 10px', borderRadius: 8, background: `${GOLD}14`, border: `1px solid ${GOLD}44`,
-        }}>{explainNote}</div>
+        }}>
+          {explainNote}
+          {/* The one line that turns an empty panel into a diagnosis: exactly what was asked. */}
+          {askedLine(ev.asked) && (
+            <div style={{ fontSize: 11.5, color: MUTED, marginTop: 6 }}>{askedLine(ev.asked)}</div>
+          )}
+        </div>
       )}
       <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
         <Track title="Price build"

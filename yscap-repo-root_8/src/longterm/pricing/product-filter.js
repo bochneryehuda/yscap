@@ -78,9 +78,33 @@ function wantedAmortization(v) {
  * With neither function passed the dimension is simply not narrowed, which is what a caller with no
  * Lender Price request to mirror should get.
  */
-function wantFrom(sc = {}, lpInternals = {}) {
+function wantFrom(sc = {}, lpInternals = {}, opts = {}) {
   const s = sc || {};
-  const io = s.io === true ? true : (s.io === false ? false : null);
+  /**
+   * ⛔ INTEREST-ONLY FOLLOWS THE REQUEST LENDER PRICE WAS ACTUALLY SENT, not only the scenario.
+   *
+   * Owner-reported 2026-09-02: *"Interest-only program still comes up even when I'm not
+   * searching for interest-only… Make sure when we search for interest only, it comes up interest
+   * only, and when we don't search for interest only, it doesn't come up interest only."*
+   *
+   * MEASURED: the screen's `toScenario` sends a yes/no button ONLY when it is on — an off switch
+   * is OMITTED, not sent as `false` (that is deliberate on the Lender Price side: an omitted flag
+   * inherits the tenant's own default, and the DSCR base carries `interestOnly: false`). So with
+   * the switch off, Lender Price was asked for an amortising board while this read `io: null`,
+   * narrowed nothing, and LoanNEX's interest-only programmes stayed on — the two boards answering
+   * two different questions, which is the exact drift this module exists to prevent.
+   *
+   * The scenario still wins when it SAYS something; when it says nothing, the answer is what the
+   * request Lender Price was ACTUALLY sent carries (`opts.lpCriteria.interestOnly` — `priceBoth`
+   * hands over the criteria of the WIRE body the client returns, falling back to the static build
+   * only when Lender Price failed and there is no wire body), and only with neither is the
+   * dimension left un-narrowed. This is the same mirror rule amortization already follows below —
+   * an unstated search resolves the way the other vendor's request resolved it, never a guess of
+   * our own.
+   */
+  const lpc = opts && opts.lpCriteria && typeof opts.lpCriteria === 'object' ? opts.lpCriteria : null;
+  const io = s.io === true ? true : (s.io === false ? false
+    : (lpc && typeof lpc.interestOnly === 'boolean' ? lpc.interestOnly : null));
 
   let amortization = null;
   if (typeof lpInternals.mapAmortization === 'function') {

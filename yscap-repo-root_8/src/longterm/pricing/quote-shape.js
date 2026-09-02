@@ -353,11 +353,20 @@ function splitInterestOnly(options) {
   return { io, amortizing, unknown };
 }
 
-/** Apply the scenario's interest-only answer to a set of options. */
+/**
+ * Apply the scenario's interest-only answer to a set of options.
+ *
+ * ⛔ A ROW WHOSE PRODUCT DOES NOT SAY IS KEPT AND COUNTED, never dropped — the same rule the
+ * programme-level narrowing (`product-filter.narrowBoard`) holds, and the rule the header above
+ * has always stated. An earlier cut returned only the matching half and left `unknown` for the
+ * count alone, so the moment the answer was resolved for every search (2026-09-02) a row nobody
+ * could classify vanished from the option list with nothing on screen to say so. The unknown rows
+ * ride at the END so the matched ones are still read first, and `unknown` still reports them.
+ */
 function filterInterestOnly(options, want) {
   if (want === undefined || want === null) return { options: options || [], filtered: false, unknown: [] };
   const s = splitInterestOnly(options);
-  return { options: want ? s.io : s.amortizing, filtered: true, unknown: s.unknown };
+  return { options: (want ? s.io : s.amortizing).concat(s.unknown), filtered: true, unknown: s.unknown };
 }
 
 
@@ -411,6 +420,8 @@ function filterInterestOnly(options, want) {
  * They ride ON THE ROW rather than in browser state so a handle can never be paired with a later
  * board's transaction — the commonest way a per-row fetch silently explains the wrong quote.
  */
+const { EXPLAIN_LENDER_ID } = require('./investor-routing');
+
 function explainHandle(r, p, price, opts = {}) {
   if (!r || !r.priceHashKey) return null;
   const h = {
@@ -420,8 +431,14 @@ function explainHandle(r, p, price, opts = {}) {
     price,
     lockDays: r.lockDays,
     productId: p.productId,
-    lenderId: p.lenderId,
+    // BOTH ids, on the ordinary board too. The vendor addresses a quote by product AND investor
+    // (`loannex/client.evidence` → `{ productId, investorId }`), and `investor-routing.stripSource`
+    // renames the investor id rather than dropping it precisely so this handle can still carry it
+    // — see the note there. Without the fallback the default board asked for an itemisation of a
+    // quote it never identified, which is why the panel came back empty (measured 2026-09-02).
+    lenderId: p.lenderId != null ? p.lenderId : (p[EXPLAIN_LENDER_ID] != null ? p[EXPLAIN_LENDER_ID] : undefined),
   };
+  if (h.lenderId === undefined) delete h.lenderId;
   // Omitted rather than sent as null: a null would read as "asked and there was none",
   // and the route falls back to the request body only when the key is genuinely absent.
   if (opts.transactionId != null) h.transactionId = opts.transactionId;
@@ -454,6 +471,26 @@ function programsFromLoanNex(board, opts = {}) {
         cushionedLockDays: r.cushionedLockDays == null ? null : r.cushionedLockDays,
         dscr: numOrNull(r.dscr),
         interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
+        /**
+         * THE TERMS, UNDER THE KEY THE SCREEN READS. The Details panel draws `o.terms.term`,
+         * `o.terms.interestOnly` and `o.terms.dayLock` (that is where every Lender Price option
+         * carries them), and `splitInterestOnly` judges an option on `o.terms.interestOnly` — so a
+         * LoanNEX board row, which stated all three only at the top level, drew an em dash for its
+         * term, its amortization and its lock on the one panel whose job is to state them, and
+         * could not be classified by the option-level interest-only filter at all. The vendor's own
+         * published facts, restated where they are read; the top-level copies stay for anything
+         * that reads them there.
+         */
+        terms: {
+          dayLock: r.lockDays == null ? null : r.lockDays,
+          cushionedLockDays: r.cushionedLockDays == null ? null : r.cushionedLockDays,
+          interestOnly: p.isInterestOnly === undefined ? null : !!p.isInterestOnly,
+          interestOnlyTerm: p.interestOnlyTerm == null ? null : p.interestOnlyTerm,
+          amortizationType: p.amortizationType || null,
+          term: p.termInMonths == null ? null : p.termInMonths, termInMonths: p.termInMonths != null,
+          ...termPair(p.termInMonths, 'months'),
+          dscr: numOrNull(r.dscr),
+        },
         isException: !!r.isException,
         softStop: !!r.hasSoftStopViolation,
         explain: explainHandle(r, p, price, opts),
