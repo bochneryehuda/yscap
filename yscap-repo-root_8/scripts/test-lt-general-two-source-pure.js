@@ -638,9 +638,52 @@ const byInvestor = (programs) => {
      `boardForScenario` in its hands. */
   {
     const searchRecord = require(path.join(ROOT, 'src/longterm/pricing/search-record.js'));
-    const board = await run(lpOk, nexOk);
+
+    /* ⛔ THE BOARD IS BUILT FROM THE REAL `loadConfig`, NOT FROM `{}` — the re-audit's D-7.
+       Every earlier cut of this section passed an EMPTY opts object, so the board was built
+       with `routes`, `custom`, `settings`, `links`, `extraFor`, `heldSetting` and
+       `wantLoanNex` all undefined. That is a fixture THINNER than what production builds,
+       and a fixture thinner than the real thing is blind to any gate on the missing fields:
+       a `if (!opts.settings) return {...no sightings...}` added tomorrow would leave this
+       whole section green while silencing both doors in production — the exact shape of the
+       defect SEAM was written to catch, one layer down.
+
+       `loadConfig` runs with NO DATABASE when it is handed its three inputs (it reports the
+       unreadable settings store as `problem` and answers with empty maps), which is what
+       makes the real config reachable from a pure suite. MEASURED: the board it produces is
+       identical to the `{}` one today — 14 programmes, the same six investors, the same
+       sightings — so this changes nothing about what is asserted and everything about what
+       a future gate can walk past. */
+    const cfg = await gb.loadConfig({ routes: {}, links: {}, marginHoldback: 0.25 });
+    const board = await run(lpOk, nexOk, cfg);
     ok(board.ok && board.programs.length > 0,
       'SEAM-0 CONTROL: the board under test priced something, so the assertions below mean something');
+
+    /* AND THE KEY LIST IS DERIVED FROM THE TWO FUNCTIONS THEMSELVES, never hand-kept: a
+       config key added to `loadConfig` and read by the board arrives here for free, and a
+       key the BOARD reads that `loadConfig` does not supply fails until somebody says which
+       kind it is. `raw` / `staticRequest` / `debug` are per-CALL, not config — a caller
+       decides them per search, so they are named once, here, and nowhere else. */
+    {
+      const fs = require('fs');
+      const all = fs.readFileSync(path.join(ROOT, 'src/longterm/pricing/general-board.js'), 'utf8');
+      const start = all.indexOf('async function boardForScenario');
+      const after = all.slice(start + 1);
+      const nextDecl = after.search(/\n(?:async )?function [A-Za-z_]|\nmodule\.exports/);
+      const body = (nextDecl === -1 ? after : after.slice(0, nextDecl))
+        .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      const readKeys = Array.from(new Set((body.match(/opts\.[A-Za-z_]+/g) || [])
+        .map((m) => m.slice(5)))).sort();
+      const PER_CALL = ['debug', 'raw', 'staticRequest'];
+      const cfgKeys = Object.keys(cfg);
+      const fromConfig = readKeys.filter((k) => !PER_CALL.includes(k));
+      const missingFromCfg = fromConfig.filter((k) => !cfgKeys.includes(k));
+      ok(missingFromCfg.length === 0,
+        `SEAM-0a the board reads no opts key its own loadConfig cannot supply (per-call: ${PER_CALL.join(', ')}) — unaccounted: ${missingFromCfg.join(', ') || 'none'}`);
+      const notPassed = fromConfig.filter((k) => !(k in cfg));
+      ok(notPassed.length === 0 && fromConfig.length >= 5,
+        `SEAM-0b every config key the board reads is actually handed to it here (${fromConfig.join(', ')})`);
+    }
 
     let sighted = null; let missed = null;
     const col = searchRecord.collector({
@@ -666,7 +709,7 @@ const byInvestor = (programs) => {
     /* A sheet that genuinely refused says nothing — the property the `answered` flag is
        FOR. This is the control that stops SEAM-1 being satisfiable by ignoring the flag. */
     const lpDown = { price: async () => ({ ok: false, error: 'down' }), parseFull: lpModel.parseFull };
-    const downBoard = await run(lpDown, nexOk);
+    const downBoard = await run(lpDown, nexOk, cfg);
     let sightedDown = null;
     const col2 = searchRecord.collector({
       recordSightings: async (s) => { sightedDown = s; return { ok: true }; },

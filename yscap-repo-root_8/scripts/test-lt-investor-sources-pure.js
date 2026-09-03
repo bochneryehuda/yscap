@@ -455,6 +455,48 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
   console.log('\nL · a row goes back to the pre-fill');
   const { rowPatch, carriesSetting, resetRequested, mapForSave, staysWithoutSetting } = await import('../app-v2/src/longterm/investorSourcePatch.js');
   const settings = require('../src/longterm/pricing/investor-settings');
+  const routing = require('../src/longterm/pricing/investor-routing');
+  /* Aliased: a later section in this same scope re-declares `sightings` locally, and a
+     `const` shadow makes the module-level one unreachable from here (TDZ). */
+  const sightReg = require('../src/longterm/pricing/investor-sightings');
+
+  /* ⛔ THE ROWS ARE BUILT THE WAY THE ROUTE BUILDS THEM — the re-audit's D-1.
+     Every earlier cut of this section hand-typed its rows as four or five literal keys, so
+     `prefill`, `label`, `availability`, `custom`, `whiteLabelMissing` and `note` were all
+     ABSENT — a fixture thinner than what production sends, which is blind to any rule that
+     reads one of the missing fields. `staysWithoutSetting` reads `prefill.whiteLabel` and
+     `availability`, and both were being supplied by hand right beside the assertion, so the
+     test was agreeing with its own fixture rather than with the screen's own input.
+
+     This is `GET /investors`'s own two steps, in order: `routing.describeSettings` for the
+     row, then the route's map adding `availability`, `lockedOut` and `carriesSetting`. A
+     field the route starts sending arrives here for free; a field it stops sending fails
+     here rather than passing by omission. */
+  const realRows = (saved, sight) => {
+    const d = routing.describeSettings(saved, { origin: 'setting', custom: new Map() });
+    return d.investors.map((r) => ({
+      ...r,
+      availability: sightReg.availabilityFor(r.key, sight),
+      lockedOut: sightReg.lockedOutFor(r.key, sight, r.source),
+      carriesSetting: settings.carriesOwnSetting(r),
+    }));
+  };
+  /* A register in which one sheet has produced ONE investor and the rest are `not_yet` —
+     the ordinary state of a shop a few searches old, and the state the hand-typed fixture
+     never had. */
+  const L_SIGHT = {
+    boards: { lenderprice: T1, loannex: T1 },
+    searches: 20,
+    investors: { verus: { lenderprice: T1 } },
+  };
+  const L_ROWS = realRows({
+    broadview: { source: 'lenderprice', enabled: false },
+    nqm: { source: 'loannex', enabled: true, whiteLabel: 'Ruby' },
+  }, L_SIGHT);
+  const realRow = (k) => L_ROWS.find((r) => r.key === k);
+  ok(realRow('broadview') && 'prefill' in realRow('broadview') && 'availability' in realRow('broadview')
+    && 'label' in realRow('broadview') && 'custom' in realRow('broadview'),
+    'L0 CONTROL: the rows below are the ROUTE\'s own shape — prefill, label, availability and custom all present, none typed by hand');
 
   /* The owner's own rows: on the list for no reason but a setting somebody saved. */
   const stale = {
@@ -555,19 +597,31 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
      is the owner's own defect restored in full. A regex over the screen can only ever pin
      how the loop is SPELLED. So the loop lives in the module and is HANDED REAL ROWS. */
   const SAVE_ROWS = [
-    stale,                                                                              // asked to reset
-    { key: 'nqm', source: 'loannex', enabled: true, whiteLabel: 'Ruby', carriesSetting: true },  // untouched, has a setting
-    { key: 'fresh', source: 'lenderprice', enabled: true, carriesSetting: false },       // untouched, no setting
-    { key: 'edited', source: 'lenderprice', enabled: true, carriesSetting: false },      // touched
+    realRow('broadview'),   // carries a setting and nothing else — asked to reset
+    realRow('nqm'),         // untouched, carries a setting
+    realRow('amb'),         // untouched, carries no setting at all
+    realRow('verus'),       // touched — and edited on THREE keys at once, see below
   ];
-  const SAVE_EDITS = { broadview: { reset: true }, edited: { choice: 'loannex' } };
+  ok(SAVE_ROWS.every(Boolean) && realRow('broadview').carriesSetting === true
+    && realRow('amb').carriesSetting === false,
+    'L12b CONTROL: those four are real registry rows and the two the save turns on carry what the route says they carry');
+  /* ⛔ A MULTI-KEY EDIT — the re-audit's D-4. Every earlier cut edited exactly ONE field on
+     one row, so a save loop that carried only the first change it found, or that let one
+     field overwrite another, passed. A real officer changes the source, types a name and
+     sets a holdback on one row before pressing Save. */
+  const SAVE_EDITS = {
+    broadview: { reset: true },
+    verus: { choice: 'loannex', whiteLabel: 'Topaz', holdback: 0.5 },
+  };
   const built = mapForSave(SAVE_ROWS, SAVE_EDITS);
   ok(!('broadview' in built.map),
     '⛔ L13 THE ONE THAT MATTERS: the row that asked for the pre-fill is ABSENT from the map the save sends');
-  ok(!('fresh' in built.map),
+  ok(!('amb' in built.map),
     'L14 …an untouched row carrying no setting is absent too, so today’s pre-fill is never pinned on for ever');
-  ok(built.map.nqm && built.map.nqm.source === 'loannex' && built.map.edited && built.map.edited.source === 'loannex',
+  ok(built.map.nqm && built.map.nqm.source === 'loannex' && built.map.verus && built.map.verus.source === 'loannex',
     'L15 …while a row with a setting and a row somebody edited both send what they hold');
+  ok(built.map.verus && built.map.verus.whiteLabel === 'Topaz' && built.map.verus.holdback === 0.5,
+    '⛔ L15a …and EVERY field of a multi-field edit is carried, not just the first one the loop found');
   ok(built.reset === 1,
     'L16 …and the count of settings actually removed is 1 — the reset on a row that had none is not counted');
   eq(mapForSave(null, null), { map: {}, reset: 0 }, 'L17 …and nothing to save is an empty map, never a throw');
@@ -584,6 +638,17 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
     { prefill: { whiteLabel: null }, availability: { lenderprice: { state: 'seen' } } },     // a sheet produced it
     { prefill: { whiteLabel: null }, availability: { loannex: { state: 'seen' } } },
     { prefill: { whiteLabel: null }, availability: { lenderprice: { state: 'never' }, loannex: { state: 'unknown' } } },
+    /* ⛔ `not_yet` — the re-audit's D-2/D-3. It is the ORDINARY state of a shop a few
+       searches old (a sheet has answered, this investor has not appeared in it yet) and
+       it was the ONE state of the four this battery never carried, so a rule that read it
+       as "a sheet produced this" — keeping a row that is about to leave, or the reverse —
+       passed. Both alone and mixed with a sheet that HAS produced the investor. */
+    { prefill: { whiteLabel: null }, availability: { lenderprice: { state: 'not_yet' }, loannex: { state: 'not_yet' } } },
+    { prefill: { whiteLabel: null }, availability: { lenderprice: { state: 'seen' }, loannex: { state: 'not_yet' } } },
+    { prefill: { whiteLabel: null }, availability: { lenderprice: { state: 'not_yet' }, loannex: { state: 'never' } } },
+    /* And two rows built the way the ROUTE builds them, rather than typed here. */
+    { prefill: realRow('broadview').prefill, availability: realRow('broadview').availability },
+    { prefill: realRow('verus').prefill, availability: realRow('verus').availability },
     { prefill: { whiteLabel: null }, availability: {} },
     { prefill: {}, availability: undefined },
     {},

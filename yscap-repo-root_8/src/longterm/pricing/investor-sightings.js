@@ -192,39 +192,31 @@ function record(stored, { source, keys, at, answered = true } = {}) {
  * See the three-state note at the top — `never` is the only one that locks a button.
  */
 /**
- * THE READ, SKIPPED WHEN THE CALLER ALREADY HANDS US A READ ONE.
+ * ALWAYS THE READ — the shortcut is gone, and that is the fix rather than a tidy-up.
  *
- * ⛔ THE TEST ASKS ABOUT EVERY KEY THE SHAPE HAS, DERIVED FROM `EMPTY` — never a
- * hand-typed pair. It used to test `boards` and `investors` only, and when
- * `searches` was added the shortcut went stale in the one direction nobody would
- * notice: a register written BEFORE that counter existed carries both of the old
- * keys, so it was taken as already-read and the very next line threw on
- * `cur.searches[s]`. The one production caller passes a normalized object, so it
- * was latent — but this module is exported precisely so the rule can be asked
- * without an HTTP door, and every fixture in its own suite is a `record()` output,
- * which is exactly the shape that CANNOT catch it. Deriving the key list means the
- * next key added to `EMPTY` cannot re-open it.
+ * ⛔ IT TRIED TWICE TO ASK "IS THIS ALREADY READ?" AND BOTH ANSWERS WERE WRONG IN THE
+ * SAME WAY: they judged the SHAPE and never the CONTENTS.
+ *   · `stored[k] === undefined` — an explicit `null` passes, and the next line threw.
+ *   · `typeof v === 'object'` — a key holding `{ nqm: { lenderprice: 'not-a-date' } }`
+ *     passes, and an UNUSABLE TIMESTAMP then lights a source button and keeps a row on
+ *     the settings list. Measured (re-audit 2026-09-03): a bad stamp read as `seen`
+ *     through the shortcut and `unknown` through `read`, and `validate()` stores it.
  *
- * ⛔ AND IT ASKS WHETHER THE KEY IS USABLE, NOT MERELY PRESENT. The first cut tested
- * `=== undefined`, which an explicit `null` passes — so a register carrying
- * `searches: null` was taken as already-read and the next line threw on
- * `cur.searches[s]`. `validate()` stores all three of those shapes happily, and a
- * throw here takes down `GET /investors` — the whole settings screen — in the one
- * place this module's own header promises it never will (*"a register that cannot be
- * parsed costs the 'available on' column, never a board"*). `read()` is total, so
- * handing it anything unusable is always the right answer.
+ * There is no third test that is right, because "already read" is not a property of the
+ * shape at all — only `read` itself can answer it, and `read` is TOTAL and IDEMPOTENT
+ * (its own output fed back in is unchanged). So this asks it every time. The cost is one
+ * pass over a small object; the class it closes is every future value nobody validated.
+ *
+ * ⛔ AND THE SEVERITY IS STATED HONESTLY. An earlier version of this note claimed a throw
+ * here "takes down `GET /investors`, the whole settings screen". That is NOT reachable:
+ * the one production caller, `investorConfig.sightingsRaw()`, spreads `sightings.read(...)`,
+ * so a raw blob never arrives. It was LATENT, exactly as the paragraph beside it said —
+ * two paragraphs of one comment contradicting each other, which the re-audit caught. It
+ * is worth fixing because this module is exported so the rule can be asked without an
+ * HTTP door, not because a screen was falling over.
  */
-function normalized(stored) {
-  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return read(stored);
-  for (const k of Object.keys(EMPTY)) {
-    const v = stored[k];
-    if (!v || typeof v !== 'object' || Array.isArray(v)) return read(stored);
-  }
-  return stored;
-}
-
 function availabilityFor(key, stored) {
-  const cur = normalized(stored);
+  const cur = read(stored);
   const row = cur.investors[asKey(key)] || {};
   const out = {};
   for (const s of SOURCES) {
@@ -272,7 +264,7 @@ function lockedOutFor(key, stored, currentSource) {
 
 /** Every investor key the register has ever seen, on either source. */
 function keysSeen(stored) {
-  const cur = normalized(stored);
+  const cur = read(stored);
   return Object.keys(cur.investors).sort();
 }
 

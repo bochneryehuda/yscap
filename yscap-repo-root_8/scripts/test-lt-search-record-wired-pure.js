@@ -39,7 +39,7 @@ const ok = (c, m) => { if (c) { pass++; console.log(`  ok   ${m}`); } else { fai
    require(...)` at the top of the file), so a cache entry replaced afterwards is
    never seen — the first cut of this harness stubbed `bracket-run` too late and
    the bands door quietly ran the real one. Everything goes in first. */
-const calls = { recordOne: [], flush: [], observe: 0, later: 0 };
+const calls = { recordOne: [], flush: [], observe: 0, observed: [], later: 0 };
 const stub = (rel, exports) => {
   const id = require.resolve(path.join(ROOT, rel));
   require.cache[id] = { id, filename: id, loaded: true, exports };
@@ -52,10 +52,20 @@ const stub = (rel, exports) => {
    that the work it was given actually calls the recorder. */
 stub('src/longterm/pricing/search-record.js', {
   collector: () => ({
-    observe: () => { calls.observe += 1; },
+    /* ⛔ THE ARGUMENT IS RECORDED, NOT COUNTED — the re-audit's D-6. A spy that only
+       counts calls proves the door CALLED the recorder and nothing about what it handed
+       over: `observe(null)` twice, or `observe(someSummary)` instead of the board, keeps a
+       count-based assertion green while the register is fed nothing it can read. So every
+       argument is kept and asserted by IDENTITY against the object the board stub returned.
+       The count stays too — it is what proves BOTH bands were observed. */
+    observe: (...a) => { calls.observe += 1; calls.observed.push({ arg: a[0], argc: a.length }); },
     flush: (o) => { calls.flush.push(o); },
   }),
-  recordOne: (b, o) => { calls.recordOne.push({ board: b, opts: o }); },
+  /* ⛔ AND THE ARGUMENT COUNT IS KEPT — the re-audit's D-5. `(b, o) => …` silently ignores a
+     third argument, so a door that injected its own no-op dependency (`recordOne(board, opts,
+     { recordMiss: () => {} })`) would turn the recording into nothing in production and leave
+     every assertion here green. Rest params record what was ACTUALLY passed. */
+  recordOne: (...a) => { calls.recordOne.push({ board: a[0], opts: a[1], argc: a.length }); },
   later: (fn) => { calls.later += 1; try { fn(); } catch (_) { /* production swallows too */ } },
   settled: async () => {},
 });
@@ -91,6 +101,14 @@ const BOARD = {
    see section D, which is what stops this whole suite being silenced by a condition
    that the one fixture here happens to satisfy. */
 const cfg = { wantLoanNex: true };
+/* ONE object, not a fresh spread per call, so the observe spy above can assert the door
+   handed over THE BOARD IT WAS GIVEN rather than something shaped like it. */
+const BOARD_LP_ONLY = {
+  ...BOARD,
+  source: 'lenderprice',
+  sources: { lenderprice: true, loannex: false },
+  sightings: { lenderprice: { answered: true, keys: ['nqm'] }, loannex: { answered: false, keys: [] } },
+};
 stub('src/longterm/pricing/general-board.js', {
   loadConfig: async () => ({
     routes: {}, custom: new Map(), links: {}, heldSetting: 0.25,
@@ -102,12 +120,7 @@ stub('src/longterm/pricing/general-board.js', {
      the two-source board regardless would leave section D unable to see a gate written
      on the BOARD (`if (board.source === 'both')`) rather than on the config — and the
      audit defeated the suite both ways. */
-  boardForScenario: async () => (cfg.wantLoanNex ? BOARD : {
-    ...BOARD,
-    source: 'lenderprice',
-    sources: { lenderprice: true, loannex: false },
-    sightings: { lenderprice: { answered: true, keys: ['nqm'] }, loannex: { answered: false, keys: [] } },
-  }),
+  boardForScenario: async () => (cfg.wantLoanNex ? BOARD : BOARD_LP_ONLY),
   pickerRoster: () => [],
 });
 /* The bands door's own runner. It hands each band back through `priceOne`, which is
@@ -134,7 +147,7 @@ const SCENARIO = {
   state: 'NJ', zip: '07728', county: 'Monmouth', purpose: 'purchase',
   propertyType: 'sfr', termYears: 30,
 };
-const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.observe = 0; calls.later = 0; };
+const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.observe = 0; calls.observed.length = 0; calls.later = 0; };
 
 (async () => {
   console.log('\n── A. THE IMMEDIATE BOARD RECORDS — the door the owner reported ──');
@@ -151,6 +164,8 @@ const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.
     const got = calls.recordOne[0] || {};
     ok(got.board === BOARD,
       'A3 …handing over THE BOARD it just answered, not a re-derived one');
+    ok(got.argc === 2,
+      `A3a …with EXACTLY the board and the options — a third argument would be a dependency the door injected, which is how a recorder becomes a no-op in production (${got.argc})`);
     ok(got.opts && got.opts.staffId === 'staff-1' && got.opts.scenario,
       'A4 …with who searched and what they searched for, which is what makes the review actionable');
     ok(calls.flush.length === 0,
@@ -166,6 +181,8 @@ const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.
       `B0 CONTROL: the door answered (${res.code || 200} ${res.body && (res.body.ok || res.body.error)})`);
     ok(calls.observe === 2,
       `B1 every band is OBSERVED — an investor that answers in one band is carried (${calls.observe} of 2)`);
+    ok(calls.observed.length === 2 && calls.observed.every((o) => o.arg === BOARD && o.argc === 1),
+      `B1a …and what it observed is THE BAND'S OWN BOARD, by identity, not a count of calls (${calls.observed.map((o) => (o.arg === BOARD ? 'board' : String(o.arg && o.arg.source || o.arg))).join(', ')})`);
     ok(calls.flush.length === 1,
       `B2 …and flushed EXACTLY ONCE, after the whole search — never per band, whose silence proves nothing (${calls.flush.length})`);
     ok(calls.later === 1,
@@ -189,8 +206,8 @@ const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.
     bracket.fail = false;
     ok(res.code === 422 && res.body && res.body.error === 'lt_bracket_figures_incomplete',
       `C0 CONTROL: the bracketing really did refuse AFTER the sheets were asked (${res.code} ${res.body && res.body.error})`);
-    ok(calls.observe === 2,
-      `C0b CONTROL: …and the sheets really were asked (${calls.observe} bands observed)`);
+    ok(calls.observe === 2 && calls.observed.every((o) => o.arg === BOARD),
+      `C0b CONTROL: …and the sheets really were asked, each handing over its own board (${calls.observe} bands observed)`);
     ok(calls.flush.length === 1,
       `C1 …so the search is recorded anyway — a refusal downstream is not evidence the sheets were never asked (${calls.flush.length})`);
 
