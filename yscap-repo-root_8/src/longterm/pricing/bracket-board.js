@@ -66,7 +66,32 @@
  *     that went up.
  *   · nothing becomes unworkable: 0 nulls before, 0 after.
  * And over 6,336 deals × the whole 11-band ladder (69,696 pairs): 0 bands LOST,
- * 0 newly reachable, and the searched ratio moves in 5,176 — always downward.
+ * 0 newly reachable, and the SEARCHED ratio moves in about 5,165 of them.
+ *
+ * ⛔ THE SEARCHED RATIO IS NOT ALWAYS CUT DOWNWARD, AND THIS LINE USED TO SAY IT
+ * WAS. The pre-merge audit of 2026-09-03 measured the claim false and it is
+ * corrected here rather than quietly dropped. Re-measured on that battery:
+ * 5,165 moves, of which 3,951 go DOWN and 1,214 go UP (the first is band 7 on a
+ * $150,000 loan, 1.15 → 1.16).
+ *
+ * THE MECHANISM, and it is why an up-move is the SAFE direction. `sendRatioFor`
+ * asks for the LOWEST ratio any rate in the band achieves. Cutting each rate's
+ * ratio down can push the rate that USED to be that minimum out of the band
+ * altogether — and the new minimum is then a HIGHER ratio. So we ask the vendor
+ * for a STRONGER DSCR than before, which can only ever fetch a worse price, never
+ * a better one. Nothing is over-stated about the loan; the request is simply more
+ * conservative in that band.
+ *
+ * WHAT IS ACTUALLY ONE-WAY, and what the safety of this rests on: the RATIO A
+ * RATE ACHIEVES (above — 0 of 161,915 moves went up), 0 bands lost, and every
+ * searched ratio landing inside the band it is for (0 of 69,696 outside).
+ *
+ * HONEST NOTE ON THE FIGURES: the script that produced the original numbers is
+ * not in the tree, so this battery is a RECONSTRUCTION of the one the paragraph
+ * describes — hence 5,165 against the 5,176 first written. The SPLIT is the
+ * finding; the total is indicative. The properties that matter are asserted
+ * rather than measured: N15 in `test-lt-dscr-brackets-pure` re-runs this and
+ * fails on a single band lost or a single ratio outside its own band.
  *
  * So the only thing this can do is search a band the loan has genuinely earned
  * instead of the one above it. A borrower quoted at the better band was being

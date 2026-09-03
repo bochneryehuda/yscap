@@ -146,6 +146,57 @@ console.log('\nB2 · which buttons are locked out — the rule itself, not a cop
     'B10 an investor neither sheet has ever carried is locked out of both — and can still be turned off');
   eq(sightings.lockedOutFor('verus', both, 'lenderprice'), ['loannex'],
     'B10a …and even then, the sheet it is SET to stays pressable, so the row is never a dead end');
+
+  /* ── B11 · EVERY ROW AT ONCE, AND IT MUST ANSWER THE SAME THING ────────────
+     The settings screen asked `availabilityFor` and then `lockedOutFor` per row —
+     and `lockedOutFor` asks `availabilityFor` again, so that was THREE full passes
+     over the register per investor and drawing the screen was QUADRATIC. The
+     pre-merge audit of 2026-09-03 measured one render: 8.3 ms at today's 43
+     investors, 624.6 ms at this module's own `MAX_INVESTORS` of 500.
+
+     `availabilityAll` does it off ONE read. What must never drift is the ANSWER,
+     so it is compared row for row against the per-row doors over a register
+     carrying every state at once — seen, never, not_yet and unknown. */
+  const wide = { boards: { lenderprice: T1, loannex: T1 }, searches: { lenderprice: sightings.NEVER_AFTER_SEARCHES, loannex: 1 }, investors: {} };
+  const wideKeys = [];
+  for (let i = 0; i < 60; i += 1) {
+    const k = `inv${i}`;
+    wideKeys.push(k);
+    if (i % 3 === 0) wide.investors[k] = { lenderprice: T1 };
+    else if (i % 3 === 1) wide.investors[k] = { loannex: T2 };
+  }
+  wideKeys.push('never-seen-at-all');
+  const srcOf = (k) => (k === 'inv1' ? 'loannex' : 'lenderprice');
+  const all = sightings.availabilityAll(wide, wideKeys, srcOf);
+  let differ = 0; let states = new Set();
+  for (const k of wideKeys) {
+    const a = sightings.availabilityFor(k, wide);
+    const l = sightings.lockedOutFor(k, wide, srcOf(k));
+    const got = all.get(k);
+    if (JSON.stringify(got.availability) !== JSON.stringify(a)) differ += 1;
+    if (JSON.stringify(got.lockedOut) !== JSON.stringify(l)) differ += 1;
+    for (const src of sightings.SOURCES) states.add(a[src].state);
+  }
+  ok(states.size >= 3,
+    `B11 CONTROL: the battery really carries several states at once (${[...states].sort().join(', ')})`);
+  eq(differ, 0,
+    '⛔ B11a THE FAST PATH ANSWERS EXACTLY WHAT THE PER-ROW DOORS ANSWER — it is the same two rules underneath, which is what stops a fast path drifting from the rule it is fast at');
+  ok(all.get('inv1').lockedOut.indexOf('loannex') === -1,
+    'B11b …including the rule that the source a row is SET to is never locked out');
+
+  /* A REGRESSION GUARD, NOT A TARGET. Measured: 411 ms per-row against 0.68 ms here
+     at 500 investors on this machine. The ceiling is ~150× the measured figure, so a
+     slow or loaded box cannot fail it — only a return to asking per row can. */
+  const CAP_MS = 100;
+  const big = { boards: { lenderprice: T1, loannex: T1 }, searches: { lenderprice: 50, loannex: 50 }, investors: {} };
+  const bigKeys = [];
+  for (let i = 0; i < sightings.MAX_INVESTORS; i += 1) { const k = `big${i}`; bigKeys.push(k); big.investors[k] = { lenderprice: T1 }; }
+  const t0 = process.hrtime.bigint();
+  const bigOut = sightings.availabilityAll(big, bigKeys, () => 'lenderprice');
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  ok(bigOut.size === sightings.MAX_INVESTORS, `B11c CONTROL: the whole cap really was answered (${bigOut.size} rows)`);
+  ok(ms < CAP_MS,
+    `⛔ B11d …in ${ms.toFixed(2)} ms at the register's own cap of ${sightings.MAX_INVESTORS} — asking per row took 411 ms`);
 }
 
 console.log('\nC · the register reads what it wrote, and refuses what it cannot');
@@ -206,8 +257,15 @@ console.log('\nF · the availability reaches the screen already decided');
   ok(/availabilityFor/.test(shared), 'F1 the investors door asks the register about every row');
   ok(/lockedOut/.test(shared),
     'F2 …and resolves the LOCK on the server — a browser working that out again would be a second copy of a rule the board prices on');
-  ok(/sightings\.lockedOutFor\(/.test(shared),
-    'F3 …through the ONE function that owns the rule (section B2 runs it) — never a copy of the test re-inlined here');
+  /* ⛔ RE-POINTED, NOT LOOSENED (2026-09-03). This pinned `sightings.lockedOutFor(`,
+     which was ONE SPELLING of the property. The door now asks `availabilityAll` —
+     the SAME two rules in the same module, off one read instead of three per row,
+     because asking per row made drawing this screen quadratic (624 ms at the
+     register's own cap, measured). The property is that the lock comes from that
+     module and is never re-derived here; both spellings satisfy it, and F3b below
+     is what refuses a re-inlined copy of the test itself. */
+  ok(/sightings\.(lockedOutFor|availabilityAll)\(/.test(shared),
+    'F3 …through the ONE module that owns the rule (section B2 runs it) — never a copy of the test re-inlined here');
   ok(!/state === 'never'/.test(strip(shared)),
     'F3b …so the door cannot grow its own reading of what "locked" means');
 }
@@ -501,12 +559,27 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
   };
   /* A register in which one sheet has produced ONE investor and the rest are `not_yet` —
      the ordinary state of a shop a few searches old, and the state the hand-typed fixture
-     never had. */
+     never had.
+     ⛔ `searches` IS AN OBJECT PER SHEET, NOT A NUMBER, and this fixture wrote `20`. `read`
+     ignores a non-object, so `searches` came back `{}` and every row was `not_yet` — which
+     is what the comment above SAYS, so the fixture accidentally described what it claimed.
+     The pre-merge audit of 2026-09-03 caught it: written as intended (a count per sheet at
+     the threshold) the rows would have been `never` — the state that LOCKS a button — and
+     "correcting" it later would silently change what this whole section tests.
+     It is left at a DELIBERATE low count now: the same `not_yet` the comment describes, said
+     in the shape `read` actually understands, so it means what it says and cannot drift. */
   const L_SIGHT = {
     boards: { lenderprice: T1, loannex: T1 },
-    searches: 20,
+    searches: { lenderprice: 1, loannex: 1 },
     investors: { verus: { lenderprice: T1 } },
   };
+  {
+    const st = sightReg.availabilityFor('nqm', L_SIGHT);
+    ok(st.lenderprice.state === 'not_yet' && st.loannex.state === 'not_yet',
+      `L_SIGHT CONTROL: the fixture really is the "a few searches old" register it describes (${st.lenderprice.state}/${st.loannex.state}) — it read \`not_yet\` for the WRONG reason before`);
+    ok(sightReg.lockedOutFor('nqm', L_SIGHT).length === 0,
+      'L_SIGHT CONTROL: …so nothing is locked out, which is what every row below is written against');
+  }
   const L_ROWS = realRows({
     broadview: { source: 'lenderprice', enabled: false },
     nqm: { source: 'loannex', enabled: true, whiteLabel: 'Ruby' },
@@ -724,12 +797,19 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
     && !tot(() => sightings.availabilityFor('nqm', [])).threw,
     'M5 …and nothing at all, a string or an array still answers rather than throwing');
 
-  /* ⛔ THE SHORTCUT ASKS WHETHER THE KEY IS USABLE, NOT MERELY PRESENT — the SECOND half of
-     the same class, found by the pre-merge audit of 2026-09-03. `=== undefined` is passed by
-     an explicit `null`, so a register carrying `searches: null` was taken as already-read and
-     the next line threw on `cur.searches[s]`. `validate()` stores all three of these shapes
-     happily, and a throw here takes down `GET /investors` — the whole settings screen — in the
-     one place the module's own header promises it never will. */
+  /* ⛔ EVERY READER GOES THROUGH `read`, WHATEVER IT IS HANDED — and the shortcut that
+     used to sit in front of it is GONE, not merely corrected.
+     THE HISTORY, because two versions of this comment contradicted each other and the
+     re-audit of 2026-09-03 caught it. There was a shortcut that treated an already-read
+     register as read and skipped `read`; it asked `=== undefined`, which an explicit
+     `null` passes, so `searches: null` was taken as read and the next line threw on
+     `cur.searches[s]`. `validate()` stores all of these shapes happily.
+     ⛔ AND THE SEVERITY IS STATED HONESTLY: this was LATENT, never live. The one
+     production caller, `investorConfig.sightingsRaw()`, spreads `sightings.read(...)`,
+     so a raw blob never reached it — an earlier version of this note claimed a throw
+     here "takes down GET /investors, the whole settings screen", and that was not
+     reachable. It is worth holding because the module is exported so the rule can be
+     asked without an HTTP door. */
   let survived = 0;
   const NULLED = [
     { boards: {}, searches: null, investors: {} },
@@ -750,6 +830,28 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
     `⛔ M6 a register with a NULL where an object should be still answers rather than throwing (${survived}/${NULLED.length})`);
   ok(NULLED.every((b) => sightings.validate(b).ok),
     'M7 …and the settings door would have stored every one of them, which is why M6 is not hypothetical');
+
+  /* ⛔ M8 · WHAT THE REMOVAL ACTUALLY CHANGED, and it is not nothing. Restoring the exact
+     shortcut left all eight suites green (measured by the pre-merge audit), so this is the
+     assertion that was missing: a stamp that is NOT a usable timestamp must resolve through
+     `read`, which drops it — so the sheet reads as having NEVER carried that investor.
+     THE CONSEQUENCE IS NAMED because it is the expensive direction: `never` is the state
+     that LOCKS a source button, so an unreadable stamp costs that button rather than
+     leaving it live. That is the right answer (an unreadable stamp is no evidence the sheet
+     carried anything) and it is the one worth stating out loud. */
+  const CORRUPT = {
+    boards: { lenderprice: T1 },
+    searches: { lenderprice: sightings.NEVER_AFTER_SEARCHES },
+    investors: { nqm: { lenderprice: 'not-a-date' } },
+  };
+  const c8 = tot(() => sightings.availabilityFor('nqm', CORRUPT));
+  ok(!c8.threw && c8.v.lenderprice.state === 'never',
+    `⛔ M8 an unusable stamp resolves through \`read\` and is DROPPED — the sheet reads as never having carried it (${c8.threw || c8.v.lenderprice.state}), not as "seen at not-a-date"`);
+  const c8l = tot(() => sightings.lockedOutFor('nqm', CORRUPT));
+  ok(!c8l.threw && Array.isArray(c8l.v) && c8l.v.indexOf('lenderprice') !== -1,
+    `M8a …and that is the state that LOCKS the button, which is the cost of the fix, stated rather than left to be discovered (${JSON.stringify(c8l.threw || c8l.v)})`);
+  ok(sightings.validate(CORRUPT).ok === true,
+    'M8b …and the settings door would have STORED that register, so M8 is not hypothetical either');
 
   /* The three wirings no run of the rule can see: the list must ASK the shared function
      rather than keep a fourth copy of the four-clause test, the route must put its answer

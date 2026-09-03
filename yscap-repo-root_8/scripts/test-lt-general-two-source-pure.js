@@ -682,9 +682,20 @@ const byInvestor = (programs) => {
       const missingFromCfg = fromConfig.filter((k) => !cfgKeys.includes(k));
       ok(missingFromCfg.length === 0,
         `SEAM-0a the board reads no opts key its own loadConfig cannot supply (per-call: ${PER_CALL.join(', ')}) — unaccounted: ${missingFromCfg.join(', ') || 'none'}`);
+      /* ⛔ SEAM-0b's FIRST CLAUSE IS IMPLIED BY SEAM-0a, and the pre-merge audit of
+         2026-09-03 verified it: `!(k in cfg)` and `!cfgKeys.includes(k)` agree on every
+         key, so `notPassed` can never be non-empty once `missingFromCfg` is empty. It is
+         kept because the two ask about DIFFERENT objects in principle (own keys versus
+         the prototype chain) and the cost is nothing — but the message no longer claims
+         it is what earns its place.
+         WHAT ACTUALLY EARNS IT is `fromConfig.length >= 5`: without a floor, a board that
+         read NO opts keys at all would satisfy both clauses vacuously, and SEAM-0a with
+         it. That is the assertion doing the work. */
       const notPassed = fromConfig.filter((k) => !(k in cfg));
-      ok(notPassed.length === 0 && fromConfig.length >= 5,
-        `SEAM-0b every config key the board reads is actually handed to it here (${fromConfig.join(', ')})`);
+      ok(fromConfig.length >= 5,
+        `SEAM-0b CONTROL: the board really reads its config from opts — ${fromConfig.length} keys (${fromConfig.join(', ')}) — so SEAM-0a cannot pass vacuously`);
+      ok(notPassed.length === 0,
+        `SEAM-0b1 …and every one of them is handed to it here${notPassed.length ? ` — not passed: ${notPassed.join(', ')}` : ''}`);
     }
 
     let sighted = null; let missed = null;

@@ -234,7 +234,24 @@ function record(stored, { source, keys, at, answered = true, counts = true } = {
  * HTTP door, not because a screen was falling over.
  */
 function availabilityFor(key, stored) {
-  const cur = read(stored);
+  return availabilityFrom(read(stored), key);
+}
+
+/**
+ * THE PER-ROW RULE, OVER AN ALREADY-READ REGISTER — the one definition both doors
+ * above and `availabilityAll` below are built from.
+ *
+ * ⛔ WHY IT IS SPLIT OUT AT ALL, and it is a cost rather than a taste. A settings
+ * screen asks about EVERY investor, and `availabilityFor` + `lockedOutFor` each
+ * re-read the whole register — with `lockedOutFor` calling `availabilityFor`, that
+ * was THREE full passes per row, so drawing the screen was quadratic in the number
+ * of investors. MEASURED by the pre-merge audit of 2026-09-03, on one render:
+ * 43 investors 8.3 ms, 100 24.8 ms, 200 91.5 ms, and 624.6 ms at `MAX_INVESTORS`
+ * — six tenths of a second of BLOCKING CPU at the cap this module itself declares.
+ * At today's roster it is harmless; at the cap it is not, and a limit a module sets
+ * for itself is a limit it should survive.
+ */
+function availabilityFrom(cur, key) {
   const row = cur.investors[asKey(key)] || {};
   const out = {};
   for (const s of SOURCES) {
@@ -275,9 +292,40 @@ function availabilityFor(key, stored) {
  * HTTP door.
  */
 function lockedOutFor(key, stored, currentSource) {
-  const a = availabilityFor(key, stored);
+  return lockedFrom(availabilityFor(key, stored), currentSource);
+}
+
+/** The lock rule over an availability already in hand. One definition; see above. */
+function lockedFrom(a, currentSource) {
   const inUse = typeof currentSource === 'string' ? currentSource : null;
   return SOURCES.filter((s) => a[s].state === 'never' && s !== inUse);
+}
+
+/**
+ * EVERY ROW AT ONCE, OFF ONE READ — what a settings screen actually asks for.
+ *
+ * The answer per row is byte-identical to calling `availabilityFor` and
+ * `lockedOutFor` (they are the same two functions underneath, which is what stops
+ * a fast path drifting from the rule it is fast at). What changes is the cost:
+ * one `read` for the whole screen instead of three per row.
+ *
+ * `sourceOf` is asked for the setting in force for each key, so the source an
+ * investor is actually routed to is never locked — the same guarantee
+ * `lockedOutFor`'s third argument makes, and for the same reason.
+ *
+ * NON-THROWING, like everything else here: a key `sourceOf` cannot answer for is
+ * treated as having no setting, which locks strictly less.
+ */
+function availabilityAll(stored, keys, sourceOf) {
+  const cur = read(stored);
+  const out = new Map();
+  for (const key of (keys || [])) {
+    const availability = availabilityFrom(cur, key);
+    let inUse = null;
+    if (typeof sourceOf === 'function') { try { inUse = sourceOf(key); } catch (_) { inUse = null; } }
+    out.set(key, { availability, lockedOut: lockedFrom(availability, inUse) });
+  }
+  return out;
 }
 
 /** Every investor key the register has ever seen, on either source. */
@@ -297,7 +345,7 @@ function validate(v) {
 }
 
 module.exports = {
-  SETTING_KEY, SOURCES, MAX_INVESTORS, EMPTY,
+  SETTING_KEY, SOURCES, MAX_INVESTORS, EMPTY, availabilityAll,
   read, record, availabilityFor, lockedOutFor, keysSeen, validate, NEVER_AFTER_SEARCHES,
   _internals: { isIso, newestOf },
 };

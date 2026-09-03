@@ -39,7 +39,7 @@ const ok = (c, m) => { if (c) { pass++; console.log(`  ok   ${m}`); } else { fai
    require(...)` at the top of the file), so a cache entry replaced afterwards is
    never seen — the first cut of this harness stubbed `bracket-run` too late and
    the bands door quietly ran the real one. Everything goes in first. */
-const calls = { recordOne: [], flush: [], observe: 0, observed: [], later: 0 };
+const calls = { recordOne: [], flush: [], observe: 0, observed: [], later: 0, collector: [] };
 const stub = (rel, exports) => {
   const id = require.resolve(path.join(ROOT, rel));
   require.cache[id] = { id, filename: id, loaded: true, exports };
@@ -51,7 +51,14 @@ const stub = (rel, exports) => {
    is asserted is that `later` was ASKED, which is the production property, and
    that the work it was given actually calls the recorder. */
 stub('src/longterm/pricing/search-record.js', {
-  collector: () => ({
+  /* ⛔ AND `collector`'s OWN ARGUMENT COUNT IS RECORDED TOO — the hole A3a closes on
+     `recordOne`, still open one line up on the OTHER door until the pre-merge audit of
+     2026-09-03 found it. `searchRecord.collector({ recordSightings: async () => ({ok:true}),
+     recordMisses: async () => ({ok:true}) })` at the bands door turns every band's sighting
+     AND miss recording into nothing in production — and this stub's `collector: () => ({…})`
+     discarded its own argument, so all 24 checks stayed green while the register went
+     silent. Rest params record what was ACTUALLY passed. */
+  collector: (...ca) => { calls.collector.push({ deps: ca[0], argc: ca.length }); return ({
     /* ⛔ THE ARGUMENT IS RECORDED, NOT COUNTED — the re-audit's D-6. A spy that only
        counts calls proves the door CALLED the recorder and nothing about what it handed
        over: `observe(null)` twice, or `observe(someSummary)` instead of the board, keeps a
@@ -60,7 +67,7 @@ stub('src/longterm/pricing/search-record.js', {
        The count stays too — it is what proves BOTH bands were observed. */
     observe: (...a) => { calls.observe += 1; calls.observed.push({ arg: a[0], argc: a.length }); },
     flush: (o) => { calls.flush.push(o); },
-  }),
+  }); },
   /* ⛔ AND THE ARGUMENT COUNT IS KEPT — the re-audit's D-5. `(b, o) => …` silently ignores a
      third argument, so a door that injected its own no-op dependency (`recordOne(board, opts,
      { recordMiss: () => {} })`) would turn the recording into nothing in production and leave
@@ -192,6 +199,16 @@ const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.
       'B4 …carrying who searched and what for');
     ok(calls.recordOne.length === 0,
       'B5 …and it does NOT also call the single-board recorder — one search, one recording');
+    /* ⛔ B6 · THE SAME HOLE A3a CLOSES, ON THIS DOOR. `collector()` takes an optional
+       dependency bag, so `collector({ recordSightings: async () => ({ok:true}),
+       recordMisses: async () => ({ok:true}) })` here turns every band's sighting AND miss
+       recording into nothing IN PRODUCTION — and left all 24 checks green until the
+       pre-merge audit of 2026-09-03 tried it, because this suite's stub discarded its own
+       argument. A3a records `recordOne`'s argument count for the immediate door; this
+       records `collector`'s for the bands door. */
+    const c0 = calls.collector[0];
+    ok(c0 && c0.argc === 0,
+      `B6 the collector is asked for with NO dependencies injected — anything passed there is the recorder replaced with a no-op (${c0 ? `argc ${c0.argc}` : 'never called'})`);
   }
 
   console.log('\n── C. A REFUSED SEARCH IS STILL A SEARCH ──');
