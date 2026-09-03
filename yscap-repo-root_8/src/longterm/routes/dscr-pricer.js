@@ -764,7 +764,7 @@ function makeRouter() {
   const router = express.Router();
   router.use(express.json({ limit: '256kb' }));
   router.get('/zip/:zip', zipLookup);
-  router.get('/investors', investorsRoster);
+  router.get('/investors', (req, res) => investorsRoster(req, res).catch((e) => res.status(500).json({ ok: false, error: 'lt_dscr_investors_error' })));
   router.get('/comp-plan', (req, res) => compPlanHandler(req, res).catch((e) => {
     console.error('[lt-dscr] comp-plan failed:', (e && e.message) || e);
     // ⛔ NO PLAN IS THE ANSWER, never a guessed one — the screen falls back to raw pricing
