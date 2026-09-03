@@ -189,6 +189,50 @@ export default function LtInvestorSources() {
     return list.filter((r) => `${r.label} ${r.whiteLabel || ''} ${r.key}`.toLowerCase().includes(needle));
   }, [rows, q, onlyOn, edits]);
 
+  /**
+   * WHEN EACH SHEET LAST ACTUALLY ANSWERED — the one fact that settles "is it
+   * working?" (owner, 2026-09-03: *"I see already in the search the new
+   * investor's name… where exactly are we off?"*).
+   *
+   * ⛔ SEEING THE NAMES ON THE PRICING PAGE IS NOT EVIDENCE. "Narrow to certain
+   * investors" is drawn from `engine.investors()` — our OWN settings roster,
+   * "no vendor call, no billing" in that code's own words — so it lists the five
+   * whether or not LoanNEX has ever answered. This line reads the register the
+   * board itself writes.
+   *
+   * The DATE is composed here rather than on the server because only the reader's
+   * browser knows the reader's timezone; the never-answered sentence has no date
+   * in it and stays server-side. One home each.
+   *
+   * ⛔ A HOOK, SO IT LIVES ABOVE EVERY EARLY RETURN. `if (gone) return null` sits
+   * below; a useMemo after it changes the hook count between renders and React
+   * crashes the page ("Rendered more hooks than during the previous render").
+   * CI's test-react-hook-order caught exactly this — keep it here.
+   */
+  const sheetActivity = useMemo(() => {
+    const la = (data && data.lastAnswered) || null;
+    if (!la) return [];
+    return ['lenderprice', 'loannex'].map((k) => la[k]).filter(Boolean).map((x) => {
+      if (!x.everAnswered) return { key: x.source, label: x.label, ok: false, text: x.neverNote };
+      let when = x.at;
+      try { when = new Date(x.at).toLocaleString(); } catch (_) { when = x.at; }
+      return { key: x.source, label: x.label, ok: true, text: `${x.label} last answered a search on ${when}.` };
+    });
+  }, [data]);
+
+  /**
+   * A RATE SHEET THE SERVER SAYS HAS TROUBLE — its own decision to speak, its own
+   * wording (a second copy here would drift from the board). Also a hook: above
+   * the early return with the one above it.
+   */
+  const sheetTrouble = useMemo(() => {
+    const c = (data && data.connections) || null;
+    if (!c) return [];
+    return ['loannex', 'lenderprice']
+      .map((k) => c[k])
+      .filter((x) => x && x.speak && x.message);
+  }, [data]);
+
   const edit = (key, patch) => {
     setSaved(null);
     setEdits((s) => ({ ...s, [key]: { ...(s[key] || {}), ...patch } }));
@@ -291,50 +335,6 @@ export default function LtInvestorSources() {
 
   const sight = (data && data.sightings) || null;
   const coldRegister = sight && !sight.boards.lenderprice && !sight.boards.loannex;
-
-  /**
-   * A RATE SHEET NOBODY CAN SIGN IN TO — the reason an investor set to it never
-   * reaches the board (owner-reported 2026-09-03: *"It still does not come up in
-   * any of the new five. It's not pulling on the ink from loannex yet."*).
-   *
-   * ⛔ THE SERVER DECIDES WHETHER TO SPEAK, NOT THIS SCREEN. `speak` already
-   * accounts for whether anybody is actually routed there, and the wording is
-   * the server's one definition — re-deriving either here would be a second copy
-   * of the rule, free to disagree with the board about the same fact.
-   */
-  /**
-   * WHEN EACH SHEET LAST ACTUALLY ANSWERED — the one fact that settles "is it
-   * working?" (owner, 2026-09-03: *"I see already in the search the new
-   * investor's name… where exactly are we off?"*).
-   *
-   * ⛔ SEEING THE NAMES ON THE PRICING PAGE IS NOT EVIDENCE. "Narrow to certain
-   * investors" is drawn from `engine.investors()` — our OWN settings roster,
-   * "no vendor call, no billing" in that code's own words — so it lists the five
-   * whether or not LoanNEX has ever answered. This line reads the register the
-   * board itself writes.
-   *
-   * The DATE is composed here rather than on the server because only the reader's
-   * browser knows the reader's timezone; the never-answered sentence has no date
-   * in it and stays server-side. One home each.
-   */
-  const sheetActivity = useMemo(() => {
-    const la = (data && data.lastAnswered) || null;
-    if (!la) return [];
-    return ['lenderprice', 'loannex'].map((k) => la[k]).filter(Boolean).map((x) => {
-      if (!x.everAnswered) return { key: x.source, label: x.label, ok: false, text: x.neverNote };
-      let when = x.at;
-      try { when = new Date(x.at).toLocaleString(); } catch (_) { when = x.at; }
-      return { key: x.source, label: x.label, ok: true, text: `${x.label} last answered a search on ${when}.` };
-    });
-  }, [data]);
-
-  const sheetTrouble = useMemo(() => {
-    const c = (data && data.connections) || null;
-    if (!c) return [];
-    return ['loannex', 'lenderprice']
-      .map((k) => c[k])
-      .filter((x) => x && x.speak && x.message);
-  }, [data]);
 
   return (
     <div style={{ ...card, borderColor: `${GOLD}55` }}>
