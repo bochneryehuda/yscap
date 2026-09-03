@@ -24,9 +24,13 @@ const read = (p) => fs.readFileSync(path.join(root, p), 'utf8');
 // It kept its own copy of the two-line regex idiom — `.replace(/\/\*[\s\S]*?\*\//g,
 // '')` — while `scripts/lib/strip-comments.js` had already existed since 2026-08-30,
 // written because that idiom is silently wrong in BOTH directions and had bitten for
-// real. Fourteen other suites had adopted it; this one had not, and nothing pointed
-// that out because a stripper that eats too much makes a "must not appear" assertion
-// PASS.
+// real. EIGHT other suites had adopted it and this one had not — and about 130 still
+// carry a copy of their own, so adopting it here is one file catching up, not the
+// last holdout being closed. (An earlier draft of this paragraph said "fourteen",
+// which was wrong, and wrong in the flattering direction: it made the shared module
+// sound like the norm. Counted: `git grep -l lib/strip-comments -- '*scripts/*.js'`.)
+// Nothing pointed the gap out, because a stripper that eats too much makes a
+// "must not appear" assertion PASS.
 //
 // A post-merge audit then walked straight through it: the exact defect these guards
 // exist to catch — a cumulative-travel `pointermove` listener calling
@@ -338,9 +342,15 @@ for (const f of RELEASE_SCOPE) {
   //     swallowed everything down to the next `from '…';` — taking a real
   //     `const giveBack = releaseFromGuest;` with it. A false PASS, on the exact
   //     defect this rule exists to catch.
-  // `[^;]*?` cannot cross a semicolon, so a side-effect import ends at its own; and
-  // ['"] admits both quotes. Both proven by the audit that found them.
-  const mentions = (f.src.replace(/\bimport\b[^;]*?\bfrom\s*['"][^'"]*['"]\s*;/g, '').match(/\breleaseFromGuest\b/g) || []).length;
+  // `[^;\n]*?` cannot cross a semicolon OR A NEWLINE, and `['"]` admits both quotes.
+  // The semicolon alone was not enough: an import written without one (ASI style)
+  // still let `[^;]*?` run into the next statement and swallow a real
+  // `const giveBack = releaseFromGuest`, which is the same false PASS one rewrite
+  // later. An import statement is one line here in every case that matters, and a
+  // multi-line one is handled by matching the specifier block explicitly.
+  const IMPORT_LINE = /\bimport\b[^;\n]*?\bfrom\s*['"][^'"]*['"]\s*;?/g;
+  const IMPORT_BLOCK = /\bimport\b\s*\{[^}]*\}\s*from\s*['"][^'"]*['"]\s*;?/g;
+  const mentions = (f.src.replace(IMPORT_BLOCK, '').replace(IMPORT_LINE, '').match(/\breleaseFromGuest\b/g) || []).length;
   const calls = (f.src.match(/\breleaseFromGuest\(/g) || []).length;
   ok(mentions === calls, `releaseFromGuest is only ever CALLED in ${f.rel} (${mentions} non-import mentions, ${calls} calls)`);
 }
@@ -352,6 +362,13 @@ const KNOWN_LISTENERS = {
   'app-v2/src/lib/cobrowse.js': ['change', 'click', 'hashchange', 'popstate'],
   'app-v2/src/components/CobrowseHost.jsx': ['keydown', 'load', 'resize'],
 };
+// A KEY WHOSE FILE HAS LEFT THE SCOPE IS A STALE EXPECTATION, and stale expectations
+// are what this whole suite keeps catching. `POOL_EXCEPTIONS` in the pool guard has
+// the same check; this list did not.
+for (const k of Object.keys(KNOWN_LISTENERS)) {
+  ok(RELEASE_SCOPE.some((f) => f.rel === k),
+    `KNOWN_LISTENERS names ${k}, which still releases control — a key for a file that has moved on would silently expect nothing`);
+}
 for (const f of RELEASE_SCOPE) {
   const literals = [...f.src.matchAll(/addEventListener\(\s*'([^']+)'/g)].map((m) => m[1]).sort();
   const known = KNOWN_LISTENERS[f.rel];

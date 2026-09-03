@@ -9,18 +9,26 @@
  * which is the same "built but never triggered" failure as a mirror with no
  * writer, one level up: every writer existed and nothing ever called them.
  *
- * ⛔ THIS PARAGRAPH SAID "OFF BY DEFAULT, and it says so" AND WAS FALSE FROM
- * 2026-08-23, when the default flipped — see the owner-directed note further down
- * this same file, and `enabled()` below, which returns TRUE when the variable is
- * unset. Two other files quoted this sentence as their authority and were corrected
- * on 2026-09-03; the file that owns the default kept it a day longer, which is the
- * more dangerous half: a reader who checks the source of a claim found the claim
- * repeated.
+ * ⛔ THIS PARAGRAPH SAID "OFF BY DEFAULT, and it says so" AND WAS NEVER TRUE. This
+ * file was added on 2026-08-25 by `562dff5`, and THAT SAME COMMIT introduced both
+ * `if (!raw) return true;` in `enabled()` below and the sentence claiming the
+ * opposite — so the file has never once existed with an off default. (An earlier
+ * draft of this correction dated the flip to 2026-08-23; that is the date of the
+ * owner direction quoted further down, not of any code change. Getting the date of
+ * a false claim wrong while correcting it is the same mistake one turn smaller.)
  *
- * ON BY DEFAULT. `LT_SYNC_ENABLED=0` turns it off — the reverse of
- * `ENCOMPASS_ENABLED` and `CLICKUP_OUTBOUND_ENABLED`, which still gate their own
- * workers the ordinary way, so do not read across from them. With the switch off
- * this module schedules nothing, reads nothing and costs nothing; with it ON but no
+ * TWO OTHER PLACES QUOTE THIS FILE AS THEIR AUTHORITY: `src/longterm/index.js`,
+ * corrected 2026-09-03, and `docs/longterm/LOS-MASTER-PLAN.md`, corrected in the
+ * same change as this paragraph. The design document was the one that mattered
+ * most and was missed first — it is where a reader checks.
+ *
+ * ON BY DEFAULT. `LT_SYNC_ENABLED=0` turns it off. Do NOT read across from
+ * `ENCOMPASS_ENABLED` in either direction: that variable's own master switch
+ * (`src/lib/integrations/encompass-enabled.js`) is ALSO blank-is-on, while the RTL
+ * sync worker's separate gate (`src/sync/encompass-sync.js`) requires an explicit
+ * `1`. An earlier draft of this line called it "the reverse of `ENCOMPASS_ENABLED`",
+ * which pointed the reader at a file saying the opposite. With the switch off this
+ * module schedules nothing, reads nothing and costs nothing; with it ON but no
  * Encompass credentials, a pass costs one refused call (see below).
  *
  * IT IS BOUNDED BY THE PASSES IT CALLS, NOT BY A LIMIT OF ITS OWN. `loans.syncOnce`

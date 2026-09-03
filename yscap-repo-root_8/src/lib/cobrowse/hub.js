@@ -438,8 +438,15 @@ function close(sessionId, reason) {
  *     The beat re-asks `sessions.mayWatch` for every VIEWER socket on a
  *     borrower-targeted session, so the answer comes from the one definition
  *     (`perms.visibleBorrowerSql`) instead of being re-derived here. EVERY route it
- *     recognises is covered by construction — there are eight, not the five an
- *     earlier draft of this line listed. `visibleBorrowerSql` has four of its own:
+ *     recognises is covered by construction. Counting them is where two drafts of
+ *     this line have now gone wrong, so: the code asks the function and is right
+ *     whatever the count, and the count below is offered as a map, not as an
+ *     invariant. (An earlier draft said "all five branches", which was the count of
+ *     the WRONG function and dropped two routes; the next said "eight", which split
+ *     one delegation clause into its own route while folding the identical clause
+ *     inside `borrower_officers` into its parent. At consistent granularity it is
+ *     nine. A number nobody can re-derive the same way twice does not belong in an
+ *     invariant.) `visibleBorrowerSql` has four of its own:
  *     `primary_officer_id`, that officer being on the reader's delegation list, a
  *     `borrower_officers` row, and a visible APPLICATION; and that last one expands
  *     through `visibleOfficersSql` into five more: the primary loan officer, the

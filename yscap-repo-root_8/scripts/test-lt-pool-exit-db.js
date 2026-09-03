@@ -213,6 +213,10 @@ function runChild(body, budgetMs) {
         for (const e of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
           const rel = dir + '/' + e.name;
           if (e.isDirectory()) { walk(rel, out); continue; }
+          // ONLY `.js`, which is what `src/` is today (51 non-js files, all assets,
+          // JSON, markdown and prisma — none constructs a pool). A `.mjs`, `.cjs` or
+          // `.ts` file added tomorrow would be invisible here, so that is stated
+          // rather than left as an unexamined edge of a rule about completeness.
           if (e.name.endsWith('.js')) out.push(rel);
         }
         return out;
@@ -232,34 +236,113 @@ function runChild(body, budgetMs) {
       // expression whose constructor ENDS in `Pool` is a site, each site's own
       // options object is what is read, and a construction the scanner cannot read
       // is a FAILURE rather than a silent pass.
-      const NEW_POOL = /\bnew\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)*Pool\s*\(/g;
-      // `new (expr)(…)` — `new (require('pg').Pool)({…})`. Undecidable here, so it is
-      // refused by name: construct the pool plainly and the guard can read it.
-      const NEW_COMPUTED = /\bnew\s*\(/;
+      // A CONSTRUCTOR ENDING IN `Pool`, UNDER ANY NAME. The first cut required the
+      // final identifier to BE `Pool` (or `x.Pool`) while its own comment said
+      // "ends in Pool" — so `const { Pool: PgPool } = require('pg'); new PgPool({…})`
+      // was invisible, at 22/0, under an assertion reading "every pool CONSTRUCTION
+      // SITE in src/ is found". That is the third appearance of "named as covered and
+      // was not", this time inside the correction of the correction, which is why the
+      // sentinel checks below exist and why the assertion text no longer says
+      // "every".
+      const NEW_CTOR = /\bnew\s+((?:[A-Za-z_$][\w$]*\s*\.\s*)*[A-Za-z_$][\w$]*)\s*\(/g;
+      // Two shapes NOTHING can read from source, so both are refused BY NAME rather
+      // than silently passed: a computed constructor that mentions Pool, and `Pool`
+      // rebound to a name that does not end in Pool (`const P = Pool`), which would
+      // make every `new P(` invisible to the rule above.
+      // Found by BALANCING rather than by `[^)]*`, which cannot cross the `)` in
+      // `require('pg')` — the sentinel below caught that on the first run of this
+      // very rewrite, which is the whole reason the sentinels are here.
+      const NEW_COMPUTED_AT = /\bnew\s*\(/g;
+      const POOL_ALIAS = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*Pool\s*[;,\n]|Pool\s*:\s*([A-Za-z_$][\w$]*)/;
+      // BALANCED STRING-AWARE. This file adopted the string-aware stripper precisely
+      // because a regex cannot tell a string from code — and then balanced parentheses
+      // with a raw character scan, so `application_name: 'yscap (lt :) audit'` truncated
+      // the options and failed a correctly guarded pool. Same mistake, ten lines apart.
+      const argsAt = (src, openIdx) => {
+        let depth = 0, k = openIdx;
+        while (k < src.length) {
+          const c = src[k];
+          if (c === "'" || c === '"' || c === '`') {
+            const q = c; k += 1;
+            while (k < src.length) {
+              if (src[k] === '\\') { k += 2; continue; }
+              if (src[k] === q) { k += 1; break; }
+              k += 1;
+            }
+            continue;
+          }
+          if (c === '(') depth += 1;
+          else if (c === ')') { depth -= 1; if (depth === 0) return src.slice(openIdx, k + 1); }
+          k += 1;
+        }
+        return null;                      // unbalanced: unreadable, never "unguarded"
+      };
+      // `new (<expr>)(…)` where <expr> mentions Pool. The expression is read by the
+      // same balanced scan, so `new (require('pg').Pool)(` — whose inner `)` defeats
+      // any `[^)]*` — is seen.
+      const computedPoolCtor = (src) => {
+        NEW_COMPUTED_AT.lastIndex = 0;
+        let m;
+        while ((m = NEW_COMPUTED_AT.exec(src))) {
+          const expr = argsAt(src, m.index + m[0].length - 1);
+          if (expr && /\bPool\b/.test(expr)) return true;
+        }
+        return false;
+      };
       const files = walk('src');
       const sites = [];
-      let unreadable = [];
+      const unreadable = [];
       for (const f of files) {
-        const raw = fs.readFileSync(path.join(ROOT, f), 'utf8');
-        const src = stripComments(raw);
-        if (NEW_COMPUTED.test(src) && /\bPool\b/.test(src)) unreadable.push(f);
-        NEW_POOL.lastIndex = 0;
+        const src = stripComments(fs.readFileSync(path.join(ROOT, f), 'utf8'));
+        const mentionsPool = /\bPool\b/.test(src);
+        if (mentionsPool && computedPoolCtor(src)) unreadable.push(`${f} (computed constructor)`);
+        if (mentionsPool) {
+          const al = POOL_ALIAS.exec(src);
+          const alias = al && (al[1] || al[2]);
+          if (alias && !/Pool$/.test(alias)) unreadable.push(`${f} (Pool renamed to \`${alias}\`, which no rule can follow)`);
+        }
+        NEW_CTOR.lastIndex = 0;
         let m;
-        while ((m = NEW_POOL.exec(src))) {
-          // The site's OWN argument list: balance from the `(` this match ends on.
-          let depth = 0, k = m.index + m[0].length - 1, end = k;
-          for (; k < src.length; k += 1) {
-            if (src[k] === '(') depth += 1;
-            else if (src[k] === ')') { depth -= 1; if (depth === 0) { end = k; break; } }
-          }
-          sites.push({ file: f, args: src.slice(m.index, end + 1) });
+        while ((m = NEW_CTOR.exec(src))) {
+          const ctor = m[1].replace(/\s/g, '');
+          if (!/(^|\.)\w*Pool$/.test(ctor)) continue;
+          const args = argsAt(src, m.index + m[0].length - 1);
+          if (args === null) { unreadable.push(`${f} (unbalanced parentheses after \`new ${ctor}\`)`); continue; }
+          // Options passed as a variable cannot be read here. That is UNREADABLE, not
+          // unguarded — the first cut reported it as "does not release the process",
+          // which accuses a file of a leak it may not have.
+          if (!/\{/.test(args)) { unreadable.push(`${f} (\`new ${ctor}\` options come from a variable, not a literal)`); continue; }
+          sites.push({ file: f, ctor, args });
         }
       }
       const byFile = [...new Set(sites.map((x) => x.file))];
       ok(sites.length >= 3 && byFile.length >= 3,
-        `every pool CONSTRUCTION SITE in src/ is found and read on its own (${sites.length} site(s) in ${byFile.length} file(s): ${byFile.join(', ')})`);
+        `the pool construction sites this guard can read are found and read one by one (${sites.length} site(s) in ${byFile.length} file(s): ${byFile.join(', ')})`);
       ok(unreadable.length === 0,
-        `no pool is built through an expression this guard cannot read (${unreadable.length ? unreadable.join(', ') + ' — construct it as `new Pool({…})` so its options can be checked' : 'none'})`);
+        `and no file builds a pool in a shape this guard cannot read (${unreadable.length ? unreadable.join('; ') : 'none'})`);
+      // SENTINELS. The rule above is a regex over source, so its real coverage is
+      // whatever these say it is — not whatever the sentence above claims. Each is the
+      // spelling that has ALREADY escaped a version of this guard.
+      {
+        const probe = (text) => {
+          NEW_CTOR.lastIndex = 0;
+          let hit = 0, mm;
+          while ((mm = NEW_CTOR.exec(text))) if (/(^|\.)\w*Pool$/.test(mm[1].replace(/\s/g, ''))) hit += 1;
+          return hit;
+        };
+        for (const [label, text] of [
+          ['new Pool({})', 'const a = new Pool({ x: 1 });'],
+          ['new pg.Pool({})', 'const a = new pg.Pool({ x: 1 });'],
+          ['new PgPool({}) — the rename that escaped', 'const a = new PgPool({ x: 1 });'],
+          ['new  Pool\n({}) — odd whitespace', 'const a = new  Pool\n({ x: 1 });'],
+        ]) ok(probe(text) === 1, `the site rule sees ${label}`);
+        ok(probe('const a = new Widget({ x: 1 });') === 0, 'and does not fire on an unrelated constructor');
+        ok(computedPoolCtor("const a = new (require('pg').Pool)({});"),
+          'the computed-constructor rule sees `new (require(\'pg\').Pool)(` — its inner `)` defeats any [^)]* pattern');
+        ok(!computedPoolCtor('const x = new (Widget)(1);'), 'and does not fire on a computed constructor with no Pool in it');
+        ok(argsAt("new Pool({ application_name: 'a) b', max: 2 })", 8) === "({ application_name: 'a) b', max: 2 })",
+          'the argument reader is string-aware — a `)` inside an option value does not truncate it');
+      }
       for (const site of sites) {
         const guarded = /allowExitOnIdle\s*:\s*true/.test(site.args);
         const excused = Object.prototype.hasOwnProperty.call(POOL_EXCEPTIONS, site.file);
