@@ -41,7 +41,8 @@ const apprCard = require('../lib/appraisal-card');
 const conditionEngine = require('../lib/conditions/engine');
 const conditionRegistry = require('../lib/conditions/field-registry');
 const externalNote = require('../lib/conditions/external-note');   // db/604 — the note staff wrote FOR the borrower
-const { carriesAssignmentCondition } = require('../lib/conditions/assignment-purchase'); // the ONE rule for the assignment condition
+const { carriesAssignmentCondition } = require('../lib/conditions/assignment-purchase');
+const { isBridgeWithoutConstruction, CONSTRUCTION_ONLY_CODES } = require('../lib/conditions/bridge-construction'); // the ONE rule for the budget / SOW conditions on a bridge
 /* The details door speaks camelCase and the field registry speaks snake_case,
    and `file-lock.payoffContactLockReason` is keyed on the DETAILS door's names —
    that is where its carve-out is defined. Only the payoff contact pair needs
@@ -4605,12 +4606,18 @@ async function generateChecklist(appId, borrowerId, program, loanType, opts = {}
   let row = null;
   try {
     row = (await db.query(
-      `SELECT rehab_type, loan_type, program, is_assignment FROM applications WHERE id=$1`, [appId])).rows[0] || null;
+      `SELECT rehab_type, loan_type, program, is_assignment, rehab_budget FROM applications WHERE id=$1`, [appId])).rows[0] || null;
   } catch (_) { /* best-effort */ }
   // Ground-up build? Drives the "Plans & permits (if applicable)" placeholder
   // condition. Read the file itself so every caller gets the same answer.
   let groundUp = /ground/i.test([program, loanType].join(' '));
   if (!groundUp && row) groundUp = /ground/i.test([row.rehab_type, row.loan_type, row.program].join(' '));
+  // A BRIDGE THAT BUILDS NOTHING is never asked for a budget or a scope of work
+  // (owner-directed 2026-09-03). The one rule — JS half here, SQL twin in the
+  // db/691 trigger that keeps a live file in step when its program changes.
+  const bridgeNoConstruction = isBridgeWithoutConstruction(row
+    ? row
+    : { program, loan_type: loanType, rehab_type: null, rehab_budget: null });
   // Assignment paperwork: the ONE shared rule (assignment-purchase.js), read off
   // the file when the file can answer.
   const assignmentApplies = carriesAssignmentCondition(row
@@ -4632,6 +4639,8 @@ async function generateChecklist(appId, borrowerId, program, loanType, opts = {}
     if (tpl.code === 'rtl_p5_assign' && !assignmentApplies) continue;
     // Plans & permits placeholder only exists on ground-up construction files.
     if (tpl.code === 'rtl_p1_plans' && !groundUp) continue;
+    // The budget and the scope of work only exist where something is built.
+    if (bridgeNoConstruction && CONSTRUCTION_ONLY_CODES.includes(tpl.code)) continue;
     const owner = tpl.scope === 'application' ? { application_id: appId }
                 : tpl.scope === 'borrower_profile' ? { borrower_id: borrowerId }
                 : null; // llc-scoped items are created when an LLC is linked

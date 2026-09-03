@@ -6817,6 +6817,13 @@ tr.tape-row-on{background:rgba(47,127,134,.07)}
   .ltq-tap{padding:9px 4px !important;min-height:38px;display:inline-flex;align-items:center}
 }
 
+/* The prior-to-submittal list's "Open" lands on the condition row and flashes it
+   once, so the eye finds the row the page just scrolled to (LtFileConditions).
+   Placed ABOVE the co-browse block on purpose: test-cobrowse-pure reads everything
+   from that block's marker to the end of the file as co-browse and requires every
+   class there to be cb- namespaced — nothing may be appended after it. */
+@keyframes lt-cond-flash{0%{box-shadow:0 0 0 0 rgba(176,137,45,.0)}20%{box-shadow:0 0 0 4px rgba(176,137,45,.45)}100%{box-shadow:0 0 0 0 rgba(176,137,45,0)}}
+.lt-cond-flash{animation:lt-cond-flash 1.8s ease-out}
 /* ---------------------------------------------------------------------------
    THE INVESTOR SOURCE LIST (General Pricing Engine settings).
 
