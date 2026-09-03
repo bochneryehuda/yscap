@@ -74,6 +74,7 @@ async function main() {
   const orderRow = (await db.query(
     `INSERT INTO class_orders (application_id, class_order_id, reference_number, api_version, uad, status, payment_method, payment_recipient_email)
      VALUES ($1,'555',$2,'v1','2.6','ordered','PaymentLink',$3) RETURNING id`, [appId, 'YSCAP' + tag, mailbox])).rows[0].id;
+  let app2 = null, officer2 = null;   // the pointer-only officer case below; cleaned up at the end
   const outbox = [];
   const realSend = mailer.sendMail;
   mailer.sendMail = async (m) => { outbox.push(m); return { ok: true, id: 'test' }; };
@@ -141,7 +142,65 @@ async function main() {
       const before2 = outbox.length;
       const r2 = await fileInbox.processReceivedEvent(evt('plink-receipt-' + tag));
       ok(!outbox.slice(before2).some((m) => /How to pay for the appraisal/.test(String(m.subject))), `a receipt is never forwarded as "how to pay" (${r2 && r2.status})`);
+      // Post-merge audit 2026-09-03: a MACHINE-STAMPED vendor email that is not the link
+      // (Class's "payment successful", before OrderPaid lands) is filed as the auto-reply
+      // it is — not forwarded to the team as a plain file reply either.
+      canned = { from: 'Class Valuation <noreply@classvaluation.com>', subject: 'Payment successful — order 555', to: [mailbox],
+        text: 'Thank you. View your receipt: https://pay.classvaluation.com/receipt/' + tag, html: '', attachments: [],
+        headers: { precedence: 'bulk', 'auto-submitted': 'auto-generated' } };
+      const before3 = outbox.length;
+      const r3 = await fileInbox.processReceivedEvent(evt('plink-success-' + tag));
+      ok(r3 && r3.status === 'auto_reply', `a machine-stamped "payment successful" is filed as an auto-reply (${r3 && r3.status})`);
+      ok(outbox.length === before3, 'and nothing is sent to anyone');
+      const row3 = (await db.query(`SELECT status, app_results FROM inbound_file_emails WHERE resend_email_id=$1`, [ 'plink-success-' + tag ])).rows[0];
+      ok(row3 && row3.status === 'auto_reply' && row3.app_results && row3.app_results[appId] === 'auto_reply', 'the row says so per file');
+      // A vendor email a PERSON wrote (no machine stamp) that is not the link still
+      // reaches the team the ordinary way.
+      canned = { from: 'Class Valuation <jane@classvaluation.com>', subject: 'Question about access', to: [mailbox],
+        text: 'Can the appraiser get in Tuesday?', html: '', attachments: [], headers: {} };
+      const before4 = outbox.length;
+      const r4 = await fileInbox.processReceivedEvent(evt('plink-human-' + tag));
+      ok(r4 && r4.status === 'forwarded' && outbox.length > before4 && !outbox.slice(before4).some((m) => /How to pay/.test(String(m.subject))),
+         `a person at the vendor writing to the file is forwarded to the team as a file reply (${r4 && r4.status})`);
     } finally { global.fetch = realFetch; }
+
+    // ========================================================================
+    console.log('\n--- two live orders on one file: the email that names an order lands on that order ---');
+    await db.query(`UPDATE class_orders SET payment_link_forwarded_at = NULL, payment_link_forwarded_to = NULL WHERE id=$1`, [orderRow]);
+    const order2 = (await db.query(
+      `INSERT INTO class_orders (application_id, class_order_id, reference_number, api_version, uad, status, payment_method, payment_recipient_email, created_at)
+       VALUES ($1,$4,$2,'v1','2.6','ordered','PaymentLink',$3, now() + interval '1 second') RETURNING id`, [appId, 'YSCAP' + tag + '-SUPP', mailbox, '777' + tag])).rows[0].id;
+    const named = await plink.handleInbound({ applicationId: appId, fromEmail: 'noreply@classvaluation.com', subject: 'Payment link for order 555',
+      text: 'Please pay here: https://pay.classvaluation.com/p/named-' + tag, html: '', inboundId: 'em-named-' + tag });
+    const o1 = (await db.query('SELECT payment_link_forwarded_to FROM class_orders WHERE id=$1', [orderRow])).rows[0];
+    const o2 = (await db.query('SELECT payment_link_forwarded_to FROM class_orders WHERE id=$1', [order2])).rows[0];
+    ok(named.handled === true && o1.payment_link_forwarded_to && o1.payment_link_forwarded_to.inboundId === 'em-named-' + tag, 'the email naming order 555 is recorded on order 555, not the newer one');
+    ok(!o2.payment_link_forwarded_to, 'and the newer order still waits for its own');
+    const unnamed = await plink.handleInbound({ applicationId: appId, fromEmail: 'noreply@classvaluation.com', subject: 'Payment for your appraisal',
+      text: 'Please pay here: https://pay.classvaluation.com/p/unnamed-' + tag, html: '', inboundId: 'em-unnamed-' + tag });
+    const o2b = (await db.query('SELECT payment_link_forwarded_to FROM class_orders WHERE id=$1', [order2])).rows[0];
+    ok(unnamed.handled === true && o2b.payment_link_forwarded_to && o2b.payment_link_forwarded_to.inboundId === 'em-unnamed-' + tag, 'an email naming no order lands on the newest');
+    await db.query(`UPDATE class_orders SET status='cancelled' WHERE id=$1`, [order2]);
+
+    // ========================================================================
+    console.log('\n--- an officer set only by the file pointer gets the portal trace too ---');
+    officer2 = (await db.query(
+      `INSERT INTO staff_users (email, full_name, role, is_active) VALUES ($1,$2,'loan_officer',true) RETURNING id`,
+      [`lo2-${tag}@example.test`, 'Olive Pointer'])).rows[0].id;
+    app2 = (await db.query(
+      `INSERT INTO applications (borrower_id, ys_loan_number, loan_type, property_type, occupancy, property_address,
+                                 purchase_price, loan_amount, status, loan_officer_id)
+       VALUES ($1,$2,'fix_and_flip','Single Family','investment',$3::jsonb,180000,250000,'underwriting',$4) RETURNING id`,
+      [borrowerId, 'YSCAP' + tag + 'B', JSON.stringify({ addressLine: '9 Pointer Rd', city: 'Scranton', state: 'PA', postalCode: '18503' }), officer2])).rows[0].id;
+    await db.query(
+      `INSERT INTO class_orders (application_id, class_order_id, reference_number, api_version, uad, status, payment_method, payment_recipient_email)
+       VALUES ($1,$4,$2,'v1','2.6','ordered','PaymentLink',$3)`, [app2, 'YSCAP' + tag + 'B', `file+${app2}@reply.test`, '888' + tag]);
+    const rp = await plink.handleInbound({ applicationId: app2, fromEmail: 'noreply@classvaluation.com', subject: 'Payment for your appraisal',
+      text: 'Please pay here: https://pay.classvaluation.com/p/ptr-' + tag, html: '', inboundId: 'em-ptr-' + tag });
+    const last = outbox[outbox.length - 1] || {};
+    ok(rp.handled === true && (last.cc || []).includes(`lo2-${tag}@example.test`), 'the pointer-only officer is copied on the email');
+    const trace = await db.query(`SELECT count(*)::int n FROM notifications WHERE application_id=$1 AND type='class_payment_link' AND staff_id=$2`, [app2, officer2]);
+    ok(trace.rows[0].n === 1, `and has the portal trace (${trace.rows[0].n})`);
   } finally { mailer.sendMail = realSend; }
 
   // ==========================================================================
@@ -191,11 +250,12 @@ async function main() {
   }
 
   // ---- cleanup ------------------------------------------------------------
-  await db.query('DELETE FROM notifications WHERE application_id=$1', [appId]);
-  await db.query('DELETE FROM class_orders WHERE application_id=$1', [appId]);
-  await db.query('DELETE FROM applications WHERE id=$1', [appId]);
+  const apps = [appId, app2].filter(Boolean);
+  await db.query('DELETE FROM notifications WHERE application_id = ANY($1::uuid[])', [apps]);
+  await db.query('DELETE FROM class_orders WHERE application_id = ANY($1::uuid[])', [apps]);
+  await db.query('DELETE FROM applications WHERE id = ANY($1::uuid[])', [apps]);
   await db.query('DELETE FROM borrowers WHERE id=$1', [borrowerId]);
-  await db.query('DELETE FROM staff_users WHERE id = ANY($1::uuid[])', [[officer, processor]]);
+  await db.query('DELETE FROM staff_users WHERE id = ANY($1::uuid[])', [[officer, processor, officer2].filter(Boolean)]);
   console.log(`\ntest-class-payment-link-db: ${pass} passed, ${fail} failed`);
   await db.pool.end().catch(() => {});
   process.exit(fail ? 1 : 0);

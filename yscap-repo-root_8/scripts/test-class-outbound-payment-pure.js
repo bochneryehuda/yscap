@@ -228,6 +228,17 @@ const orderBuild = require(path.join(ROOT, 'src/class/order-build'));
     eq(plink.looksLikePaymentLink({ subject: 'Reminder', text: 'Your appraisal payment is due.', html: '', link: null }), true, 'a reminder that talks about paying is forwarded too');
     eq(plink.looksLikePaymentLink({ subject: 'Receipt for your payment', text: 'Thank you, paid', html: '', link: 'https://pay.classvaluation.com/r/1' }), false, 'a receipt is never told to the borrower as "how to pay"');
     eq(plink.looksLikePaymentLink({ subject: 'Your appraisal is scheduled', text: 'The inspection is Tuesday.', html: '', link: null }), false, 'a status note is not a payment link');
+    // Post-merge audit 2026-09-03: "payment successful" can land before OrderPaid marks the order paid.
+    eq(plink.looksLikePaymentLink({ subject: 'Payment successful — order 12345', text: 'Thank you. View your receipt: https://pay.classvaluation.com/receipt/1', html: '', link: 'https://pay.classvaluation.com/receipt/1' }), false, 'a "payment successful" note with a receipt link is never "how to pay"');
+    eq(plink.looksLikePaymentLink({ subject: 'Order 12345', text: 'Thank you for your payment of $550. View receipt: https://pay.classvaluation.com/r/1', html: '', link: 'https://pay.classvaluation.com/r/1' }), false, 'nor is a receipt whose subject does not say so');
+    eq(plink.looksLikePaymentLink({ subject: 'Order 12345', text: 'Please click below.', html: '<a href="https://pay.classvaluation.com/x">Open</a>', link: 'https://pay.classvaluation.com/x' }), false, 'a link on its own, with no payment wording, is not the link');
+    eq(plink.looksLikePaymentLink({ subject: 'Payment link for order 12345', text: 'x', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, '"payment link for order" is the link');
+    eq(plink.looksLikePaymentLink({ subject: 'Your appraisal payment', text: 'Please pay here: https://pay.classvaluation.com/p/1', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, 'and so is "please pay here"');
+    eq(plink.looksLikePaymentLink({ subject: 'Your appraisal payment', text: 'Your payment of $550 was received. Pay here if a balance remains: https://pay.classvaluation.com/p/1', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, 'an email that asks for a payment is the link even when it also mentions one received');
+    eq(plink.namesOrder('Payment link for order 555 (ref YSCAP-abc)', '555'), true, 'an order number in the subject names the order');
+    eq(plink.namesOrder('Your payment of $5550 is due', '555'), false, 'but a digit run inside another number does not');
+    eq(plink.namesOrder('ref YSCAP-abc', 'YSCAP-abc'), true, 'and our reference names it too');
+    eq(plink.namesOrder('order 12', '12'), false, 'a two-character key never matches (too easy to hit by accident)');
     eq(plink.extractLink('', '<a href="https://www.classvaluation.com">Class</a> <a href="https://secure.processor.test/pay/9">Pay</a>'), 'https://secure.processor.test/pay/9', 'a footer link to their home page never beats the pay link');
 
     // The forward itself over a stubbed db + mailer: one email, borrower To, team Cc.
