@@ -235,6 +235,11 @@ const orderBuild = require(path.join(ROOT, 'src/class/order-build'));
     eq(plink.looksLikePaymentLink({ subject: 'Payment link for order 12345', text: 'x', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, '"payment link for order" is the link');
     eq(plink.looksLikePaymentLink({ subject: 'Your appraisal payment', text: 'Please pay here: https://pay.classvaluation.com/p/1', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, 'and so is "please pay here"');
     eq(plink.looksLikePaymentLink({ subject: 'Your appraisal payment', text: 'Your payment of $550 was received. Pay here if a balance remains: https://pay.classvaluation.com/p/1', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, 'an email that asks for a payment is the link even when it also mentions one received');
+    // Re-audit 2026-09-03: a genuine link that mentions a receipt in passing must never be refused
+    // (machine-stamped, it would otherwise be filed as an auto-reply and nobody told).
+    eq(plink.looksLikePaymentLink({ subject: 'Payment Required for Order #12345', text: 'Payment is required before the appraisal can be scheduled. Click the button below. A receipt will be emailed once payment is complete. https://pay.classvaluation.com/p/1', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, '"payment is required … a receipt will be emailed" is the link');
+    eq(plink.looksLikePaymentLink({ subject: 'Invoice 123', text: 'Amount: $550. Due on receipt. https://pay.classvaluation.com/p/1', html: '', link: 'https://pay.classvaluation.com/p/1' }), true, 'an invoice-worded email carrying the pay link, "due on receipt", is the link');
+    eq(plink.looksLikePaymentLink({ subject: 'Order #12345', text: 'Your payment has been processed. Receipt: https://pay.classvaluation.com/r/1', html: '', link: 'https://pay.classvaluation.com/r/1' }), false, 'while "your payment has been processed" is still a receipt');
     eq(plink.namesOrder('Payment link for order 555 (ref YSCAP-abc)', '555'), true, 'an order number in the subject names the order');
     eq(plink.namesOrder('Your payment of $5550 is due', '555'), false, 'but a digit run inside another number does not');
     eq(plink.namesOrder('ref YSCAP-abc', 'YSCAP-abc'), true, 'and our reference names it too');

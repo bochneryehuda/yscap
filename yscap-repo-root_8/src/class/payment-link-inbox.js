@@ -79,8 +79,13 @@ function extractLink(text, html) {
 // OrderPaid callback marks the order paid, so "the order is still unpaid" is not
 // enough on its own (post-merge audit 2026-09-03).
 const RECEIPT_RE = /receipt|payment (was |has been )?(received|successful|processed|complete[d]?|confirmed)|paid in full|thank you for (your |the )?payment|confirmation of (your |the )?payment|payment confirmation/i;
-// Wording that ASKS for a payment, as opposed to mentioning one.
-const ASK_RE = /pay now|pay here|pay online|payment link|make (a |your |the )?payment|payment is due|payment due|balance due|amount due|to pay\b|pay for|please pay|complete (your |the )?payment|payment (page|portal|request)|submit (your |the )?payment/i;
+// The same, for the BODY: a bare "receipt" there is as often forward-looking ("a receipt
+// will be emailed once payment is complete") as it is a receipt, so only the phrasings a
+// receipt actually uses count (re-audit 2026-09-03).
+const BODY_RECEIPT_RE = /your receipt|view (your |the )?receipt|receipt (for|of) (your |the |this )?payment|payment (was |has been )?(received|successful|processed|confirmed)|paid in full|thank you for (your |the )?payment|confirmation of (your |the )?payment|payment confirmation/i;
+// Wording that ASKS for a payment, as opposed to mentioning one. Decided FIRST, so a link
+// email that also mentions a receipt is still the link.
+const ASK_RE = /pay now|pay here|pay online|payment link|make (a |your |the )?payment|payment (is |will be )?(due|required|requested|needed|owed)|requires payment|balance due|amount due|due on receipt|to pay\b|pay for|please pay|complete (your |the )?payment|payment (page|portal|request)|submit (your |the )?payment|proceed (to|with) (the |your )?payment/i;
 function looksLikePaymentLink({ subject, text, html, link }) {
   const subj = String(subject || '');
   if (RECEIPT_RE.test(subj)) return false;
@@ -88,7 +93,7 @@ function looksLikePaymentLink({ subject, text, html, link }) {
   if (ASK_RE.test(body)) return true;
   // Nothing asks for a payment: a body that reads as a receipt is a receipt, whatever
   // link it carries ("view your receipt" is a link too).
-  if (RECEIPT_RE.test(body)) return false;
+  if (BODY_RECEIPT_RE.test(body)) return false;
   // A link on its own is not a payment link — the wording has to talk about paying.
   void link;
   return /\bpay(ment|able)?\b/i.test(body);
