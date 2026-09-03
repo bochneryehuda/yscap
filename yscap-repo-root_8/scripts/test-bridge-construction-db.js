@@ -109,6 +109,21 @@ async function codesOn(appId) {
     await db.query(`UPDATE applications SET program='Fix & Flip With Construction' WHERE id=$1`, [app2]);
     assert((await codesOn(app2)).length === 3, 'and becomes a fix & flip with all three the moment its program says so');
 
+    console.log('\nD. the put-back half is a RESTORE — a file that was never a bridge is left to its engine');
+    // A plain purchase with no program and one ordinary condition (the drafting test's
+    // shape). Typing a rehab budget on it must not conjure the three: this trigger did
+    // not take them off, so it has nothing to put back (regression: test-drafting F8).
+    const app3 = (await db.query(
+      `INSERT INTO applications (borrower_id, status, loan_type) VALUES ($1,'underwriting','Purchase') RETURNING id`,
+      [borrowerId])).rows[0].id;
+    await db.query(
+      `INSERT INTO checklist_items (scope,application_id,label,borrower_label,audience,item_kind,is_required,status)
+       VALUES ('application',$1,'Photo ID','Photo ID','borrower','document',true,'outstanding')`, [app3]);
+    await db.query(`UPDATE applications SET rehab_budget=126000 WHERE id=$1`, [app3]);
+    have = await codesOn(app3);
+    assert(have.length === 0, `a rehab budget typed on a never-a-bridge file adds none of the three (${have.join(', ') || 'none'})`);
+    await db.query(`UPDATE applications SET program='Fix & Flip With Construction' WHERE id=$1`, [app3]);
+    assert((await codesOn(app3)).length === 0, 'and neither does naming a program on it — the engine, not this trigger, owns that file');
     console.log(failures ? `\n${failures} assertion(s) failed` : '\nALL bridge-construction assertions passed');
   } catch (e) {
     console.error('ERROR', e); failures++;

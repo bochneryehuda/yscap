@@ -65,6 +65,7 @@ $$;
 CREATE OR REPLACE FUNCTION ensure_construction_conditions() RETURNS trigger AS $$
 DECLARE
   bridge boolean;
+  was_bridge boolean;
   attrs_changed boolean;
 BEGIN
   -- Only files that already have a materialized checklist; generateChecklist
@@ -74,6 +75,16 @@ BEGIN
   END IF;
 
   bridge := pilot_bridge_without_construction(NEW.program, NEW.loan_type, NEW.rehab_type, NEW.rehab_budget);
+  -- The put-back half is a RESTORE, not an apply: it only runs when the row was a
+  -- bridge-without-construction a moment ago and has stopped being one — because that
+  -- is the only case in which this trigger is the thing that took the three off.
+  -- A file that was never a bridge (a plain "Purchase" with no program, say) gets its
+  -- conditions from the engine that generated its checklist; a rehab budget typed onto
+  -- such a file must not conjure template rows the engine never gave it (that put a
+  -- second, payload-less "Scope of Work" line on a file and the drafting test's F8 —
+  -- "never a fabricated $0" — caught it).
+  was_bridge := (TG_OP = 'UPDATE')
+    AND pilot_bridge_without_construction(OLD.program, OLD.loan_type, OLD.rehab_type, OLD.rehab_budget);
 
   attrs_changed := (TG_OP = 'INSERT')
     OR (OLD.program      IS DISTINCT FROM NEW.program)
@@ -94,7 +105,7 @@ BEGIN
        AND ci.status IN ('outstanding', 'requested')
        AND ci.signed_off_at IS NULL AND ci.waived_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM documents d WHERE d.checklist_item_id = ci.id);
-  ELSE
+  ELSIF was_bridge THEN
     -- The file builds something (or stopped being a bridge): put back whichever
     -- of the three it does not carry, exactly as generateChecklist would.
     INSERT INTO checklist_items
