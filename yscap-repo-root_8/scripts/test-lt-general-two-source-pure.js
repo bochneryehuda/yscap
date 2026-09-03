@@ -138,10 +138,19 @@ const byInvestor = (programs) => {
 
   console.log('\n── THE LENDER PRICE HALF IS PASSED THROUGH UNTOUCHED ──');
   const direct = lpModel.parseFull(LP_RAW);
-  const changed = Object.keys(direct).filter((k) => k !== 'programs'
+  /* programCount/lenderCount now describe the ROUTED board (LoanNEX folded in, turned-off
+     Lender Price investors dropped), so they are DELIBERATELY not the plain-LP counts — the
+     counts line on screen must name the board that is actually shown (GEN-9b/9c). */
+  const ROUTED_COUNTS = new Set(['programCount', 'lenderCount']);
+  const changed = Object.keys(direct).filter((k) => k !== 'programs' && !ROUTED_COUNTS.has(k)
     && JSON.stringify(direct[k]) !== JSON.stringify(out.parsed[k]));
   ok(changed.length === 0,
-    `GEN-9 every parsed field except the programme list is byte-identical to a plain parse (${changed.length} differ)`);
+    `GEN-9 every parsed field except the programme list and the two routed counts is byte-identical to a plain parse (${changed.length} differ)`);
+  const routedLenders = new Set(out.programs.map((x) => x && x.lender).filter(Boolean)).size;
+  ok(out.parsed.programCount === out.programs.length && out.parsed.lenderCount === routedLenders,
+    `GEN-9b the counts describe the ROUTED board (${out.parsed.programCount} programmes · ${out.parsed.lenderCount} lenders over ${out.programs.length} routed rows)`);
+  ok(direct.programCount !== out.parsed.programCount,
+    `GEN-9c …and that is NOT the raw Lender Price count (LP ${direct.programCount} != routed ${out.parsed.programCount}) — the old code reported the wrong one`);
   ok(out.searchKey === 'k1', 'GEN-10 …and the search key the disqualify poll needs still rides out');
 
   console.log('\n── AN INVESTOR LOANNEX DID NOT PRICE ──');
@@ -178,12 +187,34 @@ const byInvestor = (programs) => {
   const both = await run(lpDown, nexOk);
   ok(both.ok === false && both.error === 'lp_price_failed',
     'GEN-18 Lender Price failing fails the board, exactly as this screen already behaved');
+  /* THE VENDOR'S OWN DIAGNOSTICS RIDE THROUGH. priceErrorBody surfaces firstHttp /
+     retryHttp / upstream / provenance; before the fix the board error return flattened
+     them to a bare error+http, so the FULL door lost them (the summary door never did). */
+  const lpDiag = { price: async () => ({ ok: false, error: 'lp_http', message: 'boom', http: 503, firstHttp: 502, retryHttp: 503, upstream: { detail: 'x' }, provenance: { tries: 2 } }), parseFull: lpModel.parseFull };
+  const diag = await run(lpDiag, nexOk);
+  ok(diag.ok === false && diag.http === 503 && diag.firstHttp === 502 && diag.retryHttp === 503
+    && diag.upstream && diag.upstream.detail === 'x' && diag.provenance && diag.provenance.tries === 2,
+    'GEN-18b a Lender Price failure passes its firstHttp/retryHttp/upstream/provenance through the board error return');
+  /* A REJECTED promise (the vendor threw, no result object) still composes a clean error. */
+  const lpThrow = { price: async () => { throw new Error('network dead'); }, parseFull: lpModel.parseFull };
+  const thrown = await run(lpThrow, nexOk);
+  ok(thrown.ok === false && thrown.error === 'lp_price_failed' && !!thrown.message,
+    `GEN-18c a Lender Price promise that REJECTS composes a clean error (${thrown.message})`);
 
   console.log('\n── THE GUARD CAN FAIL ──');
   const noNex = await run(lpOk, nexOk, { wantLoanNex: false });
   const noNexBy = byInvestor(noNex.programs);
   ok(!noNexBy.has('eresi') && noNexBy.get('deephaven') === 1,
     'GEN-19 with LoanNEX not asked at all the board is Lender Price only — so the LoanNEX rows above are really coming from LoanNEX');
+
+  console.log('\n── DEV DIAGNOSTICS (parity with the summary door) ──');
+  const lpDbg = { price: async () => ({ ok: true, raw: LP_RAW, searchKey: 'k1', request: {}, provenance: null }), parseFull: lpModel.parseFull, summarizeRaw: lpModel.summarizeRaw };
+  const noDbg = await run(lpDbg, nexOk);
+  ok(noDbg.rawSummary === undefined,
+    'GEN-20 an ordinary search returns no rawSummary — the board is never bloated with raw vendor payloads');
+  const dbg = await run(lpDbg, nexOk, { debug: true });
+  ok(dbg.rawSummary !== undefined && dbg.rawSummary !== null,
+    'GEN-20b …but opts.debug returns the raw Lender Price summary, restoring the full-path parity the summary door has');
 
   console.log('\n\u2500\u2500 EVERY ROW CAN IDENTIFY ITSELF TO THE RATE SHEET \u2500\u2500');
   {

@@ -167,6 +167,14 @@ const investorsOf = (j) => {
     ok(ibTotal > 0 && ibArm === 0, `IB-6 no ARM on the immediate board either (${ibArm} of ${ibTotal})`);
     ok(Array.isArray(ib.json.investorRoster) && ib.json.investorRoster.some((x) => x.key === 'nqm'),
       'IB-7 the lens roster names the routed investors, so the board and the lens describe one set');
+    // The counts line reads the RESPONSE's programCount/lenderCount, so the route must carry the
+    // ROUTED board's counts — not the raw Lender Price ones. LoanNEX rows fold the board well past
+    // the LP-only count, so a routed count is provably larger here.
+    ok(ib.json.programCount === (ib.json.programs || []).length,
+      `IB-7b the response programme count is the ROUTED board's (${ib.json.programCount} = ${(ib.json.programs || []).length} rows on screen)`);
+    const ibLenders = new Set((ib.json.programs || []).map((p) => p && p.lender).filter(Boolean)).size;
+    ok(ib.json.lenderCount === ibLenders,
+      `IB-7c …and the lender count is a real distinct-lender count over the routed board (${ib.json.lenderCount})`);
 
     console.log('\n── THE INITIAL BOARD WHEN LOANNEX IS DOWN ──');
     nexDown = true;

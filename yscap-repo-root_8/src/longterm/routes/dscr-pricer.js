@@ -489,9 +489,12 @@ async function price(req, res) {
        (`wantLoanNex`), so a shop that has switched no investor over prices exactly as before,
        at Lender Price speed. A LoanNEX that refuses never costs the board: the router asks the
        sheets with `allSettled` and returns the Lender Price half on its own. The register of
-       sightings/misses is written ONCE per search by the bracket door, never here — the
-       initial board reads `sources`/`missing` only to say when a sheet has no login. */
+       sightings/misses is written ONCE per search by the bracket door, never here. The
+       initial board CARRIES `sources`/`missing` as truthful data, but the general-engine
+       screen does not yet render a no-login banner from them — wiring that banner is the
+       owner's call, not a silent side effect of this change. */
     const cfg = await generalBoard.loadConfig({ routes: body.routes, links: body.links, marginHoldback: body.marginHoldback });
+    cfg.debug = !!body.debug; cfg.raw = !!body.raw; // dev diagnostics, parity with the summary door
     const board = await generalBoard.boardForScenario(sc, { lp, nex, investorPrograms }, cfg);
     if (!board.ok) return res.status((board.http && board.http >= 500) ? 502 : 400).json(priceErrorBody(board));
     if (rejectInvalidValues(board.request, res)) return; // a supported field carried an unrecognized value
@@ -503,13 +506,15 @@ async function price(req, res) {
       investorRoster: board.roster,          // the lens roster, for the routed board
       investorsUnmapped: board.unmapped,     // a lender quoting with no white-label name yet
       missing: board.missing,                // investors LoanNEX was asked for and did not carry
-      sources: board.sources,                // which sheet answered — drives the "no login" banner
+      sources: board.sources,                // which sheet answered (truthful data; the general-engine
+                                             // screen does not render a no-login banner from it yet)
       requestedScenario, derivedScenario: derivedOf(sc),
       countyEnrichment: chk.countyEnrichment, effectiveScenario: effectiveFull,
       cashoutAmount: cashoutNote(sc), dscrClamped: chk.dscrClamped || null,
       request: board.request, searchKey: board.searchKey,
       disqualifyStatus: 'computing', provenance: board.provenance || null, recovered: !!board.recovered,
     };
+    if (board.rawSummary) out.rawSummary = board.rawSummary; // only when body.debug asked for it
     return res.json(out);
   }
 

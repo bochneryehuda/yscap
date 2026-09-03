@@ -172,15 +172,22 @@ async function boardForScenario(sc, deps, opts = {}) {
   // ── The Lender Price half, exactly as this screen has always built it ──────
   if (lpRes.status !== 'fulfilled' || !lpRes.value || lpRes.value.ok === false) {
     const v = lpRes.status === 'fulfilled' ? lpRes.value : null;
+    // A Lender Price answer that failed carries its OWN diagnostics — firstHttp /
+    // retryHttp / upstream / provenance / fault — that priceErrorBody surfaces. Pass
+    // them straight through so the FULL initial-board door reports a Lender Price
+    // failure exactly as the summary door does (which errors on the raw `lp.price`
+    // result). Only a REJECTED promise (the vendor threw, no result object) has to be
+    // composed by hand.
+    if (v) return Object.assign({}, v, { ok: false, error: v.error || 'lp_price_failed' });
     return {
       ok: false,
-      error: (v && v.error) || 'lp_price_failed',
-      message: (v && v.message) || (lpRes.status === 'rejected' ? reasonOf(lpRes.reason) : null),
-      http: (v && v.http) || null,
+      error: 'lp_price_failed',
+      message: lpRes.status === 'rejected' ? reasonOf(lpRes.reason) : null,
+      http: null,
     };
   }
   const lpAnswer = lpRes.value;
-  const lpParsed = lp.parseFull(lpAnswer.raw);
+  const lpParsed = lp.parseFull(lpAnswer.raw, { raw: !!opts.raw });
   const deco = investorPrograms.decorate(lpParsed.programs);
   const lpBoard = { source: 'lenderprice', programs: deco.programs };
 
@@ -274,10 +281,20 @@ async function boardForScenario(sc, deps, opts = {}) {
      board than the one on screen. */
   const lens = rosterFromRouted(programs, mergedRaw.investors);
 
+  /* THE COUNTS DESCRIBE THE BOARD THAT IS SHOWN, not the raw Lender Price answer.
+     `lpParsed` counts the pre-routing Lender Price programmes and lenders, so once a
+     shop switches an investor to LoanNEX or turns one off, its `programCount` /
+     `lenderCount` name a board nobody is looking at (LoanNEX rows uncounted, turned-off
+     LP rows still counted). Recompute both from the ROUTED programmes — each carries
+     `lender` (a LoanNEX row's is its investor name), so the lender count is a real
+     distinct-lender count over the mixed board. The bracket door reads only
+     `parsed.programs`, so overriding these counts never reaches the bands. */
+  const routedLenderCount = new Set(programs.map((p) => p && p.lender).filter(Boolean)).size;
+
   return {
     ok: true,
     sightings,
-    parsed: Object.assign({}, lpParsed, { programs }),
+    parsed: Object.assign({}, lpParsed, { programs, programCount: programs.length, lenderCount: routedLenderCount }),
     programs,
     missing,
     roster: lens.roster,
@@ -286,6 +303,9 @@ async function boardForScenario(sc, deps, opts = {}) {
     request: lpAnswer.request || null,
     provenance: lpAnswer.provenance || null,
     recovered: !!lpAnswer.recovered,
+    // Dev diagnostics, only when asked — parity with the summary door (never sent
+    // on an ordinary search, so the board is not bloated with raw vendor payloads).
+    rawSummary: opts.debug ? lp.summarizeRaw(lpAnswer.raw) : undefined,
     nx: nxMeta,
     sources: {
       lenderprice: { ok: true },
