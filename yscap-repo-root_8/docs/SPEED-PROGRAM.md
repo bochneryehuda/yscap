@@ -106,8 +106,8 @@ frozen waterfall. Measured: the shortcut over-lends by $9,424 and $13,331 on two
 
 ## 4. Evidence
 
-- `scripts/test-speed-program-pure.js` (in `npm test`) — 20,736 scenarios (8 places incl. IN and NV × 4 strategies ×
-  purchase/refi × FICO × ARV × rehab × experience × reserve × assignment): worst status wins; **dual-sellability** —
+- `scripts/test-speed-program-pure.js` (in `npm test`) — 20,746 scenarios (8 places incl. IN and NV × 4 strategies ×
+  purchase/refi × FICO × ARV × rehab × experience × reserve × assignment, plus ten pinned edge shapes): worst status wins; **dual-sellability** —
   each parent alone, at its own 15% rule and own caps, accepts every Speed loan and every ratio sits under that
   parent's ceiling; the rate is exactly the higher of the two; the 10% share; the trap asserted directly; truthful
   attribution; the $1M wall binds (3,168 scenarios held at exactly $1,000,000) and a typed amount above it is refused
@@ -117,10 +117,23 @@ frozen waterfall. Measured: the shortcut over-lends by $9,424 and $13,331 on two
 - `scripts/test-speed-levers-pure.js` — the engine levers (phase 1).
 - Studio and app screen harnesses — see the PR.
 
-## 5. Deliberate interpretations (flag to the owner if wrong)
+## 5. Deliberate interpretations and known gaps (flag to the owner if wrong)
 
 1. **Experience (D2):** no Speed rule of its own; each parent's tiering, the lesser caps.
 2. **Reserve (D3):** the higher-rate parent's evaluation is the structure, so the reserve is funded at the rate charged.
 3. **Rate basis (D4):** the higher of the two rates at the Speed structure, not at each parent's own higher leverage.
 4. **Ties in attribution:** a ceiling both parents set at the same figure is credited to "both programs"; the $1M wall is
    credited only when it is genuinely below both parents' tier walls.
+5. **Reason tags (D9) — server-side plain, browser what-if tagged.** Every quote a borrower receives through the API
+   goes through `borrower-safe.stripQuoteInternal`, which drops the `[Standard]` / `[Silver]` / `[Both]` prefixes.
+   The studio's instant what-if banner runs the composition in the browser and shows the tags as-is; they name our
+   own programs, never a buyer. Making the browser banner role-aware is a follow-up.
+6. **D6's second half is NOT built — disclosed.** The owner approved "until a buyer is set, both buyers' advisory
+   overlays run". The appraisal note-buyer checks and the ISG rules key on the buyer label on the file, and a Speed
+   registration deliberately leaves the buyer blank, so today a Speed file carries neither parent's overlay until a
+   buyer is chosen. The build is a union over `providersForProgram('speed')` in `appraisal/note-buyer-checks.js` and
+   `underwriting/investor-guideline-review.js` when the buyer is blank and the program is Speed. Follow-up.
+7. **The Silver shadow-parity monitor watches Silver registrations only.** A Speed file's Silver-side evaluation is not
+   re-checked against the EMCAP workbook transcription (the monitor reads a registered quote's structure; Speed's is
+   the donor's). Watch-only; extend when `program === 'speed'` from `quote.speed.silver` as a follow-up.
+8. **Speed's ladder** is Standard-shaped but carries no `maxBucket` (no consumer of the Speed ladder reads it).

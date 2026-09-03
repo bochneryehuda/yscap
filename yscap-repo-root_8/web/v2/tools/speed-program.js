@@ -306,6 +306,10 @@
       }
       var next = combine(cS, cV);
       if (sameCaps(next.caps, caps)) { converged = true; break; }
+      // A lower ceiling came back and there is no pass left to size at it: keep `caps`
+      // as the ceiling the two evaluations WERE sized at (the reported structure and the
+      // reported ceiling must be the same one), and fall through as not converged.
+      if (passes >= MAX_PASSES) break;
       // Keep the ORIGINAL attribution where the figure did not move; a newly lowered
       // axis is attributed to whoever lowered it.
       for (var i = 0; i < CAP_KEYS.length; i++) if (Math.abs(next.caps[CAP_KEYS[i]] - caps[CAP_KEYS[i]]) > 1e-9) donor[CAP_KEYS[i]] = next.donor[CAP_KEYS[i]];

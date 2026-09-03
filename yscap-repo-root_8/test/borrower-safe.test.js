@@ -71,4 +71,22 @@ eq(out.label, `${PROGRAM} doc`, 'scrubFields scrubs named key');
 eq(out.keep, 'Churchill Lane', 'scrubFields leaves other keys');
 eq(src.label, 'BlueLake doc', 'scrubFields does not mutate input');
 
+
+// THE SPEED PROGRAM'S REASON TAGS ARE STAFF-FACING (owner decision D9, 2026-09-03): a borrower
+// gets the parent's sentence alone; staff see which book raised it.
+{
+  const speed = { status: 'INELIGIBLE', adminPricing: { x: 1 }, reasons: [
+    { level: 'INELIGIBLE', msg: '[Silver] Properties in Nevada are not eligible for the Silver Program.', program: 'silver' },
+    { level: 'ELIGIBLE', msg: '[Both] $20,000 of the $40,000 assignment fee is financed.', program: 'both' },
+    { level: 'ELIGIBLE', msg: 'Sized under the lesser of the Standard and Silver programs.', program: 'speed' },
+  ] };
+  const out = B.borrowerSafeQuoteBundle({ inputs: {}, standard: {}, gold: {}, silver: {}, speed });
+  eq(out.speed.reasons[0].msg, 'Properties in Nevada are not eligible for the Silver Program.', 'a [Silver] tag is dropped for a borrower');
+  eq(out.speed.reasons[1].msg, '$20,000 of the $40,000 assignment fee is financed.', 'a [Both] tag is dropped for a borrower');
+  eq(out.speed.reasons[2].msg, 'Sized under the lesser of the Standard and Silver programs.', 'an untagged sentence is untouched');
+  eq(out.speed.reasons[0].program, 'silver', 'the program KEY on the reason is kept (a key, not prose)');
+  eq(out.speed.adminPricing, undefined, 'and adminPricing is still stripped from the fourth program');
+  eq(speed.reasons[0].msg.startsWith('[Silver] '), true, 'the staff copy is not mutated');
+}
+
 console.log(`ALL ${n} assertions passed`);

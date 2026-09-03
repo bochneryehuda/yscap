@@ -17,7 +17,7 @@
  *
  * Run: node scripts/test-speed-studio-card.mjs
  * SKIPs (exit 0) without Playwright/Chromium — CI has no browser, which is why this is not in
- * the `npm test` chain; the pure guards for the wiring live in the fee-audit / parses suites.
+ * the `npm test` chain (registered there after the Speed portal suite; it SKIPs green without Chromium).
  */
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
