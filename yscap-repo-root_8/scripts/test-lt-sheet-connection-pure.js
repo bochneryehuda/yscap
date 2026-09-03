@@ -1,7 +1,12 @@
 'use strict';
 /**
- * LONG-TERM — A RATE SHEET THAT CANNOT BE SIGNED IN TO SAYS SO, ON THE SCREEN
- * WHERE SOMEBODY IS CHOOSING IT.
+ * LONG-TERM — WHY A RATE SHEET CANNOT BE USED IS SAID ON THE SCREEN WHERE
+ * SOMEBODY IS CHOOSING IT.
+ *
+ * Two ways that question goes unanswered, both from one owner sentence:
+ * *"the settings you can't really change from LenderPric, the loannex, maybe
+ * only not on mobile."* Section H is the sheet with no login; section I is the
+ * greyed-out button whose only explanation was a hover tooltip.
  *
  * ── THE REPORT THIS PINS ───────────────────────────────────────────────────
  * Owner, 2026-09-03: *"It still does not. I searched again. It still does not
@@ -143,6 +148,36 @@ console.log('\n── H. A BACK END NOBODY RENDERS IS THE SAME SILENCE ──');
   ok(/\{c\.message\}/.test(screen), 'H7 …with the server\'s own wording, not a second copy of it');
   ok(!/NEX_USERNAME/.test(screen),
     'H8 the screen never restates the credential names — one definition, on the server');
+}
+
+console.log('\n── I. A GREYED-OUT BUTTON EXPLAINS ITSELF WITHOUT A HOVER ──');
+{
+  const screen = stripComments(read('../app-v2/src/longterm/LtInvestorSources.jsx'));
+  const css = stripComments(read('../app-v2/src/styles.css'));
+
+  ok(/const lockReason = \(/.test(screen),
+    'I1 the reason a source cannot be picked has ONE definition');
+  /* The point is that the SENTENCE exists once. Two readers call it; a second
+     literal copy is how the tooltip and the visible line drift apart. */
+  ok((screen.match(/has never carried this investor/g) || []).length === 1,
+    'I2 …written out exactly once, so the tooltip and the visible line can never disagree');
+  ok((screen.match(/lockReason\(/g) || []).length === 2,
+    'I2b …and read by BOTH of them');
+  ok(/title=\{isLocked \? lockReason\(/.test(screen),
+    'I3 the tooltip no longer carries its own copy of the sentence');
+  ok(/className="lt-inv-lock"/.test(screen), 'I4 …and the visible line is rendered');
+  ok(/\(r\.lockedOut \|\| \[\]\)\.filter\(\(id\) => id !== 'off'\)/.test(screen),
+    'I5 OFF is never described as locked — the owner\'s rule is that an investor can always be turned off');
+
+  /* The desktop table has a working tooltip, so repeating the sentence on every
+     row there would be a wall of noise. It appears ONLY in the stacked form. */
+  ok(/\.lt-inv-lock\{display:none\}/.test(css), 'I6 hidden by default, so the desktop table is unchanged');
+  const container = (css.match(/@container \(max-width: 820px\)\{[\s\S]*?\n\}/) || [''])[0];
+  ok(/\.lt-inv-lock\{display:block/.test(container),
+    'I7 …and shown only in the stacked form, which is the one with no hover');
+  ok(/\.lt-inv-lock\{[^}]*color:#4B585C/.test(container),
+    'I8 dark on white — never an --ink* token, which is a LIGHT paper colour in this palette');
+  ok(!/\.lt-inv-lock\{[^}]*var\(--ink/.test(css), 'I9 …asserted, not merely intended');
 }
 
 console.log(`\ntest-lt-sheet-connection-pure: ${pass} passed, ${fail} failed`);

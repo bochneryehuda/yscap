@@ -6897,6 +6897,7 @@ tr.tape-row-on{background:rgba(47,127,134,.07)}
   grid-template-columns:minmax(180px,1.3fr) minmax(150px,1fr) minmax(180px,1fr) auto minmax(90px,auto);
   gap:10px;align-items:center}
 .lt-inv-cell-label{display:none}
+.lt-inv-lock{display:none}
 
 /* 820px is MEASURED, not chosen: the five columns' own minimums plus the three
    source buttons come to ~880px, so the table form is honest only above that. */
@@ -6913,4 +6914,11 @@ tr.tape-row-on{background:rgba(47,127,134,.07)}
   /* iOS Safari zooms the whole page on focus of any control under 16px, which
      throws a settings form off screen mid-edit. */
   .lt-inv-row input{font-size:16px !important}
+  /* A TOUCH SCREEN HAS NO HOVER, so the `title` that explains a greyed-out
+     source button does not exist here — the owner met a button they could not
+     press with no reason given anywhere. The words appear only in this form, so
+     the desktop table (where the tooltip does work) gains no wall of repeated
+     lines. Dark on white per the hard rule; never an --ink* token, which is a
+     LIGHT paper colour in this palette. */
+  .lt-inv-lock{display:block;font-size:11px;color:#4B585C;line-height:1.5;margin-top:5px}
 }

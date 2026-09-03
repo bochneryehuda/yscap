@@ -51,11 +51,20 @@ function choiceOf(row, edit) {
   return row.source === 'loannex' ? 'loannex' : 'lenderprice';
 }
 
+/**
+ * "THIS SHEET HAS NEVER CARRIED THIS INVESTOR" — written once.
+ *
+ * It is the SAME fact stated in two places: the Available-on cell reports it, and
+ * the greyed-out source button is greyed out BECAUSE of it. Two copies is how
+ * the two ends up describing one register differently.
+ */
+const NEVER_CARRIED = 'has never carried this investor';
+
 /** What one system's register says, in words a person can act on. */
 function availabilityNote(a) {
   if (!a) return null;
   if (a.state === 'seen') return 'has answered for this investor';
-  if (a.state === 'never') return 'has never carried this investor';
+  if (a.state === 'never') return NEVER_CARRIED;
   return 'not searched yet';
 }
 
@@ -81,6 +90,12 @@ function AvailabilityCell({ availability }) {
  * THE THREE BUTTONS. A locked one is a real `disabled` button carrying the REASON — a control that
  * looks pressable and does nothing is worse than one that says why it cannot be.
  */
+/**
+ * WHY A SOURCE BUTTON CANNOT BE PRESSED — ONE definition, read by the hover
+ * tooltip AND by the words a phone gets instead of one.
+ */
+const lockReason = (short) => `${short} ${NEVER_CARRIED}, so there is nothing to price from there.`;
+
 function SourceChoice({ value, lockedOut, onPick }) {
   const locked = new Set(lockedOut || []);
   return (
@@ -97,7 +112,7 @@ function SourceChoice({ value, lockedOut, onPick }) {
             type="button"
             disabled={isLocked}
             aria-pressed={on}
-            title={isLocked ? `${c.short} has never carried this investor, so there is nothing to price from there.` : c.help}
+            title={isLocked ? lockReason(c.short) : c.help}
             onClick={() => !isLocked && onPick(c.id)}
             style={{
               appearance: 'none', border: 0, cursor: isLocked ? 'not-allowed' : 'pointer',
@@ -425,6 +440,16 @@ export default function LtInvestorSources() {
                   lockedOut={r.lockedOut}
                   onPick={(id) => edit(r.key, { choice: id })}
                 />
+                {/* ⛔ A TOOLTIP DOES NOT EXIST ON A PHONE. The greyed-out button explains
+                    itself on hover, and a touch screen has no hover — so on the stacked
+                    form the owner met a button they could not press with no reason given
+                    anywhere, which is the "you can't really change from LenderPric, the
+                    loannex, maybe only not on mobile" half of the report. The CSS shows
+                    this only in the stacked form, so the desktop table gains no wall of
+                    repeated lines while the phone stops being a dead end. */}
+                {(r.lockedOut || []).filter((id) => id !== 'off').map((id) => (
+                  <div key={id} className="lt-inv-lock">{lockReason(sourceLabel(id))}</div>
+                ))}
               </div>
               <div>
                 <div className="lt-inv-cell-label">Holdback (extra points)</div>
