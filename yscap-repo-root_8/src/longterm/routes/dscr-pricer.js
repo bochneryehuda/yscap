@@ -728,13 +728,35 @@ async function disqualify(req, res) {
  *
  * The old scenario-based door is UNTOUCHED — it re-prices and is the saved-scenario flow.
  */
+/**
+ * POST /ineligible — WHY EACH INVESTOR SAID NO, ACROSS BOTH RATE SHEETS.
+ *
+ * The JOIN is `pricing/ineligibility.collect`, the one definition both engines call, so the two
+ * boards can never explain one refusal two ways. What is this door's own is the SHAPING:
+ *
+ * ⛔ THIS BOARD'S LIST HAS ALWAYS BEEN BOUNDED, AND IT STAYS BOUNDED. `GET /disqualifications`
+ * runs every answer through `shapeDisqualified`, which caps lenders at LENDER_PAGE_MAX and each
+ * lender's reasons at ITEM_PAGE_MAX and reports `truncated` + a cursor rather than trimming in
+ * silence. Handing the joined result back raw would have quietly removed that ceiling from the
+ * general board on the very change that makes the list LONGER — two sheets' refusals instead of
+ * one. The combined door does not shape because it never did; a bound is a property of the DOOR,
+ * not of the join, which is why it lives here and not in the shared module.
+ */
 async function ineligible(req, res) {
   const b = req.body || {};
   if (!b.pollKey && !b.treeId) return res.status(400).json(ineligibility.NO_HANDLE);
-  return res.json(await ineligibility.collect(
+  const joined = await ineligibility.collect(
     { pollKey: b.pollKey, treeId: b.treeId, portal: b.portal, reveal: b.revealSource === true },
     { lp, nex, programs: investorPrograms },
-  ));
+  );
+  const { disqualified, ...rest } = joined;
+  return res.json({
+    ...rest,
+    ...shapeDisqualified(
+      { ...disqualified, ready: joined.ready },
+      { debug: b.debug, ...pageOptsOf(req) },
+    ),
+  });
 }
 
 // POST /selftest — run the fixed battery; returns one row per scenario. Paced, gentle on the login.

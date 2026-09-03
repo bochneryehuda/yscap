@@ -62,8 +62,30 @@ export const GENERAL_ENGINE = {
    * the handle instead of reaching into the price answer itself, which is what lets a second
    * engine answer differently without forking the screen.
    */
-  disqualifyHandle: (res) => ((res && res.searchKey) ? { searchKey: res.searchKey } : null),
-  disqualify: (h) => ltApi.dscrDisqualifications(h.searchKey),
+  disqualifyHandle: (res) => {
+    /* ⛔ THE HANDLE IS A PAIR NOW, AND THE FALLBACK IS WHAT MAKES THAT SAFE. `res.ineligibility`
+       is what the route lifts to the top level (`{pollKey, treeId}`) — but a page loaded across a
+       deploy, or an answer this screen is still holding from before one, has only the older
+       `searchKey`. Falling back to it keeps that board's ineligible tab working and simply asks
+       the joined door with one half of the handle, which is exactly what it did before: the door
+       skips a half it was given no handle for rather than reporting it as a failure. */
+    const h = (res && res.ineligibility) || null;
+    const pollKey = (h && h.pollKey) || (res && res.searchKey) || null;
+    const treeId = (h && h.treeId) || null;
+    if (!pollKey && !treeId) return null;
+    return { pollKey, treeId };
+  },
+  /* ⛔ BOTH SHEETS' REFUSALS, THROUGH ONE DOOR. This asked Lender Price alone until 2026-09-03,
+     while `general-board.js` had LoanNEX's transaction id in hand and dropped it — so on a board
+     five investors are quoted from LoanNEX on, the "not eligible" list could never say why any of
+     them said no. `src/longterm/pricing/ineligibility.js` is ONE join mounted at both engines'
+     paths, so the two boards can never explain one refusal two ways.
+
+     NO PORTAL AND NO REVEAL ARE SENT, deliberately: this engine prices without naming a portal and
+     has no reveal control, so the tree must be asked for on the same default aggregator portal the
+     search was made on. If a portal is ever added to `price` it must be added here in the same
+     commit, or the two will quietly describe different searches. */
+  disqualify: (h) => ltApi.dscrIneligible({ pollKey: h.pollKey, treeId: h.treeId }),
 
   /* THE INVESTOR ROSTER, already in the shape the picker reads. Normalising here rather than in
      the screen is what lets one picker serve two doors that answer in two shapes. */

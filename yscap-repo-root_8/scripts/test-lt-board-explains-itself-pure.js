@@ -232,6 +232,66 @@ async function main() {
       'E5a …which is where it delegates to');
   }
 
+  console.log('\nF · the general door keeps its own ceiling, and the screen asks it');
+  {
+    const { stripComments } = require(path.join(ROOT, 'scripts/lib/strip-comments'));
+    const fs = require('fs');
+    const rd = (f) => stripComments(fs.readFileSync(path.join(ROOT, f), 'utf8'));
+    const general = rd('src/longterm/routes/dscr-pricer.js');
+
+    /* ⛔ THE BOUND IS THIS DOOR'S, NOT THE JOIN'S — and this change makes the list LONGER (two
+       sheets' refusals where there was one), so a door that stopped shaping would have removed
+       the general board's ceiling on exactly the change that most needed it. `GET
+       /disqualifications` has always run through `shapeDisqualified`; so does this one. */
+    const body = general.slice(general.indexOf('async function ineligible('),
+      general.indexOf('async function selftest('));
+    ok(/shapeDisqualified\(/.test(body),
+      'F1 ⛔ the joined list is SHAPED before it leaves — the lender and per-lender item caps the general board has always had still apply');
+    ok(/pageOptsOf\(req\)/.test(body),
+      'F1a …reading the SAME paging controls the older door reads, so a caller that pages one pages both');
+    ok(/ineligibility\.NO_HANDLE/.test(body),
+      'F1b …and a call with neither handle is refused rather than answered with an empty list');
+
+    /* THE SHAPER IS NOT ASKED TO DECIDE READINESS. `shapeDisqualified` defaults `ready` to TRUE
+       when it is not told, so handing it a still-computing half without the flag would report a
+       list as settled while one sheet is still working. */
+    ok(/ready: joined\.ready/.test(body),
+      'F1c …and the join\'s own readiness is carried into it, never left to the shaper\'s default of true');
+
+    const eng = rd('app-v2/src/longterm/pricerEngine.js');
+    const gen = eng.slice(eng.indexOf("key: 'general'"), eng.indexOf("key: 'combined'"));
+    ok(/dscrIneligible\(/.test(gen),
+      'F2 the general engine asks the JOINED door — until 2026-09-03 it asked Lender Price alone, so a LoanNEX refusal could never reach its list');
+    ok(/res\.ineligibility/.test(gen) && /res\.searchKey/.test(gen),
+      'F2a …off the new handle, FALLING BACK to the old searchKey so a page held across a deploy keeps its ineligible tab');
+    const api = rd('app-v2/src/longterm/api.js');
+    ok(/dscrIneligible: \(handle\) => ltPost\(lt\('\/dscr\/ineligible'\)/.test(api),
+      'F2b …at the path the route actually mounts');
+    ok(/dscrDisqualifications:/.test(api),
+      'F2c …and the old door is still reachable, because the saved-scenario flow still uses it');
+
+    /* THE SCREEN — a back end nobody can see is not a feature. */
+    const pricer = rd('app-v2/src/longterm/LtPricer.jsx');
+    /* ⛔ THIS IS A TRIPWIRE, NOT A PROOF, AND IT IS WRITTEN AS THE SHAPE FOR THAT REASON. Only a
+       RENDER can prove a mount happens, and `renderToString` reaches no answer (it runs no
+       effects), so the first paint draws nothing here whatever the code says — which is exactly
+       why `test-lt-pricer-shared.mjs` proves the COMPONENT by rendering it and this proves the
+       MOUNT by reading. A guard that only asked whether the literal appears was defeated by
+       `{false && <BoardExplains …>}` — the spelling survives and the panel never draws. So the
+       mount must stand ALONE on its line, with no condition in front of it, and there must be
+       exactly one. A second condition would in any case be a second place the "should this show"
+       rule lives: every one of these three already returns null when there is nothing to say. */
+    const mounts = (pricer.match(/^[ \t]*<BoardExplains\b/gm) || []).length;
+    const anyMention = (pricer.match(/<BoardExplains\b/g) || []).length;
+    ok(mounts === 1 && anyMention === 1,
+      `F3 the ONE shared screen draws what the server says about the answer, unconditionally, so BOTH boards say it (${mounts} plain mount(s) of ${anyMention} mention(s))`);
+    ok(!/<BoardExplains res=\{filteredRes\}/.test(pricer),
+      'F3a …off the RAW answer, never the filtered one — `filteredRes.hidden` is a display COUNT and `res.hidden` is the router\'s list, two facts sharing one name');
+    const combinedScreen = rd('app-v2/src/longterm/LtCombinedPricer.jsx');
+    ok(!/<ShortBoardNotice|<NearTierFlag|NotOnThisBoard/.test(combinedScreen),
+      'F3b …and the combined screen keeps no second copy of any of them');
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 }

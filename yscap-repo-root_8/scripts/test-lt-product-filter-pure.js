@@ -385,7 +385,10 @@ const nexRows = (out) => (out.programs || []).filter((p) => NEX_PROGRAMS.some((n
   console.log('\n── AND THE ROW SAYS WHICH LOCK IT IS, ON THE BOARD WHERE TWO PROGRAMS ANSWER ──');
   {
     const eng = read('app-v2/src/longterm/pricerEngine.js');
-    ok(/key: 'general',[\s\S]{0,6000}?showRowLock: false,/.test(eng),
+    /* SLICED ON THE NEXT ENGINE, NOT ON A CHARACTER BUDGET — see the same repair in
+       test-lt-combined-details-pure.js. A budget is a guess about today's line count. */
+    const generalDecl = eng.slice(eng.indexOf("key: 'general'"), eng.indexOf("key: 'combined'"));
+    ok(/showRowLock: false,/.test(generalDecl),
       'ROW-1 the GENERAL engine does not print the lock — every row there came from one vendor answering one lock, and the owner\'s rule for that screen is "don\'t touch our current setup"');
     ok(/key: 'combined',[\s\S]{0,6000}?showRowLock: true,/.test(eng),
       'ROW-2 …and the COMBINED engine does, because that is the board where two programs answer and the lock is what says the comparison is like for like');
@@ -401,13 +404,18 @@ const nexRows = (out) => (out.programs || []).filter((p) => NEX_PROGRAMS.some((n
 
   console.log('\n── AND A SHORT BOARD SAYS SO ON THE SCREEN, WITHOUT NAMING A VENDOR ──');
   {
-    const pricer = read('app-v2/src/longterm/LtCombinedPricer.jsx');
+    /* MOVED 2026-09-03 out of the combined screen and into the shared explainer, because the
+       general route now returns `completeness` too and a panel BOTH boards draw is not the
+       combined board's to own. The rules below are the SAME rules — only the file moved. */
+    const pricer = read('app-v2/src/longterm/BoardExplains.jsx');
     ok(/export function ShortBoardNotice\(\{ completeness \}\)/.test(pricer),
       'SHORT-1 the notice exists and takes ONLY the server\'s own answer — it works nothing out for itself');
     ok(/if \(!c \|\| c\.complete !== false \|\| !c\.message\) return null;/.test(pricer),
       'SHORT-2 …and renders NOTHING when the board is whole, which is almost always');
-    ok(/<ShortBoardNotice completeness=\{res\.completeness\} \/>/.test(pricer),
-      'SHORT-3 …and it is mounted on the combined screen, reading the key the route lifts to the top level');
+    ok(/<ShortBoardNotice completeness=\{r\.completeness\} \/>/.test(pricer),
+      'SHORT-3 …and it is mounted on the shared explainer, reading the key BOTH routes lift to the top level');
+    ok(/<BoardExplains res=\{res\}/.test(read('app-v2/src/longterm/LtPricer.jsx')),
+      'SHORT-3a …which the ONE shared screen draws, so the general board says it too');
     const idxNotice = pricer.indexOf('<ShortBoardNotice');
     const idxNear = pricer.indexOf('<NearTierFlag');
     ok(idxNotice > 0 && idxNear > 0 && idxNotice < idxNear,

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { rememberPairing } from './LtInvestorLinks.jsx';
+import BoardExplains from './BoardExplains.jsx';
 import LtLayout from './LtLayout.jsx';
 import { ltApi } from './api.js';
 import { money, money2, noteRate as rate, price, points as pts } from './format.js';
@@ -2786,6 +2787,19 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
                 />
               )}
             />
+            {/* ⛔ WHAT THE SERVER SAYS ABOUT THIS ANSWER — on BOTH boards, in one arrangement.
+                Until 2026-09-03 the general route computed every one of these inside
+                `applyRouting` and returned none of them, so only the combined board could draw
+                them and they lived in its slot. They are not slot material any more: a panel BOTH
+                boards have, drawn from a copy each, is two screens disagreeing about one short
+                board the first time either is edited. `res` and not `filteredRes` deliberately —
+                `filteredRes.hidden` is a COUNT of what the investor picker is hiding for display,
+                `res.hidden` is the router's own list of who is not on the board at all, and they
+                are two different facts that happen to share a name. */}
+            <BoardExplains res={res} onUseLoan={(loan) => {
+              setF((p) => ({ ...p, loan: String(loan) }));
+              try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { /* no window in a test render */ }
+            }} />
             {/* WHATEVER THIS BOARD HAS THAT THE OTHER DOES NOT — handed in by the screen that
                 mounts this one rather than listed here, because a shared screen that enumerates
                 its own exceptions is a copy with extra steps. It is given the answer, whether a
