@@ -506,7 +506,7 @@ async function price(req, res) {
     searchRecord.later(() => searchRecord.recordOne(board, {
       staffId: (req.actor && req.actor.id) || null,
       scenario: sc,
-      partOfLargerSearch: body.bandsFollow === true,
+      partOfLargerSearch: searchRecord.partOfLargerSearchFrom(body),
     }));
 
     const effectiveFull = effectiveOf(board.request); // requested-vs-effective transparency

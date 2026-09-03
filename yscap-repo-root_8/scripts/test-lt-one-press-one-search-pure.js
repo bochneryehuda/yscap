@@ -38,6 +38,10 @@
  */
 
 const path = require('path');
+/* The band rules are an ES module (the front end's own format), so they are reached by
+   dynamic import rather than require — which is the whole point of moving them out of
+   the .jsx: CI can now RUN them. */
+const { pathToFileURL } = require('url');
 const ROOT = path.join(__dirname, '..');
 const { stripComments } = require(path.join(ROOT, 'scripts/lib/strip-comments'));
 const fs = require('fs');
@@ -85,11 +89,7 @@ function installStore() {
  * fail-open path a pool hiccup or an unset DATABASE_URL produces in production.
  */
 function installDb(mode) {
-  const state = { taken: new Map(), acquired: 0, released: 0, clients: 0, releasedClients: 0 };
-  const queueFor = (key) => {
-    if (!state.taken.has(key)) state.taken.set(key, Promise.resolve());
-    return state.taken.get(key);
-  };
+  const state = { taken: new Map(), acquired: 0, released: 0, clients: 0, releasedClients: 0, held: 0, peakHeld: 0 };
   require.cache[DB_ID] = {
     id: DB_ID,
     filename: DB_ID,
@@ -98,20 +98,30 @@ function installDb(mode) {
       async getClient() {
         if (mode === 'unavailable') throw new Error('no database');
         state.clients += 1;
+        state.held += 1;
+        if (state.held > state.peakHeld) state.peakHeld = state.held;
         let releaseLock = null;
         return {
           async query(sql, params) {
-            if (/pg_advisory_lock/.test(sql)) {
-              state.acquired += 1;
-              if (mode === 'granted') return { rows: [] }; // the control: no queueing at all
+            /* ⛔ MATCHES THE NON-BLOCKING FORM, because that is what production takes:
+               `pg_try_advisory_lock` does NOT contain the substring `pg_advisory_lock`
+               (the `try_` sits between), so the old regex silently matched nothing and
+               every lock read as refused. A fake that does not speak the call under test
+               reports about a different program. */
+            if (/pg_(try_)?advisory_lock/.test(sql)) {
+              if (mode === 'granted') { state.acquired += 1; return { rows: [{ ok: true }] }; } // the control: everybody wins at once
+              /* ⛔ TRY-LOCK SEMANTICS, WHICH IS THE WHOLE POINT: `pg_try_advisory_lock`
+                 answers FALSE IMMEDIATELY when the key is held — it never queues. A fake
+                 that made the caller wait inside `query` would be modelling the BLOCKING
+                 function and would hold this client for the wait, which is the very
+                 defect the production change removed: the fake would then report the
+                 fixed code as still starving the pool. */
               const key = String(params && params[0]);
-              const ahead = queueFor(key);
-              let done;
-              const mine = new Promise((r) => { done = r; });
-              state.taken.set(key, ahead.then(() => mine));
-              releaseLock = done;
-              await ahead;
-              return { rows: [] };
+              if (state.taken.get(key) === true) return { rows: [{ ok: false }] };
+              state.taken.set(key, true);
+              state.acquired += 1;
+              releaseLock = () => state.taken.set(key, false);
+              return { rows: [{ ok: true }] };
             }
             if (/pg_advisory_unlock/.test(sql)) {
               state.released += 1;
@@ -122,6 +132,7 @@ function installDb(mode) {
           },
           release() {
             state.releasedClients += 1;
+            state.held -= 1;
             if (releaseLock) { releaseLock(); releaseLock = null; }
           },
         };
@@ -172,6 +183,72 @@ const BANDS = { lenderprice: { answered: true, keys: ['acra'] }, loannex: { answ
       `⛔ A1 THE ONE THAT MATTERS: with the per-key lock the same overlap keeps every sighting — ${names.join(', ')}`);
     ok(db.acquired === 2 && db.released === 2 && db.clients === db.releasedClients,
       `A2 …and every lock taken was released, and every connection handed back (${db.acquired} taken, ${db.released} released, ${db.clients}/${db.releasedClients} clients)`);
+
+    /* ⛔ THE ONE THAT CLOSES THE POOL-STARVATION DEFECT — A REFUSED CALLER LETS GO BEFORE
+       IT WAITS. Every caller must take a client in order to ASK for the lock, so a peak
+       held-count is the wrong question (seven callers asking at once legitimately hold
+       seven for an instant). What was fatal about the blocking form is the DURATION: a
+       waiter held one of the five for the whole wait, so five concurrent calls left the
+       lock HOLDER unable to get a connection for its own read — 2,128 ms measured, one
+       call back `{ok:false}` and its sighting lost.
+
+       So the property is an ORDER, and it is asserted as one: `release` happens before
+       `nap`, on every refused attempt. `takeLock` is called directly with both injected,
+       which is the only way to see the order at all. */
+    {
+      const { takeLock } = require(path.join(ROOT, 'src/longterm/pricing/investor-config.js'))._internals;
+      const log = [];
+      const busy = {
+        async getClient() {
+          log.push('take');
+          return { async query() { return { rows: [{ ok: false }] }; }, release() { log.push('release'); } };
+        },
+      };
+      const napped = async () => { log.push('nap'); };
+      const got = await takeLock('k', { getClient: busy.getClient, nap: napped });
+      ok(got === null, 'A2a a lock refused for the whole budget answers null — and the write goes ahead anyway (A3)');
+      const pairs = log.join(',');
+      ok(!/take,nap/.test(pairs) && !/release,take,nap/.test(pairs.replace(/release,/g, '')),
+        `A2b ⛔ …and NOT ONE of those attempts napped while holding a client — ${pairs}`);
+      const naps = log.filter((x) => x === 'nap').length;
+      const takes = log.filter((x) => x === 'take').length;
+      const rels = log.filter((x) => x === 'release').length;
+      ok(takes === rels && takes > 1 && naps === takes - 1,
+        `A2c …every client taken was handed back, and it waited between tries rather than spinning (${takes} taken, ${rels} released, ${naps} waits)`);
+
+      /* THE CONTROL that makes A2b mean something: a `takeLock` that keeps its client
+         while it waits — which is what the blocking call did — produces the forbidden
+         order immediately. Without this, A2b passes on any code that never naps at all. */
+      const ctl = [];
+      const holdWhileWaiting = async () => {
+        for (let i = 0; i < 3; i += 1) {
+          ctl.push('take');
+          await (async () => { ctl.push('nap'); })();   // waits WITHOUT releasing
+          ctl.push('release');
+        }
+        return null;
+      };
+      await holdWhileWaiting();
+      ok(/take,nap/.test(ctl.join(',')),
+        'A2d CONTROL: a waiter that keeps its client shows exactly the order A2b forbids');
+
+      /* AND THE GRANTED CASE STILL HANDS THE CLIENT BACK TO THE CALLER, which is what
+         lets the `finally` unlock on it. */
+      const okClient = { async query() { return { rows: [{ ok: true }] }; }, release() {} };
+      const held = await takeLock('k', { getClient: async () => okClient, nap: napped });
+      ok(held === okClient, 'A2e …and a lock that IS granted comes back holding its client, so the finally can unlock on it');
+    }
+
+    /* SEVEN OVERLAPPING WRITES STILL LOSE NOTHING — the serialisation the lock exists for
+       survives the change from blocking to try-and-retry. */
+    cell = installStore();
+    db = installDb('queue');
+    cfg = freshConfig();
+    const many = await Promise.all([0, 1, 2, 3, 4, 5, 6].map(() => cfg.recordSightings(IMMEDIATE)));
+    ok(many.every((r) => r && r.ok === true) && sightings.read(cell.value).investors.nqm,
+      `A2f seven overlapping writes all succeed and the sighting is there (${db.clients} clients taken, ${db.releasedClients} handed back)`);
+    ok(db.clients === db.releasedClients,
+      'A2g …with every client handed back');
 
     /* ⛔ IT FAILS OPEN. A pool hiccup, or a script with no DATABASE_URL, must never stop
        the register recording — a missed lock costs at worst the sighting the unlocked
@@ -283,35 +360,117 @@ const BANDS = { lenderprice: { answered: true, keys: ['acra'] }, loannex: { answ
   // ═══════════════════════════════════════════════════════════════════════════
   {
     const src = stripComments(fs.readFileSync(path.join(ROOT, 'app-v2/src/longterm/LtPricer.jsx'), 'utf8'));
-    ok(/export function bandsWillFollow\(/.test(src),
-      'D1 the rule is a NAMED, exported function rather than a condition buried in the handler');
+    /* ⛔ THE RULE IS RUN, NOT READ. Every assertion here used to be a regex over
+       `LtPricer.jsx`, because a `.jsx` module cannot be loaded by any CI job — and the
+       re-audit of 2026-09-03 walked straight through them: a `bandsWillFollow` returning
+       TRUE unconditionally, while still calling `bracketMissing` so every pattern
+       matched, was green across all 204 suites. A TRUE here is a promise that the band
+       door will run, and a wrong one means the press is never recorded and the super
+       admin is never told a sheet did not carry a switched investor. The three rules now
+       live in `bandRules.js`, plain JavaScript, and this asks them. */
+    const bands = await import(pathToFileURL(path.join(ROOT, 'app-v2/src/longterm/bandRules.js')).href);
+    const CALC = { rent: '3000', tax: '400', taxBasis: 'monthly', insurance: '100', insBasis: 'monthly', hoa: '' };
+    const FORM = { loan: '400000', termYears: '30', io: false };
+    ok(bands.bandsWillFollow({ f: FORM, calc: CALC }) === true,
+      '⛔ D1 a complete search says the bands WILL follow');
+    for (const [what, calc, form] of [
+      ['no rent', { ...CALC, rent: '' }, FORM],
+      ['no property tax', { ...CALC, tax: '' }, FORM],
+      ['no insurance', { ...CALC, insurance: '' }, FORM],
+      ['no loan amount', CALC, { ...FORM, loan: '' }],
+      ['no term on an amortising loan', CALC, { ...FORM, termYears: '' }],
+    ]) {
+      ok(bands.bandsWillFollow({ f: form, calc }) === false,
+        `⛔ D1${what[3]} …and one with ${what} says they will NOT — the door then records in full, which is the safe direction`);
+    }
+    ok(bands.bandsWillFollow({ f: { ...FORM, termYears: '', io: true }, calc: CALC }) === true,
+      'D1f …while an INTEREST-ONLY loan needs no term, exactly as the band board itself rules');
+
+    /* ⛔ D2 · WHAT MAKES A TRUE SAFE: it is computed WITHOUT the answer's effective
+       scenario. That value arrives only WITH the answer and can only SUPPLY a loan
+       amount the form left blank, so "complete before" implies "complete after". Asked
+       WITH it, a blank form would promise bands that then do run — but the promise was
+       made before anybody could know that. Run rather than read: a rule that consulted
+       it would answer TRUE on the second line below. */
+    ok(bands.bracketMissing(bands.bracketFigures({ f: { ...FORM, loan: '' }, calc: CALC, effectiveScenario: { loanAmount: 400000 } })).length === 0,
+      'D2 CONTROL: the effective scenario really can fill a blank loan amount — so consulting it WOULD change the answer');
+    ok(bands.bandsWillFollow({ f: { ...FORM, loan: '' }, calc: CALC }) === false,
+      '⛔ D2a …and `bandsWillFollow` still says NO, because it never asks — a TRUE it gives can never turn out to be wrong');
+
+    /* D3 · ONE LIST, NOT TWO. The screen's promise and the band door's own early return
+       must agree about what is missing, or the door stands down on a press that told the
+       server it would run. Asserted by RUNNING both over the same figures. */
+    const missing = bands.bracketMissing(bands.bracketFigures({ f: { ...FORM, loan: '' }, calc: { ...CALC, rent: '' }, effectiveScenario: null }));
+    ok(missing.includes('monthly rent') && missing.includes('loan amount'),
+      `D3 …and it names what is missing in the words of the boxes they come from (${missing.join(', ')})`);
+
+
     ok(/bandsFollow: bandsWillFollow\(\{ f, calc \}\)/.test(src),
-      '⛔ D2 …and the immediate call actually carries it — a rule the press does not send is a rule nobody follows');
-    /* ⛔ ASKED WITHOUT `effectiveScenario`, which is what makes a TRUE safe: that value
-       arrives only WITH the answer and can only supply a loan amount the form left blank,
-       so "complete before" implies "complete after". Reading it here would be asking a
-       question this side of the call cannot answer. */
-    const fn = /export function bandsWillFollow\([\s\S]*?\n\}/.exec(src);
-    ok(fn && /effectiveScenario: null/.test(fn[0]),
-      'D3 …computed WITHOUT the answer’s effective scenario, so a TRUE can never be wrong');
-    ok(fn && /bracketMissing\(/.test(fn[0]) && !/rentMonthly|taxMonthly|loanAmount/.test(fn[0]),
-      'D4 …and it asks `bracketMissing`, the SAME rule `runBrackets` returns early on — never a second copy of the list');
+      '⛔ D4 …and the immediate call actually carries it — a rule the press does not send is a rule nobody follows');
 
     const eng = stripComments(fs.readFileSync(path.join(ROOT, 'app-v2/src/longterm/pricerEngine.js'), 'utf8'));
     ok(/bandsFollow: !!\(opts && opts\.bandsFollow\)/.test(eng),
       'D5 the engine door carries it to the server, and coerces rather than forwarding whatever it was handed');
 
+    /* ⛔ D6 · AND THE SERVER'S READ IS RUN TOO. This was one inline expression at the
+       route guarded by an UNANCHORED regex, and the re-audit appended `|| body.full ===
+       true` to it: the pattern still matched, all 204 stayed green, and because
+       `GENERAL_ENGINE.price` sends `full: true` on EVERY press, the immediate door on
+       the General Pricing Engine would have filed no miss and counted no search, ever.
+       It is a named function now, and this is its whole truth table. */
+    const { partOfLargerSearchFrom: partOf } = require(path.join(ROOT, 'src/longterm/pricing/search-record.js'));
+    ok(partOf({ bandsFollow: true }) === true,
+      '⛔ D6 an explicit true narrows what this door records');
+    ok(partOf({ full: true }) === false,
+      '⛔ D6a …and NOTHING ELSE does — `full: true` rides on every general-engine press and must never be read as one');
+    for (const [what, body] of [['a string', { bandsFollow: 'true' }], ['a 1', { bandsFollow: 1 }], ['nothing', {}], ['no body at all', null]]) {
+      ok(partOf(body) === false,
+        `D6b …nor does ${what} — anything but a boolean true means "I am the whole search", whose worst outcome is a duplicate rather than a silence`);
+    }
     const route = stripComments(fs.readFileSync(path.join(ROOT, 'src/longterm/routes/dscr-pricer.js'), 'utf8'));
-    ok(/partOfLargerSearch: body\.bandsFollow === true/.test(route),
-      '⛔ D6 …and the route reads it STRICTLY — only an explicit true narrows what is recorded');
+    ok(/partOfLargerSearch: searchRecord\.partOfLargerSearchFrom\(body\)/.test(route),
+      'D6c …and the route asks that one rule rather than re-reading the body itself');
 
     /* THE LOCK IS WHERE IT IS CLAIMED TO BE. A comment saying a read-modify-write is
        serialised, over code that is not, is the confident wrong answer. */
     const cfgSrc = stripComments(fs.readFileSync(path.join(ROOT, 'src/longterm/pricing/investor-config.js'), 'utf8'));
-    ok(/pg_advisory_lock\(hashtextextended/.test(cfgSrc) && /pg_advisory_unlock\(hashtextextended/.test(cfgSrc),
+    ok(/pg_try_advisory_lock\(hashtextextended/.test(cfgSrc) && /pg_advisory_unlock\(hashtextextended/.test(cfgSrc),
       'D7 the sightings write really does take and release a per-key advisory lock');
+    /* ⛔ AND IT IS THE NON-BLOCKING FORM. The blocking one shipped in ba2c583a and the
+       re-audit measured what it cost: the Long-Term pool is `max: 5` and the store
+       borrows from it, so a waiter holding one of the five leaves the lock HOLDER unable
+       to get a connection for its own read — 2,128 ms measured at five concurrent calls,
+       one of them back with `{ok:false}` and its sighting gone. The lock added to stop a
+       lost sighting was losing them. A2a below proves the property behaviourally; this
+       stops the blocking call coming back by name. */
+    ok(!/\bpg_advisory_lock\(/.test(cfgSrc),
+      'D7a …the NON-BLOCKING one — a blocking waiter holds a pooled connection, and there are only five');
     ok(/finally \{/.test(cfgSrc.slice(cfgSrc.indexOf('async function recordSightings'))),
       'D8 …released in a `finally`, so a throw mid-write cannot strand it');
+
+    /* ⛔ D9 · THE PROMISE HAS TO BE KEPT, AND THAT IS A QUESTION OF ORDER.
+       `bandsFollow: true` tells the server "do not count this press and do not file its
+       misses — the band door is about to". If the band door never runs, nothing records
+       the press at all: no counted search, no last-answered stamp, and no miss filed, so
+       the super admin is never told a sheet did not carry a switched investor. That is
+       the "a wrong TRUE loses a real alert" harm the change itself names.
+
+       `runBrackets` was the LAST statement in `run()`'s try block, so anything throwing
+       between the answer and it — `engine.disqualifyHandle` on an unexpected shape,
+       `filterPrograms`/`buildRateStack` — landed in the catch and the band door never
+       ran, with `bandsFollow` already on the wire. It fires FIRST now.
+
+       A TRIPWIRE, not a proof, and it says so: only a render could prove the order, and
+       `renderToString` runs no effects, so nothing here can make `buildRateStack` throw
+       and watch what happens. What it can do is pin that nothing sits in front of it. */
+    const screen = stripComments(fs.readFileSync(path.join(ROOT, 'app-v2/src/longterm/LtPricer.jsx'), 'utf8'));
+    const runBody = screen.slice(screen.indexOf('async function run('), screen.indexOf('async function askDisqualified('));
+    const iBands = runBody.indexOf('runBrackets(toScenario(f)');
+    const iHandle = runBody.indexOf('engine.disqualifyHandle ? engine.disqualifyHandle(r)');
+    const iStack = runBody.indexOf('buildRateStack(filterPrograms(');
+    ok(iBands > 0 && iHandle > 0 && iStack > 0, 'D9a (located the band call and the two that used to run before it)');
+    ok(iBands < iHandle && iBands < iStack,
+      `D9 ⛔ the band door fires BEFORE anything that could throw — the press promised it would run (bands at ${iBands}, handle ${iHandle}, stack ${iStack})`);
   }
 
   console.log(`\n${fail ? 'FAILED' : 'OFFLINE: all passed'} (${pass} passed, ${fail} failed)`);

@@ -100,6 +100,26 @@ const sightingsRegister = require('./investor-sightings');
  * immediate board) and unions what it saw. `flush(opts)` writes both registers
  * once. Calling `flush` with nothing observed writes nothing at all.
  */
+/**
+ * IS THIS DOOR PART OF A LARGER SEARCH? — read from a request body, ONCE, here.
+ *
+ * ⛔ IT IS A FUNCTION SO IT CAN BE RUN, and that is the whole reason it exists. It was
+ * one inline expression at the route (`partOfLargerSearch: body.bandsFollow === true`)
+ * guarded by an UNANCHORED regex, and the re-audit of 2026-09-03 walked past it by
+ * appending a disjunct: `|| body.full === true`. The regex still matched, all 204 LT
+ * suites stayed green — and since `GENERAL_ENGINE.price` sends `full: true` on every
+ * press, the immediate door on the General Pricing Engine would then have filed NO miss
+ * and counted NO search, ever, whatever the screen said. A rule that decides whether a
+ * super admin is told about a rate sheet is not a thing to pin by spelling.
+ *
+ * STRICT ON PURPOSE. Only an explicit boolean `true` narrows what is recorded; a string
+ * "true", a 1, a missing key and anything else all mean "I am the whole search", which
+ * is the safe direction — its worst outcome is a duplicate, never a silence.
+ */
+function partOfLargerSearchFrom(body) {
+  return !!(body && body.bandsFollow === true);
+}
+
 function collector(deps = {}, opts = {}) {
   const recordSightings = deps.recordSightings || investorConfig.recordSightings;
   const recordMisses = deps.recordMisses || sourceMisses.record;
@@ -245,4 +265,5 @@ async function settled() {
   while (inFlight.size) await Promise.all([...inFlight]);
 }
 
-module.exports = { collector, recordOne, later, settled };
+module.exports = {
+  partOfLargerSearchFrom, collector, recordOne, later, settled };

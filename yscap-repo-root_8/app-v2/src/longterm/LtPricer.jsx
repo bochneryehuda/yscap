@@ -23,6 +23,7 @@ import {
   missingFromAnswer, overlaySummary, expandAllKeys,
 } from './investorFilter.js';
 import { perMonth, dscrFrom, housingPayment, ratioVerdict } from './dscrCalc.js';
+import { bracketFigures, bracketMissing, bandsWillFollow } from './bandRules.js';
 // The form's own rules — which options exist, when a field appears, and the amount triangle. Also a
 // plain `.js` module, and for the same reason: CI can run it, and a rule CI cannot run is a rule
 // nobody is holding. See scenarioFields.js.
@@ -161,75 +162,10 @@ export function ltvOf(f) {
    price FIRST — a higher price is better for the borrower, and that is arithmetic, not a
    judgement. A quote with no price sorts last rather than being treated as zero.
    ────────────────────────────────────────────────────────────────────────── */
-/**
- * THE FIGURES A DSCR BAND IS WORKED OUT FROM, and what is still missing.
- *
- * ⛔ PURE, AND MODULE-LEVEL ON PURPOSE. The band searches are fired from inside the
- * Search press, where the component's own derived values are the PREVIOUS render's —
- * `loanAmount` in particular is partly derived from the last response. Reading them
- * there would band the new board on the old deal's figures. So everything is passed
- * in, and the loan amount comes from the answer the vendor just gave (its own echo)
- * before anything the form holds.
- *
- * ⛔ TAX AND INSURANCE GO THROUGH `perMonth`, NEVER RAW. Both boxes carry a
- * monthly/yearly switch beside them, so the raw number can be a yearly bill — a
- * payment twelve times too high, and a band wrong on every row.
- */
-export function bracketFigures({ f, calc, effectiveScenario }) {
-  const eff = effectiveScenario && toNumber(effectiveScenario.loanAmount);
-  const typed = toNumber(f && f.loan);
-  return {
-    loanAmount: eff != null && eff > 0 ? eff : (typed != null && typed > 0 ? typed : null),
-    termYears: toNumber(f && f.termYears),
-    interestOnly: !!(f && f.io),
-    rentMonthly: perMonth(toNumber(calc && calc.rent), 'monthly'),
-    taxMonthly: perMonth(toNumber(calc && calc.tax), calc && calc.taxBasis),
-    insuranceMonthly: perMonth(toNumber(calc && calc.insurance), calc && calc.insBasis),
-    hoaMonthly: calc && calc.hoa === '' ? 0 : perMonth(toNumber(calc && calc.hoa), 'monthly'),
-  };
-}
-
-/**
- * WHAT THE BAND BOARD IS STILL MISSING, in the words of the boxes it comes from.
- *
- * ⛔ NOT `dscrFrom`'s LIST. That answers "can we show a ratio for THIS rate", so with
- * no rate chosen it reports the RATE as missing — nonsense advice here, because the
- * band board's whole job is to find the rates. This mirrors the server's own
- * `readFigures` rule instead: the property's figures plus the loan, and a term only
- * when the payment amortises (an interest-only payment never uses one).
- */
-export function bracketMissing(fig) {
-  const need = [];
-  if (!(fig.rentMonthly > 0)) need.push('monthly rent');
-  if (fig.taxMonthly == null) need.push('property tax');
-  if (fig.insuranceMonthly == null) need.push('insurance');
-  if (!(fig.loanAmount > 0)) need.push('loan amount');
-  if (!fig.interestOnly && !(fig.termYears > 0)) need.push('loan term');
-  return need;
-}
-
-/**
- * WILL THE BAND DOOR RUN ON THIS PRESS? — asked BEFORE the immediate call, and
- * deliberately conservative.
- *
- * ⛔ ONE PRESS IS ONE SEARCH, AND THE SERVER CANNOT KNOW THAT ON ITS OWN. `run()` fires
- * the immediate board and then the band board, and since #1436 both record what the
- * sheets said. Recorded as two searches, one press files a miss the band door is about to
- * disprove, doubles the reviewer's hit count, and locks a source button out on half the
- * evidence `NEVER_AFTER_SEARCHES` was set to demand. So this screen — the only thing that
- * knows both calls belong to one press — tells the server, and `search-record` records the
- * first door as part of a larger search.
- *
- * ⛔ IT IS ASKED WITHOUT `effectiveScenario`, WHICH IS WHY IT IS SAFE. That value arrives
- * only WITH the answer, and all it can do is supply a loan amount the form left blank —
- * so a `true` here is never wrong (complete before can only stay complete after), while a
- * `false` on a deal whose loan the vendor filled in simply records both doors in full,
- * which is the behaviour today. `runBrackets` refuses the same way on the same rule, so
- * this and the early return there cannot disagree.
- */
-export function bandsWillFollow({ f, calc }) {
-  return bracketMissing(bracketFigures({ f, calc, effectiveScenario: null })).length === 0;
-}
+/* THE BAND RULES live in a plain-JS module so CI can RUN them rather than read them —
+   see bandRules.js. Re-exported here because the screen has always been where they were
+   imported from, and moving a file should not move anybody's import. */
+export { bracketFigures, bracketMissing, bandsWillFollow } from './bandRules.js';
 
 /**
  * THE BOARD, WITH A BRACKET DIVIDER WHERE THE BAND CHANGES.
@@ -2521,6 +2457,21 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
          older server during a deploy) simply leaves the last one in place, and this may never
          cost anybody a board. */
       try { if (r && r.investorPairing) rememberPairing(r.investorPairing); } catch (_) { /* never at the board's cost */ }
+      /* ⛔ THE BAND BOARD FIRES HERE — FIRST, before any of the render bookkeeping below.
+         NOT awaited: the officer already has their answer and these searches take a few
+         seconds more; the position is what matters.
+
+         It used to be the LAST statement in this `try`, and the re-audit of 2026-09-03
+         named what that costs. The immediate door has already told the server
+         `bandsFollow: true` — "do not count this press, do not file its misses, the band
+         door is about to" — and that promise is only kept if the band door actually runs.
+         Anything throwing between the answer and it (`engine.disqualifyHandle`,
+         `filterPrograms`/`buildRateStack` on an unexpected shape) lands in `catch (e2)`
+         and the band door never runs at all: the press goes unrecorded, no miss is filed,
+         and the super admin is never told that a sheet did not carry a switched investor
+         — the "a wrong TRUE loses a real alert" harm. Everything it needs is in hand the
+         moment `r` is, so there is no reason for anything to sit in front of it. */
+      runBrackets(toScenario(f), bracketFigures({ f, calc, effectiveScenario: r && r.effectiveScenario }));
       // THE ANSWER IS HERE — the form folds away and the sticky strip takes over, holding the
       // search's facts and the Edit search button. Only a SUCCESS collapses it: a refusal leaves
       // the form open with the problem in front of the person who has to fix it.
@@ -2545,9 +2496,6 @@ export function PricerScreen({ engine = GENERAL_ENGINE, slots = {} }) {
       // selection opens a row that is on the board rather than one it is hiding.
       const s = buildRateStack(filterPrograms(r && r.programs, invSel).programs);
       if (s.rates.length) setOpenRates(new Set([s.rates[0].key]));
-      // …and the band board, on the same press. NOT awaited: the officer already has
-      // their answer, and these searches take a few seconds more.
-      runBrackets(toScenario(f), bracketFigures({ f, calc, effectiveScenario: r && r.effectiveScenario }));
     } catch (e2) {
       setErr((e2 && e2.message) || 'Lender Price could not be reached.');
     } finally {

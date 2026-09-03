@@ -40,6 +40,11 @@ const ok = (c, m) => { if (c) { pass++; console.log(`  ok   ${m}`); } else { fai
    never seen — the first cut of this harness stubbed `bracket-run` too late and
    the bands door quietly ran the real one. Everything goes in first. */
 const calls = { recordOne: [], flush: [], observe: 0, observed: [], later: 0, collector: [] };
+/* ⛔ THE REAL MODULE, TAKEN BEFORE IT IS STUBBED. The stub replaces the WRITERS, which is
+   the point of this suite; it must not replace the pure RULES beside them, or the route
+   would be judged against a re-typed copy. `partOfLargerSearchFrom` is delegated to this
+   below — see the note there. */
+const REAL_SEARCH_RECORD = require(path.join(ROOT, 'src/longterm/pricing/search-record.js'));
 const stub = (rel, exports) => {
   const id = require.resolve(path.join(ROOT, rel));
   require.cache[id] = { id, filename: id, loaded: true, exports };
@@ -58,6 +63,7 @@ stub('src/longterm/pricing/search-record.js', {
      AND miss recording into nothing in production — and this stub's `collector: () => ({…})`
      discarded its own argument, so all 24 checks stayed green while the register went
      silent. Rest params record what was ACTUALLY passed. */
+  partOfLargerSearchFrom: (...a) => REAL_SEARCH_RECORD.partOfLargerSearchFrom(...a),
   collector: (...ca) => { calls.collector.push({ deps: ca[0], argc: ca.length }); return ({
     /* ⛔ THE ARGUMENT IS RECORDED, NOT COUNTED — the re-audit's D-6. A spy that only
        counts calls proves the door CALLED the recorder and nothing about what it handed
@@ -277,6 +283,59 @@ const reset = () => { calls.recordOne.length = 0; calls.flush.length = 0; calls.
     ok(res2.body && res2.body.ok === true, `D2 CONTROL: the bands door answers too (${res2.code || 200})`);
     ok(calls.flush.length === 1,
       `⛔ D3 …and it flushes the register just the same (${calls.flush.length})`);
+
+  console.log('\n── E. THE REAL WRITERS ARE THE DEFAULTS — run, not read ──');
+  {
+    /* ⛔ WHY THIS EXISTS. B6 records `collector`'s ARGUMENT COUNT, which catches the
+       mutation it was written for (`collector({recordSightings: noop, recordMisses:
+       noop})` at the call site) and nothing else. The re-audit of 2026-09-03 moved the
+       same no-op ONE LINE INSIDE the module —
+
+           const recordSightings = deps.recordSightings || (async () => ({ ok: true }));
+
+       — so `collector()` is still called with 0 arguments, B6 stays green, and NOTHING IS
+       EVER WRITTEN IN PRODUCTION: no sighting from either door, no miss, no email to the
+       super admin. All 204 LT suites passed.
+
+       A call-site argument count cannot see that, because the defect is not at the call
+       site. So this loads the REAL `search-record` with the two writer modules replaced
+       in the require cache, asks for a collector with NO dependencies exactly as the
+       route does, and asserts the real writers were REACHED. */
+    const SR_ID = require.resolve(path.join(ROOT, 'src/longterm/pricing/search-record.js'));
+    const CFG_ID = require.resolve(path.join(ROOT, 'src/longterm/pricing/investor-config.js'));
+    const MISS_ID = require.resolve(path.join(ROOT, 'src/longterm/pricing/source-misses.js'));
+    const beforeSr = require.cache[SR_ID];
+    const beforeCfg = require.cache[CFG_ID];
+    const beforeMiss = require.cache[MISS_ID];
+    const hit = { sightings: 0, misses: 0, observed: null };
+    const stub = (id, exports) => { require.cache[id] = { id, filename: id, loaded: true, exports }; };
+    try {
+      delete require.cache[SR_ID];
+      stub(CFG_ID, { async recordSightings(observed) { hit.sightings += 1; hit.observed = observed; return { ok: true, wrote: true }; } });
+      stub(MISS_ID, { async record() { hit.misses += 1; return { ok: true }; } });
+      const real = require(SR_ID);
+      const c = real.collector();                    // exactly as the bands door asks for it
+      c.observe({
+        ok: true,
+        sightings: { lenderprice: { answered: true, keys: ['nqm'] }, loannex: { answered: true, keys: [] } },
+        missing: ['acra'],   // the board's own key — `observe` reads `board.missing`
+      });
+      await c.flush({ staffId: null, scenario: {} });
+      ok(hit.sightings === 1,
+        `⛔ E1 A COLLECTOR ASKED FOR WITH NO DEPENDENCIES REACHES THE REAL SIGHTINGS WRITER (${hit.sightings} call(s)) — a no-op default inside the module silences every door and no argument count can see it`);
+      ok(hit.observed && hit.observed.lenderprice && hit.observed.lenderprice.answered === true,
+        'E1a …and hands it what the board actually saw, rather than an empty shape');
+      ok(hit.misses === 1,
+        `⛔ E2 …and the real MISS writer too — that one is what emails the super admin about a sheet that did not carry a switched investor (${hit.misses} call(s))`);
+    } finally {
+      /* Put the cache back exactly as it was: a stub left behind would silently answer
+         for every later suite in the same process. */
+      delete require.cache[SR_ID];
+      if (beforeSr) require.cache[SR_ID] = beforeSr;
+      if (beforeCfg) require.cache[CFG_ID] = beforeCfg; else delete require.cache[CFG_ID];
+      if (beforeMiss) require.cache[MISS_ID] = beforeMiss; else delete require.cache[MISS_ID];
+    }
+  }
 
     /* And the fixture is held to the shape the real board produces, so a board that
        described a sheet WITHOUT saying whether it answered could not sit here unnoticed —
