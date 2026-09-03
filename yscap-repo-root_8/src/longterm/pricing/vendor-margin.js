@@ -58,6 +58,7 @@ const MARGIN_HOLDBACK_POINTS = {
 };
 
 const r3 = (n) => Math.round(Number(n) * 1000) / 1000;
+const pricePoints = require('./price-points');
 /**
  * Is this actually a number?
  *
@@ -324,7 +325,19 @@ function applyToBoard(board, source, opts) {
       // unrounded one, and a board whose price and points disagree by 0.001 is a
       // board somebody will spend an afternoon on. A holdback moves the price
       // down and the points up by exactly the same amount, so shift.
-      const points = nn(r.points) ? r3(Number(r.points) + pts) : r3(100 - price);
+      const points = nn(r.points) ? r3(Number(r.points) + pts) : pricePoints.pointsFromPrice(price);
+      /**
+       * ⛔ `priceExact` RIDES THROUGH UNSHIFTED, AND THAT IS DELIBERATE. It is the vendor's own
+       * price to the last decimal, kept for one purpose only: asking that vendor to itemise a
+       * quote it can still recognise (`loannex/parse` has the measurement). Our holdback is not
+       * on its sheet, so a held-back `priceExact` would be a price the sheet has never quoted —
+       * which is the exact failure the field was added to end. Spread through, never touched.
+       *
+       * ⛔ IT STAYS ON THE SERVER. Beside the held-back `price` on the same object it IS our margin,
+       * one subtraction apart, so `quote-shape.explainHandle` SEALS it on the way to the browser
+       * (`pricing/sealed-price`) and only the explain door opens it. Never put it on a row a screen
+       * reads, and never widen what carries it out.
+       */
       return { ...r, vendorPrice: r3(vendorPrice), price, points, marginHoldback: pts };
     }),
     // ⛔ AND THE ITEMIZED OPTIONS BESIDE THEM, OR THE BOARD AND ITS OWN DETAILS TABLE QUOTE TWO
@@ -394,7 +407,7 @@ function shiftBase(pb, pts) {
   const next = { ...pb, vendorBasePoints: r3(vendorBasePoints), basePoints: r3(vendorBasePoints + pts) };
   // Only when the vendor STATED one — a base price this module invented would be indistinguishable
   // from one the sheet published, and `breakdown.priceOf` already derives it when it is absent.
-  if (nn(pb.basePrice)) next.basePrice = r3(100 - next.basePoints);
+  if (nn(pb.basePrice)) next.basePrice = pricePoints.priceFromPoints(next.basePoints);
   /**
    * ⛔ THE FLOOR AND THE CEILING MOVE WITH IT, or the holdback is recoverable by SUBTRACTION.
    *
@@ -468,7 +481,7 @@ function shiftOptions(options, pts) {
       next.vendorPrice = r3(vendorPrice);
       next.price = r3(vendorPrice - pts);
       if (vendorAdjPts != null) { next.vendorAdjustedPoints = r3(vendorAdjPts); next.adjustedPoints = r3(vendorAdjPts + pts); }
-      else next.adjustedPoints = r3(100 - next.price);
+      else next.adjustedPoints = pricePoints.pointsFromPrice(next.price);
     }
     return { ...o, priceBuild: next, marginHoldback: pts };
   });

@@ -12074,6 +12074,12 @@ router.post('/borrowers/:id/set-password', async (req, res) => {
              failed_attempts=0, locked_until=NULL,
              email_verified=true, email_verified_at=COALESCE(email_verified_at, now())
          WHERE borrower_id=$1`, [req.params.id, hash]);
+      // AND ANY LIVE CO-BROWSE OF THIS BORROWER ENDS WITH IT (2026-09-02). Taking a
+      // borrower's login over is the moment their screen must stop being shown: the
+      // token bump stops the next connect and the hub's heartbeat closes the socket
+      // within a beat, but "within a beat" is not what somebody resetting a password
+      // expects. Best-effort, never blocks.
+      try { require('../lib/cobrowse/sessions').endAllFor('borrower', req.params.id, 'revoked').catch(() => {}); } catch (_) {}
     } else {
       await db.query(
         `INSERT INTO borrower_auth (borrower_id,password_hash,token_version,email_verified,email_verified_at)
@@ -12455,6 +12461,24 @@ router.patch('/borrowers/:id', async (req, res) => {
           [req.params.id])).rows;
         for (const a of coApps) enqueueClickupPush(a.id, ['co_borrower']).catch(() => {});
       } catch (_) { /* best-effort */ }
+    }
+    // ⛔ REASSIGNING A BORROWER ENDS ANY LIVE CO-BROWSE OF THEM (2026-09-02).
+    // `sessions.mayWatch` gates a borrower target on `visibleBorrowerSql`, which
+    // reads `borrowers.primary_officer_id` — one of its five branches. So a
+    // reassignment MAY revoke the old officer's right to watch and may not: a
+    // `borrower_officers` row or an application of theirs can still carry it
+    // (measured). We end the session either way, and this also fires on a PATCH that
+    // merely echoes the same officer, because it keys on the field being submitted.
+    // Both are the fail-safe direction, and both are written down here rather than
+    // left to be discovered as a mystery disconnect. What matters is that the change
+    // touches nothing the co-browse hub's own re-check can see (no `token_version`,
+    // no staff row at all). Without this the officer the file was taken FROM keeps
+    // receiving that borrower's live screen indefinitely — the same failure that was
+    // closed for role and permissions, in the half that was missed (pre-merge audit).
+    // Ending it for both parties is the safe direction: the borrower's own screen is
+    // the thing being protected. Best-effort, never blocks the response.
+    if (b.primaryOfficerId !== undefined) {
+      try { require('../lib/cobrowse/sessions').endAllFor('borrower', req.params.id, 'revoked').catch(() => {}); } catch (_) {}
     }
     await audit(req, 'update_borrower', 'borrower', req.params.id, {
       fields: sets.filter((s) => !s.startsWith('updated_at')).map((s) => s.split('=')[0]).concat(dobDay ? ['date_of_birth'] : []),

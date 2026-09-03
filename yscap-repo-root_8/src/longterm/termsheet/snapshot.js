@@ -199,10 +199,31 @@ const MANUAL_NAME_WARNING = 'Give the program a name a borrower can read — nev
  *
  * The registry-supplied white-label name always wins: a program that HAS a name
  * is never renamed by hand, or two sheets would call one program two things.
+ *
+ * ⛔ BUT `sel` IS THE CLIENT'S OWN POST, SO THE REGISTRY NAME IS CHECKED TOO.
+ * The field is called `consumerLabel` and is MEANT to hold the registry's white
+ * label — which is safe by construction, because `investor-roster.whiteLabelProblem`
+ * already runs the same scrub on BOTH the write door and the read, so a label
+ * naming an investor can neither be saved nor served. But nothing here can tell
+ * a white label the server resolved from a string a caller typed into that field,
+ * and the typed sibling one line below has been refused since the day it existed.
+ * Checking one and trusting the other is a door with a lock on one leaf.
+ *
+ * It is a NO-OP on every real registry label — measured against every white label
+ * the roster can hold — and bites only on a forged one. Rule 10 is a HARD rule and
+ * this is the last door before a name reaches a borrower's document.
  */
 function resolveProgramName(sel) {
   const registry = str(sel.consumerLabel, 60);
-  if (registry) return { ok: true, name: registry, namedBy: 'registry' };
+  if (registry) {
+    if (audience.mentionsInvestor(registry)) {
+      return refuse('program_name_names_investor',
+        `"${registry}" names the investor, so it cannot go on a borrower's document. ${MANUAL_NAME_WARNING} `
+        + 'A white-labelled program never carries its investor\'s name; if this one does, fix it on the investor '
+        + 'and price it again.');
+    }
+    return { ok: true, name: registry, namedBy: 'registry' };
+  }
 
   const typed = str(sel.manualProgramName, 60);
   if (!typed) {

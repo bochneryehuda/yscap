@@ -522,8 +522,21 @@ const reg = registryOf.capturedRegistry();
       'E1b …and strips the wire body off the board before it is answered');
     ok(/const io = want\.io;/.test(src), 'E2  the option-level filter reads the SAME resolved answer as the programme narrowing');
     ok(!/nex\s*\.evidence\(scenarioOf\(req\)/.test(src), 'E3  no explain door hands the vendor the raw browser scenario any more');
-    ok((src.match(/sc = explainScenario\(req\)/g) || []).length === 2, 'E4  both explain doors run the scenario through explainScenario');
-    ok((src.match(/catch \(e\) \{ return scenarioRefused\(res, e\); \}/g) || []).length === 2, 'E4b …and both answer a refusal through scenarioRefused — the one function B12b–e prove');
+    /**
+     * ⛔ COUNTED AGAINST THE DOORS, NOT AGAINST A NUMBER. This pair used to assert `=== 2`, and a
+     * third door — `/loannex/diagnose` — turned it red on 2026-09-03 even though that door does the
+     * right thing. A guard that has to be edited every time a correct door is added teaches people
+     * to edit guards, so it is stated as the rule it always meant: EVERY place that asks the vendor
+     * to itemise a quote runs the browser's scenario through `explainScenario` first, and answers a
+     * refusal through `scenarioRefused`. Add a fourth door tomorrow and this stays green if it is
+     * built right, red if it is not — which is what E3 above is for as well.
+     */
+    const doors = (src.match(/nex\s*\.evidence\(/g) || []).length;
+    ok(doors >= 3, `E4a there are at least three doors that ask the vendor to itemise a quote (found ${doors})`);
+    ok((src.match(/sc = explainScenario\(req\)/g) || []).length === doors,
+      `E4  EVERY explain door runs the scenario through explainScenario (${(src.match(/sc = explainScenario\(req\)/g) || []).length} of ${doors})`);
+    ok((src.match(/catch \(e\) \{ return scenarioRefused\(res, e\); \}/g) || []).length === doors,
+      `E4b …and every one answers a refusal through scenarioRefused — the one function B12b–e prove (${(src.match(/catch \(e\) \{ return scenarioRefused\(res, e\); \}/g) || []).length} of ${doors})`);
     const jsx = read('app-v2/src/longterm/LtPricer.jsx');
     ok(/askedLine\(ev\.asked\)/.test(jsx), 'E5  the panel prints what was asked under an empty breakdown');
     ok(!/loannex|LoanNEX/i.test(jsx.slice(jsx.indexOf('function askedLine'), jsx.indexOf('function askedLine') + 1500)), 'E6  …and names no vendor doing it');

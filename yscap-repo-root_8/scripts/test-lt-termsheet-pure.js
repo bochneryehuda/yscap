@@ -786,6 +786,47 @@ section('an unnamed program may be named — and never after the investor');
   const good = snapshot.resolveProgramName({ manualProgramName: '30-Year Rental Select' });
   check(good.ok, '…while an ordinary program name is accepted, so the guard is not simply refusing everything');
   check(!snapshot.resolveProgramName({ manualProgramName: 'X' }).ok, 'a name too short to read is refused');
+
+  /* ⛔ AND THE SAME SWEEP THROUGH THE OTHER LEAF OF THE DOOR — audit N11.
+   *
+   * `sel` is the CLIENT'S OWN POST. `consumerLabel` is MEANT to hold the registry's white
+   * label, which is safe by construction (`investor-roster.whiteLabelProblem` runs this same
+   * scrub on both the write door and the read, so a label naming an investor can neither be
+   * saved nor served) — but nothing at this door can tell a resolved white label from a string
+   * a caller typed into that field, and the typed sibling above has been refused since the day
+   * it existed. Checking one and trusting the other is a door with a lock on one leaf. */
+  let leakedRegistry = 0;
+  let triedRegistry = 0;
+  for (const entry of spellings) {
+    const s2 = entry && entry.text ? String(entry.text) : '';
+    if (s2.length < 4 || s2.length > 40) continue;
+    triedRegistry += 1;
+    if (snapshot.resolveProgramName({ consumerLabel: `${s2} Select` }).ok) leakedRegistry += 1;
+    if (snapshot.resolveProgramName({ consumerLabel: s2 }).ok) leakedRegistry += 1;
+  }
+  check(triedRegistry > 10 && leakedRegistry === 0,
+    `every recorded investor spelling is refused as a REGISTRY name too (${triedRegistry} tried, ${leakedRegistry} accepted)`);
+
+  /* NEUTRAL ON EVERY REAL WHITE LABEL, and that is the half that makes it safe to add.
+     A label the roster's own door would ACCEPT must still be accepted here, or this check
+     would start refusing programs that price perfectly well today. */
+  {
+    const wlProblem = require('../src/longterm/pricing/investor-roster')._internals.whiteLabelProblem;
+    const words = ['30-Year', 'Rental', 'Select', 'Premier', 'Gold', 'Standard', 'DSCR', 'Investor',
+      'Portfolio', 'Core', 'Elite', 'Flex', 'Bridge', 'Home', 'Capital', 'Lending', 'Funding', 'Group'];
+    const names = new Set(words);
+    for (const a of words) for (const b of words) if (a !== b) names.add(`${a} ${b}`);
+    let refusedButAllowed = 0;
+    for (const n of names) {
+      const rosterWouldRefuse = !!wlProblem('k', 'Some Investor', n, new Map(), new Map());
+      if (!rosterWouldRefuse && !snapshot.resolveProgramName({ consumerLabel: n }).ok) refusedButAllowed += 1;
+    }
+    check(names.size > 100 && refusedButAllowed === 0,
+      `the registry check refuses NOTHING the roster would have accepted (${names.size} labels tried)`);
+  }
+
+  check(snapshot.resolveProgramName({ consumerLabel: 'Platinum' }).namedBy === 'registry',
+    '…and a real white label still wins over anything typed, exactly as before');
 }
 
 // =============================================================================

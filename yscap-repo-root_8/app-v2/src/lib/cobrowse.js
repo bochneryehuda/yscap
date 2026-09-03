@@ -38,6 +38,7 @@
 import { record } from '@rrweb/record';
 import { getToken, api } from './api.js';
 import { BLOCK_SELECTOR, NO_RECORD_ROUTES, NO_DRIVE_SELECTOR, NO_DRIVE_ROUTES, recordOptions } from './cobrowseMask.js';
+import { fingerprintOf } from './cobrowseFingerprint.js';
 
 export { BLOCK_SELECTOR, NO_RECORD_ROUTES, NO_DRIVE_SELECTOR, NO_DRIVE_ROUTES };
 export const SESSION_KEY = 'ys_cobrowse_session';
@@ -294,13 +295,34 @@ function armDriving(state) {
   // here at all. Every event the driver dispatches below is synthetic (isTrusted
   // false), so the controller can never release themselves through this path.
   //
-  // A PASSIVE MOUSE MOVE IS NOT AN ACT, AND MUST NEVER RELEASE CONTROL. The first
-  // cut released after 40px of CUMULATIVE pointer travel that was never reset, so
-  // an ordinary hand resting on a trackpad reached it within a second or two of
-  // Allow being pressed: control was granted and lost again immediately, on every
-  // session, which reads as "I asked for control and never got it". A threshold on
-  // a signal a person produces without meaning to has no safe value — so the test
-  // is the ACT, not the distance. Never re-add a mousemove release here.
+  // ⛔ NO POINTER MOTION OF ANY KIND MAY RELEASE CONTROL — and the rule is the
+  // CLASS, not one event name. The first cut released after 40px of CUMULATIVE
+  // pointer travel that was never reset, so an ordinary hand resting on a
+  // trackpad reached it within a second or two of Allow being pressed: control
+  // was granted and lost again immediately, on every session, which reads as "I
+  // asked for control and never got it". A threshold on a signal a person
+  // produces without meaning to has no safe value — so the test is the ACT, not
+  // the distance.
+  //
+  // THE RULE WAS FIRST WRITTEN AS "never re-add a mousemove release here", and
+  // the post-merge audit showed why that wording was not enough: it rebuilt the
+  // identical defect with a `pointermove` listener and every guard stayed green.
+  // `pointermove` is the SAME SIGNAL from the same trackpad, and it is the
+  // modern API somebody would reach for. So: no `mousemove`, no `pointermove`,
+  // no `touchmove`, no `movementX`/`movementY` or `clientX`/`clientY`
+  // accumulation, no distance or travel threshold — under any name, and by any
+  // registration mechanism: `addEventListener`, a handler property, a computed
+  // one, or an alias of `releaseFromGuest`.
+  //
+  // AND THE SOURCE CHECKS FOR THOSE SHAPES ARE A TRIPWIRE, NOT A PROOF. A second
+  // audit walked through the version that asserted the listener inventory, using
+  // all three of its exits in one mutation — an alias, `clientX` instead of
+  // `movementX`, and `window['on' + ['pointer','move'].join('')] = handler` —
+  // with the suite at 232/0 and the owner's bug live on every session. THE GUARD
+  // THAT ACTUALLY HOLDS THIS is `render-cobrowse-e2e.js`: it moves a real mouse
+  // across a real page and asserts the grant survives, and it catches every one
+  // of them. `check-bundle-fresh.js` is what gives it authority over THIS file,
+  // by refusing a committed bundle that has drifted behind its source.
   const armedAt = Date.now();
   const takeBack = (e) => {
     if (!e.isTrusted || live !== state || state.control !== 'granted') return;
@@ -386,13 +408,14 @@ function ensureCursor(state) {
 
 const KEY_CODES = { Enter: 13, Escape: 27, Tab: 9, Backspace: 8, Delete: 46, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Home: 36, End: 35, ' ': 32 };
 
-/** OUR OWN READING OF THE ELEMENT, in the same shape the viewer sends. */
-function fingerprint(el) {
-  try {
-    const cls = String(el.className || '').split(/\s+/).filter(Boolean)[0] || '';
-    return `${el.tagName || ''}|${el.getAttribute ? (el.getAttribute('type') || '') : ''}|${cls}`.slice(0, 120);
-  } catch { return ''; }
-}
+/**
+ * OUR OWN READING OF THE ELEMENT, in the same shape the viewer sends — and it is
+ * literally the same function now, from `lib/cobrowseFingerprint.js`. It used to
+ * be this six-line copy and a second copy in `screens/StaffCobrowse.jsx`, and the
+ * two disagreed about rrweb's replay decorations, so every relayed click and
+ * keystroke was refused. See that file's header.
+ */
+const fingerprint = fingerprintOf;
 
 /**
  * Mirror id → the real element, or null when it may not be driven.

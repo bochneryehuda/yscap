@@ -367,6 +367,28 @@ async function main() {
   // expressed against the node ids it establishes, so losing it blanks the mirror forever.
   g7.ws.send(JSON.stringify({ t: 'rrweb', events: [{ type: 2, data: { node: { id: 1, type: 0 }, initialOffset: { top: 0, left: 0 } }, timestamp: Date.now() }] }));
   assert(await waitFor(v7.msgs, (m) => m.includes('"type":2')), 'a FULL SNAPSHOT always reaches the viewer');
+  // ⛔ AND A BIG ONE REACHES IT TOO. The assertions above prove no CONTENT check drops a
+  // batch; the post-merge audit (2026-09-02) showed they say nothing about a SIZE one. It
+  // added `if (text.length > 200000) { r.pendingBatches += 1; return; }` immediately before
+  // the relay — the most plausible well-intentioned reintroduction there is — and both
+  // suites stayed green (pure 217/0, this one 112/0) while the mirror blanked exactly as
+  // before. A real full snapshot of a busy page runs to hundreds of kilobytes, so a cap in
+  // that range refuses precisely the batch that must never be refused.
+  //
+  // This sends a genuinely large snapshot — comfortably over any cap somebody would think
+  // to write, and still far under the hub's own 4 MB MAX_MESSAGE_BYTES, which is a
+  // connection-level refusal and a different thing — and requires it to arrive WHOLE.
+  const bigTag = `big-${tag}`;
+  const filler = 'x'.repeat(600000);   // ~0.6 MB: 3x the audit's cap, well under MAX_MESSAGE_BYTES
+  const bigSnapshot = JSON.stringify({ t: 'rrweb', events: [{ type: 2, data: { node: { id: 1, type: 0, filler }, initialOffset: { top: 0, left: 0 } }, timestamp: Date.now(), marker: bigTag }] });
+  assert(bigSnapshot.length > 500000, `the large-snapshot fixture really is large (${bigSnapshot.length} bytes)`);
+  g7.ws.send(bigSnapshot);
+  assert(await waitFor(v7.msgs, (m) => m.includes(bigTag), 6000),
+    `a LARGE full snapshot (${bigSnapshot.length} bytes) reaches the viewer — no size cap may drop a batch`);
+  const gotBig = v7.msgs.find((m) => m.includes(bigTag));
+  assert(gotBig.length === bigSnapshot.length,
+    `it arrives byte-for-byte, not truncated (sent ${bigSnapshot.length}, got ${gotBig.length})`);
+  assert(gotBig === bigSnapshot, 'and unaltered — the hub relays the guest\'s own bytes');
   r = await call('POST', `/api/cobrowse/${s7}/end`, null, lo2Tok);
   assert(r.status === 200, 'the watched person ends the session');
   await new Promise((rr) => setTimeout(rr, 250));
@@ -379,6 +401,196 @@ async function main() {
   const auC = await db.query(`SELECT action FROM audit_log WHERE entity_type='cobrowse_session' AND entity_id=$1 AND action LIKE 'cobrowse_control%' ORDER BY id`, [s7]);
   assert(auC.rows.length >= 6 && auC.rows.some((x) => x.action === 'cobrowse_control_granted') && auC.rows.some((x) => x.action === 'cobrowse_control_released'), `every control step is audited (${auC.rows.length} rows)`);
 
+
+  // ── C6. A SOCKET IS NOT AUTHENTICATED ONCE ────────────────────────────────
+  // Post-merge audit, 2026-09-02: `actorFromToken` ran at connect and NEVER again.
+  // Every HTTP request from a deactivated staffer died at the next call, while
+  // their already-open viewer socket kept receiving the watched person's live
+  // screen — until the socket happened to drop, the guest pressed Stop, or the
+  // four-hour cap fired. The same held for a borrower who reset their password
+  // expecting the watching to stop. Nothing in either suite noticed, because
+  // both only ever tested the door and never the room.
+  //
+  // Proven here by a socket ACTUALLY CLOSING, on the real hub, over a real
+  // WebSocket — never by reading the source.
+  console.log('C6. a live socket is re-checked, not trusted for ever');
+  {
+    const watcher = await mk('super_admin', 'Watcher');
+    const watched = await mk('loan_officer', 'Watched');
+    const wTok = tok(watcher), dTok = tok(watched);
+    r = await call('POST', '/api/cobrowse/request', { kind: 'staff', id: watched.id }, wTok);
+    assert(r.status === 200, 'a session is requested for the re-check case');
+    const s8 = r.data.session.id;
+    r = await call('POST', `/api/cobrowse/${s8}/respond`, { accept: true }, dTok);
+    assert(r.status === 200, 'the watched person accepts');
+    const g8 = await open(wsUrl(dTok, s8, 'guest'));
+    const v8 = await open(wsUrl(wTok, s8, 'viewer'));
+    assert(await waitFor(v8.msgs, (m) => m.includes('"t":"hello"')), 'the viewer is attached and watching');
+    g8.ws.send(JSON.stringify({ t: 'rrweb', events: [{ type: 3, data: { source: 0, texts: [{ id: 1, value: 'before-revoke' }] }, timestamp: Date.now() }] }));
+    assert(await waitFor(v8.msgs, (m) => m.includes('before-revoke')), 'the screen is genuinely streaming to it');
+
+    // A HEARTBEAT ON A HEALTHY SESSION CLOSES NOTHING. Without this the assertion
+    // below would pass just as well for a heartbeat that hung up on everyone.
+    await hub._internals.heartbeat();
+    await new Promise((rr) => setTimeout(rr, 120));
+    assert(v8.ws.readyState === 1 && g8.ws.readyState === 1,
+      'a heartbeat leaves an authorised viewer and guest exactly where they were');
+    g8.ws.send(JSON.stringify({ t: 'rrweb', events: [{ type: 3, data: { source: 0, texts: [{ id: 1, value: 'still-streaming' }] }, timestamp: Date.now() }] }));
+    assert(await waitFor(v8.msgs, (m) => m.includes('still-streaming')), 'and the stream carries on');
+
+    // Now deactivate the WATCHER, exactly as the admin screen does.
+    await db.query(`UPDATE staff_users SET is_active=false, token_version=token_version+1 WHERE id=$1`, [watcher.id]);
+    const closed8 = new Promise((resolve) => { if (v8.ws.readyState === 3) return resolve(v8.ws._closeCode || null); v8.ws.once('close', (c) => resolve(c)); setTimeout(() => resolve(null), 4000); });
+    await hub._internals.heartbeat();
+    const code8 = await closed8;
+    assert(code8 === 4401, `a deactivated watcher's LIVE socket is closed on the next heartbeat (got ${code8})`);
+    // AND THE SESSION IS FILED AS WHAT IT WAS. Leaving the socket's own close
+    // handler to end it would record `guest_left` — "the watched person walked
+    // away" — for a session cut off by a revocation.
+    await new Promise((rr) => setTimeout(rr, 400));
+    const row8 = (await db.query(`SELECT status, end_reason FROM cobrowse_sessions WHERE id=$1`, [s8])).rows[0];
+    assert(row8.status === 'ended' && row8.end_reason === 'revoked',
+      `the register says the session was REVOKED, not that somebody wandered off (status=${row8.status} reason=${row8.end_reason})`);
+    assert(g8.ws.readyState !== 1 || await waitFor(g8.msgs, (m) => m.includes('"t":"ended"')),
+      'and the watched person is told, so they are not left showing a screen to nobody');
+
+    // A DEGRADED DATABASE IS NOT A REVOCATION. `stillAllowed` answers UNKNOWN when
+    // a query throws, and the beat must leave the socket alone — the first cut ran a
+    // `SELECT 1` probe and guessed, so one degraded beat tore down every live
+    // co-browse in the process (pre-merge audit, 2026-09-02).
+    {
+      const watcher3 = await mk('super_admin', 'Watcher3');
+      const watched3 = await mk('loan_officer', 'Watched3');
+      const w3Tok = tok(watcher3), d3Tok = tok(watched3);
+      r = await call('POST', '/api/cobrowse/request', { kind: 'staff', id: watched3.id }, w3Tok);
+      const sA = r.data.session.id;
+      await call('POST', `/api/cobrowse/${sA}/respond`, { accept: true }, d3Tok);
+      const gA = await open(wsUrl(d3Tok, sA, 'guest'));
+      const vA = await open(wsUrl(w3Tok, sA, 'viewer'));
+      assert(await waitFor(vA.msgs, (m) => m.includes('"t":"hello"')), 'a third session is attached for the degraded-pool case');
+      const realQuery = db.query.bind(db);
+      db.query = async (text, params) => {
+        if (/FROM staff_users|FROM borrower_auth/.test(String(text))) throw new Error('canceling statement due to statement timeout');
+        return realQuery(text, params);
+      };
+      try {
+        await hub._internals.heartbeat();
+        await new Promise((rr) => setTimeout(rr, 250));
+        assert(vA.ws.readyState === 1 && gA.ws.readyState === 1,
+          'a beat that CANNOT TELL leaves both sockets open — a degraded pool is not a revocation');
+      } finally { db.query = realQuery; }
+      await call('POST', `/api/cobrowse/${sA}/end`, null, d3Tok).catch(() => {});
+    }
+
+    // AN OVERLAPPING BEAT MUST NOT KILL A HEALTHY SOCKET. `setInterval` fires
+    // whether or not the last beat finished. The first beat clears `isAlive`; the
+    // pong that would set it again has not been processed yet; so a second beat
+    // that runs the ping loop sees `isAlive === false` and calls `terminate()` on a
+    // socket whose only fault is a pong in flight. And whatever made the first beat
+    // slow — a busy event loop, a slow database — is the same thing keeping the
+    // pong from landing, so it feeds itself.
+    //
+    // The first version of the guard sat BELOW the ping loop and protected only the
+    // database re-check, while its comment claimed otherwise; the pre-merge audit
+    // ran it and watched a socket die (2026-09-02). This drives the real thing: a
+    // beat held open inside `stillAllowed`, a second beat fired underneath it, and
+    // the socket required to survive.
+    {
+      const watcher4 = await mk('super_admin', 'Watcher4');
+      const watched4 = await mk('loan_officer', 'Watched4');
+      const w4Tok = tok(watcher4), d4Tok = tok(watched4);
+      r = await call('POST', '/api/cobrowse/request', { kind: 'staff', id: watched4.id }, w4Tok);
+      const sB = r.data.session.id;
+      await call('POST', `/api/cobrowse/${sB}/respond`, { accept: true }, d4Tok);
+      const gB = await open(wsUrl(d4Tok, sB, 'guest'));
+      const vB = await open(wsUrl(w4Tok, sB, 'viewer'));
+      assert(await waitFor(vB.msgs, (m) => m.includes('"t":"hello"')), 'a fourth session is attached for the overlap case');
+      const realQuery = db.query.bind(db);
+      let release = null;
+      const held = new Promise((rr) => { release = rr; });
+      db.query = async (text, params) => {
+        if (/FROM staff_users/.test(String(text))) { await held; }
+        return realQuery(text, params);
+      };
+      // THE PONG MUST NOT LAND INSIDE THE WINDOW, or the killing condition never
+      // arises and this test passes for the wrong reason — it did on the first
+      // run, because a loopback pong returns in about a millisecond. Silencing
+      // the server's own ping is the honest model of the case that matters: a
+      // busy event loop or a slow link, where the pong is in flight when the next
+      // tick fires. The sockets themselves are perfectly healthy throughout.
+      const room = hub._internals.rooms.get(sB);
+      const live = [room && room.guest, ...(room ? room.viewers : [])].filter(Boolean);
+      assert(live.length === 2, `both server-side sockets are in the room (${live.length})`);
+      const realPings = live.map((w) => w.ping.bind(w));
+      for (const w of live) w.ping = () => {};
+      let firstDone = false;
+      const first = hub._internals.heartbeat().then(() => { firstDone = true; });
+      await new Promise((rr) => setTimeout(rr, 150));
+      assert(!firstDone, 'the first beat really is held open inside the identity lookup');
+      await hub._internals.heartbeat();              // the overlapping tick
+      await new Promise((rr) => setTimeout(rr, 150));
+      assert(vB.ws.readyState === 1 && gB.ws.readyState === 1,
+        'a beat that overlaps a slow one terminates NOBODY — the guard covers the ping loop, not just the re-check');
+      release(); await first;
+      live.forEach((w, i) => { w.ping = realPings[i]; });
+      db.query = realQuery;
+
+      // AND A BEAT THAT WOULD NEVER SETTLE STILL SETTLES. `beating` is a one-at-a-time
+      // flag, so a beat that hangs leaves it true for the life of the process and
+      // silently disables the pings, the reaping AND the revocation re-check — a revoked
+      // staffer would keep receiving the screen for ever. An earlier note waved this away
+      // as "bounded by the pool's connectionTimeoutMillis", which bounds acquiring a
+      // client, not running a query (pre-merge audit measured pg_sleep(8) returning after
+      // 8s with a 1s connection timeout). Every await in the beat now runs to a deadline.
+      const realQuery2 = db.query.bind(db);
+      db.query = async (text, params) => {
+        if (/FROM staff_users/.test(String(text))) return new Promise(() => {});   // never settles
+        return realQuery2(text, params);
+      };
+      const t0 = Date.now();
+      const settled = await Promise.race([
+        hub._internals.heartbeat().then(() => 'settled'),
+        new Promise((rr) => setTimeout(() => rr('hung'), 20000)),
+      ]);
+      db.query = realQuery2;
+      assert(settled === 'settled', `a beat whose query never returns still settles (${settled} after ${Date.now() - t0}ms)`);
+      // And the flag is released, so the NEXT beat runs rather than being locked out.
+      const after = await Promise.race([
+        hub._internals.heartbeat().then(() => 'ran'),
+        new Promise((rr) => setTimeout(() => rr('locked-out'), 8000)),
+      ]);
+      assert(after === 'ran', `and the next beat runs — the one-at-a-time flag was released (${after})`);
+      await call('POST', `/api/cobrowse/${sB}/end`, null, d4Tok).catch(() => {});
+    }
+  }
+
+  // AND DEACTIVATION DOES NOT WAIT FOR A HEARTBEAT. The re-check above bounds the
+  // exposure at one beat; the admin screen ends the session outright, so a screen
+  // stops being watched the moment the person is deactivated.
+  {
+    const watcher2 = await mk('super_admin', 'Watcher2');
+    const watched2 = await mk('loan_officer', 'Watched2');
+    const w2Tok = tok(watcher2), d2Tok = tok(watched2);
+    r = await call('POST', '/api/cobrowse/request', { kind: 'staff', id: watched2.id }, w2Tok);
+    const s9 = r.data.session.id;
+    await call('POST', `/api/cobrowse/${s9}/respond`, { accept: true }, d2Tok);
+    // REAL SOCKETS ON BOTH SIDES. A session with no live room is an ORPHAN, and the
+    // sweep ends it as 'expired' — which would let this case "pass" for the wrong
+    // reason, and did on the first run.
+    const g9 = await open(wsUrl(d2Tok, s9, 'guest'));
+    const v9 = await open(wsUrl(w2Tok, s9, 'viewer'));
+    assert(await waitFor(v9.msgs, (m) => m.includes('"t":"hello"')), 'the second session is genuinely attached');
+    let row9 = (await db.query(`SELECT status FROM cobrowse_sessions WHERE id=$1`, [s9])).rows[0];
+    assert(row9.status === 'active', 'a second session is live before the deactivation');
+    r = await call('PATCH', `/api/admin/staff/${watcher2.id}`, { isActive: false }, saTok);
+    assert(r.status === 200, `the admin screen deactivates the watcher (got ${r.status})`);
+    await new Promise((rr) => setTimeout(rr, 400));
+    row9 = (await db.query(`SELECT status, end_reason FROM cobrowse_sessions WHERE id=$1`, [s9])).rows[0];
+    assert(row9.status === 'ended' && row9.end_reason === 'revoked',
+      `deactivating a staffer ends the co-browse they were party to at once (status=${row9.status} reason=${row9.end_reason})`);
+    assert(g9.ws.readyState !== 1 || await waitFor(g9.msgs, (m) => m.includes('"t":"ended"')),
+      'and the watched person is told, so their banner comes down rather than lying');
+  }
 
   // A borrower's HELPER (a real assistant row + the real envelope) is not the borrower:
   // it may not see, answer, or end a co-browse aimed at the borrower (audit blocker).

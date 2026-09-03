@@ -332,7 +332,71 @@ async function fails(transactionId, opts = {}) {
 }
 
 /** The LLPA breakdown behind one quote, and the sheet date the merge elects on. */
+/**
+ * WHAT THE VENDOR NEEDS TO FIND A QUOTE. It addresses one by product AND investor AND
+ * the price hash — `selectedPriceData` plus `{productId, investorId}` — so a request
+ * missing any of them names no quote at all.
+ */
+const EVIDENCE_IDENTITY = [
+  ['priceHashKey', (q) => q.priceHashKey],
+  ['productId', (q) => q.productId],
+  ['investorId', (q) => q.lenderId],
+  ['rate', (q) => q.rate],
+  ['lockDays', (q) => q.lockDays],
+];
+
+/**
+ * THE PRICE THIS QUOTE ASKS THE SHEET ABOUT — the vendor's own figure when we genuinely hold it,
+ * otherwise the rounded one.
+ *
+ * PURE, and separate from the request body so the rule is testable without a network. `priceExact`
+ * must be a REAL NUMBER to win: `Number(null)` is 0 and `Number('')` is 0, and either would ask the
+ * sheet to itemise a par-minus-100 quote that does not exist; a SEALED blob (a string — see
+ * `pricing/sealed-price`) is likewise not a price and falls back rather than travelling. A numeric
+ * STRING is accepted and normalised, because that is what a caller reading the figure out of stored
+ * JSON hands over and it means exactly what it says.
+ */
+function exactPrice(quote) {
+  const q = quote || {};
+  const raw = q.priceExact;
+  if (raw != null && raw !== '' && typeof raw !== 'object') {
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n;
+  }
+  return q.price;
+}
+
+/** Which parts of a quote's identity are missing, if any. */
+function missingIdentity(quote) {
+  const q = quote || {};
+  return EVIDENCE_IDENTITY.filter(([, read]) => {
+    const v = read(q);
+    return v === undefined || v === null || v === '';
+  }).map(([name]) => name);
+}
+
 async function evidence(sc, quote, opts = {}) {
+  /* ⛔ REFUSE BEFORE ASKING, AND SAY WHAT WAS MISSING. Recorded live on 2026-08-30, one
+     investor of four came back `{"status":"Success"}` with no body — and the capture
+     kept the request beside it, which is empty: `"request": {}`. We had asked with no
+     product, no investor and no price hash, so the vendor answered about no quote.
+     That was read at the time as the SHEET being silent, and the screen has said "the
+     rate sheet accepted the question and returned no breakdown" ever since — blaming
+     the vendor for our own empty question, on the one panel whose job is to explain.
+     A quote that cannot identify itself is now refused here, by name, without spending
+     a vendor call. */
+  const missing = missingIdentity(quote);
+  if (missing.length) {
+    return {
+      evidence: null,
+      absence: {
+        reason: 'quote_incomplete',
+        message: `This quote reached the breakdown without ${missing.join(', ')}, so the rate sheet was not asked — it could not have found the quote.`,
+        missing,
+      },
+      transactionId: opts.transactionId || null,
+    };
+  }
   const s = await getSession(opts.portal, opts);
   const registry = await fieldRegistry(opts.portal, opts);
   const county = await resolveCounty(opts.portal, sc, opts);
@@ -341,7 +405,30 @@ async function evidence(sc, quote, opts = {}) {
     data: {
       productId: quote.productId, investorId: quote.lenderId,
       selectedPriceData: {
-        price: quote.price, rate: quote.rate, priceHashKey: quote.priceHashKey,
+        /**
+         * ⛔ THE SHEET'S OWN PRICE, NOT THE ROUNDED ONE. MEASURED LIVE, 2026-09-03.
+         *
+         * LoanNEX looks a quote up by matching this price against its sheet EXACTLY. Our parser
+         * rounds to three decimals for display; 269 of 4,396 rungs on one live board need a
+         * fourth. Sent rounded, the sheet found no quote and answered `{"status":"Success"}` with
+         * no body — which the panel reported as "the rate sheet accepted the question and returned
+         * no breakdown", blaming the vendor for our own rounding. Proven on one quote, everything
+         * else held identical: 104.1762 answered, 104.176 came back empty.
+         *
+         * `priceExact` is the vendor's number carried untouched from the parse (never held back —
+         * see `vendor-margin`). `price` remains the fallback for a caller that has only the
+         * rounded figure, so an older row still asks the question it asked yesterday.
+         *
+         * ⛔ IT MUST BE A NUMBER, AND THAT IS A GUARD RATHER THAN AN ASSUMPTION. On the way to the
+         * browser this figure travels SEALED (`pricing/sealed-price`), because in the clear it and
+         * the held-back price beside it are our margin, one subtraction apart. The explain door
+         * opens it (`combined-pricer.quoteFromBody`) and hands this a plain number — but a caller
+         * that skipped that step would otherwise post a base64 blob into `selectedPriceData.price`,
+         * which the sheet cannot match, so the panel would report an empty breakdown and blame the
+         * vendor for our own plumbing. Anything that is not a real number falls back to `price`.
+         */
+        price: exactPrice(quote),
+        rate: quote.rate, priceHashKey: quote.priceHashKey,
         lockDays: quote.lockDays, includeAdminFee: false,
       },
       nexApp: scenario.buildNexApp(sc, registry, { countyKey: county.countyKey }),
@@ -378,6 +465,10 @@ module.exports = {
   configured, getSession, loginCheck, price, fails, evidence, rateStack,
   fieldRegistry, resolveCounty, invalidateSession, newTransactionId,
   _internals: {
+    // Exported so the board's own guard can ask the SAME question the client asks —
+    // "can this row identify itself to the sheet?" — rather than keeping a second copy
+    // of the answer that could drift from the one that actually gates the call.
+    missingIdentity, EVIDENCE_IDENTITY, exactPrice,
     request, assertReadOnly, pathMatches, READ_ONLY_PATHS, scrub, claimsOf,
     tokenKeyFromIframeHtml, portalLogin, PORTAL_HOST, sessions, TOKEN_SKEW_MS, portalLoginMod,
   },
