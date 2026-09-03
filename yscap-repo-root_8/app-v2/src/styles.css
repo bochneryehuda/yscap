@@ -6818,54 +6818,6 @@ tr.tape-row-on{background:rgba(47,127,134,.07)}
 }
 
 /* ---------------------------------------------------------------------------
-   CO-BROWSE — the launcher and the waiting chip (owner-directed 2026-09-02:
-   "design the CoBrowse button a little bit nicer and the cancel button a little
-   bit nicer, with real buttons, not just text. A little bit modern design").
-
-   Real buttons, never a text link: `Cancel` used to be a `.btn.link`, which on a
-   crowded roster row reads as a sentence rather than a control. Everything here
-   is namespaced `cb-` — a bare `.on`/`.off`/`.wait` would collide with the global
-   utilities (the `.crx-off` lesson, 2026-07-27). Every colour is an explicit dark
-   on white per the HARD RULE; an `--ink*` token is a LIGHT paper colour and would
-   render white on white.
-   --------------------------------------------------------------------------- */
-.cb-btn{gap:7px}
-.cb-btn .cb-ico{flex:none;opacity:.75}
-.cb-btn:hover .cb-ico{opacity:1}
-
-/* Waiting for their answer: a real bordered chip, not a run of muted text. */
-.cb-wait{display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;
-  padding:5px 6px 5px 11px;border:1px solid #D9D2C5;border-radius:999px;
-  background:#FFFFFF;color:#3A4550;font-size:12.5px;line-height:1.2}
-.cb-wait .cb-wait-text{white-space:nowrap}
-.cb-wait .btn{min-height:30px;padding:4px 11px;font-size:12px}
-
-/* The spinner. `.spin` was never a class in this stylesheet, so the waiting state
-   rendered a zero-size span and looked frozen. */
-.cb-spin{width:14px;height:14px;flex:none;border-radius:50%;
-  border:2px solid #D9D2C5;border-top-color:#2F7F86;animation:cb-spin .8s linear infinite}
-@keyframes cb-spin{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){.cb-spin{animation:none;border-top-color:#2F7F86}}
-
-/* An answer that closes the ask — never a dead end: the message and the way to
-   try again sit together. */
-.cb-answer{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px}
-.cb-answer .cb-answer-no{color:#B3261E}
-.cb-answer .cb-answer-quiet{color:#4B585C}
-/* The mirror's Fit / 100% pair. Its own class, not the global `.seg`: that one carries a
-   `margin:2px 0 6px` from an earlier definition (which knocks it off the centre line of
-   the action bar it sits in) and stacks into two full-width rows under 720px, which is
-   wrong for a two-word pair inside a toolbar. Same namespacing lesson as `.crx-off`. */
-.cb-seg{display:inline-flex;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
-.cb-seg > .btn{border-radius:0;border:0;min-height:30px;padding:4px 11px;font-size:12px}
-.cb-seg > .btn + .btn{border-left:1px solid var(--border)}
-
-@media(max-width:720px){
-  .cb-wait{width:100%;justify-content:space-between;border-radius:12px}
-  .cb-wait .cb-wait-text{white-space:normal}
-}
-
-/* ---------------------------------------------------------------------------
    THE INVESTOR SOURCE LIST (General Pricing Engine settings).
 
    Owner-reported 2026-09-03: *"the settings you can't really change from
@@ -6921,4 +6873,52 @@ tr.tape-row-on{background:rgba(47,127,134,.07)}
      lines. Dark on white per the hard rule; never an --ink* token, which is a
      LIGHT paper colour in this palette. */
   .lt-inv-lock{display:block;font-size:11px;color:#4B585C;line-height:1.5;margin-top:5px}
+}
+
+/* ---------------------------------------------------------------------------
+   CO-BROWSE — the launcher and the waiting chip (owner-directed 2026-09-02:
+   "design the CoBrowse button a little bit nicer and the cancel button a little
+   bit nicer, with real buttons, not just text. A little bit modern design").
+
+   Real buttons, never a text link: `Cancel` used to be a `.btn.link`, which on a
+   crowded roster row reads as a sentence rather than a control. Everything here
+   is namespaced `cb-` — a bare `.on`/`.off`/`.wait` would collide with the global
+   utilities (the `.crx-off` lesson, 2026-07-27). Every colour is an explicit dark
+   on white per the HARD RULE; an `--ink*` token is a LIGHT paper colour and would
+   render white on white.
+   --------------------------------------------------------------------------- */
+.cb-btn{gap:7px}
+.cb-btn .cb-ico{flex:none;opacity:.75}
+.cb-btn:hover .cb-ico{opacity:1}
+
+/* Waiting for their answer: a real bordered chip, not a run of muted text. */
+.cb-wait{display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:5px 6px 5px 11px;border:1px solid #D9D2C5;border-radius:999px;
+  background:#FFFFFF;color:#3A4550;font-size:12.5px;line-height:1.2}
+.cb-wait .cb-wait-text{white-space:nowrap}
+.cb-wait .btn{min-height:30px;padding:4px 11px;font-size:12px}
+
+/* The spinner. `.spin` was never a class in this stylesheet, so the waiting state
+   rendered a zero-size span and looked frozen. */
+.cb-spin{width:14px;height:14px;flex:none;border-radius:50%;
+  border:2px solid #D9D2C5;border-top-color:#2F7F86;animation:cb-spin .8s linear infinite}
+@keyframes cb-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.cb-spin{animation:none;border-top-color:#2F7F86}}
+
+/* An answer that closes the ask — never a dead end: the message and the way to
+   try again sit together. */
+.cb-answer{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px}
+.cb-answer .cb-answer-no{color:#B3261E}
+.cb-answer .cb-answer-quiet{color:#4B585C}
+/* The mirror's Fit / 100% pair. Its own class, not the global `.seg`: that one carries a
+   `margin:2px 0 6px` from an earlier definition (which knocks it off the centre line of
+   the action bar it sits in) and stacks into two full-width rows under 720px, which is
+   wrong for a two-word pair inside a toolbar. Same namespacing lesson as `.crx-off`. */
+.cb-seg{display:inline-flex;border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.cb-seg > .btn{border-radius:0;border:0;min-height:30px;padding:4px 11px;font-size:12px}
+.cb-seg > .btn + .btn{border-left:1px solid var(--border)}
+
+@media(max-width:720px){
+  .cb-wait{width:100%;justify-content:space-between;border-radius:12px}
+  .cb-wait .cb-wait-text{white-space:normal}
 }
