@@ -823,6 +823,128 @@ async function main() {
     ok(boardMod.ratioAtRate(deals[0], 5.25, 2000) === boardMod.ratioAtRate(deals[0], 11.5, 2000),
       'N12b …and the rate is ignored when the vendor quoted a payment — the vendor\'s figure wins, whatever coupon it came from');
 
+    /* ═══ N16 · THE INPUT SPACE, NOT A BATTERY — and an oracle that borrows nothing ═══
+       ⛔ WHY THIS EXISTS, AND WHAT IT REPLACES. The re-audit of 2026-09-03 defeated
+       N11a and N12a WITHOUT touching the rounding rule's shape at all — it simply
+       re-armed round-to-nearest on a REGION the lists above do not reach:
+
+         · `if (quoted != null && quoted > 3200) return Math.round(r * 100) / 100;`
+           `vendorPis` stops at $3,100.40. A $500,000 loan at 7.5% over 30 years pays
+           $3,496, so this is not an edge — it is essentially every jumbo board.
+           MEASURED under it: rent 5,980 / P&I 4,000 = 1.495 bought the ≥1.50 TOP band.
+         · `if (f.hoaMonthly > 0 && f.hoaMonthly !== 340) return Math.round(...)`.
+           `hoasA` is [0, 340], so every condo and PUD on the system rounded to nearest.
+
+       Both passed all 204 LT suites. A fixed list proves the rule at the points
+       somebody thought of; it says nothing about the ones they did not.
+
+       ⛔ AND THE ORACLE NO LONGER DELEGATES. N11/N12's oracle took its payment from
+       `overlay.monthlyPI` — the same function production takes it from — so a mutation
+       THERE moved both sides together and went unseen: `if (loanAmount > 500000)
+       return r2(... * 0.97)` was green across all 204, while the bracket ratio on a
+       $750,000 loan moved 0.86 → 0.88, a BETTER band. `piHere` below is the textbook
+       annuity written out here, computed a different way from production's algebraic
+       rearrangement, so nothing production can be mutated into moves it. */
+    {
+      /** The payment, from first principles. Deliberately `P·r(1+r)ⁿ / ((1+r)ⁿ−1)`
+          where production writes `P·r / (1−(1+r)⁻ⁿ)` — the same identity by a
+          different route, so the two agreeing is evidence rather than tautology. */
+      const piHere = ({ loanAmount, ratePct, termYears, interestOnly }) => {
+        if (!Number.isFinite(loanAmount) || loanAmount <= 0) return null;
+        if (!Number.isFinite(ratePct) || ratePct < 0) return null;
+        const r = ratePct / 100 / 12;
+        const r2h = (x) => Math.round(x * 100) / 100;
+        if (interestOnly) return r2h(loanAmount * r);
+        if (!Number.isFinite(termYears) || termYears <= 0) return null;
+        const n = Math.round(termYears * 12);
+        if (n <= 0) return null;
+        if (r === 0) return r2h(loanAmount / n);
+        const g = Math.pow(1 + r, n);
+        return r2h((loanAmount * r * g) / (g - 1));
+      };
+
+      /* THE PAYMENT ITSELF, ACROSS THE WHOLE RANGE WE LEND IN — including jumbo,
+         which nothing anywhere pinned. Compared with a ONE CENT tolerance because
+         the two formulations differ in the last bits of a float, and a 3% error
+         (the mutation that got through) is thousands of times that. */
+      let piPoints = 0; let piBad = 0; let firstPi = null; let worst = 0;
+      for (const loan of [50000, 175000, 499999, 500001, 750000, 1200000, 2500000, 5000000]) {
+        for (const rate of [0, 3.125, 5.25, 6.875, 7.5, 9.99, 12.5, 15]) {
+          for (const term of [15, 20, 30, 40]) {
+            for (const io of [false, true]) {
+              const mine = piHere({ loanAmount: loan, ratePct: rate, termYears: term, interestOnly: io });
+              const prod = oraclePI({ loanAmount: loan, ratePct: rate, termYears: term, interestOnly: io });
+              piPoints += 1;
+              const d = (mine == null || prod == null) ? (mine === prod ? 0 : Infinity) : Math.abs(mine - prod);
+              if (d > worst && Number.isFinite(d)) worst = d;
+              if (!(d <= 0.011)) { piBad += 1; if (!firstPi) firstPi = { loan, rate, term, io, mine, prod }; }
+            }
+          }
+        }
+      }
+      ok(piBad === 0,
+        `⛔ N16 THE MONTHLY PAYMENT IS ITSELF PINNED, over ${piPoints} points to $5,000,000 — worst disagreement ${worst.toFixed(4)}${firstPi ? ` — first ${JSON.stringify(firstPi)}` : ''}`);
+
+      /** The ratio oracle again, this time on `piHere` — it borrows NOTHING from
+          production but the figures the deal is made of. */
+      const oracleFree = (fg, rate, vendorPi) => {
+        const pi = (vendorPi != null && vendorPi > 0)
+          ? vendorPi
+          : piHere({ loanAmount: fg.loanAmount, ratePct: rate, termYears: fg.termYears, interestOnly: fg.interestOnly });
+        if (!Number.isFinite(pi) || pi <= 0) return null;
+        const pitia = Math.round((pi + fg.taxMonthly + fg.insuranceMonthly + fg.hoaMonthly) * 100) / 100;
+        if (!(pitia > 0) || !Number.isFinite(fg.rentMonthly)) return null;
+        return cutHere(fg.rentMonthly / pitia);
+      };
+
+      /* A SEEDED WALK OF THE SPACE. Deterministic (the same numbers on every run and
+         on every machine, so a failure is reproducible), and wide enough that no
+         region of it is reachable by a rule keyed on a threshold: every figure is
+         drawn from a continuous range rather than a short list, so a mutation gated
+         on "vendor payment over X" or "HOA is not exactly Y" has nowhere to hide. */
+      let seed = 20260903;
+      const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+      const pick = (lo, hi) => lo + rnd() * (hi - lo);
+      let pts = 0; let bad = 0; let first = null; let bit = 0; let vendorPts = 0; let jumboPts = 0; let hoaPts = 0;
+      for (let i = 0; i < 40000; i += 1) {
+        const fg = boardMod.readFigures({
+          rentMonthly: Math.round(pick(400, 30000) * 100) / 100,
+          taxMonthly: Math.round(pick(0, 3000) * 100) / 100,
+          insuranceMonthly: Math.round(pick(0, 900) * 100) / 100,
+          hoaMonthly: rnd() < 0.45 ? 0 : Math.round(pick(1, 2400) * 100) / 100,
+          loanAmount: Math.round(pick(60000, 3500000)),
+          termYears: [15, 20, 30, 40][Math.floor(rnd() * 4)],
+          interestOnly: rnd() < 0.35,
+        });
+        const rate = Math.round(pick(3, 15) * 1000) / 1000;
+        /* Half the points go down the VENDOR-PAYMENT path — the live production path
+           — and its range runs to $25,000 a month, far past any list. */
+        const vp = rnd() < 0.5 ? Math.round(pick(150, 25000) * 100) / 100 : null;
+        const got = boardMod.ratioAtRate(fg, rate, vp);
+        const want = oracleFree(fg, rate, vp);
+        pts += 1;
+        if (vp != null) vendorPts += 1;
+        if (fg.loanAmount > 500000) jumboPts += 1;
+        if (fg.hoaMonthly > 0) hoaPts += 1;
+        if (got !== want) { bad += 1; if (!first) first = { rate, vp, got, want, fg }; }
+        /* The control, point by point: how often the rule actually BITES here. An
+           equality over a space where nothing is ever cut would prove nothing. */
+        if (want != null) {
+          const pi = (vp != null && vp > 0) ? vp : piHere({ loanAmount: fg.loanAmount, ratePct: rate, termYears: fg.termYears, interestOnly: fg.interestOnly });
+          if (Number.isFinite(pi) && pi > 0) {
+            const pitia = Math.round((pi + fg.taxMonthly + fg.insuranceMonthly + fg.hoaMonthly) * 100) / 100;
+            if (pitia > 0 && want !== Math.round((fg.rentMonthly / pitia) * 100) / 100) bit += 1;
+          }
+        }
+      }
+      ok(bit > 5000,
+        `N16a CONTROL: the rule bites across the space (${bit} of ${pts} points cut below round-to-nearest)`);
+      ok(vendorPts > 15000 && jumboPts > 5000 && hoaPts > 15000,
+        `N16b CONTROL: the walk really covers the regions the fixed lists miss (${vendorPts} vendor-payment, ${jumboPts} over $500k, ${hoaPts} with an HOA)`);
+      ok(bad === 0,
+        `⛔ N16c THE RULE HOLDS OVER THE SPACE: ${pts} points, every one exactly the cut-down value${first ? ` — first mismatch ${JSON.stringify(first)}` : ''}`);
+    }
+
     /* ⛔ N13 · THE TOP OF THE LADDER — the audit's M2 shape, stated as a value.
        rent 2,990 against a PITIA of exactly 2,000 is 1.495: cut down it is 1.49 and
        sits BELOW the ≥1.50 top band; rounded to nearest it is 1.50 and buys the best
