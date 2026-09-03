@@ -38,6 +38,7 @@
  */
 
 const round3 = (n) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n) * 1000) / 1000);
+const pricePoints = require('./price-points');
 const numOrNull = (n) => (n == null || n === '' || !Number.isFinite(Number(n)) ? null : Number(n));
 const strOrNull = (s) => {
   const t = s == null ? '' : String(s).trim();
@@ -160,8 +161,8 @@ function priceOf(option) {
   const pb = (option && option.priceBuild) || {};
   const statedPrice = numOrNull(pb.basePrice);
   const statedPoints = numOrNull(pb.basePoints);
-  const basePrice = statedPrice != null ? statedPrice : (statedPoints == null ? null : round3(100 - statedPoints));
-  const basePoints = statedPoints != null ? statedPoints : (statedPrice == null ? null : round3(100 - statedPrice));
+  const basePrice = statedPrice != null ? statedPrice : pricePoints.priceFromPoints(statedPoints);
+  const basePoints = statedPoints != null ? statedPoints : pricePoints.pointsFromPrice(statedPrice);
   /* WHICH HALF THE RATE SHEET ACTUALLY STATED. Absence answers it most of the time and needs no
      help: Lender Price sends points and no price, so the price is ours; a LoanNEX board rung sends
      neither. But a LoanNEX option that has been EXPLAINED carries BOTH halves — the vendor's own

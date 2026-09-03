@@ -56,6 +56,7 @@
  */
 
 const round3 = (n) => (n == null || !Number.isFinite(Number(n)) ? null : Math.round(Number(n) * 1000) / 1000);
+const pricePoints = require('./price-points');
 
 /**
  * A loan term, in BOTH units, from whichever one the vendor stated.
@@ -209,7 +210,7 @@ function optionsFromLoanNex(board, opts = {}) {
           // LoanNEX quotes PRICE; Lender Price quotes POINTS. `100 − price` is
           // the identity between them, and the flag says it was derived so a
           // reader never mistakes it for a number the vendor sent.
-          adjustedPoints: price == null ? null : round3(100 - price),
+          adjustedPoints: pricePoints.pointsFromPrice(price),
           pointsDerivedFromPrice: price != null,
         },
         terms: loanNexTerms(p, r, opts),
@@ -357,7 +358,7 @@ function attachEvidence(option, ev, opts = {}) {
       baseRate: numOrNull(ev.baseRate),
       priceFloor: numOrNull(ev.priceFloor),
       priceCeiling: numOrNull(ev.priceCeiling),
-      basePoints: ev.basePrice == null ? null : round3(100 - Number(ev.basePrice)),
+      basePoints: pricePoints.pointsFromPrice(ev.basePrice),
       adjustmentPoints: all.length ? round3(-totalGiven) : null,
       /* THE SHEET PUBLISHED A PRICE; THE POINTS ON THE LINE ABOVE ARE OURS. Saying so is the
          whole of it: both halves are filled here, so the panel could no longer tell the
@@ -567,7 +568,7 @@ function programsFromLoanNex(board, opts = {}) {
           // LoanNEX quotes PRICE, Lender Price quotes POINTS; `100 − price` is
           // the identity, flagged as derived so a reader never mistakes it for
           // something the vendor sent.
-          adjustedPoints: price == null ? null : round3(100 - price),
+          adjustedPoints: pricePoints.pointsFromPrice(price),
           pointsDerivedFromPrice: price != null,
           basePoints: null, adjustmentPoints: null,
         },
@@ -673,7 +674,7 @@ function handlePatch(quote = {}) {
     priceBuild: {
       noteRate: numOrNull(q.rate),
       price: numOrNull(q.price),
-      adjustedPoints: q.price == null ? null : round3(100 - Number(q.price)),
+      adjustedPoints: pricePoints.pointsFromPrice(q.price),
     },
     terms: { dayLock: q.lockDays == null ? null : Number(q.lockDays) },
     explain: q.priceHashKey ? { ...q } : null,

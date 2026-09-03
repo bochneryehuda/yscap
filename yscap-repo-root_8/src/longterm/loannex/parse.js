@@ -29,6 +29,7 @@
  */
 
 const round3 = (n) => (n == null ? null : Math.round(Number(n) * 1000) / 1000);
+const pricePoints = require('../pricing/price-points');
 
 function indexById(list, idKey = 'id') {
   const m = new Map();
@@ -114,7 +115,7 @@ function parse(raw) {
          * explain itself, and nothing else ever reads it.
          */
         priceExact: price,
-        points: round3(100 - price),
+        points: pricePoints.pointsFromPrice(price),
         pointsDerived: true,
         lockDays: lt.lockDays == null ? null : Number(lt.lockDays),
         cushionedLockDays: lt.cushionedLockDays == null ? null : Number(lt.cushionedLockDays),
