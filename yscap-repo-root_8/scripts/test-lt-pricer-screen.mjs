@@ -368,6 +368,59 @@ console.log('LT Pricing Engine — structural guards\n');
     ok(/sheet: \(o && o\.rateSheet && o\.rateSheet\.name\) \|\| null/.test(code),
       'PE-64e the stack entry carries the sheet the vendor named — never a value invented here');
   }
+  {
+    /* ── OUR NAME LEADS, THE RATE SHEET'S SPELLING FOLLOWS (owner-directed 2026-09-03) ──
+       *"You need to display the names of the investors according to the name that I gave you on
+       my list, not the name that is displayed on LoanX"*, and *"The main name of the investor."*
+
+       WHY THIS IS A RULE AND NOT A PREFERENCE. The board is now quoted by TWO rate sheets that
+       spell one investor differently — measured on the real board, Acra reaches us as "Acra
+       Lending - Corr" from LoanNEX and "Acra Lending" from Lender Price — so a heading taken
+       from the vendor CHANGED WITH WHICHEVER SHEET ANSWERED, and the name the company actually
+       uses ("Amber") was a 10px tag beside it. */
+    const G = (lender, whiteLabel, investorKey) => ({ lender, whiteLabel, investorKey });
+    ok(PB.lenderHeading(G('Acra Lending - Corr', 'Amber', 'acra')) === 'Amber',
+      'PE-64f the heading is OUR name, never the spelling the rate sheet used');
+    ok(PB.lenderVendorName(G('Acra Lending - Corr', 'Amber', 'acra')) === 'Acra Lending - Corr',
+      'PE-64g …and the vendor\'s own spelling is still said, as the second line');
+    // FAIL CLOSED: an investor the registry could not place has no name of ours, and the vendor's
+    // spelling is then all there is — the SAME thing those rows have always shown.
+    ok(PB.lenderHeading(G('ResiCentral', null, null)) === 'ResiCentral',
+      'PE-64h an investor we could not place still reads as the vendor named it — never blank, never a guess');
+    ok(PB.lenderVendorName(G('ResiCentral', null, null)) === null,
+      'PE-64i …and its second line is empty rather than repeating the heading');
+    ok(PB.lenderVendorName(G('Amber', 'Amber', 'acra')) === null,
+      'PE-64j a sheet that already spells it our way says it ONCE, not twice');
+    ok(PB.lenderHeading(null) === '—' && PB.lenderHeading(G(null, null, null)) === '—',
+      'PE-64k a group with no name at all is an em dash rather than throwing');
+
+    // THE GROUP MUST CARRY THE NAME. `lenderHeading` reads `g.whiteLabel`, so a grouping that
+    // dropped it would make every heading fall back to the vendor — the defect, silently restored.
+    const gg = PB.groupByLender([
+      { key: 'a', lender: 'Acra Lending - Corr', whiteLabel: 'Amber', investorKey: 'acra', price: 100 },
+      { key: 'b', lender: 'Acra Lending', whiteLabel: 'Amber', investorKey: 'acra', price: 101 },
+    ]);
+    ok(gg.length === 1, 'PE-64l two spellings the SERVER resolved to one investor are ONE line, not two');
+    ok(PB.lenderHeading(gg[0]) === 'Amber', 'PE-64m …and that line is headed by our name');
+    // The name can arrive on any quote in the group, not just the first one in.
+    const back = PB.groupByLender([
+      { key: 'a', lender: 'Acra', whiteLabel: null, investorKey: 'acra', price: 99 },
+      { key: 'b', lender: 'Acra', whiteLabel: 'Amber', investorKey: 'acra', price: 98 },
+    ]);
+    ok(PB.lenderHeading(back[0]) === 'Amber',
+      'PE-64n …taken from whichever quote carries it, not from whichever sorted first');
+
+    // THE SCREEN MUST USE THEM, on BOTH boards — the priced one and the ineligible stack. One
+    // investor called two things across two lists is exactly what one definition exists to stop.
+    const headings = (code.match(/lenderHeading\(g\)/g) || []).length;
+    ok(headings >= 2, `PE-64o both boards head their rows with our name (${headings} call sites)`);
+    ok((code.match(/lenderVendorName\(g\)/g) || []).length >= 2,
+      'PE-64p …and both say the rate sheet\'s own spelling beneath it');
+    ok(!/\{g\.lender \|\| '—'\}/.test(code),
+      'PE-64q no board heads a row with the vendor\'s spelling any more — the defect cannot come back');
+    ok(!/WhiteLabelTag/.test(code),
+      'PE-64r the inverted tag is gone: our name is the heading now, not a pill beside the vendor\'s');
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════════
@@ -822,14 +875,19 @@ console.log('LT Pricing Engine — structural guards\n');
   ok(/ltApi\.dscrInvestors\(\)/.test(generalBlock), 'PE-151 the roster is fetched from the server');
   ok(!/Platinum|Emerald|Bluewater|Sequoia/.test(code),
     'PE-152 …and no white-label name is typed into the screen — one sheet, server-side');
-  ok(/<WhiteLabelTag name=\{g\.best && g\.best\.whiteLabel\}/.test(code),
-    'PE-153 the lender line carries the white-label tag beside the real name (staff screen: real name leads)');
-  // Owner 2026-08-27, confirming: internally the team sees the REAL investor name AND the
-  // white-label name AND the vendor's real programme name — on BOTH boards. The ineligible
-  // board is pinned on its OWN function body, because PE-153's regex is satisfied by either.
-  ok(/<WhiteLabelTag name=\{g\.best && g\.best\.whiteLabel\}/
-    .test(code.slice(code.indexOf('function IneligibleBoard'))),
-  'PE-163 the INELIGIBLE board carries the white-label tag beside the real name too');
+  // BOTH NAMES, ON BOTH BOARDS — which is what these two have always been about. Internally
+  // the team sees the REAL investor name AND our own name (owner-directed 2026-08-27); the
+  // 2026-09-03 change INVERTED WHICH ONE LEADS (ours), and re-pointing them here rather than
+  // matching the new spelling is deliberate: the property is that a staffer can still see both.
+  ok(/lenderHeading\(g\)/.test(code) && /lenderVendorName\(g\)/.test(code),
+    'PE-153 the lender line carries BOTH names — ours as the heading, the rate sheet\'s beside it');
+  // The ineligible board is pinned on its OWN function body, because PE-153's regex is
+  // satisfied by either one of them.
+  {
+    const inel = code.slice(code.indexOf('function IneligibleBoard'));
+    ok(/lenderHeading\(g\)/.test(inel) && /lenderVendorName\(g\)/.test(inel),
+      'PE-163 the INELIGIBLE board carries both names too — one investor is called one thing on both');
+  }
 
   // (5) THE PRE-MERGE AUDIT'S FOUR DEFECTS, each pinned so it cannot come back
   //     (audit 2026-08-27). The picker slice is the component's own body.

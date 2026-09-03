@@ -214,8 +214,15 @@ console.log('\n── I. A GREYED-OUT BUTTON EXPLAINS ITSELF WITHOUT A HOVER ─
     'I2 …written out exactly once, so the tooltip and the visible line can never disagree');
   ok((screen.match(/lockReason\(/g) || []).length === 2,
     'I2b …and read by BOTH of them');
-  ok(/title=\{isLocked \? lockReason\(/.test(screen),
+  ok(/title=\{frozen \? \(frozenReason \|\| ''\) : \(isLocked \? lockReason\(/.test(screen),
     'I3 the tooltip no longer carries its own copy of the sentence');
+  /* The row-level freeze (a row on its way back to the pre-fill) has its OWN sentence,
+     and it is subject to the SAME rule for the same reason: the tooltip does not exist on
+     a phone, the visible line is the phone's only explanation, and two copies of one
+     sentence is how they come to say different things about one greyed-out button. */
+  ok((screen.match(/going back to the pre-fill — press/g) || []).length === 1
+    && (screen.match(/RESETTING_REASON/g) || []).length === 3,
+    'I3b …and the freeze’s own reason is written once and read by both of them');
   ok(/className="lt-inv-lock"/.test(screen), 'I4 …and the visible line is rendered');
   ok(/\(r\.lockedOut \|\| \[\]\)\.filter\(\(id\) => id !== 'off'\)/.test(screen),
     'I5 OFF is never described as locked — the owner\'s rule is that an investor can always be turned off');
