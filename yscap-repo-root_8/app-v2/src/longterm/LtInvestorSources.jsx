@@ -51,11 +51,20 @@ function choiceOf(row, edit) {
   return row.source === 'loannex' ? 'loannex' : 'lenderprice';
 }
 
+/**
+ * "THIS SHEET HAS NEVER CARRIED THIS INVESTOR" — written once.
+ *
+ * It is the SAME fact stated in two places: the Available-on cell reports it, and
+ * the greyed-out source button is greyed out BECAUSE of it. Two copies is how
+ * the two ends up describing one register differently.
+ */
+const NEVER_CARRIED = 'has never carried this investor';
+
 /** What one system's register says, in words a person can act on. */
 function availabilityNote(a) {
   if (!a) return null;
   if (a.state === 'seen') return 'has answered for this investor';
-  if (a.state === 'never') return 'has never carried this investor';
+  if (a.state === 'never') return NEVER_CARRIED;
   return 'not searched yet';
 }
 
@@ -81,10 +90,16 @@ function AvailabilityCell({ availability }) {
  * THE THREE BUTTONS. A locked one is a real `disabled` button carrying the REASON — a control that
  * looks pressable and does nothing is worse than one that says why it cannot be.
  */
+/**
+ * WHY A SOURCE BUTTON CANNOT BE PRESSED — ONE definition, read by the hover
+ * tooltip AND by the words a phone gets instead of one.
+ */
+const lockReason = (short) => `${short} ${NEVER_CARRIED}, so there is nothing to price from there.`;
+
 function SourceChoice({ value, lockedOut, onPick }) {
   const locked = new Set(lockedOut || []);
   return (
-    <div role="group" aria-label="Where this investor is priced from" style={{
+    <div role="group" aria-label="Where this investor is priced from" className="lt-inv-sources" style={{
       display: 'inline-flex', border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden', background: '#fff',
     }}>
       {CHOICES.map((c, i) => {
@@ -97,7 +112,7 @@ function SourceChoice({ value, lockedOut, onPick }) {
             type="button"
             disabled={isLocked}
             aria-pressed={on}
-            title={isLocked ? `${c.short} has never carried this investor, so there is nothing to price from there.` : c.help}
+            title={isLocked ? lockReason(c.short) : c.help}
             onClick={() => !isLocked && onPick(c.id)}
             style={{
               appearance: 'none', border: 0, cursor: isLocked ? 'not-allowed' : 'pointer',
@@ -173,6 +188,50 @@ export default function LtInvestorSources() {
     if (!needle) return list;
     return list.filter((r) => `${r.label} ${r.whiteLabel || ''} ${r.key}`.toLowerCase().includes(needle));
   }, [rows, q, onlyOn, edits]);
+
+  /**
+   * WHEN EACH SHEET LAST ACTUALLY ANSWERED — the one fact that settles "is it
+   * working?" (owner, 2026-09-03: *"I see already in the search the new
+   * investor's name… where exactly are we off?"*).
+   *
+   * ⛔ SEEING THE NAMES ON THE PRICING PAGE IS NOT EVIDENCE. "Narrow to certain
+   * investors" is drawn from `engine.investors()` — our OWN settings roster,
+   * "no vendor call, no billing" in that code's own words — so it lists the five
+   * whether or not LoanNEX has ever answered. This line reads the register the
+   * board itself writes.
+   *
+   * The DATE is composed here rather than on the server because only the reader's
+   * browser knows the reader's timezone; the never-answered sentence has no date
+   * in it and stays server-side. One home each.
+   *
+   * ⛔ A HOOK, SO IT LIVES ABOVE EVERY EARLY RETURN. `if (gone) return null` sits
+   * below; a useMemo after it changes the hook count between renders and React
+   * crashes the page ("Rendered more hooks than during the previous render").
+   * CI's test-react-hook-order caught exactly this — keep it here.
+   */
+  const sheetActivity = useMemo(() => {
+    const la = (data && data.lastAnswered) || null;
+    if (!la) return [];
+    return ['lenderprice', 'loannex'].map((k) => la[k]).filter(Boolean).map((x) => {
+      if (!x.everAnswered) return { key: x.source, label: x.label, ok: false, text: x.neverNote };
+      let when = x.at;
+      try { when = new Date(x.at).toLocaleString(); } catch (_) { when = x.at; }
+      return { key: x.source, label: x.label, ok: true, text: `${x.label} last answered a search on ${when}.` };
+    });
+  }, [data]);
+
+  /**
+   * A RATE SHEET THE SERVER SAYS HAS TROUBLE — its own decision to speak, its own
+   * wording (a second copy here would drift from the board). Also a hook: above
+   * the early return with the one above it.
+   */
+  const sheetTrouble = useMemo(() => {
+    const c = (data && data.connections) || null;
+    if (!c) return [];
+    return ['loannex', 'lenderprice']
+      .map((k) => c[k])
+      .filter((x) => x && x.speak && x.message);
+  }, [data]);
 
   const edit = (key, patch) => {
     setSaved(null);
@@ -300,6 +359,41 @@ export default function LtInvestorSources() {
         </div>
       )}
 
+      {/* THE TWO SHEETS' OWN STANDING, always shown. While this is being
+          commissioned it is the single most useful fact on the screen, and it is
+          two short lines. A sheet that has never answered says so plainly rather
+          than looking identical to one that answered a minute ago. */}
+      {sheetActivity.length > 0 && (
+        <div style={{
+          border: `1px solid ${LINE}`, borderRadius: 10, padding: '8px 12px',
+          marginBottom: 10, background: WASH,
+        }}>
+          {sheetActivity.map((a) => (
+            <div key={a.key} style={{ fontSize: 12, color: a.ok ? SLATE : CAUTION, lineHeight: 1.7 }}>
+              <span style={dot(a.ok ? '#2F7F86' : '#B4483C')} />{a.text}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Above the list and above the search box on purpose: this is the answer to
+          "I set five investors to LoanNEX and nothing came up", and it is worth
+          nothing if somebody has to scroll to it. */}
+      {sheetTrouble.map((c) => (
+        <div
+          key={c.source}
+          style={{
+            border: `1px solid ${DANGER}55`, background: '#FDF4F3', borderRadius: 10,
+            padding: '10px 12px', marginBottom: 10,
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 800, color: DANGER, letterSpacing: '.04em', textTransform: 'uppercase' }}>
+            {c.label} is not connected
+          </div>
+          <div style={{ fontSize: 13, color: INK, marginTop: 4, lineHeight: 1.6 }}>{c.message}</div>
+        </div>
+      ))}
+
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
         <input
           style={{ ...input, maxWidth: 280 }}
@@ -327,10 +421,9 @@ export default function LtInvestorSources() {
         >{busy ? 'Saving…' : 'Save the list'}</button>
       </div>
 
-      <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
-        <div style={{
-          display: 'grid', gridTemplateColumns: 'minmax(180px,1.3fr) minmax(150px,1fr) minmax(180px,1fr) auto minmax(90px,auto)',
-          gap: 10, padding: '9px 12px', background: WASH, borderBottom: `1px solid ${LINE}`,
+      <div className="lt-inv" style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
+        <div className="lt-inv-head" style={{
+          padding: '9px 12px', background: WASH, borderBottom: `1px solid ${LINE}`,
           fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase', color: MUTED, fontWeight: 700,
         }}>
           <div>Investor</div>
@@ -352,10 +445,9 @@ export default function LtInvestorSources() {
           return (
             <div
               key={r.key}
+              className="lt-inv-row"
               style={{
-                display: 'grid',
-                gridTemplateColumns: 'minmax(180px,1.3fr) minmax(150px,1fr) minmax(180px,1fr) auto minmax(90px,auto)',
-                gap: 10, padding: '10px 12px', alignItems: 'center',
+                padding: '10px 12px',
                 borderBottom: `1px solid ${LINE}`,
                 background: choice === 'off' ? '#FBFAF8' : '#fff',
               }}
@@ -367,6 +459,7 @@ export default function LtInvestorSources() {
                 </div>
               </div>
               <div>
+                <div className="lt-inv-cell-label">Name a client may see</div>
                 <input
                   style={{ ...input, fontSize: 14, padding: '7px 9px' }}
                   placeholder={r.prefill && r.prefill.whiteLabel ? r.prefill.whiteLabel : 'not named yet'}
@@ -379,13 +472,30 @@ export default function LtInvestorSources() {
                   </div>
                 )}
               </div>
-              <AvailabilityCell availability={r.availability} />
-              <SourceChoice
-                value={choice}
-                lockedOut={r.lockedOut}
-                onPick={(id) => edit(r.key, { choice: id })}
-              />
               <div>
+                <div className="lt-inv-cell-label">Available on</div>
+                <AvailabilityCell availability={r.availability} />
+              </div>
+              <div>
+                <div className="lt-inv-cell-label">Priced from</div>
+                <SourceChoice
+                  value={choice}
+                  lockedOut={r.lockedOut}
+                  onPick={(id) => edit(r.key, { choice: id })}
+                />
+                {/* ⛔ A TOOLTIP DOES NOT EXIST ON A PHONE. The greyed-out button explains
+                    itself on hover, and a touch screen has no hover — so on the stacked
+                    form the owner met a button they could not press with no reason given
+                    anywhere, which is the "you can't really change from LenderPric, the
+                    loannex, maybe only not on mobile" half of the report. The CSS shows
+                    this only in the stacked form, so the desktop table gains no wall of
+                    repeated lines while the phone stops being a dead end. */}
+                {(r.lockedOut || []).filter((id) => id !== 'off').map((id) => (
+                  <div key={id} className="lt-inv-lock">{lockReason(sourceLabel(id))}</div>
+                ))}
+              </div>
+              <div>
+                <div className="lt-inv-cell-label">Holdback (extra points)</div>
                 <input
                   style={{ ...input, fontSize: 14, padding: '7px 9px', textAlign: 'right' }}
                   placeholder="0"
