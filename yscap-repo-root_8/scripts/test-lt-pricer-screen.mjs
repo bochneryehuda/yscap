@@ -643,8 +643,27 @@ console.log('LT Pricing Engine — structural guards\n');
     // The Terms track reads the keys the parser ACTUALLY emits — `term`+`termInMonths`,
     // `dayLock`, `interestOnly` — never the phantom `termMonths`/`amortization`/`lockDays`
     // that left every row an em dash.
-    ok(/o\.terms\.termInMonths \? 'months' : 'years'/.test(code),
-      'PE-121 the term is read from the parser’s own keys, unit and all');
+    /* ⛔ RE-POINTED, NOT LOOSENED (2026-09-03). This named the exact expression
+       `o.terms.termInMonths ? 'months' : 'years'`, and the claim it was making — that the term is
+       read from the parser's OWN keys rather than a phantom `termMonths`/`amortization` — is still
+       the claim. What changed is that printing each sheet's own unit put the SAME thirty-year loan
+       on one board as "30 years" on a Lender Price row and "360 months" on the LoanNEX row beside
+       it, so an officer had to convert one of them in their head. One formatter now answers for
+       both, and the guard follows it: the panel must call `termText`, and `termText` must read the
+       parser's own keys. A guard that kept naming the old expression would read as a broken
+       feature and get "fixed" by loosening it, which is worse than the drift it watches for. */
+    ok(/<Row k="Term" v=\{termText\(o && o\.terms\)/.test(code),
+      'PE-121 the term is drawn through the ONE shared formatter, so both rate sheets read alike');
+    {
+      const pb = read('app-v2/src/longterm/priceBuild.js');
+      const body = (/export function termText\([\s\S]*?\n}/.exec(pb) || [''])[0];
+      ok(/t\.termYears/.test(body) && /t\.term\b/.test(body) && /t\.termInMonths/.test(body),
+        'PE-121b …and that formatter reads the parser’s own keys — termYears, term, termInMonths');
+      ok(!/termMonths\s*\?|amortization|lockDays/.test(body),
+        'PE-121c …and none of the phantom keys that once left every row an em dash');
+      ok(!/o\.terms\.termInMonths \? 'months' : 'years'/.test(code),
+        'PE-121d …and the old per-sheet unit is gone from the panel entirely');
+    }
     ok(/o\.terms\.dayLock/.test(code) && !/o\.terms\.lockDays/.test(code) && !/o\.terms\.termMonths/.test(code),
       'PE-122 the lock reads dayLock — the phantom keys that drew em dashes are gone');
     ok(/o\.terms\.interestOnly \? 'Interest-only' : 'Fully amortising'/.test(code),

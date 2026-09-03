@@ -201,7 +201,11 @@ const ADAPTERS = {
     orderNumber: (o) => (o.class_order_id ? 'Class #' + o.class_order_id : null),
     orderedAt: (o) => o.placed_at || o.created_at,
     orderFee: (o) => (o.client_fee_cents != null ? o.client_fee_cents / 100 : null),
-    orderPaid: (o) => !!o.paid_at,
+    // Their OrderPaid callback, OR their payment-details reading a zero balance on a
+    // priced order — both are Class saying it is paid.
+    orderPaid: (o) => !!o.paid_at || (o.outstanding_cents != null && Number(o.outstanding_cents) <= 0 && Number(o.total_cents || 0) > 0),
+    // The balance sentence the server composes from payment-details (src/class/payment.js).
+    balanceLine: (o) => o.balance || null,
     // Class's own words for the same three facts, so the card asks the adapter
     // rather than reaching for one vendor's column names on every vendor's row.
     dueDate: (o) => o.due_date || null,
@@ -1041,14 +1045,15 @@ const STATE = {
 const EDITABLE = new Set([
   'apiVersion', 'productId', 'propertyTypeEnum', 'purpose', 'loanType', 'occupancy',
   'referenceNumber', 'street', 'city', 'state', 'zip', 'county', 'dueDate', 'instructions',
+  'paymentMethod', 'paymentEmail',
 ]);
-const PATH_TO_KEY = { propertyType: 'propertyTypeEnum' };
+const PATH_TO_KEY = { propertyType: 'propertyTypeEnum', recipientEmail: 'paymentEmail' };
 const overrideKeyFor = (path) => {
   const last = String(path || '').split('.').pop();
   const k = PATH_TO_KEY[last] || last;
   return EDITABLE.has(k) ? k : null;
 };
-const ENUM_FOR = { propertyTypeEnum: 'propertyTypeEnum', purpose: 'purpose', loanType: 'loanType' };
+const ENUM_FOR = { propertyTypeEnum: 'propertyTypeEnum', purpose: 'purpose', loanType: 'loanType', paymentMethod: 'paymentMethod' };
 
 function ClassBuilder({ appId, cfg, onPlaced }) {
   const [preview, setPreview] = useState(null);
@@ -1095,7 +1100,9 @@ function ClassBuilder({ appId, cfg, onPlaced }) {
   }, [appId, overrides, load, onPlaced]);
 
   const options = (preview && preview.options) || {};
-  const enums = options.enums || {};
+  // The payment methods ride alongside Class's own enums so the field row renders a
+  // picker of their three values rather than a free text box.
+  const enums = useMemo(() => ({ ...(options.enums || {}), paymentMethod: options.paymentMethods || ['PaymentLink', 'Prepay'] }), [options]);
   const occSuggestions = options.occupancySuggestions || [];
   const occIsList = !!options.occupancyIsEnum;
   const fields = (preview && preview.fields) || [];
@@ -1121,6 +1128,8 @@ function ClassBuilder({ appId, cfg, onPlaced }) {
               setOverride('productId', String(id));
               if (product && product.title) setPickedNames((m) => ({ ...m, [String(id)]: product.title }));
             }} />
+          <PaymentRow preview={preview} methods={enums.paymentMethod} overrides={overrides}
+            onMethod={(v) => setOverride('paymentMethod', v)} onEmail={(v) => setOverride('paymentEmail', v)} />
 
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 16, flexWrap: 'wrap' }}>
             <SectionTitle>What we will send to Class</SectionTitle>
@@ -1167,6 +1176,60 @@ function ClassBuilder({ appId, cfg, onPlaced }) {
       ) : (
         <div style={{ color: MUTED, fontSize: 13 }}>This file could not be loaded for a Class Valuation order.</div>
       )}
+    </div>
+  );
+}
+
+/* ---- how the appraisal is paid — chosen HERE because Class's API only lets it be
+   chosen when the order is placed (src/class/payment.js). No invoicing (owner-directed
+   2026-09-03): the payment link is the default on every order, and it is addressed to
+   the file's own mailbox so PILOT forwards it to the borrower, the loan officer and
+   the processor in one email. Prepay is the one other choice. There is no card charge
+   in their API, so no card is asked for. ---- */
+const PAYMENT_WORDS = {
+  PaymentLink: { head: 'Payment link to the borrower, officer and processor', sub: 'Class emails the link to the file mailbox when the order is placed; PILOT forwards it to all three in one email. The appraisal moves ahead once it is paid.' },
+  Prepay: { head: 'Prepaid', sub: 'Paid up front, outside Class\'s system.' },
+};
+function PaymentRow({ preview, methods, overrides, onMethod, onEmail }) {
+  const rows = (preview && preview.fields) || [];
+  const methodRow = rows.find((f) => f.path === 'paymentDetails.paymentMethod');
+  const emailRow = rows.find((f) => f.path === 'paymentDetails.recipientEmail');
+  const current = (overrides.paymentMethod || (methodRow && methodRow.value) || 'PaymentLink');
+  const words = PAYMENT_WORDS[current] || { head: current, sub: '' };
+  const chosen = !!overrides.paymentMethod;
+  const list = Array.isArray(methods) && methods.length ? methods : ['PaymentLink', 'Prepay'];
+  const toMailbox = /^file\+/i.test(String((overrides.paymentEmail != null ? overrides.paymentEmail : (emailRow && emailRow.value)) || ''));
+  return (
+    <div style={{ border: `1px solid ${chosen ? TEAL : LINE}`, borderRadius: 10, padding: 12, marginTop: 12, background: '#fff' }}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <div style={{ fontSize: 11, color: MUTED, textTransform: 'uppercase', letterSpacing: '.03em' }}>How it is paid</div>
+          <div style={{ color: INK, fontWeight: 600 }}>{words.head}</div>
+          <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>{words.sub}</div>
+        </div>
+        <div className="seg">
+          {list.map((m) => (
+            <button type="button" key={m} className={current === m ? 'on' : ''} aria-pressed={current === m}
+              onClick={() => onMethod(m === 'PaymentLink' && !overrides.paymentMethod ? '' : m)}>
+              {(PAYMENT_WORDS[m] || {}).head || m}
+            </button>
+          ))}
+        </div>
+      </div>
+      {current === 'PaymentLink' ? (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 12.5, color: INK, minWidth: 160 }}>Send the payment link to</label>
+          <input type="email" style={{ ...inputStyle, flex: 1, minWidth: 220 }}
+            value={overrides.paymentEmail != null ? overrides.paymentEmail : ((emailRow && emailRow.value) || '')}
+            placeholder="borrower@example.com"
+            onChange={(e) => onEmail(e.target.value)} />
+          <div style={{ width: '100%', fontSize: 12, color: MUTED }}>
+            {toMailbox
+              ? 'This is the file\u2019s own mailbox. Class emails the link here and PILOT forwards it to the borrower, the loan officer and the processor together. Change it only if the link should go to one address instead.'
+              : 'PILOT\u2019s file mailbox is not set up on this system, so the link goes straight to this address. The loan officer and processor are told in PILOT when it is sent.'}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1271,6 +1334,14 @@ function ProductPicker({ onPick }) {
                 style={{ display: 'block', width: '100%', textAlign: 'left', background: '#fff', color: INK, border: 'none', borderTop: `1px solid ${LINE}`, padding: '8px 10px', cursor: 'pointer' }}>
                 <span style={{ fontWeight: 550 }}>{p.title || `Product ${p.id}`}</span>
                 {p.alternativeName && p.alternativeName !== p.title ? <span style={{ color: MUTED, fontSize: 12 }}> — {p.alternativeName}</span> : null}
+                {/* THE FEE BEFORE ORDERING, as far as Class allows: their API has no
+                    quote, so this is what they LAST charged us for this product. */}
+                {p.recentFee && p.recentFee.lastCents != null ? (
+                  <span style={{ color: MUTED, fontSize: 12 }}>
+                    {' · last time '}{money(p.recentFee.lastCents / 100)}
+                    {p.recentFee.count > 1 && p.recentFee.lowCents !== p.recentFee.highCents ? ` (${money(p.recentFee.lowCents / 100)}–${money(p.recentFee.highCents / 100)} over ${p.recentFee.count})` : ''}
+                  </span>
+                ) : null}
                 <div style={{ color: MUTED, fontSize: 11 }}>#{p.id}</div>
               </button>
             ))}
@@ -2889,6 +2960,11 @@ function ActiveOrderCard({ order, appId, card, onChanged, onPay }) {
           assigned", which is why there is no placeholder row here. */}
       {appraiser ? <AppraiserLine who={appraiser} /> : null}
 
+      {/* WHAT IS OWED, in the vendor's own numbers, when the vendor tells us. */}
+      {ad.balanceLine && ad.balanceLine(order) ? (
+        <div style={{ fontSize: 12.5, color: MUTED, margin: '4px 0 6px' }}>{ad.balanceLine(order)}</div>
+      ) : null}
+
       {/* Quiet action row: communicate · pay · cancel */}
       <div className="aord-acts">
         <button className="aord-btn" onClick={() => toggle('messages')} aria-pressed={open === 'messages'}>
@@ -3105,7 +3181,7 @@ function SubMessages({ order, appId, onChanged }) {
 function SubDocuments({ order, appId, onChanged }) {
   return order._vendor === 'nan'
     ? <NanDocuments appId={appId} orderId={order.id} onChanged={onChanged} />
-    : <ClassAttachments order={order} />;
+    : <ClassDocuments appId={appId} order={order} onChanged={onChanged} />;
 }
 function SubRevision({ order, appId, onChanged }) {
   return order._vendor === 'nan'
@@ -3292,16 +3368,52 @@ function NanDocuments({ appId, orderId, onChanged }) {
   );
 }
 
-/* ---- Class documents (the vendor's returned attachments — read-only) ---- */
-function ClassAttachments({ order }) {
-  const rows = order._attachments || [];
+/* ---- Class documents: what they sent back, and OUR documents up to them ----
+   The mirror of NanDocuments (owner-directed 2026-09-02). Until then this tab was
+   read-only AND claimed the scope of work and contract were "sent automatically",
+   which was false — nothing could be sent to Class at all. Now the poller sends
+   those two on its own and this picker sends anything else. */
+function ClassDocuments({ appId, order, onChanged }) {
+  const back = (order._attachments || []).filter((a) => a.direction !== 'outbound');
+  const sent = (order._attachments || []).filter((a) => a.direction === 'outbound');
+  const [rows, setRows] = useState([]);
+  const [pick, setPick] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [notice, setNotice] = useState('');
+  const [asContract, setAsContract] = useState(false);
+  const numbered = !!order.class_order_id;
+  const load = useCallback(async () => {
+    try { const r = await api.classDocuments(appId, order.id); setRows((r && r.documents) || []); } catch (_) { /* ignore */ }
+  }, [appId, order.id]);
+  useEffect(() => { load(); }, [load]);
+  const toggle = (id) => setPick((p) => ({ ...p, [id]: !p[id] }));
+  const ids = Object.keys(pick).filter((k) => pick[k]);
+  const send = async () => {
+    if (!ids.length) return;
+    setBusy(true); setErr(''); setNotice('');
+    try {
+      const o = await api.classUploadDocs(appId, order.id, ids, asContract ? 'SalesContract' : undefined);
+      if (!o.ok) setErr(o.message || 'Could not send.');
+      else {
+        const n = o.uploaded ? o.uploaded.length : 0;
+        const skipped = (o.skipped || []).length;
+        setNotice(`Sent ${n} document(s) to Class${asContract ? ' as the sales contract' : ''}.`
+          + (skipped ? ` ${skipped} could not go (${(o.skipped || []).map((s) => s.reason.replace(/_/g, ' ')).join(', ')}).` : '')
+          + (o.uploaded && o.uploaded.some((u) => u.dryrun) ? ' Test mode — nothing left the building.' : ''));
+        setPick({}); setAsContract(false); await load(); if (onChanged) onChanged();
+      }
+    } catch (e) { setErr(e.message || 'Could not send.'); }
+    setBusy(false);
+  };
   return (
     <div style={surfaceWrap}>
-      <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>
-        Documents Class has sent back on this order. Their scope of work and contract are sent to them automatically.
-      </div>
-      <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
-        {rows.length ? rows.map((a, i) => (
+      {err ? <Banner tone="bad">{err}</Banner> : null}
+      {notice ? <Banner tone="good">{notice}</Banner> : null}
+
+      <div style={{ fontSize: 12, color: MUTED, marginBottom: 6 }}>Documents Class has sent back on this order.</div>
+      <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden', marginBottom: 14 }}>
+        {back.length ? back.map((a, i) => (
           <div key={a.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', borderTop: i ? `1px solid ${LINE}` : 'none' }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ color: INK, fontWeight: 550, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name || 'Document'}</div>
@@ -3310,6 +3422,51 @@ function ClassAttachments({ order }) {
           </div>
         )) : <div style={{ padding: 10, color: MUTED, fontSize: 13 }}>Class hasn’t sent any documents back on this order yet.</div>}
       </div>
+
+      <div style={{ fontSize: 12, color: MUTED, marginBottom: 6 }}>
+        Send the file&apos;s documents to Class.{numbered ? '' : ' Class has not numbered this order yet — nothing can be attached until it has.'}
+      </div>
+      <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden', marginBottom: 8 }}>
+        {rows.length ? rows.map((d) => {
+          const off = d.alreadyUploaded || !d.sendable || !numbered;
+          return (
+            <label key={d.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', borderTop: `1px solid ${LINE}`, cursor: off ? 'default' : 'pointer', opacity: off ? 0.6 : 1 }}>
+              <input type="checkbox" disabled={off} checked={!!pick[d.id]} onChange={() => toggle(d.id)} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ color: INK, fontWeight: 550, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.filename}</div>
+                <div style={{ fontSize: 12, color: MUTED }}>
+                  {d.category}{d.alreadyUploaded ? ' · already sent' : (d.uploadGaveUp ? ' · could not be sent after several tries — send it again by hand' : (d.uploadError ? ' · last try failed, PILOT will retry' : (!d.sendable ? ' · Class takes PDF, XML and image files only' : ` · goes as ${d.classCategory}`)))}
+                </div>
+              </div>
+            </label>
+          );
+        }) : <div style={{ padding: 10, color: MUTED, fontSize: 13 }}>No documents on this file yet.</div>}
+      </div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: INK, margin: '0 0 8px' }}>
+        <input type="checkbox" checked={asContract} onChange={(e) => setAsContract(e.target.checked)} />
+        <span>Send as the sales contract<span style={{ color: MUTED }}> — files it in their contract slot instead of as a supporting document</span></span>
+      </label>
+      <button className="btn primary" disabled={busy || !ids.length || !numbered} onClick={send}>{busy ? 'Sending…' : ('Send ' + (ids.length || '') + ' to Class')}</button>
+      <div style={{ marginTop: 6, fontSize: 12, color: MUTED }}>The scope of work and the purchase contract are sent on their own when they arrive or change.</div>
+
+      {sent.length ? (
+        <>
+          <div style={{ fontSize: 12, color: MUTED, margin: '14px 0 6px' }}>Already sent to Class on this order.</div>
+          <div style={{ border: `1px solid ${LINE}`, borderRadius: 10, overflow: 'hidden' }}>
+            {sent.map((a, i) => (
+              <div key={a.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 10px', borderTop: i ? `1px solid ${LINE}` : 'none' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ color: INK, fontWeight: 550, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name || 'Document'}</div>
+                  <div style={{ fontSize: 12, color: a.upload_error ? '#8A2F27' : MUTED }}>
+                    {a.category || 'Miscellaneous'}
+                    {a.upload_error ? ` · could not be sent: ${a.upload_error}` : (a.uploaded_at ? ` · sent ${fmtDate(a.uploaded_at)}` : ' · test mode, not sent')}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -3947,6 +4104,35 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
     return () => { alive = false; };
   }, [order._vendor, order.id]);
 
+  // CLASS'S OWN MONEY PICTURE — the live fee / paid / owed off their payment-details,
+  // and the one write their API allows: RECORDING a card charge the back office ran
+  // on the card on file, so Class marks the order paid and stops chasing the
+  // borrower. Nothing here charges a card; src/class/payment.js says why.
+  const [classPay, setClassPay] = useState(null);
+  const [rec, setRec] = useState({ nameCardHolder: '', amount: '', last4: '', authorizationCode: '' });
+  const [recOpen, setRecOpen] = useState(false);
+  const loadClassPay = useCallback(async () => {
+    if (order._vendor !== 'class' || !order.class_order_id) { setClassPay(null); return; }
+    try { setClassPay(await api.classPayment(appId, order.id)); } catch (_) { /* the balance line is a bonus, never a blocker */ }
+  }, [appId, order._vendor, order.id, order.class_order_id]);
+  useEffect(() => { loadClassPay(); }, [loadClassPay]);
+  const recordCharge = async () => {
+    setBusy('record'); setErr(''); setDone('');
+    try {
+      const r = await api.classRecordPayment(appId, order.id, {
+        nameCardHolder: rec.nameCardHolder, amount: rec.amount, last4: rec.last4 || (card && card.last4) || '', authorizationCode: rec.authorizationCode,
+      });
+      if (!r || r.ok === false) setErr((r && r.message) || 'Class did not accept the record.');
+      else {
+        setDone(r.dryrun ? 'Test mode — the record was built and logged, nothing was sent to Class.'
+          : `Recorded at Class.${r.balance ? ' ' + r.balance : ''}`);
+        setRecOpen(false);
+        await loadClassPay(); await load(); await onPaid();
+      }
+    } catch (e) { setErr((e && e.message) || 'Could not record the charge at Class.'); }
+    setBusy('');
+  };
+
   const vendorBlock = state && state.vendors ? state.vendors[order._vendor] : null;
   const rawOpts = (vendorBlock && vendorBlock.options) || [];
   // The overlay can only ever DISABLE, never enable — a screen must not open a
@@ -4046,6 +4232,43 @@ function PayModal({ appId, order, card, onClose, onPaid }) {
                 {vendorPay.lastError
                   || 'Give it a moment and reload. Nothing else can be charged on this order until it settles.'}
               </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* CLASS: what they say is owed, and the record-a-charge form. */}
+        {classPay && classPay.ok ? (
+          <div style={{ marginTop: 12, borderRadius: 10, padding: '10px 12px', border: `1px solid ${classPay.outstandingCents != null && Number(classPay.outstandingCents) <= 0 && Number(classPay.totalCents || 0) > 0 ? '#CFE6D8' : LINE}`, background: '#fff' }}>
+            <div style={{ fontWeight: 650, color: INK }}>{classPay.balance || 'Class has not priced this order yet.'}</div>
+            <div style={{ fontSize: 12.5, color: MUTED, marginTop: 3, lineHeight: 1.45 }}>
+              {classPay.paymentMethod === 'PaymentLink'
+                ? (classPay.linkToMailbox
+                  ? (classPay.linkForwardedAt
+                    ? `Class sent the payment link and PILOT forwarded it on ${fmtDate(classPay.linkForwardedAt)} to ${[...((classPay.linkForwardedTo && classPay.linkForwardedTo.to) || []), ...((classPay.linkForwardedTo && classPay.linkForwardedTo.cc) || [])].join(', ') || 'the borrower and the team'}.`
+                    : `Ordered with a payment link to the file mailbox${classPay.linkSentAt ? ' — Class says it sent the link ' + fmtDate(classPay.linkSentAt) + ', PILOT has not received it yet' : ' — Class has not sent it yet'}.`)
+                  : `Ordered with a payment link${classPay.recipientEmail ? ' to ' + classPay.recipientEmail : ''}${classPay.linkSentAt ? ', sent ' + fmtDate(classPay.linkSentAt) : ', not sent yet'}.`)
+                : (classPay.paymentMethod === 'Prepay' ? 'Ordered as prepaid.' : (classPay.paymentMethod ? `Ordered as ${classPay.paymentMethod}.` : ''))}
+              {classPay.recordedAt ? ` A card charge was recorded at Class on ${fmtDate(classPay.recordedAt)}.` : ''}
+              {' '}{classPay.note}
+            </div>
+            {!(classPay.outstandingCents != null && Number(classPay.outstandingCents) <= 0 && Number(classPay.totalCents || 0) > 0) ? (
+              recOpen ? (
+                <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                  <input placeholder="Name on the card" style={inputStyle} value={rec.nameCardHolder} onChange={(e) => setRec((p) => ({ ...p, nameCardHolder: e.target.value }))} />
+                  <input placeholder="Amount charged ($)" style={inputStyle} value={rec.amount} onChange={(e) => setRec((p) => ({ ...p, amount: e.target.value }))} />
+                  <input placeholder={card && card.last4 ? `Last four (••${card.last4})` : 'Last four digits'} style={inputStyle} value={rec.last4} onChange={(e) => setRec((p) => ({ ...p, last4: e.target.value }))} />
+                  <input placeholder="Authorization code" style={inputStyle} value={rec.authorizationCode} onChange={(e) => setRec((p) => ({ ...p, authorizationCode: e.target.value }))} />
+                  <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8 }}>
+                    <button className="btn primary" disabled={!!busy || !rec.amount} onClick={recordCharge}>{busy === 'record' ? 'Recording…' : 'Tell Class it was charged'}</button>
+                    <button className="btn soft" disabled={!!busy} onClick={() => setRecOpen(false)}>Cancel</button>
+                  </div>
+                  <div style={{ gridColumn: '1 / -1', fontSize: 12, color: MUTED }}>Only for a charge the back office already ran on the card. This records it at Class — it does not charge anything.</div>
+                </div>
+              ) : (
+                <button className="btn soft" style={{ marginTop: 8 }} disabled={!!busy} onClick={() => setRecOpen(true)}>
+                  The back office charged the card — record it at Class
+                </button>
+              )
             ) : null}
           </div>
         ) : null}

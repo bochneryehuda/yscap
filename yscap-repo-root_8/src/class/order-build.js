@@ -482,6 +482,31 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
     ? [{ [profile.notifyKeys.type]: 'BorrowerInfo', [profile.notifyKeys.email]: notifyEmail }]
     : [];
 
+  // ---- how it is paid -------------------------------------------------------
+  // THE OWNER DOES NOT ACCEPT INVOICING (owner-directed 2026-09-03): every order is
+  // paid up front through Class's payment link, which is the default; `Prepay` is the
+  // one other choice (paid outside Class). Class's API also offers `Invoice`, and it is
+  // REFUSED here — a body naming it never leaves PILOT. A payment link needs the
+  // address Class emails it to: the file's own mailbox by default (src/class/
+  // payment-link-inbox.js forwards it to the borrower, the loan officer and the
+  // processor), and an address that is not one blocks the order here, not at Class.
+  const rawMethod = pick('paymentMethod', ctx.paymentMethod);
+  const paymentMethod = normalizePaymentMethod(rawMethod) || 'PaymentLink';
+  if (rawMethod && !normalizePaymentMethod(rawMethod)) {
+    const isInvoice = /^\s*invoice\s*$/i.test(String(rawMethod));
+    missing.push({ field: 'paymentDetails.paymentMethod', why: isInvoice
+      ? 'YS Capital does not accept invoicing for appraisals — the order is paid by the payment link, or prepaid'
+      : `Class pays an order by ${PAYMENT_METHODS.join(' or ')} — "${rawMethod}" is neither` });
+  }
+  const paymentDetails = { paymentMethod };
+  if (paymentMethod === 'PaymentLink') {
+    // The file mailbox (order-service sets ctx.paymentEmail to it), else the borrower's
+    // own address — a link with no mailbox to land in still has to reach the borrower.
+    const to = validEmail(pick('paymentEmail', ctx.paymentEmail)) || validEmail(ctx.borrower && ctx.borrower.email);
+    if (to) paymentDetails.recipientEmail = to;
+    else missing.push({ field: 'paymentDetails.recipientEmail', why: 'a payment link needs a valid email address for Class to send it to' });
+  }
+
   const body = {
     productId,
     referenceNumber,
@@ -516,6 +541,7 @@ function buildOrder(ctx = {}, overrides = {}, opts = {}) {
     contractPrice: money(ctx.contractPrice),
     dateOfContract: text(ctx.dateOfContract),
     notificationList: notify,
+    paymentDetails,
   };
 
   // The GSE reference numbers are renamed on 3.6, so they are keyed off the profile
@@ -615,6 +641,16 @@ function describeOrderError(err) {
 // the field is free text), and the screen renders a dropdown or a type-ahead
 // accordingly — it must never present a free-text field as a closed choice, or a
 // closed choice as free text.
+// The ways an order may be paid, in Class's casing (guide p.32). Their API has a third,
+// `Invoice`, which YS Capital does not accept (owner-directed 2026-09-03) — it is not
+// on this list, so it can never be chosen, defaulted to, or normalised into.
+const PAYMENT_METHODS = ['PaymentLink', 'Prepay'];
+function normalizePaymentMethod(v) {
+  const wanted = String(v == null ? '' : v).trim().toLowerCase().replace(/[\s_-]+/g, '');
+  if (!wanted) return null;
+  return PAYMENT_METHODS.find((m) => m.toLowerCase() === wanted) || null;
+}
+
 function screenOptions(version) {
   const profile = profileFor(version);
   const uniq = (a) => a.filter((v, i) => a.indexOf(v) === i);
@@ -633,6 +669,7 @@ function screenOptions(version) {
     occupancySuggestions: profile.occupancyIsEnum
       ? profile.enums.occupancy
       : suggestFrom(profile.occupancy),
+    paymentMethods: PAYMENT_METHODS,
   };
 }
 
@@ -651,6 +688,14 @@ function orderSummary(order) {
   add('Report ordered', order.product_title || (order.product_id ? 'Product #' + order.product_id : null));
   const b = (order && order.request_body) || {};
   const li = b.loanInfo || {};
+  const pd = b.paymentDetails || {};
+  if (pd.paymentMethod) {
+    add('Paid by', pd.paymentMethod === 'PaymentLink'
+      ? (/^file\+/i.test(String(pd.recipientEmail || ''))
+        ? 'Payment link from Class, forwarded by PILOT to the borrower, the loan officer and the processor'
+        : `Payment link emailed by Class${pd.recipientEmail ? ' to ' + pd.recipientEmail : ''}`)
+      : (pd.paymentMethod === 'Prepay' ? 'Prepaid' : pd.paymentMethod));
+  }
   const p = b.property || {};
   add('Loan number', li.loanNumber || order.reference_number);
   add('Property', [p.street, p.line2, p.city, p.state, p.zip].filter(Boolean).join(', '));
@@ -675,6 +720,8 @@ module.exports = {
   orderSummary,
   profileFor,
   screenOptions,
+  PAYMENT_METHODS,
+  normalizePaymentMethod,
   isOccupancyEnumError,
   describeOrderError,
   DEFAULT_VERSION,
