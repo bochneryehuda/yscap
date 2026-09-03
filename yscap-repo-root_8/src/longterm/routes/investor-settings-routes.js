@@ -166,7 +166,15 @@ function attach(router) {
       /* The source THIS investor is set to is passed so it can never be locked out —
          a row routed to LoanNEX whose LoanNEX button is dead cannot be re-routed or
          turned off and back on, and reads as a broken screen. */
-      return { ...r, availability, lockedOut: sightings.lockedOutFor(r.key, sight, r.source) };
+      return {
+        ...r,
+        availability,
+        lockedOut: sightings.lockedOutFor(r.key, sight, r.source),
+        /* WHETHER THIS ROW CARRIES A SETTING SOMEBODY SAVED — answered HERE, by the
+           one definition, so the screen's "use the pre-fill" control and the rule that
+           KEEPS the row on this list can never disagree about the same row. */
+        carriesSetting: investorSettings.carriesOwnSetting(r),
+      };
     });
     /**
      * THE OWNER'S LIST, NOT OUR WHOLE REGISTRY (owner-reported 2026-09-03: *"the list of

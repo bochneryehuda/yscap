@@ -220,9 +220,17 @@ console.log('\nG · the screen');
 
   ok(/lenderprice/.test(s) && /loannex/.test(s) && /'off'/.test(s), 'G1 three choices, in the owner’s own words');
   ok(/c\.id !== 'off' && locked\.has\(c\.id\)/.test(s),
-    'G2 OFF IS NEVER LOCKED OUT — the owner’s rule, verbatim: an investor can always be turned off');
+    'G2 OFF IS NEVER LOCKED OUT BY AVAILABILITY — the owner’s rule, verbatim: an investor can always be turned off');
+  /* The ONE other thing that may disable these buttons is `frozen`, and it is a
+     SEPARATE prop for exactly this reason: it is a transient state of the FORM (a row on
+     its way back to the pre-fill, undone in one click) rather than a statement about the
+     investor, and folding it into `lockedOut` would have left Off pressable on a row whose
+     save ignores every source it is given — a button that does nothing and says nothing. */
+  ok(/const isLocked = frozen \|\| \(c\.id !== 'off' && locked\.has\(c\.id\)\);/.test(s),
+    'G2b …and the only other thing that may disable a button is the row-level freeze, never a second availability rule');
   ok(/disabled=\{isLocked\}/.test(s), 'G3 a locked choice is a real disabled button, never one that looks pressable and does nothing');
-  ok(/title=\{isLocked \?/.test(s), 'G3b …carrying the reason it cannot be pressed');
+  ok(/title=\{frozen \? \(frozenReason \|\| ''\) : \(isLocked \? lockReason\(c\.short\) : c\.help\)\}/.test(s),
+    'G3b …carrying the reason it cannot be pressed, for BOTH ways it can be disabled');
   ok(/r\.lockedOut/.test(s), 'G4 the lock comes from the server’s own answer, never re-derived here');
   ok(/setGone\(true\)/.test(s) && /return null/.test(bare),
     'G5 a 404 renders NOTHING — an ordinary admin’s settings screen is exactly the screen it was');
@@ -349,10 +357,11 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
      88 checks passed. A second alternative in the pattern made the first one dead.
      The rule now lives in `investorSourcePatch.js` and is RUN in section K. All this asserts
      is that the screen still asks it rather than growing a second copy. */
-  ok(/from '\.\/investorSourcePatch\.js'/.test(src) && /sourcePatch\(r, e\)/.test(src),
+  ok(/from '\.\/investorSourcePatch\.js'/.test(src) && /const patchOf = \(r\) => rowPatch\(r, edits\[r\.key\]\);/.test(src),
     'J1 the row that is sent is built by the shared rule — not by a copy inside the screen');
-  ok(!/const sourceAnswered =/.test(src) && !/choice === 'off' \? \(r\.source === 'loannex'/.test(src),
-    'J1b …and no copy of that rule has grown back here');
+  ok(!/const sourceAnswered =/.test(src) && !/choice === 'off' \? \(r\.source === 'loannex'/.test(src)
+    && !/Origin === 'setting'\s*\|\|/.test(src),
+    'J1b …and no copy of that rule — the source answer, or the four-origin test — has grown back here');
   ok(/setEdits\(\{\}\);\s*load\(\);/.test(src),
     'J2 after saving, the screen RE-READS the server rather than believing its own patch');
   /* Scoped to the FILTER, not the file: `sourceOrigin === 'setting'` is also read by
@@ -415,6 +424,109 @@ console.log('\nJ · the settings screen sends what it was shown, and shows what 
 
   ok(sourcePatch(null).enabled === true && sourcePatch(undefined, undefined).source === 'lenderprice',
     'K10 a missing row answers the pre-fill rather than throwing');
+
+  /* ═════════════════════════════════════════════════════════════════════════
+     L · TAKING A ROW BACK TO THE PRE-FILL, RUN.
+
+     The owner, 2026-09-03: the side-by-side list *"still shows investors that were
+     removed"* — Constructive and Broadview, from an older screen that saved all 43
+     rows. A row is KEPT on that list while it carries a setting of its own
+     (`belongsOnSettingsList` test 3), so a setting made once could never be taken
+     back off and the investor sat there for ever. The door replaces the whole map on
+     every save, so OMITTING a row is the removal; this is the rule that omits it.
+     ═════════════════════════════════════════════════════════════════════════ */
+  console.log('\nL · a row goes back to the pre-fill');
+  const { rowPatch, carriesSetting, resetRequested } = await import('../app-v2/src/longterm/investorSourcePatch.js');
+  const settings = require('../src/longterm/pricing/investor-settings');
+
+  /* The owner's own rows: on the list for no reason but a setting somebody saved. */
+  const stale = {
+    key: 'broadview', source: 'lenderprice', enabled: false, whiteLabel: null,
+    sourceOrigin: 'setting', enabledOrigin: 'setting', whiteLabelOrigin: 'unset', holdbackOrigin: 'default',
+    carriesSetting: true,
+  };
+  ok(rowPatch(stale, undefined) !== null,
+    'L1 CONTROL: with nobody asking, the row RE-STATES its setting — which is why it never left');
+  ok(rowPatch(stale, { reset: true }) === null,
+    'L2 …asked for the pre-fill, it sends NOTHING, so the door drops the setting and the row leaves the list');
+
+  /* Asked FIRST is the whole shape of it: asking makes the row touched, so a "was this
+     touched?" test reached before it would re-state the very setting being removed. */
+  ok(rowPatch({ key: 'x', source: 'loannex', enabled: true, carriesSetting: false }, { reset: true }) === null,
+    'L3 …and it outranks a row nobody had a setting for — removing nothing removes nothing');
+  ok(rowPatch(stale, { reset: true, whiteLabel: 'Typed', holdback: 3, choice: 'loannex' }) === null,
+    'L4 …and it outranks every other pending edit on the row, so a reset is never half-applied');
+
+  /* Undo is the absence of the flag, so it must be EXACTLY true — an edit object is
+     spread from whatever was last written, and a stray value silently dropping a saved
+     setting is invisible until somebody notices the investor pricing differently. */
+  ok(rowPatch(stale, { reset: false }) !== null && rowPatch(stale, { reset: 'yes' }) !== null,
+    'L5 only an exact `true` resets — a stray value never drops a setting nobody asked to drop');
+  ok(resetRequested({ reset: true }) === true && resetRequested({ reset: 1 }) === false
+    && resetRequested(null) === false && resetRequested(undefined) === false,
+    'L6 …the same rule read on its own, including with no edit at all');
+
+  /* A row nobody has touched and that carries nothing still sends nothing — the
+     property that stops today's pre-fill being pinned onto every investor for ever. */
+  ok(rowPatch({ key: 'y', source: 'lenderprice', enabled: true, carriesSetting: false }, undefined) === null,
+    'L7 an untouched row with no setting of its own sends nothing');
+  const touched = rowPatch({ key: 'y', source: 'lenderprice', enabled: true, carriesSetting: false }, { holdback: '0.5' });
+  ok(touched && touched.holdback === 0.5 && touched.source === 'lenderprice',
+    'L8 …and one somebody DID touch sends what they typed');
+
+  /* An empty box means "no setting of its own for this", so it is OMITTED rather than
+     sent as an empty string or a NaN the door would have to judge. */
+  const blanked = rowPatch({ key: 'z', source: 'loannex', enabled: true, whiteLabel: 'Ruby', holdback: 0.25, carriesSetting: true },
+    { whiteLabel: '   ', holdback: '' });
+  ok(blanked && !('whiteLabel' in blanked) && !('holdback' in blanked),
+    'L9 an emptied name or holdback is omitted, never sent as an empty value');
+
+  /* ⛔ ONE DEFINITION. The control offers itself for exactly the reason the list KEEPS
+     the row, so the two must answer the same question about the same row. The server
+     owns the rule; the browser reads its answer. Both directions are asserted, because
+     a control that offers to remove a setting on a row kept for ANOTHER reason clears
+     the setting and leaves the row sitting there — which reads as the button not working. */
+  const shapes = [
+    { sourceOrigin: 'setting' }, { enabledOrigin: 'setting' },
+    { whiteLabelOrigin: 'setting' }, { holdbackOrigin: 'setting' },
+    { sourceOrigin: 'default', enabledOrigin: 'default', whiteLabelOrigin: 'sheet', holdbackOrigin: 'default' },
+    {},
+  ];
+  let agree = 0;
+  for (const base of shapes) {
+    const server = settings.carriesOwnSetting(base);
+    /* The browser reads the server's answer off the row — the shape the route sends. */
+    if (carriesSetting({ ...base, carriesSetting: server }) === server) agree += 1;
+    /* And the deploy-window fallback, with no answer on the row, must agree too. */
+    if (carriesSetting(base) !== server) agree -= 99;
+  }
+  ok(agree === shapes.length,
+    'L10 the browser and the server agree, on every shape a row can have, about whether it carries a setting');
+
+  /* And the rule the LIST turns on is the SAME function, not a second copy of it — a row
+     kept only by a setting must stop being kept the moment that setting goes. */
+  ok(settings.belongsOnSettingsList({ whiteLabel: null, holdbackOrigin: 'setting' }, {}) === true
+    && settings.belongsOnSettingsList({ whiteLabel: null, holdbackOrigin: 'default' }, {}) === false,
+    'L11 …and the list keeps a row for that reason and stops keeping it when the reason goes');
+  ok(settings.belongsOnSettingsList({ whiteLabel: 'Ruby' }, {}) === true
+    && settings.belongsOnSettingsList({ whiteLabel: null }, { loannex: { state: 'seen' } }) === true,
+    'L12 …while a named investor, and one a rate sheet has produced, are kept whatever their settings say');
+
+  /* The three wirings no run of the rule can see: the list must ASK the shared function
+     rather than keep a fourth copy of the four-clause test, the route must put its answer
+     ON the row (or the browser silently falls back to deriving it for ever), and the
+     control must be offered only where there is a setting to remove. */
+  const settingsSrc = strip(read('src/longterm/pricing/investor-settings.js'));
+  ok(/function belongsOnSettingsList[\s\S]{0,400}?return carriesOwnSetting\(row\);/.test(settingsSrc),
+    'L13 the list rule DELEGATES to the shared one — it does not keep its own copy of the four origins');
+  ok(/carriesSetting: investorSettings\.carriesOwnSetting\(r\)/.test(strip(read('src/longterm/routes/investor-settings-routes.js'))),
+    'L14 …and the route answers it on every row, so the browser reads it rather than re-deriving it');
+  const screen = strip(read('app-v2/src/longterm/LtInvestorSources.jsx'));
+  ok(/\{carriesSetting\(r\) && !resetting && \(/.test(screen),
+    'L15 …and the control is offered only on a row that HAS a setting to remove');
+  ok(/onClick=\{\(\) => edit\(r\.key, \{ reset: true \}\)\}/.test(screen)
+    && /onClick=\{\(\) => undoReset\(r\.key\)\}/.test(screen),
+    'L16 …with a one-click undo beside it, so a mis-press never costs a setting');
 
   console.log('\n' + pass + ' checks passed\n');
 })();

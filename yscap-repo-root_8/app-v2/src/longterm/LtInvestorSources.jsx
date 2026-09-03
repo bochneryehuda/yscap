@@ -5,7 +5,7 @@ import LtSourceMisses from './LtSourceMisses.jsx';
 import { keyFromLabel, parseAliases } from './customInvestors.js';
 import { INK, MUTED, SLATE, GOLD, GOLD_TEXT, CAUTION, DANGER, card, eyebrow, sub, input, label, LINE, WASH } from './ppeStyles.js';
 import { sourceLabel } from './sourceLabel.js';
-import { choiceOf, sourcePatch } from './investorSourcePatch.js';
+import { choiceOf, rowPatch, carriesSetting, resetRequested } from './investorSourcePatch.js';
 
 /**
  * THE SIDE-BY-SIDE INVESTOR LIST — the ONE new section in the General Pricing Engine's settings.
@@ -95,8 +95,23 @@ function AvailabilityCell({ availability }) {
  * tooltip AND by the words a phone gets instead of one.
  */
 const lockReason = (short) => `${short} ${NEVER_CARRIED}, so there is nothing to price from there.`;
+/**
+ * WHY THE SOURCE BUTTONS ARE FROZEN ON A ROW GOING BACK TO THE PRE-FILL — ONE
+ * SENTENCE, for the reason `lockReason` above is one: the tooltip (which does not
+ * exist on a phone) and the visible line (which is the phone's only explanation)
+ * must not drift into saying two different things about the same greyed-out button.
+ */
+const RESETTING_REASON = 'This investor is going back to the pre-fill — press “Keep the setting” if you want to change where it is priced from.';
 
-function SourceChoice({ value, lockedOut, onPick }) {
+/**
+ * `frozen` locks ALL THREE buttons for a reason that is about the ROW rather than
+ * about a rate sheet — today, a row on its way back to the pre-fill. It is a
+ * SEPARATE prop from `lockedOut` deliberately: `off` is never in `lockedOut` (the
+ * owner's rule — an investor can always be turned off), so reusing it here would
+ * have left Off pressable on a row whose save ignores every source it is given,
+ * which is a button that does nothing and says nothing.
+ */
+function SourceChoice({ value, lockedOut, frozen, frozenReason, onPick }) {
   const locked = new Set(lockedOut || []);
   return (
     <div role="group" aria-label="Where this investor is priced from" className="lt-inv-sources" style={{
@@ -105,14 +120,14 @@ function SourceChoice({ value, lockedOut, onPick }) {
       {CHOICES.map((c, i) => {
         const on = value === c.id;
         // ⛔ `off` IS NEVER LOCKED — the owner's rule, verbatim: an investor can always be turned off.
-        const isLocked = c.id !== 'off' && locked.has(c.id);
+        const isLocked = frozen || (c.id !== 'off' && locked.has(c.id));
         return (
           <button
             key={c.id}
             type="button"
             disabled={isLocked}
             aria-pressed={on}
-            title={isLocked ? lockReason(c.short) : c.help}
+            title={frozen ? (frozenReason || '') : (isLocked ? lockReason(c.short) : c.help)}
             onClick={() => !isLocked && onPick(c.id)}
             style={{
               appearance: 'none', border: 0, cursor: isLocked ? 'not-allowed' : 'pointer',
@@ -248,6 +263,22 @@ export default function LtInvestorSources() {
     setSaved(null);
     setEdits((s) => ({ ...s, [key]: { ...(s[key] || {}), ...patch } }));
   };
+  /**
+   * KEEP THE SETTING AFTER ALL. It drops ONLY the reset and leaves anything else
+   * pending on that row — somebody who renamed an investor and then pressed the
+   * wrong button must get their rename back, not lose it to the undo. If the reset
+   * was the only thing pending the row's edit goes entirely, so the Save button
+   * stops offering to save nothing.
+   */
+  const undoReset = (key) => {
+    setSaved(null);
+    setEdits((s) => {
+      const { reset, ...rest } = s[key] || {};
+      const next = { ...s };
+      if (Object.keys(rest).length) next[key] = rest; else delete next[key];
+      return next;
+    });
+  };
   const dirty = Object.keys(edits).length > 0;
 
   /**
@@ -257,43 +288,15 @@ export default function LtInvestorSources() {
    * ⛔ AND A ROW NOBODY HAS TOUCHED SENDS NOTHING — that is what leaves it answering to the
    * standing instruction rather than pinning today's pre-fill onto it for ever.
    */
-  const patchOf = (r) => {
-    const e = edits[r.key];
-    const touched = !!e;
-    const pinned = r.sourceOrigin === 'setting' || r.enabledOrigin === 'setting'
-      || r.whiteLabelOrigin === 'setting' || r.holdbackOrigin === 'setting';
-    if (!touched && !pinned) return null;
-    const choice = choiceOf(r, e);
-    /**
-     * ⛔ ONLY A PRESS OF THE SOURCE BUTTONS MAY CHANGE THE SOURCE. Everything else re-states what
-     * is stored, VERBATIM — it is never re-derived through the three-button vocabulary.
-     *
-     * `both` is a real stored value: the COMBINED engine's settings screen offers it and writes the
-     * same key (`pricing.combinedInvestors`). This screen deliberately does not offer it, so
-     * `choiceOf` answers `'lenderprice'` for it — and a save then silently re-routed every stored
-     * `both` row to Lender Price with no source button pressed. A screen that does not offer a
-     * value must PASS IT THROUGH, never translate it into the nearest one it knows.
-     *
-     * ⛔ AND THE TEST IS THE SOURCE, NOT THE ROW. The first cut asked whether the ROW had been
-     * edited at all, which is a different question and was wrong three ways out of four: renaming
-     * an investor, changing its holdback, or switching it OFF all re-routed a stored `both` to
-     * Lender Price, because none of them says anything whatever about which sheet to price on.
-     * Measured, all three. `choice` is what the buttons write, so `e.choice` is the only
-     * evidence that a person answered THIS question.
-     *
-     * SWITCHING OFF IS NOT AN ANSWER TO IT EITHER — an investor that is off has no sheet in use,
-     * and remembering the one it had is what lets turning it back on restore what was there.
-     */
-    const out = sourcePatch(r, e);
-    const wl = e && e.whiteLabel !== undefined ? e.whiteLabel : r.whiteLabel;
-    if (wl != null && String(wl).trim() !== '') out.whiteLabel = String(wl).trim();
-    const hbv = e && e.holdback !== undefined ? e.holdback : r.holdback;
-    if (hbv !== undefined && hbv !== null && String(hbv) !== '') {
-      const n = Number(hbv);
-      if (Number.isFinite(n)) out.holdback = n;
-    }
-    return out;
-  };
+  /**
+   * THE ROW AS THE SERVER STORES IT — ONE DELEGATING LINE, deliberately.
+   *
+   * The rule is `investorSourcePatch.rowPatch`, where a test can HAND IT REAL ROWS and
+   * read the real answers back. It was a closure here once and the pre-merge audit
+   * defeated the regex guarding it twice, each time restoring the defect in full with
+   * every check still passing: a regex over a caller can only ever pin a spelling.
+   */
+  const patchOf = (r) => rowPatch(r, edits[r.key]);
 
   async function save() {
     if (busy || !data) return;
@@ -301,7 +304,12 @@ export default function LtInvestorSources() {
     setBusy(true); setErr(null); setSaved(null);
     try {
       const map = {};
+      let reset = 0;
       for (const r of rows) {
+        /* Counted from the SAME question the save turns on, not from the edits: a reset
+           on a row that carried no setting removes nothing, and saying it did would be a
+           confident wrong answer about what just happened to the list. */
+        if (resetRequested(edits[r.key]) && carriesSetting(r)) reset += 1;
         const p = patchOf(r);
         if (p) map[r.key] = p;
       }
@@ -316,7 +324,10 @@ export default function LtInvestorSources() {
        */
       setEdits({});
       load();
-      setSaved(`Saved. ${out.saved} investor${out.saved === 1 ? '' : 's'} now carry a setting of their own; the rest use the pre-fill.`);
+      setSaved(`Saved. ${out.saved} investor${out.saved === 1 ? '' : 's'} now carry a setting of their own; the rest use the pre-fill.`
+        + (reset
+          ? ` ${reset} went back to the pre-fill — any that were on this list only because of that setting have left it.`
+          : ''));
     } catch (e) {
       const problems = e && e.data && Array.isArray(e.data.problems) ? e.data.problems : null;
       setErr(problems
@@ -476,9 +487,20 @@ export default function LtInvestorSources() {
         )}
         {shown.map((r) => {
           const e = edits[r.key] || {};
+          const resetting = resetRequested(e);
           const choice = choiceOf(r, e);
-          const wl = e.whiteLabel !== undefined ? e.whiteLabel : (r.whiteLabel || '');
-          const hbv = e.holdback !== undefined ? e.holdback : (r.holdback == null ? '' : r.holdback);
+          /* A ROW GOING BACK TO THE PRE-FILL SHOWS THE PRE-FILL, not the setting it is
+             about to lose — otherwise somebody presses "Use the pre-fill", the boxes go on
+             reading exactly as before, and the only way to know it worked is to save and
+             look again. `prefill` is what the server says the row would answer to with no
+             setting of its own; the fields are disabled because typing into them while the
+             row is being reset is asking two contradictory things at once. */
+          const wl = resetting
+            ? ((r.prefill && r.prefill.whiteLabel) || '')
+            : (e.whiteLabel !== undefined ? e.whiteLabel : (r.whiteLabel || ''));
+          const hbv = resetting
+            ? (r.prefill && r.prefill.holdback != null ? r.prefill.holdback : '')
+            : (e.holdback !== undefined ? e.holdback : (r.holdback == null ? '' : r.holdback));
           return (
             <div
               key={r.key}
@@ -486,7 +508,7 @@ export default function LtInvestorSources() {
               style={{
                 padding: '10px 12px',
                 borderBottom: `1px solid ${LINE}`,
-                background: choice === 'off' ? '#FBFAF8' : '#fff',
+                background: resetting ? '#FBF7EE' : (choice === 'off' ? '#FBFAF8' : '#fff'),
               }}
             >
               <div style={{ minWidth: 0 }}>
@@ -494,13 +516,51 @@ export default function LtInvestorSources() {
                 <div style={{ fontSize: 11, color: MUTED }}>
                   {r.key}{r.custom ? ' · added by hand' : ''}
                 </div>
+                {/*
+                  TAKING A ROW BACK TO THE PRE-FILL — the owner's *"investors that were
+                  removed"* (Constructive, Broadview) still on the list. A row stays on this
+                  screen while it carries a setting of its own, so until now a setting made
+                  once could never be taken back off and the investor sat there for ever.
+                  The control is offered only where there IS a setting to remove, and the
+                  server answers whether there is (`carriesSetting`) so this can never offer
+                  to remove one that is not there.
+                */}
+                {carriesSetting(r) && !resetting && (
+                  <button
+                    type="button"
+                    onClick={() => edit(r.key, { reset: true })}
+                    style={{
+                      marginTop: 6, padding: '4px 9px', borderRadius: 999,
+                      border: `1px solid ${LINE}`, background: '#fff',
+                      fontSize: 11, fontWeight: 650, color: MUTED, cursor: 'pointer',
+                    }}
+                    title="Drop the setting saved for this investor and go back to the standing pre-fill. If nothing else keeps it here, it will leave this list."
+                  >Use the pre-fill</button>
+                )}
+                {resetting && (
+                  <div style={{ marginTop: 6 }}>
+                    <div style={{ fontSize: 11, color: GOLD_TEXT, fontWeight: 650, lineHeight: 1.45 }}>
+                      Going back to the pre-fill when you save{r.whiteLabel ? '' : ' — and leaving this list'}.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => undoReset(r.key)}
+                      style={{
+                        marginTop: 4, padding: '4px 9px', borderRadius: 999,
+                        border: `1px solid ${LINE}`, background: '#fff',
+                        fontSize: 11, fontWeight: 650, color: MUTED, cursor: 'pointer',
+                      }}
+                    >Keep the setting</button>
+                  </div>
+                )}
               </div>
               <div>
                 <div className="lt-inv-cell-label">Name a client may see</div>
                 <input
-                  style={{ ...input, fontSize: 14, padding: '7px 9px' }}
+                  style={{ ...input, fontSize: 14, padding: '7px 9px', opacity: resetting ? 0.6 : 1 }}
                   placeholder={r.prefill && r.prefill.whiteLabel ? r.prefill.whiteLabel : 'not named yet'}
                   value={wl}
+                  disabled={resetting}
                   onChange={(ev) => edit(r.key, { whiteLabel: ev.target.value })}
                 />
                 {r.whiteLabelMissing && !String(wl).trim() && (
@@ -518,6 +578,12 @@ export default function LtInvestorSources() {
                 <SourceChoice
                   value={choice}
                   lockedOut={r.lockedOut}
+                  /* While a row is going back to the pre-fill every button is locked, for
+                     the same reason its boxes are: pressing one would be answering a
+                     question the row is in the middle of un-asking, and the save would
+                     ignore the answer. */
+                  frozen={resetting}
+                  frozenReason={RESETTING_REASON}
                   onPick={(id) => edit(r.key, { choice: id })}
                 />
                 {/* ⛔ A TOOLTIP DOES NOT EXIST ON A PHONE. The greyed-out button explains
@@ -527,17 +593,21 @@ export default function LtInvestorSources() {
                     loannex, maybe only not on mobile" half of the report. The CSS shows
                     this only in the stacked form, so the desktop table gains no wall of
                     repeated lines while the phone stops being a dead end. */}
-                {(r.lockedOut || []).filter((id) => id !== 'off').map((id) => (
+                {!resetting && (r.lockedOut || []).filter((id) => id !== 'off').map((id) => (
                   <div key={id} className="lt-inv-lock">{lockReason(sourceLabel(id))}</div>
                 ))}
+                {/* On a phone there is no hover, so the frozen buttons would otherwise
+                    explain themselves nowhere — the same reason the lock lines above exist. */}
+                {resetting && <div className="lt-inv-lock">{RESETTING_REASON}</div>}
               </div>
               <div>
                 <div className="lt-inv-cell-label">Holdback (extra points)</div>
                 <input
-                  style={{ ...input, fontSize: 14, padding: '7px 9px', textAlign: 'right' }}
+                  style={{ ...input, fontSize: 14, padding: '7px 9px', textAlign: 'right', opacity: resetting ? 0.6 : 1 }}
                   placeholder="0"
                   inputMode="decimal"
                   value={hbv}
+                  disabled={resetting}
                   onChange={(ev) => edit(r.key, { holdback: ev.target.value })}
                   title="Extra points held back on this investor, on top of the standing holdback."
                 />

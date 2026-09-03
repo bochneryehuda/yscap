@@ -64,3 +64,73 @@ export function sourcePatch(row, edit) {
     enabled: choice !== 'off',
   };
 }
+
+/**
+ * DOES THIS ROW CARRY A SETTING SOMEBODY SAVED — the question the "use the
+ * pre-fill" control turns on, and the same one that KEEPS the row on the list.
+ *
+ * ⛔ THE SERVER ANSWERS IT (`carriesSetting`, from `investorSettings.carriesOwnSetting`,
+ * the one definition), and this reads that answer. The four-origin derivation below is
+ * the DEPLOY-WINDOW FALLBACK ONLY — a cached bundle against a newer server, or the
+ * reverse — never a second opinion: a browser that judged for itself could offer to
+ * remove a setting the server does not think is there, or hide the control on a row
+ * whose setting is the only reason it is on screen.
+ */
+export function carriesSetting(row) {
+  const r = row || {};
+  if (typeof r.carriesSetting === 'boolean') return r.carriesSetting;
+  return r.sourceOrigin === 'setting' || r.enabledOrigin === 'setting'
+    || r.whiteLabelOrigin === 'setting' || r.holdbackOrigin === 'setting';
+}
+
+/**
+ * HAS SOMEBODY ASKED TO TAKE THIS ROW BACK TO THE PRE-FILL?
+ *
+ * ⛔ EXACTLY `true`, never merely truthy. The edit object is spread from whatever the
+ * screen last wrote, so a stray string would otherwise silently drop a saved setting
+ * nobody asked to drop — and a dropped setting is invisible until somebody notices the
+ * investor pricing differently.
+ */
+export function resetRequested(edit) {
+  return !!edit && edit.reset === true;
+}
+
+/**
+ * THE WHOLE ROW: what this settings row sends on a save, or `null` for "send nothing,
+ * so it answers to the standing pre-fill".
+ *
+ * ⛔ IT LIVES HERE, NOT IN THE SCREEN, FOR THE REASON AT THE TOP OF THIS FILE. The
+ * pre-merge audit of 2026-09-03 defeated a regex over the screen TWICE while fully
+ * restoring the defect. This can be HANDED REAL ROWS and read back, so its test pins
+ * what the rule ANSWERS rather than how it is spelled — and the screen's own copy is
+ * one delegating line, which a regex CAN hold honestly.
+ *
+ * The three answers, in the order they are asked and the order they must stay in:
+ *
+ *   1. SOMEBODY ASKED FOR THE PRE-FILL → send nothing. Asked FIRST because asking makes
+ *      the row touched, so any later "was this touched?" test would re-state the very
+ *      setting the person is removing. The door replaces the whole map on every save, so
+ *      omitting the row IS the removal — that is what makes an investor removable at all
+ *      (owner-reported 2026-09-03: the list *"still shows investors that were removed"*).
+ *   2. NOBODY HAS TOUCHED IT AND IT CARRIES NO SETTING → send nothing, so today's
+ *      pre-fill is never pinned onto it for ever.
+ *   3. OTHERWISE → the source and on/off from `sourcePatch`, plus a white label and a
+ *      holdback when there is one to send. An EMPTY name and an empty holdback are
+ *      omitted, never sent as `''`/`NaN`: the door reads an absent key as "no setting of
+ *      its own for this", which is exactly what an empty box means.
+ */
+export function rowPatch(row, edit) {
+  const r = row || {};
+  const e = edit || null;
+  if (resetRequested(e)) return null;
+  if (!e && !carriesSetting(r)) return null;
+  const out = sourcePatch(r, e);
+  const wl = e && e.whiteLabel !== undefined ? e.whiteLabel : r.whiteLabel;
+  if (wl != null && String(wl).trim() !== '') out.whiteLabel = String(wl).trim();
+  const hbv = e && e.holdback !== undefined ? e.holdback : r.holdback;
+  if (hbv !== undefined && hbv !== null && String(hbv) !== '') {
+    const n = Number(hbv);
+    if (Number.isFinite(n)) out.holdback = n;
+  }
+  return out;
+}

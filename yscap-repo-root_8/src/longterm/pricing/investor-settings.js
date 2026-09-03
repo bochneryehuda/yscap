@@ -358,11 +358,31 @@ function belongsOnSettingsList(row, availability) {
   for (const k of Object.keys(a)) {
     if (a[k] && a[k].state === 'seen') return true;
   }
-  // A setting somebody saved of their own — any of the four a row can carry.
-  return row.sourceOrigin === 'setting'
-    || row.enabledOrigin === 'setting'
-    || row.whiteLabelOrigin === 'setting'
-    || row.holdbackOrigin === 'setting';
+  return carriesOwnSetting(row);
+}
+
+/**
+ * DOES THIS ROW CARRY A SETTING SOMEBODY SAVED — any of the four a row can hold.
+ *
+ * ⛔ IT IS ONE DEFINITION BECAUSE TWO THINGS TURN ON IT, AND THEY MUST AGREE.
+ * `belongsOnSettingsList` test 3 above KEEPS a row on the screen because it carries
+ * one; the settings screen's per-row "use the pre-fill" control OFFERS ITSELF for
+ * exactly the same reason and, when it is used, the row's setting is dropped from
+ * the save and the row leaves the list. Written twice, the two could disagree — and
+ * the disagreement nobody would notice is the expensive direction: a control that
+ * offers to remove a setting on a row the list keeps for another reason clears the
+ * setting and leaves the row sitting there, which reads as the button not working.
+ *
+ * The route puts the answer ON the row (`carriesSetting`) so the browser reads it
+ * rather than re-deriving it — a browser cannot require this file, and a second copy
+ * of a four-clause test is exactly how the two drift.
+ */
+function carriesOwnSetting(row) {
+  const r = row || {};
+  return r.sourceOrigin === 'setting'
+    || r.enabledOrigin === 'setting'
+    || r.whiteLabelOrigin === 'setting'
+    || r.holdbackOrigin === 'setting';
 }
 
 /** The investors with no client-safe name yet — the ones to go and name. */
@@ -404,7 +424,7 @@ function describe(raw, opts = {}) {
 }
 
 module.exports = {
-  belongsOnSettingsList,
+  belongsOnSettingsList, carriesOwnSetting,
   SOURCES, DEFAULT_SOURCE, OWNER_SOURCE, OWNER_DISABLED, MAX_INVESTOR_HOLDBACK,
   readSettings, resolveRaw, settingFor, roster, needsWhiteLabel, describe,
   _internals: { isSource },
